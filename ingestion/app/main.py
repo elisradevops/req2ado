@@ -37,7 +37,9 @@ from app.kb.browse_service import FolderChildSummary, browse_shared_folder, brow
 from app.kb.graph_client import GraphApiError, GraphClient, decode_jwt_expiry_seconds
 from app.kb.ingest_service import FolderIngestResult, IngestResult, ingest_document_from_url, ingest_folder_child, ingest_folder_from_url
 from app.kb.kb_vector_store import KbVectorStore
+from app.chat.context_pack import render_context_pack
 from app.kb.default_rubric import default_profile
+from app.kb.explain import basis_for, choose_categories, describe_categories
 from app.kb.rubric import RubricOverrides, apply_overrides, rubric_view, validate_overrides
 from app.kb.profile import ChromaProfileStore, KbProfile, ensure_profile, render_authoring_standard, scoring_inputs
 from app.kb.retrieval import retrieve_context
@@ -1926,6 +1928,74 @@ async def rewrite_compare(body: RewriteCompareRequest) -> dict:
         "categoryDeltas": {name: (after[2] or {})[name] - (before[2] or {})[name] for name in shared},
         "warnings": warnings,
     }
+
+
+# How long "Why this score?" waits for the model before answering 504.
+EXPLAIN_SECONDS = 60
+
+
+class ScoreExplainRequest(BaseModel):
+    title: str | None = None
+    description: str
+    type: str | None = "Requirement"
+    # The item's score per category (from its scoring pass); the weakest are explained unless `categories` names which.
+    category_scores: dict[str, float] | None = None
+    categories: list[str] | None = None
+    # Where the item sits in the document (parents, neighbours, linked items, captions), as for the chat.
+    context: dict | None = None
+    user_id: str | None = None
+    model: str | None = None
+
+
+@app.post("/score-explain")
+async def score_explain(body: ScoreExplainRequest) -> dict:
+    """The reason for each low category of an item, on demand: from the user's rubric (the knowledge base's pass conditions, as pinned by the
+    user) when there is one, otherwise from the built-in rubric and its design philosophy. One model call; it explains, it never rewrites."""
+    if not body.description.strip():
+        raise HTTPException(status_code=400, detail="description must not be blank")
+    rubric = await run_in_threadpool(_stored_profile_or_none, body.user_id) if body.user_id else default_profile()
+    names = choose_categories(body.category_scores, body.categories)
+    if not names:
+        raise HTTPException(status_code=400, detail="the item has no category scores to explain")
+    described = describe_categories(rubric, names, body.category_scores)
+    basis, basis_tag = basis_for(rubric)
+    probe_client = OrchestratorLlmClient(
+        settings.orchestrator_url, settings.llm_proxy_bearer, model=body.model, top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
+    )
+    num_ctx = (await run_in_threadpool(_resolve_caps, body.model, probe_client, body.user_id)).context_budget_tokens
+    client = OrchestratorLlmClient(
+        settings.orchestrator_url, settings.llm_proxy_bearer, model=body.model, num_ctx=num_ctx, top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
+    )
+    item = {"type": body.type or "Requirement", "title": body.title or "", "description": body.description}
+
+    def _explain() -> list[dict]:
+        return client.explain_category_scores(item, render_context_pack(body.context), described, basis, user_id=body.user_id)
+
+    try:
+        with job_cancel.cancellation_scope() as token:
+            try:
+                answered = await asyncio.wait_for(run_in_threadpool(_explain), timeout=EXPLAIN_SECONDS)
+            except asyncio.TimeoutError as exc:
+                token.cancel()
+                raise HTTPException(status_code=504, detail="the explanation is taking too long; try again") from exc
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Score explanation failed: %s", describe_exception(exc))
+        raise HTTPException(status_code=502, detail=f"the explanation could not be made: {describe_exception(exc)}") from exc
+    reasons = {_explain_key(e["category"]): " ".join(e["reason"].split())[:300] for e in answered}
+    return {
+        "explanations": [
+            {"category": d["name"], "score": d["score"], "reason": reasons.get(_explain_key(d["name"])) or None, "passCondition": d["pass_condition"]}
+            for d in described
+        ],
+        "basis": basis_tag,
+        "rubric": {"source": rubric.source if rubric else "default", "version": rubric.version if rubric else None},
+    }
+
+
+def _explain_key(name: str) -> str:
+    return " ".join(name.casefold().split())
 
 
 class EnhanceItem(BaseModel):
