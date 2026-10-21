@@ -1,4 +1,5 @@
 # ingestion/app/main.py
+import asyncio
 import hashlib
 import json
 import logging
@@ -1825,6 +1826,10 @@ async def score_item(body: ScoreItemRequest) -> ScoreItemResponse:
     )
 
 
+# How long a rewrite check waits for the model's prediction before answering with the warnings only.
+REWRITE_PREDICTION_SECONDS = 60
+
+
 class RewriteCompareRequest(BaseModel):
     """A proposed rewrite of one requirement, to be judged against the original before the user applies it."""
 
@@ -1875,7 +1880,15 @@ async def rewrite_compare(body: RewriteCompareRequest) -> dict:
         )
 
     try:
-        scored = await run_in_threadpool(_score)
+        # The prediction waits for the model at most REWRITE_PREDICTION_SECONDS (a 429 retry or a slow model can take minutes); past that
+        # the user gets the warnings and no score, and the run is cancelled so it asks no further.
+        with job_cancel.cancellation_scope() as token:
+            try:
+                scored = await asyncio.wait_for(run_in_threadpool(_score), timeout=REWRITE_PREDICTION_SECONDS)
+            except asyncio.TimeoutError:
+                token.cancel()
+                logger.warning("Rewrite prediction took longer than %ss; answering with the warnings only", REWRITE_PREDICTION_SECONDS)
+                return {"before": nothing, "after": nothing, "delta": None, "categoryDeltas": {}, "warnings": warnings}
     except Exception as exc:  # noqa: BLE001 -- the checks of the two texts need no model; only the prediction is lost
         logger.warning("Rewrite comparison could not be scored: %s", describe_exception(exc))
         return {"before": nothing, "after": nothing, "delta": None, "categoryDeltas": {}, "warnings": warnings}

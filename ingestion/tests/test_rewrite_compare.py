@@ -167,3 +167,33 @@ def test_warnings_only_answers_at_once_without_calling_the_model(monkeypatch) ->
     assert calls == []
     assert body["delta"] is None and body["before"]["score"] is None
     assert {"title_changed", "dropped_numbers"} <= {w["code"] for w in body["warnings"]}
+
+
+def test_a_prediction_that_takes_longer_than_the_cap_gives_the_warnings_and_no_score_and_stops_asking(monkeypatch) -> None:
+    import time
+
+    calls: list[int] = []
+
+    def slow(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        time.sleep(0.8)
+        return _scores(_entry(64, Testable=60), _entry(71, Testable=70))
+
+    _patch(monkeypatch, slow)
+    monkeypatch.setattr("app.main.REWRITE_PREDICTION_SECONDS", 0.2)
+    started = time.monotonic()
+    response = client.post("/rewrite/compare", json={**BODY, "proposed_description": "The receiver shall lock quickly."})
+    elapsed = time.monotonic() - started
+
+    assert response.status_code == 200 and elapsed < 0.7  # did not wait for the slow model
+    body = response.json()
+    assert body["delta"] is None and body["before"]["score"] is None
+    assert "dropped_numbers" in {w["code"] for w in body["warnings"]}
+    time.sleep(1.0)  # the call already in flight finishes; the cancelled run must not start another
+    assert len(calls) == 1
+
+
+def test_a_prediction_within_the_cap_is_returned_as_before(monkeypatch) -> None:
+    _patch(monkeypatch, lambda r: _scores(_entry(64, Testable=60), _entry(71, Testable=70)))
+    monkeypatch.setattr("app.main.REWRITE_PREDICTION_SECONDS", 5)
+    assert client.post("/rewrite/compare", json=BODY).json()["delta"] == 7

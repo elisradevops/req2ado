@@ -23,9 +23,12 @@ interface Proposal {
 
 const HISTORY_DISPLAY_LIMIT = 50;
 
-// The prediction is a model call and can be slow; past this the proposal can be applied without it. The warnings do not wait for it
+// The prediction is a model call and can be slow (the server stops waiting for it at 60 s). Past this limit the proposal can be applied
+// without it, but the card keeps listening: an answer that arrives later still updates it. The warnings do not wait for the prediction
 // (they need no model), and a warning still asks for confirmation.
-const CHECK_TIMEOUT_MS = 45_000;
+const CHECK_TIMEOUT_MS = 75_000;
+// The scorer is a sampled model: a difference this small is noise, not a better or worse rewrite.
+const NOISE_BAND = 5;
 
 /**
  * What is known about ONE proposal. `warnings` come back at once; `prediction` (the original and the proposal scored together)
@@ -34,7 +37,8 @@ const CHECK_TIMEOUT_MS = 45_000;
 interface ProposalCheck {
   proposal: Proposal;
   warnings: { status: 'loading' } | { status: 'unavailable' } | { status: 'ready'; items: RewriteWarning[] };
-  prediction: { status: 'loading' } | { status: 'unavailable' } | { status: 'ready'; data: RewriteComparison };
+  // `late`: the limit passed without an answer; Accept is open, the answer may still come.
+  prediction: { status: 'loading' } | { status: 'late' } | { status: 'unavailable' } | { status: 'ready'; data: RewriteComparison };
 }
 
 const WARNING_LABEL: Record<string, string> = {
@@ -54,7 +58,8 @@ function warningText(warning: RewriteWarning): string {
 function predictedLine(data: RewriteComparison | null): string {
   if (!data || data.delta === null || data.before.score === null || data.after.score === null) return 'The predicted score is unavailable.';
   const sign = data.delta > 0 ? '+' : '';
-  return `Predicted score: ${data.before.score} → ${data.after.score} (${sign}${data.delta})`;
+  const verdict = Math.abs(data.delta) <= NOISE_BAND ? ', about the same' : '';
+  return `Predicted score: ${data.before.score} → ${data.after.score} (${sign}${data.delta}${verdict})`;
 }
 
 // Fixed, non-editable prompt for the "Suggest a better title" chip -- title
@@ -166,6 +171,7 @@ export function ChatPanel({
   const [checkState, setCheckState] = useState<ProposalCheck | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const checkRequestRef = useRef(0);
+  const [predictingSeconds, setPredictingSeconds] = useState(0);
   const historyEndRef = useRef<HTMLDivElement>(null);
 
   // Reset chat state whenever the selected node changes so a stale
@@ -239,11 +245,19 @@ export function ChatPanel({
         if (fresh()) update({ warnings: { status: 'unavailable' } });
       });
 
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error('timeout')), CHECK_TIMEOUT_MS);
-    });
-    Promise.race([checkRewrite(jobId, localId, target), timeout])
+    // Past the limit Accept opens up (`late`), but the request is not abandoned: an answer that comes later still updates the card.
+    setPredictingSeconds(0);
+    const startedAt = Date.now();
+    const ticker = setInterval(() => setPredictingSeconds(Math.floor((Date.now() - startedAt) / 1000)), 1000);
+    const limit = setTimeout(
+      () => setCheckState((prev) => (prev && prev.proposal === proposal && prev.prediction.status === 'loading' ? { ...prev, prediction: { status: 'late' } } : prev)),
+      CHECK_TIMEOUT_MS,
+    );
+    const settle = () => {
+      clearInterval(ticker);
+      clearTimeout(limit);
+    };
+    checkRewrite(jobId, localId, target)
       .then((data) => {
         if (!fresh()) return;
         if (data && Array.isArray(data.warnings)) update({ prediction: { status: 'ready', data }, warnings: { status: 'ready', items: data.warnings } });
@@ -252,8 +266,8 @@ export function ChatPanel({
       .catch(() => {
         if (fresh()) update({ prediction: { status: 'unavailable' } });
       })
-      .finally(() => clearTimeout(timer));
-    return () => clearTimeout(timer);
+      .finally(settle);
+    return settle;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [proposal, jobId, localId, checkedKind]);
 
@@ -393,7 +407,7 @@ export function ChatPanel({
   // Applying asks first when the check predicts a lower score, found something that probably lost content, or could not check at all
   // ("unchecked" is not "fine").
   const needsConfirmation =
-    !loading && (notChecked || warningItems.some((w) => w.severity === 'high') || (comparison?.delta != null && comparison.delta < 0));
+    !loading && (notChecked || warningItems.some((w) => w.severity === 'high') || (comparison?.delta != null && comparison.delta < -NOISE_BAND));
 
   function onAcceptClick(): void {
     if (needsConfirmation) setConfirmOpen(true);
@@ -560,8 +574,13 @@ export function ChatPanel({
               ))}
             </div>
           )}
-          {checking && check && check.prediction.status === 'loading' && <p className="mt-1 text-xs text-ink-3">Predicting the score…</p>}
-          {checking && check && check.prediction.status !== 'loading' && !notChecked && (
+          {checking && check && check.prediction.status === 'loading' && (
+            <p className="mt-1 text-xs text-ink-3">Predicting the score… ({predictingSeconds} s)</p>
+          )}
+          {checking && check && check.prediction.status === 'late' && (
+            <p className="mt-1 text-xs text-ink-3">The score is still being predicted ({predictingSeconds} s); you can apply without it.</p>
+          )}
+          {checking && check && (check.prediction.status === 'ready' || check.prediction.status === 'unavailable') && !notChecked && (
             <p className="mt-1 text-xs text-ink-2">{predictedLine(comparison)}</p>
           )}
           <div className="mt-1.5 flex gap-2">

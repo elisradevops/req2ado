@@ -44,6 +44,9 @@ MAX_SCORING_CATEGORIES = 16
 # The merge is asked this many times and only what most runs agree on is kept: Claude and GPT-5.x are forced to temperature 1 by the
 # proxy, so one answer is a sample, while the agreement of three is stable.
 CONSOLIDATION_RUNS = 3
+# Each window of a document is read this many times (the extraction is a temperature-1 sample). Every wording is a candidate; a quality
+# is kept only when most of the runs produced it in the same document, and the wording most runs gave names it.
+EXTRACTION_RUNS = 3
 MAX_RULES = 60
 MAX_GLOSSARY = 80
 
@@ -63,6 +66,9 @@ class Category(BaseModel):
     # The document categories this entry stands for, as the documents wrote them (it is one of them). Lets a rebuild keep
     # the groups it made; absent (empty) on profiles stored before it existed.
     merged_from: list[str] = Field(default_factory=list)
+    # Per source document, the extraction runs (0-based) that produced this category (pooled over the wordings merged into it). Used to keep
+    # only what most runs agree on; empty on profiles stored before it existed (then nothing is dropped for lack of support).
+    seen_in: dict[str, list[int]] = Field(default_factory=dict)
 
 
 class TypeDefinition(BaseModel):
@@ -154,7 +160,7 @@ class DocumentCache(Protocol):
 
 def extraction_version() -> str:
     """Identifies how a document is read: change a prompt, the window size or the schema and stored extractions no longer apply."""
-    parts = [SCHEMA_VERSION, load_prompt("kb_document_relevance"), load_prompt("extract_kb_document_profile"), WINDOW_CHARS, WINDOW_OVERLAP, RELEVANCE_EXCERPT_CHARS]
+    parts = [SCHEMA_VERSION, load_prompt("kb_document_relevance"), load_prompt("extract_kb_document_profile"), WINDOW_CHARS, WINDOW_OVERLAP, RELEVANCE_EXCERPT_CHARS, EXTRACTION_RUNS]
     return hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:24]
 
 
@@ -252,6 +258,30 @@ def _union(into: dict, extracted: dict) -> None:
             into["type_definitions"].append({"item_type": kind, "text": text})
 
 
+def _combine_runs(run_results: list[dict]) -> dict:
+    """One document's extraction from its runs. Every wording of a category is kept as its own candidate, with the runs that produced
+    it; its pass condition is the most common one and its spelling the most common (ties alphabetical), so the result does not depend
+    on the order the runs are in. Rules, glossary terms and type definitions are pooled across the runs."""
+    combined = _empty()
+    cats: dict[str, dict] = {}
+    for run, result in enumerate(run_results):
+        for category in result["categories"]:
+            entry = cats.setdefault(_key(category["name"]), {"spellings": {}, "conditions": {}, "runs": [], "first": len(cats)})
+            entry["runs"].append(run)
+            entry["spellings"][category["name"]] = entry["spellings"].get(category["name"], 0) + 1
+            condition = category.get("pass_condition")
+            if condition:
+                entry["conditions"][condition] = entry["conditions"].get(condition, 0) + 1
+        _union(combined, {**result, "categories": []})
+    for entry in sorted(cats.values(), key=lambda e: (-len(e["runs"]), e["first"])):
+        spelling = min(entry["spellings"], key=lambda t: (-entry["spellings"][t], t))
+        conditions = entry["conditions"]
+        combined["categories"].append(
+            {"name": spelling, "pass_condition": min(conditions, key=lambda t: (-conditions[t], t)) if conditions else None, "runs": entry["runs"]}
+        )
+    return combined
+
+
 def _cache_get(cache: DocumentCache, file: str, fingerprint: str) -> dict | None:
     """The cache only saves work: a store error is a miss, never a failed build (the model calls were already paid for)."""
     try:
@@ -321,15 +351,19 @@ def build_profile(
             if cache is not None and verdict_ok:
                 _cache_put(cache, name, fingerprint, {"status": "not_relevant", "reason": reason})
             continue
-        combined, errors, windows = _empty(), [], windows_of(text)
-        for window in windows:
-            try:
-                _union(combined, client.extract_kb_document_profile(name, window, user_id=user_id))
-            except Exception as exc:  # noqa: BLE001
-                errors.append(redact_identity(" ".join(str(exc).split()))[:200])
+        windows = windows_of(text)
+        run_results, errors = [_empty() for _ in range(EXTRACTION_RUNS)], []
+        for run in range(EXTRACTION_RUNS):
+            for window in windows:
+                try:
+                    _union(run_results[run], client.extract_kb_document_profile(name, window, user_id=user_id))
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(redact_identity(" ".join(str(exc).split()))[:200])
+        combined = _combine_runs(run_results)
+        calls = len(windows) * EXTRACTION_RUNS
         counts = {k: len(v) for k, v in combined.items()}
         degraded = degraded or bool(errors)
-        if errors and len(errors) == len(windows):
+        if errors and len(errors) == calls:
             statuses.append(DocumentStatus(file=name, status="failed", reason=errors[0]))
         elif sum(counts.values()) == 0:
             statuses.append(DocumentStatus(file=name, status="extracted_nothing", reason="no categories, definitions, rules or terms found"))
@@ -338,7 +372,7 @@ def build_profile(
             statuses.append(
                 DocumentStatus(
                     file=name, status="contributed",
-                    reason=f"{len(errors)} of {len(windows)} windows failed" if errors else None,
+                    reason=f"{len(errors)} of {calls} extraction calls failed" if errors else None,
                     categories=counts["categories"], rules=counts["rules"],
                     type_definitions=counts["type_definitions"], glossary=counts["glossary"],
                 )
@@ -366,9 +400,10 @@ def build_profile(
 
 def _representative_key(member: Category, preferred: set[str]):
     """Which member of a group speaks for it: the previous profile's name first (a rebuild keeps names), then the wording more
-    documents used, then a plainly written one (capitalised, shorter), then alphabetical. A rule over the documents' own
+    documents used, then the one more extraction runs gave, then a plainly written one (capitalised, shorter), then alphabetical. A rule over the documents' own
     words: nothing the model wrote is used, so sampling cannot rename a quality."""
-    return (_key(member.name) not in preferred, -len(member.sources), 0 if member.name[:1].isupper() else 1, len(member.name), member.name.casefold(), member.name)
+    support = sum(len(runs) for runs in member.seen_in.values())
+    return (_key(member.name) not in preferred, -len(member.sources), -support, 0 if member.name[:1].isupper() else 1, len(member.name), member.name.casefold(), member.name)
 
 
 def consolidate_categories(
@@ -389,8 +424,15 @@ def consolidate_categories(
         ordered = sorted(entries, key=lambda c: (-len(c.sources), c.sources[0] if c.sources else "", c.name))
         return ordered[:MAX_SCORING_CATEGORIES], len(ordered) > MAX_SCORING_CATEGORIES
 
+    majority = EXTRACTION_RUNS // 2 + 1
+
+    def supported(seen_in: dict[str, list[int]]) -> bool:
+        # No run information (a profile stored before it existed): nothing is dropped for lack of support.
+        return not seen_in or max(len(runs) for runs in seen_in.values()) >= majority
+
     def unmerged() -> tuple[list[Category], bool]:
-        return [c.model_copy(update={"merged_from": [c.name]}) for c in categories[:MAX_SCORING_CATEGORIES]], len(categories) > MAX_SCORING_CATEGORIES
+        kept = [c for c in categories if supported(c.seen_in)] or list(categories)
+        return [c.model_copy(update={"merged_from": [c.name]}) for c in kept[:MAX_SCORING_CATEGORIES]], len(kept) > MAX_SCORING_CATEGORIES
 
     by_key = {_key(c.name): c for c in categories}
     keys = list(by_key)
@@ -469,12 +511,19 @@ def consolidate_categories(
         members = [by_key[k] for k in member_keys]
         ranked = sorted(members, key=lambda m: _representative_key(m, preferred))
         condition = next((m.pass_condition for m in ranked if m.pass_condition), None)
+        pooled: dict[str, set[int]] = {}
+        for m in members:
+            for doc, runs in m.seen_in.items():
+                pooled.setdefault(doc, set()).update(runs)  # a run that produced two wordings of one quality counts once
         entries.append(
             Category(
                 name=ranked[0].name, pass_condition=condition,
                 sources=sorted({src for m in members for src in m.sources}), merged_from=[m.name for m in members],
+                seen_in={doc: sorted(runs) for doc, runs in pooled.items()},
             )
         )
+    # A quality most runs did not produce (in one document) is a one-off; if nothing would survive, keep the candidates.
+    entries = [e for e in entries if supported(e.seen_in)] or entries
     return capped(entries)
 
 
@@ -495,8 +544,9 @@ def merge_document_profiles(extracted: dict[str, dict], model: str, version: str
     for name in names:
         for index, c in enumerate(extracted[name]["categories"]):
             key = _key(c["name"])
-            entry = categories.setdefault(key, {"name": c["name"], "sources": [], "index": index})
+            entry = categories.setdefault(key, {"name": c["name"], "sources": [], "index": index, "seen_in": {}})
             entry["sources"].append(name)
+            entry["seen_in"][name] = sorted(set(entry["seen_in"].get(name, [])) | set(c.get("runs") or [0]))
             if c.get("pass_condition"):
                 variant = category_variants.setdefault(key, {}).setdefault(_key(c["pass_condition"]), Variant(text=c["pass_condition"], sources=[]))
                 variant.sources.append(name)
@@ -516,7 +566,7 @@ def merge_document_profiles(extracted: dict[str, dict], model: str, version: str
     for entry in category_list:
         key = _key(entry["name"])
         variants = sorted(category_variants.get(key, {}).values(), key=lambda v: (-len(v.sources), v.sources[0]))
-        out_categories.append(Category(name=entry["name"], pass_condition=variants[0].text if variants else None, sources=entry["sources"]))
+        out_categories.append(Category(name=entry["name"], pass_condition=variants[0].text if variants else None, sources=entry["sources"], seen_in=entry["seen_in"]))
         if len(variants) > 1:
             conflicts.append(Conflict(kind="category", key=key, variants=sorted(variants, key=lambda v: v.sources[0])))
     out_definitions = []

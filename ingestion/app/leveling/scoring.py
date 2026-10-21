@@ -875,6 +875,53 @@ def _match_category_checklist(
     return matched or None
 
 
+_MAX_REPAIR_CALLS = 3  # distinct sets of missing categories repaired per scoring call; a rarer gap keeps its warning
+
+
+def _repair_missing_categories(
+    nodes: list[WorkItemNode],
+    missing_by_node: dict[str, list[str]],
+    scoring_client: BatchedScoringClient,
+    criteria_context: str | None,
+    kb_context: str | None,
+    category_checklist: list[str],
+    user_id: str | None,
+) -> dict[str, list[str]]:
+    """Completes the breakdowns that lack required categories with ONE small follow-up call per distinct set of missing names (at most
+    _MAX_REPAIR_CALLS), asking only for those names, in the same frame (same context). Only the missing categories are taken from the
+    answer: the item's score, issues and the categories it already has are never touched, and a value that is not an integer 0-100 is
+    ignored. Returns what is still missing afterwards; a failing call leaves its items as they were."""
+    required = list(category_checklist)
+    if not any(name.strip().casefold() == _COMPLETENESS_KEY for name in required):
+        required.append(_COMPLETENESS_KEY)
+    by_id = {node.local_id: node for node in nodes}
+    groups: dict[tuple[str, ...], list[str]] = {}
+    for node_id, missing in missing_by_node.items():
+        groups.setdefault(tuple(missing), []).append(node_id)
+    still_missing = dict(missing_by_node)
+    # The groups that cover the most items first; ties by their names, so the choice never depends on dict order.
+    for missing, node_ids in sorted(groups.items(), key=lambda g: (-len(g[1]), g[0]))[:_MAX_REPAIR_CALLS]:
+        wanted = {name.strip().casefold(): name for name in missing}
+        try:
+            answer = scoring_client.score_requirements_for_document(
+                {node_id: by_id[node_id].description for node_id in node_ids}, criteria_context, kb_context, list(missing), user_id=user_id,
+            )
+        except Exception as exc:  # noqa: BLE001 -- a repair only completes a breakdown; the scores already stand
+            logger.warning("Completing %d item(s) with a missing category failed: %s", len(node_ids), exc)
+            continue
+        for node_id in node_ids:
+            entry = answer.get(node_id) if isinstance(answer, dict) else None
+            parsed = _parse_category_scores(entry.get("categoryScores")) if isinstance(entry, dict) else None
+            if not parsed:
+                continue
+            found = {wanted[k.strip().casefold()]: v for k, v in parsed.items() if k.strip().casefold() in wanted}
+            node = by_id[node_id]
+            merged = {**(node.quality_category_scores or {}), **found}
+            node.quality_category_scores = {name: merged[name] for name in required if name in merged}
+            still_missing[node_id] = [name for name in missing_by_node[node_id] if name not in found]
+    return {node_id: names for node_id, names in still_missing.items() if names}
+
+
 def _apply_quality_scores(
     nodes: list[WorkItemNode],
     scoring_client: BatchedScoringClient,
@@ -1008,6 +1055,10 @@ def _apply_quality_scores(
                 )
             )
 
+    if nodes_missing_categories and category_checklist:
+        nodes_missing_categories = _repair_missing_categories(
+            nodes, nodes_missing_categories, scoring_client, criteria_context, kb_context, category_checklist, user_id,
+        )
     if nodes_missing_categories:
         left_out_names = sorted({name for names in nodes_missing_categories.values() for name in names})
         # Counts only: the names are the company's own material and stay in the warning's detail, not in the log or the narration.
