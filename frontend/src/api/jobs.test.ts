@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import axios from 'axios';
 import { httpClient } from './httpClient';
-import { listJobs, submitJob, confirmJob, editDiffEntry, setDiffEntryExcluded, setDiffEntriesReviewed, setWarningsAcknowledged, retryEnhancement, addDiffEntry, rescoreDiffEntry, getFigureFile, attachFigureToAdo, retryTraceLinkWrite, validateCreatedTree, previewExposition } from './jobs';
+import { explainScore, listJobs, submitJob, confirmJob, editDiffEntry, setDiffEntryExcluded, setDiffEntriesReviewed, setWarningsAcknowledged, retryEnhancement, addDiffEntry, rescoreDiffEntry, getFigureFile, attachFigureToAdo, retryTraceLinkWrite, validateCreatedTree, previewExposition } from './jobs';
 
 vi.mock('./httpClient');
 
@@ -174,5 +174,13 @@ describe('jobs api', () => {
       const formData = calls[calls.length - 1][1] as FormData;
       expect(formData.get('documentOverview')).toBeNull();
     });
+  });
+
+  it('explainScore POSTs to the score-explain sub-route, with the chosen categories only when there are some', async () => {
+    (httpClient.post as any).mockResolvedValue({ data: { explanations: [], basis: 'built_in', rubric: { source: 'default', version: 'v' } } });
+    await explainScore('job-1', 'n0');
+    expect(httpClient.post).toHaveBeenLastCalledWith('/jobs/job-1/diff/n0/score-explain', {});
+    await explainScore('job-1', 'n0', ['Verifiable']);
+    expect(httpClient.post).toHaveBeenLastCalledWith('/jobs/job-1/diff/n0/score-explain', { categories: ['Verifiable'] });
   });
 });

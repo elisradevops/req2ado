@@ -399,3 +399,17 @@ export async function retryTraceLinkWrite(jobId: string, failureId: string): Pro
   const response = await httpClient.post(`/jobs/${jobId}/trace-links/${failureId}/retry`);
   return response.data;
 }
+
+
+/** Why an item got the scores it did: one short reason per category asked about, and what the category is held to. */
+export interface ScoreExplanation {
+  explanations: { category: string; score: number | null; reason: string | null; passCondition: string | null }[];
+  basis: 'knowledge_base' | 'built_in';
+  rubric: { source: string; version: string | null };
+}
+
+// Read-only, one short model call, on demand. Without `categories` the weakest categories are explained.
+export async function explainScore(jobId: string, localId: string, categories?: string[]): Promise<ScoreExplanation> {
+  const response = await httpClient.post<ScoreExplanation>(`/jobs/${jobId}/diff/${localId}/score-explain`, categories?.length ? { categories } : {});
+  return response.data;
+}

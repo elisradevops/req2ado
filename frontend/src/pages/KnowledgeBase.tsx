@@ -14,6 +14,7 @@ import {
 import { SharePointFolderTree } from '../components/SharePointFolderTree';
 import { KbFileList } from '../components/KbFileList';
 import { KbFileDetailPane } from '../components/KbFileDetailPane';
+import { RubricPanel } from '../components/RubricPanel';
 import { useToast } from '../components/ToastProvider';
 import { useUserId } from '../store/authStore';
 import { PageHeader } from '../ui/PageHeader';
@@ -486,6 +487,7 @@ export function KnowledgeBase(): React.ReactElement {
         isConfirming={isRemoving}
         variant="destructive"
       />
+      <RubricPanel />
     </div>
   );
 }

@@ -4,6 +4,8 @@ import { TagChips } from './TagChips';
 import { resolveWinningTag } from '../utils/requirementClassification';
 import { REQUIREMENT_TAG_LABELS } from '../utils/labels';
 import { QualityGauge, type QualityCategoryScores } from './QualityGauge';
+import { ScoreExplanationPanel } from './ScoreExplanationPanel';
+import { explainScore } from '../api/jobs';
 import { TraceLinkChips } from './TraceLinkChips';
 import { SourceProvenance } from './SourceProvenance';
 import type { KbCitation } from './KbCitationChips';
@@ -619,6 +621,10 @@ export function NodeDetailPanel({
                   previousIssues={preRescoreSnapshot?.issues}
                 />
               </div>
+              {/* Why each low category got its score, on demand: only for a score that still describes the current text. */}
+              {jobId && !entry.qualityStale && entry.qualityCategoryScores && (
+                <ScoreExplanationPanel load={() => explainScore(jobId, entry.localId)} resetKey={`${entry.localId}:${entry.qualityScore}`} />
+              )}
               {entry.qualityStale ? (
                 <div className="flex items-center justify-between gap-2">
                   <p className="text-xs text-ink-3">
