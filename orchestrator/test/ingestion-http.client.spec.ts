@@ -691,3 +691,25 @@ describe('IngestionHttpClient.compareRewrite', () => {
     ).rejects.toBeInstanceOf(IngestionHttpError);
   });
 });
+
+
+describe('IngestionHttpClient.cacheScope', () => {
+  beforeEach(() => {
+    global.fetch = jest.fn();
+  });
+
+  it('reads the ingestion build and the user\'s stored profile version', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ ingestion: '0.3.15', profile: 'p1' }) });
+    expect(await new IngestionHttpClient('http://ingestion.internal').cacheScope('user-1')).toEqual({ ingestion: '0.3.15', profile: 'p1' });
+    expect((global.fetch as jest.Mock).mock.calls[0][0]).toBe('http://ingestion.internal/cache-scope?user_id=user-1');
+  });
+
+  it('is null when it cannot be read, so nothing is cached on a guess', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 500, text: async () => '', json: async () => ({}) });
+    expect(await new IngestionHttpClient('http://ingestion.internal').cacheScope('user-1')).toBeNull();
+    (global.fetch as jest.Mock).mockRejectedValue(new Error('down'));
+    expect(await new IngestionHttpClient('http://ingestion.internal').cacheScope('user-1')).toBeNull();
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ nonsense: true }) });
+    expect(await new IngestionHttpClient('http://ingestion.internal').cacheScope('user-1')).toBeNull();
+  });
+});

@@ -298,6 +298,20 @@ export class IngestionHttpClient {
     };
   }
 
+  // What a stored job result depends on besides the file: this ingestion build and the version of the profile the user's jobs are
+  // scored with (null without one). null when it cannot be read: the caller then caches nothing rather than guess.
+  async cacheScope(userId: string): Promise<{ ingestion: string; profile: string | null } | null> {
+    try {
+      const response = await fetch(`${this.baseUrl}/cache-scope?user_id=${encodeURIComponent(userId)}`);
+      if (!response.ok) return null;
+      const body = (await response.json()) as { ingestion?: unknown; profile?: unknown };
+      if (typeof body?.ingestion !== 'string') return null;
+      return { ingestion: body.ingestion, profile: typeof body.profile === 'string' ? body.profile : null };
+    } catch {
+      return null;
+    }
+  }
+
   // A proposed rewrite judged against the original in ONE model call (same frame, same rubric, the user's KB profile context), plus
   // ingestion's deterministic checks of the proposal. Ingestion's /rewrite/compare answers camelCase already.
   async compareRewrite(

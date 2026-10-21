@@ -25,6 +25,10 @@ export interface ResultKeyParts {
   mode: string;
   /** `kbVersionFor` of the submitting user. */
   kbVersion: string;
+  /** The ingestion build that produced the tree: an ingestion-only release must not serve the previous build's result. */
+  ingestionVersion: string;
+  /** The version of the KB profile the job is scored with (null without one): results scored with other categories do not apply. */
+  profileVersion: string | null;
 }
 
 const TTL_SECONDS = 30 * 24 * 60 * 60;
@@ -41,7 +45,7 @@ export class JobResultCache {
 
   keyFor(parts: ResultKeyParts): string {
     const digest = createHash('sha256')
-      .update(JSON.stringify([this.codeVersion, parts.fileHash, parts.userId, parts.model, parts.mode, parts.kbVersion]))
+      .update(JSON.stringify([this.codeVersion, parts.fileHash, parts.userId, parts.model, parts.mode, parts.kbVersion, parts.ingestionVersion, parts.profileVersion]))
       .digest('hex');
     return `job-result:${digest}`;
   }

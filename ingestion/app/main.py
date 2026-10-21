@@ -2224,6 +2224,23 @@ async def kb_build_profile(body: KbProfileRequest) -> dict:
     return _profile_response(profile)
 
 
+def _ingestion_version() -> str:
+    try:
+        from importlib import metadata
+
+        return metadata.version("req2ado-ingestion")
+    except Exception:  # noqa: BLE001 -- not installed as a package (a source checkout): the result cache then simply never matches
+        return "unknown"
+
+
+@app.get("/cache-scope")
+async def cache_scope(user_id: str | None = None) -> dict:
+    """What a stored job result depends on besides the file: this ingestion build, and the version of the profile the user's jobs are scored
+    with (null without one). The orchestrator puts both in its result-cache key, so a new build or a rebuilt profile never serves old results."""
+    profile = await run_in_threadpool(_stored_profile_or_none, user_id) if user_id else None
+    return {"ingestion": _ingestion_version(), "profile": profile.version if profile is not None else None}
+
+
 @app.get("/kb/profile")
 async def kb_get_profile(user_id: str) -> dict:
     profile = await run_in_threadpool(_kb_profile_store.get, user_id)

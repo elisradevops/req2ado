@@ -54,6 +54,13 @@ describe('model capability table', () => {
     expect(seedConstraints('OpenAI/gpt-chat-latest')).toMatchObject({ omitTokenLimit: true });
     expect(seedConstraints('OpenAI/gpt-oss-120b')).toMatchObject({ tokenParam: 'max_completion_tokens' });
   });
+
+  it('seeds the parameters a family is known to refuse, so the first call does not have to fail to learn them', () => {
+    // Prod: Opus via azure_ai and GPT-5.x reasoning models answered 400 UnsupportedParamsError to frequency_penalty on the figure-vision call.
+    expect([...seedConstraints('claude-opus-4-8')!.rejected]).toContain('frequency_penalty');
+    expect([...seedConstraints('OpenAI/gpt-5.6-terra')!.rejected]).toContain('frequency_penalty');
+    expect([...seedConstraints('OpenAI/gpt-oss-120b')!.rejected]).not.toContain('frequency_penalty');
+  });
 });
 
 describe('the client starts from the table: no failed first attempt for a known family', () => {
@@ -78,5 +85,15 @@ describe('the client starts from the table: no failed first attempt for a known 
     const result = await clientFor(model).chat([{ role: 'user', content: 'Reply OK.' }], { model, temperature: 0, maxTokens: 300 });
     expect(result.content).toBe('OK');
     expect(proxy.requests.filter((r) => r.path === '/v1/chat/completions')).toHaveLength(1);
+  });
+
+  it.each(['claude-opus-4-8', 'OpenAI/gpt-5.6-terra'])('%s: the figure-vision call needs no failed first attempt either', async (model) => {
+    const behavior = behaviorFromCapabilities(model);
+    proxy = await startFakeProxy({ [model]: behavior! });
+    const answer = await clientFor(model).vision('What colour?', [Buffer.from('png')], { model, mimeType: 'image/png' });
+    expect(answer).toBe('OK');
+    const sent = proxy.requests.filter((r) => r.path === '/v1/chat/completions');
+    expect(sent).toHaveLength(1);
+    expect('frequency_penalty' in sent[0].body).toBe(false);
   });
 });

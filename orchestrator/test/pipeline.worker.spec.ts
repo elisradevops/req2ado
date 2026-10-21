@@ -3,7 +3,7 @@ import { runPipelineJob } from '../src/modules/pipeline/pipeline.worker';
 import { JobResultCache } from '../src/modules/pipeline/result-cache';
 
 describe('runPipelineJob', () => {
-  const fakeIngestionClient = { ingest: jest.fn(), level: jest.fn(), checkDuplicate: jest.fn(), deleteDedupEntry: jest.fn() };
+  const fakeIngestionClient = { ingest: jest.fn(), level: jest.fn(), checkDuplicate: jest.fn(), deleteDedupEntry: jest.fn(), cacheScope: jest.fn() };
   const fakeDryRunService = { diff: jest.fn() };
   const fakeIdempotencyService = { lookup: jest.fn(), record: jest.fn(), deleteByAdoWorkItemId: jest.fn() };
   const fakePrisma = {
@@ -1954,6 +1954,7 @@ describe('runPipelineJob', () => {
       resultCache,
     });
     beforeEach(() => {
+      fakeIngestionClient.cacheScope.mockResolvedValue({ ingestion: '0.3.15', profile: 'p1' });
       fakeIngestionClient.ingest.mockResolvedValue({ blocks: [{ id: 'b0' }], figures: [] });
       fakeIngestionClient.level.mockResolvedValue({ nodes: [{ local_id: 'n0', source_ref: {}, fidelity_hash: 'h', customer_id: null }], warnings: [] });
       fakeDryRunService.diff.mockResolvedValue([{ localId: 'n0', action: 'create', existingAdoId: null }]);
@@ -2007,6 +2008,36 @@ describe('runPipelineJob', () => {
     it('does not store a result whose document has a figure without a caption', async () => {
       const cache = new JobResultCache(cacheStore(), 'code-1');
       fakeIngestionClient.ingest.mockResolvedValue({ blocks: [{ id: 'b0' }], figures: [{ id: 'f1', caption_status: 'vision_failed' }] });
+      await runPipelineJob(survey('job-1'), deps(cache));
+      await runPipelineJob(survey('job-2'), deps(cache));
+      expect(fakeIngestionClient.level).toHaveBeenCalledTimes(2);
+    });
+
+    it('a new ingestion build or a rebuilt KB profile runs the pipeline again instead of serving the old tree', async () => {
+      const cache = new JobResultCache(cacheStore(), 'code-1');
+      await runPipelineJob(survey('job-1'), deps(cache));
+      fakeIngestionClient.cacheScope.mockResolvedValue({ ingestion: '0.3.16', profile: 'p1' });
+      await runPipelineJob(survey('job-2'), deps(cache));
+      expect(fakeIngestionClient.level).toHaveBeenCalledTimes(2);
+      fakeIngestionClient.cacheScope.mockResolvedValue({ ingestion: '0.3.16', profile: 'p2' });
+      await runPipelineJob(survey('job-3'), deps(cache));
+      expect(fakeIngestionClient.level).toHaveBeenCalledTimes(3);
+      await runPipelineJob(survey('job-4'), deps(cache)); // the same scope as job-3: now it is served
+      expect(fakeIngestionClient.level).toHaveBeenCalledTimes(3);
+    });
+
+    it('a profile built DURING the first job is part of the key the result is stored under, so the second identical job is served', async () => {
+      const cache = new JobResultCache(cacheStore(), 'code-1');
+      fakeIngestionClient.cacheScope.mockResolvedValueOnce({ ingestion: '0.3.15', profile: null }); // before the job: no profile yet
+      fakeIngestionClient.cacheScope.mockResolvedValue({ ingestion: '0.3.15', profile: 'p-built-by-job-1' }); // after: it exists
+      await runPipelineJob(survey('job-1'), deps(cache));
+      await runPipelineJob(survey('job-2'), deps(cache));
+      expect(fakeIngestionClient.level).toHaveBeenCalledTimes(1);
+    });
+
+    it('caches nothing when the scope cannot be read, and the job still runs', async () => {
+      const cache = new JobResultCache(cacheStore(), 'code-1');
+      fakeIngestionClient.cacheScope.mockResolvedValue(null);
       await runPipelineJob(survey('job-1'), deps(cache));
       await runPipelineJob(survey('job-2'), deps(cache));
       expect(fakeIngestionClient.level).toHaveBeenCalledTimes(2);

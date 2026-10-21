@@ -23,6 +23,8 @@ export interface ProxyBehavior {
   toolsNeedReasoningNone?: boolean;
   /** Answers 429 with this retry hint for the first N calls. */
   rateLimitedCalls?: { count: number; retryAfterSeconds: number };
+  /** Parameters the model refuses outright (LiteLLM UnsupportedParamsError), like frequency_penalty on Claude via azure_ai. */
+  rejectsParams?: string[];
   /** The text of a successful answer. */
   answer?: string;
 }
@@ -51,6 +53,10 @@ export const BEHAVIORS = {
 const chars = (messages: { content?: unknown }[]): number => messages.reduce((n, m) => n + (typeof m.content === 'string' ? m.content.length : 0), 0);
 
 function refusal(body: Record<string, any>, behavior: ProxyBehavior, model: string): { status: number; text: string } | null {
+  const refused = (behavior.rejectsParams ?? []).filter((name) => name in body);
+  if (refused.length > 0) {
+    return { status: 400, text: `litellm.UnsupportedParamsError: azure_ai does not support parameters: [${refused.map((n) => `'${n}'`).join(', ')}], for model=${model}.` };
+  }
   if (behavior.tokenParam === 'neither' && ('max_tokens' in body || 'max_completion_tokens' in body)) {
     return { status: 400, text: "litellm.UnsupportedParamsError: azure does not support parameters: ['max_tokens']" };
   }
@@ -166,6 +172,7 @@ export function behaviorFromCapabilities(model: string): ProxyBehavior | null {
     temperature: capability.temperature.mode === 'fixed' ? 'fixed-1' : 'any',
     temperatureWording: capability.family.startsWith('claude') ? 'litellm-unsupported-params' : 'azure-unsupported-value',
     ...(capability.outputCountsInContext && capability.contextTokens ? { contextWindow: capability.contextTokens } : {}),
+    ...(capability.droppedParams?.length ? { rejectsParams: [...capability.droppedParams] } : {}),
     toolsNeedReasoningNone: Boolean(capability.toolsRequireReasoningNoneFor && new RegExp(capability.toolsRequireReasoningNoneFor, 'i').test(model)),
     schema: 'ok',
   };

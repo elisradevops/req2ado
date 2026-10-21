@@ -658,16 +658,26 @@ export async function runPipelineJob(
     // stored: reuse them instead of asking the models again, so the result is identical. Any problem reading it is a miss.
     let cacheKey: string | null = null;
     let cached: CachedResult | undefined;
-    if (deps.resultCache && job.mode === 'survey' && job.userId) {
+    // What the stored result depends on, besides the file: the KB documents, the ingestion build and the KB profile. Read twice: before
+    // (to look up) and after the job (to store), because a profile built DURING the first job belongs in the key the result is stored under.
+    const cacheKeyFor = async (): Promise<string | null> => {
+      if (!deps.resultCache || job.mode !== 'survey' || !job.userId) return null;
       const kbVersion = await kbVersionFor(deps.prisma as never, job.userId);
-      if (kbVersion !== null) {
-        cacheKey = deps.resultCache.keyFor({
-          fileHash: crypto.createHash('sha256').update(job.fileBuffer).digest('hex'),
-          userId: job.userId,
-          model,
-          mode: job.mode,
-          kbVersion,
-        });
+      const scope = await deps.ingestionClient.cacheScope?.(job.userId);
+      if (kbVersion === null || !scope) return null; // not readable: nothing is cached on a guess
+      return deps.resultCache.keyFor({
+        fileHash: crypto.createHash('sha256').update(job.fileBuffer).digest('hex'),
+        userId: job.userId,
+        model,
+        mode: job.mode,
+        kbVersion,
+        ingestionVersion: scope.ingestion,
+        profileVersion: scope.profile,
+      });
+    };
+    if (deps.resultCache && job.mode === 'survey' && job.userId) {
+      cacheKey = await cacheKeyFor();
+      if (cacheKey !== null) {
         cached = await deps.resultCache.lookup(cacheKey);
         // eslint-disable-next-line no-console -- worker process logging
         if (cached) console.info(`Job ${job.id}: reusing the stored result of an identical earlier job`);
@@ -838,7 +848,10 @@ export async function runPipelineJob(
         levelResult = await deps.ingestionClient.level(doc, job.mode, job.userId ?? undefined, linkTypeCatalog, model, job.id, primerContext);
         const leveled = levelResult as { warnings?: { kind: string }[] };
         const degraded = primerWarnings.length > 0 || isDegradedResult(leveled?.warnings, doc.figures as { caption_status?: string }[] | undefined);
-        if (deps.resultCache && cacheKey && !degraded) await deps.resultCache.save(cacheKey, { doc, tree: levelResult, catalogHash });
+        if (deps.resultCache && cacheKey && !degraded) {
+          const storeKey = (await cacheKeyFor()) ?? null; // after the job: a profile it built is now part of the scope
+          if (storeKey) await deps.resultCache.save(storeKey, { doc, tree: levelResult, catalogHash });
+        }
       }
     } finally {
       await stopProgress?.();

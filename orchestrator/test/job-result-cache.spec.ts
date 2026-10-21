@@ -15,7 +15,7 @@ const memoryStore = (): ResultCacheStore & { data: Map<string, string>; sets: nu
   return store;
 };
 
-const parts = { fileHash: 'f1', userId: 'u1', model: 'claude-opus-4-8', mode: 'survey', kbVersion: 'kb1' };
+const parts = { fileHash: 'f1', userId: 'u1', model: 'claude-opus-4-8', mode: 'survey', kbVersion: 'kb1', ingestionVersion: '0.3.15', profileVersion: 'p1' as string | null };
 const result = { doc: { blocks: [] }, tree: { nodes: [{ local_id: 'n0' }] }, catalogHash: 'c1' };
 
 describe('JobResultCache', () => {
@@ -31,6 +31,9 @@ describe('JobResultCache', () => {
     ['another model', { model: 'OpenAI/gpt-5.6-terra' }],
     ['another mode', { mode: 'baseline' }],
     ['a changed KB', { kbVersion: 'kb2' }],
+    ['another ingestion build (an ingestion-only release must not serve the old tree)', { ingestionVersion: '0.3.16' }],
+    ['a rebuilt KB profile (results scored with the old categories)', { profileVersion: 'p2' }],
+    ['no KB profile', { profileVersion: null }],
   ])('misses for %s', async (_label, change) => {
     const cache = new JobResultCache(memoryStore(), 'code-1');
     await cache.save(cache.keyFor(parts), result);

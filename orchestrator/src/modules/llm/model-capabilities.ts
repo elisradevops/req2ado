@@ -29,6 +29,8 @@ export interface ModelCapability {
   /** Input and output share one window (gpt-oss): a large output limit leaves no room for the input. */
   outputCountsInContext?: boolean;
   contextTokens?: number;
+  /** Request parameters the family refuses outright (UnsupportedParamsError); they are left out from the first call. */
+  droppedParams?: string[];
   sources: CapabilitySource[];
 }
 
@@ -39,9 +41,11 @@ export const MODEL_CAPABILITIES: readonly ModelCapability[] = [
     tokenParam: 'max_tokens',
     temperature: { mode: 'fixed', value: 1 },
     structuredOutput: 'native-or-tool',
+    droppedParams: ['frequency_penalty'],
     sources: [
       { url: 'prod: claude-opus-4-8, claude-sonnet-4-6 via the proxy', checked: '2026-10-18', note: '"does not support temperature=0. Only temperature=1 is supported"' },
       { url: 'https://platform.claude.com/docs/en/docs/build-with-claude/structured-outputs', checked: '2026-10-19' },
+      { url: 'prod: claude-opus-4-8 figure vision, 400 azure_ai UnsupportedParamsError on the first call (frequency_penalty is the one parameter the vision call sends that the proxy drops elsewhere)', checked: '2026-10-21', note: 'the full message was cut in the report; the seed only leaves a hygiene parameter out' },
     ],
   },
   {
@@ -51,6 +55,7 @@ export const MODEL_CAPABILITIES: readonly ModelCapability[] = [
     temperature: { mode: 'fixed', value: 1 },
     toolsRequireReasoningNoneFor: '(^|/)gpt-(5\\.[6-9]|6)',
     structuredOutput: 'strict-portable',
+    droppedParams: ['frequency_penalty'],
     sources: [
       { url: 'https://learn.microsoft.com/en-us/azure/ai-foundry/openai/how-to/reasoning', checked: '2026-10-19' },
       { url: 'prod: OpenAI/gpt-5.5 and gpt-5.6-terra via the proxy', checked: '2026-10-18', note: "'temperature' does not support 0 ... Only the default (1) value is supported" },
@@ -102,6 +107,7 @@ export function seedConstraints(model: string): (LearnedConstraints & { rejected
   if (capability.temperature.mode === 'fixed') seed.temperature = capability.temperature.value;
   if (capability.tokenParam === 'max_completion_tokens') seed.tokenParam = 'max_completion_tokens';
   if (capability.tokenParam === 'none') seed.omitTokenLimit = true;
+  for (const name of capability.droppedParams ?? []) seed.rejected.add(name);
   if (capability.toolsRequireReasoningNoneFor && new RegExp(capability.toolsRequireReasoningNoneFor, 'i').test(model)) seed.forceReasoningNone = true;
   return seed;
 }
