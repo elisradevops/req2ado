@@ -622,8 +622,11 @@ export function NodeDetailPanel({
                 />
               </div>
               {/* Why each low category got its score, on demand: only for a score that still describes the current text. */}
-              {jobId && !entry.qualityStale && entry.qualityCategoryScores && (
-                <ScoreExplanationPanel load={() => explainScore(jobId, entry.localId)} resetKey={`${entry.localId}:${entry.qualityScore}`} />
+              {jobId && !entry.qualityStale && entry.qualityCategoryScores && Object.keys(entry.qualityCategoryScores).length > 0 && (
+                <ScoreExplanationPanel
+                  load={() => explainScore(jobId, entry.localId)}
+                  resetKey={`${jobId}:${entry.localId}:${entry.qualityScore}:${JSON.stringify(entry.qualityCategoryScores)}`}
+                />
               )}
               {entry.qualityStale ? (
                 <div className="flex items-center justify-between gap-2">

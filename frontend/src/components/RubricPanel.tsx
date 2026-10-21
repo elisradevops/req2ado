@@ -28,7 +28,7 @@ function rowsOf(rubric: Rubric): Row[] {
   return rubric.categories.map((c: RubricCategory, index) => ({
     name: c.name,
     passCondition: c.passCondition ?? '',
-    derived: c.passCondition ?? '',
+    derived: c.basePassCondition ?? c.passCondition ?? '',
     pinned: c.pinned || c.origin === 'custom',
     custom: c.origin === 'custom',
     mergedFrom: c.mergedFrom,
@@ -78,7 +78,12 @@ export function RubricPanel(): React.ReactElement {
 
   const initial = rubric ? JSON.stringify(payloadOf(rowsOf(rubric), rubric.removed)) : '';
   const dirty = rubric !== null && JSON.stringify(payloadOf(rows, removed)) !== initial;
-  const taken = new Set([...rows.map((r) => norm(r.name)), ...removedRows.map((r) => norm(r.name)), ...removed.map(norm)]);
+  // A name is taken when a category, or a wording merged into one, already has it: a pin by that name would take that category over.
+  const taken = new Set([
+    ...rows.flatMap((r) => [r.name, ...r.mergedFrom].map(norm)),
+    ...removedRows.flatMap((r) => [r.name, ...r.mergedFrom].map(norm)),
+    ...removed.map(norm),
+  ]);
   const duplicate = newName.trim() !== '' && taken.has(norm(newName));
   const canAdd = newName.trim() !== '' && newCondition.trim() !== '' && !duplicate;
 

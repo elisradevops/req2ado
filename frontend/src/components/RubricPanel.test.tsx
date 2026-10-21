@@ -8,11 +8,11 @@ import * as kbApi from '../api/kb';
 vi.mock('../api/kb');
 
 const category = (overrides: Record<string, unknown> = {}) => ({
-  name: 'Testable', passCondition: 'Can be verified', guidance: null, pinned: false, origin: 'kb', sources: ['A.pptx'], mergedFrom: ['Testable'], ...overrides,
+  name: 'Testable', passCondition: 'Can be verified', basePassCondition: 'Can be verified', guidance: null, pinned: false, origin: 'kb', sources: ['A.pptx'], mergedFrom: ['Testable'], ...overrides,
 });
 const rubric = (overrides: Record<string, unknown> = {}) => ({
   version: 'v1', source: 'kb', builtAt: '2026-10-21T10:00:00+00:00',
-  categories: [category(), category({ name: 'Unambiguity', passCondition: 'One reading only', mergedFrom: ['Unambiguity', 'Clear and unambiguous'] }), category({ name: 'Essential', passCondition: 'Needed', pinned: true })],
+  categories: [category(), category({ name: 'Unambiguity', passCondition: 'One reading only', mergedFrom: ['Unambiguity', 'Clear and unambiguous'] }), category({ name: 'Essential', passCondition: 'Pinned text', basePassCondition: 'Needed', pinned: true })],
   removed: [], ...overrides,
 });
 
@@ -66,7 +66,7 @@ describe('RubricPanel', () => {
     expect(kbApi.putRubric).toHaveBeenCalledWith({
       pinned: [
         { name: 'Testable', passCondition: 'Has a measurable acceptance criterion' },
-        { name: 'Essential', passCondition: 'Needed' },
+        { name: 'Essential', passCondition: 'Pinned text' },
       ],
       removed: [],
     });
@@ -76,8 +76,17 @@ describe('RubricPanel', () => {
     renderPanel();
     const user = userEvent.setup();
     await user.click(await screen.findByLabelText('Pin Essential'));
+    expect(screen.getByLabelText('Pass condition of Essential')).toHaveValue('Needed'); // the derived text is back on screen at once
     await user.click(screen.getByRole('button', { name: /save rubric/i }));
     await waitFor(() => expect(kbApi.putRubric).toHaveBeenCalledWith({ pinned: [], removed: [] }));
+  });
+
+  it('after unpinning, editing the text again pins it again (it is the users decision each time)', async () => {
+    renderPanel();
+    const user = userEvent.setup();
+    await user.click(await screen.findByLabelText('Pin Essential'));
+    await user.type(screen.getByLabelText('Pass condition of Essential'), ' more');
+    expect(screen.getByLabelText('Pin Essential')).toBeChecked();
   });
 
   it('removing a category lists it as removed (with a way back) and saving sends the removal', async () => {
@@ -87,7 +96,7 @@ describe('RubricPanel', () => {
     expect(screen.queryByLabelText('Pass condition of Unambiguity')).not.toBeInTheDocument();
     expect(screen.getByText(/removed:/i)).toHaveTextContent('Unambiguity');
     await user.click(screen.getByRole('button', { name: /save rubric/i }));
-    await waitFor(() => expect(kbApi.putRubric).toHaveBeenCalledWith({ pinned: [{ name: 'Essential', passCondition: 'Needed' }], removed: ['Unambiguity'] }));
+    await waitFor(() => expect(kbApi.putRubric).toHaveBeenCalledWith({ pinned: [{ name: 'Essential', passCondition: 'Pinned text' }], removed: ['Unambiguity'] }));
   });
 
   it('restoring a removed category brings it back and leaves nothing to save', async () => {
@@ -114,7 +123,7 @@ describe('RubricPanel', () => {
     await user.click(screen.getByRole('button', { name: /save rubric/i }));
     await waitFor(() =>
       expect(kbApi.putRubric).toHaveBeenCalledWith({
-        pinned: [{ name: 'Essential', passCondition: 'Needed' }, { name: 'Safety-relevant', passCondition: 'Names the hazard it mitigates' }],
+        pinned: [{ name: 'Essential', passCondition: 'Pinned text' }, { name: 'Safety-relevant', passCondition: 'Names the hazard it mitigates' }],
         removed: [],
       }),
     );
@@ -125,6 +134,16 @@ describe('RubricPanel', () => {
     const user = userEvent.setup();
     await screen.findByText(/from your knowledge base/i);
     await user.type(screen.getByLabelText('New category name'), ' testable ');
+    await user.type(screen.getByLabelText('New category pass condition'), 'x');
+    expect(screen.getByRole('button', { name: /add category/i })).toBeDisabled();
+    expect(screen.getByText(/already in the rubric/i)).toBeInTheDocument();
+  });
+
+  it('refuses a new category named like a wording already merged into a category (it would take that category over)', async () => {
+    renderPanel();
+    const user = userEvent.setup();
+    await screen.findByText(/from your knowledge base/i);
+    await user.type(screen.getByLabelText('New category name'), 'Clear and unambiguous');
     await user.type(screen.getByLabelText('New category pass condition'), 'x');
     expect(screen.getByRole('button', { name: /add category/i })).toBeDisabled();
     expect(screen.getByText(/already in the rubric/i)).toBeInTheDocument();

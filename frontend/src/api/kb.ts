@@ -131,6 +131,8 @@ export async function reconnectSharePoint(token: string): Promise<SharePointStat
 export interface RubricCategory {
   name: string;
   passCondition: string | null;
+  // What the rubric derived for it (a pinned category's text is the user's): what an unpin hands the category back to. null for the user's own.
+  basePassCondition?: string | null;
   guidance: string | null;
   pinned: boolean;
   origin: 'kb' | 'default' | 'custom';
