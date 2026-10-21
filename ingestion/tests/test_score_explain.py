@@ -148,23 +148,33 @@ def test_blank_text_is_refused_and_a_failing_model_is_a_502(monkeypatch) -> None
     assert response.status_code == 502
 
 
-def test_a_model_that_takes_too_long_is_a_504_and_stops_asking(monkeypatch) -> None:
+def test_a_model_that_takes_too_long_is_a_504_and_the_run_is_cancelled_so_it_asks_no_further(monkeypatch) -> None:
+    import threading
     import time
+    from contextlib import contextmanager
 
-    calls: list[int] = []
+    from app import job_cancel
+
+    tokens: list = []
+    real_scope = job_cancel.cancellation_scope
+
+    @contextmanager
+    def recording_scope():
+        with real_scope() as token:
+            tokens.append(token)
+            yield token
 
     def slow(request: httpx.Request) -> httpx.Response:
-        calls.append(1)
-        time.sleep(0.6)
+        threading.Event().wait(0.6)
         return httpx.Response(200, json={"content": json.dumps({"explanations": []})})
 
     install(monkeypatch, slow)
+    monkeypatch.setattr("app.main.job_cancel.cancellation_scope", recording_scope)
     monkeypatch.setattr("app.main.EXPLAIN_SECONDS", 0.2)
     started = time.monotonic()
     response = client.post("/score-explain", json=BODY)
     assert response.status_code == 504 and time.monotonic() - started < 0.55
-    time.sleep(0.8)
-    assert len(calls) == 1
+    assert len(tokens) == 1 and tokens[0].cancelled is True  # every model call this run would still make now raises at once
 
 
 def test_an_answer_that_is_not_the_expected_shape_is_a_502(monkeypatch) -> None:

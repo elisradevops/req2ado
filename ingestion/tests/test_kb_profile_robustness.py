@@ -144,6 +144,8 @@ def test_a_job_never_scores_with_a_half_built_profile_it_keeps_the_last_good_one
 
     assert main._profile_for_job("u1", "m1").source == "default"  # nothing good stored: the built-in rubric, not a half-built one
     store.put("u1", good)
-    assert main._profile_for_job("u1", "m1") == good  # a good one is stored: keep scoring with it
+    kept = main._profile_for_job("u1", "m1")
+    assert kept.version == good.version and [c.name for c in kept.categories] == ["Testable"]  # a good one is stored: keep scoring with it
+    assert kept.degraded is True  # and the job says it did not get the rebuild
     monkeypatch.setattr(main, "ensure_profile", lambda *a, **k: KbProfile(version="v2", built_with="m1", categories=[Category(name="Full", sources=["A"], merged_from=["Full"])]))
     assert [c.name for c in main._profile_for_job("u1", "m1").categories] == ["Full"]

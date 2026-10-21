@@ -225,24 +225,31 @@ def _effective_rubric(user_id: str, base: KbProfile) -> KbProfile:
 
 def _profile_for_job(user_id: str | None, job_model: str | None) -> KbProfile | None:
     """The rubric this job is scored with: the user's KB profile, built when stale (pinned to the configured model, else to the model that
-    built the stored one); with no KB, a KB that yields no categories, or a build that failed with nothing stored, the built-in default
-    rubric. None only without a user or with profile scoring switched off (scoring then behaves as it did before rubrics)."""
+    built the stored one), with their pins and removals; with no KB or a KB that yields no categories, the built-in default rubric. None only
+    without a user or with profile scoring switched off (scoring then behaves as it did before rubrics).
+
+    `degraded` is set on the result when the job did not get the rubric it should have (the build failed or came back incomplete): it is then
+    the last good stored rubric of the user, or the built-in one if nothing is stored. Such a result must not be cached as if it were the user's."""
     if not user_id or not settings.kb_profile_scoring:
         return None
+    stored: KbProfile | None = None
     try:
         stored = _kb_profile_store.get(user_id)
         model = settings.kb_profile_model or (stored.built_with if stored else None) or job_model
         if not model:
             return _effective_rubric(user_id, default_profile())
         profile = ensure_profile(user_id, _kb_vector_store, _kb_profile_store, _make_profile_client(model), model=model)
+        degraded = False
         if profile is not None and profile.degraded:
             # Half a profile would give this job categories that no later job has: keep the last good one (or the default).
             logger.warning("KB profile build was incomplete; scoring with the last stored profile, if any")
-            profile = stored
-        return _effective_rubric(user_id, profile if profile is not None and profile.categories else default_profile())
+            profile, degraded = stored, True
+        effective = _effective_rubric(user_id, profile if profile is not None and profile.categories else default_profile())
+        return effective.model_copy(update={"degraded": True}) if degraded else effective
     except Exception:  # noqa: BLE001 -- the rubric improves scoring; it must never fail a job
-        logger.warning("KB profile unavailable for this job; scoring with the built-in rubric", exc_info=True)
-        return default_profile()
+        logger.warning("KB profile unavailable for this job; scoring with the last stored rubric, if any", exc_info=True)
+        base = stored if stored is not None and stored.categories else default_profile()
+        return _effective_rubric(user_id, base).model_copy(update={"degraded": True})
 
 
 def _stored_profile_or_none(user_id: str | None) -> KbProfile | None:
@@ -816,6 +823,7 @@ def _build_survey_tree_with_scoring(
     job_id: str | None,
     model: str | None = None,
     primer_context: str | None = None,
+    rubric_report: dict | None = None,
 ) -> WorkItemTree:
     """Wraps build_survey_tree so BOTH the (possibly network-calling)
     CriteriaRetriever construction above AND the tree-building itself run
@@ -859,6 +867,9 @@ def _build_survey_tree_with_scoring(
         if settings.live_progress and job_id is not None:
             publish_document_map(_narration_redis, job_id, doc)
         profile = _profile_for_job(user_id, model)
+        if rubric_report is not None:  # what this job was scored with, for the route to report (the result cache keys on it)
+            rubric_report["version"] = profile.version if profile is not None else None
+            rubric_report["degraded"] = bool(profile is not None and profile.degraded)
         try:
             client.authoring_standard = render_authoring_standard(profile) if settings.kb_profile_generation else None
         except AttributeError:  # a client double that is not an OrchestratorLlmClient has nowhere to put it
@@ -1685,6 +1696,7 @@ def _enforce_requirement_only_fields(tree: WorkItemTree) -> WorkItemTree:
 @app.post("/level", response_model=WorkItemTree)
 async def level(
     request: Request,
+    response: Response,
     doc: CanonicalDoc,
     mode: str = "baseline",
     user_id: str | None = None,
@@ -1753,11 +1765,17 @@ async def level(
         # The caller (the orchestrator's request) going away cancels this run: its remaining model calls are not made.
         with job_cancel.cancellation_scope() as cancel_token:
             async with job_cancel.watch_for_disconnect(request, cancel_token):
+                rubric_report: dict = {}
                 tree = await run_in_threadpool(
-                    _build_survey_tree_with_scoring, doc, client, user_id, catalog, job_id, model, primer_context
+                    _build_survey_tree_with_scoring, doc, client, user_id, catalog, job_id, model, primer_context, rubric_report
                 )
             if cancel_token.cancelled:
                 raise HTTPException(status_code=499, detail="the caller disconnected; the run was cancelled")
+        # Which rubric the job was scored with (and whether it got the one it should have): the result cache keys on it, not on whatever the
+        # user's rubric is by the time the job ends.
+        response.headers["X-Req2Ado-Rubric-Version"] = rubric_report.get("version") or ""
+        if rubric_report.get("degraded"):
+            response.headers["X-Req2Ado-Rubric-Degraded"] = "1"
         return _enforce_requirement_only_fields(_append_vision_disabled_warning(tree, doc, mode))
     return _enforce_requirement_only_fields(
         _append_vision_disabled_warning(build_baseline_tree(doc), doc, mode)
@@ -2313,20 +2331,26 @@ async def kb_build_profile(body: KbProfileRequest) -> dict:
     return _profile_response(profile)
 
 
-def _ingestion_version() -> str:
+def _ingestion_version() -> str | None:
+    """This ingestion build, or None when it cannot be told (not installed as a package): the result cache then keys on nothing and caches nothing."""
     try:
         from importlib import metadata
 
         return metadata.version("req2ado-ingestion")
-    except Exception:  # noqa: BLE001 -- not installed as a package (a source checkout): the result cache then simply never matches
-        return "unknown"
+    except Exception:  # noqa: BLE001
+        return None
 
 
 @app.get("/cache-scope")
-async def cache_scope(user_id: str | None = None) -> dict:
-    """What a stored job result depends on besides the file: this ingestion build, and the version of the profile the user's jobs are scored
-    with (null without one). The orchestrator puts both in its result-cache key, so a new build or a rebuilt profile never serves old results."""
-    profile = await run_in_threadpool(_stored_profile_or_none, user_id) if user_id else None
+async def cache_scope(
+    user_id: str | None = None,
+    x_user_id: str | None = Header(default=None, alias=USER_ID_HEADER),
+) -> dict:
+    """What a stored job result depends on besides the file: this ingestion build, and the version of the rubric the user's jobs are scored
+    with (null without a user). The orchestrator puts both in its result-cache key, so a new build or a changed rubric never serves old results.
+    The user comes in the header (the old query form still works for one release): identity does not travel in URLs."""
+    user = resolve_user_id(user_id, x_user_id)
+    profile = await run_in_threadpool(_stored_profile_or_none, user) if user else None
     return {"ingestion": _ingestion_version(), "profile": profile.version if profile is not None else None}
 
 
@@ -2342,18 +2366,34 @@ class RubricPutRequest(BaseModel):
     removed: list[str] = []
 
 
-def _rubric_view_for(user_id: str) -> dict:
+def _rubric_base(user_id: str) -> KbProfile:
     stored = _kb_profile_store.get(user_id)
-    base = stored if stored is not None and stored.categories else default_profile()
+    return stored if stored is not None and stored.categories else default_profile()
+
+
+def _rubric_view_for(user_id: str) -> dict:
+    base = _rubric_base(user_id)
     overrides = _kb_profile_store.get_overrides(user_id)
-    return rubric_view(apply_overrides(base, overrides), base, overrides)
+    effective = apply_overrides(base, overrides)
+    if not effective.categories:
+        # Jobs fall back to the built-in rubric when nothing is left (see _effective_rubric): the view shows what they really use.
+        base = effective = default_profile()
+        overrides = RubricOverrides()
+    return rubric_view(effective, base, overrides)
 
 
 @app.get("/kb/rubric")
-async def kb_get_rubric(user_id: str) -> dict:
+async def kb_get_rubric(
+    user_id: str | None = None,
+    x_user_id: str | None = Header(default=None, alias=USER_ID_HEADER),
+) -> dict:
     """The rubric the user's jobs are graded against: every category with its pass condition, whether it is pinned, where it comes from (the
-    knowledge base, the built-in default, or the user's own) and what was removed. Never builds anything."""
-    return await run_in_threadpool(_rubric_view_for, user_id)
+    knowledge base, the built-in default, or the user's own) and what was removed. Never builds anything. The user comes in the header (the
+    old query form still works for one release)."""
+    user = resolve_user_id(user_id, x_user_id)
+    if not user:
+        raise HTTPException(status_code=400, detail="a user is required")
+    return await run_in_threadpool(_rubric_view_for, user)
 
 
 @app.put("/kb/rubric")
@@ -2364,6 +2404,8 @@ async def kb_put_rubric(body: RubricPutRequest) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     def store() -> dict:
+        if not apply_overrides(_rubric_base(body.user_id), overrides).categories:
+            raise HTTPException(status_code=400, detail="the rubric must keep at least one category")
         _kb_profile_store.put_overrides(body.user_id, overrides)
         return _rubric_view_for(body.user_id)
 

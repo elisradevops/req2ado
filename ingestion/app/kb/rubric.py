@@ -56,7 +56,9 @@ def apply_overrides(base: KbProfile, overrides: RubricOverrides | None) -> KbPro
         wordings = _wordings(category)
         if wordings & removed:
             continue
-        match = next((k for k in sorted(wordings) if k in pins), None)
+        # A pin named exactly like the category wins; otherwise one named like a wording merged into it (it keeps holding when a rebuild
+        # names the same quality differently). A pin fixes one category only.
+        match = next((k for k in [_key(category.name), *sorted(wordings)] if k in pins and k not in used), None)
         if match is None:
             categories.append(category)
             continue
@@ -75,11 +77,16 @@ def rubric_view(effective: KbProfile, base: KbProfile, overrides: RubricOverride
     base_wordings = [(_wordings(c), c.name) for c in base.categories]
     removed_keys = {_key(n) for n in overrides.removed}
     categories = []
+    base_by_wording: dict[str, Category] = {}
+    for base_category in base.categories:
+        for wording in _wordings(base_category):
+            base_by_wording.setdefault(wording, base_category)
     for category in effective.categories:
         custom = category.sources == ["(pinned)"]
+        derived = None if custom else next((base_by_wording[k].pass_condition for k in [_key(category.name), *sorted(_wordings(category))] if k in base_by_wording), None)
         categories.append(
             {
-                "name": category.name, "passCondition": category.pass_condition, "guidance": category.guidance,
+                "name": category.name, "passCondition": category.pass_condition, "guidance": category.guidance, "basePassCondition": derived,
                 "pinned": _key(category.name) in pinned, "origin": "custom" if custom else base.source,
                 "sources": [] if custom else category.sources, "mergedFrom": category.merged_from,
             }
