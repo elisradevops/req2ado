@@ -14,7 +14,7 @@ class CapturingScorer:
 
     def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
         self.calls.append({"n": len(descriptions_by_node_id), "kb_context": kb_context, "checklist": category_checklist})
-        return {node_id: {"score": 80, "issues": [], "categoryScores": {name: 80 for name in (category_checklist or [])}} for node_id in descriptions_by_node_id}
+        return {node_id: {"score": 80, "issues": [], "categoryScores": {name: 80 for name in ([*category_checklist, "completeness_as_requirement"] if category_checklist else [])}} for node_id in descriptions_by_node_id}
 
     def score_epics_and_features_for_document(self, *args, **kwargs):
         return {}
