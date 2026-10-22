@@ -28,6 +28,8 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, Field
 
+from app.config import settings
+from app.leveling.bounded_chunks import run_chunks_bounded
 from app.prompts import load_prompt
 from app.request_identity import redact_identity
 
@@ -375,12 +377,17 @@ def build_profile(
             continue
         windows = windows_of(text)
         run_results, errors = [_empty() for _ in range(EXTRACTION_RUNS)], []
-        for run in range(EXTRACTION_RUNS):
-            for window in windows:
-                try:
-                    _union(run_results[run], client.extract_kb_document_profile(name, window, user_id=user_id))
-                except Exception as exc:  # noqa: BLE001
-                    errors.append(redact_identity(" ".join(str(exc).split()))[:200])
+        # The calls overlap (the proxy holds some of them for a minute); outcomes come back in call order (run by run, window by
+        # window), so what is merged, and in which order, is what the sequential loop gave.
+        calls_in_order = [(run, window) for run in range(EXTRACTION_RUNS) for window in windows]
+        outcomes = run_chunks_bounded(
+            calls_in_order, lambda call: client.extract_kb_document_profile(name, call[1], user_id=user_id), settings.kb_profile_concurrency,
+        )
+        for (run, _window), outcome in zip(calls_in_order, outcomes):
+            if outcome.error is None:
+                _union(run_results[run], outcome.value)
+            else:
+                errors.append(redact_identity(" ".join(str(outcome.error).split()))[:200])
         combined = _combine_runs(run_results)
         calls = len(windows) * EXTRACTION_RUNS
         counts = {k: len(v) for k, v in combined.items()}

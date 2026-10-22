@@ -1050,6 +1050,10 @@ class OrchestratorLlmClient:
         self.authoring_standard: str | None = None
         self._cache = cache
         self._transport: httpx.BaseTransport | None = None  # test-only injection seam
+        # How long one call waits for the orchestrator's answer. None: the configured LLM_REQUEST_TIMEOUT_SECONDS (a job's calls run
+        # for minutes). An on-demand call whose caller stops waiting sets it just past its own cap, so the connection ends with it
+        # instead of the call running on with its answer thrown away.
+        self.request_timeout_seconds: float | None = None
 
     @property
     def model(self) -> str | None:
@@ -1089,7 +1093,7 @@ class OrchestratorLlmClient:
         for attempt in range(_MAX_CHAT_RETRY_ATTEMPTS):
             raise_if_cancelled()  # a job whose caller is gone makes no further model calls
             started = time.monotonic()
-            with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
+            with httpx.Client(transport=self._transport, timeout=self.request_timeout_seconds or _LLM_REQUEST_TIMEOUT_SECONDS) as client:
                 response = client.post(
                     f"{self._base_url}/llm/chat",
                     json=payload,
@@ -1138,7 +1142,7 @@ class OrchestratorLlmClient:
         got_output = False
         finish_reason: str | None = None
         try:
-            timeout = _LLM_REQUEST_TIMEOUT_SECONDS
+            timeout = self.request_timeout_seconds or _LLM_REQUEST_TIMEOUT_SECONDS
             with httpx.Client(transport=self._transport, timeout=timeout) as client:
                 with client.stream(
                     "POST", f"{self._base_url}/llm/chat/stream",
@@ -2112,7 +2116,7 @@ class OrchestratorLlmClient:
         headers = {"Authorization": f"Bearer {self._bearer_token}"}
         if user_id:
             headers["X-Req2Ado-User-Id"] = user_id
-        with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
+        with httpx.Client(transport=self._transport, timeout=self.request_timeout_seconds or _LLM_REQUEST_TIMEOUT_SECONDS) as client:
             response = client.post(
                 f"{self._base_url}/llm/show",
                 json={"model": model},

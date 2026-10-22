@@ -1911,6 +1911,7 @@ async def rewrite_compare(body: RewriteCompareRequest) -> dict:
     client = OrchestratorLlmClient(
         settings.orchestrator_url, settings.llm_proxy_bearer, model=body.model, num_ctx=num_ctx, top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
     )
+    client.request_timeout_seconds = REWRITE_PREDICTION_SECONDS + CAPPED_CALL_GRACE_SECONDS
 
     def _score() -> dict:
         return score_texts_together(
@@ -1948,8 +1949,10 @@ async def rewrite_compare(body: RewriteCompareRequest) -> dict:
     }
 
 
-# How long "Why this score?" waits for the model before answering 504.
-EXPLAIN_SECONDS = 60
+# How long "Why this score?" waits for the model before answering 504. The first real click took 97 s on Opus.
+EXPLAIN_SECONDS = 120
+# A capped call's connection to the orchestrator ends this long after the cap, so a call the caller stopped waiting for does not run on.
+CAPPED_CALL_GRACE_SECONDS = 5
 
 
 class ScoreExplainRequest(BaseModel):
@@ -1984,6 +1987,7 @@ async def score_explain(body: ScoreExplainRequest) -> dict:
     client = OrchestratorLlmClient(
         settings.orchestrator_url, settings.llm_proxy_bearer, model=body.model, num_ctx=num_ctx, top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
     )
+    client.request_timeout_seconds = EXPLAIN_SECONDS + CAPPED_CALL_GRACE_SECONDS
     item = {"type": body.type or "Requirement", "title": body.title or "", "description": body.description}
 
     def _explain() -> list[dict]:
