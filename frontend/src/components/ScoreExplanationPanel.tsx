@@ -11,7 +11,18 @@ type State = { status: 'idle' } | { status: 'loading' } | { status: 'error' } | 
  */
 export function ScoreExplanationPanel({ load, resetKey }: { load: () => Promise<ScoreExplanation>; resetKey: string }): React.ReactElement {
   const [state, setState] = useState<State>({ status: 'idle' });
+  const [seconds, setSeconds] = useState(0);
   const requestRef = useRef(0);
+
+  // The model can take a minute or two; the count is the evidence that something is happening. It starts again with each try.
+  const loading = state.status === 'loading';
+  useEffect(() => {
+    if (!loading) return undefined;
+    const startedAt = Date.now();
+    setSeconds(0);
+    const ticker = setInterval(() => setSeconds(Math.floor((Date.now() - startedAt) / 1000)), 1000);
+    return () => clearInterval(ticker);
+  }, [loading]);
 
   useEffect(() => {
     requestRef.current += 1;
@@ -54,9 +65,9 @@ export function ScoreExplanationPanel({ load, resetKey }: { load: () => Promise<
     <div className="flex items-center gap-2">
       <Button variant="outline" size="sm" onClick={ask} loading={state.status === 'loading'} disabled={state.status === 'loading'}>
         {state.status !== 'loading' && <HelpCircle className="h-3 w-3" />}
-        {state.status === 'loading' ? 'Explaining…' : state.status === 'error' ? 'Try again' : 'Why this score?'}
+        {state.status === 'loading' ? (seconds > 0 ? `Explaining… ${seconds} s` : 'Explaining…') : state.status === 'error' ? 'Try again' : 'Why this score?'}
       </Button>
-      {state.status === 'error' && <p className="text-xs text-danger-ink">Could not explain this score.</p>}
+      {state.status === 'error' && <p className="text-xs text-danger-ink">Could not explain this score. The model can be slow at times; try again.</p>}
     </div>
   );
 }

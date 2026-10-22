@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor, act } from '@testing-library/react';
+import { render, screen, waitFor, act, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ScoreExplanationPanel } from './ScoreExplanationPanel';
 
@@ -80,5 +80,40 @@ describe('ScoreExplanationPanel', () => {
     rerender(<ScoreExplanationPanel load={load} resetKey="n1" />);
     await act(async () => finish(answer()));
     expect(screen.queryByText(/no limit is stated/i)).not.toBeInTheDocument();
+  });
+
+  it('counts the seconds while the model works, since an explanation can take a minute or two', () => {
+    render(<ScoreExplanationPanel load={vi.fn().mockReturnValue(new Promise(() => undefined))} resetKey="n0" />);
+    vi.useFakeTimers(); // after the render: the polling of findBy* hangs under fake timers
+    try {
+      fireEvent.click(screen.getByRole('button', { name: /why this score/i }));
+      expect(screen.getByRole('button', { name: /^explaining…$/i })).toBeDisabled();
+      act(() => {
+        vi.advanceTimersByTime(12_000);
+      });
+      expect(screen.getByRole('button', { name: /explaining… 12 s/i })).toBeDisabled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('starts the count again for the next try', async () => {
+    const load = vi.fn().mockRejectedValueOnce(new Error('timeout')).mockReturnValueOnce(new Promise(() => undefined));
+    render(<ScoreExplanationPanel load={load} resetKey="n0" />);
+    await userEvent.setup().click(screen.getByRole('button', { name: /why this score/i }));
+    await screen.findByText(/could not explain this score/i);
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(screen.getByRole('button', { name: /try again/i }));
+      expect(screen.getByRole('button', { name: /^explaining…$/i })).toBeInTheDocument(); // not 'explaining… 0 s' or a stale count
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('tells the user a slow model is the usual reason, when it fails', async () => {
+    render(<ScoreExplanationPanel load={vi.fn().mockRejectedValue(new Error('504'))} resetKey="n0" />);
+    await userEvent.setup().click(screen.getByRole('button', { name: /why this score/i }));
+    expect(await screen.findByText(/could not explain this score\. the model can be slow at times; try again\./i)).toBeInTheDocument();
   });
 });
