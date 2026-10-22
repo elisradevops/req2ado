@@ -24,6 +24,7 @@ from app.survey._response_schemas import (
     leftover_assignment_schema,
     kb_document_profile_schema,
     kb_category_consolidation_schema,
+    score_explanation_schema,
     kb_document_relevance_schema,
     root_group_names_schema,
     rule_conformance_schema,
@@ -1992,6 +1993,24 @@ class OrchestratorLlmClient:
             if members:
                 groups.append({"name": " ".join(item["name"].split()), "pass_condition": " ".join(str(item.get("pass_condition") or "").split()), "merged_from": members})
         return groups
+
+    def explain_category_scores(
+        self, item: dict, context_text: str | None, categories: list[dict], basis: str, user_id: str | None = None,
+    ) -> list[dict]:
+        """Why an item got the scores it did, one short reason per category asked about (see app.kb.explain for the basis). Entries that are
+        not {category, reason} strings are dropped; an answer without an explanation list raises ValueError."""
+        system_prompt = load_prompt("explain_category_scores", basis=basis)
+        parsed = self._chat_json(
+            system_prompt, json.dumps({"item": item, "context": context_text, "categories": categories}, ensure_ascii=False),
+            schema=score_explanation_schema(), max_tokens=1500, user_id=user_id,
+        )
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("explanations"), list):
+            raise ValueError(f"malformed JSON in LLM response content: {parsed!r}")
+        return [
+            {"category": e["category"], "reason": e["reason"]}
+            for e in parsed["explanations"]
+            if isinstance(e, dict) and isinstance(e.get("category"), str) and isinstance(e.get("reason"), str)
+        ]
 
     def judge_rule_conformance(self, rule: str, items: dict[str, str], user_id: str | None = None) -> dict[str, bool]:
         """Backs the KB conformance report (app.kb.conformance): does each item follow one stated writing rule? Returns

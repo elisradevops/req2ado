@@ -37,6 +37,10 @@ from app.kb.browse_service import FolderChildSummary, browse_shared_folder, brow
 from app.kb.graph_client import GraphApiError, GraphClient, decode_jwt_expiry_seconds
 from app.kb.ingest_service import FolderIngestResult, IngestResult, ingest_document_from_url, ingest_folder_child, ingest_folder_from_url
 from app.kb.kb_vector_store import KbVectorStore
+from app.chat.context_pack import render_context_pack
+from app.kb.default_rubric import default_profile
+from app.kb.explain import basis_for, choose_categories, describe_categories
+from app.kb.rubric import RubricOverrides, apply_overrides, rubric_view, validate_overrides
 from app.kb.profile import ChromaProfileStore, KbProfile, ensure_profile, render_authoring_standard, scoring_inputs
 from app.kb.retrieval import retrieve_context
 from app.leveling.document_map import publish_document_map
@@ -205,35 +209,59 @@ _kb_vector_store = KbVectorStore(
 _kb_profile_store = ChromaProfileStore(_kb_vector_store)
 
 
+def _overrides_of(user_id: str) -> RubricOverrides:
+    try:
+        return _kb_profile_store.get_overrides(user_id)
+    except Exception:  # noqa: BLE001 -- a pin that cannot be read must not fail a job: the rubric is then the model's own
+        logger.warning("The user's rubric overrides could not be read; using the rubric without them", exc_info=True)
+        return RubricOverrides()
+
+
+def _effective_rubric(user_id: str, base: KbProfile) -> KbProfile:
+    """The base rubric with the user's pins and removals applied; the built-in default if nothing is left."""
+    effective = apply_overrides(base, _overrides_of(user_id))
+    return effective if effective.categories else default_profile()
+
+
 def _profile_for_job(user_id: str | None, job_model: str | None) -> KbProfile | None:
-    """The KB profile this job scores with, or None (no user, no KB, switched off, or any failure: the job then scores as it
-    did before profiles). Builds it when stale; pinned to the configured model, else to the model that built the stored one."""
+    """The rubric this job is scored with: the user's KB profile, built when stale (pinned to the configured model, else to the model that
+    built the stored one), with their pins and removals; with no KB or a KB that yields no categories, the built-in default rubric. None only
+    without a user or with profile scoring switched off (scoring then behaves as it did before rubrics).
+
+    `degraded` is set on the result when the job did not get the rubric it should have (the build failed or came back incomplete): it is then
+    the last good stored rubric of the user, or the built-in one if nothing is stored. Such a result must not be cached as if it were the user's."""
     if not user_id or not settings.kb_profile_scoring:
         return None
+    stored: KbProfile | None = None
     try:
         stored = _kb_profile_store.get(user_id)
         model = settings.kb_profile_model or (stored.built_with if stored else None) or job_model
         if not model:
-            return None
+            return _effective_rubric(user_id, default_profile())
         profile = ensure_profile(user_id, _kb_vector_store, _kb_profile_store, _make_profile_client(model), model=model)
+        degraded = False
         if profile is not None and profile.degraded:
-            # Half a profile would give this job categories that no later job has: keep the last good one (or none).
+            # Half a profile would give this job categories that no later job has: keep the last good one (or the default).
             logger.warning("KB profile build was incomplete; scoring with the last stored profile, if any")
-            return stored
-        return profile
-    except Exception:  # noqa: BLE001 -- the profile improves scoring; it must never fail a job
-        logger.warning("KB profile unavailable for this job; scoring without it", exc_info=True)
-        return None
+            profile, degraded = stored, True
+        effective = _effective_rubric(user_id, profile if profile is not None and profile.categories else default_profile())
+        return effective.model_copy(update={"degraded": True}) if degraded else effective
+    except Exception:  # noqa: BLE001 -- the rubric improves scoring; it must never fail a job
+        logger.warning("KB profile unavailable for this job; scoring with the last stored rubric, if any", exc_info=True)
+        base = stored if stored is not None and stored.categories else default_profile()
+        return _effective_rubric(user_id, base).model_copy(update={"degraded": True})
 
 
 def _stored_profile_or_none(user_id: str | None) -> KbProfile | None:
-    """The user's stored KB profile for a chat turn (never built here), or None."""
+    """The rubric for a chat turn, a rescore, a rewrite check and the cache scope (never built here): the user's stored KB profile, else the
+    built-in default rubric. None without a user."""
     if not user_id:
         return None
     try:
-        return _kb_profile_store.get(user_id)
-    except Exception:  # noqa: BLE001 -- the profile only sharpens a rewrite
-        return None
+        stored = _kb_profile_store.get(user_id)
+    except Exception:  # noqa: BLE001 -- the rubric only sharpens a rewrite
+        stored = None
+    return _effective_rubric(user_id, stored if stored is not None and stored.categories else default_profile())
 
 
 def _make_profile_client(model: str) -> OrchestratorLlmClient:
@@ -795,6 +823,7 @@ def _build_survey_tree_with_scoring(
     job_id: str | None,
     model: str | None = None,
     primer_context: str | None = None,
+    rubric_report: dict | None = None,
 ) -> WorkItemTree:
     """Wraps build_survey_tree so BOTH the (possibly network-calling)
     CriteriaRetriever construction above AND the tree-building itself run
@@ -838,6 +867,9 @@ def _build_survey_tree_with_scoring(
         if settings.live_progress and job_id is not None:
             publish_document_map(_narration_redis, job_id, doc)
         profile = _profile_for_job(user_id, model)
+        if rubric_report is not None:  # what this job was scored with, for the route to report (the result cache keys on it)
+            rubric_report["version"] = profile.version if profile is not None else None
+            rubric_report["degraded"] = bool(profile is not None and profile.degraded)
         try:
             client.authoring_standard = render_authoring_standard(profile) if settings.kb_profile_generation else None
         except AttributeError:  # a client double that is not an OrchestratorLlmClient has nowhere to put it
@@ -1664,6 +1696,7 @@ def _enforce_requirement_only_fields(tree: WorkItemTree) -> WorkItemTree:
 @app.post("/level", response_model=WorkItemTree)
 async def level(
     request: Request,
+    response: Response,
     doc: CanonicalDoc,
     mode: str = "baseline",
     user_id: str | None = None,
@@ -1732,11 +1765,17 @@ async def level(
         # The caller (the orchestrator's request) going away cancels this run: its remaining model calls are not made.
         with job_cancel.cancellation_scope() as cancel_token:
             async with job_cancel.watch_for_disconnect(request, cancel_token):
+                rubric_report: dict = {}
                 tree = await run_in_threadpool(
-                    _build_survey_tree_with_scoring, doc, client, user_id, catalog, job_id, model, primer_context
+                    _build_survey_tree_with_scoring, doc, client, user_id, catalog, job_id, model, primer_context, rubric_report
                 )
             if cancel_token.cancelled:
                 raise HTTPException(status_code=499, detail="the caller disconnected; the run was cancelled")
+        # Which rubric the job was scored with (and whether it got the one it should have): the result cache keys on it, not on whatever the
+        # user's rubric is by the time the job ends.
+        response.headers["X-Req2Ado-Rubric-Version"] = rubric_report.get("version") or ""
+        if rubric_report.get("degraded"):
+            response.headers["X-Req2Ado-Rubric-Degraded"] = "1"
         return _enforce_requirement_only_fields(_append_vision_disabled_warning(tree, doc, mode))
     return _enforce_requirement_only_fields(
         _append_vision_disabled_warning(build_baseline_tree(doc), doc, mode)
@@ -1907,6 +1946,74 @@ async def rewrite_compare(body: RewriteCompareRequest) -> dict:
         "categoryDeltas": {name: (after[2] or {})[name] - (before[2] or {})[name] for name in shared},
         "warnings": warnings,
     }
+
+
+# How long "Why this score?" waits for the model before answering 504.
+EXPLAIN_SECONDS = 60
+
+
+class ScoreExplainRequest(BaseModel):
+    title: str | None = None
+    description: str
+    type: str | None = "Requirement"
+    # The item's score per category (from its scoring pass); the weakest are explained unless `categories` names which.
+    category_scores: dict[str, float] | None = None
+    categories: list[str] | None = None
+    # Where the item sits in the document (parents, neighbours, linked items, captions), as for the chat.
+    context: dict | None = None
+    user_id: str | None = None
+    model: str | None = None
+
+
+@app.post("/score-explain")
+async def score_explain(body: ScoreExplainRequest) -> dict:
+    """The reason for each low category of an item, on demand: from the user's rubric (the knowledge base's pass conditions, as pinned by the
+    user) when there is one, otherwise from the built-in rubric and its design philosophy. One model call; it explains, it never rewrites."""
+    if not body.description.strip():
+        raise HTTPException(status_code=400, detail="description must not be blank")
+    rubric = await run_in_threadpool(_stored_profile_or_none, body.user_id) if body.user_id else default_profile()
+    names = choose_categories(body.category_scores, body.categories)
+    if not names:
+        raise HTTPException(status_code=400, detail="the item has no category scores to explain")
+    described = describe_categories(rubric, names, body.category_scores)
+    basis, basis_tag = basis_for(rubric)
+    probe_client = OrchestratorLlmClient(
+        settings.orchestrator_url, settings.llm_proxy_bearer, model=body.model, top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
+    )
+    num_ctx = (await run_in_threadpool(_resolve_caps, body.model, probe_client, body.user_id)).context_budget_tokens
+    client = OrchestratorLlmClient(
+        settings.orchestrator_url, settings.llm_proxy_bearer, model=body.model, num_ctx=num_ctx, top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
+    )
+    item = {"type": body.type or "Requirement", "title": body.title or "", "description": body.description}
+
+    def _explain() -> list[dict]:
+        return client.explain_category_scores(item, render_context_pack(body.context), described, basis, user_id=body.user_id)
+
+    try:
+        with job_cancel.cancellation_scope() as token:
+            try:
+                answered = await asyncio.wait_for(run_in_threadpool(_explain), timeout=EXPLAIN_SECONDS)
+            except asyncio.TimeoutError as exc:
+                token.cancel()
+                raise HTTPException(status_code=504, detail="the explanation is taking too long; try again") from exc
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Score explanation failed: %s", describe_exception(exc))
+        raise HTTPException(status_code=502, detail=f"the explanation could not be made: {describe_exception(exc)}") from exc
+    reasons = {_explain_key(e["category"]): " ".join(e["reason"].split())[:300] for e in answered}
+    return {
+        "explanations": [
+            {"category": d["name"], "score": d["score"], "reason": reasons.get(_explain_key(d["name"])) or None, "passCondition": d["pass_condition"]}
+            for d in described
+        ],
+        "basis": basis_tag,
+        "rubric": {"source": rubric.source if rubric else "default", "version": rubric.version if rubric else None},
+    }
+
+
+def _explain_key(name: str) -> str:
+    return " ".join(name.casefold().split())
 
 
 class EnhanceItem(BaseModel):
@@ -2222,6 +2329,87 @@ async def kb_build_profile(body: KbProfileRequest) -> dict:
     if profile is None:
         raise HTTPException(status_code=404, detail="No knowledge-base documents for this user")
     return _profile_response(profile)
+
+
+def _ingestion_version() -> str | None:
+    """This ingestion build, or None when it cannot be told (not installed as a package): the result cache then keys on nothing and caches nothing."""
+    try:
+        from importlib import metadata
+
+        return metadata.version("req2ado-ingestion")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+@app.get("/cache-scope")
+async def cache_scope(
+    user_id: str | None = None,
+    x_user_id: str | None = Header(default=None, alias=USER_ID_HEADER),
+) -> dict:
+    """What a stored job result depends on besides the file: this ingestion build, and the version of the rubric the user's jobs are scored
+    with (null without a user). The orchestrator puts both in its result-cache key, so a new build or a changed rubric never serves old results.
+    The user comes in the header (the old query form still works for one release): identity does not travel in URLs."""
+    user = resolve_user_id(user_id, x_user_id)
+    profile = await run_in_threadpool(_stored_profile_or_none, user) if user else None
+    return {"ingestion": _ingestion_version(), "profile": profile.version if profile is not None else None}
+
+
+class RubricPinBody(BaseModel):
+    name: str
+    passCondition: str
+
+
+class RubricPutRequest(BaseModel):
+    user_id: str
+    # The user's whole set of pins (a category to fix, or one of their own) and removals; sending empty lists returns to the derived rubric.
+    pinned: list[RubricPinBody] = []
+    removed: list[str] = []
+
+
+def _rubric_base(user_id: str) -> KbProfile:
+    stored = _kb_profile_store.get(user_id)
+    return stored if stored is not None and stored.categories else default_profile()
+
+
+def _rubric_view_for(user_id: str) -> dict:
+    base = _rubric_base(user_id)
+    overrides = _kb_profile_store.get_overrides(user_id)
+    effective = apply_overrides(base, overrides)
+    if not effective.categories:
+        # Jobs fall back to the built-in rubric when nothing is left (see _effective_rubric): the view shows what they really use.
+        base = effective = default_profile()
+        overrides = RubricOverrides()
+    return rubric_view(effective, base, overrides)
+
+
+@app.get("/kb/rubric")
+async def kb_get_rubric(
+    user_id: str | None = None,
+    x_user_id: str | None = Header(default=None, alias=USER_ID_HEADER),
+) -> dict:
+    """The rubric the user's jobs are graded against: every category with its pass condition, whether it is pinned, where it comes from (the
+    knowledge base, the built-in default, or the user's own) and what was removed. Never builds anything. The user comes in the header (the
+    old query form still works for one release)."""
+    user = resolve_user_id(user_id, x_user_id)
+    if not user:
+        raise HTTPException(status_code=400, detail="a user is required")
+    return await run_in_threadpool(_rubric_view_for, user)
+
+
+@app.put("/kb/rubric")
+async def kb_put_rubric(body: RubricPutRequest) -> dict:
+    try:
+        overrides = validate_overrides([{"name": p.name, "pass_condition": p.passCondition} for p in body.pinned], body.removed)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    def store() -> dict:
+        if not apply_overrides(_rubric_base(body.user_id), overrides).categories:
+            raise HTTPException(status_code=400, detail="the rubric must keep at least one category")
+        _kb_profile_store.put_overrides(body.user_id, overrides)
+        return _rubric_view_for(body.user_id)
+
+    return await run_in_threadpool(store)
 
 
 @app.get("/kb/profile")

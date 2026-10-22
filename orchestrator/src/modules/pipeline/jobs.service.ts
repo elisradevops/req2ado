@@ -1,6 +1,7 @@
 import {
   BadGatewayException,
   BadRequestException,
+  GatewayTimeoutException,
   ConflictException,
   Injectable,
   NotFoundException,
@@ -11,7 +12,8 @@ import { Prisma, type Job, type PrismaClient } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { createHash } from 'crypto';
 import type { McpClient } from './mcp.client';
-import { IngestionHttpError, type IngestionHttpClient, type RewriteComparison } from './ingestion-http.client';
+import { IngestionHttpError, type IngestionHttpClient, type RewriteComparison, type ScoreExplanation } from './ingestion-http.client';
+import { buildChatContext } from '../chat/chat-context';
 import type { IdempotencyService } from '../writeback/idempotency.service';
 import type { DryRunDiffEntry, WarningRecord } from '../writeback/dry-run.service';
 import { mapWithConcurrency, type SettledResult } from './map-with-concurrency';
@@ -1261,6 +1263,42 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       };
       return freshDiff;
     });
+  }
+
+  /**
+   * Why an item got the scores it did: one short reason per low category, from the rubric the item was graded against (the user's knowledge
+   * base, as they pinned it, or the built-in rubric with its design philosophy) and from where the item sits in the document. Read-only, and
+   * available for any job: the scores are stored with the entry.
+   */
+  async explainScore(id: string, localId: string, options: { categories?: string[] }): Promise<ScoreExplanation> {
+    const job = await this.prisma.job.findUnique({ where: { id } });
+    if (!job) throw new NotFoundException(`Job ${id} not found`);
+    const diff = (job.dryRunDiff as unknown as DryRunDiffEntry[]) ?? [];
+    const entry = diff.find((e) => e.localId === localId);
+    if (!entry) throw new NotFoundException(`Diff entry ${localId} not found`);
+    if (!entry.qualityCategoryScores || Object.keys(entry.qualityCategoryScores).length === 0) {
+      throw new BadRequestException('this entry has no category scores to explain');
+    }
+    try {
+      return await this.ingestionClient.explainScores({
+        title: entry.title,
+        description: entry.description,
+        type: entry.type,
+        categoryScores: entry.qualityCategoryScores as Record<string, number>,
+        ...(options.categories?.length ? { categories: options.categories } : {}),
+        context: buildChatContext(diff as never, entry as never, job as never),
+        userId: job.userId ?? undefined,
+        model: job.model ?? undefined,
+      });
+    } catch (err) {
+      if (err instanceof IngestionHttpError) {
+        // Keep the kind of failure: a refusal is the caller's (400), a timeout is a timeout (504), anything else a bad gateway (502).
+        if (err.status === 400) throw new BadRequestException(err.message);
+        if (err.status === 504) throw new GatewayTimeoutException(err.message);
+        throw new BadGatewayException({ statusCode: 502, message: err.message, error: 'Bad Gateway', ...(err.traceback ? { upstreamTraceback: err.traceback } : {}) });
+      }
+      throw err;
+    }
   }
 
   /**

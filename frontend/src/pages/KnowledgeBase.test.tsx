@@ -23,7 +23,18 @@ describe('KnowledgeBase', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'valid', expiresInSeconds: 2820 });
+    vi.spyOn(kbApi, 'getRubric').mockResolvedValue({
+      version: 'v1', source: 'kb', builtAt: null, removed: [],
+      categories: [{ name: 'Testable', passCondition: 'Can be verified', guidance: null, pinned: false, origin: 'kb', sources: ['A.pptx'], mergedFrom: ['Testable'] }],
+    });
     localStorage.clear();
+  });
+
+  it('shows the quality rubric the user\'s jobs are graded against, next to the documents it comes from', async () => {
+    renderPage();
+    expect(await screen.findByText('Quality rubric')).toBeInTheDocument();
+    expect(await screen.findByLabelText('Pass condition of Testable')).toHaveValue('Can be verified');
+    expect(kbApi.getRubric).toHaveBeenCalledTimes(1);
   });
 
   it('does not render a bearer-token / password field on initial load', async () => {

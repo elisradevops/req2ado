@@ -44,6 +44,32 @@ export interface RewriteComparison {
   warnings: { code: string; severity: 'high' | 'notice'; detail: string }[];
 }
 
+export interface RubricCategory {
+  name: string;
+  passCondition: string | null;
+  guidance: string | null;
+  pinned: boolean;
+  origin: 'kb' | 'default' | 'custom';
+  sources: string[];
+  mergedFrom: string[];
+}
+
+/** The rubric a user's jobs are graded against (the knowledge base's, or the built-in one), with the user's pins and removals applied. */
+export interface Rubric {
+  version: string;
+  source: 'kb' | 'default';
+  builtAt: string | null;
+  categories: RubricCategory[];
+  removed: string[];
+}
+
+/** Why an item got the scores it did: one short reason per category asked about, and what the category is held to. */
+export interface ScoreExplanation {
+  explanations: { category: string; score: number | null; reason: string | null; passCondition: string | null }[];
+  basis: 'knowledge_base' | 'built_in';
+  rubric: { source: string; version: string | null };
+}
+
 export class IngestionHttpError extends Error {
   // traceback: ingestion's own Python traceback, present only when ingestion
   // runs with EXPOSE_ERROR_DETAILS on. Kept off `message` so audit trails and
@@ -224,6 +250,9 @@ export class IngestionHttpClient {
     // /level route). Optional/omitted for every call site predating this
     // field, matching model/jobId's own backward-compat convention above.
     primerContext?: string,
+    // Out parameter: which rubric ingestion scored this job with (`rubricVersion`: null when none, left undefined by an ingestion that does not
+    // report it) and whether it did not get the one it should have (`degraded`). The result cache stores under the rubric the job really used.
+    scored?: { rubricVersion?: string | null; degraded?: boolean },
   ): Promise<WorkItemTree> {
     const params = new URLSearchParams({ mode });
     if (model) params.set('model', model);
@@ -251,6 +280,11 @@ export class IngestionHttpClient {
     });
     if (!response.ok) {
       throw await _ingestionError(response, `Ingestion /level request failed: `);
+    }
+    if (scored) {
+      const version = response.headers?.get?.('x-req2ado-rubric-version');
+      if (version !== null && version !== undefined) scored.rubricVersion = version === '' ? null : version;
+      scored.degraded = response.headers?.get?.('x-req2ado-rubric-degraded') === '1';
     }
     return (await response.json()) as WorkItemTree;
   }
@@ -296,6 +330,67 @@ export class IngestionHttpClient {
       qualityCategoryScores: body.quality_category_scores,
       qualityConfidence: body.quality_confidence ?? null,
     };
+  }
+
+  async getRubric(userId: string): Promise<Rubric> {
+    // The user is identified by a header, not in the URL: ingestion's access log records URLs.
+    const response = await fetch(`${this.baseUrl}/kb/rubric`, { headers: identityHeaders(userId) });
+    if (!response.ok) throw await _ingestionError(response, `Ingestion /kb/rubric request failed: `);
+    return (await response.json()) as Rubric;
+  }
+
+  // Stores the user's pins (a category fixed, or one of their own) and removals, and returns the rubric that results. Empty lists return to
+  // the derived rubric. Ingestion refuses a list that makes no sense with a 400 and a reason.
+  async putRubric(userId: string, input: { pinned: { name: string; passCondition: string }[]; removed: string[] }): Promise<Rubric> {
+    const response = await fetch(`${this.baseUrl}/kb/rubric`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId, pinned: input.pinned, removed: input.removed }),
+    });
+    if (!response.ok) throw await _ingestionError(response, `Ingestion /kb/rubric update failed: `);
+    return (await response.json()) as Rubric;
+  }
+
+  async explainScores(input: {
+    title: string | null;
+    description: string;
+    type: string;
+    categoryScores: Record<string, number> | null;
+    categories?: string[];
+    context: unknown;
+    userId?: string | null;
+    model?: string | null;
+  }): Promise<ScoreExplanation> {
+    const response = await fetch(`${this.baseUrl}/score-explain`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: input.title,
+        description: input.description,
+        type: input.type,
+        category_scores: input.categoryScores,
+        ...(input.categories ? { categories: input.categories } : {}),
+        context: input.context,
+        user_id: input.userId ?? null,
+        model: input.model ?? null,
+      }),
+    });
+    if (!response.ok) throw await _ingestionError(response, `Ingestion /score-explain request failed: `);
+    return (await response.json()) as ScoreExplanation;
+  }
+
+  // What a stored job result depends on besides the file: this ingestion build and the version of the profile the user's jobs are
+  // scored with (null without one). null when it cannot be read: the caller then caches nothing rather than guess.
+  async cacheScope(userId: string): Promise<{ ingestion: string; profile: string | null } | null> {
+    try {
+      const response = await fetch(`${this.baseUrl}/cache-scope`, { headers: identityHeaders(userId) });
+      if (!response.ok) return null;
+      const body = (await response.json()) as { ingestion?: unknown; profile?: unknown };
+      if (typeof body?.ingestion !== 'string') return null;
+      return { ingestion: body.ingestion, profile: typeof body.profile === 'string' ? body.profile : null };
+    } catch {
+      return null;
+    }
   }
 
   // A proposed rewrite judged against the original in ONE model call (same frame, same rubric, the user's KB profile context), plus

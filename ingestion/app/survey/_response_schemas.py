@@ -721,3 +721,26 @@ def kb_category_consolidation_schema() -> dict:
             "additionalProperties": False,
         },
     }
+
+
+def score_explanation_schema() -> dict:
+    """explain_category_scores: one short reason per category the author asked about."""
+    return {
+        "name": "score_explanation",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "explanations": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"category": {"type": "string"}, "reason": {"type": "string"}},
+                        "required": ["category", "reason"],
+                        "additionalProperties": False,
+                    },
+                }
+            },
+            "required": ["explanations"],
+            "additionalProperties": False,
+        },
+    }

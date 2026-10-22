@@ -69,6 +69,8 @@ class Category(BaseModel):
     # Per source document, the extraction runs (0-based) that produced this category (pooled over the wordings merged into it). Used to keep
     # only what most runs agree on; empty on profiles stored before it existed (then nothing is dropped for lack of support).
     seen_in: dict[str, list[int]] = Field(default_factory=dict)
+    # How to improve an item that misses this category (the built-in rubric states it; a knowledge-base category usually does not).
+    guidance: str | None = None
 
 
 class TypeDefinition(BaseModel):
@@ -107,6 +109,8 @@ class DocumentStatus(BaseModel):
 class KbProfile(BaseModel):
     version: str
     built_with: str
+    # `kb`: derived from the user's knowledge-base documents; `default`: the built-in rubric (app.kb.default_rubric).
+    source: Literal["kb", "default"] = "kb"
     docs: list[DocumentStatus] = Field(default_factory=list)
     categories: list[Category] = Field(default_factory=list)
     type_definitions: list[TypeDefinition] = Field(default_factory=list)
@@ -191,9 +195,19 @@ class InMemoryProfileStore:
     def __init__(self) -> None:
         self._profiles: dict[str, str] = {}
         self._documents: dict[str, dict[str, tuple[str, dict]]] = {}
+        self._overrides: dict[str, str] = {}
 
     def document_cache(self, user_id: str) -> DocumentCache:
         return _MemoryDocumentCache(self._documents.setdefault(user_id, {}))
+
+    def get_overrides(self, user_id: str):
+        from app.kb.rubric import RubricOverrides
+
+        raw = self._overrides.get(user_id)
+        return RubricOverrides.model_validate_json(raw) if raw else RubricOverrides()
+
+    def put_overrides(self, user_id: str, overrides) -> None:
+        self._overrides[user_id] = overrides.model_dump_json()
 
     def get(self, user_id: str) -> KbProfile | None:
         raw = self._profiles.get(user_id)
@@ -220,9 +234,17 @@ def windows_of(text: str, size: int = WINDOW_CHARS, overlap: int = WINDOW_OVERLA
     return windows
 
 
+def build_version() -> str:
+    """How a profile is built: the extraction (prompts, windows, runs, schema) and the merge (its prompt, runs, ceiling). A change to any
+    of them makes a stored profile stale, so an improvement reaches jobs by itself instead of waiting for a document to change."""
+    parts = [extraction_version(), load_prompt("consolidate_kb_categories"), CONSOLIDATION_RUNS, MAX_SCORING_CATEGORIES]
+    return hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:24]
+
+
 def profile_version(documents: dict[str, str], model: str) -> str:
-    """Changes with any document's text, the set of documents, the building model or the schema; nothing else."""
-    parts = [SCHEMA_VERSION, model, sorted((name, hashlib.sha256(text.encode()).hexdigest()) for name, text in documents.items())]
+    """Changes with any document's text, the set of documents, the building model, or how a profile is built (build_version); nothing
+    else."""
+    parts = [SCHEMA_VERSION, build_version(), model, sorted((name, hashlib.sha256(text.encode()).hexdigest()) for name, text in documents.items())]
     return hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:24]
 
 
@@ -662,6 +684,20 @@ class ChromaProfileStore:
     def document_cache(self, user_id: str) -> DocumentCache:
         return _ChromaDocumentCache(self._kb_store, user_id)
 
+    def get_overrides(self, user_id: str):
+        """The user's pins and removals (app.kb.rubric); empty when there are none or they cannot be read."""
+        from app.kb.rubric import RubricOverrides
+
+        raw = self._kb_store.get_profile_part(user_id, "rubric-overrides")
+        try:
+            return RubricOverrides.model_validate_json(raw) if raw else RubricOverrides()
+        except ValueError:
+            logger.warning("Stored rubric overrides could not be read; ignoring them")
+            return RubricOverrides()
+
+    def put_overrides(self, user_id: str, overrides) -> None:
+        self._kb_store.put_profile_part(user_id, "rubric-overrides", overrides.model_dump_json(), "rubric-overrides")
+
 
 _DOC_PREFIX = "doc:"
 
@@ -710,7 +746,12 @@ def scoring_inputs(profile: KbProfile | None) -> tuple[list[str] | None, dict[st
         return None, None, None
     names = [c.name for c in profile.categories]
     definitions = {c.name: c.pass_condition for c in profile.categories if c.pass_condition}
-    lines = ["The organization's own standard for judging a requirement (from its knowledge base):"]
+    header = (
+        "The standard used to judge a requirement (the built-in rubric; the organization has no knowledge base):"
+        if profile.source == "default"
+        else "The organization's own standard for judging a requirement (from its knowledge base):"
+    )
+    lines = [header]
     lines += [f"- {c.name}: {c.pass_condition}" if c.pass_condition else f"- {c.name}" for c in profile.categories]
     if profile.rules:
         lines.append("Mandatory writing rules:")
@@ -727,7 +768,7 @@ def render_authoring_standard(profile: KbProfile | None) -> str | None:
     organization's own knowledge base says an Epic, Feature and Requirement are, the rules that make a way of writing
     mandatory, its defined terms, and the quality bar a requirement is judged against. None when the profile has none of
     these, so prompts are then byte-identical to what they were before profiles."""
-    if profile is None:
+    if profile is None or profile.source == "default":  # the built-in rubric judges and explains; it is not an authoring standard
         return None
     sections: list[str] = []
     if profile.type_definitions:

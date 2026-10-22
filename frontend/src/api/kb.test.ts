@@ -60,3 +60,25 @@ describe('kb api', () => {
     expect(response).toEqual(result);
   });
 });
+
+
+describe('the rubric', () => {
+  const rubric = { version: 'v1', source: 'kb', builtAt: null, categories: [], removed: [] };
+
+  it('getRubric reads the rubric of the session user', async () => {
+    const { httpClient } = await import('./httpClient');
+    (httpClient.get as any).mockResolvedValue({ data: rubric });
+    const { getRubric } = await import('./kb');
+    expect(await getRubric()).toEqual(rubric);
+    expect(httpClient.get).toHaveBeenCalledWith('/kb/rubric');
+  });
+
+  it('putRubric stores the pins and removals and returns the rubric that results', async () => {
+    const { httpClient } = await import('./httpClient');
+    (httpClient.put as any).mockResolvedValue({ data: rubric });
+    const { putRubric } = await import('./kb');
+    const input = { pinned: [{ name: 'Testable', passCondition: 'Pinned' }], removed: ['Essential'] };
+    expect(await putRubric(input)).toEqual(rubric);
+    expect(httpClient.put).toHaveBeenCalledWith('/kb/rubric', input);
+  });
+});

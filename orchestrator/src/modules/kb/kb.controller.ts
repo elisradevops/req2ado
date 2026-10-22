@@ -1,6 +1,6 @@
-import { BadRequestException, Body, Controller, Delete, Get, HttpException, NotFoundException, Param, Post, Query } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, HttpException, NotFoundException, Param, Post, Put, Query } from '@nestjs/common';
 import { BrowseFolderEntry, FolderIngestUrlResult, IngestedDocumentSummary, IngestUrlResult, KbService } from './kb.service';
-import { IngestionHttpError, SharePointStatus } from '../pipeline/ingestion-http.client';
+import { IngestionHttpError, Rubric, SharePointStatus } from '../pipeline/ingestion-http.client';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { SessionUser } from '../auth/session.service';
 
@@ -104,6 +104,41 @@ export class KbController {
   @Get('documents')
   async listDocuments(@CurrentUser() user: SessionUser): Promise<IngestedDocumentSummary[]> {
     return this.kbService.listDocuments(user.userId);
+  }
+
+  // The rubric the session user's jobs are graded against: the categories derived from their knowledge base (or the built-in ones), each with
+  // its pass condition, whether it is pinned, and what was removed. Scoped to the session: no request shape can ask for someone else's.
+  @Get('rubric')
+  async getRubric(@CurrentUser() user: SessionUser): Promise<Rubric> {
+    return this.kbService.getRubric(user.userId);
+  }
+
+  // Pins (a category fixed, or one of the user's own) and removals; empty lists return to the derived rubric.
+  @Put('rubric')
+  async putRubric(
+    @CurrentUser() user: SessionUser,
+    @Body() body: { pinned?: { name?: unknown; passCondition?: unknown }[]; removed?: unknown },
+  ): Promise<Rubric> {
+    const pinned = body?.pinned ?? [];
+    const removed = body?.removed ?? [];
+    if (
+      !Array.isArray(pinned) ||
+      !Array.isArray(removed) ||
+      pinned.some((p) => typeof p?.name !== 'string' || typeof p?.passCondition !== 'string') ||
+      removed.some((r) => typeof r !== 'string')
+    ) {
+      throw new BadRequestException('pinned must be a list of {name, passCondition} and removed a list of names');
+    }
+    try {
+      return await this.kbService.putRubric(user.userId, {
+        pinned: pinned.map((p) => ({ name: p.name as string, passCondition: p.passCondition as string })),
+        removed: removed as string[],
+      });
+    } catch (err) {
+      // Ingestion refuses a list that makes no sense (a duplicate, a blank name, too many) with a 400 and the reason.
+      if (err instanceof IngestionHttpError && err.status === 400) throw new BadRequestException(err.message);
+      throw err;
+    }
   }
 
   @Delete('documents/:id')

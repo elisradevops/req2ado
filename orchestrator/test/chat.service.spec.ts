@@ -99,6 +99,33 @@ describe('ChatService.sendTurn: what ingestion is told about the item', () => {
   });
 });
 
+describe('ChatService.sendTurn: which model answers', () => {
+  const run = async (jobModel: string | null, picked: string | undefined) => {
+    const post = jest.spyOn(axios, 'post').mockResolvedValue({ data: {} } as never);
+    const create = jest.fn();
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue({ ...makeDiffJob(), userId: 'user-1', model: jobModel }) },
+      chatMessage: { create, findMany: jest.fn().mockResolvedValue([]) },
+    };
+    await new ChatService(prisma as any, 'http://ingestion:8000', { set: jest.fn() } as any).sendTurn('job-1', 'n0', 'improve this', picked);
+    const sent = (post.mock.calls[0][1] as { model: string | null }).model;
+    post.mockRestore();
+    return { sent, stored: (create.mock.calls[0][0] as { data: { model: string | null } }).data.model };
+  };
+
+  it('uses the model the job was analysed with when none is picked (not the orchestrator\'s own default)', async () => {
+    expect(await run('claude-opus-4-8', undefined)).toEqual({ sent: 'claude-opus-4-8', stored: 'claude-opus-4-8' });
+  });
+
+  it('uses the picked model when there is one', async () => {
+    expect(await run('claude-opus-4-8', 'OpenAI/gpt-5.6-terra')).toEqual({ sent: 'OpenAI/gpt-5.6-terra', stored: 'OpenAI/gpt-5.6-terra' });
+  });
+
+  it('leaves it to the server default only when the job has no model either', async () => {
+    expect(await run(null, undefined)).toEqual({ sent: null, stored: null });
+  });
+});
+
 describe('ChatService.sendTurn: where the item sits', () => {
   it('sends the item its parents, neighbours, linked items and captions, built from the job itself', async () => {
     const post = jest.spyOn(axios, 'post').mockResolvedValue({ data: {} } as never);

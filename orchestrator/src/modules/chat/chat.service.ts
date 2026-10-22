@@ -60,8 +60,12 @@ export class ChatService implements OnModuleDestroy {
       );
     }
 
+    // No pick means the model the job was analysed with, not the orchestrator's own default (a different model than the user chose for
+    // the job); only a job without a model leaves it to the server default.
+    const effectiveModel = model ?? (job.model as string | null | undefined) ?? undefined;
+
     await this.prisma.chatMessage.create({
-      data: { jobId, localId, role: 'user', content: message, model: model ?? null },
+      data: { jobId, localId, role: 'user', content: message, model: effectiveModel ?? null },
     });
 
     const history = await this.prisma.chatMessage.findMany({
@@ -84,7 +88,7 @@ export class ChatService implements OnModuleDestroy {
       },
       history: history.map((h: { role: string; content: string }) => ({ role: h.role, content: h.content })),
       message,
-      model: model ?? null,
+      model: effectiveModel ?? null,
       // Knowledge Base scope key -- the job's submitting user's identity,
       // NOT job.areaPath (ADO destination, unrelated concern here).
       user_id: job.userId,

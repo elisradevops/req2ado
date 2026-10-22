@@ -126,3 +126,42 @@ export async function reconnectSharePoint(token: string): Promise<SharePointStat
   const response = await httpClient.post<SharePointStatus>('/kb/sharepoint/reconnect', { token });
   return response.data;
 }
+
+
+export interface RubricCategory {
+  name: string;
+  passCondition: string | null;
+  // What the rubric derived for it (a pinned category's text is the user's): what an unpin hands the category back to. null for the user's own.
+  basePassCondition?: string | null;
+  guidance: string | null;
+  pinned: boolean;
+  origin: 'kb' | 'default' | 'custom';
+  sources: string[];
+  mergedFrom: string[];
+}
+
+/** The rubric the user's jobs are graded against: derived from their knowledge base, or the built-in one, with their pins and removals applied. */
+export interface Rubric {
+  version: string;
+  source: 'kb' | 'default';
+  builtAt: string | null;
+  categories: RubricCategory[];
+  removed: string[];
+}
+
+export interface RubricInput {
+  pinned: { name: string; passCondition: string }[];
+  removed: string[];
+}
+
+export async function getRubric(): Promise<Rubric> {
+  const response = await httpClient.get<Rubric>('/kb/rubric');
+  return response.data;
+}
+
+// Stores the user's pins (a category fixed, or one of their own) and removals; empty lists return to the derived rubric. Answers with the
+// rubric that results.
+export async function putRubric(input: RubricInput): Promise<Rubric> {
+  const response = await httpClient.put<Rubric>('/kb/rubric', input);
+  return response.data;
+}

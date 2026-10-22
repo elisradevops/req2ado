@@ -9,6 +9,28 @@ _STREAM_REQUEST_TIMEOUT_SECONDS = 120.0
 PROPOSAL_SENTINEL = "<<<PROPOSAL>>>"
 
 
+def _proposal_after_marker(full_text: str) -> tuple[str, dict | None, str | None]:
+    """(message, the proposal object, why there is none). The object is the first JSON object after the marker, read wherever it sits:
+    models wrap it in a code fence or add a closing sentence after it."""
+    index = full_text.find(PROPOSAL_SENTINEL)
+    if index == -1:
+        return full_text.strip(), None, "no_marker"
+    message = full_text[:index].strip()
+    raw = full_text[index + len(PROPOSAL_SENTINEL):]
+    start = raw.find("{")
+    if start == -1:
+        return message, None, "no_object"
+    try:
+        parsed, _end = json.JSONDecoder().raw_decode(raw[start:])
+    except json.JSONDecodeError:
+        return message, None, "invalid_json"
+    if not isinstance(parsed, dict):
+        return message, None, "no_object"
+    if not isinstance(parsed.get("proposedTitle"), str) and not isinstance(parsed.get("proposedDescription"), str):
+        return message, None, "no_text"
+    return message, parsed, None
+
+
 def split_message_and_proposal(full_text: str) -> tuple[str, str | None, str | None]:
     """Splits a raw model reply into (message, proposedTitle, proposedDescription).
     The model is instructed (see chat_service.py's system prompt) to emit
@@ -17,25 +39,18 @@ def split_message_and_proposal(full_text: str) -> tuple[str, str | None, str | N
     Tolerant: a missing sentinel, malformed JSON, a non-dict JSON value, or a
     non-string field value all fall back to a safe default rather than
     raising — a caller acting on a chat reply is worse off failing the whole
-    turn than getting no structured proposal for one malformed response."""
-    sentinel_index = full_text.find(PROPOSAL_SENTINEL)
-    if sentinel_index == -1:
-        return full_text.strip(), None, None
-
-    message = full_text[:sentinel_index].strip()
-    raw_json = full_text[sentinel_index + len(PROPOSAL_SENTINEL) :].strip()
-    try:
-        parsed = json.loads(raw_json)
-    except json.JSONDecodeError:
+    turn than getting no structured proposal for one malformed response.
+    The JSON object may sit inside a code fence or be followed by text."""
+    message, parsed, _reason = _proposal_after_marker(full_text)
+    if parsed is None:
         return message, None, None
-    if not isinstance(parsed, dict):
-        return message, None, None
+    title, description = parsed.get("proposedTitle"), parsed.get("proposedDescription")
+    return message, title if isinstance(title, str) else None, description if isinstance(description, str) else None
 
-    proposed_title = parsed.get("proposedTitle")
-    proposed_description = parsed.get("proposedDescription")
-    proposed_title = proposed_title if isinstance(proposed_title, str) else None
-    proposed_description = proposed_description if isinstance(proposed_description, str) else None
-    return message, proposed_title, proposed_description
+
+def proposal_failure_reason(full_text: str) -> str | None:
+    """Why a reply carries no proposal: no_marker, no_object, invalid_json or no_text; None when it carries one."""
+    return _proposal_after_marker(full_text)[2]
 
 
 class ChatLlmClient:

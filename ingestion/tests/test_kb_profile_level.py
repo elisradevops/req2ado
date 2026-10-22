@@ -66,18 +66,18 @@ def test_a_configured_profile_model_is_used_for_everything(monkeypatch) -> None:
     assert profile.built_with == "pinned-model"
 
 
-def test_no_knowledge_base_or_a_failing_build_or_the_switch_off_means_no_profile_and_a_normal_job(monkeypatch) -> None:
+def test_no_knowledge_base_or_a_failing_build_means_the_built_in_rubric_and_only_the_switch_off_means_none(monkeypatch) -> None:
     monkeypatch.setattr(settings, "kb_profile_model", "")
-    assert _level(InMemoryProfileStore(), _Kb({}), FakeProfileClient()) is None
+    assert _level(InMemoryProfileStore(), _Kb({}), FakeProfileClient()).source == "default"  # no KB documents: the built-in rubric
 
     class Broken(_Kb):
         def list_documents(self, user_id):
             raise RuntimeError("chroma down")
 
-    assert _level(InMemoryProfileStore(), Broken(DOCS), FakeProfileClient()) is None
+    assert _level(InMemoryProfileStore(), Broken(DOCS), FakeProfileClient()).source == "default"  # a failing build never fails the job
 
     monkeypatch.setattr(settings, "kb_profile_scoring", False)
-    assert _level(InMemoryProfileStore(), _Kb(DOCS), FakeProfileClient()) is None
+    assert _level(InMemoryProfileStore(), _Kb(DOCS), FakeProfileClient()) is None  # switched off: as before rubrics
 
 
 def _client_after_level(store, kb, fake):
@@ -108,3 +108,18 @@ def test_without_a_kb_or_with_the_generation_switch_off_prompts_are_untouched(mo
     assert _client_after_level(InMemoryProfileStore(), _Kb({}), FakeProfileClient()).authoring_standard is None
     monkeypatch.setattr(settings, "kb_profile_generation", False)
     assert _client_after_level(InMemoryProfileStore(), _Kb(DOCS), FakeProfileClient()).authoring_standard is None
+
+
+def test_a_build_that_raises_with_a_stored_profile_still_scores_with_it_not_with_the_default(monkeypatch) -> None:
+    from app.kb.profile import Category, KbProfile
+
+    monkeypatch.setattr(settings, "kb_profile_model", "")
+    store = InMemoryProfileStore()
+    store.put("u1", KbProfile(version="v-stored", built_with="m", categories=[Category(name="Testable", pass_condition="Can be verified", sources=["A"], merged_from=["Testable"])]))
+
+    class Broken(_Kb):
+        def list_documents(self, user_id):
+            raise RuntimeError("chroma down")
+
+    used = _level(store, Broken(DOCS), FakeProfileClient())
+    assert used.source == "kb" and used.version == "v-stored" and used.degraded is True
