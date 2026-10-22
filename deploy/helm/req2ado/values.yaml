@@ -140,9 +140,14 @@ config:
   FILES_STATUS_PATH: "/api/v1/files"
   FILES_UPLOAD_PATH: "/api/v1/files/"
   GRAPH_BASE_URL: "https://graph.microsoft.com/v1.0"
+  # A SURVEY /level is streamed (heartbeats): its limits are silence and a total guard. INGESTION_REQUEST_TIMEOUT_MS still bounds
+  # /ingest and the other long calls.
+  INGESTION_IDLE_TIMEOUT_MS: "300000"
   INGESTION_REQUEST_TIMEOUT_MS: "3600000"
   JOB_RETENTION_CHECK_INTERVAL_MS: "3600000"
   JOB_RETENTION_MAX_AGE_MS: "172800000"
+  KB_PROFILE_CONCURRENCY: "3"
+  LEVEL_MAX_DURATION_MS: "10800000"
   LLM_BASE_URL: "https://elbichat.elbitsystems.com/api/v1"
   # LLM_CHAT_BASE_URL: "" # Optional: overrides LLM_BASE_URL for SDK chat calls only.
   #   Use to switch to Open WebUI's /api/chat path (set to https://host/api) without
@@ -212,6 +217,9 @@ config:
   STALE_JOB_CHECK_INTERVAL_MS: "60000"
   STALE_JOB_THRESHOLD_MS: "3600000"
   SURVEY_BRANCH_CONCURRENCY: "4"
+  # Scoring, titles, synthesis and summaries run up to 3 chunks at once (they were one after another; the proxy holds some calls for
+  # a minute, so a job took an hour). Output order does not depend on it. 1 restores the sequential run.
+  SURVEY_CHUNK_CONCURRENCY: "3"
   VISION_REQUEST_TIMEOUT_SECONDS: "590"
   # CORS_ORIGIN deliberately omitted -- the web container's nginx is now
   # the frontend's only origin, proxying /api/ to the orchestrator
