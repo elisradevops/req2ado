@@ -186,6 +186,11 @@ export const configSchema = z.object({
   // the three, so an inner layer's timeout always fires first. Same
   // numeric default as before this was configurable (no behavior change).
   INGESTION_REQUEST_TIMEOUT_MS: z.coerce.number().default(3_600_000),
+  // A SURVEY run's /level is streamed (heartbeat lines while it works), so its limits are about SILENCE and a total guard, not one
+  // request timer: no byte for INGESTION_IDLE_TIMEOUT_MS means ingestion is gone; LEVEL_MAX_DURATION_MS stops a run that never
+  // ends (closing the connection cancels it in ingestion). Jobs that are making progress are no longer cut at INGESTION_REQUEST_TIMEOUT_MS.
+  INGESTION_IDLE_TIMEOUT_MS: z.coerce.number().default(5 * 60_000),
+  LEVEL_MAX_DURATION_MS: z.coerce.number().default(3 * 60 * 60_000),
   // Unset in production topology (frontend served same-origin behind nginx,
   // per docs/architecture.md — never actually built, see docker-compose.yml's
   // commented-out frontend service). Set for local dev, where Vite serves the

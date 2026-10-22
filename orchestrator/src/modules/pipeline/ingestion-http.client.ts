@@ -132,15 +132,47 @@ function identityHeaders(userId?: string, primerContext?: string): Record<string
   };
 }
 
+const NDJSON = 'application/x-ndjson';
+
+/** A streamed /level answers with heartbeat lines while it works; this is how long the connection may stay silent. */
+const DEFAULT_LEVEL_IDLE_TIMEOUT_MS = 5 * 60_000;
+/** The whole streamed run's limit, a guard against a run that never ends (its heartbeats keep the connection alive). */
+const DEFAULT_LEVEL_MAX_DURATION_MS = 3 * 60 * 60_000;
+
+export interface IngestionClientLimits {
+  /** Silence (no heartbeat, no result) after which a streamed /level is given up on. */
+  idleTimeoutMs?: number;
+  /** Total time after which a streamed /level is stopped (the connection is closed, so ingestion cancels the run). */
+  maxDurationMs?: number;
+}
+
+type LevelLine =
+  | { type: 'heartbeat'; elapsed?: number }
+  | { type: 'result'; tree: WorkItemTree; rubric?: { version?: string | null; degraded?: boolean } }
+  | { type: 'error'; status?: number; detail?: string };
+
+function seconds(ms: number): string {
+  return String(ms / 1000);
+}
+
 @Injectable()
 export class IngestionHttpClient {
   private readonly longRunningAgent: Agent;
+  /** /level only: its limit on a silent body is the idle timeout, not the whole request's, because the stream proves the run is alive. */
+  private readonly levelAgent: Agent;
+  private readonly idleTimeoutMs: number;
+  private readonly maxDurationMs: number;
 
   constructor(
     private readonly baseUrl: string,
     requestTimeoutMs: number = DEFAULT_INGESTION_REQUEST_TIMEOUT_MS,
+    limits: IngestionClientLimits = {},
   ) {
     this.longRunningAgent = new Agent({ headersTimeout: requestTimeoutMs, bodyTimeout: requestTimeoutMs });
+    this.idleTimeoutMs = limits.idleTimeoutMs ?? DEFAULT_LEVEL_IDLE_TIMEOUT_MS;
+    this.maxDurationMs = limits.maxDurationMs ?? DEFAULT_LEVEL_MAX_DURATION_MS;
+    // An ingestion that does not stream answers only at the end, after headers: headersTimeout still bounds that old behaviour.
+    this.levelAgent = new Agent({ headersTimeout: requestTimeoutMs, bodyTimeout: this.idleTimeoutMs });
   }
 
   // skipVision: /jobs/preview's caller (jobs.controller.ts) only needs
@@ -272,21 +304,87 @@ export class IngestionHttpClient {
         ),
       );
     }
-    const response = await fetch(`${this.baseUrl}/level?${params.toString()}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...identityHeaders(userId, primerContext) },
-      body: JSON.stringify(doc),
-      dispatcher: this.longRunningAgent,
-    });
-    if (!response.ok) {
-      throw await _ingestionError(response, `Ingestion /level request failed: `);
+    const limit = AbortSignal.timeout(this.maxDurationMs);
+    try {
+      const response = await fetch(`${this.baseUrl}/level?${params.toString()}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: `${NDJSON}, application/json`, ...identityHeaders(userId, primerContext) },
+        body: JSON.stringify(doc),
+        dispatcher: this.levelAgent,
+        signal: limit,
+      });
+      if (!response.ok) {
+        throw await _ingestionError(response, `Ingestion /level request failed: `);
+      }
+      if (response.headers?.get?.('content-type')?.startsWith(NDJSON)) {
+        const answer = await this.readLevelStream(response);
+        if (scored) {
+          const version = answer.rubric?.version;
+          scored.rubricVersion = version === undefined || version === '' ? null : version;
+          scored.degraded = answer.rubric?.degraded === true;
+        }
+        return answer.tree;
+      }
+      // An ingestion that does not stream: the tree is the body, the rubric is in headers.
+      if (scored) {
+        const version = response.headers?.get?.('x-req2ado-rubric-version');
+        if (version !== null && version !== undefined) scored.rubricVersion = version === '' ? null : version;
+        scored.degraded = response.headers?.get?.('x-req2ado-rubric-degraded') === '1';
+      }
+      return (await response.json()) as WorkItemTree;
+    } catch (error) {
+      throw this.describeLevelFailure(error, limit);
     }
-    if (scored) {
-      const version = response.headers?.get?.('x-req2ado-rubric-version');
-      if (version !== null && version !== undefined) scored.rubricVersion = version === '' ? null : version;
-      scored.degraded = response.headers?.get?.('x-req2ado-rubric-degraded') === '1';
+  }
+
+  /** The streamed /level answer: heartbeat lines (ignored; they only keep the connection from looking dead), then one result or error line. */
+  private async readLevelStream(response: Response): Promise<{ tree: WorkItemTree; rubric?: { version?: string | null; degraded?: boolean } }> {
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+    const handle = (raw: string): { tree: WorkItemTree; rubric?: { version?: string | null; degraded?: boolean } } | undefined => {
+      if (!raw.trim()) return undefined;
+      const parsed = JSON.parse(raw) as LevelLine;
+      if (parsed.type === 'error') {
+        throw new IngestionHttpError(parsed.status ?? 502, `Ingestion /level request failed: ${parsed.detail ?? 'the run failed'}`);
+      }
+      return parsed.type === 'result' ? { tree: parsed.tree, rubric: parsed.rubric } : undefined;
+    };
+    let lastChunkAt = Date.now();
+    for (;;) {
+      let chunk: { done: boolean; value?: Uint8Array };
+      try {
+        chunk = await reader.read();
+      } catch (error) {
+        // undici ends a body that stayed silent past its idle limit with a bare "terminated"; the time since the last chunk is what says why.
+        if (Date.now() - lastChunkAt >= this.idleTimeoutMs * 0.9) {
+          throw new Error(`Ingestion /level went silent for ${seconds(this.idleTimeoutMs)} s (no heartbeat), so the run was given up on`);
+        }
+        throw error;
+      }
+      lastChunkAt = Date.now();
+      const { done, value } = chunk;
+      buffer += decoder.decode(value, { stream: !done });
+      let newline = buffer.indexOf('\n');
+      while (newline >= 0) {
+        const found = handle(buffer.slice(0, newline));
+        if (found) return found;
+        buffer = buffer.slice(newline + 1);
+        newline = buffer.indexOf('\n');
+      }
+      if (done) break;
     }
-    return (await response.json()) as WorkItemTree;
+    const found = handle(buffer);
+    if (found) return found;
+    throw new Error('Ingestion /level ended without a result (the connection closed before the run finished)');
+  }
+
+  /** A stop by the total-duration limit says so; every other failure is passed on unchanged (the worker describes its network cause). */
+  private describeLevelFailure(error: unknown, limit: AbortSignal): unknown {
+    if (limit.aborted) {
+      return new Error(`Ingestion /level was stopped: the run took longer than ${seconds(this.maxDurationMs)} s`);
+    }
+    return error;
   }
 
   // CR-7d rescore: re-judges ONE already-formalized requirement's current

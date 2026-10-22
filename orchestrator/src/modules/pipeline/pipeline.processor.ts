@@ -45,7 +45,10 @@ import { SettingsService } from '../settings/settings.service';
  */
 const config = configSchema.parse(process.env);
 const prisma = new PrismaClient();
-const ingestionClient = new IngestionHttpClient(process.env.INGESTION_BASE_URL ?? 'http://localhost:8000', config.INGESTION_REQUEST_TIMEOUT_MS);
+const ingestionClient = new IngestionHttpClient(process.env.INGESTION_BASE_URL ?? 'http://localhost:8000', config.INGESTION_REQUEST_TIMEOUT_MS, {
+  idleTimeoutMs: config.INGESTION_IDLE_TIMEOUT_MS,
+  maxDurationMs: config.LEVEL_MAX_DURATION_MS,
+});
 const dryRunService = new DryRunService();
 const idempotencyService = new IdempotencyService(prisma);
 const jobEventsPublisherRedis = new Redis(config.REDIS_URL);
