@@ -14,11 +14,12 @@ from typing import Literal, NamedTuple, cast
 import httpx
 import redis
 from fastapi import FastAPI, Header, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from app import job_cancel
+from app.level_stream import NDJSON, ndjson_stream
 from app.canonical.model import CanonicalDoc
 from app.chat.chat_client import ChatLlmClient
 from app.chat.chat_service import run_chat_turn
@@ -1693,6 +1694,88 @@ def _enforce_requirement_only_fields(tree: WorkItemTree) -> WorkItemTree:
     return tree
 
 
+async def _survey_level(
+    doc: CanonicalDoc, model: str | None, user_id: str | None, link_type_catalog: str | None, job_id: str | None,
+    primer_context: str | None, rubric_report: dict,
+) -> WorkItemTree:
+    """The SURVEY run of /level: the clients for the job's model, then the build in the threadpool. The caller owns the cancellation scope.
+    `rubric_report` is filled with the rubric the job was scored with."""
+    # One real client instance satisfies SectionAnalysisClient (and every
+    # other build_survey_tree Protocol). run_in_threadpool:
+    # OrchestratorLlmClient's HTTP calls are synchronous (httpx.Client,
+    # not an async client) — calling build_survey_tree inline in this
+    # async route would block ingestion's single-worker event loop for
+    # the whole job's duration, starving every other concurrent request
+    # (including /health). Moving the blocking work to FastAPI's
+    # threadpool keeps the loop free.
+    # link_type_catalog arrives as a JSON-encoded query param (matches
+    # the existing lightweight query-param style user_id here already
+    # uses) rather than restructuring the request body around
+    # CanonicalDoc — the orchestrator is the only caller that populates it.
+    # model is an optional per-job override of the orchestrator's own
+    # LLM_CHAT_MODEL default (see OpenWebUiClient.chat's opts.model) --
+    # unset means "use whatever the orchestrator is configured with",
+    # matching pre-model-selection behavior exactly. Also resolved by
+    # build_survey_tree's own _resolve_caps(model) for branch-size cap +
+    # tool-calling capability (§5c/§6).
+    # num_ctx (§6 of the whole-document redesign): Ollama's actual
+    # runtime context window isn't what a model's architectural max
+    # implies -- without setting it explicitly, Ollama truncates to its
+    # own small default regardless of how large a prompt this proxies,
+    # so the §3 whole-document gate's promise ("fits budget -> analyzed
+    # in one call") wouldn't actually hold for a local model. Sized from
+    # the SAME _resolve_caps(model) budget build_survey_tree itself uses
+    # for the gate decision, so num_ctx and the gate never disagree. A
+    # genuine OpenAI-compat backend (the production frontier-model
+    # proxy) ignores this unrecognized field -- harmless to always send.
+    # caps_client=probe_client: _resolve_caps's optional live /api/show
+    # lookup (for a model NOT already in _MODEL_CAPS) is a real,
+    # synchronous httpx.Client HTTP call (same convention as every
+    # other OrchestratorLlmClient method) -- run in its OWN threadpool
+    # dispatch, never inline in this async route, for the exact reason
+    # build_survey_tree's own call below is already threadpool-
+    # dispatched. probe_client needs no num_ctx of its own (show_model's
+    # request doesn't use it); construction itself is cheap/sync
+    # (no I/O), so building a second instance below with the now-known
+    # num_ctx is simpler than mutating this one after the fact.
+    probe_client = OrchestratorLlmClient(
+        settings.orchestrator_url, settings.llm_proxy_bearer, model=model,
+        top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
+    )
+    num_ctx = (
+        await run_in_threadpool(_resolve_caps, model, probe_client, user_id)
+    ).context_budget_tokens
+    client = OrchestratorLlmClient(
+        settings.orchestrator_url, settings.llm_proxy_bearer, model=model, num_ctx=num_ctx,
+        top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P, cache=_llm_response_cache,
+    )
+    catalog = json.loads(link_type_catalog) if link_type_catalog else None
+    return await run_in_threadpool(
+        _build_survey_tree_with_scoring, doc, client, user_id, catalog, job_id, model, primer_context, rubric_report
+    )
+
+
+# How often a streamed /level sends a heartbeat line while its run works.
+LEVEL_HEARTBEAT_SECONDS = 15.0
+
+
+def _level_failure(request: Request, exc: Exception) -> tuple[int, str]:
+    """A failed streamed run as the (status, detail) the plain route's handlers give the same failure."""
+    if isinstance(exc, HTTPException):
+        return exc.status_code, str(exc.detail)
+    logger.exception("Unhandled exception in %s", request.url)
+    _publish_job_failed(request, exc)
+    return (502 if isinstance(exc, ValueError) else 500), describe_exception(exc)
+
+
+def _level_result(doc: CanonicalDoc, tree: WorkItemTree, rubric_report: dict) -> dict:
+    final = _enforce_requirement_only_fields(_append_vision_disabled_warning(tree, doc, "survey"))
+    return {
+        "tree": final.model_dump(mode="json", by_alias=True),
+        "rubric": {"version": rubric_report.get("version") or None, "degraded": bool(rubric_report.get("degraded"))},
+    }
+
+
 @app.post("/level", response_model=WorkItemTree)
 async def level(
     request: Request,
@@ -1712,63 +1795,28 @@ async def level(
     user_id = resolve_user_id(user_id, x_user_id)
     primer_context = resolve_primer_context(primer_context, x_primer_context)
     if mode == "survey":
-        # One real client instance satisfies SectionAnalysisClient (and every
-        # other build_survey_tree Protocol). run_in_threadpool:
-        # OrchestratorLlmClient's HTTP calls are synchronous (httpx.Client,
-        # not an async client) — calling build_survey_tree inline in this
-        # async route would block ingestion's single-worker event loop for
-        # the whole job's duration, starving every other concurrent request
-        # (including /health). Moving the blocking work to FastAPI's
-        # threadpool keeps the loop free.
-        # link_type_catalog arrives as a JSON-encoded query param (matches
-        # the existing lightweight query-param style user_id here already
-        # uses) rather than restructuring the request body around
-        # CanonicalDoc — the orchestrator is the only caller that populates it.
-        # model is an optional per-job override of the orchestrator's own
-        # LLM_CHAT_MODEL default (see OpenWebUiClient.chat's opts.model) --
-        # unset means "use whatever the orchestrator is configured with",
-        # matching pre-model-selection behavior exactly. Also resolved by
-        # build_survey_tree's own _resolve_caps(model) for branch-size cap +
-        # tool-calling capability (§5c/§6).
-        # num_ctx (§6 of the whole-document redesign): Ollama's actual
-        # runtime context window isn't what a model's architectural max
-        # implies -- without setting it explicitly, Ollama truncates to its
-        # own small default regardless of how large a prompt this proxies,
-        # so the §3 whole-document gate's promise ("fits budget -> analyzed
-        # in one call") wouldn't actually hold for a local model. Sized from
-        # the SAME _resolve_caps(model) budget build_survey_tree itself uses
-        # for the gate decision, so num_ctx and the gate never disagree. A
-        # genuine OpenAI-compat backend (the production frontier-model
-        # proxy) ignores this unrecognized field -- harmless to always send.
-        # caps_client=probe_client: _resolve_caps's optional live /api/show
-        # lookup (for a model NOT already in _MODEL_CAPS) is a real,
-        # synchronous httpx.Client HTTP call (same convention as every
-        # other OrchestratorLlmClient method) -- run in its OWN threadpool
-        # dispatch, never inline in this async route, for the exact reason
-        # build_survey_tree's own call below is already threadpool-
-        # dispatched. probe_client needs no num_ctx of its own (show_model's
-        # request doesn't use it); construction itself is cheap/sync
-        # (no I/O), so building a second instance below with the now-known
-        # num_ctx is simpler than mutating this one after the fact.
-        probe_client = OrchestratorLlmClient(
-            settings.orchestrator_url, settings.llm_proxy_bearer, model=model,
-            top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
-        )
-        num_ctx = (
-            await run_in_threadpool(_resolve_caps, model, probe_client, user_id)
-        ).context_budget_tokens
-        client = OrchestratorLlmClient(
-            settings.orchestrator_url, settings.llm_proxy_bearer, model=model, num_ctx=num_ctx,
-            top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P, cache=_llm_response_cache,
-        )
-        catalog = json.loads(link_type_catalog) if link_type_catalog else None
+        if NDJSON in request.headers.get("accept", ""):
+            # Streamed: heartbeats while the run works, then one result (or error) line. The caller's limit is silence, not total time;
+            # closing the stream cancels the run (see app.level_stream).
+            token = job_cancel.CancelToken()
+
+            async def work() -> dict:
+                with job_cancel.cancellation_scope(token):
+                    rubric_report: dict = {}
+                    tree = await _survey_level(doc, model, user_id, link_type_catalog, job_id, primer_context, rubric_report)
+                return await run_in_threadpool(_level_result, doc, tree, rubric_report)
+
+            return StreamingResponse(
+                ndjson_stream(
+                    work, token, heartbeat_seconds=LEVEL_HEARTBEAT_SECONDS, describe_failure=lambda exc: _level_failure(request, exc),
+                ),
+                media_type=NDJSON,
+            )
         # The caller (the orchestrator's request) going away cancels this run: its remaining model calls are not made.
         with job_cancel.cancellation_scope() as cancel_token:
             async with job_cancel.watch_for_disconnect(request, cancel_token):
                 rubric_report: dict = {}
-                tree = await run_in_threadpool(
-                    _build_survey_tree_with_scoring, doc, client, user_id, catalog, job_id, model, primer_context, rubric_report
-                )
+                tree = await _survey_level(doc, model, user_id, link_type_catalog, job_id, primer_context, rubric_report)
             if cancel_token.cancelled:
                 raise HTTPException(status_code=499, detail="the caller disconnected; the run was cancelled")
         # Which rubric the job was scored with (and whether it got the one it should have): the result cache keys on it, not on whatever the

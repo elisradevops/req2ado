@@ -37,9 +37,11 @@ _token_var: contextvars.ContextVar[CancelToken | None] = contextvars.ContextVar(
 
 
 @contextmanager
-def cancellation_scope() -> Iterator[CancelToken]:
-    """One run's cancellation: model calls made inside (including in worker threads started from it) honour its token."""
-    token = CancelToken()
+def cancellation_scope(token: CancelToken | None = None) -> Iterator[CancelToken]:
+    """One run's cancellation: model calls made inside (including in worker threads started from it) honour its token.
+
+    A token made beforehand can be installed (a streamed run is cancelled from the stream's side, which has to hold the token)."""
+    token = token if token is not None else CancelToken()
     reset = _token_var.set(token)
     try:
         yield token
