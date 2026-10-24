@@ -14,12 +14,12 @@ export function ScoreExplanationPanel({ load, resetKey }: { load: () => Promise<
   const [seconds, setSeconds] = useState(0);
   const requestRef = useRef(0);
 
-  // The model can take a minute or two; the count is the evidence that something is happening. It starts again with each try.
+  // The model can take a minute or two; the count is the evidence that something is happening. It starts again with each try: `ask` zeroes
+  // it in the same render that starts loading (an effect would let one frame show the last try's count).
   const loading = state.status === 'loading';
   useEffect(() => {
     if (!loading) return undefined;
     const startedAt = Date.now();
-    setSeconds(0);
     const ticker = setInterval(() => setSeconds(Math.floor((Date.now() - startedAt) / 1000)), 1000);
     return () => clearInterval(ticker);
   }, [loading]);
@@ -31,6 +31,7 @@ export function ScoreExplanationPanel({ load, resetKey }: { load: () => Promise<
 
   function ask(): void {
     const request = ++requestRef.current;
+    setSeconds(0);
     setState({ status: 'loading' });
     load()
       .then((data) => {
