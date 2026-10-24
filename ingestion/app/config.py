@@ -207,6 +207,10 @@ class Settings(BaseSettings):
     # The model that reads the KB documents into the profile. Empty: the model of the job that first needs it, and from then
     # on the model that built the stored profile, so two models alternating on one KB never rebuild it back and forth.
     kb_profile_model: str = ""
+    # How many of the profile build's model calls (every window of every KB document, EXTRACTION_RUNS times) run at once. They were
+    # one after another: 732 s in a job when the proxy held half its calls for a minute. The answers are merged in call order, so the
+    # profile does not depend on this number (KB_PROFILE_CONCURRENCY=1 is the old sequential build).
+    kb_profile_concurrency: int = 3
     root_regroup_cosine_threshold: float = 0.75
     # Job transparency (docs/job-transparency-implementation-plan.md). Every
     # capability is its own kill switch and ships OFF: with both false this

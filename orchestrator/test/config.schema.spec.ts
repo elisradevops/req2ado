@@ -154,3 +154,18 @@ describe('configSchema job transparency flag', () => {
     expect(() => configSchema.parse({ ...BASE_ENV, LIVE_PROGRESS: 'yes' })).toThrow();
   });
 });
+
+describe('configSchema ingestion limits', () => {
+  it('limits a streamed /level by silence (5 min) and by a total guard (3 h), the request timeout staying for the other calls', () => {
+    const result = configSchema.parse(BASE_ENV);
+    expect(result.INGESTION_IDLE_TIMEOUT_MS).toBe(300_000);
+    expect(result.LEVEL_MAX_DURATION_MS).toBe(10_800_000);
+    expect(result.INGESTION_REQUEST_TIMEOUT_MS).toBe(3_600_000);
+  });
+
+  it('takes them from the environment', () => {
+    const result = configSchema.parse({ ...BASE_ENV, INGESTION_IDLE_TIMEOUT_MS: '120000', LEVEL_MAX_DURATION_MS: '7200000' });
+    expect(result.INGESTION_IDLE_TIMEOUT_MS).toBe(120_000);
+    expect(result.LEVEL_MAX_DURATION_MS).toBe(7_200_000);
+  });
+});

@@ -180,3 +180,25 @@ def test_a_model_that_takes_too_long_is_a_504_and_the_run_is_cancelled_so_it_ask
 def test_an_answer_that_is_not_the_expected_shape_is_a_502(monkeypatch) -> None:
     install(monkeypatch, lambda request: httpx.Response(200, json={"content": json.dumps({"nope": 1})}))
     assert client.post("/score-explain", json=BODY).status_code == 502
+
+
+def _record_request_timeouts(monkeypatch) -> list:
+    timeouts: list = []
+    real = httpx.Client
+
+    class Recording(real):
+        def __init__(self, *args, **kwargs):
+            timeouts.append(kwargs.get("timeout"))
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr("app.survey.orchestrator_llm_client.httpx.Client", Recording)
+    return timeouts
+
+
+def test_the_explanation_waits_up_to_two_minutes_and_its_model_call_ends_with_the_cap_instead_of_running_on(monkeypatch) -> None:
+    # The first real click took 97 s and got a 504 at 60 s; the model call then ran on for 37 s with its answer thrown away.
+    assert main.EXPLAIN_SECONDS == 120
+    timeouts = _record_request_timeouts(monkeypatch)
+    install(monkeypatch, Recorder())
+    assert client.post("/score-explain", json=BODY).status_code == 200
+    assert timeouts and set(timeouts) == {main.EXPLAIN_SECONDS + 5}

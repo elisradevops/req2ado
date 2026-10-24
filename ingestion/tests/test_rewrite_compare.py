@@ -9,6 +9,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 from app.kb.profile import build_profile
+from app import main
 from app.main import app
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 from tests.test_kb_profile import DOCS, FakeProfileClient
@@ -197,3 +198,18 @@ def test_a_prediction_within_the_cap_is_returned_as_before(monkeypatch) -> None:
     _patch(monkeypatch, lambda r: _scores(_entry(64, Testable=60), _entry(71, Testable=70)))
     monkeypatch.setattr("app.main.REWRITE_PREDICTION_SECONDS", 5)
     assert client.post("/rewrite/compare", json=BODY).json()["delta"] == 7
+
+
+def test_the_prediction_model_call_ends_with_the_cap_instead_of_running_on(monkeypatch) -> None:
+    timeouts: list = []
+    real = httpx.Client
+
+    class Recording(real):
+        def __init__(self, *args, **kwargs):
+            timeouts.append(kwargs.get("timeout"))
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr("app.survey.orchestrator_llm_client.httpx.Client", Recording)
+    _patch(monkeypatch, lambda r: _scores(_entry(64, Testable=60), _entry(71, Testable=70)))
+    assert client.post("/rewrite/compare", json=BODY).status_code == 200
+    assert timeouts and set(timeouts) == {main.REWRITE_PREDICTION_SECONDS + 5}

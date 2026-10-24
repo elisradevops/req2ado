@@ -88,7 +88,10 @@ import { BatchPumpService } from '../batch/batch-pump.service';
       provide: IngestionHttpClient,
       inject: [ConfigService],
       useFactory: (config: ConfigService) =>
-        new IngestionHttpClient(config.get<string>('INGESTION_BASE_URL')!, config.get<number>('INGESTION_REQUEST_TIMEOUT_MS')!),
+        new IngestionHttpClient(config.get<string>('INGESTION_BASE_URL')!, config.get<number>('INGESTION_REQUEST_TIMEOUT_MS')!, {
+          idleTimeoutMs: config.get<number>('INGESTION_IDLE_TIMEOUT_MS')!,
+          maxDurationMs: config.get<number>('LEVEL_MAX_DURATION_MS')!,
+        }),
     },
     {
       provide: JobsService,
