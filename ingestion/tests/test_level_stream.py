@@ -90,3 +90,34 @@ def test_an_existing_token_can_be_installed_as_the_scope_of_a_run() -> None:
                 job_cancel.raise_if_cancelled()
 
     asyncio.run(scenario())
+
+
+def test_a_stream_cancelled_while_waiting_cancels_the_run_too() -> None:
+    # The server ends a stream whose caller left by cancelling it at its await (not by closing it at a yield).
+    async def scenario():
+        token = job_cancel.CancelToken()
+        finished = asyncio.Event()
+
+        async def work() -> dict:
+            try:
+                await asyncio.sleep(30)
+            finally:
+                finished.set()
+            return {}
+
+        seen: list[dict] = []
+
+        async def consume():
+            async for raw in ndjson_stream(work, token, heartbeat_seconds=0.05, describe_failure=failure):
+                seen.append(json.loads(raw))
+
+        consumer = asyncio.ensure_future(consume())
+        await asyncio.sleep(0.2)
+        assert seen and seen[0]["type"] == "heartbeat"
+        consumer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await consumer
+        assert token.cancelled is True
+        await asyncio.wait_for(finished.wait(), timeout=2)
+
+    asyncio.run(scenario())
