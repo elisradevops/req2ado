@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import type { PrismaClient } from '@prisma/client';
 
 // A job's expensive output (the parsed document with its figure captions, and the leveled tree) is a function of the
@@ -36,6 +37,12 @@ export interface ResultKeyParts {
 const TTL_SECONDS = 30 * 24 * 60 * 60;
 const DEFAULT_MAX_BYTES = 40 * 1024 * 1024;
 
+// A leveled tree is 1-2 MB of repetitive JSON and Valkey holds it in memory: it is stored gzipped (base64, so the store stays a string
+// store). Entries written plain by earlier builds start with `{` and are still read.
+const GZIP_PREFIX = 'gz:';
+const encode = (json: string): string => GZIP_PREFIX + gzipSync(json).toString('base64');
+const decode = (raw: string): string => (raw.startsWith(GZIP_PREFIX) ? gunzipSync(Buffer.from(raw.slice(GZIP_PREFIX.length), 'base64')).toString('utf8') : raw);
+
 export class JobResultCache {
   constructor(
     private readonly store: ResultCacheStore,
@@ -58,7 +65,7 @@ export class JobResultCache {
     try {
       const raw = await this.store.get(key);
       if (!raw) return undefined;
-      const parsed = JSON.parse(raw) as CachedResult;
+      const parsed = JSON.parse(decode(raw)) as CachedResult;
       return parsed && typeof parsed === 'object' && 'tree' in parsed && 'doc' in parsed ? parsed : undefined;
     } catch {
       return undefined;
@@ -70,7 +77,7 @@ export class JobResultCache {
     try {
       const serialized = JSON.stringify(result);
       if (serialized.length > this.maxBytes) return;
-      await this.store.set(key, serialized, 'EX', TTL_SECONDS);
+      await this.store.set(key, encode(serialized), 'EX', TTL_SECONDS);
     } catch {
       /* a cache that cannot be written is just a cache that does not help */
     }

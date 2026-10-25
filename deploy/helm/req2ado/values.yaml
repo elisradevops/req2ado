@@ -93,8 +93,12 @@ postgres:
   storageClassName: nfs-client
 
 valkey:
+  # maxmemory sits below the container limit so a full Valkey answers writes with an error (noeviction: BullMQ queue keys must never be
+  # evicted) instead of being OOM-killed; the 1-2 MB cached results are stored gzipped.
+  maxmemory: 384mb
   resources:
     requests: { cpu: 100m, memory: 128Mi }
+    limits: { memory: 512Mi }
 
 # Single external entry point. NodePort is the default so nothing is
 # blocked on DNS/cert provisioning; flip to ClusterIP once the Ingress
