@@ -463,3 +463,48 @@ def test_vision_model_is_forwarded_to_the_vision_client_and_part_of_the_cache_ke
     assert seen_models == ["claude-opus-4-8", "other-model"]
     assert main_module._figure_caption_cache_key(b"x", "c", "a") != main_module._figure_caption_cache_key(b"x", "c", "b")
     assert main_module._figure_caption_cache_key(b"x", "c") == main_module._figure_caption_cache_key(b"x", "c", None)
+
+
+def test_figure_storage_under_concurrency_stores_every_figure_once_with_a_slow_first_store(monkeypatch) -> None:
+    # The deployment runs the pass at concurrency 3 with every caption cached, so the figure phase is storage. A slow first
+    # store must neither lose nor duplicate a figure, and later stores must overlap it rather than queue behind it.
+    import app.main as main_module
+
+    stored: list[str] = []
+    in_flight = 0
+    max_in_flight = 0
+    lock = threading.Lock()
+
+    class _SlowFirstStoreClient:
+        def store(self, job_id: str, figure_id: str, image_bytes: bytes, mime_type: str) -> None:
+            nonlocal in_flight, max_in_flight
+            with lock:
+                in_flight += 1
+                max_in_flight = max(max_in_flight, in_flight)
+            if figure_id == "f0":
+                time.sleep(0.3)
+            else:
+                time.sleep(0.02)
+            with lock:
+                in_flight -= 1
+                stored.append(figure_id)
+
+    class _Vision:
+        def describe_figure(self, image_bytes, mime_type=None, document_context=None, user_id=None):
+            return FigureVisionResult(significant=True, description="a real caption")
+
+    monkeypatch.setattr(main_module, "_vision_client", _Vision())
+    monkeypatch.setattr(main_module, "_figure_file_client", _SlowFirstStoreClient())
+    monkeypatch.setattr(main_module.settings, "vision_caption_concurrency", 3)
+
+    result = _upload(
+        MULTI_FIGURE_FIXTURE_NAME, FIXTURES / MULTI_FIGURE_FIXTURE_NAME, mode="survey",
+        job_id="job-store-concurrency", primer_context=f"store-concurrency-{uuid.uuid4()}",
+    )
+
+    figure_ids = [f["id"] for f in result["figures"]]
+    assert sorted(stored) == sorted(figure_ids)
+    assert len(stored) == len(set(stored))
+    assert result["failed_figure_storage_ids"] == []
+    assert max_in_flight > 1
+    assert max_in_flight <= 3
