@@ -16,6 +16,8 @@ export interface CachedResult {
   tree: unknown;
   /** Hash of the link-type catalog the tree's trace links were inferred against; a different catalog re-runs leveling. */
   catalogHash: string;
+  /** The job whose `/ingest` stored this document's figure images; a hit copies that job's rows to the new job. Absent on older entries. */
+  sourceJobId?: string;
 }
 
 export interface ResultKeyParts {

@@ -681,6 +681,12 @@ export async function runPipelineJob(
       cacheKey = keyFor(cacheScope?.profile ?? null);
       if (cacheKey !== null) {
         cached = await deps.resultCache.lookup(cacheKey);
+        // The images are not in the cache: they live per job in JobFigureFile. A hit gives this job its own copy of the source job's rows;
+        // when they cannot be had (an older entry, or the source job's rows were removed) the hit is a miss, not a result without images.
+        if (cached && ((cached.doc as { figures?: unknown[] } | null)?.figures ?? []).length > 0) {
+          const copied = await copyFigureRows(deps.prisma, cached.sourceJobId, job.id);
+          if (copied === 0) cached = undefined;
+        }
         // eslint-disable-next-line no-console -- worker process logging
         if (cached) console.info(`Job ${job.id}: reusing the stored result of an identical earlier job`);
       }
@@ -858,7 +864,7 @@ export async function runPipelineJob(
         if (deps.resultCache && cacheKey && !degraded) {
           // Under the rubric the job was scored with (an older ingestion that does not say: the scope read before the job).
           const storeKey = keyFor(scored.rubricVersion !== undefined ? scored.rubricVersion : (cacheScope?.profile ?? null));
-          if (storeKey) await deps.resultCache.save(storeKey, { doc, tree: levelResult, catalogHash });
+          if (storeKey) await deps.resultCache.save(storeKey, { doc, tree: levelResult, catalogHash, sourceJobId: job.id });
         }
       }
     } finally {
@@ -1299,4 +1305,19 @@ export async function runPipelineJob(
     await deps.jobEventsPublisher.publish(job.id, 'failed');
     throw error;
   }
+}
+
+const FIGURE_COPY_CHUNK = 20;
+
+/** Gives `targetJobId` its own copy of `sourceJobId`'s stored figure images; returns how many rows it now has (0: nothing to serve). */
+async function copyFigureRows(prisma: PipelineWorkerDeps['prisma'], sourceJobId: string | undefined, targetJobId: string): Promise<number> {
+  if (!sourceJobId) return 0;
+  const rows = await prisma.jobFigureFile.findMany({ where: { jobId: sourceJobId } });
+  for (let i = 0; i < rows.length; i += FIGURE_COPY_CHUNK) {
+    await prisma.jobFigureFile.createMany({
+      data: rows.slice(i, i + FIGURE_COPY_CHUNK).map((r) => ({ jobId: targetJobId, figureId: r.figureId, bytes: r.bytes, mimeType: r.mimeType })),
+      skipDuplicates: true, // a retried job copies again
+    });
+  }
+  return rows.length;
 }

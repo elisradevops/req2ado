@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { runPipelineJob } from '../src/modules/pipeline/pipeline.worker';
 
 import { JobResultCache } from '../src/modules/pipeline/result-cache';
@@ -1971,6 +1972,75 @@ describe('runPipelineJob', () => {
       expect(fakeIngestionClient.ingest).toHaveBeenCalledTimes(1);
       expect(fakeIngestionClient.level).toHaveBeenCalledTimes(1);
       expect(second).toEqual(first);
+    });
+
+    describe('figure images ride along with a cached result', () => {
+      const figureDoc = { blocks: [{ id: 'b0' }], figures: [{ id: 'f0', caption: 'a caption', caption_status: 'ok' }, { id: 'f1', caption: 'another', caption_status: 'ok' }] };
+      // An in-memory JobFigureFile table: /ingest of the first job wrote its rows, as ingestion's store call does.
+      const figureTable = (seed: { jobId: string; figureId: string; bytes: Buffer; mimeType: string }[]) => {
+        const rows = [...seed];
+        return {
+          rows,
+          deleteMany: jest.fn(),
+          findMany: jest.fn(async ({ where }: any) => rows.filter((r) => r.jobId === where.jobId)),
+          createMany: jest.fn(async ({ data }: any) => { rows.push(...data); return { count: data.length }; }),
+          findUnique: jest.fn(async ({ where }: any) => rows.find((r) => r.jobId === where.jobId_figureId.jobId && r.figureId === where.jobId_figureId.figureId) ?? null),
+        };
+      };
+      const withFigures = (cache: JobResultCache, table: ReturnType<typeof figureTable>) => {
+        const d = deps(cache);
+        return { ...d, prisma: { ...d.prisma, jobFigureFile: table } as any };
+      };
+      const seed = [
+        { jobId: 'job-1', figureId: 'f0', bytes: Buffer.from([1, 2, 3]), mimeType: 'image/png' },
+        { jobId: 'job-1', figureId: 'f1', bytes: Buffer.from([4, 5]), mimeType: 'image/jpeg' },
+      ];
+      beforeEach(() => fakeIngestionClient.ingest.mockResolvedValue(figureDoc));
+
+      it('a hit copies the source job figure rows to the new job, bytes and types intact, and the figure is then readable there', async () => {
+        const table = figureTable(seed);
+        const cache = new JobResultCache(cacheStore(), 'code-1');
+        await runPipelineJob(survey('job-1'), withFigures(cache, table));
+        await runPipelineJob(survey('job-2'), withFigures(cache, table));
+        expect(fakeIngestionClient.ingest).toHaveBeenCalledTimes(1);
+        const copied = table.rows.filter((r) => r.jobId === 'job-2');
+        expect(copied.map((r) => [r.figureId, [...r.bytes], r.mimeType])).toEqual([['f0', [1, 2, 3], 'image/png'], ['f1', [4, 5], 'image/jpeg']]);
+        expect(await table.findUnique({ where: { jobId_figureId: { jobId: 'job-2', figureId: 'f1' } } })).not.toBeNull();
+      });
+
+      it('a hit whose source job no longer has figure rows runs fully instead of serving a result with no images', async () => {
+        const table = figureTable(seed);
+        const cache = new JobResultCache(cacheStore(), 'code-1');
+        await runPipelineJob(survey('job-1'), withFigures(cache, table));
+        table.rows.length = 0; // retention removed the source job's figures
+        await runPipelineJob(survey('job-2'), withFigures(cache, table));
+        expect(fakeIngestionClient.ingest).toHaveBeenCalledTimes(2);
+        expect(fakeIngestionClient.level).toHaveBeenCalledTimes(2);
+      });
+
+      it('an entry stored before sourceJobId existed counts as a miss when its document has figures', async () => {
+        const table = figureTable(seed);
+        const store = cacheStore();
+        const cache = new JobResultCache(store, 'code-1');
+        await runPipelineJob(survey('job-1'), withFigures(cache, table));
+        const key = cache.keyFor({ fileHash: crypto.createHash('sha256').update('same file').digest('hex'), userId: 'user-1', model: 'claude-opus-4-8', mode: 'survey', kbVersion: 'no-kb', ingestionVersion: '0.3.15', profileVersion: 'p1' });
+        const stored = await cache.lookup(key);
+        expect(stored?.sourceJobId).toBe('job-1');
+        await cache.save(key, { ...stored!, sourceJobId: undefined });
+        await runPipelineJob(survey('job-2'), withFigures(cache, table));
+        expect(fakeIngestionClient.ingest).toHaveBeenCalledTimes(2);
+      });
+
+      it('a document without figures never touches the figure table', async () => {
+        fakeIngestionClient.ingest.mockResolvedValue({ blocks: [{ id: 'b0' }], figures: [] });
+        const table = figureTable([]);
+        const cache = new JobResultCache(cacheStore(), 'code-1');
+        await runPipelineJob(survey('job-1'), withFigures(cache, table));
+        await runPipelineJob(survey('job-2'), withFigures(cache, table));
+        expect(fakeIngestionClient.ingest).toHaveBeenCalledTimes(1);
+        expect(table.findMany).not.toHaveBeenCalled();
+        expect(table.createMany).not.toHaveBeenCalled();
+      });
     });
 
     it('a changed knowledge base, model or file runs the pipeline again', async () => {
