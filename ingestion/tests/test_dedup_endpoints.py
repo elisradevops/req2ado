@@ -512,3 +512,29 @@ def test_the_duplicate_check_retries_a_transient_embedding_failure_once(tmp_path
 
     main._embed_client._transport = httpx.MockTransport(flaky)
     assert client.post("/dedup/check", json=_CHECK_BODY).status_code == 200 and len(calls) == 2
+
+
+def test_a_slow_dedup_check_says_where_the_time_went(tmp_path, monkeypatch, caplog) -> None:
+    # The rerun of a cached job spent minutes in 558 of these and nothing said whether it was the embed, the store or the judge.
+    import logging
+
+    monkeypatch.setattr(main, "_vector_store", ChromaVectorStore(str(tmp_path)))
+    main._embed_client._transport = httpx.MockTransport(_mock_embed_handler)
+    monkeypatch.setattr(main, "_SLOW_DEDUP_CHECK_MS", 0)
+    body = {"text": "The unit shall survive a drop.", "title": "The unit shall survive a drop.", "area_path": "Project\\Area1", "job_id": "job-77"}
+    with caplog.at_level(logging.INFO, logger="app.main"):
+        assert client.post("/dedup/check", json=body).status_code == 200
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("dedup_check timing")]
+    assert len(lines) == 1
+    assert lines[0].startswith("dedup_check timing job=job-77 embed_ms=") and " query_ms=" in lines[0] and lines[0].endswith(" judge_ms=-")
+
+
+def test_a_fast_dedup_check_is_silent(tmp_path, monkeypatch, caplog) -> None:
+    import logging
+
+    monkeypatch.setattr(main, "_vector_store", ChromaVectorStore(str(tmp_path)))
+    main._embed_client._transport = httpx.MockTransport(_mock_embed_handler)
+    body = {"text": "The unit shall survive a drop.", "title": "The unit shall survive a drop.", "area_path": "Project\\Area1"}
+    with caplog.at_level(logging.INFO, logger="app.main"):
+        client.post("/dedup/check", json=body)
+    assert not [r for r in caplog.records if r.getMessage().startswith("dedup_check timing")]

@@ -2252,6 +2252,10 @@ async def enhance_items(body: EnhanceItemsRequest) -> EnhanceItemsResponse:
     return EnhanceItemsResponse(results=results, omitted=omitted)
 
 
+# A dedup check slower than this logs its embed / store / judge split.
+_SLOW_DEDUP_CHECK_MS = 500
+
+
 @app.post("/dedup/check", response_model=DuplicateCheckResult)
 def dedup_check(body: DedupCheckRequest) -> DuplicateCheckResult:
     # body.threshold is None when the caller didn't override it (the
@@ -2260,6 +2264,8 @@ def dedup_check(body: DedupCheckRequest) -> DuplicateCheckResult:
     # check_for_duplicates's own default (0.90) governs otherwise, exactly
     # as before this field existed.
     kwargs = {"threshold": body.threshold} if body.threshold is not None else {}
+    timings: dict[str, int] = {}
+    check_started = time.monotonic()
     result = _with_embedding_retry(
         lambda: check_for_duplicates(
             body.text,
@@ -2270,9 +2276,16 @@ def dedup_check(body: DedupCheckRequest) -> DuplicateCheckResult:
             vector_store=_vector_store,
             judge_client=_dedup_judge_client,
             user_id=body.user_id,
+            timings=timings,
             **kwargs,
         )
     )
+    total_ms = round((time.monotonic() - check_started) * 1000)
+    if total_ms >= _SLOW_DEDUP_CHECK_MS:  # a slow check says where its time went: embed, store or judge (counts only)
+        logger.info(
+            "dedup_check timing job=%s embed_ms=%s query_ms=%s judge_ms=%s", body.job_id or "-", timings.get("embed_ms", "-"),
+            timings.get("query_ms", "-"), timings.get("judge_ms", "-"),
+        )
     if body.job_id and result.is_duplicate and result.matched_text is not None:
         # Display only: a no-op unless LIVE_PROGRESS is on, and never raises.
         with live_emitter_scope(body.job_id, _narration_redis) as emitter:

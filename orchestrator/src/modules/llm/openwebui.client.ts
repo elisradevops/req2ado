@@ -536,15 +536,25 @@ export class OpenWebUiClient implements LlmClient {
     }
     // Same retry policy as the 'ollama' branch above -- a pure read with no
     // side effects, safe to re-run on a transient 429/5xx/network failure.
+    let attempts = 0;
+    const embedStartedAt = Date.now();
     const response = await fetchWithRetry(
-      () =>
-        fetch(`${this.openWebUiAppRoot()}/openai/embeddings`, {
+      () => {
+        attempts += 1;
+        return fetch(`${this.openWebUiAppRoot()}/openai/embeddings`, {
           method: 'POST',
           headers: this.nativeOllamaHeaders(),
           body: JSON.stringify({ model: opts?.model ?? this.config.EMBED_MODEL, input: flatChunks }),
-        }),
+        });
+      },
       { maxRetries: 3 },
     );
+    // A 429 backoff inside the retry is otherwise invisible: say when the upstream was slow or needed more than one attempt (counts only).
+    const embedMs = Date.now() - embedStartedAt;
+    if (attempts > 1 || embedMs > 1000) {
+      // eslint-disable-next-line no-console
+      console.info(`embed upstream ms=${embedMs} texts=${texts.length} attempts=${attempts}`);
+    }
     if (!response.ok) {
       let bodyText = '';
       try { bodyText = await response.text(); } catch { /* ignore read failure */ }
