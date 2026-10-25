@@ -204,6 +204,9 @@ class Settings(BaseSettings):
     # The profile's definitions, rules, terms and quality bar lead every prompt that writes an item's title or description
     # (KB_PROFILE_GENERATION=false removes them).
     kb_profile_generation: bool = True
+    # Chat shows the model each table of a description as read-only CSV behind a [[TABLE n]] marker and puts the stored table back into any
+    # proposal itself (the model never writes a table). Off: the model gets the raw description, as before.
+    chat_table_placeholders_enabled: bool = True
     # What a model is sent for a work item's description: plain text with every table as CSV (app.leveling.description_text). Off: the stored
     # HTML as it is. Part of /cache-scope, so results built one way are never served for the other.
     description_text_for_model_enabled: bool = True

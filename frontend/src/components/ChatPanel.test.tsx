@@ -212,6 +212,31 @@ describe('ChatPanel', () => {
     expect(onAcceptProposal).toHaveBeenCalledWith({ title: 'New title', description: undefined });
   });
 
+  it('shows a proposed description with a table as a real table, like the detail window does, not as markup text', async () => {
+    let capturedOnEvent: ((event: import('../hooks/useChatSocket').StreamEvent) => void) | undefined;
+    vi.mocked(useChatSocket).mockImplementation((_jobId, _localId, onEvent) => {
+      capturedOnEvent = onEvent;
+    });
+    render(
+      <ToastProvider>
+        <ChatPanel jobId="job-1" localId="n0" itemType="Epic" disabled={false} onAcceptProposal={vi.fn()} />
+      </ToastProvider>,
+    );
+    await screen.findByPlaceholderText(/ask the assistant/i);
+    act(() => {
+      capturedOnEvent?.({
+        type: 'done',
+        message: 'Here you go',
+        proposedTitle: null,
+        proposedDescription: 'The receiver shall use:\n\n<table><tr><th>Rail</th><th>V</th></tr><tr><td>VDD</td><td>3.3</td></tr></table>',
+        model: 'llama3.1',
+      });
+    });
+    expect(await screen.findByRole('table')).toBeInTheDocument();
+    expect(screen.getByText('VDD')).toBeInTheDocument();
+    expect(screen.queryByText(/<table/)).not.toBeInTheDocument();
+  });
+
   describe('the category a rewrite is aimed at', () => {
     const renderWithProposal = async (categoryScores?: Record<string, number> | null) => {
       let capturedOnEvent: ((event: import('../hooks/useChatSocket').StreamEvent) => void) | undefined;
