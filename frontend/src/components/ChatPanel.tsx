@@ -568,7 +568,7 @@ export function ChatPanel({
       {proposal && (
         <Card className="mb-2 p-2">
           <p className="text-xs">Proposed change</p>
-          {targetCategory && (
+          {targetCategory && proposal.proposedDescription && (
             <p className="text-xs text-ink-3">
               Aimed at: {targetCategory.name} ({targetCategory.score})
             </p>
