@@ -5,6 +5,8 @@ here reads the source document, which is not kept after a job. Every part is cap
 looks like, and the tail (figures, tables) is what gives way first."""
 from __future__ import annotations
 
+from app.leveling.description_text import description_for_model
+
 MAX_CONTEXT_CHARS = 3_000
 _PARENT_DESCRIPTION_CHARS = 400
 _MAX_SIBLINGS = 12
@@ -36,7 +38,7 @@ def render_context_pack(context: dict | None) -> str | None:
         if not title:
             continue
         kind = _clip(parent.get("type"), 20) or "Parent"
-        description = _clip(parent.get("description"), _PARENT_DESCRIPTION_CHARS)
+        description = _clip(description_for_model(parent.get("description")), _PARENT_DESCRIPTION_CHARS)
         lines.append(f"{kind}: {title}" + (f" -- {description}" if description else ""))
     siblings = [t for t in (_clip(s.get("title"), _TITLE_CHARS) for s in _dicts(context.get("siblings"))) if t][:_MAX_SIBLINGS]
     if siblings:
