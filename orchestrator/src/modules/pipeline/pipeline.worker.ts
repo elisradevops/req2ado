@@ -3,6 +3,7 @@ import { JobResultCache, hashCatalog, isDegradedResult, kbVersionFor, type Cache
 import crypto from 'crypto';
 import type { PrismaClient } from '@prisma/client';
 import type { IngestionHttpClient } from './ingestion-http.client';
+import type { CanonicalDoc } from '@req2ado/shared-ts';
 import type { OpenWebUiClientFactory } from '../llm/openwebui-client.factory';
 import { resolveCrossJobTraceLinks, verifyExistingAdoIdsStillExist, type WarningRecord } from '../writeback/dry-run.service';
 import type { DryRunService, DryRunTreeNode } from '../writeback/dry-run.service';
@@ -702,7 +703,18 @@ export async function runPipelineJob(
           }
         }
         // eslint-disable-next-line no-console -- worker process logging
-        if (cached) console.info(`Job ${job.id}: reusing the stored result of an identical earlier job`);
+        if (cached) {
+          console.info(`Job ${job.id}: reusing the stored result of an identical earlier job`);
+          // Ingestion writes the run map during /ingest, which this job skips: have it published from the cached document.
+          if (deps.progressService) {
+            try {
+              await deps.ingestionClient.publishDocumentMap?.(cached.doc as CanonicalDoc, job.id);
+            } catch (error) {
+              // eslint-disable-next-line no-console -- worker process logging
+              console.error(`Run map for job ${job.id} could not be published (the job proceeds without it):`, error);
+            }
+          }
+        }
         // eslint-disable-next-line no-console -- worker process logging
         else if (!missLogged) console.info(`Job ${job.id}: no stored result for these inputs, running in full`);
       } else {

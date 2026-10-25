@@ -2141,6 +2141,40 @@ describe('runPipelineJob', () => {
       });
     });
 
+    describe('the run map of a job served from the cache', () => {
+      const progressService = { track: jest.fn().mockResolvedValue(undefined), record: jest.fn(), finish: jest.fn() };
+      const withMap = (cache: JobResultCache, publishDocumentMap: jest.Mock, extra: object = { progressService }) => ({
+        ...deps(cache),
+        ...extra,
+        ingestionClient: { ...fakeIngestionClient, publishDocumentMap } as any,
+      });
+
+      it('a hit asks ingestion to publish the map from the cached document, for the new job', async () => {
+        const publish = jest.fn().mockResolvedValue(true);
+        const cache = new JobResultCache(cacheStore(), 'code-1');
+        await runPipelineJob(survey('job-1'), withMap(cache, publish));
+        expect(publish).not.toHaveBeenCalled(); // a full run: /ingest publishes it itself
+        await runPipelineJob(survey('job-2'), withMap(cache, publish));
+        expect(publish).toHaveBeenCalledTimes(1);
+        expect(publish).toHaveBeenCalledWith(expect.objectContaining({ blocks: [{ id: 'b0' }] }), 'job-2');
+      });
+
+      it('without live progress configured, nothing is published', async () => {
+        const publish = jest.fn().mockResolvedValue(true);
+        const cache = new JobResultCache(cacheStore(), 'code-1');
+        await runPipelineJob(survey('job-1'), withMap(cache, publish, {}));
+        await runPipelineJob(survey('job-2'), withMap(cache, publish, {}));
+        expect(publish).not.toHaveBeenCalled();
+      });
+
+      it('a failing publish never fails the job', async () => {
+        const publish = jest.fn().mockRejectedValue(new Error('ingestion down'));
+        const cache = new JobResultCache(cacheStore(), 'code-1');
+        await runPipelineJob(survey('job-1'), withMap(cache, publish));
+        await expect(runPipelineJob(survey('job-2'), withMap(cache, publish))).resolves.toBeDefined();
+      });
+    });
+
     it('a changed knowledge base, model or file runs the pipeline again', async () => {
       const cache = new JobResultCache(cacheStore(), 'code-1');
       await runPipelineJob(survey('job-1'), deps(cache, [{ id: 'd1', ingestedAt: new Date('2026-10-01') }]));

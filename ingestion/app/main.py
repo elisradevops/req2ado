@@ -1539,7 +1539,21 @@ async def ingest(
 
     if redact:
         doc = await run_in_threadpool(redact_canonical_doc, doc)
+    # The running screen's "what is in your document" map exists from here on, not only once /level starts (minutes later). Same
+    # build /level does (it overwrites this with an identical map); observation only, a no-op unless live progress is on.
+    if settings.live_progress and job_id is not None:
+        await run_in_threadpool(publish_document_map, _narration_redis, job_id, doc)
     return doc
+
+
+@app.post("/document-map")
+async def document_map(doc: CanonicalDoc, job_id: str) -> dict[str, bool]:
+    """Publishes the run map of `job_id` from a given document, without ingesting or leveling it: a job served from the result cache
+    skips both, so the orchestrator hands the cached document here. No model call; a no-op (published: false) unless live
+    progress is on."""
+    if not settings.live_progress:
+        return {"published": False}
+    return {"published": await run_in_threadpool(publish_document_map, _narration_redis, job_id, doc)}
 
 
 _VISION_SKIP_EXPLANATIONS = {
