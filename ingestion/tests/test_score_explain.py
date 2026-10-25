@@ -202,3 +202,28 @@ def test_the_explanation_waits_up_to_two_minutes_and_its_model_call_ends_with_th
     install(monkeypatch, Recorder())
     assert client.post("/score-explain", json=BODY).status_code == 200
     assert timeouts and set(timeouts) == {main.EXPLAIN_SECONDS + 5}
+
+
+def test_the_model_must_name_the_items_language_before_writing_reasons_and_is_told_to_use_it(monkeypatch) -> None:
+    # Opus answered an English item in Spanish in 5 of 6 replays although the prompt said "write in the language of the item":
+    # a one-line instruction in a long prompt is easy to lose. The answer now has to START with the language the item is written in
+    # (the model commits to it before writing a reason), the request repeats it, and the prompt ties every reason to it.
+    recorder = Recorder()
+    install(monkeypatch, recorder)
+    client.post("/score-explain", json=BODY)
+    call = recorder.calls[0]
+    schema = call["responseSchema"]["schema"]
+    assert list(schema["properties"])[0] == "language"
+    assert schema["required"][0] == "language"
+    user = json.loads(call["messages"][1]["content"])
+    assert "language" in user["reasons_language"].lower() and "description" in user["reasons_language"].lower()
+    system = call["messages"][0]["content"]
+    assert '"language"' in system and "every reason" in system.lower()
+
+
+def test_an_answer_without_the_language_field_is_still_accepted(monkeypatch) -> None:
+    # The field steers the model; a model that leaves it out must not turn a usable explanation into a 502.
+    recorder = Recorder()
+    install(monkeypatch, recorder)
+    response = client.post("/score-explain", json=BODY)
+    assert response.status_code == 200
