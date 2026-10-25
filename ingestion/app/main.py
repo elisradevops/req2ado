@@ -44,6 +44,7 @@ from app.kb.explain import basis_for, choose_categories, describe_categories
 from app.kb.rubric import RubricOverrides, apply_overrides, rubric_view, validate_overrides
 from app.kb.profile import ChromaProfileStore, KbProfile, ensure_profile, render_authoring_standard, scoring_inputs
 from app.kb.retrieval import retrieve_context
+from app.leveling.description_text import description_for_model
 from app.leveling.document_map import publish_document_map
 from app.leveling.live_context import live_emitter_scope, ocr_progress_callback
 from app.leveling.id_hierarchy import rows_from_table
@@ -1882,7 +1883,7 @@ async def _rescoring_kb_context(user_id: str | None, text: str) -> str | None:
         if context:
             return context
     # Blocking embed + vector-store calls: off the event loop, like every other blocking call here (a blocked loop fails /health).
-    kb_context, _ = await run_in_threadpool(retrieve_context, user_id, text, _embed_client, _kb_vector_store)
+    kb_context, _ = await run_in_threadpool(retrieve_context, user_id, description_for_model(text), _embed_client, _kb_vector_store)
     return kb_context
 
 
@@ -2050,7 +2051,7 @@ async def score_explain(body: ScoreExplainRequest) -> dict:
         settings.orchestrator_url, settings.llm_proxy_bearer, model=body.model, num_ctx=num_ctx, top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
     )
     client.request_timeout_seconds = EXPLAIN_SECONDS + CAPPED_CALL_GRACE_SECONDS
-    item = {"type": body.type or "Requirement", "title": body.title or "", "description": body.description}
+    item = {"type": body.type or "Requirement", "title": body.title or "", "description": description_for_model(body.description)}
 
     def _explain() -> list[dict]:
         return client.explain_category_scores(item, render_context_pack(body.context), described, basis, user_id=body.user_id)
@@ -2417,7 +2418,10 @@ async def cache_scope(
     The user comes in the header (the old query form still works for one release): identity does not travel in URLs."""
     user = resolve_user_id(user_id, x_user_id)
     profile = await run_in_threadpool(_stored_profile_or_none, user) if user else None
-    return {"ingestion": _ingestion_version(), "profile": profile.version if profile is not None else None}
+    version = _ingestion_version()
+    if version is not None and not settings.description_text_for_model_enabled:
+        version = f"{version}+html"  # results built from the stored HTML are not the ones built from its text form
+    return {"ingestion": version, "profile": profile.version if profile is not None else None}
 
 
 class RubricPinBody(BaseModel):

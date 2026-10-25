@@ -204,6 +204,9 @@ class Settings(BaseSettings):
     # The profile's definitions, rules, terms and quality bar lead every prompt that writes an item's title or description
     # (KB_PROFILE_GENERATION=false removes them).
     kb_profile_generation: bool = True
+    # What a model is sent for a work item's description: plain text with every table as CSV (app.leveling.description_text). Off: the stored
+    # HTML as it is. Part of /cache-scope, so results built one way are never served for the other.
+    description_text_for_model_enabled: bool = True
     # The model that reads the KB documents into the profile. Empty: the model of the job that first needs it, and from then
     # on the model that built the stored profile, so two models alternating on one KB never rebuild it back and forth.
     kb_profile_model: str = ""

@@ -227,3 +227,13 @@ def test_an_answer_without_the_language_field_is_still_accepted(monkeypatch) -> 
     install(monkeypatch, recorder)
     response = client.post("/score-explain", json=BODY)
     assert response.status_code == 200
+
+
+def test_the_explanation_reads_the_text_form_of_the_description_like_the_score_did(monkeypatch) -> None:
+    # A table is stored as HTML; the score was judged on its CSV text form, so the reasons are written from the same text.
+    recorder = Recorder()
+    install(monkeypatch, recorder)
+    html = "The receiver shall use:\n\n<table><tr><th>Rail</th><th>V</th></tr><tr><td>VDD</td><td>3.3</td></tr></table>"
+    client.post("/score-explain", json={**BODY, "description": html})
+    user = json.loads(recorder.calls[0]["messages"][1]["content"])
+    assert user["item"]["description"] == "The receiver shall use:\n\nTable (CSV):\nRail,V\nVDD,3.3"
