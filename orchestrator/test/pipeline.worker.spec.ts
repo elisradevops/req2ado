@@ -1981,7 +1981,12 @@ describe('runPipelineJob', () => {
         const rows = [...seed];
         return {
           rows,
-          deleteMany: jest.fn(),
+          // The worker's prune step: delete this job's rows whose figure is not in `notIn`.
+          deleteMany: jest.fn(async ({ where }: any) => {
+            for (let i = rows.length - 1; i >= 0; i -= 1) {
+              if (rows[i].jobId === where.jobId && !(where.figureId?.notIn ?? []).includes(rows[i].figureId)) rows.splice(i, 1);
+            }
+          }),
           findMany: jest.fn(async ({ where }: any) => rows.filter((r) => r.jobId === where.jobId)),
           createMany: jest.fn(async ({ data }: any) => { rows.push(...data); return { count: data.length }; }),
           findUnique: jest.fn(async ({ where }: any) => rows.find((r) => r.jobId === where.jobId_figureId.jobId && r.figureId === where.jobId_figureId.figureId) ?? null),
@@ -2027,6 +2032,50 @@ describe('runPipelineJob', () => {
         const stored = await cache.lookup(key);
         expect(stored?.sourceJobId).toBe('job-1');
         await cache.save(key, { ...stored!, sourceJobId: undefined });
+        await runPipelineJob(survey('job-2'), withFigures(cache, table));
+        expect(fakeIngestionClient.ingest).toHaveBeenCalledTimes(2);
+      });
+
+      it('a source job that lost some of the figures its tree needs (attached and deleted by confirm) is a miss, not a partial copy', async () => {
+        const table = figureTable(seed);
+        const cache = new JobResultCache(cacheStore(), 'code-1');
+        await runPipelineJob(survey('job-1'), withFigures(cache, table));
+        table.rows.splice(table.rows.findIndex((r) => r.jobId === 'job-1' && r.figureId === 'f1'), 1);
+        await runPipelineJob(survey('job-2'), withFigures(cache, table));
+        expect(fakeIngestionClient.ingest).toHaveBeenCalledTimes(2);
+        expect(fakeIngestionClient.level).toHaveBeenCalledTimes(2);
+      });
+
+      it('figures the first job pruned as unreferenced are not needed: the hit copies what the tree uses and still hits', async () => {
+        fakeIngestionClient.ingest.mockResolvedValue({ blocks: [], figures: [{ id: 'f0', caption: 'c', caption_status: 'ok' }, { id: 'f1', caption: null, caption_status: 'insignificant' }] });
+        const table = figureTable(seed);
+        const cache = new JobResultCache(cacheStore(), 'code-1');
+        await runPipelineJob(survey('job-1'), withFigures(cache, table));
+        expect(table.rows.filter((r) => r.jobId === 'job-1').map((r) => r.figureId)).toEqual(['f0']);
+        await runPipelineJob(survey('job-2'), withFigures(cache, table));
+        expect(fakeIngestionClient.ingest).toHaveBeenCalledTimes(1);
+        expect(table.rows.filter((r) => r.jobId === 'job-2').map((r) => r.figureId)).toEqual(['f0']);
+      });
+
+      it('a document whose figures never stored a row (nothing to serve) still hits the cache', async () => {
+        fakeIngestionClient.ingest.mockResolvedValue({ blocks: [], figures: [{ id: 'f0', caption: null, caption_status: 'insignificant' }], failed_figure_storage_ids: ['f0'] });
+        const table = figureTable([]);
+        const cache = new JobResultCache(cacheStore(), 'code-1');
+        await runPipelineJob(survey('job-1'), withFigures(cache, table));
+        await runPipelineJob(survey('job-2'), withFigures(cache, table));
+        expect(fakeIngestionClient.ingest).toHaveBeenCalledTimes(1);
+        expect(fakeIngestionClient.level).toHaveBeenCalledTimes(1);
+      });
+
+      it('an entry that does not say which figures it needs counts as a miss when its document has figures', async () => {
+        const table = figureTable(seed);
+        const store = cacheStore();
+        const cache = new JobResultCache(store, 'code-1');
+        await runPipelineJob(survey('job-1'), withFigures(cache, table));
+        const key = cache.keyFor({ fileHash: crypto.createHash('sha256').update('same file').digest('hex'), userId: 'user-1', model: 'claude-opus-4-8', mode: 'survey', kbVersion: 'no-kb', ingestionVersion: '0.3.15', profileVersion: 'p1' });
+        const stored = await cache.lookup(key);
+        expect(stored?.figureIds).toEqual(['f0', 'f1']);
+        await cache.save(key, { ...stored!, figureIds: undefined });
         await runPipelineJob(survey('job-2'), withFigures(cache, table));
         expect(fakeIngestionClient.ingest).toHaveBeenCalledTimes(2);
       });
@@ -2088,7 +2137,7 @@ describe('runPipelineJob', () => {
         expect(lines()).toContain('Job job-2: copied 1 figure rows from job job-1');
         rows.length = 0;
         await runPipelineJob(survey('job-3'), withTable);
-        expect(lines()).toContain('Job job-3: stored result has figures but no figure rows to copy, running in full');
+        expect(lines()).toContain('Job job-3: the figure rows the stored result needs are no longer available, running in full');
       });
     });
 

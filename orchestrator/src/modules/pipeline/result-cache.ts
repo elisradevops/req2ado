@@ -19,6 +19,9 @@ export interface CachedResult {
   catalogHash: string;
   /** The job whose `/ingest` stored this document's figure images; a hit copies that job's rows to the new job. Absent on older entries. */
   sourceJobId?: string;
+  /** The figures a hit must be able to serve: those the source job kept after its prune step (referenced by its tree) and has a stored
+   *  image for. Written once the source job has pruned; absent (or the entry from before this field) means "cannot be verified". */
+  figureIds?: string[];
 }
 
 export interface ResultKeyParts {
