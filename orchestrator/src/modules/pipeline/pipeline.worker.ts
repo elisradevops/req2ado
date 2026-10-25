@@ -473,6 +473,8 @@ export async function runPipelineJob(
     // failure-prone stage) still records what it ran under, and a later
     // resubmit() has something real to read.
     const model = job.model ?? (await resolveDefaultChatModel(job, deps));
+    // eslint-disable-next-line no-console -- worker process logging
+    console.info(`Job ${job.id}: started (mode ${job.mode}, model ${model})`);
     // Real lifecycle: 'pending' (set on submit) -> 'running' (here) ->
     // 'diff_ready'/'failed'. Without this write the Job row sits at
     // 'pending' for the entire worker run, so the frontend's
@@ -685,10 +687,22 @@ export async function runPipelineJob(
         // when they cannot be had (an older entry, or the source job's rows were removed) the hit is a miss, not a result without images.
         if (cached && ((cached.doc as { figures?: unknown[] } | null)?.figures ?? []).length > 0) {
           const copied = await copyFigureRows(deps.prisma, cached.sourceJobId, job.id);
-          if (copied === 0) cached = undefined;
+          if (copied === 0) {
+            cached = undefined;
+            // eslint-disable-next-line no-console -- worker process logging
+            console.info(`Job ${job.id}: stored result has figures but no figure rows to copy, running in full`);
+          } else {
+            // eslint-disable-next-line no-console -- worker process logging
+            console.info(`Job ${job.id}: copied ${copied} figure rows from job ${cached.sourceJobId}`);
+          }
         }
         // eslint-disable-next-line no-console -- worker process logging
         if (cached) console.info(`Job ${job.id}: reusing the stored result of an identical earlier job`);
+        // eslint-disable-next-line no-console -- worker process logging
+        else console.info(`Job ${job.id}: no stored result for these inputs, running in full`);
+      } else {
+        // eslint-disable-next-line no-console -- worker process logging
+        console.info(`Job ${job.id}: result cache not consulted (knowledge base or ingestion scope unreadable), running in full`);
       }
     }
     const [doc] = await Promise.all([
@@ -855,9 +869,14 @@ export async function runPipelineJob(
       } else {
         // Only when the result cache is in use is the rubric the job was scored with needed (the out parameter): every other call keeps its shape.
         const scored: { rubricVersion?: string | null; degraded?: boolean } = {};
+        const levelStartedAt = Date.now();
+        // eslint-disable-next-line no-console -- worker process logging
+        console.info(`Job ${job.id}: /level started`);
         levelResult = await deps.ingestionClient.level(
           doc, job.mode, job.userId ?? undefined, linkTypeCatalog, model, job.id, primerContext, ...(deps.resultCache ? [scored] : []),
         );
+        // eslint-disable-next-line no-console -- worker process logging
+        console.info(`Job ${job.id}: /level finished in ${Date.now() - levelStartedAt} ms, ${(levelResult as { nodes?: unknown[] })?.nodes?.length ?? 0} nodes`);
         const leveled = levelResult as { warnings?: { kind: string }[] };
         const degraded =
           primerWarnings.length > 0 || scored.degraded === true || isDegradedResult(leveled?.warnings, doc.figures as { caption_status?: string }[] | undefined);

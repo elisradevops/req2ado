@@ -2043,6 +2043,55 @@ describe('runPipelineJob', () => {
       });
     });
 
+    describe('the worker leaves a trace in the log', () => {
+      let info: jest.SpyInstance;
+      beforeEach(() => { info = jest.spyOn(console, 'info').mockImplementation(() => undefined); });
+      afterEach(() => info.mockRestore());
+      const lines = () => info.mock.calls.map((c) => String(c[0]));
+      const figureTable = (rows: any[]) => ({
+        deleteMany: jest.fn(),
+        findMany: jest.fn(async ({ where }: any) => rows.filter((r) => r.jobId === where.jobId)),
+        createMany: jest.fn(async ({ data }: any) => { rows.push(...data); return { count: data.length }; }),
+      });
+
+      it('logs the job start with its mode and model, and the /level start and finish with duration and node count', async () => {
+        const cache = new JobResultCache(cacheStore(), 'code-1');
+        await runPipelineJob(survey('job-1'), deps(cache));
+        expect(lines()).toContain('Job job-1: started (mode survey, model claude-opus-4-8)');
+        expect(lines()).toContain('Job job-1: /level started');
+        expect(lines().find((l) => l.startsWith('Job job-1: /level finished'))).toMatch(/^Job job-1: \/level finished in \d+ ms, 1 nodes$/);
+      });
+
+      it('logs why a job missed the cache, and that it hit it', async () => {
+        const cache = new JobResultCache(cacheStore(), 'code-1');
+        await runPipelineJob(survey('job-1'), deps(cache));
+        expect(lines()).toContain('Job job-1: no stored result for these inputs, running in full');
+        await runPipelineJob(survey('job-2'), deps(cache));
+        expect(lines()).toContain('Job job-2: reusing the stored result of an identical earlier job');
+        expect(lines().some((l) => l.startsWith('Job job-2: /level'))).toBe(false);
+      });
+
+      it('logs that the cache was not consulted when the ingestion scope cannot be read', async () => {
+        fakeIngestionClient.cacheScope.mockResolvedValue(null);
+        await runPipelineJob(survey('job-1'), deps(new JobResultCache(cacheStore(), 'code-1')));
+        expect(lines()).toContain('Job job-1: result cache not consulted (knowledge base or ingestion scope unreadable), running in full');
+      });
+
+      it('logs the figure rows copied on a hit, and a hit turned into a miss because the source figures are gone', async () => {
+        const rows: any[] = [{ jobId: 'job-1', figureId: 'f0', bytes: Buffer.from([1]), mimeType: 'image/png' }];
+        fakeIngestionClient.ingest.mockResolvedValue({ blocks: [], figures: [{ id: 'f0', caption: 'c', caption_status: 'ok' }] });
+        const cache = new JobResultCache(cacheStore(), 'code-1');
+        const d = deps(cache);
+        const withTable = { ...d, prisma: { ...d.prisma, jobFigureFile: figureTable(rows) } as any };
+        await runPipelineJob(survey('job-1'), withTable);
+        await runPipelineJob(survey('job-2'), withTable);
+        expect(lines()).toContain('Job job-2: copied 1 figure rows from job job-1');
+        rows.length = 0;
+        await runPipelineJob(survey('job-3'), withTable);
+        expect(lines()).toContain('Job job-3: stored result has figures but no figure rows to copy, running in full');
+      });
+    });
+
     it('a changed knowledge base, model or file runs the pipeline again', async () => {
       const cache = new JobResultCache(cacheStore(), 'code-1');
       await runPipelineJob(survey('job-1'), deps(cache, [{ id: 'd1', ingestedAt: new Date('2026-10-01') }]));
