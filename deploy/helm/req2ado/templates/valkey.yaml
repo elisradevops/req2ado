@@ -44,7 +44,7 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.secrets.appSecretsName }}
                   key: VALKEY_PASSWORD
-          command: ["valkey-server", "--requirepass", "$(VALKEY_PASSWORD)"]
+          command: ["valkey-server", "--requirepass", "$(VALKEY_PASSWORD)", "--maxmemory", {{ .Values.valkey.maxmemory | quote }}, "--maxmemory-policy", "noeviction"]
           ports:
             - containerPort: 6379
           livenessProbe:

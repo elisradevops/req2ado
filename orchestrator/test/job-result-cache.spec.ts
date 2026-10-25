@@ -63,6 +63,37 @@ describe('JobResultCache', () => {
     expect(await off.lookup(off.keyFor(parts))).toBeUndefined();
   });
 
+  it('stores the result compressed and reads it back identical', async () => {
+    const store = memoryStore();
+    const cache = new JobResultCache(store, 'c');
+    const big = {
+      doc: { blocks: Array.from({ length: 800 }, (_, i) => ({ id: `b${i}`, text: `Requirement ${i}: the system shall process request number ${i} within the agreed time and report the outcome.` })) },
+      tree: { nodes: Array.from({ length: 560 }, (_, i) => ({ local_id: `n${i}`, title: `Item ${i}`, description: `The component shall support behaviour ${i} under the stated conditions.`, trace_links: [] })) },
+      catalogHash: 'c1',
+      sourceJobId: 'job-1',
+    };
+    await cache.save(cache.keyFor(parts), big);
+    const stored = store.data.get(cache.keyFor(parts)) as string;
+    expect(stored.length).toBeLessThan(JSON.stringify(big).length / 4);
+    expect(await cache.lookup(cache.keyFor(parts))).toEqual(big);
+  });
+
+  it('still reads an entry stored plain by an earlier build', async () => {
+    const store = memoryStore();
+    const cache = new JobResultCache(store, 'c');
+    store.data.set(cache.keyFor(parts), JSON.stringify(result));
+    expect(await cache.lookup(cache.keyFor(parts))).toEqual(result);
+  });
+
+  it('treats a truncated compressed entry as a miss', async () => {
+    const store = memoryStore();
+    const cache = new JobResultCache(store, 'c');
+    await cache.save(cache.keyFor(parts), result);
+    const stored = store.data.get(cache.keyFor(parts)) as string;
+    store.data.set(cache.keyFor(parts), stored.slice(0, stored.length - 12));
+    expect(await cache.lookup(cache.keyFor(parts))).toBeUndefined();
+  });
+
   it('does not store an enormous result', async () => {
     const store = memoryStore();
     const cache = new JobResultCache(store, 'c', true, 1000);

@@ -93,8 +93,12 @@ postgres:
   storageClassName: nfs-client
 
 valkey:
+  # maxmemory sits below the container limit so a full Valkey answers writes with an error (noeviction: BullMQ queue keys must never be
+  # evicted) instead of being OOM-killed; the 1-2 MB cached results are stored gzipped.
+  maxmemory: 384mb
   resources:
     requests: { cpu: 100m, memory: 128Mi }
+    limits: { memory: 512Mi }
 
 # Single external entry point. NodePort is the default so nothing is
 # blocked on DNS/cert provisioning; flip to ClusterIP once the Ingress
@@ -220,6 +224,9 @@ config:
   # Scoring, titles, synthesis and summaries run up to 3 chunks at once (they were one after another; the proxy holds some calls for
   # a minute, so a job took an hour). Output order does not depend on it. 1 restores the sequential run.
   SURVEY_CHUNK_CONCURRENCY: "3"
+  # Figures are captioned/stored up to 3 at once (one after another, a document with 36 figures spent ~10 minutes there even with every
+  # caption cached). Document order is kept. More than a few vision 429s in one job: set 2. 1 restores the sequential run.
+  VISION_CAPTION_CONCURRENCY: "3"
   VISION_REQUEST_TIMEOUT_SECONDS: "590"
   # CORS_ORIGIN deliberately omitted -- the web container's nginx is now
   # the frontend's only origin, proxying /api/ to the orchestrator

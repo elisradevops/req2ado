@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import type { PrismaClient } from '@prisma/client';
 
 // A job's expensive output (the parsed document with its figure captions, and the leveled tree) is a function of the
@@ -16,6 +17,11 @@ export interface CachedResult {
   tree: unknown;
   /** Hash of the link-type catalog the tree's trace links were inferred against; a different catalog re-runs leveling. */
   catalogHash: string;
+  /** The job whose `/ingest` stored this document's figure images; a hit copies that job's rows to the new job. Absent on older entries. */
+  sourceJobId?: string;
+  /** The figures a hit must be able to serve: those the source job kept after its prune step (referenced by its tree) and has a stored
+   *  image for. Written once the source job has pruned; absent (or the entry from before this field) means "cannot be verified". */
+  figureIds?: string[];
 }
 
 export interface ResultKeyParts {
@@ -33,6 +39,12 @@ export interface ResultKeyParts {
 
 const TTL_SECONDS = 30 * 24 * 60 * 60;
 const DEFAULT_MAX_BYTES = 40 * 1024 * 1024;
+
+// A leveled tree is 1-2 MB of repetitive JSON and Valkey holds it in memory: it is stored gzipped (base64, so the store stays a string
+// store). Entries written plain by earlier builds start with `{` and are still read.
+const GZIP_PREFIX = 'gz:';
+const encode = (json: string): string => GZIP_PREFIX + gzipSync(json).toString('base64');
+const decode = (raw: string): string => (raw.startsWith(GZIP_PREFIX) ? gunzipSync(Buffer.from(raw.slice(GZIP_PREFIX.length), 'base64')).toString('utf8') : raw);
 
 export class JobResultCache {
   constructor(
@@ -56,7 +68,7 @@ export class JobResultCache {
     try {
       const raw = await this.store.get(key);
       if (!raw) return undefined;
-      const parsed = JSON.parse(raw) as CachedResult;
+      const parsed = JSON.parse(decode(raw)) as CachedResult;
       return parsed && typeof parsed === 'object' && 'tree' in parsed && 'doc' in parsed ? parsed : undefined;
     } catch {
       return undefined;
@@ -68,7 +80,7 @@ export class JobResultCache {
     try {
       const serialized = JSON.stringify(result);
       if (serialized.length > this.maxBytes) return;
-      await this.store.set(key, serialized, 'EX', TTL_SECONDS);
+      await this.store.set(key, encode(serialized), 'EX', TTL_SECONDS);
     } catch {
       /* a cache that cannot be written is just a cache that does not help */
     }

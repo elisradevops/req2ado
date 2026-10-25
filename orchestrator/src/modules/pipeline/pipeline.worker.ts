@@ -473,6 +473,8 @@ export async function runPipelineJob(
     // failure-prone stage) still records what it ran under, and a later
     // resubmit() has something real to read.
     const model = job.model ?? (await resolveDefaultChatModel(job, deps));
+    // eslint-disable-next-line no-console -- worker process logging
+    console.info(`Job ${job.id}: started (mode ${job.mode}, model ${model})`);
     // Real lifecycle: 'pending' (set on submit) -> 'running' (here) ->
     // 'diff_ready'/'failed'. Without this write the Job row sits at
     // 'pending' for the entire worker run, so the frontend's
@@ -658,6 +660,9 @@ export async function runPipelineJob(
     // stored: reuse them instead of asking the models again, so the result is identical. Any problem reading it is a miss.
     let cacheKey: string | null = null;
     let cached: CachedResult | undefined;
+    let missLogged = false;
+    // What this job stored in the result cache, so that once it has pruned its figures it can say which ones a hit needs.
+    let savedEntry: { key: string; result: CachedResult } | null = null;
     // What the stored result depends on, besides the file: the KB documents, the ingestion build and the rubric (the KB profile with the user's
     // pins). Read once before the lookup; the result is STORED under the rubric ingestion reports it was scored with, which can differ from
     // this scope (a profile built by this very job; or a pin the user saved while it ran: that result must not be served for the new rubric).
@@ -681,8 +686,28 @@ export async function runPipelineJob(
       cacheKey = keyFor(cacheScope?.profile ?? null);
       if (cacheKey !== null) {
         cached = await deps.resultCache.lookup(cacheKey);
+        // The images are not in the cache: they live per job in JobFigureFile. A hit gives this job its own copy of the figures the source job
+        // kept for its tree; when the entry does not say which, or the source no longer has all of them (confirm() deletes a row once it is
+        // attached to ADO, retention deletes the rest), the hit is a miss, not a result with missing images.
+        if (cached && ((cached.doc as { figures?: unknown[] } | null)?.figures ?? []).length > 0) {
+          const copied = await copyFigureRows(deps.prisma, cached.sourceJobId, cached.figureIds, job.id);
+          if (copied === null) {
+            cached = undefined;
+            missLogged = true;
+            // eslint-disable-next-line no-console -- worker process logging
+            console.info(`Job ${job.id}: the figure rows the stored result needs are no longer available, running in full`);
+          } else if (copied > 0) {
+            // eslint-disable-next-line no-console -- worker process logging
+            console.info(`Job ${job.id}: copied ${copied} figure rows from job ${cached.sourceJobId}`);
+          }
+        }
         // eslint-disable-next-line no-console -- worker process logging
         if (cached) console.info(`Job ${job.id}: reusing the stored result of an identical earlier job`);
+        // eslint-disable-next-line no-console -- worker process logging
+        else if (!missLogged) console.info(`Job ${job.id}: no stored result for these inputs, running in full`);
+      } else {
+        // eslint-disable-next-line no-console -- worker process logging
+        console.info(`Job ${job.id}: result cache not consulted (knowledge base or ingestion scope unreadable), running in full`);
       }
     }
     const [doc] = await Promise.all([
@@ -849,16 +874,25 @@ export async function runPipelineJob(
       } else {
         // Only when the result cache is in use is the rubric the job was scored with needed (the out parameter): every other call keeps its shape.
         const scored: { rubricVersion?: string | null; degraded?: boolean } = {};
+        const levelStartedAt = Date.now();
+        // eslint-disable-next-line no-console -- worker process logging
+        console.info(`Job ${job.id}: /level started`);
         levelResult = await deps.ingestionClient.level(
           doc, job.mode, job.userId ?? undefined, linkTypeCatalog, model, job.id, primerContext, ...(deps.resultCache ? [scored] : []),
         );
+        // eslint-disable-next-line no-console -- worker process logging
+        console.info(`Job ${job.id}: /level finished in ${Date.now() - levelStartedAt} ms, ${(levelResult as { nodes?: unknown[] })?.nodes?.length ?? 0} nodes`);
         const leveled = levelResult as { warnings?: { kind: string }[] };
         const degraded =
           primerWarnings.length > 0 || scored.degraded === true || isDegradedResult(leveled?.warnings, doc.figures as { caption_status?: string }[] | undefined);
         if (deps.resultCache && cacheKey && !degraded) {
           // Under the rubric the job was scored with (an older ingestion that does not say: the scope read before the job).
           const storeKey = keyFor(scored.rubricVersion !== undefined ? scored.rubricVersion : (cacheScope?.profile ?? null));
-          if (storeKey) await deps.resultCache.save(storeKey, { doc, tree: levelResult, catalogHash });
+          if (storeKey) {
+            const result: CachedResult = { doc, tree: levelResult, catalogHash, sourceJobId: job.id };
+            await deps.resultCache.save(storeKey, result);
+            savedEntry = { key: storeKey, result };
+          }
         }
       }
     } finally {
@@ -1006,6 +1040,11 @@ export async function runPipelineJob(
         await deps.prisma.jobFigureFile.deleteMany({
           where: { jobId: job.id, figureId: { notIn: referencedFigureIds } },
         });
+      }
+      // Now that the kept figures are known, the stored result can say which ones a hit needs (none when nothing references a figure).
+      if (savedEntry && deps.resultCache) {
+        const kept = referencedFigureIds.length > 0 ? await deps.prisma.jobFigureFile.findMany({ where: { jobId: job.id }, select: { figureId: true } }) : [];
+        await deps.resultCache.save(savedEntry.key, { ...savedEntry.result, figureIds: kept.map((row) => row.figureId) });
       }
     } catch (error) {
       console.error(`JobFigureFile prune failed for job ${job.id}:`, error);
@@ -1299,4 +1338,28 @@ export async function runPipelineJob(
     await deps.jobEventsPublisher.publish(job.id, 'failed');
     throw error;
   }
+}
+
+const FIGURE_COPY_CHUNK = 20;
+
+/** Gives `targetJobId` its own copy of the figure images a stored result needs, from `sourceJobId`. Returns how many rows it copied, or
+ *  null when the result cannot be served with its images (the entry does not say which figures it needs, or a needed row is gone). */
+async function copyFigureRows(
+  prisma: PipelineWorkerDeps['prisma'],
+  sourceJobId: string | undefined,
+  figureIds: string[] | undefined,
+  targetJobId: string,
+): Promise<number | null> {
+  if (!figureIds) return null;
+  if (figureIds.length === 0) return 0;
+  if (!sourceJobId) return null;
+  const rows = (await prisma.jobFigureFile.findMany({ where: { jobId: sourceJobId } })).filter((r) => figureIds.includes(r.figureId));
+  if (new Set(rows.map((r) => r.figureId)).size < figureIds.length) return null;
+  for (let i = 0; i < rows.length; i += FIGURE_COPY_CHUNK) {
+    await prisma.jobFigureFile.createMany({
+      data: rows.slice(i, i + FIGURE_COPY_CHUNK).map((r) => ({ jobId: targetJobId, figureId: r.figureId, bytes: r.bytes, mimeType: r.mimeType })),
+      skipDuplicates: true, // a retried job copies again
+    });
+  }
+  return rows.length;
 }

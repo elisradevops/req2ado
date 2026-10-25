@@ -212,6 +212,40 @@ describe('ChatPanel', () => {
     expect(onAcceptProposal).toHaveBeenCalledWith({ title: 'New title', description: undefined });
   });
 
+  describe('the category a rewrite is aimed at', () => {
+    const renderWithProposal = async (categoryScores?: Record<string, number> | null) => {
+      let capturedOnEvent: ((event: import('../hooks/useChatSocket').StreamEvent) => void) | undefined;
+      vi.mocked(useChatSocket).mockImplementation((_jobId, _localId, onEvent) => {
+        capturedOnEvent = onEvent;
+      });
+      render(
+        <ToastProvider>
+          <ChatPanel jobId="job-1" localId="n0" disabled={false} categoryScores={categoryScores} onAcceptProposal={vi.fn()} />
+        </ToastProvider>,
+      );
+      await screen.findByPlaceholderText(/ask the assistant/i);
+      act(() => {
+        capturedOnEvent?.({ type: 'done', message: 'Here you go', proposedTitle: 'New title', proposedDescription: null, model: 'llama3.1' });
+      });
+      await screen.findByText('New title');
+    };
+
+    it('names the weakest category below 70 on the proposal card', async () => {
+      await renderWithProposal({ Necessary: 90, Verifiable: 20, Unambiguous: 35 });
+      expect(screen.getByText(/aimed at/i)).toHaveTextContent('Aimed at: Verifiable (20)');
+    });
+
+    it('shows no label when every category is good', async () => {
+      await renderWithProposal({ Necessary: 90, Verifiable: 75 });
+      expect(screen.queryByText(/aimed at/i)).not.toBeInTheDocument();
+    });
+
+    it('shows no label without scores', async () => {
+      await renderWithProposal(null);
+      expect(screen.queryByText(/aimed at/i)).not.toBeInTheDocument();
+    });
+  });
+
   it('shows an error toast and stops the typing indicator on a WS error event', async () => {
     let capturedOnEvent: ((event: import('../hooks/useChatSocket').StreamEvent) => void) | undefined;
     vi.mocked(useChatSocket).mockImplementation((_jobId, _localId, onEvent) => {
