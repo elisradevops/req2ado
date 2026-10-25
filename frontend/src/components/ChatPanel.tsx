@@ -106,12 +106,23 @@ const SUGGESTED_PROMPTS: { label: string; effect: string; prompt: string }[] = [
   },
 ];
 
+// Same rule as ingestion's chat prompt (chat_service._weakest_categories): the lowest score, and only when it is below the bar.
+const WEAK_CATEGORY_SCORE = 70;
+
+function weakestCategory(scores: Record<string, number> | null | undefined): { name: string; score: number } | null {
+  const usable = Object.entries(scores ?? {}).filter(([, value]) => typeof value === 'number' && Number.isFinite(value));
+  usable.sort((a, b) => a[1] - b[1] || (a[0] < b[0] ? -1 : 1));
+  const [weakest] = usable;
+  return weakest && weakest[1] < WEAK_CATEGORY_SCORE ? { name: weakest[0], score: weakest[1] } : null;
+}
+
 export function ChatPanel({
   jobId,
   localId,
   itemType,
   disabled,
   disabledReason,
+  categoryScores,
   onAcceptProposal,
 }: {
   jobId: string;
@@ -124,6 +135,8 @@ export function ChatPanel({
   // relying on the generic fallback below, which doesn't tell the user
   // WHY chat is unavailable.
   disabledReason?: string;
+  // The item's score per quality category: a rewrite is aimed at the weakest one, and the proposal card says which.
+  categoryScores?: Record<string, number> | null;
   onAcceptProposal: (patch: { title?: string; description?: string }) => void;
 }): React.ReactElement {
   const { showToast, showErrorToast } = useToast();
@@ -274,6 +287,7 @@ export function ChatPanel({
   // Only the state that belongs to the proposal on screen counts (the render before the effect runs would otherwise see the last one's).
   const check = checkState && checkState.proposal === proposal ? checkState : null;
   const checking = checkedKind && !!proposal?.proposedDescription;
+  const targetCategory = weakestCategory(categoryScores);
   const loading = checking && (!check || check.warnings.status === 'loading' || check.prediction.status === 'loading');
   const warningItems = check?.warnings.status === 'ready' ? check.warnings.items : [];
   const comparison = check?.prediction.status === 'ready' ? check.prediction.data : null;
@@ -554,6 +568,11 @@ export function ChatPanel({
       {proposal && (
         <Card className="mb-2 p-2">
           <p className="text-xs">Proposed change</p>
+          {targetCategory && (
+            <p className="text-xs text-ink-3">
+              Aimed at: {targetCategory.name} ({targetCategory.score})
+            </p>
+          )}
           {proposal.proposedTitle && (
             <p className="text-sm">
               <strong>Title:</strong> {proposal.proposedTitle}
