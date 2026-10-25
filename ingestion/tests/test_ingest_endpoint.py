@@ -12,6 +12,8 @@ from app.config import settings
 from app.main import _figure_caption_cache_key, _rasterize_for_vision, _sniff_image_mime_type, app
 from app.vision.orchestrator_vision_client import PROMPT_VERSION, FigureVisionResult
 
+from tests.identity import identity_headers
+
 client = TestClient(app)
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -23,7 +25,8 @@ def _upload(filename: str, path: Path, redact: bool = False, **extra_params: obj
             # user_id defaults on: vision only runs for a request that carries
             # the submitting user's identity (the orchestrator's /llm/vision
             # needs it to resolve the user's credential/model).
-            params={"redact": redact, "user_id": "test-user", **extra_params},
+            params=(params := {"redact": redact, "user_id": "test-user", **extra_params}),
+            headers=identity_headers(params),
             files={"file": (filename, f, "application/octet-stream")},
         )
     assert response.status_code == 200
@@ -529,20 +532,17 @@ def test_describe_figure_forwards_document_context_to_the_vision_client(monkeypa
     assert captured["document_context"] == "An avionics ICD."
 
 
-def test_ingest_route_accepts_primer_context_as_the_wire_query_key(monkeypatch) -> None:
-    # Regression guard for the exact param-name mismatch this plan's own
-    # self-review caught: the orchestrator sends this as `primer_context`
-    # (matching /level's already-established key), NOT `document_context` --
-    # a mismatched FastAPI param name would silently swallow the value with
-    # no error, and every figure in a real request would get described with
-    # zero document context despite the orchestrator sending it correctly.
+def test_ingest_takes_identity_and_the_document_overview_from_headers_only(monkeypatch) -> None:
+    # The overview and the user used to be query keys; they travel in headers so they never reach an access log. A mismatched name would
+    # silently swallow the value, so the signature is pinned: no identity query parameters, and no `document_context` either.
     import inspect
 
     import app.main as main_module
 
     sig = inspect.signature(main_module.ingest)
-    assert "primer_context" in sig.parameters
+    assert "primer_context" not in sig.parameters and "user_id" not in sig.parameters
     assert "document_context" not in sig.parameters
+    assert {"x_user_id", "x_primer_context"} <= set(sig.parameters)
 
 
 def test_ingest_publishes_describe_figure_and_parse_done_narration_when_job_id_is_given(monkeypatch) -> None:

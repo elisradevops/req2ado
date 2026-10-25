@@ -6,6 +6,8 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.vision.orchestrator_vision_client import FigureVisionResult
 
+from tests.identity import identity_headers
+
 client = TestClient(app)
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -14,7 +16,8 @@ def _upload(filename: str, path: Path, **extra_params: object) -> dict:
     with open(path, "rb") as f:
         response = client.post(
             "/ingest",
-            params={"redact": False, "user_id": "test-user", **extra_params},
+            params=(params := {"redact": False, "user_id": "test-user", **extra_params}),
+            headers=identity_headers(params),
             files={"file": (filename, f, "application/octet-stream")},
         )
     assert response.status_code == 200

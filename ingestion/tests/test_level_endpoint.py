@@ -332,7 +332,7 @@ def test_level_endpoint_survey_mode_with_area_path_injects_kb_context(monkeypatc
         blocks=[Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr("x.txt"))],
     )
     response = client.post(
-        "/level", params={"mode": "survey", "user_id": "Project\\Area1"}, json=doc.model_dump(mode="json")
+        "/level", params={"mode": "survey"}, headers={"X-Req2Ado-User-Id": "Project\\Area1"}, json=doc.model_dump(mode="json")
     )
     assert response.status_code == 200
     grounded_prompts = [

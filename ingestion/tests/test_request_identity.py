@@ -11,12 +11,10 @@ from app.request_identity import decode_primer_header, encode_primer_header, res
 client = TestClient(app)
 
 
-def test_the_header_wins_over_the_query_and_either_alone_works() -> None:
-    assert resolve_user_id("from-query", "from-header") == "from-header"
-    assert resolve_user_id("from-query", None) == "from-query"
-    assert resolve_user_id(None, "from-header") == "from-header"
-    assert resolve_user_id(None, None) is None
-    assert resolve_user_id("q", "") == "q"  # an empty header is no header
+def test_the_user_comes_from_the_header_and_an_empty_header_is_no_user() -> None:
+    assert resolve_user_id("from-header") == "from-header"
+    assert resolve_user_id(None) is None
+    assert resolve_user_id("") is None
 
 
 def test_the_primer_header_carries_any_unicode_text_losslessly() -> None:
@@ -24,14 +22,13 @@ def test_the_primer_header_carries_any_unicode_text_losslessly() -> None:
     header = encode_primer_header(text)
     assert header.isascii() and "\n" not in header
     assert decode_primer_header(header) == text
-    assert resolve_primer_context("query text", header) == text
-    assert resolve_primer_context("query text", None) == "query text"
-    assert resolve_primer_context(None, None) is None
+    assert resolve_primer_context(header) == text
+    assert resolve_primer_context(None) is None
 
 
 def test_a_malformed_primer_header_is_ignored_not_fatal() -> None:
     assert decode_primer_header("%%% not base64 %%%") is None
-    assert resolve_primer_context("query text", "%%% not base64 %%%") == "query text"
+    assert resolve_primer_context("%%% not base64 %%%") is None
 
 
 def _doc() -> CanonicalDoc:
@@ -69,7 +66,7 @@ def test_level_reads_identity_and_primer_from_headers_so_they_never_ride_in_the_
     assert "user-from-header" not in str(response.request.url) and "overview" not in str(response.request.url)
 
 
-def test_level_still_accepts_the_old_query_form_for_one_release() -> None:
+def test_level_ignores_the_old_query_form() -> None:
     from app.workitem.model import WorkItemTree
 
     with patch("app.main._build_survey_tree_with_scoring", return_value=WorkItemTree(nodes=[], warnings=[])) as mocked:
@@ -80,7 +77,7 @@ def test_level_still_accepts_the_old_query_form_for_one_release() -> None:
         )
     assert response.status_code == 200, response.text
     seen = {**{f"arg{i}": a for i, a in enumerate(mocked.call_args.args)}, **mocked.call_args.kwargs}
-    assert "old-user" in seen.values() and "old primer" in seen.values()
+    assert "old-user" not in seen.values() and "old primer" not in seen.values()
 
 
 def test_describe_exception_never_carries_a_user_identity() -> None:
@@ -104,7 +101,7 @@ def test_ingest_reads_the_user_from_the_header_so_figure_captioning_still_runs()
     assert by_header.json()["vision_active"] is True
 
     by_query = client.post("/ingest?mode=survey&user_id=user-1", files={"file": ("x.txt", b"The receiver shall lock.\n", "text/plain")})
-    assert by_query.json()["vision_active"] is True  # the old form still works for one release
+    assert by_query.json()["vision_active"] is False  # the old query form is ignored: identity does not travel in URLs
 
     neither = client.post("/ingest?mode=survey", files={"file": ("x.txt", b"The receiver shall lock.\n", "text/plain")})
     assert neither.json()["vision_active"] is False
