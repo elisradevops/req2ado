@@ -1,0 +1,131 @@
+# req2ado review — design, flow, AI results, KB retrieval (2026-10-29)
+
+Status: **review only. No code was changed.** Supersedes `docs/ui-polish-plan.md` (kept; its items are re-verified below where marked **[live]**).
+
+How this was produced: stack rebuilt and run from `req2ado/docker-compose.yml`; signed in by the owner; two SURVEY jobs run end to end in a browser (`mock_prd_sensor.docx`, `mock_icd.docx`, model `qwen3.6:35b`, project `elisradevops-project`, Area `Customer Requirements`); API payloads of both jobs read; widths 1440 / 1024 / 390 checked on the job page. Nothing was confirmed or written to ADO. ADO criteria come from Microsoft Learn (Azure DevOps Server 2022): Epic groups Features, Feature groups Requirements, parent-child links only across levels, never same-category (story-story, task-task).
+
+Labels: **[live]** seen in the browser or read from the running API. **[src]** read in source only. **[inf]** inference, not proven. Severity `Blocker/High/Medium/Low`, effort `XS–XL`.
+
+## 0. What was NOT tested (read before trusting the rest)
+
+- Only `.docx` was uploaded. TXT, MD, PDF, scanned PDF and XLSX parsing were not exercised. PPTX is not an accepted requirement-document type (dropzone lists DOCX, PDF, XLSX, TXT, MD).
+- **Both runs built their structure with the baseline tree builder, not the generative LLM path** (`bl_` node ids). SURVEY's default `structure_mode="baseline"` (`ingestion/app/config.py`) hands the document to `build_baseline_tree`; the model is used for titles, scoring and similar passes, not for deciding structure. Neither fixture was claimed by a deterministic-subtree detector. [live + src; corrected 2026-10-29 after source exploration] They say little about how the LLM behaves on unstructured prose. A flat/prose document (`mock_flat.docx`, a headingless PDF) is the missing test.
+- The "one pptx dominates" KB behaviour was **not reproduced**: the KB held no pptx, and it could not be added (see K3).
+- Hover states, keyboard-only use, reduced motion, the Confirm/write step, Settings, Help, Jobs list, batch wizard and chat replies were not exercised. Motion findings (section 5) are from source, not from watching animations.
+- Two test jobs now exist in your job list (`a5a84db6…`, `fa70926a…`). They are `diff_ready`, nothing written.
+
+## K. Knowledge Base — root cause and evidence
+
+| ID | Finding | Evidence | Sev / Eff |
+|---|---|---|---|
+| K1 | Retrieval is **one global top-5** nearest-chunk query across all sources, `max_distance` 0.7, with no per-file spreading. One file with many near-duplicate chunks (slides) can fill all 5 slots, so other files never appear. This is the most likely mechanism behind your "only one pptx" runs. | [src] `ingestion/app/kb/retrieval.py` `retrieve_context(top_k=5)`; `kb/kb_vector_store.py` `query(... n_results=top_k)` | High / M |
+| K2 | Fallback path builds **one query per document** from headings only (`_document_level_query_text`), so every section shares the same ≤5 chunks. Agentic path relies on the model choosing to call `query_kb` (same top-5) or `read_kb_document`. | [src] `leveling/llm_leveling.py` ~L1962, ~L2195, ~L2208 | High / M |
+| K3 | **In both live runs the KB contributed nothing**: `kbCitations: []` on both jobs; the progress banner showed "Not grounded against your knowledge base for this step" (`components/ProgressBanner.tsx:620`). | [live] job API payloads; banner screenshot | Blocker / — |
+| K4 | **Your KB has no vectors under your current identity; the UI says it does.** Postgres lists 3 PDFs ingested 2026-08-10. Chroma (read directly from its SQLite catalog, since `list_collections` fails with `KeyError('_type')`) shows your collection `req2ado_kb_221bfb70…` (= `sha256("all-minilm:latest\0" + your user id)[:32]`, name derivation reproduced) with **0 embeddings**. The only KB vectors in the shared volume are 14 chunks in `req2ado_kb_28a69a38…`, written 2026-07-14…16 under a different user-id/model I could not derive, covering the same 3 PDFs (2 chunks each) plus `SRD-RT-19062025 3.docx` (7) and `spec.docx` (1). Both local embedded stores (`./.req2ado/vectors`, `ingestion/.req2ado/vectors`) hold only empty KB collections. No store I can reach holds the Aug 10 vectors. **Root cause of their absence is not proven.** Ruled out: embedded-mode loss in this compose stack (it runs `CHROMA_MODE=http` against the persistent volume), embed-model mismatch between services (both `all-minilm:latest`), a wiped volume (July data survives). Still open: (a) the Aug 10 ingest wrote under a user-id/pin that no longer exists, then was removed; (b) a skip-unchanged ingest (below) recorded a row while vectors were already gone; (c) a Chroma restore/kill (`chroma` showed `Exited (137)`). SharePoint is valid again (`expiresInSeconds` ~86k), so the discriminating test is cheap: re-ingest one PDF and count rows in `req2ado_kb_221bfb70…`. | [live] read-only SQLite/Chroma probes, source reads | Blocker / S to confirm, M to fix |
+| K9 | **KB ingest currently fails with `502 "Ingestion /kb/ingest-item request failed: could not reach Microsoft Graph"`** (reported by the owner after reconnecting SharePoint, whose status reads `valid`). The message is a catch-all: `graph_client.py` converts every `httpx.HTTPError` (DNS, timeout, reset, TLS) into the same text and drops the cause (`_get` L99; the pre-signed file download L203). Probed from the ingestion container: `https://graph.microsoft.com/v1.0/$metadata` → 200, but `https://1drv.ms/` → `CERTIFICATE_VERIFY_FAILED: self-signed certificate in certificate chain`. That is the signature of a TLS-intercepting proxy (the repo already documents Cato on this network) whose root CA the ingestion container does not trust: `docker-compose.yml` sets `NODE_EXTRA_CA_CERTS` for orchestrator and pipeline-worker only; no CA bundle is configured for ingestion. **Likely** the failing call is the OneDrive/SharePoint content-host download, not the Graph call itself **[inf: I did not capture which request failed; the actual file-download host was not probed]**. Consequences: (1) the KB cannot be refilled from this stack until ingestion trusts the proxy CA, regardless of the token; (2) the error text sends a user to "reconnect SharePoint", which cannot fix it; (3) a green SharePoint status plus a red ingest is indistinguishable without the logs. | [live] owner-reported error; read-only TLS probe; [src] `ingestion/app/kb/graph_client.py` | Blocker / S to confirm, S to fix |
+| K8 | **"Ingested" in the UI proves nothing about vectors.** The orchestrator upserts the Postgres row (`ingestedAt = now`) after the ingestion call returns, and ingestion returns success with `chunks_stored=0` on its skip-unchanged branch. The row never stores `chunksStored`, and nothing reconciles Postgres against Chroma. | [src] `orchestrator/src/modules/kb/kb.service.ts` `ingestItem`/`ingestUrl`; `ingestion/app/kb/ingest_service.py` ~L99–123 | High / S |
+| K5 | The **only** way into the KB is a SharePoint/OneDrive sharing link. The server's SharePoint token is expired (`424` on `/api/kb/browse-folder`, banner "ask an admin to refresh it"), so nothing can be (re)ingested. No local upload exists, and PPTX can only enter via SharePoint. | [live] `/knowledge-base`; [src] `api/kb.ts` has only ingest-url / ingest-folder-url / ingest-item | High / M |
+| K6 | The wizard never mentions the KB: no count of files, no "will ground this run / will not", no token warning. A user cannot know before starting that grounding is off. | [live] configure and confirm steps | High / S |
+| K7 | Retrieval reads use `get_or_create_collection`, so merely running a job creates an empty collection and can mask a missing one. **Observed:** my first probe (before any job) reported your collection missing; it now exists, empty, created by my two jobs. | [src] `kb_vector_store.py:108`; [live] catalog | Medium / XS |
+
+Fix direction (not implemented): (1) diagnose K4 first, before any code; (2) per-source diversified retrieval, i.e. over-fetch (say 4×top_k), then round-robin by `source_file` so every relevant file gets at least one slot before any file gets a second, keeping the distance cutoff; (3) per-section queries instead of one heading-only query; (4) a "KB coverage" strip on the config step and on the job (files available / files cited / token state); (5) make "always include" discoverable in the ingest UI; (6) use `get_collection` on read paths. Build with TDD and a local mock harness (multi-file KB where one file has many near-duplicate chunks), prod only to confirm.
+
+## 1. Visual style — the "slop" list
+
+| ID | Finding | Where | Sev / Eff |
+|---|---|---|---|
+| V1 | Uppercase monospace is used as decoration, not for data: destination bar (PROJECT / AREA / ITERATION), stat-card labels (BLOCKS, SECTIONS), table headers (INDEX / ITEM / STATUS / FLAGS), "WHAT LANDS IN AZURE DEVOPS". Mono should mean "literal/ID"; here it makes everything the same voice. Fonts themselves (IBM Plex Sans/Mono) are fine. | [live] all pages | Medium / S |
+| V2 | Stat cards in one row use three typographic treatments: "12 NEW" small green, "0 REUSED" large mono, "0 DUPLICATES SKIPPED" grey. | [live] job page | Low / XS |
+| V3 | Dropdown popovers are sized to their content, not the trigger, and sit on top of the next field's label (project, area, model). | [live] New Job step 2 | Medium / S |
+| V4 | Large dead areas: New Job step 1 (~400px under the dropzone), step 2 left column (~280px beside a tall right column), the diff-tree card (~230px under 7 rows), the detail dialog's left pane. | [live] | Medium / S |
+| V5 | Duplicated content: the overview paragraph repeats verbatim on confirm and progress; the title "Software" appears 3 times in the detail dialog and the body is "Software" again; the warning shows as a banner and again as a full card. | [live] | Low / XS |
+| V6 | Zero-information chrome: every tree row carries an identical "New" chip; rail status dots are tiny, unlabeled as a group, SharePoint in orange. | [live] | Low / XS |
+| V7 | **Confirm** is saturated yellow, the loudest object on the page, and its label hides the effect (it writes to ADO). | [live] job header | Medium / XS |
+| V8 | Dev-changelog copy shipped in the UI: chat card "Suggest a better title — *was a separate button in the header, before this change*". | [src] `components/ChatPanel.tsx:104` | Medium / XS |
+
+## 2. Component quality
+
+| ID | Finding | Sev / Eff |
+|---|---|---|
+| C1 | Stepper changes from 2 to 3 steps when SURVEY is selected, so every label jumps; step 1's label is centred over the left column, step 2's over the right, so spacing is lopsided. [live] | Medium / S |
+| C2 | Job header carries four actions in four styles (red outline Reject, yellow Confirm, outline Resubmit, outline Delete, plus text-link Download summary). No primary/secondary/destructive hierarchy; at 1024px they wrap under the title. [live] | Medium / S |
+| C3 | **Narration ticker is stale after completion**: the job is `diff_ready` but the dark ticker under the stepper still reads "Checking for existing/duplicate work items — 12 of 12" with Review (5) active, at 1440 and 1024, minutes after finish. Source: `frontend/src/utils/narrationTicker.ts` `sentenceFor` prefers the last narration over the job status (it is the `NarrationTicker`, not `ProgressBanner`, which is only shown while running/writing). [corrected] Also truncates mid-word ("…Target Handling, S…") and shows "0%" plus "Estimating time left…" with no information. [live] | High / S |
+| C4 | Diff tree opens fully collapsed: no Requirement is visible until you expand; flags are bare warning triangles with no label; "New item" is a full-width button above the filter, styled like the primary action. [live] | Medium / M |
+| C5 | Confirm button enabled while the confirm card still says "Reading the document's structure…": a user can approve what they have not seen. [live] | Medium / XS |
+| C6 | Header breadcrumb shows a truncated UUID (`a5a84db6…`) instead of the file name on a job page. On an unregistered route (e.g. `/kb`, my own URL guess) it falls back to the raw path (`ROUTE_CRUMBS` fallback in `AppShell.tsx`), and the 404 page offers no way back. [live; the raw-path case only affects unknown routes] | Low / XS |
+| C7 | Page titles are `h2`; the old plan's D7 (one `h1` per page) is still open. [live] | Low / XS |
+| C8 | **390px is broken**: the 220px rail never collapses, leaving `main` 170px wide; stepper circles overlap into a smudge; destination bar stacks. (old B1.1) [live] | High / M |
+| C9 | `/api/jobs/:id/run-map` returns 404 on every poll while a job runs: console error spam (10+ per job). [live] | Low / S |
+| C10 | Safety line ("Nothing is written to Azure DevOps…") and primary button float bottom-right, detached from the fields they act on. [live] `pages/NewJobWizard.tsx:481` | Low / XS |
+
+Keep as-is (these are good): the parse preview with document map; the "confirm understanding" step; the "nothing is written until you approve" line; integrity warnings split into "Fix before confirming" vs "For your information"; the detail dialog's chat with action cards and prev/next; the destination bar concept.
+
+## 3. Flow and AI interaction
+
+| ID | Finding | Sev / Eff |
+|---|---|---|
+| F1 | The model picker lists bare tags (`gemma4:26b`, `devstral-small-2:24b`, `qwen3.6:35b`, `qwen3:4b`, `gemma4:e4b`) with no size, speed, vision or tool-calling support and no recommendation, so "select the right AI model" is a guess. The helper text under it is a dense mono paragraph. [live] | High / S–M (needs model metadata from the Open WebUI listing) |
+| F2 | KB invisible in the flow (K6). | High / S |
+| F3 | The understanding step is yes/no only: one paragraph, no expected hierarchy, no KB statement, no way to correct "this is a hardware spec / about 50 requirements". The "~50" figure is unexplained (the cost card shows `n=50` for a 12-block document). [live] | Medium / M |
+| F4 | Time estimate "11–19 min" for job 1; it finished in under ~5 min (job 2: about 3.5 min). Estimates this far off train users to ignore them. [live] | Low / S |
+| F5 | The chat opens "I have read this requirement" on a Feature and offers "Make it testable" / "Add rationale" for an item that is never scored (the dialog itself says features aren't scored). [live] `components/ChatPanel.tsx:475` | Low / XS |
+| F6 | Old-plan D1 (approve vocabulary: "Confirm" → "Write to Azure DevOps") is still open and is the right call. [live] | Medium / XS |
+
+## 4. AI result quality against ADO practice
+
+Job 1 `mock_prd_sensor.docx` (12 nodes: 2 Epic, 5 Feature, 5 Requirement; scores 40–45 on Requirements). Job 2 `mock_icd.docx` (6 nodes: 2 Feature, 4 Requirement; scores 75–95). Both [live].
+
+| ID | Finding | ADO relevance | Sev / Eff |
+|---|---|---|---|
+| R1 | **Non-atomic Requirements.** A table with three rows (`P-SENSOR-000#`, `-001#`, `-002#`, each a separate `shall`) became one Requirement titled "Synchronization" whose description is a raw HTML `<table>`. Same for "SW Safety" and the others. | A Requirement is a single capability; one work item per `shall` is what makes it testable, linkable, and countable. | High / M |
+| R2 | **False blocking warning.** "Requirement has no Customer ID — the document had no ID to use" (5 items, *Fix before confirming*) while the IDs are in the table's first column. `customerId` is null on all of them. | A wrong "fix before confirming" erodes trust in every other warning and blocks approval. | High / S–M |
+| R3 | **Same-category nesting.** "Ripple Sub-Requirement" is a Requirement under another Requirement. | Microsoft's guidance: do not create requirement-requirement links; the backlog cannot reorder them. Violates the repo's own `Epic → Feature → Requirement` invariant. | High / S |
+| R4 | **Layering differs between runs.** Job 1 wrapped everything in catch-all Epics, one literally named "(auto-grouped) Other Sections" (an internal label that would land in ADO), and made the document title a childless Feature. Job 2 has Features at the root with no Epic. | Same tool, same project, different shape; the label is not a real Epic name. | Medium / M |
+| R5 | Titles are source headings ("Ripple Sub-Requirement", "Target tracking"), and every description starts by repeating its title ("3.3V Rail Requirements The 3.3V rail shall…"). | Titles should state the capability; the SURVEY card promises that ("Receiver tuning range and step size"). | Medium / S |
+| R6 | No acceptance/verification criteria are produced; nodes are flagged `missing_acceptance_criteria` and the user is pointed at the chat. Confirm which field the target process uses before building. | Needed for testability. | High / M |
+| R7 | **Confidence contradicts score**: `qualityConfidence: "high"` beside score 45 and flags `fragment`, `placeholder`. | A user cannot calibrate trust. | Medium / S |
+| R8 | A compound requirement ("activate the fan above 45C and deactivate it below 40C") is flagged `compound` but kept as one item; no split offered. | Singular is one of the app's own rubric categories. | Medium / M |
+| R9 | Good: job 2 text is faithful to the source; scores and the `ambiguous`/`compound` flags are plausible; the count matched the stated "four to five". Placeholder values (`N ms`, `XYZ`) in job 1's fixture are real placeholders and were correctly flagged. | — | — |
+| R10 | KB grounding absent (K3), so no Requirement could be checked against the standards the user ingested. | — | see K |
+
+## 5. Motion and interaction language (from source)
+
+- The `motion` package is installed (`frontend/package.json`) but only 2 files import it, with **no** `AnimatePresence`, `layoutId`, or `motion.*` components anywhere. [src]
+- Everything else is CSS: about 93 `transition-*/duration-*` utilities and 76 `hover:` styles, plus keyframes (`fadeIn`, `dialogIn`, `popIn`, `listItemIn`, `shimmer`). Tokens exist (`--duration-*`, `--ease-*` in `index.css`) and `DESIGN.md §8` is a motion contract; reduced motion is handled at `index.css:535` (old B2.2/B2.3 gaps remain). [src]
+- Consequences, consistent with what was observed: no page/route transition (New Job step changes, 2→3 step jump, wizard → job page are instant cuts); progress and step changes are abrupt; tree rows appear without enter/expand motion; counts do not count; the Review → "diff ready" arrival has no moment.
+- Direction: one motion language built on the existing tokens: route enter (fade + 8px), stepper fill and layout-animated step insertion, tree expand/collapse (height), staggered first-paint list (reuse `listItemIn`), count-up on stat cards, smoothed progress, a single "diff ready" arrival. Hover only on interactive rows/buttons already listed; no ambient motion. Reduced-motion variants for each.
+
+## 6. Layout zoning
+
+- Rail (dark navy, 220px, nav plus status dots), header (white strip: breadcrumb plus user chip), main (pale blue-grey with white cards). On desktop the three zones read clearly; the dark rail against the light main is the strongest separation in the app. [live]
+- Problems: **no footer at all** (version, help, system status have nowhere to live; the status dots at the bottom of the rail are doing that job unlabeled); the header breadcrumb duplicates the page title directly below it ("New Job" / "New Job"); the rail does not collapse on narrow screens (C8); each page re-implements its own title block inside `main`.
+- Direction: header carries context only (breadcrumb as page name plus job name instead of a UUID); one `PageHeader` (h1) per page; a labelled status group in the rail ("Connections"); add a slim footer or move status there; collapse the rail below `md`.
+
+## 7. Ranked fix plan (each batch is a separate approved plan)
+
+| Batch | Scope | Why this order |
+|---|---|---|
+| **B0 KB** | Diagnose K4; per-source retrieval, per-section queries, coverage strip, `get_collection` on reads, tests with a multi-file mock KB | Biggest correctness gap; user-reported; independent of the UI work |
+| **B1 Result correctness** | R1, R2, R3 (guard in tree builder), R7, then R4/R5/R6/R8 | A wrong warning and invalid ADO structure matter more than polish |
+| **B2 Layout and mobile** | C8, C6, C7, zoning in section 6, stepper (C1) | Foundation for every page |
+| **B3 Type, spacing, popovers** | V1–V5, V8, C10 | Mostly XS–S, removes the "slop" read quickly |
+| **B4 Component hierarchy** | V7/F6 (Confirm → "Write to Azure DevOps"), C2, C3 (stale banner), C4, C5 | Needs the vocabulary decision first |
+| **B5 Motion system** | section 5 | After layout settles, so transitions are built once |
+| **B6 Semi-automatic review flow** | See below | Builds on B0 and B1 |
+
+B6 sketch (the "approve with confidence" flow): a review queue ordered by risk (blocking warnings first, then low score, then flagged, then clean); a per-item evidence strip (source excerpt beside the proposed text, KB citations used, the weakest rubric category); one-key accept / edit / reject with next-item focus; "approve all clean" for items above a score threshold with no flags, shown as a count the user confirms; the final write step summarises exactly what will be created. The detail dialog (prev/next, chat actions) is the right base.
+
+`DESIGN.md` amendments needed with B3/B4: §4 (mono only for literals/IDs), §5 (sizing per old D2), §8 (motion inventory above), §11 (job page, wizard steps, header actions), approve vocabulary per old D1.
+
+Out-of-scope observations: the rail shows SharePoint as warning-orange while the app is otherwise usable, which is accurate and good, but the same token failure is surfaced three different ways (rail dot, KB banner, KB inline alert); worth unifying in B0/B2.
+
+## Out-of-scope findings recorded during implementation
+
+Found while building the coverage gate (P0). Not fixed; severity and effort as defined above.
+
+| ID | Finding | Evidence | Sev / Eff |
+|---|---|---|---|
+| X1 | The ingestion test suite is not isolated from a local Redis. `app/main.py` builds `redis.Redis.from_url(settings.redis_url)` (default `redis://localhost:6379`) and the LLM response cache is fail-open, so with the compose Redis running, cached results from an earlier run change what tests observe: `tests/test_ingest_endpoint.py::test_ingest_survey_mode_still_captions_when_vision_is_configured` passed on a cold cache and then failed 3 of 3 runs (`calls == 0`); it passes deterministically with `REDIS_URL=redis://127.0.0.1:1`. The gate script sets that for its ingestion run. | [live] | Medium / S |
+| X2 | `orchestrator/test/llm.controller.e2e-spec.ts` is flaky: two different tests in it returned 404 instead of 401 in 2 of 5 full-suite runs (including the baseline), and pass in isolation and on 2 other full runs. The spec boots the full `AppModule` against real `localhost` Postgres and Redis (`DATABASE_URL`/`REDIS_URL` set in `beforeAll`), so it depends on whatever is running locally. Cause not proven. | [live] | Medium / S |
+| X3 | `ruff check .` in `ingestion/` reports 4095 pre-existing violations (3893 `E501` line-too-long, 96 `I001`, 27 `F401`, …); CI does not run ruff. Later phases gate on "no new violations in changed files". | [live] | Low / L |
+| X4 | Stale per-package `package-lock.json` files sit next to the pnpm workspace (`frontend`, `orchestrator`, `mcp-ado-server`); the repo installs with `pnpm-lock.yaml`. | [live] | Low / XS |
