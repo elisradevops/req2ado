@@ -139,9 +139,9 @@ def api(monkeypatch):
 
 
 def test_get_shows_the_users_rubric_and_a_user_without_a_kb_sees_the_built_in_one(api) -> None:
-    mine = client.get("/kb/rubric", params={"user_id": "u1"}).json()
+    mine = client.get("/kb/rubric", headers={"X-Req2Ado-User-Id": "u1"}).json()
     assert mine["source"] == "kb" and [c["name"] for c in mine["categories"]] == ["Testable", "Unambiguity", "Essential"]
-    other = client.get("/kb/rubric", params={"user_id": "nobody"}).json()
+    other = client.get("/kb/rubric", headers={"X-Req2Ado-User-Id": "nobody"}).json()
     assert other["source"] == "default" and len(other["categories"]) == 8 and other["categories"][0]["guidance"]
 
 
@@ -152,7 +152,7 @@ def test_put_pins_edits_and_removes_and_the_next_job_is_scored_with_the_result(a
     assert response.status_code == 200, response.text
     view = response.json()
     assert [c["name"] for c in view["categories"]] == ["Testable", "Essential", "Safety-relevant"]
-    assert client.get("/kb/rubric", params={"user_id": "u1"}).json() == view
+    assert client.get("/kb/rubric", headers={"X-Req2Ado-User-Id": "u1"}).json() == view
 
     scored_with = main._profile_for_job("u1", "m1")
     assert names(scored_with) == ["Testable", "Essential", "Safety-relevant"]
@@ -160,12 +160,12 @@ def test_put_pins_edits_and_removes_and_the_next_job_is_scored_with_the_result(a
 
 
 def test_the_cache_scope_follows_the_rubric_so_a_pin_never_serves_an_old_result(api) -> None:
-    before = client.get("/cache-scope", params={"user_id": "u1"}).json()["profile"]
+    before = client.get("/cache-scope", headers={"X-Req2Ado-User-Id": "u1"}).json()["profile"]
     client.put("/kb/rubric", json={"user_id": "u1", "pinned": [{"name": "Testable", "passCondition": "Changed"}], "removed": []})
-    after = client.get("/cache-scope", params={"user_id": "u1"}).json()["profile"]
+    after = client.get("/cache-scope", headers={"X-Req2Ado-User-Id": "u1"}).json()["profile"]
     assert before == "v-base" and after != before
     client.put("/kb/rubric", json={"user_id": "u1", "pinned": [], "removed": []})  # resetting returns to the model's own rubric
-    assert client.get("/cache-scope", params={"user_id": "u1"}).json()["profile"] == "v-base"
+    assert client.get("/cache-scope", headers={"X-Req2Ado-User-Id": "u1"}).json()["profile"] == "v-base"
 
 
 def test_a_user_cannot_see_or_change_another_users_pins(api) -> None:
@@ -177,7 +177,7 @@ def test_a_user_cannot_see_or_change_another_users_pins(api) -> None:
 def test_put_refuses_nonsense_with_a_400_and_changes_nothing(api) -> None:
     response = client.put("/kb/rubric", json={"user_id": "u1", "pinned": [{"name": "", "passCondition": "x"}], "removed": []})
     assert response.status_code == 400 and "name" in response.json()["detail"]
-    assert client.get("/kb/rubric", params={"user_id": "u1"}).json()["version"] == "v-base"
+    assert client.get("/kb/rubric", headers={"X-Req2Ado-User-Id": "u1"}).json()["version"] == "v-base"
 
 
 def test_the_chat_and_the_rescore_see_the_pinned_rubric(api) -> None:

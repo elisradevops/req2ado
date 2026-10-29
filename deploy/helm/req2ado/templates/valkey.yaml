@@ -44,7 +44,9 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.secrets.appSecretsName }}
                   key: VALKEY_PASSWORD
-          command: ["valkey-server", "--requirepass", "$(VALKEY_PASSWORD)", "--maxmemory", {{ .Values.valkey.maxmemory | quote }}, "--maxmemory-policy", "noeviction"]
+          # --save "": no RDB snapshots. There is no volume, so a restart starts empty anyway, and a background save needs copy-on-write
+          # memory on top of maxmemory (an OOM kill, or refused writes, near a full cache).
+          command: ["valkey-server", "--requirepass", "$(VALKEY_PASSWORD)", "--maxmemory", {{ .Values.valkey.maxmemory | quote }}, "--maxmemory-policy", "noeviction", "--save", ""]
           ports:
             - containerPort: 6379
           livenessProbe:

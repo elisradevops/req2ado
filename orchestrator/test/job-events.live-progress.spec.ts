@@ -1,4 +1,4 @@
-import { NotFoundException } from '@nestjs/common';
+import { Logger, NotFoundException } from '@nestjs/common';
 import { JobEventsController, runMapKey } from '../src/modules/pipeline/job-events.controller';
 import { liveDoneKey } from '../src/modules/pipeline/live-channels';
 import { progressChannel, progressLatestKey } from '../src/modules/pipeline/progress.service';
@@ -384,6 +384,43 @@ describe('JobEventsController.getRunMap', () => {
     const command = makeCommandClient({ [runMapKey('job-1')]: '{not json' });
     const controller = makeController(makeSubscriber(), command, true);
     await expect(controller.getRunMap('job-1', OWNER)).rejects.toBeInstanceOf(NotFoundException);
+  });
+});
+
+
+describe('JobEventsController.getRunMap logs why it answered 404', () => {
+  let log: jest.SpyInstance;
+  beforeEach(() => { log = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined); });
+  afterEach(() => log.mockRestore());
+  const lines = () => log.mock.calls.map((call) => String(call[0]));
+
+  it.each([
+    ['feature_off', makeCommandClient(), false],
+    ['missing', makeCommandClient(), true],
+    ['not_json', makeCommandClient({ [runMapKey('job-1')]: '{not json' }), true],
+  ] as const)('says %s, once per job and reason', async (reason, command, flag) => {
+    const controller = makeController(makeSubscriber(), command, flag);
+    await expect(controller.getRunMap('job-1', OWNER)).rejects.toBeInstanceOf(NotFoundException);
+    await expect(controller.getRunMap('job-1', OWNER)).rejects.toBeInstanceOf(NotFoundException);
+    expect(lines().filter((l) => l === `run-map 404 job=job-1 reason=${reason}`)).toHaveLength(1);
+  });
+
+  it('keeps logging new jobs after the once-per-pair memory is full', async () => {
+    const controller = makeController(makeSubscriber(), makeCommandClient(), true);
+    for (let i = 0; i < 1000; i += 1) {
+      fakeJobsService.getById.mockResolvedValueOnce({ id: `old-${i}`, userId: OWNER.userId });
+      await expect(controller.getRunMap(`old-${i}`, OWNER)).rejects.toBeInstanceOf(NotFoundException);
+    }
+    fakeJobsService.getById.mockResolvedValueOnce({ id: 'late', userId: OWNER.userId });
+    await expect(controller.getRunMap('late', OWNER)).rejects.toBeInstanceOf(NotFoundException);
+    expect(lines()).toContain('run-map 404 job=late reason=missing');
+  });
+
+  it('logs nothing for a stranger or a job that does not exist, and nothing on success', async () => {
+    const controller = makeController(makeSubscriber(), makeCommandClient({ [runMapKey('job-1')]: JSON.stringify({ version: 1 }) }), true);
+    await controller.getRunMap('job-1', OWNER);
+    await expect(controller.getRunMap('job-1', STRANGER)).rejects.toBeInstanceOf(NotFoundException);
+    expect(lines().filter((l) => l.startsWith('run-map 404'))).toEqual([]);
   });
 });
 

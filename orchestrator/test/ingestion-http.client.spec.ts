@@ -333,6 +333,21 @@ describe('IngestionHttpClient', () => {
     ).rejects.toThrow(/upsert-batch.*502/i);
   });
 
+  it('publishDocumentMap POSTs the document to /document-map for the job and never throws', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ published: true }) });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+    await expect(client.publishDocumentMap(MINIMAL_DOC, 'job-1')).resolves.toBe(true);
+    const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toBe('http://ingestion.internal/document-map?job_id=job-1');
+    expect(options.method).toBe('POST');
+    expect(JSON.parse(options.body)).toEqual(MINIMAL_DOC);
+
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 500, text: async () => 'boom' });
+    await expect(client.publishDocumentMap(MINIMAL_DOC, 'job-1')).resolves.toBe(false);
+    (global.fetch as jest.Mock).mockRejectedValue(new Error('down'));
+    await expect(client.publishDocumentMap(MINIMAL_DOC, 'job-1')).resolves.toBe(false);
+  });
+
   it('checkDuplicate POSTs text, title, and area_path to /dedup/check', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({
       ok: true,

@@ -1,4 +1,4 @@
-import { Controller, Get, Inject, NotFoundException, Optional, Param, Res, type OnModuleDestroy } from '@nestjs/common';
+import { Controller, Get, Inject, Logger, NotFoundException, Optional, Param, Res, type OnModuleDestroy } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 import type { Response } from 'express';
 import type Redis from 'ioredis';
@@ -52,6 +52,10 @@ export const runMapKey = (jobId: string): string => `job-events:${jobId}:map`;
 // connections.
 @Controller('jobs')
 export class JobEventsController implements OnModuleDestroy {
+  private readonly logger = new Logger(JobEventsController.name);
+  // (job, reason) pairs already logged: the running screen polls this route, so one line per pair is enough. Capped, reset when full.
+  private readonly loggedRunMapMisses = new Set<string>();
+
   constructor(
     @Inject(REDIS_SUBSCRIBER_FACTORY) private readonly redisSubscriberFactory: () => Redis,
     @Inject(REDIS_COMMAND_CLIENT) private readonly redisCommandClient: Redis,
@@ -91,14 +95,26 @@ export class JobEventsController implements OnModuleDestroy {
     if (!job || job.userId !== user.userId) {
       throw new NotFoundException(`Job ${id} not found`);
     }
-    if (!this.liveProgress) throw new NotFoundException('No document map for this job');
+    if (!this.liveProgress) throw this.noRunMap(id, 'feature_off');
     const raw = await this.redisCommandClient.get(runMapKey(id));
-    if (!raw) throw new NotFoundException('No document map for this job');
+    if (!raw) throw this.noRunMap(id, 'missing');
     try {
       return JSON.parse(raw) as unknown;
     } catch {
-      throw new NotFoundException('No document map for this job');
+      throw this.noRunMap(id, 'not_json');
     }
+  }
+
+  // The 404 of run-map used to leave no trace, so "no map" could not be told from "never written" or "expired". Counts only.
+  private noRunMap(jobId: string, reason: 'feature_off' | 'missing' | 'not_json'): NotFoundException {
+    const marker = `${jobId}:${reason}`;
+    if (!this.loggedRunMapMisses.has(marker)) {
+      // Full: forget everything, so a long-lived pod keeps logging new jobs (at worst one repeat line per old pair).
+      if (this.loggedRunMapMisses.size >= 1000) this.loggedRunMapMisses.clear();
+      this.loggedRunMapMisses.add(marker);
+      this.logger.log(`run-map 404 job=${jobId} reason=${reason}`);
+    }
+    return new NotFoundException('No document map for this job');
   }
 
   // Job transparency: the refs of items the run has finished. The event stream

@@ -1987,7 +1987,7 @@ describe('runPipelineJob', () => {
               if (rows[i].jobId === where.jobId && !(where.figureId?.notIn ?? []).includes(rows[i].figureId)) rows.splice(i, 1);
             }
           }),
-          findMany: jest.fn(async ({ where }: any) => rows.filter((r) => r.jobId === where.jobId)),
+          findMany: jest.fn(async ({ where }: any) => rows.filter((r) => r.jobId === where.jobId && (!where.figureId?.in || where.figureId.in.includes(r.figureId)))),
           createMany: jest.fn(async ({ data }: any) => { rows.push(...data); return { count: data.length }; }),
           findUnique: jest.fn(async ({ where }: any) => rows.find((r) => r.jobId === where.jobId_figureId.jobId && r.figureId === where.jobId_figureId.figureId) ?? null),
         };
@@ -2034,6 +2034,16 @@ describe('runPipelineJob', () => {
         await cache.save(key, { ...stored!, sourceJobId: undefined });
         await runPipelineJob(survey('job-2'), withFigures(cache, table));
         expect(fakeIngestionClient.ingest).toHaveBeenCalledTimes(2);
+      });
+
+      it('only the figures the stored result needs are read from the source job, not every row with its bytes', async () => {
+        const table = figureTable([...seed, { jobId: 'job-1', figureId: 'f9', bytes: Buffer.alloc(1000), mimeType: 'image/png' }]);
+        const cache = new JobResultCache(cacheStore(), 'code-1');
+        await runPipelineJob(survey('job-1'), withFigures(cache, table));
+        table.findMany.mockClear();
+        await runPipelineJob(survey('job-2'), withFigures(cache, table));
+        expect(table.findMany).toHaveBeenCalledWith({ where: { jobId: 'job-1', figureId: { in: ['f0', 'f1'] } } });
+        expect(table.rows.filter((r) => r.jobId === 'job-2').map((r) => r.figureId)).toEqual(['f0', 'f1']);
       });
 
       it('a source job that lost some of the figures its tree needs (attached and deleted by confirm) is a miss, not a partial copy', async () => {
@@ -2120,6 +2130,27 @@ describe('runPipelineJob', () => {
         expect(lines().some((l) => l.startsWith('Job job-2: /level'))).toBe(false);
       });
 
+      it.each([
+        ['no_user', { userId: null }, {}],
+        ['no_factory', {}, {}],
+        ['resolve_failed', {}, { openWebUiClientFactory: { getClientFor: jest.fn().mockRejectedValue(new Error('vault down')) } }],
+      ])('logs why the job ran on the default chat model: %s', async (reason, jobExtra, depsExtra) => {
+        const cache = new JobResultCache(cacheStore(), 'code-1');
+        await runPipelineJob({ ...survey('job-fb'), model: undefined, ...jobExtra } as any, { ...deps(cache), ...depsExtra } as any);
+        expect(lines()).toContain(`Job job-fb: no model chosen, using the default chat model gemma4:12b (reason ${reason})`);
+      });
+
+      it('summarizes the dedup checks of a job: how many, how long they took, and what they decided', async () => {
+        fakeIngestionClient.checkDuplicate.mockResolvedValue({ isDuplicate: false, matchedItemId: null, similarity: null });
+        fakeDryRunService.diff.mockImplementation(async (_inputs: unknown, _idem: unknown, dedupCheck: (t: string, ti: string, a: string) => Promise<unknown>) => {
+          await Promise.all([dedupCheck('a', 'a', 'P'), dedupCheck('b', 'b', 'P'), dedupCheck('c', 'c', 'P')]);
+          return [{ localId: 'n0', action: 'create' }, { localId: 'n1', action: 'create' }, { localId: 'n2', action: 'reuse' }];
+        });
+        await runPipelineJob(survey('job-dd'), deps(new JobResultCache(cacheStore(), 'code-1')));
+        const line = lines().find((l) => l.startsWith('Job job-dd: dedup check'));
+        expect(line).toMatch(/^Job job-dd: dedup check n=3 p50=\d+ p90=\d+ max=\d+ ms, total=\d+ ms, actions create=2 reuse=1$/);
+      });
+
       it('logs that the cache was not consulted when the ingestion scope cannot be read', async () => {
         fakeIngestionClient.cacheScope.mockResolvedValue(null);
         await runPipelineJob(survey('job-1'), deps(new JobResultCache(cacheStore(), 'code-1')));
@@ -2134,10 +2165,44 @@ describe('runPipelineJob', () => {
         const withTable = { ...d, prisma: { ...d.prisma, jobFigureFile: figureTable(rows) } as any };
         await runPipelineJob(survey('job-1'), withTable);
         await runPipelineJob(survey('job-2'), withTable);
-        expect(lines()).toContain('Job job-2: copied 1 figure rows from job job-1');
+        expect(lines().find((l) => l.startsWith('Job job-2: copied 1 figure rows from job job-1 in '))).toMatch(/ in \d+ ms$/);
         rows.length = 0;
         await runPipelineJob(survey('job-3'), withTable);
         expect(lines()).toContain('Job job-3: the figure rows the stored result needs are no longer available, running in full');
+      });
+    });
+
+    describe('the run map of a job served from the cache', () => {
+      const progressService = { track: jest.fn().mockResolvedValue(undefined), record: jest.fn(), finish: jest.fn() };
+      const withMap = (cache: JobResultCache, publishDocumentMap: jest.Mock, extra: object = { progressService }) => ({
+        ...deps(cache),
+        ...extra,
+        ingestionClient: { ...fakeIngestionClient, publishDocumentMap } as any,
+      });
+
+      it('a hit asks ingestion to publish the map from the cached document, for the new job', async () => {
+        const publish = jest.fn().mockResolvedValue(true);
+        const cache = new JobResultCache(cacheStore(), 'code-1');
+        await runPipelineJob(survey('job-1'), withMap(cache, publish));
+        expect(publish).not.toHaveBeenCalled(); // a full run: /ingest publishes it itself
+        await runPipelineJob(survey('job-2'), withMap(cache, publish));
+        expect(publish).toHaveBeenCalledTimes(1);
+        expect(publish).toHaveBeenCalledWith(expect.objectContaining({ blocks: [{ id: 'b0' }] }), 'job-2');
+      });
+
+      it('without live progress configured, nothing is published', async () => {
+        const publish = jest.fn().mockResolvedValue(true);
+        const cache = new JobResultCache(cacheStore(), 'code-1');
+        await runPipelineJob(survey('job-1'), withMap(cache, publish, {}));
+        await runPipelineJob(survey('job-2'), withMap(cache, publish, {}));
+        expect(publish).not.toHaveBeenCalled();
+      });
+
+      it('a failing publish never fails the job', async () => {
+        const publish = jest.fn().mockRejectedValue(new Error('ingestion down'));
+        const cache = new JobResultCache(cacheStore(), 'code-1');
+        await runPipelineJob(survey('job-1'), withMap(cache, publish));
+        await expect(runPipelineJob(survey('job-2'), withMap(cache, publish))).resolves.toBeDefined();
       });
     });
 
@@ -2150,12 +2215,12 @@ describe('runPipelineJob', () => {
       expect(fakeIngestionClient.level).toHaveBeenCalledTimes(4);
     });
 
-    it('a different link-type catalog re-levels the cached document instead of serving trace links for another catalog', async () => {
+    it('a different link-type catalog is a full miss: the cached tree has links for another catalog and the document may need images its source job pruned', async () => {
       const cache = new JobResultCache(cacheStore(), 'code-1');
       await runPipelineJob(survey('job-1'), deps(cache));
       fakeMcpClient.discoverLinkTypes.mockResolvedValueOnce([{ referenceName: 'Custom.Covers', name: 'Covers' }]);
       await runPipelineJob(survey('job-2'), deps(cache));
-      expect(fakeIngestionClient.ingest).toHaveBeenCalledTimes(1);
+      expect(fakeIngestionClient.ingest).toHaveBeenCalledTimes(2);
       expect(fakeIngestionClient.level).toHaveBeenCalledTimes(2);
     });
 

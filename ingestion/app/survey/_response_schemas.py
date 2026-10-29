@@ -730,6 +730,8 @@ def score_explanation_schema() -> dict:
         "schema": {
             "type": "object",
             "properties": {
+                # First on purpose: naming the item's language before writing any reason keeps the model from drifting into another one.
+                "language": {"type": "string"},
                 "explanations": {
                     "type": "array",
                     "items": {
@@ -738,9 +740,9 @@ def score_explanation_schema() -> dict:
                         "required": ["category", "reason"],
                         "additionalProperties": False,
                     },
-                }
+                },
             },
-            "required": ["explanations"],
+            "required": ["language", "explanations"],
             "additionalProperties": False,
         },
     }

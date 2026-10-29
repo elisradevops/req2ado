@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from app.debug_capture import DebugCapture
 
 from app.config import settings
+from app.leveling.description_text import description_for_model
 from app.leveling.bounded_chunks import run_chunks_bounded
 from app.leveling.narration_publisher import LevelingProgress, Phase, ProgressCallback, _sample_titles
 from app.quality.criteria_retrieval import CriteriaRetriever
@@ -69,7 +70,7 @@ def _build_criteria_context(criteria_retriever: CriteriaRetriever, nodes: list[W
     node -- see CriteriaRetriever's docstring for why), formatted as plain
     reference text the scoring prompt can cite. Empty string if the branch's
     nodes have no description text at all (nothing to retrieve against)."""
-    combined_text = " ".join(node.description for node in nodes if node.description)
+    combined_text = " ".join(description_for_model(node.description) for node in nodes if node.description)
     if not combined_text.strip():
         return ""
     criteria = criteria_retriever.retrieve(combined_text)
@@ -573,7 +574,7 @@ def _score_epics_and_features(
     # PRE-dispatch narration event fires from the merge loop below, not
     # here -- same reasoning, spelled out there.
     payloads: list[dict[str, dict]] = [
-        {node.local_id: {"type": node.type.value, "text": node.description} for node in chunk} for chunk in chunks
+        {node.local_id: {"type": node.type.value, "text": description_for_model(node.description)} for node in chunk} for chunk in chunks
     ]
 
     # PHASE 2 -- only the client call leaves the calling thread.
@@ -655,12 +656,12 @@ def score_texts_together(
     scores of the two are then comparable, which two separate calls never were. The criteria context is retrieved for the FIRST
     text and shared by all of them. A fixed `category_checklist` is enforced on the answer like everywhere else."""
     criteria_context = None
-    first = next(iter(texts.values()), "")
+    first = description_for_model(next(iter(texts.values()), ""))
     if criteria_retriever is not None and first.strip():
         criteria = criteria_retriever.retrieve(first)
         criteria_context = "\n".join(f"- {c.issue.value}: {c.text}" for c in criteria)
     scores_by_id = scoring_client.score_requirements_for_document(
-        dict(texts), criteria_context, kb_context, category_checklist, user_id=user_id,
+        {text_id: description_for_model(text) for text_id, text in texts.items()}, criteria_context, kb_context, category_checklist, user_id=user_id,
     )
     valid_issue_values = {i.value for i in RequirementQualityIssue}
     out: dict = {}
@@ -904,7 +905,7 @@ def _repair_missing_categories(
         wanted = {name.strip().casefold(): name for name in missing}
         try:
             answer = scoring_client.score_requirements_for_document(
-                {node_id: by_id[node_id].description for node_id in node_ids}, criteria_context, kb_context, list(missing), user_id=user_id,
+                {node_id: description_for_model(by_id[node_id].description) for node_id in node_ids}, criteria_context, kb_context, list(missing), user_id=user_id,
             )
         except Exception as exc:  # noqa: BLE001 -- a repair only completes a breakdown; the scores already stand
             logger.warning("Completing %d item(s) with a missing category failed: %s", len(node_ids), exc)
@@ -972,7 +973,8 @@ def _apply_quality_scores(
     settings.survey_scoring_canary_enabled (default True, preserving prior
     behavior) -- see that setting's own comment in config.py for why an
     operator kill switch exists."""
-    descriptions_by_node_id = {node.local_id: node.description for node in nodes}
+    # What the model reads is the text form of a description (tables as CSV), not the HTML it is stored as.
+    descriptions_by_node_id = {node.local_id: description_for_model(node.description) for node in nodes}
     # §7 canary: injected here (the one place the real batch is built) and
     # popped on the very next line after the call, so nothing else in this
     # function -- and no caller -- can observe it. Skipped when the

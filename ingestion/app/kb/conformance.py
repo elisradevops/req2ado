@@ -19,6 +19,7 @@ import sys
 from dataclasses import dataclass
 from typing import Callable, Protocol
 
+from app.leveling.description_text import description_for_model
 from app.kb.profile import KbProfile
 
 _MODAL = re.compile(r"\b(shall|must|should|will)\b", re.IGNORECASE)
@@ -72,14 +73,14 @@ def conformance_report(items: list[dict], profile: KbProfile, *, judge: Conforma
         check = rule_check_for(rule.text)
         entry: dict = {"rule": rule.text, "sources": rule.sources}
         if check is not None:
-            failed = [str(i["localId"]) for i in requirements if not check.passes(str(i.get("description", "")))]
+            failed = [str(i["localId"]) for i in requirements if not check.passes(description_for_model(str(i.get("description", ""))))]
             entry |= {"method": "program", "check": check.name, "checked": len(requirements), "passed": len(requirements) - len(failed), "failed_ids": failed}
         elif judge is None or not requirements:
             entry |= {"method": "not checked", "checked": 0, "passed": None, "failed_ids": [], "note": "no program check and no model judge"}
         else:
             sample = _sample(requirements, sample_size)
             try:
-                verdicts = judge.judge_rule_conformance(rule.text, {str(i["localId"]): str(i.get("description", "")) for i in sample})
+                verdicts = judge.judge_rule_conformance(rule.text, {str(i["localId"]): description_for_model(str(i.get("description", ""))) for i in sample})
                 failed = [item_id for item_id, ok in verdicts.items() if not ok]
                 entry |= {"method": "model sample", "checked": len(verdicts), "passed": len(verdicts) - len(failed), "failed_ids": sorted(failed), "sampled_ids": sorted(verdicts)}
             except Exception as exc:  # noqa: BLE001 -- a judge that fails leaves the rule unchecked, never "passed"
