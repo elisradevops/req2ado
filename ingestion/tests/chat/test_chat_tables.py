@@ -50,8 +50,19 @@ def test_the_model_rewrites_the_prose_and_the_tables_come_back_in_place() -> Non
 
 
 def test_an_edited_marker_still_matches() -> None:
-    restored, counts = restore_tables("a [table 1] b [ [Table  2 ] ] c", [STYLED, OTHER])
+    restored, counts = restore_tables("a [[table 1]] b [ [Table  2 ] ] c", [STYLED, OTHER])
     assert restored == f"a {STYLED} b {OTHER} c" and counts["restored"] == 2 and counts["reattached"] == 0
+
+
+def test_a_marker_that_lost_one_bracket_matches_only_alone_on_its_line() -> None:
+    restored, counts = restore_tables("Rails:\n  [Table 1]\nEnd.", [STYLED])
+    assert restored == f"Rails:\n  {STYLED}\nEnd." and counts["restored"] == 1 and counts["reattached"] == 0
+
+
+def test_author_prose_that_looks_like_a_single_bracket_marker_is_left_alone() -> None:
+    restored, counts = restore_tables("As shown in [Table 1], the rail is 3.3 V.\n\n[[TABLE 1]]", [STYLED])
+    assert restored == f"As shown in [Table 1], the rail is 3.3 V.\n\n{STYLED}"
+    assert counts["restored"] == 1 and counts["dropped_extra"] == 0
 
 
 def test_a_missing_marker_gets_its_table_appended_in_original_order() -> None:

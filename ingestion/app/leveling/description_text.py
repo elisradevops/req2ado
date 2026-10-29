@@ -255,6 +255,10 @@ def html_to_model_text(description: str | None) -> str:
 
 _TABLE_TAG = re.compile(r"<(/?)table\b[^>]*>", re.IGNORECASE)
 _MARKER = re.compile(r"\[\s*\[?\s*TABLE\s*#?\s*(\d+)\s*\]?\s*\]", re.IGNORECASE)
+# What restore_tables accepts as a marker. A single-bracket "[Table 1]" is also what an author writes in prose ("see [Table 1]"), so it
+# counts only alone on its line, where the model put the marker; inline it is left as written.
+_MARKER_DOUBLE = re.compile(r"\[\s*\[\s*TABLE\s*#?\s*(\d+)\s*\]\s*\]", re.IGNORECASE)
+_MARKER_SINGLE_ALONE = re.compile(r"^([ \t]*)\[\s*TABLE\s*#?\s*(\d+)\s*\](?=[ \t]*$)", re.IGNORECASE | re.MULTILINE)
 
 
 def table_marker(number: int) -> str:
@@ -307,7 +311,7 @@ def _echoed_csv_lines(tables: list[str]) -> set[str]:
 
 
 def restore_tables(proposed: str, tables: list[str]) -> tuple[str, dict[str, int]]:
-    """Puts the stored tables back into a proposal that holds markers. Each marker (matched loosely: case, spacing, brackets) becomes its
+    """Puts the stored tables back into a proposal that holds markers. Each marker (matched loosely: case, spacing; one bracket short only alone on its line) becomes its
     original HTML byte for byte; a duplicated or unknown marker is dropped; a table whose marker is missing is appended at the end in
     original order; CSV lines the model echoed into the prose are removed. Returns the text and counts for the log."""
     counts = {"restored": 0, "reattached": 0, "dropped_extra": 0, "csv_rows_removed": 0}
@@ -321,8 +325,7 @@ def restore_tables(proposed: str, tables: list[str]) -> tuple[str, dict[str, int
     text = "\n".join(kept)
     used: set[int] = set()
 
-    def put_back(match: re.Match[str]) -> str:
-        number = int(match.group(1))
+    def table_for(number: int) -> str:
         if not 1 <= number <= len(tables) or number in used:
             counts["dropped_extra"] += 1
             return ""
@@ -330,7 +333,8 @@ def restore_tables(proposed: str, tables: list[str]) -> tuple[str, dict[str, int
         counts["restored"] += 1
         return tables[number - 1]
 
-    text = _MARKER.sub(put_back, text)
+    text = _MARKER_DOUBLE.sub(lambda match: table_for(int(match.group(1))), text)
+    text = _MARKER_SINGLE_ALONE.sub(lambda match: match.group(1) + table_for(int(match.group(2))), text)
     for number, table in enumerate(tables, start=1):
         if number not in used:
             text = text.rstrip() + "\n\n" + table

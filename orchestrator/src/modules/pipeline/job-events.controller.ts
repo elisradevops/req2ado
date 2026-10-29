@@ -53,7 +53,7 @@ export const runMapKey = (jobId: string): string => `job-events:${jobId}:map`;
 @Controller('jobs')
 export class JobEventsController implements OnModuleDestroy {
   private readonly logger = new Logger(JobEventsController.name);
-  // (job, reason) pairs already logged: the running screen polls this route, so one line per pair is enough. Capped.
+  // (job, reason) pairs already logged: the running screen polls this route, so one line per pair is enough. Capped, reset when full.
   private readonly loggedRunMapMisses = new Set<string>();
 
   constructor(
@@ -108,7 +108,9 @@ export class JobEventsController implements OnModuleDestroy {
   // The 404 of run-map used to leave no trace, so "no map" could not be told from "never written" or "expired". Counts only.
   private noRunMap(jobId: string, reason: 'feature_off' | 'missing' | 'not_json'): NotFoundException {
     const marker = `${jobId}:${reason}`;
-    if (!this.loggedRunMapMisses.has(marker) && this.loggedRunMapMisses.size < 1000) {
+    if (!this.loggedRunMapMisses.has(marker)) {
+      // Full: forget everything, so a long-lived pod keeps logging new jobs (at worst one repeat line per old pair).
+      if (this.loggedRunMapMisses.size >= 1000) this.loggedRunMapMisses.clear();
       this.loggedRunMapMisses.add(marker);
       this.logger.log(`run-map 404 job=${jobId} reason=${reason}`);
     }
