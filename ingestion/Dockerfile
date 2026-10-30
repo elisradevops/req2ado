@@ -26,5 +26,24 @@ RUN apt-get update \
 COPY pyproject.toml ./
 COPY app ./app
 RUN pip install --no-cache-dir .
+# Optional, empty by default -- a developer on a network with TLS-intercepting
+# middleware (e.g. a corporate proxy) can supply an extra trusted CA
+# certificate via docker-compose.override.yml (gitignored, never committed).
+# Without it, KB ingestion cannot download SharePoint/OneDrive files: the
+# pre-signed download host is re-signed by the proxy and fails verification.
+# The cert is ADDED to the system store (never replaces it), and SSL_CERT_FILE
+# points httpx at that bundle. SSL_CERT_FILE is process-wide: every outbound
+# client in this service that uses default verification (Graph, LLM, vision,
+# embeddings) trusts the system bundle instead of certifi's; with no cert
+# supplied that bundle is the stock Debian one (the same public roots).
+# A supplied value that is not a valid PEM certificate fails the build --
+# update-ca-certificates alone would exit 0 having added nothing.
+ARG EXTRA_CA_CERT=""
+RUN if [ -n "$EXTRA_CA_CERT" ]; then \
+      printf '%s\n' "$EXTRA_CA_CERT" > /usr/local/share/ca-certificates/extra-ca.crt \
+      && python -c "import ssl; ssl.PEM_cert_to_DER_cert(open('/usr/local/share/ca-certificates/extra-ca.crt').read())" \
+      && update-ca-certificates; \
+    fi
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
