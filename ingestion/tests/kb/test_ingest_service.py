@@ -352,11 +352,15 @@ def test_skips_a_document_whose_hash_is_unchanged(mock_dispatch, tmp_path) -> No
         vector_store=vector_store,
     )
 
-    ingest_document_from_url(**kwargs)  # first ingest
+    first = ingest_document_from_url(**kwargs)  # first ingest
+    assert first.chunks_in_store == first.chunks_stored > 0
     result = ingest_document_from_url(**kwargs)  # second ingest: unchanged content
 
     assert result.skipped_unchanged is True
     assert result.chunks_stored == 0
+    # K8: the skip branch still reports how many chunks the store really holds
+    # for the file, so the caller can record a truthful count (not 0).
+    assert result.chunks_in_store == first.chunks_in_store > 0
 
 
 @patch("app.kb.ingest_service.dispatch_by_extension")
@@ -792,3 +796,28 @@ def test_ingest_folder_rejects_ssrf_url_before_listing_children(tmp_path) -> Non
         )
 
     graph_client.list_folder_children.assert_not_called()
+
+
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_skip_branch_reports_unknown_count_when_the_count_read_fails(mock_dispatch, tmp_path) -> None:
+    mock_dispatch.return_value = _fake_doc("Some paragraph text")
+    graph_client = MagicMock()
+    graph_client.get_drive_item.return_value = GraphDriveItem(
+        id="item-1", name="doc.docx", mime_type="application/vnd.openxmlformats", size=len(DOCX_CONTENT)
+    )
+    graph_client.fetch_content.return_value = DOCX_CONTENT
+    vector_store = KbVectorStore(persist_path=str(tmp_path))
+    kwargs = dict(
+        url=VALID_URL, user_id="Project\\Area1", doc_type="requirements", graph_client=graph_client,
+        embed_client=FakeEmbedClient(), vector_store=vector_store,
+    )
+    ingest_document_from_url(**kwargs)
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("chroma hiccup")
+
+    vector_store.count_file_chunks = boom  # type: ignore[method-assign]
+    result = ingest_document_from_url(**kwargs)
+
+    assert result.skipped_unchanged is True
+    assert result.chunks_in_store is None

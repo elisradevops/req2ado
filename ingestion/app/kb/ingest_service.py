@@ -24,6 +24,11 @@ class IngestResult(BaseModel):
     size_bytes: int
     chunks_stored: int
     skipped_unchanged: bool
+    # Chunks the store really holds for this file after the call: equals
+    # chunks_stored on a fresh ingest, but is the existing count (not 0) on the
+    # skip-unchanged branch, so callers can record a truthful number. None =
+    # unknown (count unavailable); never 0 by default.
+    chunks_in_store: int | None = None
 
 
 # Recursive folder-crawl depth cap: bounds worst-case Graph API calls
@@ -37,6 +42,7 @@ class FolderIngestFileResult(BaseModel):
     file: str
     status: str  # "ingested" | "skipped_unchanged" | "failed"
     chunks_stored: int
+    chunks_in_store: int | None = None
     driveitem_id: str | None = None
     mime_type: str | None = None
     size_bytes: int | None = None
@@ -114,6 +120,13 @@ def _store_document(
             vector_store.rename_file(user_id, item_id, name)
         except Exception as exc:  # noqa: BLE001 - rename metadata update must never fail an ingest
             logger.warning("rename_file failed for %s (source_id=%s): %s", name, item_id, exc)
+        # Best-effort like the rename above: a store hiccup here must not fail
+        # the (otherwise infallible) skip branch; the count is then unknown.
+        try:
+            chunks_in_store: int | None = vector_store.count_file_chunks(user_id, item_id)
+        except Exception as exc:  # noqa: BLE001 - count is informational only
+            logger.warning("count_file_chunks failed for %s (source_id=%s): %s", name, item_id, exc)
+            chunks_in_store = None
         return IngestResult(
             document_name=name,
             driveitem_id=item_id,
@@ -121,6 +134,7 @@ def _store_document(
             size_bytes=len(content),
             chunks_stored=0,
             skipped_unchanged=True,
+            chunks_in_store=chunks_in_store,
         )
 
     suffix = Path(name).suffix
@@ -200,6 +214,7 @@ def _store_document(
         size_bytes=len(content),
         chunks_stored=len(embedded),
         skipped_unchanged=False,
+        chunks_in_store=len(embedded),
     )
 
 
@@ -335,6 +350,7 @@ def _ingest_folder_children(
                     file=child.name,
                     status="skipped_unchanged" if result.skipped_unchanged else "ingested",
                     chunks_stored=result.chunks_stored,
+                    chunks_in_store=result.chunks_in_store,
                     driveitem_id=child.id,
                     mime_type=child.mime_type,
                     size_bytes=len(content),

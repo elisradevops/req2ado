@@ -447,6 +447,12 @@ model IngestedDocument {
   // here too so the KB document list UI can show/edit a file's mode without
   // a round trip to ingestion's Chroma-backed store.
   retrievalMode String?
+  // Chunks the vector store held for this file at its last successful ingest
+  // (a snapshot, not live truth; a skip-unchanged re-ingest reports the
+  // existing count, not 0). Null = unknown (rows from before this column, or
+  // an unavailable count -- an unknown overwrites a possibly stale number). The row alone never proved any
+  // vectors exist; this is what the KB page shows instead.
+  chunkCount    Int?
   ingestedAt    DateTime @default(now())
 
   @@unique([userId, driveItemId])

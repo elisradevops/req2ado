@@ -16,6 +16,8 @@ export interface IngestUrlResult {
   mimeType: string | null;
   sizeBytes: number;
   chunksStored: number;
+  // What the vector store holds for the file now (see the ingestion client); null when unknown.
+  chunksInStore: number | null;
   skippedUnchanged: boolean;
 }
 
@@ -28,6 +30,8 @@ export interface IngestedDocumentSummary {
   mimeType: string | null;
   docType: string | null;
   retrievalMode: string | null;
+  // Chunks the vector store held for this file at its last successful ingest (a snapshot); null = unknown (older rows, or the count was unavailable).
+  chunkCount: number | null;
   ingestedAt: Date;
 }
 
@@ -35,6 +39,7 @@ export interface FolderIngestFile {
   file: string;
   status: string;
   chunksStored: number;
+  chunksInStore: number | null;
   driveitemId: string | null;
   mimeType: string | null;
   sizeBytes: number | null;
@@ -139,6 +144,7 @@ export class KbService {
         mimeType: result.mimeType,
         docType,
         retrievalMode,
+        chunkCount: result.chunksInStore,
       },
       update: {
         name: result.documentName,
@@ -146,6 +152,7 @@ export class KbService {
         mimeType: result.mimeType,
         docType,
         retrievalMode,
+        chunkCount: result.chunksInStore,
         ingestedAt: new Date(),
       },
     });
@@ -265,6 +272,7 @@ export class KbService {
         mimeType: result.mimeType,
         docType,
         retrievalMode,
+        chunkCount: result.chunksInStore,
       },
       update: {
         name: relativePath,
@@ -272,6 +280,7 @@ export class KbService {
         mimeType: result.mimeType,
         docType,
         retrievalMode,
+        chunkCount: result.chunksInStore,
         ingestedAt: new Date(),
       },
     });
@@ -306,12 +315,14 @@ export class KbService {
             sizeBytes: f.sizeBytes ?? 0,
             mimeType: f.mimeType,
             docType,
+            chunkCount: f.chunksInStore,
           },
           update: {
             name: f.relativePath ?? f.file,
             sizeBytes: f.sizeBytes ?? 0,
             mimeType: f.mimeType,
             docType,
+            chunkCount: f.chunksInStore,
             ingestedAt: new Date(),
           },
         }),

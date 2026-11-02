@@ -460,6 +460,7 @@ describe('IngestionHttpClient.ingestUrl', () => {
         mime_type: 'application/pdf',
         size_bytes: 1024,
         chunks_stored: 3,
+        chunks_in_store: 3,
         skipped_unchanged: false,
       }),
     });
@@ -487,8 +488,31 @@ describe('IngestionHttpClient.ingestUrl', () => {
       mimeType: 'application/pdf',
       sizeBytes: 1024,
       chunksStored: 3,
+      chunksInStore: 3,
       skippedUnchanged: false,
     });
+  });
+
+  it('maps chunks_in_store, and null when an older ingestion service omits it (count unknown, not 0)', async () => {
+    const body = { document_name: 'd.pdf', driveitem_id: 'drive-1', mime_type: null, size_bytes: 1, chunks_stored: 0, skipped_unchanged: true };
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ...body, chunks_in_store: 32 }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => body })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ...body, chunks_in_store: 5 }) }) as any;
+
+    const client = new IngestionHttpClient('http://ingestion:8000');
+    expect((await client.ingestUrl('https://x/d.pdf', 'u', null)).chunksInStore).toBe(32);
+    expect((await client.ingestUrl('https://x/d.pdf', 'u', null)).chunksInStore).toBeNull();
+    expect((await client.ingestItem('d.pdf', 'drive-1', 'https://dl', 'u', null)).chunksInStore).toBe(5);
+
+    global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => body }) as any;
+    expect((await client.ingestItem('d.pdf', 'drive-1', 'https://dl', 'u', null)).chunksInStore).toBeNull();
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ files: [{ file: 'a.docx', status: 'skipped_unchanged', chunks_stored: 0, driveitem_id: 'd', mime_type: null, size_bytes: 1, reason: null, relative_path: 'a.docx' }] }),
+    }) as any;
+    expect((await client.ingestFolderUrl('https://x/folder', 'u', null)).files[0].chunksInStore).toBeNull();
   });
 
   it('forwards retrievalMode as retrieval_mode in the request body', async () => {
@@ -547,8 +571,8 @@ describe('IngestionHttpClient.ingestFolderUrl', () => {
       ok: true,
       json: async () => ({
         files: [
-          { file: 'a.docx', status: 'ingested', chunks_stored: 2, driveitem_id: 'drive-a', mime_type: 'application/a', size_bytes: 100, reason: null, relative_path: 'a.docx' },
-          { file: 'bad.docx', status: 'failed', chunks_stored: 0, driveitem_id: null, mime_type: null, size_bytes: null, reason: 'corrupt', relative_path: null },
+          { file: 'a.docx', status: 'ingested', chunks_stored: 2, chunks_in_store: 2, driveitem_id: 'drive-a', mime_type: 'application/a', size_bytes: 100, reason: null, relative_path: 'a.docx' },
+          { file: 'bad.docx', status: 'failed', chunks_stored: 0, chunks_in_store: 0, driveitem_id: null, mime_type: null, size_bytes: null, reason: 'corrupt', relative_path: null },
         ],
       }),
     });
@@ -566,8 +590,8 @@ describe('IngestionHttpClient.ingestFolderUrl', () => {
     );
     expect(result).toEqual({
       files: [
-        { file: 'a.docx', status: 'ingested', chunksStored: 2, driveitemId: 'drive-a', mimeType: 'application/a', sizeBytes: 100, reason: null, relativePath: 'a.docx' },
-        { file: 'bad.docx', status: 'failed', chunksStored: 0, driveitemId: null, mimeType: null, sizeBytes: null, reason: 'corrupt', relativePath: null },
+        { file: 'a.docx', status: 'ingested', chunksStored: 2, chunksInStore: 2, driveitemId: 'drive-a', mimeType: 'application/a', sizeBytes: 100, reason: null, relativePath: 'a.docx' },
+        { file: 'bad.docx', status: 'failed', chunksStored: 0, chunksInStore: 0, driveitemId: null, mimeType: null, sizeBytes: null, reason: 'corrupt', relativePath: null },
       ],
     });
   });

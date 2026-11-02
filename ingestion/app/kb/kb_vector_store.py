@@ -30,6 +30,22 @@ _MAX_LISTED_DOCUMENTS = 5000
 logger = logging.getLogger(__name__)
 
 
+def _is_missing_collection_error(exc: Exception) -> bool:
+    """True only for chromadb's "this COLLECTION does not exist" error across
+    versions (InvalidCollectionException; NotFoundError/ValueError on other
+    builds and transports). A missing tenant/database, a 404 from a wrong server, or a
+    connection failure must still propagate: treating those as "KB never
+    created" would recreate the silent-empty-KB problem this guards against."""
+    if type(exc).__name__ == "InvalidCollectionException":
+        return True
+    # chromadb 0.6.x over HTTP signals a missing collection with
+    # InvalidArgumentError (see purge_user); 1.x with NotFoundError.
+    if type(exc).__name__ in {"NotFoundError", "InvalidArgumentError"} or isinstance(exc, ValueError):
+        message = str(exc).lower()
+        return "collection" in message and "does not exist" in message
+    return False
+
+
 def _kb_collection_name_for_user(user_id: str, embed_model: str) -> str:
     # Separate namespace from dedup's `req2ado_<hash>` collections (see
     # dedup/vector_store.py) — KB chunks store real source text and are a
@@ -109,6 +125,27 @@ class KbVectorStore:
             name=_kb_collection_name_for_user(user_id, self._embed_model),
             metadata={"hnsw:space": "cosine"},
         )
+        self._collection_cache[user_id] = collection
+        return collection
+
+    def _existing_collection(self, user_id: str):
+        """The user's KB collection, or None when it has never been created.
+
+        Every READ path uses this instead of _get_collection: a read must not
+        create the collection (a job's retrieval used to leave an empty one
+        behind, which then masked a KB that was never ingested). Only the
+        write path (upsert_chunk) creates. A missing collection is never
+        cached, so the first upsert is seen by later reads on this store."""
+        cached = self._collection_cache.get(user_id)
+        if cached is not None:
+            return cached
+        try:
+            name = _kb_collection_name_for_user(user_id, self._embed_model)
+            collection = self._client.get_collection(name=name)
+        except Exception as exc:  # noqa: BLE001 -- the "missing" error type varies by chromadb version
+            if _is_missing_collection_error(exc):
+                return None
+            raise
         self._collection_cache[user_id] = collection
         return collection
 
@@ -202,7 +239,9 @@ class KbVectorStore:
         metadata gets brought current without a full re-embed. `source_file`
         is accepted but intentionally unused for filtering -- kept so this
         method's call sites don't need to change."""
-        collection = self._get_collection(user_id)
+        collection = self._existing_collection(user_id)
+        if collection is None:
+            return None
         result = collection.get(where={"source_id": source_id}, limit=1)
         metadatas = result.get("metadatas") or []
         if not metadatas:
@@ -221,7 +260,9 @@ class KbVectorStore:
         the freshly-ingested new-named chunks. `source_file` is accepted but
         intentionally unused for filtering -- kept so this method's call
         sites don't need to change."""
-        collection = self._get_collection(user_id)
+        collection = self._existing_collection(user_id)
+        if collection is None:
+            return None
         collection.delete(where={"source_id": source_id})
 
     def rename_file(self, user_id: str, source_id: str, source_file: str) -> None:
@@ -232,7 +273,9 @@ class KbVectorStore:
         upsert_chunk at all). Cheap no-op check first: only pays for the
         full-collection rewrite when the name has actually changed. No-op
         (not an error) if source_id was never ingested."""
-        collection = self._get_collection(user_id)
+        collection = self._existing_collection(user_id)
+        if collection is None:
+            return None
         probe = collection.get(where={"source_id": source_id}, limit=1, include=["metadatas"])
         probe_metadatas = probe.get("metadatas") or []
         if not probe_metadatas:
@@ -293,9 +336,30 @@ class KbVectorStore:
     def chunk_count(self, user_id: str) -> int:
         """How many chunks this user's KB holds (0 when there is none); for the audit line of a destructive action."""
         try:
-            return int(self._get_collection(user_id).count())
+            collection = self._existing_collection(user_id)
+            return 0 if collection is None else int(collection.count())
         except Exception:  # noqa: BLE001 -- only an audit number
             return 0
+
+    def count_file_chunks(self, user_id: str, source_id: str) -> int:
+        """How many chunks this user's KB currently holds for one file (the
+        stable source_id), 0 when the file or the whole collection is absent.
+        Recorded by the orchestrator as the count observed at the last
+        successful ingest (a snapshot, not a live truth)."""
+        collection = self._existing_collection(user_id)
+        if collection is None:
+            return 0
+        count = 0
+        offset = 0
+        while True:
+            page = collection.get(
+                where={"source_id": source_id}, limit=_GET_PAGE_SIZE, offset=offset, include=[]
+            )
+            page_ids = page.get("ids") or []
+            count += len(page_ids)
+            if len(page_ids) < _GET_PAGE_SIZE:
+                return count
+            offset += _GET_PAGE_SIZE
 
     def purge_user(self, user_id: str) -> None:
         """Irreversibly drops this user_id's entire KB collection -- the
@@ -345,7 +409,9 @@ class KbVectorStore:
         (text, True) when the document was too large and had to be capped
         -- the caller (llm_leveling.py's read_document_fn) surfaces this to
         the model instead of silently handing back a partial document."""
-        collection = self._get_collection(user_id)
+        collection = self._existing_collection(user_id)
+        if collection is None:
+            return None, False
         pairs: list[tuple[dict, str]] = []
         offset = 0
         while True:
@@ -382,7 +448,9 @@ class KbVectorStore:
         applies. `[]` means extraction ran and genuinely found no checklist
         in the document -- also falls back, but is a distinct, deliberate
         signal from "never ran"."""
-        collection = self._get_collection(user_id)
+        collection = self._existing_collection(user_id)
+        if collection is None:
+            return None
         result = collection.get(where={"source_file": source_file}, limit=1)
         metadatas = result.get("metadatas") or []
         if not metadatas:
@@ -404,7 +472,9 @@ class KbVectorStore:
         the caller (app.leveling.scoring._match_category_checklist), kept
         distinct only for the same debuggability reason get_quality_
         checklist's own None/[] distinction is."""
-        collection = self._get_collection(user_id)
+        collection = self._existing_collection(user_id)
+        if collection is None:
+            return None
         result = collection.get(where={"source_file": source_file}, limit=1)
         metadatas = result.get("metadatas") or []
         if not metadatas:
@@ -427,7 +497,9 @@ class KbVectorStore:
         the user's ENTIRE KB just to build this list. Stops once either the
         real last page is reached or _MAX_LISTED_DOCUMENTS distinct names
         have been collected."""
-        collection = self._get_collection(user_id)
+        collection = self._existing_collection(user_id)
+        if collection is None:
+            return []
         if collection.count() == 0:
             return []
         names: set[str] = set()
@@ -454,7 +526,9 @@ class KbVectorStore:
         output) since most documents are the "retrieve" default and would
         otherwise be fetched and discarded for nothing. Same pagination/cap
         convention as list_documents -- see its own docstring."""
-        collection = self._get_collection(user_id)
+        collection = self._existing_collection(user_id)
+        if collection is None:
+            return []
         if collection.count() == 0:
             return []
         names: set[str] = set()
@@ -484,7 +558,9 @@ class KbVectorStore:
         closer) — callers apply their own similarity cutoff. Empty list
         if the collection has no chunks (mirrors ChromaVectorStore.
         query_nearest's empty-collection guard)."""
-        collection = self._get_collection(user_id)
+        collection = self._existing_collection(user_id)
+        if collection is None:
+            return []
         if collection.count() == 0:
             return []
         result = collection.query(query_embeddings=[embedding], n_results=top_k)

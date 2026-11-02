@@ -573,3 +573,123 @@ def test_purge_user_deletes_the_model_scoped_collection_name() -> None:
         # the user's chunk collection and, beside it, the stored KB profile built from those chunks
         assert deleted[0] == _kb_collection_name_for_user("Project\\Area1", "bge-m3")
         assert len(deleted) == 2 and deleted[1].startswith("req2ado_kbprofile_")
+
+
+def _collection_names(store: KbVectorStore) -> list[str]:
+    # chromadb >= 0.6: list_collections returns names (str).
+    return [str(c) for c in store._client.list_collections()]
+
+
+def test_read_paths_never_create_a_missing_collection() -> None:
+    # K7: a read (a job's retrieval, a document listing) used to
+    # get_or_create the user's collection, so merely running a job created an
+    # empty one and masked a KB that was never ingested.
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        user = "Project\\Area1"
+        assert store.existing_file_hash(user, "doc.txt", "source-1") is None
+        assert store.count_file_chunks(user, "source-1") == 0
+        assert store.chunk_count(user) == 0
+        assert store.list_documents(user) == []
+        assert store.list_always_include_documents(user) == []
+        assert store.query(user, [1.0, 0.0, 0.0], top_k=3) == []
+        assert store.get_document(user, "doc.txt") == (None, False)
+        assert store.get_quality_checklist(user, "doc.txt") is None
+        assert store.get_quality_checklist_definitions(user, "doc.txt") is None
+        store.delete_file_chunks(user, "doc.txt", "source-1")
+        store.rename_file(user, "source-1", "doc.txt")
+        assert _collection_names(store) == []
+
+
+def test_upsert_still_creates_the_collection_and_reads_then_see_it() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        user = "Project\\Area1"
+        store.upsert_chunk(
+            chunk_id="s1:doc.txt:0", embedding=[1.0, 0.0, 0.0], text="t",
+            user_id=user, source_file="doc.txt", source_id="s1", chunk_index=0, file_hash="h",
+        )
+        assert len(_collection_names(store)) == 1
+        assert store.list_documents(user) == ["doc.txt"]
+        assert store.chunk_count(user) == 1
+
+
+def test_a_read_before_the_first_ingest_does_not_pin_a_stale_missing_state() -> None:
+    # The missing-collection result must not be cached: after the first
+    # upsert creates the collection, the very same store must see its chunks.
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        user = "Project\\Area1"
+        assert store.list_documents(user) == []
+        store.upsert_chunk(
+            chunk_id="s1:doc.txt:0", embedding=[1.0, 0.0, 0.0], text="t",
+            user_id=user, source_file="doc.txt", source_id="s1", chunk_index=0, file_hash="h",
+        )
+        assert store.list_documents(user) == ["doc.txt"]
+
+
+def test_count_file_chunks_counts_only_that_source() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        user = "Project\\Area1"
+        for source_id, n in (("s1", 3), ("s2", 2)):
+            for i in range(n):
+                store.upsert_chunk(
+                    chunk_id=f"{source_id}:f:{i}", embedding=[1.0, 0.0, 0.0], text="t",
+                    user_id=user, source_file=f"{source_id}.txt", source_id=source_id,
+                    chunk_index=i, file_hash="h",
+                )
+        assert store.count_file_chunks(user, "s1") == 3
+        assert store.count_file_chunks(user, "s2") == 2
+        assert store.count_file_chunks(user, "other") == 0
+
+
+class _StubClient:
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    def get_collection(self, name: str):
+        raise self._exc
+
+
+def _store_with_failing_client(exc: Exception) -> KbVectorStore:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+    store._client = _StubClient(exc)
+    return store
+
+
+def test_a_real_outage_propagates_from_read_paths_instead_of_looking_like_an_empty_kb() -> None:
+    import pytest
+
+    store = _store_with_failing_client(ConnectionError("chroma unreachable"))
+    with pytest.raises(ConnectionError):
+        store.list_documents("Project\\Area1")
+    with pytest.raises(ConnectionError):
+        store.count_file_chunks("Project\\Area1", "s1")
+
+
+def test_a_missing_database_or_tenant_is_not_mistaken_for_a_missing_collection() -> None:
+    import pytest
+    from chromadb.errors import NotFoundError
+
+    store = _store_with_failing_client(NotFoundError("Database default_db does not exist"))
+    with pytest.raises(NotFoundError):
+        store.query("Project\\Area1", [1.0, 0.0, 0.0], top_k=3)
+
+
+def test_a_missing_collection_error_of_either_chroma_flavour_reads_as_empty() -> None:
+    from chromadb.errors import InvalidArgumentError, NotFoundError
+
+    missing = "Collection x does not exist."
+    for exc in (NotFoundError(missing), ValueError(missing), InvalidArgumentError(missing)):
+        assert _store_with_failing_client(exc).list_documents("Project\\Area1") == []
+
+
+def test_an_unrelated_invalid_argument_error_still_propagates() -> None:
+    import pytest
+    from chromadb.errors import InvalidArgumentError
+
+    store = _store_with_failing_client(InvalidArgumentError("bad where clause"))
+    with pytest.raises(InvalidArgumentError):
+        store.list_documents("Project\\Area1")

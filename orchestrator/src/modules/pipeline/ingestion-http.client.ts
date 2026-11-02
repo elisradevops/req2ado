@@ -748,6 +748,10 @@ export class IngestionHttpClient {
     mimeType: string | null;
     sizeBytes: number;
     chunksStored: number;
+    // Chunks the vector store really holds for the file after the call (the
+    // existing count on a skip-unchanged re-ingest); null from an older
+    // ingestion service that does not report it.
+    chunksInStore: number | null;
     skippedUnchanged: boolean;
   }> {
     const response = await fetch(`${this.baseUrl}/kb/ingest-url`, {
@@ -771,6 +775,7 @@ export class IngestionHttpClient {
       mime_type: string | null;
       size_bytes: number;
       chunks_stored: number;
+      chunks_in_store?: number | null;
       skipped_unchanged: boolean;
     };
     return {
@@ -779,6 +784,7 @@ export class IngestionHttpClient {
       mimeType: body.mime_type,
       sizeBytes: body.size_bytes,
       chunksStored: body.chunks_stored,
+      chunksInStore: body.chunks_in_store ?? null,
       skippedUnchanged: body.skipped_unchanged,
     };
   }
@@ -804,6 +810,7 @@ export class IngestionHttpClient {
         file: string;
         status: string;
         chunks_stored: number;
+        chunks_in_store?: number | null;
         driveitem_id: string | null;
         mime_type: string | null;
         size_bytes: number | null;
@@ -816,6 +823,7 @@ export class IngestionHttpClient {
         file: f.file,
         status: f.status,
         chunksStored: f.chunks_stored,
+        chunksInStore: f.chunks_in_store ?? null,
         driveitemId: f.driveitem_id,
         mimeType: f.mime_type,
         sizeBytes: f.size_bytes,
@@ -842,6 +850,10 @@ export class IngestionHttpClient {
     mimeType: string | null;
     sizeBytes: number;
     chunksStored: number;
+    // Chunks the vector store really holds for the file after the call (the
+    // existing count on a skip-unchanged re-ingest); null from an older
+    // ingestion service that does not report it.
+    chunksInStore: number | null;
     skippedUnchanged: boolean;
   }> {
     const response = await fetch(`${this.baseUrl}/kb/ingest-item`, {
@@ -867,6 +879,7 @@ export class IngestionHttpClient {
       mime_type: string | null;
       size_bytes: number;
       chunks_stored: number;
+      chunks_in_store?: number | null;
       skipped_unchanged: boolean;
     };
     return {
@@ -875,6 +888,7 @@ export class IngestionHttpClient {
       mimeType: body.mime_type,
       sizeBytes: body.size_bytes,
       chunksStored: body.chunks_stored,
+      chunksInStore: body.chunks_in_store ?? null,
       skippedUnchanged: body.skipped_unchanged,
     };
   }
