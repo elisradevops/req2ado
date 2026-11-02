@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { Prisma } from '@prisma/client';
 import { runPipelineJob } from '../src/modules/pipeline/pipeline.worker';
 
 import { JobResultCache } from '../src/modules/pipeline/result-cache';
@@ -322,6 +323,7 @@ describe('runPipelineJob', () => {
         dryRunDiff: [],
         warnings: [],
         kbCitations: [],
+        kbCoverage: Prisma.DbNull,
         figureDescriptions: [],
         tableDescriptions: [],
         // Backward-compat default: the mocked level() response has neither
@@ -954,6 +956,7 @@ describe('runPipelineJob', () => {
           },
         ],
         kbCitations: [],
+        kbCoverage: Prisma.DbNull,
         figureDescriptions: [],
         tableDescriptions: [],
         // Doc-wide ids the mapping stage judged decorative/irrelevant, or
@@ -1574,6 +1577,7 @@ describe('runPipelineJob', () => {
           { sourceFile: 'doc-a.docx', similarity: 0.9, relevance: 'relevant' },
           { sourceFile: 'doc-b.pdf', similarity: 0.7, relevance: 'unknown' },
         ],
+        kbCoverage: Prisma.DbNull,
         figureDescriptions: [],
         tableDescriptions: [],
         excludedFigureIds: [],
@@ -1585,6 +1589,36 @@ describe('runPipelineJob', () => {
         diffReadyAt: expect.any(Date),
       },
     });
+  });
+
+  it("persists the tree's kb_coverage as camelCase and clears the column (DbNull) when the tree has none", async () => {
+    const deps = {
+      ingestionClient: fakeIngestionClient as any,
+      dryRunService: fakeDryRunService as any,
+      idempotencyService: fakeIdempotencyService as any,
+      prisma: fakePrisma as any,
+      jobEventsPublisher: fakeJobEventsPublisher as any,
+      mcpClient: fakeMcpClient as any,
+      backfillService: fakeBackfillService as any,
+      adoCredentialResolver: fakeAdoCredentialResolver as any,
+      defaultLlmModel: 'gemma4:12b',
+    };
+    const job = { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey' as const, fileBuffer: Buffer.from(''), filename: 'x.txt' };
+    fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+    fakeDryRunService.diff.mockResolvedValue([]);
+
+    fakeIngestionClient.level.mockResolvedValue({ nodes: [], kb_coverage: { files_available: 3, files_cited: 1 } });
+    await runPipelineJob(job, deps);
+    expect(fakePrisma.job.update).toHaveBeenCalledWith({
+      where: { id: 'job-1' },
+      data: expect.objectContaining({ status: 'diff_ready', kbCoverage: { filesAvailable: 3, filesCited: 1 } }),
+    });
+
+    fakePrisma.job.update.mockClear();
+    fakeIngestionClient.level.mockResolvedValue({ nodes: [], kb_coverage: null });
+    await runPipelineJob(job, deps);
+    const data = fakePrisma.job.update.mock.calls.find((c: any[]) => c[0].data.status === 'diff_ready')[0].data;
+    expect(data.kbCoverage).toBe(Prisma.DbNull);
   });
 
   it("extracts figures with a real caption or name from ingestion's /ingest response and persists them 1-based by array position", async () => {

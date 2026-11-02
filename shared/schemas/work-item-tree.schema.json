@@ -20,6 +20,10 @@
       "type": "array",
       "items": { "$ref": "#/definitions/KbCitation" }
     },
+    "kb_coverage": {
+      "oneOf": [{ "$ref": "#/definitions/KbCoverage" }, { "type": "null" }],
+      "description": "How much of the user's Knowledge Base a SURVEY run could use versus did cite. null when no KB grounding ran (BASELINE, or SURVEY without KB dependencies) or the file listing failed; absent on trees produced before this field existed."
+    },
     "trace_links": {
       "type": "array",
       "items": { "$ref": "#/definitions/TraceLink" }
@@ -155,6 +159,15 @@
         "source_file": { "type": "string" },
         "similarity": { "type": "number" },
         "relevance": { "type": "string", "enum": ["relevant", "not_relevant", "unknown"] }
+      }
+    },
+    "KbCoverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["files_available", "files_cited"],
+      "properties": {
+        "files_available": { "type": "integer", "minimum": 0, "description": "Distinct source files with stored vectors in the user's KB when the run retrieved from it." },
+        "files_cited": { "type": "integer", "minimum": 0, "description": "Distinct source files in kb_citations: files surfaced by retrieval/always-include for this run (any relevance verdict). On the SURVEY fallback path this is broader than any single prompt's grounding." }
       }
     },
     "TraceLink": {

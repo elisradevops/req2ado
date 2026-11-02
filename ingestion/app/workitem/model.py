@@ -38,6 +38,16 @@ class KbCitation(BaseModel):
     relevance: KbCitationRelevance = KbCitationRelevance.UNKNOWN
 
 
+class KbCoverage(BaseModel):
+    """How much of the user's KB a SURVEY run could use vs. did cite.
+    `files_cited` counts distinct source files in WorkItemTree.kb_citations
+    (any relevance verdict; on the fallback path broader than any single
+    prompt's grounding -- see build_survey_tree's citation merge)."""
+
+    files_available: int = Field(ge=0)
+    files_cited: int = Field(ge=0)
+
+
 # Per-dimension 0-100 breakdown backing the single overall quality_score
 # below -- added because a lone number (e.g. 40) with only a closed-
 # vocabulary issue TAG list (e.g. ['ambiguous', 'vague_term']) told a
@@ -565,6 +575,9 @@ class WorkItemTree(BaseModel):
     # while formalizing this tree's requirements -- whole-document, not
     # per-node, mirroring trace_links below.
     kb_citations: list[KbCitation] = Field(default_factory=list)
+    # None when no KB grounding ran (BASELINE, SURVEY without KB deps) or the
+    # KB file listing failed -- reporting coverage never fails a job.
+    kb_coverage: KbCoverage | None = None
     trace_links: list[TraceLink] = Field(default_factory=list)
     # Figures/tables SURVEY's whole-document mapping stage judged structurally
     # irrelevant to every work item (a decorative logo, a divider, a page

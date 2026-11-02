@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import itertools
 import logging
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING, Callable, NamedTuple, Protocol
+from typing import TYPE_CHECKING, Any, Callable, NamedTuple, Protocol
 
 if TYPE_CHECKING:
     from app.debug_capture import DebugCapture
@@ -78,6 +79,7 @@ from app.leveling.tree_builder import figures_by_id
 from app.quality.criteria_retrieval import CriteriaRetriever
 from app.leveling.warnings_finalize import finalize_warnings
 from app.workitem.model import (
+    KbCoverage,
     IntegrityWarning,
     KbCitation,
     KbCitationRelevance,
@@ -626,6 +628,42 @@ class SectionAnalysisClient(Protocol):
         kb_context: str | None = None,
         user_id: str | None = None,
     ) -> tuple[dict[str, dict], bool]: ...
+
+
+def _count_kb_files(user_id: str, vector_store: Any) -> int | None:
+    """Distinct KB source files with stored vectors for this user -- the
+    "available" half of WorkItemTree.kb_coverage. Best-effort: coverage
+    reporting must never fail a SURVEY job, so a listing failure is logged
+    and reported as unknown (None)."""
+    try:
+        return len(vector_store.list_documents(user_id))
+    except Exception as exc:  # noqa: BLE001 - coverage reporting is best-effort, never fails a job
+        logger.warning("KB file listing for coverage failed: %s", exc)
+        return None
+
+
+def _kb_coverage(files_available: int | None, citations: list[KbCitation]) -> KbCoverage | None:
+    if files_available is None:
+        return None
+    return KbCoverage(
+        files_available=files_available,
+        files_cited=len({c.source_file for c in citations}),
+    )
+
+
+def _stamp_kb_files_available(
+    progress_callback: Callable[[LevelingProgress], None] | None, files_available: int | None,
+) -> Callable[[LevelingProgress], None] | None:
+    """Wraps the progress callback so every narration event emitted after KB
+    retrieval carries how many KB files were available, without threading a
+    new argument through each of the many LevelingProgress call sites."""
+    if progress_callback is None or files_available is None:
+        return progress_callback
+
+    def _stamped(progress: LevelingProgress) -> None:
+        progress_callback(dataclasses.replace(progress, kb_files_available=files_available))
+
+    return _stamped
 
 
 def _resolve_kb_citations(
@@ -1980,6 +2018,8 @@ def build_survey_tree(
                 doc_kb_context, doc_kb_citations, user_id, vector_store,
             )
         deduped_citations = sorted(doc_kb_citations, key=lambda c: c.source_file)
+        kb_files_available = _count_kb_files(user_id, vector_store) if kb_deps_present else None
+        progress_callback = _stamp_kb_files_available(progress_callback, kb_files_available)
 
         if scoring_client is not None:
             model_name = getattr(analysis_client, "model", None)
@@ -2056,7 +2096,8 @@ def build_survey_tree(
 
         return WorkItemTree(
             nodes=all_nodes, warnings=finalize_warnings(all_warnings),
-            kb_citations=deduped_citations, trace_links=trace_links,
+            kb_citations=deduped_citations, kb_coverage=_kb_coverage(kb_files_available, deduped_citations),
+            trace_links=trace_links,
         )
 
     doc = llm_doc  # every remaining read below sees only the residual, non-claimed content
@@ -2252,6 +2293,9 @@ def build_survey_tree(
         doc_kb_context, doc_kb_citations = _merge_always_include_context(
             doc_kb_context, doc_kb_citations, user_id, vector_store,
         )
+
+    kb_files_available = _count_kb_files(user_id, vector_store) if kb_deps_present else None
+    progress_callback = _stamp_kb_files_available(progress_callback, kb_files_available)
 
     # §3.3: only built on the compact-outline path (global_context is set) --
     # lets a tool-capable model pull a specific OTHER section's full text on
@@ -2740,7 +2784,8 @@ def build_survey_tree(
 
     return WorkItemTree(
         nodes=all_nodes, warnings=finalize_warnings(all_warnings),
-        kb_citations=deduped_citations, trace_links=trace_links,
+        kb_citations=deduped_citations, kb_coverage=_kb_coverage(kb_files_available, deduped_citations),
+        trace_links=trace_links,
         excluded_figure_ids=excluded_figure_ids, excluded_table_ids=excluded_table_ids,
     )
 

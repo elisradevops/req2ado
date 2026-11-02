@@ -170,6 +170,11 @@ class LevelingProgress:
     # actually finished -- the first real "what did scoring find" signal a
     # user sees, previously nothing ever told them scoring had concluded.
     issues_found: int | None = None
+    # Distinct KB source files with stored vectors when this SURVEY run
+    # retrieved from the KB (stamped onto every event after retrieval by
+    # llm_leveling._stamp_kb_files_available); None when unknown or no KB
+    # grounding ran. Lets the UI show "N of M KB files" next to kb_citations.
+    kb_files_available: int | None = None
     # describe_figure only: 1-based count of figures described so far in
     # THIS document. Before this field existed, a figure-heavy document
     # (confirmed live: one real document had 39 embedded figures, each a
@@ -538,6 +543,7 @@ class NarrationPublisher:
                 "kbCitations": [
                     {"sourceFile": c["source_file"], "similarity": c["similarity"]} for c in progress.kb_citations
                 ],
+                "kbFilesAvailable": progress.kb_files_available,
                 "model": progress.model,
                 "draftCount": progress.draft_count,
                 "issuesFound": progress.issues_found,

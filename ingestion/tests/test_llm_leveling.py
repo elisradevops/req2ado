@@ -3287,6 +3287,86 @@ def test_build_survey_tree_multi_branch_fallback_per_branch_query(monkeypatch) -
     assert {c.source_file for c in tree.kb_citations} >= {"display.pdf", "audio.pdf"}
 
 
+def _stub_kb_documents(monkeypatch, names: list[str]) -> None:
+    from app.kb.kb_vector_store import KbVectorStore
+
+    monkeypatch.setattr(KbVectorStore, "list_documents", lambda self, user_id: list(names))
+
+
+def test_build_survey_tree_reports_kb_coverage_available_vs_cited(monkeypatch) -> None:
+    from app.kb.kb_vector_store import KbVectorStore
+    from app.workitem.model import KbCoverage
+
+    _stub_kb_documents(monkeypatch, ["a.pdf", "b.pdf", "c.pdf"])
+    monkeypatch.setattr(
+        "app.leveling.llm_leveling.retrieve_context",
+        lambda *a, **k: ("KB", [_kb_hit("a.pdf", 0.9, "KB"), _kb_hit("b.pdf", 0.8, "KB")]),
+    )
+    events: list = []
+    tree = build_survey_tree(
+        _small_doc(), FakeSectionAnalysisClient(), user_id="Project\\Area1", embed_client=object(),
+        vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
+        progress_callback=events.append,
+    )
+    assert tree.kb_coverage == KbCoverage(files_available=3, files_cited=2)
+    assert any(e.kb_files_available == 3 for e in events)
+
+
+def test_build_survey_tree_kb_coverage_counts_zero_cited_when_kb_has_files(monkeypatch) -> None:
+    from app.kb.kb_vector_store import KbVectorStore
+
+    _stub_kb_documents(monkeypatch, ["a.pdf", "b.pdf"])
+    monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", lambda *a, **k: (None, []))
+    tree = build_survey_tree(
+        _small_doc(), FakeSectionAnalysisClient(), user_id="Project\\Area1", embed_client=object(),
+        vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
+    )
+    assert tree.kb_coverage is not None
+    assert (tree.kb_coverage.files_available, tree.kb_coverage.files_cited) == (2, 0)
+
+
+def test_build_survey_tree_multi_branch_kb_coverage_dedupes_cited_files(monkeypatch) -> None:
+    from app.kb.kb_vector_store import KbVectorStore
+
+    _force_multi_branch(monkeypatch)
+    _stub_kb_documents(monkeypatch, ["display.pdf", "audio.pdf", "doc.pdf", "unused.pdf"])
+
+    def _fake_retrieve_context(user_id, query_text, embed_client, vector_store, **_):
+        if query_text == "Audio":
+            return "audio KB", [_kb_hit("audio.pdf", 0.8, "audio KB")]
+        return "doc KB", [_kb_hit("doc.pdf", 0.7, "doc KB")]
+
+    monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fake_retrieve_context)
+    tree = build_survey_tree(
+        _two_branch_doc(), FakeSectionAnalysisClient(), user_id="Project\\Area1", embed_client=object(),
+        vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
+    )
+    assert tree.kb_coverage is not None
+    assert tree.kb_coverage.files_available == 4
+    assert tree.kb_coverage.files_cited == len({c.source_file for c in tree.kb_citations})
+
+
+def test_build_survey_tree_kb_coverage_is_none_without_kb_deps() -> None:
+    tree = build_survey_tree(_small_doc(), FakeSectionAnalysisClient())
+    assert tree.kb_coverage is None
+
+
+def test_build_survey_tree_kb_coverage_listing_failure_is_non_fatal(monkeypatch) -> None:
+    from app.kb.kb_vector_store import KbVectorStore
+
+    def _boom(self, user_id):
+        raise RuntimeError("chroma down")
+
+    monkeypatch.setattr(KbVectorStore, "list_documents", _boom)
+    monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", lambda *a, **k: (None, []))
+    tree = build_survey_tree(
+        _small_doc(), FakeSectionAnalysisClient(), user_id="Project\\Area1", embed_client=object(),
+        vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
+    )
+    assert tree.kb_coverage is None
+    assert len(tree.nodes) == 2
+
+
 def test_build_survey_tree_multi_branch_fallback_keeps_doc_ctx_if_none(monkeypatch) -> None:
     from app.kb.kb_vector_store import KbVectorStore
 

@@ -137,6 +137,10 @@ model Job {
   // retrieval score and relevance verdict, not just "this file was
   // offered", per docs/runbook.md's KB-usage-visibility rationale.
   kbCitations      Json      @default("[]")
+  // {filesAvailable, filesCited} -- how many KB files a SURVEY run could use
+  // vs. cited (WorkItemTree.kb_coverage). Nullable: BASELINE / no-KB runs and
+  // jobs created before this column have no value (unknown, never a fake 0).
+  kbCoverage       Json?
   // Tree-level integrity warnings surfaced by ingestion's /level response
   // (WorkItemTree.warnings, SURVEY-only) -- always [] for BASELINE. Persisted
   // here so getById() can return them alongside the diff for the reviewer.

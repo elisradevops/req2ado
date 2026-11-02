@@ -87,6 +87,24 @@ def test_publish_includes_kb_citations_in_camelcase_when_grounded() -> None:
     assert "grounded with 1 KB file" in payload["message"]
 
 
+def test_publish_includes_kb_files_available_when_known() -> None:
+    redis_client = _FakeRedis()
+    publisher = NarrationPublisher(redis_client, "job-1")
+
+    publisher.publish(_progress(kb_files_available=3))
+
+    assert json.loads(redis_client.publish_calls[0][1])["kbFilesAvailable"] == 3
+
+
+def test_publish_kb_files_available_is_null_when_unknown() -> None:
+    redis_client = _FakeRedis()
+    publisher = NarrationPublisher(redis_client, "job-1")
+
+    publisher.publish(_progress())
+
+    assert json.loads(redis_client.publish_calls[0][1])["kbFilesAvailable"] is None
+
+
 def test_publish_never_raises_when_redis_fails() -> None:
     redis_client = _FakeRedis(raises=RuntimeError("redis unavailable"))
     publisher = NarrationPublisher(redis_client, "job-1")

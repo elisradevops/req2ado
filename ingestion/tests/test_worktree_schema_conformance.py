@@ -9,7 +9,7 @@ from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, Docume
 from app.leveling.llm_leveling import build_survey_tree
 from app.leveling.tree_builder import build_baseline_tree
 from app.section_analysis_options import DEFAULT_SECTION_ANALYSIS_OPTIONS, SectionAnalysisOptions
-from app.workitem.model import IntegrityWarning, WarningKind
+from app.workitem.model import IntegrityWarning, KbCoverage, WarningKind
 
 SCHEMA_PATH = Path(__file__).parents[2] / "shared" / "schemas" / "work-item-tree.schema.json"
 
@@ -114,6 +114,22 @@ def test_survey_tree_with_a_real_warning_matches_work_item_tree_schema(schema) -
     tree = build_survey_tree(_survey_doc(), fake)
     assert len(tree.warnings) >= 1
     jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
+
+
+def test_tree_with_kb_coverage_matches_work_item_tree_schema(schema) -> None:
+    tree = build_baseline_tree(_baseline_doc())
+    tree.kb_coverage = KbCoverage(files_available=3, files_cited=1)
+    dumped = tree.model_dump(mode="json")
+    assert dumped["kb_coverage"] == {"files_available": 3, "files_cited": 1}
+    jsonschema.validate(instance=dumped, schema=schema)
+
+
+def test_baseline_tree_has_no_kb_coverage(schema) -> None:
+    tree = build_baseline_tree(_baseline_doc())
+    assert tree.kb_coverage is None
+    dumped = tree.model_dump(mode="json")
+    assert dumped["kb_coverage"] is None
+    jsonschema.validate(instance=dumped, schema=schema)
 
 
 def test_unsupported_content_note_warning_matches_work_item_tree_schema(schema) -> None:

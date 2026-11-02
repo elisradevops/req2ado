@@ -1,6 +1,7 @@
 import { describeFailure } from './failure-reason';
 import { JobResultCache, hashCatalog, isDegradedResult, kbVersionFor, type CachedResult } from './result-cache';
 import crypto from 'crypto';
+import { Prisma } from '@prisma/client';
 import type { PrismaClient } from '@prisma/client';
 import type { IngestionHttpClient } from './ingestion-http.client';
 import type { CanonicalDoc } from '@req2ado/shared-ts';
@@ -929,6 +930,7 @@ export async function runPipelineJob(
       nodes: LeveledNode[];
       warnings?: LeveledWarning[];
       kb_citations?: { source_file: string; similarity: number; relevance: string }[];
+      kb_coverage?: { files_available: number; files_cited: number } | null;
       trace_links?: LeveledTraceLink[];
       excluded_figure_ids?: string[];
       excluded_table_ids?: string[];
@@ -1282,6 +1284,13 @@ export async function runPipelineJob(
           similarity: c.similarity,
           relevance: c.relevance,
         })) as any,
+        // Explicit NULL when ingestion reported no coverage (BASELINE, SURVEY
+        // without KB grounding, listing failure) so a re-run never keeps a
+        // previous run's stale value -- same overwrite-every-time convention
+        // as kbCitations above.
+        kbCoverage: tree.kb_coverage
+          ? { filesAvailable: tree.kb_coverage.files_available, filesCited: tree.kb_coverage.files_cited }
+          : Prisma.DbNull,
         figureDescriptions: figureDescriptions as any,
         tableDescriptions: tableDescriptions as any,
         // Doc-wide figure/table ids the mapping stage judged decorative/

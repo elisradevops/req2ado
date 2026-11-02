@@ -157,6 +157,9 @@ export interface JobDetail {
   // where that legacy shape gets reclassified into a WarningRecord.
   warnings: (WarningRecord | string)[];
   kbCitations: unknown;
+  // {filesAvailable, filesCited} | null -- see Job.kbCoverage's schema.prisma
+  // comment. null for BASELINE / no-KB runs and historical jobs.
+  kbCoverage: { filesAvailable: number; filesCited: number } | null;
   // {figureIndex, figureId, name, caption}[] -- see Job.figureDescriptions'
   // schema.prisma doc comment. Defaults to [] for a historical job (null
   // column), same convention as warnings above. `name` is the document's
@@ -611,6 +614,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       dryRunDiff: job.dryRunDiff,
       warnings: (job.warnings as (WarningRecord | string)[] | null) ?? [],
       kbCitations: job.kbCitations,
+      kbCoverage: (job.kbCoverage as { filesAvailable: number; filesCited: number } | null) ?? null,
       figureDescriptions:
         (job.figureDescriptions as { figureIndex: number; figureId: string; name: string | null; caption: string | null; captionStatus?: 'insignificant' | 'vision_failed' }[] | null) ?? [],
       tableDescriptions: (job.tableDescriptions as { tableId: string; caption: string }[] | null) ?? [],

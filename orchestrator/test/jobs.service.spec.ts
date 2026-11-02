@@ -5329,6 +5329,9 @@ describe('JobsService.getById', () => {
       dryRunDiff: [{ localId: 'n0' }],
       warnings: [],
       kbCitations: ['doc-a.docx'],
+      // A historical job predates the kbCoverage column -- null (unknown),
+      // never an error or a fabricated zero.
+      kbCoverage: null,
       // A historical job predates the figureDescriptions column -- a null
       // column defaults to [], same convention as warnings above.
       figureDescriptions: [],
@@ -5468,6 +5471,25 @@ describe('JobsService.getById', () => {
     const result = await service.getById('job-1');
 
     expect(result?.createdItemCount).toBe(3);
+  });
+
+  it('returns the persisted kbCoverage', async () => {
+    const prisma = {
+      job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', mode: 'survey', dryRunDiff: [],
+          warnings: null, kbCitations: [], figureDescriptions: null,
+          kbCoverage: { filesAvailable: 3, filesCited: 1 },
+          _count: { createdItemMappings: 0 },
+        }),
+      },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    const result = await service.getById('job-1');
+
+    expect(result?.kbCoverage).toEqual({ filesAvailable: 3, filesCited: 1 });
   });
 
   it('returns the persisted documentOverview', async () => {
