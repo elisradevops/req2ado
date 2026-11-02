@@ -4,6 +4,7 @@ import { cn } from '../lib/cn';
 import { WorkItemTypeBadge } from './WorkItemTypeBadge';
 import { QualityGauge } from './QualityGauge';
 import { Chip } from '../ui/Chip';
+import { describeStepKbGrounding } from '../utils/kbCoverage';
 
 export interface SectionResultNode {
   type: string;
@@ -30,6 +31,9 @@ export interface SectionResultEntry {
   // real KB usage visible per section instead of flickering away.
   kbGrounded: boolean;
   kbCitations: { sourceFile: string; similarity: number }[];
+  // KB files available to the run when this section completed -- see
+  // NarrationEvent.kbFilesAvailable. null/undefined keeps the legacy copy.
+  kbFilesAvailable?: number | null;
 }
 
 // The real "parsed and formatted response" for a section -- lets a reviewer
@@ -90,24 +94,29 @@ function SectionResultRow({ item }: { item: SectionResultEntry }): React.ReactEl
       </button>
       {expanded && (
         <div className="flex flex-col gap-3 border-t border-hairline/60 px-2.5 py-2.5">
-          {item.kbGrounded && item.kbCitations.length > 0 ? (
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="text-xs text-ink-3">Grounded against:</span>
-              {item.kbCitations.map((citation) => (
-                <Chip
-                  key={citation.sourceFile}
-                  bg="var(--color-surface-alt)"
-                  color="var(--color-ink-2)"
-                  className="border border-hairline-strong font-mono text-meta font-normal"
-                  title={`similarity ${Math.round(citation.similarity * 100)}%`}
-                >
-                  {citation.sourceFile}
-                </Chip>
-              ))}
-            </div>
-          ) : (
-            <p className="text-xs text-ink-3">Not grounded against your knowledge base for this section.</p>
-          )}
+          {(() => {
+            const note = describeStepKbGrounding(item.kbFilesAvailable, item.kbCitations.length, item.kbGrounded);
+            return item.kbGrounded && item.kbCitations.length > 0 ? (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-xs text-ink-3">{note ? `${note.text}:` : 'Grounded against:'}</span>
+                {item.kbCitations.map((citation) => (
+                  <Chip
+                    key={citation.sourceFile}
+                    bg="var(--color-surface-alt)"
+                    color="var(--color-ink-2)"
+                    className="border border-hairline-strong font-mono text-meta font-normal"
+                    title={`similarity ${Math.round(citation.similarity * 100)}%`}
+                  >
+                    {citation.sourceFile}
+                  </Chip>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-ink-3">
+                {note ? note.text : 'Not grounded against your knowledge base for this section.'}
+              </p>
+            );
+          })()}
           {item.nodes.map((node, index) => (
             <div key={index} className="flex flex-col gap-1.5 border-t border-hairline/40 pt-2.5 first:border-t-0 first:pt-0">
               <div className="flex items-center gap-2">

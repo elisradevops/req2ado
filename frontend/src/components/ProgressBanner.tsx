@@ -12,6 +12,7 @@ import { ProgressBar } from '../ui/ProgressBar';
 import { Spinner } from '../ui/Spinner';
 import { Chip } from '../ui/Chip';
 import { InfoTip } from '../ui/Tooltip';
+import { describeStepKbGrounding } from '../utils/kbCoverage';
 import { LiveRunPanel } from './liveRun/LiveRunPanel';
 import { LiveStatusRegion } from './liveRun/LiveStatusRegion';
 import { useLiveRunStore } from '../store/liveRunStore';
@@ -597,29 +598,32 @@ export function ProgressBanner({
                 </Chip>
               )}
               {showKbGroundingNote &&
-                (latest!.kbGrounded && latest!.kbCitations.length > 0 ? (
-                  <>
-                    <span className='text-xs text-ink-3'>Grounded against:</span>
-                    {latest!.kbCitations.map((citation) => (
-                      <Chip
-                        key={citation.sourceFile}
-                        bg='var(--color-surface)'
-                        color='var(--color-ink-2)'
-                        className='border border-hairline-strong font-mono text-meta font-normal tabular-nums'
-                      >
-                        {citation.sourceFile} · {Math.round(citation.similarity * 100)}%
-                      </Chip>
-                    ))}
-                  </>
-                ) : (
-                  <Chip
-                    bg='var(--color-surface)'
-                    color='var(--color-ink-3)'
-                    className='w-fit border border-hairline-strong text-meta font-normal'
-                  >
-                    Not grounded against your knowledge base for this step
-                  </Chip>
-                ))}
+                (() => {
+                  const note = describeStepKbGrounding(latest!.kbFilesAvailable, latest!.kbCitations.length, latest!.kbGrounded);
+                  return latest!.kbGrounded && latest!.kbCitations.length > 0 ? (
+                    <>
+                      <span className='text-xs text-ink-3'>{note ? `${note.text}:` : 'Grounded against:'}</span>
+                      {latest!.kbCitations.map((citation) => (
+                        <Chip
+                          key={citation.sourceFile}
+                          bg='var(--color-surface)'
+                          color='var(--color-ink-2)'
+                          className='border border-hairline-strong font-mono text-meta font-normal tabular-nums'
+                        >
+                          {citation.sourceFile} · {Math.round(citation.similarity * 100)}%
+                        </Chip>
+                      ))}
+                    </>
+                  ) : (
+                    <Chip
+                      bg='var(--color-surface)'
+                      color='var(--color-ink-3)'
+                      className='h-auto max-w-full whitespace-normal rounded-md border border-hairline-strong text-meta font-normal'
+                    >
+                      {note ? note.text : 'Not grounded against your knowledge base for this step'}
+                    </Chip>
+                  );
+                })()}
             </div>
           )}
           <div>

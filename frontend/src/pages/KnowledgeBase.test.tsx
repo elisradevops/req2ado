@@ -161,6 +161,94 @@ describe('KnowledgeBase', () => {
     expect(screen.getByRole('button', { name: /remove spec\.docx from the knowledge base/i })).toBeInTheDocument();
   });
 
+  async function browseWith(entries: Partial<FolderTreeEntry>[]): Promise<void> {
+    vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue(
+      entries.map((e, i) => ({
+        id: `f${i + 1}`, name: `file${i + 1}.pdf`, mimeType: null, sizeBytes: 1024, isFolder: false, driveId: null,
+        alreadyIngested: true, ingestedDocumentId: `doc-${i + 1}`, downloadUrl: 'https://graph.example/d', ...e,
+      })) as FolderTreeEntry[],
+    );
+    renderPage();
+    await userEvent.type(screen.getByLabelText(/sharing url/i), 'https://share.example/folder');
+    await userEvent.click(screen.getByRole('button', { name: /^browse$/i }));
+    await waitFor(() => expect(screen.getByText('file1.pdf')).toBeInTheDocument());
+  }
+
+  it('flags an ingested file that has no stored vectors and offers re-ingest', async () => {
+    await browseWith([{ chunkCount: 0 }]);
+    expect(screen.getByText('No vectors')).toBeInTheDocument();
+    expect(screen.queryByText('In knowledge base')).toBeNull();
+    expect(screen.getByRole('button', { name: /re-ingest file1\.pdf/i })).toBeInTheDocument();
+  });
+
+  it('shows the stored chunk count for an ingested file with vectors', async () => {
+    await browseWith([{ chunkCount: 32 }]);
+    expect(screen.getByText('In knowledge base · 32 chunks')).toBeInTheDocument();
+    expect(screen.queryByText('No vectors')).toBeNull();
+  });
+
+  it('keeps the plain status when the chunk count is unknown', async () => {
+    await browseWith([{ chunkCount: null }]);
+    expect(screen.getByText('In knowledge base')).toBeInTheDocument();
+  });
+
+  it('re-ingesting a no-vectors file clears the warning', async () => {
+    vi.spyOn(kbApi, 'ingestFolderItem').mockResolvedValue({
+      documentName: 'file1.pdf', driveitemId: 'f1', mimeType: null, sizeBytes: 1024,
+      chunksStored: 12, chunksInStore: 12, skippedUnchanged: false, ingestedDocumentId: 'doc-1',
+    });
+    await browseWith([{ chunkCount: 0 }]);
+
+    await userEvent.click(screen.getByRole('button', { name: /re-ingest file1\.pdf/i }));
+
+    await waitFor(() => expect(screen.getByText('In knowledge base · 12 chunks')).toBeInTheDocument());
+    expect(screen.queryByText('No vectors')).toBeNull();
+    expect(screen.getByText(/re-ingested "file1\.pdf"\./i)).toBeInTheDocument();
+  });
+
+  it('keeps "No vectors" when a re-ingest stores nothing (still zero chunks in the store)', async () => {
+    vi.spyOn(kbApi, 'ingestFolderItem').mockResolvedValue({
+      documentName: 'file1.pdf', driveitemId: 'f1', mimeType: null, sizeBytes: 1024,
+      chunksStored: 0, chunksInStore: 0, skippedUnchanged: false, ingestedDocumentId: 'doc-1',
+    });
+    await browseWith([{ chunkCount: 0 }]);
+
+    await userEvent.click(screen.getByRole('button', { name: /re-ingest file1\.pdf/i }));
+
+    await waitFor(() => expect(kbApi.ingestFolderItem).toHaveBeenCalled());
+    expect(await screen.findByText('No vectors')).toBeInTheDocument();
+    expect(await screen.findByText(/re-ingested "file1\.pdf", but no text could be stored/i)).toBeInTheDocument();
+    expect(screen.queryByText(/added "file1\.pdf"/i)).toBeNull();
+  });
+
+  it('shows the stored count after a skipped-unchanged re-ingest', async () => {
+    vi.spyOn(kbApi, 'ingestFolderItem').mockResolvedValue({
+      documentName: 'file1.pdf', driveitemId: 'f1', mimeType: null, sizeBytes: 1024,
+      chunksStored: 0, chunksInStore: 7, skippedUnchanged: true, ingestedDocumentId: 'doc-1',
+    });
+    await browseWith([{ chunkCount: 0 }]);
+
+    await userEvent.click(screen.getByRole('button', { name: /re-ingest file1\.pdf/i }));
+
+    expect(await screen.findByText('In knowledge base · 7 chunks')).toBeInTheDocument();
+  });
+
+  it('re-ingest preserves an always-include retrieval mode', async () => {
+    vi.spyOn(kbApi, 'ingestFolderItem').mockResolvedValue({
+      documentName: 'file1.pdf', driveitemId: 'f1', mimeType: null, sizeBytes: 1024,
+      chunksStored: 3, chunksInStore: 3, skippedUnchanged: false, ingestedDocumentId: 'doc-1',
+    });
+    await browseWith([{ chunkCount: 0, retrievalMode: 'always_include' }]);
+
+    await userEvent.click(screen.getByRole('button', { name: /re-ingest file1\.pdf/i }));
+
+    await waitFor(() =>
+      expect(kbApi.ingestFolderItem).toHaveBeenCalledWith(
+        'file1.pdf', 'f1', 'https://graph.example/d', 'file1.pdf', 'user-descriptor-1', 'always_include',
+      ),
+    );
+  });
+
   it('removes an already-ingested file from the tree after confirming', async () => {
     vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([
       { id: 'f1', name: 'spec.docx', mimeType: null, sizeBytes: 2048, isFolder: false, driveId: null, alreadyIngested: true, ingestedDocumentId: 'doc-1', downloadUrl: null },

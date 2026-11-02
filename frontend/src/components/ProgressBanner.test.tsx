@@ -971,6 +971,52 @@ describe('ProgressBanner', () => {
     expect(screen.getByText(/not grounded against your knowledge base/i)).toBeInTheDocument();
   });
 
+  it('shows cited-of-available KB files when the backend reports how many were available', () => {
+    render(
+      <ProgressBanner
+        stage="infer_hierarchy_start"
+        startedAt="2026-07-09T10:00:00Z"
+        mode="survey"
+        narrations={[
+          {
+            phase: 'analyze_section', branchIndex: 0, branchCount: 2, blocksDone: 0, blocksTotal: 10,
+            kbGrounded: true, kbCitations: [{ sourceFile: 'a.pdf', similarity: 0.82 }], kbFilesAvailable: 3,
+            message: 'x',
+          },
+        ]}
+      />,
+    );
+    expect(screen.getByText('Grounded against 1 of 3 KB files:')).toBeInTheDocument();
+  });
+
+  it('says how many KB files were available when a step was not grounded', () => {
+    render(
+      <ProgressBanner
+        stage="infer_hierarchy_start"
+        startedAt="2026-07-09T10:00:00Z"
+        mode="survey"
+        narrations={[
+          { phase: 'analyze_section', branchIndex: 0, branchCount: 2, blocksDone: 0, blocksTotal: 10, kbGrounded: false, kbCitations: [], kbFilesAvailable: 3, message: 'x' },
+        ]}
+      />,
+    );
+    expect(screen.getByText('Not grounded against your knowledge base for this step (3 files available)')).toBeInTheDocument();
+  });
+
+  it('says the knowledge base is empty when zero files are available', () => {
+    render(
+      <ProgressBanner
+        stage="infer_hierarchy_start"
+        startedAt="2026-07-09T10:00:00Z"
+        mode="survey"
+        narrations={[
+          { phase: 'analyze_section', branchIndex: 0, branchCount: 2, blocksDone: 0, blocksTotal: 10, kbGrounded: false, kbCitations: [], kbFilesAvailable: 0, message: 'x' },
+        ]}
+      />,
+    );
+    expect(screen.getByText('Your knowledge base has no ingested files')).toBeInTheDocument();
+  });
+
   it('shows a live "last update" ticker once narration has started', () => {
     render(
       <ProgressBanner

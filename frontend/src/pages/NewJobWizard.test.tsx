@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
@@ -6,10 +6,19 @@ import { NewJobWizard } from './NewJobWizard';
 import { ToastProvider } from '../components/ToastProvider';
 import * as jobsApi from '../api/jobs';
 import * as adoApi from '../api/ado';
+import * as kbApi from '../api/kb';
 import { useAuthStore } from '../store/authStore';
 
 vi.mock('../api/jobs');
 vi.mock('../api/ado');
+vi.mock('../api/kb');
+
+// The SURVEY configure step shows a KB readiness strip; give it a healthy KB
+// by default so unrelated tests never hit the network or an undefined mock.
+beforeEach(() => {
+  vi.spyOn(kbApi, 'listIngestedDocuments').mockResolvedValue([]);
+  vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'valid', expiresInSeconds: 3600 });
+});
 
 describe('NewJobWizard Step 1', () => {
   it('uploads a file and fills in the stat tiles in place, without leaving step 1', async () => {
@@ -384,6 +393,17 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
     await userEvent.click(screen.getByRole('button', { name: /configure/i }));
     await userEvent.click(screen.getByRole('radio', { name: /survey/i }));
   }
+
+  it('SURVEY configure step shows the knowledge-base readiness strip; BASELINE does not', async () => {
+    vi.spyOn(kbApi, 'listIngestedDocuments').mockResolvedValue([
+      { id: 'a', userId: 'u', driveItemId: 'a', name: 'a.pdf', sizeBytes: 1, mimeType: null, docType: null, retrievalMode: null, ingestedAt: '2026-11-02T00:00:00Z', chunkCount: 32 },
+    ]);
+    await uploadAndConfigureAsSurvey();
+    expect(await screen.findByText('1 file · 32 chunks')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('radio', { name: /baseline/i }));
+    expect(screen.queryByText('1 file · 32 chunks')).toBeNull();
+  });
 
   it('BASELINE never shows step 3 -- Start job submits directly from step 2', async () => {
     vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({

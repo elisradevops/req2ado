@@ -51,6 +51,7 @@ import { NodeDetailDialog } from '../components/NodeDetailDialog';
 import { AddChildCard } from '../components/AddChildCard';
 import { applyMoveOptimistically } from '../lib/applyMove';
 import { cn } from '../lib/cn';
+import { describeJobKbCoverage, type KbCoverage } from '../utils/kbCoverage';
 import { getServerMessage } from '../lib/errorDetails';
 import { isFlaggedDiffEntry } from '../utils/diffFlagging';
 import { useToast } from '../components/ToastProvider';
@@ -109,6 +110,7 @@ export function JobDetail(): React.ReactElement {
   const [mode, setMode] = useState<string | null>(null);
   const [documentOverview, setDocumentOverview] = useState<{ synopsis: string; caveat: string | null } | null>(null);
   const [kbCitations, setKbCitations] = useState<KbCitation[]>([]);
+  const [kbCoverage, setKbCoverage] = useState<KbCoverage | null>(null);
   // STAGE 2 mapping's own excluded lists (see jobsStore.JobDetail's own
   // comment) -- same load/refetch lifecycle as kbCitations above (only
   // known once the tree exists, so seeded at mount and refreshed once the
@@ -257,6 +259,7 @@ export function JobDetail(): React.ReactElement {
         setMode(job.mode);
         setDocumentOverview(job.documentOverview ?? null);
         setKbCitations(job.kbCitations ?? []);
+        setKbCoverage(job.kbCoverage ?? null);
         setExcludedFigureIds(job.excludedFigureIds ?? []);
         setExcludedTableIds(job.excludedTableIds ?? []);
         setWarnings(job.warnings ?? []);
@@ -416,6 +419,7 @@ export function JobDetail(): React.ReactElement {
               setTraceLinkFailures(job.traceLinkFailures ?? []);
               setCreatedItemCount(job.createdItemCount ?? 0);
               setKbCitations(job.kbCitations ?? []);
+              setKbCoverage(job.kbCoverage ?? null);
               setExcludedFigureIds(job.excludedFigureIds ?? []);
               setExcludedTableIds(job.excludedTableIds ?? []);
               // No live-narration counterpart (tables are never narrated
@@ -471,7 +475,7 @@ export function JobDetail(): React.ReactElement {
             setFigureCaptionsByIndex((current) => ({ ...current, [figureIndex]: figureCaption }));
           }
           if (narration.phase === 'section_complete' && narration.branchIndex != null && narration.sectionNodes) {
-            const { branchIndex, sectionLabel, sectionNodes, kbGrounded, kbCitations } = narration;
+            const { branchIndex, sectionLabel, sectionNodes, kbGrounded, kbCitations, kbFilesAvailable } = narration;
             setSectionResultsByIndex((current) => ({
               ...current,
               [branchIndex]: {
@@ -480,6 +484,7 @@ export function JobDetail(): React.ReactElement {
                 nodes: sectionNodes,
                 kbGrounded,
                 kbCitations,
+                kbFilesAvailable,
               },
             }));
           }
@@ -646,6 +651,7 @@ export function JobDetail(): React.ReactElement {
   // through the same normalizeWarning (persisted `warnings` may still be a
   // legacy string[] job; liveWarnings is always plain strings, see its own
   // doc comment above) so the rest of the page only ever handles one shape.
+  const kbCoverageNote = describeJobKbCoverage(kbCoverage);
   const mergedWarnings = useMemo<WarningRecord[]>(() => {
     const normalizedPersisted = warnings.map(normalizeWarning);
     const persistedRawTexts = new Set(normalizedPersisted.map((w) => w.raw));
@@ -1677,6 +1683,11 @@ export function JobDetail(): React.ReactElement {
           completedSectionIndices={completedSectionIndices}
           jobId={id}
         />
+      )}
+      {kbCoverageNote && (
+        <p className={cn('px-2 text-xs', kbCoverageNote.tone === 'warning' ? 'text-warning-ink' : 'text-ink-3')}>
+          {kbCoverageNote.text}
+        </p>
       )}
       <div id="integrity-warnings">
         <CollapsibleWarnings

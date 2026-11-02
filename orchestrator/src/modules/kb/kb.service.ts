@@ -69,6 +69,14 @@ export interface BrowseFolderEntry {
   // /kb/documents/:id) is keyed by that Prisma row's id, which a Graph
   // listing has no way to know on its own.
   ingestedDocumentId: string | null;
+  // The matched row's stored chunk count (IngestedDocument.chunkCount): 0
+  // means the row exists but the vector store held nothing at last ingest
+  // ("no vectors"); null for not-ingested files, folders, and legacy rows
+  // that never recorded a count (unknown).
+  chunkCount: number | null;
+  // The matched row's retrieval mode ('always_include' | 'retrieve' | null),
+  // so a re-ingest from the explorer can preserve it instead of resetting it.
+  retrievalMode: string | null;
   // Files only -- Graph's pre-signed download URL, passed straight through
   // from ingestion so a tree row's ingest action can call POST
   // /kb/ingest-item without a share link for this specific file.
@@ -223,7 +231,7 @@ export class KbService {
   private async withIngestedFlag(children: FolderChild[], userId: string, pathPrefix: string): Promise<BrowseFolderEntry[]> {
     const documents = await this.prisma.ingestedDocument.findMany({
       where: { userId },
-      select: { id: true, driveItemId: true },
+      select: { id: true, driveItemId: true, chunkCount: true, retrievalMode: true },
     });
     // Matched by driveItemId -- the stable Graph drive-item identity, which
     // survives a SharePoint rename/move. Confirmed real bug (fixed here):
@@ -233,12 +241,16 @@ export class KbService {
     // required, unique-per-user column (schema.prisma), so every row has
     // one -- no fallback needed.
     const idByDriveItemId = new Map(documents.map((d) => [d.driveItemId, d.id]));
+    const chunkCountByDriveItemId = new Map(documents.map((d) => [d.driveItemId, d.chunkCount ?? null]));
+    const retrievalModeByDriveItemId = new Map(documents.map((d) => [d.driveItemId, d.retrievalMode ?? null]));
     return children.map((child) => {
       const ingestedDocumentId = !child.isFolder ? (idByDriveItemId.get(child.id) ?? null) : null;
       return {
         ...child,
         alreadyIngested: ingestedDocumentId !== null,
         ingestedDocumentId,
+        chunkCount: ingestedDocumentId !== null ? (chunkCountByDriveItemId.get(child.id) ?? null) : null,
+        retrievalMode: ingestedDocumentId !== null ? (retrievalModeByDriveItemId.get(child.id) ?? null) : null,
       };
     });
   }

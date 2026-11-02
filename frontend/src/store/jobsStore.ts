@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { KbCitation } from '../components/KbCitationChips';
 import type { FigureDescriptionEntry } from '../components/FigureDescriptions';
+import type { KbCoverage } from '../utils/kbCoverage';
 import type { WarningRecord } from '../utils/warnings';
 
 export interface JobSummary {
@@ -23,6 +24,9 @@ export interface JobDetail {
   mode: string;
   dryRunDiff: unknown;
   kbCitations?: KbCitation[];
+  // How much of the KB the run could use vs surfaced -- null for BASELINE and
+  // jobs created before the field existed (see utils/kbCoverage.ts).
+  kbCoverage?: KbCoverage | null;
   // Tree-level integrity warnings from ingestion's /level response
   // (SURVEY-only, e.g. generated node count diverging from source block
   // count) -- distinct from per-node quality/grounding signals. `string`

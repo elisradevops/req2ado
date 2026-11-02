@@ -170,7 +170,7 @@ export function KnowledgeBase(): React.ReactElement {
   // whether a given file is in the knowledge base -- a file ingested via
   // the center-pane row action must show as ingested in the right-hand
   // detail pane too, without a re-browse round trip.
-  const [ingestOverrides, setIngestOverrides] = useState<Record<string, { ingested: boolean; docId: string | null }>>({});
+  const [ingestOverrides, setIngestOverrides] = useState<Record<string, { ingested: boolean; docId: string | null; chunkCount?: number | null }>>({});
   const [ingestingId, setIngestingId] = useState<string | null>(null);
   const ingestingRef = useRef(false);
   // Per-file "always include" (Full Context mode) choice, made in the
@@ -190,6 +190,15 @@ export function KnowledgeBase(): React.ReactElement {
 
   function isIngested(entry: FolderTreeEntry): boolean {
     return ingestOverrides[entry.id]?.ingested ?? entry.alreadyIngested;
+  }
+
+  // A fresh ingest/removal in this session supersedes the browse-time count:
+  // the store's count after that ingest (chunksInStore, which can still be 0),
+  // or unknown when the backend did not report one.
+  function chunkCountOf(entry: FolderTreeEntry): number | null {
+    const override = ingestOverrides[entry.id];
+    if (override) return override.chunkCount ?? null;
+    return entry.chunkCount ?? null;
   }
 
   function ingestedDocIdOf(entry: FolderTreeEntry): string | null {
@@ -293,14 +302,37 @@ export function KnowledgeBase(): React.ReactElement {
     if (!userId || !entry.downloadUrl || ingestingId || ingestingRef.current) return;
     ingestingRef.current = true;
     setIngestingId(entry.id);
+    // Re-ingest = the file was already in the KB but had no stored vectors.
+    const reingest = isIngested(entry);
     try {
       const relativePath = currentFolder.path ? `${currentFolder.path}/${entry.name}` : entry.name;
-      const retrievalMode = alwaysIncludeSelection[entry.id] ? 'always_include' : undefined;
+      // A re-ingest of an already-ingested file keeps its stored mode rather
+      // than silently resetting an always-include doc to similarity retrieval.
+      const retrievalMode =
+        alwaysIncludeSelection[entry.id] || entry.retrievalMode === 'always_include' ? 'always_include' : undefined;
       const result = await ingestFolderItem(entry.name, entry.id, entry.downloadUrl, relativePath, userId, retrievalMode);
-      setIngestOverrides((prev) => ({ ...prev, [entry.id]: { ingested: true, docId: result.ingestedDocumentId } }));
-      showToast(`Added "${entry.name}" to the knowledge base.`, 'success');
+      setIngestOverrides((prev) => ({
+        ...prev,
+        [entry.id]: {
+          ingested: true,
+          docId: result.ingestedDocumentId,
+          chunkCount: result.chunksInStore ?? null,
+        },
+      }));
+      if (reingest) {
+        if (result.chunksInStore === 0) {
+          showToast(
+            `Re-ingested "${entry.name}", but no text could be stored. The file may be empty or scanned images; try a text-based version.`,
+            'warning',
+          );
+        } else {
+          showToast(`Re-ingested "${entry.name}".`, 'success');
+        }
+      } else {
+        showToast(`Added "${entry.name}" to the knowledge base.`, 'success');
+      }
     } catch (err) {
-      showErrorToast(`Failed to add "${entry.name}" — please try again.`, err);
+      showErrorToast(`Failed to ${reingest ? 're-ingest' : 'add'} "${entry.name}" — please try again.`, err);
     } finally {
       ingestingRef.current = false;
       setIngestingId(null);
@@ -419,6 +451,7 @@ export function KnowledgeBase(): React.ReactElement {
               selectedFileId={selectedFileId}
               onSelectFile={(entry) => setSelectedFileId(entry.id)}
               isIngested={isIngested}
+              chunkCountOf={chunkCountOf}
               ingestingId={ingestingId}
               onIngest={handleIngestFile}
               onRequestRemove={handleRequestRemove}
@@ -427,6 +460,7 @@ export function KnowledgeBase(): React.ReactElement {
               <KbFileDetailPane
                 entry={selectedFile}
                 ingested={selectedFile ? isIngested(selectedFile) : false}
+                chunkCount={selectedFile ? chunkCountOf(selectedFile) : null}
                 isIngesting={selectedFile ? ingestingId === selectedFile.id : false}
                 alwaysInclude={selectedFile ? (alwaysIncludeSelection[selectedFile.id] ?? false) : false}
                 onToggleAlwaysInclude={(value) =>

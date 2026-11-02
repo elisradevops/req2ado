@@ -1705,6 +1705,22 @@ jobs outside the 90-day window being excluded; and **rejected jobs with a
 non-null `diffReadyAt` being included** — the §11.2.3.b regression that a
 `status = 'succeeded'` filter would silently reintroduce.
 
+#### §11.2.3.c — Knowledge-base readiness (SURVEY only)
+
+**Files:** `components/KbReadinessStrip.tsx`, rendered by `pages/NewJobWizard.tsx`
+in a `SectionCard` titled "Knowledge base" under the mode cards, **only when
+SURVEY is selected** (BASELINE never reads the KB).
+
+A user must learn *before* starting whether grounding is on. The strip shows
+`N files · M chunks`, the SharePoint state (`SharePoint connected` / `token
+expired` / `can't reach SharePoint` / `not connected`, with "adding files will
+fail" where it matters), and a link to Manage knowledge base. An empty KB reads
+"Your knowledge base is empty — this run won't be grounded against your
+standards." Files whose stored chunk count is `0` read "N files have no vectors
+and cannot ground this run — re-ingest them." It is **informational only**: it
+never disables `Start job`, and a failed lookup degrades to "Couldn't check your
+knowledge base right now." — never to a false "healthy."
+
 #### §11.2.4 — Footer
 
 `Back` (outline) and `Start job` (primary, with the `Activity` glyph). The
@@ -2876,6 +2892,25 @@ baseline, so any new raw hex, arbitrary size/radius/duration, or bare
 - The live run view's per-step headlines, reasons and notices have one home: `frontend/src/utils/liveCopy.ts` (§11.3.4). Add copy there, not inline.
 
 ---
+
+### Knowledge-base coverage copy
+
+- **Ingested is not the same as usable.** A KB row only proves an ingest call
+  returned; the stored chunk count says whether grounding can use the file.
+  `0` → the chip reads **No vectors** with a **Re-ingest** action; a known
+  count reads "In knowledge base · N chunks"; an unknown count (legacy row)
+  keeps the plain "In knowledge base" and is never guessed (`KbIngestStatusChip`).
+- **Say how much was available, not only what was cited.** Live steps read
+  "Grounded against 2 of 3 KB files" or "Not grounded against your knowledge base
+  for this step (3 files available)"; an empty KB reads "Your knowledge base has
+  no ingested files" (`utils/kbCoverage.ts`). When availability is unknown the
+  pre-coverage wording stays.
+- **Job-level wording is "surfaced", not "grounded".** The persisted
+  `kbCoverage.filesCited` counts every file retrieval surfaced, including ones
+  the relevance check judged unrelated, so results read "2 of 3 knowledge-base
+  files were surfaced for this job." `{0, 0}` reads "No knowledge-base files
+  were available to this job." — never "0 of 0". BASELINE and pre-existing jobs
+  show no coverage line at all.
 
 ## §13 — Accessibility contract
 

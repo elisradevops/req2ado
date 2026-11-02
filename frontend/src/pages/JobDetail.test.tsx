@@ -843,6 +843,30 @@ describe('JobDetail', () => {
     expect(screen.getByText(/A block diagram showing power distribution\./i)).toBeInTheDocument();
   });
 
+  it('shows how many knowledge-base files were surfaced for a job that persisted kbCoverage', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-kbc', status: 'diff_ready', mode: 'survey', dryRunDiff: [], createdAt: new Date().toISOString(),
+      kbCoverage: { filesAvailable: 3, filesCited: 1 },
+    } as any);
+
+    renderAt('job-kbc');
+
+    await waitFor(() => expect(screen.getByText('1 of 3 knowledge-base files were surfaced for this job.')).toBeInTheDocument());
+  });
+
+  it('shows no knowledge-base coverage note for a job without kbCoverage (older job or BASELINE)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-nokbc', status: 'diff_ready', mode: 'baseline', dryRunDiff: [], createdAt: new Date().toISOString(), kbCoverage: null,
+    } as any);
+
+    renderAt('job-nokbc');
+
+    await waitFor(() => expect(jobsApi.getJob).toHaveBeenCalled());
+    expect(screen.queryByText(/knowledge-base file/i)).not.toBeInTheDocument();
+  });
+
   it('does not add a figure to the live FigureDescriptions panel when figureCaptionStatus marks it insignificant/failed', async () => {
     // Real live bug this guards against: figureCaption is NEVER empty even
     // when the vision model judged the figure decorative/failed --

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Folder, ChevronRight, Plus, Trash2 } from 'lucide-react';
+import { Folder, ChevronRight, Plus, Trash2, RefreshCw } from 'lucide-react';
 import { extensionOf } from '../utils/extension';
 import type { FolderTreeEntry } from '../api/kb';
 import { formatFileSize } from '../utils/fileSize';
@@ -8,7 +8,7 @@ import { Spinner } from '../ui/Spinner';
 import { Skeleton } from '../ui/Skeleton';
 import { Tooltip } from '../ui/Tooltip';
 import { TextField } from '../ui/TextField';
-import { Chip } from '../ui/Chip';
+import { KbIngestStatusChip, hasNoVectors } from './KbIngestStatusChip';
 import { TableHeaderCell } from '../ui/TableHeaderCell';
 import { EmptyState } from '../ui/EmptyState';
 import { cn } from '../lib/cn';
@@ -35,6 +35,7 @@ export function KbFileList({
   selectedFileId,
   onSelectFile,
   isIngested,
+  chunkCountOf,
   ingestingId,
   onIngest,
   onRequestRemove,
@@ -47,6 +48,7 @@ export function KbFileList({
   selectedFileId: string | null;
   onSelectFile: (entry: FolderTreeEntry) => void;
   isIngested: (entry: FolderTreeEntry) => boolean;
+  chunkCountOf: (entry: FolderTreeEntry) => number | null;
   ingestingId: string | null;
   onIngest: (entry: FolderTreeEntry) => void;
   onRequestRemove: (entry: FolderTreeEntry) => void;
@@ -145,18 +147,25 @@ export function KbFileList({
                     <td className="px-3.5 py-2 font-mono text-xs tabular-nums text-ink-3">{entry.isFolder ? '—' : formatFileSize(entry.sizeBytes)}</td>
                     <td className="px-3.5 py-2">
                       {!entry.isFolder && (
-                        <Chip
-                          bg={ingested ? 'var(--color-ok-soft)' : 'var(--color-surface-alt)'}
-                          color={ingested ? 'var(--color-ok-ink)' : 'var(--color-ink-3)'}
-                          className="text-xs font-normal"
-                        >
-                          {ingested ? 'In knowledge base' : 'Not ingested'}
-                        </Chip>
+                        <KbIngestStatusChip ingested={ingested} chunkCount={chunkCountOf(entry)} />
                       )}
                     </td>
                     <td className="px-3.5 py-2 text-right">
                       {!entry.isFolder && (
-                        <span onClick={(e) => e.stopPropagation()} className="inline-flex">
+                        <span onClick={(e) => e.stopPropagation()} className="inline-flex gap-1">
+                          {hasNoVectors(ingested, chunkCountOf(entry)) && entry.downloadUrl && (
+                            <Tooltip content="No vectors are stored for this file -- re-ingest it so grounding can use it">
+                              <button
+                                type="button"
+                                aria-label={`Re-ingest ${entry.name}`}
+                                disabled={isIngesting}
+                                onClick={() => onIngest(entry)}
+                                className="grid h-6 w-6 cursor-pointer place-items-center rounded-sm text-warning transition-colors duration-instant hover:bg-accent-soft hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                {isIngesting ? <Spinner /> : <RefreshCw className="h-3.5 w-3.5" />}
+                              </button>
+                            </Tooltip>
+                          )}
                           {ingested ? (
                             <Tooltip content="Remove from your knowledge base">
                               <button

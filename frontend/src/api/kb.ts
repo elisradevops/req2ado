@@ -6,6 +6,10 @@ export interface IngestResult {
   mimeType: string | null;
   sizeBytes: number;
   chunksStored: number;
+  // Chunks the vector store holds for the file AFTER this call (what the
+  // backend persists as chunkCount) -- unlike chunksStored, non-zero for a
+  // skipped-unchanged re-ingest. Absent from an older backend.
+  chunksInStore?: number | null;
   skippedUnchanged: boolean;
 }
 
@@ -19,6 +23,8 @@ export interface IngestedDocument {
   docType: string | null;
   retrievalMode: string | null;
   ingestedAt: string;
+  // Chunks held at last ingest; null = unknown (legacy row).
+  chunkCount?: number | null;
 }
 
 export interface FolderIngestFile {
@@ -72,6 +78,11 @@ export interface FolderTreeEntry {
   // a row's remove action deletes by. Null for folders and not-yet-ingested
   // files.
   ingestedDocumentId: string | null;
+  // Stored chunk count of the matched row: 0 = ingested but no vectors, null/
+  // absent = unknown (not ingested, folder, or a legacy row).
+  chunkCount?: number | null;
+  // The matched row's retrieval mode; a re-ingest passes it back unchanged.
+  retrievalMode?: string | null;
   // Files only -- lets a row's ingest action pull this exact file in via
   // POST /kb/ingest-item without a separate sharing link.
   downloadUrl: string | null;

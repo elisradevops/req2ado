@@ -26,6 +26,7 @@ import { useOrgUrl } from '../store/authStore';
 import { useToast } from '../components/ToastProvider';
 import { PageHeader } from '../ui/PageHeader';
 import { SectionCard } from '../ui/SectionCard';
+import { KbReadinessStrip } from '../components/KbReadinessStrip';
 import { TextField } from '../ui/TextField';
 import { Button } from '../ui/Button';
 import { Spinner } from '../ui/Spinner';
@@ -665,6 +666,11 @@ export function NewJobWizard(): React.ReactElement {
               modelsError={modelsError}
             />
           </SectionCard>
+          {mode === 'survey' && (
+            <SectionCard title="Knowledge base">
+              <KbReadinessStrip />
+            </SectionCard>
+          )}
           {mode === 'survey' && (
             <Alert severity="warning">
               SURVEY mode scales with document size -- figures cost the most, since each triggers a separate vision-model call. You'll

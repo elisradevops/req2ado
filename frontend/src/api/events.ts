@@ -136,6 +136,10 @@ export interface NarrationEvent {
   blocksTotal: number;
   kbGrounded: boolean;
   kbCitations: { sourceFile: string; similarity: number }[];
+  // Distinct KB files with stored vectors when this run retrieved from the
+  // KB -- null/undefined when unknown (no KB retrieval yet, a failed listing,
+  // or a backend that predates the field).
+  kbFilesAvailable?: number | null;
   // The LLM model doing the work for this step -- null/undefined when the
   // underlying client has none configured (falls back to the orchestrator's
   // default) or a stale/rolling-deploy backend predates this field.

@@ -295,6 +295,29 @@ describe('KbService', () => {
       ]);
     });
 
+    it('returns the matched row\'s chunkCount (null when unknown or not ingested)', async () => {
+      const prisma = {
+        ingestedDocument: {
+          findMany: jest.fn().mockResolvedValue([
+            { id: 'doc-1', driveItemId: 'drive-1', chunkCount: 0, retrievalMode: 'always_include' },
+            { id: 'doc-2', driveItemId: 'drive-2', chunkCount: 32, retrievalMode: null },
+            { id: 'doc-3', driveItemId: 'drive-3', chunkCount: null },
+          ]),
+        },
+      };
+      const ingestionClient = {
+        browseFolder: jest.fn().mockResolvedValue([
+          child({ id: 'drive-1' }), child({ id: 'drive-2' }), child({ id: 'drive-3' }), child({ id: 'drive-4' }),
+        ]),
+      };
+      const service = new KbService(prisma as any, ingestionClient as any, fakeCredentialVault as any);
+
+      const result = await service.browseFolder('https://contoso.sharepoint.com/x', 'Project\\Area1', '');
+
+      expect(result.map((r) => r.chunkCount)).toEqual([0, 32, null, null]);
+      expect(result.map((r) => r.retrievalMode)).toEqual(['always_include', null, null, null]);
+    });
+
     it('does not match a file whose driveItemId is not in this user\'s KB', async () => {
       const prisma = { ingestedDocument: { findMany: jest.fn().mockResolvedValue([{ id: 'doc-1', driveItemId: 'drive-1' }]) } };
       const ingestionClient = { browseFolder: jest.fn().mockResolvedValue([child({ id: 'drive-2', name: 'other.docx' })]) };
