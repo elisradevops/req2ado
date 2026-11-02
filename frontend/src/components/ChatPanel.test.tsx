@@ -69,6 +69,54 @@ describe('ChatPanel', () => {
     expect(await screen.findByText(/i have read this requirement/i)).toBeInTheDocument();
   });
 
+  it('offers the split starter first for a compound item, and sends its fixed prompt', async () => {
+    render(
+      <ToastProvider>
+        <ChatPanel jobId="job-1" localId="n0" disabled={false} isCompound onAcceptProposal={vi.fn()} />
+      </ToastProvider>,
+    );
+    const split = await screen.findByRole('button', { name: /split into separate requirements/i });
+    const rows = screen.getAllByRole('button').filter((b) => /make it testable|split into separate/i.test(b.textContent ?? ''));
+    expect(rows[0]).toBe(split);
+    await userEvent.click(split);
+    await waitFor(() => expect(chatApi.sendChatTurn).toHaveBeenCalledTimes(1));
+    const [jobId, localId, message] = vi.mocked(chatApi.sendChatTurn).mock.calls[0];
+    expect([jobId, localId]).toEqual(['job-1', 'n0']);
+    expect(message).toMatch(/combines more than one requirement/i);
+  });
+
+  it('hides every starter, the split one included, once the chat has history', async () => {
+    vi.mocked(chatApi.getChatHistory).mockResolvedValue([
+      { id: '1', role: 'user', content: 'hello', createdAt: '2026-11-02T00:00:00Z' } as never,
+    ]);
+    render(
+      <ToastProvider>
+        <ChatPanel jobId="job-1" localId="n0" disabled={false} isCompound onAcceptProposal={vi.fn()} />
+      </ToastProvider>,
+    );
+    expect(await screen.findByText('hello')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /split into separate requirements/i })).not.toBeInTheDocument();
+  });
+
+  it('shows no starters at all while the chat is disabled, even for a compound item', () => {
+    render(
+      <ToastProvider>
+        <ChatPanel jobId="job-1" localId="n0" disabled isCompound onAcceptProposal={vi.fn()} />
+      </ToastProvider>,
+    );
+    expect(screen.queryByRole('button', { name: /split into separate requirements/i })).not.toBeInTheDocument();
+  });
+
+  it('does not offer the split starter for an item that is not compound', async () => {
+    render(
+      <ToastProvider>
+        <ChatPanel jobId="job-1" localId="n0" disabled={false} onAcceptProposal={vi.fn()} />
+      </ToastProvider>,
+    );
+    await screen.findByText(/i have read this requirement/i);
+    expect(screen.queryByRole('button', { name: /split into separate requirements/i })).not.toBeInTheDocument();
+  });
+
   it('renders an assistant reply\'s markdown (e.g. **bold**) as real formatting, not literal asterisks', async () => {
     vi.mocked(chatApi.getChatHistory).mockResolvedValue([
       {

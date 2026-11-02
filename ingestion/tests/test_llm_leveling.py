@@ -8462,3 +8462,150 @@ def test_mapping_tolerates_a_wrong_shaped_response_without_failing_the_job(monke
 
     assert len(tree.nodes) > 0
     assert sorted(tree.excluded_figure_ids) == ["f0", "f1"]
+
+
+# Acceptance-criteria step wired into build_survey_tree (P9) ----
+
+
+class _CriteriaSpy:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def propose_acceptance_criteria(self, items_by_id, user_id=None):
+        self.calls.append(items_by_id)
+        return {k: {"criteria": ["Check HDR output on a reference display."], "assumptions": [], "needs_author_input": False} for k in items_by_id}
+
+
+class _StudySpy:
+    def __init__(self) -> None:
+        self.windows: list[str] = []
+
+    def study_document_window(self, window_text, user_id=None):
+        self.windows.append(window_text)
+        return {"placeholder_tokens": []}
+
+
+def _flagged_scoring() -> "FakeScoringClient":
+    return FakeScoringClient(results={
+        "n0": {"score": 90, "issues": []},
+        "n1": {"score": 40, "issues": ["missing_acceptance_criteria"]},
+    })
+
+
+def test_build_survey_tree_proposes_criteria_for_flagged_requirements_after_studying_the_document() -> None:
+    criteria, study = _CriteriaSpy(), _StudySpy()
+
+    tree = build_survey_tree(
+        _small_doc(), FakeSectionAnalysisClient(), scoring_client=_flagged_scoring(),
+        acceptance_criteria_client=criteria, document_study_client=study,
+    )
+
+    by_id = {n.local_id: n for n in tree.nodes}
+    assert "Proposed acceptance criteria" in by_id["n1"].description
+    assert "Proposed acceptance criteria" not in by_id["n0"].description
+    assert len(study.windows) == 1 and "The display shall support HDR." in study.windows[0]
+    assert list(criteria.calls[0]) == ["n1"]
+    assert by_id["n1"].quality_score == 40  # the scored verdict is untouched
+
+
+def test_build_survey_tree_without_flagged_requirements_never_studies_the_document() -> None:
+    criteria, study = _CriteriaSpy(), _StudySpy()
+    scoring = FakeScoringClient(results={"n0": {"score": 90, "issues": []}, "n1": {"score": 90, "issues": []}})
+
+    build_survey_tree(
+        _small_doc(), FakeSectionAnalysisClient(), scoring_client=scoring,
+        acceptance_criteria_client=criteria, document_study_client=study,
+    )
+
+    assert study.windows == [] and criteria.calls == []
+
+
+def test_build_survey_tree_without_a_criteria_client_is_unchanged() -> None:
+    tree = build_survey_tree(_small_doc(), FakeSectionAnalysisClient(), scoring_client=_flagged_scoring())
+
+    assert all("Proposed acceptance criteria" not in n.description for n in tree.nodes)
+
+
+class _CriteriaForEveryKey:
+    """Scores every requirement as lacking acceptance criteria, whatever its local id."""
+
+    def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
+        return {k: {"score": 40, "issues": ["missing_acceptance_criteria"]} for k in descriptions_by_node_id}
+
+
+def test_build_survey_tree_proposes_criteria_on_the_fully_deterministic_path_too() -> None:
+    criteria, study = _CriteriaSpy(), _StudySpy()
+
+    tree = build_survey_tree(
+        _structural_heading_doc(), FakeSectionAnalysisClient(), scoring_client=_CriteriaForEveryKey(),
+        acceptance_criteria_client=criteria, document_study_client=study,
+    )
+
+    assert any("Proposed acceptance criteria" in n.description for n in tree.nodes if n.type == WorkItemType.REQUIREMENT)
+    assert len(study.windows) == 1 and "The system shall do A." in study.windows[0]
+
+
+class _BrokenStudy:
+    def study_document_window(self, window_text, user_id=None):
+        raise RuntimeError("model down")
+
+
+def test_build_survey_tree_warns_when_the_document_could_not_be_studied_but_still_proposes() -> None:
+    tree = build_survey_tree(
+        _small_doc(), FakeSectionAnalysisClient(), scoring_client=_flagged_scoring(),
+        acceptance_criteria_client=_CriteriaSpy(), document_study_client=_BrokenStudy(),
+    )
+
+    assert any("only partly read" in w.raw for w in tree.warnings)
+    assert any("Proposed acceptance criteria" in n.description for n in tree.nodes)
+
+
+
+class _FailsOnSecondWindow:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def study_document_window(self, window_text, user_id=None):
+        self.calls += 1
+        if self.calls == 2:
+            raise RuntimeError("model down")
+        return {"placeholder_tokens": []}
+
+
+def _long_doc() -> CanonicalDoc:
+    path = "long_input.txt"
+    text = "The display shall support HDR. " * 400  # ~12k characters: two study windows
+    return CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[Block(id="b0", kind=BlockKind.PARAGRAPH, text="Display", source_ref=_sr(path)), Block(id="b1", kind=BlockKind.PARAGRAPH, text=text, source_ref=_sr(path))],
+    )
+
+
+def test_a_partly_read_document_warns_with_how_much_was_read() -> None:
+    study = _FailsOnSecondWindow()
+
+    tree = build_survey_tree(
+        _long_doc(), FakeSectionAnalysisClient(), scoring_client=_flagged_scoring(),
+        acceptance_criteria_client=_CriteriaSpy(), document_study_client=study,
+    )
+
+    assert study.calls == 2
+    assert any("1 of 2 parts" in w.raw for w in tree.warnings)
+
+
+def test_a_document_with_no_readable_text_is_not_studied_and_does_not_warn() -> None:
+    from app.leveling.llm_leveling import _propose_criteria_step
+
+    path = "empty.txt"
+    empty = CanonicalDoc(document=Document(path=path, format=DocumentFormat.TXT, sha256="h"), blocks=[])
+    node = WorkItemNode(
+        local_id="r", parent_local_id=None, type=WorkItemType.REQUIREMENT, title="r", description="The unit shall x.",
+        source_ref=_sr(path), mode=WorkItemMode.SURVEY, quality_issues=[RequirementQualityIssue.NOT_TESTABLE],
+    )
+    study, warnings = _StudySpy(), []
+
+    _propose_criteria_step([node], empty, _CriteriaSpy(), study, warnings)
+
+    assert study.windows == []
+    assert warnings == []
+    assert "Proposed acceptance criteria" in node.description

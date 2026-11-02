@@ -942,6 +942,9 @@ def _build_survey_tree_with_scoring(
             # description exists to distill a better one from (see
             # _author_branch_content's own gate for the actual quality check).
             title_distillation_client=client,
+            # Same client again: acceptance-criteria proposals and the whole-document study that informs them (SURVEY only).
+            acceptance_criteria_client=client,
+            document_study_client=client,
         )
 
 

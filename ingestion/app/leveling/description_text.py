@@ -41,6 +41,7 @@ class _Converter(HTMLParser):
         self._cell: list[str] | None = None
         self._cell_attrs = (1, 1)
         self._cell_is_th = False
+        self._proposal_depth = 0  # inside a generated <div data-r2a=...> section: not the author's text, never read by a model
 
     # -- helpers -------------------------------------------------------------------------------------------------------------------
     @staticmethod
@@ -61,6 +62,14 @@ class _Converter(HTMLParser):
     # -- parser callbacks ------------------------------------------------------------------------------------------------------------
     def handle_starttag(self, tag, attrs):
         tag = tag.lower()
+        if self._proposal_depth:
+            if tag == "div":
+                self._proposal_depth += 1
+            return
+        if tag == "div" and any(k.lower() == "data-r2a" for k, _ in attrs):
+            self._proposal_depth = 1
+            self.out.append("\n\n")
+            return
         if tag in _DROPPED_CONTENT:
             self._skip += 1
             return
@@ -115,6 +124,10 @@ class _Converter(HTMLParser):
 
     def handle_endtag(self, tag):
         tag = tag.lower()
+        if self._proposal_depth:
+            if tag == "div":
+                self._proposal_depth -= 1
+            return
         if tag in _DROPPED_CONTENT:
             self._skip = max(0, self._skip - 1)
             return
@@ -144,7 +157,7 @@ class _Converter(HTMLParser):
             self.out.append("\n\n")
 
     def handle_data(self, data):
-        if not self._skip:
+        if not self._skip and not self._proposal_depth:
             self._emit(data)
 
     def handle_comment(self, data):  # Word's conditional comments and the like

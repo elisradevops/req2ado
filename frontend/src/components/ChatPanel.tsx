@@ -106,6 +106,15 @@ const SUGGESTED_PROMPTS: { label: string; effect: string; prompt: string }[] = [
   },
 ];
 
+// Offered first, only for an item the scorer flagged "compound" (review finding R8). A chat turn edits this one item and cannot create
+// siblings, so the starter asks for the first requirement to stay here and the rest to be listed as complete statements to add.
+const SPLIT_STARTER = {
+  label: 'Split into separate requirements',
+  effect: 'this item keeps the first one; the others are listed for you to add as new items',
+  prompt:
+    'This item combines more than one requirement. Keep only the first requirement in this item, and list each remaining requirement as its own complete statement. Ignore any "Proposed acceptance criteria" or "Needs author input" section: those are generated notes, not requirements.',
+};
+
 // Same rule as ingestion's chat prompt (chat_service._weakest_categories): the lowest score, and only when it is below the bar.
 const WEAK_CATEGORY_SCORE = 70;
 
@@ -123,6 +132,7 @@ export function ChatPanel({
   disabled,
   disabledReason,
   categoryScores,
+  isCompound,
   onAcceptProposal,
 }: {
   jobId: string;
@@ -137,6 +147,8 @@ export function ChatPanel({
   disabledReason?: string;
   // The item's score per quality category: a rewrite is aimed at the weakest one, and the proposal card says which.
   categoryScores?: Record<string, number> | null;
+  // The scorer flagged this item as combining several requirements: adds the split starter.
+  isCompound?: boolean;
   onAcceptProposal: (patch: { title?: string; description?: string }) => void;
 }): React.ReactElement {
   const { showToast, showErrorToast } = useToast();
@@ -475,7 +487,7 @@ export function ChatPanel({
               <p className="text-sm text-ink-1">I have read this requirement. Want me to:</p>
             </div>
             <div className="ml-2.5 flex flex-col gap-1.5">
-              {SUGGESTED_PROMPTS.map((p) => (
+              {(isCompound ? [SPLIT_STARTER, ...SUGGESTED_PROMPTS] : SUGGESTED_PROMPTS).map((p) => (
                 <button
                   key={p.label}
                   type="button"

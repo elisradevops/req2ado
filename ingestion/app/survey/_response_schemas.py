@@ -672,6 +672,75 @@ def kb_document_profile_schema() -> dict:
     }
 
 
+def document_study_schema() -> dict:
+    """study_document_window: what one window of the job's document states about its glossary, unresolved-value markers, verification
+    wording, cited standards, table roles and list lead-ins. Entries are checked against the window text by the caller."""
+    strings = {"type": "array", "items": {"type": "string"}}
+    return {
+        "name": "document_study",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "glossary": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"term": {"type": "string"}, "definition": {"type": "string"}},
+                        "required": ["term", "definition"],
+                        "additionalProperties": False,
+                    },
+                },
+                "placeholder_tokens": strings,
+                "verification_statements": strings,
+                "standards_cited": strings,
+                "table_roles": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"table": {"type": "string"}, "role": {"type": "string"}},
+                        "required": ["table", "role"],
+                        "additionalProperties": False,
+                    },
+                },
+                "lead_in_patterns": strings,
+            },
+            "required": [
+                "glossary", "placeholder_tokens", "verification_statements", "standards_cited", "table_roles", "lead_in_patterns",
+            ],
+            "additionalProperties": False,
+        },
+    }
+
+
+def acceptance_criteria_schema() -> dict:
+    """propose_acceptance_criteria: one entry per requirement with proposed criteria, the assumptions behind them, and whether a value
+    the criteria depend on is missing from the input."""
+    return {
+        "name": "acceptance_criteria",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "criteria": {"type": "array", "items": {"type": "string"}},
+                            "assumptions": {"type": "array", "items": {"type": "string"}},
+                            "needs_author_input": {"type": "boolean"},
+                        },
+                        "required": ["id", "criteria", "assumptions", "needs_author_input"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["items"],
+            "additionalProperties": False,
+        },
+    }
+
+
 def rule_conformance_schema() -> dict:
     """judge_rule_conformance: for each given item, whether its text follows one stated writing rule."""
     return {

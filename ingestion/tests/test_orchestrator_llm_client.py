@@ -4066,3 +4066,109 @@ def test_consolidate_kb_categories_offers_the_previous_names_only_when_there_are
     client.consolidate_kb_categories([{"name": "A", "pass_condition": "a"}], 16, preferred_names=["Testable"])
     first, second = (json.loads(b["messages"][1]["content"]) for b in bodies)
     assert "preferred_names" not in first and second["preferred_names"] == ["Testable"]
+
+
+# study_document_window / propose_acceptance_criteria (P9) ----
+
+
+class _DictCache:
+    def __init__(self) -> None:
+        self.store: dict = {}
+
+    def get(self, key):
+        return self.store.get(key)
+
+    def set(self, key, value) -> None:
+        self.store[key] = value
+
+
+def test_study_document_window_returns_the_object_and_sends_the_window_text() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        captured["user"] = json.loads(body["messages"][1]["content"])
+        return httpx.Response(200, json={"content": '{"placeholder_tokens": ["TBD"]}'})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    assert client.study_document_window("Latency TBD ms") == {"placeholder_tokens": ["TBD"]}
+    assert captured["user"] == {"text": "Latency TBD ms"}
+
+
+def test_study_document_window_rejects_a_non_object_answer() -> None:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": "[1, 2]"})
+
+    with pytest.raises(ValueError):
+        client.study_document_window("text")
+
+
+def test_study_document_window_is_cached_per_window() -> None:
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json={"content": '{"glossary": []}'})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=_DictCache())
+    client._transport = httpx.MockTransport(handler)
+
+    client.study_document_window("same window")
+    client.study_document_window("same window")
+    client.study_document_window("another window")
+
+    assert calls["n"] == 2
+
+
+def test_propose_acceptance_criteria_keeps_only_asked_ids_and_drops_the_contract_comment() -> None:
+    captured: dict = {}
+    answer = {"items": [
+        {"id": "a", "criteria": ["c1"], "assumptions": [], "needs_author_input": False},
+        {"id": "ghost", "criteria": ["x"], "assumptions": [], "needs_author_input": False},
+    ]}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        captured["system"] = body["messages"][0]["content"]
+        captured["user"] = json.loads(body["messages"][1]["content"])
+        return httpx.Response(200, json={"content": json.dumps(answer)})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    result = client.propose_acceptance_criteria({"a": {"text": "The unit shall x."}})
+
+    assert list(result) == ["a"]
+    assert result["a"]["criteria"] == ["c1"]
+    assert captured["user"] == {"a": {"text": "The unit shall x."}}
+    assert not any(line.startswith("#") for line in captured["system"].splitlines())
+    assert "NEVER invent" in captured["system"]
+
+
+def test_propose_acceptance_criteria_rejects_an_answer_without_items() -> None:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": '{"nope": 1}'})
+
+    with pytest.raises(ValueError):
+        client.propose_acceptance_criteria({"a": {"text": "t"}})
+
+
+def test_propose_acceptance_criteria_caches_only_a_complete_answer() -> None:
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        items = [{"id": "a", "criteria": ["c"], "assumptions": [], "needs_author_input": False}]
+        return httpx.Response(200, json={"content": json.dumps({"items": items})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=_DictCache())
+    client._transport = httpx.MockTransport(handler)
+
+    client.propose_acceptance_criteria({"a": {"text": "t"}})
+    client.propose_acceptance_criteria({"a": {"text": "t"}})  # complete: served from the cache
+    client.propose_acceptance_criteria({"a": {"text": "t"}, "b": {"text": "u"}})  # b missing: not cached
+    client.propose_acceptance_criteria({"a": {"text": "t"}, "b": {"text": "u"}})
+
+    assert calls["n"] == 3

@@ -18,7 +18,9 @@ from app.section_analysis_options import DEFAULT_SECTION_ANALYSIS_OPTIONS, Secti
 from app.survey._response_schemas import (
     checklist_definitions_schema,
     checklist_extraction_schema,
+    acceptance_criteria_schema,
     distill_title_schema,
+    document_study_schema,
     duplicate_cluster_verdict_schema,
     duplicate_pair_verdict_schema,
     leftover_assignment_schema,
@@ -1844,6 +1846,60 @@ class OrchestratorLlmClient:
             )
 
         return run_keyed(send, items_by_id, spec, model=self._model)
+
+    def study_document_window(self, window_text: str, user_id: str | None = None) -> dict:
+        """Backs the job-document study (app.leveling.document_study): what one window states about its glossary, unresolved-value
+        markers, verification wording, cited standards, table roles and list lead-ins. Returns the raw object; the caller drops every
+        entry the window text does not contain."""
+        system_prompt = load_prompt("study_document")
+        key = None
+        if self._cache is not None:
+            key = cache_key(
+                "study_document_window", self._model, self._num_ctx, self._top_k, self._min_p, self._seed, system_prompt, document_study_schema(), window_text,
+            )
+            cached = self._cache.get(key)
+            if cached is not None:
+                return cached
+        parsed = self._chat_json(
+            system_prompt, json.dumps({"text": window_text}, ensure_ascii=False),
+            schema=document_study_schema(), max_tokens=3000, user_id=user_id,
+        )
+        if not isinstance(parsed, dict):
+            raise ValueError(f"malformed JSON in LLM response content: {parsed!r}")
+        if key is not None:
+            self._cache.set(key, parsed)
+        return parsed
+
+    def propose_acceptance_criteria(self, items_by_id: dict[str, dict], user_id: str | None = None) -> dict[str, dict]:
+        """Backs app.leveling.acceptance_criteria: proposed criteria (with assumptions, or "needs author input") for requirements the
+        scorer flagged as lacking them. Returns {node_id: entry}; entries for ids that were not asked about are dropped, a missing id
+        is simply absent (the caller leaves that description alone)."""
+        system_prompt = "\n".join(
+            line for line in load_prompt("propose_acceptance_criteria").splitlines() if not line.startswith("#")
+        )
+        key = None
+        if self._cache is not None:
+            key = cache_key(
+                "propose_acceptance_criteria", self._model, self._num_ctx, self._top_k, self._min_p, self._seed, system_prompt, acceptance_criteria_schema(), items_by_id,
+            )
+            cached = self._cache.get(key)
+            if cached is not None:
+                return cached
+        parsed = self._chat_json(
+            system_prompt, json.dumps(items_by_id, ensure_ascii=False),
+            schema=acceptance_criteria_schema(), max_tokens=4000, user_id=user_id,
+        )
+        entries = parsed.get("items") if isinstance(parsed, dict) else None
+        if not isinstance(entries, list):
+            raise ValueError(f"malformed JSON in LLM response content: {parsed!r}")
+        result = {
+            entry["id"]: entry
+            for entry in entries
+            if isinstance(entry, dict) and isinstance(entry.get("id"), str) and entry["id"] in items_by_id
+        }
+        if key is not None and len(result) == len(items_by_id):
+            self._cache.set(key, result)
+        return result
 
     def distill_title(self, text: str, max_length: int, user_id: str | None = None) -> str:
         """Backs the TitleDistillationClient protocol

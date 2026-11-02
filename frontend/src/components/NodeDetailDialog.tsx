@@ -286,6 +286,7 @@ export function NodeDetailDialog({
       disabled={!canEdit}
       disabledReason={chatDisabledReason}
       categoryScores={entry.qualityStale ? null : entry.qualityCategoryScores}
+      isCompound={entry.type === 'Requirement' && !entry.qualityStale && (entry.qualityIssues ?? []).includes('compound')}
       onAcceptProposal={(patch) =>
         onSave?.(entry.localId, {
           title: patch.title ?? entry.title,

@@ -71,6 +71,30 @@ describe('NodeDetailDialog', () => {
     expect(screen.queryByPlaceholderText(/ask the assistant/i)).not.toBeInTheDocument();
   });
 
+  it('offers the split starter in the chat only for a fresh compound-flagged Requirement', async () => {
+    const matchMediaSpy = vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({
+      matches: true, media: query, onchange: null, addListener: () => {}, removeListener: () => {},
+      addEventListener: () => {}, removeEventListener: () => {}, dispatchEvent: () => false,
+    }) as unknown as MediaQueryList);
+    const props = { onSave: vi.fn(), jobMode: 'survey' as const, jobStatus: 'diff_ready' };
+    try {
+      const fresh = renderDialog({ entry: { ...ENTRY, qualityIssues: ['compound'] } as DryRunDiffEntry, ...props });
+      expect(await screen.findByRole('button', { name: /split into separate requirements/i })).toBeInTheDocument();
+      fresh.unmount();
+
+      const stale = renderDialog({ entry: { ...ENTRY, qualityIssues: ['compound'], qualityStale: true } as DryRunDiffEntry, ...props });
+      await screen.findByText(/i have read this requirement/i);
+      expect(screen.queryByRole('button', { name: /split into separate requirements/i })).not.toBeInTheDocument();
+      stale.unmount();
+
+      renderDialog({ entry: { ...ENTRY, type: 'Feature', qualityIssues: ['compound'] } as DryRunDiffEntry, ...props });
+      await screen.findByText(/i have read this requirement/i);
+      expect(screen.queryByRole('button', { name: /split into separate requirements/i })).not.toBeInTheDocument();
+    } finally {
+      matchMediaSpy.mockRestore();
+    }
+  });
+
   it('does not render an interactive exclude control -- excluding is a table-row action, not a dialog action', () => {
     // Regression guard: an earlier version had its own interactive exclude
     // checkbox in the dialog header, duplicating DiffTree's per-row

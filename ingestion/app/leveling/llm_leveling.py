@@ -21,6 +21,8 @@ from app.kb.kb_vector_store import _MAX_DOCUMENT_CHUNKS as _KB_GET_DOCUMENT_MAX_
 from app.kb.kb_vector_store import KbVectorStore
 from app.kb.retrieval import fetch_always_include_context, retrieve_context
 from app.section_analysis_options import DEFAULT_SECTION_ANALYSIS_OPTIONS, SectionAnalysisOptions
+from app.leveling.acceptance_criteria import AcceptanceCriteriaClient, eligible_nodes, propose_acceptance_criteria
+from app.leveling.document_study import DocumentStudyClient, study_document
 from app.leveling.conflict_detection import (
     ConflictJudgeClient,
     _detect_conflicting_duplicates,
@@ -1750,6 +1752,11 @@ def build_survey_tree(
     # _author_branch_content's own use of this for the real quality gate and
     # distill_survey_title for the actual correction call.
     title_distillation_client: TitleDistillationClient | None = None,
+    # Acceptance-criteria proposals for requirements the scorer flagged as lacking them (see app.leveling.acceptance_criteria), after the
+    # model has read the whole document once (app.leveling.document_study; optional -- without it the proposals use the hierarchy alone).
+    # None (the default) is byte-identical to before this capability existed.
+    acceptance_criteria_client: AcceptanceCriteriaClient | None = None,
+    document_study_client: DocumentStudyClient | None = None,
     # How many of a chunked LLM enhancement pass's independent chunks may
     # be in flight at once, for all five of them: the deterministic path's
     # title/tag, requirement-synthesis and Epic/Feature parent-summary
@@ -2097,12 +2104,16 @@ def build_survey_tree(
                 user_id=user_id,
             )
 
+        _propose_criteria_step(
+            all_nodes, doc, acceptance_criteria_client, document_study_client, all_warnings, user_id=user_id,
+        )
         return WorkItemTree(
             nodes=all_nodes, warnings=finalize_warnings(all_warnings),
             kb_citations=deduped_citations, kb_coverage=_kb_coverage(kb_files_available, deduped_citations),
             trace_links=trace_links,
         )
 
+    study_source_doc = doc  # the full document, before the residual replaces it
     doc = llm_doc  # every remaining read below sees only the residual, non-claimed content
 
     # figure_id_by_block_id was already built above, BEFORE
@@ -2785,6 +2796,9 @@ def build_survey_tree(
             user_id=user_id,
         )
 
+    _propose_criteria_step(
+        all_nodes, study_source_doc, acceptance_criteria_client, document_study_client, all_warnings, user_id=user_id,
+    )
     return WorkItemTree(
         nodes=all_nodes, warnings=finalize_warnings(all_warnings),
         kb_citations=deduped_citations, kb_coverage=_kb_coverage(kb_files_available, deduped_citations),
@@ -2793,6 +2807,43 @@ def build_survey_tree(
     )
 
 
+
+
+def _propose_criteria_step(
+    nodes: list[WorkItemNode],
+    source_doc: CanonicalDoc,
+    criteria_client: AcceptanceCriteriaClient | None,
+    study_client: DocumentStudyClient | None,
+    warnings: list[IntegrityWarning],
+    user_id: str | None = None,
+) -> None:
+    """Runs the acceptance-criteria proposals (see app.leveling.acceptance_criteria) when a client is supplied and any requirement is
+    eligible. The whole-document study runs only then, so a document with nothing to propose never pays for it."""
+    if criteria_client is None or not eligible_nodes(nodes):
+        return
+    study = None
+    tables_by_id = {t.id: t for t in source_doc.tables}
+
+    def table_text(table_id: str) -> str | None:
+        table = tables_by_id.get(table_id)
+        return _table_to_markdown(table) if table is not None else None
+
+    document_text = render_section(source_doc.blocks, source_doc.tables) if study_client is not None else ""
+    if study_client is not None and document_text.strip():
+        try:
+            study = study_document(document_text, study_client, user_id=user_id)
+        except Exception as error:  # noqa: BLE001 -- the study is context only: carry on with the hierarchy alone, and say so
+            logger.warning("Document study failed (%s); acceptance criteria use the hierarchy alone.", error)
+        if study is None or study.windows_studied < study.windows_total:
+            read = f"{study.windows_studied} of {study.windows_total} parts" if study is not None else "none of it"
+            warnings.append(IntegrityWarning.make(
+                WarningKind.ENHANCEMENT_CALL_FAILED,
+                f"The document was only partly read before proposing acceptance criteria ({read}); the proposals used less document "
+                "context, and values the document marks as unresolved may not have been recognised.",
+                detail={"pass": "document_study"},
+            ))
+
+    propose_acceptance_criteria(nodes, study, criteria_client, warnings, table_text, user_id=user_id)
 
 
 class _BranchContentResult(NamedTuple):
