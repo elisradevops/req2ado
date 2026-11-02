@@ -161,6 +161,19 @@ def _row_label(row: list[str], id_column: int) -> str:
     return longest if len(longest) <= _LABEL_MAX_LENGTH else longest[:_LABEL_MAX_LENGTH]
 
 
+def _gated_id_rows(table: Table) -> tuple[list[list[str]], int] | None:
+    """The table's non-blank rows and its id column, or None when the table
+    as a whole is not a requirements list -- the one shared gate behind both
+    `qualifying_requirement_rows` and `atomizable_requirement_rows`."""
+    rows = [row for row in plain_text_rows(table) if any(cell.strip() for cell in row)]
+    if len(rows) < MIN_ID_ROWS:
+        return None
+    id_column = _id_column_index(rows)
+    if id_column is None:
+        return None
+    return rows, id_column
+
+
 def qualifying_requirement_rows(tables: Iterable[Table] | None) -> list[RequirementRowInfo]:
     """Every row, across all given tables, that is itself a separately-
     identified requirement -- one RequirementRowInfo per such row, in
@@ -170,12 +183,10 @@ def qualifying_requirement_rows(tables: Iterable[Table] | None) -> list[Requirem
         return []
     results: list[RequirementRowInfo] = []
     for table in tables:
-        rows = [row for row in plain_text_rows(table) if any(cell.strip() for cell in row)]
-        if len(rows) < MIN_ID_ROWS:
+        gated = _gated_id_rows(table)
+        if gated is None:
             continue
-        id_column = _id_column_index(rows)
-        if id_column is None:
-            continue
+        rows, id_column = gated
         for row in rows:
             if id_column >= len(row):
                 continue
@@ -183,3 +194,47 @@ def qualifying_requirement_rows(tables: Iterable[Table] | None) -> list[Requirem
             if code and extract_customer_requirement_code(code) == code:
                 results.append(RequirementRowInfo(table_id=table.id, code=code, label=_row_label(row, id_column)))
     return results
+
+
+class AtomicRow(NamedTuple):
+    code: str  # verbatim id-cell text, same as RequirementRowInfo.code
+    cells: tuple[str, ...]  # every other non-empty cell, trimmed, in column order
+
+
+_HEADER_CELL_MAX_LENGTH = 40
+
+
+def _looks_like_header_row(row: list[str]) -> bool:
+    """Column labels, not content: at least two non-empty cells, each short
+    and not sentence-like. A lone spanning title row or a data row with a
+    missing id fails this, so the table stays folded and its text is kept."""
+    cells = [cell.strip() for cell in row if cell.strip()]
+    return len(cells) >= 2 and all(len(c) <= _HEADER_CELL_MAX_LENGTH and not c.endswith(".") for c in cells)
+
+
+def atomizable_requirement_rows(table: Table | None) -> list[AtomicRow] | None:
+    """The rows of `table` as separate requirements, or None when the table
+    must stay folded into its parent's description.
+
+    Same table-level decision as `qualifying_requirement_rows` (an id
+    column clearing MIN_ID_ROWS/MIN_ID_ROW_FRACTION), plus one extra rule so
+    splitting never loses row text: the only non-blank row allowed WITHOUT a
+    code is a single leading header-shaped row (column labels). A coded table with any other
+    uncoded row (a trailing note, a continuation row) returns None and keeps
+    its previous whole-table fold. Column labels of the header row are the one
+    accepted loss (they name columns, not requirements). Never raises."""
+    if table is None:
+        return None
+    gated = _gated_id_rows(table)
+    if gated is None:
+        return None
+    rows, id_column = gated
+    atoms: list[AtomicRow] = []
+    for position, row in enumerate(rows):
+        code = row[id_column].strip() if id_column < len(row) else ""
+        if code and extract_customer_requirement_code(code) == code:
+            cells = tuple(cell.strip() for i, cell in enumerate(row) if i != id_column and cell.strip())
+            atoms.append(AtomicRow(code=code, cells=cells))
+        elif position != 0 or not _looks_like_header_row(row):
+            return None
+    return atoms

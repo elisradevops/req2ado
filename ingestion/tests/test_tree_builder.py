@@ -2065,3 +2065,85 @@ def test_a_real_ocr_recovered_pdf_table_produces_the_expected_warning_end_to_end
     assert len(ocr_warnings) == 1
     assert ocr_warnings[0].detail["tableId"] == doc.tables[0].id
     assert ocr_warnings[0].detail["recoveredCellCount"] == 1
+
+
+def _requirement_list_doc(rows: list[list[str]], extra_table: Table | None = None) -> CanonicalDoc:
+    path = "prd.docx"
+    table = Table(
+        id="t0",
+        cells=[[TableCell(text=cell) for cell in row] for row in rows],
+        source_ref=_sr(path, 30, 31),
+    )
+    return CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.DOCX, sha256="prdhash"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Synchronization", source_ref=_sr(path, 0, 15)),
+            Block(id="b1", kind=BlockKind.PARAGRAPH, text="Intro paragraph.", source_ref=_sr(path, 16, 29)),
+        ],
+        tables=[table] if extra_table is None else [table, extra_table],
+    )
+
+
+_PRD_ROWS = [
+    ["#", "Parameter", "Requirement / Value"],
+    ["P-SENSOR-001#", "Time sync source", "The system shall synchronize to Standard-XX within N ms."],
+    ["P-SENSOR-002#", "", "Timing accuracy shall be better than X microseconds."],
+]
+
+
+def test_a_requirement_list_table_becomes_one_requirement_per_row_with_its_id() -> None:
+    tree = build_baseline_tree(_requirement_list_doc(_PRD_ROWS))
+    rows = [n for n in tree.nodes if n.customer_id is not None]
+    assert [n.customer_id for n in rows] == ["P-SENSOR-001#", "P-SENSOR-002#"]
+    assert all(n.type == WorkItemType.REQUIREMENT for n in rows)
+    parent = next(n for n in tree.nodes if n.title == "Synchronization")
+    assert all(n.parent_local_id == parent.local_id for n in rows)
+    assert rows[0].title == "The system shall synchronize to Standard-XX within N ms."
+    assert "Time sync source" in rows[0].description
+    assert "<table" not in parent.description
+    assert parent.table_ids == []
+    assert all(n.table_ids == ["t0"] for n in rows)
+
+
+def test_split_row_nodes_have_stable_distinct_hashes_and_section_path() -> None:
+    first = build_baseline_tree(_requirement_list_doc(_PRD_ROWS))
+    second = build_baseline_tree(_requirement_list_doc(_PRD_ROWS))
+    rows = [n for n in first.nodes if n.customer_id is not None]
+    assert len({n.identity_hash for n in rows}) == 2
+    assert [n.identity_hash for n in rows] == [n.identity_hash for n in second.nodes if n.customer_id is not None]
+    assert rows[0].source_ref.section_path == ["Synchronization"]
+
+
+def test_a_values_table_without_ids_still_folds_into_its_parent() -> None:
+    tree = build_baseline_tree(_requirement_list_doc([["SRU module", "QTY"], ["Power supply", "1"], ["Fan", "2"]]))
+    parent = next(n for n in tree.nodes if n.title == "Synchronization")
+    assert "<table" in parent.description
+    assert parent.table_ids == ["t0"]
+    assert all(n.customer_id is None for n in tree.nodes)
+
+
+def test_a_table_with_an_unnumbered_row_stays_folded_so_no_text_is_lost() -> None:
+    rows = [*_PRD_ROWS, ["", "Note", "A free-text remark with no id."]]
+    tree = build_baseline_tree(_requirement_list_doc(rows))
+    parent = next(n for n in tree.nodes if n.title == "Synchronization")
+    assert "A free-text remark" in parent.description
+    assert all(n.customer_id is None for n in tree.nodes)
+
+
+def test_a_split_table_keeps_its_caption_on_the_parent() -> None:
+    doc = _requirement_list_doc(_PRD_ROWS)
+    doc.tables[0].caption = "Table 3 - Timing requirements"
+    tree = build_baseline_tree(doc)
+    parent = next(n for n in tree.nodes if n.title == "Synchronization")
+    assert "Table 3 - Timing requirements" in parent.description
+    assert len([n for n in tree.nodes if n.customer_id]) == 2
+
+
+def test_split_row_identity_survives_an_earlier_row_being_inserted_and_repeated_codes_stay_distinct() -> None:
+    base = build_baseline_tree(_requirement_list_doc(_PRD_ROWS))
+    more = build_baseline_tree(_requirement_list_doc([*_PRD_ROWS[:1], ["P-SENSOR-000#", "New", "The system shall be new."], *_PRD_ROWS[1:]]))
+    by_code = lambda tree: {n.customer_id: n.identity_hash for n in tree.nodes if n.customer_id}  # noqa: E731
+    assert by_code(base)["P-SENSOR-001#"] == by_code(more)["P-SENSOR-001#"]
+    dup = build_baseline_tree(_requirement_list_doc([*_PRD_ROWS, _PRD_ROWS[1]]))
+    hashes = [n.identity_hash for n in dup.nodes if n.customer_id]
+    assert len(hashes) == 3 and len(set(hashes)) == 3

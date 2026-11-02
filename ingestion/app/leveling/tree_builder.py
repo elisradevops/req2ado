@@ -10,6 +10,7 @@ from app.distillation.description import assemble_description
 from app.distillation.title import extract_baseline_title
 from app.leveling.autodetect import classify_numbering_branch, is_heading_style_branch
 from app.leveling.customer_id import extract_customer_requirement_code
+from app.leveling.requirement_rows import atomizable_requirement_rows
 from app.leveling.depth import authored_numbering_label, resolve_block_depth
 from app.leveling.profiles import heading_style_type_for_depth
 from app.leveling.table_color import colgroup_html, resolve_cell_style_colors, table_style_attr
@@ -1074,7 +1075,56 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
                     if nested_table_warning is not None:
                         warnings.append(nested_table_warning)
                     continue
-                if stack:
+                atoms = atomizable_requirement_rows(table) if stack else None
+                if atoms:
+                    # A requirements-list table (every row carries its own
+                    # document-authored id): each row is its own Requirement
+                    # under the open node, not one more block of that node's
+                    # description. See requirement_rows.atomizable_requirement_rows.
+                    open_node = nodes_by_id[stack[-1][1]]
+                    row_section_path = [nodes_by_id[ancestor_id].title for _depth, ancestor_id in stack]
+                    row_source_ref = table.source_ref.model_copy(update={"section_path": row_section_path})
+                    row_node_ids: list[str] = []
+                    code_occurrences: dict[str, int] = {}
+                    for atom in atoms:
+                        occurrence = code_occurrences.get(atom.code, 0)
+                        code_occurrences[atom.code] = occurrence + 1
+                        row_text = "\n".join(atom.cells) if atom.cells else atom.code
+                        row_local_id = f"n{node_counter}"
+                        node_counter += 1
+                        row_node = WorkItemNode(
+                            local_id=row_local_id,
+                            type=WorkItemType.REQUIREMENT,
+                            parent_local_id=open_node.local_id,
+                            title=extract_baseline_title(max(atom.cells, key=len) if atom.cells else atom.code),
+                            description=row_text,
+                            customer_id=atom.code,
+                            source_ref=row_source_ref,
+                            fidelity_hash=_hash_description(row_text),
+                            # Every row shares the table's one source span, so the
+                            # position-only hash needs a per-row discriminator: the
+                            # row's own document-authored code (stable when rows or
+                            # tables are inserted elsewhere), plus an occurrence
+                            # count in case a code repeats within the table.
+                            identity_hash=_hash_identity_for_synthesized_node(
+                                f"table_row:{atom.code}:{occurrence}", row_source_ref
+                            ),
+                            tags=[],
+                            mode=WorkItemMode.BASELINE,
+                            child_type=WorkItemType.REQUIREMENT,
+                            table_ids=[table.id],
+                        )
+                        nodes.append(row_node)
+                        nodes_by_id[row_local_id] = row_node
+                        row_node_ids.append(row_local_id)
+                    if table.caption and table.caption.strip():
+                        # The caption is table-level text no row carries; keep it on the parent.
+                        open_node.description = assemble_description(open_node.description, table.caption.strip())
+                        open_node.fidelity_hash = _hash_description(open_node.description)
+                    open_node.source_ref = _widen_page_end(open_node.source_ref, table.source_ref)
+                    ocr_warning = _ocr_recovered_table_warning(table, node_ids=row_node_ids)
+                    nested_table_warning = _nested_table_dropped_warning(table, node_ids=row_node_ids)
+                elif stack:
                     open_node = nodes_by_id[stack[-1][1]]
                     open_node.description = assemble_description(open_node.description, description)
                     open_node.fidelity_hash = _hash_description(open_node.description)
