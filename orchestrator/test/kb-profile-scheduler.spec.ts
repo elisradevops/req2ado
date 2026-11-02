@@ -2,6 +2,20 @@ import { KbProfileScheduler, profileJobId, type ProfileQueue } from '../src/modu
 import { KbService } from '../src/modules/kb/kb.service';
 import { IngestionHttpClient } from '../src/modules/pipeline/ingestion-http.client';
 
+// Captures the options the scheduler gives its BullMQ worker; nothing else in this spec uses a real BullMQ.
+const mockWorkerOptions: Array<Record<string, unknown>> = [];
+jest.mock('bullmq', () => ({
+  Worker: class {
+    constructor(_name: string, _processor: unknown, options: Record<string, unknown>) {
+      mockWorkerOptions.push(options);
+    }
+    on() {
+      return this;
+    }
+    async close() {}
+  },
+}));
+
 const queue = () => ({ add: jest.fn(async (..._args: unknown[]) => undefined), close: jest.fn(async () => undefined) }) satisfies ProfileQueue;
 const resolver = (chatModel: string | null) => ({ resolve: jest.fn(async () => (chatModel ? { apiKey: 'k', chatModel } : null)) });
 
@@ -63,6 +77,16 @@ describe('KbProfileScheduler', () => {
 
     ingestion.buildKbProfile.mockRejectedValueOnce(new Error('ingestion down'));
     await expect(noKb.run({ userId: 'u1' })).resolves.toBeUndefined();
+  });
+});
+
+describe('KbProfileScheduler worker', () => {
+  it('holds its job lock for as long as the pipeline worker does, so a slow local-LLM build is not declared stalled', async () => {
+    mockWorkerOptions.length = 0;
+    const scheduler = new KbProfileScheduler({ queue: queue(), ingestion: {} as never, resolver: resolver('m') as never, profileModel: '', redisUrl: 'redis://x:6379' });
+    await scheduler.onModuleInit();
+    expect(mockWorkerOptions).toHaveLength(1);
+    expect(mockWorkerOptions[0]).toMatchObject({ concurrency: 1, lockDuration: 1_800_000, stalledInterval: 1_800_000 });
   });
 });
 

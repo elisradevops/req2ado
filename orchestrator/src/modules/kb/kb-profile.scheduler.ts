@@ -52,6 +52,13 @@ export class KbProfileScheduler implements OnModuleInit, OnModuleDestroy {
     const worker = new Worker(KB_PROFILE_QUEUE, async (job) => this.run(job.data as { userId: string }), {
       connection: { url: this.deps.redisUrl } as never,
       concurrency: 1,
+      // A profile build is a run of slow local-LLM calls. BullMQ's 30s lock default declared it stalled while it was
+      // still running (lock renewal failed, the job went back to the queue, and the next stall failed it for good).
+      // Same fix and same reason as the pipeline worker's (see pipeline-worker.main.ts): Docker Desktop's VM loses
+      // host scheduling time while Ollama runs heavy inference on the same machine, so renewals can miss. Slower
+      // detection of a truly dead worker is the accepted trade-off.
+      lockDuration: 1_800_000,
+      stalledInterval: 1_800_000,
     });
     worker.on('error', (err) => logger.error(`kb profile worker error: ${err.message}`));
     this.worker = worker;
