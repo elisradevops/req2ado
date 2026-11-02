@@ -680,7 +680,10 @@ def score_texts_together(
         category_scores = _parse_category_scores(entry.get("categoryScores"))
         if category_checklist:
             category_scores, _left_out = _conform_category_scores(category_scores, category_checklist)
-        out[text_id] = (score, issues, category_scores, _parse_confidence(entry.get("confidence")))
+        out[text_id] = (
+            score, issues, category_scores,
+            _reconcile_confidence(_parse_confidence(entry.get("confidence")), issues),
+        )
     return out
 
 
@@ -765,6 +768,28 @@ def _conform_category_scores(scores: dict[str, int] | None, category_checklist: 
             kept[canonical] = value
     ordered = {name: kept[name] for name in required if name in kept}
     return ordered, [name for name in required if name not in kept]
+
+
+# Flags that say the candidate is not a well-formed requirement. A model that
+# raises one of these cannot also be "high" confident in the item as a
+# requirement, so the pair would contradict itself on screen.
+_STRUCTURAL_ISSUES = frozenset(
+    {
+        RequirementQualityIssue.FRAGMENT.value,
+        RequirementQualityIssue.PLACEHOLDER.value,
+        RequirementQualityIssue.NOT_A_REQUIREMENT.value,
+    }
+)
+
+
+def _reconcile_confidence(
+    confidence: QualityConfidence | None, issues: Sequence[str],
+) -> QualityConfidence | None:
+    """Caps HIGH at MEDIUM when a structural flag is present. Only ever
+    lowers; None (no usable answer) stays None, LOW and MEDIUM are kept."""
+    if confidence is QualityConfidence.HIGH and _STRUCTURAL_ISSUES.intersection(issues):
+        return QualityConfidence.MEDIUM
+    return confidence
 
 
 def _parse_confidence(raw: object) -> QualityConfidence | None:
@@ -1023,7 +1048,9 @@ def _apply_quality_scores(
         node.quality_category_checklist = _match_category_checklist(
             node.quality_category_scores, category_checklist_definitions,
         )
-        node.quality_confidence = _parse_confidence(entry.get("confidence"))
+        node.quality_confidence = _reconcile_confidence(
+            _parse_confidence(entry.get("confidence")), [i.value for i in node.quality_issues],
+        )
 
     missing_nodes = [node for node in nodes if node.quality_score is None]
     missing_or_invalid = [node.local_id for node in missing_nodes]

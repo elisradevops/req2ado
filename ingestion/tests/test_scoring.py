@@ -8,6 +8,7 @@ from app.leveling.scoring import (
     _apply_quality_scores,
     _match_category_checklist,
     score_single_requirement_text,
+    score_texts_together,
 )
 from app.workitem.model import IntegrityWarning, QualityConfidence, WorkItemMode, WorkItemNode, WorkItemType
 
@@ -730,3 +731,46 @@ def test_chunks_follow_the_node_limit_for_the_categories_in_use() -> None:
     assert max(len(c) for c in wide) == scoring.scoring_chunk_node_limit(21)
     assert max(len(c) for c in narrow) == scoring._SCORING_CHUNK_NODE_COUNT
     assert [i for c in wide for i in c] == items  # document order preserved
+
+
+def test_structural_flags_cap_high_confidence_in_document_scoring() -> None:
+    nodes = [_requirement_node(f"n{i}", f"text {i}") for i in range(4)]
+    client = _FakeScoringClient(
+        {
+            "n0": {"score": 45, "issues": ["fragment"], "categoryScores": {}, "confidence": "high"},
+            "n1": {"score": 40, "issues": ["placeholder", "vague_term"], "categoryScores": {}, "confidence": "high"},
+            "n2": {"score": 30, "issues": ["not_a_requirement"], "categoryScores": {}, "confidence": "medium"},
+            "n3": {"score": 90, "issues": ["vague_term"], "categoryScores": {}, "confidence": "high"},
+        },
+    )
+
+    _apply_quality_scores(nodes, client, [], "")
+
+    assert nodes[0].quality_confidence is QualityConfidence.MEDIUM
+    assert nodes[1].quality_confidence is QualityConfidence.MEDIUM
+    assert nodes[2].quality_confidence is QualityConfidence.MEDIUM  # never raised
+    assert nodes[3].quality_confidence is QualityConfidence.HIGH  # non-structural flag: untouched
+
+
+def test_structural_flag_never_raises_low_confidence_or_invents_one() -> None:
+    client = _FakeScoringClient(
+        {
+            "a": {"score": 40, "issues": ["fragment"], "categoryScores": {}, "confidence": "low"},
+            "b": {"score": 40, "issues": ["fragment"], "categoryScores": {}},
+        },
+    )
+
+    out = score_texts_together({"a": "x", "b": "y"}, client, None, None, None)
+
+    assert out["a"][3] is QualityConfidence.LOW
+    assert out["b"][3] is None
+
+
+def test_structural_flags_cap_high_confidence_in_single_text_scoring() -> None:
+    client = _FakeScoringClient(
+        {"adhoc": {"score": 45, "issues": ["placeholder"], "categoryScores": {}, "confidence": "high"}},
+    )
+
+    _, _, _, confidence = score_single_requirement_text("TBD", client, None, None, None)
+
+    assert confidence is QualityConfidence.MEDIUM
