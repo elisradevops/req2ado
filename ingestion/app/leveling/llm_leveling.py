@@ -670,6 +670,7 @@ def _merge_always_include_context(
     kb_citations: list[KbCitation],
     user_id: str,
     vector_store: KbVectorStore,
+    prefetched: tuple[str | None, list[dict]] | None = None,
 ) -> tuple[str | None, list[KbCitation]]:
     """Prepends every "always_include" KB file's full text to `kb_context`
     (see fetch_always_include_context's own docstring) and appends its
@@ -682,7 +683,11 @@ def _merge_always_include_context(
     _resolve_kb_citations' judge -- an always-include file's relevance is a
     property of upload-time intent, not something a per-call verification
     should be able to override."""
-    always_include_context, always_include_raw = fetch_always_include_context(user_id, vector_store)
+    # `prefetched` lets a caller that merges many times (once per branch) read
+    # the always-include files from the vector store only once.
+    if prefetched is None:
+        prefetched = fetch_always_include_context(user_id, vector_store)
+    always_include_context, always_include_raw = prefetched
     if always_include_context is None:
         return kb_context, kb_citations
     merged_context = always_include_context if kb_context is None else f"{always_include_context}\n\n{kb_context}"
@@ -696,6 +701,15 @@ def _merge_always_include_context(
 _DOC_LEVEL_QUERY_FALLBACK_CHARS = 2000
 
 
+def _blocks_query_text(blocks: list[Block]) -> str:
+    """Query text for a set of blocks (one branch, or the whole document):
+    the heading text, else the first ~2000 chars of block text."""
+    heading_text = "\n".join(block.text for block in blocks if block.kind == BlockKind.HEADING)
+    if heading_text.strip():
+        return heading_text
+    return "\n".join(block.text for block in blocks)[:_DOC_LEVEL_QUERY_FALLBACK_CHARS]
+
+
 def _document_level_query_text(doc: CanonicalDoc) -> str:
     """Builds the ONE query text used to retrieve KB context ONCE per
     document for the §5c fallback (non-tool-capable model) path -- heading
@@ -703,10 +717,7 @@ def _document_level_query_text(doc: CanonicalDoc) -> str:
     document has no headings at all, falls back to its first ~2000 chars of
     block text (a conservative proxy, same spirit as
     _MAX_SURVEY_BRANCH_BLOCK_COUNT's block-count proxy)."""
-    heading_text = "\n".join(block.text for block in doc.blocks if block.kind == BlockKind.HEADING)
-    if heading_text.strip():
-        return heading_text
-    return "\n".join(block.text for block in doc.blocks)[:_DOC_LEVEL_QUERY_FALLBACK_CHARS]
+    return _blocks_query_text(doc.blocks)
 
 
 # §14 Tier 1: cheap, always-on detection of a section referencing an
@@ -2196,8 +2207,10 @@ def build_survey_tree(
         doc_kb_citations = _resolve_kb_citations(
             query_text, raw_doc_citations, kb_relevance_client, debug_capture=debug_capture, user_id=user_id,
         )
+        fallback_always_include = fetch_always_include_context(user_id, vector_store)
         doc_kb_context, doc_kb_citations = _merge_always_include_context(
             doc_kb_context, doc_kb_citations, user_id, vector_store,
+            prefetched=fallback_always_include,
         )
     elif kb_deps_present and supports_tools:
         # Agentic path (§5c): the model pulls KB context itself via query_kb
@@ -2359,6 +2372,8 @@ def build_survey_tree(
             with callback_lock:
                 progress_callback(progress)
 
+        branch_fallback_citations: dict[int, list[KbCitation]] = {}
+
         def _run_branch(branch_index: int, branch_blocks: list[Block]) -> _BranchSkeleton:
             # Per-BRANCH heading count (not the whole-document heading_count
             # above, which only applies on the single-branch/whole-doc path)
@@ -2400,12 +2415,39 @@ def build_survey_tree(
             # multi-top-tier-section-in-one-call shape the whole-document
             # path hits.
             branch_heading_hints = entries_for_blocks(full_doc_heading_entries, branch_blocks)
+            branch_kb_context, branch_kb_citations = doc_kb_context, doc_kb_citations
+            if kb_deps_present and not supports_tools:
+                # Fallback path: ground each branch on its OWN headings, not
+                # only the document-wide query -- otherwise sections whose
+                # topic differs from the document's headings get no KB
+                # material from the other files. A branch that finds nothing
+                # keeps the document-level grounding.
+                branch_query = _blocks_query_text(branch_blocks)
+                branch_context, raw_branch_citations = retrieve_context(
+                    user_id, branch_query, embed_client, vector_store,
+                )
+                if branch_context is not None:
+                    branch_kb_citations = _resolve_kb_citations(
+                        branch_query, raw_branch_citations, kb_relevance_client,
+                        node_id_prefix=f"br{branch_index}_", debug_capture=debug_capture,
+                        user_id=user_id,
+                    )
+                    branch_kb_context, branch_kb_citations = _merge_always_include_context(
+                        branch_context, branch_kb_citations, user_id, vector_store,
+                        prefetched=fallback_always_include,
+                    )
+                    # The fallback skeleton reports no citations of its own
+                    # (doc-level ones are collected once above); keep this
+                    # branch's by index so they reach the deduped tree-level
+                    # list in document order, whatever order threads finish.
+                    branch_fallback_citations[branch_index] = branch_kb_citations
             return _build_survey_skeleton_for_branch(
                 branch_blocks, analysis_client,
                 node_id_prefix=f"br{branch_index}_",
                 tables=branch_tables[branch_index] if branch_tables is not None else None,
-                supports_tools=supports_tools, retrieve_fn=retrieve_fn, kb_context=doc_kb_context,
-                kb_context_citations=doc_kb_citations,
+                supports_tools=supports_tools, retrieve_fn=retrieve_fn,
+                kb_context=branch_kb_context,
+                kb_context_citations=branch_kb_citations,
                 list_documents_fn=list_documents_fn, read_document_fn=read_document_fn,
                 global_context=_combine_global_context(
                     global_context, branch_index, glossary_sections, primer_context, front_matter_branch_indices,
@@ -2441,6 +2483,8 @@ def build_survey_tree(
                 futures = [submit_in_context(executor, _run_branch, i, branch_blocks) for i, branch_blocks in enumerate(branches)]
                 branch_skeletons = [future.result() for future in futures]
         blocks_done = running_total
+        for branch_index in sorted(branch_fallback_citations):
+            all_kb_citations.extend(branch_fallback_citations[branch_index])
 
     # Every branch's STRUCTURE now exists, document-wide, and not one word of
     # requirement text has been written yet -- which is the entire point of
@@ -2575,9 +2619,11 @@ def build_survey_tree(
             branch_scoring_kb_contexts.append(branch_result.scoring_kb_context)
 
     # kb_citations deduped across branches by source_file, keeping the
-    # highest-similarity hit -- on the fallback path every branch shares the
-    # SAME doc-level citations (harmless duplication, deduped here); on the
-    # agentic path each branch can genuinely surface different source files.
+    # highest-similarity hit -- on the fallback path the doc-level citations
+    # (always seeded, still used for scoring/trace links) are joined by each
+    # branch's own citations, so this list is deliberately broader than any
+    # single prompt; on the agentic path each branch can genuinely surface
+    # different source files.
     best_by_file: dict[str, KbCitation] = {}
     for citation in all_kb_citations:
         existing = best_by_file.get(citation.source_file)
@@ -2597,6 +2643,13 @@ def build_survey_tree(
         requirement_nodes = [node for node in all_nodes if node.type == WorkItemType.REQUIREMENT]
         if requirement_nodes:
             combined_kb_context = "\n\n".join(dict.fromkeys(branch_scoring_kb_contexts)) or None
+            if kb_deps_present and not supports_tools:
+                # Fallback path: per-branch retrieval feeds each branch's
+                # authoring call, but the whole-document scoring prompt stays
+                # grounded on the single document-level context (None when
+                # that query found nothing, as before), so it does not grow
+                # with the number of branches.
+                combined_kb_context = doc_kb_context
             # Cross-run scoring determinism (user-reported requirement: the
             # SAME document run any number of times must yield the SAME
             # categoryScores keys) -- reads the FIXED checklist extracted
@@ -2615,7 +2668,13 @@ def build_survey_tree(
             # a different one.
             category_checklist_definitions: dict[str, str] | None = None
             if vector_store is not None and user_id is not None:
-                for citation in sorted(deduped_citations, key=lambda c: c.similarity, reverse=True):
+                # Fallback path: scoring is grounded on the doc-level context
+                # only, so the checklist may only come from a doc-level
+                # citation (a branch-only file's text is never in that prompt).
+                fallback_grounding = kb_deps_present and not supports_tools
+                checklist_candidates = doc_kb_citations if fallback_grounding else deduped_citations
+                ranked = sorted(checklist_candidates, key=lambda c: c.similarity, reverse=True)
+                for citation in ranked:
                     checklist = vector_store.get_quality_checklist(user_id, citation.source_file)
                     if checklist:
                         category_checklist = checklist

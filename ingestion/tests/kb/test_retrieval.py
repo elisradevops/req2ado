@@ -70,6 +70,67 @@ def test_retrieve_context_citations_span_multiple_distinct_files(tmp_path) -> No
     assert sorted(c["source_file"] for c in citations) == ["doc1.txt", "doc2.txt"]
 
 
+_USER = "Project\\Area1"
+
+
+def _add(store, source_file: str, index: int, embedding: list[float], text: str) -> None:
+    store.upsert_chunk(
+        chunk_id=f"{source_file}:{index}", embedding=embedding, text=text, user_id=_USER,
+        source_file=source_file, source_id=source_file, chunk_index=index, file_hash=source_file,
+    )
+
+
+def test_retrieve_context_cites_each_source_when_one_file_floods_the_nearest(tmp_path) -> None:
+    store = KbVectorStore(persist_path=str(tmp_path))
+    for i in range(8):  # one file with many near-duplicate chunks, all closer than the other file
+        _add(store, "flood.pdf", i, [1.0, 0.0, 0.0], f"flood chunk {i}")
+    _add(store, "other.pdf", 0, [0.9, 0.436, 0.0], "other chunk")
+    embed = FakeEmbedClient(embedding=[1.0, 0.0, 0.0])
+    context, citations = retrieve_context(_USER, "q", embed, store, top_k=5)
+    assert sorted(c["source_file"] for c in citations) == ["flood.pdf", "other.pdf"]
+    assert context is not None and "other chunk" in context
+    assert len(context.split("\n\n")) == 5  # still bounded by top_k
+
+
+def test_retrieve_context_round_robin_nearest_file_first_and_max_distance(tmp_path) -> None:
+    store = KbVectorStore(persist_path=str(tmp_path))
+    _add(store, "a.pdf", 0, [1.0, 0.0, 0.0], "a0")
+    _add(store, "a.pdf", 1, [1.0, 0.0, 0.0], "a1")
+    _add(store, "b.pdf", 0, [0.9, 0.436, 0.0], "b0")
+    _add(store, "far.pdf", 0, [0.0, 1.0, 0.0], "far")
+    embed = FakeEmbedClient(embedding=[1.0, 0.0, 0.0])
+    context, citations = retrieve_context(_USER, "q", embed, store, top_k=3)
+    # far.pdf is beyond max_distance
+    assert [c["source_file"] for c in citations] == ["a.pdf", "b.pdf"]
+    # nearest hit first, then one per file in nearest-file order, then the next-nearest of any file
+    assert context == "a0\n\na1\n\nb0"
+
+
+def test_retrieve_context_keeps_strongest_files_best_chunks_ahead_of_weak_files(tmp_path) -> None:
+    store = KbVectorStore(persist_path=str(tmp_path))
+    for i in range(5):
+        _add(store, "strong.pdf", i, [1.0, 0.0, 0.0], f"strong {i}")
+    for name in ("w1.pdf", "w2.pdf", "w3.pdf", "w4.pdf"):
+        _add(store, name, 0, [0.6, 0.8, 0.0], f"weak {name}")  # distance 0.4, within max_distance
+    embed = FakeEmbedClient(embedding=[1.0, 0.0, 0.0])
+    context, citations = retrieve_context(_USER, "q", embed, store, top_k=5)
+    assert context is not None
+    assert sum(1 for part in context.split("\n\n") if part.startswith("strong")) >= 2
+    assert citations[0]["source_file"] == "strong.pdf"
+
+
+def test_retrieve_context_overfetches_candidates_beyond_top_k() -> None:
+    seen: dict = {}
+
+    class SpyStore:
+        def query(self, user_id: str, embedding: list[float], top_k: int) -> list[dict]:
+            seen["top_k"] = top_k
+            return []
+
+    retrieve_context(_USER, "q", FakeEmbedClient(), SpyStore(), top_k=5)
+    assert seen["top_k"] > 5
+
+
 def test_retrieve_context_dedup_keeps_the_lowest_distance_hit_per_file(tmp_path) -> None:
     store = KbVectorStore(persist_path=str(tmp_path))
     # A worse (farther) hit from the same file, upserted first.

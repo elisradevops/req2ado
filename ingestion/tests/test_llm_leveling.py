@@ -3253,6 +3253,186 @@ def test_build_survey_tree_calls_retrieve_context_exactly_once(monkeypatch) -> N
     assert call_count["n"] == 1
 
 
+def _kb_hit(source_file: str, similarity: float, text: str) -> dict:
+    distance = 1 - similarity
+    return {"source_file": source_file, "distance": distance, "similarity": similarity,
+            "text": text}
+
+
+def test_build_survey_tree_multi_branch_fallback_per_branch_query(monkeypatch) -> None:
+    from app.kb.kb_vector_store import KbVectorStore
+
+    _force_multi_branch(monkeypatch)
+    queries: list[str] = []
+
+    def _fake_retrieve_context(user_id, query_text, embed_client, vector_store, **_):
+        queries.append(query_text)
+        if "Display" in query_text and "Audio" not in query_text:
+            return "display KB", [_kb_hit("display.pdf", 0.9, "display KB")]
+        if query_text == "Audio":
+            return "audio KB", [_kb_hit("audio.pdf", 0.8, "audio KB")]
+        return "doc KB", [_kb_hit("doc.pdf", 0.7, "doc KB")]
+
+    monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fake_retrieve_context)
+
+    fake = FakeSectionAnalysisClient()
+    tree = build_survey_tree(
+        _two_branch_doc(), fake, user_id="Project\\Area1", embed_client=object(),
+        vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
+    )
+    assert "Display" in queries and "Audio" in queries  # one query per branch (its own headings)
+    by_section = {"HDR" in c["section_text"]: c["kb_context"] for c in fake.calls}
+    assert by_section[True] == "display KB"
+    assert by_section[False] == "audio KB"
+    assert {c.source_file for c in tree.kb_citations} >= {"display.pdf", "audio.pdf"}
+
+
+def test_build_survey_tree_multi_branch_fallback_keeps_doc_ctx_if_none(monkeypatch) -> None:
+    from app.kb.kb_vector_store import KbVectorStore
+
+    _force_multi_branch(monkeypatch)
+
+    def _fake_retrieve_context(user_id, query_text, embed_client, vector_store, **_):
+        if query_text == "Audio":
+            return None, []  # this branch finds nothing
+        if query_text == "Display":
+            return "display KB", [_kb_hit("display.pdf", 0.9, "display KB")]
+        return "doc KB", [_kb_hit("doc.pdf", 0.7, "doc KB")]
+
+    monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fake_retrieve_context)
+
+    fake = FakeSectionAnalysisClient()
+    tree = build_survey_tree(
+        _two_branch_doc(), fake, user_id="Project\\Area1", embed_client=object(),
+        vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
+        branch_concurrency=2,
+    )
+    by_section = {"HDR" in c["section_text"]: c["kb_context"] for c in fake.calls}
+    assert by_section[True] == "display KB"
+    assert by_section[False] == "doc KB"  # Audio branch fell back to the document-level context
+    assert {c.source_file for c in tree.kb_citations} == {"doc.pdf", "display.pdf"}
+
+
+def test_build_survey_tree_multi_branch_fallback_scores_on_doc_ctx(monkeypatch) -> None:
+    from app.kb.kb_vector_store import KbVectorStore
+
+    _force_multi_branch(monkeypatch)
+
+    def _fake_retrieve_context(user_id, query_text, embed_client, vector_store, **_):
+        if query_text == "Display":
+            return "display KB", [_kb_hit("display.pdf", 0.9, "display KB")]
+        if query_text == "Audio":
+            return "audio KB", [_kb_hit("audio.pdf", 0.8, "audio KB")]
+        return "doc KB", [_kb_hit("doc.pdf", 0.7, "doc KB")]
+
+    monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fake_retrieve_context)
+    scoring_contexts: list = []
+
+    class _SpyScoring:
+        def score_requirements_for_document(
+            self, descriptions_by_node_id, criteria_context=None, kb_context=None,
+            category_checklist=None, user_id=None,
+        ):
+            scoring_contexts.append(kb_context)
+            return {node_id: {"score": 90, "issues": []} for node_id in descriptions_by_node_id}
+
+    build_survey_tree(
+        _two_branch_doc(), FakeSectionAnalysisClient(), user_id="Project\\Area1",
+        embed_client=object(), vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
+        scoring_client=_SpyScoring(),
+    )
+    # One prompt-size-bounded context, not one block per branch.
+    assert scoring_contexts and all(ctx == "doc KB" for ctx in scoring_contexts)
+
+
+def test_build_survey_tree_multi_branch_fallback_scoring_none_without_doc_ctx(monkeypatch) -> None:
+    from app.kb.kb_vector_store import KbVectorStore
+
+    _force_multi_branch(monkeypatch)
+
+    def _fake_retrieve_context(user_id, query_text, embed_client, vector_store, **_):
+        if query_text in ("Display", "Audio"):
+            return f"{query_text} KB", [_kb_hit(f"{query_text}.pdf", 0.9, f"{query_text} KB")]
+        return None, []  # the document-wide query finds nothing
+
+    monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fake_retrieve_context)
+    scoring_contexts: list = []
+
+    class _SpyScoring:
+        def score_requirements_for_document(
+            self, descriptions_by_node_id, criteria_context=None, kb_context=None,
+            category_checklist=None, user_id=None,
+        ):
+            scoring_contexts.append(kb_context)
+            return {node_id: {"score": 90, "issues": []} for node_id in descriptions_by_node_id}
+
+    build_survey_tree(
+        _two_branch_doc(), FakeSectionAnalysisClient(), user_id="Project\\Area1",
+        embed_client=object(), vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
+        scoring_client=_SpyScoring(),
+    )
+    assert scoring_contexts and all(ctx is None for ctx in scoring_contexts)
+
+
+def test_build_survey_tree_multi_branch_fallback_reads_always_include_once(monkeypatch) -> None:
+    from app.kb.kb_vector_store import KbVectorStore
+
+    _force_multi_branch(monkeypatch)
+    fetches = {"n": 0}
+
+    def _fake_fetch(user_id, vector_store):
+        fetches["n"] += 1
+        return "STANDARDS", [{"source_file": "std.docx", "similarity": 1.0, "text": "STANDARDS"}]
+
+    def _fake_retrieve_context(user_id, query_text, embed_client, vector_store, **_):
+        return f"{query_text} KB", [_kb_hit(f"{query_text}.pdf", 0.9, f"{query_text} KB")]
+
+    monkeypatch.setattr("app.leveling.llm_leveling.fetch_always_include_context", _fake_fetch)
+    monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fake_retrieve_context)
+
+    fake = FakeSectionAnalysisClient()
+    build_survey_tree(
+        _two_branch_doc(), fake, user_id="Project\\Area1", embed_client=object(),
+        vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
+    )
+    assert fetches["n"] == 1
+    assert all(c["kb_context"].startswith("STANDARDS") for c in fake.calls)  # still in every branch
+
+
+def test_build_survey_tree_multi_branch_fallback_checklist_from_doc_citations(monkeypatch) -> None:
+    _force_multi_branch(monkeypatch)
+
+    def _fake_retrieve_context(user_id, query_text, embed_client, vector_store, **_):
+        if query_text == "Display":  # a branch-only file with the highest similarity
+            return "display KB", [_kb_hit("branch-only.pdf", 0.95, "display KB")]
+        return "doc KB", [_kb_hit("doc.pdf", 0.7, "doc KB")]
+
+    monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fake_retrieve_context)
+    asked: list[str] = []
+
+    class _Store:
+        def list_always_include_documents(self, user_id):
+            return []
+
+        def get_quality_checklist(self, user_id, source_file):
+            asked.append(source_file)
+            return None
+
+        def get_quality_checklist_definitions(self, user_id, source_file):
+            return None
+
+    class _Scoring:
+        def score_requirements_for_document(self, descriptions_by_node_id, **_):
+            return {node_id: {"score": 90, "issues": []} for node_id in descriptions_by_node_id}
+
+    build_survey_tree(
+        _two_branch_doc(), FakeSectionAnalysisClient(), user_id="Project\\Area1",
+        embed_client=object(), vector_store=_Store(), scoring_client=_Scoring(),
+    )
+    # Scoring sees only the doc-level context, so only its citations may supply the checklist.
+    assert asked == ["doc.pdf"]
+
+
 def test_build_survey_tree_unknown_model_uses_fallback_kb_path_not_agentic(monkeypatch) -> None:
     # _resolve_caps gating: an unknown model conservatively gets
     # supports_tools=False -> the once-per-document fallback path, never
