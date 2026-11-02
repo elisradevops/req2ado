@@ -21,6 +21,7 @@ RUN echo '{"apiBaseUrl":"/api"}' > /usr/share/nginx/html/config.json
 COPY nginx.conf.template /etc/nginx/templates/default.conf.template
 ENV UPSTREAM_HOST=127.0.0.1 \
     UPSTREAM_PORT=3001 \
+    DNS_RESOLVER=127.0.0.11 \
     API_BASE_URL=/api
 # Writes /usr/share/nginx/html/config.json from API_BASE_URL on every
 # start -- see the script's own header comment for the defect this fixes.
