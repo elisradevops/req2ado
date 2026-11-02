@@ -33,7 +33,7 @@ from app.leveling.live_context import current_stage_counter
 from app.leveling.customer_id import extract_customer_requirement_code
 from app.leveling.id_hierarchy import HierarchyRow
 from app.leveling.narration_publisher import LevelingProgress, ProgressCallback
-from app.leveling.tree_builder import _hash_description, _table_to_html
+from app.leveling.tree_builder import _hash_description, _table_to_html, strip_repeated_titles
 from app.survey.keyed_calls import KeyedEntries, normalize_keyed_result, retry_omitted
 from app.workitem.model import IntegrityWarning, RequirementTag, WarningKind, WorkItemMode, WorkItemNode, WorkItemType
 
@@ -1070,6 +1070,9 @@ def build_hierarchy_subtree(
     # (2/3): a heading's own row.parent_index chain already reaches all the
     # way to a true document root with nothing else to prepend.
     section_path_root: str | None = None,
+    # False when the caller folds more text into these nodes afterwards and
+    # strips (strip_repeated_titles) itself once done, so identity stays stable.
+    strip_titles: bool = True,
     # Forwarded unchanged to _apply_synthesis_pass/_apply_title_tag_pass
     # below -- see app.config.Settings.survey_chunk_concurrency. 1 (the
     # default) is the byte-identical previous behavior.
@@ -1320,6 +1323,12 @@ def build_hierarchy_subtree(
     # a child set that's about to change. See _detect_deterministic_subtrees,
     # which runs _apply_parent_summary_pass once, after every subtree's own
     # repair has already settled the FINAL parent/child structure.
+
+    # Runs after the synthesis/title passes so they still see the full text. A
+    # caller that folds more text in afterwards passes strip_titles=False and
+    # calls strip_repeated_titles itself once it is done.
+    if strip_titles:
+        strip_repeated_titles(nodes)
 
     return nodes, warnings
 

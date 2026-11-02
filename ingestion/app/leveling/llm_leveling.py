@@ -73,6 +73,7 @@ from app.leveling.tree_builder import (
     _split_into_branches,
     _table_to_html,
     _widen_page_end,
+    strip_repeated_titles,
 )
 from app.leveling.tree_builder import figure_id_by_block_id as _build_figure_id_by_block_id
 from app.leveling.tree_builder import figures_by_id
@@ -1435,7 +1436,7 @@ def _detect_deterministic_subtrees(
             heading_rows, f"det{subtree_index}_", title_tag_client, synthesis_client,
             progress_callback=progress_callback, subtree_index=subtree_index,
             subtree_count=subtree_count, subtree_label="Heading hierarchy",
-            chunk_concurrency=chunk_concurrency, user_id=user_id,
+            chunk_concurrency=chunk_concurrency, user_id=user_id, strip_titles=False,
         )
         # See the table-subtree call site's identical comment above.
         _repair_requirement_hierarchy(nodes, f"det{subtree_index}_", build_warnings)
@@ -1625,6 +1626,8 @@ def _detect_deterministic_subtrees(
         del id_disambiguator_needed  # only used to document the branch above; both heading
         # adapters always pass id_disambiguator_needed=False, so span-fold hashing always
         # uses the plain _hash_identity, never the table-row disambiguated variant.
+        # Every fold into these nodes is done: now drop the repeated heading (R5).
+        strip_repeated_titles(nodes)
 
     if not claimed_heading_block_ids and not claimed_table_ids:
         _apply_det_parent_summary(

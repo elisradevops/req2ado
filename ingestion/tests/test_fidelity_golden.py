@@ -28,11 +28,12 @@ def test_description_is_byte_for_byte_verbatim_join_of_folded_blocks() -> None:
     # A FIGURE block's caption is tracked via figure_ids only -- never
     # folded into description text at all (removed per explicit user
     # request; see tree_builder.py's BASELINE fold path).
+    # The heading is the title, so the description starts at the first folded block (R5).
     expected = (
-        "1.1 3.3V Rail Requirements"
-        "\nOPEN: confirm connector part number before release."
+        "OPEN: confirm connector part number before release."
         "\nTBD: verify against thermal derating curve."
     )
+    assert requirement_node.title == "1.1 3.3V Rail Requirements"
     assert requirement_node.description == expected
 
 

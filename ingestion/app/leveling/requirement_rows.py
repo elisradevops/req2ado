@@ -59,10 +59,12 @@ Known, deliberate limitations (accepted, not silently papered over):
   even if a human reader would recognize it as an id column."""
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from typing import NamedTuple
 
 from app.canonical.model import Table, plain_text_rows
+from app.distillation.title import extract_baseline_title
 from app.leveling.customer_id import extract_customer_requirement_code
 from app.leveling.id_hierarchy import MIN_ID_ROW_FRACTION, MIN_ID_ROWS
 
@@ -199,6 +201,36 @@ def qualifying_requirement_rows(tables: Iterable[Table] | None) -> list[Requirem
 class AtomicRow(NamedTuple):
     code: str  # verbatim id-cell text, same as RequirementRowInfo.code
     cells: tuple[str, ...]  # every other non-empty cell, trimmed, in column order
+
+
+_NAME_CELL_MAX_WORDS = 8
+_STATEMENT_MODAL = re.compile(r"\b(?:shall|must|should|will)\b", re.IGNORECASE)
+
+
+def _is_statement(cell: str) -> bool:
+    return bool(_STATEMENT_MODAL.search(cell)) or len(cell.split()) > _NAME_CELL_MAX_WORDS
+
+
+def row_title_and_description(code: str, cells: tuple[str, ...]) -> tuple[str, str]:
+    """Source text for the title and the description of one atomized row.
+    When the first non-id cell is clearly a name (short, not a statement)
+    and the longest cell is the statement, the name is the title and the
+    remaining cells are the description. Otherwise the longest cell is the
+    title and every cell stays in the description, as before. Never drops a cell."""
+    if not cells:
+        return code, code
+    longest = max(cells, key=len)
+    first = cells[0]
+    if (
+        len(cells) >= 2
+        and first is not longest
+        and not _is_statement(first)
+        and _is_statement(longest)
+        # A name the title extractor would cut ("Max. voltage" -> "Max.") must stay whole.
+        and extract_baseline_title(first) == first
+    ):
+        return first, "\n".join(cells[1:])
+    return longest, "\n".join(cells)
 
 
 _HEADER_CELL_MAX_LENGTH = 40

@@ -523,8 +523,10 @@ def test_description_assembly_is_used_for_unleveled_block_folding() -> None:
     icd_doc = _icd_style_doc()
     tree = build_baseline_tree(icd_doc)
     requirement_node = tree.nodes[1]
-    expected = assemble_description("3.3V Rail Requirements", "OPEN: confirm connector part number before release.")
-    assert requirement_node.description == expected
+    # The heading is the title, so the assembled text starts at the body (R5).
+    full = assemble_description("3.3V Rail Requirements", "OPEN: confirm connector part number before release.")
+    assert requirement_node.title == "3.3V Rail Requirements"
+    assert requirement_node.description == full.split("\n", 1)[1]
 
 
 def test_fidelity_hash_reflects_folded_description_not_just_the_initiating_block() -> None:
@@ -880,8 +882,7 @@ def test_document_with_both_headings_and_tables_folds_the_table_into_its_parent_
     assert len(tree.nodes) == 2  # no extra node was created for the table
     parent = next(n for n in tree.nodes if n.title == "3.3V Rail Requirements")
     assert parent.description == (
-        "3.3V Rail Requirements"
-        "\n<table><caption>Rail Table</caption><tbody><tr><td>Rail</td><td>Voltage</td></tr>"
+        "<table><caption>Rail Table</caption><tbody><tr><td>Rail</td><td>Voltage</td></tr>"
         "<tr><td>3.3V</td><td>3.3</td></tr></tbody></table>"
     )
     assert tree.warnings == []
@@ -2098,8 +2099,10 @@ def test_a_requirement_list_table_becomes_one_requirement_per_row_with_its_id() 
     assert all(n.type == WorkItemType.REQUIREMENT for n in rows)
     parent = next(n for n in tree.nodes if n.title == "Synchronization")
     assert all(n.parent_local_id == parent.local_id for n in rows)
-    assert rows[0].title == "The system shall synchronize to Standard-XX within N ms."
-    assert "Time sync source" in rows[0].description
+    assert rows[0].title == "Time sync source"
+    assert rows[0].description == "The system shall synchronize to Standard-XX within N ms."
+    assert rows[1].title == "Timing accuracy shall be better than X microseconds."
+    assert rows[1].description == "Timing accuracy shall be better than X microseconds."
     assert "<table" not in parent.description
     assert parent.table_ids == []
     assert all(n.table_ids == ["t0"] for n in rows)

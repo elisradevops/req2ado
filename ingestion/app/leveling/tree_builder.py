@@ -6,11 +6,11 @@ import re
 from pathlib import Path
 
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Figure, SourceRef, Table, TableCell
-from app.distillation.description import assemble_description
+from app.distillation.description import assemble_description, strip_leading_title
 from app.distillation.title import extract_baseline_title
 from app.leveling.autodetect import classify_numbering_branch, is_heading_style_branch
 from app.leveling.customer_id import extract_customer_requirement_code
-from app.leveling.requirement_rows import atomizable_requirement_rows
+from app.leveling.requirement_rows import atomizable_requirement_rows, row_title_and_description
 from app.leveling.depth import authored_numbering_label, resolve_block_depth
 from app.leveling.profiles import heading_style_type_for_depth
 from app.leveling.table_color import colgroup_html, resolve_cell_style_colors, table_style_attr
@@ -121,6 +121,18 @@ def _bound_branch_size(branch: list[Block], max_block_count: int) -> list[list[B
 
 def _hash_description(description: str) -> str:
     return hashlib.sha256(description.encode()).hexdigest()
+
+
+def strip_repeated_titles(nodes: list[WorkItemNode]) -> None:
+    """R5: a heading is the title, so it is not repeated at the top of the
+    description. Only fidelity_hash follows the shown description; identity_hash
+    keeps hashing the full source text (a re-run still matches existing items).
+    Call once per node, after every fold into its description has finished."""
+    for node in nodes:
+        shown = strip_leading_title(node.description, node.title)
+        if shown != node.description:
+            node.description = shown
+            node.fidelity_hash = _hash_description(shown)
 
 
 def _hash_identity(description: str, source_ref: SourceRef) -> str:
@@ -1089,14 +1101,14 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
                     for atom in atoms:
                         occurrence = code_occurrences.get(atom.code, 0)
                         code_occurrences[atom.code] = occurrence + 1
-                        row_text = "\n".join(atom.cells) if atom.cells else atom.code
+                        row_title_text, row_text = row_title_and_description(atom.code, atom.cells)
                         row_local_id = f"n{node_counter}"
                         node_counter += 1
                         row_node = WorkItemNode(
                             local_id=row_local_id,
                             type=WorkItemType.REQUIREMENT,
                             parent_local_id=open_node.local_id,
-                            title=extract_baseline_title(max(atom.cells, key=len) if atom.cells else atom.code),
+                            title=extract_baseline_title(row_title_text),
                             description=row_text,
                             customer_id=atom.code,
                             source_ref=row_source_ref,
@@ -1339,5 +1351,7 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
                 )
                 nodes.append(front_matter_node)
                 nodes_by_id[front_matter_local_id] = front_matter_node
+
+    strip_repeated_titles(nodes)  # R5, once every fold above is done
 
     return WorkItemTree(nodes=nodes, warnings=finalize_warnings(warnings))

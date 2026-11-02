@@ -1581,3 +1581,21 @@ def test_repairing_many_requirements_logs_one_summary_not_one_warning_each(caplo
     assert loud == []
     summaries = [r for r in caplog.records if r.levelno == logging.INFO]
     assert len(summaries) == 1 and any(count in summaries[0].getMessage() for count in ("30", "31"))
+
+
+def test_build_hierarchy_subtree_does_not_repeat_the_title_in_a_folded_description() -> None:
+    from app.leveling.tree_builder import _hash_description, _hash_identity
+
+    rows = [
+        _row("Real Group", "Feature", None, "1"),
+        _row("Lone Wrapper", None, 0, "1.1"),
+        _row("Heading only", "Feature", None, "2"),
+    ]
+    nodes, _ = build_hierarchy_subtree(rows, "det0_")
+    group = next(n for n in nodes if n.title == "Real Group")
+    assert group.description == "Lone Wrapper"
+    assert group.fidelity_hash == _hash_description("Lone Wrapper")
+    # identity still identifies the full source text, so a re-run matches existing work items
+    assert group.identity_hash == _hash_identity("Real Group\nLone Wrapper", group.source_ref)
+    heading_only = next(n for n in nodes if n.title == "Heading only")
+    assert heading_only.description == "Heading only"
