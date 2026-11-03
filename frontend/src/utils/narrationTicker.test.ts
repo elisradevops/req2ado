@@ -94,3 +94,34 @@ describe('tickerFor', () => {
     expect(result.counter).toBe('682 blocks · 5 tables · 39 figures');
   });
 });
+
+// C3 (docs/review-2026-10-ux-ai.md): a Diff-ready job still read "Checking for existing/duplicate work items -- 8 of 8" because the last
+// narration won over the job's status. Once the job has settled, its status is the truth; the narration only describes work in progress.
+describe('tickerFor once the job has settled', () => {
+  const stale = baseNarration('dedup_check', { message: 'Checking for existing/duplicate work items -- 8 of 8 (Volume Buttons)', blocksDone: 8, blocksTotal: 8, currentTitle: 'Volume Buttons' });
+
+  it.each([
+    ['diff_ready', 'Diff ready for your review.'],
+    ['succeeded', 'Wrote the reviewed work items to Azure DevOps.'],
+    ['rejected', 'Rejected — nothing was written to Azure DevOps.'],
+    ['cancelled', 'Job cancelled.'],
+  ])('shows the %s status, not the last narration', (status, sentence) => {
+    const result = tickerFor({ status, stage: 'diff_ready', latest: stale });
+    expect(result.sentence).toBe(sentence);
+    expect(result.counter).toBeNull();
+    expect(result.determinate).toBeUndefined();
+  });
+
+  it('still follows the narration while the job is running or writing', () => {
+    expect(tickerFor({ status: 'running', stage: 'dedup_check', latest: stale }).sentence).toContain('Checking for existing');
+    expect(tickerFor({ status: 'writing', stage: 'writing', latest: baseNarration('writing', { message: 'Creating work items', blocksTotal: 3 }) }).sentence).toContain('Creating');
+  });
+
+  it('keeps the failure narration for a failed job (it carries the reason)', () => {
+    const failed = baseNarration('job_failed', { message: 'Scoring failed: model unreachable', lastPhase: 'score_requirements' });
+    const result = tickerFor({ status: 'failed', stage: 'failed', latest: failed });
+    expect(result.sentence).toBe('Scoring failed: model unreachable');
+    expect(result.counter).toBe('Last phase: score_requirements');
+  });
+});
+

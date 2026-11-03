@@ -18,8 +18,19 @@ map $http_upgrade $connection_upgrade {
     ''      close;
 }
 
+# Diagnostics for the job event stream (an unexplained 503 was seen once on a reconnect). One extra line per /events request: who answered
+# (status vs upstream_status: a 503 here with an empty upstream_status means nginx itself produced it), which upstream, and the timings.
+# No headers, cookies or bodies are logged.
+map $uri $log_job_events {
+    default 0;
+    ~/events$ 1;
+}
+log_format job_events '$time_iso8601 events status=$status upstream_status=$upstream_status upstream=$upstream_addr '
+                      'request_time=$request_time upstream_response_time=$upstream_response_time bytes=$body_bytes_sent uri=$uri';
+
 server {
     listen 80;
+    access_log /dev/stdout job_events if=$log_job_events;
     root /usr/share/nginx/html;
     index index.html;
 

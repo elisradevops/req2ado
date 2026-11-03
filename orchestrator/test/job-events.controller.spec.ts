@@ -142,6 +142,55 @@ describe('JobEventsController', () => {
     expect(subscriber.quit).toHaveBeenCalled();
   });
 
+  // Diagnostics for an unexplained 503 once seen on a stream reconnect: one line when a stream opens and one when it ends (with why and for
+  // how long), so a failing request can be told apart from a normal end. Only the job id is logged -- never the user, a cookie or a token.
+  describe('stream diagnostics', () => {
+    async function open() {
+      const subscriber = makeSubscriber();
+      const { controller } = makeController(subscriber);
+      const log = jest.spyOn((controller as any).logger, 'log').mockImplementation(() => undefined);
+      const warn = jest.spyOn((controller as any).logger, 'warn').mockImplementation(() => undefined);
+      const res = makeRes();
+      await controller.streamEvents('job-1', res as any, TEST_USER);
+      return { subscriber, controller, res, log, warn };
+    }
+    const lines = (spy: jest.SpyInstance) => spy.mock.calls.map((c) => String(c[0]));
+
+    it('logs when a stream opens', async () => {
+      const { log } = await open();
+      expect(lines(log)).toEqual(['stream open job=job-1']);
+    });
+
+    it('logs one closed line with the final stage and a duration when the server ends the stream', async () => {
+      const { subscriber, res, log } = await open();
+      subscriber.__handlers.message('job-events:job-1', JSON.stringify({ stage: 'diff_ready' }));
+      res.__handlers.close(); // the close event that follows res.end()
+      const closed = lines(log).filter((l) => l.startsWith('stream closed'));
+      expect(closed).toHaveLength(1);
+      expect(closed[0]).toMatch(/^stream closed job=job-1 reason=terminal:diff_ready durationMs=\d+$/);
+    });
+
+    it('logs the client as the reason when the browser disconnects first', async () => {
+      const { res, log } = await open();
+      res.__handlers.close();
+      expect(lines(log).filter((l) => l.startsWith('stream closed'))[0]).toMatch(/^stream closed job=job-1 reason=client_closed durationMs=\d+$/);
+    });
+
+    it('warns with only the error type when subscribing fails, and never logs the user', async () => {
+      const subscriber = makeSubscriber();
+      subscriber.subscribe.mockRejectedValue(new TypeError('connection refused to redis://secret-host'));
+      const { controller } = makeController(subscriber);
+      const warn = jest.spyOn((controller as any).logger, 'warn').mockImplementation(() => undefined);
+      const log = jest.spyOn((controller as any).logger, 'log').mockImplementation(() => undefined);
+
+      await expect(controller.streamEvents('job-1', makeRes() as any, TEST_USER)).rejects.toThrow();
+
+      expect(lines(warn)).toEqual(['stream failed job=job-1 reason=TypeError']);
+      expect([...lines(warn), ...lines(log)].join('\n')).not.toContain('secret-host');
+      expect([...lines(warn), ...lines(log)].join('\n')).not.toContain(TEST_USER.userId);
+    });
+  });
+
   it('releases the subscriber when the client closes the connection', async () => {
     const subscriber = makeSubscriber();
     const { controller } = makeController(subscriber);

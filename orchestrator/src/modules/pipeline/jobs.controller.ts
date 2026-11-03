@@ -418,9 +418,16 @@ export class JobsController {
           // best-effort read (caught below), never the write path, so a
           // fallback here is correct where a hard-fail would be wrong.
           const project = job.adoProject ?? job.areaPath.split('\\')[0];
-          workItemTypeCatalog = await this.workItemTypeCatalogService.resolve(project, credential);
-          workItemTypeCategoryLabels = await this.workItemTypeCatalogService.resolveCategoryLabels(project, credential);
-          requirementClassificationField = await this.workItemTypeCatalogService.resolveRequirementClassificationField(project, credential);
+          // Started together, each on its own: they used to run one after another and the job fetch waited on their sum. One failing
+          // keeps its fallback without discarding the others (resolveCategoryLabels and the classification field already fail open).
+          const [catalog, labels, field] = await Promise.all([
+            this.workItemTypeCatalogService.resolve(project, credential).catch(() => workItemTypeCatalog),
+            this.workItemTypeCatalogService.resolveCategoryLabels(project, credential),
+            this.workItemTypeCatalogService.resolveRequirementClassificationField(project, credential),
+          ]);
+          workItemTypeCatalog = catalog;
+          workItemTypeCategoryLabels = labels;
+          requirementClassificationField = field;
         }
       } catch {
         // Best-effort enrichment -- never fail the whole job fetch over it.

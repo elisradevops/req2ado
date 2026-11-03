@@ -163,6 +163,10 @@ export class JobEventsController implements OnModuleDestroy {
     // buffer by default; nginx for /api/ in this repo already does not.
     if (this.liveProgress) res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders();
+    // Diagnostics: one line when the stream opens and one when it ends, with why and for how long. Only the job id is logged.
+    const openedAt = Date.now();
+    let closeReason = 'client_closed';
+    this.logger.log(`stream open job=${id}`);
 
     const subscriber = this.redisSubscriberFactory();
     // ioredis clients are plain EventEmitters — an 'error' event with zero
@@ -183,6 +187,7 @@ export class JobEventsController implements OnModuleDestroy {
     const cleanup = () => {
       if (cleanedUp) return;
       cleanedUp = true;
+      this.logger.log(`stream closed job=${id} reason=${closeReason} durationMs=${Date.now() - openedAt}`);
       if (keepalive) clearInterval(keepalive);
       void subscriber.unsubscribe().catch(() => undefined);
       void subscriber.quit().catch(() => undefined);
@@ -223,6 +228,7 @@ export class JobEventsController implements OnModuleDestroy {
       res.write(`event: stage\ndata: ${raw}\n\n`);
       if (payload.stage && terminalStages.has(payload.stage)) {
         streamEnded = true;
+        closeReason = `terminal:${payload.stage}`;
         cleanup();
         res.end();
       }
@@ -320,6 +326,7 @@ export class JobEventsController implements OnModuleDestroy {
       // any message that still lands on it from reaching dispatch()/
       // res.write() on a request whose subscribe attempt already failed.
       cleanedUp = true;
+      this.logger.warn(`stream failed job=${id} reason=${err instanceof Error ? err.name : typeof err}`); // the type only: a message can carry hosts or credentials
       await subscriber.quit().catch(() => undefined);
       throw err;
     }

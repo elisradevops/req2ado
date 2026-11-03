@@ -139,6 +139,46 @@ describe('JobsController.getById', () => {
     originalFilename: 'req.docx',
   };
 
+  it('starts the ADO-backed lookups together instead of one after another (the job fetch waited on their sum)', async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue(TEST_JOB) };
+    const adoCredentialResolver = { resolve: jest.fn().mockResolvedValue({ orgUrl: 'https://ado.example', pat: 'x' }) };
+    let releaseCatalog: (value: Record<string, never>) => void = () => {};
+    const workItemTypeCatalogService = {
+      resolve: jest.fn(() => new Promise<Record<string, never>>((resolve) => { releaseCatalog = resolve; })),
+      resolveCategoryLabels: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }),
+      resolveRequirementClassificationField: jest.fn().mockResolvedValue(null),
+    };
+    const controller = new JobsController(
+      jobsService as any, {} as any, {} as any, adoCredentialResolver as any, workItemTypeCatalogService as any, {} as any, 500 * 1024 * 1024, {} as any,
+    );
+
+    const pending = controller.getById('job-1', TEST_USER);
+    await new Promise((resolve) => setImmediate(resolve)); // the catalog lookup is still in flight here
+    expect(workItemTypeCatalogService.resolveCategoryLabels).toHaveBeenCalled();
+    expect(workItemTypeCatalogService.resolveRequirementClassificationField).toHaveBeenCalled();
+    releaseCatalog({});
+    await pending;
+  });
+
+  it('keeps the other lookups when one of them fails', async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue(TEST_JOB) };
+    const adoCredentialResolver = { resolve: jest.fn().mockResolvedValue({ orgUrl: 'https://ado.example', pat: 'x' }) };
+    const workItemTypeCatalogService = {
+      resolve: jest.fn().mockRejectedValue(new Error('ADO down')),
+      resolveCategoryLabels: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'User Story' }),
+      resolveRequirementClassificationField: jest.fn().mockResolvedValue({ referenceName: 'X', allowedValues: ['A'] }),
+    };
+    const controller = new JobsController(
+      jobsService as any, {} as any, {} as any, adoCredentialResolver as any, workItemTypeCatalogService as any, {} as any, 500 * 1024 * 1024, {} as any,
+    );
+
+    const result = await controller.getById('job-1', TEST_USER);
+
+    expect(result.workItemTypeCatalog).toEqual({});
+    expect(result.workItemTypeCategoryLabels.Requirement).toBe('User Story');
+    expect(result.requirementClassificationField).toEqual({ referenceName: 'X', allowedValues: ['A'] });
+  });
+
   it('embeds the resolved work-item-type catalog directly in the response -- no separate frontend request needed', async () => {
     const jobsService = { getById: jest.fn().mockResolvedValue(TEST_JOB) };
     const adoCredentialResolver = { resolve: jest.fn().mockResolvedValue({ orgUrl: 'https://ado.example', pat: 'x' }) };

@@ -1,11 +1,14 @@
 import { describe, it, expect, vi } from 'vitest';
 import axios from 'axios';
 import { readFileSync } from 'fs';
-import { resolveApiVersion, RealAdoBackend } from '../src/backends/realAdo';
+import { resolveApiVersion, RealAdoBackend, resetApiVersionCache } from '../src/backends/realAdo';
+import { beforeEach } from 'vitest';
 import type { AdoCredential } from '../src/auth/patAuth';
 import type { AdoMcpConfig } from '../src/config/env';
 
 vi.mock('fs', () => ({ readFileSync: vi.fn() }));
+
+beforeEach(() => resetApiVersionCache());
 
 const credential: AdoCredential = { orgUrl: 'https://tfs.internal/tfs/Collection', pat: 'fake-pat' };
 
@@ -1066,5 +1069,60 @@ describe('RealAdoBackend CA-trust TLS construction', () => {
     expect(readFileSync).not.toHaveBeenCalled();
     // @ts-expect-error -- inspecting the private client's constructed agent
     expect(backend.httpClient.defaults.httpsAgent).toBeUndefined();
+  });
+});
+
+
+// index.ts builds a new RealAdoBackend for every request, so every operation used to repeat the api-version probe (GET wit/fields, a collection-wide
+// listing): 3 of the 6 ADO calls behind one orchestrator job fetch. The resolved version is now remembered per (org, PAT) for a short time.
+describe('api-version probe cache across backend instances', () => {
+  function backendWith(cred: AdoCredential, get: ReturnType<typeof vi.fn>): RealAdoBackend {
+    const backend = new RealAdoBackend(testConfig, cred);
+    const httpClient = axios.create();
+    vi.spyOn(httpClient, 'get').mockImplementation(get as never);
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+    return backend;
+  }
+  const ok = () => vi.fn().mockResolvedValue({ status: 200, data: { name: 'P', children: [] } });
+  const probesIn = (get: ReturnType<typeof vi.fn>) => get.mock.calls.filter((c) => String(c[0]).includes('/_apis/wit/fields')).length;
+
+  it('probes once for two backends with the same org and PAT', async () => {
+    const get = ok();
+    await backendWith(credential, get).readAreaPaths(5, 'P');
+    await backendWith(credential, get).readAreaPaths(5, 'P');
+    expect(probesIn(get)).toBe(1);
+  });
+
+  it('shares one in-flight probe between backends that start at the same time (the orchestrator fires three lookups together)', async () => {
+    const get = ok();
+    await Promise.all([backendWith(credential, get).readAreaPaths(5, 'P'), backendWith(credential, get).readAreaPaths(5, 'P'), backendWith(credential, get).readAreaPaths(5, 'P')]);
+    expect(probesIn(get)).toBe(1);
+  });
+
+  it('never reuses a version resolved with another PAT or against another org', async () => {
+    const get = ok();
+    await backendWith(credential, get).readAreaPaths(5, 'P');
+    await backendWith({ ...credential, pat: 'another-pat' }, get).readAreaPaths(5, 'P');
+    await backendWith({ orgUrl: 'https://other.internal/tfs/Collection', pat: credential.pat }, get).readAreaPaths(5, 'P');
+    expect(probesIn(get)).toBe(3);
+  });
+
+  it('does not remember a failed probe', async () => {
+    const get = vi.fn().mockResolvedValueOnce({ status: 401, data: {} }).mockResolvedValue({ status: 200, data: { name: 'P', children: [] } });
+    await expect(backendWith(credential, get).readAreaPaths(5, 'P')).rejects.toThrow();
+    await backendWith(credential, get).readAreaPaths(5, 'P');
+    expect(probesIn(get)).toBe(2);
+  });
+
+  it('probes again once the remembered version is older than the cache lifetime', async () => {
+    const get = ok();
+    const now = vi.spyOn(Date, 'now');
+    now.mockReturnValue(1_000_000);
+    await backendWith(credential, get).readAreaPaths(5, 'P');
+    now.mockReturnValue(1_000_000 + 11 * 60 * 1000);
+    await backendWith(credential, get).readAreaPaths(5, 'P');
+    now.mockRestore();
+    expect(probesIn(get)).toBe(2);
   });
 });

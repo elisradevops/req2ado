@@ -55,6 +55,28 @@ describe('subscribeToJobEvents', () => {
     expect(onStage).toHaveBeenCalledWith('parse');
   });
 
+  // The server ends the stream itself on a final stage. A browser EventSource then reconnects on its own (about 3 s later) to a job that is
+  // already finished -- seen live as a second, pointless /events request, once with a 503. Closing on the final stage prevents that.
+  it.each(['diff_ready', 'failed', 'cancelled'])('closes the stream after the final stage %s, so the browser never reconnects', (stage) => {
+    const onStage = vi.fn();
+    subscribeToJobEvents('job-1', 'https://api.example', onStage);
+    const source = FakeEventSource.instances[0];
+
+    source.emit('stage', { stage });
+
+    expect(onStage).toHaveBeenCalledWith(stage);
+    expect(source.closed).toBe(true);
+  });
+
+  it('keeps the stream open for every non-final stage', () => {
+    subscribeToJobEvents('job-1', 'https://api.example', vi.fn());
+    const source = FakeEventSource.instances[0];
+
+    for (const stage of ['parse', 'infer_hierarchy_start', 'generate_requirements_done', 'dedup_check', 'writing']) source.emit('stage', { stage });
+
+    expect(source.closed).toBe(false);
+  });
+
   it('forwards parsed narration payloads to onNarration', () => {
     const onNarration = vi.fn();
     subscribeToJobEvents('job-1', 'https://api.example', vi.fn(), onNarration);

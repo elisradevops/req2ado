@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { Injectable } from '@nestjs/common';
 import { McpClient, type AdoRequestCredential } from './mcp.client';
 import { DEFAULT_REQUIREMENT_TYPE_FIELD_CANDIDATES } from '../../config/requirement-type-fields';
@@ -14,6 +15,12 @@ export interface WorkItemTypeCatalogEntry {
 // (server-side, shared across every caller) instead of only ever
 // benefiting one browser's own cache.
 const ICON_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+// Type, category and field lookups are project metadata that changes rarely, but fetching them took several sequential ADO round trips on every
+// job fetch. Held briefly per (project, credential): the key includes a hash of the caller's own org and PAT, so one user's answer is never
+// served to another, and a failed lookup is dropped at once so the next call asks again.
+const LOOKUP_CACHE_TTL_MS = 5 * 60 * 1000;
+const LOOKUP_CACHE_MAX_ENTRIES = 200;
 
 /**
  * Resolves a project's real work-item types to their color + a ready-to-use
@@ -37,8 +44,28 @@ export class WorkItemTypeCatalogService {
     private readonly requirementTypeFieldCandidates: string[] = DEFAULT_REQUIREMENT_TYPE_FIELD_CANDIDATES,
   ) {}
 
+  private static readonly lookupCache = new Map<string, { expiresAt: number; value: Promise<unknown> }>();
+
+  private cachedLookup<T>(kind: string, project: string | undefined, credential: AdoRequestCredential | undefined, load: () => Promise<T>): Promise<T> {
+    const who = credential ? createHash('sha256').update(`${credential.orgUrl}\n${credential.pat}`).digest('hex') : 'default';
+    const key = `${kind}|${project ?? ''}|${who}`;
+    const cache = WorkItemTypeCatalogService.lookupCache;
+    const hit = cache.get(key);
+    if (hit && hit.expiresAt > Date.now()) return hit.value as Promise<T>;
+    if (cache.size >= LOOKUP_CACHE_MAX_ENTRIES) {
+      for (const [k, v] of cache) if (v.expiresAt <= Date.now()) cache.delete(k);
+      if (cache.size >= LOOKUP_CACHE_MAX_ENTRIES) cache.clear();
+    }
+    const entry = { expiresAt: Date.now() + LOOKUP_CACHE_TTL_MS, value: load() };
+    cache.set(key, entry);
+    entry.value.catch(() => {
+      if (cache.get(key) === entry) cache.delete(key);
+    });
+    return entry.value as Promise<T>;
+  }
+
   async resolve(project: string | undefined, credential?: AdoRequestCredential): Promise<Record<string, WorkItemTypeCatalogEntry>> {
-    const types = await this.mcpClient.discoverWorkItemTypes(project, credential);
+    const types = await this.cachedLookup('types', project, credential, () => this.mcpClient.discoverWorkItemTypes(project, credential));
     const entries = await Promise.all(
       types.map(async (type): Promise<readonly [string, WorkItemTypeCatalogEntry] | null> => {
         try {
@@ -72,7 +99,7 @@ export class WorkItemTypeCatalogService {
     credential?: AdoRequestCredential,
   ): Promise<Record<'Epic' | 'Feature' | 'Requirement', string>> {
     try {
-      return await this.mcpClient.discoverWorkItemTypeCategories(project, credential);
+      return await this.cachedLookup('categories', project, credential, () => this.mcpClient.discoverWorkItemTypeCategories(project, credential));
     } catch {
       return { Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' };
     }
@@ -92,7 +119,9 @@ export class WorkItemTypeCatalogService {
   ): Promise<{ referenceName: string; allowedValues: string[] } | null> {
     try {
       const categoryLabels = await this.resolveCategoryLabels(project, credential);
-      const fields = await this.mcpClient.discoverFieldsDetailed(categoryLabels.Requirement, project, credential);
+      const fields = await this.cachedLookup(`fields:${categoryLabels.Requirement}`, project, credential, () =>
+        this.mcpClient.discoverFieldsDetailed(categoryLabels.Requirement, project, credential),
+      );
       for (const candidate of this.requirementTypeFieldCandidates) {
         const match = fields.find((f) => f.referenceName === candidate);
         if (match) {
