@@ -126,6 +126,39 @@ describe('JobDetail', () => {
     expect(await screen.findAllByText('Root')).not.toHaveLength(0);
   });
 
+  describe('proposal review gate (P9d)', () => {
+    const proposal = { kind: 'criteria' as const, html: '<div data-r2a="criteria"><p><b>Proposed acceptance criteria</b></p><ul><li>Given X then Y</li></ul></div>' };
+    const entry = { localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [], proposal };
+
+    async function openEntry(jobId: string) {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: jobId, status: 'diff_ready', dryRunDiff: [entry] } as any);
+      const chatApi = await import('../api/chat');
+      vi.mocked(chatApi.getChatHistory).mockResolvedValue([]);
+      vi.mocked(chatApi.listModels).mockResolvedValue([]);
+      renderAt(jobId);
+      await waitFor(() => expect(screen.getByText('Req Title')).toBeInTheDocument());
+      const { default: userEvent } = await import('@testing-library/user-event');
+      await openNodeDetails(userEvent, 'Req Title');
+      return userEvent;
+    }
+
+    it('accepting a proposal calls the API and shows the accepted state from the server reply', async () => {
+      const accept = vi.spyOn(jobsApi, 'setProposalAccepted').mockResolvedValue({ dryRunDiff: [{ ...entry, proposalAccepted: true }] });
+      const userEvent = await openEntry('job-p9d-1');
+      await userEvent.click(await screen.findByRole('button', { name: /accept criteria/i }));
+      await waitFor(() => expect(accept).toHaveBeenCalledWith('job-p9d-1', 'e1', true));
+      expect(await screen.findByText(/will be written to azure devops/i)).toBeInTheDocument();
+    });
+
+    it('shows an error toast and keeps the proposal unaccepted when the request fails', async () => {
+      vi.spyOn(jobsApi, 'setProposalAccepted').mockRejectedValue(new Error('network error'));
+      const userEvent = await openEntry('job-p9d-2');
+      await userEvent.click(await screen.findByRole('button', { name: /accept criteria/i }));
+      await waitFor(() => expect(screen.getByText(/failed to update the proposal/i)).toBeInTheDocument());
+      expect(screen.getByRole('button', { name: /accept criteria/i })).toBeInTheDocument();
+    });
+  });
+
   // Guard added alongside handleToggleExclude/handleBulkExclude/
   // handleMoveEntry's own isDiffMutatingRef re-entry guard (779-856 above)
   // -- handleSaveEdit had none, so a user who re-opens Edit and clicks Save

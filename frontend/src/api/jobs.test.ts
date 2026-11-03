@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import axios from 'axios';
 import { httpClient } from './httpClient';
-import { explainScore, listJobs, submitJob, confirmJob, editDiffEntry, setDiffEntryExcluded, setDiffEntriesReviewed, setWarningsAcknowledged, retryEnhancement, addDiffEntry, rescoreDiffEntry, getFigureFile, attachFigureToAdo, retryTraceLinkWrite, validateCreatedTree, previewExposition } from './jobs';
+import { explainScore, listJobs, submitJob, confirmJob, editDiffEntry, setDiffEntryExcluded, setProposalAccepted, setDiffEntriesReviewed, setWarningsAcknowledged, retryEnhancement, addDiffEntry, rescoreDiffEntry, getFigureFile, attachFigureToAdo, retryTraceLinkWrite, validateCreatedTree, previewExposition } from './jobs';
 
 vi.mock('./httpClient');
 
@@ -38,6 +38,12 @@ describe('jobs api', () => {
     (httpClient.patch as any).mockResolvedValue({ data: { dryRunDiff: [] } });
     await setDiffEntryExcluded('job-1', 'n0', true);
     expect(httpClient.patch).toHaveBeenCalledWith('/jobs/job-1/diff/n0/exclude', { excluded: true });
+  });
+
+  it('setProposalAccepted PATCHes the proposal sub-route with the accepted flag', async () => {
+    (httpClient.patch as any).mockResolvedValue({ data: { dryRunDiff: [] } });
+    await setProposalAccepted('job-1', 'n0', true);
+    expect(httpClient.patch).toHaveBeenCalledWith('/jobs/job-1/diff/n0/proposal', { accepted: true });
   });
 
   it('setDiffEntriesReviewed PATCHes the bulk reviewed route with every id in one body', async () => {

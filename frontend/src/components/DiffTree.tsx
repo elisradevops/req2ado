@@ -97,6 +97,10 @@ export interface DryRunDiffEntry {
   // job shapes and non-Requirement entries predate/never carry this field.
   seCoverageRef?: string | null;
   tags?: string[];
+  // A section the run generated (proposed acceptance criteria, or a "Needs author input" note), held apart from `description`: it is
+  // written to ADO only while `proposalAccepted` is true, and only a criteria proposal can be accepted. See ProposalCard.
+  proposal?: { kind: 'criteria' | 'needs-input'; html: string } | null;
+  proposalAccepted?: boolean;
   qualityScore?: number | null;
   // Computed server-side alongside qualityScore (vocabulary-overlap check
   // against the node's own source text) -- see DiffTree's own review-chip
@@ -1094,6 +1098,20 @@ function DiffTreeRow({
             >
               same tier
             </Chip>
+          )}
+          {entry.action === 'create' && entry.proposal?.kind === 'criteria' && (
+            <Tooltip
+              content={entry.proposalAccepted ? 'Proposed acceptance criteria accepted: written to Azure DevOps with this item.' : 'Proposed acceptance criteria are waiting for review: not written to Azure DevOps unless accepted.'}
+            >
+              <Chip
+                tabIndex={0}
+                bg={entry.proposalAccepted ? 'var(--color-accent-soft)' : 'var(--color-surface-alt)'}
+                color={entry.proposalAccepted ? 'var(--color-accent)' : 'var(--color-ink-2)'}
+                className="flex-none border border-hairline"
+              >
+                {entry.proposalAccepted ? 'criteria accepted' : 'criteria to review'}
+              </Chip>
+            </Tooltip>
           )}
           {reason && (
             <Tooltip content={reason.tip}>

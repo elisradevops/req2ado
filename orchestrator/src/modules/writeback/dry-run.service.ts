@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { idempotencyMapKey, type IdempotencyService } from './idempotency.service';
 import { mapWithConcurrency } from '../pipeline/map-with-concurrency';
 import { stripHtmlTags } from './backfill.service';
+import type { DiffProposal } from '../pipeline/description-html';
 
 export interface DryRunSourceRef {
   documentPath: string;
@@ -208,6 +209,11 @@ export interface DryRunDiffEntry {
   uncaptionedFigureIds?: string[];
   insignificantFigureIds?: string[];
   excluded?: boolean;
+  // Section ingestion generated for this node (proposed acceptance criteria, or a "Needs author input" note), held apart from
+  // `description` so it reaches ADO only when the reviewer accepts it (JobsService.setProposalAccepted; confirm() writes it via
+  // composeAdoDescriptionHtml). Set by the worker after the diff, so diffOneNode's return branches do not carry it. Absent = no proposal.
+  proposal?: DiffProposal | null;
+  proposalAccepted?: boolean;
   // Reviewer has checked this item (see JobsService.setDiffEntriesReviewed).
   // Advisory progress state for working through integrity warnings --
   // confirm() never reads it, so it never changes what is written to ADO.

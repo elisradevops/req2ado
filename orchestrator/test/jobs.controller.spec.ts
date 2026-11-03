@@ -896,3 +896,36 @@ describe('JobsController hidden models (LLM_MODEL_HIDE_PATTERNS)', () => {
     await expect(make(jobsService).resubmit('job-1', TEST_USER)).resolves.toEqual({ jobId: 'job-2' });
   });
 });
+
+describe('JobsController.setProposalAccepted (P9d)', () => {
+  const TEST_USER = { userId: 'user-descriptor-1', displayName: 'Jane Doe' } as any;
+  const TEST_JOB = { id: 'job-1', userId: 'user-descriptor-1', status: 'diff_ready' };
+  const make = (jobsService: any) =>
+    new JobsController(jobsService, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+
+  it('delegates to jobsService.setProposalAccepted and returns the new diff', async () => {
+    const jobsService = {
+      getById: jest.fn().mockResolvedValue(TEST_JOB),
+      setProposalAccepted: jest.fn().mockResolvedValue([{ localId: 'n0', proposalAccepted: true }]),
+    };
+
+    const result = await make(jobsService).setProposalAccepted('job-1', 'n0', TEST_USER, true);
+
+    expect(jobsService.setProposalAccepted).toHaveBeenCalledWith('job-1', 'n0', true);
+    expect(result).toEqual({ dryRunDiff: [{ localId: 'n0', proposalAccepted: true }] });
+  });
+
+  it('rejects a non-boolean accepted before touching the job', async () => {
+    const jobsService = { getById: jest.fn(), setProposalAccepted: jest.fn() };
+
+    await expect(make(jobsService).setProposalAccepted('job-1', 'n0', TEST_USER, 'yes' as any)).rejects.toThrow('accepted must be a boolean');
+    expect(jobsService.getById).not.toHaveBeenCalled();
+  });
+
+  it('404s for a job that does not belong to the caller', async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue({ ...TEST_JOB, userId: 'someone-else' }), setProposalAccepted: jest.fn() };
+
+    await expect(make(jobsService).setProposalAccepted('job-1', 'n0', TEST_USER, true)).rejects.toThrow('not found');
+    expect(jobsService.setProposalAccepted).not.toHaveBeenCalled();
+  });
+});

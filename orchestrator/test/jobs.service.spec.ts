@@ -2132,6 +2132,17 @@ describe('JobsService.retryEnhancement', () => {
     expect(result.dryRunDiff[0].qualityStale).toBe(true);
   });
 
+  it('withdraws an accepted proposal when synthesis rewrites the text it was proposed for (P9d)', async () => {
+    const enhanceItems = jest.fn().mockResolvedValue({ results: { a: { description: 'New text.' } }, omitted: [] });
+    const proposal = { kind: 'criteria', html: '<div data-r2a="criteria"><ul><li>Given X</li></ul></div>' };
+    const { service } = makeService([entry('a', { proposal, proposalAccepted: true })], [warn('enhancement_call_failed', 'synthesis', ['a'])], enhanceItems);
+
+    const result = await service.retryEnhancement('job-1', { kind: 'enhancement_call_failed', pass: 'synthesis', localIds: ['a'] });
+
+    expect(result.dryRunDiff[0].description).toBe('New text.');
+    expect(result.dryRunDiff[0].proposalAccepted).toBe(false);
+  });
+
   it('keeps items the model skipped in the warning and reports them as failed', async () => {
     const enhanceItems = jest.fn().mockResolvedValue({ results: { a: { title: 'T' } }, omitted: ['b'] });
     const { service } = makeService([entry('a'), entry('b')], [warn('enhancement_call_failed', 'title_tag', ['a', 'b'])], enhanceItems);
@@ -5719,5 +5730,139 @@ describe('JobsService.checkRewrite', () => {
   it('turns an ingestion failure into a 502 that keeps the reason', async () => {
     const compareRewrite = jest.fn().mockRejectedValue(new IngestionHttpError(502, 'the model did not score both texts'));
     await expect(make(compareRewrite).service.checkRewrite('job-1', 'n0', { proposedDescription: 'x' })).rejects.toThrow(BadGatewayException);
+  });
+});
+
+describe('JobsService.setProposalAccepted (P9d review gate)', () => {
+  const criteria = { kind: 'criteria' as const, html: '<div data-r2a="criteria"><ul><li>Given X</li></ul></div>' };
+  const base = { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null };
+
+  function makeService(dryRunDiff: unknown[], status = 'diff_ready') {
+    const prisma = {
+      job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status, dryRunDiff }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    return new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+  }
+
+  it('accepts a criteria proposal on a create entry', async () => {
+    const result = await makeService([{ ...base, proposal: criteria }]).setProposalAccepted('job-1', 'n0', true);
+    expect(result[0].proposalAccepted).toBe(true);
+    expect(result[0].description).toBe('D');
+  });
+
+  it('un-accepts it again', async () => {
+    const result = await makeService([{ ...base, proposal: criteria, proposalAccepted: true }]).setProposalAccepted('job-1', 'n0', false);
+    expect(result[0].proposalAccepted).toBe(false);
+  });
+
+  it('rejects an entry with no proposal', async () => {
+    await expect(makeService([base]).setProposalAccepted('job-1', 'n0', true)).rejects.toThrow('no proposal');
+  });
+
+  it('rejects accepting a needs-input note', async () => {
+    const note = { kind: 'needs-input' as const, html: '<div data-r2a="needs-input"></div>' };
+    await expect(makeService([{ ...base, proposal: note }]).setProposalAccepted('job-1', 'n0', true)).rejects.toThrow('criteria');
+  });
+
+  it('rejects a reuse entry (it is not written)', async () => {
+    await expect(makeService([{ ...base, action: 'reuse', existingAdoId: 5, proposal: criteria }]).setProposalAccepted('job-1', 'n0', true)).rejects.toThrow('create');
+  });
+
+  it('rejects an unknown entry', async () => {
+    await expect(makeService([{ ...base, proposal: criteria }]).setProposalAccepted('job-1', 'nope', true)).rejects.toThrow('not found');
+  });
+});
+
+describe('JobsService.confirm — proposal review gate (P9d)', () => {
+  const criteria = { kind: 'criteria' as const, html: '<div data-r2a="criteria"><ul><li>Given X</li></ul></div>' };
+
+  async function descriptionWritten(entry: Record<string, unknown>): Promise<string> {
+    const createWorkItem = jest.fn().mockResolvedValue({ id: 200 });
+    const prisma = {
+      job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
+          dryRunDiff: [{ localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [], ...entry }],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+    );
+    await service.confirm('job-1');
+    return createWorkItem.mock.calls[0][1]['System.Description'];
+  }
+
+  it('does not write an unaccepted proposal (the default)', async () => {
+    expect(await descriptionWritten({ proposal: criteria })).toBe(toAdoDescriptionHtml('D'));
+  });
+
+  it('writes an accepted proposal after the description, as real HTML', async () => {
+    expect(await descriptionWritten({ proposal: criteria, proposalAccepted: true })).toBe(`${toAdoDescriptionHtml('D')}${criteria.html}`);
+  });
+
+  it('never writes a needs-input note', async () => {
+    const note = { kind: 'needs-input' as const, html: '<div data-r2a="needs-input"></div>' };
+    expect(await descriptionWritten({ proposal: note, proposalAccepted: true })).toBe(toAdoDescriptionHtml('D'));
+  });
+
+  it('does not leak a section left inside the description of an older diff', async () => {
+    const written = await descriptionWritten({ description: `D\n${criteria.html}` });
+    expect(written).toBe(toAdoDescriptionHtml('D'));
+  });
+});
+
+describe('JobsService.validateCreatedTree — accepted proposal (P9d)', () => {
+  it('expects the accepted proposal HTML in the stored description', async () => {
+    const html = '<div data-r2a="criteria"><ul><li>Given X</li></ul></div>';
+    const getWorkItemsBatch = jest.fn().mockResolvedValue([
+      { id: 100, type: 'Requirement', fields: { 'System.Title': 'T', 'System.Description': `${toAdoDescriptionHtml('d0')}${html}` }, parentId: null },
+    ]);
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', dryRunDiff: [{ localId: 'n0', parentLocalId: null, title: 'T', description: 'd0', proposal: { kind: 'criteria', html }, proposalAccepted: true }] }) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([{ localId: 'n0', adoWorkItemId: 100 }]) },
+    };
+    const service = new JobsService(prisma as any, { getWorkItemsBatch } as any, {} as any, {} as any, 'redis://unused');
+    const result = await service.validateCreatedTree('job-1');
+    expect(result?.mismatches).toEqual([]);
+  });
+});
+
+describe('JobsService.editDiffEntry — accepted proposal (P9d)', () => {
+  const proposal = { kind: 'criteria' as const, html: '<div data-r2a="criteria"><ul><li>Given X</li></ul></div>' };
+  const base = { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'Old', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, proposal, proposalAccepted: true };
+
+  function makeService() {
+    const prisma = {
+      job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [base] }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    return new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+  }
+
+  it('withdraws the acceptance when the description changes (the criteria were proposed for the old text)', async () => {
+    const result = await makeService().editDiffEntry('job-1', 'n0', { description: 'New text' });
+    expect(result[0].proposalAccepted).toBe(false);
+    expect(result[0].proposal).toEqual(proposal);
+  });
+
+  it('keeps the acceptance on a title-only edit or an unchanged description', async () => {
+    expect((await makeService().editDiffEntry('job-1', 'n0', { title: 'New title' }))[0].proposalAccepted).toBe(true);
+    expect((await makeService().editDiffEntry('job-1', 'n0', { description: 'Old' }))[0].proposalAccepted).toBe(true);
   });
 });

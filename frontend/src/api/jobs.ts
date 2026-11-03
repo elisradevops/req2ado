@@ -200,6 +200,12 @@ export async function setDiffEntryExcluded(jobId: string, localId: string, exclu
   return response.data;
 }
 
+// The review gate for a generated acceptance-criteria proposal: it is written to ADO only while accepted. See JobsService.setProposalAccepted.
+export async function setProposalAccepted(jobId: string, localId: string, accepted: boolean): Promise<{ dryRunDiff: unknown }> {
+  const response = await httpClient.patch(`/jobs/${jobId}/diff/${localId}/proposal`, { accepted });
+  return response.data;
+}
+
 // Advisory "I've checked these" flag, set for many items in one request --
 // see JobsService.setDiffEntriesReviewed. Never changes what Confirm writes.
 export async function setDiffEntriesReviewed(jobId: string, localIds: string[], reviewed: boolean): Promise<{ dryRunDiff: unknown }> {

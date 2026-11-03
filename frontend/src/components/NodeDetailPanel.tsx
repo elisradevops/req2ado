@@ -14,6 +14,7 @@ import type { DryRunDiffEntry } from './DiffTree';
 import type { TraceLinkFailure } from '../store/jobsStore';
 import { TextField, TextArea } from '../ui/TextField';
 import { Button } from '../ui/Button';
+import { ProposalCard } from './ProposalCard';
 import { Chip } from '../ui/Chip';
 import { Tooltip } from '../ui/Tooltip';
 import { DescriptionMarkdown, Markdown } from '../ui/Markdown';
@@ -83,6 +84,7 @@ export function NodeDetailPanel({
   captionByTableId,
   onSave,
   onRescore,
+  onSetProposalAccepted,
   onAttachFigure,
   onRetryTraceLink,
   descendantCounts,
@@ -145,6 +147,8 @@ export function NodeDetailPanel({
   // own contract. Rejecting leaves the stored entry (and its qualityStale
   // flag) untouched -- this component never fabricates a fresh number on
   // failure, it just reflects whatever the server actually persisted.
+  // P9d review gate: accepts or withdraws the generated acceptance-criteria proposal. Owned by the caller (JobDetail.tsx), which persists it.
+  onSetProposalAccepted?: (localId: string, accepted: boolean) => Promise<void> | void;
   onRescore?: (localId: string) => Promise<void>;
   // figureId -> vision-model caption, same figureId scheme entry.figureIds
   // references (computed by the caller, JobDetail.tsx, from the SAME
@@ -568,6 +572,21 @@ export function NodeDetailPanel({
       <div className="max-w-[68ch] text-sm leading-relaxed text-ink-2">
         <DescriptionMarkdown>{entry.description}</DescriptionMarkdown>
       </div>
+      <ProposalCard
+        key={entry.localId}
+        entry={entry}
+        canAccept={canEdit && !!onSetProposalAccepted}
+        lockedNote={
+          editability.editable
+            ? undefined
+            : editability.reason === 'matched'
+              ? 'This item already exists in Azure DevOps, so its description is not written.'
+              : editability.reason === 'excluded'
+                ? 'This item is excluded, so nothing is written for it.'
+                : 'This job is no longer in review, so the choice cannot be changed.'
+        }
+        onSetAccepted={onSetProposalAccepted}
+      />
       {/* Real bug fixed here (confirmed against the agreed mockup, which has
           no "Active Flags" block at all): this used to pair Classification
           with a second "Active Flags" chip cloud showing the SAME issue

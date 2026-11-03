@@ -579,6 +579,21 @@ export class JobsController {
     return { dryRunDiff };
   }
 
+  @Patch(':id/diff/:localId/proposal')
+  async setProposalAccepted(
+    @Param('id') id: string,
+    @Param('localId') localId: string,
+    @CurrentUser() user: SessionUser,
+    @Body('accepted') accepted: boolean | undefined,
+  ): Promise<{ dryRunDiff: unknown }> {
+    if (typeof accepted !== 'boolean') {
+      throw new BadRequestException('accepted must be a boolean');
+    }
+    await this.ownedJob(id, user);
+    const dryRunDiff = await this.jobsService.setProposalAccepted(id, localId, accepted);
+    return { dryRunDiff };
+  }
+
   @Patch(':id/diff/:localId/move')
   async moveDiffEntry(
     @Param('id') id: string,

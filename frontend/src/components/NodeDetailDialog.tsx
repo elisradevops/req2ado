@@ -82,6 +82,7 @@ export function NodeDetailDialog({
   captionByTableId,
   onSave,
   onRescore,
+  onSetProposalAccepted,
   onAttachFigure,
   onRetryTraceLink,
   onAddChild,
@@ -133,6 +134,7 @@ export function NodeDetailDialog({
   // classification to -- see NodeDetailPanel's own doc comment.
   requirementClassificationField?: { referenceName: string; allowedValues: string[] } | null;
   onRescore?: (localId: string) => Promise<void>;
+  onSetProposalAccepted?: (localId: string, accepted: boolean) => Promise<void> | void;
   // Manual "Upload to ADO" action for one of this entry's figures -- see
   // NodeDetailPanel's Figures section and JobsService.attachFigureToAdo's
   // own doc comment for why this exists alongside confirm()'s automatic
@@ -271,6 +273,7 @@ export function NodeDetailDialog({
       captionByTableId={captionByTableId}
       onSave={onSave}
       onRescore={onRescore}
+      onSetProposalAccepted={onSetProposalAccepted}
       onAttachFigure={onAttachFigure}
       onRetryTraceLink={onRetryTraceLink}
       descendantCounts={descendantCountsByLocalId?.[entry.localId]}

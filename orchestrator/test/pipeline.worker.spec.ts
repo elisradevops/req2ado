@@ -87,7 +87,7 @@ describe('runPipelineJob', () => {
     // -- see the dedicated NEW-04 test below for the real-value case.
     expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(Buffer.from('text'), 'x.txt', false, 'baseline', 'job-1', undefined, undefined, undefined);
     expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [{ id: 'b0' }] }, 'baseline', undefined, [], 'gemma4:12b', 'job-1', undefined);
-    expect(result).toEqual([{ localId: 'n0', action: 'create', existingAdoId: null }]);
+    expect(result).toEqual([{ localId: 'n0', action: 'create', existingAdoId: null, proposal: null }]);
   });
 
   it('forwards deps.ocrLanguages to ingestionClient.ingest (NEW-04)', async () => {
@@ -1222,6 +1222,44 @@ describe('runPipelineJob', () => {
     expect(fakeIngestionClient.checkDuplicate).toHaveBeenCalledWith('Desc 0', 'Title 0', 'Project\\Area1', undefined, undefined);
   });
 
+  it('holds a generated acceptance-criteria section apart from the description (P9d): the diff sees the clean text, the entry carries the proposal unaccepted', async () => {
+    const section = '<div data-r2a="criteria"><ul><li>Given X</li></ul></div>';
+    fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+    fakeIngestionClient.level.mockResolvedValue({
+      nodes: [
+        { local_id: 'n0', parent_local_id: null, type: 'Requirement', title: 'T0', description: `Desc 0\n${section}`, fidelity_hash: null, identity_hash: 'idA', customer_id: null },
+        { local_id: 'n1', parent_local_id: null, type: 'Requirement', title: 'T1', description: 'Desc 1', fidelity_hash: null, identity_hash: 'idB', customer_id: null },
+      ],
+    });
+    fakeDryRunService.diff.mockImplementation(async (inputs: any[]) =>
+      inputs.map((n) => ({ localId: n.localId, parentLocalId: null, type: n.type, title: n.title, description: n.description, action: 'create', existingAdoId: null, similarity: null, sourceHash: n.sourceHash, customerId: null, seCoverageRef: null, tags: [] })),
+    );
+
+    await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        defaultLlmModel: 'gemma4:12b',
+      },
+    );
+
+    const inputs = fakeDryRunService.diff.mock.calls[0][0];
+    expect(inputs.map((n: any) => n.description)).toEqual(['Desc 0', 'Desc 1']);
+    expect(inputs.map((n: any) => n.sourceHash)).toEqual(['idA', 'idB']);
+    const stored = fakePrisma.job.update.mock.calls.find((c: any[]) => c[0].data.status === 'diff_ready')[0].data.dryRunDiff;
+    expect(stored[0].proposal).toEqual({ kind: 'criteria', html: section });
+    expect(stored[0].description).toBe('Desc 0');
+    expect(stored[0].proposalAccepted).toBeUndefined();
+    expect(stored[1].proposal).toBeNull();
+  });
+
   it("forwards job.userId to ingestionClient.checkDuplicate as the 5th argument, so the dedup tie-break LLM judge resolves the submitting user's own Open WebUI connection", async () => {
     fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
     fakeIngestionClient.level.mockResolvedValue({
@@ -1833,9 +1871,9 @@ describe('runPipelineJob', () => {
     );
 
     expect(result).toEqual([
-      { localId: 'n0', action: 'create', existingAdoId: null, similarity: null },
-      { localId: 'n1', action: 'create', existingAdoId: null, similarity: null },
-      { localId: 'n2', action: 'reuse', existingAdoId: 42, similarity: null },
+      { localId: 'n0', action: 'create', existingAdoId: null, similarity: null , proposal: null },
+      { localId: 'n1', action: 'create', existingAdoId: null, similarity: null , proposal: null },
+      { localId: 'n2', action: 'reuse', existingAdoId: 42, similarity: null , proposal: null },
     ]);
     // Both downgraded entries get their stale match cleaned up: the reuse
     // entry (n0/533) via IdempotencyMapping deletion, the dedup_skip entry
@@ -2380,8 +2418,8 @@ describe('runPipelineJob', () => {
     );
 
     expect(result).toEqual([
-      { localId: 'n0', action: 'create', existingAdoId: null, similarity: null },
-      { localId: 'n1', action: 'create', existingAdoId: null, similarity: null },
+      { localId: 'n0', action: 'create', existingAdoId: null, similarity: null , proposal: null },
+      { localId: 'n1', action: 'create', existingAdoId: null, similarity: null , proposal: null },
     ]);
     expect(fakePrisma.job.update).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ status: 'diff_ready' }) }),

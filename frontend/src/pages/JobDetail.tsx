@@ -8,6 +8,7 @@ import {
   getDebugCaptures,
   editDiffEntry,
   setDiffEntryExcluded,
+  setProposalAccepted,
   setDiffEntriesReviewed,
   setWarningsAcknowledged,
   retryEnhancement,
@@ -1080,6 +1081,28 @@ export function JobDetail(): React.ReactElement {
     }
   }
 
+  // P9d review gate: accept (or withdraw) a generated acceptance-criteria proposal. Serialized with the other diff mutations; re-throws on
+  // failure so ProposalCard's own pending state resets.
+  async function handleSetProposalAccepted(localId: string, accepted: boolean): Promise<void> {
+    if (!id) return;
+    if (isDiffMutatingRef.current) {
+      showToast('Try again — another change is still saving.', 'error');
+      return;
+    }
+    isDiffMutatingRef.current = true;
+    setIsDiffMutating(true);
+    try {
+      const result = await setProposalAccepted(id, localId, accepted);
+      setDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []);
+    } catch (err) {
+      showErrorToast('Failed to update the proposal — please try again.', err);
+      throw err;
+    } finally {
+      isDiffMutatingRef.current = false;
+      setIsDiffMutating(false);
+    }
+  }
+
   // CR-7d rescore: re-throws on failure so NodeDetailPanel's own
   // try/catch/finally (its loading-button guard) knows the call failed --
   // this function's job is persisting a success and surfacing a toast
@@ -1920,6 +1943,7 @@ export function JobDetail(): React.ReactElement {
                 captionByTableId={captionByTableId}
                 onSave={handleSaveEdit}
                 onRescore={handleRescore}
+                onSetProposalAccepted={handleSetProposalAccepted}
                 onAttachFigure={handleAttachFigure}
                 onRetryTraceLink={handleRetryTraceLink}
                 onAddChild={handleAddChild}

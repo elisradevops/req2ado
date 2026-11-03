@@ -16,6 +16,7 @@ import type { McpClient, AdoRequestCredential } from './mcp.client';
 import { DEFAULT_CUSTOMER_ID_FIELD_CANDIDATES } from '../../config/customer-id-fields';
 import type { AdoCredentialResolver } from '../auth/ado-credential.resolver';
 import type { SettingsService } from '../settings/settings.service';
+import { splitProposal, type DiffProposal } from './description-html';
 
 // A full area-path WIQL scan + batch fetch + embed + upsert (see
 // BackfillService.backfillAreaPath) is real cost that shouldn't repeat on
@@ -981,7 +982,7 @@ export async function runPipelineJob(
         parentLocalId: node.parent_local_id,
         type: node.type,
         title: node.title,
-        description: node.description,
+        description: splitProposal(node.description).description,
         sourceHash,
         // Migration-safety fallback for IdempotencyService.lookup -- see
         // DryRunTreeNode.legacySourceHash's own doc comment. Only meaningful
@@ -1167,6 +1168,18 @@ export async function runPipelineJob(
         });
       },
     );
+
+    // Generated sections (proposed acceptance criteria, "Needs author input") were held out of the description above, so the dedup check and
+    // the reviewer's text never contain them; they travel on the entry and reach ADO only when the reviewer accepts them (confirm()).
+    const proposalByLocalId = new Map<string, DiffProposal>();
+    for (const node of tree.nodes) {
+      const { proposal } = splitProposal(node.description);
+      if (proposal) proposalByLocalId.set(node.local_id, proposal);
+    }
+    // Every entry gets the key (null when there is no proposal): a diff without it predates this and still has the section in its description.
+    for (const entry of diff as { localId: string; proposal?: DiffProposal | null }[]) {
+      entry.proposal = proposalByLocalId.get(entry.localId) ?? null;
+    }
 
     if (dedupDurations.length > 0) {
       const sorted = [...dedupDurations].sort((a, b) => a - b);

@@ -25,7 +25,7 @@ import {
   REQUIREMENT_TAG_TO_ADO_VALUE,
 } from '../../config/requirement-type-fields';
 import { DEFAULT_SE_COVERAGE_REF_FIELD_CANDIDATES } from '../../config/se-coverage-ref-fields';
-import { normalizeAdoStoredHtml, toAdoDescriptionHtml } from './description-html';
+import { composeAdoDescriptionHtml, normalizeAdoStoredHtml } from './description-html';
 import type { JobEventsPublisher } from './job-events.publisher';
 import { canNest, canBeRoot } from './canNest';
 
@@ -767,6 +767,21 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  // The review gate for a generated section (proposed acceptance criteria): it reaches ADO only while accepted, and the default is not
+  // written. Only a criteria proposal on an entry confirm() would create can be accepted -- a needs-input note is informational.
+  async setProposalAccepted(id: string, localId: string, accepted: boolean): Promise<DryRunDiffEntry[]> {
+    return this.mutateDiffVersioned(id, (diff) => {
+      const index = diff.findIndex((entry) => entry.localId === localId);
+      if (index === -1) throw new NotFoundException(`Diff entry ${localId} not found`);
+      const entry = diff[index];
+      if (!entry.proposal) throw new BadRequestException('this entry has no proposal');
+      if (entry.proposal.kind !== 'criteria') throw new BadRequestException('only a criteria proposal can be accepted');
+      if (entry.action !== 'create') throw new BadRequestException('only a create entry is written, so only it can accept a proposal');
+      diff[index] = { ...entry, proposalAccepted: accepted };
+      return diff;
+    });
+  }
+
   // Advisory "I've checked these" flag, set in bulk so marking 80 items is
   // one request and one version bump instead of 80 racing read-modify-writes.
   // Never read by confirm() -- see DryRunDiffEntry.reviewed.
@@ -954,12 +969,14 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
           // is no longer there (the "chip with zero content" the ingestion pass already guards). Such a
           // node gets the new title only.
           entry.description = result.description;
+          if (entry.proposalAccepted) entry.proposalAccepted = false; // the criteria were proposed for the old text
           if (result.groundingScore != null) entry.groundingScore = result.groundingScore;
           // The score (if any) judged the OLD text -- same stale marking as a manual edit.
           if (entry.qualityScore != null) entry.qualityStale = true;
         }
         if (input.pass === 'synthesis' && result.description) {
           entry.description = result.description;
+          if (entry.proposalAccepted) entry.proposalAccepted = false; // the criteria were proposed for the old text
           if (result.groundingScore != null) entry.groundingScore = result.groundingScore;
           // The score (if any) judged the OLD text -- same stale marking as a manual edit.
           if (entry.qualityScore != null) entry.qualityStale = true;
@@ -1107,7 +1124,9 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       const descriptionChanged =
         definedPatch.description !== undefined && definedPatch.description !== diff[index].description;
       const staleness = descriptionChanged && diff[index].qualityScore != null ? { qualityStale: true } : {};
-      diff[index] = { ...diff[index], ...definedPatch, ...staleness };
+      // The criteria were proposed for the previous text: a changed description withdraws their acceptance (the reviewer can accept again).
+      const withdrawn = descriptionChanged && diff[index].proposalAccepted ? { proposalAccepted: false } : {};
+      diff[index] = { ...diff[index], ...definedPatch, ...staleness, ...withdrawn };
       return diff;
     });
   }
@@ -1653,7 +1672,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       // 0 findings) -- without it, this comparison false-positived on
       // EVERY item, table or not (even a plain `<p>text</p>` description
       // came back as `<p>text </p>`).
-      const expectedDescriptionHtml = toAdoDescriptionHtml(entry.description);
+      const expectedDescriptionHtml = composeAdoDescriptionHtml(entry);
       const actualDescriptionHtml = normalizeAdoStoredHtml(item.fields['System.Description'] ?? '');
       if (actualDescriptionHtml !== expectedDescriptionHtml) {
         mismatches.push({
@@ -2263,7 +2282,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       const createOneWorkItem = async (entry: (typeof toCreate)[number]): Promise<{ id: number }> => {
         const fields: Record<string, string> = {
           'System.Title': entry.title,
-          'System.Description': toAdoDescriptionHtml(entry.description),
+          'System.Description': composeAdoDescriptionHtml(entry),
           'System.State': job.state,
           'System.AreaPath': job.areaPath,
         };

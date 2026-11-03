@@ -935,3 +935,22 @@ def test_the_standards_sent_to_the_model_ground_a_criterion_for_every_node() -> 
     propose_acceptance_criteria(nodes, _study(standards_cited=["MIL-STD-810G"]), client, [], lambda _id: None)
 
     assert all(SECTION_TITLE in n.description for n in nodes)
+
+
+# The orchestrator splits these sections off the description with a pattern (orchestrator/test/description-html.spec.ts parses the same shapes:
+# change both together). The shape is a contract: one flat <div data-r2a="..."> after a newline, no nested div.
+def test_the_emitted_section_shape_is_the_one_the_orchestrator_splits_off() -> None:
+    from app.leveling.acceptance_criteria import _needs_input_section
+
+    node = _node("a", description="<p>The unit shall boot.</p>", issues=[Issue.NOT_TESTABLE])
+    client = _Client({"a": {"criteria": ["Given the unit is powered, then it boots"], "assumptions": ["Power is on"], "needs_author_input": False}})
+
+    propose_acceptance_criteria([node], _study(), client, [], table_text=lambda _id: None)
+
+    assert node.description.startswith('<p>The unit shall boot.</p>\n<div data-r2a="criteria"><p><b>Proposed acceptance criteria</b></p><ul><li>')
+    assert node.description.endswith("</li></ul><p><i>Assumptions</i></p><ul><li>Power is on</li></ul></div>")
+    assert node.description.count("<div") == 1
+    assert _needs_input_section(["TBD"]) == (
+        '<div data-r2a="needs-input"><p><b>Needs author input</b></p>'
+        "<p>Unresolved value(s) in this requirement: TBD. Acceptance criteria were not proposed.</p></div>"
+    )

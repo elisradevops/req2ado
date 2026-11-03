@@ -127,6 +127,20 @@ describe('DiffTree', () => {
     expect(screen.getByText('2')).toBeInTheDocument();
   });
 
+  it('marks a row whose criteria proposal is waiting for review, or accepted (P9d)', () => {
+    const proposal = { kind: 'criteria' as const, html: '<div data-r2a="criteria"><ul><li>x</li></ul></div>' };
+    const entries: DryRunDiffEntry[] = [
+      { localId: 'a', parentLocalId: null, type: 'Requirement', title: 'Pending one', description: '', action: 'create', customerId: null, tags: [], proposal },
+      { localId: 'b', parentLocalId: null, type: 'Requirement', title: 'Accepted one', description: '', action: 'create', customerId: null, tags: [], proposal, proposalAccepted: true },
+      { localId: 'c', parentLocalId: null, type: 'Requirement', title: 'Plain one', description: '', action: 'create', customerId: null, tags: [] },
+      { localId: 'd', parentLocalId: null, type: 'Requirement', title: 'Note one', description: '', action: 'create', customerId: null, tags: [], proposal: { kind: 'needs-input' as const, html: '<div data-r2a="needs-input"></div>' } },
+    ];
+    render(<DiffTree entries={entries} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} />);
+    expect(screen.getAllByText('criteria to review')).toHaveLength(1);
+    expect(screen.getAllByText('criteria accepted')).toHaveLength(1);
+    expect(screen.queryAllByText(/criteria/i)).toHaveLength(2);
+  });
+
   it('renders customerId as a separate badge next to the title, distinct from the row index', () => {
     const withCustomerId: DryRunDiffEntry[] = [
       { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Root Epic', description: '', action: 'create', customerId: null, tags: [] },

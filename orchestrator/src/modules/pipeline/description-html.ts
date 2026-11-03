@@ -57,6 +57,44 @@ export function toAdoDescriptionHtml(text: string): string {
 }
 
 /**
+ * A section ingestion generated (not the author's text): proposed acceptance criteria, or a "Needs author input" note. Held apart from
+ * `description` so it reaches ADO only when the reviewer accepts it (criteria only; a needs-input note is informational and never written).
+ */
+export interface DiffProposal {
+  kind: 'criteria' | 'needs-input';
+  html: string;
+}
+
+// Ingestion appends each generated section as one flat <div data-r2a="..."> (escaped text inside, no nested div), after a newline. The shape is
+// a contract with ingestion/app/leveling/acceptance_criteria.py (both sides have a test that pins it).
+const PROPOSAL_SECTION_PATTERN = /\n?<div data-r2a="(criteria|needs-input)">[\s\S]*?<\/div>/g;
+
+/** Splits every generated section off a description; the first one is the proposal. Without one, the text is returned as given. */
+export function splitProposal(description: string): { description: string; proposal: DiffProposal | null } {
+  if (typeof description !== 'string') return { description, proposal: null }; // a malformed node: nothing to split, nothing to hide
+  let proposal: DiffProposal | null = null;
+  const text = description.replace(PROPOSAL_SECTION_PATTERN, (section: string, kind: string) => {
+    proposal ??= { kind: kind as DiffProposal['kind'], html: section.replace(/^\n/, '') };
+    return '';
+  });
+  return { description: text, proposal };
+}
+
+/**
+ * The System.Description to write for a diff entry: the author's text, plus the proposal's HTML (appended as real HTML, not escaped) only
+ * when the reviewer accepted a criteria proposal. A diff made before proposals were held apart carries the section inside `description`
+ * and no `proposal` key at all: it is stripped and never written.
+ */
+export function composeAdoDescriptionHtml(entry: { description: string; proposal?: DiffProposal | null; proposalAccepted?: boolean; isManual?: boolean }): string {
+  // `proposal` is set (to null when there is none) on every entry of a current diff, and a manual entry is the reviewer's own text.
+  const legacy = entry.proposal === undefined && !entry.isManual ? splitProposal(entry.description) : null;
+  const text = legacy ? legacy.description : entry.description;
+  const body = toAdoDescriptionHtml(text);
+  const accepted = entry.proposalAccepted === true && entry.proposal?.kind === 'criteria';
+  return accepted ? `${body}${entry.proposal!.html}` : body;
+}
+
+/**
  * Undoes ADO's own write-time HTML re-serialization, confirmed via a real
  * round-trip spike against a live work item (see
  * docs/superpowers/specs/2026-08-12-table-fidelity-design.md's Phase 0
