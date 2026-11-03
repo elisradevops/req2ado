@@ -516,9 +516,9 @@ export class JobsController {
     @CurrentUser() user: SessionUser,
     @Body('title') title: string | undefined,
     @Body('description') description: string | undefined,
-    @Body('customerId') customerId: string | undefined,
+    @Body('customerId') customerId: string | null | undefined,
     @Body('tags') tags: string[] | undefined,
-    @Body('seCoverageRef') seCoverageRef: string | undefined,
+    @Body('seCoverageRef') seCoverageRef: string | null | undefined,
   ): Promise<{ dryRunDiff: unknown }> {
     await this.ownedJob(id, user);
     // Same trim-then-null-if-blank convention the wizard's own (now-removed)
@@ -526,7 +526,10 @@ export class JobsController {
     // the entry's customerId untouched; a real service-layer type gate
     // (Requirement-only) is enforced in JobsService.editDiffEntry itself.
     let trimmedCustomerId: string | null | undefined;
-    if (customerId !== undefined) {
+    if (customerId === null) {
+      trimmedCustomerId = null; // the review UI sends null for a field left blank: that clears it
+    } else if (customerId !== undefined) {
+      if (typeof customerId !== 'string') throw new BadRequestException('customerId must be a string');
       const trimmed = customerId.trim();
       if (trimmed.length > MAX_CUSTOMER_ID_LENGTH) {
         throw new BadRequestException(`customerId exceeds the ${MAX_CUSTOMER_ID_LENGTH}-character limit`);
@@ -547,7 +550,10 @@ export class JobsController {
     }
     // Same trim-then-null-if-blank convention as customerId above.
     let trimmedSeCoverageRef: string | null | undefined;
-    if (seCoverageRef !== undefined) {
+    if (seCoverageRef === null) {
+      trimmedSeCoverageRef = null;
+    } else if (seCoverageRef !== undefined) {
+      if (typeof seCoverageRef !== 'string') throw new BadRequestException('seCoverageRef must be a string');
       const trimmed = seCoverageRef.trim();
       if (trimmed.length > MAX_SE_COVERAGE_REF_LENGTH) {
         throw new BadRequestException(`seCoverageRef exceeds the ${MAX_SE_COVERAGE_REF_LENGTH}-character limit`);

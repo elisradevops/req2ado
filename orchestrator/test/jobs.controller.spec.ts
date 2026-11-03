@@ -257,6 +257,29 @@ describe('JobsController.editDiffEntry', () => {
     expect(jobsService.editDiffEntry).toHaveBeenLastCalledWith('job-1', 'n0', expect.objectContaining({ customerId: null }));
   });
 
+  // The review UI sends null (not undefined) for a field the reviewer left blank: that clears it. It used to throw
+  // "Cannot read properties of null (reading 'trim')" and answer 500, so no Requirement with an empty SE coverage reference could be saved.
+  it('treats an explicit null customerId or seCoverageRef as clearing it, not as a crash', async () => {
+    const jobsService = {
+      getById: jest.fn().mockResolvedValue(TEST_JOB),
+      editDiffEntry: jest.fn().mockResolvedValue([]),
+    };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+
+    await controller.editDiffEntry('job-1', 'n0', TEST_USER, 'T', 'D', null as any, undefined, null as any);
+
+    expect(jobsService.editDiffEntry).toHaveBeenCalledWith('job-1', 'n0', expect.objectContaining({ customerId: null, seCoverageRef: null }));
+  });
+
+  it('rejects a customerId or seCoverageRef that is neither a string nor null', async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue(TEST_JOB), editDiffEntry: jest.fn() };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+
+    await expect(controller.editDiffEntry('job-1', 'n0', TEST_USER, undefined, undefined, 5 as any, undefined, undefined)).rejects.toThrow('customerId must be a string');
+    await expect(controller.editDiffEntry('job-1', 'n0', TEST_USER, undefined, undefined, undefined, undefined, {} as any)).rejects.toThrow('seCoverageRef must be a string');
+    expect(jobsService.editDiffEntry).not.toHaveBeenCalled();
+  });
+
   it('leaves customerId untouched (undefined in the patch) when the caller omits it entirely', async () => {
     const jobsService = {
       getById: jest.fn().mockResolvedValue(TEST_JOB),
