@@ -5,6 +5,7 @@ import time
 
 import pytest
 
+from app.job_cancel import JobCancelled
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, Figure, SourceRef, Table, TableCell, plain_text_rows
 from app.section_analysis_options import DEFAULT_SECTION_ANALYSIS_OPTIONS, SectionAnalysisOptions
 from app.leveling.conflict_detection import _DUPLICATE_CLUSTER_COSINE_THRESHOLD, _cosine_similarity
@@ -8476,13 +8477,18 @@ class _CriteriaSpy:
         return {k: {"criteria": ["Check HDR output on a reference display."], "assumptions": [], "needs_author_input": False} for k in items_by_id}
 
 
+_EMPTY_STUDY = {
+    "glossary": [], "placeholder_tokens": [], "verification_statements": [], "standards_cited": [], "table_roles": [], "lead_in_patterns": [],
+}
+
+
 class _StudySpy:
     def __init__(self) -> None:
         self.windows: list[str] = []
 
     def study_document_window(self, window_text, user_id=None):
         self.windows.append(window_text)
-        return {"placeholder_tokens": []}
+        return {**_EMPTY_STUDY, "placeholder_tokens": []}
 
 
 def _flagged_scoring() -> "FakeScoringClient":
@@ -8508,7 +8514,40 @@ def test_build_survey_tree_proposes_criteria_for_flagged_requirements_after_stud
     assert by_id["n1"].quality_score == 40  # the scored verdict is untouched
 
 
-def test_build_survey_tree_without_flagged_requirements_never_studies_the_document() -> None:
+def test_build_survey_tree_stores_study_windows_and_a_second_identical_call_makes_no_study_calls() -> None:
+    from app.leveling.study_store import StudyStore
+
+    class _Redis:
+        def __init__(self) -> None:
+            self.data: dict = {}
+
+        def get(self, key):
+            return self.data.get(key)
+
+        def set(self, key, value, ex=None, nx=False):
+            if nx and key in self.data:
+                return None
+            self.data[key] = value
+            return True
+
+        def delete(self, *keys):
+            return sum(self.data.pop(key, None) is not None for key in keys)
+
+    redis = _Redis()
+    store = StudyStore(redis, 60)
+    first_study, second_study = _StudySpy(), _StudySpy()
+
+    for study in (first_study, second_study):
+        build_survey_tree(
+            _small_doc(), FakeSectionAnalysisClient(), scoring_client=_flagged_scoring(),
+            acceptance_criteria_client=_CriteriaSpy(), document_study_client=study, study_store=store, user_id="user-a",
+        )
+
+    assert len(first_study.windows) == 1 and second_study.windows == []
+    assert len(redis.data) == 1 and "user-a" not in next(iter(redis.data))
+
+
+def test_build_survey_tree_without_flagged_requirements_proposes_nothing_and_stops_the_study() -> None:
     criteria, study = _CriteriaSpy(), _StudySpy()
     scoring = FakeScoringClient(results={"n0": {"score": 90, "issues": []}, "n1": {"score": 90, "issues": []}})
 
@@ -8517,7 +8556,7 @@ def test_build_survey_tree_without_flagged_requirements_never_studies_the_docume
         acceptance_criteria_client=criteria, document_study_client=study,
     )
 
-    assert study.windows == [] and criteria.calls == []
+    assert criteria.calls == []  # the study now starts with the job, so a window may already have been read; it is stopped, not joined
 
 
 def test_build_survey_tree_without_a_criteria_client_is_unchanged() -> None:
@@ -8556,7 +8595,7 @@ def test_build_survey_tree_warns_when_the_document_could_not_be_studied_but_stil
         acceptance_criteria_client=_CriteriaSpy(), document_study_client=_BrokenStudy(),
     )
 
-    assert any("only partly read" in w.raw for w in tree.warnings)
+    assert any("read none of the document" in w.raw for w in tree.warnings)  # the study's own wording, now that it runs in the background
     assert any("Proposed acceptance criteria" in n.description for n in tree.nodes)
 
 
@@ -8569,12 +8608,12 @@ class _FailsOnSecondWindow:
         self.calls += 1
         if self.calls == 2:
             raise RuntimeError("model down")
-        return {"placeholder_tokens": []}
+        return {**_EMPTY_STUDY, "placeholder_tokens": []}
 
 
 def _long_doc() -> CanonicalDoc:
     path = "long_input.txt"
-    text = "The display shall support HDR. " * 400  # ~12k characters: two study windows
+    text = "The display shall support HDR. " * 800  # ~24k characters: two study windows (20k each)
     return CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[Block(id="b0", kind=BlockKind.PARAGRAPH, text="Display", source_ref=_sr(path)), Block(id="b1", kind=BlockKind.PARAGRAPH, text=text, source_ref=_sr(path))],
@@ -8595,6 +8634,7 @@ def test_a_partly_read_document_warns_with_how_much_was_read() -> None:
 
 def test_a_document_with_no_readable_text_is_not_studied_and_does_not_warn() -> None:
     from app.leveling.llm_leveling import _propose_criteria_step
+    from app.leveling.study_runner import StudyHandle
 
     path = "empty.txt"
     empty = CanonicalDoc(document=Document(path=path, format=DocumentFormat.TXT, sha256="h"), blocks=[])
@@ -8603,9 +8643,83 @@ def test_a_document_with_no_readable_text_is_not_studied_and_does_not_warn() -> 
         source_ref=_sr(path), mode=WorkItemMode.SURVEY, quality_issues=[RequirementQualityIssue.NOT_TESTABLE],
     )
     study, warnings = _StudySpy(), []
-
-    _propose_criteria_step([node], empty, _CriteriaSpy(), study, warnings)
+    handle = StudyHandle.from_settings(  # the step joins a started study: it no longer reads the document itself
+        render_text=lambda: render_section(empty.blocks, empty.tables), client=study, user_id=None, scope="s", model=None, store=None, limiter=None,
+    )
+    handle.start()
+    try:
+        _propose_criteria_step([node], empty, _CriteriaSpy(), study, warnings, study_handle=handle)
+    finally:
+        handle.close()
 
     assert study.windows == []
     assert warnings == []
     assert "Proposed acceptance criteria" in node.description
+
+
+# cancellation and the user-less call in the criteria step (fix pass T4b) ----
+
+
+class _CancelledStudy:
+    def study_document_window(self, window_text, user_id=None):
+        raise JobCancelled("gone")
+
+
+class _CancelledCriteria:
+    def propose_acceptance_criteria(self, items_by_id, user_id=None):
+        raise JobCancelled("gone")
+
+
+def _flagged_requirement() -> WorkItemNode:
+    return WorkItemNode(
+        local_id="r", parent_local_id=None, type=WorkItemType.REQUIREMENT, title="r", description="The display shall support HDR.",
+        source_ref=_sr("survey_input.txt"), mode=WorkItemMode.SURVEY, quality_issues=[RequirementQualityIssue.NOT_TESTABLE],
+    )
+
+
+def test_criteria_step_propagates_a_criteria_cancellation_without_a_warning() -> None:
+    from app.leveling.llm_leveling import _propose_criteria_step
+
+    warnings: list = []
+
+    with pytest.raises(JobCancelled):  # a study's own cancellation comes through the handle (tests/test_study_wiring.py) and the wrapper (below)
+        _propose_criteria_step([_flagged_requirement()], _small_doc(), _CancelledCriteria(), None, warnings)
+
+    assert warnings == []
+
+
+@pytest.mark.parametrize("study_client, criteria_client", [(_CancelledStudy(), _CriteriaSpy()), (_StudySpy(), _CancelledCriteria())])
+def test_build_survey_tree_propagates_a_cancellation_from_the_study_or_the_criteria_client(study_client, criteria_client) -> None:
+    with pytest.raises(JobCancelled):
+        build_survey_tree(
+            _small_doc(), FakeSectionAnalysisClient(), scoring_client=_flagged_scoring(),
+            acceptance_criteria_client=criteria_client, document_study_client=study_client,
+        )
+
+
+def test_a_call_without_a_user_id_never_touches_the_study_store() -> None:
+    from app.leveling.study_store import StudyStore
+
+    class _SpyRedis:
+        def __init__(self) -> None:
+            self.calls: list = []
+
+        def get(self, *args, **kwargs):
+            self.calls.append("get")
+
+        def set(self, *args, **kwargs):
+            self.calls.append("set")
+            return True
+
+        def delete(self, *args, **kwargs):
+            self.calls.append("delete")
+
+    redis, study = _SpyRedis(), _StudySpy()
+
+    for user_id in (None, ""):
+        build_survey_tree(
+            _small_doc(), FakeSectionAnalysisClient(), scoring_client=_flagged_scoring(), acceptance_criteria_client=_CriteriaSpy(),
+            document_study_client=study, study_store=StudyStore(redis, 60), user_id=user_id,
+        )
+
+    assert redis.calls == [] and len(study.windows) == 2  # read afresh each time, nothing stored or reused

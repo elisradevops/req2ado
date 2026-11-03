@@ -31,7 +31,13 @@ export type CompareKind = (typeof COMPARE_KINDS)[number];
 export const IN_FLIGHT_KINDS = ['working_on', 'writing', 'ocr_page'] as const;
 export type InFlightKind = (typeof IN_FLIGHT_KINDS)[number];
 
-export const NOTICE_KINDS = ['output_limit_reached', 'server_retry', 'context_assumed', 'stream_fallback'] as const;
+export const NOTICE_KINDS = [
+  'output_limit_reached',
+  'server_retry',
+  'context_assumed',
+  'stream_fallback',
+  'document_study',
+] as const;
 export type NoticeKind = (typeof NOTICE_KINDS)[number];
 export const NOTICE_SEVERITIES = ['info', 'warning'] as const;
 export type NoticeSeverity = (typeof NOTICE_SEVERITIES)[number];

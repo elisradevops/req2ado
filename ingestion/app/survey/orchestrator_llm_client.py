@@ -13,6 +13,7 @@ from json_repair import repair_json
 from app.job_cancel import raise_if_cancelled
 from app.otel import get_tracer
 from app.prompts import load_prompt
+from app.request_identity import user_scope
 from app.section_analysis_options import DEFAULT_SECTION_ANALYSIS_OPTIONS, SectionAnalysisOptions
 
 from app.survey._response_schemas import (
@@ -1850,24 +1851,14 @@ class OrchestratorLlmClient:
     def study_document_window(self, window_text: str, user_id: str | None = None) -> dict:
         """Backs the job-document study (app.leveling.document_study): what one window states about its glossary, unresolved-value
         markers, verification wording, cited standards, table roles and list lead-ins. Returns the raw object; the caller drops every
-        entry the window text does not contain."""
+        entry the window text does not contain. Not cached here: the per-user app.leveling.study_store keeps what a run studied."""
         system_prompt = load_prompt("study_document")
-        key = None
-        if self._cache is not None:
-            key = cache_key(
-                "study_document_window", self._model, self._num_ctx, self._top_k, self._min_p, self._seed, system_prompt, document_study_schema(), window_text,
-            )
-            cached = self._cache.get(key)
-            if cached is not None:
-                return cached
         parsed = self._chat_json(
             system_prompt, json.dumps({"text": window_text}, ensure_ascii=False),
             schema=document_study_schema(), max_tokens=3000, user_id=user_id,
         )
         if not isinstance(parsed, dict):
             raise ValueError(f"malformed JSON in LLM response content: {parsed!r}")
-        if key is not None:
-            self._cache.set(key, parsed)
         return parsed
 
     def propose_acceptance_criteria(self, items_by_id: dict[str, dict], user_id: str | None = None) -> dict[str, dict]:
@@ -1878,9 +1869,9 @@ class OrchestratorLlmClient:
             line for line in load_prompt("propose_acceptance_criteria").splitlines() if not line.startswith("#")
         )
         key = None
-        if self._cache is not None:
+        if self._cache is not None and user_id:  # a call without a user id shares no cached answer
             key = cache_key(
-                "propose_acceptance_criteria", self._model, self._num_ctx, self._top_k, self._min_p, self._seed, system_prompt, acceptance_criteria_schema(), items_by_id,
+                "propose_acceptance_criteria", self._model, self._num_ctx, self._top_k, self._min_p, self._seed, system_prompt, acceptance_criteria_schema(), items_by_id, user_scope(user_id),
             )
             cached = self._cache.get(key)
             if cached is not None:

@@ -1,5 +1,6 @@
 import base64
 import json
+import re
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -105,3 +106,17 @@ def test_ingest_reads_the_user_from_the_header_so_figure_captioning_still_runs()
 
     neither = client.post("/ingest?mode=survey", files={"file": ("x.txt", b"The receiver shall lock.\n", "text/plain")})
     assert neither.json()["vision_active"] is False
+
+
+def test_user_scope_is_stable_hashed_and_anon_for_none() -> None:
+    from app.request_identity import user_scope
+
+    user_id = "Microsoft.Identity;someone@example.com"
+    scope = user_scope(user_id)
+
+    assert scope == user_scope(user_id)
+    assert scope != user_scope("Microsoft.Identity;someone-else@example.com")
+    assert user_scope(None) == "anon"
+    assert user_scope("") == "anon"
+    assert user_id not in scope and "someone" not in scope
+    assert re.fullmatch(r"[0-9a-f]{16}", scope)

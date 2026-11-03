@@ -182,7 +182,7 @@
       "properties": {
         "type": { "const": "notice" },
         "id": { "type": "string", "maxLength": 64 },
-        "kind": { "enum": ["output_limit_reached", "server_retry", "context_assumed", "stream_fallback"] },
+        "kind": { "enum": ["output_limit_reached", "server_retry", "context_assumed", "stream_fallback", "document_study"] },
         "severity": { "enum": ["info", "warning"] },
         "count": { "type": "integer", "minimum": 1 },
         "facts": {

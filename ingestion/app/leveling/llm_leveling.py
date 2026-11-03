@@ -12,7 +12,8 @@ from typing import TYPE_CHECKING, Any, Callable, NamedTuple, Protocol
 if TYPE_CHECKING:
     from app.debug_capture import DebugCapture
 
-from app.job_cancel import submit_in_context
+from app.config import settings
+from app.job_cancel import JobCancelled, submit_in_context
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Figure, SourceRef, Table, plain_text_rows
 from app.distillation.description import assemble_description
 from app.distillation.title import extract_baseline_title, title_is_low_quality
@@ -22,7 +23,11 @@ from app.kb.kb_vector_store import KbVectorStore
 from app.kb.retrieval import fetch_always_include_context, retrieve_context
 from app.section_analysis_options import DEFAULT_SECTION_ANALYSIS_OPTIONS, SectionAnalysisOptions
 from app.leveling.acceptance_criteria import AcceptanceCriteriaClient, eligible_nodes, propose_acceptance_criteria
-from app.leveling.document_study import DocumentStudyClient, study_document
+from app.leveling.document_study import DocumentStudyClient
+from app.leveling.llm_lease_limiter import LeaseLimiter
+from app.leveling.study_runner import StudyHandle
+from app.leveling.study_store import StudyStore
+from app.request_identity import user_scope
 from app.leveling.conflict_detection import (
     ConflictJudgeClient,
     _detect_conflicting_duplicates,
@@ -1672,7 +1677,7 @@ def _detect_deterministic_subtrees(
     return det_nodes, det_warnings, llm_doc
 
 
-def build_survey_tree(
+def _build_survey_tree(
     doc: CanonicalDoc,
     analysis_client: SectionAnalysisClient,
     scoring_client: BatchedScoringClient | None = None,
@@ -1757,6 +1762,8 @@ def build_survey_tree(
     # None (the default) is byte-identical to before this capability existed.
     acceptance_criteria_client: AcceptanceCriteriaClient | None = None,
     document_study_client: DocumentStudyClient | None = None,
+    # Per-user store of the study's fully read windows (see app.leveling.study_store). None (the default) is byte-identical to before.
+    study_store: StudyStore | None = None,
     # How many of a chunked LLM enhancement pass's independent chunks may
     # be in flight at once, for all five of them: the deterministic path's
     # title/tag, requirement-synthesis and Epic/Feature parent-summary
@@ -1767,144 +1774,13 @@ def build_survey_tree(
     # worker). 1 (the default) is byte-identical to the previous
     # strictly-sequential behavior.
     chunk_concurrency: int = 1,
+    # The document study, started and closed by build_survey_tree (the public wrapper): study_handle is None when none was started, and
+    # study_enabled False means the study is switched off. Direct callers leave both: the criteria step then proposes from the hierarchy alone.
+    *,
+    study_handle: StudyHandle | None = None,
+    study_enabled: bool = True,
 ) -> WorkItemTree:
-    """SURVEY-mode leveling entry point. Splits the document into top-level
-    branches (_split_into_branches, the same depth-1-heading split
-    BASELINE's build_baseline_tree already uses) and processes each branch
-    holistically -- the model decides how many nodes a section contains,
-    rather than the old per-branch infer_hierarchy +
-    generate_requirements_for_document pair mechanically atomizing it (one
-    input Block -> exactly one output node); see SectionAnalysisClient's
-    docstring and the redesign plan's §1/§2.
-
-    That holistic per-branch work runs as TWO calls, in three ordered stages
-    across the whole document:
-
-    1. STRUCTURE, per branch, in parallel up to `branch_concurrency`
-       (_build_survey_skeleton_for_branch) -- types, nesting and titles only,
-       no requirement text anywhere yet.
-    2. Whole-document structural repair, once, over every branch's structure
-       at once (_regroup_disconnected_roots /
-       _ensure_root_features_have_epic_parent). These used to run at the very
-       END of this function, reshaping a tree whose full text had already
-       been written against the shape they were about to change.
-    3. CONTENT, per branch, same parallelism (_author_branch_content) --
-       each node's requirement text and tags, authored against the section
-       AND the now-final tree, which this stage may not alter.
-
-    2b. STAGE 2, whole-document figure/table -> EXACT node mapping, once,
-        over every branch's figures/tables at once and against the now-final
-        node ids (_map_figures_tables_to_nodes) -- batched per branch, with a
-        whole-document escalation tier for the items a branch can't place.
-        Optional (see FigureTableMappingClient); without it every node's
-        figure_ids/table_ids simply stay empty.
-
-    `model` (the per-job model override, same value threaded from main.py's
-    /level route) resolves via `_resolve_caps` to this document's branch-size
-    cap AND whether the model supports tool-calling (§5c): tool-capable
-    models drive KB retrieval AGENTICALLY per-branch via stage 1's
-    analyze_section_skeleton_agentic (a query_kb tool call during analysis),
-    whose retrieved material then also grounds stage 3; other models get a
-    single pre-computed, once-per-document KB context threaded into every
-    branch's plain skeleton call (the ORIGINAL, pre-agentic KB design, kept
-    as the fallback). Splitting the ENTIRE document into one call previously
-    risked overflowing the LLM's context window in a single whole-document
-    call, producing truncated/malformed JSON that aborted the whole job
-    rather than a partial/degraded result.
-
-    A document with only ONE branch (the common case: no heading structure,
-    or one top-level section) behaves BYTE-IDENTICALLY to before this
-    change — same single call pair, same unprefixed node_ids ("0", "1", ...)
-    — chunking is invisible unless a document genuinely has multiple
-    top-level branches. Only a genuinely multi-branch document gets
-    per-branch node_id namespacing (see _build_survey_skeleton_for_branch); each
-    branch's own hierarchy is entirely self-contained (a branch's node_ids
-    only ever reference other node_ids within that SAME branch/outline, so
-    there is no cross-branch parent-reference case to reconcile).
-
-    `scoring_client` is entirely optional (default None, same as every
-    pre-existing test/call site) — when supplied, every branch's nodes get
-    a real quality_score/quality_issues judgment via ONE extra batched call
-    per branch; when omitted, every node's quality_score/quality_issues
-    stay at their model defaults (None/[]), byte-identical to before this
-    capability existed.
-
-    Warnings from every branch are concatenated into one list, in branch
-    order.
-
-    Customer ID (WorkItemNode.customer_id) is a per-Requirement, document-
-    derived attribute, never a parameter threaded through this function.
-    For the deterministic path, see _detect_deterministic_subtrees'/
-    id_tree_builder's own docstrings (a real document-authored identifier,
-    conventions 1/2 only). For THIS function's own LLM-driven generative
-    path, there are two layered mechanisms, primary then fallback, plus a
-    whole-tree consistency check neither one can see on its own:
-    (1) PRIMARY: stage 1's own model-reported customer_id (see
-    section_skeleton_schema, _build_survey_skeleton_for_branch's
-    _validated_skeleton_customer_id) -- the model reads the section's own
-    rendered table/paragraph text at the same time it decides a row is its
-    own separate node, and reports that row's literal identifier directly,
-    verified verbatim against the branch's own source text before being
-    trusted. (2) FALLBACK, for whatever (1) leaves None: see
-    _author_branch_content's own customer_id extraction, which checks a
-    source table folded verbatim into the node's description (via
-    table_ids/skeleton.tables_by_id) with
-    requirement_rows.repeated_customer_code_in_table (a column only counts
-    as a real id column when it repeats a whole-cell code match at least
-    twice) -- never a raw regex search over the table's rendered HTML or
-    the surrounding model-authored paraphrase, either of which can just as
-    easily match an unrelated cited product/protocol designator as carry
-    the node's own real code.
-
-    Neither mechanism can tell, by itself, that the SAME reported value
-    got assigned to several unrelated nodes -- a real customer ID is
-    unique to one requirement, so main.py's /level exit pass
-    (_enforce_requirement_only_fields) runs a THIRD, whole-tree check
-    after this function returns: any value shared by 2+ Requirements gets
-    stripped from all of them (WarningKind.DUPLICATE_CUSTOMER_ID), since
-    neither this stage nor stage 1 has enough context to know which one,
-    if any, is genuinely correct. Honest on every path: never fabricated
-    when no such code is present, at any stage. Live bug history for all
-    three layers: docs/handoff-heading-tier-detector-and-customer-id-fixes.md.
-
-    `criteria_retriever` is entirely optional (default None, same
-    opt-in-capability convention as scoring_client) -- when supplied
-    alongside scoring_client, each branch's quality scoring call is grounded
-    against retrieved reference criteria (see
-    app.quality.criteria_retrieval.CriteriaRetriever) instead of relying
-    solely on the model's own parametric knowledge of public standards.
-
-    `user_id`/`embed_client`/`vector_store`, when ALL supplied, ground
-    every branch's analysis call, but HOW depends on `_resolve_caps(model)`'s
-    tool-calling verdict (§5c): a tool-capable model gets a `retrieve_fn`
-    closure (wrapping app.kb.retrieval.retrieve_context) passed into every
-    branch's analyze_section_agentic call, which actively pulls KB context
-    per its own query_kb tool calls; a non-tool-capable model instead gets
-    ONE retrieve_context call made HERE, up front, against
-    `_document_level_query_text(doc)` -- the SAME resulting kb_context string
-    is threaded into every branch's plain analyze_section call (and into
-    score_requirements_for_document). When any of the three KB params is
-    omitted, KB retrieval is skipped entirely (kb_context/retrieve_fn stay
-    None for every call), matching pre-KB behavior exactly. `kb_citations`
-    (deduped by source_file, keeping the highest similarity) is returned once
-    on the tree — for the fallback path this is the single document-level
-    retrieval's citations; for the agentic path it's the union of every
-    branch's own query_kb hits, each marked KbCitationRelevance.RELEVANT
-    (the model chose to pull and use them, so relevance verification via
-    kb_relevance_client does not apply on this path).
-
-    `link_type_client`/`link_type_catalog`, when link_type_client is
-    supplied, run ONE additional whole-tree call (after every branch has
-    been processed, using the full combined node list — see
-    TraceLinkInferenceClient's docstring for why this is whole-tree, not
-    per-branch) inferring trace/coverage links; when omitted, trace_links
-    stays [] — matching pre-trace-link behavior exactly. Every returned link
-    is validated before being trusted: a source_node_id that doesn't match
-    any node actually produced by this build is always dropped, and — when
-    a non-empty link_type_catalog was supplied — a reference_name outside
-    that catalog is dropped too. A link's target_ref is classified as
-    intraJob when it matches another node's local_id in this same tree, and
-    as crossJob (an opaque customer-id string) otherwise."""
+    """The pipeline behind build_survey_tree (see its docstring); the public wrapper owns the document study."""
     # Real gap (confirmed live, 682-block AirPro ICD document): the
     # preparing_analysis kickoffs further down this function (previously the
     # ONLY ones) both fire AFTER _detect_deterministic_subtrees below --
@@ -2106,6 +1982,7 @@ def build_survey_tree(
 
         _propose_criteria_step(
             all_nodes, doc, acceptance_criteria_client, document_study_client, all_warnings, user_id=user_id,
+            study_handle=study_handle, study_enabled=study_enabled,
         )
         return WorkItemTree(
             nodes=all_nodes, warnings=finalize_warnings(all_warnings),
@@ -2798,6 +2675,7 @@ def build_survey_tree(
 
     _propose_criteria_step(
         all_nodes, study_source_doc, acceptance_criteria_client, document_study_client, all_warnings, user_id=user_id,
+        study_handle=study_handle, study_enabled=study_enabled,
     )
     return WorkItemTree(
         nodes=all_nodes, warnings=finalize_warnings(all_warnings),
@@ -2807,6 +2685,207 @@ def build_survey_tree(
     )
 
 
+def build_survey_tree(
+    doc: CanonicalDoc,
+    analysis_client: SectionAnalysisClient,
+    scoring_client: BatchedScoringClient | None = None,
+    criteria_retriever: CriteriaRetriever | None = None,
+    user_id: str | None = None,
+    embed_client: object | None = None,
+    vector_store: KbVectorStore | None = None,
+    root_regroup_mode: str = "llm",
+    root_regroup_cosine_threshold: float = 0.75,
+    structure_mode: str = "model",
+    kb_profile: KbProfile | None = None,
+    link_type_client: TraceLinkInferenceClient | None = None,
+    link_type_catalog: list[dict] | None = None,
+    kb_relevance_client: KbRelevanceClient | None = None,
+    progress_callback: ProgressCallback | None = None,
+    model: str | None = None,
+    debug_capture: "DebugCapture | None" = None,
+    title_tag_client: TitleTagClient | None = None,
+    synthesis_client: SynthesisClient | None = None,
+    parent_summary_client: ParentSummaryClient | None = None,
+    conflict_client: ConflictJudgeClient | None = None,
+    grouping_client: RootGroupingClient | None = None,
+    branch_concurrency: int = 1,
+    primer_context: str | None = None,
+    title_distillation_client: TitleDistillationClient | None = None,
+    acceptance_criteria_client: AcceptanceCriteriaClient | None = None,
+    document_study_client: DocumentStudyClient | None = None,
+    study_store: StudyStore | None = None,
+    chunk_concurrency: int = 1,
+    study_limiter: LeaseLimiter | None = None,
+) -> WorkItemTree:
+    """SURVEY-mode leveling entry point. Splits the document into top-level
+    branches (_split_into_branches, the same depth-1-heading split
+    BASELINE's build_baseline_tree already uses) and processes each branch
+    holistically -- the model decides how many nodes a section contains,
+    rather than the old per-branch infer_hierarchy +
+    generate_requirements_for_document pair mechanically atomizing it (one
+    input Block -> exactly one output node); see SectionAnalysisClient's
+    docstring and the redesign plan's §1/§2.
+
+    That holistic per-branch work runs as TWO calls, in three ordered stages
+    across the whole document:
+
+    1. STRUCTURE, per branch, in parallel up to `branch_concurrency`
+       (_build_survey_skeleton_for_branch) -- types, nesting and titles only,
+       no requirement text anywhere yet.
+    2. Whole-document structural repair, once, over every branch's structure
+       at once (_regroup_disconnected_roots /
+       _ensure_root_features_have_epic_parent). These used to run at the very
+       END of this function, reshaping a tree whose full text had already
+       been written against the shape they were about to change.
+    3. CONTENT, per branch, same parallelism (_author_branch_content) --
+       each node's requirement text and tags, authored against the section
+       AND the now-final tree, which this stage may not alter.
+
+    2b. STAGE 2, whole-document figure/table -> EXACT node mapping, once,
+        over every branch's figures/tables at once and against the now-final
+        node ids (_map_figures_tables_to_nodes) -- batched per branch, with a
+        whole-document escalation tier for the items a branch can't place.
+        Optional (see FigureTableMappingClient); without it every node's
+        figure_ids/table_ids simply stay empty.
+
+    `model` (the per-job model override, same value threaded from main.py's
+    /level route) resolves via `_resolve_caps` to this document's branch-size
+    cap AND whether the model supports tool-calling (§5c): tool-capable
+    models drive KB retrieval AGENTICALLY per-branch via stage 1's
+    analyze_section_skeleton_agentic (a query_kb tool call during analysis),
+    whose retrieved material then also grounds stage 3; other models get a
+    single pre-computed, once-per-document KB context threaded into every
+    branch's plain skeleton call (the ORIGINAL, pre-agentic KB design, kept
+    as the fallback). Splitting the ENTIRE document into one call previously
+    risked overflowing the LLM's context window in a single whole-document
+    call, producing truncated/malformed JSON that aborted the whole job
+    rather than a partial/degraded result.
+
+    A document with only ONE branch (the common case: no heading structure,
+    or one top-level section) behaves BYTE-IDENTICALLY to before this
+    change — same single call pair, same unprefixed node_ids ("0", "1", ...)
+    — chunking is invisible unless a document genuinely has multiple
+    top-level branches. Only a genuinely multi-branch document gets
+    per-branch node_id namespacing (see _build_survey_skeleton_for_branch); each
+    branch's own hierarchy is entirely self-contained (a branch's node_ids
+    only ever reference other node_ids within that SAME branch/outline, so
+    there is no cross-branch parent-reference case to reconcile).
+
+    `scoring_client` is entirely optional (default None, same as every
+    pre-existing test/call site) — when supplied, every branch's nodes get
+    a real quality_score/quality_issues judgment via ONE extra batched call
+    per branch; when omitted, every node's quality_score/quality_issues
+    stay at their model defaults (None/[]), byte-identical to before this
+    capability existed.
+
+    Warnings from every branch are concatenated into one list, in branch
+    order.
+
+    Customer ID (WorkItemNode.customer_id) is a per-Requirement, document-
+    derived attribute, never a parameter threaded through this function.
+    For the deterministic path, see _detect_deterministic_subtrees'/
+    id_tree_builder's own docstrings (a real document-authored identifier,
+    conventions 1/2 only). For THIS function's own LLM-driven generative
+    path, there are two layered mechanisms, primary then fallback, plus a
+    whole-tree consistency check neither one can see on its own:
+    (1) PRIMARY: stage 1's own model-reported customer_id (see
+    section_skeleton_schema, _build_survey_skeleton_for_branch's
+    _validated_skeleton_customer_id) -- the model reads the section's own
+    rendered table/paragraph text at the same time it decides a row is its
+    own separate node, and reports that row's literal identifier directly,
+    verified verbatim against the branch's own source text before being
+    trusted. (2) FALLBACK, for whatever (1) leaves None: see
+    _author_branch_content's own customer_id extraction, which checks a
+    source table folded verbatim into the node's description (via
+    table_ids/skeleton.tables_by_id) with
+    requirement_rows.repeated_customer_code_in_table (a column only counts
+    as a real id column when it repeats a whole-cell code match at least
+    twice) -- never a raw regex search over the table's rendered HTML or
+    the surrounding model-authored paraphrase, either of which can just as
+    easily match an unrelated cited product/protocol designator as carry
+    the node's own real code.
+
+    Neither mechanism can tell, by itself, that the SAME reported value
+    got assigned to several unrelated nodes -- a real customer ID is
+    unique to one requirement, so main.py's /level exit pass
+    (_enforce_requirement_only_fields) runs a THIRD, whole-tree check
+    after this function returns: any value shared by 2+ Requirements gets
+    stripped from all of them (WarningKind.DUPLICATE_CUSTOMER_ID), since
+    neither this stage nor stage 1 has enough context to know which one,
+    if any, is genuinely correct. Honest on every path: never fabricated
+    when no such code is present, at any stage. Live bug history for all
+    three layers: docs/handoff-heading-tier-detector-and-customer-id-fixes.md.
+
+    `criteria_retriever` is entirely optional (default None, same
+    opt-in-capability convention as scoring_client) -- when supplied
+    alongside scoring_client, each branch's quality scoring call is grounded
+    against retrieved reference criteria (see
+    app.quality.criteria_retrieval.CriteriaRetriever) instead of relying
+    solely on the model's own parametric knowledge of public standards.
+
+    `user_id`/`embed_client`/`vector_store`, when ALL supplied, ground
+    every branch's analysis call, but HOW depends on `_resolve_caps(model)`'s
+    tool-calling verdict (§5c): a tool-capable model gets a `retrieve_fn`
+    closure (wrapping app.kb.retrieval.retrieve_context) passed into every
+    branch's analyze_section_agentic call, which actively pulls KB context
+    per its own query_kb tool calls; a non-tool-capable model instead gets
+    ONE retrieve_context call made HERE, up front, against
+    `_document_level_query_text(doc)` -- the SAME resulting kb_context string
+    is threaded into every branch's plain analyze_section call (and into
+    score_requirements_for_document). When any of the three KB params is
+    omitted, KB retrieval is skipped entirely (kb_context/retrieve_fn stay
+    None for every call), matching pre-KB behavior exactly. `kb_citations`
+    (deduped by source_file, keeping the highest similarity) is returned once
+    on the tree — for the fallback path this is the single document-level
+    retrieval's citations; for the agentic path it's the union of every
+    branch's own query_kb hits, each marked KbCitationRelevance.RELEVANT
+    (the model chose to pull and use them, so relevance verification via
+    kb_relevance_client does not apply on this path).
+
+    `link_type_client`/`link_type_catalog`, when link_type_client is
+    supplied, run ONE additional whole-tree call (after every branch has
+    been processed, using the full combined node list — see
+    TraceLinkInferenceClient's docstring for why this is whole-tree, not
+    per-branch) inferring trace/coverage links; when omitted, trace_links
+    stays [] — matching pre-trace-link behavior exactly. Every returned link
+    is validated before being trusted: a source_node_id that doesn't match
+    any node actually produced by this build is always dropped, and — when
+    a non-empty link_type_catalog was supplied — a reference_name outside
+    that catalog is dropped too. A link's target_ref is classified as
+    intraJob when it matches another node's local_id in this same tree, and
+    as crossJob (an opaque customer-id string) otherwise."""
+    arguments = dict(locals())  # every parameter as passed, whether it was given by position or by name
+    study_limiter = arguments.pop("study_limiter")
+    # The study is owned here, never by the last step, so no thread of it outlives the job on any exit path (see app.leveling.study_runner).
+    study_enabled = settings.survey_study_enabled
+    handle: StudyHandle | None = None
+    if study_enabled and acceptance_criteria_client is not None and document_study_client is not None:
+        # One snapshot of the full document, taken here before any stage runs: the study thread reads this string and never the live blocks,
+        # so a stage that touches them cannot change what is read (and so the stored study's key).
+        try:
+            document_text = render_section(doc.blocks, doc.tables)
+            handle = StudyHandle.from_settings(
+                render_text=lambda: document_text, client=document_study_client, user_id=user_id,
+                scope=user_scope(user_id), model=model, store=study_store if user_id else None, limiter=study_limiter if user_id else None,
+            )
+            handle.start()  # before anything else runs, so it reads while the pipeline works; `doc` here is the full document, not the residual
+        except JobCancelled:
+            raise
+        except Exception as error:  # noqa: BLE001 -- the study is context only: the criteria step falls back to reading the document itself
+            logger.warning("Document study could not start (%s); carrying on without it.", type(error).__name__)
+            handle = None
+    try:
+        tree = _build_survey_tree(**arguments, study_handle=handle, study_enabled=study_enabled)
+    except BaseException:
+        if handle is not None:  # the job failed or was cancelled: the study's stored windows go too, even a finished study's
+            try:
+                handle.close(discard=True)
+            except Exception as error:  # noqa: BLE001 -- must not mask the job's own exception
+                logger.warning("Document study could not be closed (%s).", type(error).__name__)
+        raise
+    if handle is not None:
+        handle.close()  # a finished job keeps the study's windows as the re-run cache; a study still running is stopped and cleaned up
+    return tree
 
 
 def _propose_criteria_step(
@@ -2816,10 +2895,18 @@ def _propose_criteria_step(
     study_client: DocumentStudyClient | None,
     warnings: list[IntegrityWarning],
     user_id: str | None = None,
+    study_handle: StudyHandle | None = None,
+    study_enabled: bool = True,
 ) -> None:
     """Runs the acceptance-criteria proposals (see app.leveling.acceptance_criteria) when a client is supplied and any requirement is
-    eligible. The whole-document study runs only then, so a document with nothing to propose never pays for it."""
+    eligible. The whole-document study runs only then, so a document with nothing to propose never pays for it.
+
+    With a `study_handle` (started by build_survey_tree) the study has been reading in the background since the job began: this joins it, or,
+    when nothing is eligible, stops it and keeps the windows it had stored. Without one the proposals use the hierarchy alone, and when the study
+    was wanted (`study_enabled` and a `study_client`) one warning says it could not be started: the document is never read on the job's thread."""
     if criteria_client is None or not eligible_nodes(nodes):
+        if study_handle is not None:
+            study_handle.stop(keep_results=True)  # not needed: what is stored stays as the cache
         return
     study = None
     tables_by_id = {t.id: t for t in source_doc.tables}
@@ -2828,20 +2915,17 @@ def _propose_criteria_step(
         table = tables_by_id.get(table_id)
         return _table_to_markdown(table) if table is not None else None
 
-    document_text = render_section(source_doc.blocks, source_doc.tables) if study_client is not None else ""
-    if study_client is not None and document_text.strip():
-        try:
-            study = study_document(document_text, study_client, user_id=user_id)
-        except Exception as error:  # noqa: BLE001 -- the study is context only: carry on with the hierarchy alone, and say so
-            logger.warning("Document study failed (%s); acceptance criteria use the hierarchy alone.", error)
-        if study is None or study.windows_studied < study.windows_total:
-            read = f"{study.windows_studied} of {study.windows_total} parts" if study is not None else "none of it"
-            warnings.append(IntegrityWarning.make(
-                WarningKind.ENHANCEMENT_CALL_FAILED,
-                f"The document was only partly read before proposing acceptance criteria ({read}); the proposals used less document "
-                "context, and values the document marks as unresolved may not have been recognised.",
-                detail={"pass": "document_study"},
-            ))
+    if study_handle is not None:
+        outcome = study_handle.result(timeout=settings.survey_study_hard_budget_seconds + 60)  # JobCancelled is not swallowed
+        study = outcome.study
+        for message in outcome.warnings:  # turned into warnings here, in the job's own thread
+            warnings.append(IntegrityWarning.make(WarningKind.ENHANCEMENT_CALL_FAILED, message, detail={"pass": "document_study"}))
+    elif study_enabled and study_client is not None:  # wanted, but the wrapper could not start it: the job's thread never reads the document
+        warnings.append(IntegrityWarning.make(
+            WarningKind.ENHANCEMENT_CALL_FAILED,
+            "The document study could not be started, so acceptance criteria proposals used the hierarchy alone.",
+            detail={"pass": "document_study"},
+        ))
 
     propose_acceptance_criteria(nodes, study, criteria_client, warnings, table_text, user_id=user_id)
 

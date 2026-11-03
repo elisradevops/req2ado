@@ -59,6 +59,8 @@ from app.leveling.id_tree_builder import (
 from app.leveling.model_caps import _resolve_caps
 from app.leveling.narration_publisher import LevelingProgress, NarrationPublisher, last_known_phase
 from app.leveling.scoring import score_single_requirement_text, score_texts_together
+from app.leveling.llm_lease_limiter import LeaseLimiter
+from app.leveling.study_store import StudyStore
 from app.leveling.tree_builder import build_baseline_tree, figure_id_by_block_id
 from app.loaders.docx_pagination import annotate_docx_pages
 from app.logging_context import JobIdLogFilter, job_id_scope
@@ -320,6 +322,11 @@ _chat_redis_publisher = RedisChatPublisher(settings.redis_url)
 # where an async client can't be awaited without loop gymnastics a plain
 # sync call sidesteps. See NarrationPublisher's own docstring.
 _narration_redis = redis.Redis.from_url(settings.redis_url)
+_study_redis = redis.Redis.from_url(
+    settings.redis_url,
+    socket_timeout=settings.survey_study_redis_timeout_seconds,
+    socket_connect_timeout=settings.survey_study_redis_timeout_seconds,
+)
 # Same synchronous client, same threadpool-friendliness reasoning as above --
 # DebugCapture.capture() is called from inside soft-failure warning paths
 # that run on the same worker thread build_survey_tree itself runs on.
@@ -329,6 +336,13 @@ _debug_capture = DebugCapture(_narration_redis)
 # client as above (fail-open on any Redis error, see LlmResponseCache's own
 # docstring), not a separate connection.
 _llm_response_cache = LlmResponseCache(_narration_redis)
+# Per-user store of the SURVEY document study's fully read windows (re-run / resume; fail-open, see StudyStore's docstring). Its own client,
+# with short timeouts, so a hung Redis fails open instead of blocking the study.
+_study_store = StudyStore(_study_redis, settings.survey_study_cache_ttl_seconds)
+# Global, lease-based limit on the study's concurrent model calls (shared proxy; fail-open, see LeaseLimiter's docstring). Same short-timeout client.
+_study_limiter = LeaseLimiter(
+    _study_redis, settings.survey_study_global_slots, settings.survey_study_user_slots, settings.survey_study_lease_seconds,
+)
 
 
 def _sniff_image_mime_type(image_bytes: bytes) -> str | None:
@@ -945,6 +959,8 @@ def _build_survey_tree_with_scoring(
             # Same client again: acceptance-criteria proposals and the whole-document study that informs them (SURVEY only).
             acceptance_criteria_client=client,
             document_study_client=client,
+            study_store=_study_store,
+            study_limiter=_study_limiter,
         )
 
 

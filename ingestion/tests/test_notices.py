@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from app.leveling import live_context
 from app.leveling.live_context import live_emitter_scope, notice
 from app.logging_context import job_id_scope
@@ -153,3 +155,24 @@ def test_client_is_silent_without_live_progress(monkeypatch) -> None:  # noqa: A
     with job_id_scope("j5"), live_emitter_scope("j5", redis):
         _client(handler).analyze_section("Some section text.")
     assert redis.published == []
+
+
+def test_the_document_study_kind_is_published_with_its_facts() -> None:
+    redis = FakeRedis()
+    facts = {"state": "partial", "studied": 9, "windows": 12, "cached": 4, "split": 2, "failed": 1}
+    assert NoticePublisher(redis, "j1").publish("document_study", "warning", once_key="end", **facts)
+    payload = json.loads(redis.published[0][1])
+    assert payload["kind"] == "document_study" and payload["severity"] == "warning" and payload["facts"] == facts
+
+
+def test_every_kind_is_in_the_shared_schema_and_the_other_way_round() -> None:
+    import pathlib
+
+    from app.leveling.notices import NOTICE_KINDS
+
+    assert "document_study" in NOTICE_KINDS
+    schema_path = pathlib.Path(__file__).resolve().parents[2] / "shared" / "schemas" / "job-live.schema.json"
+    if not schema_path.exists():
+        pytest.skip("the shared schemas are not part of this checkout")
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    assert set(schema["definitions"]["Notice"]["properties"]["kind"]["enum"]) == set(NOTICE_KINDS)

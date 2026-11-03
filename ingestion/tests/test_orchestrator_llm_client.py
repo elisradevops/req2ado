@@ -4105,7 +4105,8 @@ def test_study_document_window_rejects_a_non_object_answer() -> None:
         client.study_document_window("text")
 
 
-def test_study_document_window_is_cached_per_window() -> None:
+def test_client_study_window_is_no_longer_cached() -> None:
+    # The per-user study store (app.leveling.study_store) replaced the client-side copy, which a cancelled run could not delete.
     calls = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -4119,7 +4120,8 @@ def test_study_document_window_is_cached_per_window() -> None:
     client.study_document_window("same window")
     client.study_document_window("another window")
 
-    assert calls["n"] == 2
+    assert calls["n"] == 3
+    assert client._cache.store == {}
 
 
 def test_propose_acceptance_criteria_keeps_only_asked_ids_and_drops_the_contract_comment() -> None:
@@ -4166,9 +4168,80 @@ def test_propose_acceptance_criteria_caches_only_a_complete_answer() -> None:
     client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=_DictCache())
     client._transport = httpx.MockTransport(handler)
 
-    client.propose_acceptance_criteria({"a": {"text": "t"}})
-    client.propose_acceptance_criteria({"a": {"text": "t"}})  # complete: served from the cache
-    client.propose_acceptance_criteria({"a": {"text": "t"}, "b": {"text": "u"}})  # b missing: not cached
-    client.propose_acceptance_criteria({"a": {"text": "t"}, "b": {"text": "u"}})
+    client.propose_acceptance_criteria({"a": {"text": "t"}}, user_id="user-a")
+    client.propose_acceptance_criteria({"a": {"text": "t"}}, user_id="user-a")  # complete: served from the cache
+    client.propose_acceptance_criteria({"a": {"text": "t"}, "b": {"text": "u"}}, user_id="user-a")  # b missing: not cached
+    client.propose_acceptance_criteria({"a": {"text": "t"}, "b": {"text": "u"}}, user_id="user-a")
 
     assert calls["n"] == 3
+
+
+# per-user cache scope for propose_acceptance_criteria ----
+
+
+def _scoped_cache_client(calls: dict, cache: "_DictCache | None" = None) -> OrchestratorLlmClient:
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        content = {"glossary": [], "items": [{"id": "a", "criteria": ["c"], "assumptions": [], "needs_author_input": False}]}
+        return httpx.Response(200, json={"content": json.dumps(content)})
+
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=cache if cache is not None else _DictCache()
+    )
+    client._transport = httpx.MockTransport(handler)
+    return client
+
+
+def test_propose_acceptance_criteria_cache_is_not_shared_between_users() -> None:
+    calls = {"n": 0}
+    client = _scoped_cache_client(calls)
+
+    client.propose_acceptance_criteria({"a": {"text": "t"}}, user_id="user-a")
+    client.propose_acceptance_criteria({"a": {"text": "t"}}, user_id="user-b")
+
+    assert calls["n"] == 2
+
+
+def test_propose_acceptance_criteria_cache_hits_for_the_same_user() -> None:
+    calls = {"n": 0}
+    client = _scoped_cache_client(calls)
+
+    client.propose_acceptance_criteria({"a": {"text": "t"}}, user_id="user-a")
+    client.propose_acceptance_criteria({"a": {"text": "t"}}, user_id="user-a")
+
+    assert calls["n"] == 1
+
+
+def test_cache_keys_never_contain_the_raw_user_id() -> None:
+    user_id = "Microsoft.Identity;someone@example.com"
+    cache = _DictCache()
+    client = _scoped_cache_client({"n": 0}, cache)
+
+    client.propose_acceptance_criteria({"a": {"text": "t"}}, user_id=user_id)
+
+    assert len(cache.store) == 1
+    pieces = {user_id[i:i + 7] for i in range(len(user_id) - 6)}
+    for key in cache.store:
+        assert not any(piece in str(key) for piece in pieces)
+
+
+def test_a_call_without_a_user_id_never_reads_or_writes_the_cache() -> None:
+    calls = {"n": 0}
+
+    class _SpyCache:
+        def __init__(self) -> None:
+            self.gets = self.sets = 0
+
+        def get(self, key):
+            self.gets += 1
+
+        def set(self, key, value):
+            self.sets += 1
+
+    cache = _SpyCache()
+    client = _scoped_cache_client(calls, cache)
+
+    client.propose_acceptance_criteria({"a": {"text": "t"}}, user_id=None)
+    client.propose_acceptance_criteria({"a": {"text": "t"}})
+
+    assert calls["n"] == 2 and (cache.gets, cache.sets) == (0, 0)

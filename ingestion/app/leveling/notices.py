@@ -19,7 +19,9 @@ logger = logging.getLogger(__name__)
 # each in JobEvent, no migration) and kept in a short replay list for a stream that
 # reconnects. Best-effort: a failure is logged once and never reaches the job.
 
-NOTICE_KINDS = ("output_limit_reached", "server_retry", "context_assumed", "stream_fallback")
+# `document_study` is a state-evolving notice: up to about 5 per job (start, quarter milestones, one finish), all emitted from one thread (the
+# study's coordinator). The frontend keeps one row per kind, and the per-kind count acts as the sequence number that orders them.
+NOTICE_KINDS = ("output_limit_reached", "server_retry", "context_assumed", "stream_fallback", "document_study")
 NOTICE_SEVERITIES = ("info", "warning")
 NOTICE_TTL_SECONDS = 24 * 3600
 NOTICE_LOG_MAX = 50

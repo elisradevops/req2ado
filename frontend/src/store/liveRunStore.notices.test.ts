@@ -33,3 +33,27 @@ describe('notices in the live run store', () => {
     expect(useLiveRunStore.getState().notices).toEqual([]);
   });
 });
+
+describe('the evolving document_study row', () => {
+  const study = (id: string, count: number, severity: Notice['severity'], facts: Notice['facts']): Notice => ({
+    type: 'notice', id, kind: 'document_study', severity, count, facts, emittedAt: 'x',
+  });
+
+  it('follows reading, milestones and the finish in order, and ends on the finish state', () => {
+    let list: Notice[] = [];
+    list = mergeNotice(list, study('a', 1, 'info', { state: 'reading', windows: 12 }));
+    list = mergeNotice(list, study('b', 2, 'info', { state: 'reading', done: 3, windows: 12 }));
+    list = mergeNotice(list, study('e', 5, 'warning', { state: 'partial', studied: 9, windows: 12 }));
+    expect(list).toHaveLength(1);
+    expect(list[0].facts.state).toBe('partial');
+    expect(list[0].severity).toBe('warning');
+  });
+
+  it('keeps the finish state when an older milestone is replayed after it, or the same notice arrives twice', () => {
+    let list: Notice[] = [study('e', 5, 'info', { state: 'done', studied: 12, windows: 12 })];
+    list = mergeNotice(list, study('b', 2, 'info', { state: 'reading', done: 3, windows: 12 }));
+    list = mergeNotice(list, study('e', 5, 'info', { state: 'done', studied: 12, windows: 12 }));
+    expect(list).toHaveLength(1);
+    expect(list[0].facts.state).toBe('done');
+  });
+});
