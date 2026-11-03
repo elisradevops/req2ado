@@ -5,6 +5,8 @@ import json
 import logging
 import tempfile
 import threading
+import queue
+from collections.abc import AsyncIterator, Iterator
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -19,13 +21,13 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from app import job_cancel
-from app.level_stream import NDJSON, ndjson_stream
+from app.level_stream import NDJSON, line as level_line, ndjson_stream
 from app.canonical.model import CanonicalDoc
 from app.chat.chat_client import ChatLlmClient
 from app.chat.chat_service import run_chat_turn
 from app.chat.redis_publisher import RedisChatPublisher
 from app.chat.rewrite_check import check_rewrite
-from app.request_identity import PRIMER_HEADER, USER_ID_HEADER, resolve_primer_context, resolve_user_id
+from app.request_identity import PRIMER_HEADER, USER_ID_HEADER, resolve_primer_context, resolve_user_id, user_scope
 from app.config import settings
 from app.debug_capture import DebugCapture
 from app.dedup.check_for_duplicates import DuplicateCheckResult, check_for_duplicates
@@ -61,6 +63,9 @@ from app.leveling.narration_publisher import LevelingProgress, NarrationPublishe
 from app.leveling.scoring import score_single_requirement_text, score_texts_together
 from app.leveling.llm_lease_limiter import LeaseLimiter
 from app.leveling.study_store import StudyStore
+from app.leveling.study_runner import StudyHandle
+from app.leveling.document_overview import overview_facts
+from app.leveling.llm_leveling import render_section
 from app.leveling.tree_builder import build_baseline_tree, figure_id_by_block_id
 from app.loaders.docx_pagination import annotate_docx_pages
 from app.logging_context import JobIdLogFilter, job_id_scope
@@ -1726,6 +1731,23 @@ def _enforce_requirement_only_fields(tree: WorkItemTree) -> WorkItemTree:
     return tree
 
 
+async def _survey_client(model: str | None, user_id: str | None) -> OrchestratorLlmClient:
+    """The LLM client of a SURVEY run for `model`: its context window is sized the same way the whole-document gate sizes it (see _survey_level),
+    so the job and the wizard's study read the document with identical settings."""
+    probe_client = OrchestratorLlmClient(
+        settings.orchestrator_url, settings.llm_proxy_bearer, model=model,
+        top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
+    )
+    num_ctx = (
+        await run_in_threadpool(_resolve_caps, model, probe_client, user_id)
+    ).context_budget_tokens
+    client = OrchestratorLlmClient(
+        settings.orchestrator_url, settings.llm_proxy_bearer, model=model, num_ctx=num_ctx,
+        top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P, cache=_llm_response_cache,
+    )
+    return client
+
+
 async def _survey_level(
     doc: CanonicalDoc, model: str | None, user_id: str | None, link_type_catalog: str | None, job_id: str | None,
     primer_context: str | None, rubric_report: dict,
@@ -1770,21 +1792,108 @@ async def _survey_level(
     # request doesn't use it); construction itself is cheap/sync
     # (no I/O), so building a second instance below with the now-known
     # num_ctx is simpler than mutating this one after the fact.
-    probe_client = OrchestratorLlmClient(
-        settings.orchestrator_url, settings.llm_proxy_bearer, model=model,
-        top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
-    )
-    num_ctx = (
-        await run_in_threadpool(_resolve_caps, model, probe_client, user_id)
-    ).context_budget_tokens
-    client = OrchestratorLlmClient(
-        settings.orchestrator_url, settings.llm_proxy_bearer, model=model, num_ctx=num_ctx,
-        top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P, cache=_llm_response_cache,
-    )
+    client = await _survey_client(model, user_id)
     catalog = json.loads(link_type_catalog) if link_type_catalog else None
     return await run_in_threadpool(
         _build_survey_tree_with_scoring, doc, client, user_id, catalog, job_id, model, primer_context, rubric_report
     )
+
+
+# How often the streamed study overview says it is still working while a model call is under way.
+STUDY_OVERVIEW_HEARTBEAT_SECONDS = 5.0
+
+
+async def _study_events(
+    request: Request, document_text: str, client: OrchestratorLlmClient, user_id: str, model: str | None,
+) -> AsyncIterator[dict]:
+    """The study of one document as events: `progress` (windows accounted for, of the total, with the elapsed seconds), `heartbeat` while a model
+    call is under way, then exactly one `result` (the plain answer's fields). A browser that disconnects stops the study, keeping the windows it
+    stored; the stream then ends without a result."""
+    progress: queue.Queue[tuple[int, int]] = queue.Queue()
+    handle = StudyHandle.from_settings(
+        render_text=lambda: document_text, client=client, user_id=user_id, scope=user_scope(user_id), model=model,
+        store=_study_store, limiter=_study_limiter, on_progress=lambda done, total: progress.put((done, total)),
+    )
+    handle.start()
+    started = time.monotonic()
+    last_sent = started
+    waiting = asyncio.ensure_future(run_in_threadpool(handle.result, settings.survey_study_hard_budget_seconds + 60))
+
+    def drain() -> Iterator[dict]:
+        while True:
+            try:
+                done, total = progress.get_nowait()
+            except queue.Empty:
+                return
+            yield {"type": "progress", "done": done, "total": total, "elapsed": round(time.monotonic() - started)}
+
+    try:
+        while not waiting.done():
+            await asyncio.wait({waiting}, timeout=min(1.0, STUDY_OVERVIEW_HEARTBEAT_SECONDS))
+            sent = False
+            for event in drain():
+                sent = True
+                yield event
+            now = time.monotonic()
+            if sent:
+                last_sent = now
+            elif not waiting.done() and now - last_sent >= STUDY_OVERVIEW_HEARTBEAT_SECONDS:
+                last_sent = now
+                yield {"type": "heartbeat", "elapsed": round(now - started)}
+            if not waiting.done() and await request.is_disconnected():
+                handle.stop(keep_results=True)  # nobody is waiting for the answer; what was read stays as the job's cache
+                return
+        outcome = waiting.result()
+        for event in drain():
+            yield event
+        facts = overview_facts(outcome.study)
+        yield {
+            "type": "result", "read": facts is not None, "facts": facts, "reason": None if facts is not None else "unread",
+            "warnings": list(outcome.warnings),
+        }
+    finally:
+        await run_in_threadpool(handle.close)  # a finished study's windows stay as the re-run cache
+
+
+@app.post("/study/overview")
+async def study_overview(
+    request: Request,
+    file: UploadFile,
+    model: str | None = None,
+    x_user_id: str | None = Header(default=None, alias=USER_ID_HEADER),
+):
+    """The wizard's "does this look right?" overview, from a study of the document: the same extractive study the SURVEY job runs, started
+    here so the job reuses its stored windows. Returns structured facts (see app.leveling.document_overview), never model-written text, so
+    it can state only what the document states. `read` is False when nothing was read (no user, or every window failed): the caller then
+    shows no overview rather than an invented one. With `Accept: application/x-ndjson` the answer is a stream (progress and heartbeat lines,
+    then one result line, as /level streams); otherwise one JSON object."""
+    streamed = NDJSON in request.headers.get("accept", "")
+    user_id = resolve_user_id(x_user_id)
+    if not user_id:  # the model calls and the store both need a user
+        unread = {"read": False, "facts": None, "reason": "no_user", "warnings": []}
+        return StreamingResponse(iter([level_line({"type": "result", **unread})]), media_type=NDJSON) if streamed else unread
+    # Parsed before anything is streamed: the upload is closed once the endpoint returns.
+    doc = await ingest(
+        file=file, redact=False, languages="eng", skip_vision=True, mode="baseline", job_id=None, vision_model=None, vision_skip_reason=None,
+        x_user_id=x_user_id, x_primer_context=None,
+    )
+    document_text = render_section(doc.blocks, doc.tables)  # the same call the job makes, so the stored windows are the same windows
+    client = await _survey_client(model, user_id)
+    events = _study_events(request, document_text, client, user_id, model)
+    if streamed:
+        async def lines() -> AsyncIterator[bytes]:
+            try:
+                async for event in events:
+                    yield level_line(event)
+            except Exception as exc:  # noqa: BLE001 -- after the first byte a failure can only be a line
+                yield level_line({"type": "error", "status": 500, "detail": type(exc).__name__})
+
+        return StreamingResponse(lines(), media_type=NDJSON)
+    result: dict = {"read": False, "facts": None, "reason": "disconnected", "warnings": []}
+    async for event in events:
+        if event["type"] == "result":
+            result = {k: v for k, v in event.items() if k != "type"}
+    return result
 
 
 # How often a streamed /level sends a heartbeat line while its run works.

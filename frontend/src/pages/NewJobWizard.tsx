@@ -155,6 +155,12 @@ function WorthKnowingCard({ preview, parsing }: { preview: PreviewResult | null;
   );
 }
 
+// Seconds as m:ss ("75" -> "1:15").
+function formatElapsed(seconds: number): string {
+  const whole = Math.max(0, Math.round(seconds));
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
+}
+
 export function NewJobWizard(): React.ReactElement {
   const navigate = useNavigate();
   const { showToast, showErrorToast } = useToast();
@@ -181,6 +187,8 @@ export function NewJobWizard(): React.ReactElement {
   const [modelsError, setModelsError] = useState(false);
   const [documentOverview, setDocumentOverview] = useState<DocumentOverview | null>(null);
   const [expositionStatus, setExpositionStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  // What the study has reported so far (windows read, seconds elapsed): step 3 shows it so a long wait does not look stuck.
+  const [expositionProgress, setExpositionProgress] = useState<{ done?: number; total?: number; elapsed: number } | null>(null);
   // DESIGN.md §11.2.3.d -- server-computed, both modes shown side by side
   // (ModeCards) so both are fetched regardless of which is selected.
   // undefined while in flight/not-yet-fetched; ModeCards renders '--' for
@@ -226,9 +234,15 @@ export function NewJobWizard(): React.ReactElement {
   // on expositionStatus !== 'idle' so re-renders while step 3 is already
   // loading/ready/error don't re-fire the request.
   useEffect(() => {
-    if (step !== 3 || expositionStatus !== 'idle' || !preview) return;
+    if (step !== 3 || expositionStatus !== 'idle' || !preview || !file) return;
     setExpositionStatus('loading');
-    previewExposition({ documentMap: preview.documentMap, sectionCount: preview.sectionCount, depth: preview.depth })
+    previewExposition({
+      file,
+      documentMap: preview.documentMap,
+      sectionCount: preview.sectionCount,
+      depth: preview.depth,
+      model: model || undefined,
+    }, (progress) => setExpositionProgress((current) => ({ ...current, ...progress })))
       .then((result) => {
         // NestJS serializes a `null` route-handler return (the server's own
         // documented fail-open path) as an EMPTY response body -- axios's
@@ -244,7 +258,7 @@ export function NewJobWizard(): React.ReactElement {
         setDocumentOverview(null);
         setExpositionStatus('error');
       });
-  }, [step, expositionStatus, preview]);
+  }, [step, expositionStatus, preview, file, model]);
 
   // A stale area path picked under a previous project must not be
   // submittable once the project changes -- the two are meant to stay
@@ -322,6 +336,7 @@ export function NewJobWizard(): React.ReactElement {
     // (`expositionStatus !== 'idle'`) skips re-fetching for the new file and
     // the old file's synopsis gets submitted with the new file's job.
     setDocumentOverview(null);
+    setExpositionProgress(null);
     setExpositionStatus('idle');
   }
 
@@ -501,9 +516,17 @@ export function NewJobWizard(): React.ReactElement {
         <SectionCard title="Does this look right?">
           <div className="flex flex-col gap-3">
             {expositionStatus === 'loading' && (
-              <p className="flex items-center gap-2 text-sm text-ink-3">
-                <Spinner /> Reading the document's structure…
-              </p>
+              <div role="status" className="flex flex-col gap-1 text-sm text-ink-3">
+                <p className="flex items-center gap-2">
+                  <Spinner /> Studying the document… this reads it in full, so a long one can take a few minutes.
+                </p>
+                <p className="pl-6 font-mono text-xs">
+                  {expositionProgress?.total
+                    ? `Read ${expositionProgress.done ?? 0} of ${expositionProgress.total} ${expositionProgress.total === 1 ? 'part' : 'parts'} of the document`
+                    : 'Waiting for the model'}
+                  {expositionProgress ? ` · ${formatElapsed(expositionProgress.elapsed)}` : ''}
+                </p>
+              </div>
             )}
             {expositionStatus === 'ready' && documentOverview && (
               <>
@@ -514,7 +537,7 @@ export function NewJobWizard(): React.ReactElement {
               </>
             )}
             {expositionStatus === 'error' && (
-              <p className="text-sm text-ink-3">Couldn't generate a summary — you can still continue.</p>
+              <p className="text-sm text-ink-3">No overview available — the study of the document produced nothing it could state. You can still continue.</p>
             )}
           </div>
         </SectionCard>

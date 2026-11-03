@@ -171,7 +171,9 @@ class StudyHandle:
         soft_budget_seconds: float, breaker_failures: int, max_windows: int, lease_max_wait_seconds: float,
         sleep: Callable[[float], None] = _cancellable_sleep, rng: random.Random | None = None,
         clock: Callable[[], float] = time.monotonic, poll_seconds: float = _POLL_SECONDS,
+        on_progress: Callable[[int, int], None] | None = None,
     ) -> None:
+        self._on_progress = on_progress  # (windows accounted for, windows to read): what a caller shows while the study runs (the coordinator's alone)
         self._render_text = render_text
         self._client = client
         self._user_id = user_id
@@ -215,6 +217,15 @@ class StudyHandle:
             breaker_failures=settings.survey_study_breaker_failures, max_windows=settings.survey_study_max_windows,
             lease_max_wait_seconds=float(settings.survey_study_lease_max_wait_seconds), **overrides,
         )
+
+    def _report_progress(self, done: int, total: int) -> None:
+        """Never raises: a caller that stopped listening must not break the study."""
+        if self._on_progress is None:
+            return
+        try:
+            self._on_progress(done, total)
+        except Exception:  # noqa: BLE001 -- progress is for a viewer; the study goes on without one
+            logger.debug("study progress callback failed", exc_info=True)
 
     @property
     def current_workers(self) -> int:
@@ -354,6 +365,7 @@ class StudyHandle:
         all_windows = windows_of(text, STUDY_WINDOW_CHARS, STUDY_WINDOW_OVERLAP)
         self._windows_total = len(all_windows)
         windows = all_windows[:self._max_windows]
+        self._report_progress(0, len(windows))
         run = self._run = self._store.run(self._scope, self._model, text) if self._store is not None else None
         cached: dict[int, WindowFindings] = {}
         if run is not None:
@@ -382,6 +394,7 @@ class StudyHandle:
                     results.append((index, cached[index]))
                     studied += 1
                     consecutive = 0
+                    self._report_progress(index + 1, len(windows))
                     continue
                 while reason is None:
                     reason = self._stop_reason()
@@ -437,6 +450,7 @@ class StudyHandle:
                 else:
                     studied += 1
                     consecutive = 0
+                self._report_progress(index + 1, len(windows))
                 if len(all_windows) >= _MILESTONE_MIN_WINDOWS:
                     for quarter, key in _MILESTONES:
                         if key not in announced and (index + 1) * 4 >= len(all_windows) * quarter:

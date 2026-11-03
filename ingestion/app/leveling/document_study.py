@@ -45,7 +45,8 @@ _MAX_429_RETRIES = 2
 _MAX_BACKOFF_SECONDS = 60
 _MAX_RETRY_AFTER_SECONDS = 120
 _SLEEP_SLICE_SECONDS = 1.0  # a back-off is slept in slices this long, so a cancellation is noticed within one slice
-_ANSWER_KEYS = ("glossary", "placeholder_tokens", "verification_statements", "standards_cited", "table_roles", "lead_in_patterns")
+_ANSWER_KEYS = ("glossary", "placeholder_tokens", "verification_statements", "standards_cited", "table_roles", "lead_in_patterns", "purpose_statements")
+_MAX_PURPOSE_STATEMENTS = 3  # the overview quotes at most this many, taken in document order
 _NEWLINE_PREFERENCE = 0.10  # a newline this close (fraction of the text) to the middle is preferred to a nearer space
 
 
@@ -72,6 +73,7 @@ class DocumentStudy:
     standards_cited: list[str] = field(default_factory=list)
     table_roles: list[dict] = field(default_factory=list)  # {table, role}
     lead_in_patterns: list[str] = field(default_factory=list)
+    purpose_statements: list[str] = field(default_factory=list)  # sentences the document states its own purpose or scope in
     windows_studied: int = 0
     windows_total: int = 0
     read_stats: StudyReadStats = field(default_factory=StudyReadStats)
@@ -87,6 +89,7 @@ class WindowFindings:
     standards_cited: tuple[str, ...] = ()
     table_roles: tuple[tuple[str, str], ...] = ()  # (table, role)
     lead_in_patterns: tuple[str, ...] = ()
+    purpose_statements: tuple[str, ...] = ()
 
 
 def _squash(text: str) -> str:
@@ -143,6 +146,7 @@ def window_findings(answer: object, window: str) -> WindowFindings:
         standards_cited=tuple(_strings(answer.get("standards_cited"), window, _MAX_QUOTE_CHARS)),
         table_roles=tuple((r["table"], r["role"]) for r in table_roles),
         lead_in_patterns=tuple(_strings(answer.get("lead_in_patterns"), window, _MAX_QUOTE_CHARS)),
+        purpose_statements=tuple(_strings(answer.get("purpose_statements"), window, _MAX_QUOTE_CHARS)),
     )
 
 
@@ -178,6 +182,7 @@ def merge_findings(indexed: Iterable[tuple[int, WindowFindings]]) -> DocumentStu
             {"table": t, "role": r} for t, r in _first_of_each(gather("table_roles"), lambda r: _canonical(r[0]))
         ],
         lead_in_patterns=_first_of_each(gather("lead_in_patterns"), _canonical),
+        purpose_statements=_first_of_each(gather("purpose_statements"), _canonical)[:_MAX_PURPOSE_STATEMENTS],
         windows_studied=len(ordered),
     )
 

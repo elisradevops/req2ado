@@ -785,4 +785,80 @@ describe('IngestionHttpClient.level: which rubric the job was scored with', () =
     (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ nodes: [] }) });
     await expect(new IngestionHttpClient('http://ingestion.internal').level(MINIMAL_DOC, 'survey')).resolves.toEqual({ nodes: [] });
   });
+
+  describe('studyOverview', () => {
+    const facts = { purpose_statements: [], glossary_terms: 0 };
+    const stream = (lines: object[], chunks = (t: string) => [t]): Response => {
+      const enc = new TextEncoder();
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(c) {
+            for (const piece of chunks(lines.map((l) => JSON.stringify(l)).join('\n') + '\n')) c.enqueue(enc.encode(piece));
+            c.close();
+          },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/x-ndjson' } },
+      );
+    };
+    const RESULT = { type: 'result', read: true, facts, reason: null, warnings: [] };
+
+    it('POSTs the file as multipart to /study/overview asking for a stream, sends the user in the identity header, and returns the result', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue(stream([RESULT]));
+      const client = new IngestionHttpClient('http://ingestion.internal');
+
+      const result = await client.studyOverview(Buffer.from('doc'), 'x.docx', 'user-1', 'gemma4:12b');
+
+      expect(result).toEqual({ read: true, facts, reason: null, warnings: [] });
+      const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
+      expect(url).toBe('http://ingestion.internal/study/overview?model=gemma4%3A12b');
+      expect(options.method).toBe('POST');
+      expect(options.body).toBeInstanceOf(FormData);
+      expect(options.headers['X-Req2Ado-User-Id']).toBe('user-1');
+      expect(options.headers.Accept).toBe('application/x-ndjson');
+      expect(url).not.toContain('user-1'); // identity never travels in a URL
+    });
+
+    it('sends no model parameter when none was chosen, and uses the long-running dispatcher (a study reads the whole document)', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue(stream([{ ...RESULT, read: false, facts: null, reason: 'unread' }]));
+      await new IngestionHttpClient('http://ingestion.internal').studyOverview(Buffer.from('doc'), 'x.docx', 'user-1');
+      const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
+      expect(url).toBe('http://ingestion.internal/study/overview');
+      expect(options.dispatcher).toBeDefined();
+    });
+
+    it('reports progress and heartbeat lines as they arrive, even when a line is split across chunks', async () => {
+      const lines = [
+        { type: 'progress', done: 0, total: 3, elapsed: 0 }, { type: 'heartbeat', elapsed: 5 },
+        { type: 'progress', done: 2, total: 3, elapsed: 9 }, RESULT,
+      ];
+      (global.fetch as jest.Mock).mockResolvedValue(stream(lines, (t) => [t.slice(0, 20), t.slice(20, 70), t.slice(70)]));
+      const seen: unknown[] = [];
+
+      await new IngestionHttpClient('http://ingestion.internal').studyOverview(Buffer.from('doc'), 'x.docx', 'user-1', undefined, (p) => seen.push(p));
+
+      expect(seen).toEqual([{ done: 0, total: 3, elapsed: 0 }, { elapsed: 5 }, { done: 2, total: 3, elapsed: 9 }]);
+    });
+
+    it('passes the abort signal to the request, so a caller that leaves stops the study', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue(stream([RESULT]));
+      const controller = new AbortController();
+      await new IngestionHttpClient('http://ingestion.internal').studyOverview(Buffer.from('doc'), 'x.docx', 'user-1', undefined, undefined, controller.signal);
+      expect((global.fetch as jest.Mock).mock.calls[0][1].signal).toBe(controller.signal);
+    });
+
+    it('throws an IngestionHttpError for an error line', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue(stream([{ type: 'error', status: 502, detail: 'model down' }]));
+      await expect(new IngestionHttpClient('http://ingestion.internal').studyOverview(Buffer.from('doc'), 'x.docx', 'user-1')).rejects.toBeInstanceOf(IngestionHttpError);
+    });
+
+    it('throws when the stream ends without a result', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue(stream([{ type: 'progress', done: 1, total: 3, elapsed: 4 }]));
+      await expect(new IngestionHttpClient('http://ingestion.internal').studyOverview(Buffer.from('doc'), 'x.docx', 'user-1')).rejects.toThrow(/without a result/);
+    });
+
+    it('throws an IngestionHttpError when ingestion answers with an HTTP error', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 502, text: async () => 'bad gateway', json: async () => ({ detail: 'bad gateway' }), headers: new Headers() });
+      await expect(new IngestionHttpClient('http://ingestion.internal').studyOverview(Buffer.from('doc'), 'x.docx', 'user-1')).rejects.toBeInstanceOf(IngestionHttpError);
+    });
+  });
 });

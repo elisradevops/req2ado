@@ -24,6 +24,7 @@ from app.leveling.document_study import (
 
 _EMPTY_ANSWER = {
     "glossary": [], "placeholder_tokens": [], "verification_statements": [], "standards_cited": [], "table_roles": [], "lead_in_patterns": [],
+    "purpose_statements": [],
 }
 
 
@@ -633,3 +634,37 @@ def test_failed_window_logs_never_carry_the_error_text(caplog) -> None:
 
     assert secret not in caplog.text
     assert "ValueError" in caplog.text and "HTTP 502" in caplog.text and "RuntimeError" in caplog.text
+
+
+# What the document itself says it is for (its scope or purpose sentences). The wizard's summary is built from these quotes, so they are held to
+# the study's rule: copied exactly from the text, or dropped.
+_SCOPE_TEXT = "1. Scope. This document specifies the interface between the target tracker and the display unit. Report rate shall be N Hz."
+
+
+def test_purpose_statements_are_kept_only_when_the_window_contains_them() -> None:
+    found = window_findings(
+        {"purpose_statements": ["This document specifies the interface between the target tracker and the display unit.", "It also covers fusion."]},
+        _SCOPE_TEXT,
+    )
+    assert found.purpose_statements == ("This document specifies the interface between the target tracker and the display unit.",)
+
+
+def test_purpose_statements_longer_than_a_quote_are_dropped_and_malformed_ones_ignored() -> None:
+    long_text = "This document " + "describes the system " * 40
+    assert window_findings({"purpose_statements": [long_text.strip()]}, long_text).purpose_statements == ()
+    assert window_findings({"purpose_statements": [None, 5, "  "]}, _SCOPE_TEXT).purpose_statements == ()
+    assert window_findings({"purpose_statements": "not a list"}, _SCOPE_TEXT).purpose_statements == ()
+
+
+def test_merge_keeps_the_first_three_distinct_purpose_statements_in_window_order() -> None:
+    merged = merge_findings([
+        (1, _wf(purpose_statements=["Second window purpose.", "This document covers A."])),
+        (0, _wf(purpose_statements=["This document covers A.", "First window purpose.", "Another.", "Fourth is cut."])),
+    ])
+    assert merged.purpose_statements == ["This document covers A.", "First window purpose.", "Another."]
+
+
+def test_an_answer_without_the_purpose_key_is_malformed_so_the_window_is_read_again() -> None:
+    client = _StubClient([{k: [] for k in ("glossary", "placeholder_tokens", "verification_statements", "standards_cited", "table_roles", "lead_in_patterns")}], raw=True)
+    assert study_document(TEXT, client) is None  # the old answer shape (no purpose_statements) is malformed: nothing counts as read
+

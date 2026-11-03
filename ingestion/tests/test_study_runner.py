@@ -21,7 +21,7 @@ USER = "user-raw-id"
 WAIT = 10.0
 
 _EMPTY = {
-    "glossary": [], "placeholder_tokens": [], "verification_statements": [], "standards_cited": [], "table_roles": [], "lead_in_patterns": [],
+    "glossary": [], "placeholder_tokens": [], "verification_statements": [], "standards_cited": [], "table_roles": [], "lead_in_patterns": [], "purpose_statements": [],
 }
 
 
@@ -1222,6 +1222,28 @@ def test_a_long_document_reports_each_quarter_once_in_order(notices) -> None:
         {"state": "reading", "done": 2, "windows": 8}, {"state": "reading", "done": 4, "windows": 8},
         {"state": "reading", "done": 6, "windows": 8},
     ]
+
+
+# The wizard shows the study's progress while it runs (a long document takes minutes): the runner reports each window as it is accounted for,
+# in window order, whichever order the model calls finish in. Cached windows count too: they are accounted for without a call.
+def test_progress_is_reported_from_zero_to_every_window_in_order() -> None:
+    calls: list[tuple[int, int]] = []
+    _run(_handle(_doc(3), _Stub(3), concurrency=3, on_progress=lambda done, total: calls.append((done, total))))
+    assert calls == [(0, 3), (1, 3), (2, 3), (3, 3)]
+
+
+def test_a_failing_progress_callback_never_breaks_the_study() -> None:
+    def boom(done: int, total: int) -> None:
+        raise RuntimeError("the stream is gone")
+
+    outcome = _run(_handle(_doc(2), _Stub(2), on_progress=boom))
+    assert outcome.study is not None and outcome.study.windows_studied == 2
+
+
+def test_no_progress_is_reported_for_an_empty_document() -> None:
+    calls: list[tuple[int, int]] = []
+    _run(_handle("   ", _Stub(1), on_progress=lambda done, total: calls.append((done, total))))
+    assert calls == []
 
 
 def test_a_short_document_has_no_milestones(notices) -> None:

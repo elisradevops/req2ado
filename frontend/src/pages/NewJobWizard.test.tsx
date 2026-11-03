@@ -446,6 +446,46 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
 
     await waitFor(() => expect(screen.getByText('About a backplane.')).toBeInTheDocument());
     expect(screen.getByRole('button', { name: /looks right/i })).toBeInTheDocument();
+    // The overview is a study of the document itself, so the document is what gets sent (not only its heading map).
+    expect(jobsApi.previewExposition).toHaveBeenCalledWith(expect.objectContaining({ file: expect.any(File) }), expect.any(Function));
+  });
+
+  // The study reads the whole document, so step 3 can take minutes: it says what is happening (windows read, time elapsed) instead of a bare
+  // spinner that looks stuck.
+  describe('while the study runs', () => {
+    async function openStep3(implementation: (params: any, onProgress?: (p: { done?: number; total?: number; elapsed: number }) => void) => Promise<any>) {
+      vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({
+        blockCount: 1, sectionCount: 6, figureCount: 0, depth: 2, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
+      } as any);
+      vi.spyOn(jobsApi, 'listModels').mockResolvedValue([]);
+      vi.spyOn(jobsApi, 'previewExposition').mockImplementation(implementation as any);
+      await uploadAndConfigureAsSurvey();
+      await userEvent.type(screen.getByLabelText(/area path/i), 'Project\\Area1');
+      await userEvent.click(screen.getByRole('button', { name: /continue/i }));
+    }
+
+    it('shows how many parts of the document are read and the time elapsed', async () => {
+      await openStep3((_params, onProgress) => {
+        onProgress?.({ done: 1, total: 3, elapsed: 75 });
+        return new Promise(() => {});
+      });
+      await waitFor(() => expect(screen.getByText(/read 1 of 3 parts/i)).toBeInTheDocument());
+      expect(screen.getByText(/1:15/)).toBeInTheDocument();
+    });
+
+    it('says it is waiting for the model, with the time, before any part is counted or on a heartbeat', async () => {
+      await openStep3((_params, onProgress) => {
+        onProgress?.({ elapsed: 7 });
+        return new Promise(() => {});
+      });
+      await waitFor(() => expect(screen.getByText(/waiting for the model/i)).toBeInTheDocument());
+      expect(screen.getByText(/0:07/)).toBeInTheDocument();
+    });
+
+    it('announces progress politely to assistive technology', async () => {
+      await openStep3(() => new Promise(() => {}));
+      await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/studying the document/i));
+    });
   });
 
   it('"Looks right -- start job" submits with the generated documentOverview', async () => {
@@ -573,7 +613,7 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
     await userEvent.type(screen.getByLabelText(/area path/i), 'Project\\Area1');
     await userEvent.click(screen.getByRole('button', { name: /continue/i }));
 
-    await waitFor(() => expect(screen.getByText(/couldn't generate a summary/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/no overview available/i)).toBeInTheDocument());
 
     const startButton = screen.getByRole('button', { name: /start job|looks right/i });
     await waitFor(() => expect(startButton).not.toBeDisabled());

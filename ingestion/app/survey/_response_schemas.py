@@ -674,7 +674,7 @@ def kb_document_profile_schema() -> dict:
 
 def document_study_schema() -> dict:
     """study_document_window: what one window of the job's document states about its glossary, unresolved-value markers, verification
-    wording, cited standards, table roles and list lead-ins. Entries are checked against the window text by the caller."""
+    wording, cited standards, table roles, list lead-ins and the sentences that state its purpose. Entries are checked against the window text by the caller."""
     strings = {"type": "array", "items": {"type": "string"}}
     return {
         "name": "document_study",
@@ -703,9 +703,11 @@ def document_study_schema() -> dict:
                     },
                 },
                 "lead_in_patterns": strings,
+                "purpose_statements": strings,
             },
             "required": [
                 "glossary", "placeholder_tokens", "verification_statements", "standards_cited", "table_roles", "lead_in_patterns",
+                "purpose_statements",
             ],
             "additionalProperties": False,
         },

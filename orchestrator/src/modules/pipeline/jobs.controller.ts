@@ -329,22 +329,114 @@ export class JobsController {
     };
   }
 
-  // No file upload here -- consumes the heading/document-map data the
-  // wizard's step-1 preview() call already returned, so this never
-  // re-parses the document. SURVEY-only from the caller's side (the
-  // wizard only calls this once SURVEY is selected); this endpoint itself
-  // has no mode check since it does nothing mode-specific.
-  @Post('preview/exposition')
-  async previewExposition(
-    @CurrentUser() user: SessionUser,
-    @Body('documentMap') documentMap: DocumentMapSection[] | undefined,
-    @Body('sectionCount') sectionCount: number | undefined,
-    @Body('depth') depth: number | undefined,
-  ): Promise<{ synopsis: string; caveat: string | null } | null> {
-    if (!documentMap || !Array.isArray(documentMap) || typeof sectionCount !== 'number' || typeof depth !== 'number') {
+  // The wizard's "does this look right?" step: takes the document itself and returns an overview made from a study of it (ingestion's
+  // extractive reading, composed into text in DocumentOverviewService). The heading map is only used for the structure caveat. SURVEY-only from
+  // the caller's side; this route itself has no mode check since it does nothing mode-specific.
+  // The checks both exposition routes share. Throws for a missing or unacceptable file or model (before anything is written); returns null when
+  // the heading map or the counts are unusable (the caller then answers "no overview" instead of studying the document).
+  private async expositionInput(
+    file: Express.Multer.File | undefined,
+    documentMapRaw: string | undefined,
+    sectionCountRaw: string | undefined,
+    depthRaw: string | undefined,
+    model: string | undefined,
+  ): Promise<{ file: Express.Multer.File; documentMap: DocumentMapSection[]; sectionCount: number; depth: number } | null> {
+    await this.assertModelAllowed(model);
+    if (!file) {
+      throw new BadRequestException('file is required');
+    }
+    if (file.size > this.maxUploadSizeBytes) {
+      throw new PayloadTooLargeException(`file exceeds the ${Math.round(this.maxUploadSizeBytes / 1024 / 1024)}MB upload limit`);
+    }
+    const ext = file.originalname.slice(file.originalname.lastIndexOf('.')).toLowerCase();
+    if (!ALLOWED_EXTENSIONS.has(ext)) {
+      throw new BadRequestException(`unsupported file type: ${ext}`);
+    }
+    let documentMap: unknown;
+    try {
+      documentMap = documentMapRaw ? JSON.parse(documentMapRaw) : undefined;
+    } catch {
       return null;
     }
-    return this.documentOverviewService.generate({ documentMap, sectionCount, depth }, user.userId);
+    const sectionCount = Number(sectionCountRaw);
+    const depth = Number(depthRaw);
+    if (!Array.isArray(documentMap) || sectionCountRaw === undefined || depthRaw === undefined || !Number.isFinite(sectionCount) || !Number.isFinite(depth)) {
+      return null;
+    }
+    return { file, documentMap: documentMap as DocumentMapSection[], sectionCount, depth };
+  }
+
+  @Post('preview/exposition')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: MULTER_SAFETY_CEILING_BYTES },
+    }),
+  )
+  async previewExposition(
+    @CurrentUser() user: SessionUser,
+    @UploadedFile() file: Express.Multer.File | undefined,
+    // Multipart fields arrive as strings: the heading map as JSON, the counts as numbers in text.
+    @Body('documentMap') documentMapRaw: string | undefined,
+    @Body('sectionCount') sectionCountRaw: string | undefined,
+    @Body('depth') depthRaw: string | undefined,
+    // The model the job will run with: the study's stored windows are keyed by it, so the job reuses them only when it matches.
+    @Body('model') model: string | undefined,
+  ): Promise<{ synopsis: string; caveat: string | null } | null> {
+    const input = await this.expositionInput(file, documentMapRaw, sectionCountRaw, depthRaw, model);
+    if (!input) return null;
+    return this.documentOverviewService.generate({ ...input, model }, user.userId);
+  }
+
+  // The wizard's route: the same study, answered as a stream of lines (progress and heartbeat while it works, then exactly one result or error
+  // line) so a long document does not look stuck. Validation errors are ordinary HTTP errors, raised before any line is written. A browser that
+  // disconnects aborts the study.
+  @Post('preview/exposition/stream')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: MULTER_SAFETY_CEILING_BYTES },
+    }),
+  )
+  async previewExpositionStream(
+    @CurrentUser() user: SessionUser,
+    @Res() res: Response,
+    @UploadedFile() file: Express.Multer.File | undefined,
+    @Body('documentMap') documentMapRaw: string | undefined,
+    @Body('sectionCount') sectionCountRaw: string | undefined,
+    @Body('depth') depthRaw: string | undefined,
+    @Body('model') model: string | undefined,
+  ): Promise<void> {
+    const input = await this.expositionInput(file, documentMapRaw, sectionCountRaw, depthRaw, model);
+    res.status(200);
+    res.setHeader('Content-Type', 'application/x-ndjson');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('X-Accel-Buffering', 'no'); // a proxy must not hold the lines back
+    res.flushHeaders();
+    const abort = new AbortController();
+    res.on('close', () => abort.abort());
+    const write = (line: object): void => {
+      if (!abort.signal.aborted) res.write(`${JSON.stringify(line)}\n`);
+    };
+    try {
+      if (!input) {
+        write({ type: 'result', overview: null });
+        return;
+      }
+      const overview = await this.documentOverviewService.generate(
+        {
+          ...input,
+          model,
+          signal: abort.signal,
+          onProgress: (progress) =>
+            write(progress.done === undefined ? { type: 'heartbeat', elapsed: progress.elapsed } : { type: 'progress', ...progress }),
+        },
+        user.userId,
+      );
+      write({ type: 'result', overview });
+    } catch (err) {
+      write({ type: 'error', detail: `The study of the document failed (${err instanceof Error ? err.name : typeof err}).` });
+    } finally {
+      res.end();
+    }
   }
 
   // Re-pricing without re-uploading: the reviewer changing mode/model on

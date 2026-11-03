@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Agent } from 'undici';
 import type { CanonicalDoc, WorkItemTree } from '@req2ado/shared-ts';
 import type { FolderIngestFile } from '../kb/kb.service';
+import type { OverviewFacts } from './overview-text';
 
 // undici's default headersTimeout (300s) is shorter than a real local LLM
 // can take for SURVEY mode's two sequential calls (infer_hierarchy +
@@ -155,6 +156,13 @@ function seconds(ms: number): string {
   return String(ms / 1000);
 }
 
+export interface StudyOverviewResult {
+  read: boolean;
+  facts: OverviewFacts | null;
+  reason: string | null;
+  warnings: string[];
+}
+
 @Injectable()
 export class IngestionHttpClient {
   private readonly longRunningAgent: Agent;
@@ -262,6 +270,67 @@ export class IngestionHttpClient {
       throw await _ingestionError(response, `Ingestion /ingest request failed: `);
     }
     return (await response.json()) as CanonicalDoc;
+  }
+
+  /**
+   * The facts of a study of the document (ingestion's /study/overview): the same extractive study the SURVEY job runs, started here so the job
+   * reuses its stored windows. Answered as a stream: progress and heartbeat lines go to `onProgress` while it works, then one result line.
+   * `read` is false when nothing was read; the facts then are null and the caller shows no overview. Aborting `signal` closes the connection,
+   * which makes ingestion stop the study (keeping the windows it stored).
+   */
+  async studyOverview(
+    fileBuffer: Buffer,
+    filename: string,
+    userId: string,
+    model?: string,
+    onProgress?: (progress: { done?: number; total?: number; elapsed: number }) => void,
+    signal?: AbortSignal,
+  ): Promise<StudyOverviewResult> {
+    const form = new FormData();
+    form.append('file', new Blob([fileBuffer]), filename);
+    const query = model ? `?${new URLSearchParams({ model }).toString()}` : '';
+    const response = await fetch(`${this.baseUrl}/study/overview${query}`, {
+      method: 'POST',
+      headers: { ...identityHeaders(userId), Accept: NDJSON },
+      body: form,
+      signal,
+      dispatcher: this.longRunningAgent,
+    });
+    if (!response.ok) {
+      throw await _ingestionError(response, 'Ingestion /study/overview request failed: ');
+    }
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+    let result: StudyOverviewResult | undefined;
+    const handle = (raw: string): void => {
+      if (!raw.trim()) return;
+      const line = JSON.parse(raw) as
+        | { type: 'progress'; done: number; total: number; elapsed: number }
+        | { type: 'heartbeat'; elapsed: number }
+        | ({ type: 'result' } & StudyOverviewResult)
+        | { type: 'error'; status?: number; detail?: string };
+      if (line.type === 'progress') onProgress?.({ done: line.done, total: line.total, elapsed: line.elapsed });
+      else if (line.type === 'heartbeat') onProgress?.({ elapsed: line.elapsed });
+      else if (line.type === 'result') result = { read: line.read, facts: line.facts, reason: line.reason, warnings: line.warnings };
+      else if (line.type === 'error') {
+        throw new IngestionHttpError(line.status ?? 502, `Ingestion /study/overview request failed: ${line.detail ?? 'the study failed'}`);
+      }
+    };
+    for (;;) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      let newline = buffer.indexOf('\n');
+      while (newline >= 0) {
+        handle(buffer.slice(0, newline));
+        buffer = buffer.slice(newline + 1);
+        newline = buffer.indexOf('\n');
+      }
+      if (done) break;
+    }
+    handle(buffer);
+    if (!result) throw new Error('Ingestion /study/overview ended without a result (the connection closed before the study finished)');
+    return result;
   }
 
   async level(
