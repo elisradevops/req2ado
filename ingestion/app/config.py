@@ -214,6 +214,12 @@ class Settings(BaseSettings):
     # study lowers it by one on each 429 it sees), and how many windows ahead of the one being merged may be submitted.
     survey_study_concurrency: int = Field(default=4, ge=1, le=8)
     survey_study_lookahead: int = Field(default=8, ge=1)
+    # The acceptance-criteria proposals (app.leveling.acceptance_criteria): how many chunks of requirements are asked at once (2 when no shared
+    # limiter is available), the whole step's time budget (chunks not started by then are reported, not asked) and how long one model attempt
+    # waits for a limiter slot. Each attempt holds one slot of the limiter above.
+    survey_criteria_concurrency: int = Field(default=3, ge=1, le=4)
+    survey_criteria_stage_budget_seconds: float = Field(default=3600, ge=1)
+    survey_criteria_lease_max_wait_seconds: int = Field(default=120, ge=1)
     # How disconnected root sections are grouped under synthetic topical Epics: "deterministic" clusters their titles by
     # embedding similarity with a fixed rule (same input, same groups, whichever chat model runs the job; the model only
     # names the groups), "llm" is the earlier model-chosen grouping, whose group count varied from 1 to 14 between runs

@@ -206,7 +206,8 @@ def test_study_cancelled_error_is_never_swallowed_by_the_step() -> None:
     assert warnings == []
 
 
-def test_no_eligible_requirement_keeps_finished_windows_and_stops_the_study() -> None:
+def test_no_eligible_requirement_keeps_finished_windows_and_stops_the_study(monkeypatch) -> None:
+    monkeypatch.setattr(llm_leveling_module, "eligible_nodes", lambda nodes: [])  # eligibility is decided by the text (see test_acceptance_criteria)
     doc, redis = _two_window_doc(), _Redis()
     stub = _Stub(_window_count(doc), hold={1})
     criteria = _CriteriaSpy()

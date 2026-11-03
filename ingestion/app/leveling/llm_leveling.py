@@ -1779,6 +1779,7 @@ def _build_survey_tree(
     *,
     study_handle: StudyHandle | None = None,
     study_enabled: bool = True,
+    criteria_limiter: LeaseLimiter | None = None,
 ) -> WorkItemTree:
     """The pipeline behind build_survey_tree (see its docstring); the public wrapper owns the document study."""
     # Real gap (confirmed live, 682-block AirPro ICD document): the
@@ -1983,6 +1984,7 @@ def _build_survey_tree(
         _propose_criteria_step(
             all_nodes, doc, acceptance_criteria_client, document_study_client, all_warnings, user_id=user_id,
             study_handle=study_handle, study_enabled=study_enabled,
+            background=primer_context, limiter=criteria_limiter, model=model,
         )
         return WorkItemTree(
             nodes=all_nodes, warnings=finalize_warnings(all_warnings),
@@ -2676,6 +2678,7 @@ def _build_survey_tree(
     _propose_criteria_step(
         all_nodes, study_source_doc, acceptance_criteria_client, document_study_client, all_warnings, user_id=user_id,
         study_handle=study_handle, study_enabled=study_enabled,
+        background=primer_context, limiter=criteria_limiter, model=model,
     )
     return WorkItemTree(
         nodes=all_nodes, warnings=finalize_warnings(all_warnings),
@@ -2875,7 +2878,7 @@ def build_survey_tree(
             logger.warning("Document study could not start (%s); carrying on without it.", type(error).__name__)
             handle = None
     try:
-        tree = _build_survey_tree(**arguments, study_handle=handle, study_enabled=study_enabled)
+        tree = _build_survey_tree(**arguments, study_handle=handle, study_enabled=study_enabled, criteria_limiter=study_limiter)
     except BaseException:
         if handle is not None:  # the job failed or was cancelled: the study's stored windows go too, even a finished study's
             try:
@@ -2897,6 +2900,9 @@ def _propose_criteria_step(
     user_id: str | None = None,
     study_handle: StudyHandle | None = None,
     study_enabled: bool = True,
+    background: str | None = None,
+    limiter: LeaseLimiter | None = None,
+    model: str | None = None,
 ) -> None:
     """Runs the acceptance-criteria proposals (see app.leveling.acceptance_criteria) when a client is supplied and any requirement is
     eligible. The whole-document study runs only then, so a document with nothing to propose never pays for it.
@@ -2927,7 +2933,9 @@ def _propose_criteria_step(
             detail={"pass": "document_study"},
         ))
 
-    propose_acceptance_criteria(nodes, study, criteria_client, warnings, table_text, user_id=user_id)
+    propose_acceptance_criteria(
+        nodes, study, criteria_client, warnings, table_text, user_id=user_id, background=background, limiter=limiter, model=model,
+    )
 
 
 class _BranchContentResult(NamedTuple):

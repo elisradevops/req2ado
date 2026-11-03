@@ -1,3 +1,4 @@
+import contextlib
 # ingestion/tests/test_orchestrator_llm_client.py
 import json
 import threading
@@ -4245,3 +4246,67 @@ def test_a_call_without_a_user_id_never_reads_or_writes_the_cache() -> None:
     client.propose_acceptance_criteria({"a": {"text": "t"}})
 
     assert calls["n"] == 2 and (cache.gets, cache.sets) == (0, 0)
+
+
+# background (the job's context primer) and the per-attempt gate for propose_acceptance_criteria ----
+
+
+def test_propose_acceptance_criteria_appends_the_background_to_the_prompt_only_when_given() -> None:
+    systems: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        systems.append(json.loads(request.content)["messages"][0]["content"])
+        return httpx.Response(200, json={"content": json.dumps({"items": [{"id": "a", "criteria": [], "assumptions": [], "needs_author_input": False}]})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.propose_acceptance_criteria({"a": {"text": "t"}})
+    client.propose_acceptance_criteria({"a": {"text": "t"}}, background="A radar ICD.")
+
+    assert "Background" not in systems[0]
+    assert systems[1].startswith(systems[0]) and systems[1].endswith("A radar ICD.") and "never a source of numbers" in systems[1]
+
+
+def test_propose_acceptance_criteria_cache_key_follows_the_background() -> None:
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json={"content": json.dumps({"items": [{"id": "a", "criteria": [], "assumptions": [], "needs_author_input": False}]})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=_DictCache())
+    client._transport = httpx.MockTransport(handler)
+
+    for background in (None, "one", "one", "two"):
+        client.propose_acceptance_criteria({"a": {"text": "t"}}, user_id="user-a", background=background)
+
+    assert calls["n"] == 3
+
+
+def test_the_call_gate_wraps_each_attempt_but_not_the_retry_back_off(monkeypatch) -> None:
+    from app.leveling.llm_call_gate import use_gate
+    events: list[str] = []
+    answers = iter([429, 200])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        events.append("call")
+        status = next(answers)
+        return httpx.Response(status, json={"content": json.dumps({"items": []})})
+
+    @contextlib.contextmanager
+    def gate():
+        events.append("enter")
+        try:
+            yield
+        finally:
+            events.append("exit")
+
+    monkeypatch.setattr("app.survey.orchestrator_llm_client.time.sleep", lambda seconds: events.append("sleep"))
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    with use_gate(gate):
+        client.propose_acceptance_criteria({"a": {"text": "t"}})
+
+    assert events == ["enter", "call", "exit", "sleep", "enter", "call", "exit"]

@@ -10,6 +10,7 @@ from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, Docume
 from app.section_analysis_options import DEFAULT_SECTION_ANALYSIS_OPTIONS, SectionAnalysisOptions
 from app.leveling.conflict_detection import _DUPLICATE_CLUSTER_COSINE_THRESHOLD, _cosine_similarity
 from app.leveling.scoring import _CANARY_NODE_ID
+from app.leveling import llm_leveling as llm_leveling_module
 from app.leveling.llm_leveling import (
     SectionAnalysisClient,
     _BranchSkeleton,
@@ -8471,9 +8472,11 @@ def test_mapping_tolerates_a_wrong_shaped_response_without_failing_the_job(monke
 class _CriteriaSpy:
     def __init__(self) -> None:
         self.calls: list[dict] = []
+        self.backgrounds: list[str | None] = []
 
-    def propose_acceptance_criteria(self, items_by_id, user_id=None):
+    def propose_acceptance_criteria(self, items_by_id, user_id=None, background=None):
         self.calls.append(items_by_id)
+        self.backgrounds.append(background)
         return {k: {"criteria": ["Check HDR output on a reference display."], "assumptions": [], "needs_author_input": False} for k in items_by_id}
 
 
@@ -8547,7 +8550,19 @@ def test_build_survey_tree_stores_study_windows_and_a_second_identical_call_make
     assert len(redis.data) == 1 and "user-a" not in next(iter(redis.data))
 
 
-def test_build_survey_tree_without_flagged_requirements_proposes_nothing_and_stops_the_study() -> None:
+def test_build_survey_tree_gives_the_criteria_step_the_context_primer() -> None:
+    criteria = _CriteriaSpy()
+
+    build_survey_tree(
+        _small_doc(), FakeSectionAnalysisClient(), scoring_client=_flagged_scoring(), acceptance_criteria_client=criteria,
+        primer_context="A radar interface control document.",
+    )
+
+    assert criteria.backgrounds and set(criteria.backgrounds) == {"A radar interface control document."}
+
+
+def test_build_survey_tree_without_eligible_requirements_proposes_nothing_and_stops_the_study(monkeypatch) -> None:
+    monkeypatch.setattr(llm_leveling_module, "eligible_nodes", lambda nodes: [])  # eligibility is decided by the text (see test_acceptance_criteria)
     criteria, study = _CriteriaSpy(), _StudySpy()
     scoring = FakeScoringClient(results={"n0": {"score": 90, "issues": []}, "n1": {"score": 90, "issues": []}})
 

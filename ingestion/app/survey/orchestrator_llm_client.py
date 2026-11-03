@@ -11,6 +11,7 @@ import httpx
 from json_repair import repair_json
 
 from app.job_cancel import raise_if_cancelled
+from app.leveling.llm_call_gate import gated
 from app.otel import get_tracer
 from app.prompts import load_prompt
 from app.request_identity import user_scope
@@ -1095,13 +1096,14 @@ class OrchestratorLlmClient:
             headers["X-Req2Ado-User-Id"] = user_id
         for attempt in range(_MAX_CHAT_RETRY_ATTEMPTS):
             raise_if_cancelled()  # a job whose caller is gone makes no further model calls
-            started = time.monotonic()
-            with httpx.Client(transport=self._transport, timeout=self.request_timeout_seconds or _LLM_REQUEST_TIMEOUT_SECONDS) as client:
-                response = client.post(
-                    f"{self._base_url}/llm/chat",
-                    json=payload,
-                    headers=headers,
-                )
+            with gated():  # a lease (when a gate is set) covers this one attempt, not the back-off sleep below; the wait for it is not "elapsed"
+                started = time.monotonic()
+                with httpx.Client(transport=self._transport, timeout=self.request_timeout_seconds or _LLM_REQUEST_TIMEOUT_SECONDS) as client:
+                    response = client.post(
+                        f"{self._base_url}/llm/chat",
+                        json=payload,
+                        headers=headers,
+                    )
             if response.status_code not in _RETRYABLE_CHAT_STATUS_CODES:
                 return response
             elapsed = time.monotonic() - started
@@ -1861,13 +1863,18 @@ class OrchestratorLlmClient:
             raise ValueError(f"malformed JSON in LLM response content: {parsed!r}")
         return parsed
 
-    def propose_acceptance_criteria(self, items_by_id: dict[str, dict], user_id: str | None = None) -> dict[str, dict]:
+    def propose_acceptance_criteria(
+        self, items_by_id: dict[str, dict], user_id: str | None = None, background: str | None = None,
+    ) -> dict[str, dict]:
         """Backs app.leveling.acceptance_criteria: proposed criteria (with assumptions, or "needs author input") for requirements the
         scorer flagged as lacking them. Returns {node_id: entry}; entries for ids that were not asked about are dropped, a missing id
-        is simply absent (the caller leaves that description alone)."""
+        is simply absent (the caller leaves that description alone). `background` is the job's context primer: appended to the prompt as
+        context only, never a source of values."""
         system_prompt = "\n".join(
             line for line in load_prompt("propose_acceptance_criteria").splitlines() if not line.startswith("#")
         )
+        if background:
+            system_prompt += f"\n\nBackground (context about the whole document; never a source of numbers, units or standards):\n{background}"
         key = None
         if self._cache is not None and user_id:  # a call without a user id shares no cached answer
             key = cache_key(
