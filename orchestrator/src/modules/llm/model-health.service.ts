@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { Injectable, Logger, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
 import { isListed, needsProbe, parseVerdict, probeModel, type ModelVerdict, type ProbeClient } from './model-health';
+import { closeWhenReady } from '../../common/queue-errors';
 
 const logger = new Logger('ModelHealth');
 
@@ -67,8 +68,8 @@ export class ModelHealthService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleDestroy(): Promise<void> {
-    await this.worker?.close();
-    await this.deps.queue.close?.();
+    await closeWhenReady(this.worker);
+    await closeWhenReady(this.deps.queue);
     await this.deps.store.quit?.();
   }
 

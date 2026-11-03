@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { Prisma, type Job, type PrismaClient } from '@prisma/client';
 import { Queue } from 'bullmq';
+import { closeWhenReady, logQueueErrors } from '../../common/queue-errors';
 import { createHash } from 'crypto';
 import type { McpClient } from './mcp.client';
 import { IngestionHttpError, type IngestionHttpClient, type RewriteComparison, type ScoreExplanation } from './ingestion-http.client';
@@ -249,7 +250,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     // never reaches ADO until then.
     private readonly seCoverageRefFieldCandidates: string[] = DEFAULT_SE_COVERAGE_REF_FIELD_CANDIDATES,
   ) {
-    this.queue = new Queue('req2ado-pipeline', { connection: { url: redisUrl } as any });
+    this.queue = logQueueErrors(new Queue('req2ado-pipeline', { connection: { url: redisUrl } as any }), 'req2ado-pipeline');
   }
 
   /**
@@ -315,7 +316,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
    * still 'running' 10+ seconds after SIGTERM against a real container).
    */
   async onModuleDestroy(): Promise<void> {
-    await this.queue.close();
+    await closeWhenReady(this.queue);
   }
 
   async submit(input: SubmitJobInput): Promise<{ jobId: string }> {

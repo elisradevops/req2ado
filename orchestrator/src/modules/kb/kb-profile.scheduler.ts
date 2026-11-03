@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { Logger, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
 import type { IngestionHttpClient } from '../pipeline/ingestion-http.client';
+import { closeWhenReady } from '../../common/queue-errors';
 
 const logger = new Logger('KbProfile');
 
@@ -65,8 +66,8 @@ export class KbProfileScheduler implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleDestroy(): Promise<void> {
-    await this.worker?.close();
-    await this.deps.queue.close?.();
+    await closeWhenReady(this.worker);
+    await closeWhenReady(this.deps.queue);
   }
 
   async schedule(userId: string): Promise<void> {
