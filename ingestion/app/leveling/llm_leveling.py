@@ -54,6 +54,7 @@ from app.leveling.requirement_rows import RequirementRowInfo, qualifying_require
 from app.kb.profile import KbProfile, scoring_inputs
 from app.leveling.baseline_structure import adopt_baseline_structure
 from app.leveling.conservation import restore_lost_nodes
+from app.leveling.hierarchy_rules import ensure_ladder, scope_with_ancestors, type_headings_by_shape
 from app.leveling.root_regrouping import (
     RootGroupingClient,
     _ensure_root_features_have_epic_parent,
@@ -69,6 +70,7 @@ from app.leveling.table_groups import TableGroupInfo, qualifying_table_groups
 from app.leveling.trace_links import TraceLinkInferenceClient, _infer_trace_links_for_nodes
 from app.leveling.tree_builder import (
     _bound_branch_size,
+    _derive_doc_title,
     _figure_line,
     _hash_description,
     _hash_identity,
@@ -1445,9 +1447,11 @@ def _detect_deterministic_subtrees(
             subtree_count=subtree_count, subtree_label="Heading hierarchy",
             chunk_concurrency=chunk_concurrency, user_id=user_id, strip_titles=False,
         )
-        # See the table-subtree call site's identical comment above.
-        _repair_requirement_hierarchy(nodes, f"det{subtree_index}_", build_warnings)
-        recompute_child_types(nodes)
+        # The same typing BASELINE applies to heading documents (see tree_builder.build_baseline_tree), so both modes
+        # give one shape; the missing parents are added once, over the whole tree, by ensure_ladder at the end.
+        # `_repair_requirement_hierarchy` is not used here because it would add "(auto-grouped)" bridge Features and
+        # change the nesting the typing reads.
+        type_headings_by_shape(nodes)
         det_nodes.extend(nodes)
         det_warnings.extend(heading_warnings)
         det_warnings.extend(build_warnings)
@@ -1962,16 +1966,24 @@ def _build_survey_tree(
             all_nodes, embed_client, conflict_client, all_warnings,
             progress_callback, len(det_nodes), 0, user_id=user_id,
         )
+        # Complete the document's own structure first, so one Epic titled from the document wraps every orphan and the
+        # catch-all below has nothing left to do (the same shape BASELINE gives).
+        ensure_ladder(
+            all_nodes, _derive_doc_title(doc), all_warnings, scope=scope_with_ancestors(det_nodes, all_nodes)
+        )
         _regroup_disconnected_roots(
             all_nodes, "regroup_", grouping_client, all_warnings,
             progress_callback, len(det_nodes), 0, debug_capture=debug_capture, user_id=user_id,
             embed_client=embed_client, deterministic=root_regroup_mode == "deterministic",
             cosine_threshold=root_regroup_cosine_threshold,
         )
-        _ensure_root_features_have_epic_parent(all_nodes, "regroup_", all_warnings)
+        _ensure_root_features_have_epic_parent(all_nodes, "regroup_", all_warnings, _derive_doc_title(doc))
         recompute_child_types(all_nodes)
         # Every node that came from the document's own structure must have survived the stages above.
         restore_lost_nodes(det_nodes, all_nodes, all_warnings, "structure stages")
+        ensure_ladder(
+            all_nodes, _derive_doc_title(doc), all_warnings, scope=scope_with_ancestors(det_nodes, all_nodes)
+        )
 
         trace_links: list[TraceLink] = []
         if link_type_client is not None:
@@ -2459,13 +2471,17 @@ def _build_survey_tree(
     # narrates via its own new 'map_scope' phase, added alongside the
     # frontend phase-mapping changes that let it do so without regroup_roots'
     # own stepper-regression problem.
+    ensure_ladder(all_nodes, _derive_doc_title(doc), all_warnings, scope=scope_with_ancestors(det_nodes, all_nodes))
     _regroup_disconnected_roots(
         all_nodes, "regroup_", grouping_client, all_warnings, debug_capture=debug_capture, user_id=user_id,
         embed_client=embed_client, deterministic=root_regroup_mode == "deterministic",
         cosine_threshold=root_regroup_cosine_threshold,
     )
-    _ensure_root_features_have_epic_parent(all_nodes, "regroup_", all_warnings)
+    _ensure_root_features_have_epic_parent(all_nodes, "regroup_", all_warnings, _derive_doc_title(doc))
     restore_lost_nodes(det_nodes, all_nodes, all_warnings, "structure stages")
+    ensure_ladder(
+        all_nodes, _derive_doc_title(doc), all_warnings, scope=scope_with_ancestors(det_nodes, all_nodes)
+    )
 
     # STAGE 2: whole-document figure/table -> EXACT node mapping, run here
     # and only here -- exact-node binding is impossible before stage 1 built

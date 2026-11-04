@@ -15,6 +15,19 @@ def _sr(path: str, start: int, end: int) -> SourceRef:
     return SourceRef(document_path=path, start_offset=start, end_offset=end)
 
 
+_STRUCTURE_KINDS = {WarningKind.CATCHALL_EPIC_WRAP, WarningKind.BRIDGE_FEATURE_SYNTHESIZED}
+
+
+def _real_nodes(tree):
+    """The document's own items: the Epic/Feature parents the ladder adds (ids start with synth_) are not content."""
+    return [n for n in tree.nodes if not n.local_id.startswith("synth_")]
+
+
+def _real_warnings(tree):
+    """The warnings a test is about: not the note that the ladder added a missing parent."""
+    return [w for w in tree.warnings if w.kind not in _STRUCTURE_KINDS]
+
+
 def _tv_style_doc() -> CanonicalDoc:
     path = "tv_receiver.txt"
     return CanonicalDoc(
@@ -80,9 +93,9 @@ def test_tv_style_branch_autodetects_and_builds_epic_epic_feature_requirement() 
 
 def test_icd_style_branch_autodetects_and_builds_feature_requirement() -> None:
     tree = build_baseline_tree(_icd_style_doc())
-    types = [n.type for n in tree.nodes]
+    types = [n.type for n in _real_nodes(tree)]
     assert types == [WorkItemType.FEATURE, WorkItemType.REQUIREMENT]
-    requirement_node = tree.nodes[1]
+    requirement_node = _real_nodes(tree)[1]
     assert "OPEN: confirm connector part number" in requirement_node.description
     # A placeholder-only figure (no real caption) must be omitted, not leak
     # the literal "[FIGURE: none]" wire-format string into the work item
@@ -115,7 +128,7 @@ def test_baseline_fold_attaches_a_real_figure_caption_via_figure_ids_not_inline_
         figures=[Figure(id="f0", caption="Rail topology diagram", source_ref=_sr(path, 44, 76))],
     )
     tree = build_baseline_tree(doc)
-    requirement_node = tree.nodes[-1]
+    requirement_node = _real_nodes(tree)[-1]
     assert "Rail topology diagram" not in requirement_node.description
     assert "[FIGURE:" not in requirement_node.description
     assert requirement_node.figure_ids == ["f0"]
@@ -164,10 +177,10 @@ def test_a_branch_starting_with_no_recognized_heading_folds_its_orphan_block_int
         ],
     )
     tree = build_baseline_tree(doc)
-    front_matter_node = next(n for n in tree.nodes if "stray line" in n.description)
+    front_matter_node = next(n for n in _real_nodes(tree) if "stray line" in n.description)
     assert front_matter_node.title.startswith("Front Matter:")
-    assert len(tree.warnings) == 1
-    assert "stray line" in tree.warnings[0].raw
+    assert len(_real_warnings(tree)) == 1
+    assert "stray line" in _real_warnings(tree)[0].raw
 
 
 def test_a_document_with_a_recognized_heading_first_produces_no_warnings() -> None:
@@ -198,11 +211,11 @@ def test_structured_walk_drops_an_unsupported_content_note_into_the_open_node() 
         ],
     )
     tree = build_baseline_tree(doc)
-    requirement_node = tree.nodes[1]
+    requirement_node = _real_nodes(tree)[1]
     assert "[UNSUPPORTED:" not in requirement_node.description
-    assert len(tree.warnings) == 1
-    assert tree.warnings[0].kind == WarningKind.UNSUPPORTED_CONTENT_NOTE
-    assert tree.warnings[0].node_ids == [requirement_node.local_id]
+    assert len(_real_warnings(tree)) == 1
+    assert _real_warnings(tree)[0].kind == WarningKind.UNSUPPORTED_CONTENT_NOTE
+    assert _real_warnings(tree)[0].node_ids == [requirement_node.local_id]
 
 
 def test_structured_walk_drops_an_unsupported_content_note_with_no_open_node_yet() -> None:
@@ -225,11 +238,11 @@ def test_structured_walk_drops_an_unsupported_content_note_with_no_open_node_yet
         ],
     )
     tree = build_baseline_tree(doc)
-    assert not any("[UNSUPPORTED:" in n.description for n in tree.nodes)
-    assert not any(n.title.startswith("Front Matter:") for n in tree.nodes)
-    assert len(tree.warnings) == 1
-    assert tree.warnings[0].kind == WarningKind.UNSUPPORTED_CONTENT_NOTE
-    assert tree.warnings[0].node_ids == []
+    assert not any("[UNSUPPORTED:" in n.description for n in _real_nodes(tree))
+    assert not any(n.title.startswith("Front Matter:") for n in _real_nodes(tree))
+    assert len(_real_warnings(tree)) == 1
+    assert _real_warnings(tree)[0].kind == WarningKind.UNSUPPORTED_CONTENT_NOTE
+    assert _real_warnings(tree)[0].node_ids == []
 
 
 def test_structured_walk_folds_a_note_block_without_the_unsupported_prefix_normally() -> None:
@@ -247,9 +260,9 @@ def test_structured_walk_folds_a_note_block_without_the_unsupported_prefix_norma
         ],
     )
     tree = build_baseline_tree(doc)
-    requirement_node = tree.nodes[1]
+    requirement_node = _real_nodes(tree)[1]
     assert "Remember to emphasize the roadmap slide." in requirement_node.description
-    assert tree.warnings == []
+    assert _real_warnings(tree) == []
 
 
 def test_fidelity_hash_is_sha256_of_display_text() -> None:
@@ -459,7 +472,7 @@ def test_child_type_is_computed_one_level_deeper_per_node_tv_style() -> None:
 
 def test_child_type_is_computed_one_level_deeper_per_node_icd_style() -> None:
     tree = build_baseline_tree(_icd_style_doc())
-    child_types = [n.child_type for n in tree.nodes]
+    child_types = [n.child_type for n in _real_nodes(tree)]
     assert child_types == [WorkItemType.REQUIREMENT, WorkItemType.REQUIREMENT]
 
 
@@ -784,9 +797,13 @@ def test_single_flat_item_is_left_to_the_structured_path_not_regrouped() -> None
     # at all has no "one level above a leaf" position to be Feature at).
     tree = build_baseline_tree(_flat_numbered_list_doc(1))
 
-    assert len(tree.nodes) == 1
-    assert tree.nodes[0].type == WorkItemType.REQUIREMENT
-    assert tree.nodes[0].parent_local_id is None
+    assert len(_real_nodes(tree)) == 1
+    assert _real_nodes(tree)[0].type == WorkItemType.REQUIREMENT
+    # Not a parentless Requirement: it sits under a Feature, under an Epic, both titled from the document name.
+    by_id = {n.local_id: n for n in tree.nodes}
+    feature = by_id[_real_nodes(tree)[0].parent_local_id]
+    assert feature.type == WorkItemType.FEATURE and by_id[feature.parent_local_id].type == WorkItemType.EPIC
+    assert by_id[feature.parent_local_id].parent_local_id is None
 
 
 def test_mixed_numbering_styles_in_one_branch_still_resolve_depth_correctly() -> None:
@@ -879,13 +896,13 @@ def test_document_with_both_headings_and_tables_folds_the_table_into_its_parent_
     )
     tree = build_baseline_tree(doc)
 
-    assert len(tree.nodes) == 2  # no extra node was created for the table
-    parent = next(n for n in tree.nodes if n.title == "3.3V Rail Requirements")
+    assert len(_real_nodes(tree)) == 2  # no extra node was created for the table
+    parent = next(n for n in _real_nodes(tree) if n.title == "3.3V Rail Requirements")
     assert parent.description == (
         "<table><caption>Rail Table</caption><tbody><tr><td>Rail</td><td>Voltage</td></tr>"
         "<tr><td>3.3V</td><td>3.3</td></tr></tbody></table>"
     )
-    assert tree.warnings == []
+    assert _real_warnings(tree) == []
 
 
 def test_a_table_before_any_heading_in_its_branch_is_folded_into_front_matter() -> None:
@@ -901,11 +918,11 @@ def test_a_table_before_any_heading_in_its_branch_is_folded_into_front_matter() 
     )
     tree = build_baseline_tree(doc)
 
-    assert len(tree.nodes) == 2
-    front_matter_node = next(n for n in tree.nodes if "Rail" in n.description)
-    assert front_matter_node.parent_local_id == tree.nodes[0].local_id
-    assert len(tree.warnings) == 1
-    assert "Rail Table" in tree.warnings[0].raw
+    assert len(_real_nodes(tree)) == 2
+    front_matter_node = next(n for n in _real_nodes(tree) if "Rail" in n.description)
+    assert front_matter_node.parent_local_id == _real_nodes(tree)[0].local_id
+    assert len(_real_warnings(tree)) == 1
+    assert "Rail Table" in _real_warnings(tree)[0].raw
 
 
 def test_leading_table_and_prose_both_fold_into_one_shared_front_matter_node() -> None:
@@ -929,9 +946,9 @@ def test_leading_table_and_prose_both_fold_into_one_shared_front_matter_node() -
     )
     tree = build_baseline_tree(doc)
 
-    assert len(tree.nodes) == 3
-    front_matter_node = next(n for n in tree.nodes if n.title.startswith("Front Matter:"))
-    assert front_matter_node.parent_local_id == tree.nodes[0].local_id
+    assert len(_real_nodes(tree)) == 3
+    front_matter_node = next(n for n in _real_nodes(tree) if n.title.startswith("Front Matter:"))
+    assert front_matter_node.parent_local_id == _real_nodes(tree)[0].local_id
     assert "Scope: this document covers the power subsystem." in front_matter_node.description
     assert "Rev" in front_matter_node.description and "2026-01-01" in front_matter_node.description
     # Document order preserved: the table (offset 20) sits between the
@@ -941,8 +958,8 @@ def test_leading_table_and_prose_both_fold_into_one_shared_front_matter_node() -
     # Both front-matter folds (the table AND the prose block) are the same
     # IntegrityWarning kind with no natural sub-key, so finalize_warnings
     # merges them into ONE summary record instead of two near-identical lines.
-    assert len(tree.warnings) == 1
-    assert tree.warnings[0].detail["mergedCount"] == 2
+    assert len(_real_warnings(tree)) == 1
+    assert _real_warnings(tree)[0].detail["mergedCount"] == 2
 
 
 def test_document_with_both_headings_and_tables_skips_a_fully_blank_table() -> None:
@@ -954,7 +971,7 @@ def test_document_with_both_headings_and_tables_skips_a_fully_blank_table() -> N
     )
     tree = build_baseline_tree(doc)
 
-    assert all(n.type != WorkItemType.REQUIREMENT for n in tree.nodes)
+    assert [n.title for n in _real_nodes(tree)] == ["Power Distribution"]  # the blank table added no item
     empty_table_warnings = [w for w in tree.warnings if w.kind == WarningKind.EMPTY_TABLE_CONTENT]
     assert len(empty_table_warnings) == 1
 
@@ -1611,7 +1628,7 @@ def test_baseline_identity_and_fidelity_hashes_are_unaffected_by_section_path() 
 
     icd_doc = _icd_style_doc()
     tree = build_baseline_tree(icd_doc)
-    for node in tree.nodes:
+    for node in _real_nodes(tree):
         bare_ref = node.source_ref.model_copy(update={"section_path": []})
         assert node.identity_hash == _hash_identity(node.description, bare_ref)
         # fidelity_hash never depends on source_ref at all (see
@@ -1866,11 +1883,11 @@ def test_table_with_an_ocr_recovered_cell_emits_a_warning_attributed_to_the_open
         ],
     )
     tree = build_baseline_tree(doc)
-    parent = next(n for n in tree.nodes if n.title == "Variant Table")
-    assert len(tree.warnings) == 1
-    assert tree.warnings[0].kind == WarningKind.OCR_RECOVERED_TABLE_TEXT
-    assert tree.warnings[0].node_ids == [parent.local_id]
-    assert tree.warnings[0].detail == {"tableId": "t0", "recoveredCellCount": 1}
+    parent = next(n for n in _real_nodes(tree) if n.title == "Variant Table")
+    assert len(_real_warnings(tree)) == 1
+    assert _real_warnings(tree)[0].kind == WarningKind.OCR_RECOVERED_TABLE_TEXT
+    assert _real_warnings(tree)[0].node_ids == [parent.local_id]
+    assert _real_warnings(tree)[0].detail == {"tableId": "t0", "recoveredCellCount": 1}
 
 
 def test_table_with_no_ocr_recovered_cells_emits_no_warning() -> None:
@@ -1881,7 +1898,7 @@ def test_table_with_no_ocr_recovered_cells_emits_no_warning() -> None:
         tables=[Table(id="t0", cells=[[TableCell(text="Rail"), TableCell(text="Voltage")]], source_ref=_sr(path, 20, 21))],
     )
     tree = build_baseline_tree(doc)
-    assert tree.warnings == []
+    assert _real_warnings(tree) == []
 
 
 def test_an_orphaned_table_with_an_ocr_recovered_cell_emits_a_warning_with_no_node_ids() -> None:
@@ -1943,11 +1960,11 @@ def test_table_with_a_nested_table_dropped_cell_emits_a_warning_attributed_to_th
         ],
     )
     tree = build_baseline_tree(doc)
-    parent = next(n for n in tree.nodes if n.title == "Variant Table")
-    assert len(tree.warnings) == 1
-    assert tree.warnings[0].kind == WarningKind.NESTED_TABLE_DROPPED
-    assert tree.warnings[0].node_ids == [parent.local_id]
-    assert tree.warnings[0].detail == {"tableId": "t0", "droppedCellCount": 1}
+    parent = next(n for n in _real_nodes(tree) if n.title == "Variant Table")
+    assert len(_real_warnings(tree)) == 1
+    assert _real_warnings(tree)[0].kind == WarningKind.NESTED_TABLE_DROPPED
+    assert _real_warnings(tree)[0].node_ids == [parent.local_id]
+    assert _real_warnings(tree)[0].detail == {"tableId": "t0", "droppedCellCount": 1}
 
 
 def test_table_with_no_nested_tables_dropped_emits_no_such_warning() -> None:
@@ -2024,10 +2041,10 @@ def test_a_blank_table_that_also_dropped_a_nested_table_emits_both_warnings() ->
         ],
     )
     tree = build_baseline_tree(doc)
-    kinds = {w.kind for w in tree.warnings}
+    kinds = {w.kind for w in _real_warnings(tree)}
     assert WarningKind.EMPTY_TABLE_CONTENT in kinds
     assert WarningKind.NESTED_TABLE_DROPPED in kinds
-    assert len(tree.warnings) == 2
+    assert len(_real_warnings(tree)) == 2
 
 
 def test_headingless_table_only_blank_table_that_also_dropped_a_nested_table_emits_both_warnings() -> None:
@@ -2150,3 +2167,30 @@ def test_split_row_identity_survives_an_earlier_row_being_inserted_and_repeated_
     dup = build_baseline_tree(_requirement_list_doc([*_PRD_ROWS, _PRD_ROWS[1]]))
     hashes = [n.identity_hash for n in dup.nodes if n.customer_id]
     assert len(hashes) == 3 and len(set(hashes)) == 3
+
+
+def test_a_heading_retyped_to_requirement_still_gets_its_customer_id() -> None:
+    # "CUST-042 ..." is a depth-1 heading with no children: the old depth rule made it a Feature (no Customer ID);
+    # by shape it is a Requirement, so it must carry the code a Requirement carries.
+    path = "ids.md"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.MD, sha256="h"),
+        blocks=[Block(id="h0", kind=BlockKind.HEADING, heading_level=1, text="CUST-042 The unit shall boot", source_ref=_sr(path, 0, 29))],
+    )
+    tree = build_baseline_tree(doc)
+    node = next(n for n in tree.nodes if not n.local_id.startswith("synth_"))
+    assert node.type == WorkItemType.REQUIREMENT and node.customer_id == "CUST-042"
+
+
+def test_a_front_matter_node_does_not_turn_the_first_heading_into_a_section() -> None:
+    path = "fm.md"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.MD, sha256="h"),
+        blocks=[
+            Block(id="p0", kind=BlockKind.PARAGRAPH, text="stray line before any heading", source_ref=_sr(path, 0, 29)),
+            Block(id="h0", kind=BlockKind.HEADING, heading_level=1, text="Power", source_ref=_sr(path, 30, 35)),
+        ],
+    )
+    tree = build_baseline_tree(doc)
+    power = next(n for n in tree.nodes if n.title == "Power")
+    assert power.type == WorkItemType.REQUIREMENT

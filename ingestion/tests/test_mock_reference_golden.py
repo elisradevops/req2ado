@@ -27,29 +27,32 @@ def _nodes_by_title(nodes):
     return {n.title: n for n in nodes}
 
 
-def test_mock_icd_docx_each_top_heading_is_a_feature_everything_nested_is_a_requirement() -> None:
-    """Real ICD convention: each top-level heading = Feature, everything
-    nested below it = Requirement -- including a genuine depth-3
-    sub-requirement (docs/architecture.md 1g fix in
-    detect_profile_for_branch), which stays icd_style/Requirement rather
-    than flipping the whole branch to tv_style/Epic-Epic."""
+def test_mock_icd_docx_is_a_valid_epic_feature_requirement_ladder() -> None:
+    """P10: a heading with a sub-section ("Power Distribution") is an Epic, "3.3V Rail Requirements" a Feature holding
+    its "Ripple Sub-Requirement", and the loose "Rail Sequencing Requirements" sits under a Feature titled like the
+    Epic. "Thermal Management" (leaf children only) is a Feature, so it sits under the Epic the ladder adds, titled
+    from the document name. Nothing is parentless except an Epic."""
     doc = load_docx(str(_FIXTURES_DIR / "mock_icd.docx"))
     tree = build_baseline_tree(doc)
-    by_title = _nodes_by_title(tree.nodes)
+    by_title = {n.title: n for n in tree.nodes if not n.local_id.startswith("synth_")}
+    same_title_feature = next(n for n in tree.nodes if n.local_id.startswith("synth_feature_"))
+    doc_epic = next(n for n in tree.nodes if n.local_id == "synth_doc_epic")
 
-    assert by_title["Power Distribution"].type == WorkItemType.FEATURE
+    assert by_title["Power Distribution"].type == WorkItemType.EPIC
     assert by_title["Power Distribution"].parent_local_id is None
-    assert by_title["3.3V Rail Requirements"].type == WorkItemType.REQUIREMENT
+    assert by_title["3.3V Rail Requirements"].type == WorkItemType.FEATURE
     assert by_title["3.3V Rail Requirements"].parent_local_id == by_title["Power Distribution"].local_id
     assert by_title["Ripple Sub-Requirement"].type == WorkItemType.REQUIREMENT
     assert by_title["Ripple Sub-Requirement"].parent_local_id == by_title["3.3V Rail Requirements"].local_id
-    assert by_title["Rail Sequencing Requirements"].type == WorkItemType.REQUIREMENT
-    assert by_title["Rail Sequencing Requirements"].parent_local_id == by_title["Power Distribution"].local_id
+    assert same_title_feature.title == "Power Distribution" and same_title_feature.type == WorkItemType.FEATURE
+    assert by_title["Rail Sequencing Requirements"].parent_local_id == same_title_feature.local_id
 
+    assert doc_epic.type == WorkItemType.EPIC and doc_epic.parent_local_id is None and doc_epic.title == "mock icd"
     assert by_title["Thermal Management"].type == WorkItemType.FEATURE
-    assert by_title["Thermal Management"].parent_local_id is None
+    assert by_title["Thermal Management"].parent_local_id == doc_epic.local_id
     assert by_title["Fan Control"].type == WorkItemType.REQUIREMENT
     assert by_title["Fan Control"].parent_local_id == by_title["Thermal Management"].local_id
+    assert all(n.type == WorkItemType.EPIC for n in tree.nodes if n.parent_local_id is None)
 
 
 def test_mock_tv_remote_docx_same_nominal_depth_resolves_to_different_types_across_branches() -> None:

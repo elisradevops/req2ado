@@ -12,6 +12,7 @@ from app.leveling.autodetect import classify_numbering_branch, is_heading_style_
 from app.leveling.customer_id import extract_customer_requirement_code
 from app.leveling.requirement_rows import atomizable_requirement_rows, row_title_and_description
 from app.leveling.depth import authored_numbering_label, resolve_block_depth
+from app.leveling.hierarchy_rules import ensure_ladder, type_headings_by_shape
 from app.leveling.profiles import heading_style_type_for_depth
 from app.leveling.table_color import colgroup_html, resolve_cell_style_colors, table_style_attr
 from app.leveling.warnings_finalize import finalize_warnings
@@ -1042,8 +1043,15 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
     orphan_source_ref: SourceRef | None = None
     front_matter_flushed = False
 
+    # Per branch: [first node index, is a heading branch, nodes typed by the heading rule, nodes typed by the numbering
+    # classifier]. A numbering-root branch whose nodes mostly came from Word headings (real documents mix them) is
+    # typed by shape too; a branch that is mostly numbered text keeps its classifier.
+    branch_node_starts: list[list] = []
+    block_by_node: dict[str, Block] = {}
+    front_matter_ids: set[str] = set()
     for branch_blocks, branch_tables in zip(branches, table_buckets):
         heading_branch = is_heading_style_branch(branch_blocks)
+        branch_node_starts.append([len(nodes), heading_branch, 0, 0])
         # Numbering-label branches: bottom-up tree-shape classification (see
         # classify_numbering_branch's own docstring) replaces the retired
         # depth-threshold heuristic entirely -- no "profile" concept is
@@ -1260,6 +1268,7 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
                 entry = classification.get(block.id)
                 if entry is not None:
                     node_type, node_child_type, display_text = entry
+                    branch_node_starts[-1][3] += 1
                 else:
                     # A block inside a numbering-label branch (is_heading_style_branch
                     # is False for the branch overall, decided by the branch's root
@@ -1274,6 +1283,7 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
                     # an arbitrary default.
                     node_type = heading_style_type_for_depth(depth)
                     node_child_type = WorkItemType.REQUIREMENT
+                    branch_node_starts[-1][2] += 1
 
             while stack and stack[-1][0] >= depth:
                 stack.pop()
@@ -1321,6 +1331,7 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
             )
             nodes.append(node)
             nodes_by_id[local_id] = node
+            block_by_node[local_id] = block
             stack.append((depth, local_id))
 
             if orphan_entries and not front_matter_flushed:
@@ -1351,7 +1362,22 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
                 )
                 nodes.append(front_matter_node)
                 nodes_by_id[front_matter_local_id] = front_matter_node
+                front_matter_ids.add(front_matter_local_id)
 
     strip_repeated_titles(nodes)  # R5, once every fold above is done
+
+    # Epic -> Feature -> Requirement: heading branches are typed from their own shape (the old depth-only rule left a
+    # document without level-1 headings as Requirements under Requirements), then any missing parent is added.
+    branch_ends = [entry[0] for entry in branch_node_starts[1:]] + [len(nodes)]
+    for (start, is_heading, from_heading_rule, from_classifier), end in zip(branch_node_starts, branch_ends):
+        if is_heading or from_heading_rule > from_classifier:
+            type_headings_by_shape(nodes[start:end], non_structural_ids=front_matter_ids)
+            for node in nodes[start:end]:
+                block = block_by_node.get(node.local_id)
+                if node.type == WorkItemType.REQUIREMENT and node.customer_id is None and block is not None:
+                    # Same rule as at creation, now that the final type is known (a heading first created as a
+                    # Feature can end up a Requirement).
+                    node.customer_id = extract_customer_requirement_code(block.text) or authored_numbering_label(block)
+    ensure_ladder(nodes, _derive_doc_title(doc), warnings)
 
     return WorkItemTree(nodes=nodes, warnings=finalize_warnings(warnings))

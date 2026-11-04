@@ -31,6 +31,7 @@ REGISTRY: list[tuple[str, str]] = [
     ("docx PRD with tables", "mock_prd_flat.docx"),
     ("docx PRD sensor", "mock_prd_sensor.docx"),
     ("docx remote", "mock_tv_remote.docx"),
+    ("docx requirements as headings", "mock_airpro_shape.docx"),
     ("pdf text", "sample.pdf"),
     ("txt", "sample.txt"),
     ("markdown", "sample.md"),
@@ -120,10 +121,48 @@ def test_the_items_are_the_baseline_items_of_the_same_file(label: str, filename:
     doc = _load(filename)
     baseline = build_baseline_tree(doc)
     survey = _survey(doc, 1)
-    baseline_titles = sorted(n.title for n in baseline.nodes)
-    survey_titles = sorted(n.title for n in survey.nodes if not n.local_id.startswith(("regroup_", "synth_")))
+    baseline_titles = sorted(n.title for n in baseline.nodes if "synth_" not in n.local_id)
+    survey_titles = sorted(n.title for n in survey.nodes if not ("regroup_" in n.local_id or "synth_" in n.local_id))
     assert survey_titles == baseline_titles, label
     assert not any(w.kind.value == "items_lost" for w in survey.warnings)
+
+
+def ladder_violations(tree) -> list[str]:
+    """Every way a tree can break Epic -> Feature -> Requirement (an Epic may hold Epics, a Feature Features, a
+    Requirement Requirements): only Epics are roots, a Feature sits under an Epic or Feature, a Requirement under a
+    Feature or Requirement."""
+    allowed = {"Epic": {"Epic"}, "Feature": {"Epic", "Feature"}, "Requirement": {"Feature", "Requirement"}}
+    by_id = {n.local_id: n for n in tree.nodes}
+    problems = []
+    for n in tree.nodes:
+        parent = by_id.get(n.parent_local_id) if n.parent_local_id else None
+        if parent is None:
+            if n.type.value != "Epic":
+                problems.append(f"parentless {n.type.value}: {n.title}")
+        elif parent.type.value not in allowed[n.type.value]:
+            problems.append(f"{n.type.value} under {parent.type.value}: {n.title}")
+    return problems
+
+
+@pytest.mark.parametrize("label,filename", REGISTRY, ids=[label for label, _ in REGISTRY])
+def test_the_tree_is_a_valid_epic_feature_requirement_ladder_in_both_modes(label: str, filename: str) -> None:
+    doc = _load(filename)
+    assert ladder_violations(build_baseline_tree(doc)) == [], label
+    assert ladder_violations(_survey(doc, 1)) == [], label
+
+
+@pytest.mark.parametrize("label,filename", REGISTRY, ids=[label for label, _ in REGISTRY])
+def test_survey_and_baseline_give_the_same_types_and_parents(label: str, filename: str) -> None:
+    doc = _load(filename)
+
+    def shape(tree):
+        by_id = {n.local_id: n for n in tree.nodes}
+        return sorted(
+            (n.title, n.type.value, by_id[n.parent_local_id].title if n.parent_local_id in by_id else None)
+            for n in tree.nodes
+        )
+
+    assert shape(_survey(doc, 1)) == shape(build_baseline_tree(doc)), label
 
 
 @pytest.mark.parametrize("label,filename", REGISTRY, ids=[label for label, _ in REGISTRY])
@@ -149,3 +188,50 @@ def test_the_model_mode_is_still_available_as_the_rollback() -> None:
     from app.leveling import llm_leveling
 
     assert "structure_mode" in llm_leveling.build_survey_tree.__code__.co_varnames
+
+
+def test_a_document_with_an_epic_a_bare_section_and_a_lone_requirement_gets_one_shape_in_both_modes() -> None:
+    from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, SourceRef
+
+    path = "mixed_roots.docx"
+    texts = [
+        (2, "Platform"), (3, "Boot"), (4, "Boot time shall be fast"), (4, "Boot logs shall be kept"), (3, "Power"),
+        (4, "Power shall be 5V"), (4, "Power must be stable"), (2, "Misc"), (3, "Fan speed shall be set"),
+        (3, "Fan noise shall be low"), (2, "A lone requirement heading"),
+    ]
+    blocks = [
+        Block(
+            id=f"b{i}", kind=BlockKind.HEADING, heading_level=level, text=text,
+            source_ref=SourceRef(document_path=path, start_offset=i * 10, end_offset=i * 10 + 9),
+        )
+        for i, (level, text) in enumerate(texts)
+    ]
+    doc = CanonicalDoc(document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"), blocks=blocks)
+
+    def shape(tree):
+        by_id = {n.local_id: n for n in tree.nodes}
+        return sorted(
+            (n.title, n.type.value, by_id[n.parent_local_id].title if n.parent_local_id in by_id else None)
+            for n in tree.nodes
+        )
+
+    baseline = build_baseline_tree(doc)
+    survey = _survey(doc, 1)
+    assert ladder_violations(baseline) == [] and ladder_violations(survey) == []
+    assert shape(survey) == shape(baseline)
+    assert sum(1 for n in survey.nodes if n.type.value == "Epic" and n.title == "mixed roots") == 1
+
+
+def test_adopted_baseline_warnings_point_at_ids_that_exist_after_the_bl_renaming() -> None:
+    from app.leveling.baseline_structure import adopt_baseline_structure
+
+    doc = _load("mock_icd.docx")
+    nodes, warnings = adopt_baseline_structure(doc)
+    ids = {n.local_id for n in nodes}
+    assert warnings, "the fixture is expected to carry the ladder's structural warnings"
+    for w in warnings:
+        assert set(w.node_ids) <= ids
+        for value in (w.detail or {}).values():
+            for item in value if isinstance(value, list) else [value]:
+                if isinstance(item, str) and ("synth_" in item or item.startswith("n")):
+                    assert item in ids, f"stale id in warning detail: {item}"

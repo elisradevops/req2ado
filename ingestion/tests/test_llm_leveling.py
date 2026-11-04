@@ -1898,11 +1898,11 @@ def test_build_survey_tree_derives_expected_root_count_from_top_level_groups() -
     fake = FakeSectionAnalysisClient()
     tree = build_survey_tree(doc, fake)
     assert fake.calls[0]["options"].expected_root_count is None
-    det_roots = [
-        n for n in tree.nodes
-        if n.parent_local_id is None and n.title in ("Television Receiver", "Remote Control")
-    ]
-    assert len(det_roots) == 2
+    by_id = {n.local_id: n for n in tree.nodes}
+    det_groups = [n for n in tree.nodes if n.title in ("Television Receiver", "Remote Control")]
+    assert len(det_groups) == 2
+    # Each group sits under the Epic the ladder adds (only Epics are roots).
+    assert all(by_id[n.parent_local_id].type == WorkItemType.EPIC for n in det_groups)
 
 
 def test_build_survey_tree_leaves_expected_root_count_none_with_a_single_top_level_group() -> None:
@@ -6285,9 +6285,11 @@ def test_build_survey_tree_identity_and_fidelity_hashes_are_unaffected_by_sectio
     assert not llm_root.local_id.startswith("det")
 
     for node in tree.nodes:
+        if node.local_id.startswith("regroup_"):
+            continue  # a synthesized catch-all Epic: its hash is derived from its id, not its description
         bare_ref = node.source_ref.model_copy(update={"section_path": []})
         assert node.fidelity_hash == hashlib.sha256(node.description.encode()).hexdigest()
-        if node.local_id.startswith("det"):
+        if node.local_id.startswith("det") and "synth_" not in node.local_id:
             # Deterministic node -- identity is position-only, same as
             # every BASELINE node (see _hash_identity's own docstring).
             assert node.identity_hash == _hash_identity(node.description, bare_ref)
@@ -6309,7 +6311,8 @@ def test_build_survey_tree_never_calls_the_llm_for_a_pure_deterministic_document
             raise AssertionError("LLM analysis must not be called for a pure-deterministic doc")
 
     tree = build_survey_tree(_structural_heading_doc(), ExplodingClient())
-    assert len(tree.nodes) == 6
+    # The document's six items, plus the Epic the ladder adds above a top-level section that had none.
+    assert len([n for n in tree.nodes if "synth_" not in n.local_id]) == 6
     # The det/LLM content-split informational message was removed (not
     # actionable, not a defect signal) -- ExplodingClient's own raise is
     # this test's real proof the LLM path was never invoked.
@@ -6343,8 +6346,16 @@ def test_build_survey_tree_merges_deterministic_and_llm_nodes_as_sibling_roots()
     tree = build_survey_tree(doc, fake)
     det_root = next(n for n in tree.nodes if n.title == "System Domain")
     llm_root = next(n for n in tree.nodes if n.title == "Display")
-    assert det_root.parent_local_id is None
-    assert llm_root.parent_local_id is None
+    # The deterministic section sits under the Epic the ladder adds (only Epics are roots); the LLM node is untouched.
+    assert tree_node_type(tree, det_root.parent_local_id) == WorkItemType.EPIC
+    # The model-analysed Feature gets the existing catch-all Epic, titled from the document name, never an internal
+    # label (the ladder itself only completes the document's own structure).
+    llm_epic = next(n for n in tree.nodes if n.local_id == llm_root.parent_local_id)
+    assert llm_epic.type == WorkItemType.EPIC and "auto-grouped" not in llm_epic.title
+
+
+def tree_node_type(tree, local_id):
+    return next(n.type for n in tree.nodes if n.local_id == local_id)
 
 
 def test_build_survey_tree_retrieves_kb_context_on_the_pure_deterministic_path() -> None:

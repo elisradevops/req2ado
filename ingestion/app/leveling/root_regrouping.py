@@ -428,7 +428,8 @@ def _regroup_disconnected_roots(
 
 @_summarized('catch-all Epic')
 def _ensure_root_features_have_epic_parent(
-    nodes: list[WorkItemNode], node_id_prefix: str, warnings: list[IntegrityWarning]
+    nodes: list[WorkItemNode], node_id_prefix: str, warnings: list[IntegrityWarning],
+    epic_title: str = "(auto-grouped) Other Sections",
 ) -> None:
     """Confirmed real gap (user-reported, live review): after
     _regroup_disconnected_roots runs, a root that either wasn't offered to
@@ -466,7 +467,7 @@ def _ensure_root_features_have_epic_parent(
         local_id=synth_id,
         type=WorkItemType.EPIC,
         parent_local_id=None,
-        title="(auto-grouped) Other Sections",
+        title=epic_title,
         description=(
             "Auto-inserted catch-all Epic -- the following root Feature(s) had no Epic ancestor "
             "of their own: " + ", ".join(n.title for n in orphan_features)

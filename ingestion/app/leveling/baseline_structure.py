@@ -28,8 +28,20 @@ def adopt_baseline_structure(doc: CanonicalDoc) -> tuple[list[WorkItemNode], lis
             }
         )
         nodes.append(adopted)
+    def remap(value):
+        if isinstance(value, str):
+            return renamed.get(value, value)
+        if isinstance(value, list):
+            return [remap(item) for item in value]
+        return value
+
     warnings = [
-        warning.model_copy(update={"node_ids": [renamed.get(node_id, node_id) for node_id in warning.node_ids]})
+        warning.model_copy(
+            update={
+                "node_ids": [renamed.get(node_id, node_id) for node_id in warning.node_ids],
+                "detail": {key: remap(value) for key, value in warning.detail.items()} if warning.detail else warning.detail,
+            }
+        )
         for warning in tree.warnings
     ]
     return nodes, warnings
