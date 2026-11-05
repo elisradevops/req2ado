@@ -25,7 +25,7 @@ describe('OpenWebUiClient', () => {
     SHOW_PATH: '/api/show',
     FILES_UPLOAD_PATH: '/api/v1/files/',
     FILES_STATUS_PATH: '/api/v1/files',
-    LLM_REQUEST_TIMEOUT_MS: 600_000,
+    LLM_REQUEST_TIMEOUT_MS: 200_000,
     LLM_SEND_SEED: false,
     LLM_SEND_REASONING_EFFORT: false,
   };

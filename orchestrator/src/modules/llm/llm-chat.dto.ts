@@ -69,6 +69,9 @@ export const llmChatRequestSchema = z.object({
   // See LlmChatOptions.think's own doc comment (llm-client.interface.ts) --
   // explicit `false` disables a reasoning model's hidden chain-of-thought.
   think: z.boolean().optional(),
+  budgetKind: z.literal('study').optional(),
+  // How long the caller will wait for this call, retries included (ms).
+  deadlineMs: z.number().int().positive().optional(),
   // Job transparency (B7): /llm/chat/stream only. When true, the stream ends
   // with one terminal line `{done, finishReason, model}` so a caller can tell
   // a finished answer from a cut-off one and see why the model stopped. Off by

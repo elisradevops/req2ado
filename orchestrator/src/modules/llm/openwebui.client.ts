@@ -13,6 +13,11 @@ import {
   assertCompletion,
   effectiveMaxTokens,
   EmptyLengthCompletion,
+  LADDER_CEILING,
+  LADDER_MAX_ATTEMPTS,
+  RUNG_TIMEOUT_MS,
+  REMEMBERED_FLOOR_MAX,
+  VISION_BASE_TOKENS,
   negotiate,
   raisedBudgetFor,
   summarizeUpstreamError,
@@ -158,6 +163,10 @@ export class OpenWebUiClient implements LlmClient {
     }
   >();
 
+  // The output limit a model needed for a FIGURE or a STUDY window (a ladder, up to LADDER_CEILING), kept apart from modelConstraints: chat calls to the same
+  // model ask for small limits on purpose and must not inherit a figure's.
+  private readonly kindFloors = new Map<string, number>();
+
   /** What is known about a model before its first call: what the capability table says about its family, then what was learned. */
   private learnedFor(model: string) {
     let known = this.modelConstraints.get(model);
@@ -169,6 +178,24 @@ export class OpenWebUiClient implements LlmClient {
       }
     }
     return known;
+  }
+
+  /** What a ladder call kind knows about a model: the shared constraints, but its own remembered output floor (never the other kinds'). */
+  private kindScope(kind: 'vision' | 'study', model: string) {
+    const key = `${kind}:${model}`;
+    const known = this.learnedFor(model);
+    return {
+      learned: { ...known, rejected: known?.rejected ?? new Set<string>(), maxTokensFloor: this.kindFloors.get(key) },
+      remember: ({ maxTokensFloor, ...rest }: LearnedUpdate): void => {
+        if (maxTokensFloor !== undefined) this.kindFloors.set(key, Math.min(maxTokensFloor, REMEMBERED_FLOOR_MAX));
+        if (Object.keys(rest).length > 0) this.rememberConstraint(model, rest);
+      },
+    };
+  }
+
+  /** One ladder rung is cut at RUNG_TIMEOUT_MS (inside the proxy's cut) when the configured request timeout is longer; never lengthens it. */
+  private rungTimeout(): { timeout?: number } {
+    return this.config.LLM_REQUEST_TIMEOUT_MS > RUNG_TIMEOUT_MS ? { timeout: RUNG_TIMEOUT_MS } : {};
   }
 
   private rememberConstraint(model: string, update: LearnedUpdate): void {
@@ -201,7 +228,28 @@ export class OpenWebUiClient implements LlmClient {
     });
   }
 
+  // How many calls that are real work (chat and vision, not background probes) are running on this client right now. A model health probe
+  // checks it first, so it never queues behind (or in front of) a study window or a figure on a backend that serves one request at a time.
+  private activeWork = 0;
+
+  activeWorkCalls(): number {
+    return this.activeWork;
+  }
+
+  private async asWork<T>(counted: boolean, run: () => Promise<T>): Promise<T> {
+    if (counted) this.activeWork += 1;
+    try {
+      return await run();
+    } finally {
+      if (counted) this.activeWork -= 1;
+    }
+  }
+
   async chat(messages: ChatMessage[], opts?: LlmChatOptions): Promise<LlmChatResult> {
+    return this.asWork(!opts?.background, () => this.chatCall(messages, opts));
+  }
+
+  private async chatCall(messages: ChatMessage[], opts?: LlmChatOptions): Promise<LlmChatResult> {
     const outboundMessages = this.config.LLM_TRUSTED_LOCAL ? messages : redactMessages(messages);
     // Ollama-specific extras, not part of the OpenAI spec -- its OpenAI-compat
     // endpoint accepts a passthrough `options` object for native Ollama
@@ -219,6 +267,7 @@ export class OpenWebUiClient implements LlmClient {
     if (opts?.topK !== undefined) ollamaOptions.top_k = opts.topK;
     if (opts?.minP !== undefined) ollamaOptions.min_p = opts.minP;
     const chatModel = opts?.model ?? this.config.LLM_CHAT_MODEL;
+    const studyCall = opts?.budgetKind === 'study';
     const buildParams = (a: Adaptation) => ({
       model: chatModel,
       messages: outboundMessages as OpenAI.Chat.ChatCompletionMessageParam[],
@@ -258,7 +307,10 @@ export class OpenWebUiClient implements LlmClient {
       const finishReason = response.choices[0]?.finish_reason;
       // The whole output budget went on hidden reasoning (gpt-5-mini/nano at a small limit): nothing usable came
       // back. Ask again once with a larger budget; a second empty answer is returned as it is.
-      if (finishReason === 'length' && !response.choices[0]?.message?.content && !response.choices[0]?.message?.tool_calls?.length) {
+      // A study window is raised ONCE on any cut-off (empty, whitespace or part of the JSON): a larger limit is cheaper than reading halves. Not a
+      // ladder: a higher limit only lets a thinking model think longer (and counts against a GPT-5 quota); a window still cut off is left to the caller.
+      const cutOffContent = response.choices[0]?.message?.content;
+      if (finishReason === 'length' && (studyCall || !cutOffContent?.trim()) && !response.choices[0]?.message?.tool_calls?.length) {
         const target = raisedBudgetFor(effectiveMaxTokens(opts?.maxTokens, adaptation), adaptation);
         if (target !== null) throw new EmptyLengthCompletion(target);
       }
@@ -286,10 +338,23 @@ export class OpenWebUiClient implements LlmClient {
       hasSchema: opts?.responseSchema !== undefined,
       requestChars: messageChars(outboundMessages),
       droppable: CHAT_DROPPABLE,
-      learned: this.learnedFor(chatModel),
-      remember: (update) => this.rememberConstraint(chatModel, update),
+      ...(studyCall
+        ? { ...this.kindScope('study', chatModel), maxAttempts: LADDER_MAX_ATTEMPTS }
+        : { learned: this.learnedFor(chatModel), remember: (update: LearnedUpdate) => this.rememberConstraint(chatModel, update) }),
+      ...(opts?.deadlineAtMs !== undefined ? { deadlineAtMs: opts.deadlineAtMs } : {}),
+      ...(opts?.signal ? { signal: opts.signal } : {}),
       hasTools: opts?.tools !== undefined,
-      send: async (adaptation) => toResult(await this.openai.chat.completions.create(buildParams(adaptation)), adaptation),
+      send: async (adaptation, signal) =>
+        toResult(
+          await (signal || (studyCall && this.rungTimeout().timeout !== undefined)
+            ? this.openai.chat.completions.create(buildParams(adaptation), { ...(studyCall ? this.rungTimeout() : {}), ...(signal ? { signal } : {}) }).catch((err: unknown) => {
+                // A rung cut at the bound is a timeout the caller can tell from a server error (and does not resend).
+                if (err instanceof OpenAI.APIConnectionTimeoutError) throw new UpstreamHttpError(504, 'Upstream did not answer within the per-attempt time bound');
+                throw err;
+              })
+            : this.openai.chat.completions.create(buildParams(adaptation))),
+          adaptation,
+        ),
     });
   }
 
@@ -602,8 +667,7 @@ export class OpenWebUiClient implements LlmClient {
   // Falls back to the previous chars-based estimate on any tokenizer
   // failure (e.g. a corrupted install in a constrained container) rather
   // than crashing the embed call -- same fail-open philosophy as
-  // DocumentOverviewService/JobEventPersistenceService elsewhere in this
-  // module.
+  // JobEventPersistenceService elsewhere in this module.
   private splitTextForEmbed(text: string): string[] {
     try {
       const encoder = getEmbedEncoder();
@@ -864,7 +928,29 @@ export class OpenWebUiClient implements LlmClient {
   async vision(
     prompt: string,
     images: Buffer[],
-    opts?: { model?: string; mimeType?: string; responseSchema?: LlmResponseSchema; detail?: 'low' | 'high' | 'auto' },
+    opts?: {
+      model?: string;
+      mimeType?: string;
+      responseSchema?: LlmResponseSchema;
+      detail?: 'low' | 'high' | 'auto';
+      signal?: AbortSignal;
+      deadlineAtMs?: number;
+    },
+  ): Promise<string> {
+    return this.asWork(true, () => this.visionCall(prompt, images, opts));
+  }
+
+  private async visionCall(
+    prompt: string,
+    images: Buffer[],
+    opts?: {
+      model?: string;
+      mimeType?: string;
+      responseSchema?: LlmResponseSchema;
+      detail?: 'low' | 'high' | 'auto';
+      signal?: AbortSignal;
+      deadlineAtMs?: number;
+    },
   ): Promise<string> {
     const model = opts?.model ?? this.config.LLM_VISION_MODEL ?? this.config.LLM_CHAT_MODEL;
     // Same OpenAI-compatible chat.completions endpoint as chat(), just with
@@ -937,7 +1023,7 @@ export class OpenWebUiClient implements LlmClient {
       // non-compliant response MORE expensive per call, not prevent it.
       // 300 is a defensive backstop a few times wider than a real
       // one-or-two-sentence caption ever needs, not the primary defense.
-      ...(effectiveMaxTokens(300, a) !== undefined ? { [a.tokenParam]: effectiveMaxTokens(300, a) } : {}),
+      ...(effectiveMaxTokens(VISION_BASE_TOKENS, a) !== undefined ? { [a.tokenParam]: effectiveMaxTokens(VISION_BASE_TOKENS, a) } : {}),
       // Real, 100%-reproducible root cause (confirmed live: every single
       // figure in a real document came back "no useful caption returned"
       // on a genuinely fresh, uncached run): unlike chat()'s own
@@ -981,28 +1067,51 @@ export class OpenWebUiClient implements LlmClient {
     // Classification and retry policy live in negotiate() (upstream-negotiation.ts), shared with chat().
     // A failure that cannot be adapted around is rethrown as-is, as before: vision's controller route has no
     // UpstreamHttpError mapping, so wrapping it here would only change the HTTP status it ends up with.
-    return negotiate({
+    // One log line per call (sizes and timings only, never the model's text): which model, how many attempts the call needed, how long it
+    // took, and why the last answer ended. Without it a figure left without a description left nothing to explain why.
+    const callStartedAt = Date.now();
+    let attemptsMade = 0;
+    let lastFinishReason = 'unknown';
+    let lastCompletionTokens: number | undefined;
+    let lastChars = 0;
+    const description = await negotiate({
       label: 'OpenWebUiClient.vision',
       model,
       hasSchema: opts?.responseSchema !== undefined,
       droppable: VISION_DROPPABLE,
-      learned: this.learnedFor(model),
-      remember: (update) => this.rememberConstraint(model, update),
+      maxAttempts: LADDER_MAX_ATTEMPTS,
+      ...this.kindScope('vision', model),
       terminal: (err) => {
         throw err;
       },
-      send: async (adaptation) => {
-        const response = await this.openai.chat.completions.create(buildParams(adaptation));
+      ...(opts?.signal ? { signal: opts.signal } : {}),
+      ...(opts?.deadlineAtMs !== undefined ? { deadlineAtMs: opts.deadlineAtMs } : {}),
+      send: async (adaptation, signal) => {
+        const params = buildParams(adaptation);
+        attemptsMade += 1;
+        const requestOptions = { ...this.rungTimeout(), ...(signal ? { signal } : {}) };
+        const response = await (Object.keys(requestOptions).length > 0 ? this.openai.chat.completions.create(params, requestOptions) : this.openai.chat.completions.create(params));
         assertCompletion(response);
         const text = response.choices[0]?.message?.content ?? '';
-        if (!text && response.choices[0]?.finish_reason === 'length') {
-          // A reasoning model that spent the 300-token budget thinking: ask once with a larger one.
-          const target = raisedBudgetFor(effectiveMaxTokens(300, adaptation), adaptation);
+        lastFinishReason = response.choices[0]?.finish_reason ?? 'unknown';
+        lastCompletionTokens = response.usage?.completion_tokens;
+        lastChars = text.length;
+        if (response.choices[0]?.finish_reason === 'length') {
+          // Cut off at the output limit: empty (a reasoning model spent the budget thinking) or part of a JSON answer. Either way
+          // it is not a description. Ask again with a larger limit while the model's ceiling and the deadline allow; when
+          // nothing is left to raise, fail clearly instead of passing partial JSON on as a caption.
+          const target = raisedBudgetFor(effectiveMaxTokens(VISION_BASE_TOKENS, adaptation), adaptation, true, LADDER_CEILING);
           if (target !== null) throw new EmptyLengthCompletion(target);
+          throw new UpstreamHttpError(422, 'Upstream answer was cut off at the largest output limit this model allows');
         }
         return text;
       },
     });
+    // eslint-disable-next-line no-console -- worker/API process logging
+    console.info(
+      `[OpenWebUiClient.vision] model=${model} attempts=${attemptsMade} elapsedMs=${Date.now() - callStartedAt} finishReason=${lastFinishReason} completionTokens=${lastCompletionTokens ?? 'n/a'} chars=${lastChars}`,
+    );
+    return description;
   }
 
   // Derives Open WebUI's true app root from LLM_BASE_URL for its NATIVE
@@ -1070,7 +1179,7 @@ export class OpenWebUiClient implements LlmClient {
   async chatWithFullFileContext(
     content: string,
     fileId: string,
-    opts: { maxTokens?: number; numCtx?: number; model?: string },
+    opts: { maxTokens?: number; numCtx?: number; model?: string; signal?: AbortSignal },
   ): Promise<LlmChatResult> {
     const outboundContent = this.config.LLM_TRUSTED_LOCAL ? content : redactText(content);
     const model = opts.model ?? this.config.LLM_CHAT_MODEL;
@@ -1105,13 +1214,15 @@ export class OpenWebUiClient implements LlmClient {
         const { status, message } = summarizeUpstreamError(err);
         throw new Error(`OpenWebUiClient.chatWithFullFileContext failed: ${status} — ${message}`);
       },
-      send: async (adaptation) => {
+      ...(opts.signal ? { signal: opts.signal } : {}),
+      send: async (adaptation, signal) => {
         const response = await fetch(`${this.openWebUiAppRoot()}/api/chat/completions`, {
           method: 'POST',
           // `context: 'full'` is an undocumented Open WebUI extension field on the files array entry that
           // instructs the native route to return the file's full stored content instead of routing it into
           // chunked RAG (confirmed against Open WebUI v0.8.12 source; a future upgrade could change it silently).
-          signal: AbortSignal.timeout(this.config.LLM_REQUEST_TIMEOUT_MS),
+          // The call's own time limit, and the caller's abort (a cancelled job, the primer's budget) when there is one.
+          signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(this.config.LLM_REQUEST_TIMEOUT_MS)]) : AbortSignal.timeout(this.config.LLM_REQUEST_TIMEOUT_MS),
           headers: {
             'Content-Type': 'application/json',
             ...(this.config.LLM_API_KEY ? { Authorization: `Bearer ${this.config.LLM_API_KEY}` } : {}),
@@ -1136,7 +1247,7 @@ export class OpenWebUiClient implements LlmClient {
   // this.openai) so a later call can generate the whole-document AI context
   // primer (Phase 6) from it. FormData/Blob are global in Node 18+, no
   // import needed.
-  async uploadFile(buffer: Buffer, filename: string): Promise<string> {
+  async uploadFile(buffer: Buffer, filename: string, signal?: AbortSignal): Promise<string> {
     const baseUrl = this.openWebUiAppRoot();
     const form = new FormData();
     form.append('file', new Blob([buffer]), filename);
@@ -1155,6 +1266,7 @@ export class OpenWebUiClient implements LlmClient {
       // break the multipart upload.
       headers: this.config.LLM_API_KEY ? { Authorization: `Bearer ${this.config.LLM_API_KEY}` } : {},
       body: form,
+      ...(signal ? { signal } : {}),
     });
     if (!response.ok) {
       throw new Error(`OpenWebUiClient.uploadFile failed: ${response.status}`);
@@ -1170,29 +1282,49 @@ export class OpenWebUiClient implements LlmClient {
   // both resolve false the same way, matching "primer generation didn't
   // work out, proceed without it" being the only two real outcomes callers
   // need to distinguish (succeeded vs. didn't).
-  async pollFileProcessed(fileId: string, timeoutMs: number): Promise<boolean> {
+  async pollFileProcessed(fileId: string, timeoutMs: number, signal?: AbortSignal): Promise<boolean> {
     const baseUrl = this.openWebUiAppRoot();
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
+      // An abort (a cancelled job, the primer's budget) ends the wait at once instead of at the next poll or the deadline.
+      signal?.throwIfAborted();
       try {
         const response = await fetch(`${baseUrl}${this.config.FILES_STATUS_PATH}/${fileId}/process/status`, {
           headers: this.nativeOllamaHeaders(),
+          ...(signal ? { signal } : {}),
         });
         if (response.ok) {
           const data = (await response.json()) as { status?: string };
           if (data.status === 'completed') return true;
           if (data.status === 'failed') return false;
         }
-      } catch {
+      } catch (error) {
         // A transient poll failure is not itself a verdict -- keep polling
         // until the deadline, then time out the same as a stuck 'pending'.
+        // An abort is not transient: stop.
+        if (signal?.aborted) throw error;
       }
       // Clamped to the remaining budget -- without this, a poll interval
       // longer than what's left before the deadline (the common case for a
       // short timeoutMs, and the tail iteration of any timeoutMs) silently
       // rounds the actual wait up to a full extra 1000ms past the caller's
       // requested deadline.
-      await new Promise((resolve) => setTimeout(resolve, Math.min(1000, deadline - Date.now())));
+      await new Promise<void>((resolve, reject) => {
+        if (signal?.aborted) {
+          reject(signal.reason ?? new Error('aborted'));
+          return;
+        }
+        const onAbort = (): void => {
+          clearTimeout(timer);
+          reject(signal?.reason ?? new Error('aborted'));
+        };
+        // The listener goes away with the sleep: one is added per poll, and a minute of polling must not leave sixty behind.
+        const timer = setTimeout(() => {
+          signal?.removeEventListener('abort', onAbort);
+          resolve();
+        }, Math.min(1000, deadline - Date.now()));
+        signal?.addEventListener('abort', onAbort, { once: true });
+      });
     }
     return false;
   }

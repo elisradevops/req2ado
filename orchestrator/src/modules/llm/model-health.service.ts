@@ -126,6 +126,12 @@ export class ModelHealthService implements OnModuleInit, OnModuleDestroy {
       logger.warn(`health probe for ${data.model} skipped: ${(err as Error).message}`);
       return undefined;
     }
+    // A backend that serves one request at a time (a single local Ollama, a rate-limited proxy) must not spend a slot on a health check while a study
+    // window or a figure is being answered: the probe is left for the next catalog listing, and the model keeps whatever verdict it had.
+    if ((client.activeWorkCalls?.() ?? 0) > 0) {
+      logger.log(`health probe for ${data.model} deferred: real work is running on this backend`);
+      return undefined;
+    }
     const previous = (await this.verdicts([data.model])).get(data.model);
     const outcome = await probeModel(client, data.model, { now: this.deps.now });
     if (outcome.status === 'inconclusive') {

@@ -218,6 +218,20 @@ export class EmptyLengthCompletion extends Error {
   }
 }
 
+/** The output limit a figure (vision) call starts with, and the attempts a full ladder from it needs: 4 rungs plus room for one adaptation each (parameter name, temperature, rate limit). */
+export const VISION_BASE_TOKENS = 300;
+export const LADDER_MAX_ATTEMPTS = 8;
+/** The highest floor kept for later calls: a one-off outlier figure must not make every later figure start at the ceiling. */
+export const REMEMBERED_FLOOR_MAX = 16_000;
+
+/**
+ * The most a figure (vision) or a document-study call is ever raised to: their answers are a few hundred to a few thousand tokens, so a
+ * limit above this only pays for hidden reasoning (and, on GPT-5, counts against the quota). One rung per attempt is also cut at
+ * RUNG_TIMEOUT_MS, inside the proxy's ~300 s cut, so a slow rung ends as a clear failure instead of a hang.
+ */
+export const LADDER_CEILING = 16_000;
+export const RUNG_TIMEOUT_MS = 280_000;
+
 /** Hard ceiling for a raised budget when the model's own output ceiling is unknown. */
 export const RAISED_BUDGET_CEILING = 64_000;
 
@@ -229,12 +243,18 @@ export function effectiveMaxTokens(requested: number | undefined, adaptation: Ad
   return value;
 }
 
-/** The budget to retry with after an empty length-truncated answer, or null when raising cannot help. */
-export function raisedBudgetFor(sent: number | undefined, adaptation: Adaptation): number | null {
-  // Once per model: a floor is already in force (learned earlier, or raised on this call), so a second empty
-  // answer is a result, not a reason to keep spending.
-  if (sent === undefined || adaptation.omitTokenLimit || adaptation.maxTokensFloor !== undefined) return null;
-  const ceiling = adaptation.maxTokensCap ?? RAISED_BUDGET_CEILING;
+/**
+ * The budget to retry with after a length-truncated answer, or null when raising cannot help.
+ *
+ * By default a model is raised once (a floor already in force means a second cut-off answer is a result). With `ladder`
+ * the caller wants the answer complete or a clear failure (a figure caption), so each cut-off raises again by x4 until the
+ * model's ceiling: the learned cap, never above RAISED_BUDGET_CEILING. A model that takes no output limit has nothing to raise.
+ */
+export function raisedBudgetFor(sent: number | undefined, adaptation: Adaptation, ladder = false, ceilingLimit = RAISED_BUDGET_CEILING): number | null {
+  if (sent === undefined || adaptation.omitTokenLimit) return null;
+  if (!ladder && adaptation.maxTokensFloor !== undefined) return null;
+  // Only a ladder call is held to its own ceiling; a default call keeps its learned cap (up to a model's real limit).
+  const ceiling = ladder ? Math.min(adaptation.maxTokensCap ?? ceilingLimit, ceilingLimit) : (adaptation.maxTokensCap ?? ceilingLimit);
   const target = Math.min(Math.max(sent * 4, 4_000), ceiling);
   return target > sent ? target : null;
 }
@@ -342,8 +362,18 @@ export interface NegotiationArgs<T> {
   remember: (update: LearnedUpdate) => void;
   /** Whether the request carries tools (enables the "function tools need reasoning off" adaptation). */
   hasTools?: boolean;
-  /** Builds and sends ONE attempt under the given adaptation. */
-  send: (adaptation: Adaptation) => Promise<T>;
+  /** Builds and sends ONE attempt under the given adaptation. `signal` is the caller's abort signal, to hand to the SDK. */
+  send: (adaptation: Adaptation, signal?: AbortSignal) => Promise<T>;
+  /** Stops the call: an aborted call is never retried, and one already aborted is never sent. */
+  signal?: AbortSignal;
+  /**
+   * Wall-clock time (epoch ms) by which the whole call, retries included, should be over. No new attempt is started when
+   * what is left is less than `minAttemptMs` or the last attempt's own duration: a slow model is slow again, and the
+   * abandoned attempt would keep the backend busy.
+   */
+  deadlineAtMs?: number;
+  /** The least time worth starting another attempt for. Default MIN_ATTEMPT_MS. */
+  minAttemptMs?: number;
   /** How a failure that cannot be adapted around leaves the loop. Defaults to rethrowAsUpstream. */
   terminal?: (err: unknown) => never;
   /** Hard cap on attempts, including the first. Default 6 (adaptations accumulate across attempts). */
@@ -351,6 +381,9 @@ export interface NegotiationArgs<T> {
   /** Waits before a rate-limited call is repeated; tests replace it so they do not really wait. */
   sleep?: (ms: number) => Promise<void>;
 }
+
+/** With a deadline, another attempt is only started when at least this much time is left (and the last attempt's duration). */
+export const MIN_ATTEMPT_MS = 20_000;
 
 /** Longest a rate-limited call waits for the provider's Retry-After before it is repeated. */
 export const RATE_LIMIT_MAX_WAIT_MS = 20_000;
@@ -396,7 +429,13 @@ export async function negotiate<T>(args: NegotiationArgs<T>): Promise<T> {
   let rateLimitRetries = 0;
   for (let attempt = 1; ; attempt += 1) {
     adaptation.attempt = attempt;
+    // An aborted call is never sent: the caller (a cancelled job, a closed connection) is no longer waiting for it.
+    if (args.signal?.aborted) throw args.signal.reason ?? new Error('aborted');
     const startedAt = Date.now();
+    // True when starting another attempt (after `extraWaitMs`) would run past the deadline.
+    const outOfTime = (extraWaitMs = 0): boolean =>
+      args.deadlineAtMs !== undefined &&
+      args.deadlineAtMs - Date.now() - extraWaitMs < Math.max(args.minAttemptMs ?? MIN_ATTEMPT_MS, Date.now() - startedAt);
     // Every failure is logged with the upstream's own status and text: a failing call used to leave nothing in
     // this service's log (four 502s and a 400 in one prod job were invisible).
     const logFailure = (err: unknown): void => {
@@ -411,21 +450,29 @@ export async function negotiate<T>(args: NegotiationArgs<T>): Promise<T> {
       return terminal(err);
     };
     try {
-      return await args.send(adaptation);
+      return await args.send(adaptation, args.signal);
     } catch (err) {
-      if (err instanceof EmptyLengthCompletion && attempt < maxAttempts) {
-        // eslint-disable-next-line no-console
-        console.warn(`[${args.label}] empty answer at the output limit; retrying with limit ${err.target} for model=${args.model}`);
+      // The caller went away: not an upstream failure, and nothing to adapt around or repeat.
+      if (args.signal?.aborted) throw err;
+      if (err instanceof EmptyLengthCompletion) {
+        // The higher limit is known to be needed whether or not there is time to use it now: the next call starts there.
         adaptation.maxTokensFloor = err.target;
         args.remember({ maxTokensFloor: err.target });
-        continue;
+        if (attempt < maxAttempts && !outOfTime()) {
+          // eslint-disable-next-line no-console
+          console.warn(`[${args.label}] answer cut off at the output limit; retrying with limit ${err.target} for model=${args.model}`);
+          continue;
+        }
+        // Out of attempts or time: a clear failure the caller can tell from a server error, not a leaked internal exception.
+        // A 504, not a 422: the model could answer, the call ran out of time, so it counts as transient (health probes, callers).
+        return giveUp(new UpstreamHttpError(504, `Upstream answer was cut off at the output limit and there was no time or attempt left to raise it to ${err.target}`));
       }
       logFailure(err);
-      if (attempt >= maxAttempts) return giveUp(err);
+      if (attempt >= maxAttempts || outOfTime()) return giveUp(err);
 
       // A rate limit says nothing about the request: wait what the provider asked (bounded) and send the same call.
       const rateLimitWait = rateLimitWaitMs(err);
-      if (rateLimitWait !== null && rateLimitRetries < RATE_LIMIT_RETRIES) {
+      if (rateLimitWait !== null && rateLimitRetries < RATE_LIMIT_RETRIES && !outOfTime(rateLimitWait)) {
         rateLimitRetries += 1;
         // eslint-disable-next-line no-console
         console.warn(`[${args.label}] rate limited; repeating after ${rateLimitWait} ms for model=${args.model}`);

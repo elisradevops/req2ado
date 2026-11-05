@@ -74,6 +74,22 @@ describe('probeModel', () => {
     expect((await probeModel(client, 'm', { sleep: noSleep })).status).toBe('ok');
   });
 
+  it('marks every probe call as background work and cancels a call that outlives its timeout, so it stops holding the backend', async () => {
+    const seen: { background?: boolean; aborted: () => boolean }[] = [];
+    const hang: ProbeClient = {
+      chat(_messages, opts) {
+        seen.push({ background: opts?.background, aborted: () => opts?.signal?.aborted === true });
+        return new Promise(() => undefined);
+      },
+    };
+    await probeModel(hang, 'slow', { sleep: noSleep, timeoutMs: 10 });
+    expect(seen.length).toBeGreaterThan(0);
+    for (const call of seen) {
+      expect(call.background).toBe(true);
+      expect(call.aborted()).toBe(true);
+    }
+  });
+
   it('is inconclusive, not failed, for a timeout or a rate limit (they say nothing about the model)', async () => {
     const hang: ProbeClient = { chat: () => new Promise(() => undefined) };
     expect(await probeModel(hang, 'slow', { sleep: noSleep, timeoutMs: 10 })).toMatchObject({ status: 'inconclusive', reason: 'timeout' });
@@ -196,6 +212,20 @@ describe('ModelHealthService', () => {
     expect(clients.getClientFor).toHaveBeenCalledWith('user-7');
     expect(verdict).toEqual({ status: 'ok', checkedAt: 9000 });
     expect(store.set).toHaveBeenCalledWith('model-health:new', JSON.stringify({ status: 'ok', checkedAt: 9000 }), 'EX', expect.any(Number));
+  });
+
+  it('defers a probe while real work is running on that backend: no call is made and no verdict is stored', async () => {
+    const busy = Object.assign(clientWith(healthy), { activeWorkCalls: () => 1 });
+    const { service, store } = makeService({ client: busy });
+    expect(await service.runProbe({ userId: 'u', model: 'new' })).toBeUndefined();
+    expect(busy.calls).toBe(0);
+    expect(store.set).not.toHaveBeenCalled();
+  });
+
+  it('probes as usual when no real work is running', async () => {
+    const idle = Object.assign(clientWith(healthy), { activeWorkCalls: () => 0 });
+    const { service } = makeService({ client: idle });
+    expect((await service.runProbe({ userId: 'u', model: 'new' }))?.status).toBe('ok');
   });
 
   it('skips the probe, storing nothing, when the user has no connection any more', async () => {

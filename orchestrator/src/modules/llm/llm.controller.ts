@@ -1,4 +1,5 @@
-import { BadRequestException, Body, Controller, Get, Headers, HttpException, NotFoundException, Post, Res, UnauthorizedException, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Headers, HttpException, Logger, NotFoundException, Post, Res, UnauthorizedException, UseGuards } from '@nestjs/common';
+import OpenAI from 'openai';
 import { SkipThrottle } from '@nestjs/throttler';
 import type { Response } from 'express';
 import { llmChatRequestSchema } from './llm-chat.dto';
@@ -26,6 +27,8 @@ import { Public } from '../auth/public.decorator';
 @Controller('llm')
 @UseGuards(LlmProxyBearerGuard)
 export class LlmController {
+  private readonly logger = new Logger(LlmController.name);
+
   constructor(private readonly clientFactory: OpenWebUiClientFactory) {}
 
   // The X-Req2Ado-User-Id header carries the submitting user's identity on
@@ -71,6 +74,8 @@ export class LlmController {
         ...(body.tools !== undefined ? { tools: body.tools } : {}),
         ...(body.toolChoice !== undefined ? { toolChoice: body.toolChoice } : {}),
         ...(body.think !== undefined ? { think: body.think } : {}),
+        ...(body.budgetKind !== undefined ? { budgetKind: body.budgetKind } : {}),
+        ...(body.deadlineMs !== undefined ? { deadlineAtMs: Date.now() + body.deadlineMs } : {}),
       });
       return result;
     } catch (err) {
@@ -201,22 +206,58 @@ export class LlmController {
   async vision(
     @Body() rawBody: unknown,
     @Headers('x-req2ado-user-id') userId: string | undefined,
+    // How long the caller is willing to wait for this call, retries included (ms). Ingestion sends it so a slow model
+    // is not retried past the figure's budget.
+    @Headers('x-req2ado-deadline-ms') deadlineMsHeader?: string,
+    @Res({ passthrough: true }) res?: Response,
   ): Promise<{ description: string }> {
     const parseResult = llmVisionRequestSchema.safeParse(rawBody);
     if (!parseResult.success) {
       throw new BadRequestException('Invalid request body: prompt and a non-empty images array (base64) are required');
     }
     const body = parseResult.data;
+    const deadlineMs = Number(deadlineMsHeader);
+    const deadlineAtMs = deadlineMsHeader && Number.isFinite(deadlineMs) && deadlineMs > 0 ? Date.now() + deadlineMs : undefined;
+    // When the caller closes its connection before an answer was sent (a cancelled job, a timed-out request), stop the
+    // upstream call too: otherwise a backend that serves one request at a time keeps working for nobody and the next call
+    // queues behind it.
+    let signal: AbortSignal | undefined;
+    const startedAt = Date.now();
+    if (res) {
+      const controller = new AbortController();
+      res.on('close', () => {
+        if (!res.writableEnded) {
+          this.logger.warn(`vision call aborted: the caller closed the connection after ${Date.now() - startedAt} ms; the upstream request is cancelled`);
+          controller.abort();
+        }
+      });
+      signal = controller.signal;
+    }
     const opts =
-      body.model !== undefined || body.mimeType !== undefined || body.responseSchema !== undefined
+      body.model !== undefined || body.mimeType !== undefined || body.responseSchema !== undefined || signal || deadlineAtMs !== undefined
         ? {
             ...(body.model !== undefined ? { model: body.model } : {}),
             ...(body.mimeType !== undefined ? { mimeType: body.mimeType } : {}),
             ...(body.responseSchema !== undefined ? { responseSchema: body.responseSchema } : {}),
+            ...(signal ? { signal } : {}),
+            ...(deadlineAtMs !== undefined ? { deadlineAtMs } : {}),
           }
         : undefined;
     const llmClient = await this.resolveClient(userId);
-    const description = await llmClient.vision(body.prompt, body.images.map((image) => Buffer.from(image, 'base64')), opts);
-    return { description };
+    try {
+      const description = await llmClient.vision(body.prompt, body.images.map((image) => Buffer.from(image, 'base64')), opts);
+      return { description };
+    } catch (err) {
+      // An upstream HTTP error keeps its status (a refused image is a 400, a rate limit a 429 with its Retry-After), as chat
+      // does: collapsed to a 500 the caller could not tell "send the image smaller" or "wait N seconds" from "the server is
+      // broken", and retried every one of them the same way.
+      if (err instanceof UpstreamHttpError) throw new HttpException(err.message, err.upstreamStatus);
+      if (err instanceof OpenAI.APIError && typeof err.status === 'number' && err.status >= 400 && err.status <= 599) {
+        const retryAfter = err.headers?.['retry-after'];
+        if (err.status === 429 && retryAfter) res?.setHeader('Retry-After', String(retryAfter));
+        throw new HttpException(err.message, err.status);
+      }
+      throw err;
+    }
   }
 }

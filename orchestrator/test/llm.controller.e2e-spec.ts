@@ -167,7 +167,7 @@ describe('LlmController (e2e)', () => {
       expect(fakeOpenWebUiClient.vision).toHaveBeenCalledWith(
         'describe this figure',
         [Buffer.from('fake-png-bytes')],
-        undefined,
+        { signal: expect.any(AbortSignal) }, // always sent now, so a closed connection can stop the upstream call
       );
     });
 
@@ -178,7 +178,7 @@ describe('LlmController (e2e)', () => {
         .set('Authorization', 'Bearer test-llm-proxy-bearer')
         .set('X-Req2Ado-User-Id', 'user-1')
         .send({ prompt: 'describe', images: ['aGVsbG8='], model: 'llava' });
-      expect(fakeOpenWebUiClient.vision).toHaveBeenCalledWith('describe', [Buffer.from('hello')], { model: 'llava' });
+      expect(fakeOpenWebUiClient.vision).toHaveBeenCalledWith('describe', [Buffer.from('hello')], expect.objectContaining({ model: 'llava', signal: expect.any(AbortSignal) }));
     });
 
     it('forwards an explicit mimeType when provided (a real non-PNG image)', async () => {
@@ -188,7 +188,7 @@ describe('LlmController (e2e)', () => {
         .set('Authorization', 'Bearer test-llm-proxy-bearer')
         .set('X-Req2Ado-User-Id', 'user-1')
         .send({ prompt: 'describe', images: ['aGVsbG8='], mimeType: 'image/jpeg' });
-      expect(fakeOpenWebUiClient.vision).toHaveBeenCalledWith('describe', [Buffer.from('hello')], { mimeType: 'image/jpeg' });
+      expect(fakeOpenWebUiClient.vision).toHaveBeenCalledWith('describe', [Buffer.from('hello')], expect.objectContaining({ mimeType: 'image/jpeg', signal: expect.any(AbortSignal) }));
     });
   });
 });

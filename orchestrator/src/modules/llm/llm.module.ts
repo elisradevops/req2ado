@@ -82,7 +82,7 @@ import { AuthModule } from '../auth/auth.module';
   // upload endpoint (see JobsController) rather than inventing a second
   // bearer-token convention for the same "caller is ingestion" need.
   // OpenWebUiClientFactory exported so other modules (ChatModule,
-  // JobsModule, DocumentOverviewService's consumers) can resolve a
+  // JobsModule, the AI summary) can resolve a
   // per-user client without a circular import back through this module's
   // own controllers.
   exports: [OpenWebUiClientFactory, LlmProxyBearerGuard, ModelHealthService],
