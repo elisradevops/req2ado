@@ -233,6 +233,8 @@ class LevelingProgress:
     # during a live run too, without changing figure_caption/the ticker's
     # own text at all.
     figure_caption_status: str | None = None
+    # describe_figure only, with status "insignificant": the vision model's own few words on why, shown beside the verdict.
+    figure_caption_reason: str | None = None
     # section_complete only: this branch's finished nodes (type/title/text/
     # quality_score, in generation order) -- the real "parsed and formatted
     # response" a reviewer can inspect live, per section, instead of only
@@ -555,6 +557,7 @@ class NarrationPublisher:
                 "pageAlignAnchoredRatio": progress.page_align_anchored_ratio,
                 "figureCaption": progress.figure_caption,
                 "figureCaptionStatus": progress.figure_caption_status,
+                "figureCaptionReason": progress.figure_caption_reason,
                 "sectionNodes": (
                     [
                         {

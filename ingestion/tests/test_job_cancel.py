@@ -143,3 +143,37 @@ def test_a_pool_that_submits_in_context_sees_the_token_and_a_plain_submit_does_n
         with ThreadPoolExecutor(max_workers=2) as pool:
             assert job_cancel.submit_in_context(pool, probe).result() is True
             assert pool.submit(probe).result() is False  # the reason every submit site needs the helper
+
+
+# --- cancelling also stops a call that is already in flight --------------------------------------------------------
+
+def test_a_token_runs_its_cancel_callbacks_once_and_an_unregistered_one_never() -> None:
+    token = job_cancel.CancelToken()
+    called: list[str] = []
+    token.on_cancel(lambda: called.append("a"))
+    unregister = token.on_cancel(lambda: called.append("b"))
+    unregister()
+    token.cancel()
+    token.cancel()
+    assert called == ["a"]
+
+
+def test_a_callback_registered_on_an_already_cancelled_token_runs_at_once() -> None:
+    token = job_cancel.CancelToken()
+    token.cancel()
+    called: list[str] = []
+    token.on_cancel(lambda: called.append("late"))
+    assert called == ["late"]
+
+
+def test_a_failing_callback_does_not_stop_the_others() -> None:
+    token = job_cancel.CancelToken()
+    called: list[str] = []
+
+    def boom() -> None:
+        raise RuntimeError("closing twice")
+
+    token.on_cancel(boom)
+    token.on_cancel(lambda: called.append("ok"))
+    token.cancel()
+    assert called == ["ok"]

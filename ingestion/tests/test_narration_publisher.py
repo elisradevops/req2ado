@@ -658,3 +658,15 @@ def test_last_known_phase_is_recorded_even_when_the_redis_publish_itself_fails()
     publisher.publish(_progress(phase="regroup_roots"))
 
     assert last_known_phase("job-last-phase-outage") == "regroup_roots"
+
+
+def test_publish_carries_the_models_reason_for_a_figure_judged_not_significant() -> None:
+    redis_client = _FakeRedis()
+    NarrationPublisher(redis_client, "job-1").publish(
+        _progress(phase="describe_figure", figure_index=3, figure_caption_status="insignificant", figure_caption_reason="A company logo.")
+    )
+    payload = json.loads(redis_client.publish_calls[0][1])
+    assert payload["figureCaptionStatus"] == "insignificant"
+    assert payload["figureCaptionReason"] == "A company logo."
+    NarrationPublisher(redis_client, "job-1").publish(_progress(phase="describe_figure", figure_index=4))
+    assert json.loads(redis_client.publish_calls[1][1])["figureCaptionReason"] is None

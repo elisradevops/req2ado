@@ -1,20 +1,45 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import time
 import hashlib
 import json
+import logging
 from typing import NamedTuple
 
 import httpx
 from json_repair import repair_json
 
+from app import job_cancel
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 # Sourced from settings (config.py) rather than a bare literal so it can be
 # tuned per-deployment without a code change -- see config.py's own doc
 # comment for why 590s (just under the orchestrator's own 600s LLM timeout).
 _VISION_REQUEST_TIMEOUT_SECONDS = settings.vision_request_timeout_seconds
+
+
+# A retry is only worth starting if at least this much of the figure's budget is left after the pause.
+# Mirrors the orchestrator's MIN_ATTEMPT_MS (upstream-negotiation.ts): it starts no new attempt with less than this left, so a
+# retry sent with less would be refused there. Keep the two in step.
+_MIN_BUDGET_FOR_A_RETRY_SECONDS = 20.0
+
+# Longest wait for a provider's Retry-After; mirrors the orchestrator's RATE_LIMIT_MAX_WAIT_MS (upstream-negotiation.ts).
+_MAX_RETRY_AFTER_SECONDS = 20.0
+
+
+def _parse_retry_after(value: str | None) -> float | None:
+    """Seconds from a Retry-After header (the delta-seconds form); None when absent or not a plain number."""
+    if not value:
+        return None
+    try:
+        seconds = float(value.strip())
+    except ValueError:
+        return None
+    return seconds if seconds >= 0 else None
 
 
 class FigureVisionResult(NamedTuple):
@@ -35,6 +60,9 @@ class FigureVisionResult(NamedTuple):
     significant: bool
     description: str
     title: str | None = None
+    # Only for significant=False: the model's own few words on what the image is and why it adds nothing, shown to the reader beside the
+    # verdict so a "not significant" can be checked. None for a significant figure, or when the model gave none.
+    reason: str | None = None
 
 
 _FIGURE_SIGNIFICANCE_SCHEMA = {
@@ -42,7 +70,7 @@ _FIGURE_SIGNIFICANCE_SCHEMA = {
     "properties": {
         "significant": {
             "type": "boolean",
-            "description": "True if this figure has real technical/informational content relevant to understanding the document; false for decorative images, logos, or blank/placeholder graphics.",
+            "description": "True if this figure has real technical/informational content relevant to understanding the document -- including a table, chart or screenshot of values, requirements or configuration, even when it is only a picture of a table; false only for decorative images, logos, or blank/placeholder graphics.",
         },
         "description": {
             "type": "string",
@@ -73,6 +101,27 @@ _FIGURE_SIGNIFICANCE_SCHEMA = {
     },
     "required": ["significant", "description"],
 }
+_FIGURE_SIGNIFICANCE_SCHEMA["properties"]["reason"] = {
+    "type": "string",
+    "description": (
+        "Only when not significant: in at most 12 words, say what the image is and why it adds nothing "
+        "(for example 'company logo' or 'blank placeholder block'). Empty if significant."
+    ),
+}
+
+
+_MAX_REASON_CHARS = 140
+
+
+def _short_reason(text: str) -> str | None:
+    """The model's reason as one short plain line, cut at a word boundary; None when it is blank."""
+    one_line = " ".join(text.split())
+    if not one_line:
+        return None
+    if len(one_line) <= _MAX_REASON_CHARS:
+        return one_line
+    cut = one_line[:_MAX_REASON_CHARS]
+    return (cut[: cut.rfind(" ")] if " " in cut else cut).rstrip()
 
 
 def _build_prompt(document_context: str | None) -> str:
@@ -105,9 +154,11 @@ def _build_prompt(document_context: str | None) -> str:
         "numbered lists) and do NOT use LaTeX/math notation -- plain prose "
         "only. Judge whether the figure has genuine informational content "
         "worth including, or whether it is decorative (a logo, a colored "
-        "placeholder block, a blank divider). Also give a short noun-"
+        "placeholder block, a blank divider). A table, chart or screenshot of values, requirements or configuration IS significant, even when it "
+        "is only a picture of a table. Also give a short noun-"
         "phrase title for the figure (a few words, for use as a display "
-        "label) -- not a sentence, not a restatement of the description."
+        "label) -- not a sentence, not a restatement of the description. "
+        "If you judge the figure NOT significant, also say in a few words why: what the image is and why it adds nothing."
     )
     if not document_context:
         return base
@@ -200,6 +251,7 @@ def _parse_figure_response(raw: str) -> FigureVisionResult | None:
                 # ambiguous (the schema's own `description` field says it may
                 # be empty when not significant) and is returned -- and cached
                 # -- normally.
+                logger.warning("Vision reply unusable (blank_description): the model called the figure significant but described nothing (%d chars)", len(raw))
                 return None
             # Task 7: title is optional (not in the schema's `required`
             # list -- a model that omits it must not fail the whole parse,
@@ -210,7 +262,11 @@ def _parse_figure_response(raw: str) -> FigureVisionResult | None:
             # being used as a blank display label.
             raw_title = parsed.get("title")
             title = raw_title.strip() if isinstance(raw_title, str) and raw_title.strip() else None
-            return FigureVisionResult(significant=parsed["significant"], description=description, title=title)
+            raw_reason = parsed.get("reason")
+            reason = _short_reason(raw_reason) if not parsed["significant"] and isinstance(raw_reason, str) else None
+            return FigureVisionResult(significant=parsed["significant"], description=description, title=title, reason=reason)
+    # Sizes only, never the reply: it is model output about a customer document.
+    logger.warning("Vision reply unusable (unparseable): not the expected JSON verdict (%d chars)", len(raw))
     return None
 
 
@@ -250,8 +306,34 @@ class OrchestratorVisionClient:
     def __init__(self, base_url: str, bearer_token: str) -> None:
         self._base_url = base_url.rstrip("/")
         self._bearer_token = bearer_token
-        self._transport: httpx.BaseTransport | None = None  # test-only injection seam
+        self._transport: httpx.BaseTransport | httpx.AsyncBaseTransport | None = None  # test-only injection seam (a MockTransport serves both)
         self._retry_pause_seconds = 2.0
+
+    def _post(self, url: str, body: dict, headers: dict[str, str], timeout: float) -> httpx.Response:
+        """One POST that a cancelled run can really stop.
+
+        A blocking sync call cannot be interrupted from another thread (closing the client leaves a read that is already
+        waiting for the model's answer waiting), so the call runs as a task on a private event loop: cancelling the run
+        cancels the task, which closes the connection, so the upstream call stops and a backend that serves one request at a
+        time is not kept busy for nobody. Outside a cancellation scope this behaves like a plain call."""
+        token = job_cancel.current_token()
+
+        async def call() -> httpx.Response:
+            async with httpx.AsyncClient(transport=self._transport, timeout=timeout) as client:
+                return await client.post(url, json=body, headers=headers)
+
+        loop = asyncio.new_event_loop()
+        try:
+            task = loop.create_task(call())
+            unregister = token.on_cancel(lambda: loop.call_soon_threadsafe(task.cancel)) if token is not None else (lambda: None)
+            try:
+                return loop.run_until_complete(task)
+            except asyncio.CancelledError:
+                raise job_cancel.JobCancelled("the run was cancelled: its caller is gone") from None
+            finally:
+                unregister()
+        finally:
+            loop.close()
 
     def describe_figure(
         self,
@@ -281,38 +363,73 @@ class OrchestratorVisionClient:
         if user_id:
             headers["X-Req2Ado-User-Id"] = user_id
 
+        budget = settings.vision_figure_budget_seconds
+        started = time.monotonic()
+
+        def remaining() -> float | None:
+            return None if budget <= 0 else budget - (time.monotonic() - started)
+
         def attempt(data: bytes, mime: str | None) -> FigureVisionResult | None:
-            with httpx.Client(transport=self._transport, timeout=_VISION_REQUEST_TIMEOUT_SECONDS) as client:
-                response = client.post(
-                    f"{self._base_url}/llm/vision",
-                    json={
-                        "prompt": _build_prompt(document_context),
-                        "images": [base64.b64encode(data).decode("ascii")],
-                        "responseSchema": {"name": "figure_significance", "schema": _FIGURE_SIGNIFICANCE_SCHEMA},
-                        **({"mimeType": mime} if mime else {}),
-                        **({"model": model} if model else {}),
-                    },
-                    headers=headers,
-                )
+            left = remaining()
+            call_headers = dict(headers)
+            timeout = _VISION_REQUEST_TIMEOUT_SECONDS
+            if left is not None:
+                timeout = max(1.0, min(_VISION_REQUEST_TIMEOUT_SECONDS, left))
+                call_headers["X-Req2Ado-Deadline-Ms"] = str(int(timeout * 1000))
+            job_cancel.raise_if_cancelled()  # a cancelled run sends no further call
+            body = {
+                "prompt": _build_prompt(document_context),
+                "images": [base64.b64encode(data).decode("ascii")],
+                "responseSchema": {"name": "figure_significance", "schema": _FIGURE_SIGNIFICANCE_SCHEMA},
+                **({"mimeType": mime} if mime else {}),
+                **({"model": model} if model else {}),
+            }
+            response = self._post(f"{self._base_url}/llm/vision", body, call_headers, timeout)
             response.raise_for_status()
             return _parse_figure_response(response.json()["description"])
 
+        def fits(wait: float) -> bool:
+            left = remaining()
+            ok = left is None or left > wait + _MIN_BUDGET_FOR_A_RETRY_SECONDS
+            if not ok:
+                logger.info("Vision call not retried: %.0fs of the %.0fs figure budget left, a retry needs %.0fs plus its wait", left, budget, _MIN_BUDGET_FOR_A_RETRY_SECONDS)
+            return ok
+
         # One more try before a figure is given up on (a figure with no caption stays uncaptioned for the whole job). A 400
         # means the upstream refused this image (4 of 36 on GPT in prod, instantly and without a reason), and the same bytes
-        # would be refused again, so the retry sends the image downscaled and re-encoded as JPEG. A 5xx, a 429 or a timeout
-        # says nothing about the image, so the same image is sent again after a short pause. Anything else (401, 403, 404)
-        # is not about this image at all and is raised as it was.
+        # would be refused again, so the retry sends the image downscaled and re-encoded as JPEG. A 5xx or a 429 says nothing
+        # about the image, so the same image is sent again after a pause (the 429's own Retry-After), but only when the wait
+        # fits in this figure's budget. A TIMEOUT is not retried while the budget is on: the model is slow, the abandoned call
+        # is still running on the backend, and a second try would only queue behind it. Anything else (401, 403, 404) is not
+        # about this image at all and is raised as it was.
         try:
             return attempt(image_bytes, mime_type)
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             if status == 400:
+                if not fits(0.0):
+                    raise
                 normalized = _normalize_for_vision(image_bytes)
                 return attempt(*(normalized if normalized is not None else (image_bytes, mime_type)))
             if status >= 500 or status == 429:
-                time.sleep(self._retry_pause_seconds)
+                wait = self._retry_pause_seconds
+                if status == 429 and budget > 0:  # with the budget off the wait is the old fixed pause
+                    retry_after = _parse_retry_after(exc.response.headers.get("retry-after"))
+                    if retry_after is not None:
+                        if retry_after > _MAX_RETRY_AFTER_SECONDS:
+                            raise  # the provider asks for longer than a figure is worth waiting: an early retry would be refused again
+                        wait = retry_after
+                if not fits(wait):
+                    raise
+                job_cancel.sleep(wait)
                 return attempt(image_bytes, mime_type)
             raise
         except httpx.TimeoutException:
-            time.sleep(self._retry_pause_seconds)
+            if budget > 0:
+                logger.info(
+                    "Vision call timed out after %.0fs of a %.0fs figure budget; not retried (the model is slow and the abandoned call is still running)",
+                    time.monotonic() - started, budget,
+                )
+                raise
+            job_cancel.sleep(self._retry_pause_seconds)
             return attempt(image_bytes, mime_type)

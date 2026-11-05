@@ -1,12 +1,11 @@
 # ingestion/app/main.py
 import asyncio
 import hashlib
+import io
 import json
 import logging
 import tempfile
 import threading
-import queue
-from collections.abc import AsyncIterator, Iterator
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -21,13 +20,13 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from app import job_cancel
-from app.level_stream import NDJSON, line as level_line, ndjson_stream
+from app.level_stream import NDJSON, ndjson_stream
 from app.canonical.model import CanonicalDoc
 from app.chat.chat_client import ChatLlmClient
 from app.chat.chat_service import run_chat_turn
 from app.chat.redis_publisher import RedisChatPublisher
 from app.chat.rewrite_check import check_rewrite
-from app.request_identity import PRIMER_HEADER, USER_ID_HEADER, resolve_primer_context, resolve_user_id, user_scope
+from app.request_identity import PRIMER_HEADER, USER_ID_HEADER, resolve_primer_context, resolve_user_id
 from app.config import settings
 from app.debug_capture import DebugCapture
 from app.dedup.check_for_duplicates import DuplicateCheckResult, check_for_duplicates
@@ -63,9 +62,6 @@ from app.leveling.narration_publisher import LevelingProgress, NarrationPublishe
 from app.leveling.scoring import score_single_requirement_text, score_texts_together
 from app.leveling.llm_lease_limiter import LeaseLimiter
 from app.leveling.study_store import StudyStore
-from app.leveling.study_runner import StudyHandle
-from app.leveling.document_overview import overview_facts
-from app.leveling.llm_leveling import render_section
 from app.leveling.tree_builder import build_baseline_tree, figure_id_by_block_id
 from app.loaders.docx_pagination import annotate_docx_pages
 from app.logging_context import JobIdLogFilter, job_id_scope
@@ -379,6 +375,10 @@ def _sniff_image_mime_type(image_bytes: bytes) -> str | None:
 # vision-model swap self-heals within a week rather than serving stale
 # captions forever.
 _FIGURE_CAPTION_CACHE_TTL_SECONDS = 60 * 60 * 24 * 7
+# Bumped whenever what the model is SENT for an image changes (not the prompt, which PROMPT_VERSION covers): a verdict cached from an older
+# way of preparing the image (a transparent PNG sent as it was) must not outlive the fix for a week. "2": transparency flattened onto white.
+_VISION_INPUT_VERSION = "2"
+
 
 
 def _figure_caption_cache_key(
@@ -402,7 +402,7 @@ def _figure_caption_cache_key(
     # served for a job that selected another. None (KB routes, no explicit
     # model) keeps the pre-model key shape.
     model_part = f":{hashlib.sha256(model.encode('utf-8')).hexdigest()[:16]}" if model else ""
-    return f"figcap:{PROMPT_VERSION}:{hashlib.sha256(original_image_bytes).hexdigest()}:{context_hash}{model_part}"
+    return f"figcap:{PROMPT_VERSION}:{_VISION_INPUT_VERSION}:{hashlib.sha256(original_image_bytes).hexdigest()}:{context_hash}{model_part}"
 
 
 def _rasterize_for_vision(image_bytes: bytes) -> tuple[bytes, str | None]:
@@ -428,6 +428,29 @@ def _rasterize_for_vision(image_bytes: bytes) -> tuple[bytes, str | None]:
         if converted is not None:
             return converted, "image/png"
     return image_bytes, None
+
+
+def _flatten_for_vision(image_bytes: bytes, mime_type: str | None) -> tuple[bytes, str | None]:
+    """A figure with transparency, composited onto white. Diagrams and table pictures are often drawn in dark ink on a transparent ground; a model
+    (or the proxy in front of it) that drops the alpha channel sees that ground as black, and black ink on it is invisible: a table image read as
+    empty, a layout drawing judged "not significant". An opaque, unreadable or unknown image is returned as it is."""
+    if mime_type is None:
+        return image_bytes, mime_type
+    try:
+        from PIL import Image  # local: only this path needs it
+
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            has_alpha = image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info) or "transparency" in image.info
+            if not has_alpha:
+                return image_bytes, mime_type
+            rgba = image.convert("RGBA")
+        ground = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+        ground.alpha_composite(rgba)
+        out = io.BytesIO()
+        ground.convert("RGB").save(out, "PNG")
+        return out.getvalue(), "image/png"
+    except Exception:  # noqa: BLE001 -- a figure that cannot be flattened is described as it is
+        return image_bytes, mime_type
 
 
 def _describe_figure(
@@ -497,6 +520,8 @@ def _describe_figure(
                 cached_obj = json.loads(cached.decode("utf-8"))
                 if not cached_obj["significant"] and caption_status_out is not None:
                     caption_status_out["status"] = "insignificant"
+                    if cached_obj.get("reason"):  # `.get`: an entry written before the reason existed simply has none
+                        caption_status_out["reason"] = cached_obj["reason"]
                 if not cached_obj["significant"]:
                     return None
                 # Applied on read, not just at write time -- see
@@ -522,10 +547,18 @@ def _describe_figure(
 
     describe_bytes, mime_type = _rasterize_for_vision(image_bytes)
     if caption_status_out is not None:
-        caption_status_out["rasterized_bytes"] = describe_bytes
-    result = _vision_client.describe_figure(
-        describe_bytes, mime_type, document_context, user_id=user_id, **({"model": model} if model else {}),
-    )
+        caption_status_out["rasterized_bytes"] = describe_bytes  # what is stored for the review UI stays as it was drawn
+    describe_bytes, mime_type = _flatten_for_vision(describe_bytes, mime_type)  # what the model is sent: transparency onto white
+    model_args = {"model": model} if model else {}
+    result = _vision_client.describe_figure(describe_bytes, mime_type, document_context, user_id=user_id, **model_args)
+    if result is not None and not result.significant:
+        # One verdict from one sample of a model is thin evidence for dropping a figure for good (a layout drawing was called "not
+        # significant" in one run and "significant" in the next). So it gets a second look, and is let go only if the second answer agrees. A
+        # failed or blank second answer leaves the first verdict as it was.
+        second = _vision_client.describe_figure(describe_bytes, mime_type, document_context, user_id=user_id, **model_args)
+        if second is not None and second.significant and second.description.strip():
+            logger.info("Figure verdict changed on the second look: not significant -> significant")
+            result = second
     if result is None:
         # The vision client's single "ambiguous result" outcome: a totally
         # unparseable response OR a well-formed significant=True whose
@@ -542,13 +575,15 @@ def _describe_figure(
     try:
         _narration_redis.set(
             cache_key,
-            json.dumps({"significant": result.significant, "description": result.description, "title": result.title}),
+            json.dumps({"significant": result.significant, "description": result.description, "title": result.title, "reason": result.reason}),
             ex=_FIGURE_CAPTION_CACHE_TTL_SECONDS,
         )
     except Exception:
         logger.warning("Figure-caption cache write failed -- caption still returned, just not cached", exc_info=True)
     if not result.significant and caption_status_out is not None:
         caption_status_out["status"] = "insignificant"
+        if result.reason:
+            caption_status_out["reason"] = result.reason
     # Task 7: only for a significant figure -- an insignificant one gets no
     # caption AND no fallback name from either source, same as before.
     if result.significant and result.title and caption_status_out is not None:
@@ -615,6 +650,8 @@ class FigureCaptionOutcome(NamedTuple):
     storage_failed: bool
     # True when the breaker had tripped and no vision call was made.
     skipped: bool = False
+    # status == "insignificant" only: the model's own few words on why (see FigureVisionResult.reason).
+    reason: str | None = None
 
 
 def _store_figure_only(figure_id: str, image_bytes: bytes, job_id: str | None) -> FigureCaptionOutcome:
@@ -667,6 +704,8 @@ def _caption_and_store_one_figure(
     Contains NO narration and NO shared-state mutation, which is what makes
     it safe to run on a worker thread: it returns everything the caller
     needs as plain data instead."""
+    job_cancel.raise_if_cancelled()  # a cancelled run captions no further figure
+    figure_started = time.monotonic()
     caption_status_out: dict[str, str | bytes] = {}
     if skip_caption:
         return _store_figure_only(figure_id, image_bytes, job_id)
@@ -684,6 +723,8 @@ def _caption_and_store_one_figure(
     # attempted a store either.
     try:
         caption = _describe_figure(image_bytes, document_context, caption_status_out, user_id=user_id, model=model)
+    except job_cancel.JobCancelled:
+        raise  # a cancelled run is not a vision failure: stop, do not carry on with the next figure
     except Exception:  # noqa: BLE001 -- one figure's vision failure must not abort the whole document
         logger.warning("Vision captioning failed for %s -- figure left uncaptioned", figure_id, exc_info=True)
         return FigureCaptionOutcome(
@@ -691,6 +732,7 @@ def _caption_and_store_one_figure(
         )
     status = cast(str, caption_status_out["status"]) if "status" in caption_status_out else None
     title = cast(str, caption_status_out["title"]) if "title" in caption_status_out else None
+    reason = cast(str, caption_status_out["reason"]) if "reason" in caption_status_out else None
 
     # Captured for every figure regardless of relevance -- figure_ids
     # relevance isn't known until /level runs (see llm_leveling.py's
@@ -726,8 +768,13 @@ def _caption_and_store_one_figure(
                 "Figure-file storage failed for %s -- it will not be attachable in ADO", figure_id, exc_info=True
             )
             storage_failed = True
+    logger.info(
+        "Figure %s: %s in %.0fs", figure_id,
+        "no usable reply" if status == "vision_failed" else "not significant" if status == "insignificant" else "described",
+        time.monotonic() - figure_started,
+    )
     return FigureCaptionOutcome(
-        figure_id=figure_id, caption=caption, status=status, title=title, storage_failed=storage_failed,
+        figure_id=figure_id, caption=caption, status=status, title=title, storage_failed=storage_failed, reason=reason,
     )
 
 
@@ -1138,6 +1185,7 @@ _UPLOAD_READ_CHUNK_BYTES = 1024 * 1024
 
 @app.post("/ingest", response_model=CanonicalDoc)
 async def ingest(
+    request: Request,
     file: UploadFile,
     redact: bool = False,
     languages: str = "eng",
@@ -1463,6 +1511,7 @@ async def ingest(
                         # Distinct from display_caption above -- see
                         # LevelingProgress.figure_caption_status's own docstring.
                         figure_caption_status=outcome.status,
+                        figure_caption_reason=outcome.reason,
                     )
                 )
 
@@ -1499,7 +1548,16 @@ async def ingest(
         _reassign_figure_captions(doc, figure_outcomes)
 
     if collected_figure_bytes:
-        await run_in_threadpool(_run_captioning_pass)
+        # The caller (the orchestrator's request) going away cancels the figures not yet captioned and the call in flight:
+        # a cancelled job must not keep a one-request-at-a-time backend busy describing figures nobody will read.
+        with job_cancel.cancellation_scope() as cancel_token:
+            async with job_cancel.watch_for_disconnect(request, cancel_token):
+                try:
+                    await run_in_threadpool(_run_captioning_pass)
+                except job_cancel.JobCancelled:
+                    raise HTTPException(status_code=499, detail="the caller disconnected; the run was cancelled") from None
+            if cancel_token.cancelled:
+                raise HTTPException(status_code=499, detail="the caller disconnected; the run was cancelled")
 
     doc.failed_figure_storage_ids = failed_figure_ids
     doc.vision_active = vision_active
@@ -1797,103 +1855,6 @@ async def _survey_level(
     return await run_in_threadpool(
         _build_survey_tree_with_scoring, doc, client, user_id, catalog, job_id, model, primer_context, rubric_report
     )
-
-
-# How often the streamed study overview says it is still working while a model call is under way.
-STUDY_OVERVIEW_HEARTBEAT_SECONDS = 5.0
-
-
-async def _study_events(
-    request: Request, document_text: str, client: OrchestratorLlmClient, user_id: str, model: str | None,
-) -> AsyncIterator[dict]:
-    """The study of one document as events: `progress` (windows accounted for, of the total, with the elapsed seconds), `heartbeat` while a model
-    call is under way, then exactly one `result` (the plain answer's fields). A browser that disconnects stops the study, keeping the windows it
-    stored; the stream then ends without a result."""
-    progress: queue.Queue[tuple[int, int]] = queue.Queue()
-    handle = StudyHandle.from_settings(
-        render_text=lambda: document_text, client=client, user_id=user_id, scope=user_scope(user_id), model=model,
-        store=_study_store, limiter=_study_limiter, on_progress=lambda done, total: progress.put((done, total)),
-    )
-    handle.start()
-    started = time.monotonic()
-    last_sent = started
-    waiting = asyncio.ensure_future(run_in_threadpool(handle.result, settings.survey_study_hard_budget_seconds + 60))
-
-    def drain() -> Iterator[dict]:
-        while True:
-            try:
-                done, total = progress.get_nowait()
-            except queue.Empty:
-                return
-            yield {"type": "progress", "done": done, "total": total, "elapsed": round(time.monotonic() - started)}
-
-    try:
-        while not waiting.done():
-            await asyncio.wait({waiting}, timeout=min(1.0, STUDY_OVERVIEW_HEARTBEAT_SECONDS))
-            sent = False
-            for event in drain():
-                sent = True
-                yield event
-            now = time.monotonic()
-            if sent:
-                last_sent = now
-            elif not waiting.done() and now - last_sent >= STUDY_OVERVIEW_HEARTBEAT_SECONDS:
-                last_sent = now
-                yield {"type": "heartbeat", "elapsed": round(now - started)}
-            if not waiting.done() and await request.is_disconnected():
-                handle.stop(keep_results=True)  # nobody is waiting for the answer; what was read stays as the job's cache
-                return
-        outcome = waiting.result()
-        for event in drain():
-            yield event
-        facts = overview_facts(outcome.study)
-        yield {
-            "type": "result", "read": facts is not None, "facts": facts, "reason": None if facts is not None else "unread",
-            "warnings": list(outcome.warnings),
-        }
-    finally:
-        await run_in_threadpool(handle.close)  # a finished study's windows stay as the re-run cache
-
-
-@app.post("/study/overview")
-async def study_overview(
-    request: Request,
-    file: UploadFile,
-    model: str | None = None,
-    x_user_id: str | None = Header(default=None, alias=USER_ID_HEADER),
-):
-    """The wizard's "does this look right?" overview, from a study of the document: the same extractive study the SURVEY job runs, started
-    here so the job reuses its stored windows. Returns structured facts (see app.leveling.document_overview), never model-written text, so
-    it can state only what the document states. `read` is False when nothing was read (no user, or every window failed): the caller then
-    shows no overview rather than an invented one. With `Accept: application/x-ndjson` the answer is a stream (progress and heartbeat lines,
-    then one result line, as /level streams); otherwise one JSON object."""
-    streamed = NDJSON in request.headers.get("accept", "")
-    user_id = resolve_user_id(x_user_id)
-    if not user_id:  # the model calls and the store both need a user
-        unread = {"read": False, "facts": None, "reason": "no_user", "warnings": []}
-        return StreamingResponse(iter([level_line({"type": "result", **unread})]), media_type=NDJSON) if streamed else unread
-    # Parsed before anything is streamed: the upload is closed once the endpoint returns.
-    doc = await ingest(
-        file=file, redact=False, languages="eng", skip_vision=True, mode="baseline", job_id=None, vision_model=None, vision_skip_reason=None,
-        x_user_id=x_user_id, x_primer_context=None,
-    )
-    document_text = render_section(doc.blocks, doc.tables)  # the same call the job makes, so the stored windows are the same windows
-    client = await _survey_client(model, user_id)
-    events = _study_events(request, document_text, client, user_id, model)
-    if streamed:
-        async def lines() -> AsyncIterator[bytes]:
-            try:
-                async for event in events:
-                    yield level_line(event)
-            except Exception as exc:  # noqa: BLE001 -- after the first byte a failure can only be a line
-                yield level_line({"type": "error", "status": 500, "detail": type(exc).__name__})
-
-        return StreamingResponse(lines(), media_type=NDJSON)
-    result: dict = {"read": False, "facts": None, "reason": "disconnected", "warnings": []}
-    async for event in events:
-        if event["type"] == "result":
-            result = {k: v for k, v in event.items() if k != "type"}
-    return result
 
 
 # How often a streamed /level sends a heartbeat line while its run works.

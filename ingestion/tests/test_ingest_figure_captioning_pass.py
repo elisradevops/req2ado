@@ -508,3 +508,99 @@ def test_figure_storage_under_concurrency_stores_every_figure_once_with_a_slow_f
     assert result["failed_figure_storage_ids"] == []
     assert max_in_flight > 1
     assert max_in_flight <= 3
+
+
+def test_a_cancelled_run_is_not_swallowed_as_a_vision_failure(monkeypatch) -> None:
+    """JobCancelled is an ordinary Exception, so the per-figure `except Exception` used to record a cancel as `vision_failed`
+    and carry on with the next figure."""
+    import app.main as main_module
+    from app import job_cancel
+
+    def cancelled(*args, **kwargs):
+        raise job_cancel.JobCancelled("the run was cancelled: its caller is gone")
+
+    monkeypatch.setattr(main_module, "_describe_figure", cancelled)
+    with pytest.raises(job_cancel.JobCancelled):
+        main_module._caption_and_store_one_figure("f0", b"x", None, "job-1", user_id="u1")
+
+
+def test_no_vision_call_is_made_for_a_figure_once_the_run_is_cancelled(monkeypatch) -> None:
+    import app.main as main_module
+    from app import job_cancel
+
+    calls: list[str] = []
+    monkeypatch.setattr(main_module, "_describe_figure", lambda *a, **k: calls.append("called"))
+    with job_cancel.cancellation_scope() as token:
+        token.cancel()
+        with pytest.raises(job_cancel.JobCancelled):
+            main_module._caption_and_store_one_figure("f0", b"x", None, "job-1", user_id="u1")
+    assert calls == []
+
+
+@pytest.mark.parametrize("concurrency", [1, 4])
+def test_the_captioning_pass_runs_inside_a_cancellation_scope(monkeypatch, concurrency) -> None:
+    """So a caller that disconnects (a cancelled job) can stop the figures that have not been captioned yet."""
+    import app.main as main_module
+    from app import job_cancel
+
+    seen: list[object] = []
+
+    class _Recording:
+        def describe_figure(self, image_bytes, mime_type=None, document_context=None, user_id=None):
+            seen.append(job_cancel.current_token())
+            return FigureVisionResult(significant=True, description="a caption")
+
+    monkeypatch.setattr(main_module, "_vision_client", _Recording())
+    monkeypatch.setattr(main_module.settings, "vision_caption_concurrency", concurrency)
+    _upload(
+        MULTI_FIGURE_FIXTURE_NAME, FIXTURES / MULTI_FIGURE_FIXTURE_NAME, mode="survey",
+        primer_context=f"captioning-scope-{uuid.uuid4()}",
+    )
+    assert seen and all(token is not None for token in seen)
+
+
+def test_a_cancelled_captioning_pass_answers_499_and_not_a_result(monkeypatch) -> None:
+    import app.main as main_module
+    from app import job_cancel
+    from tests.test_ingest_caption_status import client, identity_headers
+
+    class _Cancelling:
+        def describe_figure(self, image_bytes, mime_type=None, document_context=None, user_id=None):
+            raise job_cancel.JobCancelled("the run was cancelled: its caller is gone")
+
+    monkeypatch.setattr(main_module, "_vision_client", _Cancelling())
+    monkeypatch.setattr(main_module.settings, "vision_caption_concurrency", 1)
+    params = {"redact": False, "user_id": "test-user", "mode": "survey", "primer_context": f"captioning-499-{uuid.uuid4()}"}
+    with open(FIXTURES / MULTI_FIGURE_FIXTURE_NAME, "rb") as f:
+        response = client.post(
+            "/ingest", params=params, headers=identity_headers(params),
+            files={"file": (MULTI_FIGURE_FIXTURE_NAME, f, "application/octet-stream")},
+        )
+    assert response.status_code == 499
+
+
+def test_every_figure_gets_one_outcome_line_with_its_result_and_time(monkeypatch, caplog) -> None:
+    import logging
+
+    import app.main as main_module
+
+    outcomes = iter([
+        FigureVisionResult(significant=True, description="a caption"),
+        FigureVisionResult(significant=False, description=""),
+        FigureVisionResult(significant=False, description=""),  # the second look at the not-significant figure
+        None,
+    ])
+
+    class _Scripted:
+        def describe_figure(self, image_bytes, mime_type=None, document_context=None, user_id=None):
+            return next(outcomes)
+
+    monkeypatch.setattr(main_module, "_vision_client", _Scripted())
+    monkeypatch.setattr(main_module.settings, "vision_caption_concurrency", 1)
+    with caplog.at_level(logging.INFO, logger="app.main"):
+        for index in range(3):
+            main_module._caption_and_store_one_figure(f"f{index}", bytes([index]) * 40, f"ctx-{uuid.uuid4()}", None, user_id="u1")
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Figure ")]
+    assert len(lines) == 3
+    assert "described" in lines[0] and "not significant" in lines[1] and "no usable reply" in lines[2]
+    assert all(" in " in line and line.rstrip().endswith("s") for line in lines)

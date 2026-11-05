@@ -119,6 +119,12 @@ class Settings(BaseSettings):
     # orchestrator's LLM_REQUEST_TIMEOUT_MS changes, reconsider the other --
     # they're meant to stay in that relative order.
     vision_request_timeout_seconds: float = 590.0
+    # One figure's whole time budget, retries included. A figure that times out is NOT sent again (a slow model is slow
+    # again, and the abandoned first call keeps the backend busy, so the second queues behind it): before this, one figure
+    # could cost 2 x vision_request_timeout_seconds (~20 minutes) and a 36-figure document stalled on figure 1. Each call's
+    # timeout is the budget still left, and a 5xx/429 is retried only if the wait fits. Kept under the ~300 s cut production
+    # puts on an upstream call. 0 switches the budget off (the previous behaviour: 590 s calls, one retry after a timeout).
+    vision_figure_budget_seconds: float = 240.0
     # How many figures may be captioned concurrently by /ingest's post-parse
     # captioning pass. Vision captioning used to run fully inline during the
     # document walk -- one network round-trip per figure, strictly in

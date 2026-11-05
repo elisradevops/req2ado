@@ -186,8 +186,23 @@ def test_ingest_survey_mode_still_captions_when_vision_is_configured(monkeypatch
             self.calls += 1
             return FigureVisionResult(significant=True, description="a real caption")
 
+    class _MemoryRedis:
+        # Its own cache: with the live dev Redis a caption cached by an earlier run answered this one, and the fake client was never called.
+        def __init__(self) -> None:
+            self.store: dict[str, bytes] = {}
+
+        def get(self, key):
+            return self.store.get(key)
+
+        def set(self, key, value, ex=None):
+            self.store[key] = value.encode("utf-8") if isinstance(value, str) else value
+
+        def publish(self, channel, payload):
+            pass
+
     fake_client = _FakeVisionClient()
     monkeypatch.setattr(main_module, "_vision_client", fake_client)
+    monkeypatch.setattr(main_module, "_narration_redis", _MemoryRedis())
 
     body = _upload("sample.docx", FIXTURES / "sample.docx", mode="survey")
     figure_blocks = [b for b in body["blocks"] if b["kind"] == "figure"]
@@ -481,7 +496,7 @@ def test_describe_figure_caches_a_genuine_insignificant_verdict(monkeypatch) -> 
 
     assert first is None
     assert second is None
-    assert fake_client.calls == 1  # second call served from cache, no live re-query
+    assert fake_client.calls == 2  # the first call asked twice (a not-significant verdict gets a second look); the second call came from the cache
 
 
 def test_describe_figure_returns_none_when_vision_model_judges_figure_insignificant(monkeypatch) -> None:
@@ -1237,3 +1252,181 @@ def test_caption_and_store_one_figure_flags_a_storage_failure_without_losing_the
     # CanonicalDoc.failed_figure_storage_ids.
     assert outcome.caption == "prose about the figure"
     assert outcome.storage_failed is True
+
+
+def test_describe_figure_reports_why_a_figure_was_not_significant_live_and_from_the_cache(monkeypatch) -> None:
+    import app.main as main_module
+
+    class _FakeVisionClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None, user_id: str | None = None) -> FigureVisionResult | None:
+            self.calls += 1
+            return FigureVisionResult(significant=False, description="", reason="A decorative divider line.")
+
+    class _FakeRedis:
+        def __init__(self) -> None:
+            self._store: dict[str, bytes] = {}
+
+        def get(self, key):
+            return self._store.get(key)
+
+        def set(self, key, value, ex=None):
+            self._store[key] = value.encode("utf-8") if isinstance(value, str) else value
+
+        def publish(self, channel, payload):
+            pass
+
+    fake_client = _FakeVisionClient()
+    monkeypatch.setattr(main_module, "_vision_client", fake_client)
+    monkeypatch.setattr(main_module, "_narration_redis", _FakeRedis())
+
+    live: dict = {}
+    assert main_module._describe_figure(b"reason-image-bytes", None, live) is None
+    assert (live["status"], live["reason"]) == ("insignificant", "A decorative divider line.")
+
+    cached: dict = {}
+    assert main_module._describe_figure(b"reason-image-bytes", None, cached) is None
+    assert fake_client.calls == 2  # asked twice live (the second look), then served from the cache
+    assert (cached["status"], cached["reason"]) == ("insignificant", "A decorative divider line.")
+
+
+def _png(mode: str, size=(40, 20), color=(0, 0, 0, 0)) -> bytes:
+    import io
+
+    from PIL import Image
+
+    out = io.BytesIO()
+    Image.new(mode, size, color).save(out, "PNG")
+    return out.getvalue()
+
+
+def test_a_transparent_figure_is_flattened_onto_white_before_the_model_sees_it() -> None:
+    import io
+
+    from PIL import Image
+
+    import app.main as main_module
+
+    flattened, mime = main_module._flatten_for_vision(_png("RGBA", color=(0, 0, 0, 0)), "image/png")
+    assert mime == "image/png"
+    pixel = Image.open(io.BytesIO(flattened)).convert("RGB").getpixel((1, 1))
+    assert pixel == (255, 255, 255)  # transparent became white, so black text stays readable on it
+
+    # black text on a transparent ground: the text stays black
+    from PIL import ImageDraw
+
+    image = Image.new("RGBA", (40, 20), (0, 0, 0, 0))
+    ImageDraw.Draw(image).rectangle((5, 5, 10, 10), fill=(0, 0, 0, 255))
+    out = io.BytesIO()
+    image.save(out, "PNG")
+    flat, _ = main_module._flatten_for_vision(out.getvalue(), "image/png")
+    flat_image = Image.open(io.BytesIO(flat)).convert("RGB")
+    assert flat_image.getpixel((7, 7)) == (0, 0, 0) and flat_image.getpixel((30, 15)) == (255, 255, 255)
+
+
+def test_an_opaque_or_unreadable_figure_is_left_as_it_is() -> None:
+    import app.main as main_module
+
+    opaque = _png("RGB", color=(10, 20, 30))
+    assert main_module._flatten_for_vision(opaque, "image/png") == (opaque, "image/png")
+    assert main_module._flatten_for_vision(b"not an image", "image/png") == (b"not an image", "image/png")
+    assert main_module._flatten_for_vision(b"x", None) == (b"x", None)
+
+
+def test_a_palette_png_with_transparency_is_flattened_too() -> None:
+    import io
+
+    from PIL import Image
+
+    import app.main as main_module
+
+    image = Image.new("P", (10, 10), 0)
+    image.putpalette([0, 0, 0] + [255, 255, 255] * 255)
+    out = io.BytesIO()
+    image.save(out, "PNG", transparency=0)
+    flat, _ = main_module._flatten_for_vision(out.getvalue(), "image/png")
+    assert Image.open(io.BytesIO(flat)).convert("RGB").getpixel((1, 1)) == (255, 255, 255)
+
+
+class _ScriptedVision:
+    """Answers each call from a list, so a test can say what the model says the first and the second time."""
+
+    def __init__(self, answers) -> None:
+        self.answers = list(answers)
+        self.calls = 0
+
+    def describe_figure(self, image_bytes, mime_type=None, document_context=None, user_id=None):
+        self.calls += 1
+        return self.answers.pop(0)
+
+
+class _MemoryRedis:
+    def __init__(self) -> None:
+        self.store: dict[str, bytes] = {}
+
+    def get(self, key):
+        return self.store.get(key)
+
+    def set(self, key, value, ex=None):
+        self.store[key] = value.encode("utf-8") if isinstance(value, str) else value
+
+    def publish(self, channel, payload):
+        pass
+
+
+def _describe_with(monkeypatch, answers, image=b"second-look-image"):
+    import app.main as main_module
+
+    vision = _ScriptedVision(answers)
+    redis = _MemoryRedis()
+    monkeypatch.setattr(main_module, "_vision_client", vision)
+    monkeypatch.setattr(main_module, "_narration_redis", redis)
+    status: dict = {}
+    caption = main_module._describe_figure(image, None, status)
+    return caption, status, vision, redis
+
+
+def test_a_not_significant_verdict_is_asked_again_once_and_a_significant_second_answer_wins(monkeypatch) -> None:
+    caption, status, vision, _ = _describe_with(
+        monkeypatch,
+        [FigureVisionResult(significant=False, description="", reason="Looks decorative."), FigureVisionResult(significant=True, description="A backplane layout.", title="Backplane layout")],
+    )
+    assert vision.calls == 2
+    assert caption == "A backplane layout."
+    assert "status" not in status and status.get("title") == "Backplane layout"
+
+
+def test_two_not_significant_answers_stand_and_the_reason_is_kept(monkeypatch) -> None:
+    caption, status, vision, redis = _describe_with(
+        monkeypatch,
+        [FigureVisionResult(significant=False, description="", reason="A company logo."), FigureVisionResult(significant=False, description="", reason="A logo.")],
+    )
+    assert vision.calls == 2 and caption is None
+    assert status["status"] == "insignificant" and status["reason"] == "A company logo."
+    assert len(redis.store) == 1  # the settled verdict is what gets cached
+
+
+def test_a_significant_first_answer_is_not_asked_twice(monkeypatch) -> None:
+    _, _, vision, _ = _describe_with(monkeypatch, [FigureVisionResult(significant=True, description="A diagram.")])
+    assert vision.calls == 1
+
+
+def test_a_failed_second_look_leaves_the_first_verdict_alone(monkeypatch) -> None:
+    caption, status, vision, _ = _describe_with(monkeypatch, [FigureVisionResult(significant=False, description="", reason="A divider."), None])
+    assert vision.calls == 2 and caption is None
+    assert status["status"] == "insignificant"
+
+
+def test_a_second_answer_that_calls_it_significant_but_describes_nothing_does_not_win(monkeypatch) -> None:
+    caption, status, _, _ = _describe_with(
+        monkeypatch, [FigureVisionResult(significant=False, description="", reason="A divider."), FigureVisionResult(significant=True, description="   ")]
+    )
+    assert caption is None and status["status"] == "insignificant"
+
+
+def test_the_cache_key_changes_when_what_the_model_is_sent_changes() -> None:
+    import app.main as main_module
+
+    assert main_module._VISION_INPUT_VERSION in main_module._figure_caption_cache_key(b"img", None, None)
