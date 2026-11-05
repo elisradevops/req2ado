@@ -683,7 +683,7 @@ export function ProgressBanner({
         {detSubtreeChunk && (
           <div className='mt-2.5 flex flex-col gap-2.5 rounded-md border border-hairline-strong bg-surface-alt p-3.5'>
             <div className='flex items-center gap-2.5'>
-              <span className='font-mono text-meta font-semibold uppercase tracking-wide text-ink-3'>Chunk</span>
+              <span className='text-meta font-semibold tracking-normal text-ink-3'>Chunk</span>
               <div className='flex flex-1 gap-1.5'>
                 {Array.from({ length: detSubtreeChunk.chunkCount }, (_, index) => {
                   const isDone = index < detSubtreeChunk.chunkIndex - 1;
@@ -999,7 +999,7 @@ function SectionStepList({
 
   return (
     <div className='mt-3 flex flex-col gap-1 border-t border-hairline pt-3'>
-      <p className='flex items-center gap-1.5 text-meta font-semibold uppercase tracking-wide text-ink-3'>
+      <p className='flex items-center gap-1.5 text-meta font-semibold tracking-normal text-ink-3'>
         Sections
         <Chip
           bg='var(--color-surface-alt)'
@@ -1065,7 +1065,7 @@ function SectionStepList({
           user-reported confusion: "what is the actual difference between the
           stepper and the section todos... the section [count] is weird" when
           most of the rows under "Sections" weren't sections at all. */}
-      <p className='mt-2 text-meta font-semibold uppercase tracking-wide text-ink-3'>Scoring &amp; linking</p>
+      <p className='mt-2 text-meta font-semibold tracking-normal text-ink-3'>Scoring &amp; linking</p>
       <div className={rowClass} aria-selected={scoringActive}>
         {conflictsActive || regroupActive || traceLinksActive ? (
           <Check

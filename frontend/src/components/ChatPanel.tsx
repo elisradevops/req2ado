@@ -552,7 +552,7 @@ export function ChatPanel({
                   </div>
                 )}
                 <div className="mb-3 max-w-[85%] border-l-2 border-hairline-strong pl-2.5">
-                  <p className="flex items-center gap-1.5 text-micro font-semibold uppercase tracking-wide text-live">
+                  <p className="flex items-center gap-1.5 text-meta font-semibold tracking-normal text-ink-3">
                     Assistant
                     {!streaming && !reasoning && (
                       <span className="inline-flex items-center gap-0.5" aria-label="typing">

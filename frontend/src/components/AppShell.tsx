@@ -332,7 +332,7 @@ export function AppShell({ children }: { children: ReactNode }): React.ReactElem
         </ul>
 
         <div role="group" aria-label="Connections" className="mt-auto flex flex-col gap-1 px-2">
-          {!railCollapsed && <span className="px-1 pb-0.5 text-micro font-semibold uppercase tracking-wide text-ink-on-dark-dim">Connections</span>}
+          {!railCollapsed && <span className="px-1 pb-0.5 text-meta font-semibold tracking-normal text-ink-on-dark-dim">Connections</span>}
           <Tooltip content={`Azure DevOps — ${adoDetail(adoStatus?.status)}`}>
             <div className="flex items-center gap-2 rounded-sm px-1 py-1 text-xs text-ink-on-dark-dim">
               <ConnectionDot {...adoConnectionState(adoStatus?.status)} />

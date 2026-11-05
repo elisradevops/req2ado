@@ -581,7 +581,8 @@ export function NewJobWizard(): React.ReactElement {
           stack; this was the single biggest layout deviation from the
           approved prototype. */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.6fr_1fr]">
-        <div className="flex min-w-0 flex-col gap-4">
+        {/* The right column is far taller than this one: keep Destination in view beside it instead of leaving a blank column. Only on a viewport tall enough to hold the card, so a short window never pins its bottom out of reach. */}
+        <div className="flex min-w-0 flex-col gap-4 lg:self-start lg:[@media(min-height:640px)]:sticky lg:[@media(min-height:640px)]:top-4">
           <SectionCard title="Destination in Azure DevOps">
             <div className="flex flex-col gap-3">
               {hasAdoSession ? (

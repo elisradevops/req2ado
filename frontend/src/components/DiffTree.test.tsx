@@ -653,6 +653,24 @@ describe('DiffTree signal counts', () => {
     expect(container.querySelector('[data-item-size]')).toHaveAttribute('data-item-size', '40');
   });
 
+  it('sizes the scroller to its rows, not to a fixed 230px of empty card (review finding V4)', () => {
+    render(<DiffTree entries={[baseEntry]} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+    // 1 row is padded to 3 so the card never collapses; capped by the viewport, never taller than the rows
+    // (jsdom reorders min()/max() when reading it back, so assert the row-based bound, not the whole string)
+    expect(screen.getByRole('tree').style.height).toContain('120px');
+  });
+
+  it('keeps the scroller height when a filter hides rows, so the card does not jump while typing', () => {
+    const entries = Array.from({ length: 6 }, (_, i) => ({ ...baseEntry, localId: `n${i}`, title: i === 0 ? 'Alpha' : `Beta ${i}` }));
+    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="alpha" onToggleExclude={() => {}} />);
+    expect(screen.getByRole('tree').style.height).toContain('240px');
+  });
+
+  it('draws no "New" pill on a routine row in the desktop status column, but keeps the word for screen readers (V6)', () => {
+    render(<DiffTree entries={[baseEntry]} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+    expect(screen.getByText('New')).toHaveClass('sr-only');
+  });
+
   describe('below the md breakpoint', () => {
     const original = window.matchMedia;
     beforeEach(() => {

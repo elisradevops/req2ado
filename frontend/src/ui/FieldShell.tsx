@@ -28,7 +28,7 @@ export function FieldShell({
       {(label || labelExtra) && (
         <div className="flex items-center justify-between gap-1.5">
           {label && (
-            <label htmlFor={fieldId} className="text-meta font-semibold uppercase tracking-wide text-ink-2">
+            <label htmlFor={fieldId} className="text-meta font-semibold tracking-normal text-ink-2">
               {label}
             </label>
           )}

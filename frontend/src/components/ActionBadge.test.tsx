@@ -35,6 +35,17 @@ describe('ActionBadge', () => {
     expect(screen.queryByRole('link')).not.toBeInTheDocument();
   });
 
+  it('can hide the routine "New" pill but keeps the word for screen readers', () => {
+    const { container } = render(<ActionBadge action="create" hideNew />);
+    expect(screen.getByText('New')).toHaveClass('sr-only');
+    expect(container.querySelector('[class*="rounded-full"]')).toBeNull();
+  });
+
+  it('hideNew leaves a reuse or near-duplicate pill alone', () => {
+    render(<ActionBadge action="reuse" existingAdoId={604} hideNew />);
+    expect(screen.getByText('Links to WI-604')).not.toHaveClass('sr-only');
+  });
+
   it('includes the project segment in the link when project is provided -- avoids ADO resolving the id against the wrong project context', () => {
     render(<ActionBadge action="dedup_skip" existingAdoId={532} orgUrl="https://dev.azure.com/example-org" project="elisradevops-project" />);
     const link = screen.getByRole('link', { name: /near-duplicate of wi-532/i });

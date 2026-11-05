@@ -33,7 +33,7 @@ const MARKDOWN_COMPONENTS: Components = {
       <table className="w-full text-sm">{children}</table>
     </div>
   ),
-  th: ({ children }) => <th className="border-b border-hairline-strong bg-surface-alt px-2.5 py-1.5 text-left text-xs font-semibold uppercase tracking-wide text-ink-3">{children}</th>,
+  th: ({ children }) => <th className="border-b border-hairline-strong bg-surface-alt px-2.5 py-1.5 text-left text-meta font-semibold tracking-normal text-ink-3">{children}</th>,
   td: ({ children }) => <td className="border-b border-hairline px-2.5 py-1.5">{children}</td>,
 };
 

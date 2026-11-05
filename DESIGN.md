@@ -445,11 +445,17 @@ focus indicator — it must be `--color-field-border` instead.
 
 ## §4 — Typography rules
 
-- Sentence case everywhere. No ALL-CAPS body copy. `text-micro` eyebrow labels
-  are the sole exception and use `letter-spacing: 0.06em` rather than case to
-  read as a label, not as shouting. Mode names (`BASELINE`, `SURVEY`) are the
-  one other capitalised form, because they are enum values the API returns, not
-  prose.
+- Sentence case everywhere, including labels. No ALL-CAPS copy. Capitals are for
+  enum values the API returns (`BASELINE`, `SURVEY`) and identifiers, so a label
+  never reads in the same voice as the data under it. Section and field labels
+  (`LABEL_MICRO`, `FieldShell`, table headers, stat-tile labels) are
+  `text-meta font-semibold` in `text-ink-3` (`text-ink-2` for a form field's
+  label): size and weight carry the hierarchy, not case or tracking.
+- **Size tokens through `cn`.** `lib/cn.ts` teaches tailwind-merge the custom
+  size rungs (`text-micro`, `text-meta`, `text-title`, `text-display`,
+  `text-metric`). Without it a later `text-ink-3` or `text-ok` silently deleted
+  the size (a stat tile's label rendered 16px, a toned value shrank). Add a new
+  size rung to that list too.
 - `text-display` is reserved for `PageHeader` — one per page.
 - `text-title` is the only size for dialog titles, card section headers, and the
   running-job phase headline. Do not reach for `text-display` inside a dialog.
@@ -747,7 +753,7 @@ Minimum hit target 24×24 CSS px.
 | Selected | `Checkbox` checked: `bg-accent border-accent` + white check. `Select` item: `bg-accent-soft text-accent-ink` + check |
 | Invalid | `border-danger` + `aria-invalid="true"` + helper text `text-danger-ink` |
 
-Label rung: `text-meta uppercase text-ink-2`.
+Label rung: `text-meta font-semibold text-ink-2` (sentence case, §4).
 
 The dropzone is the one input that is also a Surface: rest
 `border-1.5 border-dashed border-hairline-strong rounded-md bg-surface`, hover
@@ -1151,13 +1157,13 @@ that mode. It is labelled `Model`, uses the `Cpu` glyph, and carries the hint
 
 The four destination inputs (team project, area path, iteration path, starting
 state) become a single horizontal **path bar** of `.hoverable-row` segments,
-each showing an uppercase `text-micro` key with its icon and the chosen value
+each showing a sentence-case `text-meta` key with its icon and the chosen value
 beneath. Read left to right, it mirrors how Azure DevOps itself reads.
 
 **Extend `components/DestinationBar.tsx` — do not build this fresh.** The
 component already exists (35 lines) and already implements most of the idea: a
 bordered `bg-surface-alt` strip, a `Briefcase` glyph in `--color-accent`, a
-`text-micro uppercase` key, the team project in `text-ink-1`, a `›` separator,
+sentence-case `text-meta` key, the team project in `text-ink-1`, a `›` separator,
 the area path in `font-mono text-xs` (the §0.1 identifier rule, already
 honoured), and an `InfoTip` explaining that reuse-matching is scoped to that
 exact area path. Its own header comment says it was written to be shared by
@@ -1908,7 +1914,7 @@ renders **one row per processing section plus four whole-document passes**, each
 row carrying its own state. It is the answer to "what is left to do," which the
 log never actually gave.
 
-- **Header:** a `text-meta uppercase` "Sections" eyebrow, a `font-mono` chip
+- **Header:** a sentence-case `text-meta` "Sections" eyebrow, a `font-mono` chip
   with the section count, an `InfoTip`, and — pushed right — a
   `{n} steps left` chip. That countdown spans the *whole* pipeline
   (`branchCount + 4`), not just the visible section rows, so it does not
@@ -2930,8 +2936,7 @@ baseline, so any new raw hex, arbitrary size/radius/duration, or bare
   not explanation. §11.4.3 is the worked example and the strictest case, and
   records that an earlier gloss-first version of this rule was tried and
   explicitly withdrawn.
-- Sentence case everywhere except `text-micro` eyebrow labels and mode enum
-  names (§4).
+- Sentence case everywhere except mode enum names and identifiers (§4).
 - **Name things by what the user controls,** not by how the system is built.
   "Checking for duplicates," not `dedup_check`. "Reading the document and
   splitting it into sections," not "extracting a deterministic hierarchy
@@ -3203,7 +3208,7 @@ Append-only. Every renamed or removed token, and every closed §1.8 divergence.
 | `Assistant · <model>` attribution → `font-mono` on the model span | `components/ChatPanel.tsx` | **Closed.** §11.4.2, §0.1. Fixed the model span only, not the "Assistant ·" word, exactly as specified. |
 | Chat empty state: static hint → clickable suggestion chips, each with a §10.1 glyph | `components/ChatPanel.tsx` | **Closed, with two deliberate, permanent deviations from this row's original spec (not open work — settled choices).** Shipped 3 chips with icons ("Make it testable" `Target`, "Add the missing rationale" `Flag`, "Tighten the wording" `Pencil`) — the fourth, "Suggest a better title" `Sparkles`, was deliberately NOT duplicated here; `ChatPanel.test.tsx` already has a regression guard against a second Suggest-a-title control, and the header button already covers it while staying reachable even once the chat has history, unlike an empty-state-only chip. Each chip sends immediately via the existing `send()` path (same behavior "Suggest a title" already has), not populate-then-let-the-user-edit as this row's original text specified — chosen for consistency with the one send affordance that already existed. Plain `Button variant="outline" size="sm"`, matching the header's own button, not `.liftable` (a card-hover treatment that doesn't fit a small text button). Heading updated to "No conversation yet / Ask in your own words, or start from one of these:" per spec. 3 new tests for the chips + icons together. |
 | Stop button: immediate "Stopping…" UI state (frontend fix; the true-immediate-cancellation backend fix stays a separate follow-up, unchanged) | `components/ChatPanel.tsx` | **Closed.** §11.4.2/§11.3's "Streaming states." `stop()` gained the project-standard `useRef`+`useState` re-entry guard (checked/set before the `await`, cleared in `finally`); the button shows a `Spinner` + disabled state for the real cooperative-poll gap instead of looking unresponsive. 1 new test. |
-| `DestinationBar` extended to the wizard's path bar (iteration + state segments, hatched-when-unset), used on both screens | `components/DestinationBar.tsx` (unchanged shared implementation — not rebuilt fresh, per this row's own instruction); new call site in `pages/NewJobWizard.tsx`'s Destination card | **Closed, with one honest scope reduction.** All 4 segments (Project/Area/Iteration/State) now render as their own `.hoverable-row` box with icon + uppercase key + value, iteration hatches (`repeating-linear-gradient`, `accent-soft`/`accent-soft-border`) instead of going blank when unset, and a `font-mono` preview line restates the full resolved destination below (`Radar Systems \ Radar Systems\EW Suite \ Rev C · state Proposed`). **Not shipped:** the "one sentence of consequence" this row's spec also asked for (e.g. "Proposed keeps new items out of sprint metrics..."). Checked `StatePicker.tsx`/`api/ado.ts`'s `getStates`: starting state is fetched LIVE per-project from ADO's own configurable workflow, an open org-defined list, not a small fixed enum — a hardcoded sentence for "Proposed" specifically would have no matching sentence for a custom state (e.g. "Triage", "Ready") and risks being actively wrong for an org whose "Proposed" doesn't behave like the example assumes. Real data doesn't exist to do this correctly; inventing text for an unknown value isn't a shortcut, it's a guess. A dedup regression test for identical project/area values was intentionally rewritten, not just relaxed: the old single-line unlabeled breadcrumb genuinely needed the dedup (two identical values with no distinguishing label read as a bug); each segment now carries its own key label, so showing the same value under two clearly-different labels is a real state, not a repeat to hide. 5 new tests. |
+| `DestinationBar` extended to the wizard's path bar (iteration + state segments, hatched-when-unset), used on both screens | `components/DestinationBar.tsx` (unchanged shared implementation — not rebuilt fresh, per this row's own instruction); new call site in `pages/NewJobWizard.tsx`'s Destination card | **Closed, with one honest scope reduction.** All 4 segments (Project/Area/Iteration/State) now render as their own `.hoverable-row` box with icon + sentence-case key + value, iteration hatches (`repeating-linear-gradient`, `accent-soft`/`accent-soft-border`) instead of going blank when unset, and a `font-mono` preview line restates the full resolved destination below (`Radar Systems \ Radar Systems\EW Suite \ Rev C · state Proposed`). **Not shipped:** the "one sentence of consequence" this row's spec also asked for (e.g. "Proposed keeps new items out of sprint metrics..."). Checked `StatePicker.tsx`/`api/ado.ts`'s `getStates`: starting state is fetched LIVE per-project from ADO's own configurable workflow, an open org-defined list, not a small fixed enum — a hardcoded sentence for "Proposed" specifically would have no matching sentence for a custom state (e.g. "Triage", "Ready") and risks being actively wrong for an org whose "Proposed" doesn't behave like the example assumes. Real data doesn't exist to do this correctly; inventing text for an unknown value isn't a shortcut, it's a guess. A dedup regression test for identical project/area values was intentionally rewritten, not just relaxed: the old single-line unlabeled breadcrumb genuinely needed the dedup (two identical values with no distinguishing label read as a bug); each segment now carries its own key label, so showing the same value under two clearly-different labels is a real state, not a repeat to hide. 5 new tests. |
 | Epic/Feature **Scope** group in place of the absent gauge | `components/NodeDetailPanel.tsx`, `components/NodeDetailDialog.tsx`, `pages/JobDetail.tsx` (`descendantCountsByLocalId`) | **Closed, with one honest scope reduction from this section's exact copy example.** This section's illustrative copy ("Covers §3 through §3.2 — 6 features, 41 requirements") bundles two different things: a section-number range and descendant counts. The counts are real and shipped — a new O(n) children-by-parent walk in `JobDetail.tsx`, threaded down the same way `diffByLocalId` already is. The section-number range is NOT shippable from real data: `DryRunSourceRef` is byte-offset-only (confirmed via `utils/sourceRef.ts`), there is no heading-number field anywhere in the diff entry shape, and inventing one via regex-parsing title text would be a guess, not real data — same category of gap as §11.1's own per-section breakdown (tracked separately, needs a new backend field). Shipped: "Covers 6 features, 41 requirements." / "No child items under this Epic yet." plus a plain "why no score" line. 4 new tests. |
 | Band-crossing sentences ("Moved from Needs review into Solid") and **Cleared: &lt;flag&gt;** rows on a successful rescore | `components/QualityGauge.tsx` (`bandCrossingText`, `previousIssues` prop, `clearedByCategory`/`clearedOther`) | **Closed.** §11.4.4. Band-crossing sentences render on the headline and on any category row whose band actually changed, and nowhere else (a row that moved without crossing keeps only its numeral delta, per this section's own rule against decorating unmoved rows). Cleared-flag lines are grouped by category the exact same way active issues already are (reusing `categoryForIssueCode`, unmapped codes to "Other flags") and render always-visible, not gated behind the category's own expand disclosure — "the most direct evidence the edit worked... it is free," per this row's own reasoning. `NodeDetailPanel.tsx`'s pre-rescore snapshot extended to also capture `qualityIssues`. 5 new tests. |
 | **New §11.5** — diff-review tree reparent/reorder/create-with-parent (no prior spec existed for this screen) | `DESIGN.md` §11.5; new `orchestrator/src/modules/pipeline/canNest.ts` (also duplicated at `frontend/src/lib/canNest.ts`, with a drift-guard test — no shared runtime package crosses the orchestrator/frontend build boundary today, confirmed: `frontend/package.json` has no dependency on `@req2ado/shared-ts`, and that workspace member ships untranspiled `.ts` with no build step); new `PATCH /jobs/:id/diff/:localId/move` (`jobs.controller.ts`/`jobs.service.ts`); new `components/MoveToPicker.tsx`; `components/DiffTree.tsx` (grip track, native HTML5 DnD, `itemKey`, drop indicators, `same tier`/excluded-parent badges); `components/AddChildForm.tsx` (parent picker, label-only real-type-name fix, dropped `isManual` restriction) | **Closed.** Grip track added via a `--grip-w` CSS custom property on `GRID_TEMPLATE_COLUMNS`'s existing wrapper rather than forking the shared template string. Same-tier links are allowed and flagged (confirmed live against this deployment's on-prem ADO Server 2022.1, GA REST API 7.0 per `mcp-ado-server/src/config/env.ts:13-19` — the Work Item Tracking API accepts a same-category parent-child link; only the native Backlogs hub refuses to reorder it). Drag-and-drop is explicitly scoped to short, in-viewport moves — `MoveToPicker` is the stated path for anything crossing a scroll boundary, not a gap. Hover-to-expand-a-collapsed-parent-during-drag was considered and deliberately cut from this pass: the endpoint's `parentLocalId`-only form already makes dropping on a collapsed row a complete "append last" operation, and auto-expanding mid-drag risks pushing the drag source itself out of the virtualized viewport. Deployed, then refined per two rounds of real user feedback — see the next two rows. |

@@ -23,6 +23,7 @@ export function ActionBadge({
   orgUrl,
   project,
   quiet = false,
+  hideNew = false,
 }: {
   action: 'create' | 'reuse' | 'dedup_skip';
   existingAdoId?: number | null;
@@ -34,6 +35,10 @@ export function ActionBadge({
   // Same meaning; a real link stays a link (accent colour, underlined); everything else is muted. "Near-duplicate of" is shortened to "Dup of" so
   // the status always fits beside the other marks on a phone line; the full wording is the hover title, and a screen-reader suffix explains it.
   quiet?: boolean;
+  // Desktop tree rows: nearly every row is a create, so a "New" pill on each
+  // is noise and drowns the rows that differ (links, near-duplicates). The word
+  // stays for screen readers; those other statuses keep their pill.
+  hideNew?: boolean;
 }): React.ReactElement {
   if (quiet) {
     const full = actionLabel({ action, existingAdoId });
@@ -56,6 +61,7 @@ export function ActionBadge({
     );
   }
   if (action === 'create') {
+    if (hideNew) return <span className="sr-only">New</span>;
     return (
       <Chip bg="#E8F6EC" color="var(--color-ok)" className="border border-[#B7E0C3]">
         New

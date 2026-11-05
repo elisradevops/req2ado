@@ -742,7 +742,7 @@ export function DiffTree({
         <span>Item</span>
         <span className={cn('flex items-center gap-1', WIDE_ONLY)}>
           Status
-          <InfoTip content="What will happen to this item when you write to Azure DevOps: New (written to ADO for the first time), Links to an existing WI-#### (reused, nothing new written, and it keeps its existing ADO parent regardless of where you place it in this tree), or Near-duplicate of an existing item (skipped, same parent-keeping rule)." />
+          <InfoTip content="What will happen to this item when you write to Azure DevOps. No pill means New (written to ADO for the first time). A pill means: Links to an existing WI-#### (reused, nothing new written, and it keeps its existing ADO parent regardless of where you place it in this tree), or Near-duplicate of an existing item (skipped, same parent-keeping rule)." />
         </span>
         <span className={cn('flex items-center justify-end gap-1', WIDE_ONLY)}>
           Flags
@@ -763,7 +763,9 @@ export function DiffTree({
           tabIndex={0}
           onKeyDown={handleKeyDown}
           role="tree"
-          className="h-[calc(100vh-400px)] min-h-[280px] focus:outline-none"
+          // As tall as the job's rows (at least 3, so a near-empty tree is still a card), up to the viewport-based cap that used to be the fixed height. Counted from ALL entries, not the visible rows, so filtering or collapsing a branch never makes the card jump.
+          style={{ height: `min(max(calc(100vh - 400px), 280px), ${Math.max(entries.length, 3) * rowHeight}px)` }}
+          className="focus:outline-none"
         >
           <FixedSizeList
             ref={listRef}
@@ -1256,7 +1258,7 @@ function DiffTreeRow({
           it. */}
       {!narrow && (
         <span className="flex flex-none items-center justify-end overflow-hidden">
-          <ActionBadge action={entry.action} existingAdoId={entry.existingAdoId} orgUrl={orgUrl} project={project} />
+          <ActionBadge action={entry.action} existingAdoId={entry.existingAdoId} orgUrl={orgUrl} project={project} hideNew />
         </span>
       )}
 

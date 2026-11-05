@@ -34,12 +34,12 @@ Fix direction (not implemented): (1) diagnose K4 first, before any code; (2) per
 
 | ID | Finding | Where | Sev / Eff |
 |---|---|---|---|
-| V1 | Uppercase monospace is used as decoration, not for data: destination bar (PROJECT / AREA / ITERATION), stat-card labels (BLOCKS, SECTIONS), table headers (INDEX / ITEM / STATUS / FLAGS), "WHAT LANDS IN AZURE DEVOPS". Mono should mean "literal/ID"; here it makes everything the same voice. Fonts themselves (IBM Plex Sans/Mono) are fine. | [live] all pages | Medium / S |
-| V2 | Stat cards in one row use three typographic treatments: "12 NEW" small green, "0 REUSED" large mono, "0 DUPLICATES SKIPPED" grey. | [live] job page | Low / XS |
-| V3 | Dropdown popovers are sized to their content, not the trigger, and sit on top of the next field's label (project, area, model). | [live] New Job step 2 | Medium / S |
-| V4 | Large dead areas: New Job step 1 (~400px under the dropzone), step 2 left column (~280px beside a tall right column), the diff-tree card (~230px under 7 rows), the detail dialog's left pane. | [live] | Medium / S |
+| V1 | Uppercase monospace is used as decoration, not for data: destination bar (PROJECT / AREA / ITERATION), stat-card labels (BLOCKS, SECTIONS), table headers (INDEX / ITEM / STATUS / FLAGS), "WHAT LANDS IN AZURE DEVOPS". Mono should mean "literal/ID"; here it makes everything the same voice. Fonts themselves (IBM Plex Sans/Mono) are fine. | [live] all pages | Medium / S **Resolved (P13)**: sentence-case labels; DESIGN.md §4. |
+| V2 | Stat cards in one row use three typographic treatments: "12 NEW" small green, "0 REUSED" large mono, "0 DUPLICATES SKIPPED" grey. | [live] job page | Low / XS **Resolved (P13)**: root cause was `cn` dropping size tokens. |
+| V3 | Dropdown popovers are sized to their content, not the trigger, and sit on top of the next field's label (project, area, model). | [live] New Job step 2 | Medium / S **Resolved (P13)**: list width = trigger (14rem floor), options ellipsize. |
+| V4 | Large dead areas: New Job step 1 (~400px under the dropzone), step 2 left column (~280px beside a tall right column), the diff-tree card (~230px under 7 rows), the detail dialog's left pane. | [live] | Medium / S **Partly resolved (P13)**: step 1, step 2 (sticky Destination) and the tree card fixed; the detail dialog keeps its fixed height on purpose. |
 | V5 | Duplicated content: the overview paragraph repeats verbatim on confirm and progress; the title "Software" appears 3 times in the detail dialog and the body is "Software" again; the warning shows as a banner and again as a full card. | [live] | Low / XS |
-| V6 | Zero-information chrome: every tree row carries an identical "New" chip; rail status dots are tiny, unlabeled as a group, SharePoint in orange. | [live] | Low / XS |
+| V6 | Zero-information chrome: every tree row carries an identical "New" chip; rail status dots are tiny, unlabeled as a group, SharePoint in orange. | [live] | Low / XS **Partly resolved (P13)**: "New" pills dropped; rail dots unchanged (group label came with P12). |
 | V7 | **Confirm** is saturated yellow, the loudest object on the page, and its label hides the effect (it writes to ADO). | [live] job header | Medium / XS |
 | V8 | Dev-changelog copy shipped in the UI: chat card "Suggest a better title — *was a separate button in the header, before this change*". | [src] `components/ChatPanel.tsx:104` | Medium / XS |
 
