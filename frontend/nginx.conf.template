@@ -74,9 +74,19 @@ server {
         proxy_set_header Connection $connection_upgrade;
     }
 
+    # The build's files are named by content hash, so they never change under one name: cache them for good.
+    location /assets/ {
+        add_header Cache-Control "public, max-age=31536000, immutable";
+    }
+
     # SPA fallback: any path not matching a real static file or /api/ above
-    # serves index.html so client-side routing works.
+    # serves index.html so client-side routing works. index.html (and every
+    # other un-hashed file, like config.json) must be revalidated on each load:
+    # with no Cache-Control a browser reuses a stale copy by its Last-Modified
+    # age, keeps pointing at the PREVIOUS build's hashed bundle after a deploy,
+    # and the page then runs old code (seen live: a removed route called, 404).
     location / {
+        add_header Cache-Control "no-cache";
         try_files $uri $uri/ /index.html;
     }
 }
