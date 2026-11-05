@@ -14,10 +14,12 @@ export interface StreamEvent {
   details?: { status?: number; method?: string; url?: string; traceback?: string };
 }
 
+// apiBaseUrl is either absolute (http://host:3001) or the same-origin proxy prefix (/api, the container default), which is resolved against
+// the page. The prefix is kept: the proxy strips it before the request reaches the orchestrator's /chat.
 export function toWsUrl(apiBaseUrl: string): string {
-  const url = new URL(apiBaseUrl);
+  const url = new URL(apiBaseUrl, window.location.href);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-  url.pathname = '/chat';
+  url.pathname = `${url.pathname.replace(/\/+$/, '')}/chat`;
   url.search = '';
   return url.toString();
 }
@@ -41,7 +43,14 @@ export function useChatSocket(
 
     loadRuntimeConfig().then((config) => {
       if (cancelled) return;
-      const wsUrl = `${toWsUrl(config.apiBaseUrl)}?jobId=${encodeURIComponent(jobId)}&localId=${encodeURIComponent(localId)}`;
+      let wsUrl: string;
+      try {
+        wsUrl = `${toWsUrl(config.apiBaseUrl)}?jobId=${encodeURIComponent(jobId)}&localId=${encodeURIComponent(localId)}`;
+      } catch {
+        // A base url that cannot be used: say so (ChatPanel shows it) instead of leaving the panel waiting on a socket that never opens.
+        onEventRef.current({ type: 'error', reason: 'Chat is not available: the server address is not valid.' });
+        return;
+      }
       socket = new WebSocket(wsUrl);
       socket.onmessage = (event) => {
         const parsed = JSON.parse(event.data as string) as StreamEvent;
