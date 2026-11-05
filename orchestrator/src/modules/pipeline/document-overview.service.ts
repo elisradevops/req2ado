@@ -1,12 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import type { DocumentOverview } from '@req2ado/shared-ts';
 import type { DocumentMapSection } from './document-map';
-import { IngestionHttpClient } from './ingestion-http.client';
-import { composeOverviewText } from './overview-text';
+import { sanitizeHint } from './document-profile';
 
-export interface DocumentOverview {
-  synopsis: string;
-  caveat: string | null;
-}
+// The shape is the shared contract (shared/schemas/document-overview.schema.json); the frontend keeps a matching hand-written copy.
+export type { DocumentOverview };
 
 // Thresholds tuned against a real, deeply fragmented ICD used throughout
 // this feature's own design review (79 top-level sections' worth of
@@ -29,41 +26,39 @@ export function computeDeterministicCaveat(sectionCount: number, depth: number, 
   return deepNesting || fragmented ? CAVEAT_TEXT : null;
 }
 
-/**
- * The pre-job overview of a document ("Does this look right?"): what the document itself states, from a study of the document. The study is
- * ingestion's extractive reading (the same one the SURVEY job runs, so the job reuses its stored windows): every entry is copied from the document
- * and checked against the text, and the text here is composed in code from those facts. No model writes it, so it cannot describe what the document
- * does not say. A document the study could not read, or that gave it nothing to report, gets no overview.
- */
-@Injectable()
-export class DocumentOverviewService {
-  constructor(private readonly ingestionClient: IngestionHttpClient) {}
+const MAX_OVERVIEW_LINES = 40;
+const MAX_OVERVIEW_LINE_CHARS = 2000;
+const MAX_SYNOPSIS_CHARS = 8000;
+const MAX_CAVEAT_CHARS = 1000;
+const MAX_AI_SUMMARY_CHARS = 1500;
 
-  // Fail-open (the overview is a preview, never a blocker): any failure returns null. Only the error type is logged: a message can carry hosts.
-  async generate(
-    input: {
-      file: { buffer: Buffer; originalname: string };
-      documentMap: DocumentMapSection[];
-      sectionCount: number;
-      depth: number;
-      model?: string;
-      // The study's progress while it runs (windows read, seconds elapsed): what the wizard shows so a long wait does not look stuck.
-      onProgress?: (progress: { done?: number; total?: number; elapsed: number }) => void;
-      // Aborting stops the study (the browser left).
-      signal?: AbortSignal;
-    },
-    userId: string,
-  ): Promise<DocumentOverview | null> {
-    try {
-      const caveat = computeDeterministicCaveat(input.sectionCount, input.depth, input.documentMap);
-      const result = await this.ingestionClient.studyOverview(input.file.buffer, input.file.originalname, userId, input.model, input.onProgress, input.signal);
-      if (!result.read || !result.facts) return null;
-      const synopsis = composeOverviewText(result.facts);
-      return synopsis ? { synopsis, caveat } : null;
-    } catch (err) {
-      // eslint-disable-next-line no-console -- no structured logger in this module yet
-      console.error(`DocumentOverviewService.generate failed: ${err instanceof Error ? err.name : typeof err}`);
-      return null;
-    }
+const points = (text: string): number => Array.from(text).length;
+const cutPoints = (text: string, max: number): string => (points(text) <= max ? text : Array.from(text).slice(0, max).join(''));
+const MAX_STRUCTURE_HINT_CHARS = 1000;
+
+/**
+ * The overview a browser submits with a job, read defensively: a malformed shape is no overview, never an error (job creation must not fail on it).
+ * The lines are bounded, and the structure hint (it reaches a model prompt) is made one bounded line without control characters.
+ */
+export function parseDocumentOverview(raw: string | undefined): DocumentOverview | null {
+  if (!raw) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
   }
+  if (!parsed || typeof parsed !== 'object') return null;
+  const value = parsed as Record<string, unknown>;
+  if (typeof value.synopsis !== 'string') return null;
+  const lines = value.lines;
+  const goodLines = Array.isArray(lines) && lines.length <= MAX_OVERVIEW_LINES && lines.every((l) => typeof l === 'string' && points(l) <= MAX_OVERVIEW_LINE_CHARS);
+  return {
+    synopsis: cutPoints(value.synopsis, MAX_SYNOPSIS_CHARS),
+    caveat: typeof value.caveat === 'string' ? cutPoints(value.caveat, MAX_CAVEAT_CHARS) : null,
+    ...(goodLines ? { lines: lines as string[] } : {}),
+    // A model's paragraph, shown to the reader as text only: one paragraph, no control characters, bounded.
+    ...(typeof value.aiSummary === 'string' && value.aiSummary.trim() ? { aiSummary: sanitizeHint(value.aiSummary, MAX_AI_SUMMARY_CHARS) } : {}),
+    ...(typeof value.structureHint === 'string' ? { structureHint: sanitizeHint(value.structureHint, MAX_STRUCTURE_HINT_CHARS) } : {}),
+  };
 }

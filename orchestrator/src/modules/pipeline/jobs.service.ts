@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { Prisma, type Job, type PrismaClient } from '@prisma/client';
 import { Queue } from 'bullmq';
+import type { DocumentOverview } from './document-overview.service';
 import { closeWhenReady, logQueueErrors } from '../../common/queue-errors';
 import { createHash } from 'crypto';
 import type { McpClient } from './mcp.client';
@@ -119,13 +120,13 @@ export interface SubmitJobInput {
   // undefined for every non-batch caller, same as every other optional field
   // here -- no behavior change to any existing submit() caller.
   batchId?: string | null;
-  // Generated in the wizard's SURVEY-only "Confirm understanding" step
-  // (see DocumentOverviewService), BEFORE this Job row exists -- passed
+  // Made for the wizard's SURVEY-only "Confirm understanding" step from the
+  // parsed document (see document-profile.ts and JobsController.preview), BEFORE this Job row exists -- passed
   // straight through here, never recomputed. Always undefined/null for
   // BASELINE, or for a SURVEY submission whose generation call failed at
   // wizard time (fail-open, same convention as every other optional
   // LLM-dependent signal in this codebase).
-  documentOverview?: { synopsis: string; caveat: string | null } | null;
+  documentOverview?: DocumentOverview | null;
 }
 
 export interface JobSummary {
@@ -210,7 +211,7 @@ export interface JobDetail {
   // before they click Confirm again, instead of a blind re-submit --
   // same `_count` pattern `list()` above already uses.
   createdItemCount: number;
-  documentOverview: { synopsis: string; caveat: string | null } | null;
+  documentOverview: DocumentOverview | null;
 }
 
 @Injectable()
@@ -358,6 +359,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         fileBufferBase64: input.fileBuffer.toString('base64'),
         filename: input.filename,
         ...(input.model ? { model: input.model } : {}),
+        ...(input.mode === 'survey' && input.documentOverview?.structureHint ? { structureHint: input.documentOverview.structureHint } : {}),
       },
       { jobId: job.id },
     );
@@ -421,7 +423,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       // generation failed) -- forwarding it, not recomputing it, matches
       // submit()'s own doc comment: this is generated once, at wizard time,
       // never recomputed later.
-      documentOverview: job.documentOverview as { synopsis: string; caveat: string | null } | null,
+      documentOverview: job.documentOverview as DocumentOverview | null,
     });
   }
 
@@ -636,7 +638,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         referenceName: f.referenceName,
       })),
       createdItemCount: job._count.createdItemMappings,
-      documentOverview: job.documentOverview as { synopsis: string; caveat: string | null } | null,
+      documentOverview: job.documentOverview as DocumentOverview | null,
     };
   }
 

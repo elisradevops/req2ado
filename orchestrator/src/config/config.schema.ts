@@ -57,8 +57,8 @@ export const configSchema = z.object({
   // it; set to 1 to skip the retry overhead when the target vision model is
   // known to require it.
   LLM_VISION_TEMPERATURE: z.coerce.number().optional(),
-  // maxTokens for DocumentOverviewService's pre-job document-summary call
-  // (NewJobWizard step 3, "Confirm understanding"). Default raised from the
+  // maxTokens for the optional AI summary of a document (NewJobWizard step 3,
+  // "Confirm understanding"; shown only when it is ready in time). Default raised from the
   // original 300 after live confirmation (finishReason=length in production
   // logs) that a reasoning-capable model can exhaust a small budget on
   // hidden chain-of-thought before emitting any real content -- this

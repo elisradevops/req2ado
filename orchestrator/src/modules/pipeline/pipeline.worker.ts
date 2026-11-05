@@ -1,4 +1,5 @@
 import { describeFailure } from './failure-reason';
+import { joinContexts } from './document-profile';
 import { JobResultCache, hashCatalog, isDegradedResult, kbVersionFor, type CachedResult } from './result-cache';
 import crypto from 'crypto';
 import { DEFAULT_PRIMER_OPTIONS, runPrimerStep, type PrimerCache, type PrimerStepOptions } from './primer.step';
@@ -92,6 +93,8 @@ export interface PipelineJobInput {
   // LLM). Unset means "use whatever the orchestrator is configured with",
   // matching pre-model-selection behavior exactly.
   model?: string;
+  // How the file is built, made from its text and structure when the wizard showed the overview (SURVEY only): context for the AI stage.
+  structureHint?: string;
 }
 
 // The primer's cache is the narrow Redis shape primer.step.ts declares (get/set only), not the full ioredis type.
@@ -572,6 +575,11 @@ export async function runPipelineJob(
       );
       primerContext = primer.primerContext;
       primerWarnings.push(...primer.warnings);
+    }
+    // How the file is built (made from its text and structure when the wizard showed the overview): context for the AI stage, with or without a primer.
+    // A BASELINE job makes no model call, so it never gets it.
+    if (job.mode === 'survey') {
+      primerContext = joinContexts(primerContext, job.structureHint);
     }
 
     // Runs concurrently with the area-path backfill check (see

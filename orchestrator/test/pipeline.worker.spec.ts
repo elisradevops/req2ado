@@ -2903,6 +2903,45 @@ describe('runPipelineJob', () => {
       );
     });
 
+    it('gives the AI stage the structure hint from the wizard overview, after the primer text, and without any primer at all', async () => {
+      const deps = {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        defaultLlmModel: 'gemma4:12b',
+      };
+      const job = { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: 'user-1', mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf', structureHint: 'HINT: 4 sections, baseline builds 1 Epics.' };
+
+      await runPipelineJob(job as any, deps as any); // no primer wired
+      expect(fakeIngestionClient.level).toHaveBeenLastCalledWith(bigDoc, 'survey', 'user-1', [], 'gemma4:12b', 'job-1', 'HINT: 4 sections, baseline builds 1 Epics.');
+
+      fakeOpenWebUiClient.uploadFile.mockResolvedValue('file-1');
+      fakeOpenWebUiClient.pollFileProcessed.mockResolvedValue(true);
+      fakeOpenWebUiClient.chatWithFullFileContext.mockResolvedValue({ content: 'This is an avionics ICD.' });
+      fakePrimerCacheRedis.get.mockResolvedValue(null);
+      await runPipelineJob(job as any, { ...deps, openWebUiClientFactory: { getClientFor: jest.fn().mockResolvedValue(fakeOpenWebUiClient) } as any, primerCacheRedis: fakePrimerCacheRedis as any } as any);
+      expect(fakeIngestionClient.level).toHaveBeenLastCalledWith(
+        bigDoc, 'survey', 'user-1', [], 'gemma4:12b', 'job-1', 'This is an avionics ICD.\n\nHINT: 4 sections, baseline builds 1 Epics.',
+      );
+    });
+
+    it('never gives a BASELINE job the structure hint: it makes no model call', async () => {
+      await runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: null, userId: null, mode: 'baseline', fileBuffer: bigFileBuffer, filename: 'x.pdf', structureHint: 'HINT' } as any,
+        {
+          ingestionClient: fakeIngestionClient as any, dryRunService: fakeDryRunService as any, idempotencyService: fakeIdempotencyService as any, prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any, mcpClient: fakeMcpClient as any, backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any, defaultLlmModel: 'gemma4:12b',
+        } as any,
+      );
+      expect(fakeIngestionClient.level).toHaveBeenLastCalledWith(bigDoc, 'baseline', undefined, [], 'gemma4:12b', 'job-1', undefined);
+    });
+
     it('never attempts the primer for a BASELINE job, even with primer deps wired and a large document -- BASELINE never calls an LLM', async () => {
       await runPipelineJob(
         { id: 'job-1', areaPath: 'Project\\Area1', adoProject: null, userId: null, mode: 'baseline', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
