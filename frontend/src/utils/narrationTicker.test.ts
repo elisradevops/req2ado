@@ -97,6 +97,32 @@ describe('tickerFor', () => {
 
 // C3 (docs/review-2026-10-ux-ai.md): a Diff-ready job still read "Checking for existing/duplicate work items -- 8 of 8" because the last
 // narration won over the job's status. Once the job has settled, its status is the truth; the narration only describes work in progress.
+describe('tickerFor during the whole-document overview (primer) step', () => {
+  it('shows the step message, which already names the part and the time, and a clock counter', () => {
+    const result = tickerFor({
+      status: 'running',
+      stage: 'parse',
+      latest: baseNarration('primer', {
+        primerStep: 'reading',
+        elapsedSeconds: 130,
+        message: 'Reading the whole document to understand it - 2:10',
+      }),
+    });
+    expect(result.sentence).toBe('Reading the whole document to understand it - 2:10');
+    expect(result.counter).toBe('2:10');
+  });
+
+  it('never returns an empty sentence, even for a blank message from a future backend', () => {
+    const result = tickerFor({ status: 'running', stage: 'parse', latest: baseNarration('primer', { message: '' }) });
+    expect(result.sentence.length).toBeGreaterThan(0);
+  });
+
+  it('has no counter when the elapsed time is not known', () => {
+    const result = tickerFor({ status: 'running', stage: 'parse', latest: baseNarration('primer', { message: 'x' }) });
+    expect(result.counter).toBeFalsy();
+  });
+});
+
 describe('tickerFor once the job has settled', () => {
   const stale = baseNarration('dedup_check', { message: 'Checking for existing/duplicate work items -- 8 of 8 (Volume Buttons)', blocksDone: 8, blocksTotal: 8, currentTitle: 'Volume Buttons' });
 

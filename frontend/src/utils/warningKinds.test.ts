@@ -142,3 +142,16 @@ describe('warningKinds', () => {
     });
   });
 });
+
+
+describe('document_study_incomplete', () => {
+  it('has its own plain-language entry that says what was not read, not "enhanced wording unavailable"', async () => {
+    const { KIND_META } = await import('./warningKinds');
+    const entry = (KIND_META as Record<string, { title: string; short: string; means: string; group: string }>).document_study_incomplete;
+    expect(entry).toBeDefined();
+    expect(entry.title).toMatch(/study/i);
+    expect(entry.short).toMatch(/not read|did not read|unread/i);
+    expect(entry.means).toMatch(/nothing is missing from the tree|tree itself/i);
+    expect(entry.group).toBe('info');
+  });
+});

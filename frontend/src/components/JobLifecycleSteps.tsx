@@ -92,7 +92,8 @@ function reachedKeyFor(
       latestNarrationPhase === 'infer_trace_links'
     ) {
       key = 'score';
-    } else if (stage === 'parse') {
+    } else if (stage === 'parse' || (latestNarrationPhase === 'primer' && stage === null)) {
+      // The whole-document overview runs inside the Parse step, and its narration can arrive before the stage event does.
       key = 'parse';
     } else {
       key = 'analyze'; // infer_hierarchy_start / generate_requirements_start / _done

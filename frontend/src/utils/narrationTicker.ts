@@ -51,6 +51,7 @@ const PHASE_FALLBACK_SENTENCES: Record<NarrationEvent['phase'], string> = {
   page_alignment: 'Deriving real page numbers for the source document.',
   dedup_check: 'Checking for existing/duplicate work items.',
   writing: 'Writing to Azure DevOps.',
+  primer: 'Reading the whole document to understand it.',
   job_failed: 'Job failed.',
   // Never actually looked up -- JobDetail.tsx deliberately excludes
   // chunk_warning from the `narrations` array tickerFor reads (see its own
@@ -129,6 +130,8 @@ function counterFor(latest: NarrationEvent | null): string | null {
       return latest.currentTitle ? latest.currentTitle : latest.blocksTotal > 0 ? `${latest.blocksDone} / ${latest.blocksTotal}` : null;
     case 'writing':
       return latest.blocksTotal > 0 ? `${latest.blocksDone} / ${latest.blocksTotal}` : null;
+    case 'primer':
+      return latest.elapsedSeconds != null ? `${Math.floor(latest.elapsedSeconds / 60)}:${String(latest.elapsedSeconds % 60).padStart(2, '0')}` : null;
     case 'job_failed':
       return latest.lastPhase ? `Last phase: ${latest.lastPhase}` : null;
     default:

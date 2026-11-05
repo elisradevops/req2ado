@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { FigureDescriptions, type FigureDescriptionEntry } from './FigureDescriptions';
 import * as jobsApi from '../api/jobs';
 
@@ -229,5 +229,63 @@ describe('FigureDescriptions', () => {
     await user.click(screen.getByRole('button'));
     // hasExpandedOnce is still true, so active stays true even though the panel is collapsed
     expect(screen.getByTestId('figure-f0')).toHaveAttribute('data-active', 'true');
+  });
+});
+
+
+describe('FigureDescriptions: figures without a description', () => {
+  const described = [{ figureIndex: 1, caption: 'A real caption.', name: null, figureId: 'f0' }];
+
+  it('names the tally in the header, so three missing descriptions are explained, not hidden', () => {
+    render(<FigureDescriptions jobId="j" items={described} outcomes={{ 2: 'insignificant', 4: 'vision_failed' }} />);
+    expect(screen.getByText(/1 described · 1 not significant · 1 failed/)).toBeInTheDocument();
+  });
+
+  it('lists each outcome with a plain reason once expanded', () => {
+    render(<FigureDescriptions jobId="j" items={described} outcomes={{ 2: 'insignificant', 4: 'vision_failed' }} />);
+    fireEvent.click(screen.getByRole('button'));
+    expect(screen.getByText(/Figure 2 in the document/)).toBeInTheDocument();
+    expect(screen.getByText(/not significant, no description needed/i)).toBeInTheDocument();
+    expect(screen.getByText(/Figure 4 in the document/)).toBeInTheDocument();
+    expect(screen.getByText(/no usable reply from the model, left without a description/i)).toBeInTheDocument();
+  });
+
+  it('still shows when no figure has a description yet but some already failed or were skipped', () => {
+    render(<FigureDescriptions jobId="j" items={[]} outcomes={{ 4: 'vision_failed' }} />);
+    expect(screen.getByText(/1 failed/)).toBeInTheDocument();
+  });
+
+  it('a figure that later got a description is never also listed or counted as failed', () => {
+    render(<FigureDescriptions jobId="j" items={[{ figureIndex: 4, caption: 'Now described.', name: null, figureId: 'f3' }]} outcomes={{ 4: 'vision_failed', 6: 'insignificant' }} />);
+    expect(screen.getByText(/1 described · 1 not significant/)).toBeInTheDocument();
+    expect(screen.queryByText(/failed/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button'));
+    expect(screen.queryByText(/Figure 4 in the document/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Figure 6 in the document/)).toBeInTheDocument();
+  });
+
+  it('counts only figures with a model description as described, not entries that have only a document name', () => {
+    const items = [
+      { figureIndex: 1, caption: 'A real caption.', name: null, figureId: 'f0' },
+      { figureIndex: 2, caption: null, name: 'Figure 2: Block diagram', figureId: 'f1' },
+    ];
+    render(<FigureDescriptions jobId="j" items={items} outcomes={{ 5: 'vision_failed' }} />);
+    expect(screen.getByText(/1 described · 1 failed/)).toBeInTheDocument();
+  });
+
+  it('is unchanged without outcomes: nothing renders for an empty panel', () => {
+    const { container } = render(<FigureDescriptions jobId="j" items={[]} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it('says under a not-significant figure who judged it and why, in one short line', () => {
+    render(<FigureDescriptions jobId="j" items={described} outcomes={{ 2: 'insignificant', 4: 'insignificant' }} reasons={{ 2: 'A company logo.' }} />);
+    expect(screen.getByText('Judged by the vision model: A company logo.')).toBeInTheDocument();
+    expect(screen.getByText('Judged by the vision model; it gave no reason.')).toBeInTheDocument(); // an older job, or a model that gave none
+  });
+
+  it('adds no line under a figure the model failed on', () => {
+    render(<FigureDescriptions jobId="j" items={[]} outcomes={{ 4: 'vision_failed' }} reasons={{ 4: 'ignored' }} />);
+    expect(screen.queryByText(/judged by the vision model/i)).not.toBeInTheDocument();
   });
 });

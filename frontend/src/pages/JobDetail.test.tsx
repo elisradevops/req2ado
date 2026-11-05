@@ -927,15 +927,16 @@ describe('JobDetail', () => {
         phase: 'describe_figure', branchIndex: null, branchCount: 0, blocksDone: 0, blocksTotal: 0,
         kbGrounded: false, kbCitations: [], message: 'Figure 2: this figure has no discernible technical content',
         figureIndex: 2, figureCaption: 'this figure has no discernible technical content', figureCaptionStatus: 'insignificant',
+        figureCaptionReason: 'A decorative divider line.',
       } as any);
       return () => {};
     });
 
     renderAt('job-27');
 
-    await waitFor(() => expect(screen.getByText(/1 figure description/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/1 described · 1 not significant/i)).toBeInTheDocument());
     const userEvent = (await import('@testing-library/user-event')).default;
-    const panelToggle = screen.getByText(/1 figure description/i);
+    const panelToggle = screen.getByText(/1 described · 1 not significant/i);
     await userEvent.click(panelToggle);
     // Scoped to the panel itself (a sibling ProgressBanner ticker
     // legitimately still shows the placeholder text once, by design -- see
@@ -944,6 +945,11 @@ describe('JobDetail', () => {
     const panel = panelToggle.closest('button')!.parentElement as HTMLElement;
     expect(within(panel).getByText(/A block diagram showing power distribution\./i)).toBeInTheDocument();
     expect(within(panel).queryByText(/this figure has no discernible technical content/i)).not.toBeInTheDocument();
+    // The figure is not hidden: the panel says what became of it, in plain words (the placeholder text still never counts as a description).
+    expect(within(panel).getByText(/Figure 2 in the document/i)).toBeInTheDocument();
+    expect(within(panel).getByText(/not significant, no description needed/i)).toBeInTheDocument();
+    // ...and who judged it and why, in one short line, rebuilt from the stored history.
+    expect(within(panel).getByText('Judged by the vision model: A decorative divider line.')).toBeInTheDocument();
   });
 
   it('does not add a figure to the FigureDescriptions panel via durable event-history backfill either, when figureCaptionStatus marks it insignificant/failed', async () => {
@@ -976,19 +982,23 @@ describe('JobDetail', () => {
           phase: 'describe_figure', branchIndex: null, branchCount: 0, blocksDone: 0, blocksTotal: 0,
           kbGrounded: false, kbCitations: [], message: 'Figure 2: this figure has no discernible technical content',
           figureIndex: 2, figureCaption: 'this figure has no discernible technical content', figureCaptionStatus: 'insignificant',
+          figureCaptionReason: 'A decorative divider line.',
         },
       },
     ] as any);
 
     renderAt('job-32');
 
-    await waitFor(() => expect(screen.getByText(/1 figure description/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/1 described · 1 not significant/i)).toBeInTheDocument());
     const userEvent = (await import('@testing-library/user-event')).default;
-    const panelToggle = screen.getByText(/1 figure description/i);
+    const panelToggle = screen.getByText(/1 described · 1 not significant/i);
     await userEvent.click(panelToggle);
     const panel = panelToggle.closest('button')!.parentElement as HTMLElement;
     expect(within(panel).getByText(/A block diagram showing power distribution\./i)).toBeInTheDocument();
     expect(within(panel).queryByText(/this figure has no discernible technical content/i)).not.toBeInTheDocument();
+    // The figure is not hidden: the panel says what became of it, in plain words (the placeholder text still never counts as a description).
+    expect(within(panel).getByText(/Figure 2 in the document/i)).toBeInTheDocument();
+    expect(within(panel).getByText(/not significant, no description needed/i)).toBeInTheDocument();
   });
 
   it('shows an excluded-as-decorative summary line when excludedFigureIds/excludedTableIds are non-empty', async () => {

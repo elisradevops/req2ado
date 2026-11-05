@@ -30,6 +30,8 @@ import {
   type MoveDiffEntryInput,
   type ValidationResult,
 } from '../api/jobs';
+import { appendNarration } from '../utils/narrationLog';
+import { outcomeOf, outcomesFromHistory, reasonOf, reasonsFromHistory, type FigureOutcome } from '../utils/figureOutcomes';
 import { subscribeToJobEvents, isValidNarrationEvent, isValidNotice, type JobStage, type NarrationEvent } from '../api/events';
 import type { Notice } from '../api/liveTypes';
 import { useLiveRunStore, mergeNotice } from '../store/liveRunStore';
@@ -154,6 +156,10 @@ export function JobDetail(): React.ReactElement {
   // (before/after the vision call) collapse to one entry, the second
   // overwriting the first once the real caption arrives.
   const [figureCaptionsByIndex, setFigureCaptionsByIndex] = useState<Record<number, string>>({});
+  // Figures that ended without a description (not significant / no usable reply), by real figure number: from live events and, after a
+  // reload, from the stored event history. Shown in the figure panel so a missing description is explained.
+  const [figureOutcomesByIndex, setFigureOutcomesByIndex] = useState<Record<number, FigureOutcome>>({});
+  const [figureReasonsByIndex, setFigureReasonsByIndex] = useState<Record<number, string>>({});
   // Task 5: the document's own figure name (parsed at ingest time, not a
   // vision-narrated value) -- unlike figureCaptionsByIndex, this has no
   // live-SSE counterpart (narration events never carry a name), so it is
@@ -454,7 +460,7 @@ export function JobDetail(): React.ReactElement {
             // Cap accumulated narrations -- a long-running SURVEY job with
             // many branches could otherwise grow this list unboundedly for
             // the duration of the whole job.
-            setNarrations((current) => [...current, narration].slice(-50));
+            setNarrations((current) => appendNarration(current, narration));
           }
           // figureCaptionStatus (non-null) means the model judged this
           // figure insignificant/failed -- figureCaption is STILL truthy in
@@ -475,6 +481,13 @@ export function JobDetail(): React.ReactElement {
             const { figureIndex, figureCaption } = narration;
             setFigureCaptionsByIndex((current) => ({ ...current, [figureIndex]: figureCaption }));
           }
+          const figureOutcome = outcomeOf(narration);
+          if (figureOutcome) {
+            const [outcomeIndex, outcome] = figureOutcome;
+            setFigureOutcomesByIndex((current) => ({ ...current, [outcomeIndex]: outcome }));
+          }
+          const figureReason = reasonOf(narration);
+          if (figureReason) setFigureReasonsByIndex((current) => ({ ...current, [figureReason[0]]: figureReason[1] }));
           if (narration.phase === 'section_complete' && narration.branchIndex != null && narration.sectionNodes) {
             const { branchIndex, sectionLabel, sectionNodes, kbGrounded, kbCitations, kbFilesAvailable } = narration;
             setSectionResultsByIndex((current) => ({
@@ -572,6 +585,17 @@ export function JobDetail(): React.ReactElement {
     }
     if (Object.keys(seeded).length > 0) {
       setFigureCaptionsByIndex((current) => ({ ...seeded, ...current }));
+    }
+  }, [eventHistory]);
+
+  useEffect(() => {
+    const seeded = outcomesFromHistory(eventHistory);
+    if (Object.keys(seeded).length > 0) {
+      setFigureOutcomesByIndex((current) => ({ ...seeded, ...current }));
+    }
+    const seededReasons = reasonsFromHistory(eventHistory);
+    if (Object.keys(seededReasons).length > 0) {
+      setFigureReasonsByIndex((current) => ({ ...seededReasons, ...current }));
     }
   }, [eventHistory]);
 
@@ -1762,7 +1786,7 @@ export function JobDetail(): React.ReactElement {
           titleByRef={titleByLocalIdMap}
         />
       )}
-      <FigureDescriptions jobId={id!} items={figureDescriptions} />
+      <FigureDescriptions jobId={id!} items={figureDescriptions} outcomes={figureOutcomesByIndex} reasons={figureReasonsByIndex} />
       <SectionResults items={sectionResults} />
       {showTiles && summary && (
         // Plain tiles -- no icon/hint/interactive. Confirmed against the

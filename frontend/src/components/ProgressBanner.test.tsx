@@ -900,7 +900,46 @@ describe('ProgressBanner', () => {
         ]}
       />,
     );
+    expect(screen.getByText(/~56% of this section \(est\.\)/i)).toBeInTheDocument(); // 20 of 36 finished: figure 21 has only started
+    expect(screen.queryByText(/no progress estimate for this step yet/i)).not.toBeInTheDocument();
+  });
+
+  it('counts a figure as done only when its description (or verdict) has arrived', () => {
+    const base = { phase: 'describe_figure' as const, branchIndex: null, branchCount: 0, blocksDone: 0, blocksTotal: 0, kbGrounded: false, kbCitations: [], figureIndex: 21, figureCount: 36 };
+    const started = render(
+      <ProgressBanner stage="parse" startedAt="2026-07-09T10:00:00Z" mode="survey" narrations={[{ ...base, message: 'Describing an embedded figure via the vision model (figure 21 of 36)' }]} />,
+    );
+    expect(screen.getByText(/~56% of this section \(est\.\)/i)).toBeInTheDocument();
+    started.unmount();
+    render(
+      <ProgressBanner stage="parse" startedAt="2026-07-09T10:00:00Z" mode="survey" narrations={[{ ...base, figureCaption: 'A diagram.', message: 'Described figure 21 of 36' }]} />,
+    );
     expect(screen.getByText(/~58% of this section \(est\.\)/i)).toBeInTheDocument();
+  });
+
+  it('names the whole-document overview step with its timer instead of "no progress estimate"', () => {
+    render(
+      <ProgressBanner
+        stage="parse"
+        startedAt="2026-07-09T10:00:00Z"
+        mode="survey"
+        narrations={[
+          {
+            phase: 'primer',
+            primerStep: 'reading',
+            elapsedSeconds: 130,
+            branchIndex: null,
+            branchCount: 0,
+            blocksDone: 0,
+            blocksTotal: 0,
+            kbGrounded: false,
+            kbCitations: [],
+            message: 'Reading the whole document to understand it - 2:10',
+          },
+        ]}
+      />,
+    );
+    expect(screen.getAllByText(/Reading the whole document to understand it - 2:10/i).length).toBeGreaterThan(0);
     expect(screen.queryByText(/no progress estimate for this step yet/i)).not.toBeInTheDocument();
   });
 

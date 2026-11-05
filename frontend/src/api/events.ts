@@ -110,6 +110,10 @@ export interface NarrationEvent {
     // every other phase's convention here.
     | 'dedup_check'
     | 'writing'
+    // Published by the orchestrator during the Parse phase, BEFORE ingestion starts: the whole-document overview ("primer") step.
+    // Without it the Parse phase sat on "Parsing document..." with nothing else for minutes. primerStep names the part that is
+    // running and elapsedSeconds the time spent in the step so far; message already carries both in words.
+    | 'primer'
     // Fired once, from /level's top-level exception handler, when an
     // unhandled exception (e.g. an LLM-call timeout) aborts the job --
     // replaces a flattened one-line AuditEntry with real structured context
@@ -125,6 +129,9 @@ export interface NarrationEvent {
   // (discover_types/create/link_parents/trace_links), not one flat burst;
   // null/undefined on every other phase.
   writeSubPhase?: 'discover_types' | 'create' | 'link_parents' | 'trace_links' | null;
+  // 'primer' only -- which part of the whole-document overview step is running (its elapsed time is elapsedSeconds below, shared
+  // with job_failed).
+  primerStep?: 'cached' | 'uploading' | 'processing' | 'reading' | 'done' | 'skipped' | 'timed_out' | 'failed';
   // Human-readable label for the section this event's branchIndex refers to
   // (typically its own first heading text) -- null/undefined when the
   // backend had nothing to label the section with (or for the whole-tree
@@ -179,6 +186,8 @@ export interface NarrationEvent {
   // applies when building Job.figureDescriptions. null on the real-caption
   // case (mirrors caption_status's own None default).
   figureCaptionStatus?: string | null;
+  /** With status 'insignificant': the vision model's own few words on why. */
+  figureCaptionReason?: string | null;
   // section_complete only: this branch's finished nodes, in generation
   // order -- null on every other phase.
   sectionNodes?: { type: string; title: string; text: string; qualityScore: number | null; customerId: string | null }[] | null;
@@ -270,7 +279,7 @@ export const INGESTION_NARRATION_PHASES = [
 // published by the orchestrator, not ingestion. Excluded from
 // INGESTION_NARRATION_PHASES above by design, not an oversight -- the sync
 // test only checks ingestion's own Phase Literal against the list above.
-const NON_INGESTION_NARRATION_PHASES = ['infer_hierarchy', 'generate_requirements', 'dedup_check', 'writing'] as const;
+const NON_INGESTION_NARRATION_PHASES = ['infer_hierarchy', 'generate_requirements', 'dedup_check', 'writing', 'primer'] as const;
 
 const KNOWN_NARRATION_PHASES: readonly string[] = [
   ...INGESTION_NARRATION_PHASES,

@@ -35,6 +35,7 @@ import type { JobStage, NarrationEvent } from '../api/events';
 // same file.
 const PHASE_SUBLABEL: Record<NarrationEvent['phase'], string> = {
   describe_figure: 'Describing figures',
+  primer: 'Reading the whole document',
   parse_done: 'Parsing complete',
   table_detected: 'Detecting tables',
   preparing_analysis: 'Preparing analysis',
@@ -92,6 +93,7 @@ const SKELETON_STAGE_SHARE = 0.3;
 // only updates once a WHOLE section finishes, which can be many minutes).
 const PHASE_START_WEIGHT: Record<NarrationEvent['phase'], number> = {
   describe_figure: 0,
+  primer: 0,
   parse_done: 0,
   table_detected: 0,
   preparing_analysis: 0,
@@ -240,6 +242,9 @@ export function ProgressBanner({
   // the metrics box showing real "no fixed step count" text instead of
   // rendering blank (see the "cannot be blank" fix below).
   const isPreparingAnalysis = latest?.phase === 'preparing_analysis';
+  // The whole-document overview has no fixed step count either; its message carries the part and the time, so that is what the
+  // metrics line shows instead of the generic "no progress estimate".
+  const isPrimerStep = latest?.phase === 'primer';
   let completedUnits: number | undefined;
   // Real denominator for THIS phase's progress -- almost always blocksTotal,
   // except describe_figure below, where blocksTotal isn't known yet (block
@@ -260,7 +265,9 @@ export function ProgressBanner({
     // "Working -- no progress estimate for this step yet." the entire time,
     // even though "figure N of 36" was already known and rendered right
     // above this same panel -- the two numbers just weren't wired together.
-    completedUnits = latest.figureIndex;
+    // A figure counts as done when its description or verdict has arrived (figureCaption is set on that event, never on the one
+    // that only announces the work); counting the figure being worked on showed "figure 5" with four finished.
+    completedUnits = latest.figureCaption ? latest.figureIndex : latest.figureIndex - 1;
     progressTotal = latest.figureCount;
   } else if (latest && latest.blocksTotal > 0 && !isTailPhase) {
     const averageSectionShare = latest.branchCount > 0 ? latest.blocksTotal / latest.branchCount : 0;
@@ -640,6 +647,8 @@ export function ProgressBanner({
                 </span>
               ) : clampedProgress !== undefined ? (
                 `~${Math.round(clampedProgress)}% of this section (est.)`
+              ) : isPrimerStep ? (
+                latest?.message || 'Reading the whole document to understand it.'
               ) : isTailPhase || isPreparingAnalysis ? (
                 'A single whole-document pass -- no fixed step count to measure against.'
               ) : (

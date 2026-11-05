@@ -33,6 +33,17 @@ describe('JobLifecycleSteps', () => {
     expect(stateOf('Analyze')).toBe('pending');
   });
 
+  it('keeps the Parse step current during the whole-document overview, even before the stage event arrives', () => {
+    render(<JobLifecycleSteps mode="survey" status="running" stage={null} latestNarrationPhase="primer" />);
+    expect(stateOf('Parse')).toBe('current');
+    expect(stateOf('Analyze')).toBe('pending');
+  });
+
+  it('does not keep Parse current for a stale overview narration once the job has moved on to analysis', () => {
+    render(<JobLifecycleSteps mode="survey" status="running" stage="infer_hierarchy_start" latestNarrationPhase="primer" />);
+    expect(stateOf('Analyze')).toBe('current');
+  });
+
   it('does not regress from Score back to Analyze during detect_conflicts/regroup_roots/infer_trace_links', () => {
     // infer_trace_links included -- confirmed live: leaving it out of this
     // guard regressed the stepper backward to "Analyze" during trace/coverage
