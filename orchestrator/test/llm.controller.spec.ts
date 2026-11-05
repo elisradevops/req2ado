@@ -313,6 +313,51 @@ describe('LlmController', () => {
     expect(res.end).toHaveBeenCalled();
   });
 
+  describe('chat disconnect', () => {
+    const chatBody = { messages: [{ role: 'user' as const, content: 'hi' }] };
+    const fakeRes = () => {
+      const handlers: Record<string, () => void> = {};
+      return {
+        res: { writableEnded: false, on: (event: string, handler: () => void) => { handlers[event] = handler; } } as any,
+        fire: (event: string) => handlers[event]?.(),
+      };
+    };
+
+    it('aborts the upstream chat call when the caller closes the connection before an answer is sent', async () => {
+      let signal: AbortSignal | undefined;
+      const chat = jest.fn().mockImplementation(
+        (_m: unknown, opts: { signal?: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            signal = opts.signal;
+            opts.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+          }),
+      );
+      const { controller } = makeController({ chat });
+      const { res, fire } = fakeRes();
+      const call = controller.chat(chatBody, USER_ID, res);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(signal?.aborted).toBe(false);
+      fire('close');
+      await expect(call).rejects.toThrow('aborted');
+      expect(signal?.aborted).toBe(true);
+    });
+
+    it('does not abort when the connection closes after the answer was fully sent, and a call without a response object still works', async () => {
+      let signal: AbortSignal | undefined;
+      const chat = jest.fn().mockImplementation(async (_m: unknown, opts: { signal?: AbortSignal }) => {
+        signal = opts.signal;
+        return { content: 'ok' };
+      });
+      const { controller } = makeController({ chat });
+      const { res, fire } = fakeRes();
+      await controller.chat(chatBody, USER_ID, res);
+      res.writableEnded = true;
+      fire('close');
+      expect(signal?.aborted).toBe(false);
+      await expect(controller.chat(chatBody, USER_ID)).resolves.toEqual({ content: 'ok' });
+    });
+  });
+
   describe('vision budget and disconnect', () => {
     const body = { prompt: 'describe this figure', images: [Buffer.from('img').toString('base64')] };
     const fakeRes = () => {

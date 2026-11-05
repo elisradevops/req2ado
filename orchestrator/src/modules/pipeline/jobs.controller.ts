@@ -18,6 +18,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { Throttle } from '@nestjs/throttler';
 import { Body } from '@nestjs/common';
 import type { Response } from 'express';
 import type { CanonicalDoc } from '@req2ado/shared-ts';
@@ -334,6 +335,9 @@ export class JobsController {
 
   // The optional AI summary of the document shown beside the overview (SURVEY wizard, step 3): written by one bounded model call from the small
   // deterministic input the preview returned, checked against it, and answered as null on any failure. The wizard never waits on it.
+  // A model call on the user's own connection with text the caller chose, so it is limited well below the global 200 per minute: the wizard
+  // asks once per document (and once more if the model is changed).
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('preview/summary')
   async previewSummary(
     @CurrentUser() user: SessionUser,

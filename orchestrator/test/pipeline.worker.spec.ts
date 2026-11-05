@@ -317,7 +317,7 @@ describe('runPipelineJob', () => {
     );
 
     expect(fakePrisma.job.update).toHaveBeenCalledWith({
-      where: { id: 'job-1' },
+      where: { id: 'job-1', status: { not: 'cancelled' } },
       data: {
         status: 'diff_ready',
         dryRunDiff: [],
@@ -368,7 +368,7 @@ describe('runPipelineJob', () => {
     // because this job's mode is 'baseline', which never calls an LLM at
     // all; a SURVEY job would record the effective model instead.
     expect(fakePrisma.job.update).toHaveBeenNthCalledWith(1, {
-      where: { id: 'job-1' },
+      where: { id: 'job-1', status: { not: 'cancelled' } },
       data: { status: 'running', startedAt: expect.any(Date), model: null },
     });
     expect(fakeJobEventsPublisher.publish).toHaveBeenNthCalledWith(1, 'job-1', 'parse');
@@ -942,7 +942,7 @@ describe('runPipelineJob', () => {
       expect.any(Function),
     );
     expect(fakePrisma.job.update).toHaveBeenCalledWith({
-      where: { id: 'job-1' },
+      where: { id: 'job-1', status: { not: 'cancelled' } },
       data: {
         status: 'diff_ready',
         dryRunDiff: [],
@@ -1606,7 +1606,7 @@ describe('runPipelineJob', () => {
     );
 
     expect(fakePrisma.job.update).toHaveBeenCalledWith({
-      where: { id: 'job-1' },
+      where: { id: 'job-1', status: { not: 'cancelled' } },
       data: {
         status: 'diff_ready',
         dryRunDiff: [],
@@ -1648,7 +1648,7 @@ describe('runPipelineJob', () => {
     fakeIngestionClient.level.mockResolvedValue({ nodes: [], kb_coverage: { files_available: 3, files_cited: 1 } });
     await runPipelineJob(job, deps);
     expect(fakePrisma.job.update).toHaveBeenCalledWith({
-      where: { id: 'job-1' },
+      where: { id: 'job-1', status: { not: 'cancelled' } },
       data: expect.objectContaining({ status: 'diff_ready', kbCoverage: { filesAvailable: 3, filesCited: 1 } }),
     });
 
@@ -1688,7 +1688,7 @@ describe('runPipelineJob', () => {
     );
 
     expect(fakePrisma.job.update).toHaveBeenCalledWith({
-      where: { id: 'job-1' },
+      where: { id: 'job-1', status: { not: 'cancelled' } },
       data: expect.objectContaining({
         // fig-b (no caption AND no name) is dropped -- nothing to show, same
         // rule live SSE narration already applies. fig-d (a name but no
@@ -1733,7 +1733,7 @@ describe('runPipelineJob', () => {
     );
 
     expect(fakePrisma.job.update).toHaveBeenCalledWith({
-      where: { id: 'job-1' },
+      where: { id: 'job-1', status: { not: 'cancelled' } },
       data: expect.objectContaining({
         figureDescriptions: [
           { figureIndex: 1, figureId: 'fig-a', name: null, caption: 'A block diagram.' },
@@ -1742,6 +1742,42 @@ describe('runPipelineJob', () => {
         ],
       }),
     });
+  });
+
+  it('keeps a figure that was judged not significant or failed even when the document gave it no name, with the model\'s reason, so a reload can still say what became of it', async () => {
+    fakeIngestionClient.ingest.mockResolvedValue({
+      blocks: [],
+      figures: [
+        { id: 'fig-a', caption: 'A block diagram.', name: null },
+        { id: 'fig-b', caption: null, name: null, caption_status: 'insignificant', caption_reason: 'A company logo.' },
+        { id: 'fig-c', caption: null, name: null, caption_status: 'vision_failed' },
+        { id: 'fig-d', caption: null, name: null },
+      ],
+    });
+    fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
+    fakeDryRunService.diff.mockResolvedValue([]);
+
+    await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        defaultLlmModel: 'gemma4:12b',
+      },
+    );
+
+    const stored = fakePrisma.job.update.mock.calls.map((c: any[]) => c[0].data.figureDescriptions).find(Boolean);
+    expect(stored).toEqual([
+      { figureIndex: 1, figureId: 'fig-a', name: null, caption: 'A block diagram.' },
+      { figureIndex: 2, figureId: 'fig-b', name: null, caption: null, captionStatus: 'insignificant', captionReason: 'A company logo.' },
+      { figureIndex: 3, figureId: 'fig-c', name: null, caption: null, captionStatus: 'vision_failed' },
+    ]);
   });
 
   it("extracts tables with a real caption from ingestion's /ingest response, keyed by the table's own id", async () => {
@@ -1772,7 +1808,7 @@ describe('runPipelineJob', () => {
     );
 
     expect(fakePrisma.job.update).toHaveBeenCalledWith({
-      where: { id: 'job-1' },
+      where: { id: 'job-1', status: { not: 'cancelled' } },
       data: expect.objectContaining({
         // t1 (no real caption) is dropped -- nothing to show, same rule
         // figureDescriptions already applies. Keyed by tableId, not a
@@ -2595,6 +2631,59 @@ describe('runPipelineJob', () => {
       });
     });
 
+    const baselineDeps = () => ({
+      ingestionClient: fakeIngestionClient as any,
+      dryRunService: fakeDryRunService as any,
+      idempotencyService: fakeIdempotencyService as any,
+      prisma: fakePrisma as any,
+      jobEventsPublisher: fakeJobEventsPublisher as any,
+      mcpClient: fakeMcpClient as any,
+      backfillService: fakeBackfillService as any,
+      adoCredentialResolver: fakeAdoCredentialResolver as any,
+      defaultLlmModel: 'gemma4:12b',
+    });
+    const baselineJob = { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' } as any;
+    const notFound = () => new Prisma.PrismaClientKnownRequestError('Record not found', { code: 'P2025', clientVersion: 'x' });
+    // these tests script findUnique/update; put the defaults back so no later test inherits them
+    afterEach(() => {
+      fakePrisma.job.update.mockReset();
+      fakePrisma.job.findUnique.mockReset().mockResolvedValue({ status: 'running' });
+    });
+
+    it('a cancel() landing between the start check and the "running" write is not overwritten: the write only matches a row that is not cancelled', async () => {
+      fakePrisma.job.findUnique.mockResolvedValueOnce({ status: 'running' }).mockResolvedValue({ status: 'cancelled' });
+      fakePrisma.job.update.mockRejectedValueOnce(notFound());
+      const result = await runPipelineJob(baselineJob, baselineDeps());
+      expect(result).toEqual([]);
+      expect(fakePrisma.job.update).toHaveBeenNthCalledWith(1, expect.objectContaining({ where: { id: 'job-1', status: { not: 'cancelled' } } }));
+      expect(fakeIngestionClient.ingest).not.toHaveBeenCalled();
+      expect(fakeJobEventsPublisher.publish).toHaveBeenCalledWith('job-1', 'cancelled');
+    });
+
+    it('a cancel() landing between the last check and the "diff_ready" write is not overwritten either', async () => {
+      fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+      fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
+      fakeDryRunService.diff.mockResolvedValue([]);
+      fakePrisma.job.update.mockImplementation(async (args: any) => {
+        if (args.data.status === 'diff_ready') {
+          fakePrisma.job.findUnique.mockResolvedValue({ status: 'cancelled' });
+          throw notFound();
+        }
+        return undefined;
+      });
+      const result = await runPipelineJob(baselineJob, baselineDeps());
+      expect(result).toEqual([]);
+      expect(fakePrisma.job.update).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'job-1', status: { not: 'cancelled' } }, data: expect.objectContaining({ status: 'diff_ready' }) }));
+      expect(fakeJobEventsPublisher.publish).toHaveBeenCalledWith('job-1', 'cancelled');
+      expect(fakeJobEventsPublisher.publish).not.toHaveBeenCalledWith('job-1', 'diff_ready');
+    });
+
+    it('a missing row that is not a cancel is still an error, not a silent stop', async () => {
+      fakePrisma.job.update.mockRejectedValueOnce(notFound());
+      fakePrisma.job.findUnique.mockResolvedValue({ status: 'running' });
+      await expect(runPipelineJob(baselineJob, baselineDeps())).rejects.toBeDefined();
+    });
+
     it('does not resurrect a job to "failed" when a different error throws from the tail after a concurrent cancel() already landed', async () => {
       // A DIFFERENT (non-JobCancelledError) error throws from inside the
       // tail -- e.g. dryRunService.diff's own internals -- while, in real
@@ -3041,7 +3130,9 @@ describe('runPipelineJob', () => {
       // EVERY job, forever. Failing open is correct; failing open silently
       // is not.
       const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
-      fakeOpenWebUiClient.uploadFile.mockRejectedValue(new Error('404 Not Found: /api/v1/files/'));
+      // The log carries the error's kind and HTTP status only: an upstream error object can hold headers, the base URL or a fragment of the
+      // request body (which is the customer's document).
+      fakeOpenWebUiClient.uploadFile.mockRejectedValue(Object.assign(new Error('404 Not Found: /api/v1/files/ secret-document-text'), { status: 404 }));
       fakePrimerCacheRedis.get.mockResolvedValue(null);
 
       try {
@@ -3064,10 +3155,8 @@ describe('runPipelineJob', () => {
 
         // Asserted BEFORE mockRestore() below -- mockRestore also resets the
         // spy's recorded calls, so asserting after it always sees zero.
-        expect(consoleErrorSpy).toHaveBeenCalledWith(
-          expect.stringContaining('job-1'),
-          expect.objectContaining({ message: expect.stringContaining('/api/v1/files/') }),
-        );
+        expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringMatching(/job-1.*Error.*404/));
+        expect(JSON.stringify(consoleErrorSpy.mock.calls)).not.toContain('secret-document-text');
       } finally {
         consoleErrorSpy.mockRestore();
       }

@@ -76,6 +76,18 @@ describe.each(families)('%s: the output limit is raised step by step and stays v
   });
 });
 
+describe('how a stuck vision rung ends', () => {
+  it('a rung that times out ends as a 504, not an untyped 500', async () => {
+    proxy = await startFakeProxy({ m: { ...BEHAVIORS.claudeOpus, latencyMs: 1_500, answer: ANSWER } });
+    const client = clientFor('m');
+    (client as unknown as { config: { LLM_REQUEST_TIMEOUT_MS: number } }).config.LLM_REQUEST_TIMEOUT_MS = 600_000;
+    (client as unknown as { rungTimeout: () => { timeout: number } }).rungTimeout = () => ({ timeout: 300 });
+    const error = await client.vision('Describe.', [png], { model: 'm' }).catch((e) => e);
+    expect(error).toBeInstanceOf(UpstreamHttpError);
+    expect((error as UpstreamHttpError).upstreamStatus).toBe(504);
+  });
+});
+
 describe('model limits are never exceeded', () => {
   it('a model with a stated output ceiling of 8192 is never asked for more once it has said so, and the end is a clear failure', async () => {
     proxy = await startFakeProxy({ m: { ...BEHAVIORS.claudeOpus, maxOutput: 8_192, reasoningTokens: 20_000, answer: ANSWER } });
@@ -192,6 +204,6 @@ describe('what is remembered for later figures', () => {
     const client = clientFor('m');
     await client.vision('Describe.', [png], { model: 'm', deadlineAtMs: Date.now() + 600_000 });
     await client.vision('Describe.', [png], { model: 'm', deadlineAtMs: Date.now() + 600_000 });
-    expect(limits('m')[3]).toBe(16_000); // the second figure starts at the highest remembered floor, then climbs again
+    expect(limits('m')).toEqual([300, 4_000, 16_000, 4_000, 16_000]); // the second figure restarts at the middle rung, not the ceiling
   });
 });

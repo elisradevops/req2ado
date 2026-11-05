@@ -221,8 +221,12 @@ export class EmptyLengthCompletion extends Error {
 /** The output limit a figure (vision) call starts with, and the attempts a full ladder from it needs: 4 rungs plus room for one adaptation each (parameter name, temperature, rate limit). */
 export const VISION_BASE_TOKENS = 300;
 export const LADDER_MAX_ATTEMPTS = 8;
-/** The highest floor kept for later calls: a one-off outlier figure must not make every later figure start at the ceiling. */
-export const REMEMBERED_FLOOR_MAX = 16_000;
+/**
+ * The highest output floor kept for later calls of a kind. A figure that needed the top rung is an outlier (one image the model thought hard
+ * about), so later figures restart at the middle rung instead of paying hidden reasoning at the ceiling; a study window's need is steady
+ * across windows, so its single raise (3000 -> 12000) is kept whole.
+ */
+export const REMEMBERED_FLOOR_MAX = { vision: 4_000, study: 12_000 } as const;
 
 /**
  * The most a figure (vision) or a document-study call is ever raised to: their answers are a few hundred to a few thousand tokens, so a

@@ -1086,3 +1086,11 @@ describe('JobsController.previewSummary', () => {
     expect(signal?.aborted).toBe(true);
   });
 });
+
+describe('POST /jobs/preview/summary limits', () => {
+  it('is throttled well below the global limit, because it is a model call on caller-chosen text', () => {
+    const handler = JobsController.prototype.previewSummary;
+    expect(Reflect.getMetadata('THROTTLER:LIMITdefault', handler)).toBeLessThanOrEqual(20);
+    expect(Reflect.getMetadata('THROTTLER:TTLdefault', handler)).toBe(60_000);
+  });
+});

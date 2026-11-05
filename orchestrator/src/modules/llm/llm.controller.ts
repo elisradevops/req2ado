@@ -50,19 +50,39 @@ export class LlmController {
     }
   }
 
+  /**
+   * When the caller closes its connection before an answer was sent (a cancelled job, a timed-out request), stop the upstream call
+   * too: otherwise a backend that serves one request at a time keeps working for nobody and the next call queues behind it.
+   */
+  private abortOnClose(res: Response | undefined, what: 'chat' | 'vision'): AbortSignal | undefined {
+    if (!res) return undefined;
+    const controller = new AbortController();
+    const startedAt = Date.now();
+    res.on('close', () => {
+      if (!res.writableEnded) {
+        this.logger.warn(`${what} call aborted: the caller closed the connection after ${Date.now() - startedAt} ms; the upstream request is cancelled`);
+        controller.abort();
+      }
+    });
+    return controller.signal;
+  }
+
   @Post('chat')
   async chat(
     @Body() rawBody: unknown,
     @Headers('x-req2ado-user-id') userId: string | undefined,
+    @Res({ passthrough: true }) res?: Response,
   ): Promise<{ content: string; toolCalls?: LlmToolCall[]; finishReason?: string }> {
     const parseResult = llmChatRequestSchema.safeParse(rawBody);
     if (!parseResult.success) {
       throw new BadRequestException('Invalid request body: messages must be a non-empty array');
     }
     const body = parseResult.data;
+    const signal = this.abortOnClose(res, 'chat');
     const llmClient = await this.resolveClient(userId);
     try {
       const result = await llmClient.chat(body.messages, {
+        ...(signal ? { signal } : {}),
         ...(body.model !== undefined ? { model: body.model } : {}),
         ...(body.temperature !== undefined ? { temperature: body.temperature } : {}),
         ...(body.seed !== undefined ? { seed: body.seed } : {}),
@@ -218,21 +238,7 @@ export class LlmController {
     const body = parseResult.data;
     const deadlineMs = Number(deadlineMsHeader);
     const deadlineAtMs = deadlineMsHeader && Number.isFinite(deadlineMs) && deadlineMs > 0 ? Date.now() + deadlineMs : undefined;
-    // When the caller closes its connection before an answer was sent (a cancelled job, a timed-out request), stop the
-    // upstream call too: otherwise a backend that serves one request at a time keeps working for nobody and the next call
-    // queues behind it.
-    let signal: AbortSignal | undefined;
-    const startedAt = Date.now();
-    if (res) {
-      const controller = new AbortController();
-      res.on('close', () => {
-        if (!res.writableEnded) {
-          this.logger.warn(`vision call aborted: the caller closed the connection after ${Date.now() - startedAt} ms; the upstream request is cancelled`);
-          controller.abort();
-        }
-      });
-      signal = controller.signal;
-    }
+    const signal = this.abortOnClose(res, 'vision');
     const opts =
       body.model !== undefined || body.mimeType !== undefined || body.responseSchema !== undefined || signal || deadlineAtMs !== undefined
         ? {

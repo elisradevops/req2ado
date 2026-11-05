@@ -109,7 +109,7 @@ describe('LlmController (e2e)', () => {
       .send({ messages: [{ role: 'user', content: 'hi' }], temperature: 0 });
     expect(fakeOpenWebUiClient.chat).toHaveBeenCalledWith(
       [{ role: 'user', content: 'hi' }],
-      { temperature: 0 },
+      { temperature: 0, signal: expect.any(AbortSignal) },
     );
   });
 

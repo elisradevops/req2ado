@@ -242,7 +242,9 @@ export async function runPrimerStep(input: PrimerStepInput): Promise<PrimerStepR
     } else {
       // A systematically failing primer (for example LLM_BASE_URL pointing at raw Ollama, which has no file API) must not be invisible.
       // eslint-disable-next-line no-console -- worker process logging
-      console.error(`Whole-document primer failed for job ${job.id} (leveling proceeds without it):`, error);
+      // The kind and HTTP status only, never the error object: an upstream error can carry headers, the base URL or a fragment of the request (the document).
+      const status = typeof (error as { status?: unknown })?.status === 'number' ? ` (HTTP ${(error as { status: number }).status})` : '';
+      console.error(`Whole-document primer failed for job ${job.id}: ${error instanceof Error ? error.name : typeof error}${status}; leveling proceeds without it`);
       say('failed', 'The document overview could not be generated; continuing without it.');
       warnings.push(warning('error', 'The whole-document overview could not be generated, so analysis ran without it. Items are otherwise unaffected.'));
     }

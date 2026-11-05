@@ -208,6 +208,20 @@ async function assertNotCancelled(prisma: PrismaClient, jobId: string): Promise<
   }
 }
 
+/**
+ * A status write that never overwrites a cancel: it only matches a row that is not 'cancelled', so a cancel() landing between the last
+ * check and this write (the check and the write are separate round trips) is kept instead of being flipped back to 'running' or
+ * 'diff_ready'. No matching row ends as the same JobCancelledError every other cancel does; a row missing for any other reason is still an error.
+ */
+async function updateUnlessCancelled(prisma: PrismaClient, jobId: string, data: Prisma.JobUpdateInput): Promise<void> {
+  try {
+    await prisma.job.update({ where: { id: jobId, status: { not: 'cancelled' } }, data });
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2025') await assertNotCancelled(prisma, jobId);
+    throw err;
+  }
+}
+
 /** How often the worker looks for a cancel while a long call runs. A cancel() lands in the HTTP process, not here, so the status in the database is the only channel. */
 export const CANCEL_POLL_MS = 2_000;
 
@@ -254,6 +268,8 @@ interface LeveledFigure {
   caption: string | null;
   // Why a figure has no caption when the vision call itself failed (ingestion's Figure.caption_status).
   caption_status?: 'insignificant' | 'vision_failed' | null;
+  // The vision model's one-line reason for judging a figure not significant (ingestion's Figure.caption_reason).
+  caption_reason?: string | null;
   // The author's own short title for this figure (parsed from a document
   // "Figure N: Title" caption line, or an LLM-generated fallback -- see
   // ingestion's Figure.name docstring) -- distinct from `caption`, which
@@ -498,10 +514,7 @@ export async function runPipelineJob(
     // (resolveDefaultChatModel's own fallback chain never returns empty),
     // so without this guard every BASELINE row would falsely record a
     // model it never used.
-    await deps.prisma.job.update({
-      where: { id: job.id },
-      data: { status: 'running', startedAt: new Date(), model: job.mode === 'survey' ? model : null },
-    });
+    await updateUnlessCancelled(deps.prisma, job.id, { status: 'running', startedAt: new Date(), model: job.mode === 'survey' ? model : null });
     await deps.jobEventsPublisher.publish(job.id, 'parse');
     // Resolved BEFORE ingest (rather than after, as before) so it's ready
     // for maybeBackfillAreaPath below without a second, redundant vault
@@ -780,8 +793,11 @@ export async function runPipelineJob(
         caption: figure.caption,
         // Why there is no caption (vision failed vs. not worth describing); absent when there is a caption.
         ...(figure.caption_status ? { captionStatus: figure.caption_status } : {}),
+        ...(figure.caption_reason ? { captionReason: figure.caption_reason } : {}),
       }))
-      .filter((entry) => Boolean(entry.caption) || Boolean(entry.name));
+      // A figure that ended without a description is kept too, with why: a reload of the job page can only say what became of it from here
+      // (the event history that told it live holds the last 50 events, fewer than a document with many figures produces).
+      .filter((entry) => Boolean(entry.caption) || Boolean(entry.name) || Boolean(entry.captionStatus));
     // Every figure with a real caption, regardless of node attachment --
     // used below to keep the prune step from deleting a figure this SAME
     // panel still promises an image for (see that comment for the full
@@ -1206,9 +1222,7 @@ export async function runPipelineJob(
     // cast past Prisma's generated InputJsonValue type (its structural check
     // does not resolve concrete array-of-interface types against the JSON
     // union even though the runtime value is valid JSON).
-    await deps.prisma.job.update({
-      where: { id: job.id },
-      data: {
+    await updateUnlessCancelled(deps.prisma, job.id, {
         status: 'diff_ready',
         dryRunDiff: resolvedDiff as any,
         warnings: [
@@ -1260,7 +1274,6 @@ export async function runPipelineJob(
         tableCount: (doc.tables ?? []).length,
         cellCount: (doc.tables ?? []).reduce((n, t) => n + (t.cells ?? []).reduce((rn, row) => rn + row.length, 0), 0),
         diffReadyAt: new Date(),
-      },
     });
     await deps.prisma.auditEntry.create({
       data: {

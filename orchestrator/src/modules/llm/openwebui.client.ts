@@ -187,7 +187,7 @@ export class OpenWebUiClient implements LlmClient {
     return {
       learned: { ...known, rejected: known?.rejected ?? new Set<string>(), maxTokensFloor: this.kindFloors.get(key) },
       remember: ({ maxTokensFloor, ...rest }: LearnedUpdate): void => {
-        if (maxTokensFloor !== undefined) this.kindFloors.set(key, Math.min(maxTokensFloor, REMEMBERED_FLOOR_MAX));
+        if (maxTokensFloor !== undefined) this.kindFloors.set(key, Math.min(maxTokensFloor, REMEMBERED_FLOOR_MAX[kind]));
         if (Object.keys(rest).length > 0) this.rememberConstraint(model, rest);
       },
     };
@@ -1090,7 +1090,11 @@ export class OpenWebUiClient implements LlmClient {
         const params = buildParams(adaptation);
         attemptsMade += 1;
         const requestOptions = { ...this.rungTimeout(), ...(signal ? { signal } : {}) };
-        const response = await (Object.keys(requestOptions).length > 0 ? this.openai.chat.completions.create(params, requestOptions) : this.openai.chat.completions.create(params));
+        const response = await (Object.keys(requestOptions).length > 0 ? this.openai.chat.completions.create(params, requestOptions) : this.openai.chat.completions.create(params)).catch((err: unknown) => {
+          // A rung cut at the bound is a timeout the caller can tell from a server error (and does not resend), as chat does.
+          if (err instanceof OpenAI.APIConnectionTimeoutError) throw new UpstreamHttpError(504, 'Upstream did not answer within the per-attempt time bound');
+          throw err;
+        });
         assertCompletion(response);
         const text = response.choices[0]?.message?.content ?? '';
         lastFinishReason = response.choices[0]?.finish_reason ?? 'unknown';
