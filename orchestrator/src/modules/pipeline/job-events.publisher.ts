@@ -31,7 +31,7 @@ export type JobStage =
 // match frontend NarrationEvent's existing convention exactly -- no new
 // per-phase fields needed for a plain N-of-M counter.
 export interface OrchestratorNarration {
-  phase: 'dedup_check' | 'writing';
+  phase: 'dedup_check' | 'writing' | 'primer';
   blocksDone: number;
   blocksTotal: number;
   // 'writing' only -- confirm() is not one flat write burst but several
@@ -43,6 +43,9 @@ export interface OrchestratorNarration {
   // lookup, so the UI can show which actual item is involved instead of
   // just a bare N-of-M count.
   currentTitle?: string;
+  // 'primer' only -- the whole-document overview step that runs before ingestion: which part of it is running and for how long.
+  primerStep?: 'cached' | 'uploading' | 'processing' | 'reading' | 'done' | 'skipped' | 'timed_out' | 'failed';
+  elapsedSeconds?: number;
   message: string;
 }
 
@@ -137,9 +140,28 @@ export class JobEventsPublisher implements OnModuleDestroy {
     // same key via LRANGE. Same key/list convention ingestion's own
     // NarrationPublisher (Python side) uses for its own narration events.
     const logKey = `job-events:${jobId}:narration-log`;
-    await this.redis.rpush(logKey, payload);
-    await this.redis.ltrim(logKey, -NARRATION_LOG_MAX_ENTRIES, -1);
+    // The overview step sends a progress line every few seconds while one part of it runs. Every line goes out live (so the timer
+    // ticks), but the replay list keeps only the newest line of the same part: otherwise a slow step would push the rest of the
+    // history out of the capped list and a reconnecting page would replay mostly heartbeats.
+    if (narration.phase === 'primer' && (await this.replacesLastPrimerLine(logKey, narration.primerStep))) {
+      await this.redis.lset(logKey, -1, payload);
+    } else {
+      await this.redis.rpush(logKey, payload);
+      await this.redis.ltrim(logKey, -NARRATION_LOG_MAX_ENTRIES, -1);
+    }
     await this.redis.expire(logKey, CURRENT_STAGE_TTL_SECONDS);
     await this.redis.publish(`job-events:${jobId}`, payload);
+  }
+
+  // True when the newest replay-list entry is an overview line for the same part, so a new line replaces it.
+  private async replacesLastPrimerLine(logKey: string, primerStep: string | undefined): Promise<boolean> {
+    try {
+      const last = await this.redis.lindex(logKey, -1);
+      if (!last) return false;
+      const parsed = JSON.parse(last) as { phase?: string; primerStep?: string };
+      return parsed.phase === 'primer' && parsed.primerStep === primerStep;
+    } catch {
+      return false; // an unreadable list or entry just means this line is appended as before
+    }
   }
 }

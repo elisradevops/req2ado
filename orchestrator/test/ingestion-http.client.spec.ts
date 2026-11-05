@@ -28,6 +28,21 @@ describe('IngestionHttpClient', () => {
     expect(options.body).toBeInstanceOf(FormData);
   });
 
+  it('passes the abort signal to the /ingest request, so a cancelled job stops the parse and its figure calls', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ blocks: [] }) });
+    const controller = new AbortController();
+    await new IngestionHttpClient('http://ingestion.internal').ingest(
+      Buffer.from('x'), 'x.txt', false, 'survey', 'job-1', undefined, undefined, 'user-1', undefined, undefined, controller.signal,
+    );
+    expect((global.fetch as jest.Mock).mock.calls[0][1].signal).toBe(controller.signal);
+  });
+
+  it('sends no signal when none is given (preview and every earlier call site)', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ blocks: [] }) });
+    await new IngestionHttpClient('http://ingestion.internal').ingest(Buffer.from('x'), 'x.txt');
+    expect((global.fetch as jest.Mock).mock.calls[0][1].signal).toBeUndefined();
+  });
+
   it('uses the long-running dispatcher for /ingest, same as /level', async () => {
     // Regression: /ingest previously used the plain default-timeout fetch --
     // fine when it was pure CPU-bound parsing, but real job submission's

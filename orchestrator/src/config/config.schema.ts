@@ -102,6 +102,15 @@ export const configSchema = z.object({
   // orchestrator's IngestionHttpClient LONG_RUNNING_AGENT (1h), so the
   // innermost hop always fails first with real margin to spare.
   LLM_REQUEST_TIMEOUT_MS: z.coerce.number().default(600_000),
+  // The whole-document primer (the first long step of a SURVEY job) may take this long in total (upload, processing, reading)
+  // before the job carries on without it. 0 = no limit (the behaviour before this existed). Kept well under
+  // LLM_REQUEST_TIMEOUT_MS and below the ~300 s cut production puts on an upstream call.
+  PRIMER_BUDGET_SECONDS: z.coerce.number().min(0).default(180),
+  // How often the step publishes a progress line with the elapsed time while a part of it runs.
+  PRIMER_HEARTBEAT_SECONDS: z.coerce.number().min(1).default(10),
+  // After a primer timeout the same document and model skip the step for this long, so a re-run does not wait the whole budget
+  // again. 0 = never remembered.
+  PRIMER_SKIP_MEMORY_SECONDS: z.coerce.number().min(0).default(3600),
   EMBED_TRANSPORT: z.enum(['ollama', 'openai']).default('ollama'),
   EMBED_BASE_URL: z.string().optional(),
   EMBED_MODEL: z.string().min(1),

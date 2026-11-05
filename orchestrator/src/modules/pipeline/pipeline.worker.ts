@@ -1,6 +1,7 @@
 import { describeFailure } from './failure-reason';
 import { JobResultCache, hashCatalog, isDegradedResult, kbVersionFor, type CachedResult } from './result-cache';
 import crypto from 'crypto';
+import { DEFAULT_PRIMER_OPTIONS, runPrimerStep, type PrimerCache, type PrimerStepOptions } from './primer.step';
 import { Prisma } from '@prisma/client';
 import type { PrismaClient } from '@prisma/client';
 import type { IngestionHttpClient } from './ingestion-http.client';
@@ -26,39 +27,6 @@ import { splitProposal, type DiffProposal } from './description-html';
 // workflow, short enough that a stale scan self-heals within a day with
 // zero manual action.
 const AREA_PATH_BACKFILL_STALE_AFTER_MS = 24 * 60 * 60 * 1000;
-
-// The primer now runs BEFORE /ingest (figures need document context during
-// parsing, not just /level) -- there is no parsed `doc` yet to size num_ctx
-// against. Per the design's explicit direction: don't reinvent a client-
-// side size heuristic (page-count, raw-byte-count) here -- fixed at this
-// deployment's real model ceiling (see the deleted PRIMER_NUM_CTX_BUCKETS'
-// own comment: 32_768 is qwen2.5:32b-instruct/qwen3.6:35b's real native
-// context window). A document whose real text exceeds this is an accepted,
-// explicit tradeoff -- it silently loses primer enrichment (Open WebUI's
-// own file-context handling may itself truncate or error; either way this
-// call's fail-open catch below absorbs it) rather than failing the job.
-const PRIMER_FIXED_NUM_CTX = 32_768;
-
-// How long a computed primer stays cached in Redis by content hash -- long
-// enough that a resubmitted/duplicate document within the same day never
-// re-pays the real upload+chat cost, short enough that a stale cache entry
-// self-heals within a day with zero manual action. Mirrors
-// AREA_PATH_BACKFILL_STALE_AFTER_MS's own "throttle, don't disable" shape.
-const PRIMER_CONTEXT_CACHE_TTL_SECONDS = 86_400;
-
-// Hard clamp on the primer string, independent of maxTokens below. The
-// prompt asks for "2-3 short sentences", but a model ignoring that
-// instruction is a realistic failure mode, not an edge case -- and
-// primerContext is threaded into /level as a URL query param
-// (ingestion-http.client.ts), so an unbounded reply risks exceeding
-// uvicorn/h11's request-line size limit and throwing a 400/431 from the
-// /level call itself, OUTSIDE this block's own try/catch. That would fail
-// the whole job on exactly the kind of soft LLM misbehavior this primer's
-// fail-open design exists to absorb. A few hundred tokens' worth of
-// characters is already generous for "document type/purpose/domain
-// conventions" -- clamped here as the final backstop regardless of what
-// maxTokens below actually bounds output to.
-const PRIMER_CONTEXT_MAX_CHARS = 1000;
 
 /**
  * Closes the "manually-created ADO items are invisible to dedup" gap for
@@ -126,15 +94,8 @@ export interface PipelineJobInput {
   model?: string;
 }
 
-// Minimal shape the primer wiring block below actually needs from a Redis
-// client -- deliberately NOT the full ioredis `Redis` type (whose `set`
-// overloads carry a lot of surface this call site never touches), same
-// "only the methods this consumer actually uses" spirit as every other
-// narrowly-typed dep on PipelineWorkerDeps below.
-interface PrimerCacheRedis {
-  get(key: string): Promise<string | null>;
-  set(key: string, value: string, mode: 'EX', seconds: number): Promise<unknown>;
-}
+// The primer's cache is the narrow Redis shape primer.step.ts declares (get/set only), not the full ioredis type.
+type PrimerCacheRedis = PrimerCache;
 
 export interface PipelineWorkerDeps {
   ingestionClient: IngestionHttpClient;
@@ -195,6 +156,8 @@ export interface PipelineWorkerDeps {
   // DIFFERENT (stale, global) model name -- ingestion's _resolve_caps(name)
   // has no way to know what actually ran.
   defaultLlmModel: string;
+  /** How often a running ingest checks whether the job was cancelled (ms). Default 2000; tests shorten it. */
+  cancelPollMs?: number;
   // Settings window (NEW-07) -- optional, same graceful-degrade convention
   // as openWebUiClient/primerCacheRedis above: an older/mocked deps object
   // predating this field simply never fetches a live threshold, and the
@@ -207,6 +170,8 @@ export interface PipelineWorkerDeps {
   // sends it on if it's actually set, so a deployment that never
   // configures it keeps ingestion's own unchanged 'eng' default.
   ocrLanguages?: string;
+  /** Budget, heartbeat and skip memory of the whole-document primer step (see primer.step.ts). Absent: the defaults below. */
+  primerOptions?: PrimerStepOptions;
 }
 
 /**
@@ -225,18 +190,53 @@ class JobCancelledError extends Error {
 }
 
 /**
- * Cooperative-cancellation checkpoint. There's no cross-process abort
- * channel to interrupt an in-flight ingestionClient.level() HTTP call (that
- * runs in this same sandboxed child process, not something a concurrent
- * cancel() request from the HTTP process can reach into) -- so cancellation
- * only takes effect the next time this function is called, not mid-call.
- * The one call site that matters most is right after level() resolves,
- * since that's the dominant wall-clock cost for a real SURVEY job.
+ * Cooperative-cancellation checkpoint. A cancel() lands in the HTTP process, which
+ * cannot reach into this worker, so the job status in the database is the channel:
+ * this function reads it and takes effect the next time it is called, not mid-call.
+ * The ingest call is the exception: withCancelWatch (below) polls the same status
+ * while it runs and aborts the call. An in-flight level() call is NOT watched yet,
+ * so for it a cancel still waits for this checkpoint right after level() resolves,
+ * the dominant wall-clock cost of a real SURVEY job.
  */
 async function assertNotCancelled(prisma: PrismaClient, jobId: string): Promise<void> {
   const current = await prisma.job.findUnique({ where: { id: jobId }, select: { status: true } });
   if (current?.status === 'cancelled') {
     throw new JobCancelledError(jobId);
+  }
+}
+
+/** How often the worker looks for a cancel while a long call runs. A cancel() lands in the HTTP process, not here, so the status in the database is the only channel. */
+export const CANCEL_POLL_MS = 2_000;
+
+
+/**
+ * Runs `run` with an abort signal that fires within `pollMs` of the job being cancelled, so a long call (the parse and its
+ * figure captioning can take many minutes) stops at once instead of at the next checkpoint. Ends as a JobCancelledError, the
+ * same as every other cancel. The poll stops when `run` ends, however it ends.
+ */
+async function withCancelWatch<T>(prisma: PrismaClient, jobId: string, pollMs: number, run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  let polling = false;
+  const timer = setInterval(() => {
+    if (polling || controller.signal.aborted) return;
+    polling = true;
+    prisma.job
+      .findUnique({ where: { id: jobId }, select: { status: true } })
+      .then((current) => {
+        if (current?.status === 'cancelled') controller.abort();
+      })
+      .catch(() => undefined) // a failed read is not a cancel: the next poll tries again
+      .finally(() => {
+        polling = false;
+      });
+  }, pollMs);
+  try {
+    return await run(controller.signal);
+  } catch (error) {
+    if (controller.signal.aborted) throw new JobCancelledError(jobId);
+    throw error;
+  } finally {
+    clearInterval(timer);
   }
 }
 
@@ -553,109 +553,25 @@ export async function runPipelineJob(
     if (job.mode === 'survey' && deps.openWebUiClientFactory && deps.primerCacheRedis && job.userId) {
       const openWebUiClientFactory = deps.openWebUiClientFactory;
       const primerCacheRedis = deps.primerCacheRedis;
-      try {
-        // Resolved fresh per job from job.userId -- never cached/reused
-        // across jobs at this call site itself (the factory has its own
-        // internal per-user cache, keyed correctly). See
-        // PipelineWorkerDeps.openWebUiClientFactory's own doc comment for
-        // why a shared client instance here would be a credential leak.
-        const openWebUiClient = await openWebUiClientFactory.getClientFor(job.userId);
-        const contentHash = crypto.createHash('sha256').update(job.fileBuffer).digest('hex');
-        const cacheKey = `primer:${model}:${contentHash}`;
-        const cached = await primerCacheRedis.get(cacheKey);
-        if (cached !== null) {
-          primerContext = cached;
-        } else {
-          const fileId = await openWebUiClient.uploadFile(job.fileBuffer, job.filename);
-          try {
-            const processed = await openWebUiClient.pollFileProcessed(fileId, 60_000);
-            if (processed) {
-              // chatWithFullFileContext, NOT chat() -- chat() goes through
-              // the OpenAI SDK, which always POSTs to
-              // {baseURL}/chat/completions; with LLM_BASE_URL routed
-              // through Open WebUI's Ollama-compat proxy, that path never
-              // runs the native file-context middleware at all (confirmed
-              // live and against Open WebUI v0.8.12 source -- see
-              // chatWithFullFileContext's own doc comment). temperature/
-              // seed are hardcoded inside that method to the same 0/0 this
-              // primer has always needed: this text is (a) threaded into
-              // every branch's analyze_section prompt, where sampled
-              // wording shifts branch/node structure (the confirmed 74 vs
-              // ~120 node variance), and (b) part of the figure-caption
-              // cache KEY (ingestion main.py's _figure_caption_cache_key),
-              // so a re-sampled primer after this primer cache's own TTL
-              // would invalidate every figure's 7-day cache entry for the
-              // SAME document.
-              const askPrimer = (primerModel: string) => openWebUiClient.chatWithFullFileContext(
-                'Read the attached document in full. In 2-3 short sentences, describe: the ' +
-                  'document type and purpose, the system it specifies (if any), and the domain ' +
-                  "conventions or phrasing style it uses. Do not list sections or definitions.",
-                fileId,
-                {
-                  // Bounds worst-case latency AND output size -- same
-                  // "structured extraction, not creative writing" reasoning
-                  // OpenWebUiClient.vision()'s own maxTokens already applies
-                  // to figure captions, here applied to a one-shot
-                  // document-orientation summary. Without this, a model
-                  // ignoring "2-3 short sentences" could produce a reply
-                  // large enough to blow past /level's own query-string
-                  // size limit (see PRIMER_CONTEXT_MAX_CHARS' own comment)
-                  // -- this cap plus that clamp are two independent
-                  // backstops against the same real risk.
-                  maxTokens: 300,
-                  // The job's own model (also part of the cache key above), not the client's configured default.
-                  model: primerModel,
-                  // Fixed at PRIMER_FIXED_NUM_CTX (see its own comment
-                  // above for why) -- passed explicitly because Ollama
-                  // otherwise runs at its own small default window
-                  // regardless of prompt size and truncates the input with
-                  // no error at all.
-                  numCtx: PRIMER_FIXED_NUM_CTX,
-                },
-              );
-              // The native file-context route only answers for models Open WebUI itself lists (claude-sonnet-4-6
-              // came back "Model not found" there while working everywhere else). The primer is only an
-              // orientation hint, so a job model it refuses falls back once to the client's configured model.
-              let result;
-              try {
-                result = await askPrimer(model);
-              } catch (primerError) {
-                if (model === openWebUiClient.chatModel) throw primerError;
-                // eslint-disable-next-line no-console -- worker process logging
-                console.warn(`Whole-document primer refused model ${model} for job ${job.id}; retrying with ${openWebUiClient.chatModel}`);
-                result = await askPrimer(openWebUiClient.chatModel);
-              }
-              primerContext = result.content?.trim().slice(0, PRIMER_CONTEXT_MAX_CHARS) || undefined;
-              if (primerContext) {
-                await primerCacheRedis.set(cacheKey, primerContext, 'EX', PRIMER_CONTEXT_CACHE_TTL_SECONDS);
-              }
-            }
-          } finally {
-            await openWebUiClient.deleteFile(fileId);
-          }
-        }
-      } catch (error) {
-        // Fail-open, same convention as linkTypeCatalog below -- a primer
-        // failure must never block or fail the job.
-        primerContext = undefined;
-        // ...but it must not be INVISIBLE either. A systematically-failing
-        // primer (most likely cause by far: LLM_BASE_URL pointing at raw
-        // Ollama, which has no /api/v1/files/ endpoint at all -- see this
-        // block's own comment above and k8s/01-configmap.yaml's default)
-        // otherwise fails on every job forever with zero signal that the
-        // capability isn't working. Logged with the job id, same
-        // console.error convention every other fail-open path in this file
-        // already uses.
-        // eslint-disable-next-line no-console -- worker process logging, not app logging
-        console.error(`Whole-document primer failed for job ${job.id} (leveling proceeds without it):`, error);
-        primerWarnings.push({
-          kind: 'primer_unavailable',
-          severity: 'pipeline_issue',
-          nodeIds: [],
-          detail: {},
-          raw: 'The whole-document overview could not be generated, so analysis ran without it. Items are otherwise unaffected.',
-        });
-      }
+      const primerUserId = job.userId;
+      // The step names each part for the user, is bounded by a budget, and stops within the cancel-poll interval when the job
+      // is cancelled (see primer.step.ts). It stays fail-open: it only ever leaves primerContext undefined.
+      const primer = await withCancelWatch(deps.prisma, job.id, deps.cancelPollMs ?? CANCEL_POLL_MS, (cancelSignal) =>
+        runPrimerStep({
+          job,
+          model,
+          // Resolved fresh per job from job.userId -- never reused across jobs at this call site (the factory has its own
+          // per-user cache). See PipelineWorkerDeps.openWebUiClientFactory's doc comment: a shared client would leak credentials.
+          getClient: () => openWebUiClientFactory.getClientFor(primerUserId),
+          cache: primerCacheRedis,
+          narrate: (narration) =>
+            deps.jobEventsPublisher.publishNarration(job.id, { phase: 'primer', blocksDone: 0, blocksTotal: 0, ...narration }),
+          options: deps.primerOptions ?? DEFAULT_PRIMER_OPTIONS,
+          signal: cancelSignal,
+        }),
+      );
+      primerContext = primer.primerContext;
+      primerWarnings.push(...primer.warnings);
     }
 
     // Runs concurrently with the area-path backfill check (see
@@ -770,22 +686,26 @@ export async function runPipelineJob(
         console.info(`Job ${job.id}: result cache not consulted (knowledge base or ingestion scope unreadable), running in full`);
       }
     }
-    const [doc] = await Promise.all([
-      cached
-        ? Promise.resolve(cached.doc as Awaited<ReturnType<typeof deps.ingestionClient.ingest>>)
-        : deps.ingestionClient.ingest(
-            job.fileBuffer,
-            job.filename,
-            visionPlan?.skip ?? false,
-            job.mode,
-            job.id,
-            primerContext,
-            deps.ocrLanguages,
-            job.userId ?? undefined,
-            ...(visionPlan ? [model, visionPlan.skipReason] : []),
-          ),
-      maybeBackfillAreaPath(deps.prisma, deps.backfillService, job.areaPath, credential, job.userId ?? undefined),
-    ]);
+    const [doc] = await withCancelWatch(deps.prisma, job.id, deps.cancelPollMs ?? CANCEL_POLL_MS, (cancelSignal) =>
+      Promise.all([
+        cached
+          ? Promise.resolve(cached.doc as Awaited<ReturnType<typeof deps.ingestionClient.ingest>>)
+          : deps.ingestionClient.ingest(
+              job.fileBuffer,
+              job.filename,
+              visionPlan?.skip ?? false,
+              job.mode,
+              job.id,
+              primerContext,
+              deps.ocrLanguages,
+              job.userId ?? undefined,
+              visionPlan ? model : undefined,
+              visionPlan?.skipReason,
+              cancelSignal,
+            ),
+        maybeBackfillAreaPath(deps.prisma, deps.backfillService, job.areaPath, credential, job.userId ?? undefined),
+      ]),
+    );
 
     // Figure storage happens during /ingest, not /level -- a store()
     // failure there (main.py's _describe_figure_with_progress) can never

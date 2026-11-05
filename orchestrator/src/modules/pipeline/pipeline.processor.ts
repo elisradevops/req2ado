@@ -144,5 +144,10 @@ export default async function processPipelineJob(job: SandboxedJob<QueuedJobData
     resultCache,
     settingsService,
     ocrLanguages: config.OCR_LANGUAGES,
+    primerOptions: {
+      budgetSeconds: config.PRIMER_BUDGET_SECONDS,
+      heartbeatSeconds: config.PRIMER_HEARTBEAT_SECONDS,
+      skipMemorySeconds: config.PRIMER_SKIP_MEMORY_SECONDS,
+    },
   });
 }

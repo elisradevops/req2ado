@@ -85,7 +85,7 @@ describe('runPipelineJob', () => {
 
     // Trailing undefined is ocrLanguages (deps has no ocrLanguages set here)
     // -- see the dedicated NEW-04 test below for the real-value case.
-    expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(Buffer.from('text'), 'x.txt', false, 'baseline', 'job-1', undefined, undefined, undefined);
+    expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(Buffer.from('text'), 'x.txt', false, 'baseline', 'job-1', undefined, undefined, undefined, undefined, undefined, expect.any(AbortSignal));
     expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [{ id: 'b0' }] }, 'baseline', undefined, [], 'gemma4:12b', 'job-1', undefined);
     expect(result).toEqual([{ localId: 'n0', action: 'create', existingAdoId: null, proposal: null }]);
   });
@@ -111,7 +111,7 @@ describe('runPipelineJob', () => {
       },
     );
 
-    expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(Buffer.from('text'), 'x.txt', false, 'baseline', 'job-1', undefined, 'heb+eng', undefined);
+    expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(Buffer.from('text'), 'x.txt', false, 'baseline', 'job-1', undefined, 'heb+eng', undefined, undefined, undefined, expect.any(AbortSignal));
   });
 
   it("forwards job.userId to ingestionClient.ingest as the 8th argument, so figure-vision captioning during /ingest resolves the submitting user's own Open WebUI connection", async () => {
@@ -134,7 +134,7 @@ describe('runPipelineJob', () => {
       },
     );
 
-    expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(Buffer.from('text'), 'x.txt', false, 'baseline', 'job-1', undefined, undefined, 'user-1');
+    expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(Buffer.from('text'), 'x.txt', false, 'baseline', 'job-1', undefined, undefined, 'user-1', undefined, undefined, expect.any(AbortSignal));
   });
 
   describe('figure vision plan (SURVEY)', () => {
@@ -165,7 +165,7 @@ describe('runPipelineJob', () => {
       const list = jest.fn().mockResolvedValue([{ id: 'claude-opus-4-8', name: 'Opus', vision: true }]);
       await runPipelineJob(surveyJob, depsWith(list));
       expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(
-        Buffer.from('text'), 'x.txt', false, 'survey', 'job-1', undefined, undefined, 'user-1', 'claude-opus-4-8', undefined,
+        Buffer.from('text'), 'x.txt', false, 'survey', 'job-1', undefined, undefined, 'user-1', 'claude-opus-4-8', undefined, expect.any(AbortSignal),
       );
     });
 
@@ -173,7 +173,7 @@ describe('runPipelineJob', () => {
       const list = jest.fn().mockResolvedValue([{ id: 'claude-opus-4-8', name: 'Opus', vision: false }]);
       await runPipelineJob(surveyJob, depsWith(list));
       expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(
-        Buffer.from('text'), 'x.txt', true, 'survey', 'job-1', undefined, undefined, 'user-1', 'claude-opus-4-8', 'model_not_vision_capable',
+        Buffer.from('text'), 'x.txt', true, 'survey', 'job-1', undefined, undefined, 'user-1', 'claude-opus-4-8', 'model_not_vision_capable', expect.any(AbortSignal),
       );
     });
 
@@ -2458,6 +2458,68 @@ describe('runPipelineJob', () => {
       });
     });
 
+    it('aborts an in-flight ingest as soon as the job is cancelled and ends as cancelled, not failed', async () => {
+      let ingestSignal: AbortSignal | undefined;
+      let ingestStarted = false;
+      fakeIngestionClient.ingest.mockImplementation(
+        (...args: unknown[]) =>
+          new Promise((_resolve, reject) => {
+            ingestStarted = true;
+            ingestSignal = args[10] as AbortSignal;
+            ingestSignal.addEventListener('abort', () => reject(new Error('This operation was aborted')));
+          }),
+      );
+      fakePrisma.job.findUnique.mockImplementation(async () => ({ status: ingestStarted ? 'cancelled' : 'running' }));
+
+      const result = await runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+        {
+          ingestionClient: fakeIngestionClient as any,
+          dryRunService: fakeDryRunService as any,
+          idempotencyService: fakeIdempotencyService as any,
+          prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
+          backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          defaultLlmModel: 'gemma4:12b',
+          cancelPollMs: 20,
+        },
+      );
+
+      expect(result).toEqual([]);
+      expect(ingestSignal?.aborted).toBe(true);
+      expect(fakeIngestionClient.level).not.toHaveBeenCalled();
+      expect(fakePrisma.job.update).not.toHaveBeenCalledWith(expect.objectContaining({ data: { status: 'failed' } }));
+      expect(fakeJobEventsPublisher.publish).toHaveBeenCalledWith('job-1', 'cancelled');
+    });
+
+    it('stops watching for a cancel once the ingest has finished', async () => {
+      fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+      fakeIngestionClient.level.mockResolvedValue({ nodes: [{ local_id: 'n0', fidelity_hash: 'h', customer_id: null }] });
+      fakeDryRunService.diff.mockResolvedValue([{ localId: 'n0', action: 'create', existingAdoId: null }]);
+      fakePrisma.job.findUnique.mockResolvedValue({ status: 'running' });
+
+      await runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+        {
+          ingestionClient: fakeIngestionClient as any,
+          dryRunService: fakeDryRunService as any,
+          idempotencyService: fakeIdempotencyService as any,
+          prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
+          backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          defaultLlmModel: 'gemma4:12b',
+          cancelPollMs: 10,
+        },
+      );
+      const callsAtEnd = fakePrisma.job.findUnique.mock.calls.length;
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(fakePrisma.job.findUnique.mock.calls.length).toBe(callsAtEnd);
+    });
+
     it('never overwrites status to running when the job was already cancelled the instant the worker picked it up', async () => {
       fakePrisma.job.findUnique.mockResolvedValue({ status: 'cancelled' });
 
@@ -2771,7 +2833,7 @@ describe('runPipelineJob', () => {
       expect(fakeIngestionClient.level).toHaveBeenCalledWith(
         bigDoc, 'survey', 'user-1', [], 'gemma4:12b', 'job-1', 'This is an avionics ICD.',
       );
-      expect(fakeOpenWebUiClient.uploadFile).toHaveBeenCalledWith(bigFileBuffer, 'x.pdf');
+      expect(fakeOpenWebUiClient.uploadFile).toHaveBeenCalledWith(bigFileBuffer, 'x.pdf', expect.any(AbortSignal)); // abortable: a cancel or the budget stops it
       // chatWithFullFileContext, NOT chat() -- chat() goes through the
       // OpenAI SDK, which can never reach Open WebUI's native file-context
       // endpoint (see chatWithFullFileContext's own doc comment,

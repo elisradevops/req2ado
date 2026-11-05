@@ -245,6 +245,8 @@ export class IngestionHttpClient {
     // skipVision=true), e.g. 'model_not_vision_capable' -- ingestion
     // surfaces it on the job's vision-disabled warning. Omitted otherwise.
     visionSkipReason?: string,
+    // Aborting it closes the connection, which makes ingestion stop the figure captioning that is running (a cancelled job).
+    signal?: AbortSignal,
   ): Promise<CanonicalDoc> {
     const form = new FormData();
     form.append('file', new Blob([fileBuffer]), filename);
@@ -265,7 +267,13 @@ export class IngestionHttpClient {
       params.set('vision_skip_reason', visionSkipReason);
     }
     const url = `${this.baseUrl}/ingest?${params.toString()}`;
-    const response = await fetch(url, { method: 'POST', headers: identityHeaders(userId, primerContext), body: form, dispatcher: this.longRunningAgent });
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: identityHeaders(userId, primerContext),
+      body: form,
+      dispatcher: this.longRunningAgent,
+      ...(signal ? { signal } : {}),
+    });
     if (!response.ok) {
       throw await _ingestionError(response, `Ingestion /ingest request failed: `);
     }
