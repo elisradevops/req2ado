@@ -738,7 +738,7 @@ export function DiffTree({
       {/* Sticky header row -- shares GRID_TEMPLATE with every data row below
           so columns always line up exactly. */}
       <div
-        className={cn('grid items-center gap-2.5 border-b border-hairline bg-surface-alt px-3.5 py-1.5 max-md:gap-1.5', LABEL_MICRO)}
+        className={cn('grid items-center gap-2.5 border-b border-hairline bg-surface-alt px-3.5 py-1.5 max-md:gap-1.5', LABEL_MICRO, 'text-ink-2')}
         style={{ gridTemplateColumns: GRID_TEMPLATE_COLUMNS }}
       >
         <span className={WIDE_ONLY} />

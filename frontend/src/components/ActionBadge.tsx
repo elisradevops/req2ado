@@ -63,7 +63,7 @@ export function ActionBadge({
   if (action === 'create') {
     if (hideNew) return <span className="sr-only">New</span>;
     return (
-      <Chip bg="#E8F6EC" color="var(--color-ok)" className="border border-[#B7E0C3]">
+      <Chip bg="#E8F6EC" color="var(--color-ok-ink)" className="border border-[#B7E0C3]">
         New
       </Chip>
     );

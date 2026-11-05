@@ -44,8 +44,9 @@ describe('IconButton', () => {
     expect(screen.getByRole('button', { name: 'Resubmit' }).parentElement).toHaveClass('inline-flex');
   });
 
+  // text-danger on the page background is 4.1:1 once the compact label shows (axe color-contrast); the -ink token is readable.
   it('marks a destructive action in the danger colour', () => {
     render(<IconButton label="Delete" icon={Download} tone="danger" onClick={() => {}} />);
-    expect(screen.getByRole('button', { name: 'Delete' })).toHaveClass('text-danger');
+    expect(screen.getByRole('button', { name: 'Delete' })).toHaveClass('text-danger-ink');
   });
 });

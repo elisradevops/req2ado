@@ -32,6 +32,8 @@ describe('ActionBadge', () => {
   it('never links a create badge -- there is no ADO item yet to open', () => {
     render(<ActionBadge action="create" orgUrl="https://dev.azure.com/example-org" />);
     expect(screen.getByText('New')).toBeInTheDocument();
+    // --color-ok on its tint is 4.49:1 (axe color-contrast); the -ink token is the readable text colour.
+    expect(screen.getByText('New')).toHaveStyle({ color: 'var(--color-ok-ink)' });
     expect(screen.queryByRole('link')).not.toBeInTheDocument();
   });
 

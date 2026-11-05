@@ -203,25 +203,23 @@ test.describe('contrast of the P14 signals', () => {
 
 test.describe('accessibility scan', () => {
   type Results = Awaited<ReturnType<AxeBuilder['analyze']>>;
-  const summary = (results: Results) =>
-    results.violations.map((v) => `${v.impact} ${v.id} x${v.nodes.length}`);
   const seriousOnly = (results: Results) =>
     results.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical').map((v) => `${v.id}: ${v.nodes.length}`);
 
   test('the warnings card header (where the approval gate now lives) has no serious or critical violations', async ({ page }) => {
     await openDiffReadyJob(page, 'many');
-    // Header only: the card's per-warning progress bar has no accessible name (reported below, not part of P14).
     const results = await new AxeBuilder({ page }).include('section[aria-label="Integrity warnings"] > div:first-child').analyze();
     expect(seriousOnly(results)).toEqual([]);
   });
 
-  // Report only: whole-page violations found so far are in parts P14 did not touch
-  // (progress bar name, also inside the warnings card, iteration swatch label, tab aria-controls, an unnamed combobox,
-  // the "Needs review" filter chip contrast), so they are listed, not gated.
-  test('whole page and open dialog: violations are reported, not gated', async ({ page }, testInfo) => {
+  test('whole page: no serious or critical violations', async ({ page }) => {
     await openDiffReadyJob(page, 'many');
-    testInfo.annotations.push({ type: 'axe-page', description: JSON.stringify(summary(await new AxeBuilder({ page }).analyze())) });
+    expect(seriousOnly(await new AxeBuilder({ page }).analyze())).toEqual([]);
+  });
+
+  test('whole page with the details dialog open: no serious or critical violations', async ({ page }) => {
+    await openDiffReadyJob(page, 'many');
     await openDetails(page, LONG_TITLE);
-    testInfo.annotations.push({ type: 'axe-dialog', description: JSON.stringify(summary(await new AxeBuilder({ page }).analyze())) });
+    expect(seriousOnly(await new AxeBuilder({ page }).analyze())).toEqual([]);
   });
 });

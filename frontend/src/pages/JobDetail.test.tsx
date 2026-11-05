@@ -234,6 +234,8 @@ describe('JobDetail', () => {
     await waitFor(() => expect(screen.getByText('Flagged epic')).toBeInTheDocument());
 
     expect(screen.getByRole('button', { name: /needs review/i })).toHaveTextContent('1');
+    // text-warning on warning-soft is 3.9:1; the -ink token is the readable one.
+    expect(screen.getByRole('button', { name: /needs review/i })).toHaveClass('text-warning-ink');
 
     const { default: userEvent } = await import('@testing-library/user-event');
     await userEvent.click(screen.getByRole('button', { name: /needs review/i }));

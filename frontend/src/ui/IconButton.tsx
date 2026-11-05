@@ -40,7 +40,7 @@ export function IconButton({
           className={cn(
             'grid h-8 w-8 place-items-center rounded-sm transition-colors duration-instant max-md:h-11 max-md:w-auto max-md:min-w-11 max-md:px-2.5',
             compactLabel && 'max-md:flex max-md:items-center max-md:gap-1.5',
-            tone === 'danger' ? 'text-danger hover:bg-danger-soft' : 'text-ink-2 hover:bg-canvas hover:text-ink-1',
+            tone === 'danger' ? 'text-danger-ink hover:bg-danger-soft' : 'text-ink-2 hover:bg-canvas hover:text-ink-1',
             (disabled || loading) && 'cursor-not-allowed text-ink-3 hover:bg-transparent hover:text-ink-3',
           )}
         >

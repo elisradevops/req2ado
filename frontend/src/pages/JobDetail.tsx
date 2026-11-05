@@ -1882,7 +1882,7 @@ export function JobDetail(): React.ReactElement {
                           'flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold',
                           filterFlaggedOnly
                             ? 'border-warning bg-warning-soft text-warning-ink'
-                            : 'border-warning-border bg-warning-soft text-warning',
+                            : 'border-warning-border bg-warning-soft text-warning-ink',
                         )}
                       >
                         ⚠ Needs review · {flaggedCount}

@@ -694,6 +694,13 @@ describe('DiffTree signal counts', () => {
     expect(screen.getByText('ממשק משתמש (UI) למערכת')).toHaveAttribute('dir', 'auto');
   });
 
+  it('sets the column header in ink-2: ink-3 on the header tint is 4.1:1', () => {
+    render(<DiffTree entries={[baseEntry]} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+    const header = screen.getByText('Item').parentElement!;
+    expect(header).toHaveClass('text-ink-2');
+    expect(header).not.toHaveClass('text-ink-3');
+  });
+
   it('draws no "New" pill on a routine row in the desktop status column, but keeps the word for screen readers (V6)', () => {
     render(<DiffTree entries={[baseEntry]} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
     expect(screen.getByText('New')).toHaveClass('sr-only');
