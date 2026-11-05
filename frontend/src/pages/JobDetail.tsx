@@ -1728,25 +1728,6 @@ export function JobDetail(): React.ReactElement {
           </span>
         </div>
       )}
-      {actionableWarningCount > 0 && (
-        // The gate ("before you approve") and its jump button stay visible at every width (below md the document overview can sit between this
-        // banner and the warnings card, so the card is not always right underneath).
-        <Alert severity="warning" className="mb-4">
-          <div className="flex flex-wrap items-center justify-between gap-2.5">
-            <span>
-              <AnimatedNumber value={actionableWarningCount} /> warning{actionableWarningCount === 1 ? '' : 's'} need
-              {actionableWarningCount === 1 ? 's' : ''} your attention before you approve.
-            </span>
-            <button
-              type="button"
-              onClick={() => document.getElementById('integrity-warnings')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-              className="flex-none rounded-sm border border-warning-border bg-surface px-2.5 py-1 text-xs font-medium text-warning-ink hover:border-current"
-            >
-              Go to warnings
-            </button>
-          </div>
-        </Alert>
-      )}
       {actionableWarningCount === 0 && trackableKinds.length > 0 && (
         <Alert severity="success" className="mb-4">
           All warnings handled. You can approve the diff.
@@ -1778,6 +1759,7 @@ export function JobDetail(): React.ReactElement {
       <div id="integrity-warnings">
         <CollapsibleWarnings
           warnings={mergedWarnings}
+          gateCount={actionableWarningCount}
           focusedKind={focusWarning?.kind ?? null}
           reviewedIds={reviewedIds}
           // Marking is advisory review state on a still-editable job; once
@@ -1869,6 +1851,7 @@ export function JobDetail(): React.ReactElement {
                 {mode === 'survey' && status === 'diff_ready' && (
                   <div className="border-b border-hairline p-3">
                     <AddChildCard
+                      compact
                       jobMode="survey"
                       allEntries={diff}
                       categoryLabels={categoryLabels ?? undefined}

@@ -13,6 +13,7 @@ import type { DragEndEvent, DragMoveEvent, DragStartEvent } from '@dnd-kit/core'
 import {
   ChevronDown,
   ChevronRight,
+  Flag,
   TriangleAlert,
   Link2,
   Table,
@@ -472,16 +473,20 @@ export function DiffTree({
   // Collapsed parent nodes -- purely a display concern (not lifted to
   // JobDetail), so toggling one never touches the diff data itself.
   // Starts with every Feature id collapsed (hiding its Requirement
-  // children) so a large document's tree reads as an outline first, not a
+  // children) except the first one that has children, so a large
+  // document's tree reads as an outline with one open example, not a
   // wall of leaf text -- Epics stay expanded so their Features are
   // visible immediately. Computed once, from the entries this component
   // mounted with; toggling never re-derives it.
   const narrow = useMediaQuery(BELOW_MD);
   // Read once per breakpoint change, not on every render (drag-move re-renders would each force a style read).
   const rowHeight = useMemo(() => (narrow ? narrowRowHeight() : ROW_HEIGHT), [narrow]);
-  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(
-    () => new Set(entries.filter((entry) => entry.type === 'Feature').map((entry) => entry.localId)),
-  );
+  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(() => {
+    const parents = new Set(entries.map((entry) => entry.parentLocalId));
+    // The first Feature that has children stays open, so a reviewer sees real Requirements on arrival; every other Feature starts collapsed.
+    const firstOpen = entries.find((entry) => entry.type === 'Feature' && parents.has(entry.localId))?.localId;
+    return new Set(entries.filter((entry) => entry.type === 'Feature' && entry.localId !== firstOpen).map((entry) => entry.localId));
+  });
 
   const toggleCollapsed = useCallback((localId: string) => {
     setCollapsedIds((prev) => {
@@ -746,7 +751,7 @@ export function DiffTree({
         </span>
         <span className={cn('flex items-center justify-end gap-1', WIDE_ONLY)}>
           Flags
-          <InfoTip content="Quick counts for this item: a triangle shows how many quality issues were flagged (open it for details), a link icon shows how many trace links it has, a table icon shows how many tables fed it, and an image icon shows how many figures fed it (amber when one or more of those figures got no description)." />
+          <InfoTip content="Quick counts for this item: a flag means the item needs your review (hover for why), a triangle shows how many quality issues were found (open the item for details), a link icon shows how many trace links it has, a table icon shows how many tables fed it, and an image icon shows how many figures fed it (amber when one or more of those figures got no description)." />
         </span>
         <span />
       </div>
@@ -1278,12 +1283,13 @@ function DiffTreeRow({
           visible gap before the action chip on every row. Confirmed live. */}
       <span className={cn('flex flex-none items-center justify-end gap-2 text-xs', WIDE_ONLY)}>
         {isFlaggedDiffEntry(entry) && (
-          <span className="flex items-center text-warning" title={flaggedDiffEntryReason(entry) ?? 'Needs review'}>
-            <TriangleAlert className="h-3.5 w-3.5" />
+          // A flag, not the issue triangle: two different signals no longer share one glyph. Named for assistive tech; the reason is the tooltip.
+          <span role="img" aria-label="Needs review" className="flex items-center text-warning" title={flaggedDiffEntryReason(entry) ?? 'Needs review'}>
+            <Flag className="h-3.5 w-3.5" />
           </span>
         )}
         {issueCount > 0 && (
-          <span className="flex items-center gap-0.5 text-warning" title={`${issueCount} quality issue(s)`}>
+          <span role="img" aria-label={`${issueCount} quality ${issueCount === 1 ? 'issue' : 'issues'}`} className="flex items-center gap-0.5 text-warning" title={`${issueCount} quality issue(s)`}>
             <TriangleAlert className="h-3.5 w-3.5" />
             {issueCount}
           </span>

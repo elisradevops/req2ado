@@ -268,6 +268,17 @@ describe('JobDetail', () => {
       await waitFor(() => expect(screen.getByText(/1 warning needs your attention/i)).toBeInTheDocument());
     });
 
+    it('says "before you approve" once, inside the Integrity warnings card, with no separate banner or jump button', async () => {
+      mockJobWithWarnings();
+      renderAt('job-60');
+
+      const gate = await screen.findByTestId('approval-gate');
+      expect(gate).toHaveTextContent(/1 warning needs your attention before you approve/i);
+      expect(within(screen.getByRole('region', { name: /integrity warnings/i })).getByTestId('approval-gate')).toBe(gate);
+      expect(screen.getAllByText(/before you approve/i)).toHaveLength(1);
+      expect(screen.queryByRole('button', { name: /go to warnings/i })).not.toBeInTheDocument();
+    });
+
     it("narrows the tree to a warning's items, shows a clearable chip, and points bulk actions at that set", async () => {
       mockJobWithWarnings();
       renderAt('job-60');

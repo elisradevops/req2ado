@@ -506,9 +506,9 @@ focus indicator — it must be `--color-field-border` instead.
   tooltip).
 - **Long grouped lists fold below `md`.** The Integrity warnings card starts as
   its three group headings with counts (the red "Fix before confirming" count
-  still shows), each opening its rows; the "before you approve" banner stays, with
-  its jump button (the document overview can sit between the banner and the
-  card). At
+  still shows), each opening its rows. The "N warnings need your attention before
+  you approve" line is the first line of this card at every width (there is no
+  separate banner or jump button, so the message is said once). At
   `md` and up every group starts open as before.
 - **Dense lists become two-line rows below `md`** (diff tree: 64px rows, grip,
   Index, Flags and Status columns dropped; the details dialog still carries them).
@@ -516,7 +516,9 @@ focus indicator — it must be `--color-field-border` instead.
   (supporting text aligns with what it supports) and reads in order of what must
   never be lost: what the row will do first (wrapping hides the *last* chips), then the
   red "same tier" hazard text, then the rest. The needs-review triangle sits at the end
-  of line 1, the same right edge on every row. Rules behind it:
+  of line 1, the same right edge on every row. (At `md` and up the Flags column draws
+  two different signals with two glyphs: a flag for "needs review", a triangle with a
+  count for quality issues; each has its own accessible name.) Rules behind it:
   - *Quiet by default.* The routine case is plain muted text ("New", "Links to
     WI-n"), not a filled pill; only exceptions get colour. A real link to a reused item stays an
     accent-coloured, underlined link; a near-duplicate's link stays muted (still underlined). "Near-duplicate of" shortens to "Dup of"
@@ -872,7 +874,7 @@ the Web Animations API is missing (so the content just appears).
 
 | Effect | Role | What moves | Where |
 |---|---|---|---|
-| **Count roll** | State-change | The digits of a count roll to the new value. Only counts the reviewer is driving down: the banner, the focus chip's "left of N", a row's "reviewed" count. | `ui/AnimatedNumber.tsx` (`@number-flow/react`) |
+| **Count roll** | State-change | The digits of a count roll to the new value. Only counts the reviewer is driving down: the warnings card's gate line, the focus chip's "left of N", a row's "reviewed" count. | `ui/AnimatedNumber.tsx` (`@number-flow/react`) |
 | **Done pop** | Entrance | A *Done* chip scales 0.6 → 1 on a spring when a kind completes. Exceeds Entrance's `scale(0.97→1)` allowance on purpose: it is a completion confirmation. | `ui/DoneChip.tsx` |
 | **Item settle** | State-change | The details dialog's content fades 0.4 → 1 and rises 4px when J/K/R moves to another item. Not on first open (the dialog's own entrance covers that). | `NodeDetailDialog.tsx` |
 
@@ -2049,8 +2051,8 @@ job, so it survives a reload and other reviewers see it:
 
 Only fix and review kinds are trackable. A kind shows *N of M reviewed* with a
 `ProgressBar`, and a **Done** chip when every item is reviewed (or every notice
-acknowledged). The page banner counts the trackable kinds not yet done ("3
-warnings need your attention before you approve") and becomes a success alert
+acknowledged). The card's first line counts the trackable kinds not yet done ("3
+warnings need your attention before you approve") and the page shows a success alert
 ("All warnings handled. You can approve the diff.") at zero. While a fix/review
 kind is focused, *Hide reviewed* (on by default) drops reviewed items from the
 tree, bulk actions and prev/next, and *Mark all reviewed* marks what is left.
@@ -2889,6 +2891,13 @@ no anchor. **SURVEY mode only**: BASELINE's type is mechanically inherited
 from a real anchor's own `childType`, so an anchor-less BASELINE creation
 has no coherent "what type may I add" answer, matching this section's
 existing BASELINE/SURVEY split for the parent field itself.
+
+The toolbar trigger is a quiet `ghost` button (`AddChildCard` `compact`), not a
+full-width outline one: adding an item is occasional and must not read as the
+page's primary action. The item-details dialog keeps the full-width trigger.
+The tree opens with every Epic open, the first Feature that has children open
+(so a reviewer sees real Requirements on arrival) and every other Feature
+collapsed.
 
 **Drag-and-drop applies to local state immediately, not after the
 round-trip — added after initial deployment, following real user feedback

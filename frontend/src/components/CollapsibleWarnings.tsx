@@ -1,7 +1,7 @@
 import { BELOW_MD, useMediaQuery } from '../hooks/useMediaQuery';
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ChevronDown, ChevronRight } from 'lucide-react';
+import { ChevronDown, ChevronRight, TriangleAlert } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { buildWorkItemUrl } from '../utils/adoLinks';
 import type { WarningRecord } from '../utils/warnings';
@@ -64,6 +64,7 @@ export function CollapsibleWarnings({
   titleByLocalId,
   orgUrl,
   project,
+  gateCount,
 }: {
   warnings: WarningRecord[];
   // Filters the proposed tree to a kind's affected items. Omitted: rows
@@ -93,6 +94,9 @@ export function CollapsibleWarnings({
   titleByLocalId?: Record<string, string>;
   orgUrl?: string | null;
   project?: string | null;
+  // How many warning types still need the reviewer before approving. Shown as the card's own first line, so the gate is said once, here,
+  // rather than in a banner above a card that says it again.
+  gateCount?: number;
 }): React.ReactElement | null {
   const kindGroups = useMemo(() => buildKindGroups(warnings), [warnings]);
   const hasActionable = kindGroups.some((entry) => entry.group !== 'info');
@@ -120,6 +124,12 @@ export function CollapsibleWarnings({
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 border-b border-hairline px-3.5 py-2.5">
         <h2 className="text-sm font-semibold text-ink-1">Integrity warnings</h2>
         <span className="text-xs text-ink-3">{summary}</span>
+        {gateCount != null && gateCount > 0 && (
+          <p data-testid="approval-gate" role="status" className="flex w-full items-center gap-1.5 text-sm font-medium text-warning-ink">
+            <TriangleAlert aria-hidden="true" className="h-3.5 w-3.5 flex-none" />
+            <span><AnimatedNumber value={gateCount} /> warning{gateCount === 1 ? '' : 's'} need{gateCount === 1 ? 's' : ''} your attention before you approve.</span>
+          </p>
+        )}
       </div>
       <Accordion value={openKind} onValueChange={setOpenKind}>
         {GROUP_ORDER.map((group) => {

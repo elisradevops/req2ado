@@ -307,7 +307,7 @@ export function NodeDetailDialog({
       maxWidthClassName="max-w-[1180px]"
       maxHeightClassName="h-[min(760px,calc(100vh-96px))]"
       title={
-        <div className="flex min-w-0 items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
           {onNavigate && (
             <span className="flex flex-none flex-col">
               <button
@@ -331,7 +331,7 @@ export function NodeDetailDialog({
             </span>
           )}
           <WorkItemTypeBadge type={entry.type} catalogEntry={typeCatalog?.[entry.type]} />
-          <span className="truncate">{entry.title}</span>
+          <span className="min-w-[12rem] flex-1 break-words" title={entry.title}>{entry.title}</span>
           {entry.customerId && <span className="flex-none font-mono text-xs tracking-tight text-ink-3">{entry.customerId}</span>}
           <ActionBadge action={entry.action} existingAdoId={entry.existingAdoId} />
         </div>

@@ -51,6 +51,19 @@ describe('NodeDetailDialog', () => {
     expect(container.querySelector('[role="dialog"]')).toBeNull();
   });
 
+  it('shows the item title once: in the dialog header, not again as a heading in the body', () => {
+    renderDialog();
+    expect(screen.getAllByText('Req Title')).toHaveLength(1);
+    expect(screen.queryByRole('heading', { name: 'Req Title' })).not.toBeInTheDocument();
+  });
+
+  it('wraps the header title and keeps it readable in full via title, instead of truncating it', () => {
+    renderDialog();
+    const title = screen.getAllByText('Req Title')[0];
+    expect(title).toHaveAttribute('title', 'Req Title');
+    expect(title.className).not.toContain('truncate');
+  });
+
   it('renders the item title, type badge, and customer ID in the header', () => {
     renderDialog();
     expect(screen.getAllByText('Req Title').length).toBeGreaterThan(0);

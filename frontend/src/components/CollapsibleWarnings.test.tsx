@@ -29,6 +29,7 @@ function renderWarnings(
     titleByLocalId?: Record<string, string>;
     orgUrl?: string | null;
     project?: string | null;
+    gateCount?: number;
   },
 ) {
   return render(
@@ -47,6 +48,7 @@ function renderWarnings(
         titleByLocalId={opts?.titleByLocalId}
         orgUrl={opts?.orgUrl}
         project={opts?.project}
+        gateCount={opts?.gateCount}
       />
     </MemoryRouter>,
   );
@@ -509,6 +511,36 @@ describe('CollapsibleWarnings', () => {
       );
 
       expect(screen.getByRole('button', { name: 'Retry enhancement' })).toBeDisabled();
+    });
+  });
+
+  describe('approval gate line (one place for the "before you approve" message)', () => {
+    const fix = warning({ kind: 'missing_acceptance_criteria', severity: 'warning', raw: 'a', nodeIds: ['n0'] });
+
+    it('shows how many warnings need attention inside the card when gateCount is set', () => {
+      renderWarnings([fix], { gateCount: 1 });
+      const card = screen.getByRole('region', { name: /integrity warnings/i });
+      expect(within(card).getByTestId('approval-gate')).toHaveTextContent(/1 warning needs your attention before you approve/i);
+    });
+
+    it('is a live region with a warning icon, not bare text', () => {
+      renderWarnings([fix], { gateCount: 2 });
+      const gate = screen.getByTestId('approval-gate');
+      expect(gate).toHaveAttribute('role', 'status');
+      expect(gate.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
+    });
+
+    it('pluralises', () => {
+      renderWarnings([fix], { gateCount: 3 });
+      expect(screen.getByTestId('approval-gate')).toHaveTextContent(/3 warnings need your attention before you approve/i);
+    });
+
+    it('shows no gate line without a gateCount, or when it is zero', () => {
+      const { unmount } = renderWarnings([fix]);
+      expect(screen.queryByTestId('approval-gate')).not.toBeInTheDocument();
+      unmount();
+      renderWarnings([fix], { gateCount: 0 });
+      expect(screen.queryByTestId('approval-gate')).not.toBeInTheDocument();
     });
   });
 });

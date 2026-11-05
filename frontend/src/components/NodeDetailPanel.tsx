@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Pencil, Link2, RefreshCw, Upload, Check } from 'lucide-react';
+import { Pencil, Link2, RefreshCw, Upload, Check, Flag } from 'lucide-react';
 import { TagChips } from './TagChips';
 import { resolveWinningTag } from '../utils/requirementClassification';
 import { REQUIREMENT_TAG_LABELS } from '../utils/labels';
@@ -20,7 +20,7 @@ import { Tooltip } from '../ui/Tooltip';
 import { DescriptionMarkdown, Markdown } from '../ui/Markdown';
 import { cn } from '../lib/cn';
 import { LABEL_MICRO } from '../utils/labelMicro';
-import { isFlaggedDiffEntry } from '../utils/diffFlagging';
+import { flaggedDiffEntryReason, isFlaggedDiffEntry } from '../utils/diffFlagging';
 
 // CR-7d rescore: the quality score/categoryScores from JUST BEFORE a
 // successful rescore -- held briefly so QualityGauge can render a real
@@ -289,6 +289,8 @@ export function NodeDetailPanel({
   // deliberately null: this check is scoped to the grounding badge alone,
   // not the separate quality-score gauge already shown above.
   const isLowGrounding = isFlaggedDiffEntry({ type: entry.type, groundingScore: entry.groundingScore, qualityScore: null });
+  // The row's flag only carries this as a tooltip, so the same reason is written out here for keyboard and touch users.
+  const reviewReason = flaggedDiffEntryReason(entry);
 
   function startEditing(): void {
     setDraftTitle(entry!.title);
@@ -505,18 +507,14 @@ export function NodeDetailPanel({
       {/* Edit sits right next to the title it edits -- it used to be a lone
           button at the very bottom of the pane, past description/quality/
           trace-links/sources, disconnected from what it acts on. */}
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex min-w-0 flex-col gap-1">
-          <span className={LABEL_MICRO}>{entry.type}</span>
-          <h3 className="text-title leading-snug">{entry.title}</h3>
-        </div>
-        {canEdit && (
+      {canEdit && (
+        <div className="flex justify-end">
           <Button variant="outline" size="sm" onClick={startEditing} className="flex-none">
             <Pencil className="h-3.5 w-3.5" />
             Edit
           </Button>
-        )}
-      </div>
+        </div>
+      )}
       {moveSlot}
       {/* 'excluded' has no message of its own here -- the dialog header
           already shows a dedicated "Excluded from this run" badge right
@@ -600,6 +598,12 @@ export function NodeDetailPanel({
           fact. Classification alone is real content the gauge doesn't
           cover, so it stays -- as its own full-width block now that it no
           longer needs to share a 2-column row with something else. */}
+      {reviewReason && (
+        <p data-testid="review-reason" className="flex items-start gap-1.5 text-sm text-warning-ink">
+          <Flag aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 flex-none" />
+          <span>Needs review: {reviewReason}</span>
+        </p>
+      )}
       {entry.tags && entry.tags.length > 0 && (
         <div className="flex flex-col gap-1">
           <span className={LABEL_MICRO}>Classification</span>

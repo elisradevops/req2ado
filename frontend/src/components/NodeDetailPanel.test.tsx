@@ -63,13 +63,13 @@ describe('NodeDetailPanel', () => {
     expect(screen.getByText(/select a node/i)).toBeInTheDocument();
   });
 
-  it('renders the entry title, description, type, and tags when selected', () => {
+  it('renders the entry description and tags when selected (title and type live in the dialog header)', () => {
     renderPanel(
       <NodeDetailPanel
         entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: ['functional'] }}
       />,
     );
-    expect(screen.getByText('Req Title')).toBeInTheDocument();
+    expect(screen.queryByText('Req Title')).not.toBeInTheDocument();
     expect(screen.getByText('Req body')).toBeInTheDocument();
     expect(screen.getByText('Functional')).toBeInTheDocument();
   });
@@ -125,7 +125,7 @@ describe('NodeDetailPanel', () => {
 
     // Add Child renders after everything else in document order, not near
     // the title (where it used to sit, disconnected from what it acts on).
-    const panel = screen.getByText('Req Title').closest('div.flex.flex-col.gap-3');
+    const panel = screen.getByText('Classification').closest('div.flex.flex-col.gap-3');
     const addChildSlot = screen.getByTestId('add-child-slot');
     expect(panel?.lastElementChild).toBe(addChildSlot);
   });
@@ -594,7 +594,6 @@ describe('NodeDetailPanel', () => {
     // Edit mode must be exited: no leftover draft textfield for A's stale text,
     // and node B's data is shown read-only with a fresh Edit button available.
     expect(screen.queryByDisplayValue('Stale unsaved draft')).not.toBeInTheDocument();
-    expect(screen.getByText('Node B Title')).toBeInTheDocument();
     expect(screen.getByText('Node B body')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /edit/i })).toBeInTheDocument();
   });
@@ -1106,6 +1105,18 @@ describe('NodeDetailPanel', () => {
     renderPanel(<NodeDetailPanel entry={requirementEntry} />);
     expect(screen.getByText('Partly')).toBeInTheDocument();
     expect(screen.queryByText(/worth checking/i)).not.toBeInTheDocument();
+  });
+
+  it('states why an item needs review as visible text, not only a tooltip', () => {
+    const flagged: DryRunDiffEntry = {
+      localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body',
+      action: 'create', customerId: null, groundingScore: 0.9, qualityScore: 95, qualityConfidence: 'low',
+    };
+    const { unmount } = renderPanel(<NodeDetailPanel entry={flagged} />);
+    expect(screen.getByTestId('review-reason')).toHaveTextContent('Needs review: Model was unsure about this score');
+    unmount();
+    renderPanel(<NodeDetailPanel entry={{ ...flagged, qualityConfidence: 'high' }} />);
+    expect(screen.queryByTestId('review-reason')).not.toBeInTheDocument();
   });
 
   it('does not mark the Grounding metric low just because qualityConfidence is low', () => {

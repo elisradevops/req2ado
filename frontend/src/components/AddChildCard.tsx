@@ -19,6 +19,7 @@ import type { WorkItemTypeCatalogEntry } from '../api/ado';
 // own toolbar "+ New item" (JobDetail.tsx, no anchor at all -- see
 // AddChildForm.tsx's top comment for why BASELINE mode is anchor-only).
 export function AddChildCard({
+  compact,
   parentEntry,
   jobMode,
   allEntries,
@@ -26,6 +27,8 @@ export function AddChildCard({
   typeCatalog,
   onAdd,
 }: {
+  // The tree toolbar's "New item": a quiet, left-aligned button. The item-details dialog keeps the full-width one.
+  compact?: boolean;
   parentEntry?: DryRunDiffEntry;
   jobMode: 'baseline' | 'survey';
   allEntries: DryRunDiffEntry[];
@@ -55,11 +58,11 @@ export function AddChildCard({
   return (
     <div>
       <Button
-        variant="outline"
+        variant={compact ? 'ghost' : 'outline'}
         size="sm"
         onClick={() => setExpanded((prev) => !prev)}
         aria-expanded={expanded}
-        className="w-full justify-center"
+        className={compact ? undefined : 'w-full justify-center'}
       >
         {expanded ? (
           <>
