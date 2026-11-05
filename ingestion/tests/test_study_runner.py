@@ -21,7 +21,7 @@ USER = "user-raw-id"
 WAIT = 10.0
 
 _EMPTY = {
-    "glossary": [], "placeholder_tokens": [], "verification_statements": [], "standards_cited": [], "table_roles": [], "lead_in_patterns": [], "purpose_statements": [],
+    "glossary": [], "placeholder_tokens": [], "verification_statements": [], "standards_cited": [], "table_roles": [],
 }
 
 
@@ -833,6 +833,21 @@ def test_429_pressure_reduces_workers_to_a_floor_of_one() -> None:
     assert handle.current_workers == 3  # no pressure: never raised, never lowered
 
 
+def _status_504() -> httpx.HTTPStatusError:
+    request = httpx.Request("POST", "http://upstream.invalid/chat")
+    return httpx.HTTPStatusError("504", request=request, response=httpx.Response(504, request=request))
+
+
+def test_a_504_or_timeout_lowers_the_workers_like_a_429_and_the_window_is_unread() -> None:
+    handle = _handle(_doc(6), _Stub(6, fail={0: _status_504()}), concurrency=4)
+    outcome = _run(handle)
+    assert handle.current_workers == 3
+    assert outcome.study.read_stats.windows_failed == 1 and outcome.study.read_stats.windows_split == 0
+    handle = _handle(_doc(6), _Stub(6, fail={0: httpx.ReadTimeout("slow"), 1: httpx.ReadTimeout("slow"), 2: httpx.ReadTimeout("slow")}), concurrency=3)
+    _run(handle)
+    assert handle.current_workers == 1
+
+
 def _final_workers(n: int, once_429, concurrency: int = 4, **over) -> int:
     handle = _handle(_doc(n), _Stub(n, once_429=once_429), concurrency=concurrency, **over)
     _run(handle)
@@ -1387,3 +1402,40 @@ def test_notice_facts_are_integers_and_short_enums_from_the_coordinator_thread_o
 def test_the_notices_come_from_a_run_with_no_job_in_scope_without_error() -> None:
     outcome = _run(_handle(_doc(2), _Stub(2)))  # the real `notice`: no job is in scope, so it is a no-op
     assert outcome.stopped_by == "completed"
+
+
+def _headed_doc(n: int) -> str:
+    """`n` windows exactly, each opening with its own heading line and marker, so a report can name the sections that were not read."""
+    return "".join((f"# {i + 1}.0 Part {i}\nS{i:03d} " + "word " * 4000)[:19500] for i in range(n))
+
+
+def test_an_unread_window_is_reported_by_part_and_section_never_as_a_finished_study() -> None:
+    handle = _handle(_headed_doc(4), _Stub(4, fail={1: _status_504(), 2: _status_504()}), concurrency=1)
+    outcome = _run(handle)
+    message = next(w for w in outcome.warnings if "2 of 4" in w)
+    assert "Not read: parts 2-3" in message
+    assert "2.0 Part 1" in message and "3.0 Part 2" in message
+    assert "1.0 Part 0" not in message and "4.0 Part 3" not in message
+
+
+def test_separate_unread_runs_are_listed_separately() -> None:
+    handle = _handle(_headed_doc(5), _Stub(5, fail={1: _status_504(), 3: _status_504()}), concurrency=1)
+    message = next(w for w in _run(handle).warnings if "3 of 5" in w)
+    assert "part 2" in message and "part 4" in message and "parts" not in message.split("Not read:")[1].split(";")[0]
+
+
+def test_windows_never_reached_because_the_study_stopped_count_as_unread(monkeypatch) -> None:
+    monkeypatch.setattr(study_document_module.settings, "survey_study_breaker_failures", 2)
+    handle = _handle(_headed_doc(5), _Stub(5, fail={0: _status_504(), 1: _status_504()}), concurrency=1, breaker_failures=2)
+    outcome = _run(handle)
+    assert outcome.study is None or any("Not read: parts 1-5" in w or "none of the document" in w for w in outcome.warnings)
+
+
+def test_the_unread_report_names_sections_by_a_short_label_even_when_headings_are_whole_sentences() -> None:
+    long_heading = "The Backplane Mezzanine (BP_MEZ) board shall support twelve independent channels at once"
+    text = "".join((f"# {long_heading} {i}\nS{i:03d} " + "word " * 4000)[:19500] for i in range(3))
+    outcome = _run(_handle(text, _Stub(3, fail={1: _status_504()}), concurrency=1))
+    message = next(w for w in outcome.warnings if "2 of 3" in w)
+    assert "The Backplane Mezzanine" in message
+    assert "independent channels" not in message  # cut to a short label, with an ellipsis
+    assert "…" in message

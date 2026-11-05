@@ -31,7 +31,7 @@ def _node(local_id, description="The system shall do x.", issues=(), parent=None
 
 def _study(**kw):
     base = dict(glossary=[], placeholder_tokens=[], verification_statements=[], standards_cited=[], table_roles=[],
-                lead_in_patterns=[], windows_studied=1, windows_total=1)
+                windows_studied=1, windows_total=1)
     base.update(kw)
     return DocumentStudy(**base)
 

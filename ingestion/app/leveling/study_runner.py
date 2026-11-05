@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import contextvars
 import logging
+import re
 import random
 import threading
 import time
@@ -83,6 +84,44 @@ class StudyOutcome:
 class _Read:
     read: WindowRead
     deadline_exceeded: bool  # the read ended on the time budget, not on the model: it counts as neither a failure nor a read
+
+
+_HEADING_LINE = re.compile(r"^#{1,6} (.+)$", re.MULTILINE)
+_SECTION_NAME_CHARS = 40
+
+
+def _headings_of(window: str) -> list[str]:
+    labels = []
+    for match in _HEADING_LINE.finditer(window):
+        name = match.group(1).strip()
+        # A source file may write whole requirement sentences as headings: a short label, cut at a word, with an ellipsis.
+        if len(name) > _SECTION_NAME_CHARS:
+            cut = name[:_SECTION_NAME_CHARS]
+            name = (cut[: cut.rfind(" ")] if " " in cut else cut).rstrip() + "…"
+        labels.append(name)
+    return labels
+
+
+def _unread_report(all_windows: list[str], read_ok: set[int]) -> str:
+    """Names what was not studied: each run of unread parts, with the sections the first and the last of them open on, so the owner knows
+    what the study did not see (a partial study is never to look like a finished one)."""
+    unread = [i for i in range(len(all_windows)) if i not in read_ok]
+    if not unread:
+        return ""
+    runs: list[list[int]] = [[unread[0]]]
+    for i in unread[1:]:
+        if i == runs[-1][-1] + 1:
+            runs[-1].append(i)
+        else:
+            runs.append([i])
+    described = []
+    for run in runs:
+        parts = f"part {run[0] + 1}" if len(run) == 1 else f"parts {run[0] + 1}-{run[-1] + 1}"
+        first = next(iter(_headings_of(all_windows[run[0]])), None)
+        last = next(iter(reversed(_headings_of(all_windows[run[-1]]))), None)
+        where = "" if first is None else f" ({first})" if last in (None, first) else f" ({first} ... {last})"
+        described.append(f"{parts}{where}")
+    return "Not read: " + "; ".join(described) + "."
 
 
 class LeasedStudyClient:
@@ -377,6 +416,7 @@ class StudyHandle:
                     cached[index] = stored
         results: list[tuple[int, WindowFindings]] = []
         studied = retried = split = failed = consecutive = clean = 0
+        read_ok: set[int] = set()  # the windows read in full: what is not here was not studied
         reason: str | None = None
         soft_warned = False
         announced: set[str] = set()  # the milestones already sent
@@ -393,6 +433,7 @@ class StudyHandle:
                 if index in cached:  # no model call, no budget, no wait; a cached window resets the breaker
                     results.append((index, cached[index]))
                     studied += 1
+                    read_ok.add(index)
                     consecutive = 0
                     self._report_progress(index + 1, len(windows))
                     continue
@@ -427,7 +468,7 @@ class StudyHandle:
                 retried += read.retries > 0
                 split += read.split
                 failed += read.failed
-                if read.retries > 0:  # 429: the job's own calls share the proxy's rate limit, so ease off
+                if read.retries > 0 or read.overloaded:  # a 429 (the job's own calls share the proxy's rate limit) or a timeout/504 (a slow backend): ease off
                     self._workers = max(1, self._workers - 1)
                     clean = 0
                 else:  # a streak of calm windows (cached ones are not counted) wins a worker back, one at a time
@@ -449,6 +490,7 @@ class StudyHandle:
                         dispatch.cancel_waiting()
                 else:
                     studied += 1
+                    read_ok.add(index)
                     consecutive = 0
                 self._report_progress(index + 1, len(windows))
                 if len(all_windows) >= _MILESTONE_MIN_WINDOWS:
@@ -465,24 +507,24 @@ class StudyHandle:
             raise
         finally:
             executor.shutdown(wait=False, cancel_futures=True)  # never waits for a model call that is under way: it ends by itself
-        return self._outcome_of(results, all_windows, studied, (retried, split, failed, len(cached)), reason)
+        return self._outcome_of(results, all_windows, studied, (retried, split, failed, len(cached)), reason, read_ok)
 
     def _outcome_of(
         self, results: list[tuple[int, WindowFindings]], all_windows: list[str], studied: int, counts: tuple[int, int, int, int],
-        reason: str | None,
+        reason: str | None, read_ok: set[int],
     ) -> StudyOutcome:
         retried, split, failed, cached = counts
         warnings: list[str] = []
         if not results:
             study = None
-            warnings.append("The document study read none of the document, so proposals used the hierarchy alone.")
+            warnings.append(f"The document study read none of the document, so proposals used the hierarchy alone. {_unread_report(all_windows, read_ok)}")
         else:
             study = merge_findings(results)
             study.windows_studied = studied  # a window with only one half read keeps its findings but does not count as studied
             study.windows_total = len(all_windows)
             study.read_stats = StudyReadStats(retried, split, failed, reason == "breaker", reason == "deadline", cached)
             if studied < len(all_windows):
-                warnings.append(f"The document study read {studied} of {len(all_windows)} parts of the document.")
+                warnings.append(f"The document study read {studied} of {len(all_windows)} parts of the document. {_unread_report(all_windows, read_ok)}")
         if reason == "breaker":
             warnings.append(f"The document study stopped after {self._breaker_failures} parts in a row could not be read.")
         elif reason == "deadline":

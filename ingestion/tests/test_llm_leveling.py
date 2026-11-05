@@ -8492,7 +8492,7 @@ class _CriteriaSpy:
 
 
 _EMPTY_STUDY = {
-    "glossary": [], "placeholder_tokens": [], "verification_statements": [], "standards_cited": [], "table_roles": [], "lead_in_patterns": [], "purpose_statements": [],
+    "glossary": [], "placeholder_tokens": [], "verification_statements": [], "standards_cited": [], "table_roles": [],
 }
 
 

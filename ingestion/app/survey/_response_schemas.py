@@ -702,12 +702,9 @@ def document_study_schema() -> dict:
                         "additionalProperties": False,
                     },
                 },
-                "lead_in_patterns": strings,
-                "purpose_statements": strings,
             },
             "required": [
-                "glossary", "placeholder_tokens", "verification_statements", "standards_cited", "table_roles", "lead_in_patterns",
-                "purpose_statements",
+                "glossary", "placeholder_tokens", "verification_statements", "standards_cited", "table_roles",
             ],
             "additionalProperties": False,
         },

@@ -23,8 +23,7 @@ from app.leveling.document_study import (
 
 
 _EMPTY_ANSWER = {
-    "glossary": [], "placeholder_tokens": [], "verification_statements": [], "standards_cited": [], "table_roles": [], "lead_in_patterns": [],
-    "purpose_statements": [],
+    "glossary": [], "placeholder_tokens": [], "verification_statements": [], "standards_cited": [], "table_roles": [],
 }
 
 
@@ -54,7 +53,6 @@ def test_keeps_only_what_the_window_text_states() -> None:
         "verification_statements": ["Report rate shall be N Hz.", "verified by magic"],
         "standards_cited": ["MIL-STD-704", "ISO 9999"],
         "table_roles": [{"table": "t1", "role": "configuration values"}, {"table": "t9", "role": "ghost"}],
-        "lead_in_patterns": ["Latency shall be"],
     }])
 
     study = study_document(TEXT + " SRU is defined here.", client)
@@ -65,7 +63,6 @@ def test_keeps_only_what_the_window_text_states() -> None:
     assert study.verification_statements == ["Report rate shall be N Hz."]
     assert study.standards_cited == ["MIL-STD-704"]
     assert study.table_roles == [{"table": "t1", "role": "configuration values"}]
-    assert study.lead_in_patterns == ["Latency shall be"]
 
 
 def test_malformed_entries_are_dropped_not_trusted() -> None:
@@ -75,7 +72,6 @@ def test_malformed_entries_are_dropped_not_trusted() -> None:
         "verification_statements": [5, ""],
         "standards_cited": [None],
         "table_roles": [{"table": "t1"}],
-        "lead_in_patterns": [],
     }])
 
     study = study_document(TEXT, client)
@@ -167,8 +163,8 @@ def test_merge_is_identical_for_shuffled_completion_order() -> None:
     windows = [
         (0, _wf(glossary=[("SRU", "unit")], placeholder_tokens=["TBD"], standards_cited=["MIL-STD-704"], table_roles=[("t1", "values")])),
         (1, _wf(glossary=[("LRU", "line unit")], placeholder_tokens=["XXxx", "TBD"], verification_statements=["Verified by test."])),
-        (2, _wf(glossary=[("sru", "other")], placeholder_tokens=["XXXX"], lead_in_patterns=["shall be"], standards_cited=["mil-std-704"])),
-        (3, _wf(placeholder_tokens=["??"], table_roles=[("t2", "limits")], lead_in_patterns=["SHALL  be"])),
+        (2, _wf(glossary=[("sru", "other")], placeholder_tokens=["XXXX"], standards_cited=["mil-std-704"])),
+        (3, _wf(placeholder_tokens=["??"], table_roles=[("t2", "limits")])),
     ]
     expected = merge_findings(windows)
 
@@ -356,7 +352,7 @@ def test_429_gives_up_after_two_backoffs_and_counts_failed() -> None:
 
 def test_cutoff_splits_once_and_merges_halves_in_order() -> None:
     client = _StubClient([
-        _status_error(504), {"placeholder_tokens": ["TBD"]}, {"standards_cited": ["MIL-STD-704"], "placeholder_tokens": ["TBD"]},
+        _status_error(502), {"placeholder_tokens": ["TBD"]}, {"standards_cited": ["MIL-STD-704"], "placeholder_tokens": ["TBD"]},
     ])
 
     read = read_window(client, HALVES_TEXT, sleep=_Sleeps(), rng=_TopRng())
@@ -367,7 +363,7 @@ def test_cutoff_splits_once_and_merges_halves_in_order() -> None:
     assert (read.split, read.failed) == (True, False)
 
 
-@pytest.mark.parametrize("error", [ValueError("empty completion"), httpx.ReadTimeout("cut"), _status_error(400)])
+@pytest.mark.parametrize("error", [ValueError("empty completion"), _status_error(502), _status_error(400)])
 def test_empty_or_malformed_completion_splits(error: Exception) -> None:
     client = _StubClient([error, {}, {}])
 
@@ -378,7 +374,7 @@ def test_empty_or_malformed_completion_splits(error: Exception) -> None:
 
 
 def test_half_failure_is_not_retried_again_and_window_is_not_counted_studied() -> None:
-    client = _StubClient([_status_error(504), {"placeholder_tokens": ["TBD"]}, _status_error(502), {}, {}])
+    client = _StubClient([_status_error(502), {"placeholder_tokens": ["TBD"]}, _status_error(502), {}, {}])
 
     study = study_document(HALVES_TEXT, client, sleep=_Sleeps(), rng=_TopRng())
 
@@ -389,7 +385,7 @@ def test_half_failure_is_not_retried_again_and_window_is_not_counted_studied() -
 
 
 def test_half_gets_one_429_retry_only() -> None:
-    client = _StubClient([_status_error(504), _status_error(429), {}, _status_error(429), _status_error(429)])
+    client = _StubClient([_status_error(502), _status_error(429), {}, _status_error(429), _status_error(429)])
     sleeps = _Sleeps()
 
     read = read_window(client, HALVES_TEXT, sleep=sleeps, rng=_TopRng())
@@ -444,7 +440,7 @@ def test_job_cancelled_propagates_and_is_not_retried() -> None:
     assert len(client.windows) == 1
 
     # also from inside a half read
-    client = _StubClient([_status_error(504), JobCancelled("gone"), {}])
+    client = _StubClient([_status_error(502), JobCancelled("gone"), {}])
     with pytest.raises(JobCancelled):
         read_window(client, HALVES_TEXT, sleep=_Sleeps(), rng=_TopRng())
     assert len(client.windows) == 2
@@ -500,7 +496,7 @@ def test_soft_budget_warns_once_and_continues(monkeypatch, caplog) -> None:
 
 
 def test_split_is_counted_once_in_stats() -> None:
-    client = _StubClient([_status_error(504), {}, {}])
+    client = _StubClient([_status_error(502), {}, {}])
 
     study = study_document(HALVES_TEXT, client, sleep=_Sleeps(), rng=_TopRng())
 
@@ -636,35 +632,55 @@ def test_failed_window_logs_never_carry_the_error_text(caplog) -> None:
     assert "ValueError" in caplog.text and "HTTP 502" in caplog.text and "RuntimeError" in caplog.text
 
 
-# What the document itself says it is for (its scope or purpose sentences). The wizard's summary is built from these quotes, so they are held to
-# the study's rule: copied exactly from the text, or dropped.
-_SCOPE_TEXT = "1. Scope. This document specifies the interface between the target tracker and the display unit. Report rate shall be N Hz."
+def test_an_answer_missing_a_key_is_malformed_so_the_window_is_read_again() -> None:
+    client = _StubClient([{k: [] for k in ("glossary", "placeholder_tokens", "verification_statements", "standards_cited")}], raw=True)
+    assert study_document(TEXT, client) is None  # the answer lacks table_roles: malformed, nothing counts as read
 
 
-def test_purpose_statements_are_kept_only_when_the_window_contains_them() -> None:
-    found = window_findings(
-        {"purpose_statements": ["This document specifies the interface between the target tracker and the display unit.", "It also covers fusion."]},
-        _SCOPE_TEXT,
-    )
-    assert found.purpose_statements == ("This document specifies the interface between the target tracker and the display unit.",)
+
+def test_an_empty_answer_cut_off_after_the_ladder_is_skipped_not_split() -> None:
+    from app.leveling.document_study import StudyLengthCutoff
+
+    # halves of a window cost the same hidden thinking, so they fail the same way: one call, window failed, no split
+    client = _StubClient([StudyLengthCutoff(empty=True)])
+
+    read = read_window(client, HALVES_TEXT, sleep=_Sleeps(), rng=_TopRng())
+
+    assert len(client.windows) == 1
+    assert (read.split, read.failed, read.findings) == (False, True, None)
 
 
-def test_purpose_statements_longer_than_a_quote_are_dropped_and_malformed_ones_ignored() -> None:
-    long_text = "This document " + "describes the system " * 40
-    assert window_findings({"purpose_statements": [long_text.strip()]}, long_text).purpose_statements == ()
-    assert window_findings({"purpose_statements": [None, 5, "  "]}, _SCOPE_TEXT).purpose_statements == ()
-    assert window_findings({"purpose_statements": "not a list"}, _SCOPE_TEXT).purpose_statements == ()
+def test_a_partial_answer_cut_off_is_split_because_halving_halves_the_output() -> None:
+    from app.leveling.document_study import StudyLengthCutoff
+
+    client = _StubClient([StudyLengthCutoff(empty=False), {}, {}])
+
+    read = read_window(client, HALVES_TEXT, sleep=_Sleeps(), rng=_TopRng())
+
+    assert len(client.windows) == 3
+    assert (read.split, read.failed) == (True, False)
 
 
-def test_merge_keeps_the_first_three_distinct_purpose_statements_in_window_order() -> None:
-    merged = merge_findings([
-        (1, _wf(purpose_statements=["Second window purpose.", "This document covers A."])),
-        (0, _wf(purpose_statements=["This document covers A.", "First window purpose.", "Another.", "Fourth is cut."])),
-    ])
-    assert merged.purpose_statements == ["This document covers A.", "First window purpose.", "Another."]
+@pytest.mark.parametrize("error", [_status_error(504), httpx.ReadTimeout("slow"), httpx.ConnectTimeout("slow")])
+def test_a_504_or_timeout_is_load_not_size_so_the_window_is_not_split(error: Exception) -> None:
+    # Halves cost the same model time, so a slow backend fails them the same way: one call, window unread, backend marked overloaded.
+    client = _StubClient([error])
+
+    read = read_window(client, HALVES_TEXT, sleep=_Sleeps(), rng=_TopRng())
+
+    assert len(client.windows) == 1
+    assert (read.split, read.failed, read.findings, read.overloaded) == (False, True, None, True)
 
 
-def test_an_answer_without_the_purpose_key_is_malformed_so_the_window_is_read_again() -> None:
-    client = _StubClient([{k: [] for k in ("glossary", "placeholder_tokens", "verification_statements", "standards_cited", "table_roles", "lead_in_patterns")}], raw=True)
-    assert study_document(TEXT, client) is None  # the old answer shape (no purpose_statements) is malformed: nothing counts as read
+def test_other_failures_do_not_mark_the_backend_overloaded() -> None:
+    client = _StubClient([_status_error(502), {}, {}])
 
+    assert read_window(client, HALVES_TEXT, sleep=_Sleeps(), rng=_TopRng()).overloaded is False
+
+
+def test_a_half_that_times_out_marks_the_backend_overloaded_so_the_runner_eases_off() -> None:
+    client = _StubClient([_status_error(502), {}, httpx.ReadTimeout("slow")])
+
+    read = read_window(client, HALVES_TEXT, sleep=_Sleeps(), rng=_TopRng())
+
+    assert (read.split, read.failed, read.overloaded) == (True, True, True)

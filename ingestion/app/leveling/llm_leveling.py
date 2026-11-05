@@ -2941,10 +2941,10 @@ def _propose_criteria_step(
         outcome = study_handle.result(timeout=settings.survey_study_hard_budget_seconds + 60)  # JobCancelled is not swallowed
         study = outcome.study
         for message in outcome.warnings:  # turned into warnings here, in the job's own thread
-            warnings.append(IntegrityWarning.make(WarningKind.ENHANCEMENT_CALL_FAILED, message, detail={"pass": "document_study"}))
+            warnings.append(IntegrityWarning.make(WarningKind.DOCUMENT_STUDY_INCOMPLETE, message, detail={"pass": "document_study"}))
     elif study_enabled and study_client is not None:  # wanted, but the wrapper could not start it: the job's thread never reads the document
         warnings.append(IntegrityWarning.make(
-            WarningKind.ENHANCEMENT_CALL_FAILED,
+            WarningKind.DOCUMENT_STUDY_INCOMPLETE,
             "The document study could not be started, so acceptance criteria proposals used the hierarchy alone.",
             detail={"pass": "document_study"},
         ))

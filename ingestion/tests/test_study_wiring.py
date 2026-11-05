@@ -272,7 +272,7 @@ def test_study_warnings_become_integrity_warnings_in_the_main_thread() -> None:
         document_study_client=_BrokenStudy(),
     )
     ours = [w for w in tree.warnings if w.detail.get("pass") == "document_study"]
-    assert len(ours) == 1 and ours[0].kind == WarningKind.ENHANCEMENT_CALL_FAILED and "none of the document" in ours[0].raw
+    assert len(ours) == 1 and ours[0].kind == WarningKind.DOCUMENT_STUDY_INCOMPLETE and "none of the document" in ours[0].raw
 
     class _FailsOneWindow:
         def __init__(self) -> None:
@@ -308,7 +308,7 @@ def test_a_study_that_could_not_start_gives_one_warning_and_a_tree_from_the_hier
     )
 
     ours = [w for w in tree.warnings if w.detail.get("pass") == "document_study"]
-    assert len(ours) == 1 and ours[0].kind == WarningKind.ENHANCEMENT_CALL_FAILED and "could not be started" in ours[0].raw
+    assert len(ours) == 1 and ours[0].kind == WarningKind.DOCUMENT_STUDY_INCOMPLETE and "could not be started" in ours[0].raw
     assert study.windows == []  # nothing reads the document on the job's thread
     assert list(criteria.calls[0]) == ["n1"] and "Proposed acceptance criteria" in {n.local_id: n for n in tree.nodes}["n1"].description
 

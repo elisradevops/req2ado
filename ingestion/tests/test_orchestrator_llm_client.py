@@ -4310,3 +4310,62 @@ def test_the_call_gate_wraps_each_attempt_but_not_the_retry_back_off(monkeypatch
         client.propose_acceptance_criteria({"a": {"text": "t"}})
 
     assert events == ["enter", "call", "exit", "sleep", "enter", "call", "exit"]
+
+
+_STUDY_ANSWER = {"glossary": [], "placeholder_tokens": [], "verification_statements": [], "standards_cited": [], "table_roles": [],}
+
+
+def _study_client(handler) -> OrchestratorLlmClient:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+    return client
+
+
+def test_a_study_window_call_asks_for_the_study_ladder_with_a_deadline() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps(_STUDY_ANSWER), "finishReason": "stop"})
+
+    _study_client(handler).study_document_window("some text")
+
+    assert captured["body"]["budgetKind"] == "study"
+    assert captured["body"]["maxTokens"] == 3000
+    assert captured["body"]["deadlineMs"] == 600_000
+    assert "reasoning_effort" not in captured["body"]
+
+
+def test_an_empty_answer_cut_off_at_the_limit_is_a_typed_empty_cutoff() -> None:
+    from app.leveling.document_study import StudyLengthCutoff
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"content": "", "finishReason": "length"})
+
+    with pytest.raises(StudyLengthCutoff) as caught:
+        _study_client(handler).study_document_window("some text")
+    assert caught.value.empty is True
+
+
+def test_a_partial_answer_cut_off_at_the_limit_is_a_typed_partial_cutoff_not_a_studied_window() -> None:
+    from app.leveling.document_study import StudyLengthCutoff
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"content": '{"glossary": [], "placeholder_tokens": ["TB', "finishReason": "length"})
+
+    with pytest.raises(StudyLengthCutoff) as caught:
+        _study_client(handler).study_document_window("some text")
+    assert caught.value.empty is False
+
+
+def test_an_ordinary_chat_json_call_sends_no_budget_fields_and_still_ignores_a_length_ending() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"n0": {"score": 85, "issues": []}}), "finishReason": "length"})
+
+    client = _study_client(handler)
+    client.score_requirements_for_document({"n0": "The unit shall power on within 2 seconds."})
+
+    assert "budgetKind" not in captured["body"] and "deadlineMs" not in captured["body"]

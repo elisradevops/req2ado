@@ -5,7 +5,7 @@ import json
 import logging
 import re
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 import httpx
 from json_repair import repair_json
@@ -163,6 +163,8 @@ _CHECKLIST_MAX_ITEM_CHARS = 60
 # -- most transient blips should never even reach those nets now.
 _RETRYABLE_CHAT_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 _MAX_CHAT_RETRY_ATTEMPTS = 3
+# How long the orchestrator may spend on one document-study window, its output-limit raises included (ms): inside the study's own budgets.
+_STUDY_CALL_DEADLINE_MS = 600_000
 _CHAT_RETRY_BACKOFF_SECONDS = (2.0, 8.0)
 # A retryable status that arrives only AFTER the call has already run this
 # long is not a transient blip: it is a call that hung (an upstream that
@@ -1196,6 +1198,7 @@ class OrchestratorLlmClient:
         user_id: str | None = None,
         stream_inputs: dict[str, str | None] | None = None,
         stream_stage: str | None = None,
+        budget_kind: Literal["study"] | None = None,
     ) -> Any:
         """Shared payload-envelope + response-parsing shape for this class's
         simple, single-shot structured-extraction calls (schema in, JSON
@@ -1222,6 +1225,7 @@ class OrchestratorLlmClient:
             **({"responseSchema": schema} if schema is not None else {}),
             "think": False,
             "maxTokens": self._max_output_tokens if max_tokens is None else max_tokens,
+            **({"budgetKind": budget_kind, "deadlineMs": _STUDY_CALL_DEADLINE_MS} if budget_kind else {}),
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
             **({"topK": self._top_k} if self._top_k else {}),
             **({"minP": self._min_p} if self._min_p else {}),
@@ -1252,6 +1256,11 @@ class OrchestratorLlmClient:
             # means the output may be incomplete -- logged so an empty or
             # partial keyed answer is no longer unexplained.
             logger.warning("Structured LLM call ended with finishReason=%s -- the answer may be incomplete", finish_reason)
+        if budget_kind == "study" and finish_reason == "length":
+            # Never read a cut-off study answer as a studied window: the caller splits it (partial) or skips it (empty).
+            from app.leveling.document_study import StudyLengthCutoff
+
+            raise StudyLengthCutoff(empty=not (body.get("content") or "").strip())
         content = _strip_json_fence(body["content"])
         parsed = _parse_json_object(content)
         return drop_possibly_cut_last_entry(parsed) if finish_reason == "length" else parsed
@@ -1857,7 +1866,7 @@ class OrchestratorLlmClient:
         system_prompt = load_prompt("study_document")
         parsed = self._chat_json(
             system_prompt, json.dumps({"text": window_text}, ensure_ascii=False),
-            schema=document_study_schema(), max_tokens=3000, user_id=user_id,
+            schema=document_study_schema(), max_tokens=3000, user_id=user_id, budget_kind="study",
         )
         if not isinstance(parsed, dict):
             raise ValueError(f"malformed JSON in LLM response content: {parsed!r}")

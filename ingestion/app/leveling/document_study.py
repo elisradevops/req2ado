@@ -45,8 +45,7 @@ _MAX_429_RETRIES = 2
 _MAX_BACKOFF_SECONDS = 60
 _MAX_RETRY_AFTER_SECONDS = 120
 _SLEEP_SLICE_SECONDS = 1.0  # a back-off is slept in slices this long, so a cancellation is noticed within one slice
-_ANSWER_KEYS = ("glossary", "placeholder_tokens", "verification_statements", "standards_cited", "table_roles", "lead_in_patterns", "purpose_statements")
-_MAX_PURPOSE_STATEMENTS = 3  # the overview quotes at most this many, taken in document order
+_ANSWER_KEYS = ("glossary", "placeholder_tokens", "verification_statements", "standards_cited", "table_roles")
 _NEWLINE_PREFERENCE = 0.10  # a newline this close (fraction of the text) to the middle is preferred to a nearer space
 
 
@@ -72,8 +71,6 @@ class DocumentStudy:
     verification_statements: list[str] = field(default_factory=list)
     standards_cited: list[str] = field(default_factory=list)
     table_roles: list[dict] = field(default_factory=list)  # {table, role}
-    lead_in_patterns: list[str] = field(default_factory=list)
-    purpose_statements: list[str] = field(default_factory=list)  # sentences the document states its own purpose or scope in
     windows_studied: int = 0
     windows_total: int = 0
     read_stats: StudyReadStats = field(default_factory=StudyReadStats)
@@ -88,8 +85,6 @@ class WindowFindings:
     verification_statements: tuple[str, ...] = ()
     standards_cited: tuple[str, ...] = ()
     table_roles: tuple[tuple[str, str], ...] = ()  # (table, role)
-    lead_in_patterns: tuple[str, ...] = ()
-    purpose_statements: tuple[str, ...] = ()
 
 
 def _squash(text: str) -> str:
@@ -145,8 +140,6 @@ def window_findings(answer: object, window: str) -> WindowFindings:
         verification_statements=tuple(_strings(answer.get("verification_statements"), window, _MAX_QUOTE_CHARS)),
         standards_cited=tuple(_strings(answer.get("standards_cited"), window, _MAX_QUOTE_CHARS)),
         table_roles=tuple((r["table"], r["role"]) for r in table_roles),
-        lead_in_patterns=tuple(_strings(answer.get("lead_in_patterns"), window, _MAX_QUOTE_CHARS)),
-        purpose_statements=tuple(_strings(answer.get("purpose_statements"), window, _MAX_QUOTE_CHARS)),
     )
 
 
@@ -181,8 +174,6 @@ def merge_findings(indexed: Iterable[tuple[int, WindowFindings]]) -> DocumentStu
         table_roles=[
             {"table": t, "role": r} for t, r in _first_of_each(gather("table_roles"), lambda r: _canonical(r[0]))
         ],
-        lead_in_patterns=_first_of_each(gather("lead_in_patterns"), _canonical),
-        purpose_statements=_first_of_each(gather("purpose_statements"), _canonical)[:_MAX_PURPOSE_STATEMENTS],
         windows_studied=len(ordered),
     )
 
@@ -229,6 +220,15 @@ class WindowRead:
     retries: int = 0
     split: bool = False
     failed: bool = False
+    overloaded: bool = False  # a timeout or 504 ended the read: the backend is slow, so the runner eases off
+
+
+def _is_overload(error: BaseException | None) -> bool:
+    """A timeout or a 504 says the backend is slow, not that the window is too big: halves cost the same model time, so they would fail the
+    same way and double the wait. Such a window is left unread and the runner eases off."""
+    if isinstance(error, httpx.TimeoutException):
+        return True
+    return isinstance(error, httpx.HTTPStatusError) and error.response.status_code == 504
 
 
 def _failure_label(error: BaseException | None) -> str:
@@ -269,8 +269,18 @@ def _cancellable_sleep(seconds: float) -> None:
         remaining -= piece
 
 
+class StudyLengthCutoff(ValueError):
+    """The model's answer ended at its output limit even after the orchestrator raised the limit as far as it allows. `empty`: nothing came back
+    (a thinking model spent the whole budget thinking), so a half of the window would cost the same thinking and fail the same way; otherwise
+    part of the JSON came back (the extraction itself is too long), which halving the window does shorten."""
+
+    def __init__(self, empty: bool) -> None:
+        super().__init__("study answer cut off at the output limit" + (" with no content" if empty else ""))
+        self.empty = empty
+
+
 def _checked_answer(answer: object) -> dict:
-    """The model's answer when it has the shape the schema demands: all six keys, each a list (all of them empty is a legitimately empty
+    """The model's answer when it has the shape the schema demands: all five keys, each a list (all of them empty is a legitimately empty
     window, e.g. a table of contents). Anything else is malformed, so the window is read again as halves and never counted as studied."""
     if not isinstance(answer, dict) or not all(isinstance(answer.get(key), list) for key in _ANSWER_KEYS):
         raise ValueError("malformed study answer")
@@ -309,12 +319,19 @@ def read_window(
     findings, retries, error = _read_text(client, text, user_id, sleep, rng, _MAX_429_RETRIES)
     if error is None:
         return WindowRead(findings, retries)
+    if _is_overload(error):
+        logger.warning("Document study: a window could not be read (%s); the backend is slow, so it is left unread and not split.", _failure_label(error))
+        return WindowRead(None, retries, failed=True, overloaded=True)
+    if isinstance(error, StudyLengthCutoff) and error.empty:
+        logger.warning("Document study: a window could not be read (the model's answer was empty at its output limit); skipping it, a half would fail the same way.")
+        return WindowRead(None, retries, failed=True)
     if not (_is_splittable_upstream_failure(error) or isinstance(error, ValueError)):
         logger.warning("Document study: a window could not be read (%s); skipping it.", _failure_label(error))
         return WindowRead(None, retries, failed=True)
     logger.warning("Document study: a window could not be read whole (%s); reading it as two halves.", _failure_label(error))
     halves: list[WindowFindings] = []
     half_failed = False
+    half_overloaded = False
     for half in split_window(text):
         if not half.strip():  # nothing to read: neither a finding nor a failure
             continue
@@ -323,9 +340,10 @@ def read_window(
         if found is None:  # a half that fails again is lost, the other half is kept
             logger.warning("Document study: half of a window could not be read (%s); skipping it.", _failure_label(half_error))
             half_failed = True
+            half_overloaded = half_overloaded or _is_overload(half_error)
         else:
             halves.append(found)
-    return WindowRead(combine_window_findings(halves) if halves else None, retries, split=True, failed=half_failed)
+    return WindowRead(combine_window_findings(halves) if halves else None, retries, split=True, failed=half_failed, overloaded=half_overloaded)
 
 
 def study_document(
