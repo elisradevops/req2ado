@@ -68,11 +68,32 @@ export interface PreviewResult {
   tableCount: number;
   openTbdCount: number;
   documentMap: DocumentMapSection[];
+  /** The step-3 overview, made from the parsed text and structure alone. Absent from a server that predates it. */
+  overview?: DocumentOverview & { profile?: { summaryInput?: string } };
 }
 
+/** The wizard's overview of a document: `lines` is what step 3 shows, each read off the document's text and structure. */
 export interface DocumentOverview {
   synopsis: string;
   caveat: string | null;
+  lines?: string[];
+  /** The optional AI summary the wizard showed, kept so the job page can show it too. Absent when it was not ready at start. */
+  aiSummary?: string;
+  /** How the file is built, for the SURVEY job's AI stage; carried to the job, never shown. */
+  structureHint?: string;
+}
+
+/**
+ * The optional AI summary of the document: written by the server from the small prepared input the preview returned, and checked against it.
+ * Null when there is none, and also when the call fails or is cancelled: the summary is a bonus, never a reason to show an error.
+ */
+export async function previewSummary(params: { summaryInput: string; model?: string }, signal?: AbortSignal): Promise<string | null> {
+  try {
+    const response = await httpClient.post<{ summary: string | null }>('/jobs/preview/summary', params, { signal });
+    return response.data?.summary ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export async function previewJob(
@@ -102,76 +123,6 @@ export async function getEstimate(params: {
 }): Promise<EtaEstimate> {
   const response = await httpClient.get<EtaEstimate>('/jobs/estimate', { params });
   return response.data;
-}
-
-/** What the wizard shows while the study runs: windows read so far (absent on a heartbeat) and seconds elapsed. */
-export interface ExpositionProgress {
-  done?: number;
-  total?: number;
-  elapsed: number;
-}
-
-// The overview is a study of the document itself (an extractive reading by ingestion), so the document is sent, not only its heading outline.
-// A long document takes minutes, so the answer streams (NDJSON): progress and heartbeat lines while it works, then exactly one result or error
-// line. That is read here with fetch (axios cannot read a response as it arrives); there is no client-side time limit.
-export async function previewExposition(
-  params: {
-    file: File;
-    documentMap: DocumentMapSection[];
-    sectionCount: number;
-    depth: number;
-    // The model the job will run with: the study's stored windows are reused by the job only when it matches.
-    model?: string;
-  },
-  onProgress?: (progress: ExpositionProgress) => void,
-): Promise<DocumentOverview | null> {
-  const form = new FormData();
-  form.append('file', params.file);
-  form.append('documentMap', JSON.stringify(params.documentMap));
-  form.append('sectionCount', String(params.sectionCount));
-  form.append('depth', String(params.depth));
-  if (params.model) form.append('model', params.model);
-  const { apiBaseUrl } = await loadRuntimeConfig();
-  const response = await fetch(`${apiBaseUrl}/jobs/preview/exposition/stream`, {
-    method: 'POST',
-    credentials: 'include',
-    headers: { Accept: 'application/x-ndjson' },
-    body: form,
-  });
-  if (response.status === 401) {
-    useAuthStore.getState().logout();
-    window.location.assign('/login');
-  }
-  if (!response.ok || !response.body) {
-    throw new Error(`The overview request failed (${response.status}).`);
-  }
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let pending = '';
-  let result: { overview: DocumentOverview | null } | null = null;
-  const handle = (text: string): void => {
-    if (!text.trim()) return;
-    const line = JSON.parse(text) as
-      | { type: 'progress'; done: number; total: number; elapsed: number }
-      | { type: 'heartbeat'; elapsed: number }
-      | { type: 'result'; overview: DocumentOverview | null }
-      | { type: 'error'; detail?: string };
-    if (line.type === 'progress') onProgress?.({ done: line.done, total: line.total, elapsed: line.elapsed });
-    else if (line.type === 'heartbeat') onProgress?.({ elapsed: line.elapsed });
-    else if (line.type === 'result') result = { overview: line.overview };
-    else if (line.type === 'error') throw new Error(line.detail || 'The study of the document failed.');
-  };
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    pending += decoder.decode(value, { stream: true });
-    const lines = pending.split('\n');
-    pending = lines.pop() ?? '';
-    lines.forEach(handle);
-  }
-  handle(pending + decoder.decode());
-  if (!result) throw new Error('The connection ended before the study finished.');
-  return (result as { overview: DocumentOverview | null }).overview;
 }
 
 export interface SubmitJobParams {

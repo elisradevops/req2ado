@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { JobDetail } from './JobDetail';
 import { ToastProvider } from '../components/ToastProvider';
@@ -1568,10 +1569,40 @@ describe('JobDetail', () => {
         documentOverview: { synopsis: 'About a backplane.', caveat: null },
       } as any);
       renderAt('job-50');
+      // collapsed: it must not compete with the job's own progress; one click opens it
+      await userEvent.click(await screen.findByRole('button', { name: /show/i }));
       expect(await screen.findByText('About a backplane.')).toBeInTheDocument();
     });
 
-    it('renders nothing for a SURVEY job whose exposition generation failed (documentOverview null)', async () => {
+    it('is collapsed below the live progress, so the job stays the focus of the page', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+        id: 'job-52', status: 'running', mode: 'survey', stage: 'parse', startedAt: new Date().toISOString(), dryRunDiff: [],
+        documentOverview: { synopsis: 'x', caveat: null, lines: ['Structure line.', 'Another line.'], aiSummary: 'An AI summary of the file. More.' },
+      } as any);
+      renderAt('job-52');
+      await screen.findByText('Document overview');
+      expect(screen.queryByText('Another line.')).not.toBeInTheDocument();
+      const overview = screen.getByText('Document overview');
+      const banner = document.querySelector('[data-testid="progress-banner"], [aria-label*="rogress"]');
+      if (banner) expect(banner.compareDocumentPosition(overview) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('renders each line of a stored overview that has lines, instead of one joined paragraph', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+        id: 'job-51',
+        status: 'diff_ready',
+        mode: 'survey',
+        dryRunDiff: [],
+        documentOverview: { synopsis: 'First line. Second line.', caveat: null, lines: ['First line.', 'Second line.'] },
+      } as any);
+      renderAt('job-51');
+      await userEvent.click(await screen.findByRole('button', { name: /show/i }));
+      expect(await screen.findByText('First line.')).toBeInTheDocument();
+      expect(screen.getByText('Second line.')).toBeInTheDocument();
+      expect(screen.queryByText('First line. Second line.')).not.toBeInTheDocument();
+    });
+
+    it('renders nothing for a SURVEY job that has no overview (documentOverview null)', async () => {
       vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
         id: 'job-51',
         status: 'diff_ready',

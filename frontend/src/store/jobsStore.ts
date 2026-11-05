@@ -3,6 +3,7 @@ import type { KbCitation } from '../components/KbCitationChips';
 import type { FigureDescriptionEntry } from '../components/FigureDescriptions';
 import type { KbCoverage } from '../utils/kbCoverage';
 import type { WarningRecord } from '../utils/warnings';
+import type { DocumentOverview } from '../api/jobs';
 
 export interface JobSummary {
   id: string;
@@ -64,7 +65,7 @@ export interface JobDetail {
   // like excludedFigureIds/tableDescriptions/iterationPath above, for a job
   // persisted before this column existed -- JobDetail.tsx already reads it
   // via `job.documentOverview ?? null`.
-  documentOverview?: { synopsis: string; caveat: string | null } | null;
+  documentOverview?: DocumentOverview | null;
   createdAt: string;
   areaPath: string;
   // The ADO project this job writes into (Job.adoProject) -- lets

@@ -12,10 +12,10 @@ import { ProjectPicker } from '../components/ProjectPicker';
 import { formatDestinationPreview } from '../components/DestinationBar';
 import {
   previewJob,
+  previewSummary,
   submitJob,
   listModels,
   getEstimate,
-  previewExposition,
   type EtaEstimate,
   type PreviewResult,
   type DocumentOverview,
@@ -155,11 +155,8 @@ function WorthKnowingCard({ preview, parsing }: { preview: PreviewResult | null;
   );
 }
 
-// Seconds as m:ss ("75" -> "1:15").
-function formatElapsed(seconds: number): string {
-  const whole = Math.max(0, Math.round(seconds));
-  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
-}
+/** How long the optional AI summary may take before it is given up on: later than this it is not worth showing. */
+const AI_SUMMARY_WAIT_MS = 90_000;
 
 export function NewJobWizard(): React.ReactElement {
   const navigate = useNavigate();
@@ -185,10 +182,42 @@ export function NewJobWizard(): React.ReactElement {
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState(false);
-  const [documentOverview, setDocumentOverview] = useState<DocumentOverview | null>(null);
-  const [expositionStatus, setExpositionStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
-  // What the study has reported so far (windows read, seconds elapsed): step 3 shows it so a long wait does not look stuck.
-  const [expositionProgress, setExpositionProgress] = useState<{ done?: number; total?: number; elapsed: number } | null>(null);
+  // The overview comes with the preview (made from the parsed text and structure alone), so it is always the current file's: nothing to fetch.
+  // The bulky profile stays out of what is submitted with the job.
+  const documentOverview: DocumentOverview | null = preview?.overview
+    ? {
+        synopsis: preview.overview.synopsis,
+        caveat: preview.overview.caveat,
+        ...(preview.overview.lines ? { lines: preview.overview.lines } : {}),
+        ...(preview.overview.structureHint ? { structureHint: preview.overview.structureHint } : {}),
+      }
+    : null;
+  // The optional AI summary: fetched in the background while step 3 is open, never waited on (Start is always available), and hidden when
+  // there is none. 'pending' only while the request is in flight; any failure or timeout leaves nothing on screen.
+  const [aiSummary, setAiSummary] = useState<{ status: 'idle' | 'pending' | 'ready' | 'none'; text?: string }>({ status: 'idle' });
+  const summaryInput = preview?.overview?.profile?.summaryInput;
+  useEffect(() => {
+    if (step !== 3 || mode !== 'survey' || !summaryInput) {
+      setAiSummary({ status: 'idle' });
+      return undefined;
+    }
+    const controller = new AbortController();
+    // Later than this it is not worth showing. The waiting note goes first: an abort resolves the request with null, and a cancelled request's
+    // result is ignored below (it may be a stale one), so nothing else would clear it.
+    const giveUp = window.setTimeout(() => {
+      setAiSummary({ status: 'none' });
+      controller.abort();
+    }, AI_SUMMARY_WAIT_MS);
+    setAiSummary({ status: 'pending' });
+    previewSummary({ summaryInput, model: model || undefined }, controller.signal).then((text) => {
+      if (controller.signal.aborted) return;
+      setAiSummary(text ? { status: 'ready', text } : { status: 'none' });
+    });
+    return () => {
+      window.clearTimeout(giveUp);
+      controller.abort();
+    };
+  }, [step, mode, summaryInput, model]);
   // DESIGN.md §11.2.3.d -- server-computed, both modes shown side by side
   // (ModeCards) so both are fetched regardless of which is selected.
   // undefined while in flight/not-yet-fetched; ModeCards renders '--' for
@@ -230,35 +259,6 @@ export function NewJobWizard(): React.ReactElement {
       .finally(() => setModelsLoading(false));
   }, [mode, availableModels.length]);
 
-  // Fires the exposition call exactly once per entry into step 3 -- guarded
-  // on expositionStatus !== 'idle' so re-renders while step 3 is already
-  // loading/ready/error don't re-fire the request.
-  useEffect(() => {
-    if (step !== 3 || expositionStatus !== 'idle' || !preview || !file) return;
-    setExpositionStatus('loading');
-    previewExposition({
-      file,
-      documentMap: preview.documentMap,
-      sectionCount: preview.sectionCount,
-      depth: preview.depth,
-      model: model || undefined,
-    }, (progress) => setExpositionProgress((current) => ({ ...current, ...progress })))
-      .then((result) => {
-        // NestJS serializes a `null` route-handler return (the server's own
-        // documented fail-open path) as an EMPTY response body -- axios's
-        // `result` here is actually '' (falsy, not an object), not `null`.
-        // Treat any falsy/non-object result as the fail-open case so the
-        // error branch below renders instead of a 'ready' card with nothing
-        // in it.
-        const overview = result && typeof result === 'object' ? result : null;
-        setDocumentOverview(overview);
-        setExpositionStatus(overview ? 'ready' : 'error');
-      })
-      .catch(() => {
-        setDocumentOverview(null);
-        setExpositionStatus('error');
-      });
-  }, [step, expositionStatus, preview, file, model]);
 
   // A stale area path picked under a previous project must not be
   // submittable once the project changes -- the two are meant to stay
@@ -331,13 +331,6 @@ export function NewJobWizard(): React.ReactElement {
     setPreview(null);
     setParseStatus('idle');
     setParseError(null);
-    // Without these, a stale exposition from the PREVIOUS file survives the
-    // replace (expositionStatus stays 'ready'), so step 3's effect guard
-    // (`expositionStatus !== 'idle'`) skips re-fetching for the new file and
-    // the old file's synopsis gets submitted with the new file's job.
-    setDocumentOverview(null);
-    setExpositionProgress(null);
-    setExpositionStatus('idle');
   }
 
   async function handleSubmit(): Promise<void> {
@@ -353,7 +346,8 @@ export function NewJobWizard(): React.ReactElement {
         state: state || undefined,
         iterationPath: iterationPath || undefined,
         model: mode === 'survey' ? model || undefined : undefined,
-        documentOverview: mode === 'survey' ? documentOverview : undefined,
+        // The AI summary goes with the job only if it was ready: the start button never waits for it.
+        documentOverview: mode === 'survey' ? (documentOverview && aiSummary.status === 'ready' && aiSummary.text ? { ...documentOverview, aiSummary: aiSummary.text } : documentOverview) : undefined,
       });
       navigate(`/jobs/${jobId}`);
     } catch (err) {
@@ -515,30 +509,30 @@ export function NewJobWizard(): React.ReactElement {
         <Stepper steps={WIZARD_STEPS_SURVEY} activeIndex={2} />
         <SectionCard title="Does this look right?">
           <div className="flex flex-col gap-3">
-            {expositionStatus === 'loading' && (
-              <div role="status" className="flex flex-col gap-1 text-sm text-ink-3">
-                <p className="flex items-center gap-2">
-                  <Spinner /> Studying the document… this reads it in full, so a long one can take a few minutes.
-                </p>
-                <p className="pl-6 font-mono text-xs">
-                  {expositionProgress?.total
-                    ? `Read ${expositionProgress.done ?? 0} of ${expositionProgress.total} ${expositionProgress.total === 1 ? 'part' : 'parts'} of the document`
-                    : 'Waiting for the model'}
-                  {expositionProgress ? ` · ${formatElapsed(expositionProgress.elapsed)}` : ''}
-                </p>
+            {documentOverview?.lines && documentOverview.lines.length > 0 ? (
+              <ul className="flex flex-col gap-2 text-sm text-ink-1">
+                {documentOverview.lines.map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+            ) : documentOverview ? (
+              <p className="text-sm text-ink-1">{documentOverview.synopsis}</p>
+            ) : (
+              <p className="text-sm text-ink-3">No overview available for this document. You can still continue.</p>
+            )}
+            {aiSummary.status === 'pending' && (
+              <p role="status" className="flex items-center gap-2 text-xs text-ink-3">
+                <Spinner /> Writing an AI summary… it is optional, you can continue without it.
+              </p>
+            )}
+            {aiSummary.status === 'ready' && (
+              <div className="flex flex-col gap-1 rounded-sm border border-hairline bg-canvas p-3">
+                <span className="text-xs font-semibold text-ink-2">AI summary</span>
+                <p className="text-sm text-ink-1">{aiSummary.text}</p>
+                <span className="text-xs text-ink-3">Written by a model from the document’s headings and opening text. Check it against the file.</span>
               </div>
             )}
-            {expositionStatus === 'ready' && documentOverview && (
-              <>
-                <p className="text-sm text-ink-1">{documentOverview.synopsis}</p>
-                {documentOverview.caveat && (
-                  <Alert severity="warning">{documentOverview.caveat}</Alert>
-                )}
-              </>
-            )}
-            {expositionStatus === 'error' && (
-              <p className="text-sm text-ink-3">No overview available — the study of the document produced nothing it could state. You can still continue.</p>
-            )}
+            {documentOverview?.caveat && <Alert severity="warning">{documentOverview.caveat}</Alert>}
           </div>
         </SectionCard>
         <div className="flex flex-wrap items-center gap-3">

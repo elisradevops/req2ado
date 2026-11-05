@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import axios from 'axios';
 import { httpClient } from './httpClient';
-import { explainScore, listJobs, submitJob, confirmJob, editDiffEntry, setDiffEntryExcluded, setProposalAccepted, setDiffEntriesReviewed, setWarningsAcknowledged, retryEnhancement, addDiffEntry, rescoreDiffEntry, getFigureFile, attachFigureToAdo, retryTraceLinkWrite, validateCreatedTree, previewExposition } from './jobs';
+import { explainScore, listJobs, submitJob, confirmJob, editDiffEntry, setDiffEntryExcluded, setProposalAccepted, setDiffEntriesReviewed, setWarningsAcknowledged, retryEnhancement, addDiffEntry, rescoreDiffEntry, getFigureFile, attachFigureToAdo, retryTraceLinkWrite, validateCreatedTree, previewSummary } from './jobs';
 
 vi.mock('./httpClient');
 vi.mock('./config', () => ({ loadRuntimeConfig: vi.fn().mockResolvedValue({ apiBaseUrl: '/api' }) }));
@@ -133,88 +133,20 @@ describe('jobs api', () => {
     expect(result).toEqual(validationResult);
   });
 
-  // The overview is a study of the document and a long one takes minutes, so the answer streams: progress and heartbeat lines while it works,
-  // then one result (or error) line. The wizard shows them so the wait does not look stuck.
-  describe('previewExposition', () => {
-    const documentMap = [{ number: null, title: 'Intro', blockCount: 5, figureCount: 0 }];
-    const params = { file: new File(['doc'], 'spec.docx'), documentMap, sectionCount: 1, depth: 2 };
-
-    function ndjson(lines: object[], chunk = (text: string) => [text]): Response {
-      const encoder = new TextEncoder();
-      const body = new ReadableStream<Uint8Array>({
-        start(controller) {
-          for (const piece of chunk(lines.map((l) => JSON.stringify(l)).join('\n') + '\n')) controller.enqueue(encoder.encode(piece));
-          controller.close();
-        },
-      });
-      return new Response(body, { status: 200, headers: { 'Content-Type': 'application/x-ndjson' } });
-    }
-
-    beforeEach(() => {
-      vi.clearAllMocks();
-      vi.stubGlobal('fetch', vi.fn());
-    });
-    afterEach(() => vi.unstubAllGlobals());
-
-    it('posts the document as multipart asking for a stream, and resolves with the overview', async () => {
-      vi.mocked(fetch).mockResolvedValue(ndjson([{ type: 'result', overview: { synopsis: 'Defines 2 terms.', caveat: null } }]));
-
-      const result = await previewExposition({ ...params, model: 'gemma4:12b' });
-
-      expect(result).toEqual({ synopsis: 'Defines 2 terms.', caveat: null });
-      const [url, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
-      expect(url).toBe('/api/jobs/preview/exposition/stream');
-      expect(init.method).toBe('POST');
-      expect(init.credentials).toBe('include');
-      expect((init.headers as Record<string, string>).Accept).toBe('application/x-ndjson');
-      const form = init.body as FormData;
-      expect((form.get('file') as File).name).toBe('spec.docx');
-      expect(form.get('documentMap')).toBe(JSON.stringify(documentMap));
-      expect(form.get('sectionCount')).toBe('1');
-      expect(form.get('depth')).toBe('2');
-      expect(form.get('model')).toBe('gemma4:12b');
+  // The overview the wizard made from the parsed document is submitted with the job (SURVEY only).
+  describe('previewSummary', () => {
+    it('posts the prepared input (and the chosen model) and returns the summary text', async () => {
+      (httpClient.post as any).mockResolvedValue({ data: { summary: 'A summary.' } });
+      const controller = new AbortController();
+      expect(await previewSummary({ summaryInput: 'INPUT', model: 'm1' }, controller.signal)).toBe('A summary.');
+      expect(httpClient.post).toHaveBeenCalledWith('/jobs/preview/summary', { summaryInput: 'INPUT', model: 'm1' }, { signal: controller.signal });
     });
 
-    it('sends no model field when none was chosen', async () => {
-      vi.mocked(fetch).mockResolvedValue(ndjson([{ type: 'result', overview: null }]));
-      await previewExposition(params);
-      const form = (vi.mocked(fetch).mock.calls[0][1] as RequestInit).body as FormData;
-      expect(form.get('model')).toBeNull();
-    });
-
-    it('reports progress and heartbeats as they arrive, even when a line is split across chunks', async () => {
-      const lines = [
-        { type: 'progress', done: 0, total: 3, elapsed: 0 },
-        { type: 'heartbeat', elapsed: 5 },
-        { type: 'progress', done: 2, total: 3, elapsed: 9 },
-        { type: 'result', overview: null },
-      ];
-      vi.mocked(fetch).mockResolvedValue(ndjson(lines, (text) => [text.slice(0, 17), text.slice(17, 60), text.slice(60)]));
-      const seen: unknown[] = [];
-
-      await previewExposition(params, (progress) => seen.push(progress));
-
-      expect(seen).toEqual([{ done: 0, total: 3, elapsed: 0 }, { elapsed: 5 }, { done: 2, total: 3, elapsed: 9 }]);
-    });
-
-    it('resolves null when the study produced no overview', async () => {
-      vi.mocked(fetch).mockResolvedValue(ndjson([{ type: 'result', overview: null }]));
-      expect(await previewExposition(params)).toBeNull();
-    });
-
-    it('rejects with the reason when the stream ends in an error line', async () => {
-      vi.mocked(fetch).mockResolvedValue(ndjson([{ type: 'error', status: 502, detail: 'ingestion unavailable' }]));
-      await expect(previewExposition(params)).rejects.toThrow('ingestion unavailable');
-    });
-
-    it('rejects when the stream ends without a result (the connection was lost)', async () => {
-      vi.mocked(fetch).mockResolvedValue(ndjson([{ type: 'progress', done: 1, total: 3, elapsed: 4 }]));
-      await expect(previewExposition(params)).rejects.toThrow(/connection/i);
-    });
-
-    it('rejects on an HTTP error status', async () => {
-      vi.mocked(fetch).mockResolvedValue(new Response('nope', { status: 500 }));
-      await expect(previewExposition(params)).rejects.toThrow(/500/);
+    it('is null when the server has no summary, and also when the call fails: the summary is optional', async () => {
+      (httpClient.post as any).mockResolvedValue({ data: { summary: null } });
+      expect(await previewSummary({ summaryInput: 'INPUT' })).toBeNull();
+      (httpClient.post as any).mockRejectedValue(new Error('timeout'));
+      expect(await previewSummary({ summaryInput: 'INPUT' })).toBeNull();
     });
   });
 
