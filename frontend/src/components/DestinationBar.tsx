@@ -74,6 +74,7 @@ function PathSegment({
           style={{
             backgroundImage: 'repeating-linear-gradient(45deg, var(--color-accent-soft) 0 4px, transparent 4px 8px)',
           }}
+          role="img"
           aria-label={`${label} not set`}
         />
       ) : value ? (

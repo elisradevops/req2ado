@@ -9,10 +9,10 @@ export function ProgressBar({
 }: {
   value?: number;
   active?: boolean;
-  // Accessible name and the honest reading of the value ("38 percent of the
-  // run, estimated" or "No progress estimate for this step"). Optional, so
-  // every existing bar is unchanged.
-  label?: string;
+  // Accessible name (required: a progressbar with no name fails axe) and the
+  // optional honest reading of the value ("38 percent of the run, estimated"
+  // or "No progress estimate for this step").
+  label: string;
   valueText?: string;
 }): React.ReactElement {
   const determinate = value !== undefined;

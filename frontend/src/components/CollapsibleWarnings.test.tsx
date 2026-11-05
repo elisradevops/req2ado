@@ -368,7 +368,7 @@ describe('CollapsibleWarnings', () => {
       });
 
       expect(screen.getByText('28 of 80 reviewed')).toBeInTheDocument();
-      expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '35');
+      expect(screen.getByRole('progressbar', { name: /^review progress: /i })).toHaveAttribute('aria-valuenow', '35');
       expect(screen.queryByText('Done')).not.toBeInTheDocument();
     });
 
@@ -496,6 +496,7 @@ describe('CollapsibleWarnings', () => {
       });
 
       expect(screen.getByText('Retrying: 100 of 275')).toBeInTheDocument();
+      expect(screen.getByRole('progressbar', { name: /^retry progress: /i })).toHaveAttribute('aria-valuenow', '36');
       expect(screen.queryByRole('button', { name: 'Retry enhancement' })).not.toBeInTheDocument();
       await userEvent.click(screen.getByRole('button', { name: 'Stop' }));
       expect(onCancelRetry).toHaveBeenCalledTimes(1);

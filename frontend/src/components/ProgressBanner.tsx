@@ -804,7 +804,7 @@ function RunDetail({
         <p className='font-mono text-sm text-ink-2 tabular-nums'>
           Checking {latest.blocksDone} of {latest.blocksTotal} proposed item{latest.blocksTotal === 1 ? '' : 's'} against existing work items.
         </p>
-        <ProgressBar value={determinate} />
+        <ProgressBar value={determinate} label='Duplicate check progress' />
       </div>
     );
   }
@@ -841,7 +841,7 @@ function WriteSubStepper({ latest }: { latest: NarrationEvent }): React.ReactEle
           <p className='font-mono text-sm text-ink-2 tabular-nums'>
             {latest.blocksDone} of {latest.blocksTotal} written
           </p>
-          <ProgressBar value={determinate} />
+          <ProgressBar value={determinate} label='Write-back progress' />
         </>
       )}
     </div>

@@ -1868,7 +1868,7 @@ export function JobDetail(): React.ReactElement {
                       onChange={(e) => setFilterText(e.target.value)}
                       className="max-w-[240px] flex-1"
                     />
-                    <Select value={filterAction ?? ''} onChange={(e) => setFilterAction(e.target.value || null)} className="max-w-[160px]">
+                    <Select aria-label="Filter by action" value={filterAction ?? ''} onChange={(e) => setFilterAction(e.target.value || null)} className="max-w-[160px]">
                       <option value="">All actions</option>
                       <option value="create">New</option>
                       <option value="reuse">Reuse</option>

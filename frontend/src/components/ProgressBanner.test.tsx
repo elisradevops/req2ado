@@ -1156,6 +1156,7 @@ describe('ProgressBanner', () => {
     );
     expect(screen.getByText(/checking 12 of 40 proposed items/i)).toBeInTheDocument();
     expect(screen.getAllByRole('progressbar')).toHaveLength(1);
+    expect(screen.getByRole('progressbar', { name: 'Duplicate check progress' })).toBeInTheDocument();
   });
 
   it('renders exactly ONE progress bar for dedup_check, not two at the same percentage (CR-10, "Wizard UX Options" decision sheet)', () => {
@@ -1202,6 +1203,7 @@ describe('ProgressBanner', () => {
     );
     expect(screen.queryByText(/\d+ \/ \d+ blocks/)).not.toBeInTheDocument();
     expect(screen.getAllByRole('progressbar')).toHaveLength(1);
+    expect(screen.getByRole('progressbar', { name: 'Write-back progress' })).toBeInTheDocument();
   });
 
   it.each(['discover_types', 'create', 'link_parents', 'trace_links'] as const)(

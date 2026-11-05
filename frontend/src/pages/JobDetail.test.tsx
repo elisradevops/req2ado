@@ -242,6 +242,23 @@ describe('JobDetail', () => {
     expect(screen.queryByText('Healthy epic')).not.toBeInTheDocument();
   });
 
+  it('names the action filter, which has no visible label', async () => {
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-41',
+      status: 'diff_ready',
+      dryRunDiff: [
+        {
+          localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Flagged epic', description: '',
+          action: 'create', customerId: null, tags: [], groundingScore: 0.1,
+        },
+      ],
+    } as any);
+    renderAt('job-41');
+    await waitFor(() => expect(screen.getByText('Flagged epic')).toBeInTheDocument());
+
+    expect(screen.getByRole('combobox', { name: 'Filter by action' })).toBeInTheDocument();
+  });
+
   describe('integrity warnings', () => {
     function epic(localId: string, title: string) {
       return { localId, parentLocalId: null, type: 'Epic', title, description: '', action: 'create', customerId: null, tags: [] };

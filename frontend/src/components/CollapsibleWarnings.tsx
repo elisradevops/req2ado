@@ -237,7 +237,7 @@ function KindRow({
         {retrying && (
           <span className="mt-1.5 flex items-center gap-2 text-xs text-ink-3">
             <span className="w-20 flex-none">
-              <ProgressBar value={(retrying.done / retrying.total) * 100} active />
+              <ProgressBar value={(retrying.done / retrying.total) * 100} active label={`Retry progress: ${meta.title}`} />
             </span>
             <span className="tabular-nums" role="status">
               Retrying: <AnimatedNumber value={retrying.done} /> of {retrying.total.toLocaleString()}
@@ -247,7 +247,7 @@ function KindRow({
         {showProgress && (
           <span className="mt-1.5 flex items-center gap-2 text-xs text-ink-3">
             <span className="w-20 flex-none">
-              <ProgressBar value={(progress.reviewed / progress.total) * 100} />
+              <ProgressBar value={(progress.reviewed / progress.total) * 100} label={`Review progress: ${meta.title}`} />
             </span>
             <span className="tabular-nums">
               <AnimatedNumber value={progress.reviewed} /> of {progress.total.toLocaleString()} reviewed
