@@ -60,4 +60,38 @@ describe('DocumentOverviewCard', () => {
     const teaser = screen.getByTestId('overview-teaser');
     expect(teaser.textContent!.length).toBeLessThanOrEqual(160);
   });
+
+  it('without a Structure line the teaser skips a line that only says what the file lacks, and an empty line never makes an empty teaser', () => {
+    render(<DocumentOverviewCard overview={{ synopsis: 'About a backplane.', caveat: null, lines: ['No Scope, Purpose or Introduction section was found.', 'Unresolved values: TBD ×5.'] }} />);
+    expect(screen.getByTestId('overview-teaser')).toHaveTextContent(/^Unresolved values: TBD ×5\./);
+    render(<DocumentOverviewCard overview={{ synopsis: 'About a backplane.', caveat: null, lines: [''] }} />);
+    expect(screen.getAllByTestId('overview-teaser')[1]).toHaveTextContent('About a backplane.');
+  });
+
+  it('names the toggle by what it opens, not by the whole teaser, and points at the content it shows', async () => {
+    render(<DocumentOverviewCard overview={OVERVIEW} />);
+    const button = screen.getByRole('button', { name: /show/i });
+    expect(button).toHaveAccessibleName('Document overview Show');
+    await userEvent.click(button);
+    const region = document.getElementById(button.getAttribute('aria-controls') ?? 'missing');
+    expect(region).not.toBeNull();
+    expect(region).toHaveTextContent('Unresolved values: TBD ×5.');
+  });
+
+  it('lets the browser pick the text direction of the model\'s and the file\'s text, so Hebrew reads right to left', async () => {
+    render(<DocumentOverviewCard overview={{ ...OVERVIEW, aiSummary: 'מסמך זה מגדיר ממשק. הוא כולל דרישות.' }} />);
+    expect(screen.getByTestId('overview-teaser').querySelector('bdi')).not.toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: /show/i }));
+    expect(screen.getByText('מסמך זה מגדיר ממשק. הוא כולל דרישות.')).toHaveAttribute('dir', 'auto');
+    expect(screen.getByText('Unresolved values: TBD ×5.')).toHaveAttribute('dir', 'auto');
+  });
+
+  it('shows the first 8 lines and the rest on request', async () => {
+    const lines = Array.from({ length: 12 }, (_v, i) => `Line ${i + 1}.`);
+    render(<DocumentOverviewCard overview={{ synopsis: 's', caveat: null, lines }} />);
+    await userEvent.click(screen.getByRole('button', { name: /^document overview/i }));
+    expect(screen.getAllByText(/^Line \d+\.$/)).toHaveLength(8);
+    await userEvent.click(screen.getByRole('button', { name: /show all 12 lines/i }));
+    expect(screen.getAllByText(/^Line \d+\.$/)).toHaveLength(12);
+  });
 });

@@ -457,12 +457,20 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
       expect(jobsApi.previewSummary).toHaveBeenCalledWith({ summaryInput: 'Sections: 1 Scope', model: undefined }, expect.any(AbortSignal));
     });
 
-    it('hides the summary, and the waiting note, when there is none', async () => {
+    it('takes the waiting note away when there is no summary and says so in one line, instead of just vanishing', async () => {
       vi.spyOn(jobsApi, 'previewSummary').mockResolvedValue(null);
       await openStep3(withInput);
       await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument());
-      expect(screen.queryByText(/ai summary/i)).not.toBeInTheDocument();
+      expect(screen.getByText('No AI summary this time. You can continue.')).toBeInTheDocument();
+      expect(screen.queryByText(/written by a model/i)).not.toBeInTheDocument();
       expect(screen.getByText(/About a backplane/)).toBeInTheDocument();
+    });
+
+    it('says how long the wait can be and what starting now means, while it waits', async () => {
+      vi.spyOn(jobsApi, 'previewSummary').mockReturnValue(new Promise(() => {}));
+      await openStep3(withInput);
+      expect(screen.getByRole('status')).toHaveTextContent(/up to about 90 seconds/i);
+      expect(screen.getByRole('status')).toHaveTextContent(/start now.*without/i);
     });
 
     it('asks for no summary when the preview carries no input for one', async () => {
@@ -494,7 +502,7 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
         vi.useRealTimers();
       }
       await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument());
-      expect(screen.queryByText(/ai summary/i)).not.toBeInTheDocument();
+      expect(screen.getByText('No AI summary this time. You can continue.')).toBeInTheDocument();
     });
 
     it('submits a ready summary with the job, so the job page can show it; nothing when there is none', async () => {
@@ -537,6 +545,29 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
     expect(screen.getByRole('button', { name: /looks right/i })).not.toBeDisabled();
     expect(screen.queryByRole('status')).not.toBeInTheDocument(); // no spinner: nothing is being waited for
     expect((jobsApi as Record<string, unknown>).previewExposition).toBeUndefined();
+  });
+
+  it('says that what is shown was read from the file, not that an AI understood it, and labels the list as such', async () => {
+    await openStep3();
+    expect(screen.getByText(/check what was read from the file before it runs/i)).toBeInTheDocument();
+    expect(screen.queryByText(/confirm the ai understood/i)).not.toBeInTheDocument();
+    expect(screen.getByText('From the file’s text and structure')).toBeInTheDocument();
+  });
+
+  it('shows the first 8 overview lines and the rest on request, so Start stays near, and lines that repeat do not collide', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const lines = [...Array.from({ length: 11 }, (_v, i) => `Line ${i + 1}.`), 'Line 1.'];
+    await openStep3({ ...OVERVIEW, lines });
+    expect(screen.getAllByText(/^Line \d+\.$/)).toHaveLength(8);
+    await userEvent.click(screen.getByRole('button', { name: /show all 12 lines/i }));
+    expect(screen.getAllByText(/^Line \d+\.$/)).toHaveLength(12);
+    expect(error.mock.calls.filter((call) => String(call[0]).includes('same key'))).toEqual([]);
+    error.mockRestore();
+  });
+
+  it('keeps the Start button in view: the action bar is sticky', async () => {
+    await openStep3();
+    expect(screen.getByRole('button', { name: /looks right/i }).parentElement?.className).toMatch(/sticky/);
   });
 
   it('shows the structure caveat as a warning', async () => {

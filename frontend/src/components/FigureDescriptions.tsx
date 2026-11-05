@@ -24,6 +24,10 @@ export interface FigureDescriptionEntry {
   // exact convention ingestion's main.py establishes (figure_id =
   // f"f{figureIndex - 1}") when it builds this array.
   figureId: string;
+  // Only on the stored shape (Job.figureDescriptions): what became of a figure that has no description, and the model's reason for a
+  // "not significant" verdict. Lets a reloaded job say it without the event history, which holds only the latest events.
+  captionStatus?: FigureOutcome;
+  captionReason?: string;
 }
 
 // The activity log (ProgressBanner) only ever shows the LATEST narration
@@ -86,7 +90,7 @@ export function FigureDescriptions({
         <span className="font-medium">
           {outcomeList.length > 0 ? tally : `${items.length} figure description${items.length === 1 ? '' : 's'}`}
         </span>
-        <span className="text-ink-3">-- full vision-model output for each embedded figure</span>
+        <span className="text-ink-3">-- what the vision model made of each embedded figure</span>
       </button>
       <div className={cn('grid min-h-0 transition-[grid-template-rows] duration-200 ease-out', expanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]')}>
         <div className="min-h-0 overflow-hidden">
@@ -141,13 +145,20 @@ export function FigureDescriptions({
                 </div>
               </li>
             ))}
+            {items.length > 0 && outcomeList.length > 0 && (
+              <li className="border-t border-hairline/60 pt-2 text-xs font-semibold text-ink-2">Not described ({outcomeList.length})</li>
+            )}
             {outcomeList.map(({ figureIndex, outcome }) => (
               <li key={`outcome-${figureIndex}`} className="flex flex-col gap-0.5 border-t border-hairline/60 pt-2 text-sm text-ink-3 first:border-t-0 first:pt-0">
                 <span className="flex flex-wrap gap-x-1">
                   <span className="font-medium text-ink-2">Figure {figureIndex} in the document:</span>
                   <span>{FIGURE_OUTCOME_TEXT[outcome]}</span>
                 </span>
-                {outcomeLine(outcome, reasons[figureIndex]) && <span className="text-xs">{outcomeLine(outcome, reasons[figureIndex])}</span>}
+                {outcomeLine(outcome, reasons[figureIndex]) && (
+                  <span dir="auto" className="break-words text-xs text-ink-2">
+                    {outcomeLine(outcome, reasons[figureIndex])}
+                  </span>
+                )}
               </li>
             ))}
           </ul>

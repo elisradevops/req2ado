@@ -294,7 +294,24 @@ export function JobDetail(): React.ReactElement {
         setFigureNamesByIndex((current) => {
           const seeded: Record<number, string | null> = {};
           for (const entry of job.figureDescriptions ?? []) {
-            seeded[entry.figureIndex] = entry.name;
+            // An entry kept only to say what became of the figure (no description, no name) is not a described figure.
+            if (entry.name != null || entry.caption) seeded[entry.figureIndex] = entry.name;
+          }
+          return { ...seeded, ...current };
+        });
+        // What became of the figures that ended without a description, and why: stored with the job, so it does not depend on the event
+        // history (which keeps only the latest events). A live outcome of this run still wins over the stored one.
+        setFigureOutcomesByIndex((current) => {
+          const seeded: Record<number, FigureOutcome> = {};
+          for (const entry of job.figureDescriptions ?? []) {
+            if (entry.captionStatus && !entry.caption) seeded[entry.figureIndex] = entry.captionStatus;
+          }
+          return { ...seeded, ...current };
+        });
+        setFigureReasonsByIndex((current) => {
+          const seeded: Record<number, string> = {};
+          for (const entry of job.figureDescriptions ?? []) {
+            if (entry.captionReason && entry.captionStatus === 'insignificant' && !entry.caption) seeded[entry.figureIndex] = entry.captionReason;
           }
           return { ...seeded, ...current };
         });
@@ -320,6 +337,20 @@ export function JobDetail(): React.ReactElement {
       cancelled = true;
     };
   }
+
+  // The route reuses this component when only the job id changes, so what was gathered for the previous job (the figure outcomes and
+  // reasons, the overview, the live narration and its stored history) must not stay on screen: the seeds below only add to it.
+  useEffect(() => {
+    setFigureCaptionsByIndex({});
+    setFigureOutcomesByIndex({});
+    setFigureReasonsByIndex({});
+    setFigureNamesByIndex({});
+    setTableDescriptions([]);
+    setSectionResultsByIndex({});
+    setNarrations([]);
+    setEventHistory([]);
+    setDocumentOverview(null);
+  }, [id]);
 
   useEffect(loadJob, [id]);
 

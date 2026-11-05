@@ -877,6 +877,75 @@ describe('JobDetail', () => {
     expect(screen.getByText(/A block diagram showing power distribution\./i)).toBeInTheDocument();
   });
 
+  it('shows which figures got no description, and why, from the persisted figure descriptions alone (not from the last 50 events)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-outcomes',
+      status: 'succeeded',
+      mode: 'survey',
+      dryRunDiff: [],
+      createdAt: new Date().toISOString(),
+      figureDescriptions: [
+        { figureIndex: 1, figureId: 'f0', name: null, caption: 'A block diagram.' },
+        { figureIndex: 2, figureId: 'f1', name: null, caption: null, captionStatus: 'insignificant', captionReason: 'A company logo.' },
+        { figureIndex: 3, figureId: 'f2', name: null, caption: null, captionStatus: 'vision_failed' },
+      ],
+    } as any);
+
+    renderAt('job-outcomes');
+
+    await waitFor(() => expect(screen.getByText('1 described · 1 not significant · 1 failed')).toBeInTheDocument());
+    const userEvent = (await import('@testing-library/user-event')).default;
+    await userEvent.click(screen.getByText('1 described · 1 not significant · 1 failed'));
+    expect(screen.getByText(/Judged by the vision model: A company logo\./)).toBeInTheDocument();
+    // a figure with neither a description nor a name is not listed as if it were described
+    expect(screen.queryByText(/2 figure description/)).not.toBeInTheDocument();
+  });
+
+  it('shows nothing of the previous job when the page is reused for another job id (figure outcomes and overview must not carry over)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    const base = { status: 'succeeded', mode: 'survey', dryRunDiff: [], createdAt: new Date().toISOString() };
+    vi.spyOn(jobsApi, 'getJob').mockImplementation(async (jobId: string) =>
+      (jobId === 'job-a'
+        ? {
+            ...base,
+            id: 'job-a',
+            documentOverview: { synopsis: 'About job A.', caveat: null, lines: ['Structure: job A has 3 sections.'] },
+            figureDescriptions: [
+              { figureIndex: 1, figureId: 'f0', name: null, caption: 'Job A diagram.' },
+              { figureIndex: 2, figureId: 'f1', name: null, caption: null, captionStatus: 'insignificant', captionReason: 'A logo in job A.' },
+            ],
+          }
+        : { ...base, id: 'job-b' }) as any,
+    );
+    const { ToastProvider: Toast } = await import('../components/ToastProvider');
+    const { useNavigate } = await import('react-router-dom');
+    function Switch() {
+      const navigate = useNavigate();
+      return <button onClick={() => navigate('/jobs/job-b')}>go to B</button>;
+    }
+    render(
+      <Toast>
+        <MemoryRouter initialEntries={['/jobs/job-a']}>
+          <Switch />
+          <Routes>
+            <Route path="/jobs/:id" element={<JobDetail />} />
+          </Routes>
+        </MemoryRouter>
+      </Toast>,
+    );
+    await waitFor(() => expect(screen.getByText('1 described · 1 not significant')).toBeInTheDocument());
+    expect(screen.getByText(/Structure: job A has 3 sections\./)).toBeInTheDocument();
+
+    const userEvent = (await import('@testing-library/user-event')).default;
+    await userEvent.click(screen.getByText('go to B'));
+
+    await waitFor(() => expect(jobsApi.getJob).toHaveBeenCalledWith('job-b'));
+    await waitFor(() => expect(screen.queryByText('1 described · 1 not significant')).not.toBeInTheDocument());
+    expect(screen.queryByText(/Structure: job A has 3 sections\./)).not.toBeInTheDocument();
+    expect(screen.queryByText(/figure description/)).not.toBeInTheDocument();
+  });
+
   it('shows how many knowledge-base files were surfaced for a job that persisted kbCoverage', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
     vi.spyOn(jobsApi, 'getJob').mockResolvedValue({

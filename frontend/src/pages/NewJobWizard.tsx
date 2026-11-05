@@ -27,6 +27,7 @@ import { useToast } from '../components/ToastProvider';
 import { PageHeader } from '../ui/PageHeader';
 import { SectionCard } from '../ui/SectionCard';
 import { KbReadinessStrip } from '../components/KbReadinessStrip';
+import { OverviewLines } from '../components/DocumentOverviewCard';
 import { TextField } from '../ui/TextField';
 import { Button } from '../ui/Button';
 import { Spinner } from '../ui/Spinner';
@@ -505,37 +506,38 @@ export function NewJobWizard(): React.ReactElement {
   if (step === 3) {
     return (
       <div className="flex flex-col gap-4">
-        <PageHeader title="New Job" description="Confirm the AI understood this document before it runs" />
+        <PageHeader title="New Job" description="Check what was read from the file before it runs" />
         <Stepper steps={WIZARD_STEPS_SURVEY} activeIndex={2} />
         <SectionCard title="Does this look right?">
           <div className="flex flex-col gap-3">
             {documentOverview?.lines && documentOverview.lines.length > 0 ? (
-              <ul className="flex flex-col gap-2 text-sm text-ink-1">
-                {documentOverview.lines.map((line) => (
-                  <li key={line}>{line}</li>
-                ))}
-              </ul>
+              <>
+                <span className="text-xs font-semibold text-ink-2">From the file’s text and structure</span>
+                <OverviewLines lines={documentOverview.lines} />
+              </>
             ) : documentOverview ? (
-              <p className="text-sm text-ink-1">{documentOverview.synopsis}</p>
+              <p dir="auto" className="break-words text-sm text-ink-1">{documentOverview.synopsis}</p>
             ) : (
               <p className="text-sm text-ink-3">No overview available for this document. You can still continue.</p>
             )}
             {aiSummary.status === 'pending' && (
               <p role="status" className="flex items-center gap-2 text-xs text-ink-3">
-                <Spinner /> Writing an AI summary… it is optional, you can continue without it.
+                <Spinner /> Writing an AI summary… optional, up to about 90 seconds. If you start now, the job runs without it.
               </p>
             )}
+            {aiSummary.status === 'none' && <p className="text-xs text-ink-3">No AI summary this time. You can continue.</p>}
             {aiSummary.status === 'ready' && (
               <div className="flex flex-col gap-1 rounded-sm border border-hairline bg-canvas p-3">
                 <span className="text-xs font-semibold text-ink-2">AI summary</span>
-                <p className="text-sm text-ink-1">{aiSummary.text}</p>
+                <p dir="auto" className="break-words text-sm text-ink-1">{aiSummary.text}</p>
                 <span className="text-xs text-ink-3">Written by a model from the document’s headings and opening text. Check it against the file.</span>
               </div>
             )}
             {documentOverview?.caveat && <Alert severity="warning">{documentOverview.caveat}</Alert>}
           </div>
         </SectionCard>
-        <div className="flex flex-wrap items-center gap-3">
+        {/* sticky: the list above can be long and a summary can appear or go away above it, and Start must not move out from under the pointer */}
+        <div className="sticky bottom-0 -mx-1 flex flex-wrap items-center gap-3 border-t border-hairline bg-canvas px-1 py-3">
           <Button variant="outline" onClick={() => setStep(2)}>
             ← Back to configure
           </Button>

@@ -288,4 +288,29 @@ describe('FigureDescriptions: figures without a description', () => {
     render(<FigureDescriptions jobId="j" items={[]} outcomes={{ 4: 'vision_failed' }} reasons={{ 4: 'ignored' }} />);
     expect(screen.queryByText(/judged by the vision model/i)).not.toBeInTheDocument();
   });
+
+  it('puts the figures without a description under their own heading when there are described ones above, with a count', () => {
+    const items: FigureDescriptionEntry[] = [{ figureIndex: 1, caption: 'A figure', figureId: 'f0' }];
+    render(<FigureDescriptions jobId="j" items={items} outcomes={{ 5: 'insignificant', 7: 'vision_failed' }} />);
+    expect(screen.getByText('Not described (2)')).toBeInTheDocument();
+  });
+
+  it('adds no such heading when nothing is described, since every row is then one of them', () => {
+    render(<FigureDescriptions jobId="j" items={[]} outcomes={{ 5: 'insignificant' }} />);
+    expect(screen.queryByText(/not described/i)).not.toBeInTheDocument();
+  });
+
+  it('shows the model\'s reason readably: a darker text, its own direction (Hebrew), and wrapped when it has no spaces', () => {
+    render(<FigureDescriptions jobId="j" items={[]} outcomes={{ 4: 'insignificant' }} reasons={{ 4: 'לוגו של החברה' }} />);
+    const line = screen.getByText(/Judged by the vision model: לוגו של החברה/);
+    expect(line).toHaveAttribute('dir', 'auto');
+    expect(line.className).toMatch(/break-words/);
+    expect(line.className).toMatch(/text-ink-2/);
+  });
+
+  it('describes the panel as what the model made of each figure, which is true of the ones it left out too', () => {
+    render(<FigureDescriptions jobId="j" items={[]} outcomes={{ 4: 'insignificant' }} />);
+    expect(screen.getByText(/what the vision model made of each embedded figure/i)).toBeInTheDocument();
+    expect(screen.queryByText(/full vision-model output/i)).not.toBeInTheDocument();
+  });
 });
