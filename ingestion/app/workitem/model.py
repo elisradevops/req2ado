@@ -382,6 +382,9 @@ class WarningKind(str, Enum):
     # action are identical across all three.
     ENHANCEMENT_CALL_FAILED = "enhancement_call_failed"
     ENHANCEMENT_RESPONSE_INCOMPLETE = "enhancement_response_incomplete"
+    # The job's document study did not read every part of the file (or could not start): acceptance-criteria proposals had less context. `detail["pass"]`
+    # is "document_study"; the message names which parts were not read. Not an enhancement pass, so it has its own kind and its own plain-language copy.
+    DOCUMENT_STUDY_INCOMPLETE = "document_study_incomplete"
     DROPPED_ROW = "dropped_row"
     FRONT_MATTER_FOLDED = "front_matter_folded"
     TRACE_LINK_INFERENCE_FAILED = "trace_link_inference_failed"
@@ -512,6 +515,7 @@ WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
     WarningKind.ADO_VERIFICATION_FAILED: WarningSeverity.PIPELINE_ISSUE,
     WarningKind.ENHANCEMENT_CALL_FAILED: WarningSeverity.PIPELINE_ISSUE,
     WarningKind.ENHANCEMENT_RESPONSE_INCOMPLETE: WarningSeverity.AUTO_FIXED,
+    WarningKind.DOCUMENT_STUDY_INCOMPLETE: WarningSeverity.PIPELINE_ISSUE,
     WarningKind.DROPPED_ROW: WarningSeverity.NEEDS_REVIEW,
     WarningKind.FRONT_MATTER_FOLDED: WarningSeverity.AUTO_FIXED,
     WarningKind.TRACE_LINK_INFERENCE_FAILED: WarningSeverity.PIPELINE_ISSUE,

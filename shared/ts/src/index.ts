@@ -15,3 +15,4 @@ export type {
   ComparePayload,
   CompareSide,
 } from './generated/JobLive.js';
+export type { DocumentOverview } from './generated/DocumentOverview.js';

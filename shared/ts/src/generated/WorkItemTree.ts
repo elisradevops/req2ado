@@ -167,6 +167,7 @@ export interface IntegrityWarning {
     | 'scoring_inconsistent_categories'
     | 'enhancement_call_failed'
     | 'enhancement_response_incomplete'
+    | 'document_study_incomplete'
     | 'dropped_row'
     | 'front_matter_folded'
     | 'trace_link_inference_failed'
