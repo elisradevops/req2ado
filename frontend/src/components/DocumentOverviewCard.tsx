@@ -9,6 +9,8 @@ const TEASER_CHARS = 150;
 export const OVERVIEW_LINES_SHOWN = 8;
 
 /** One line that says what is inside: the AI summary's first sentence when there is one, else the structure line. */
+const NOTHING_TO_SUMMARIZE = 'Too little text to summarize.';
+
 function teaserOf(overview: DocumentOverview): string {
   // The structure line says more at a glance than a line about what the file lacks, which can come first.
   // A line that only says what the file lacks ("No Scope… section was found") is a poor one-line summary, so it comes last.
@@ -17,7 +19,8 @@ function teaserOf(overview: DocumentOverview): string {
     overview.aiSummary ||
     lines.find((line) => line.startsWith('Structure:')) ||
     lines.find((line) => line && !line.startsWith('No ')) ||
-    lines.find(Boolean) ||
+    // Every line only says what the file lacks: say that the file gave too little to summarize.
+    (lines.some(Boolean) ? NOTHING_TO_SUMMARIZE : '') ||
     overview.synopsis;
   const first = source.split(/(?<=[.!?])\s/)[0] || source;
   return first.length <= TEASER_CHARS ? first : `${first.slice(0, TEASER_CHARS - 1).trimEnd()}…`;

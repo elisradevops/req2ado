@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
-import { clearDocumentMapCache, MAX_ATTEMPTS_AFTER_LIVE, MAX_PAUSE_MS, RETRY_MS, useDocumentMap } from './useDocumentMap';
+import { clearDocumentMapCache, MAX_ATTEMPTS_AFTER_LIVE, RETRY_MS, useDocumentMap } from './useDocumentMap';
 import { getRunMap } from '../api/runMap';
 import type { DocumentMap } from '../api/liveTypes';
 
@@ -46,18 +46,14 @@ describe('useDocumentMap', () => {
     expect(mocked).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps asking with a growing pause while the feature has not been seen, capped', async () => {
+  it('asks once while the feature has not been seen, and not again until the live stream shows it', async () => {
     mocked.mockResolvedValue(null);
-    renderHook(() => useDocumentMap('job-1', false, true));
+    const { result } = renderHook(() => useDocumentMap('job-1', false, true));
     await settle();
     expect(mocked).toHaveBeenCalledTimes(1);
-    await settle(RETRY_MS);
-    expect(mocked).toHaveBeenCalledTimes(2);
-    await settle(RETRY_MS * 2);
-    expect(mocked).toHaveBeenCalledTimes(3);
-    await settle(MAX_PAUSE_MS * 10);
-    // Bounded: far fewer than one ask per RETRY_MS.
-    expect(mocked.mock.calls.length).toBeLessThan(15);
+    await settle(RETRY_MS * 20);
+    expect(mocked).toHaveBeenCalledTimes(1);
+    expect(result.current).toEqual({ map: null, state: 'off' });
   });
 
   it('asks again at once when the live stream shows the feature is on, then gives up after a few tries', async () => {
@@ -77,7 +73,7 @@ describe('useDocumentMap', () => {
 
   it('finds the map when it appears after a miss', async () => {
     mocked.mockResolvedValueOnce(null).mockResolvedValue(MAP);
-    const { result } = renderHook(() => useDocumentMap('job-1', false, true));
+    const { result } = renderHook(() => useDocumentMap('job-1', true, true));
     await settle();
     expect(result.current.state).toBe('loading');
     await settle(RETRY_MS);
@@ -105,7 +101,7 @@ describe('useDocumentMap', () => {
     expect(mocked.mock.calls.map((c) => c[0])).toEqual(['a', 'b']);
     unmount();
     const calls = mocked.mock.calls.length;
-    await settle(MAX_PAUSE_MS * 3);
+    await settle(RETRY_MS * 20);
     expect(mocked.mock.calls.length).toBe(calls);
   });
 });

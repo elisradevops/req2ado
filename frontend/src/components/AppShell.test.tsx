@@ -9,6 +9,7 @@ import * as adoApi from '../api/ado';
 import * as kbApi from '../api/kb';
 import * as llmApi from '../api/llm';
 import { useAuthStore } from '../store/authStore';
+import { usePageLabelStore } from '../store/pageLabelStore';
 
 vi.mock('../api/auth');
 vi.mock('../api/ado');
@@ -142,6 +143,34 @@ describe('AppShell breadcrumbs', () => {
     const jobsLink = breadcrumb.getByRole('link', { name: 'Jobs' });
     expect(jobsLink).toHaveAttribute('href', '/jobs');
     expect(breadcrumb.getByText('87fdf5b1…')).toBeInTheDocument();
+  });
+
+  it('shows the job file name in the crumb once the job page has loaded it', async () => {
+    usePageLabelStore.getState().setJobLabel('87fdf5b1-01a0-441d-a519-741598d7c0b0', 'mock_icd.docx');
+    render(
+      <MemoryRouter initialEntries={['/jobs/87fdf5b1-01a0-441d-a519-741598d7c0b0']}>
+        <AppShell>
+          <div />
+        </AppShell>
+      </MemoryRouter>,
+    );
+    const breadcrumb = within(await screen.findByRole('navigation', { name: 'Breadcrumb' }));
+    expect(breadcrumb.getByText('mock_icd.docx')).toBeInTheDocument();
+    expect(breadcrumb.queryByText('87fdf5b1…')).not.toBeInTheDocument();
+    usePageLabelStore.setState({ jobLabels: {} });
+  });
+
+  it('names an unknown route instead of echoing its path', async () => {
+    render(
+      <MemoryRouter initialEntries={['/no/such/page']}>
+        <AppShell>
+          <div />
+        </AppShell>
+      </MemoryRouter>,
+    );
+    const breadcrumb = within(await screen.findByRole('navigation', { name: 'Breadcrumb' }));
+    expect(breadcrumb.getByText('Page not found')).toBeInTheDocument();
+    expect(breadcrumb.queryByText('/no/such/page')).not.toBeInTheDocument();
   });
 
   it('renders a single, non-linked crumb for a route with no sub-path', async () => {

@@ -62,49 +62,41 @@ function predictedLine(data: RewriteComparison | null): string {
   return `Predicted score: ${data.before.score} → ${data.after.score} (${sign}${data.delta}${verdict})`;
 }
 
-// Fixed, non-editable prompt for the "Suggest a better title" chip -- title
-// distillation beyond the first-sentence rule (a shorter label, or a fully
-// custom title unrelated to the source text) can't be done
-// deterministically: two independent heuristic attempts, hand-verified
-// against the golden TV-Receiver/Remote-Control scenario, were rejected --
-// the oracle's own title choices are provably inconsistent under any
-// per-line textual signal (same shape input, different desired output).
-// Sent via the exact same send() path as a normal typed message (in-flight
-// state, typing indicator, proposal card), same as every other suggested
-// prompt below.
-const SUGGEST_TITLE_PROMPT = 'Suggest a more specific, concise title for this requirement based on its description.';
-
 // CR-9 (Take C, "Wizard UX Options" sheet) -- the empty state used to be a
 // centered icon graphic + a row of label-only chips. Replaced with a fake
-// opening Assistant turn ("I have read this requirement. Want me to:")
+// opening Assistant turn ("I have read this <item type>. Want me to:")
 // followed by starter rows in the transcript's own voice: each row states
 // the action AND its one-line effect, so the panel teaches what this chat
 // is for instead of just naming four ideas. "Suggest a better title" folds
 // in as a row here rather than a separate control -- it has no other home
 // now that the header button and the old chip row are both gone. Each row
 // reuses send()'s existing in-flight/typing-indicator path, same as before.
-const SUGGESTED_PROMPTS: { label: string; effect: string; prompt: string }[] = [
-  {
-    label: 'Make it testable',
-    effect: 'rewrite so it is independently verifiable, with clear acceptance criteria',
-    prompt: 'Rewrite this so it is independently testable, with clear acceptance criteria.',
-  },
-  {
-    label: 'Add the missing rationale',
-    effect: 'add a brief rationale explaining why this requirement exists',
-    prompt: 'Add a brief rationale explaining why this requirement exists.',
-  },
-  {
-    label: 'Tighten the wording',
-    effect: 'remove ambiguity and vague terms',
-    prompt: 'Tighten the wording -- remove ambiguity and vague terms.',
-  },
-  {
-    label: 'Suggest a better title',
-    effect: 'was a separate button in the header, before this change',
-    prompt: SUGGEST_TITLE_PROMPT,
-  },
-];
+function suggestedPrompts(noun: string, scored: boolean): { label: string; effect: string; prompt: string }[] {
+  const prompts = [
+    {
+      label: 'Make it testable',
+      effect: 'rewrite so it is independently verifiable, with clear acceptance criteria',
+      prompt: 'Rewrite this so it is independently testable, with clear acceptance criteria.',
+    },
+    {
+      label: 'Add the missing rationale',
+      effect: `add a brief rationale explaining why this ${noun} exists`,
+      prompt: `Add a brief rationale explaining why this ${noun} exists.`,
+    },
+    {
+      label: 'Tighten the wording',
+      effect: 'remove ambiguity and vague terms',
+      prompt: 'Tighten the wording -- remove ambiguity and vague terms.',
+    },
+    {
+      label: 'Suggest a better title',
+      effect: `a more specific, concise title for this ${noun}`,
+      prompt: `Suggest a more specific, concise title for this ${noun} based on its description.`,
+    },
+  ];
+  // Testability is a rubric of requirements; an Epic or a Feature is never scored for it.
+  return scored ? prompts : prompts.filter((p) => p.label !== 'Make it testable');
+}
 
 // Offered first, only for an item the scorer flagged "compound" (review finding R8). A chat turn edits this one item and cannot create
 // siblings, so the starter asks for the first requirement to stay here and the rest to be listed as complete statements to add.
@@ -249,6 +241,7 @@ export function ChatPanel({
   // (the original and the proposal scored together) when the model has answered. A result that arrives after the proposal or the node
   // changed is discarded.
   const checkedKind = itemType === undefined || itemType === 'Requirement';
+  const noun = checkedKind ? 'requirement' : (itemType ?? 'item').toLowerCase();
   useEffect(() => {
     const request = ++checkRequestRef.current;
     setConfirmOpen(false);
@@ -484,10 +477,10 @@ export function ChatPanel({
                 separate graphic. */}
             <div className="mb-2 max-w-[85%] border-l-2 border-hairline-strong pl-2.5">
               <p className={LABEL_MICRO}>Assistant</p>
-              <p className="text-sm text-ink-1">I have read this requirement. Want me to:</p>
+              <p className="text-sm text-ink-1">I have read this {noun}. Want me to:</p>
             </div>
             <div className="ml-2.5 flex flex-col gap-1.5">
-              {(isCompound ? [SPLIT_STARTER, ...SUGGESTED_PROMPTS] : SUGGESTED_PROMPTS).map((p) => (
+              {(isCompound ? [SPLIT_STARTER, ...suggestedPrompts(noun, checkedKind)] : suggestedPrompts(noun, checkedKind)).map((p) => (
                 <button
                   key={p.label}
                   type="button"

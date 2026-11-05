@@ -11,7 +11,8 @@ import { Button } from '../ui/Button';
 // browser's unstyled defaults -- the same purpose MUI Typography variants
 // served pre-migration, expressed as Tailwind utility classes.
 const MARKDOWN_COMPONENTS: Components = {
-  h1: ({ children }) => <h1 className="mb-2 mt-6 text-2xl font-bold tracking-tight first:mt-0">{children}</h1>,
+  // The page title is the PageHeader's h1, so a markdown "#" renders as an h2 (same look) to keep one h1 per page.
+  h1: ({ children }) => <h2 className="mb-2 mt-6 text-2xl font-bold tracking-tight first:mt-0">{children}</h2>,
   h2: ({ children }) => <h2 className="mb-2 mt-6 text-lg font-bold tracking-tight">{children}</h2>,
   h3: ({ children }) => <h3 className="mb-1.5 mt-5 text-base font-semibold">{children}</h3>,
   p: ({ children }) => <p className="mb-3 text-sm leading-relaxed text-ink-2">{children}</p>,

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { useAuthStore, loadFromSessionStorage } from './authStore';
+import { usePageLabelStore } from './pageLabelStore';
 
 const STORAGE_KEY = 'req2ado-auth-v2';
 const LEGACY_V1_STORAGE_KEY = 'req2ado-auth';
@@ -21,6 +22,12 @@ describe('authStore', () => {
       displayName: 'Jane Doe',
       userId: 'user-descriptor-1',
     });
+  });
+
+  it('logout forgets the job file names the breadcrumb learned', () => {
+    usePageLabelStore.getState().setJobLabel('job-1', 'customer-spec.docx');
+    useAuthStore.getState().logout();
+    expect(usePageLabelStore.getState().jobLabels).toEqual({});
   });
 
   it('logout clears state and sessionStorage', () => {

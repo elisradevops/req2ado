@@ -1,18 +1,17 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { getRunMap } from '../api/runMap';
 import type { DocumentMap } from '../api/liveTypes';
 
 // One map per job, cached for the page's lifetime. The server publishes it only
 // after it has parsed the document, which can take minutes for a figure-heavy
 // file, so a 404 early in a run is not a final answer:
-//  - until the live stream has shown the feature is on, keep asking with a
-//    growing pause (8 s, 16 s ... up to 60 s), so a server with the feature off
-//    costs almost nothing;
+//  - until the live stream has shown the feature is on, ask exactly once (a
+//    server with the feature off answers 404 every time, so asking again only
+//    fills the console and the access log);
 //  - once it has (the first progress or live event), ask again at once and then
 //    every 8 s, a few times, because the map is about to exist.
 const cache = new Map<string, DocumentMap>();
 export const RETRY_MS = 8000;
-export const MAX_PAUSE_MS = 60000;
 export const MAX_ATTEMPTS_AFTER_LIVE = 6;
 
 export type DocumentMapState = 'loading' | 'ready' | 'off';
@@ -26,10 +25,8 @@ export function useDocumentMap(
 ): { map: DocumentMap | null; state: DocumentMapState } {
   const [map, setMap] = useState<DocumentMap | null>(jobId ? (cache.get(jobId) ?? null) : null);
   const [gaveUp, setGaveUp] = useState(false);
-  const missesBeforeLive = useRef(0);
 
   useEffect(() => {
-    missesBeforeLive.current = 0;
     setGaveUp(false);
     setMap(jobId ? (cache.get(jobId) ?? null) : null);
   }, [jobId]);
@@ -58,9 +55,8 @@ export function useDocumentMap(
             }
             timer = setTimeout(attempt, RETRY_MS);
           } else {
-            missesBeforeLive.current += 1;
-            const pause = Math.min(RETRY_MS * 2 ** (missesBeforeLive.current - 1), MAX_PAUSE_MS);
-            timer = setTimeout(attempt, pause);
+            // The one early ask missed; the effect restarts when the live stream shows the feature.
+            setGaveUp(true);
           }
         });
     };

@@ -441,6 +441,19 @@ describe('ChatPanel', () => {
     expect(screen.getAllByRole('button', { name: /^suggest a (better )?title/i })).toHaveLength(1);
   });
 
+  it('names an Epic as an epic and offers no testability starter for it', async () => {
+    render(
+      <ToastProvider>
+        <ChatPanel jobId="job-1" localId="n0" itemType="Epic" disabled={false} onAcceptProposal={vi.fn()} />
+      </ToastProvider>,
+    );
+    await screen.findByPlaceholderText(/ask the assistant/i);
+    expect(screen.getByText('I have read this epic. Want me to:')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^make it testable/i })).not.toBeInTheDocument();
+    expect(screen.getByText('add a brief rationale explaining why this epic exists')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^tighten the wording/i })).toBeInTheDocument();
+  });
+
   it('clicking a starter row sends its real prompt text through the normal send() path', async () => {
     const user = userEvent.setup();
     render(

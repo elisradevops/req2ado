@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { Briefcase, Plus, HelpCircle, Database, Menu, LogOut, UserCog } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { useDisplayName, useAuthStore } from '../store/authStore';
+import { usePageLabelStore } from '../store/pageLabelStore';
 import { logoutSession } from '../api/auth';
 import { getAdoStatus, type AdoStatus } from '../api/ado';
 import { getSharePointStatus, type SharePointStatus } from '../api/kb';
@@ -98,7 +99,8 @@ interface Crumb {
 // /jobs/:id falls through to its own crumbs() without needing a param-aware
 // router integration (App.tsx nests plain <Routes> inside AppShell, so
 // there is no route `handle`/`useMatches` to read a param from here).
-const ROUTE_CRUMBS: { prefix: string; crumbs: (pathname: string) => Crumb[] }[] = [
+type CrumbLabels = Record<string, string>;
+const ROUTE_CRUMBS: { prefix: string; crumbs: (pathname: string, jobLabels: CrumbLabels) => Crumb[] }[] = [
   { prefix: '/jobs/new', crumbs: () => [{ label: 'New Job' }] },
   // Both NEW-05 batch routes must sit ABOVE the generic '/jobs/' catch-all
   // below -- that entry matches any '/jobs/...' path via startsWith, and
@@ -112,7 +114,12 @@ const ROUTE_CRUMBS: { prefix: string; crumbs: (pathname: string) => Crumb[] }[] 
   },
   {
     prefix: '/jobs/',
-    crumbs: (pathname) => [{ label: 'Jobs', to: '/jobs' }, { label: pathname.slice('/jobs/'.length), mono: true }],
+    crumbs: (pathname, jobLabels) => {
+      const jobId = pathname.slice('/jobs/'.length);
+      // The job's file name once the page has loaded it; the (shortened) id until then.
+      const name = jobLabels[jobId];
+      return [{ label: 'Jobs', to: '/jobs' }, name ? { label: name } : { label: jobId, mono: true }];
+    },
   },
   { prefix: '/jobs', crumbs: () => [{ label: 'Jobs' }] },
   { prefix: '/knowledge-base', crumbs: () => [{ label: 'Knowledge Base' }] },
@@ -120,9 +127,10 @@ const ROUTE_CRUMBS: { prefix: string; crumbs: (pathname: string) => Crumb[] }[] 
   { prefix: '/settings', crumbs: () => [{ label: 'Profile & Connections' }] },
 ];
 
-function crumbsForPath(pathname: string): Crumb[] {
+function crumbsForPath(pathname: string, jobLabels: CrumbLabels): Crumb[] {
   const match = ROUTE_CRUMBS.find((route) => pathname.startsWith(route.prefix));
-  return match ? match.crumbs(pathname) : [{ label: pathname }];
+  // An unknown address is named, not echoed back as a raw path.
+  return match ? match.crumbs(pathname, jobLabels) : [{ label: 'Page not found' }];
 }
 
 function truncateId(id: string): string {
@@ -147,6 +155,7 @@ export function AppShell({ children }: { children: ReactNode }): React.ReactElem
   const location = useLocation();
   const navigate = useNavigate();
   const displayName = useDisplayName();
+  const jobLabels = usePageLabelStore((state) => state.jobLabels);
   const width = collapsed ? RAIL_COLLAPSED_WIDTH : RAIL_EXPANDED_WIDTH;
   const [adoStatus, setAdoStatus] = useState<AdoStatus | null>(null);
   const [sharePointStatus, setSharePointStatus] = useState<SharePointStatus | null>(null);
@@ -259,7 +268,7 @@ export function AppShell({ children }: { children: ReactNode }): React.ReactElem
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-[52px] flex-none items-center gap-3 border-b border-hairline-strong bg-surface px-4.5">
           <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5 truncate text-sm">
-            {crumbsForPath(location.pathname).map((crumb, index, all) => {
+            {crumbsForPath(location.pathname, jobLabels).map((crumb, index, all) => {
               const isLast = index === all.length - 1;
               const label = crumb.mono ? (
                 <Tooltip content={crumb.label}>

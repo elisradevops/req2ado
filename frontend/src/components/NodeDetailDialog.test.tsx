@@ -88,7 +88,7 @@ describe('NodeDetailDialog', () => {
       stale.unmount();
 
       renderDialog({ entry: { ...ENTRY, type: 'Feature', qualityIssues: ['compound'] } as DryRunDiffEntry, ...props });
-      await screen.findByText(/i have read this requirement/i);
+      await screen.findByText(/i have read this feature/i);
       expect(screen.queryByRole('button', { name: /split into separate requirements/i })).not.toBeInTheDocument();
     } finally {
       matchMediaSpy.mockRestore();

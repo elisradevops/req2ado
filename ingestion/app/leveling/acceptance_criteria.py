@@ -191,7 +191,7 @@ def unmistakable_markers(plain_text: str) -> list[str]:
 
 
 def _needs_input_section(tokens: list[str]) -> str:
-    detail = f"Unresolved value(s) in this requirement: {', '.join(tokens)}. " if tokens else "A value this requirement needs is missing. "
+    detail = f"Unresolved value(s) in this requirement: {', '.join(tokens)}. " if tokens else "This requirement needs a value that the text does not provide. "
     return (
         f'<div {_MARKER}="needs-input"><p><b>{NEEDS_INPUT_TITLE}</b></p><p>{html.escape(detail)}Acceptance criteria were not proposed.</p></div>'
     )

@@ -125,6 +125,8 @@ def test_model_can_say_a_value_is_missing() -> None:
 
     assert NEEDS_INPUT_TITLE in node.description
     assert "invented" not in node.description
+    # No marker token to name: the note says plainly that it cannot name the value, instead of implying it knows.
+    assert "needs a value that the text does not provide" in node.description
 
 
 def test_context_carries_hierarchy_children_table_and_study_hits() -> None:

@@ -1,3 +1,4 @@
+import { usePageLabelStore } from '../store/pageLabelStore';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -641,6 +642,27 @@ describe('JobDetail', () => {
     expect(screen.getByText(/3 work items/i)).toBeInTheDocument();
   });
 
+  it('names the page with the file name as its level-one heading and tells the shell the job label', async () => {
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-h1',
+      status: 'diff_ready',
+      dryRunDiff: [],
+      createdItemCount: 0,
+      originalFilename: 'mock_icd.docx',
+    } as any);
+
+    renderAt('job-h1');
+
+    expect(await screen.findByRole('heading', { level: 1, name: 'mock_icd.docx' })).toBeInTheDocument();
+    expect(usePageLabelStore.getState().jobLabels['job-h1']).toBe('mock_icd.docx');
+  });
+
+  it('still has a level-one heading when the job has no file name', async () => {
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-noname', status: 'diff_ready', dryRunDiff: [], createdItemCount: 0 } as any);
+    renderAt('job-noname');
+    expect(await screen.findByRole('heading', { level: 1, name: 'Job' })).toBeInTheDocument();
+  });
+
   it('does not render the resume-safe banner for a diff_ready job with no prior partial write', async () => {
     vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
       id: 'job-20',
@@ -651,7 +673,7 @@ describe('JobDetail', () => {
 
     renderAt('job-20');
 
-    await waitFor(() => expect(screen.getByRole('button', { name: /confirm/i })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: /^write to azure devops$/i })).toBeInTheDocument());
     expect(screen.queryByText(/already written to azure devops/i)).not.toBeInTheDocument();
   });
 
@@ -727,7 +749,7 @@ describe('JobDetail', () => {
 
     renderAt('job-24');
 
-    await waitFor(() => expect(screen.getByRole('button', { name: /confirm/i })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: /^write to azure devops$/i })).toBeInTheDocument());
     expect(screen.queryByRole('button', { name: /^validate$/i })).not.toBeInTheDocument();
   });
 
@@ -1301,7 +1323,7 @@ describe('JobDetail', () => {
     );
     vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-3', status: 'running', dryRunDiff: null } as any);
     renderAt('job-3');
-    await waitFor(() => expect(screen.queryByRole('button', { name: /confirm/i })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole('button', { name: /^write to azure devops$/i })).not.toBeInTheDocument());
   });
 
   it('bulk-excludes only rows matching the current text filter, sequentially (not concurrently)', async () => {
@@ -1588,10 +1610,10 @@ describe('JobDetail', () => {
     useAuthStore.getState().login('https://ado.example', 'Jane', 'user-descriptor-1');
 
     renderAt('job-10');
-    await waitFor(() => expect(screen.getByRole('button', { name: /^confirm$/i })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: /^write to azure devops$/i })).toBeInTheDocument());
 
     const { default: userEvent } = await import('@testing-library/user-event');
-    await userEvent.click(screen.getByRole('button', { name: /^confirm$/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^write to azure devops$/i }));
     // The confirm-to-ADO dialog is irreversible -- its Confirm button stays
     // disabled until the acknowledgement checkbox is ticked (DESIGN.md §7/§8).
     await userEvent.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));

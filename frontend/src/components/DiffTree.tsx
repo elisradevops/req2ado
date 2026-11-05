@@ -722,7 +722,7 @@ export function DiffTree({
         <span>Item</span>
         <span className="flex items-center gap-1">
           Status
-          <InfoTip content="What will happen to this item on Confirm: New (written to ADO for the first time), Links to an existing WI-#### (reused, nothing new written, and it keeps its existing ADO parent regardless of where you place it in this tree), or Near-duplicate of an existing item (skipped, same parent-keeping rule)." />
+          <InfoTip content="What will happen to this item when you write to Azure DevOps: New (written to ADO for the first time), Links to an existing WI-#### (reused, nothing new written, and it keeps its existing ADO parent regardless of where you place it in this tree), or Near-duplicate of an existing item (skipped, same parent-keeping rule)." />
         </span>
         <span className="flex items-center justify-end gap-1">
           Flags
@@ -1083,7 +1083,7 @@ function DiffTreeRow({
                 (entry.action === 'reuse'
                   ? `Already exists in ADO${entry.existingAdoId != null ? ` as WI-${entry.existingAdoId}` : ''}`
                   : `Matched to a probable duplicate in ADO${entry.existingAdoId != null ? ` (WI-${entry.existingAdoId})` : ''}`) +
-                ' and keeps its parent there. Moving it here only reorganizes this review tree -- Confirm never re-parents an existing item. New items you place under it will be linked to it in ADO.'
+                ' and keeps its parent there. Moving it here only reorganizes this review tree -- writing to Azure DevOps never re-parents an existing item. New items you place under it will be linked to it in ADO.'
               }
             >
               <Lock className="h-3.5 w-3.5" />
@@ -1128,7 +1128,7 @@ function DiffTreeRow({
           {parentIsExcluded && !entry.excluded && (
             <span
               className="flex flex-none items-center gap-0.5 text-warning"
-              title="An ancestor of this item is excluded -- this item's whole subtree will be dropped from Confirm along with it, unless you exclude something else instead."
+              title="An ancestor of this item is excluded -- this item's whole subtree will be dropped from the write along with it, unless you exclude something else instead."
             >
               <EyeOff className="h-3.5 w-3.5" />
             </span>
@@ -1157,7 +1157,7 @@ function DiffTreeRow({
           The flagged-review signal (isFlaggedDiffEntry: low grounding, low
           quality, or low model confidence) belongs here, not in the Status
           cell above -- it's a per-item quality signal like the other icons
-          in this cell, not part of what Confirm will do with the item.
+          in this cell, not part of what the write will do with the item.
           Putting it in Status instead (an earlier version of this fix)
           forced useStatusColumnWidth to reserve icon width GLOBALLY for
           every row, even unflagged ones with a short "New" label -- a

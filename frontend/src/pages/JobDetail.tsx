@@ -40,6 +40,7 @@ import { RunNotices } from '../components/liveRun/RunNotices';
 import { RUN_SUMMARY_HEADING } from '../utils/liveCopy';
 import { loadRuntimeConfig } from '../api/config';
 import { useOrgUrl } from '../store/authStore';
+import { usePageLabelStore } from '../store/pageLabelStore';
 import { StatusChip } from '../components/StatusChip';
 import { ModeBadge } from '../components/ModeBadge';
 import { ProgressBanner } from '../components/ProgressBanner';
@@ -323,6 +324,7 @@ export function JobDetail(): React.ReactElement {
         setIterationPath(job.iterationPath ?? null);
         setWorkItemState(job.state ?? null);
         setSourceFilename(job.originalFilename);
+        if (job.originalFilename) usePageLabelStore.getState().setJobLabel(job.id, job.originalFilename);
         setTypeCatalog(job.workItemTypeCatalog ?? null);
         setCategoryLabels(job.workItemTypeCategoryLabels ?? null);
         setRequirementClassificationField(job.requirementClassificationField ?? null);
@@ -1520,7 +1522,7 @@ export function JobDetail(): React.ReactElement {
       <div className="flex flex-col gap-1 border-b border-hairline pb-2 pt-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex min-w-0 flex-wrap items-baseline gap-2">
-            {sourceFilename && <span className="truncate text-sm font-medium text-ink-1">{sourceFilename}</span>}
+            <h1 className="truncate text-sm font-medium text-ink-1">{sourceFilename || 'Job'}</h1>
             {status && <StatusChip status={status} />}
             {mode && <ModeBadge mode={mode as 'baseline' | 'survey'} />}
             {startedAt && (
@@ -1543,10 +1545,10 @@ export function JobDetail(): React.ReactElement {
                 <Button variant="danger" onClick={() => setRejectDialogOpen(true)} disabled={isMutating}>
                   Reject
                 </Button>
-                <Tooltip content={canWriteToAdo ? 'Write the reviewed items to Azure DevOps' : 'Sign in with an Azure DevOps org URL and PAT to confirm'}>
+                <Tooltip content={canWriteToAdo ? 'Write the reviewed items to Azure DevOps' : 'Sign in with an Azure DevOps org URL and PAT to write'}>
                   <span>
                     <Button variant="cta" onClick={() => setConfirmDialogOpen(true)} disabled={isMutating || !canWriteToAdo}>
-                      Confirm
+                      Write to Azure DevOps
                     </Button>
                   </span>
                 </Tooltip>

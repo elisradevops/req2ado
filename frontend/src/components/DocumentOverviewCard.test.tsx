@@ -68,6 +68,11 @@ describe('DocumentOverviewCard', () => {
     expect(screen.getAllByTestId('overview-teaser')[1]).toHaveTextContent('About a backplane.');
   });
 
+  it('when every line only says what the file lacks, the teaser says there was too little to summarize', () => {
+    render(<DocumentOverviewCard overview={{ synopsis: 'About a backplane.', caveat: null, lines: ['No Scope, Purpose or Introduction section was found.'] }} />);
+    expect(screen.getByTestId('overview-teaser')).toHaveTextContent(/^Too little text to summarize\./);
+  });
+
   it('names the toggle by what it opens, not by the whole teaser, and points at the content it shows', async () => {
     render(<DocumentOverviewCard overview={OVERVIEW} />);
     const button = screen.getByRole('button', { name: /show/i });

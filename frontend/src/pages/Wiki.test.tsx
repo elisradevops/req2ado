@@ -11,4 +11,11 @@ describe('Wiki', () => {
     render(<Wiki />);
     await waitFor(() => expect(screen.getByRole('heading', { name: /req2ado user guide/i })).toBeInTheDocument());
   });
+
+  it('keeps one level-one heading: a markdown top-level heading renders as a level two', async () => {
+    (httpClient.get as any).mockResolvedValue({ data: '# req2ado User Guide\n\nSome content.' });
+    render(<Wiki />);
+    await screen.findByRole('heading', { level: 2, name: /req2ado user guide/i });
+    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
+  });
 });
