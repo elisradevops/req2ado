@@ -64,6 +64,11 @@ describe('NodeDetailDialog', () => {
     expect(title.className).not.toContain('truncate');
   });
 
+  it('lets the browser pick the header title\'s direction, so a Hebrew title reads right to left', () => {
+    renderDialog({ entry: { ...ENTRY, title: 'ממשק משתמש (UI) למערכת' } });
+    expect(screen.getByText('ממשק משתמש (UI) למערכת')).toHaveAttribute('dir', 'auto');
+  });
+
   it('renders the item title, type badge, and customer ID in the header', () => {
     renderDialog();
     expect(screen.getAllByText('Req Title').length).toBeGreaterThan(0);

@@ -1203,8 +1203,9 @@ function DiffTreeRow({
             <div className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
               <span className="flex min-w-0 items-center gap-1.5">
                 <p
+                  dir="auto"
                   className={cn(
-                    'min-w-0 flex-1 truncate text-sm font-medium leading-snug',
+                    'min-w-0 flex-1 truncate text-start text-sm font-medium leading-snug',
                     entry.excluded && 'line-through text-ink-3',
                     entry.action === 'dedup_skip' && !entry.excluded && 'text-ink-2',
                   )}
@@ -1240,7 +1241,7 @@ function DiffTreeRow({
               badge fell back to hardcoded colors/icons. realTypeName()
               resolves the real name first. */}
           <WorkItemTypeBadge type={entry.type} catalogEntry={typeCatalog?.[realTypeName(entry.type)]} />
-          <p className={cn('min-w-0 flex-1 truncate text-sm font-medium leading-snug', entry.excluded && 'line-through text-ink-3')}>
+          <p dir="auto" className={cn('min-w-0 flex-1 truncate text-start text-sm font-medium leading-snug', entry.excluded && 'line-through text-ink-3')}>
             {entry.title}
           </p>
           {customerIdEl}

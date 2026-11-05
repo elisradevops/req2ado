@@ -121,7 +121,7 @@ function SectionResultRow({ item }: { item: SectionResultEntry }): React.ReactEl
             <div key={index} className="flex flex-col gap-1.5 border-t border-hairline/40 pt-2.5 first:border-t-0 first:pt-0">
               <div className="flex items-center gap-2">
                 <WorkItemTypeBadge type={node.type} />
-                <span className="text-sm font-medium text-ink-1">{node.title}</span>
+                <span dir="auto" className="text-sm font-medium text-ink-1">{node.title}</span>
                 {/* Per-row requirement splitting live visibility (2026-08-26):
                     lets a reviewer confirm, section by section as the job
                     runs, that a source table's own row identifier actually

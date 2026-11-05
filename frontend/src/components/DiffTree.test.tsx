@@ -689,6 +689,11 @@ describe('DiffTree signal counts', () => {
     expect(screen.getByRole('tree').style.height).toContain('240px');
   });
 
+  it('lets the browser pick each row title\'s direction, so a Hebrew title reads right to left', () => {
+    render(<DiffTree entries={[{ ...baseEntry, title: 'ממשק משתמש (UI) למערכת' }]} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+    expect(screen.getByText('ממשק משתמש (UI) למערכת')).toHaveAttribute('dir', 'auto');
+  });
+
   it('draws no "New" pill on a routine row in the desktop status column, but keeps the word for screen readers (V6)', () => {
     render(<DiffTree entries={[baseEntry]} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
     expect(screen.getByText('New')).toHaveClass('sr-only');
@@ -709,6 +714,11 @@ describe('DiffTree signal counts', () => {
     });
 
     const props = { selectedId: null, onSelect: () => {}, filterAction: null, filterText: '', onToggleExclude: () => {} } as const;
+
+    it('lets the browser pick each row title\'s direction on the phone layout too', () => {
+      render(<DiffTree entries={[{ ...baseEntry, title: 'ממשק משתמש (UI) למערכת' }]} {...props} />);
+      expect(screen.getByText('ממשק משתמש (UI) למערכת')).toHaveAttribute('dir', 'auto');
+    });
 
     it('gives each row two lines of height (64px), with the status as quiet text beneath the title, not a pill', () => {
       const entries: DryRunDiffEntry[] = [

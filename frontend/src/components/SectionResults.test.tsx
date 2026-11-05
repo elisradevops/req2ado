@@ -34,3 +34,12 @@ describe('SectionResults KB note', () => {
     expect(screen.getByText('Grounded against 1 of 3 KB files:')).toBeInTheDocument();
   });
 });
+
+describe('SectionResults item titles', () => {
+  it('lets the browser pick a title\'s direction, so a Hebrew title reads right to left', async () => {
+    const node = { type: 'Requirement', title: 'ממשק משתמש (UI) למערכת', text: 'x', qualityScore: null, customerId: null };
+    render(<SectionResults items={[entry({ nodes: [node] })]} />);
+    await open();
+    expect(screen.getByText('ממשק משתמש (UI) למערכת')).toHaveAttribute('dir', 'auto');
+  });
+});

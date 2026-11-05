@@ -34,7 +34,7 @@ function Row({ index, style, data }: ListChildComponentProps<RowData>): React.Re
         <Circle aria-hidden className='h-3.5 w-3.5 flex-none text-ink-3' />
       )}
       <span className='sr-only'>{state === 'done' ? 'Written: ' : state === 'working' ? 'In progress: ' : 'Waiting: '}</span>
-      <span className={cn('min-w-0 flex-1 truncate', state === 'pending' ? 'text-ink-3' : 'text-ink-1')} title={item.title}>
+      <span dir='auto' className={cn('min-w-0 flex-1 truncate text-start', state === 'pending' ? 'text-ink-3' : 'text-ink-1')} title={item.title}>
         {item.title}
       </span>
       <span className='flex-none font-mono text-meta tabular-nums text-ink-3'>{formatCount(item.words)}</span>

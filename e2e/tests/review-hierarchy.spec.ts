@@ -144,6 +144,9 @@ test.describe('details dialog title', () => {
       const header = dialog(page).locator('span[title]', { hasText: title.slice(0, 20) }).first();
       await expect(header).toBeVisible();
       await expect(header).toHaveAttribute('title', title);
+      // The browser picks the direction from the text: a Hebrew title resolves to rtl, an English one stays ltr.
+      await expect(header).toHaveAttribute('dir', 'auto');
+      if (title === HEBREW_TITLE) expect(await header.evaluate((el) => getComputedStyle(el).direction)).toBe('rtl');
       // The bug this guards: a flex item shrinking to a few px wide and thousands of px tall.
       const box = (await header.boundingBox())!;
       expect(box.width, 'title is a readable width').toBeGreaterThan(Math.min(140, page.viewportSize()!.width * 0.4));
