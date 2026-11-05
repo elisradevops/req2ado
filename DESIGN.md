@@ -474,8 +474,59 @@ focus indicator — it must be `--color-field-border` instead.
 
 ## §5 — Layout, density, and category geometry
 
-- **Page frame:** `main` content area `p-5`. App header is a fixed 52px bar. Nav
-  rail is 220px expanded / 64px collapsed with `transition-[width] duration-slow`.
+- **Page frame:** `main` content area `p-5` (`p-3` below `md`). App header is a
+  fixed 52px bar. Nav rail is 220px expanded / 64px collapsed with
+  `transition-[width] duration-slow`.
+- **Below `md` (768px) the rail is an off-canvas drawer**, closed on load. A
+  header button opens it (always with full labels), a backdrop button, `Esc` or
+  following a link closes it, and the closed drawer is `invisible` so its links
+  leave the tab order. While it is open the page behind it is `inert`, focus moves
+  into it and returns to the header button on close, and widening past `md`
+  closes it. Each connection shows its status in words (screen readers always,
+  sighted users below `md`, where there is no hover tooltip). The in-rail collapse button is desktop-only. The three
+  connection dots sit in one labelled **Connections** group; that group, with
+  its visible heading and slightly tighter spacing, is the one change that also
+  shows at `md` and up.
+- **A page's actions come in three tiers, not N equal buttons** (job header: up
+  to six actions by state). One primary (`cta`: "Write to Azure DevOps") with its
+  counterpart decision beside it (Reject, or Cancel run while running): text,
+  icon and colour. Everything else is an **icon button** (`ui/IconButton`): the
+  label is its accessible name and tooltip, 32px at desktop widths and 44px below
+  `md`. The destructive one (Delete) is last in the tools. The DOM order is the
+  visual order at every width (decisions, a divider, then the tools), so keyboard
+  and screen-reader order match what is seen. All stay visible; below `md` the
+  decisions take the first, full-width row and the tools sit under them, each
+  with a short visible label beside its icon (there is no hover to show the
+  tooltip).
+- **Long grouped lists fold below `md`.** The Integrity warnings card starts as
+  its three group headings with counts (the red "Fix before confirming" count
+  still shows), each opening its rows; the "before you approve" banner stays, with
+  its jump button (the document overview can sit between the banner and the
+  card). At
+  `md` and up every group starts open as before.
+- **Dense lists become two-line rows below `md`** (diff tree: 64px rows, grip,
+  Index, Flags and Status columns dropped; the details dialog still carries them).
+  Line 1 is the type glyph and the title. Line 2 starts at the *title's* left edge
+  (supporting text aligns with what it supports) and reads in order of what must
+  never be lost: what the row will do first (wrapping hides the *last* chips), then the
+  red "same tier" hazard text, then the rest. The needs-review triangle sits at the end
+  of line 1, the same right edge on every row. Rules behind it:
+  - *Quiet by default.* The routine case is plain muted text ("New", "Links to
+    WI-n"), not a filled pill; only exceptions get colour. A real link to a reused item stays an
+    accent-coloured, underlined link; a near-duplicate's link stays muted (still underlined). "Near-duplicate of" shortens to "Dup of"
+    on the phone (the full wording is the title and accessible name).
+  - *Promote by tint.* A row that needs a decision gets a whole-row tint: amber
+    for needs-review (quality issues, low grounding/quality/confidence), red for
+    the same-tier hazard. The tint is never the only cue: it comes with the
+    triangle glyph and its accessible name. The row's left edge is left to the
+    hover/selected rail, and the selected fill wins over the tint.
+  - *Never half-clipped.* Line 2 wraps whole chips; anything that does not fit
+    drops out of sight whole and is in the details dialog. Status is placed so it
+    always fits.
+  - *Sized in rem.* The two-line row is 4rem, not 64px, so it grows with the
+  reader's text-size setting instead of clipping.
+- *Targets.* The matched-item link has a 24px-tall hit area. The details button is 44px (info glyph, not the external-link glyph
+    that desktop uses), indent guides cap at three levels.
 - **Card nesting cap:** a `Card` may never contain another `Card`. Depth beyond
   one level is carried by hairlines and `surface-alt`, never by stacked shadows.
 - **Panes own their height.** A step, panel, or screen that is given the
@@ -958,7 +1009,7 @@ actually read?* **Built (§18).**
 Both panes want vertical space, so none is left over.
 
 ```
-┌─ PageHeader "New job" ────────────────── Stepper (1 of 2) ─┐
+┌─ PageHeader "New job" ────────────────── Stepper (1 of 3) ─┐
 ├───────────────────────────┬───────────────────────────────┤
 │ LEFT  (grows)             │ RIGHT (fixed-ish)             │
 │                           │  ┌──────────┬──────────┐      │
@@ -1058,6 +1109,12 @@ its own question heading:
 1. **"How should it read the document?"** — the hero.
 2. **"Where do the items land?"** — an ADO path, read left to right.
 3. The cost, as a calibrated range.
+
+**The step count is stable.** The wizard's stepper always shows the same three
+steps, whichever mode is chosen. BASELINE never reaches "Confirm understanding",
+so it shows that step muted with a "SURVEY only" chip rather than leaving it out or striking it through, and picking SURVEY
+no longer makes a step appear. The "writes nothing, you approve the diff first"
+line sits beside the primary action on every step that has one, step 3 included.
 
 A thin **document strip** runs above all three: file icon, filename, a
 `font-mono` summary (`682 blocks · 24 sections · 39 figures · depth 4`), and a

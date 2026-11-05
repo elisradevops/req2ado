@@ -34,7 +34,7 @@ import { Spinner } from '../ui/Spinner';
 import { Alert } from '../ui/Alert';
 import { Chip } from '../ui/Chip';
 import { StatTile } from '../ui/StatTile';
-import { Stepper } from '../ui/Stepper';
+import { Stepper, type StepState } from '../ui/Stepper';
 import { InfoTip } from '../ui/Tooltip';
 
 // The flow is genuinely two screens (upload, then configure+review) -- a
@@ -42,8 +42,20 @@ import { InfoTip } from '../ui/Tooltip';
 // don't exist as separate screens, since target/options/review all live on
 // one page today. Two honest stages instead of a stage count the UI can't
 // back up.
-const WIZARD_STEPS_BASELINE = ['Upload document', 'Configure & review'];
-const WIZARD_STEPS_SURVEY = ['Upload document', 'Configure & review', 'Confirm understanding'];
+// One list for both modes: the step count never changes when the mode does. BASELINE never reaches step 3, so it shows it muted and tagged
+// "SURVEY only" (a struck-through label read as an error before any mode had been chosen).
+const WIZARD_STEPS = ['Upload document', 'Configure & review', 'Confirm understanding'];
+
+function wizardSubLabels(mode: 'baseline' | 'survey'): (string | null)[] {
+  return [null, null, mode === 'baseline' ? 'SURVEY only' : null];
+}
+
+function wizardStepStates(activeIndex: number): StepState[] {
+  return WIZARD_STEPS.map((_, index) => {
+    if (index < activeIndex) return 'done';
+    return index === activeIndex ? 'awaiting' : 'pending';
+  });
+}
 
 // DESIGN.md §11.1 -- the "honest answer to 'what did it read'": one
 // `.hoverable-row` per section, not just the 4 aggregate stat tiles above
@@ -381,7 +393,7 @@ export function NewJobWizard(): React.ReactElement {
     return (
       <div className="flex flex-col gap-4">
         <PageHeader title="New Job" description="Upload a requirements document to get started" />
-        <Stepper steps={mode === 'survey' ? WIZARD_STEPS_SURVEY : WIZARD_STEPS_BASELINE} activeIndex={0} />
+        <Stepper steps={WIZARD_STEPS} states={wizardStepStates(0)} subLabels={wizardSubLabels(mode)} />
         {/* DESIGN.md §11.1 -- "a two-pane split that owns the viewport by
             construction" -- previously a single narrow column stretched
             across AppShell's full-viewport-height <main>, reading as a
@@ -507,7 +519,7 @@ export function NewJobWizard(): React.ReactElement {
     return (
       <div className="flex flex-col gap-4">
         <PageHeader title="New Job" description="Check what was read from the file before it runs" />
-        <Stepper steps={WIZARD_STEPS_SURVEY} activeIndex={2} />
+        <Stepper steps={WIZARD_STEPS} states={wizardStepStates(2)} />
         <SectionCard title="Does this look right?">
           <div className="flex flex-col gap-3">
             {documentOverview?.lines && documentOverview.lines.length > 0 ? (
@@ -541,6 +553,10 @@ export function NewJobWizard(): React.ReactElement {
           <Button variant="outline" onClick={() => setStep(2)}>
             ← Back to configure
           </Button>
+          <span className="flex items-center gap-1.5 text-xs text-ink-3">
+            <Lock className="h-3.5 w-3.5 flex-none" />
+            Starting a job writes nothing. You approve the diff first.
+          </span>
           <Button onClick={handleSubmit} disabled={isSubmitting} className="ml-auto">
             {isSubmitting ? <Spinner /> : <Activity className="h-3.5 w-3.5" />}
             {isSubmitting ? 'Starting…' : 'Looks right — start job'}
@@ -558,7 +574,7 @@ export function NewJobWizard(): React.ReactElement {
   return (
     <div className="flex flex-col gap-4">
       <PageHeader title="New Job" description="Review the parsed document and set where it writes to" />
-      <Stepper steps={mode === 'survey' ? WIZARD_STEPS_SURVEY : WIZARD_STEPS_BASELINE} activeIndex={1} />
+      <Stepper steps={WIZARD_STEPS} states={wizardStepStates(1)} subLabels={wizardSubLabels(mode)} />
       {/* Two-column split (prototype's `.split`, ~1.6:1) -- left column is
           document identity + destination, right column is how-to-read +
           options + the submit action. Previously one full-width vertical

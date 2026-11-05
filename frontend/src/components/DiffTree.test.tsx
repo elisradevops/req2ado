@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { BELOW_MD } from '../hooks/useMediaQuery';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, within, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { forwardRef } from 'react';
@@ -26,12 +27,13 @@ vi.mock('react-window', () => ({
       itemCount: number;
       children: (args: { index: number; style: CSSProperties }) => ReactNode;
       itemKey?: (index: number) => string;
+      itemSize?: number;
     }
   >((props, ref) => {
     if (typeof ref === 'function') ref({ scrollToItem });
     else if (ref) ref.current = { scrollToItem };
     return (
-      <div>
+      <div data-item-size={props.itemSize}>
         {Array.from({ length: props.itemCount }, (_, index) => {
           if (props.itemKey) itemKeyCalls.push(props.itemKey(index));
           return <div key={index}>{props.children({ index, style: {} })}</div>;
@@ -593,6 +595,190 @@ describe('DiffTree signal counts', () => {
 
     expect(screen.getByTitle('2 quality issue(s)')).toBeInTheDocument();
     expect(screen.queryByText(/Ambiguous/i)).not.toBeInTheDocument();
+  });
+
+  it('keeps the same-tier chip on the title line at desktop widths', () => {
+    const entries: DryRunDiffEntry[] = [
+      { ...baseEntry, localId: 'p', title: 'Parent req' },
+      { ...baseEntry, localId: 'c', parentLocalId: 'p', title: 'Child req' },
+    ];
+    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+    expect(within(screen.getByText('Child req').parentElement as HTMLElement).getByText('same tier')).toBeInTheDocument();
+  });
+
+  it('exposes the real depth to assistive technology on every row', () => {
+    const entries: DryRunDiffEntry[] = [
+      { ...baseEntry, localId: 'a', title: 'Top', type: 'Epic' },
+      { ...baseEntry, localId: 'b', parentLocalId: 'a', title: 'Child', type: 'Requirement' },
+    ];
+    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+    expect(screen.getByText('Top').closest('[role=treeitem]')).toHaveAttribute('aria-level', '1');
+    expect(screen.getByText('Child').closest('[role=treeitem]')).toHaveAttribute('aria-level', '2');
+  });
+
+  it('keeps the criteria chip a tab stop at desktop widths', () => {
+    const entries: DryRunDiffEntry[] = [{ ...baseEntry, localId: 'a', title: 'Has criteria', proposal: { kind: 'criteria' } as any, proposalAccepted: false }];
+    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+    expect(screen.getByText('criteria to review')).toHaveAttribute('tabindex', '0');
+  });
+
+  it('keeps the desktop order after the title: customer id, same tier, then the criteria chip, all on the title line', () => {
+    const entries: DryRunDiffEntry[] = [
+      { ...baseEntry, localId: 'p', title: 'Parent req' },
+      { ...baseEntry, localId: 'c', parentLocalId: 'p', title: 'Child req', customerId: 'REQ-1', proposal: { kind: 'criteria' } as any, proposalAccepted: false },
+    ];
+    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+    const title = screen.getByText('Child req');
+    const after = (el: Element): number => title.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING;
+    const id = screen.getByText('REQ-1');
+    const tier = screen.getByText('same tier');
+    const criteria = screen.getByText('criteria to review');
+    expect(after(id) && after(tier) && after(criteria)).toBeTruthy();
+    expect(id.compareDocumentPosition(tier) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(tier.compareDocumentPosition(criteria) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(id.parentElement).not.toHaveClass('flex-wrap');
+  });
+
+  it('keeps the external-link glyph on the details button at desktop widths, and no review triangle on line 2', () => {
+    render(<DiffTree entries={[{ ...baseEntry, qualityIssues: ['ambiguous'] }]} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+    const button = screen.getByRole('button', { name: /details for sys req/i });
+    expect(button.querySelector('.lucide-square-arrow-out-up-right')).not.toBeNull();
+    expect(screen.queryByTestId('narrow-flag')).toBeNull();
+  });
+
+  it('keeps single-line 40px rows at desktop widths', () => {
+    const { container } = render(
+      <DiffTree entries={[baseEntry]} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />,
+    );
+    expect(container.querySelector('[data-item-size]')).toHaveAttribute('data-item-size', '40');
+  });
+
+  describe('below the md breakpoint', () => {
+    const original = window.matchMedia;
+    beforeEach(() => {
+      window.matchMedia = ((query: string) => ({
+        matches: query === BELOW_MD,
+        media: query,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      })) as unknown as typeof window.matchMedia;
+    });
+    afterEach(() => {
+      window.matchMedia = original;
+    });
+
+    const props = { selectedId: null, onSelect: () => {}, filterAction: null, filterText: '', onToggleExclude: () => {} } as const;
+
+    it('gives each row two lines of height (64px), with the status as quiet text beneath the title, not a pill', () => {
+      const entries: DryRunDiffEntry[] = [
+        { ...baseEntry, localId: 'a', action: 'reuse', existingAdoId: 3025 },
+        { ...baseEntry, localId: 'b', action: 'dedup_skip', existingAdoId: 3033 },
+      ];
+      const { container } = render(<DiffTree entries={entries} {...props} />);
+      expect(container.querySelector('[data-item-size]')).toHaveAttribute('data-item-size', '64');
+      expect(screen.getByText('Links to WI-3025')).not.toHaveClass('rounded-full');
+      expect(screen.getByText('Dup of WI-3033')).toHaveClass('text-ink-3');
+      expect(screen.getByText('Dup of WI-3033')).toHaveAttribute('title', 'Near-duplicate of WI-3033');
+    });
+
+    it('puts what follows the title (same tier, etc.) on line 2 in the same flow as the status, so no chip is cut on the title line', () => {
+      const entries: DryRunDiffEntry[] = [
+        { ...baseEntry, localId: 'p', title: 'Parent req' },
+        { ...baseEntry, localId: 'c', parentLocalId: 'p', title: 'Child req' },
+      ];
+      render(<DiffTree entries={entries} {...props} />);
+      const chip = screen.getByText('Same tier');
+      expect(chip.parentElement).toHaveClass('flex-wrap');
+      expect(within(chip.parentElement as HTMLElement).getByText('New')).toBeInTheDocument();
+      expect(screen.getByText('Child req')).not.toContainElement(chip);
+    });
+
+    it('promotes rows that need a decision: a labelled triangle and a warm tint, red tint for a same-tier hazard, nothing for a clean row', () => {
+      const entries: DryRunDiffEntry[] = [
+        { ...baseEntry, localId: 'clean', title: 'Clean one' },
+        { ...baseEntry, localId: 'issue', title: 'Issue one', qualityIssues: ['ambiguous'] },
+        { ...baseEntry, localId: 'tier', parentLocalId: 'clean', title: 'Tier one' },
+      ];
+      render(<DiffTree entries={entries} {...props} />);
+      const rowOf = (title: string): HTMLElement => screen.getByText(title).closest('[role=treeitem]') as HTMLElement;
+      expect(rowOf('Clean one')).not.toHaveClass('max-md:bg-warning-soft');
+      expect(rowOf('Clean one')).not.toHaveClass('max-md:bg-danger-soft');
+      expect(within(rowOf('Issue one')).getByTestId('narrow-flag')).toHaveAttribute('aria-label', 'Needs review');
+      expect(rowOf('Issue one')).toHaveClass('max-md:bg-warning-soft');
+      expect(rowOf('Tier one')).toHaveClass('max-md:bg-danger-soft');
+      expect(within(rowOf('Clean one')).queryByTestId('narrow-flag')).toBeNull();
+    });
+
+    it('sizes the two-line row in rem, so a larger text-size setting gets a taller row instead of clipped text', () => {
+      document.documentElement.style.fontSize = '20px';
+      try {
+        const { container } = render(<DiffTree entries={[baseEntry]} {...props} />);
+        expect(container.querySelector('[data-item-size]')).toHaveAttribute('data-item-size', '80');
+      } finally {
+        document.documentElement.style.fontSize = '';
+      }
+    });
+
+    it('puts the customer id and the excluded-ancestor mark on line 2 as well, so none of them is cut on the title line', () => {
+      const entries: DryRunDiffEntry[] = [
+        { ...baseEntry, localId: 'p', title: 'Parent', excluded: true },
+        { ...baseEntry, localId: 'c', parentLocalId: 'p', title: 'Child', customerId: 'REQ-SYS-0012' },
+      ];
+      render(<DiffTree entries={entries} {...props} />);
+      const id = screen.getByText('REQ-SYS-0012');
+      expect(id.parentElement).toHaveClass('flex-wrap');
+      expect(id).toHaveClass('max-w-full');
+      expect(screen.getByText('Child')).not.toContainElement(id);
+    });
+
+    it('does not tint the selected row (the tint utility would hide the selected fill), only its unselected neighbours', () => {
+      const entries: DryRunDiffEntry[] = [
+        { ...baseEntry, localId: 'a', title: 'Flagged selected', qualityIssues: ['ambiguous'] },
+        { ...baseEntry, localId: 'b', title: 'Flagged other', qualityIssues: ['ambiguous'] },
+      ];
+      render(<DiffTree entries={entries} {...props} selectedId="a" />);
+      expect(screen.getByText('Flagged selected').closest('[role=treeitem]')).not.toHaveClass('max-md:bg-warning-soft');
+      expect(screen.getByText('Flagged other').closest('[role=treeitem]')).toHaveClass('max-md:bg-warning-soft');
+      // and the tint gives way to the row hover fill on a narrow window that has a pointer
+      expect(screen.getByText('Flagged other').closest('[role=treeitem]')).toHaveClass('max-md:hover:bg-surface-alt');
+    });
+
+    it('takes the criteria and reason chips out of the tab order, since they may sit on the hidden wrapped line', () => {
+      const entries: DryRunDiffEntry[] = [
+        { ...baseEntry, localId: 'a', title: 'Has criteria', proposal: { kind: 'criteria' } as any, proposalAccepted: false },
+      ];
+      render(<DiffTree entries={entries} {...props} />);
+      expect(screen.getByText('criteria to review')).toHaveAttribute('tabindex', '-1');
+    });
+
+    it('dims the title of a skipped near-duplicate and shows the info glyph, not the external-link glyph, on the details button', () => {
+      const entries: DryRunDiffEntry[] = [{ ...baseEntry, action: 'dedup_skip', existingAdoId: 3033, title: 'Dup one' }];
+      render(<DiffTree entries={entries} {...props} />);
+      expect(screen.getByText('Dup one')).toHaveClass('text-ink-2');
+      const button = screen.getByRole('button', { name: /details for dup one/i });
+      expect(button.querySelector('.lucide-info')).not.toBeNull();
+      expect(button.querySelector('.lucide-square-arrow-out-up-right')).toBeNull();
+    });
+
+    it('caps the indent guides at three levels', () => {
+      // (Features start collapsed, so the chain below avoids them)
+      const entries: DryRunDiffEntry[] = [
+        { ...baseEntry, localId: 'a', title: 'L0', type: 'Epic' },
+        { ...baseEntry, localId: 'b', parentLocalId: 'a', title: 'L1', type: 'Requirement' },
+        { ...baseEntry, localId: 'c', parentLocalId: 'b', title: 'L2', type: 'Requirement' },
+        { ...baseEntry, localId: 'd', parentLocalId: 'c', title: 'L3', type: 'Requirement' },
+        { ...baseEntry, localId: 'e', parentLocalId: 'd', title: 'L4', type: 'Requirement' },
+        { ...baseEntry, localId: 'f', parentLocalId: 'e', title: 'L5', type: 'Requirement' },
+      ];
+      render(<DiffTree entries={entries} {...props} />);
+      const guides = (title: string): number => (screen.getByText(title).closest('[role=treeitem]') as HTMLElement).querySelectorAll('span.w-px').length;
+      expect(guides('L5')).toBe(3);
+    });
+
+    it('shows the work-item type as icon and colour only, keeping the name for screen readers', () => {
+      render(<DiffTree entries={[baseEntry]} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+      expect(screen.getAllByText(baseEntry.type)[0]).toHaveClass('sr-only');
+    });
   });
 
   it('shows a compact table-count badge when tableIds is present', () => {

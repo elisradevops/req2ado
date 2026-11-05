@@ -46,9 +46,12 @@ function fallbackIcon(type: string): typeof Award {
 export function WorkItemTypeBadge({
   type,
   catalogEntry,
+  iconOnly = false,
 }: {
   type: string;
   catalogEntry?: WorkItemTypeCatalogEntry;
+  // A bare coloured glyph (no pill), for rows with no room for the name; the name stays for screen readers and as the hover title.
+  iconOnly?: boolean;
 }): React.ReactElement {
   const color = catalogEntry?.color ? `#${catalogEntry.color.replace('#', '')}` : fallbackColor(type);
   const Icon = fallbackIcon(type);
@@ -58,7 +61,13 @@ export function WorkItemTypeBadge({
     // exactly this bg/border/text treatment) and the sibling
     // ado-hierarchy-viewer app's work-item type badge, which this
     // previously-plain icon+bold-text rendering was inconsistent with.
-    <Chip bg={hexToRgba(color, 0.1)} color={color} className="border" style={{ borderColor: hexToRgba(color, 0.3) }} title={type}>
+    <Chip
+      bg={iconOnly ? undefined : hexToRgba(color, 0.1)}
+      color={color}
+      className={iconOnly ? 'border-0 px-0' : 'border'}
+      style={iconOnly ? undefined : { borderColor: hexToRgba(color, 0.3) }}
+      title={type}
+    >
       {catalogEntry ? (
         // draggable={false} -- real bug (user-reported): <img> elements are
         // natively draggable in every browser regardless of any ancestor's
@@ -71,7 +80,7 @@ export function WorkItemTypeBadge({
       ) : (
         <Icon className="h-3.5 w-3.5 flex-none" aria-hidden="true" />
       )}
-      {type}
+      {iconOnly ? <span className="sr-only">{type}</span> : type}
     </Chip>
   );
 }

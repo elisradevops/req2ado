@@ -65,7 +65,8 @@ describe('NewJobWizard Step 1', () => {
     expect(screen.getByText('Figures')).toBeInTheDocument();
     expect(screen.getByText('Depth')).toBeInTheDocument();
     expect(screen.getByText('7')).toBeInTheDocument();
-    expect(screen.getByText('3')).toBeInTheDocument();
+    // the stepper's third circle also reads "3"; the stat tile value is the paragraph
+    expect(screen.getByText('3', { selector: 'p' })).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole('button', { name: /replace/i }));
     expect(screen.getByLabelText(/upload/i)).toBeInTheDocument();
@@ -169,7 +170,8 @@ describe('NewJobWizard Step 1', () => {
     // B phase B14) -- the stat tiles fill in on the SAME screen, and moving
     // to step 2 is now an explicit click.
     await userEvent.click(screen.getByRole('button', { name: /configure/i }));
-    await userEvent.click(screen.getByText(/survey/i));
+    // exact text: the stepper's "SURVEY only" chip also matches /survey/i
+    await userEvent.click(screen.getByText('SURVEY'));
     // Team Project is a Radix combobox+listbox now -- open then click the
     // option, same reasoning as ProjectPicker.test.tsx. Area path is still
     // a datalist-backed text input, so typing into it is correct.
@@ -563,6 +565,39 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
     expect(screen.getAllByText(/^Line \d+\.$/)).toHaveLength(12);
     expect(error.mock.calls.filter((call) => String(call[0]).includes('same key'))).toEqual([]);
     error.mockRestore();
+  });
+
+  it('says on step 3, beside the Start button, that starting writes nothing', async () => {
+    await openStep3();
+    expect(screen.getByRole('button', { name: /looks right/i }).parentElement).toHaveTextContent(/starting a job writes nothing/i);
+  });
+
+  it('shows the same three steps in BASELINE and SURVEY, with step 3 tagged SURVEY only in BASELINE', async () => {
+    vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({
+      blockCount: 1, sectionCount: 1, figureCount: 0, depth: 1, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
+    } as any);
+    render(
+      <ToastProvider>
+        <MemoryRouter>
+          <NewJobWizard />
+        </MemoryRouter>
+      </ToastProvider>,
+    );
+    await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'req.docx'));
+    await waitFor(() => expect(screen.getByRole('button', { name: /configure/i })).not.toBeDisabled());
+    const states = () => Array.from(document.querySelectorAll('ol [data-state]')).map((node) => node.getAttribute('data-state'));
+    expect(states()).toEqual(['awaiting', 'pending', 'pending']);
+    expect(screen.getByText('SURVEY only')).toBeInTheDocument();
+    // the chip of a step not yet reached is muted, not the accent chip
+    expect(screen.getByText('SURVEY only')).toHaveClass('text-ink-3');
+
+    await userEvent.click(screen.getByRole('button', { name: /configure/i }));
+    expect(states()).toEqual(['done', 'awaiting', 'pending']);
+    expect(screen.getByText('SURVEY only')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('radio', { name: /survey/i }));
+    expect(states()).toEqual(['done', 'awaiting', 'pending']);
+    expect(screen.queryByText('SURVEY only')).toBeNull();
   });
 
   it('keeps the Start button in view: the action bar is sticky', async () => {

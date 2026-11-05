@@ -74,3 +74,13 @@ describe('Stepper legacy activeIndex API', () => {
     expect(circle).toHaveStyle({ backgroundColor: '#123456', borderColor: '#123456' });
   });
 });
+
+describe('Stepper accessibility text', () => {
+  it('says "skipped" to assistive technology and marks the active step as the current one', () => {
+    render(<Stepper steps={['One', 'Two', 'Three']} states={['done', 'awaiting', 'skipped']} />);
+    expect(screen.getByText('(skipped)')).toHaveClass('sr-only');
+    expect(screen.getByText('Two').closest('li')).toHaveAttribute('aria-current', 'step');
+    expect(screen.getByText('One').closest('li')).not.toHaveAttribute('aria-current');
+    expect(screen.getByText('Three').closest('li')).not.toHaveAttribute('aria-current');
+  });
+});

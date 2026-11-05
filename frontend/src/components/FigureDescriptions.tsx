@@ -90,7 +90,8 @@ export function FigureDescriptions({
         <span className="font-medium">
           {outcomeList.length > 0 ? tally : `${items.length} figure description${items.length === 1 ? '' : 's'}`}
         </span>
-        <span className="text-ink-3">-- what the vision model made of each embedded figure</span>
+        {/* the explanation has no room beside the count on a phone; it stays for screen readers */}
+        <span className="text-ink-3 max-md:sr-only">-- what the vision model made of each embedded figure</span>
       </button>
       <div className={cn('grid min-h-0 transition-[grid-template-rows] duration-200 ease-out', expanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]')}>
         <div className="min-h-0 overflow-hidden">

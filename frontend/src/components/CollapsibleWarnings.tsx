@@ -1,3 +1,4 @@
+import { BELOW_MD, useMediaQuery } from '../hooks/useMediaQuery';
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronDown, ChevronRight } from 'lucide-react';
@@ -96,8 +97,14 @@ export function CollapsibleWarnings({
   const kindGroups = useMemo(() => buildKindGroups(warnings), [warnings]);
   const hasActionable = kindGroups.some((entry) => entry.group !== 'info');
   const [openKind, setOpenKind] = useState('');
-  // For your information stays collapsed unless it's all there is.
-  const [infoOpen, setInfoOpen] = useState(() => !hasActionable);
+  // Below md the card starts folded to its group headings, so a phone reaches the diff tree without scrolling past every row; each heading shows
+  // its count and opens its rows. At md and up "Fix before confirming" and "Review" start open as before. For your information stays collapsed
+  // unless it's all there is.
+  const narrow = useMediaQuery(BELOW_MD);
+  // Only what the reader has toggled is stored; every other group's default is derived here, so warnings that arrive after mount and a
+  // breakpoint change both get the right default.
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
+  const isGroupOpen = (group: string): boolean => openGroups[group] ?? (group === 'info' ? !hasActionable : !narrow);
 
   if (kindGroups.length === 0) return null;
 
@@ -119,14 +126,14 @@ export function CollapsibleWarnings({
           const entries = kindGroups.filter((entry) => entry.group === group);
           if (entries.length === 0) return null;
           const { title, line } = GROUP_META[group];
-          const collapsible = group === 'info';
-          const open = !collapsible || infoOpen;
+          const collapsible = group === 'info' || narrow;
+          const open = !collapsible || isGroupOpen(group);
           return (
             <div key={group} className="border-b border-hairline last:border-b-0">
               {collapsible ? (
                 <button
                   type="button"
-                  onClick={() => setInfoOpen((prev) => !prev)}
+                  onClick={() => setOpenGroups((prev) => ({ ...prev, [group]: !isGroupOpen(group) }))}
                   aria-expanded={open}
                   className={cn('flex w-full flex-wrap items-center gap-x-2.5 gap-y-0.5 px-3.5 py-2 text-left text-xs', GROUP_HEAD_CLASS[group])}
                 >

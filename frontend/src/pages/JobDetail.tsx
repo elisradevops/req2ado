@@ -90,7 +90,8 @@ import { FigureDescriptions, type FigureDescriptionEntry } from '../components/F
 import { SectionResults, type SectionResultEntry } from '../components/SectionResults';
 import type { WorkItemTypeCatalogEntry } from '../api/ado';
 import { isRunDetailStatus, shouldShowTiles, shouldShowTabs, shouldShowFilterBar } from './jobDetailLayout';
-import { FileX2, X } from 'lucide-react';
+import { Download, FileX2, RotateCw, ShieldCheck, Trash2, Upload, X } from 'lucide-react';
+import { IconButton } from '../ui/IconButton';
 import { EmptyState } from '../ui/EmptyState';
 import { DocumentOverviewCard } from '../components/DocumentOverviewCard';
 
@@ -1531,44 +1532,53 @@ export function JobDetail(): React.ReactElement {
               </Tooltip>
             )}
           </div>
-          <div className="flex flex-none flex-wrap gap-2">
-            <Button size="sm" variant="ghost" onClick={handleDownloadSummary}>
-              Download summary
-            </Button>
-            {(status === 'pending' || status === 'running') && (
-              <Button variant="danger" onClick={() => setCancelDialogOpen(true)} disabled={isMutating}>
-                Cancel run
-              </Button>
-            )}
-            {status === 'diff_ready' && (
-              <>
-                <Button variant="danger" onClick={() => setRejectDialogOpen(true)} disabled={isMutating}>
-                  Reject
-                </Button>
-                <Tooltip content={canWriteToAdo ? 'Write the reviewed items to Azure DevOps' : 'Sign in with an Azure DevOps org URL and PAT to write'}>
-                  <span>
-                    <Button variant="cta" onClick={() => setConfirmDialogOpen(true)} disabled={isMutating || !canWriteToAdo}>
-                      Write to Azure DevOps
+          {/* Three tiers, not five equal buttons (DESIGN.md §5): the primary action and its counterpart decision carry text and colour; everything
+              else is a labelled icon (name + tooltip). The DOM order is the visual order at every width (decisions, then tools, Delete last, a
+              divider away from the decisions); below md the decisions take the first, full-width row and the tools sit under them. */}
+          <div className="flex max-w-full flex-wrap items-center gap-x-3 gap-y-2 max-md:w-full">
+            {(status === 'pending' || status === 'running' || status === 'diff_ready') && (
+              <div className="flex items-center gap-2 max-md:w-full">
+                {(status === 'pending' || status === 'running') && (
+                  <Button variant="danger" onClick={() => setCancelDialogOpen(true)} disabled={isMutating} className="max-md:min-h-11">
+                    <X className="h-3.5 w-3.5" />
+                    Cancel run
+                  </Button>
+                )}
+                {status === 'diff_ready' && (
+                  <>
+                    <Button variant="danger" onClick={() => setRejectDialogOpen(true)} disabled={isMutating} className="max-md:min-h-11">
+                      <X className="h-3.5 w-3.5" />
+                      Reject
                     </Button>
+                    <Tooltip content={canWriteToAdo ? 'Write the reviewed items to Azure DevOps' : 'Sign in with an Azure DevOps org URL and PAT to write'}>
+                      <span className="max-md:flex-1">
+                        <Button variant="cta" onClick={() => setConfirmDialogOpen(true)} disabled={isMutating || !canWriteToAdo} className="max-md:min-h-11 max-md:w-full">
+                          <Upload className="h-3.5 w-3.5" />
+                          Write to Azure DevOps
+                        </Button>
+                      </span>
+                    </Tooltip>
+                  </>
+                )}
+                {/* a divider between the decisions and the tools at desktop widths; the phone puts the tools on their own row instead */}
+                <span aria-hidden="true" className="ml-1 hidden h-5 w-px bg-hairline-strong md:block" />
+              </div>
+            )}
+            <div role="group" aria-label="Job tools" className="flex items-center gap-0.5 max-md:w-full">
+              <IconButton label="Download summary" compactLabel="Download" icon={Download} onClick={handleDownloadSummary} />
+              {status !== 'pending' && status !== 'running' && status !== 'writing' && createdItemCount > 0 && (
+                <IconButton label={isValidating ? 'Validating…' : 'Validate'} compactLabel={isValidating ? 'Validating…' : 'Validate'} icon={ShieldCheck} onClick={handleValidate} loading={isValidating} />
+              )}
+              {status !== 'pending' && status !== 'running' && status !== 'writing' && (
+                <>
+                  <IconButton label="Resubmit" compactLabel="Resubmit" icon={RotateCw} onClick={() => setResubmitDialogOpen(true)} disabled={isMutating} />
+                  <span aria-hidden="true" className="mx-1 h-5 w-px bg-hairline-strong max-md:hidden" />
+                  <span className="max-md:ml-auto">
+                    <IconButton label="Delete" compactLabel="Delete" icon={Trash2} tone="danger" onClick={() => setDeleteDialogOpen(true)} disabled={isMutating} />
                   </span>
-                </Tooltip>
-              </>
-            )}
-            {status !== 'pending' && status !== 'running' && status !== 'writing' && createdItemCount > 0 && (
-              <Button size="sm" variant="ghost" onClick={handleValidate} disabled={isValidating}>
-                {isValidating ? 'Validating…' : 'Validate'}
-              </Button>
-            )}
-            {status !== 'pending' && status !== 'running' && status !== 'writing' && (
-              <>
-                <Button variant="outline" size="sm" onClick={() => setResubmitDialogOpen(true)} disabled={isMutating}>
-                  Resubmit
-                </Button>
-                <Button variant="outline" size="sm" onClick={() => setDeleteDialogOpen(true)} disabled={isMutating}>
-                  Delete
-                </Button>
-              </>
-            )}
+                </>
+              )}
+            </div>
           </div>
         </div>
         {(teamProject || areaPath) && (
@@ -1719,6 +1729,8 @@ export function JobDetail(): React.ReactElement {
         </div>
       )}
       {actionableWarningCount > 0 && (
+        // The gate ("before you approve") and its jump button stay visible at every width (below md the document overview can sit between this
+        // banner and the warnings card, so the card is not always right underneath).
         <Alert severity="warning" className="mb-4">
           <div className="flex flex-wrap items-center justify-between gap-2.5">
             <span>
@@ -1827,7 +1839,7 @@ export function JobDetail(): React.ReactElement {
         // information. (An earlier pass this session added icon/hint here
         // without having seen the mockup; reverted once the mockup showed
         // otherwise.)
-        <div className="grid grid-cols-3 gap-2.5">
+        <div className="grid grid-cols-3 gap-2.5 max-md:gap-1.5">
           <StatTile value={summary.created} label="New" tone="ok" />
           <StatTile value={summary.reused} label="Reused" />
           <StatTile value={summary.dedupSkipped} label="Duplicates skipped" tone={summary.dedupSkipped > 0 ? 'warning' : 'dim'} />

@@ -47,8 +47,8 @@ export function Stepper({
   subLabels,
 }: {
   steps: string[];
-  // Superseded by `states` (DESIGN.md Track B, phase B3) but kept as the
-  // path NewJobWizard and any other unmigrated caller still uses.
+  // Superseded by `states` (DESIGN.md Track B, phase B3); only callers that
+  // have not moved to it still pass this.
   activeIndex?: number;
   activeSpinner?: boolean;
   // One hex/CSS-color-value per step, applied to that step's own done/current
@@ -85,7 +85,11 @@ export function Stepper({
         const rightSegmentDone = state === 'done';
 
         return (
-          <li key={step} className="flex min-w-0 flex-1 flex-col items-center gap-1.5">
+          <li
+            key={step}
+            aria-current={state === 'current' || state === 'awaiting' ? 'step' : undefined}
+            className="flex min-w-0 flex-1 flex-col items-center gap-1.5 max-md:px-0.5"
+          >
             <div className="flex w-full items-center">
               <span
                 className={cn('h-px flex-1 transition-colors duration-slow', index === 0 ? 'bg-transparent' : leftSegmentDone ? 'bg-ok' : 'bg-hairline-strong')}
@@ -112,9 +116,17 @@ export function Stepper({
                 )}
               />
             </div>
-            <span className={cn('whitespace-nowrap text-meta font-medium', STATE_LABEL_CLASSES[state])}>{step}</span>
+            <span className={cn('whitespace-nowrap text-meta font-medium max-md:whitespace-normal max-md:break-words max-md:text-center max-md:text-micro', STATE_LABEL_CLASSES[state])}>{step}
+              {state === 'skipped' && <span className="sr-only"> (skipped)</span>}
+            </span>
             {subLabels?.[index] && (
-              <span className="whitespace-nowrap rounded-full border border-accent-soft-border bg-accent-soft px-1.5 py-px font-mono text-micro font-semibold text-accent-ink">
+              <span
+                className={cn(
+                  'whitespace-nowrap rounded-full border px-1.5 py-px font-mono text-micro font-semibold',
+                  // a step that has not been reached reads muted; the accent chip is for the step in play
+                  state === 'pending' ? 'border-hairline bg-surface-alt text-ink-3' : 'border-accent-soft-border bg-accent-soft text-accent-ink',
+                )}
+              >
                 {subLabels[index]}
               </span>
             )}

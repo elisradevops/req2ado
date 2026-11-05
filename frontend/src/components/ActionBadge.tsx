@@ -1,3 +1,4 @@
+import { cn } from '../lib/cn';
 import { Chip } from '../ui/Chip';
 import { buildWorkItemUrl } from '../utils/adoLinks';
 import { actionLabel } from '../utils/labels';
@@ -21,6 +22,7 @@ export function ActionBadge({
   existingAdoId,
   orgUrl,
   project,
+  quiet = false,
 }: {
   action: 'create' | 'reuse' | 'dedup_skip';
   existingAdoId?: number | null;
@@ -28,7 +30,31 @@ export function ActionBadge({
   // The job's team project (areaPath's first `\`-delimited segment) --
   // see buildWorkItemUrl's own docstring for why this matters.
   project?: string | null;
+  // Plain text instead of a filled pill, for the phone row where most rows are routine and a pill on each would drown the ones that are not.
+  // Same meaning; a real link stays a link (accent colour, underlined); everything else is muted. "Near-duplicate of" is shortened to "Dup of" so
+  // the status always fits beside the other marks on a phone line; the full wording is the hover title, and a screen-reader suffix explains it.
+  quiet?: boolean;
 }): React.ReactElement {
+  if (quiet) {
+    const full = actionLabel({ action, existingAdoId });
+    const isLink = action !== 'create' && existingAdoId != null && !!orgUrl;
+    const text = (
+      <span
+        className={cn('flex-none whitespace-nowrap text-xs font-medium', isLink && action === 'reuse' ? 'text-accent' : 'text-ink-3', isLink && 'underline underline-offset-2')}
+        title={full}
+      >
+        {action === 'dedup_skip' ? (existingAdoId != null ? `Dup of WI-${existingAdoId}` : 'Dup') : full}
+        {/* the visible text stays inside the accessible name (WCAG 2.5.3); the suffix says what the abbreviation means */}
+        {action === 'dedup_skip' && <span className="sr-only">, a skipped near-duplicate</span>}
+      </span>
+    );
+    if (!isLink) return text;
+    return (
+      <a href={buildWorkItemUrl(orgUrl, project, existingAdoId)} target="_blank" rel="noreferrer" draggable={false} className="flex h-6 flex-none items-center">
+        {text}
+      </a>
+    );
+  }
   if (action === 'create') {
     return (
       <Chip bg="#E8F6EC" color="var(--color-ok)" className="border border-[#B7E0C3]">

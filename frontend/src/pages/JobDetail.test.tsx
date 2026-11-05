@@ -695,6 +695,23 @@ describe('JobDetail', () => {
     await waitFor(() => expect(screen.getByText(/all 2 checked work items match/i)).toBeInTheDocument());
   });
 
+  it('shows the Validate icon button as busy and renamed "Validating…" while the check runs, and ignores a second click', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-22', status: 'completed', createdItemCount: 2, dryRunDiff: [] } as any);
+    let finish!: (value: { valid: boolean; checkedCount: number; mismatches: never[] }) => void;
+    const validateSpy = vi.spyOn(jobsApi, 'validateCreatedTree').mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+
+    renderAt('job-22');
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await userEvent.click(await screen.findByRole('button', { name: /^validate$/i }));
+    const busy = await screen.findByRole('button', { name: /validating/i });
+    expect(busy).toHaveAttribute('aria-busy', 'true');
+    expect(busy).toBeDisabled();
+    await userEvent.click(busy);
+    expect(validateSpy).toHaveBeenCalledTimes(1);
+    finish({ valid: true, checkedCount: 2, mismatches: [] });
+  });
+
   it('renders mismatches from a failed Validate result, using the synthetic "existence" field for a missing item', async () => {
     vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
       id: 'job-22',
@@ -1500,6 +1517,39 @@ describe('JobDetail', () => {
     await userEvent.click(screen.getByRole('button', { name: /^exclude all$/i }));
 
     await waitFor(() => expect(screen.getByText(/stopped after updating 1 of 2 item/i)).toBeInTheDocument());
+  });
+
+  it('lays the header actions out in tiers: Reject and Write as text buttons, the rest as labelled icons in a tools group, Delete last', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-8', status: 'diff_ready', dryRunDiff: [] } as any);
+
+    renderAt('job-8');
+    const tools = await screen.findByRole('group', { name: 'Job tools' });
+    const names = within(tools).getAllByRole('button').map((button) => button.getAttribute('aria-label'));
+    expect(names).toEqual(['Download summary', 'Resubmit', 'Delete']);
+    expect(within(tools).queryByRole('button', { name: /reject|write to azure/i })).toBeNull();
+    expect(screen.getByRole('button', { name: /^reject$/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /write to azure devops/i })).toBeInTheDocument();
+  });
+
+  it('puts the decisions before the tools in the DOM, so keyboard and screen-reader order matches the phone layout', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-10', status: 'diff_ready', dryRunDiff: [] } as any);
+
+    renderAt('job-10');
+    const tools = await screen.findByRole('group', { name: 'Job tools' });
+    const write = screen.getByRole('button', { name: /write to azure devops/i });
+    expect(write.compareDocumentPosition(tools) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('shows no Resubmit or Delete while a job is running, only Download summary and Cancel run', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-9', status: 'running', dryRunDiff: null } as any);
+
+    renderAt('job-9');
+    const tools = await screen.findByRole('group', { name: 'Job tools' });
+    expect(within(tools).getAllByRole('button').map((button) => button.getAttribute('aria-label'))).toEqual(['Download summary']);
+    expect(screen.getByRole('button', { name: /cancel run/i })).toBeInTheDocument();
   });
 
   it('shows Cancel run for a pending/running job, and cancelling it updates status via ConfirmDialog', async () => {

@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Tooltip as RadixTooltip } from 'radix-ui';
 import { Info } from 'lucide-react';
 
@@ -10,10 +10,22 @@ import { Info } from 'lucide-react';
  * position:fixed child's coordinate system). Using the real primitive
  * sidesteps both classes of bug entirely instead of re-solving them by hand.
  */
-export function Tooltip({ content, children }: { content: ReactNode; children: ReactNode }): React.ReactElement {
+export function Tooltip({ content, children, disabled = false }: { content: ReactNode; children: ReactNode; disabled?: boolean }): React.ReactElement {
+  // Always controlled (Radix warns when a tooltip switches between controlled and uncontrolled). `disabled` keeps the tree the same shape and just
+  // never opens it, so a child that sometimes needs a tooltip is not remounted (and does not lose focus) when that changes.
+  const [open, setOpen] = useState(false);
+  // Radix only reports a change when it differs from the `open` it was given. While disabled that is `false`, so a hover's open request would be
+  // recorded here but its matching close never reported, and the tooltip would reappear stuck open when re-enabled. Hence: never record an open
+  // request while disabled, and drop any open state when it becomes disabled. (On the render where `disabled` turns true, the `disabled ? false`
+  // override below is what hides the stale `open`; the effect then clears it after commit.)
+  // Known, cosmetic: Radix's Provider notes a disabled hover as "recently opened" (its close is never reported), so the first hover after
+  // re-enabling can open without the 200ms delay. Each Tooltip has its own Provider, so it cannot leak to other tooltips.
+  useEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
   return (
     <RadixTooltip.Provider delayDuration={200}>
-      <RadixTooltip.Root>
+      <RadixTooltip.Root open={disabled ? false : open} onOpenChange={(next) => setOpen(disabled ? false : next)}>
         <RadixTooltip.Trigger asChild>{children}</RadixTooltip.Trigger>
         <RadixTooltip.Portal>
           <RadixTooltip.Content

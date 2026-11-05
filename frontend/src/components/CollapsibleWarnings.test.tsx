@@ -1,4 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
+import { BELOW_MD } from '../hooks/useMediaQuery';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
@@ -76,6 +77,69 @@ describe('CollapsibleWarnings', () => {
 
     await userEvent.click(screen.getByRole('button', { name: /for your information/i }));
     expect(screen.getByText('Enhanced wording unavailable')).toBeInTheDocument();
+  });
+
+  describe('below the md breakpoint', () => {
+    const original = window.matchMedia;
+    beforeEach(() => {
+      window.matchMedia = ((query: string) => ({
+        matches: query === BELOW_MD,
+        media: query,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      })) as unknown as typeof window.matchMedia;
+    });
+    afterEach(() => {
+      window.matchMedia = original;
+    });
+
+    const sample = [
+      warning({ kind: 'missing_source_reference', severity: 'needs_review', raw: '14 requirements have no source reference.' }),
+      warning({ kind: 'low_grounding', severity: 'needs_review', raw: '80 nodes have low grounding.' }),
+    ];
+
+    it('starts folded to the group headings, each showing its count, so the diff tree is not pushed screens down', () => {
+      renderWarnings(sample);
+      expect(screen.getByText('Fix before confirming (1)')).toBeInTheDocument();
+      expect(screen.getByText('Review (1)')).toBeInTheDocument();
+      expect(screen.queryByText('Requirement has no Customer ID')).not.toBeInTheDocument();
+      expect(screen.queryByText('Low grounding: possible fabrication')).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /fix before confirming/i })).toHaveAttribute('aria-expanded', 'false');
+    });
+
+    it('opens and closes a group from its heading, leaving the others as they were', async () => {
+      renderWarnings(sample);
+      await userEvent.click(screen.getByRole('button', { name: /fix before confirming/i }));
+      expect(screen.getByText('Requirement has no Customer ID')).toBeInTheDocument();
+      expect(screen.queryByText('Low grounding: possible fabrication')).not.toBeInTheDocument();
+      await userEvent.click(screen.getByRole('button', { name: /fix before confirming/i }));
+      expect(screen.queryByText('Requirement has no Customer ID')).not.toBeInTheDocument();
+    });
+  });
+
+  it('derives the defaults from the warnings it has now, so warnings that arrive after mount do not leave the info group open', () => {
+    const { rerender } = renderWarnings([]);
+    rerender(
+      <MemoryRouter>
+        <CollapsibleWarnings
+          warnings={[
+            warning({ kind: 'missing_source_reference', severity: 'needs_review', raw: '14 requirements have no source reference.' }),
+            warning({ kind: 'enhancement_call_failed', severity: 'pipeline_issue', raw: 'Enhancement failed.' }),
+          ]}
+        />
+      </MemoryRouter>,
+    );
+    expect(screen.getByText('Requirement has no Customer ID')).toBeInTheDocument();
+    expect(screen.queryByText('Enhanced wording unavailable')).not.toBeInTheDocument();
+  });
+
+  it('starts every group open at desktop widths', () => {
+    renderWarnings([
+      warning({ kind: 'missing_source_reference', severity: 'needs_review', raw: '14 requirements have no source reference.' }),
+      warning({ kind: 'low_grounding', severity: 'needs_review', raw: '80 nodes have low grounding.' }),
+    ]);
+    expect(screen.getByText('Requirement has no Customer ID')).toBeInTheDocument();
+    expect(screen.getByText('Low grounding: possible fabrication')).toBeInTheDocument();
   });
 
   it('opens the informational group by default when it is the only group', () => {

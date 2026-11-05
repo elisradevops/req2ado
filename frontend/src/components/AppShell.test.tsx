@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import * as React from 'react';
@@ -9,6 +9,7 @@ import * as adoApi from '../api/ado';
 import * as kbApi from '../api/kb';
 import * as llmApi from '../api/llm';
 import { useAuthStore } from '../store/authStore';
+import { AT_LEAST_MD, BELOW_MD } from '../hooks/useMediaQuery';
 import { usePageLabelStore } from '../store/pageLabelStore';
 
 vi.mock('../api/auth');
@@ -311,5 +312,208 @@ describe('AppShell active nav-item anchoring', () => {
     const inactiveLink = screen.getByRole('link', { name: /^jobs$/i });
     expect(inactiveLink).not.toHaveAttribute('aria-current');
     expect(inactiveLink.querySelector('.bg-rail-indicator')).toBeNull();
+  });
+});
+
+describe('AppShell below the md breakpoint', () => {
+  beforeEach(() => {
+    useAuthStore.getState().login('https://ado.example', 'Jane', 'user-descriptor-1');
+    vi.spyOn(adoApi, 'getAdoStatus').mockResolvedValue({ status: 'valid' });
+    vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'valid', expiresInSeconds: 2820 });
+    vi.spyOn(llmApi, 'getLlmStatus').mockResolvedValue({ status: 'reachable', latencyMs: 42 });
+  });
+
+  function renderShell(path = '/jobs') {
+    return render(
+      <MemoryRouter initialEntries={[path]}>
+        <AppShell>
+          <div />
+        </AppShell>
+      </MemoryRouter>,
+    );
+  }
+
+  it('keeps the navigation closed until the header button opens it, and closes it again from the backdrop', async () => {
+    renderShell();
+    const nav = screen.getByTestId('app-rail');
+    expect(nav).toHaveAttribute('data-open', 'false');
+    expect(screen.queryByRole('button', { name: 'Close navigation' })).toBeNull();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Open navigation' }));
+    expect(nav).toHaveAttribute('data-open', 'true');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Close navigation' }));
+    expect(nav).toHaveAttribute('data-open', 'false');
+  });
+
+  it('closes the open navigation when a link is followed', async () => {
+    renderShell();
+    await userEvent.click(screen.getByRole('button', { name: 'Open navigation' }));
+    await userEvent.click(screen.getByRole('link', { name: /knowledge base/i }));
+    expect(screen.getByTestId('app-rail')).toHaveAttribute('data-open', 'false');
+  });
+
+  it('sends focus to the page, not the menu button, when a link in the drawer was followed', async () => {
+    renderShell();
+    await userEvent.click(screen.getByRole('button', { name: 'Open navigation' }));
+    await userEvent.click(screen.getByRole('link', { name: /knowledge base/i }));
+    expect(screen.getByRole('main')).toHaveFocus();
+  });
+
+  it('closes the drawer when the link to the page already open is followed (no pathname change)', async () => {
+    renderShell('/jobs');
+    await userEvent.click(screen.getByRole('button', { name: 'Open navigation' }));
+    await userEvent.click(screen.getByRole('link', { name: /^jobs$/i }));
+    expect(screen.getByTestId('app-rail')).toHaveAttribute('data-open', 'false');
+    expect(screen.getByRole('main')).toHaveFocus();
+  });
+
+  it('does not transition visibility while opening, so the first link can take focus at once', async () => {
+    renderShell();
+    const nav = screen.getByTestId('app-rail');
+    expect(nav.className).toContain('max-md:transition-[transform,visibility]');
+    await userEvent.click(screen.getByRole('button', { name: 'Open navigation' }));
+    expect(nav.className).not.toContain('visibility');
+    expect(nav.className).toContain('max-md:transition-[transform]');
+  });
+
+  it('returns focus to the menu button after Escape even if a nav link was followed earlier with the drawer closed', async () => {
+    renderShell();
+    // desktop-style navigation: the drawer was never open
+    await userEvent.click(screen.getByRole('link', { name: /knowledge base/i }));
+    await userEvent.click(screen.getByRole('button', { name: 'Open navigation' }));
+    await userEvent.keyboard('{Escape}');
+    expect(screen.getByRole('button', { name: 'Open navigation' })).toHaveFocus();
+  });
+
+  it('closes the open navigation on Escape', async () => {
+    renderShell();
+    await userEvent.click(screen.getByRole('button', { name: 'Open navigation' }));
+    await userEvent.keyboard('{Escape}');
+    expect(screen.getByTestId('app-rail')).toHaveAttribute('data-open', 'false');
+  });
+
+  it('shows the full labels below md even after the desktop rail was collapsed, and keeps the collapse choice for when the window widens again', async () => {
+    // a viewport whose width can be flipped across md, notifying every listener like a real MediaQueryList
+    let narrow = false;
+    const listeners = new Map<string, Set<(event: MediaQueryListEvent) => void>>();
+    const matchesFor = (query: string): boolean => (query === BELOW_MD ? narrow : query === AT_LEAST_MD ? !narrow : false);
+    const original = window.matchMedia;
+    window.matchMedia = ((query: string) => ({
+      get matches() {
+        return matchesFor(query);
+      },
+      media: query,
+      addEventListener: (_: string, handler: (event: MediaQueryListEvent) => void) => {
+        if (!listeners.has(query)) listeners.set(query, new Set());
+        listeners.get(query)!.add(handler);
+      },
+      removeEventListener: (_: string, handler: (event: MediaQueryListEvent) => void) => listeners.get(query)?.delete(handler),
+    })) as unknown as typeof window.matchMedia;
+    const setNarrow = (value: boolean): void => {
+      narrow = value;
+      act(() => {
+        for (const [query, handlers] of listeners) handlers.forEach((handler) => handler({ matches: matchesFor(query) } as MediaQueryListEvent));
+      });
+    };
+    try {
+      renderShell();
+      await userEvent.click(screen.getByRole('button', { name: 'Collapse navigation' }));
+      expect(screen.queryByText('Knowledge Base')).toBeNull();
+
+      setNarrow(true);
+      expect(screen.getByText('Knowledge Base')).toBeInTheDocument();
+      expect(screen.getByText('Connections')).toBeInTheDocument();
+
+      setNarrow(false);
+      expect(screen.queryByText('Knowledge Base')).toBeNull();
+      expect(screen.getByRole('button', { name: 'Expand navigation' })).toBeInTheDocument();
+
+      // a focused nav link keeps focus across the flip, because it is not remounted
+      // (icon-only while collapsed, so it has no name to look up: take the first nav link)
+      const link = screen.getAllByRole('link')[0];
+      link.focus();
+      expect(link).toHaveFocus();
+      setNarrow(true);
+      expect(link).toHaveFocus();
+    } finally {
+      window.matchMedia = original;
+    }
+  });
+
+  it('names the primary navigation landmark, so it is told apart from the breadcrumb', () => {
+    renderShell();
+    expect(screen.getByRole('navigation', { name: 'Main' })).toBe(screen.getByTestId('app-rail'));
+  });
+
+  it('moves focus into the drawer when it opens and back to the header button when it closes', async () => {
+    renderShell();
+    const opener = screen.getByRole('button', { name: 'Open navigation' });
+    await userEvent.click(opener);
+    expect(screen.getByTestId('app-rail')).toContainElement(document.activeElement as HTMLElement);
+    expect(document.activeElement?.tagName).toBe('A');
+    await userEvent.keyboard('{Escape}');
+    expect(opener).toHaveFocus();
+  });
+
+  it('holds the page behind the open drawer inert, and releases it on close', async () => {
+    renderShell();
+    const page = screen.getByRole('navigation', { name: 'Breadcrumb' }).closest('[class*="flex-col"]') as HTMLElement;
+    expect(page).not.toHaveAttribute('inert');
+    await userEvent.click(screen.getByRole('button', { name: 'Open navigation' }));
+    expect(page).toHaveAttribute('inert');
+    await userEvent.keyboard('{Escape}');
+    expect(page).not.toHaveAttribute('inert');
+  });
+
+  it('puts the drawer away when the window is widened past md', async () => {
+    let onChange: ((event: MediaQueryListEvent) => void) | undefined;
+    const original = window.matchMedia;
+    window.matchMedia = ((query: string) => ({
+      matches: false,
+      media: query,
+      addEventListener: (_: string, handler: (event: MediaQueryListEvent) => void) => {
+        onChange = handler;
+      },
+      removeEventListener: () => {},
+    })) as unknown as typeof window.matchMedia;
+    try {
+      renderShell();
+      await userEvent.click(screen.getByRole('button', { name: 'Open navigation' }));
+      expect(screen.getByTestId('app-rail')).toHaveAttribute('data-open', 'true');
+      act(() => onChange?.({ matches: true } as MediaQueryListEvent));
+      expect(screen.getByTestId('app-rail')).toHaveAttribute('data-open', 'false');
+      // the menu button is hidden at md and up, so focus goes to the page rather than to <body>
+      expect(screen.getByRole('main')).toHaveFocus();
+    } finally {
+      window.matchMedia = original;
+    }
+  });
+
+  it('says in words what each connection dot means, and names the account button as a menu', async () => {
+    renderShell();
+    const group = screen.getByRole('group', { name: 'Connections' });
+    expect(await within(group).findByText('Connected')).toBeInTheDocument();
+    expect(within(group).getByText('Connected, expires in 47 minutes')).toBeInTheDocument();
+    expect(within(group).getByText('Connected, 42ms')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Account menu, Jane' })).toBeInTheDocument();
+  });
+
+  it('keeps each connection\'s service name for screen readers on the collapsed rail', async () => {
+    renderShell();
+    await userEvent.click(screen.getByRole('button', { name: 'Collapse navigation' }));
+    const group = screen.getByRole('group', { name: 'Connections' });
+    for (const name of ['Azure DevOps', 'SharePoint', 'LLM Backend']) {
+      expect(within(group).getByText(name)).toHaveClass('sr-only');
+    }
+  });
+
+  it('labels the three connection indicators as one group', async () => {
+    renderShell();
+    const group = screen.getByRole('group', { name: 'Connections' });
+    expect(within(group).getByText('Azure DevOps')).toBeInTheDocument();
+    expect(within(group).getByText('SharePoint')).toBeInTheDocument();
+    expect(within(group).getByText('LLM Backend')).toBeInTheDocument();
+    await waitFor(() => expect(adoApi.getAdoStatus).toHaveBeenCalled());
   });
 });
