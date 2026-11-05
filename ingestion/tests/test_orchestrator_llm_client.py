@@ -3912,6 +3912,84 @@ def test_post_chat_still_retries_a_fast_5xx_with_backoff(monkeypatch) -> None:
     assert sleeps == [2.0, 8.0]
 
 
+def test_a_chat_call_in_flight_stops_at_once_when_the_run_is_cancelled() -> None:
+    """A cancelled run must not wait out a window already sent: the call closes its connection, so the orchestrator sees the caller go
+    and stops the upstream request (real socket, not a mock transport: a mock handler cannot be interrupted)."""
+    import http.server
+    import time
+
+    from app.job_cancel import JobCancelled, cancellation_scope
+
+    release = threading.Event()
+    received = threading.Event()
+
+    class Slow(http.server.BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            received.set()
+            release.wait(10)  # the "model" is still thinking
+
+        def log_message(self, *_args) -> None:
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Slow)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        client = OrchestratorLlmClient(base_url=f"http://127.0.0.1:{server.server_port}", bearer_token="test-bearer")
+        outcome: dict = {}
+        with cancellation_scope() as token:
+            def call() -> None:
+                started = time.monotonic()
+                try:
+                    client._post_chat({"messages": []}, None)
+                except BaseException as exc:  # noqa: BLE001
+                    outcome["error"] = exc
+                outcome["seconds"] = time.monotonic() - started
+
+            import contextvars
+
+            # the pool workers of a run start under a copy of its context (submit_in_context); a bare Thread would not see the token
+            worker = threading.Thread(target=contextvars.copy_context().run, args=(call,))
+            worker.start()
+            assert received.wait(5)
+            token.cancel()
+            worker.join(5)
+        assert not worker.is_alive()
+        assert isinstance(outcome["error"], JobCancelled)
+        assert outcome["seconds"] < 3
+        assert token._callbacks == []  # the call took its hook off again
+    finally:
+        release.set()
+        server.shutdown()
+
+
+def test_a_chat_call_leaves_no_cancel_hook_behind_when_it_finishes() -> None:
+    from app.job_cancel import cancellation_scope
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": "{}"})
+    with cancellation_scope() as token:
+        client._post_chat({"messages": []}, None)
+        assert token._callbacks == []
+
+
+def test_a_study_call_is_not_re_sent_after_a_504_because_the_study_treats_it_as_overload(monkeypatch) -> None:
+    monkeypatch.setattr(orchestrator_llm_client_module.time, "sleep", lambda _seconds: None)
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(504, json={"message": "Upstream did not answer in time"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    assert client._post_chat({"messages": [], "budgetKind": "study"}, None).status_code == 504
+    assert calls["n"] == 1
+    calls["n"] = 0
+    assert client._post_chat({"messages": []}, None).status_code == 504  # any other call still gets its retries
+    assert calls["n"] == orchestrator_llm_client_module._MAX_CHAT_RETRY_ATTEMPTS
+
+
 def test_name_root_groups_folds_the_names_array_and_ignores_malformed_entries() -> None:
     answer = {"names": [{"group_id": "g0", "title": " Bus   Interfaces "}, {"group_id": "g1", "title": ""}, "junk", {"title": "x"}]}
     client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")

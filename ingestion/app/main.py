@@ -551,14 +551,27 @@ def _describe_figure(
     describe_bytes, mime_type = _flatten_for_vision(describe_bytes, mime_type)  # what the model is sent: transparency onto white
     model_args = {"model": model} if model else {}
     result = _vision_client.describe_figure(describe_bytes, mime_type, document_context, user_id=user_id, **model_args)
+    cacheable = True
     if result is not None and not result.significant:
         # One verdict from one sample of a model is thin evidence for dropping a figure for good (a layout drawing was called "not
-        # significant" in one run and "significant" in the next). So it gets a second look, and is let go only if the second answer agrees. A
-        # failed or blank second answer leaves the first verdict as it was.
-        second = _vision_client.describe_figure(describe_bytes, mime_type, document_context, user_id=user_id, **model_args)
+        # significant" in one run and "significant" in the next). So it gets a second look, and is let go only if the second answer agrees.
+        # A second look that fails or comes back blank leaves the first verdict as it was for THIS run, but it is not kept: an unconfirmed
+        # "not significant" must not be remembered for a week, and a failed extra call is not a failed figure (it must not count towards
+        # the breaker that stops captioning).
+        cacheable = False
+        try:
+            second = _vision_client.describe_figure(describe_bytes, mime_type, document_context, user_id=user_id, **model_args)
+        except job_cancel.JobCancelled:
+            raise
+        except Exception:  # noqa: BLE001 -- the first verdict stands; the second look is a check, not the figure's only chance
+            logger.warning("Second look at a not-significant figure failed -- keeping the first verdict, not caching it", exc_info=True)
+            second = None
         if second is not None and second.significant and second.description.strip():
             logger.info("Figure verdict changed on the second look: not significant -> significant")
             result = second
+            cacheable = True
+        elif second is not None and not second.significant:
+            cacheable = True  # two answers agree
     if result is None:
         # The vision client's single "ambiguous result" outcome: a totally
         # unparseable response OR a well-formed significant=True whose
@@ -572,14 +585,15 @@ def _describe_figure(
         if caption_status_out is not None:
             caption_status_out["status"] = "vision_failed"
         return None
-    try:
-        _narration_redis.set(
-            cache_key,
-            json.dumps({"significant": result.significant, "description": result.description, "title": result.title, "reason": result.reason}),
-            ex=_FIGURE_CAPTION_CACHE_TTL_SECONDS,
-        )
-    except Exception:
-        logger.warning("Figure-caption cache write failed -- caption still returned, just not cached", exc_info=True)
+    if cacheable:
+        try:
+            _narration_redis.set(
+                cache_key,
+                json.dumps({"significant": result.significant, "description": result.description, "title": result.title, "reason": result.reason}),
+                ex=_FIGURE_CAPTION_CACHE_TTL_SECONDS,
+            )
+        except Exception:
+            logger.warning("Figure-caption cache write failed -- caption still returned, just not cached", exc_info=True)
     if not result.significant and caption_status_out is not None:
         caption_status_out["status"] = "insignificant"
         if result.reason:
@@ -1306,6 +1320,7 @@ async def ingest(
     # None default) whenever vision_active is False, matching sub-fix (i)'s
     # "never disambiguate insignificant/failed when vision never ran" rule.
     figure_caption_status: dict[str, str] = {}
+    figure_caption_reason: dict[str, str] = {}  # same shape: the model's reason for a not-significant verdict
     # Task 7: figure_id -> the vision model's own short title, same
     # side-channel/patch-after-doc-exists shape as figure_caption_status
     # above. Only ever used as a FALLBACK once `doc` exists (see the patch
@@ -1489,6 +1504,8 @@ async def ingest(
             figure_outcomes.append(outcome)
             if outcome.status is not None:
                 figure_caption_status[outcome.figure_id] = outcome.status
+            if outcome.reason:
+                figure_caption_reason[outcome.figure_id] = outcome.reason
             if outcome.title is not None:
                 figure_title[outcome.figure_id] = outcome.title
             if outcome.storage_failed:
@@ -1575,6 +1592,7 @@ async def ingest(
             _figure = _figures_by_id.get(_figure_id)
             if _figure is not None:
                 _figure.caption_status = _status
+                _figure.caption_reason = figure_caption_reason.get(_figure_id)
         # Task 7: ONLY a fallback -- applied when the loader itself found no
         # document caption for this figure (figure_utils.py's
         # extract_figure_title, used by PDF and docx -- docx via its own

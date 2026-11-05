@@ -96,6 +96,27 @@ def test_insignificant_figure_gets_insignificant_caption_status(monkeypatch) -> 
     assert result["vision_active"] is True
 
 
+def test_the_reason_for_an_insignificant_verdict_is_kept_on_the_figure_so_a_reloaded_job_can_show_it(monkeypatch) -> None:
+    import app.main as main_module
+
+    class _WithReason:
+        def describe_figure(self, image_bytes, mime_type=None, document_context=None, user_id=None):
+            return FigureVisionResult(significant=False, description="", reason="A company logo.")
+
+    monkeypatch.setattr(main_module, "_vision_client", _WithReason())
+    result = _upload("sample.docx", FIXTURES / "sample.docx", mode="survey", primer_context=f"caption-reason-{uuid.uuid4()}")
+    assert result["figures"][0]["caption_status"] == "insignificant"
+    assert result["figures"][0]["caption_reason"] == "A company logo."
+
+
+def test_a_figure_that_was_described_or_never_judged_has_no_reason(monkeypatch) -> None:
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module, "_vision_client", _SignificantVisionClient())
+    result = _upload("sample.docx", FIXTURES / "sample.docx", mode="survey", primer_context=f"caption-no-reason-{uuid.uuid4()}")
+    assert result["figures"][0]["caption_reason"] is None
+
+
 def test_task7_vision_title_is_used_as_figure_name_when_the_document_provides_no_caption(monkeypatch) -> None:
     # sample.docx never has a document-provided caption (Task 4's
     # _FIGURE_CAPTION_PATTERN is PDF-only), so this exercises the pure

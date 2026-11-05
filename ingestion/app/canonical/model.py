@@ -241,6 +241,9 @@ class Figure(BaseModel):
     # signature is shared with every loader and KB-ingestion caller, so it
     # can't grow a new required return shape without touching all of them).
     caption_status: str | None = None
+    # The vision model's own one-line reason when it judged this figure not significant ("A company logo."), so the job page can say
+    # why a figure has no description after a reload, not only while it ran. Set beside caption_status; None otherwise.
+    caption_reason: str | None = None
 
 
 class CanonicalDoc(BaseModel):

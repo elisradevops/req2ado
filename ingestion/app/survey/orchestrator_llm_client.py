@@ -4,13 +4,14 @@ from __future__ import annotations
 import json
 import logging
 import re
+import socket
 import time
 from typing import Any, Callable, Literal
 
 import httpx
 from json_repair import repair_json
 
-from app.job_cancel import raise_if_cancelled
+from app.job_cancel import current_token, raise_if_cancelled
 from app.leveling.llm_call_gate import gated
 from app.otel import get_tracer
 from app.prompts import load_prompt
@@ -974,6 +975,21 @@ def _array_category_instruction(category_checklist: list[str] | None, kb_context
     )
 
 
+def _abort_in_flight(client: httpx.Client) -> None:
+    """Ends a request another thread is blocked on. `Client.close()` alone does not: closing a socket does not wake a thread already
+    reading from it, so the call would sit until the model answered. Shutting the socket down does, and the orchestrator then sees its
+    caller go. Reaches into the transport's pool (httpx has no public way to do this); anything unexpected there falls back to close()."""
+    try:
+        for connection in list(client._transport._pool.connections):  # type: ignore[attr-defined]
+            stream = getattr(getattr(connection, "_connection", None), "_network_stream", None)
+            sock = stream.get_extra_info("socket") if stream is not None else None
+            if sock is not None:
+                sock.shutdown(socket.SHUT_RDWR)
+    except Exception:  # noqa: BLE001 -- a connection that already ended, or a transport without a pool (a test double)
+        pass
+    client.close()
+
+
 class OrchestratorLlmClient:
     """SURVEY mode's real LLM client. Calls the orchestrator's POST
     /llm/chat proxy — NEVER calls Open WebUI/Ollama directly, per the
@@ -1101,13 +1117,25 @@ class OrchestratorLlmClient:
             with gated():  # a lease (when a gate is set) covers this one attempt, not the back-off sleep below; the wait for it is not "elapsed"
                 started = time.monotonic()
                 with httpx.Client(transport=self._transport, timeout=self.request_timeout_seconds or _LLM_REQUEST_TIMEOUT_SECONDS) as client:
-                    response = client.post(
-                        f"{self._base_url}/llm/chat",
-                        json=payload,
-                        headers=headers,
-                    )
+                    # A cancelled run closes this connection, so the orchestrator sees its caller go and stops the upstream request: a window
+                    # already sent no longer keeps the model (and its lease) busy for minutes after the job was cancelled.
+                    token = current_token()
+                    unregister = token.on_cancel(lambda: _abort_in_flight(client)) if token is not None else (lambda: None)
+                    try:
+                        response = client.post(
+                            f"{self._base_url}/llm/chat",
+                            json=payload,
+                            headers=headers,
+                        )
+                    except Exception:
+                        raise_if_cancelled()  # the closed connection surfaces as a transport error: report it as the cancel it is
+                        raise
+                    finally:
+                        unregister()
             if response.status_code not in _RETRYABLE_CHAT_STATUS_CODES:
                 return response
+            if payload.get("budgetKind") == "study" and response.status_code == 504:
+                return response  # the study reads a 504 as an overloaded backend and leaves that window unread; another identical request only adds to the load
             elapsed = time.monotonic() - started
             if elapsed >= _SLOW_FAILURE_SECONDS:
                 logger.warning(

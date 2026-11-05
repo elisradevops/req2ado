@@ -1419,6 +1419,57 @@ def test_a_failed_second_look_leaves_the_first_verdict_alone(monkeypatch) -> Non
     assert status["status"] == "insignificant"
 
 
+def test_a_second_look_that_raises_keeps_the_first_verdict_and_is_not_a_vision_failure(monkeypatch) -> None:
+    import httpx
+
+    class _Flaky(_ScriptedVision):
+        def describe_figure(self, *args, **kwargs):
+            self.calls += 1
+            if self.calls == 2:
+                raise httpx.ReadTimeout("the second look timed out")
+            return FigureVisionResult(significant=False, description="", reason="A divider.")
+
+    import app.main as main_module
+
+    vision, redis, status = _Flaky([]), _MemoryRedis(), {}
+    monkeypatch.setattr(main_module, "_vision_client", vision)
+    monkeypatch.setattr(main_module, "_narration_redis", redis)
+    assert main_module._describe_figure(b"flaky-second-look", None, status) is None
+    assert vision.calls == 2
+    assert status["status"] == "insignificant" and status["reason"] == "A divider."  # not "vision_failed": it would trip the breaker
+    assert redis.store == {}  # one unconfirmed answer is not kept for a week
+
+
+def test_a_cancel_during_the_second_look_is_not_swallowed(monkeypatch) -> None:
+    from app.job_cancel import JobCancelled
+
+    class _Cancelled(_ScriptedVision):
+        def describe_figure(self, *args, **kwargs):
+            self.calls += 1
+            if self.calls == 2:
+                raise JobCancelled("the run was cancelled")
+            return FigureVisionResult(significant=False, description="")
+
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module, "_vision_client", _Cancelled([]))
+    monkeypatch.setattr(main_module, "_narration_redis", _MemoryRedis())
+    import pytest
+
+    with pytest.raises(JobCancelled):
+        main_module._describe_figure(b"cancel-second-look", None, {})
+
+
+def test_a_not_significant_verdict_is_cached_only_when_the_second_look_agreed(monkeypatch) -> None:
+    _, _, _, agreed = _describe_with(
+        monkeypatch, [FigureVisionResult(significant=False, description=""), FigureVisionResult(significant=False, description="")], image=b"agreed-image"
+    )
+    assert len(agreed.store) == 1
+    _, status, _, unanswered = _describe_with(monkeypatch, [FigureVisionResult(significant=False, description=""), None], image=b"unanswered-image")
+    assert status["status"] == "insignificant"  # this run still lets the figure go
+    assert unanswered.store == {}  # but the next run asks again
+
+
 def test_a_second_answer_that_calls_it_significant_but_describes_nothing_does_not_win(monkeypatch) -> None:
     caption, status, _, _ = _describe_with(
         monkeypatch, [FigureVisionResult(significant=False, description="", reason="A divider."), FigureVisionResult(significant=True, description="   ")]
