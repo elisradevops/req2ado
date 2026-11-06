@@ -26,7 +26,7 @@ export const LONG_TITLE =
 export const HEBREW_TITLE = 'המערכת תספק עיבוד, זיכרון ואחסון לכל תצורת מחסנית בטווח הטמפרטורות המלא';
 export const MIXED_TITLE = 'המערכת תתמוך ב-WI-3024 עד לסיום TBD בשלב התכנון';
 
-const base = { description: '<p>Synthetic description.</p>', action: 'create' as const, customerId: null };
+const base = { description: 'Synthetic description.', action: 'create' as const, customerId: null };
 
 /** Ids the specs look rows up by. Titles are what the user sees; ids stay stable. */
 export const IDS = {

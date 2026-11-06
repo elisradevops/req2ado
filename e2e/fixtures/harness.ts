@@ -253,6 +253,8 @@ export async function openDiffReadyJob(page: Page, variant: WarningVariant = 'ma
     if (pathname.endsWith('/run-map') || pathname.endsWith('/run-done')) return json(route, { message: 'none' }, 404);
     return json(route, request.method() === 'GET' ? {} : { ok: true });
   });
+  // The chat pane opens a WebSocket to /chat; without a server it closes at once and the pane toasts "Chat reply failed".
+  await page.routeWebSocket(/\/chat\?/, () => {});
   await installPageHooks(page, []);
   await page.goto(`/jobs/${JOB_ID}`);
   await page.getByRole('button', { name: 'Collapse Core module' }).waitFor();

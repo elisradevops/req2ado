@@ -177,6 +177,16 @@ test.describe('details dialog title', () => {
     await expect(dialog(page).getByRole('button', { name: 'Edit', exact: true })).toHaveCount(0);
   });
 
+  test('shows the description as plain text and raises no chat error toast', async ({ page }) => {
+    await openDiffReadyJob(page);
+    await openDetails(page, 'Flagged only');
+    await expect(dialog(page).getByText('Synthetic description.')).toBeVisible();
+    await expect(dialog(page).getByText('<p>')).toHaveCount(0);
+    // The chat socket closes (or not) shortly after the pane mounts; give a failure time to show.
+    await page.waitForTimeout(1000);
+    await expect(page.getByText(/Chat reply failed/)).toHaveCount(0);
+  });
+
   test('Hebrew text direction is reported (a finding, not a gate)', async ({ page }, testInfo) => {
     await openDiffReadyJob(page);
     await openDetails(page, HEBREW_TITLE);
