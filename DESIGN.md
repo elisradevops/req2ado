@@ -1152,8 +1152,29 @@ Each card ends with a cost row: a `Clock` icon plus the mode's time range, and a
 model-cost chip (`ok` "No model cost" for BASELINE, `warning` "Uses your model
 quota" for SURVEY). **The SURVEY model picker lives inside the SURVEY card,** not
 in a separate Options box — an option that only applies to one mode belongs to
-that mode. It is labelled `Model`, uses the `Cpu` glyph, and carries the hint
-"Fetched live from the LLM backend. Change it only if you know why."
+that mode. It is labelled `Model` and uses the `Cpu` glyph. The list is the live
+`GET /jobs/models` answer, which now carries `recommended` (the admin-configured
+default, only when the user is offered it) and per-model `details`. The option for
+the recommended model reads "<model> · Recommended", the empty option reads
+"Default (<model>)", and one muted `text-meta` line under the picker states only
+what the app did or measured: whether figures are described or skipped, speed
+against the typical job and the share of runs that finished (both from this
+deployment's own SURVEY history, shown only from 3 runs and worded "from N recent
+runs"), or "Not enough runs yet on this deployment". **No quality claim is ever
+made about a model**, and nothing is read from a static per-model table: the
+production model list is dynamic. If the extras fail the plain list renders.
+Under each mode's time range a muted line says what the estimate is based on
+("Based on N completed jobs in the last 90 days, M on this model", or "Rough
+guess: no completed jobs to learn from yet"); BASELINE's flat minute has none.
+
+**The wizard keeps its draft.** `NewJobWizard` and `BatchJobWizard` mirror their
+state (file(s), parse result, mode, model, destination, step) into an in-memory
+store (`store/newJobDraftStore.ts`, `store/batchJobDraftStore.ts`), so a trip to
+another page (the Knowledge Base, to fix a file) and back resumes where the user
+was. Cleared on a started job or batch, a replaced file and logout; a reload
+starts fresh (a `File` cannot be stored). A parse that was still running when the
+user left is dropped, a restored model that is no longer offered falls back to
+Default, and a restored project keeps its restored area path.
 
 #### §11.2.2 — Destination as a breadcrumb, not a field stack
 
@@ -1777,14 +1798,26 @@ in a `SectionCard` titled "Knowledge base" under the mode cards, **only when
 SURVEY is selected** (BASELINE never reads the KB).
 
 A user must learn *before* starting whether grounding is on. The strip shows
-`N files · M chunks`, the SharePoint state (`SharePoint connected` / `token
-expired` / `can't reach SharePoint` / `not connected`, with "adding files will
-fail" where it matters), and a link to Manage knowledge base. An empty KB reads
-"Your knowledge base is empty — this run won't be grounded against your
-standards." Files whose stored chunk count is `0` read "N files have no vectors
-and cannot ground this run — re-ingest them." It is **informational only**: it
-never disables `Start job`, and a failed lookup degrades to "Couldn't check your
-knowledge base right now." — never to a false "healthy."
+`N files · M chunks` counting **only files known to hold vectors** (a file with no
+stored chunk count, an older ingest, is not vouched for and is never counted as
+ready; if every file is like that the chip reads "N files · chunk count unknown"),
+and the SharePoint state (`SharePoint connected` / `token expired` / `can't reach
+SharePoint` / `not connected`, with "adding files will fail" where it matters).
+An empty KB reads "Your knowledge base is empty — this run won't be grounded
+against your standards." Files whose chunk count is `0` read "N files have no
+vectors and cannot ground this run", files with no stored count read "N files
+have no stored chunk count, so they may not ground this run", and the
+re-ingest instruction ("Re-ingest it/them in Knowledge Base (SharePoint folder).")
+is said **once**, after the last file warning. The link "Fix in Knowledge Base"
+(followed by the plain text "Your draft is kept.") appears **only when something
+needs fixing**. The strip also appears on step 3 under "Your knowledge base". It is
+**informational only**: it never disables `Start job`, and a failed lookup
+degrades to "Couldn't check your knowledge base right now." — never to a false
+"healthy."
+
+Step 3 also offers "Write it again" for the optional AI summary. The button stays
+mounted and is `aria-disabled` (not `disabled`) while a summary is being written,
+because a natively disabled button drops keyboard focus.
 
 #### §11.2.4 — Footer
 
