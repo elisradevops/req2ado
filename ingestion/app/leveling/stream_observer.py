@@ -134,8 +134,10 @@ class StreamObserver:
                 else:
                     self._array_key, self._array_index = self._current_key or "", 0
             elif (
-                self._depth == 3 and self._stack[1] == "["
-                and self._array_key is not None and char == "{"
+                self._depth == 3
+                and self._stack[1] == "["
+                and self._array_key is not None
+                and char == "{"
             ):
                 self._capture, self._capture_depth = [char], 3
                 self._item_key = f"{self._array_key}[{self._array_index}]"

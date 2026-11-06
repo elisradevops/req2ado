@@ -31,7 +31,9 @@ def _is_lettered_suffix(label: str) -> bool:
     return label.rsplit(".", 1)[-1].isalpha()
 
 
-def classify_numbering_branch(branch_blocks: list[Block]) -> dict[str, tuple[WorkItemType, WorkItemType, str]]:
+def classify_numbering_branch(
+    branch_blocks: list[Block],
+) -> dict[str, tuple[WorkItemType, WorkItemType, str]]:
     """Bottom-up, tree-shape-derived Epic/Feature/Requirement classification
     for a numbering-label branch -- replaces the old depth-threshold
     tv_style/icd_style heuristic entirely for this convention.

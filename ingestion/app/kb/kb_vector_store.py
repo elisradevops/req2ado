@@ -40,7 +40,9 @@ def _is_missing_collection_error(exc: Exception) -> bool:
         return True
     # chromadb 0.6.x over HTTP signals a missing collection with
     # InvalidArgumentError (see purge_user); 1.x with NotFoundError.
-    if type(exc).__name__ in {"NotFoundError", "InvalidArgumentError"} or isinstance(exc, ValueError):
+    if type(exc).__name__ in {"NotFoundError", "InvalidArgumentError"} or isinstance(
+        exc, ValueError
+    ):
         message = str(exc).lower()
         return "collection" in message and "does not exist" in message
     return False
@@ -214,7 +216,9 @@ class KbVectorStore:
         # definitions to at all) omits the key entirely, same convention as
         # quality_checklist_json's own `is not None` check above.
         if quality_checklist_definitions is not None:
-            metadata["quality_checklist_definitions_json"] = json.dumps(quality_checklist_definitions)
+            metadata["quality_checklist_definitions_json"] = json.dumps(
+                quality_checklist_definitions
+            )
         collection.upsert(
             ids=[chunk_id],
             embeddings=[embedding],
@@ -288,7 +292,10 @@ class KbVectorStore:
         offset = 0
         while True:
             page = collection.get(
-                where={"source_id": source_id}, limit=_GET_PAGE_SIZE, offset=offset, include=["metadatas"]
+                where={"source_id": source_id},
+                limit=_GET_PAGE_SIZE,
+                offset=offset,
+                include=["metadatas"],
             )
             page_ids = page.get("ids") or []
             if not page_ids:
@@ -301,7 +308,9 @@ class KbVectorStore:
         collection.update(ids=ids, metadatas=[{**m, "source_file": source_file} for m in metadatas])
 
     def _profile_collection(self, user_id: str):
-        return self._client.get_or_create_collection(name=_profile_collection_name_for_user(user_id, self._embed_model))
+        return self._client.get_or_create_collection(
+            name=_profile_collection_name_for_user(user_id, self._embed_model)
+        )
 
     def get_profile_part(self, user_id: str, part_id: str) -> str | None:
         """One stored document of this user's profile collection (the profile itself, a document's cached extraction), or None
@@ -315,11 +324,18 @@ class KbVectorStore:
         """Stores (replaces) one document of the profile collection. Chroma needs an embedding; these are not searched, so it
         is a constant placeholder."""
         self._profile_collection(user_id).upsert(
-            ids=[part_id], documents=[text], embeddings=[[0.0]], metadatas=[{"profile_version": version}],
+            ids=[part_id],
+            documents=[text],
+            embeddings=[[0.0]],
+            metadatas=[{"profile_version": version}],
         )
 
     def list_profile_part_ids(self, user_id: str, prefix: str) -> list[str]:
-        return [i for i in self._profile_collection(user_id).get(include=[]).get("ids", []) if i.startswith(prefix)]
+        return [
+            i
+            for i in self._profile_collection(user_id).get(include=[]).get("ids", [])
+            if i.startswith(prefix)
+        ]
 
     def delete_profile_parts(self, user_id: str, part_ids: list[str]) -> None:
         if part_ids:
@@ -371,7 +387,9 @@ class KbVectorStore:
         matching every other method here that treats "no such user" as an
         empty result rather than an error."""
         try:
-            self._client.delete_collection(name=_kb_collection_name_for_user(user_id, self._embed_model))
+            self._client.delete_collection(
+                name=_kb_collection_name_for_user(user_id, self._embed_model)
+            )
         except chromadb.errors.NotFoundError:
             pass
         except (ValueError, chromadb.errors.InvalidArgumentError) as exc:
@@ -382,7 +400,9 @@ class KbVectorStore:
             if "does not exist" not in str(exc):
                 raise
         try:
-            self._client.delete_collection(name=_profile_collection_name_for_user(user_id, self._embed_model))
+            self._client.delete_collection(
+                name=_profile_collection_name_for_user(user_id, self._embed_model)
+            )
         except Exception:  # noqa: BLE001 -- no profile collection is the same as nothing to purge
             pass
         # The cached handle (if any) now points at a deleted collection --
@@ -460,7 +480,9 @@ class KbVectorStore:
             return None
         return json.loads(raw)
 
-    def get_quality_checklist_definitions(self, user_id: str, source_file: str) -> dict[str, str] | None:
+    def get_quality_checklist_definitions(
+        self, user_id: str, source_file: str
+    ) -> dict[str, str] | None:
         """Companion to get_quality_checklist above -- name -> stated-
         definition text for whichever of THAT method's category names the
         document actually explains (see OrchestratorLlmClient.
@@ -568,6 +590,10 @@ class KbVectorStore:
         distances = result["distances"][0]
         metadatas = result["metadatas"][0]
         return [
-            {"text": documents[i], "distance": distances[i], "source_file": metadatas[i]["source_file"]}
+            {
+                "text": documents[i],
+                "distance": distances[i],
+                "source_file": metadatas[i]["source_file"],
+            }
             for i in range(len(documents))
         ]

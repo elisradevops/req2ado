@@ -1,4 +1,5 @@
 """Run once to (re)generate sample.pptx: `python build_pptx_fixture.py`."""
+
 from pathlib import Path
 
 from pptx import Presentation

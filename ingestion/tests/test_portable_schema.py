@@ -8,7 +8,9 @@ from app.survey import _response_schemas as response_schemas
 from app.survey import keyed_calls, keyed_specs
 from app.survey.portable_schema import portable_schema_violations
 
-VECTORS = json.loads((Path(__file__).parents[2] / "shared" / "test-vectors" / "portable-schema.json").read_text())["vectors"]
+VECTORS = json.loads(
+    (Path(__file__).parents[2] / "shared" / "test-vectors" / "portable-schema.json").read_text()
+)["vectors"]
 
 
 @pytest.mark.parametrize("vector", VECTORS, ids=[v["name"] for v in VECTORS])
@@ -32,8 +34,16 @@ KNOWN_NOT_PORTABLE: dict[str, list[str]] = {
     "scores_schema": ["/:free_form_object"],
     "synthesis_schema": ["/:free_form_object"],
     "title_tags_schema": ["/:free_form_object"],
-    "section_analysis_schema": ["/:object_not_closed", "/properties/nodes/items:not_all_required", "/properties/nodes/items:object_not_closed"],
-    "section_skeleton_schema": ["/:object_not_closed", "/properties/nodes/items:not_all_required", "/properties/nodes/items:object_not_closed"],
+    "section_analysis_schema": [
+        "/:object_not_closed",
+        "/properties/nodes/items:not_all_required",
+        "/properties/nodes/items:object_not_closed",
+    ],
+    "section_skeleton_schema": [
+        "/:object_not_closed",
+        "/properties/nodes/items:not_all_required",
+        "/properties/nodes/items:object_not_closed",
+    ],
 }
 
 
@@ -53,7 +63,8 @@ def test_every_response_schema_is_portable_or_a_listed_legacy_shape(name: str) -
 
 
 @pytest.mark.parametrize(
-    "spec_name", [n for n, o in inspect.getmembers(keyed_specs) if isinstance(o, keyed_calls.KeyedSpec)],
+    "spec_name",
+    [n for n, o in inspect.getmembers(keyed_specs) if isinstance(o, keyed_calls.KeyedSpec)],
 )
 def test_every_keyed_pass_is_portable_in_array_mode(spec_name: str) -> None:
     spec = getattr(keyed_specs, spec_name)

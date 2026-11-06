@@ -62,7 +62,10 @@ def _sr(path: str) -> SourceRef:
 
 
 def _node(
-    local_id: str, node_type: WorkItemType, parent_local_id: str | None, title: str,
+    local_id: str,
+    node_type: WorkItemType,
+    parent_local_id: str | None,
+    title: str,
 ) -> WorkItemNode:
     """Minimal WorkItemNode builder for unit-testing the repair/matching
     functions directly, bypassing build_survey_tree -- used where the
@@ -72,8 +75,13 @@ def _node(
     any more (see each converted test's own docstring)."""
     ref = _sr("x.docx")
     return WorkItemNode(
-        local_id=local_id, type=node_type, parent_local_id=parent_local_id, title=title,
-        description=title, source_ref=ref, mode=WorkItemMode.SURVEY,
+        local_id=local_id,
+        type=node_type,
+        parent_local_id=parent_local_id,
+        title=title,
+        description=title,
+        source_ref=ref,
+        mode=WorkItemMode.SURVEY,
     )
 
 
@@ -84,9 +92,13 @@ def _req_node(local_id: str, description: str, title: str | None = None) -> Work
     # a slice of the description (see _detect_conflicting_duplicates's
     # title/description blend).
     return WorkItemNode(
-        local_id=local_id, type=WorkItemType.REQUIREMENT, parent_local_id=None,
-        title=description[:60] if title is None else title, description=description,
-        source_ref=_sr("x.docx"), mode=WorkItemMode.SURVEY,
+        local_id=local_id,
+        type=WorkItemType.REQUIREMENT,
+        parent_local_id=None,
+        title=description[:60] if title is None else title,
+        description=description,
+        source_ref=_sr("x.docx"),
+        mode=WorkItemMode.SURVEY,
     )
 
 
@@ -108,7 +120,12 @@ def _small_doc() -> CanonicalDoc:
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
             Block(id="b0", kind=BlockKind.PARAGRAPH, text="Display", source_ref=_sr(path)),
-            Block(id="b1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
+            Block(
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
+                text="The display shall support HDR.",
+                source_ref=_sr(path),
+            ),
         ],
     )
 
@@ -119,8 +136,12 @@ def _small_doc() -> CanonicalDoc:
 # Requirement child, same shape most tests below rely on.
 _DEFAULT_NODES = [
     {
-        "temp_id": "n0", "type": "Feature", "parent_temp_id": None,
-        "title": "Display", "text": "The system shall handle: Display", "tags": ["functional"],
+        "temp_id": "n0",
+        "type": "Feature",
+        "parent_temp_id": None,
+        "title": "Display",
+        "text": "The system shall handle: Display",
+        "tags": ["functional"],
     },
     {
         "temp_id": "n1",
@@ -140,9 +161,30 @@ _DEFAULT_NODES = [
 # link SURVIVES must not accidentally use a parent/child pair like
 # _DEFAULT_NODES' n0/n1).
 _SIBLING_NODES = [
-    {"temp_id": "s0", "type": "Feature", "parent_temp_id": None, "title": "Root", "text": "Root feature.", "tags": []},
-    {"temp_id": "s1", "type": "Requirement", "parent_temp_id": "s0", "title": "Sibling A", "text": "Requirement A, see Sibling B.", "tags": []},
-    {"temp_id": "s2", "type": "Requirement", "parent_temp_id": "s0", "title": "Sibling B", "text": "Requirement B.", "tags": []},
+    {
+        "temp_id": "s0",
+        "type": "Feature",
+        "parent_temp_id": None,
+        "title": "Root",
+        "text": "Root feature.",
+        "tags": [],
+    },
+    {
+        "temp_id": "s1",
+        "type": "Requirement",
+        "parent_temp_id": "s0",
+        "title": "Sibling A",
+        "text": "Requirement A, see Sibling B.",
+        "tags": [],
+    },
+    {
+        "temp_id": "s2",
+        "type": "Requirement",
+        "parent_temp_id": "s0",
+        "title": "Sibling B",
+        "text": "Requirement B.",
+        "tags": [],
+    },
 ]
 
 
@@ -235,7 +277,10 @@ class FakeSectionAnalysisClient:
         self.legacy_calls: list[dict] = []
 
     def analyze_section(
-        self, section_text: str, kb_context: str | None = None, *,
+        self,
+        section_text: str,
+        kb_context: str | None = None,
+        *,
         options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
         user_id: str | None = None,
     ) -> tuple[list[dict], bool]:
@@ -243,8 +288,13 @@ class FakeSectionAnalysisClient:
         return self._nodes, self._truncated
 
     def analyze_section_agentic(
-        self, section_text: str, retrieve_fn, list_documents_fn=None, read_document_fn=None,
-        read_other_section_fn=None, *,
+        self,
+        section_text: str,
+        retrieve_fn,
+        list_documents_fn=None,
+        read_document_fn=None,
+        read_other_section_fn=None,
+        *,
         options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
         user_id: str | None = None,
     ) -> tuple[list[dict], list[dict], bool]:
@@ -252,18 +302,30 @@ class FakeSectionAnalysisClient:
         return self._agentic_nodes, self._agentic_citations, self._truncated
 
     def analyze_section_skeleton(
-        self, section_text: str, kb_context: str | None = None, *,
+        self,
+        section_text: str,
+        kb_context: str | None = None,
+        *,
         options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
         user_id: str | None = None,
     ) -> tuple[list[dict], bool]:
-        self.calls.append({
-            "section_text": section_text, "kb_context": kb_context, "options": options,
-        })
+        self.calls.append(
+            {
+                "section_text": section_text,
+                "kb_context": kb_context,
+                "options": options,
+            }
+        )
         return _skeleton_of(self._nodes), self._truncated
 
     def analyze_section_skeleton_agentic(
-        self, section_text: str, retrieve_fn, list_documents_fn=None, read_document_fn=None,
-        read_other_section_fn=None, *,
+        self,
+        section_text: str,
+        retrieve_fn,
+        list_documents_fn=None,
+        read_document_fn=None,
+        read_other_section_fn=None,
+        *,
         options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
         user_id: str | None = None,
     ) -> tuple[list[dict], list[dict], bool]:
@@ -280,12 +342,19 @@ class FakeSectionAnalysisClient:
         return _skeleton_of(self._agentic_nodes), self._agentic_citations, self._truncated
 
     def author_content(
-        self, section_text: str, skeleton_nodes: dict[str, dict], kb_context: str | None = None,
+        self,
+        section_text: str,
+        skeleton_nodes: dict[str, dict],
+        kb_context: str | None = None,
         user_id: str | None = None,
     ) -> tuple[dict[str, dict], bool]:
-        self.author_calls.append({
-            "section_text": section_text, "skeleton_nodes": skeleton_nodes, "kb_context": kb_context,
-        })
+        self.author_calls.append(
+            {
+                "section_text": section_text,
+                "skeleton_nodes": skeleton_nodes,
+                "kb_context": kb_context,
+            }
+        )
         source = self._agentic_nodes if self.agentic_calls else self._nodes
         by_temp_id = {n.get("temp_id"): n for n in source}
         content: dict[str, dict] = {}
@@ -293,7 +362,10 @@ class FakeSectionAnalysisClient:
             entry = by_temp_id.get(_strip_branch_prefix(local_id))
             if entry is None:
                 continue
-            content[local_id] = {"description": entry.get("text", ""), "tags": entry.get("tags", [])}
+            content[local_id] = {
+                "description": entry.get("text", ""),
+                "tags": entry.get("tags", []),
+            }
         return content, self._content_truncated
 
 
@@ -319,7 +391,9 @@ def test_build_survey_tree_defaults_customer_id_to_none_when_no_code_is_present(
     assert all(n.customer_id is None for n in tree.nodes)
 
 
-def test_build_survey_tree_defaults_customer_id_to_none_across_multiple_branches(monkeypatch) -> None:
+def test_build_survey_tree_defaults_customer_id_to_none_across_multiple_branches(
+    monkeypatch,
+) -> None:
     _force_multi_branch(monkeypatch)
     tree = build_survey_tree(_two_branch_doc(), FakeSectionAnalysisClient())
     assert len(tree.nodes) == 4  # 2 nodes/branch x 2 branches
@@ -345,14 +419,23 @@ def _customer_code_table(code: str, table_id: str = "t0", path: str = "survey_in
     # matching row, not "some" row.
     return Table(
         id=table_id,
-        cells=[[TableCell(text=c) for c in row] for row in [
-            ["ID", "Value"], [code, "42"], ["Other One", "x"], ["Other Two", "y"], ["AUX-999", "43"],
-        ]],
+        cells=[
+            [TableCell(text=c) for c in row]
+            for row in [
+                ["ID", "Value"],
+                [code, "42"],
+                ["Other One", "x"],
+                ["Other Two", "y"],
+                ["AUX-999", "43"],
+            ]
+        ],
         source_ref=_sr(path),
     )
 
 
-def test_build_survey_tree_extracts_a_customer_code_from_a_requirements_generated_description() -> None:
+def test_build_survey_tree_extracts_a_customer_code_from_a_requirements_generated_description() -> (
+    None
+):
     # Real mock-e2e finding this closes: a source requirements table folded
     # into a Requirement's description (table_ids != []) still carries its
     # row's own literal customer-assigned code verbatim in the raw cell
@@ -368,8 +451,12 @@ def test_build_survey_tree_extracts_a_customer_code_from_a_requirements_generate
     fake = FakeMappingClient(
         nodes=[
             {
-                "temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "title": "Sync source",
-                "text": "The system shall synchronize to Standard-XX within N ms.", "tags": [],
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "title": "Sync source",
+                "text": "The system shall synchronize to Standard-XX within N ms.",
+                "tags": [],
             },
         ],
         verdicts={"t0": {"node_id": "n0", "escalate": False}},
@@ -391,8 +478,12 @@ def test_build_survey_tree_never_extracts_a_customer_code_from_plain_prose_alone
     fake = FakeSectionAnalysisClient(
         nodes=[
             {
-                "temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "title": "Sync source",
-                "text": "The system shall synchronize. REQ-AV-014", "tags": [],
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "title": "Sync source",
+                "text": "The system shall synchronize. REQ-AV-014",
+                "tags": [],
             },
         ]
     )
@@ -400,18 +491,28 @@ def test_build_survey_tree_never_extracts_a_customer_code_from_plain_prose_alone
     assert tree.nodes[0].customer_id is None
 
 
-def test_build_survey_tree_never_gives_an_epic_or_feature_a_customer_code_even_when_one_is_present() -> None:
+def test_build_survey_tree_never_gives_an_epic_or_feature_a_customer_code_even_when_one_is_present() -> (
+    None
+):
     doc = _small_doc()
     doc.tables = [_customer_code_table("REQ-AV-014")]
     fake = FakeMappingClient(
         nodes=[
             {
-                "temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "Sync",
-                "text": "Covers requirement synchronization.", "tags": [],
+                "temp_id": "n0",
+                "type": "Feature",
+                "parent_temp_id": None,
+                "title": "Sync",
+                "text": "Covers requirement synchronization.",
+                "tags": [],
             },
             {
-                "temp_id": "n1", "type": "Requirement", "parent_temp_id": "n0", "title": "Sync source",
-                "text": "The system shall synchronize.", "tags": [],
+                "temp_id": "n1",
+                "type": "Requirement",
+                "parent_temp_id": "n0",
+                "title": "Sync source",
+                "text": "The system shall synchronize.",
+                "tags": [],
             },
         ],
         verdicts={"t0": {"node_id": "n1", "escalate": False}},
@@ -431,13 +532,25 @@ def test_skeleton_stage_carries_the_model_reported_customer_id_onto_the_node() -
     # not the stage-3 regex fallback (see the fallback-only test below).
     doc = CanonicalDoc(
         document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
-        blocks=[Block(id="b0", kind=BlockKind.PARAGRAPH, text="P-SENSOR-001# Time sync source", source_ref=_sr("x.txt"))],
+        blocks=[
+            Block(
+                id="b0",
+                kind=BlockKind.PARAGRAPH,
+                text="P-SENSOR-001# Time sync source",
+                source_ref=_sr("x.txt"),
+            )
+        ],
     )
     fake = FakeSectionAnalysisClient(
         nodes=[
             {
-                "temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "title": "Sync source",
-                "text": "The system shall synchronize. REQ-AV-014", "tags": [], "customer_id": "P-SENSOR-001#",
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "title": "Sync source",
+                "text": "The system shall synchronize. REQ-AV-014",
+                "tags": [],
+                "customer_id": "P-SENSOR-001#",
             },
         ]
     )
@@ -452,8 +565,13 @@ def test_skeleton_stage_drops_a_model_reported_customer_id_not_grounded_in_the_s
     fake = FakeSectionAnalysisClient(
         nodes=[
             {
-                "temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "title": "Sync source",
-                "text": "The system shall synchronize.", "tags": [], "customer_id": "P-SENSOR-999#",
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "title": "Sync source",
+                "text": "The system shall synchronize.",
+                "tags": [],
+                "customer_id": "P-SENSOR-999#",
             },
         ]
     )
@@ -464,13 +582,25 @@ def test_skeleton_stage_drops_a_model_reported_customer_id_not_grounded_in_the_s
 def test_skeleton_stage_never_gives_an_epic_or_feature_a_model_reported_customer_id() -> None:
     doc = CanonicalDoc(
         document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
-        blocks=[Block(id="b0", kind=BlockKind.PARAGRAPH, text="P-SENSOR-001# Sync", source_ref=_sr("x.txt"))],
+        blocks=[
+            Block(
+                id="b0",
+                kind=BlockKind.PARAGRAPH,
+                text="P-SENSOR-001# Sync",
+                source_ref=_sr("x.txt"),
+            )
+        ],
     )
     fake = FakeSectionAnalysisClient(
         nodes=[
             {
-                "temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "Sync",
-                "text": "Sync feature.", "tags": [], "customer_id": "P-SENSOR-001#",
+                "temp_id": "n0",
+                "type": "Feature",
+                "parent_temp_id": None,
+                "title": "Sync",
+                "text": "Sync feature.",
+                "tags": [],
+                "customer_id": "P-SENSOR-001#",
             },
         ]
     )
@@ -491,20 +621,39 @@ def test_content_stage_regex_only_fills_a_customer_id_stage_one_left_empty() -> 
     doc = CanonicalDoc(
         document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.PARAGRAPH, text="P-SENSOR-001# has one shape", source_ref=_sr("x.txt")),
-            Block(id="b1", kind=BlockKind.PARAGRAPH, text="REQ-AV-014 has another", source_ref=_sr("x.txt")),
+            Block(
+                id="b0",
+                kind=BlockKind.PARAGRAPH,
+                text="P-SENSOR-001# has one shape",
+                source_ref=_sr("x.txt"),
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
+                text="REQ-AV-014 has another",
+                source_ref=_sr("x.txt"),
+            ),
         ],
         tables=[_customer_code_table("REQ-AV-014")],
     )
     fake = FakeMappingClient(
         nodes=[
             {
-                "temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "title": "First",
-                "text": "The system shall do X.", "tags": [], "customer_id": "P-SENSOR-001#",
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "title": "First",
+                "text": "The system shall do X.",
+                "tags": [],
+                "customer_id": "P-SENSOR-001#",
             },
             {
-                "temp_id": "n1", "type": "Requirement", "parent_temp_id": None, "title": "Second",
-                "text": "The system shall do Y.", "tags": [],
+                "temp_id": "n1",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "title": "Second",
+                "text": "The system shall do Y.",
+                "tags": [],
             },
         ],
         verdicts={"t0": {"node_id": "n1", "escalate": False}},
@@ -517,7 +666,9 @@ def test_content_stage_regex_only_fills_a_customer_id_stage_one_left_empty() -> 
     assert "t0" in second.table_ids
 
 
-def test_content_stage_regex_never_matches_a_product_designator_in_plain_paraphrased_prose() -> None:
+def test_content_stage_regex_never_matches_a_product_designator_in_plain_paraphrased_prose() -> (
+    None
+):
     # Confirmed real bug, live (cubeadcs_icd.pdf): the model's own
     # paraphrased description text is free prose, not a table's id-bearing
     # cell -- "PC104" and "RS485" are cited product/protocol designators
@@ -527,13 +678,24 @@ def test_content_stage_regex_never_matches_a_product_designator_in_plain_paraphr
     # stay honestly None rather than scanning the prose itself.
     doc = CanonicalDoc(
         document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
-        blocks=[Block(id="b0", kind=BlockKind.PARAGRAPH, text="The PC104 variant uses RS485 signalling.", source_ref=_sr("x.txt"))],
+        blocks=[
+            Block(
+                id="b0",
+                kind=BlockKind.PARAGRAPH,
+                text="The PC104 variant uses RS485 signalling.",
+                source_ref=_sr("x.txt"),
+            )
+        ],
     )
     fake = FakeSectionAnalysisClient(
         nodes=[
             {
-                "temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "title": "PC104 Variant",
-                "text": "The PC104 variant is designed for satellites larger than 6U with RS485 signalling.", "tags": [],
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "title": "PC104 Variant",
+                "text": "The PC104 variant is designed for satellites larger than 6U with RS485 signalling.",
+                "tags": [],
             },
         ]
     )
@@ -542,7 +704,9 @@ def test_content_stage_regex_never_matches_a_product_designator_in_plain_paraphr
 
 
 def _requirements_table(rows: list[list[str]], table_id: str = "t0", path: str = "x.docx") -> Table:
-    return Table(id=table_id, cells=[[TableCell(text=c) for c in row] for row in rows], source_ref=_sr(path))
+    return Table(
+        id=table_id, cells=[[TableCell(text=c) for c in row] for row in rows], source_ref=_sr(path)
+    )
 
 
 def test_requirement_rows_raise_the_node_count_floor_and_are_named_in_the_hint() -> None:
@@ -550,13 +714,37 @@ def test_requirement_rows_raise_the_node_count_floor_and_are_named_in_the_hint()
     # requirements table contributed nothing to topic_count's floor at all.
     doc = CanonicalDoc(
         document=Document(path="x.docx", format=DocumentFormat.DOCX, sha256="h"),
-        blocks=[Block(id="b0", kind=BlockKind.HEADING, heading_level=2, text="Synchronization", source_ref=_sr("x.docx"))],
-        tables=[_requirements_table([
-            ["#", "Parameter", "Requirement / Value"],
-            ["P-SENSOR-001#", "Time sync source", "The system shall synchronize to Standard-XX within N ms."],
-            ["P-SENSOR-002#", "Sync accuracy", "Timing accuracy shall be better than X µs."],
-            ["P-SENSOR-003#", "Sync interval", "Re-synchronization shall occur every N seconds."],
-        ])],
+        blocks=[
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                heading_level=2,
+                text="Synchronization",
+                source_ref=_sr("x.docx"),
+            )
+        ],
+        tables=[
+            _requirements_table(
+                [
+                    ["#", "Parameter", "Requirement / Value"],
+                    [
+                        "P-SENSOR-001#",
+                        "Time sync source",
+                        "The system shall synchronize to Standard-XX within N ms.",
+                    ],
+                    [
+                        "P-SENSOR-002#",
+                        "Sync accuracy",
+                        "Timing accuracy shall be better than X µs.",
+                    ],
+                    [
+                        "P-SENSOR-003#",
+                        "Sync interval",
+                        "Re-synchronization shall occur every N seconds.",
+                    ],
+                ]
+            )
+        ],
     )
     fake = FakeSectionAnalysisClient()
     build_survey_tree(doc, fake)
@@ -574,16 +762,30 @@ def test_supplementary_table_contributes_no_requirement_row_hints_and_no_new_flo
     # contribute NOTHING -- today's exact floor and hint, unchanged.
     doc = CanonicalDoc(
         document=Document(path="x.docx", format=DocumentFormat.DOCX, sha256="h"),
-        blocks=[Block(id="b0", kind=BlockKind.HEADING, heading_level=2, text="Power Budget", source_ref=_sr("x.docx"))],
-        tables=[_requirements_table([
-            ["SRU module", "QTY", "Unit Power [Watt]", "Total power"],
-            ["Power supply Efficiency", "1", "63", "0.87"],
-            ["Receiver Module", "2", "12", "24"],
-        ])],
+        blocks=[
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                heading_level=2,
+                text="Power Budget",
+                source_ref=_sr("x.docx"),
+            )
+        ],
+        tables=[
+            _requirements_table(
+                [
+                    ["SRU module", "QTY", "Unit Power [Watt]", "Total power"],
+                    ["Power supply Efficiency", "1", "63", "0.87"],
+                    ["Receiver Module", "2", "12", "24"],
+                ]
+            )
+        ],
     )
     fake = FakeSectionAnalysisClient()
     build_survey_tree(doc, fake)
-    assert fake.calls[0]["options"].topic_count == 1  # heading only, exactly as before this feature existed
+    assert (
+        fake.calls[0]["options"].topic_count == 1
+    )  # heading only, exactly as before this feature existed
     assert fake.calls[0]["options"].requirement_row_hints is None
 
 
@@ -592,25 +794,56 @@ def test_unclaimed_identified_requirement_rows_are_reported() -> None:
     # nodes claiming 2 of them (silently consolidated the third).
     doc = CanonicalDoc(
         document=Document(path="x.docx", format=DocumentFormat.DOCX, sha256="h"),
-        blocks=[Block(id="b0", kind=BlockKind.HEADING, heading_level=2, text="Synchronization", source_ref=_sr("x.docx"))],
-        tables=[_requirements_table([
-            ["#", "Parameter", "Requirement / Value"],
-            ["P-SENSOR-001#", "Time sync source", "The system shall synchronize to Standard-XX within N ms."],
-            ["P-SENSOR-002#", "Sync accuracy", "Timing accuracy shall be better than X µs."],
-            ["P-SENSOR-003#", "Sync interval", "Re-synchronization shall occur every N seconds."],
-        ])],
+        blocks=[
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                heading_level=2,
+                text="Synchronization",
+                source_ref=_sr("x.docx"),
+            )
+        ],
+        tables=[
+            _requirements_table(
+                [
+                    ["#", "Parameter", "Requirement / Value"],
+                    [
+                        "P-SENSOR-001#",
+                        "Time sync source",
+                        "The system shall synchronize to Standard-XX within N ms.",
+                    ],
+                    [
+                        "P-SENSOR-002#",
+                        "Sync accuracy",
+                        "Timing accuracy shall be better than X µs.",
+                    ],
+                    [
+                        "P-SENSOR-003#",
+                        "Sync interval",
+                        "Re-synchronization shall occur every N seconds.",
+                    ],
+                ]
+            )
+        ],
     )
     fake = FakeSectionAnalysisClient(
         nodes=[
             {
-                "temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "title": "Sync source and accuracy",
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "title": "Sync source and accuracy",
                 "text": "The system shall synchronize to Standard-XX within N ms and timing accuracy shall be "
-                "better than X µs.", "tags": [], "customer_id": "P-SENSOR-001#",
+                "better than X µs.",
+                "tags": [],
+                "customer_id": "P-SENSOR-001#",
             },
         ]
     )
     tree = build_survey_tree(doc, fake)
-    warning = next(w for w in tree.warnings if w.kind == WarningKind.MISSING_REQUIREMENT_ROW_COVERAGE)
+    warning = next(
+        w for w in tree.warnings if w.kind == WarningKind.MISSING_REQUIREMENT_ROW_COVERAGE
+    )
     assert warning.detail["unclaimedCodes"] == ["P-SENSOR-002#", "P-SENSOR-003#"]
     assert warning.detail["totalIdentifiedRows"] == 3
 
@@ -618,22 +851,52 @@ def test_unclaimed_identified_requirement_rows_are_reported() -> None:
 def test_no_unclaimed_row_warning_when_every_identified_row_became_its_own_node() -> None:
     doc = CanonicalDoc(
         document=Document(path="x.docx", format=DocumentFormat.DOCX, sha256="h"),
-        blocks=[Block(id="b0", kind=BlockKind.HEADING, heading_level=2, text="Synchronization", source_ref=_sr("x.docx"))],
-        tables=[_requirements_table([
-            ["#", "Parameter", "Requirement / Value"],
-            ["P-SENSOR-001#", "Time sync source", "The system shall synchronize to Standard-XX within N ms."],
-            ["P-SENSOR-002#", "Sync accuracy", "Timing accuracy shall be better than X µs."],
-        ])],
+        blocks=[
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                heading_level=2,
+                text="Synchronization",
+                source_ref=_sr("x.docx"),
+            )
+        ],
+        tables=[
+            _requirements_table(
+                [
+                    ["#", "Parameter", "Requirement / Value"],
+                    [
+                        "P-SENSOR-001#",
+                        "Time sync source",
+                        "The system shall synchronize to Standard-XX within N ms.",
+                    ],
+                    [
+                        "P-SENSOR-002#",
+                        "Sync accuracy",
+                        "Timing accuracy shall be better than X µs.",
+                    ],
+                ]
+            )
+        ],
     )
     fake = FakeSectionAnalysisClient(
         nodes=[
             {
-                "temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "title": "Sync source",
-                "text": "The system shall synchronize to Standard-XX within N ms.", "tags": [], "customer_id": "P-SENSOR-001#",
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "title": "Sync source",
+                "text": "The system shall synchronize to Standard-XX within N ms.",
+                "tags": [],
+                "customer_id": "P-SENSOR-001#",
             },
             {
-                "temp_id": "n1", "type": "Requirement", "parent_temp_id": None, "title": "Sync accuracy",
-                "text": "Timing accuracy shall be better than X µs.", "tags": [], "customer_id": "P-SENSOR-002#",
+                "temp_id": "n1",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "title": "Sync accuracy",
+                "text": "Timing accuracy shall be better than X µs.",
+                "tags": [],
+                "customer_id": "P-SENSOR-002#",
             },
         ]
     )
@@ -651,18 +914,36 @@ def test_requirement_row_hints_are_scoped_per_branch(monkeypatch) -> None:
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.HEADING, heading_level=2, text="Section A", source_ref=sr(0, 5)),
-            Block(id="b1", kind=BlockKind.HEADING, heading_level=2, text="Section B", source_ref=sr(100, 105)),
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                heading_level=2,
+                text="Section A",
+                source_ref=sr(0, 5),
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.HEADING,
+                heading_level=2,
+                text="Section B",
+                source_ref=sr(100, 105),
+            ),
         ],
         tables=[
             Table(
                 id="ta",
-                cells=[[TableCell(text=c) for c in row] for row in [["#", "Req"], ["SECA-001", "First."], ["SECA-002", "Second."]]],
+                cells=[
+                    [TableCell(text=c) for c in row]
+                    for row in [["#", "Req"], ["SECA-001", "First."], ["SECA-002", "Second."]]
+                ],
                 source_ref=sr(1, 4),  # inside branch 1's own block range (0-5)
             ),
             Table(
                 id="tb",
-                cells=[[TableCell(text=c) for c in row] for row in [["#", "Req"], ["SECB-001", "Third."], ["SECB-002", "Fourth."]]],
+                cells=[
+                    [TableCell(text=c) for c in row]
+                    for row in [["#", "Req"], ["SECB-001", "Third."], ["SECB-002", "Fourth."]]
+                ],
                 source_ref=sr(101, 104),  # inside branch 2's own block range (100-105)
             ),
         ],
@@ -692,12 +973,40 @@ def test_identity_hash_is_stable_across_runs_despite_llm_wording_drift() -> None
     # by re-keying on local_id (deterministic given the same node
     # count/order) instead of the generated text.
     nodes_run_1 = [
-        {"temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "Display", "text": "The system shall handle: Display", "tags": []},
-        {"temp_id": "n1", "type": "Requirement", "parent_temp_id": "n0", "title": "HDR", "text": "The display shall support HDR content.", "tags": []},
+        {
+            "temp_id": "n0",
+            "type": "Feature",
+            "parent_temp_id": None,
+            "title": "Display",
+            "text": "The system shall handle: Display",
+            "tags": [],
+        },
+        {
+            "temp_id": "n1",
+            "type": "Requirement",
+            "parent_temp_id": "n0",
+            "title": "HDR",
+            "text": "The display shall support HDR content.",
+            "tags": [],
+        },
     ]
     nodes_run_2 = [
-        {"temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "Display", "text": "The system shall provide: Display", "tags": []},
-        {"temp_id": "n1", "type": "Requirement", "parent_temp_id": "n0", "title": "HDR", "text": "The system shall support high dynamic range on the display.", "tags": []},
+        {
+            "temp_id": "n0",
+            "type": "Feature",
+            "parent_temp_id": None,
+            "title": "Display",
+            "text": "The system shall provide: Display",
+            "tags": [],
+        },
+        {
+            "temp_id": "n1",
+            "type": "Requirement",
+            "parent_temp_id": "n0",
+            "title": "HDR",
+            "text": "The system shall support high dynamic range on the display.",
+            "tags": [],
+        },
     ]
     tree_1 = build_survey_tree(_small_doc(), FakeSectionAnalysisClient(nodes=nodes_run_1))
     tree_2 = build_survey_tree(_small_doc(), FakeSectionAnalysisClient(nodes=nodes_run_2))
@@ -721,7 +1030,9 @@ def test_regrouped_synthesized_node_identity_hash_differs_from_its_own_first_chi
     ]
 
     class FakeGroupingClient:
-        def group_root_topics(self, titles_by_id: dict[str, str], user_id: str | None = None) -> dict:
+        def group_root_topics(
+            self, titles_by_id: dict[str, str], user_id: str | None = None
+        ) -> dict:
             return {"groups": [{"title": "Power", "member_ids": ["n0", "n1"]}]}
 
     warnings: list[str] = []
@@ -751,12 +1062,24 @@ def test_build_survey_tree_warns_when_analysis_drops_most_of_the_document() -> N
     ]
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
-        blocks=[Block(id=f"b{i}", kind=BlockKind.PARAGRAPH, text=t, source_ref=_sr(path)) for i, t in enumerate(texts)],
+        blocks=[
+            Block(id=f"b{i}", kind=BlockKind.PARAGRAPH, text=t, source_ref=_sr(path))
+            for i, t in enumerate(texts)
+        ],
     )
     # Only one node returned, covering just the first block's content --
     # blocks 1-4's distinct vocabulary never appears anywhere in the output.
     fake = FakeSectionAnalysisClient(
-        nodes=[{"temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "Display", "text": texts[0], "tags": []}]
+        nodes=[
+            {
+                "temp_id": "n0",
+                "type": "Feature",
+                "parent_temp_id": None,
+                "title": "Display",
+                "text": texts[0],
+                "tags": [],
+            }
+        ]
     )
     tree = build_survey_tree(doc, fake)
     assert len(tree.warnings) == 1
@@ -769,7 +1092,9 @@ def test_build_survey_tree_warns_when_analysis_drops_most_of_the_document() -> N
     assert '"The battery shall charge fully within two hours."' in tree.warnings[0].raw
 
 
-def test_build_survey_tree_does_not_warn_when_a_dropped_blocks_content_was_merged_elsewhere() -> None:
+def test_build_survey_tree_does_not_warn_when_a_dropped_blocks_content_was_merged_elsewhere() -> (
+    None
+):
     # A block with no node of its own is NOT flagged as dropped if its
     # content still shows up (even paraphrased) in another node's generated
     # text -- a legitimate merge, not data loss.
@@ -777,8 +1102,18 @@ def test_build_survey_tree_does_not_warn_when_a_dropped_blocks_content_was_merge
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.PARAGRAPH, text="The display shall support HDR playback.", source_ref=_sr(path)),
-            Block(id="b1", kind=BlockKind.PARAGRAPH, text="The receiver shall log all firmware errors.", source_ref=_sr(path)),
+            Block(
+                id="b0",
+                kind=BlockKind.PARAGRAPH,
+                text="The display shall support HDR playback.",
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
+                text="The receiver shall log all firmware errors.",
+                source_ref=_sr(path),
+            ),
         ],
     )
     fake = FakeSectionAnalysisClient(
@@ -808,11 +1143,25 @@ def test_build_survey_tree_does_not_flag_a_short_label_block_as_dropped() -> Non
         blocks=[
             Block(id="b0", kind=BlockKind.PARAGRAPH, text="APOLLO2", source_ref=_sr(path)),
             Block(id="b1", kind=BlockKind.PARAGRAPH, text="Notes:", source_ref=_sr(path)),
-            Block(id="b2", kind=BlockKind.PARAGRAPH, text="The unit shall boot within ten seconds.", source_ref=_sr(path)),
+            Block(
+                id="b2",
+                kind=BlockKind.PARAGRAPH,
+                text="The unit shall boot within ten seconds.",
+                source_ref=_sr(path),
+            ),
         ],
     )
     fake = FakeSectionAnalysisClient(
-        nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "title": "Boot time", "text": "The unit shall boot within ten seconds.", "tags": []}]
+        nodes=[
+            {
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "title": "Boot time",
+                "text": "The unit shall boot within ten seconds.",
+                "tags": [],
+            }
+        ]
     )
     tree = build_survey_tree(doc, fake)
     assert tree.warnings == []
@@ -827,12 +1176,26 @@ def test_build_survey_tree_does_not_flag_an_uncaptioned_figure_as_a_dropped_bloc
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.PARAGRAPH, text="The unit shall boot within ten seconds.", source_ref=_sr(path)),
+            Block(
+                id="b0",
+                kind=BlockKind.PARAGRAPH,
+                text="The unit shall boot within ten seconds.",
+                source_ref=_sr(path),
+            ),
             Block(id="b1", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path)),
         ],
     )
     fake = FakeSectionAnalysisClient(
-        nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "title": "Boot time", "text": "The unit shall boot within ten seconds.", "tags": []}]
+        nodes=[
+            {
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "title": "Boot time",
+                "text": "The unit shall boot within ten seconds.",
+                "tags": [],
+            }
+        ]
     )
     tree = build_survey_tree(doc, fake)
     assert tree.warnings == []
@@ -851,12 +1214,18 @@ def test_build_survey_tree_never_lets_an_unsupported_content_note_reach_section_
         document=Document(path=path, format=DocumentFormat.PDF, sha256="h"),
         blocks=[
             Block(
-                id="b0", kind=BlockKind.NOTE,
+                id="b0",
+                kind=BlockKind.NOTE,
                 text="[UNSUPPORTED: page 1 appears multi-column; extraction may misorder text]",
                 source_ref=_sr(path),
             ),
             Block(id="b1", kind=BlockKind.PARAGRAPH, text="Display", source_ref=_sr(path)),
-            Block(id="b2", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
+            Block(
+                id="b2",
+                kind=BlockKind.PARAGRAPH,
+                text="The display shall support HDR.",
+                source_ref=_sr(path),
+            ),
         ],
     )
     fake = FakeSectionAnalysisClient()
@@ -883,12 +1252,18 @@ def test_build_survey_tree_never_lets_a_degraded_table_note_leak_as_content() ->
         document=Document(path=path, format=DocumentFormat.PDF, sha256="h"),
         blocks=[
             Block(
-                id="b0", kind=BlockKind.NOTE,
+                id="b0",
+                kind=BlockKind.NOTE,
                 text="[UNSUPPORTED: table extraction degraded structure (span/gap information lost) for a table on page 1]",
                 source_ref=_sr(path),
             ),
             Block(id="b1", kind=BlockKind.PARAGRAPH, text="Power Budget", source_ref=_sr(path)),
-            Block(id="b2", kind=BlockKind.PARAGRAPH, text="The board shall draw no more than 3.3V.", source_ref=_sr(path)),
+            Block(
+                id="b2",
+                kind=BlockKind.PARAGRAPH,
+                text="The board shall draw no more than 3.3V.",
+                source_ref=_sr(path),
+            ),
         ],
     )
     fake = FakeSectionAnalysisClient()
@@ -912,8 +1287,20 @@ def test_build_survey_tree_falls_back_dangling_parent_temp_id_to_root_and_warns(
     # under the Feature rather than staying a root. Both warnings fire.
     fake = FakeSectionAnalysisClient(
         nodes=[
-            {"temp_id": "n0", "type": "Feature", "parent_temp_id": None, "text": "Root requirement.", "tags": []},
-            {"temp_id": "n1", "type": "Requirement", "parent_temp_id": "does-not-exist", "text": "Orphan requirement.", "tags": []},
+            {
+                "temp_id": "n0",
+                "type": "Feature",
+                "parent_temp_id": None,
+                "text": "Root requirement.",
+                "tags": [],
+            },
+            {
+                "temp_id": "n1",
+                "type": "Requirement",
+                "parent_temp_id": "does-not-exist",
+                "text": "Orphan requirement.",
+                "tags": [],
+            },
         ]
     )
     tree = build_survey_tree(_small_doc(), fake)
@@ -969,8 +1356,22 @@ def test_build_survey_tree_drops_a_skeleton_node_with_no_title_and_warns() -> No
     # with a warning instead of crashing or shipping an anonymous item.
     fake = FakeSectionAnalysisClient(
         nodes=[
-            {"temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "", "text": "The system shall power on.", "tags": []},
-            {"temp_id": "n1", "type": "Requirement", "parent_temp_id": None, "title": "Real", "text": "The system shall self-test.", "tags": []},
+            {
+                "temp_id": "n0",
+                "type": "Feature",
+                "parent_temp_id": None,
+                "title": "",
+                "text": "The system shall power on.",
+                "tags": [],
+            },
+            {
+                "temp_id": "n1",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "title": "Real",
+                "text": "The system shall self-test.",
+                "tags": [],
+            },
         ]
     )
     tree = build_survey_tree(_small_doc(), fake)
@@ -983,7 +1384,16 @@ def test_build_survey_tree_drops_a_skeleton_node_with_no_title_and_warns() -> No
 def test_build_survey_tree_truncates_an_overlong_model_title() -> None:
     long_title = "T" * 300
     fake = FakeSectionAnalysisClient(
-        nodes=[{"temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": long_title, "text": "The system shall power on.", "tags": []}]
+        nodes=[
+            {
+                "temp_id": "n0",
+                "type": "Feature",
+                "parent_temp_id": None,
+                "title": long_title,
+                "text": "The system shall power on.",
+                "tags": [],
+            }
+        ]
     )
     tree = build_survey_tree(_small_doc(), fake)
     assert len(tree.nodes[0].title) <= 256
@@ -998,12 +1408,18 @@ def test_build_survey_tree_distills_a_low_quality_title_once_its_real_descriptio
     fake = FakeSectionAnalysisClient(
         nodes=[
             {
-                "temp_id": "n0", "type": "Requirement", "parent_temp_id": None,
-                "title": "Requirement", "text": "The unit shall survive a 1m drop onto concrete.", "tags": [],
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "title": "Requirement",
+                "text": "The unit shall survive a 1m drop onto concrete.",
+                "tags": [],
             },
         ]
     )
-    tree = build_survey_tree(_small_doc(), fake, title_distillation_client=FakeTitleDistillationClient())
+    tree = build_survey_tree(
+        _small_doc(), fake, title_distillation_client=FakeTitleDistillationClient()
+    )
     assert tree.nodes[0].title == "Physical robustness"
     warning = next(w for w in tree.warnings if w.kind == WarningKind.SURVEY_TITLE_DISTILLED)
     assert warning.node_ids == ["n0"]
@@ -1013,8 +1429,12 @@ def test_build_survey_tree_leaves_title_unchanged_when_no_distillation_client_is
     fake = FakeSectionAnalysisClient(
         nodes=[
             {
-                "temp_id": "n0", "type": "Requirement", "parent_temp_id": None,
-                "title": "Requirement", "text": "The unit shall survive a 1m drop onto concrete.", "tags": [],
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "title": "Requirement",
+                "text": "The unit shall survive a 1m drop onto concrete.",
+                "tags": [],
             },
         ]
     )
@@ -1029,12 +1449,18 @@ def test_build_survey_tree_does_not_distill_an_already_specific_title() -> None:
     fake = FakeSectionAnalysisClient(
         nodes=[
             {
-                "temp_id": "n0", "type": "Requirement", "parent_temp_id": None,
-                "title": "Drop-test survivability", "text": "The unit shall survive a 1m drop onto concrete.", "tags": [],
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "title": "Drop-test survivability",
+                "text": "The unit shall survive a 1m drop onto concrete.",
+                "tags": [],
             },
         ]
     )
-    tree = build_survey_tree(_small_doc(), fake, title_distillation_client=FakeTitleDistillationClient())
+    tree = build_survey_tree(
+        _small_doc(), fake, title_distillation_client=FakeTitleDistillationClient()
+    )
     assert tree.nodes[0].title == "Drop-test survivability"
     assert not any(w.kind == WarningKind.SURVEY_TITLE_DISTILLED for w in tree.warnings)
 
@@ -1049,10 +1475,19 @@ def test_build_survey_tree_does_not_distill_title_when_description_fell_back_to_
     # warning does).
     fake = FakeSectionAnalysisClient(
         nodes=[
-            {"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "title": "Requirement", "text": "", "tags": []},
+            {
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "title": "Requirement",
+                "text": "",
+                "tags": [],
+            },
         ]
     )
-    tree = build_survey_tree(_small_doc(), fake, title_distillation_client=FakeTitleDistillationClient())
+    tree = build_survey_tree(
+        _small_doc(), fake, title_distillation_client=FakeTitleDistillationClient()
+    )
     assert tree.nodes[0].title == "Requirement"
     assert not any(w.kind == WarningKind.SURVEY_TITLE_DISTILLED for w in tree.warnings)
 
@@ -1094,12 +1529,37 @@ def test_build_survey_tree_passes_the_real_heading_count_as_topic_count() -> Non
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Display", source_ref=_sr(path)),
-            Block(id="b1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
-            Block(id="b2", kind=BlockKind.HEADING, heading_level=1, text="Audio", source_ref=_sr(path)),
-            Block(id="b3", kind=BlockKind.PARAGRAPH, text="The speaker shall support 5.1 surround.", source_ref=_sr(path)),
-            Block(id="b4", kind=BlockKind.HEADING, heading_level=1, text="Power", source_ref=_sr(path)),
-            Block(id="b5", kind=BlockKind.PARAGRAPH, text="The unit shall support 12V input.", source_ref=_sr(path)),
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Display",
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
+                text="The display shall support HDR.",
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b2", kind=BlockKind.HEADING, heading_level=1, text="Audio", source_ref=_sr(path)
+            ),
+            Block(
+                id="b3",
+                kind=BlockKind.PARAGRAPH,
+                text="The speaker shall support 5.1 surround.",
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b4", kind=BlockKind.HEADING, heading_level=1, text="Power", source_ref=_sr(path)
+            ),
+            Block(
+                id="b5",
+                kind=BlockKind.PARAGRAPH,
+                text="The unit shall support 12V input.",
+                source_ref=_sr(path),
+            ),
         ],
     )
     fake = FakeSectionAnalysisClient()
@@ -1108,7 +1568,9 @@ def test_build_survey_tree_passes_the_real_heading_count_as_topic_count() -> Non
     assert fake.calls[0]["options"].topic_count == 3
 
 
-def test_build_survey_tree_passes_whole_document_false_for_a_multi_branch_document(monkeypatch) -> None:
+def test_build_survey_tree_passes_whole_document_false_for_a_multi_branch_document(
+    monkeypatch,
+) -> None:
     # Once the document doesn't fit in one call, every branch gets the
     # compact outline (global_context) instead -- whole_document must be
     # False, since each branch call is NOT the entire document.
@@ -1118,7 +1580,9 @@ def test_build_survey_tree_passes_whole_document_false_for_a_multi_branch_docume
     assert all(call["options"].whole_document is False for call in fake.calls)
 
 
-def test_build_survey_tree_passes_a_per_branch_topic_count_on_the_multi_branch_path(monkeypatch) -> None:
+def test_build_survey_tree_passes_a_per_branch_topic_count_on_the_multi_branch_path(
+    monkeypatch,
+) -> None:
     # Regression guard for a confirmed real cause of run-to-run SURVEY
     # node-count variance: the multi-branch loop previously passed no
     # topic_count at all (unlike the whole-doc path), so the multi-branch
@@ -1154,12 +1618,41 @@ def test_build_document_outline_lists_every_heading_in_a_merged_branch(monkeypat
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Display", source_ref=_sr(path)),
-            Block(id="b1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
-            Block(id="b2", kind=BlockKind.HEADING, heading_level=2, text="Picture Modes", source_ref=_sr(path)),
-            Block(id="b3", kind=BlockKind.PARAGRAPH, text="Three presets are supported.", source_ref=_sr(path)),
-            Block(id="b4", kind=BlockKind.HEADING, heading_level=1, text="Audio", source_ref=_sr(path)),
-            Block(id="b5", kind=BlockKind.PARAGRAPH, text="The speaker shall support 5.1 surround.", source_ref=_sr(path)),
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Display",
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
+                text="The display shall support HDR.",
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b2",
+                kind=BlockKind.HEADING,
+                heading_level=2,
+                text="Picture Modes",
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b3",
+                kind=BlockKind.PARAGRAPH,
+                text="Three presets are supported.",
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b4", kind=BlockKind.HEADING, heading_level=1, text="Audio", source_ref=_sr(path)
+            ),
+            Block(
+                id="b5",
+                kind=BlockKind.PARAGRAPH,
+                text="The speaker shall support 5.1 surround.",
+                source_ref=_sr(path),
+            ),
         ],
     )
     fake = FakeSectionAnalysisClient()
@@ -1191,9 +1684,19 @@ def test_build_document_outline_lists_a_numbered_pseudo_heading(monkeypatch) -> 
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
             Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Display", source_ref=_sr(path)),
-            Block(id="b1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
+            Block(
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
+                text="The display shall support HDR.",
+                source_ref=_sr(path),
+            ),
             Block(id="b2", kind=BlockKind.PARAGRAPH, text="2 Audio", source_ref=_sr(path)),
-            Block(id="b3", kind=BlockKind.PARAGRAPH, text="The speaker shall support 5.1 surround.", source_ref=_sr(path)),
+            Block(
+                id="b3",
+                kind=BlockKind.PARAGRAPH,
+                text="The speaker shall support 5.1 surround.",
+                source_ref=_sr(path),
+            ),
         ],
     )
     fake = FakeSectionAnalysisClient()
@@ -1211,9 +1714,19 @@ def test_topic_count_counts_numbered_pseudo_headings_on_the_whole_document_path(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
             Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Display", source_ref=_sr(path)),
-            Block(id="b1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
+            Block(
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
+                text="The display shall support HDR.",
+                source_ref=_sr(path),
+            ),
             Block(id="b2", kind=BlockKind.PARAGRAPH, text="2 Audio", source_ref=_sr(path)),
-            Block(id="b3", kind=BlockKind.PARAGRAPH, text="The speaker shall support 5.1 surround.", source_ref=_sr(path)),
+            Block(
+                id="b3",
+                kind=BlockKind.PARAGRAPH,
+                text="The speaker shall support 5.1 surround.",
+                source_ref=_sr(path),
+            ),
         ],
     )
     fake = FakeSectionAnalysisClient()
@@ -1238,7 +1751,12 @@ def test_topic_count_counts_numbered_pseudo_headings_on_the_multi_branch_path(mo
         blocks=[
             Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Display", source_ref=_sr(path)),
             Block(id="b1", kind=BlockKind.PARAGRAPH, text="1.1 Resolution", source_ref=_sr(path)),
-            Block(id="b2", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
+            Block(
+                id="b2",
+                kind=BlockKind.PARAGRAPH,
+                text="The display shall support HDR.",
+                source_ref=_sr(path),
+            ),
             Block(id="b3", kind=BlockKind.PARAGRAPH, text="2 Audio", source_ref=_sr(path)),
         ],
     )
@@ -1257,12 +1775,34 @@ def test_build_document_outline_shows_a_synthesized_number_label_when_present(mo
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Display",
-                  number_label="1", source_ref=_sr(path)),
-            Block(id="b1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
-            Block(id="b2", kind=BlockKind.HEADING, heading_level=1, text="Audio",
-                  number_label="2", source_ref=_sr(path)),
-            Block(id="b3", kind=BlockKind.PARAGRAPH, text="The speaker shall support 5.1 surround.", source_ref=_sr(path)),
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Display",
+                number_label="1",
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
+                text="The display shall support HDR.",
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b2",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Audio",
+                number_label="2",
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b3",
+                kind=BlockKind.PARAGRAPH,
+                text="The speaker shall support 5.1 surround.",
+                source_ref=_sr(path),
+            ),
         ],
     )
     fake = FakeSectionAnalysisClient()
@@ -1289,7 +1829,8 @@ def _force_multi_branch_with_real_token_sizes(monkeypatch) -> None:
     from app.leveling.model_caps import _ModelCaps
 
     monkeypatch.setattr(
-        llm_leveling_module, "_resolve_caps",
+        llm_leveling_module,
+        "_resolve_caps",
         lambda model, caps_client=None: _ModelCaps(1000, 28_000, 1, False),
     )
 
@@ -1298,11 +1839,32 @@ def _doc_with_glossary_branch(path: str = "glossary_doc.txt") -> CanonicalDoc:
     return CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Definitions and Acronyms",
-                  source_ref=_sr(path)),
-            Block(id="b1", kind=BlockKind.PARAGRAPH, text="HDR: High Dynamic Range.", source_ref=_sr(path)),
-            Block(id="b2", kind=BlockKind.HEADING, heading_level=1, text="Display", source_ref=_sr(path)),
-            Block(id="b3", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Definitions and Acronyms",
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
+                text="HDR: High Dynamic Range.",
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b2",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Display",
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b3",
+                kind=BlockKind.PARAGRAPH,
+                text="The display shall support HDR.",
+                source_ref=_sr(path),
+            ),
         ],
     )
 
@@ -1313,7 +1875,9 @@ def test_a_small_glossary_branch_is_inlined_into_a_different_branchs_context(mon
     build_survey_tree(_doc_with_glossary_branch(), fake)
     assert len(fake.calls) == 2
     # The Display branch's OWN call receives the glossary branch's content.
-    display_call = next(c for c in fake.calls if "The display shall support HDR." in c["section_text"])
+    display_call = next(
+        c for c in fake.calls if "The display shall support HDR." in c["section_text"]
+    )
     assert "HDR: High Dynamic Range." in display_call["section_text"]
 
 
@@ -1335,15 +1899,34 @@ def test_an_oversized_glossary_branch_is_not_inlined(monkeypatch) -> None:
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Glossary", source_ref=_sr(path)),
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Glossary",
+                source_ref=_sr(path),
+            ),
             Block(id="b1", kind=BlockKind.PARAGRAPH, text=huge_definition, source_ref=_sr(path)),
-            Block(id="b2", kind=BlockKind.HEADING, heading_level=1, text="Display", source_ref=_sr(path)),
-            Block(id="b3", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
+            Block(
+                id="b2",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Display",
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b3",
+                kind=BlockKind.PARAGRAPH,
+                text="The display shall support HDR.",
+                source_ref=_sr(path),
+            ),
         ],
     )
     fake = FakeSectionAnalysisClient()
     build_survey_tree(doc, fake)
-    display_call = next(c for c in fake.calls if "The display shall support HDR." in c["section_text"])
+    display_call = next(
+        c for c in fake.calls if "The display shall support HDR." in c["section_text"]
+    )
     assert huge_definition not in display_call["section_text"]
     assert "Glossary" in display_call["section_text"]  # still shows up as an outline label
 
@@ -1385,10 +1968,28 @@ def test_find_front_matter_branches_returns_indices_of_matching_branches() -> No
     from app.leveling.llm_leveling import _find_front_matter_branches
 
     path = "doc.txt"
-    intro_heading = Block(id="b0", kind=BlockKind.HEADING, text="Introduction", number_label="1", heading_level=1, source_ref=_sr(path))
-    intro_body = Block(id="b1", kind=BlockKind.PARAGRAPH, text="This document describes...", source_ref=_sr(path))
-    real_heading = Block(id="b2", kind=BlockKind.HEADING, text="Interface Requirements", number_label="2", heading_level=1, source_ref=_sr(path))
-    real_body = Block(id="b3", kind=BlockKind.PARAGRAPH, text="The unit shall...", source_ref=_sr(path))
+    intro_heading = Block(
+        id="b0",
+        kind=BlockKind.HEADING,
+        text="Introduction",
+        number_label="1",
+        heading_level=1,
+        source_ref=_sr(path),
+    )
+    intro_body = Block(
+        id="b1", kind=BlockKind.PARAGRAPH, text="This document describes...", source_ref=_sr(path)
+    )
+    real_heading = Block(
+        id="b2",
+        kind=BlockKind.HEADING,
+        text="Interface Requirements",
+        number_label="2",
+        heading_level=1,
+        source_ref=_sr(path),
+    )
+    real_body = Block(
+        id="b3", kind=BlockKind.PARAGRAPH, text="The unit shall...", source_ref=_sr(path)
+    )
     branches = [[intro_heading, intro_body], [real_heading, real_body]]
 
     assert _find_front_matter_branches(branches) == {0}
@@ -1414,7 +2015,9 @@ def test_combine_global_context_omits_front_matter_guard_when_indices_not_suppli
     assert result == "outline"
 
 
-def test_build_survey_tree_front_matter_branch_still_allows_a_real_requirement_to_surface(monkeypatch) -> None:
+def test_build_survey_tree_front_matter_branch_still_allows_a_real_requirement_to_surface(
+    monkeypatch,
+) -> None:
     # The guard is a soft instruction, not a hard skip -- if the model still
     # emits a real node for content inside a front-matter-labeled section
     # (e.g. a genuine requirement accidentally placed under "Introduction"),
@@ -1424,28 +2027,82 @@ def test_build_survey_tree_front_matter_branch_still_allows_a_real_requirement_t
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.HEADING, text="Introduction", number_label="1", heading_level=1, source_ref=_sr(path)),
-            Block(id="b1", kind=BlockKind.PARAGRAPH, text="The unit shall boot within ten seconds.", source_ref=_sr(path)),
-            Block(id="b2", kind=BlockKind.HEADING, text="System Overview", number_label="2", heading_level=1, source_ref=_sr(path)),
-            Block(id="b3", kind=BlockKind.PARAGRAPH, text="This system provides power management.", source_ref=_sr(path)),
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                text="Introduction",
+                number_label="1",
+                heading_level=1,
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
+                text="The unit shall boot within ten seconds.",
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b2",
+                kind=BlockKind.HEADING,
+                text="System Overview",
+                number_label="2",
+                heading_level=1,
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b3",
+                kind=BlockKind.PARAGRAPH,
+                text="This system provides power management.",
+                source_ref=_sr(path),
+            ),
         ],
     )
     fake = FakeSectionAnalysisClient(
-        nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "title": "Boot time", "text": "The unit shall boot within ten seconds.", "tags": []}]
+        nodes=[
+            {
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "title": "Boot time",
+                "text": "The unit shall boot within ten seconds.",
+                "tags": [],
+            }
+        ]
     )
     tree = build_survey_tree(doc, fake)
     assert len(tree.nodes) >= 1
     assert any("Boot time" in n.title for n in tree.nodes)
 
 
-def test_front_matter_guard_for_whole_document_names_matching_headings_and_is_none_without_any() -> None:
+def test_front_matter_guard_for_whole_document_names_matching_headings_and_is_none_without_any() -> (
+    None
+):
     from app.leveling.llm_leveling import _front_matter_guard_for_whole_document
 
     path = "doc.txt"
     blocks = [
-        Block(id="b0", kind=BlockKind.HEADING, text="Introduction", number_label="1", heading_level=1, source_ref=_sr(path)),
-        Block(id="b1", kind=BlockKind.PARAGRAPH, text="This document describes...", source_ref=_sr(path)),
-        Block(id="b2", kind=BlockKind.HEADING, text="Interface Requirements", number_label="2", heading_level=1, source_ref=_sr(path)),
+        Block(
+            id="b0",
+            kind=BlockKind.HEADING,
+            text="Introduction",
+            number_label="1",
+            heading_level=1,
+            source_ref=_sr(path),
+        ),
+        Block(
+            id="b1",
+            kind=BlockKind.PARAGRAPH,
+            text="This document describes...",
+            source_ref=_sr(path),
+        ),
+        Block(
+            id="b2",
+            kind=BlockKind.HEADING,
+            text="Interface Requirements",
+            number_label="2",
+            heading_level=1,
+            source_ref=_sr(path),
+        ),
     ]
     guard = _front_matter_guard_for_whole_document(blocks)
     assert guard is not None
@@ -1456,7 +2113,9 @@ def test_front_matter_guard_for_whole_document_names_matching_headings_and_is_no
     assert _front_matter_guard_for_whole_document(no_front_matter) is None
 
 
-def test_front_matter_guard_for_whole_document_text_does_not_trip_the_external_reference_warning() -> None:
+def test_front_matter_guard_for_whole_document_text_does_not_trip_the_external_reference_warning() -> (
+    None
+):
     # The guard string is prepended to section_text, which
     # _referenced_attachment_warnings scans -- if the guard's own prose named
     # "appendix"/"annex"/"attached" as examples, every guarded document would
@@ -1469,7 +2128,15 @@ def test_front_matter_guard_for_whole_document_text_does_not_trip_the_external_r
 
     path = "doc.txt"
     guard = _front_matter_guard_for_whole_document(
-        [Block(id="b0", kind=BlockKind.HEADING, text="Introduction", heading_level=1, source_ref=_sr(path))]
+        [
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                text="Introduction",
+                heading_level=1,
+                source_ref=_sr(path),
+            )
+        ]
     )
     assert guard is not None
     assert not _REFERENCED_ATTACHMENT_PATTERN.search(guard)
@@ -1483,8 +2150,18 @@ def test_front_matter_guard_for_whole_document_text_does_not_trip_the_external_r
 def test_derive_section_label_skips_an_unsupported_content_note_block() -> None:
     path = "doc.txt"
     blocks = [
-        Block(id="b0", kind=BlockKind.NOTE, text="[UNSUPPORTED: page 3 appears multi-column]", source_ref=_sr(path)),
-        Block(id="b1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
+        Block(
+            id="b0",
+            kind=BlockKind.NOTE,
+            text="[UNSUPPORTED: page 3 appears multi-column]",
+            source_ref=_sr(path),
+        ),
+        Block(
+            id="b1",
+            kind=BlockKind.PARAGRAPH,
+            text="The display shall support HDR.",
+            source_ref=_sr(path),
+        ),
     ]
     label = _derive_section_label(blocks, tables=None, figures=None)
     assert label == "The display shall support HDR."
@@ -1496,7 +2173,12 @@ def test_derive_section_label_does_not_skip_a_note_block_without_the_unsupported
     # be treated the same as a loader diagnostic placeholder.
     path = "deck.pptx"
     blocks = [
-        Block(id="b0", kind=BlockKind.NOTE, text="Remember to emphasize the roadmap slide.", source_ref=_sr(path)),
+        Block(
+            id="b0",
+            kind=BlockKind.NOTE,
+            text="Remember to emphasize the roadmap slide.",
+            source_ref=_sr(path),
+        ),
     ]
     label = _derive_section_label(blocks, tables=None, figures=None)
     assert label == "Remember to emphasize the roadmap slide."
@@ -1514,7 +2196,12 @@ def test_derive_section_label_skips_a_figure_placeholder_block_with_no_caption()
     path = "doc.pdf"
     blocks = [
         Block(id="b0", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path)),
-        Block(id="b1", kind=BlockKind.PARAGRAPH, text="The receiver shall tune across 2-18 GHz.", source_ref=_sr(path)),
+        Block(
+            id="b1",
+            kind=BlockKind.PARAGRAPH,
+            text="The receiver shall tune across 2-18 GHz.",
+            source_ref=_sr(path),
+        ),
     ]
     label = _derive_section_label(blocks, tables=None, figures=None)
     assert label == "The receiver shall tune across 2-18 GHz."
@@ -1526,14 +2213,26 @@ def test_derive_section_label_skips_a_figure_block_even_with_a_real_caption() ->
     # section is ABOUT, not describe an embedded image.
     path = "doc.pdf"
     blocks = [
-        Block(id="b0", kind=BlockKind.FIGURE, text="[FIGURE: A block diagram of the power supply.]", source_ref=_sr(path)),
-        Block(id="b1", kind=BlockKind.PARAGRAPH, text="The receiver shall tune across 2-18 GHz.", source_ref=_sr(path)),
+        Block(
+            id="b0",
+            kind=BlockKind.FIGURE,
+            text="[FIGURE: A block diagram of the power supply.]",
+            source_ref=_sr(path),
+        ),
+        Block(
+            id="b1",
+            kind=BlockKind.PARAGRAPH,
+            text="The receiver shall tune across 2-18 GHz.",
+            source_ref=_sr(path),
+        ),
     ]
     label = _derive_section_label(blocks, tables=None, figures=None)
     assert label == "The receiver shall tune across 2-18 GHz."
 
 
-def test_derive_section_label_falls_through_to_table_caption_when_only_figure_blocks_remain() -> None:
+def test_derive_section_label_falls_through_to_table_caption_when_only_figure_blocks_remain() -> (
+    None
+):
     # Same fallback cascade as before this fix existed (see this function's
     # own docstring) -- a branch with ONLY figure blocks and no heading/
     # paragraph must still fall through to the table-caption tier, not
@@ -1547,7 +2246,12 @@ def test_derive_section_label_falls_through_to_table_caption_when_only_figure_bl
 
 def test_render_block_line_omits_an_unsupported_content_note_block() -> None:
     path = "doc.txt"
-    block = Block(id="b0", kind=BlockKind.NOTE, text="[UNSUPPORTED: page 7 appears multi-column]", source_ref=_sr(path))
+    block = Block(
+        id="b0",
+        kind=BlockKind.NOTE,
+        text="[UNSUPPORTED: page 7 appears multi-column]",
+        source_ref=_sr(path),
+    )
     assert _render_block_line(block) is None
 
 
@@ -1569,7 +2273,12 @@ def test_derive_section_label_skips_a_copyright_footer_block() -> None:
             text="www.cubespace.co.za ©2025 – CubeSpace Satellite Systems (Pty) Ltd. All rights reserved.",
             source_ref=_sr(path),
         ),
-        Block(id="b1", kind=BlockKind.PARAGRAPH, text="The receiver shall tune across 2-18 GHz.", source_ref=_sr(path)),
+        Block(
+            id="b1",
+            kind=BlockKind.PARAGRAPH,
+            text="The receiver shall tune across 2-18 GHz.",
+            source_ref=_sr(path),
+        ),
     ]
     label = _derive_section_label(blocks, tables=None, figures=None)
     assert label == "The receiver shall tune across 2-18 GHz."
@@ -1580,25 +2289,54 @@ def test_derive_section_label_does_not_skip_ordinary_body_text_without_a_copyrig
     # line mentioning a company name or URL -- real body text must still
     # become the label when no copyright signal is present.
     path = "doc.pdf"
-    blocks = [Block(id="b0", kind=BlockKind.PARAGRAPH, text="CubeSpace Satellite Systems product overview.", source_ref=_sr(path))]
+    blocks = [
+        Block(
+            id="b0",
+            kind=BlockKind.PARAGRAPH,
+            text="CubeSpace Satellite Systems product overview.",
+            source_ref=_sr(path),
+        )
+    ]
     label = _derive_section_label(blocks, tables=None, figures=None)
     assert label == "CubeSpace Satellite Systems product overview."
 
 
 def test_render_block_line_does_not_omit_a_note_block_without_the_unsupported_prefix() -> None:
     path = "deck.pptx"
-    block = Block(id="b0", kind=BlockKind.NOTE, text="Speaker note: mention Q3 roadmap.", source_ref=_sr(path))
+    block = Block(
+        id="b0", kind=BlockKind.NOTE, text="Speaker note: mention Q3 roadmap.", source_ref=_sr(path)
+    )
     assert _render_block_line(block) == "Speaker note: mention Q3 roadmap."
 
 
 def test_unsupported_content_warnings_emits_one_warning_per_distinct_diagnostic_note() -> None:
     path = "doc.txt"
     blocks = [
-        Block(id="b0", kind=BlockKind.NOTE, text="[UNSUPPORTED: page 3 appears multi-column]", source_ref=_sr(path)),
-        Block(id="b1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
+        Block(
+            id="b0",
+            kind=BlockKind.NOTE,
+            text="[UNSUPPORTED: page 3 appears multi-column]",
+            source_ref=_sr(path),
+        ),
+        Block(
+            id="b1",
+            kind=BlockKind.PARAGRAPH,
+            text="The display shall support HDR.",
+            source_ref=_sr(path),
+        ),
         # Same diagnostic text repeated -- must be deduped, not double-warned.
-        Block(id="b2", kind=BlockKind.NOTE, text="[UNSUPPORTED: page 3 appears multi-column]", source_ref=_sr(path)),
-        Block(id="b3", kind=BlockKind.NOTE, text="[UNSUPPORTED: page 9 appears multi-column]", source_ref=_sr(path)),
+        Block(
+            id="b2",
+            kind=BlockKind.NOTE,
+            text="[UNSUPPORTED: page 3 appears multi-column]",
+            source_ref=_sr(path),
+        ),
+        Block(
+            id="b3",
+            kind=BlockKind.NOTE,
+            text="[UNSUPPORTED: page 9 appears multi-column]",
+            source_ref=_sr(path),
+        ),
     ]
     warnings = _unsupported_content_warnings(blocks, section_label="Display")
     assert len(warnings) == 2
@@ -1611,17 +2349,34 @@ def test_unsupported_content_warnings_emits_one_warning_per_distinct_diagnostic_
 
 def test_unsupported_content_warnings_is_empty_without_any_matching_note() -> None:
     path = "doc.txt"
-    blocks = [Block(id="b0", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path))]
+    blocks = [
+        Block(
+            id="b0",
+            kind=BlockKind.PARAGRAPH,
+            text="The display shall support HDR.",
+            source_ref=_sr(path),
+        )
+    ]
     assert _unsupported_content_warnings(blocks, section_label="Display") == []
 
 
 def test_ocr_recovered_table_warnings_emits_one_warning_per_table_with_a_recovered_cell() -> None:
     tables = [
-        Table(id="t0", cells=[[TableCell(text="Label", ocr_recovered=True), TableCell(text="Alpha")]], source_ref=_sr("x")),
-        Table(id="t1", cells=[[TableCell(text="Rail"), TableCell(text="Voltage")]], source_ref=_sr("x")),
+        Table(
+            id="t0",
+            cells=[[TableCell(text="Label", ocr_recovered=True), TableCell(text="Alpha")]],
+            source_ref=_sr("x"),
+        ),
+        Table(
+            id="t1",
+            cells=[[TableCell(text="Rail"), TableCell(text="Voltage")]],
+            source_ref=_sr("x"),
+        ),
         Table(
             id="t2",
-            cells=[[TableCell(text="A", ocr_recovered=True), TableCell(text="B", ocr_recovered=True)]],
+            cells=[
+                [TableCell(text="A", ocr_recovered=True), TableCell(text="B", ocr_recovered=True)]
+            ],
             source_ref=_sr("x"),
         ),
     ]
@@ -1635,17 +2390,36 @@ def test_ocr_recovered_table_warnings_emits_one_warning_per_table_with_a_recover
 
 
 def test_ocr_recovered_table_warnings_is_empty_without_any_recovered_cell() -> None:
-    tables = [Table(id="t0", cells=[[TableCell(text="Rail"), TableCell(text="Voltage")]], source_ref=_sr("x"))]
+    tables = [
+        Table(
+            id="t0",
+            cells=[[TableCell(text="Rail"), TableCell(text="Voltage")]],
+            source_ref=_sr("x"),
+        )
+    ]
     assert _ocr_recovered_table_warnings(tables, section_label=None) == []
 
 
 def test_nested_table_dropped_warnings_emits_one_warning_per_table_with_a_dropped_cell() -> None:
     tables = [
-        Table(id="t0", cells=[[TableCell(text="Outer", nested_table_dropped=True), TableCell(text="Other")]], source_ref=_sr("x")),
-        Table(id="t1", cells=[[TableCell(text="Rail"), TableCell(text="Voltage")]], source_ref=_sr("x")),
+        Table(
+            id="t0",
+            cells=[[TableCell(text="Outer", nested_table_dropped=True), TableCell(text="Other")]],
+            source_ref=_sr("x"),
+        ),
+        Table(
+            id="t1",
+            cells=[[TableCell(text="Rail"), TableCell(text="Voltage")]],
+            source_ref=_sr("x"),
+        ),
         Table(
             id="t2",
-            cells=[[TableCell(text="A", nested_table_dropped=True), TableCell(text="B", nested_table_dropped=True)]],
+            cells=[
+                [
+                    TableCell(text="A", nested_table_dropped=True),
+                    TableCell(text="B", nested_table_dropped=True),
+                ]
+            ],
             source_ref=_sr("x"),
         ),
     ]
@@ -1653,13 +2427,23 @@ def test_nested_table_dropped_warnings_emits_one_warning_per_table_with_a_droppe
     assert len(warnings) == 2
     by_table_id = {w.detail["tableId"]: w for w in warnings}
     assert by_table_id["t0"].kind == WarningKind.NESTED_TABLE_DROPPED
-    assert by_table_id["t0"].detail == {"section": "Power Distribution", "tableId": "t0", "droppedCellCount": 1}
+    assert by_table_id["t0"].detail == {
+        "section": "Power Distribution",
+        "tableId": "t0",
+        "droppedCellCount": 1,
+    }
     assert by_table_id["t2"].detail["droppedCellCount"] == 2
     assert "t1" not in by_table_id
 
 
 def test_nested_table_dropped_warnings_is_empty_without_any_dropped_cell() -> None:
-    tables = [Table(id="t0", cells=[[TableCell(text="Rail"), TableCell(text="Voltage")]], source_ref=_sr("x"))]
+    tables = [
+        Table(
+            id="t0",
+            cells=[[TableCell(text="Rail"), TableCell(text="Voltage")]],
+            source_ref=_sr("x"),
+        )
+    ]
     assert _nested_table_dropped_warnings(tables, section_label=None) == []
 
 
@@ -1671,10 +2455,34 @@ def test_build_survey_tree_applies_the_front_matter_guard_on_the_single_call_pat
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.HEADING, text="Introduction", number_label="1", heading_level=1, source_ref=_sr(path)),
-            Block(id="b1", kind=BlockKind.PARAGRAPH, text="This document describes the display unit.", source_ref=_sr(path)),
-            Block(id="b2", kind=BlockKind.HEADING, text="Display Requirements", number_label="2", heading_level=1, source_ref=_sr(path)),
-            Block(id="b3", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                text="Introduction",
+                number_label="1",
+                heading_level=1,
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
+                text="This document describes the display unit.",
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b2",
+                kind=BlockKind.HEADING,
+                text="Display Requirements",
+                number_label="2",
+                heading_level=1,
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b3",
+                kind=BlockKind.PARAGRAPH,
+                text="The display shall support HDR.",
+                source_ref=_sr(path),
+            ),
         ],
     )
     fake = FakeSectionAnalysisClient()
@@ -1699,9 +2507,12 @@ def test_build_survey_tree_single_call_section_text_is_unchanged_without_front_m
     assert not fake.calls[0]["section_text"].startswith("Some heading")
 
 
-def _table_with_group(rows: list[list[str]], path: str = "survey_input.txt", offset: int = 0) -> Table:
+def _table_with_group(
+    rows: list[list[str]], path: str = "survey_input.txt", offset: int = 0
+) -> Table:
     return Table(
-        id="t0", cells=[[TableCell(text=c) for c in row] for row in rows],
+        id="t0",
+        cells=[[TableCell(text=c) for c in row] for row in rows],
         source_ref=SourceRef(document_path=path, start_offset=offset, end_offset=offset + 10),
     )
 
@@ -1720,12 +2531,14 @@ def test_build_survey_tree_builds_a_qualifying_table_deterministically() -> None
     doc = _small_doc().model_copy(
         update={
             "tables": [
-                _table_with_group([
-                    ["Requirement ID", "Requirement / Section"],
-                    ["1.1", "External Source Detection"],
-                    ["1.1.1", "The system shall detect X."],
-                    ["1.1.2", "The system shall detect Y."],
-                ])
+                _table_with_group(
+                    [
+                        ["Requirement ID", "Requirement / Section"],
+                        ["1.1", "External Source Detection"],
+                        ["1.1.1", "The system shall detect X."],
+                        ["1.1.2", "The system shall detect Y."],
+                    ]
+                )
             ]
         }
     )
@@ -1738,7 +2551,10 @@ def test_build_survey_tree_builds_a_qualifying_table_deterministically() -> None
     group_node = next(n for n in tree.nodes if n.title == "External Source Detection")
     assert group_node.type == WorkItemType.FEATURE
     children = [n for n in tree.nodes if n.parent_local_id == group_node.local_id]
-    assert {n.title for n in children} == {"The system shall detect X.", "The system shall detect Y."}
+    assert {n.title for n in children} == {
+        "The system shall detect X.",
+        "The system shall detect Y.",
+    }
 
 
 def test_build_survey_tree_fires_deterministic_subtree_progress_for_a_qualifying_table() -> None:
@@ -1749,17 +2565,21 @@ def test_build_survey_tree_fires_deterministic_subtree_progress_for_a_qualifying
     doc = _small_doc().model_copy(
         update={
             "tables": [
-                _table_with_group([
-                    ["Requirement ID", "Requirement / Section"],
-                    ["1.1", "External Source Detection"],
-                    ["1.1.1", "The system shall detect X."],
-                    ["1.1.2", "The system shall detect Y."],
-                ])
+                _table_with_group(
+                    [
+                        ["Requirement ID", "Requirement / Section"],
+                        ["1.1", "External Source Detection"],
+                        ["1.1.1", "The system shall detect X."],
+                        ["1.1.2", "The system shall detect Y."],
+                    ]
+                )
             ]
         }
     )
     events: list = []
-    build_survey_tree(doc, FakeSectionAnalysisClient(), progress_callback=lambda p: events.append(p))
+    build_survey_tree(
+        doc, FakeSectionAnalysisClient(), progress_callback=lambda p: events.append(p)
+    )
 
     subtree_events = [e for e in events if e.phase == "deterministic_subtree"]
     assert len(subtree_events) == 1
@@ -1768,10 +2588,14 @@ def test_build_survey_tree_fires_deterministic_subtree_progress_for_a_qualifying
     assert subtree_events[0].subtree_label == "Table t0"
 
 
-def test_build_survey_tree_fires_deterministic_subtree_progress_for_a_structural_heading_document() -> None:
+def test_build_survey_tree_fires_deterministic_subtree_progress_for_a_structural_heading_document() -> (
+    None
+):
     events: list = []
     build_survey_tree(
-        _structural_heading_doc(), FakeSectionAnalysisClient(), progress_callback=lambda p: events.append(p)
+        _structural_heading_doc(),
+        FakeSectionAnalysisClient(),
+        progress_callback=lambda p: events.append(p),
     )
 
     subtree_events = [e for e in events if e.phase == "deterministic_subtree"]
@@ -1781,24 +2605,30 @@ def test_build_survey_tree_fires_deterministic_subtree_progress_for_a_structural
     assert subtree_events[0].subtree_label == "Heading hierarchy"
 
 
-def test_build_survey_tree_reports_the_real_subtree_count_across_multiple_qualifying_subtrees() -> None:
+def test_build_survey_tree_reports_the_real_subtree_count_across_multiple_qualifying_subtrees() -> (
+    None
+):
     # One qualifying table AND a structural-heading residual -- both
     # subtrees must be counted in subtree_count from the very first event,
     # not just however many have been seen so far.
     doc = _structural_heading_doc().model_copy(
         update={
             "tables": [
-                _table_with_group([
-                    ["Requirement ID", "Requirement / Section"],
-                    ["1.1", "External Source Detection"],
-                    ["1.1.1", "The system shall detect X."],
-                    ["1.1.2", "The system shall detect Y."],
-                ])
+                _table_with_group(
+                    [
+                        ["Requirement ID", "Requirement / Section"],
+                        ["1.1", "External Source Detection"],
+                        ["1.1.1", "The system shall detect X."],
+                        ["1.1.2", "The system shall detect Y."],
+                    ]
+                )
             ]
         }
     )
     events: list = []
-    build_survey_tree(doc, FakeSectionAnalysisClient(), progress_callback=lambda p: events.append(p))
+    build_survey_tree(
+        doc, FakeSectionAnalysisClient(), progress_callback=lambda p: events.append(p)
+    )
 
     subtree_events = [e for e in events if e.phase == "deterministic_subtree"]
     assert len(subtree_events) == 2
@@ -1812,17 +2642,21 @@ def test_build_survey_tree_does_not_count_a_one_child_group_toward_topic_count()
     doc = _small_doc().model_copy(
         update={
             "tables": [
-                _table_with_group([
-                    ["Requirement ID", "Requirement / Section"],
-                    ["1.1", "External Source Detection"],
-                    ["1.1.1", "The system shall detect X."],
-                ])
+                _table_with_group(
+                    [
+                        ["Requirement ID", "Requirement / Section"],
+                        ["1.1", "External Source Detection"],
+                        ["1.1.1", "The system shall detect X."],
+                    ]
+                )
             ]
         }
     )
     fake = FakeSectionAnalysisClient()
     build_survey_tree(doc, fake)
-    assert fake.calls[0]["options"].topic_count == 0  # zero headings, no qualifying group -- unchanged
+    assert (
+        fake.calls[0]["options"].topic_count == 0
+    )  # zero headings, no qualifying group -- unchanged
     assert fake.calls[0]["options"].table_group_hints is None
 
 
@@ -1854,10 +2688,32 @@ def test_build_survey_tree_scopes_table_group_floor_per_branch(monkeypatch) -> N
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Display", source_ref=sr(0, 5)),
-            Block(id="b1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=sr(5, 15)),
-            Block(id="b2", kind=BlockKind.HEADING, heading_level=1, text="Audio", source_ref=sr(100, 105)),
-            Block(id="b3", kind=BlockKind.PARAGRAPH, text="The speaker shall support 5.1 surround.", source_ref=sr(105, 115)),
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Display",
+                source_ref=sr(0, 5),
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
+                text="The display shall support HDR.",
+                source_ref=sr(5, 15),
+            ),
+            Block(
+                id="b2",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Audio",
+                source_ref=sr(100, 105),
+            ),
+            Block(
+                id="b3",
+                kind=BlockKind.PARAGRAPH,
+                text="The speaker shall support 5.1 surround.",
+                source_ref=sr(105, 115),
+            ),
         ],
         tables=[
             _table_with_group(
@@ -1867,7 +2723,8 @@ def test_build_survey_tree_scopes_table_group_floor_per_branch(monkeypatch) -> N
                     ["1.1.1", "The system shall do A."],
                     ["1.1.2", "The system shall do B."],
                 ],
-                path=path, offset=10,  # inside branch 1's range (0-15), before branch 2 starts at 100
+                path=path,
+                offset=10,  # inside branch 1's range (0-15), before branch 2 starts at 100
             ),
             _table_with_group(
                 [
@@ -1876,7 +2733,8 @@ def test_build_survey_tree_scopes_table_group_floor_per_branch(monkeypatch) -> N
                     ["1.1.1", "The system shall do C."],
                     ["1.1.2", "The system shall do D."],
                 ],
-                path=path, offset=110,  # inside branch 2's range (100-115)
+                path=path,
+                offset=110,  # inside branch 2's range (100-115)
             ),
         ],
     )
@@ -1892,7 +2750,10 @@ def test_build_survey_tree_scopes_table_group_floor_per_branch(monkeypatch) -> N
     assert fake.calls[1]["options"].table_group_hints is None
     assert fake.calls[0]["options"].topic_count == 1
     assert fake.calls[1]["options"].topic_count == 1
-    assert {n.title for n in tree.nodes if n.type == WorkItemType.FEATURE} >= {"Display Group", "Audio Group"}
+    assert {n.title for n in tree.nodes if n.type == WorkItemType.FEATURE} >= {
+        "Display Group",
+        "Audio Group",
+    }
 
 
 def test_build_survey_tree_derives_expected_root_count_from_top_level_groups() -> None:
@@ -1905,15 +2766,17 @@ def test_build_survey_tree_derives_expected_root_count_from_top_level_groups() -
     doc = _small_doc().model_copy(
         update={
             "tables": [
-                _table_with_group([
-                    ["Requirement ID", "Requirement / Section"],
-                    ["1", "Television Receiver"],
-                    ["1.1", "The system shall do A."],
-                    ["1.2", "The system shall do B."],
-                    ["2", "Remote Control"],
-                    ["2.1", "The system shall do C."],
-                    ["2.2", "The system shall do D."],
-                ])
+                _table_with_group(
+                    [
+                        ["Requirement ID", "Requirement / Section"],
+                        ["1", "Television Receiver"],
+                        ["1.1", "The system shall do A."],
+                        ["1.2", "The system shall do B."],
+                        ["2", "Remote Control"],
+                        ["2.1", "The system shall do C."],
+                        ["2.2", "The system shall do D."],
+                    ]
+                )
             ]
         }
     )
@@ -1933,12 +2796,14 @@ def test_build_survey_tree_leaves_expected_root_count_none_with_a_single_top_lev
     doc = _small_doc().model_copy(
         update={
             "tables": [
-                _table_with_group([
-                    ["Requirement ID", "Requirement / Section"],
-                    ["1", "Television Receiver"],
-                    ["1.1", "The system shall do A."],
-                    ["1.2", "The system shall do B."],
-                ])
+                _table_with_group(
+                    [
+                        ["Requirement ID", "Requirement / Section"],
+                        ["1", "Television Receiver"],
+                        ["1.1", "The system shall do A."],
+                        ["1.2", "The system shall do B."],
+                    ]
+                )
             ]
         }
     )
@@ -1958,18 +2823,27 @@ def test_build_survey_tree_builds_the_group_deterministically_regardless_of_llm_
     doc = _small_doc().model_copy(
         update={
             "tables": [
-                _table_with_group([
-                    ["Requirement ID", "Requirement / Section"],
-                    ["1.1", "External Source Detection"],
-                    ["1.1.1", "The system shall detect X."],
-                    ["1.1.2", "The system shall detect Y."],
-                ])
+                _table_with_group(
+                    [
+                        ["Requirement ID", "Requirement / Section"],
+                        ["1.1", "External Source Detection"],
+                        ["1.1.1", "The system shall detect X."],
+                        ["1.1.2", "The system shall detect Y."],
+                    ]
+                )
             ]
         }
     )
     fake = FakeSectionAnalysisClient(
         nodes=[
-            {"temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "Unrelated Feature", "text": "Shall do X.", "tags": []},
+            {
+                "temp_id": "n0",
+                "type": "Feature",
+                "parent_temp_id": None,
+                "title": "Unrelated Feature",
+                "text": "Shall do X.",
+                "tags": [],
+            },
         ]
     )
     tree = build_survey_tree(doc, fake)
@@ -1983,27 +2857,52 @@ def test_build_survey_tree_does_not_warn_when_a_qualifying_group_did_become_a_no
     doc = _small_doc().model_copy(
         update={
             "tables": [
-                _table_with_group([
-                    ["Requirement ID", "Requirement / Section"],
-                    ["1.1", "External Source Detection"],
-                    ["1.1.1", "The system shall detect X."],
-                    ["1.1.2", "The system shall detect Y."],
-                ])
+                _table_with_group(
+                    [
+                        ["Requirement ID", "Requirement / Section"],
+                        ["1.1", "External Source Detection"],
+                        ["1.1.1", "The system shall detect X."],
+                        ["1.1.2", "The system shall detect Y."],
+                    ]
+                )
             ]
         }
     )
     fake = FakeSectionAnalysisClient(
         nodes=[
-            {"temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "External Source Detection", "text": "Shall do X.", "tags": []},
-            {"temp_id": "n1", "type": "Requirement", "parent_temp_id": "n0", "title": "Detect X", "text": "Shall detect X.", "tags": []},
-            {"temp_id": "n2", "type": "Requirement", "parent_temp_id": "n0", "title": "Detect Y", "text": "Shall detect Y.", "tags": []},
+            {
+                "temp_id": "n0",
+                "type": "Feature",
+                "parent_temp_id": None,
+                "title": "External Source Detection",
+                "text": "Shall do X.",
+                "tags": [],
+            },
+            {
+                "temp_id": "n1",
+                "type": "Requirement",
+                "parent_temp_id": "n0",
+                "title": "Detect X",
+                "text": "Shall detect X.",
+                "tags": [],
+            },
+            {
+                "temp_id": "n2",
+                "type": "Requirement",
+                "parent_temp_id": "n0",
+                "title": "Detect Y",
+                "text": "Shall detect Y.",
+                "tags": [],
+            },
         ]
     )
     tree = build_survey_tree(doc, fake)
     assert not any("did not produce a distinctly-titled node" in w.raw for w in tree.warnings)
 
 
-def test_repair_group_attachment_resolves_the_correct_parent_despite_common_word_ambiguity() -> None:
+def test_repair_group_attachment_resolves_the_correct_parent_despite_common_word_ambiguity() -> (
+    None
+):
     # Confirmed live against the real TV-receiver/remote-control document:
     # a short, common-word label like "Audio Control" fractional-overlap
     # matched 6 different unrelated node titles (any title containing
@@ -2035,7 +2934,13 @@ def test_repair_group_attachment_resolves_the_correct_parent_despite_common_word
         _node("n6", WorkItemType.REQUIREMENT, "n4", "Volume Change While Muted"),
     ]
     table_groups = [
-        TableGroupInfo(label="Mute Behavior", child_count=2, id_text="1.2", suggested_type="Requirement", parent_label="Audio Control"),
+        TableGroupInfo(
+            label="Mute Behavior",
+            child_count=2,
+            id_text="1.2",
+            suggested_type="Requirement",
+            parent_label="Audio Control",
+        ),
     ]
     warnings: list[str] = []
     _repair_group_attachment(nodes, table_groups, "", warnings)
@@ -2067,7 +2972,13 @@ def test_repair_group_attachment_repairs_a_group_attached_to_the_wrong_ancestor(
         _node("n6", WorkItemType.REQUIREMENT, "n4", "Volume Change While Muted"),
     ]
     table_groups = [
-        TableGroupInfo(label="Mute Behavior", child_count=2, id_text="1.2", suggested_type="Requirement", parent_label="Audio Control"),
+        TableGroupInfo(
+            label="Mute Behavior",
+            child_count=2,
+            id_text="1.2",
+            suggested_type="Requirement",
+            parent_label="Audio Control",
+        ),
     ]
     warnings: list[str] = []
     _repair_group_attachment(nodes, table_groups, "", warnings)
@@ -2083,24 +2994,61 @@ def test_build_survey_tree_does_not_repair_attachment_when_already_correct() -> 
     doc = _small_doc().model_copy(
         update={
             "tables": [
-                _table_with_group([
-                    ["Requirement ID", "Requirement / Section"],
-                    ["1.1", "Audio Control"],
-                    ["1.1.1", "The system shall control volume."],
-                    ["1.1.2", "Mute Behavior"],
-                    ["1.1.2.a", "The system shall restore volume on unmute."],
-                    ["1.1.2.b", "The system shall allow volume changes while muted."],
-                ])
+                _table_with_group(
+                    [
+                        ["Requirement ID", "Requirement / Section"],
+                        ["1.1", "Audio Control"],
+                        ["1.1.1", "The system shall control volume."],
+                        ["1.1.2", "Mute Behavior"],
+                        ["1.1.2.a", "The system shall restore volume on unmute."],
+                        ["1.1.2.b", "The system shall allow volume changes while muted."],
+                    ]
+                )
             ]
         }
     )
     fake = FakeSectionAnalysisClient(
         nodes=[
-            {"temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "Audio Control", "text": "Shall handle audio.", "tags": []},
-            {"temp_id": "n1", "type": "Requirement", "parent_temp_id": "n0", "title": "Adjust Volume Level", "text": "Shall control volume.", "tags": []},
-            {"temp_id": "n4", "type": "Requirement", "parent_temp_id": "n0", "title": "Mute Behavior", "text": "General mute behavior.", "tags": []},
-            {"temp_id": "n5", "type": "Requirement", "parent_temp_id": "n4", "title": "Restore Volume on Unmute", "text": "Shall restore volume.", "tags": []},
-            {"temp_id": "n6", "type": "Requirement", "parent_temp_id": "n4", "title": "Volume Change While Muted", "text": "Shall allow changes.", "tags": []},
+            {
+                "temp_id": "n0",
+                "type": "Feature",
+                "parent_temp_id": None,
+                "title": "Audio Control",
+                "text": "Shall handle audio.",
+                "tags": [],
+            },
+            {
+                "temp_id": "n1",
+                "type": "Requirement",
+                "parent_temp_id": "n0",
+                "title": "Adjust Volume Level",
+                "text": "Shall control volume.",
+                "tags": [],
+            },
+            {
+                "temp_id": "n4",
+                "type": "Requirement",
+                "parent_temp_id": "n0",
+                "title": "Mute Behavior",
+                "text": "General mute behavior.",
+                "tags": [],
+            },
+            {
+                "temp_id": "n5",
+                "type": "Requirement",
+                "parent_temp_id": "n4",
+                "title": "Restore Volume on Unmute",
+                "text": "Shall restore volume.",
+                "tags": [],
+            },
+            {
+                "temp_id": "n6",
+                "type": "Requirement",
+                "parent_temp_id": "n4",
+                "title": "Volume Change While Muted",
+                "text": "Shall allow changes.",
+                "tags": [],
+            },
         ]
     )
     tree = build_survey_tree(doc, fake)
@@ -2123,7 +3071,13 @@ def test_repair_group_attachment_does_not_repair_when_correct_parent_node_is_mis
         _node("n6", WorkItemType.REQUIREMENT, "n4", "Volume Change While Muted"),
     ]
     table_groups = [
-        TableGroupInfo(label="Mute Behavior", child_count=2, id_text="1.2", suggested_type="Requirement", parent_label="Audio Control"),
+        TableGroupInfo(
+            label="Mute Behavior",
+            child_count=2,
+            id_text="1.2",
+            suggested_type="Requirement",
+            parent_label="Audio Control",
+        ),
     ]
     warnings: list[str] = []
     _repair_group_attachment(nodes, table_groups, "", warnings)
@@ -2160,15 +3114,21 @@ def test_build_survey_tree_passes_whole_document_true_on_the_agentic_path_too(mo
     monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fake_retrieve_context)
     fake = FakeSectionAnalysisClient()
     build_survey_tree(
-        _small_doc(), fake, user_id="user-descriptor-1", embed_client=object(),
-        vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"), model="qwen3:4b",
+        _small_doc(),
+        fake,
+        user_id="user-descriptor-1",
+        embed_client=object(),
+        vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
+        model="qwen3:4b",
     )
     assert len(fake.agentic_calls) == 1
     assert fake.agentic_calls[0]["options"].whole_document is True
     assert fake.agentic_calls[0]["options"].topic_count == 0  # _small_doc() has no headings
 
 
-def test_read_document_fn_appends_a_truncation_marker_when_the_document_was_capped(monkeypatch, tmp_path) -> None:
+def test_read_document_fn_appends_a_truncation_marker_when_the_document_was_capped(
+    monkeypatch, tmp_path
+) -> None:
     # Regression: KbVectorStore.get_document now returns (text, truncated)
     # instead of a bare str -- read_document_fn's closure must surface a
     # truncation marker to the model rather than silently handing back a
@@ -2188,15 +3148,24 @@ def test_read_document_fn_appends_a_truncation_marker_when_the_document_was_capp
     vector_store = KbVectorStore(persist_path=str(tmp_path))
     for i in range(4):  # more than the patched cap (2)
         vector_store.upsert_chunk(
-            chunk_id=f"source-1:big.docx:{i}", embedding=[float(i), 0.0, 0.0],
-            text=f"chunk {i}", user_id="user-descriptor-1", source_file="big.docx",
-            source_id="source-1", chunk_index=i, file_hash="hash-1",
+            chunk_id=f"source-1:big.docx:{i}",
+            embedding=[float(i), 0.0, 0.0],
+            text=f"chunk {i}",
+            user_id="user-descriptor-1",
+            source_file="big.docx",
+            source_id="source-1",
+            chunk_index=i,
+            file_hash="hash-1",
         )
 
     fake = FakeSectionAnalysisClient()
     build_survey_tree(
-        _small_doc(), fake, user_id="user-descriptor-1", embed_client=object(),
-        vector_store=vector_store, model="qwen3:4b",
+        _small_doc(),
+        fake,
+        user_id="user-descriptor-1",
+        embed_client=object(),
+        vector_store=vector_store,
+        model="qwen3:4b",
     )
     read_document_fn = fake.agentic_calls[0]["read_document_fn"]
     result = read_document_fn("big.docx")
@@ -2212,7 +3181,13 @@ def test_node_with_empty_text_is_skipped() -> None:
     fake = FakeSectionAnalysisClient(
         nodes=[
             {"temp_id": "n0", "type": "Feature", "parent_temp_id": None, "text": "", "tags": []},
-            {"temp_id": "n1", "type": "Requirement", "parent_temp_id": "n0", "text": "Something real.", "tags": []},
+            {
+                "temp_id": "n1",
+                "type": "Requirement",
+                "parent_temp_id": "n0",
+                "text": "Something real.",
+                "tags": [],
+            },
         ]
     )
     tree = build_survey_tree(_small_doc(), fake)
@@ -2231,7 +3206,12 @@ def test_survey_tree_can_jointly_produce_every_requirement_tag_in_the_taxonomy()
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="taxonomyhash"),
         blocks=[
-            Block(id=f"b{i}", kind=BlockKind.PARAGRAPH, text=f"informal note {i}", source_ref=_sr(path))
+            Block(
+                id=f"b{i}",
+                kind=BlockKind.PARAGRAPH,
+                text=f"informal note {i}",
+                source_ref=_sr(path),
+            )
             for i in range(len(all_tags))
         ],
     )
@@ -2259,15 +3239,35 @@ def _two_branch_doc() -> CanonicalDoc:
     return CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Display", source_ref=_sr(path)),
-            Block(id="b1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
-            Block(id="b2", kind=BlockKind.HEADING, heading_level=1, text="Audio", source_ref=_sr(path)),
-            Block(id="b3", kind=BlockKind.PARAGRAPH, text="The speaker shall support 5.1 surround.", source_ref=_sr(path)),
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Display",
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
+                text="The display shall support HDR.",
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b2", kind=BlockKind.HEADING, heading_level=1, text="Audio", source_ref=_sr(path)
+            ),
+            Block(
+                id="b3",
+                kind=BlockKind.PARAGRAPH,
+                text="The speaker shall support 5.1 surround.",
+                source_ref=_sr(path),
+            ),
         ],
     )
 
 
-def test_build_survey_tree_chunks_a_multi_branch_document_into_one_call_per_branch(monkeypatch) -> None:
+def test_build_survey_tree_chunks_a_multi_branch_document_into_one_call_per_branch(
+    monkeypatch,
+) -> None:
     # Regression: analyze_section previously always sent the ENTIRE document
     # in one call regardless of size, risking context-window overflow on a
     # large/deep document.
@@ -2296,8 +3296,11 @@ def test_build_survey_tree_places_a_table_into_its_own_branchs_section_text(monk
         update={
             "tables": [
                 Table(
-                    id="t0", cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]],
-                    source_ref=SourceRef(document_path=doc.document.path, start_offset=20, end_offset=30),
+                    id="t0",
+                    cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]],
+                    source_ref=SourceRef(
+                        document_path=doc.document.path, start_offset=20, end_offset=30
+                    ),
                 )
             ]
         }
@@ -2309,7 +3312,9 @@ def test_build_survey_tree_places_a_table_into_its_own_branchs_section_text(monk
     assert "| a | b |" not in fake.calls[0]["section_text"]
 
 
-def test_build_survey_tree_already_carries_figure_captions_via_inline_blocks_on_multi_branch_path(monkeypatch) -> None:
+def test_build_survey_tree_already_carries_figure_captions_via_inline_blocks_on_multi_branch_path(
+    monkeypatch,
+) -> None:
     # Figures never needed a placement fix here: every loader already emits
     # a figure's caption as an ordinary inline FIGURE-kind Block (see
     # render_section's docstring), so _split_into_branches carries it into
@@ -2320,11 +3325,27 @@ def test_build_survey_tree_already_carries_figure_captions_via_inline_blocks_on_
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Display", source_ref=_sr(path)),
-            Block(id="b1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
-            Block(id="b2", kind=BlockKind.HEADING, heading_level=1, text="Audio", source_ref=_sr(path)),
             Block(
-                id="b3", kind=BlockKind.FIGURE, text="[FIGURE: a speaker wiring diagram]", source_ref=_sr(path),
+                id="b0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Display",
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
+                text="The display shall support HDR.",
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b2", kind=BlockKind.HEADING, heading_level=1, text="Audio", source_ref=_sr(path)
+            ),
+            Block(
+                id="b3",
+                kind=BlockKind.FIGURE,
+                text="[FIGURE: a speaker wiring diagram]",
+                source_ref=_sr(path),
             ),
         ],
     )
@@ -2335,7 +3356,9 @@ def test_build_survey_tree_already_carries_figure_captions_via_inline_blocks_on_
     assert "speaker wiring diagram" not in fake.calls[0]["section_text"]
 
 
-def test_build_survey_tree_does_not_warn_when_multi_branch_doc_has_no_tables_or_figures(monkeypatch) -> None:
+def test_build_survey_tree_does_not_warn_when_multi_branch_doc_has_no_tables_or_figures(
+    monkeypatch,
+) -> None:
     _force_multi_branch(monkeypatch)
     fake = FakeSectionAnalysisClient()
     tree = build_survey_tree(_two_branch_doc(), fake)
@@ -2360,7 +3383,9 @@ def test_build_survey_tree_warns_when_a_non_empty_branch_produces_zero_nodes(mon
     assert "Audio" in zero_node_warnings[1].raw
 
 
-def test_build_survey_tree_does_not_warn_about_zero_nodes_when_a_branch_genuinely_has_none(monkeypatch) -> None:
+def test_build_survey_tree_does_not_warn_about_zero_nodes_when_a_branch_genuinely_has_none(
+    monkeypatch,
+) -> None:
     # A branch with NO real content (no blocks/tables/figures at all) isn't
     # a failure -- nothing to warn about.
     _force_multi_branch(monkeypatch)
@@ -2375,10 +3400,25 @@ def test_build_survey_tree_does_not_warn_about_tables_on_the_single_branch_path(
     path = "table_only.txt"
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
-        tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]], source_ref=_sr(path))],
+        tables=[
+            Table(
+                id="t0",
+                cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]],
+                source_ref=_sr(path),
+            )
+        ],
     )
     fake = FakeSectionAnalysisClient(
-        nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "title": "t", "text": "x", "tags": []}]
+        nodes=[
+            {
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "title": "t",
+                "text": "x",
+                "tags": [],
+            }
+        ]
     )
     tree = build_survey_tree(doc, fake)
     assert not any("table(s)" in w for w in tree.warnings)
@@ -2396,7 +3436,9 @@ def test_build_survey_tree_namespaces_node_ids_per_branch_to_avoid_collisions(mo
     # distinct nodes.
     assert local_ids == {"br0_n0", "br0_n1", "br1_n0", "br1_n1"}
     by_id = {node.local_id: node for node in tree.nodes}
-    assert by_id["br0_n1"].parent_local_id == "br0_n0"  # parent reference namespaced to the SAME branch
+    assert (
+        by_id["br0_n1"].parent_local_id == "br0_n0"
+    )  # parent reference namespaced to the SAME branch
     assert by_id["br1_n1"].parent_local_id == "br1_n0"
     assert by_id["br0_n0"].parent_local_id is None
     assert by_id["br1_n0"].parent_local_id is None
@@ -2447,7 +3489,10 @@ class _PerSectionSectionAnalysisClient:
         )
 
     def author_content(
-        self, section_text: str, skeleton_nodes: dict[str, dict], kb_context: str | None = None,
+        self,
+        section_text: str,
+        skeleton_nodes: dict[str, dict],
+        kb_context: str | None = None,
         user_id: str | None = None,
     ) -> tuple[dict[str, dict], bool]:
         keyword = self._keyword_for(section_text)
@@ -2477,7 +3522,9 @@ def test_build_survey_tree_chunk_concurrency_produces_the_same_tree_as_serial(mo
     assert [w.raw for w in serial.warnings] == [w.raw for w in concurrent.warnings]
 
 
-def test_build_survey_tree_forwards_chunk_concurrency_to_the_deterministic_passes(monkeypatch) -> None:
+def test_build_survey_tree_forwards_chunk_concurrency_to_the_deterministic_passes(
+    monkeypatch,
+) -> None:
     # Proves the parameter is actually THREADED, not merely accepted and
     # dropped -- the failure mode a signature-only change would leave behind.
     import app.leveling.id_tree_builder as id_tree_builder_module
@@ -2496,14 +3543,18 @@ def test_build_survey_tree_forwards_chunk_concurrency_to_the_deterministic_passe
             return {node_id: {"title": "T", "tags": []} for node_id in texts_by_row_id}
 
     build_survey_tree(
-        _structural_heading_doc(), FakeSectionAnalysisClient(),
-        title_tag_client=TitleTagClient(), chunk_concurrency=7,
+        _structural_heading_doc(),
+        FakeSectionAnalysisClient(),
+        title_tag_client=TitleTagClient(),
+        chunk_concurrency=7,
     )
 
     assert seen and all(value == 7 for value in seen)
 
 
-def test_build_survey_tree_concurrent_branches_produce_the_same_tree_as_sequential(monkeypatch) -> None:
+def test_build_survey_tree_concurrent_branches_produce_the_same_tree_as_sequential(
+    monkeypatch,
+) -> None:
     # Regression guard for the branch_concurrency feature: running branches
     # concurrently must never change WHAT gets built, only how long it
     # takes. Same document, same fake client behavior, branch_concurrency=1
@@ -2512,14 +3563,25 @@ def test_build_survey_tree_concurrent_branches_produce_the_same_tree_as_sequenti
     _force_multi_branch(monkeypatch)
     doc = _two_branch_doc()
 
-    sequential_tree = build_survey_tree(doc, _PerSectionSectionAnalysisClient(), branch_concurrency=1)
-    concurrent_tree = build_survey_tree(doc, _PerSectionSectionAnalysisClient(), branch_concurrency=2)
+    sequential_tree = build_survey_tree(
+        doc, _PerSectionSectionAnalysisClient(), branch_concurrency=1
+    )
+    concurrent_tree = build_survey_tree(
+        doc, _PerSectionSectionAnalysisClient(), branch_concurrency=2
+    )
 
-    assert [(n.local_id, n.title) for n in sequential_tree.nodes] == [(n.local_id, n.title) for n in concurrent_tree.nodes]
-    assert [n.title for n in concurrent_tree.nodes] == ["Display", "Audio"]  # document order, not alphabetical/call order
+    assert [(n.local_id, n.title) for n in sequential_tree.nodes] == [
+        (n.local_id, n.title) for n in concurrent_tree.nodes
+    ]
+    assert [n.title for n in concurrent_tree.nodes] == [
+        "Display",
+        "Audio",
+    ]  # document order, not alphabetical/call order
 
 
-def test_build_survey_tree_concurrent_branches_preserve_document_order_even_when_branch_0_finishes_last(monkeypatch) -> None:
+def test_build_survey_tree_concurrent_branches_preserve_document_order_even_when_branch_0_finishes_last(
+    monkeypatch,
+) -> None:
     # The real risk this guards against: branch 0 is submitted FIRST but
     # artificially delayed so branch 1 genuinely completes first. Node
     # order in the final tree must still be branch 0's nodes before branch
@@ -2533,7 +3595,9 @@ def test_build_survey_tree_concurrent_branches_preserve_document_order_even_when
     assert len(fake.calls) == 2
 
 
-def test_build_survey_tree_concurrency_reports_correct_per_branch_blocks_done_before(monkeypatch) -> None:
+def test_build_survey_tree_concurrency_reports_correct_per_branch_blocks_done_before(
+    monkeypatch,
+) -> None:
     # Regression: blocks_done_before used to be a running counter mutated
     # AFTER each branch finished, which is unsafe once branches can finish
     # out of order. Must now be each branch's fixed, precomputed offset
@@ -2541,12 +3605,15 @@ def test_build_survey_tree_concurrency_reports_correct_per_branch_blocks_done_be
     _force_multi_branch(monkeypatch)
     events: list[LevelingProgress] = []
     build_survey_tree(
-        _two_branch_doc(), FakeSectionAnalysisClient(),
+        _two_branch_doc(),
+        FakeSectionAnalysisClient(),
         progress_callback=lambda p: events.append(p),
         branch_concurrency=2,
     )
 
-    section_events = [e for e in events if e.phase == "build_skeleton" and e.branch_index is not None]
+    section_events = [
+        e for e in events if e.phase == "build_skeleton" and e.branch_index is not None
+    ]
     by_branch = {e.branch_index: e.blocks_done for e in section_events}
     # Branch 0 is blocks 0-1 (heading + requirement), branch 1 starts at 2.
     assert by_branch.get(0) == 0
@@ -2581,7 +3648,9 @@ def test_build_survey_tree_flags_a_generated_description_unrelated_to_its_source
         ]
     )
     tree = build_survey_tree(_small_doc(), fake)
-    assert any(node.grounding_score is not None and node.grounding_score < 0.2 for node in tree.nodes)
+    assert any(
+        node.grounding_score is not None and node.grounding_score < 0.2 for node in tree.nodes
+    )
     assert any("low grounding" in w.raw for w in tree.warnings)
 
 
@@ -2591,11 +3660,21 @@ def test_build_survey_tree_grounds_against_the_whole_rendered_section() -> None:
     # holistic synthesis (see _build_survey_skeleton_for_branch's docstring).
     doc = _small_doc()
     fake = FakeSectionAnalysisClient(
-        nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The system shall support HDR display.", "tags": []}]
+        nodes=[
+            {
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "text": "The system shall support HDR display.",
+                "tags": [],
+            }
+        ]
     )
     tree = build_survey_tree(doc, fake)
     section_text = render_section(doc.blocks)
-    assert tree.nodes[0].grounding_score == _grounding_score(tree.nodes[0].description, section_text)
+    assert tree.nodes[0].grounding_score == _grounding_score(
+        tree.nodes[0].description, section_text
+    )
 
 
 class FakeScoringClient:
@@ -2634,7 +3713,9 @@ def test_build_survey_tree_does_not_score_when_no_scoring_client_is_supplied() -
         assert node.quality_issues == []
 
 
-def test_build_survey_tree_scores_only_requirement_type_nodes_when_a_scoring_client_is_supplied() -> None:
+def test_build_survey_tree_scores_only_requirement_type_nodes_when_a_scoring_client_is_supplied() -> (
+    None
+):
     # _DEFAULT_NODES is one Feature (n0) + one Requirement (n1) -- EARS/
     # INCOSE/ISO quality criteria describe atomic testable "shall"
     # statements, not Epic/Feature groupings, so score_requirements_for_
@@ -2654,7 +3735,9 @@ def test_build_survey_tree_scores_only_requirement_type_nodes_when_a_scoring_cli
     # batched call covering exactly the real requirement nodes".
     assert set(scoring_client.calls[0].keys()) - {_CANARY_NODE_ID} == {"n1"}
     by_id = {node.local_id: node for node in tree.nodes}
-    assert by_id["n0"].quality_score is None  # no score_epics_and_features_for_document on this double
+    assert (
+        by_id["n0"].quality_score is None
+    )  # no score_epics_and_features_for_document on this double
     assert by_id["n1"].quality_score == 90
     assert by_id["n1"].quality_issues == []
 
@@ -2673,7 +3756,10 @@ def test_build_survey_tree_scores_epic_and_feature_nodes_via_the_separate_rubric
         def score_epics_and_features_for_document(self, nodes_by_id, user_id=None):
             self.epic_feature_calls.append(nodes_by_id)
             return {
-                node_id: {"score": 77, "categoryScores": {"scopeCoherence": 70, "outcomeClarity": 80}}
+                node_id: {
+                    "score": 77,
+                    "categoryScores": {"scopeCoherence": 70, "outcomeClarity": 80},
+                }
                 for node_id in nodes_by_id
             }
 
@@ -2682,7 +3768,10 @@ def test_build_survey_tree_scores_epic_and_feature_nodes_via_the_separate_rubric
 
     assert len(scoring_client.epic_feature_calls) == 1
     assert set(scoring_client.epic_feature_calls[0].keys()) == {"n0"}  # only the Feature node
-    assert scoring_client.epic_feature_calls[0]["n0"] == {"type": "Feature", "text": "The system shall handle: Display"}
+    assert scoring_client.epic_feature_calls[0]["n0"] == {
+        "type": "Feature",
+        "text": "The system shall handle: Display",
+    }
     by_id = {node.local_id: node for node in tree.nodes}
     assert by_id["n0"].quality_score == 77
     assert by_id["n0"].quality_category_scores == {"scopeCoherence": 70, "outcomeClarity": 80}
@@ -2691,7 +3780,9 @@ def test_build_survey_tree_scores_epic_and_feature_nodes_via_the_separate_rubric
     assert by_id["n1"].quality_score == 90
 
 
-def test_build_survey_tree_excludes_a_synthesized_bridge_feature_from_epic_feature_scoring() -> None:
+def test_build_survey_tree_excludes_a_synthesized_bridge_feature_from_epic_feature_scoring() -> (
+    None
+):
     # A Feature synthesized by _repair_requirement_hierarchy to hold
     # otherwise-orphaned Requirements was never a real authorial decision --
     # scoring it against scopeCoherence/capabilityClarity would produce a
@@ -2708,8 +3799,20 @@ def test_build_survey_tree_excludes_a_synthesized_bridge_feature_from_epic_featu
 
     fake = FakeSectionAnalysisClient(
         nodes=[
-            {"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "Shall do X.", "tags": []},
-            {"temp_id": "n1", "type": "Requirement", "parent_temp_id": None, "text": "Shall do Y.", "tags": []},
+            {
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "text": "Shall do X.",
+                "tags": [],
+            },
+            {
+                "temp_id": "n1",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "text": "Shall do Y.",
+                "tags": [],
+            },
         ]
     )
     scoring_client = _FullScoringClient()
@@ -2753,13 +3856,22 @@ def test_score_epics_and_features_excludes_a_per_epic_bridge_feature() -> None:
             return {node_id: {"score": 50, "categoryScores": {}} for node_id in nodes_by_id}
 
     epic = WorkItemNode(
-        local_id="det0_h1", type=WorkItemType.EPIC, parent_local_id=None, title="Epic A",
-        description="Epic A", source_ref=_sr("x.docx"), mode=WorkItemMode.SURVEY,
+        local_id="det0_h1",
+        type=WorkItemType.EPIC,
+        parent_local_id=None,
+        title="Epic A",
+        description="Epic A",
+        source_ref=_sr("x.docx"),
+        mode=WorkItemMode.SURVEY,
     )
     per_epic_bridge = WorkItemNode(
-        local_id="det0_synth_feature_det0_h1", type=WorkItemType.FEATURE, parent_local_id="det0_h1",
-        title="(auto-grouped) ...", description="Auto-inserted grouping Feature -- ...",
-        source_ref=_sr("x.docx"), mode=WorkItemMode.SURVEY,
+        local_id="det0_synth_feature_det0_h1",
+        type=WorkItemType.FEATURE,
+        parent_local_id="det0_h1",
+        title="(auto-grouped) ...",
+        description="Auto-inserted grouping Feature -- ...",
+        source_ref=_sr("x.docx"),
+        mode=WorkItemMode.SURVEY,
     )
     scoring_client = _RecordingScoringClient()
     warnings: list[str] = []
@@ -2780,10 +3892,19 @@ def test_build_survey_tree_requirement_scoring_failure_is_caught_and_warned() ->
     # immediately below). Requirement quality scoring is an enhancement on
     # top of an already-built tree, never a dependency of its correctness.
     class _RaisingRequirementScoringClient(FakeScoringClient):
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
+        def score_requirements_for_document(
+            self,
+            descriptions_by_node_id,
+            criteria_context=None,
+            kb_context=None,
+            category_checklist=None,
+            user_id=None,
+        ):
             raise ValueError("boom")
 
-    tree = build_survey_tree(_small_doc(), FakeSectionAnalysisClient(), _RaisingRequirementScoringClient())
+    tree = build_survey_tree(
+        _small_doc(), FakeSectionAnalysisClient(), _RaisingRequirementScoringClient()
+    )
 
     by_id = {node.local_id: node for node in tree.nodes}
     assert by_id["n1"].quality_score is None  # failed -- but the job itself did not fail
@@ -2794,12 +3915,21 @@ def test_build_survey_tree_requirement_scoring_failure_fires_chunk_warning() -> 
     # docs/ui-progress-review.md item #3: this failure must be visible LIVE
     # (via progress_callback), not just in the final tree.warnings list.
     class _RaisingRequirementScoringClient(FakeScoringClient):
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
+        def score_requirements_for_document(
+            self,
+            descriptions_by_node_id,
+            criteria_context=None,
+            kb_context=None,
+            category_checklist=None,
+            user_id=None,
+        ):
             raise ValueError("boom")
 
     fired: list[LevelingProgress] = []
     tree = build_survey_tree(
-        _small_doc(), FakeSectionAnalysisClient(), _RaisingRequirementScoringClient(),
+        _small_doc(),
+        FakeSectionAnalysisClient(),
+        _RaisingRequirementScoringClient(),
         progress_callback=fired.append,
     )
 
@@ -2836,7 +3966,9 @@ def test_build_survey_tree_epic_feature_scoring_failure_fires_chunk_warning() ->
 
     fired: list[LevelingProgress] = []
     tree = build_survey_tree(
-        _small_doc(), FakeSectionAnalysisClient(), _RaisingEpicFeatureClient(),
+        _small_doc(),
+        FakeSectionAnalysisClient(),
+        _RaisingEpicFeatureClient(),
         progress_callback=fired.append,
     )
 
@@ -2849,14 +3981,23 @@ def test_apply_quality_scores_missing_score_fires_chunk_warning() -> None:
     from app.leveling.scoring import _apply_quality_scores
 
     class _EmptyScoringClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
+        def score_requirements_for_document(
+            self,
+            descriptions_by_node_id,
+            criteria_context=None,
+            kb_context=None,
+            category_checklist=None,
+            user_id=None,
+        ):
             return {}  # every node comes back with no valid score
 
     nodes = [_req_node("n1", "The system shall do x.")]
     warnings: list[str] = []
     fired: list[LevelingProgress] = []
 
-    _apply_quality_scores(nodes, _EmptyScoringClient(), warnings, "", progress_callback=fired.append)
+    _apply_quality_scores(
+        nodes, _EmptyScoringClient(), warnings, "", progress_callback=fired.append
+    )
 
     assert "returned no valid score" in warnings[0].raw
     chunk_warnings = [p for p in fired if p.phase == "chunk_warning"]
@@ -2868,7 +4009,14 @@ def test_apply_quality_scores_inconsistent_categories_fires_chunk_warning() -> N
     from app.leveling.scoring import _apply_quality_scores
 
     class _InconsistentCategoriesClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
+        def score_requirements_for_document(
+            self,
+            descriptions_by_node_id,
+            criteria_context=None,
+            kb_context=None,
+            category_checklist=None,
+            user_id=None,
+        ):
             return {
                 "n1": {"score": 80, "issues": [], "categoryScores": {"clarity": 80}},
                 "n2": {"score": 70, "issues": [], "categoryScores": {"rationale": 70}},
@@ -2878,7 +4026,9 @@ def test_apply_quality_scores_inconsistent_categories_fires_chunk_warning() -> N
     warnings: list[str] = []
     fired: list[LevelingProgress] = []
 
-    _apply_quality_scores(nodes, _InconsistentCategoriesClient(), warnings, "", progress_callback=fired.append)
+    _apply_quality_scores(
+        nodes, _InconsistentCategoriesClient(), warnings, "", progress_callback=fired.append
+    )
 
     assert any("2 different sets of category names" in w.raw for w in warnings)
     chunk_warnings = [p for p in fired if p.phase == "chunk_warning"]
@@ -2900,7 +4050,10 @@ def test_build_survey_tree_captures_the_raw_response_when_epic_feature_scoring_f
 
     debug_capture = _FakeDebugCapture()
     build_survey_tree(
-        _small_doc(), FakeSectionAnalysisClient(), _RaisingEpicFeatureClient(), debug_capture=debug_capture,
+        _small_doc(),
+        FakeSectionAnalysisClient(),
+        _RaisingEpicFeatureClient(),
+        debug_capture=debug_capture,
     )
     assert len(debug_capture.calls) == 1
     kind, identifier, raw_response = debug_capture.calls[0]
@@ -2918,7 +4071,13 @@ def test_build_survey_tree_carries_category_scores_through_to_the_node() -> None
             "n1": {
                 "score": 40,
                 "issues": ["ambiguous"],
-                "categoryScores": {"clarity": 20, "testability": 80, "atomicity": 90, "style": 60, "rationale": 10},
+                "categoryScores": {
+                    "clarity": 20,
+                    "testability": 80,
+                    "atomicity": 90,
+                    "style": 60,
+                    "rationale": 10,
+                },
             }
         }
     )
@@ -2934,7 +4093,9 @@ def test_build_survey_tree_carries_category_scores_through_to_the_node() -> None
     assert category_scores["rationale"] == 10
 
 
-def test_build_survey_tree_discards_the_whole_category_breakdown_when_one_dimension_is_malformed() -> None:
+def test_build_survey_tree_discards_the_whole_category_breakdown_when_one_dimension_is_malformed() -> (
+    None
+):
     # All-or-nothing tolerance, same philosophy as quality_score itself: a
     # partial breakdown (e.g. clarity present, testability missing) would
     # misleadingly read as "testability wasn't judged" rather than "the
@@ -2944,7 +4105,13 @@ def test_build_survey_tree_discards_the_whole_category_breakdown_when_one_dimens
             "n1": {
                 "score": 40,
                 "issues": [],
-                "categoryScores": {"clarity": 20, "testability": 150, "atomicity": 90, "style": 60, "rationale": 10},
+                "categoryScores": {
+                    "clarity": 20,
+                    "testability": 150,
+                    "atomicity": 90,
+                    "style": 60,
+                    "rationale": 10,
+                },
             }
         }
     )
@@ -2966,7 +4133,9 @@ def test_build_survey_tree_leaves_category_scores_none_when_the_field_is_absent(
     assert by_id["n1"].quality_category_scores is None
 
 
-def test_build_survey_tree_carries_the_matched_checklist_definitions_through_to_the_node(tmp_path, monkeypatch) -> None:
+def test_build_survey_tree_carries_the_matched_checklist_definitions_through_to_the_node(
+    tmp_path, monkeypatch
+) -> None:
     # End-to-end: KbVectorStore's stored quality_checklist_definitions_json
     # (the companion to quality_checklist_json, see
     # OrchestratorLlmClient.extract_quality_checklist_definitions's own
@@ -2976,28 +4145,62 @@ def test_build_survey_tree_carries_the_matched_checklist_definitions_through_to_
     from app.kb.kb_vector_store import KbVectorStore
 
     def _fake_retrieve_context(user_id, query_text, embed_client, vector_store, **_):
-        return "agentic KB text", [{"source_file": "standard.pdf", "distance": 0.1, "similarity": 0.9, "text": "agentic KB text"}]
+        return "agentic KB text", [
+            {
+                "source_file": "standard.pdf",
+                "distance": 0.1,
+                "similarity": 0.9,
+                "text": "agentic KB text",
+            }
+        ]
 
     monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fake_retrieve_context)
 
     vector_store = KbVectorStore(persist_path=str(tmp_path))
     vector_store.upsert_chunk(
-        chunk_id="s1:standard.pdf:0", embedding=[1.0, 0.0, 0.0], text="checklist text", user_id="Project\\Area1",
-        source_file="standard.pdf", source_id="s1", chunk_index=0, file_hash="h1",
+        chunk_id="s1:standard.pdf:0",
+        embedding=[1.0, 0.0, 0.0],
+        text="checklist text",
+        user_id="Project\\Area1",
+        source_file="standard.pdf",
+        source_id="s1",
+        chunk_index=0,
+        file_hash="h1",
         quality_checklist=["Necessary", "Unambiguous"],
         quality_checklist_definitions={"Necessary": "States something not already satisfied."},
     )
 
     class _CapturingScoringClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
+        def score_requirements_for_document(
+            self,
+            descriptions_by_node_id,
+            criteria_context=None,
+            kb_context=None,
+            category_checklist=None,
+            user_id=None,
+        ):
             return {
-                node_id: {"score": 90, "issues": [], "categoryScores": {"Necessary": 80, "Unambiguous": 70}}
+                node_id: {
+                    "score": 90,
+                    "issues": [],
+                    "categoryScores": {"Necessary": 80, "Unambiguous": 70},
+                }
                 for node_id in descriptions_by_node_id
             }
 
     fake = FakeSectionAnalysisClient(
-        agentic_nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The display shall support HDR.", "tags": []}],
-        agentic_citations=[{"source_file": "standard.pdf", "similarity": 0.9, "text": "checklist text"}],
+        agentic_nodes=[
+            {
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "text": "The display shall support HDR.",
+                "tags": [],
+            }
+        ],
+        agentic_citations=[
+            {"source_file": "standard.pdf", "similarity": 0.9, "text": "checklist text"}
+        ],
     )
     tree = build_survey_tree(
         _small_doc(),
@@ -3018,11 +4221,20 @@ def test_build_survey_tree_carries_the_matched_checklist_definitions_through_to_
     assert n0.quality_category_checklist == {"Necessary": "States something not already satisfied."}
 
 
-def test_build_survey_tree_leaves_checklist_none_when_no_definitions_were_ever_extracted(tmp_path, monkeypatch) -> None:
+def test_build_survey_tree_leaves_checklist_none_when_no_definitions_were_ever_extracted(
+    tmp_path, monkeypatch
+) -> None:
     from app.kb.kb_vector_store import KbVectorStore
 
     def _fake_retrieve_context(user_id, query_text, embed_client, vector_store, **_):
-        return "agentic KB text", [{"source_file": "standard.pdf", "distance": 0.1, "similarity": 0.9, "text": "agentic KB text"}]
+        return "agentic KB text", [
+            {
+                "source_file": "standard.pdf",
+                "distance": 0.1,
+                "similarity": 0.9,
+                "text": "agentic KB text",
+            }
+        ]
 
     monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fake_retrieve_context)
 
@@ -3030,21 +4242,44 @@ def test_build_survey_tree_leaves_checklist_none_when_no_definitions_were_ever_e
     # quality_checklist stored, but the definitions companion never was --
     # e.g. ingested before extract_quality_checklist_definitions existed.
     vector_store.upsert_chunk(
-        chunk_id="s1:standard.pdf:0", embedding=[1.0, 0.0, 0.0], text="checklist text", user_id="Project\\Area1",
-        source_file="standard.pdf", source_id="s1", chunk_index=0, file_hash="h1",
+        chunk_id="s1:standard.pdf:0",
+        embedding=[1.0, 0.0, 0.0],
+        text="checklist text",
+        user_id="Project\\Area1",
+        source_file="standard.pdf",
+        source_id="s1",
+        chunk_index=0,
+        file_hash="h1",
         quality_checklist=["Necessary", "Unambiguous"],
     )
 
     class _CapturingScoringClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
+        def score_requirements_for_document(
+            self,
+            descriptions_by_node_id,
+            criteria_context=None,
+            kb_context=None,
+            category_checklist=None,
+            user_id=None,
+        ):
             return {
                 node_id: {"score": 90, "issues": [], "categoryScores": {"Necessary": 80}}
                 for node_id in descriptions_by_node_id
             }
 
     fake = FakeSectionAnalysisClient(
-        agentic_nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The display shall support HDR.", "tags": []}],
-        agentic_citations=[{"source_file": "standard.pdf", "similarity": 0.9, "text": "checklist text"}],
+        agentic_nodes=[
+            {
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "text": "The display shall support HDR.",
+                "tags": [],
+            }
+        ],
+        agentic_citations=[
+            {"source_file": "standard.pdf", "similarity": 0.9, "text": "checklist text"}
+        ],
     )
     tree = build_survey_tree(
         _small_doc(),
@@ -3070,7 +4305,9 @@ def test_build_survey_tree_passes_none_criteria_context_when_no_retriever_is_sup
     assert scoring_client.criteria_contexts == [None]
 
 
-def test_build_survey_tree_grounds_scoring_with_retrieved_criteria_when_a_retriever_is_supplied() -> None:
+def test_build_survey_tree_grounds_scoring_with_retrieved_criteria_when_a_retriever_is_supplied() -> (
+    None
+):
     from app.quality.criteria_corpus import CRITERIA_CORPUS
 
     class FakeCriteriaRetriever:
@@ -3102,8 +4339,20 @@ def test_build_survey_tree_records_quality_issues_from_the_closed_vocabulary_onl
     # scored nodes, not the type gate.
     fake = FakeSectionAnalysisClient(
         nodes=[
-            {"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The system shall handle: Display", "tags": []},
-            {"temp_id": "n1", "type": "Requirement", "parent_temp_id": None, "text": "The display shall support HDR.", "tags": []},
+            {
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "text": "The system shall handle: Display",
+                "tags": [],
+            },
+            {
+                "temp_id": "n1",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "text": "The display shall support HDR.",
+                "tags": [],
+            },
         ]
     )
     scoring_client = FakeScoringClient(
@@ -3116,7 +4365,9 @@ def test_build_survey_tree_records_quality_issues_from_the_closed_vocabulary_onl
 
     by_id = {node.local_id: node for node in tree.nodes}
     assert by_id["n0"].quality_score == 40
-    assert [i.value for i in by_id["n0"].quality_issues] == ["ambiguous"]  # unknown issue silently dropped
+    assert [i.value for i in by_id["n0"].quality_issues] == [
+        "ambiguous"
+    ]  # unknown issue silently dropped
     assert by_id["n1"].quality_score == 95
 
 
@@ -3147,9 +4398,13 @@ def test_build_survey_tree_rejects_boolean_score_values() -> None:
             "n1": {"score": 85, "issues": []},
         }
     )
-    tree = build_survey_tree(_small_doc(), FakeSectionAnalysisClient(), scoring_client=scoring_client)
+    tree = build_survey_tree(
+        _small_doc(), FakeSectionAnalysisClient(), scoring_client=scoring_client
+    )
     by_id = {node.local_id: node for node in tree.nodes}
-    assert by_id["n0"].quality_score is None  # bool is rejected despite isinstance(True, int) == True
+    assert (
+        by_id["n0"].quality_score is None
+    )  # bool is rejected despite isinstance(True, int) == True
     assert by_id["n1"].quality_score == 85
 
 
@@ -3163,14 +4418,28 @@ def test_low_confidence_is_copied_onto_every_duplicate_description_node(monkeypa
     # default fixture, see the "only one representative sent" test below),
     # which is what triggers the fan-out at all.
     class _LowConfidenceScoringClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
+        def score_requirements_for_document(
+            self,
+            descriptions_by_node_id,
+            criteria_context=None,
+            kb_context=None,
+            category_checklist=None,
+            user_id=None,
+        ):
             return {
-                node_id: {"score": 90, "issues": [], "categoryScores": {"clarity": 90}, "confidence": "low"}
+                node_id: {
+                    "score": 90,
+                    "issues": [],
+                    "categoryScores": {"clarity": 90},
+                    "confidence": "low",
+                }
                 for node_id in descriptions_by_node_id
             }
 
     _force_multi_branch(monkeypatch)
-    tree = build_survey_tree(_two_branch_doc(), FakeSectionAnalysisClient(), _LowConfidenceScoringClient())
+    tree = build_survey_tree(
+        _two_branch_doc(), FakeSectionAnalysisClient(), _LowConfidenceScoringClient()
+    )
 
     requirement_nodes = [n for n in tree.nodes if n.type is WorkItemType.REQUIREMENT]
     assert len(requirement_nodes) >= 2
@@ -3179,7 +4448,9 @@ def test_low_confidence_is_copied_onto_every_duplicate_description_node(monkeypa
     assert all(n.quality_score == 90 for n in requirement_nodes)
 
 
-def test_build_survey_tree_calls_scoring_once_for_the_whole_document_not_once_per_branch(monkeypatch) -> None:
+def test_build_survey_tree_calls_scoring_once_for_the_whole_document_not_once_per_branch(
+    monkeypatch,
+) -> None:
     # §2c: scoring moved to whole-document scope -- a multi-branch document
     # gets ONE batched scoring call over every branch's requirement nodes
     # combined (chunked only past _SCORING_CHUNK_NODE_COUNT), not one call
@@ -3210,7 +4481,15 @@ def test_build_survey_tree_defaults_an_invalid_analysis_type_to_requirement() ->
     # node anyway. Must not crash the entire job over one hallucinated type
     # on one node.
     fake = FakeSectionAnalysisClient(
-        nodes=[{"temp_id": "n0", "type": "Recommendation", "parent_temp_id": None, "text": "Single requirement line.", "tags": []}]
+        nodes=[
+            {
+                "temp_id": "n0",
+                "type": "Recommendation",
+                "parent_temp_id": None,
+                "text": "Single requirement line.",
+                "tags": [],
+            }
+        ]
     )
     tree = build_survey_tree(_small_doc(), fake)
     assert len(tree.nodes) == 1
@@ -3234,7 +4513,14 @@ def test_build_survey_tree_threads_same_kb_context_into_analysis_and_scoring(mon
         "app.leveling.llm_leveling.retrieve_context",
         lambda user_id, query_text, embed_client, vector_store, **_: (
             "injected KB text",
-            [{"source_file": "doc-a.docx", "distance": 0.1, "similarity": 0.9, "text": "injected KB text"}],
+            [
+                {
+                    "source_file": "doc-a.docx",
+                    "distance": 0.1,
+                    "similarity": 0.9,
+                    "text": "injected KB text",
+                }
+            ],
         ),
     )
 
@@ -3279,8 +4565,12 @@ def test_build_survey_tree_calls_retrieve_context_exactly_once(monkeypatch) -> N
 
 def _kb_hit(source_file: str, similarity: float, text: str) -> dict:
     distance = 1 - similarity
-    return {"source_file": source_file, "distance": distance, "similarity": similarity,
-            "text": text}
+    return {
+        "source_file": source_file,
+        "distance": distance,
+        "similarity": similarity,
+        "text": text,
+    }
 
 
 def test_build_survey_tree_multi_branch_fallback_per_branch_query(monkeypatch) -> None:
@@ -3301,7 +4591,10 @@ def test_build_survey_tree_multi_branch_fallback_per_branch_query(monkeypatch) -
 
     fake = FakeSectionAnalysisClient()
     tree = build_survey_tree(
-        _two_branch_doc(), fake, user_id="Project\\Area1", embed_client=object(),
+        _two_branch_doc(),
+        fake,
+        user_id="Project\\Area1",
+        embed_client=object(),
         vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
     )
     assert "Display" in queries and "Audio" in queries  # one query per branch (its own headings)
@@ -3328,7 +4621,10 @@ def test_build_survey_tree_reports_kb_coverage_available_vs_cited(monkeypatch) -
     )
     events: list = []
     tree = build_survey_tree(
-        _small_doc(), FakeSectionAnalysisClient(), user_id="Project\\Area1", embed_client=object(),
+        _small_doc(),
+        FakeSectionAnalysisClient(),
+        user_id="Project\\Area1",
+        embed_client=object(),
         vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
         progress_callback=events.append,
     )
@@ -3342,7 +4638,10 @@ def test_build_survey_tree_kb_coverage_counts_zero_cited_when_kb_has_files(monke
     _stub_kb_documents(monkeypatch, ["a.pdf", "b.pdf"])
     monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", lambda *a, **k: (None, []))
     tree = build_survey_tree(
-        _small_doc(), FakeSectionAnalysisClient(), user_id="Project\\Area1", embed_client=object(),
+        _small_doc(),
+        FakeSectionAnalysisClient(),
+        user_id="Project\\Area1",
+        embed_client=object(),
         vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
     )
     assert tree.kb_coverage is not None
@@ -3362,7 +4661,10 @@ def test_build_survey_tree_multi_branch_kb_coverage_dedupes_cited_files(monkeypa
 
     monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fake_retrieve_context)
     tree = build_survey_tree(
-        _two_branch_doc(), FakeSectionAnalysisClient(), user_id="Project\\Area1", embed_client=object(),
+        _two_branch_doc(),
+        FakeSectionAnalysisClient(),
+        user_id="Project\\Area1",
+        embed_client=object(),
         vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
     )
     assert tree.kb_coverage is not None
@@ -3384,7 +4686,10 @@ def test_build_survey_tree_kb_coverage_listing_failure_is_non_fatal(monkeypatch)
     monkeypatch.setattr(KbVectorStore, "list_documents", _boom)
     monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", lambda *a, **k: (None, []))
     tree = build_survey_tree(
-        _small_doc(), FakeSectionAnalysisClient(), user_id="Project\\Area1", embed_client=object(),
+        _small_doc(),
+        FakeSectionAnalysisClient(),
+        user_id="Project\\Area1",
+        embed_client=object(),
         vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
     )
     assert tree.kb_coverage is None
@@ -3407,7 +4712,10 @@ def test_build_survey_tree_multi_branch_fallback_keeps_doc_ctx_if_none(monkeypat
 
     fake = FakeSectionAnalysisClient()
     tree = build_survey_tree(
-        _two_branch_doc(), fake, user_id="Project\\Area1", embed_client=object(),
+        _two_branch_doc(),
+        fake,
+        user_id="Project\\Area1",
+        embed_client=object(),
         vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
         branch_concurrency=2,
     )
@@ -3434,15 +4742,22 @@ def test_build_survey_tree_multi_branch_fallback_scores_on_doc_ctx(monkeypatch) 
 
     class _SpyScoring:
         def score_requirements_for_document(
-            self, descriptions_by_node_id, criteria_context=None, kb_context=None,
-            category_checklist=None, user_id=None,
+            self,
+            descriptions_by_node_id,
+            criteria_context=None,
+            kb_context=None,
+            category_checklist=None,
+            user_id=None,
         ):
             scoring_contexts.append(kb_context)
             return {node_id: {"score": 90, "issues": []} for node_id in descriptions_by_node_id}
 
     build_survey_tree(
-        _two_branch_doc(), FakeSectionAnalysisClient(), user_id="Project\\Area1",
-        embed_client=object(), vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
+        _two_branch_doc(),
+        FakeSectionAnalysisClient(),
+        user_id="Project\\Area1",
+        embed_client=object(),
+        vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
         scoring_client=_SpyScoring(),
     )
     # One prompt-size-bounded context, not one block per branch.
@@ -3464,15 +4779,22 @@ def test_build_survey_tree_multi_branch_fallback_scoring_none_without_doc_ctx(mo
 
     class _SpyScoring:
         def score_requirements_for_document(
-            self, descriptions_by_node_id, criteria_context=None, kb_context=None,
-            category_checklist=None, user_id=None,
+            self,
+            descriptions_by_node_id,
+            criteria_context=None,
+            kb_context=None,
+            category_checklist=None,
+            user_id=None,
         ):
             scoring_contexts.append(kb_context)
             return {node_id: {"score": 90, "issues": []} for node_id in descriptions_by_node_id}
 
     build_survey_tree(
-        _two_branch_doc(), FakeSectionAnalysisClient(), user_id="Project\\Area1",
-        embed_client=object(), vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
+        _two_branch_doc(),
+        FakeSectionAnalysisClient(),
+        user_id="Project\\Area1",
+        embed_client=object(),
+        vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
         scoring_client=_SpyScoring(),
     )
     assert scoring_contexts and all(ctx is None for ctx in scoring_contexts)
@@ -3496,7 +4818,10 @@ def test_build_survey_tree_multi_branch_fallback_reads_always_include_once(monke
 
     fake = FakeSectionAnalysisClient()
     build_survey_tree(
-        _two_branch_doc(), fake, user_id="Project\\Area1", embed_client=object(),
+        _two_branch_doc(),
+        fake,
+        user_id="Project\\Area1",
+        embed_client=object(),
         vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
     )
     assert fetches["n"] == 1
@@ -3530,8 +4855,12 @@ def test_build_survey_tree_multi_branch_fallback_checklist_from_doc_citations(mo
             return {node_id: {"score": 90, "issues": []} for node_id in descriptions_by_node_id}
 
     build_survey_tree(
-        _two_branch_doc(), FakeSectionAnalysisClient(), user_id="Project\\Area1",
-        embed_client=object(), vector_store=_Store(), scoring_client=_Scoring(),
+        _two_branch_doc(),
+        FakeSectionAnalysisClient(),
+        user_id="Project\\Area1",
+        embed_client=object(),
+        vector_store=_Store(),
+        scoring_client=_Scoring(),
     )
     # Scoring sees only the doc-level context, so only its citations may supply the checklist.
     assert asked == ["doc.pdf"]
@@ -3565,7 +4894,9 @@ def test_build_survey_tree_unknown_model_uses_fallback_kb_path_not_agentic(monke
     assert fake.agentic_calls == []
 
 
-def test_build_survey_tree_tool_capable_model_uses_agentic_path_and_marks_citations_relevant(monkeypatch) -> None:
+def test_build_survey_tree_tool_capable_model_uses_agentic_path_and_marks_citations_relevant(
+    monkeypatch,
+) -> None:
     # _resolve_caps gating: a KNOWN tool-capable model routes through
     # analyze_section_agentic with an injected retrieve_fn instead of the
     # pre-computed fallback -- and every hit it pulls is marked RELEVANT
@@ -3573,13 +4904,30 @@ def test_build_survey_tree_tool_capable_model_uses_agentic_path_and_marks_citati
     from app.kb.kb_vector_store import KbVectorStore
 
     def _fake_retrieve_context(user_id, query_text, embed_client, vector_store, **_):
-        return "agentic KB text", [{"source_file": "agentic.docx", "distance": 0.1, "similarity": 0.9, "text": "agentic KB text"}]
+        return "agentic KB text", [
+            {
+                "source_file": "agentic.docx",
+                "distance": 0.1,
+                "similarity": 0.9,
+                "text": "agentic KB text",
+            }
+        ]
 
     monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fake_retrieve_context)
 
     fake = FakeSectionAnalysisClient(
-        agentic_nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The display shall support HDR.", "tags": []}],
-        agentic_citations=[{"source_file": "agentic.docx", "similarity": 0.9, "text": "agentic KB text"}],
+        agentic_nodes=[
+            {
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "text": "The display shall support HDR.",
+                "tags": [],
+            }
+        ],
+        agentic_citations=[
+            {"source_file": "agentic.docx", "similarity": 0.9, "text": "agentic KB text"}
+        ],
     )
     tree = build_survey_tree(
         _small_doc(),
@@ -3594,13 +4942,22 @@ def test_build_survey_tree_tool_capable_model_uses_agentic_path_and_marks_citati
     retrieve_fn = fake.agentic_calls[0]["retrieve_fn"]
     assert retrieve_fn("some query") == (
         "agentic KB text",
-        [{"source_file": "agentic.docx", "distance": 0.1, "similarity": 0.9, "text": "agentic KB text"}],
+        [
+            {
+                "source_file": "agentic.docx",
+                "distance": 0.1,
+                "similarity": 0.9,
+                "text": "agentic KB text",
+            }
+        ],
     )
     assert tree.kb_citations[0].source_file == "agentic.docx"
     assert tree.kb_citations[0].relevance == KbCitationRelevance.RELEVANT
 
 
-def test_build_survey_tree_agentic_path_reports_real_grounding_in_section_complete(monkeypatch) -> None:
+def test_build_survey_tree_agentic_path_reports_real_grounding_in_section_complete(
+    monkeypatch,
+) -> None:
     # Regression: section_complete's kb_grounded/kb_citations_raw used to
     # check `kb_context`, which is ALWAYS None on the agentic (tool-capable
     # model) path -- so a section that genuinely grounded itself via a real
@@ -3610,13 +4967,30 @@ def test_build_survey_tree_agentic_path_reports_real_grounding_in_section_comple
     from app.kb.kb_vector_store import KbVectorStore
 
     def _fake_retrieve_context(user_id, query_text, embed_client, vector_store, **_):
-        return "agentic KB text", [{"source_file": "agentic.docx", "distance": 0.1, "similarity": 0.9, "text": "agentic KB text"}]
+        return "agentic KB text", [
+            {
+                "source_file": "agentic.docx",
+                "distance": 0.1,
+                "similarity": 0.9,
+                "text": "agentic KB text",
+            }
+        ]
 
     monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fake_retrieve_context)
 
     fake = FakeSectionAnalysisClient(
-        agentic_nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The display shall support HDR.", "tags": []}],
-        agentic_citations=[{"source_file": "agentic.docx", "similarity": 0.9, "text": "agentic KB text"}],
+        agentic_nodes=[
+            {
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "text": "The display shall support HDR.",
+                "tags": [],
+            }
+        ],
+        agentic_citations=[
+            {"source_file": "agentic.docx", "similarity": 0.9, "text": "agentic KB text"}
+        ],
     )
     events = []
     build_survey_tree(
@@ -3650,7 +5024,15 @@ def test_build_survey_tree_agentic_path_dedupes_kb_citations_by_source_file(monk
     monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fake_retrieve_context)
 
     fake = FakeSectionAnalysisClient(
-        agentic_nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The display shall support HDR.", "tags": []}],
+        agentic_nodes=[
+            {
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "text": "The display shall support HDR.",
+                "tags": [],
+            }
+        ],
         agentic_citations=[
             {"source_file": "same.pdf", "similarity": 0.33, "text": "chunk one"},
             {"source_file": "same.pdf", "similarity": 0.38, "text": "chunk two"},
@@ -3667,10 +5049,15 @@ def test_build_survey_tree_agentic_path_dedupes_kb_citations_by_source_file(monk
     )
 
     citations_by_file = {c.source_file: c.similarity for c in tree.kb_citations}
-    assert citations_by_file == {"same.pdf": 0.38, "other.pdf": 0.5}  # highest similarity kept for the duplicated file
+    assert citations_by_file == {
+        "same.pdf": 0.38,
+        "other.pdf": 0.5,
+    }  # highest similarity kept for the duplicated file
 
 
-def test_build_survey_tree_score_requirements_events_carry_the_real_kb_citations_not_an_empty_list(monkeypatch) -> None:
+def test_build_survey_tree_score_requirements_events_carry_the_real_kb_citations_not_an_empty_list(
+    monkeypatch,
+) -> None:
     # Confirmed real user-reported bug: score_requirements/score_requirements_done
     # previously hardcoded kb_citations_raw=[] regardless of kb_grounded, so a
     # genuinely KB-grounded scoring pass rendered "grounded with 0 KB file(s)"
@@ -3681,17 +5068,41 @@ def test_build_survey_tree_score_requirements_events_carry_the_real_kb_citations
     from app.kb.kb_vector_store import KbVectorStore
 
     def _fake_retrieve_context(user_id, query_text, embed_client, vector_store, **_):
-        return "agentic KB text", [{"source_file": "agentic.docx", "distance": 0.1, "similarity": 0.9, "text": "agentic KB text"}]
+        return "agentic KB text", [
+            {
+                "source_file": "agentic.docx",
+                "distance": 0.1,
+                "similarity": 0.9,
+                "text": "agentic KB text",
+            }
+        ]
 
     monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fake_retrieve_context)
 
     class _FakeScoringClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
+        def score_requirements_for_document(
+            self,
+            descriptions_by_node_id,
+            criteria_context=None,
+            kb_context=None,
+            category_checklist=None,
+            user_id=None,
+        ):
             return {node_id: {"score": 90, "issues": []} for node_id in descriptions_by_node_id}
 
     fake = FakeSectionAnalysisClient(
-        agentic_nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The display shall support HDR.", "tags": []}],
-        agentic_citations=[{"source_file": "agentic.docx", "similarity": 0.9, "text": "agentic KB text"}],
+        agentic_nodes=[
+            {
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "text": "The display shall support HDR.",
+                "tags": [],
+            }
+        ],
+        agentic_citations=[
+            {"source_file": "agentic.docx", "similarity": 0.9, "text": "agentic KB text"}
+        ],
     )
     events = []
     build_survey_tree(
@@ -3713,7 +5124,9 @@ def test_build_survey_tree_score_requirements_events_carry_the_real_kb_citations
     assert scoring_done.kb_citations == [{"source_file": "agentic.docx", "similarity": 0.9}]
 
 
-def test_build_survey_tree_scoring_uses_the_stored_checklist_from_the_grounding_document(tmp_path, monkeypatch) -> None:
+def test_build_survey_tree_scoring_uses_the_stored_checklist_from_the_grounding_document(
+    tmp_path, monkeypatch
+) -> None:
     # Confirmed real determinism requirement (user-reported): the SAME
     # document run any number of times must yield the SAME categories --
     # this is the fix: reads the checklist extracted ONCE at KB ingestion
@@ -3723,27 +5136,57 @@ def test_build_survey_tree_scoring_uses_the_stored_checklist_from_the_grounding_
     from app.kb.kb_vector_store import KbVectorStore
 
     def _fake_retrieve_context(user_id, query_text, embed_client, vector_store, **_):
-        return "agentic KB text", [{"source_file": "standard.pdf", "distance": 0.1, "similarity": 0.9, "text": "agentic KB text"}]
+        return "agentic KB text", [
+            {
+                "source_file": "standard.pdf",
+                "distance": 0.1,
+                "similarity": 0.9,
+                "text": "agentic KB text",
+            }
+        ]
 
     monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fake_retrieve_context)
 
     vector_store = KbVectorStore(persist_path=str(tmp_path))
     vector_store.upsert_chunk(
-        chunk_id="s1:standard.pdf:0", embedding=[1.0, 0.0, 0.0], text="checklist text", user_id="Project\\Area1",
-        source_file="standard.pdf", source_id="s1", chunk_index=0, file_hash="h1",
+        chunk_id="s1:standard.pdf:0",
+        embedding=[1.0, 0.0, 0.0],
+        text="checklist text",
+        user_id="Project\\Area1",
+        source_file="standard.pdf",
+        source_id="s1",
+        chunk_index=0,
+        file_hash="h1",
         quality_checklist=["Necessary", "Unambiguous", "Verifiable"],
     )
 
     captured: dict = {}
 
     class _CapturingScoringClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
+        def score_requirements_for_document(
+            self,
+            descriptions_by_node_id,
+            criteria_context=None,
+            kb_context=None,
+            category_checklist=None,
+            user_id=None,
+        ):
             captured["category_checklist"] = category_checklist
             return {node_id: {"score": 90, "issues": []} for node_id in descriptions_by_node_id}
 
     fake = FakeSectionAnalysisClient(
-        agentic_nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The display shall support HDR.", "tags": []}],
-        agentic_citations=[{"source_file": "standard.pdf", "similarity": 0.9, "text": "checklist text"}],
+        agentic_nodes=[
+            {
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "text": "The display shall support HDR.",
+                "tags": [],
+            }
+        ],
+        agentic_citations=[
+            {"source_file": "standard.pdf", "similarity": 0.9, "text": "checklist text"}
+        ],
     )
     build_survey_tree(
         _small_doc(),
@@ -3758,31 +5201,63 @@ def test_build_survey_tree_scoring_uses_the_stored_checklist_from_the_grounding_
     assert captured["category_checklist"] == ["Necessary", "Unambiguous", "Verifiable"]
 
 
-def test_build_survey_tree_falls_back_to_none_checklist_when_grounding_document_never_had_one_extracted(tmp_path, monkeypatch) -> None:
+def test_build_survey_tree_falls_back_to_none_checklist_when_grounding_document_never_had_one_extracted(
+    tmp_path, monkeypatch
+) -> None:
     from app.kb.kb_vector_store import KbVectorStore
 
     def _fake_retrieve_context(user_id, query_text, embed_client, vector_store, **_):
-        return "agentic KB text", [{"source_file": "old_doc.pdf", "distance": 0.1, "similarity": 0.9, "text": "agentic KB text"}]
+        return "agentic KB text", [
+            {
+                "source_file": "old_doc.pdf",
+                "distance": 0.1,
+                "similarity": 0.9,
+                "text": "agentic KB text",
+            }
+        ]
 
     monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fake_retrieve_context)
 
     vector_store = KbVectorStore(persist_path=str(tmp_path))
     # Ingested WITHOUT a checklist_client -- pre-dates this capability.
     vector_store.upsert_chunk(
-        chunk_id="s1:old_doc.pdf:0", embedding=[1.0, 0.0, 0.0], text="some text", user_id="Project\\Area1",
-        source_file="old_doc.pdf", source_id="s1", chunk_index=0, file_hash="h1",
+        chunk_id="s1:old_doc.pdf:0",
+        embedding=[1.0, 0.0, 0.0],
+        text="some text",
+        user_id="Project\\Area1",
+        source_file="old_doc.pdf",
+        source_id="s1",
+        chunk_index=0,
+        file_hash="h1",
     )
 
     captured: dict = {}
 
     class _CapturingScoringClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
+        def score_requirements_for_document(
+            self,
+            descriptions_by_node_id,
+            criteria_context=None,
+            kb_context=None,
+            category_checklist=None,
+            user_id=None,
+        ):
             captured["category_checklist"] = category_checklist
             return {node_id: {"score": 90, "issues": []} for node_id in descriptions_by_node_id}
 
     fake = FakeSectionAnalysisClient(
-        agentic_nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The display shall support HDR.", "tags": []}],
-        agentic_citations=[{"source_file": "old_doc.pdf", "similarity": 0.9, "text": "agentic KB text"}],
+        agentic_nodes=[
+            {
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "text": "The display shall support HDR.",
+                "tags": [],
+            }
+        ],
+        agentic_citations=[
+            {"source_file": "old_doc.pdf", "similarity": 0.9, "text": "agentic KB text"}
+        ],
     )
     build_survey_tree(
         _small_doc(),
@@ -3812,14 +5287,33 @@ def test_build_survey_tree_scoring_is_actually_grounded_on_the_agentic_path() ->
         def __init__(self):
             self.received_kb_context = "unset"
 
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
+        def score_requirements_for_document(
+            self,
+            descriptions_by_node_id,
+            criteria_context=None,
+            kb_context=None,
+            category_checklist=None,
+            user_id=None,
+        ):
             self.received_kb_context = kb_context
             return {node_id: {"score": 90, "issues": []} for node_id in descriptions_by_node_id}
 
     fake = FakeSectionAnalysisClient(
-        agentic_nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The display shall support HDR.", "tags": []}],
+        agentic_nodes=[
+            {
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "text": "The display shall support HDR.",
+                "tags": [],
+            }
+        ],
         agentic_citations=[
-            {"source_file": "a.docx", "similarity": 0.9, "text": "Real retrieved KB text about displays."},
+            {
+                "source_file": "a.docx",
+                "similarity": 0.9,
+                "text": "Real retrieved KB text about displays.",
+            },
         ],
     )
     scoring_client = _FakeScoringClient()
@@ -3901,7 +5395,10 @@ def test_resolve_caps_frontier_prefix_gets_large_cap_and_tools() -> None:
 
 class _FakeCapsClient:
     def __init__(self, response: dict | None = None, raises: bool = False) -> None:
-        self._response = response or {"context_length": 64_000, "capabilities": ["completion", "tools"]}
+        self._response = response or {
+            "context_length": 64_000,
+            "capabilities": ["completion", "tools"],
+        }
         self._raises = raises
         self.call_count = 0
 
@@ -3915,7 +5412,9 @@ class _FakeCapsClient:
 def test_resolve_caps_unknown_model_uses_live_lookup_when_caps_client_supplied() -> None:
     from app.leveling.model_caps import _resolve_caps
 
-    fake_client = _FakeCapsClient({"context_length": 64_000, "capabilities": ["completion", "tools"]})
+    fake_client = _FakeCapsClient(
+        {"context_length": 64_000, "capabilities": ["completion", "tools"]}
+    )
     caps = _resolve_caps("some-fresh-model-v9", caps_client=fake_client)
 
     assert caps.context_budget_tokens == 64_000
@@ -3937,26 +5436,36 @@ def test_resolve_caps_live_lookup_result_is_cached_for_the_process_lifetime() ->
 def test_resolve_caps_live_lookup_at_frontier_threshold_gets_frontier_shaped_caps() -> None:
     from app.leveling.model_caps import _resolve_caps
 
-    fake_client = _FakeCapsClient({"context_length": 200_000, "capabilities": ["completion", "tools"]})
+    fake_client = _FakeCapsClient(
+        {"context_length": 200_000, "capabilities": ["completion", "tools"]}
+    )
     caps = _resolve_caps("some-huge-model-v9", caps_client=fake_client)
 
     assert caps.context_budget_tokens == 200_000
-    assert caps.coverage_budget_tokens == caps.context_budget_tokens  # no lost-in-the-middle guard at this scale
+    assert (
+        caps.coverage_budget_tokens == caps.context_budget_tokens
+    )  # no lost-in-the-middle guard at this scale
     assert caps.branch_cap == 100_000
 
 
-def test_resolve_caps_live_lookup_below_frontier_threshold_keeps_conservative_local_defaults() -> None:
+def test_resolve_caps_live_lookup_below_frontier_threshold_keeps_conservative_local_defaults() -> (
+    None
+):
     from app.leveling.model_caps import (
         _COVERAGE_BUDGET_TOKENS,
         _MAX_SURVEY_BRANCH_BLOCK_COUNT,
         _resolve_caps,
     )
 
-    fake_client = _FakeCapsClient({"context_length": 32_000, "capabilities": ["completion", "tools"]})
+    fake_client = _FakeCapsClient(
+        {"context_length": 32_000, "capabilities": ["completion", "tools"]}
+    )
     caps = _resolve_caps("some-modest-model-v9", caps_client=fake_client)
 
     assert caps.context_budget_tokens == 32_000
-    assert caps.coverage_budget_tokens == _COVERAGE_BUDGET_TOKENS  # the lost-in-the-middle guard stays on
+    assert (
+        caps.coverage_budget_tokens == _COVERAGE_BUDGET_TOKENS
+    )  # the lost-in-the-middle guard stays on
     assert caps.branch_cap == _MAX_SURVEY_BRANCH_BLOCK_COUNT
     assert caps.supports_tools is True
 
@@ -3979,7 +5488,9 @@ def test_resolve_caps_never_calls_the_live_client_for_a_model_already_in_the_sta
     # an entry, no matter what caps_client would have returned.
     from app.leveling.model_caps import _resolve_caps
 
-    fake_client = _FakeCapsClient({"context_length": 1, "capabilities": []})  # would produce very different caps
+    fake_client = _FakeCapsClient(
+        {"context_length": 1, "capabilities": []}
+    )  # would produce very different caps
     caps = _resolve_caps("qwen3.6:35b", caps_client=fake_client)
 
     assert caps.coverage_budget_tokens == 20_000  # the real static-table value, untouched
@@ -3995,7 +5506,15 @@ def test_merge_branches_by_budget_merges_adjacent_small_branches_that_fit_togeth
 
     path = "survey_input.txt"
     branches = [
-        [Block(id=f"b{i}", kind=BlockKind.HEADING, heading_level=1, text=f"Section {i}", source_ref=_sr(path))]
+        [
+            Block(
+                id=f"b{i}",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text=f"Section {i}",
+                source_ref=_sr(path),
+            )
+        ]
         for i in range(5)
     ]
     merged = _merge_branches_by_budget(branches, budget_tokens=1_000_000)
@@ -4010,7 +5529,15 @@ def test_merge_branches_by_budget_keeps_branches_separate_when_over_budget() -> 
 
     path = "survey_input.txt"
     branches = [
-        [Block(id=f"b{i}", kind=BlockKind.HEADING, heading_level=1, text=f"Section {i}", source_ref=_sr(path))]
+        [
+            Block(
+                id=f"b{i}",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text=f"Section {i}",
+                source_ref=_sr(path),
+            )
+        ]
         for i in range(3)
     ]
     merged = _merge_branches_by_budget(branches, budget_tokens=0)
@@ -4025,7 +5552,15 @@ def test_merge_branches_by_budget_merges_only_up_to_budget_then_starts_a_new_bra
 
     path = "survey_input.txt"
     branches = [
-        [Block(id=f"b{i}", kind=BlockKind.HEADING, heading_level=1, text=f"Section {i}", source_ref=_sr(path))]
+        [
+            Block(
+                id=f"b{i}",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text=f"Section {i}",
+                source_ref=_sr(path),
+            )
+        ]
         for i in range(3)
     ]
     single_branch_tokens = _estimate_tokens(render_section(branches[0], None, None))
@@ -4100,7 +5635,14 @@ def test_build_survey_tree_reuses_same_kb_context_for_scoring_as_other_calls(mon
         "app.leveling.llm_leveling.retrieve_context",
         lambda user_id, query_text, embed_client, vector_store, **_: (
             "injected KB text",
-            [{"source_file": "doc-a.docx", "distance": 0.1, "similarity": 0.9, "text": "injected KB text"}],
+            [
+                {
+                    "source_file": "doc-a.docx",
+                    "distance": 0.1,
+                    "similarity": 0.9,
+                    "text": "injected KB text",
+                }
+            ],
         ),
     )
 
@@ -4128,7 +5670,12 @@ def test_build_survey_tree_threads_kb_citations_from_retrieve_context(monkeypatc
         lambda user_id, query_text, embed_client, vector_store, **_: (
             "injected KB text",
             [
-                {"source_file": "doc-a.docx", "distance": 0.1, "similarity": 0.9, "text": "chunk a"},
+                {
+                    "source_file": "doc-a.docx",
+                    "distance": 0.1,
+                    "similarity": 0.9,
+                    "text": "chunk a",
+                },
                 {"source_file": "doc-b.pdf", "distance": 0.2, "similarity": 0.8, "text": "chunk b"},
             ],
         ),
@@ -4162,7 +5709,9 @@ def test_build_survey_tree_kb_citations_empty_when_retrieval_finds_nothing(monke
     assert tree.kb_citations == []
 
 
-def test_build_survey_tree_kb_citations_stay_unknown_relevance_when_no_relevance_client(monkeypatch) -> None:
+def test_build_survey_tree_kb_citations_stay_unknown_relevance_when_no_relevance_client(
+    monkeypatch,
+) -> None:
     from app.kb.kb_vector_store import KbVectorStore
 
     monkeypatch.setattr(
@@ -4183,7 +5732,9 @@ def test_build_survey_tree_kb_citations_stay_unknown_relevance_when_no_relevance
     assert tree.kb_citations[0].relevance == KbCitationRelevance.UNKNOWN
 
 
-def test_build_survey_tree_kb_citations_get_verified_relevance_when_relevance_client_supplied(monkeypatch) -> None:
+def test_build_survey_tree_kb_citations_get_verified_relevance_when_relevance_client_supplied(
+    monkeypatch,
+) -> None:
     from app.kb.kb_vector_store import KbVectorStore
 
     monkeypatch.setattr(
@@ -4191,14 +5742,26 @@ def test_build_survey_tree_kb_citations_get_verified_relevance_when_relevance_cl
         lambda user_id, query_text, embed_client, vector_store, **_: (
             "injected KB text",
             [
-                {"source_file": "relevant.docx", "distance": 0.1, "similarity": 0.9, "text": "chunk a"},
-                {"source_file": "irrelevant.docx", "distance": 0.2, "similarity": 0.8, "text": "chunk b"},
+                {
+                    "source_file": "relevant.docx",
+                    "distance": 0.1,
+                    "similarity": 0.9,
+                    "text": "chunk a",
+                },
+                {
+                    "source_file": "irrelevant.docx",
+                    "distance": 0.2,
+                    "similarity": 0.8,
+                    "text": "chunk b",
+                },
             ],
         ),
     )
 
     class _FakeKbRelevanceClient:
-        def judge_kb_relevance(self, branch_content: str, snippets: list[dict], user_id: str | None = None) -> dict[str, str]:
+        def judge_kb_relevance(
+            self, branch_content: str, snippets: list[dict], user_id: str | None = None
+        ) -> dict[str, str]:
             return {"0": "relevant", "1": "not_relevant"}
 
     tree = build_survey_tree(
@@ -4214,7 +5777,9 @@ def test_build_survey_tree_kb_citations_get_verified_relevance_when_relevance_cl
     assert by_file["irrelevant.docx"] == KbCitationRelevance.NOT_RELEVANT
 
 
-def test_build_survey_tree_kb_citations_degrade_to_unknown_when_relevance_client_raises(monkeypatch) -> None:
+def test_build_survey_tree_kb_citations_degrade_to_unknown_when_relevance_client_raises(
+    monkeypatch,
+) -> None:
     from app.kb.kb_vector_store import KbVectorStore
 
     monkeypatch.setattr(
@@ -4226,7 +5791,9 @@ def test_build_survey_tree_kb_citations_degrade_to_unknown_when_relevance_client
     )
 
     class _RaisingKbRelevanceClient:
-        def judge_kb_relevance(self, branch_content: str, snippets: list[dict], user_id: str | None = None) -> dict[str, str]:
+        def judge_kb_relevance(
+            self, branch_content: str, snippets: list[dict], user_id: str | None = None
+        ) -> dict[str, str]:
             raise RuntimeError("orchestrator unreachable")
 
     tree = build_survey_tree(
@@ -4240,7 +5807,9 @@ def test_build_survey_tree_kb_citations_degrade_to_unknown_when_relevance_client
     assert tree.kb_citations[0].relevance == KbCitationRelevance.UNKNOWN
 
 
-def test_build_survey_tree_fallback_path_build_skeleton_narrates_the_real_citation_not_a_fabricated_one(monkeypatch) -> None:
+def test_build_survey_tree_fallback_path_build_skeleton_narrates_the_real_citation_not_a_fabricated_one(
+    monkeypatch,
+) -> None:
     # Confirmed real bug (item 4, "fabricated citation identity"): the
     # fallback path's build_skeleton narration used to synthesize a single
     # fake {"source_file": "(document-level)", "similarity": 1.0} citation
@@ -4255,7 +5824,14 @@ def test_build_survey_tree_fallback_path_build_skeleton_narrates_the_real_citati
         "app.leveling.llm_leveling.retrieve_context",
         lambda user_id, query_text, embed_client, vector_store, **_: (
             "injected KB text",
-            [{"source_file": "spec.docx", "distance": 0.1, "similarity": 0.9, "text": "injected KB text"}],
+            [
+                {
+                    "source_file": "spec.docx",
+                    "distance": 0.1,
+                    "similarity": 0.9,
+                    "text": "injected KB text",
+                }
+            ],
         ),
     )
 
@@ -4272,10 +5848,14 @@ def test_build_survey_tree_fallback_path_build_skeleton_narrates_the_real_citati
     build_skeleton_events = [e for e in events if e.phase == "build_skeleton"]
     assert build_skeleton_events
     assert build_skeleton_events[0].kb_grounded is True
-    assert build_skeleton_events[0].kb_citations == [{"source_file": "spec.docx", "similarity": 0.9}]
+    assert build_skeleton_events[0].kb_citations == [
+        {"source_file": "spec.docx", "similarity": 0.9}
+    ]
 
 
-def test_build_survey_tree_agentic_path_scoring_kb_context_merges_always_include_with_query_kb_hits(monkeypatch) -> None:
+def test_build_survey_tree_agentic_path_scoring_kb_context_merges_always_include_with_query_kb_hits(
+    monkeypatch,
+) -> None:
     # Confirmed real bug (item 4 Critical, llm_leveling.py scoring_kb_context):
     # on the agentic path, `scoring_kb_context` used to be OVERWRITTEN by the
     # model's own query_kb hit text, silently discarding always-include KB
@@ -4288,7 +5868,9 @@ def test_build_survey_tree_agentic_path_scoring_kb_context_merges_always_include
     def _fake_fetch_always_include_context(user_id, vector_store):
         return "always-include KB text", [{"source_file": "always.docx", "similarity": 1.0}]
 
-    monkeypatch.setattr("app.leveling.llm_leveling.fetch_always_include_context", _fake_fetch_always_include_context)
+    monkeypatch.setattr(
+        "app.leveling.llm_leveling.fetch_always_include_context", _fake_fetch_always_include_context
+    )
 
     captured: dict[str, str | None] = {}
 
@@ -4305,8 +5887,18 @@ def test_build_survey_tree_agentic_path_scoring_kb_context_merges_always_include
             return {node_id: {"score": 100, "issues": []} for node_id in descriptions_by_node_id}
 
     fake = FakeSectionAnalysisClient(
-        agentic_nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The display shall support HDR.", "tags": []}],
-        agentic_citations=[{"source_file": "queried.docx", "similarity": 0.9, "text": "query_kb hit text"}],
+        agentic_nodes=[
+            {
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "text": "The display shall support HDR.",
+                "tags": [],
+            }
+        ],
+        agentic_citations=[
+            {"source_file": "queried.docx", "similarity": 0.9, "text": "query_kb hit text"}
+        ],
     )
     build_survey_tree(
         _small_doc(),
@@ -4332,12 +5924,22 @@ class FakeTraceLinkInferenceClient:
         self._results = results if results is not None else []
         self.calls: list[dict] = []
 
-    def infer_trace_links(self, nodes: list[dict], link_type_catalog: list[dict], kb_context: str | None = None, user_id: str | None = None) -> list[dict]:
-        self.calls.append({"nodes": nodes, "link_type_catalog": link_type_catalog, "kb_context": kb_context})
+    def infer_trace_links(
+        self,
+        nodes: list[dict],
+        link_type_catalog: list[dict],
+        kb_context: str | None = None,
+        user_id: str | None = None,
+    ) -> list[dict]:
+        self.calls.append(
+            {"nodes": nodes, "link_type_catalog": link_type_catalog, "kb_context": kb_context}
+        )
         return self._results
 
 
-def test_infer_trace_links_for_nodes_drops_a_link_whose_evidence_quote_is_not_in_the_source_node_text() -> None:
+def test_infer_trace_links_for_nodes_drops_a_link_whose_evidence_quote_is_not_in_the_source_node_text() -> (
+    None
+):
     # Real anti-hallucination guard (SWEEP.md section 7): a proposed link
     # whose evidence_quote isn't a literal substring of the SOURCE node's
     # own text has no verifiable textual basis and must be dropped, same
@@ -4347,7 +5949,14 @@ def test_infer_trace_links_for_nodes_drops_a_link_whose_evidence_quote_is_not_in
         _req_node("n1", "The customer requires high dynamic range video."),
     ]
     client = FakeTraceLinkInferenceClient(
-        results=[{"source_node_id": "n0", "reference_name": "Affects", "target_ref": "n1", "evidence_quote": "text that does not appear anywhere in n0"}]
+        results=[
+            {
+                "source_node_id": "n0",
+                "reference_name": "Affects",
+                "target_ref": "n1",
+                "evidence_quote": "text that does not appear anywhere in n0",
+            }
+        ]
     )
     warnings: list = []
     links = _infer_trace_links_for_nodes(nodes, client, [], warnings, None, 0, 0)
@@ -4368,7 +5977,14 @@ def test_infer_trace_links_for_nodes_drops_a_link_whose_evidence_quote_is_not_a_
         _req_node("n1", "The customer requires high dynamic range video."),
     ]
     client = FakeTraceLinkInferenceClient(
-        results=[{"source_node_id": "n0", "reference_name": "Affects", "target_ref": "n1", "evidence_quote": ["not", "a", "string"]}]
+        results=[
+            {
+                "source_node_id": "n0",
+                "reference_name": "Affects",
+                "target_ref": "n1",
+                "evidence_quote": ["not", "a", "string"],
+            }
+        ]
     )
     warnings: list = []
     links = _infer_trace_links_for_nodes(nodes, client, [], warnings, None, 0, 0)
@@ -4387,8 +6003,10 @@ def test_build_survey_tree_sends_trace_link_nodes_without_a_redundant_title_key(
     # non-change) since external ref ids can appear anywhere in it.
     fake_client = FakeTraceLinkInferenceClient()
     build_survey_tree(
-        _small_doc(), FakeSectionAnalysisClient(),
-        link_type_client=fake_client, link_type_catalog=[],
+        _small_doc(),
+        FakeSectionAnalysisClient(),
+        link_type_client=fake_client,
+        link_type_catalog=[],
     )
     assert len(fake_client.calls) == 1
     for node in fake_client.calls[0]["nodes"]:
@@ -4411,7 +6029,13 @@ def test_build_survey_tree_sends_trace_link_nodes_with_table_html_stripped() -> 
         return SourceRef(document_path=path, start_offset=offset, end_offset=offset + 10)
 
     def h(block_id: str, level: int, text: str, offset: int) -> Block:
-        return Block(id=block_id, kind=BlockKind.HEADING, heading_level=level, text=text, source_ref=sr(offset))
+        return Block(
+            id=block_id,
+            kind=BlockKind.HEADING,
+            heading_level=level,
+            text=text,
+            source_ref=sr(offset),
+        )
 
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
@@ -4424,18 +6048,28 @@ def test_build_survey_tree_sends_trace_link_nodes_with_table_html_stripped() -> 
             h("b5", 2, "The system shall do E.", 500),
         ],
         tables=[
-            Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["Rail", "Voltage"]]], source_ref=sr(50)),
+            Table(
+                id="t0",
+                cells=[[TableCell(text=c) for c in row] for row in [["Rail", "Voltage"]]],
+                source_ref=sr(50),
+            ),
         ],
     )
 
     class FakeParentSummaryClient:
         def summarize_parent_nodes(self, nodes_by_id, user_id=None):
-            return {node_id: {"title": "Synthesized Epic", "description": "Covers A-E."} for node_id in nodes_by_id}
+            return {
+                node_id: {"title": "Synthesized Epic", "description": "Covers A-E."}
+                for node_id in nodes_by_id
+            }
 
     fake_trace_client = FakeTraceLinkInferenceClient()
     tree = build_survey_tree(
-        doc, FakeSectionAnalysisClient(), parent_summary_client=FakeParentSummaryClient(),
-        link_type_client=fake_trace_client, link_type_catalog=[],
+        doc,
+        FakeSectionAnalysisClient(),
+        parent_summary_client=FakeParentSummaryClient(),
+        link_type_client=fake_trace_client,
+        link_type_catalog=[],
     )
 
     epic = next(n for n in tree.nodes if n.title == "Synthesized Epic")
@@ -4458,13 +6092,20 @@ def test_build_survey_tree_skips_a_non_object_trace_link_entry_without_crashing(
     # philosophy.
     fake_client = FakeTraceLinkInferenceClient(
         results=[
-            {"source_node_id": "s1", "target_ref": "s2", "reference_name": "System.LinkTypes.Related", "evidence_quote": "see Sibling B"},
+            {
+                "source_node_id": "s1",
+                "target_ref": "s2",
+                "reference_name": "System.LinkTypes.Related",
+                "evidence_quote": "see Sibling B",
+            },
             "a malformed bare string entry",
         ]
     )
     tree = build_survey_tree(
-        _small_doc(), FakeSectionAnalysisClient(nodes=_SIBLING_NODES),
-        link_type_client=fake_client, link_type_catalog=[],
+        _small_doc(),
+        FakeSectionAnalysisClient(nodes=_SIBLING_NODES),
+        link_type_client=fake_client,
+        link_type_catalog=[],
     )
     assert len(tree.trace_links) == 1
     assert tree.trace_links[0].source_local_id == "s1"
@@ -4473,16 +6114,22 @@ def test_build_survey_tree_skips_a_non_object_trace_link_entry_without_crashing(
 
 def test_build_survey_tree_calls_infer_trace_links_exactly_once_with_the_catalog() -> None:
     fake_client = FakeTraceLinkInferenceClient()
-    catalog = [{"reference_name": "System.LinkTypes.Related", "name": "Related", "semantic_hint": None}]
+    catalog = [
+        {"reference_name": "System.LinkTypes.Related", "name": "Related", "semantic_hint": None}
+    ]
     build_survey_tree(
-        _small_doc(), FakeSectionAnalysisClient(),
-        link_type_client=fake_client, link_type_catalog=catalog,
+        _small_doc(),
+        FakeSectionAnalysisClient(),
+        link_type_client=fake_client,
+        link_type_catalog=catalog,
     )
     assert len(fake_client.calls) == 1
     assert fake_client.calls[0]["link_type_catalog"] == catalog
 
 
-def test_build_survey_tree_forwards_doc_kb_context_to_trace_link_inference_on_fallback_path(monkeypatch) -> None:
+def test_build_survey_tree_forwards_doc_kb_context_to_trace_link_inference_on_fallback_path(
+    monkeypatch,
+) -> None:
     # Task 6: relationship EXISTENCE between two nodes is still judged from
     # node text alone (unchanged), but the link-TYPE-CHOICE for an ambiguous
     # custom type can benefit from the document's own KB material -- the
@@ -4497,20 +6144,26 @@ def test_build_survey_tree_forwards_doc_kb_context_to_trace_link_inference_on_fa
     monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fake_retrieve_context)
 
     fake_client = FakeTraceLinkInferenceClient()
-    catalog = [{"reference_name": "Elisra.CoveredBy-Forward", "name": "Covered By", "semantic_hint": None}]
+    catalog = [
+        {"reference_name": "Elisra.CoveredBy-Forward", "name": "Covered By", "semantic_hint": None}
+    ]
     build_survey_tree(
-        _small_doc(), FakeSectionAnalysisClient(),
+        _small_doc(),
+        FakeSectionAnalysisClient(),
         user_id="Project\\Area1",
         embed_client=object(),
         vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
         model="some-unknown-model",  # _resolve_caps gating: forces the fallback (non-agentic) path
-        link_type_client=fake_client, link_type_catalog=catalog,
+        link_type_client=fake_client,
+        link_type_catalog=catalog,
     )
     assert len(fake_client.calls) == 1
     assert fake_client.calls[0]["kb_context"] == "org traceability conventions doc text"
 
 
-def test_build_survey_tree_trace_link_inference_gets_no_topical_kb_context_on_agentic_path_when_no_always_include_docs(monkeypatch) -> None:
+def test_build_survey_tree_trace_link_inference_gets_no_topical_kb_context_on_agentic_path_when_no_always_include_docs(
+    monkeypatch,
+) -> None:
     # Known, documented limitation (see _infer_trace_links_for_nodes's own
     # call site comment in build_survey_tree): on the agentic (tool-capable
     # model) path, doc_kb_context only ever holds already-merged
@@ -4532,7 +6185,12 @@ def test_build_survey_tree_trace_link_inference_gets_no_topical_kb_context_on_ag
 
     def _fake_retrieve_context(user_id, query_text, embed_client, vector_store, **_):
         return "agentic KB text", [
-            {"source_file": "agentic.docx", "distance": 0.1, "similarity": 0.9, "text": "agentic KB text"}
+            {
+                "source_file": "agentic.docx",
+                "distance": 0.1,
+                "similarity": 0.9,
+                "text": "agentic KB text",
+            }
         ]
 
     monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fake_retrieve_context)
@@ -4540,23 +6198,35 @@ def test_build_survey_tree_trace_link_inference_gets_no_topical_kb_context_on_ag
     fake_client = FakeTraceLinkInferenceClient()
     fake_analysis = FakeSectionAnalysisClient(
         agentic_nodes=[
-            {"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The display shall support HDR.", "tags": []}
+            {
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "text": "The display shall support HDR.",
+                "tags": [],
+            }
         ],
-        agentic_citations=[{"source_file": "agentic.docx", "similarity": 0.9, "text": "agentic KB text"}],
+        agentic_citations=[
+            {"source_file": "agentic.docx", "similarity": 0.9, "text": "agentic KB text"}
+        ],
     )
     build_survey_tree(
-        _small_doc(), fake_analysis,
+        _small_doc(),
+        fake_analysis,
         user_id="Project\\Area1",
         embed_client=object(),
         vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
         model="qwen3:4b",  # confirmed live tool-capable, see _MODEL_CAPS
-        link_type_client=fake_client, link_type_catalog=[],
+        link_type_client=fake_client,
+        link_type_catalog=[],
     )
     assert len(fake_client.calls) == 1
     assert fake_client.calls[0]["kb_context"] is None
 
 
-def test_build_survey_tree_trace_link_inference_gets_always_include_kb_context_on_agentic_path(monkeypatch) -> None:
+def test_build_survey_tree_trace_link_inference_gets_always_include_kb_context_on_agentic_path(
+    monkeypatch,
+) -> None:
     # Positive-case sibling to the test above: when the user DOES have an
     # always-include document configured, doc_kb_context on the agentic
     # path is non-None -- it's just the always-include material, not a
@@ -4567,29 +6237,46 @@ def test_build_survey_tree_trace_link_inference_gets_always_include_kb_context_o
 
     def _fake_retrieve_context(user_id, query_text, embed_client, vector_store, **_):
         return "agentic KB text", [
-            {"source_file": "agentic.docx", "distance": 0.1, "similarity": 0.9, "text": "agentic KB text"}
+            {
+                "source_file": "agentic.docx",
+                "distance": 0.1,
+                "similarity": 0.9,
+                "text": "agentic KB text",
+            }
         ]
 
     def _fake_fetch_always_include_context(user_id, vector_store):
         return "always-include KB text", [{"source_file": "always.docx", "similarity": 1.0}]
 
     monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fake_retrieve_context)
-    monkeypatch.setattr("app.leveling.llm_leveling.fetch_always_include_context", _fake_fetch_always_include_context)
+    monkeypatch.setattr(
+        "app.leveling.llm_leveling.fetch_always_include_context", _fake_fetch_always_include_context
+    )
 
     fake_client = FakeTraceLinkInferenceClient()
     fake_analysis = FakeSectionAnalysisClient(
         agentic_nodes=[
-            {"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The display shall support HDR.", "tags": []}
+            {
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "text": "The display shall support HDR.",
+                "tags": [],
+            }
         ],
-        agentic_citations=[{"source_file": "agentic.docx", "similarity": 0.9, "text": "agentic KB text"}],
+        agentic_citations=[
+            {"source_file": "agentic.docx", "similarity": 0.9, "text": "agentic KB text"}
+        ],
     )
     build_survey_tree(
-        _small_doc(), fake_analysis,
+        _small_doc(),
+        fake_analysis,
         user_id="Project\\Area1",
         embed_client=object(),
         vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
         model="qwen3:4b",  # confirmed live tool-capable, see _MODEL_CAPS
-        link_type_client=fake_client, link_type_catalog=[],
+        link_type_client=fake_client,
+        link_type_catalog=[],
     )
     assert len(fake_client.calls) == 1
     assert fake_client.calls[0]["kb_context"] == "always-include KB text"
@@ -4606,28 +6293,61 @@ def test_build_survey_tree_drops_a_trace_link_between_a_node_and_its_own_parent(
     # exact same pair (ADO's Related Work panel showed both "Child" and
     # "Affects" listing the identical work item). n0 is n1's parent per
     # _DEFAULT_NODES -- both directions must be dropped.
-    catalog = [{"reference_name": "Microsoft.VSTS.Common.Affects-Forward", "name": "Affects", "semantic_hint": None}]
+    catalog = [
+        {
+            "reference_name": "Microsoft.VSTS.Common.Affects-Forward",
+            "name": "Affects",
+            "semantic_hint": None,
+        }
+    ]
     fake_client = FakeTraceLinkInferenceClient(
         results=[
-            {"source_node_id": "n0", "reference_name": "Microsoft.VSTS.Common.Affects-Forward", "target_ref": "n1", "evidence_quote": "Display"},
-            {"source_node_id": "n1", "reference_name": "Microsoft.VSTS.Common.Affects-Forward", "target_ref": "n0", "evidence_quote": "support HDR"},
+            {
+                "source_node_id": "n0",
+                "reference_name": "Microsoft.VSTS.Common.Affects-Forward",
+                "target_ref": "n1",
+                "evidence_quote": "Display",
+            },
+            {
+                "source_node_id": "n1",
+                "reference_name": "Microsoft.VSTS.Common.Affects-Forward",
+                "target_ref": "n0",
+                "evidence_quote": "support HDR",
+            },
         ]
     )
     tree = build_survey_tree(
-        _small_doc(), FakeSectionAnalysisClient(),
-        link_type_client=fake_client, link_type_catalog=catalog,
+        _small_doc(),
+        FakeSectionAnalysisClient(),
+        link_type_client=fake_client,
+        link_type_catalog=catalog,
     )
     assert tree.trace_links == []
 
 
 def test_build_survey_tree_drops_a_self_referencing_trace_link() -> None:
-    catalog = [{"reference_name": "Microsoft.VSTS.Common.Affects-Forward", "name": "Affects", "semantic_hint": None}]
+    catalog = [
+        {
+            "reference_name": "Microsoft.VSTS.Common.Affects-Forward",
+            "name": "Affects",
+            "semantic_hint": None,
+        }
+    ]
     fake_client = FakeTraceLinkInferenceClient(
-        results=[{"source_node_id": "n1", "reference_name": "Microsoft.VSTS.Common.Affects-Forward", "target_ref": "n1", "evidence_quote": "support HDR"}]
+        results=[
+            {
+                "source_node_id": "n1",
+                "reference_name": "Microsoft.VSTS.Common.Affects-Forward",
+                "target_ref": "n1",
+                "evidence_quote": "support HDR",
+            }
+        ]
     )
     tree = build_survey_tree(
-        _small_doc(), FakeSectionAnalysisClient(),
-        link_type_client=fake_client, link_type_catalog=catalog,
+        _small_doc(),
+        FakeSectionAnalysisClient(),
+        link_type_client=fake_client,
+        link_type_catalog=catalog,
     )
     assert tree.trace_links == []
 
@@ -4637,13 +6357,28 @@ def test_build_survey_tree_keeps_a_trace_link_between_non_hierarchy_related_node
     # a DIRECT parent/child pair, not trace links in general -- two
     # siblings (both children of the same root, neither one the other's
     # parent) are a legitimate trace/coverage relationship and must survive.
-    catalog = [{"reference_name": "Microsoft.VSTS.Common.Affects-Forward", "name": "Affects", "semantic_hint": None}]
+    catalog = [
+        {
+            "reference_name": "Microsoft.VSTS.Common.Affects-Forward",
+            "name": "Affects",
+            "semantic_hint": None,
+        }
+    ]
     fake_client = FakeTraceLinkInferenceClient(
-        results=[{"source_node_id": "s1", "reference_name": "Microsoft.VSTS.Common.Affects-Forward", "target_ref": "s2", "evidence_quote": "see Sibling B"}]
+        results=[
+            {
+                "source_node_id": "s1",
+                "reference_name": "Microsoft.VSTS.Common.Affects-Forward",
+                "target_ref": "s2",
+                "evidence_quote": "see Sibling B",
+            }
+        ]
     )
     tree = build_survey_tree(
-        _small_doc(), FakeSectionAnalysisClient(nodes=_SIBLING_NODES),
-        link_type_client=fake_client, link_type_catalog=catalog,
+        _small_doc(),
+        FakeSectionAnalysisClient(nodes=_SIBLING_NODES),
+        link_type_client=fake_client,
+        link_type_catalog=catalog,
     )
     assert len(tree.trace_links) == 1
     assert tree.trace_links[0].source_local_id == "s1"
@@ -4665,8 +6400,10 @@ def test_build_survey_tree_degrades_to_empty_trace_links_when_inference_raises()
             raise ValueError("malformed JSON in LLM response content: 'Based'")
 
     tree = build_survey_tree(
-        _small_doc(), FakeSectionAnalysisClient(),
-        link_type_client=_RaisingTraceLinkClient(), link_type_catalog=[],
+        _small_doc(),
+        FakeSectionAnalysisClient(),
+        link_type_client=_RaisingTraceLinkClient(),
+        link_type_catalog=[],
     )
     assert tree.trace_links == []
     assert len(tree.nodes) == 2  # analysis output is unaffected
@@ -4674,7 +6411,10 @@ def test_build_survey_tree_degrades_to_empty_trace_links_when_inference_raises()
 
 
 def _trace_nodes(count: int) -> list[WorkItemNode]:
-    return [_req_node(f"n{i}", f"Requirement number {i} shall do thing {i} per REQ-9.") for i in range(count)]
+    return [
+        _req_node(f"n{i}", f"Requirement number {i} shall do thing {i} per REQ-9.")
+        for i in range(count)
+    ]
 
 
 class _ChunkRecordingTraceClient:
@@ -4692,12 +6432,22 @@ class _ChunkRecordingTraceClient:
             import httpx
 
             raise httpx.HTTPStatusError(
-                "502", request=httpx.Request("POST", "http://x"), response=httpx.Response(502),
+                "502",
+                request=httpx.Request("POST", "http://x"),
+                response=httpx.Response(502),
             )
-        return [
-            {"source_node_id": ids[0], "target_ref": "REQ-9", "reference_name": "System.LinkTypes.Related",
-             "evidence_quote": "per REQ-9"}
-        ] if self._links is None else self._links
+        return (
+            [
+                {
+                    "source_node_id": ids[0],
+                    "target_ref": "REQ-9",
+                    "reference_name": "System.LinkTypes.Related",
+                    "evidence_quote": "per REQ-9",
+                }
+            ]
+            if self._links is None
+            else self._links
+        )
 
 
 def test_trace_links_are_requested_in_bounded_chunks() -> None:
@@ -4708,7 +6458,11 @@ def test_trace_links_are_requested_in_bounded_chunks() -> None:
 
     links = _infer_trace_links_for_nodes(nodes, client, [], [], None, 0, 0)
 
-    assert [len(c) for c in client.calls] == [tl._TRACE_CHUNK_MAX_NODES, tl._TRACE_CHUNK_MAX_NODES, 1]
+    assert [len(c) for c in client.calls] == [
+        tl._TRACE_CHUNK_MAX_NODES,
+        tl._TRACE_CHUNK_MAX_NODES,
+        1,
+    ]
     assert len(links) == 3  # every chunk's link is merged
 
 
@@ -4771,8 +6525,10 @@ def test_build_survey_tree_captures_the_raw_response_when_trace_link_inference_f
 
     debug_capture = _FakeDebugCapture()
     build_survey_tree(
-        _small_doc(), FakeSectionAnalysisClient(),
-        link_type_client=_RaisingTraceLinkClient(), link_type_catalog=[],
+        _small_doc(),
+        FakeSectionAnalysisClient(),
+        link_type_client=_RaisingTraceLinkClient(),
+        link_type_catalog=[],
         debug_capture=debug_capture,
     )
     assert len(debug_capture.calls) == 1
@@ -4787,11 +6543,20 @@ def test_build_survey_tree_resolves_intra_job_link_target() -> None:
     # pair -- see _SIBLING_NODES' own comment for why this test can't use
     # _DEFAULT_NODES' n0/n1 anymore.
     fake_client = FakeTraceLinkInferenceClient(
-        results=[{"source_node_id": "s1", "target_ref": "s2", "reference_name": "System.LinkTypes.Related", "evidence_quote": "see Sibling B"}]
+        results=[
+            {
+                "source_node_id": "s1",
+                "target_ref": "s2",
+                "reference_name": "System.LinkTypes.Related",
+                "evidence_quote": "see Sibling B",
+            }
+        ]
     )
     tree = build_survey_tree(
-        _small_doc(), FakeSectionAnalysisClient(nodes=_SIBLING_NODES),
-        link_type_client=fake_client, link_type_catalog=[],
+        _small_doc(),
+        FakeSectionAnalysisClient(nodes=_SIBLING_NODES),
+        link_type_client=fake_client,
+        link_type_catalog=[],
     )
     assert len(tree.trace_links) == 1
     link = tree.trace_links[0]
@@ -4803,15 +6568,24 @@ def test_build_survey_tree_resolves_intra_job_link_target() -> None:
 
 def test_build_survey_tree_treats_a_non_node_id_target_ref_as_cross_job_customer_id() -> None:
     fake_client = FakeTraceLinkInferenceClient(
-        results=[{"source_node_id": "n1", "target_ref": "REQ-SYS-012", "reference_name": "Elisra.CoveredBy-Reverse", "evidence_quote": "support HDR per REQ-SYS-012"}]
+        results=[
+            {
+                "source_node_id": "n1",
+                "target_ref": "REQ-SYS-012",
+                "reference_name": "Elisra.CoveredBy-Reverse",
+                "evidence_quote": "support HDR per REQ-SYS-012",
+            }
+        ]
     )
     nodes = [
         {**_DEFAULT_NODES[0]},
         {**_DEFAULT_NODES[1], "text": "The display shall support HDR per REQ-SYS-012."},
     ]
     tree = build_survey_tree(
-        _small_doc(), FakeSectionAnalysisClient(nodes=nodes),
-        link_type_client=fake_client, link_type_catalog=[],
+        _small_doc(),
+        FakeSectionAnalysisClient(nodes=nodes),
+        link_type_client=fake_client,
+        link_type_catalog=[],
     )
     link = tree.trace_links[0]
     assert link.target_kind == "crossJob"
@@ -4822,14 +6596,28 @@ def test_build_survey_tree_treats_a_non_node_id_target_ref_as_cross_job_customer
 def test_build_survey_tree_drops_a_link_with_a_reference_name_not_in_the_catalog() -> None:
     fake_client = FakeTraceLinkInferenceClient(
         results=[
-            {"source_node_id": "s1", "target_ref": "s2", "reference_name": "Hallucinated.NotReal", "evidence_quote": "see Sibling B"},
-            {"source_node_id": "s1", "target_ref": "s2", "reference_name": "System.LinkTypes.Related", "evidence_quote": "see Sibling B"},
+            {
+                "source_node_id": "s1",
+                "target_ref": "s2",
+                "reference_name": "Hallucinated.NotReal",
+                "evidence_quote": "see Sibling B",
+            },
+            {
+                "source_node_id": "s1",
+                "target_ref": "s2",
+                "reference_name": "System.LinkTypes.Related",
+                "evidence_quote": "see Sibling B",
+            },
         ]
     )
-    catalog = [{"reference_name": "System.LinkTypes.Related", "name": "Related", "semantic_hint": None}]
+    catalog = [
+        {"reference_name": "System.LinkTypes.Related", "name": "Related", "semantic_hint": None}
+    ]
     tree = build_survey_tree(
-        _small_doc(), FakeSectionAnalysisClient(nodes=_SIBLING_NODES),
-        link_type_client=fake_client, link_type_catalog=catalog,
+        _small_doc(),
+        FakeSectionAnalysisClient(nodes=_SIBLING_NODES),
+        link_type_client=fake_client,
+        link_type_catalog=catalog,
     )
     assert len(tree.trace_links) == 1
     assert tree.trace_links[0].reference_name == "System.LinkTypes.Related"
@@ -4837,16 +6625,27 @@ def test_build_survey_tree_drops_a_link_with_a_reference_name_not_in_the_catalog
 
 def test_build_survey_tree_drops_a_link_whose_source_node_id_does_not_exist() -> None:
     fake_client = FakeTraceLinkInferenceClient(
-        results=[{"source_node_id": "does-not-exist", "target_ref": "n0", "reference_name": "System.LinkTypes.Related", "evidence_quote": "Display"}]
+        results=[
+            {
+                "source_node_id": "does-not-exist",
+                "target_ref": "n0",
+                "reference_name": "System.LinkTypes.Related",
+                "evidence_quote": "Display",
+            }
+        ]
     )
     tree = build_survey_tree(
-        _small_doc(), FakeSectionAnalysisClient(),
-        link_type_client=fake_client, link_type_catalog=[{"reference_name": "System.LinkTypes.Related", "name": "Related"}],
+        _small_doc(),
+        FakeSectionAnalysisClient(),
+        link_type_client=fake_client,
+        link_type_catalog=[{"reference_name": "System.LinkTypes.Related", "name": "Related"}],
     )
     assert tree.trace_links == []
 
 
-def test_build_survey_tree_bounds_an_oversized_top_level_branch_into_multiple_analysis_calls(monkeypatch) -> None:
+def test_build_survey_tree_bounds_an_oversized_top_level_branch_into_multiple_analysis_calls(
+    monkeypatch,
+) -> None:
     # Reproduces a real failure: a document can have very few top-level
     # sections (here, deliberately just one) that are themselves still too
     # large for a single per-branch analyze_section call. build_survey_tree
@@ -4862,8 +6661,17 @@ def test_build_survey_tree_bounds_an_oversized_top_level_branch_into_multiple_an
     path = "one_big_section.txt"
     blocks = [Block(id="b0", kind=BlockKind.PARAGRAPH, text="2 Title", source_ref=_sr(path))]
     for i in range(1, 7):
-        blocks.append(Block(id=f"b{i}", kind=BlockKind.PARAGRAPH, text=f"2.{i} The system shall do thing {i}.", source_ref=_sr(path)))
-    doc = CanonicalDoc(document=Document(path=path, format=DocumentFormat.TXT, sha256="h"), blocks=blocks)
+        blocks.append(
+            Block(
+                id=f"b{i}",
+                kind=BlockKind.PARAGRAPH,
+                text=f"2.{i} The system shall do thing {i}.",
+                source_ref=_sr(path),
+            )
+        )
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"), blocks=blocks
+    )
 
     class _CountingSectionAnalysisClient:
         def __init__(self) -> None:
@@ -4878,28 +6686,46 @@ def test_build_survey_tree_bounds_an_oversized_top_level_branch_into_multiple_an
             return [line for line in own_text.strip().split("\n") if line]
 
         def analyze_section_skeleton(
-            self, section_text: str, kb_context: str | None = None, *,
+            self,
+            section_text: str,
+            kb_context: str | None = None,
+            *,
             options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
             user_id: str | None = None,
         ) -> tuple[list[dict], bool]:
             self.call_count += 1
             return [
-                {"temp_id": str(i), "type": "Requirement", "parent_temp_id": None, "title": line[:80]}
+                {
+                    "temp_id": str(i),
+                    "type": "Requirement",
+                    "parent_temp_id": None,
+                    "title": line[:80],
+                }
                 for i, line in enumerate(self._lines_of(section_text))
             ], False
 
         def author_content(
-            self, section_text: str, skeleton_nodes: dict[str, dict], kb_context: str | None = None,
+            self,
+            section_text: str,
+            skeleton_nodes: dict[str, dict],
+            kb_context: str | None = None,
             user_id: str | None = None,
         ) -> tuple[dict[str, dict], bool]:
             lines_by_index = dict(enumerate(self._lines_of(section_text)))
             return {
-                local_id: {"description": lines_by_index[int(_strip_branch_prefix(local_id))], "tags": []}
+                local_id: {
+                    "description": lines_by_index[int(_strip_branch_prefix(local_id))],
+                    "tags": [],
+                }
                 for local_id in skeleton_nodes
             }, False
 
-        def analyze_section_skeleton_agentic(self, section_text: str, retrieve_fn, **kwargs) -> tuple[list[dict], list[dict], bool]:
-            raise AssertionError("model default is not tool-capable -- agentic path must not be used")
+        def analyze_section_skeleton_agentic(
+            self, section_text: str, retrieve_fn, **kwargs
+        ) -> tuple[list[dict], list[dict], bool]:
+            raise AssertionError(
+                "model default is not tool-capable -- agentic path must not be used"
+            )
 
     fake = _CountingSectionAnalysisClient()
     tree = build_survey_tree(doc, fake)
@@ -4912,7 +6738,9 @@ def test_build_survey_tree_bounds_an_oversized_top_level_branch_into_multiple_an
     assert len(tree.nodes) == 7
 
 
-def test_build_survey_tree_progress_callback_carries_the_sections_heading_as_its_label(monkeypatch) -> None:
+def test_build_survey_tree_progress_callback_carries_the_sections_heading_as_its_label(
+    monkeypatch,
+) -> None:
     # Without this, the UI could only ever show an anonymous "Section N of
     # M" -- no way to tell WHICH real content a job was analyzing when it
     # failed. _two_branch_doc's branches each start with their own HEADING
@@ -4920,7 +6748,9 @@ def test_build_survey_tree_progress_callback_carries_the_sections_heading_as_its
     # produces.
     _force_multi_branch(monkeypatch)
     events = []
-    build_survey_tree(_two_branch_doc(), FakeSectionAnalysisClient(), progress_callback=lambda p: events.append(p))
+    build_survey_tree(
+        _two_branch_doc(), FakeSectionAnalysisClient(), progress_callback=lambda p: events.append(p)
+    )
     # Each branch now fires two events (build_skeleton, then section_complete
     # once its nodes are finalized) -- filter to the phase that starts each
     # branch to keep this test about section labeling, not event count.
@@ -4929,23 +6759,38 @@ def test_build_survey_tree_progress_callback_carries_the_sections_heading_as_its
     assert analyze_events[1].section_label == "Audio"
 
 
-def test_build_survey_tree_progress_callback_falls_back_to_an_excerpt_when_the_section_has_no_heading() -> None:
+def test_build_survey_tree_progress_callback_falls_back_to_an_excerpt_when_the_section_has_no_heading() -> (
+    None
+):
     tree_doc = _small_doc()  # two plain PARAGRAPH blocks, no HEADING
     events = []
-    build_survey_tree(tree_doc, FakeSectionAnalysisClient(), progress_callback=lambda p: events.append(p))
+    build_survey_tree(
+        tree_doc, FakeSectionAnalysisClient(), progress_callback=lambda p: events.append(p)
+    )
     first_section_event = next(e for e in events if e.branch_index is not None)
     assert first_section_event.section_label == "Display"  # first block's own text
 
 
-def test_build_survey_tree_progress_callback_falls_back_to_a_tables_caption_for_a_blocks_empty_branch() -> None:
+def test_build_survey_tree_progress_callback_falls_back_to_a_tables_caption_for_a_blocks_empty_branch() -> (
+    None
+):
     path = "sheet.xlsx"
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.XLSX, sha256="h"),
         blocks=[],
-        tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]], caption="Sheet1", source_ref=_sr(path))],
+        tables=[
+            Table(
+                id="t0",
+                cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]],
+                caption="Sheet1",
+                source_ref=_sr(path),
+            )
+        ],
     )
     events = []
-    build_survey_tree(doc, FakeSectionAnalysisClient(), progress_callback=lambda p: events.append(p))
+    build_survey_tree(
+        doc, FakeSectionAnalysisClient(), progress_callback=lambda p: events.append(p)
+    )
     first_section_event = next(e for e in events if e.branch_index is not None)
     assert first_section_event.section_label == "Sheet1"
 
@@ -4975,11 +6820,20 @@ def test_build_survey_tree_fires_progress_callback_for_each_real_step_boundary()
     assert all(e.kb_grounded is False for e in events)
 
 
-def test_build_survey_tree_progress_callback_fires_score_requirements_when_scoring_client_present() -> None:
+def test_build_survey_tree_progress_callback_fires_score_requirements_when_scoring_client_present() -> (
+    None
+):
     events = []
 
     class _FakeScoringClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
+        def score_requirements_for_document(
+            self,
+            descriptions_by_node_id,
+            criteria_context=None,
+            kb_context=None,
+            category_checklist=None,
+            user_id=None,
+        ):
             return {node_id: {"score": 100, "issues": []} for node_id in descriptions_by_node_id}
 
     build_survey_tree(
@@ -5008,8 +6862,18 @@ def test_build_survey_tree_progress_callback_carries_the_sections_finished_nodes
     events = []
 
     class _FakeScoringClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
-            return {node_id: {"score": 87, "issues": ["vague_term"]} for node_id in descriptions_by_node_id}
+        def score_requirements_for_document(
+            self,
+            descriptions_by_node_id,
+            criteria_context=None,
+            kb_context=None,
+            category_checklist=None,
+            user_id=None,
+        ):
+            return {
+                node_id: {"score": 87, "issues": ["vague_term"]}
+                for node_id in descriptions_by_node_id
+            }
 
     build_survey_tree(
         _small_doc(),
@@ -5042,7 +6906,14 @@ def test_build_survey_tree_progress_callback_carries_model_draft_count_and_issue
         model = "qwen2.5:32b"
 
     class _FakeScoringClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
+        def score_requirements_for_document(
+            self,
+            descriptions_by_node_id,
+            criteria_context=None,
+            kb_context=None,
+            category_checklist=None,
+            user_id=None,
+        ):
             # One node scored with two issues, the rest clean -- exercises a
             # real non-zero issues_found sum, not just a trivial 0 case.
             first_id = next(iter(descriptions_by_node_id))
@@ -5119,7 +6990,9 @@ def test_render_section_injects_the_real_figure_id_into_the_rendered_line() -> N
     # known-issues item 20: the model has no id to name in figure_ids
     # unless render_section actually puts one in the text it reads.
     path = "x.docx"
-    block = Block(id="b5", kind=BlockKind.FIGURE, text="[FIGURE: A power schematic]", source_ref=_sr(path))
+    block = Block(
+        id="b5", kind=BlockKind.FIGURE, text="[FIGURE: A power schematic]", source_ref=_sr(path)
+    )
     text = render_section([block], figure_id_by_block_id={"b5": "f3"})
     assert "> Figure f3: A power schematic" in text
 
@@ -5128,7 +7001,9 @@ def test_render_section_omits_the_figure_id_when_no_map_is_supplied() -> None:
     # None is byte-identical to before figure_id_by_block_id existed --
     # _figure_line/block.text (shared with BASELINE) are never touched.
     path = "x.docx"
-    block = Block(id="b5", kind=BlockKind.FIGURE, text="[FIGURE: A power schematic]", source_ref=_sr(path))
+    block = Block(
+        id="b5", kind=BlockKind.FIGURE, text="[FIGURE: A power schematic]", source_ref=_sr(path)
+    )
     text = render_section([block])
     assert "> Figure: A power schematic" in text
     assert "f3" not in text
@@ -5138,7 +7013,11 @@ def test_render_section_prefixes_each_table_with_its_own_id_marker() -> None:
     # Unlike figures, no id map is needed here -- table.id is already
     # directly available from the `tables` list itself.
     path = "x.docx"
-    table = Table(id="t2", cells=[[TableCell(text=c) for c in row] for row in [["h1", "h2"], ["a", "b"]]], source_ref=_sr(path))
+    table = Table(
+        id="t2",
+        cells=[[TableCell(text=c) for c in row] for row in [["h1", "h2"], ["a", "b"]]],
+        source_ref=_sr(path),
+    )
     text = render_section([], tables=[table])
     assert "[TABLE t2]" in text
     assert text.index("[TABLE t2]") < text.index("| h1 | h2 |")
@@ -5155,8 +7034,12 @@ def test_render_section_prefixes_each_table_with_its_own_id_marker() -> None:
 # verdict was reached.
 
 _MAPPING_NODE = {
-    "temp_id": "n0", "type": "Requirement", "parent_temp_id": None,
-    "title": "t", "text": "The system shall do x.", "tags": [],
+    "temp_id": "n0",
+    "type": "Requirement",
+    "parent_temp_id": None,
+    "title": "t",
+    "text": "The system shall do x.",
+    "tags": [],
 }
 
 
@@ -5176,11 +7059,15 @@ def _claim_on_every_node(monkeypatch, **ids: list[str]) -> None:
     real_author = llm_leveling_module._author_branch_content
 
     def _patched(
-        skeleton, analysis_client, figure_table_ids_by_local_id=None, title_distillation_client=None,
+        skeleton,
+        analysis_client,
+        figure_table_ids_by_local_id=None,
+        title_distillation_client=None,
         **kwargs,
     ):
         return real_author(
-            skeleton, analysis_client,
+            skeleton,
+            analysis_client,
             figure_table_ids_by_local_id={node.local_id: dict(ids) for node in skeleton.nodes},
             title_distillation_client=title_distillation_client,
             **kwargs,
@@ -5193,7 +7080,13 @@ def _table_doc(cells: list[list[str]]) -> CanonicalDoc:
     path = "table_only.txt"
     return CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
-        tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in cells], source_ref=_sr(path))],
+        tables=[
+            Table(
+                id="t0",
+                cells=[[TableCell(text=c) for c in row] for row in cells],
+                source_ref=_sr(path),
+            )
+        ],
     )
 
 
@@ -5201,7 +7094,14 @@ def _figure_doc() -> CanonicalDoc:
     path = "figure_only.txt"
     return CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
-        blocks=[Block(id="b0", kind=BlockKind.FIGURE, text="[FIGURE: A wiring diagram]", source_ref=_sr(path))],
+        blocks=[
+            Block(
+                id="b0",
+                kind=BlockKind.FIGURE,
+                text="[FIGURE: A wiring diagram]",
+                source_ref=_sr(path),
+            )
+        ],
         figures=[Figure(id="f0", caption="A wiring diagram", source_ref=_sr(path))],
     )
 
@@ -5213,7 +7113,9 @@ def test_build_survey_tree_embeds_a_mapped_tables_html_and_records_table_ids(mon
     # own docstring).
     _claim_on_every_node(monkeypatch, table_ids=["t0"])
 
-    tree = build_survey_tree(_table_doc([["a", "b"]]), FakeSectionAnalysisClient(nodes=[_MAPPING_NODE]))
+    tree = build_survey_tree(
+        _table_doc([["a", "b"]]), FakeSectionAnalysisClient(nodes=[_MAPPING_NODE])
+    )
 
     assert len(tree.nodes) == 1
     node = tree.nodes[0]
@@ -5229,14 +7131,20 @@ def test_build_survey_tree_drops_a_hallucinated_table_id_and_warns(monkeypatch) 
     # surfaced for review, not silently accepted.
     _claim_on_every_node(monkeypatch, table_ids=["t99"])
 
-    tree = build_survey_tree(_table_doc([["a", "b"]]), FakeSectionAnalysisClient(nodes=[_MAPPING_NODE]))
+    tree = build_survey_tree(
+        _table_doc([["a", "b"]]), FakeSectionAnalysisClient(nodes=[_MAPPING_NODE])
+    )
 
     assert tree.nodes[0].table_ids == []
     assert "<table>" not in tree.nodes[0].description
-    assert any('"t" referenced 1 table(s) not offered in this section' in w.raw for w in tree.warnings)
+    assert any(
+        '"t" referenced 1 table(s) not offered in this section' in w.raw for w in tree.warnings
+    )
 
 
-def test_build_survey_tree_drops_a_valid_table_id_with_no_extractable_content_and_warns(monkeypatch) -> None:
+def test_build_survey_tree_drops_a_valid_table_id_with_no_extractable_content_and_warns(
+    monkeypatch,
+) -> None:
     # A mapped table_id can pass the hallucination filter (it's a REAL table
     # this branch actually offered) yet still render empty HTML --
     # _table_to_html returns "" for a grid with no non-blank cell anywhere.
@@ -5250,7 +7158,9 @@ def test_build_survey_tree_drops_a_valid_table_id_with_no_extractable_content_an
     # EMPTY_TABLE_CONTENT warning instead of silently disappearing.
     _claim_on_every_node(monkeypatch, table_ids=["t0"])
 
-    tree = build_survey_tree(_table_doc([["", ""]]), FakeSectionAnalysisClient(nodes=[_MAPPING_NODE]))
+    tree = build_survey_tree(
+        _table_doc([["", ""]]), FakeSectionAnalysisClient(nodes=[_MAPPING_NODE])
+    )
 
     node = tree.nodes[0]
     assert node.table_ids == []
@@ -5275,7 +7185,9 @@ def test_build_survey_tree_drops_a_hallucinated_figure_id_and_warns(monkeypatch)
     tree = build_survey_tree(_figure_doc(), FakeSectionAnalysisClient(nodes=[_MAPPING_NODE]))
 
     assert tree.nodes[0].figure_ids == []
-    assert any('"t" referenced 1 figure(s) not offered in this section' in w.raw for w in tree.warnings)
+    assert any(
+        '"t" referenced 1 figure(s) not offered in this section' in w.raw for w in tree.warnings
+    )
 
 
 def test_build_survey_tree_scopes_table_ids_validation_per_branch(monkeypatch) -> None:
@@ -5292,8 +7204,11 @@ def test_build_survey_tree_scopes_table_ids_validation_per_branch(monkeypatch) -
         update={
             "tables": [
                 Table(
-                    id="t0", cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]],
-                    source_ref=SourceRef(document_path=doc.document.path, start_offset=20, end_offset=30),
+                    id="t0",
+                    cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]],
+                    source_ref=SourceRef(
+                        document_path=doc.document.path, start_offset=20, end_offset=30
+                    ),
                 )
             ]
         }
@@ -5327,10 +7242,28 @@ def test_build_survey_tree_scopes_figure_ids_validation_per_branch(monkeypatch) 
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Display", source_ref=_sr(path)),
-            Block(id="b1", kind=BlockKind.FIGURE, text="[FIGURE: A display wiring diagram]", source_ref=_sr(path)),
-            Block(id="b2", kind=BlockKind.HEADING, heading_level=1, text="Audio", source_ref=_sr(path)),
-            Block(id="b3", kind=BlockKind.PARAGRAPH, text="The speaker shall support 5.1 surround.", source_ref=_sr(path)),
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Display",
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.FIGURE,
+                text="[FIGURE: A display wiring diagram]",
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b2", kind=BlockKind.HEADING, heading_level=1, text="Audio", source_ref=_sr(path)
+            ),
+            Block(
+                id="b3",
+                kind=BlockKind.PARAGRAPH,
+                text="The speaker shall support 5.1 surround.",
+                source_ref=_sr(path),
+            ),
         ],
         figures=[Figure(id="f0", caption="A display wiring diagram", source_ref=_sr(path))],
     )
@@ -5353,9 +7286,22 @@ def test_build_survey_tree_leaves_figure_and_table_ids_empty_without_a_mapping_c
     path = "figure_and_table.txt"
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
-        blocks=[Block(id="b0", kind=BlockKind.FIGURE, text="[FIGURE: A wiring diagram]", source_ref=_sr(path))],
+        blocks=[
+            Block(
+                id="b0",
+                kind=BlockKind.FIGURE,
+                text="[FIGURE: A wiring diagram]",
+                source_ref=_sr(path),
+            )
+        ],
         figures=[Figure(id="f0", caption="A wiring diagram", source_ref=_sr(path))],
-        tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]], source_ref=_sr(path))],
+        tables=[
+            Table(
+                id="t0",
+                cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]],
+                source_ref=_sr(path),
+            )
+        ],
     )
     tree = build_survey_tree(doc, FakeSectionAnalysisClient(nodes=[_MAPPING_NODE]))
 
@@ -5375,11 +7321,24 @@ def test_build_survey_tree_warns_on_a_referenced_attachment_it_did_not_ingest() 
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.PARAGRAPH, text="See ReqID 12345 for the full connector pinout.", source_ref=_sr(path)),
+            Block(
+                id="b0",
+                kind=BlockKind.PARAGRAPH,
+                text="See ReqID 12345 for the full connector pinout.",
+                source_ref=_sr(path),
+            ),
         ],
     )
     fake = FakeSectionAnalysisClient(
-        nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "See ReqID 12345 for the full connector pinout.", "tags": []}]
+        nodes=[
+            {
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "text": "See ReqID 12345 for the full connector pinout.",
+                "tags": [],
+            }
+        ]
     )
     tree = build_survey_tree(doc, fake)
     assert any("ReqID 12345" in w.raw and "did not ingest" in w.raw for w in tree.warnings)
@@ -5399,11 +7358,24 @@ def test_build_survey_tree_warns_on_an_unfilled_reqid_placeholder() -> None:
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.PARAGRAPH, text="According to ReqID XXXX: EMI/EMC table.", source_ref=_sr(path)),
+            Block(
+                id="b0",
+                kind=BlockKind.PARAGRAPH,
+                text="According to ReqID XXXX: EMI/EMC table.",
+                source_ref=_sr(path),
+            ),
         ],
     )
     fake = FakeSectionAnalysisClient(
-        nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "According to ReqID XXXX: EMI/EMC table.", "tags": []}]
+        nodes=[
+            {
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "text": "According to ReqID XXXX: EMI/EMC table.",
+                "tags": [],
+            }
+        ]
     )
     tree = build_survey_tree(doc, fake)
     # The match itself is bare "ReqID" (no trailing digits to capture from
@@ -5420,14 +7392,23 @@ def test_build_survey_tree_does_not_double_report_a_block_as_both_dropped_and_re
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
             Block(
-                id="b0", kind=BlockKind.PARAGRAPH,
+                id="b0",
+                kind=BlockKind.PARAGRAPH,
                 text="According to ReqID XXXX the EMI/EMC shielding values are defined externally.",
                 source_ref=_sr(path),
             ),
         ],
     )
     fake = FakeSectionAnalysisClient(
-        nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "An unrelated requirement.", "tags": []}]
+        nodes=[
+            {
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "text": "An unrelated requirement.",
+                "tags": [],
+            }
+        ]
     )
     tree = build_survey_tree(doc, fake)
     assert any("did not ingest" in w.raw for w in tree.warnings)
@@ -5447,14 +7428,28 @@ def test_build_survey_tree_produces_a_non_empty_tree_for_a_table_only_xlsx_doc()
         tables=[
             Table(
                 id="t0",
-                cells=[[TableCell(text=c) for c in row] for row in [["Req ID", "Text"], ["R1", "The unit shall power on within 5 seconds."]]],
+                cells=[
+                    [TableCell(text=c) for c in row]
+                    for row in [
+                        ["Req ID", "Text"],
+                        ["R1", "The unit shall power on within 5 seconds."],
+                    ]
+                ],
                 caption="Sheet1",
                 source_ref=_sr(path),
             )
         ],
     )
     fake = FakeSectionAnalysisClient(
-        nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The unit shall power on within 5 seconds.", "tags": []}]
+        nodes=[
+            {
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "text": "The unit shall power on within 5 seconds.",
+                "tags": [],
+            }
+        ]
     )
     tree = build_survey_tree(doc, fake)
     assert len(tree.nodes) == 1
@@ -5468,7 +7463,10 @@ def test_build_survey_tree_produces_a_non_empty_tree_for_a_table_only_xlsx_doc()
     node_ref = tree.nodes[0].source_ref
     table_ref = doc.tables[0].source_ref
     assert (node_ref.document_path, node_ref.start_offset, node_ref.end_offset, node_ref.page) == (
-        table_ref.document_path, table_ref.start_offset, table_ref.end_offset, table_ref.page,
+        table_ref.document_path,
+        table_ref.start_offset,
+        table_ref.end_offset,
+        table_ref.page,
     )
     assert node_ref.section_path == ["Sheet1"]
 
@@ -5505,15 +7503,27 @@ def _doc_between_coverage_and_context_budget(with_headings: bool) -> CanonicalDo
     for i in range(20):
         if with_headings:
             blocks.append(
-                Block(id=f"h{i}", kind=BlockKind.HEADING, heading_level=2, text=f"Section {i}", source_ref=_sr(path))
+                Block(
+                    id=f"h{i}",
+                    kind=BlockKind.HEADING,
+                    heading_level=2,
+                    text=f"Section {i}",
+                    source_ref=_sr(path),
+                )
             )
-        blocks.append(Block(id=f"b{i}", kind=BlockKind.PARAGRAPH, text=_LONG_PARAGRAPH, source_ref=_sr(path)))
-    return CanonicalDoc(document=Document(path=path, format=DocumentFormat.TXT, sha256="h"), blocks=blocks)
+        blocks.append(
+            Block(id=f"b{i}", kind=BlockKind.PARAGRAPH, text=_LONG_PARAGRAPH, source_ref=_sr(path))
+        )
+    return CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"), blocks=blocks
+    )
 
 
 def test_document_that_fits_context_but_exceeds_coverage_budget_is_chunked() -> None:
     fake = FakeSectionAnalysisClient()
-    build_survey_tree(_doc_between_coverage_and_context_budget(with_headings=True), fake, model="gemma4:e4b")
+    build_survey_tree(
+        _doc_between_coverage_and_context_budget(with_headings=True), fake, model="gemma4:e4b"
+    )
     assert len(fake.calls) > 1
     assert all(call["options"].whole_document is False for call in fake.calls)
 
@@ -5524,7 +7534,9 @@ def test_large_headingless_document_is_window_chunked() -> None:
     # take the single-call path and reproduce the under-synthesis bug on any
     # large flat/prose document, not just headed ones.
     fake = FakeSectionAnalysisClient()
-    build_survey_tree(_doc_between_coverage_and_context_budget(with_headings=False), fake, model="gemma4:e4b")
+    build_survey_tree(
+        _doc_between_coverage_and_context_budget(with_headings=False), fake, model="gemma4:e4b"
+    )
     assert len(fake.calls) > 1
     assert all(call["options"].whole_document is False for call in fake.calls)
 
@@ -5547,9 +7559,27 @@ def test_build_survey_tree_reparents_a_requirement_directly_under_an_epic() -> N
     # (soft LLM instruction) doesn't always prevent.
     fake = FakeSectionAnalysisClient(
         nodes=[
-            {"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "text": "System outcome.", "tags": []},
-            {"temp_id": "n1", "type": "Feature", "parent_temp_id": "n0", "text": "A capability.", "tags": []},
-            {"temp_id": "n2", "type": "Requirement", "parent_temp_id": "n0", "text": "Shall do X.", "tags": []},
+            {
+                "temp_id": "n0",
+                "type": "Epic",
+                "parent_temp_id": None,
+                "text": "System outcome.",
+                "tags": [],
+            },
+            {
+                "temp_id": "n1",
+                "type": "Feature",
+                "parent_temp_id": "n0",
+                "text": "A capability.",
+                "tags": [],
+            },
+            {
+                "temp_id": "n2",
+                "type": "Requirement",
+                "parent_temp_id": "n0",
+                "text": "Shall do X.",
+                "tags": [],
+            },
         ]
     )
     tree = build_survey_tree(_small_doc(), fake)
@@ -5568,9 +7598,27 @@ def test_build_survey_tree_keeps_a_child_requirement_parented_under_its_requirem
     # preserved, not re-parented up to the nearest Feature.
     fake = FakeSectionAnalysisClient(
         nodes=[
-            {"temp_id": "n0", "type": "Feature", "parent_temp_id": None, "text": "A capability.", "tags": []},
-            {"temp_id": "n1", "type": "Requirement", "parent_temp_id": "n0", "text": "Shall do X.", "tags": []},
-            {"temp_id": "n2", "type": "Requirement", "parent_temp_id": "n1", "text": "Shall do Y.", "tags": []},
+            {
+                "temp_id": "n0",
+                "type": "Feature",
+                "parent_temp_id": None,
+                "text": "A capability.",
+                "tags": [],
+            },
+            {
+                "temp_id": "n1",
+                "type": "Requirement",
+                "parent_temp_id": "n0",
+                "text": "Shall do X.",
+                "tags": [],
+            },
+            {
+                "temp_id": "n2",
+                "type": "Requirement",
+                "parent_temp_id": "n1",
+                "text": "Shall do Y.",
+                "tags": [],
+            },
         ]
     )
     tree = build_survey_tree(_small_doc(), fake)
@@ -5588,10 +7636,34 @@ def test_build_survey_tree_reparents_a_requirement_chain_that_bypasses_every_fea
     # nearest real Feature elsewhere in the branch.
     fake = FakeSectionAnalysisClient(
         nodes=[
-            {"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "text": "System outcome.", "tags": []},
-            {"temp_id": "n1", "type": "Feature", "parent_temp_id": "n0", "text": "A capability.", "tags": []},
-            {"temp_id": "n2", "type": "Requirement", "parent_temp_id": "n0", "text": "Shall do X.", "tags": []},
-            {"temp_id": "n3", "type": "Requirement", "parent_temp_id": "n2", "text": "Shall do Y.", "tags": []},
+            {
+                "temp_id": "n0",
+                "type": "Epic",
+                "parent_temp_id": None,
+                "text": "System outcome.",
+                "tags": [],
+            },
+            {
+                "temp_id": "n1",
+                "type": "Feature",
+                "parent_temp_id": "n0",
+                "text": "A capability.",
+                "tags": [],
+            },
+            {
+                "temp_id": "n2",
+                "type": "Requirement",
+                "parent_temp_id": "n0",
+                "text": "Shall do X.",
+                "tags": [],
+            },
+            {
+                "temp_id": "n3",
+                "type": "Requirement",
+                "parent_temp_id": "n2",
+                "text": "Shall do Y.",
+                "tags": [],
+            },
         ]
     )
     tree = build_survey_tree(_small_doc(), fake)
@@ -5610,8 +7682,20 @@ def test_build_survey_tree_synthesizes_a_feature_when_no_real_feature_exists_at_
     # leaving them orphaned roots.
     fake = FakeSectionAnalysisClient(
         nodes=[
-            {"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "Shall do X.", "tags": []},
-            {"temp_id": "n1", "type": "Requirement", "parent_temp_id": None, "text": "Shall do Y.", "tags": []},
+            {
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "text": "Shall do X.",
+                "tags": [],
+            },
+            {
+                "temp_id": "n1",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "text": "Shall do Y.",
+                "tags": [],
+            },
         ]
     )
     tree = build_survey_tree(_small_doc(), fake)
@@ -5630,9 +7714,27 @@ def test_build_survey_tree_does_not_touch_an_already_valid_hierarchy() -> None:
     # must not be modified or warned about at all.
     fake = FakeSectionAnalysisClient(
         nodes=[
-            {"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "text": "System outcome.", "tags": []},
-            {"temp_id": "n1", "type": "Feature", "parent_temp_id": "n0", "text": "A capability.", "tags": []},
-            {"temp_id": "n2", "type": "Requirement", "parent_temp_id": "n1", "text": "Shall do X.", "tags": []},
+            {
+                "temp_id": "n0",
+                "type": "Epic",
+                "parent_temp_id": None,
+                "text": "System outcome.",
+                "tags": [],
+            },
+            {
+                "temp_id": "n1",
+                "type": "Feature",
+                "parent_temp_id": "n0",
+                "text": "A capability.",
+                "tags": [],
+            },
+            {
+                "temp_id": "n2",
+                "type": "Requirement",
+                "parent_temp_id": "n1",
+                "text": "Shall do X.",
+                "tags": [],
+            },
         ]
     )
     tree = build_survey_tree(_small_doc(), fake)
@@ -5649,7 +7751,15 @@ def test_build_survey_tree_does_not_touch_a_genuinely_sole_root_requirement() ->
     # anywhere is legitimate (a section that's just one atomic requirement)
     # and must NOT be forced under a synthesized bridge Feature.
     fake = FakeSectionAnalysisClient(
-        nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "Shall do X.", "tags": []}]
+        nodes=[
+            {
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "text": "Shall do X.",
+                "tags": [],
+            }
+        ]
     )
     tree = build_survey_tree(_small_doc(), fake)
     assert len(tree.nodes) == 1
@@ -5667,9 +7777,27 @@ def test_build_survey_tree_synthesizes_one_feature_shared_by_three_root_requirem
     # working even after the precomputed root_count itself has gone stale.
     fake = FakeSectionAnalysisClient(
         nodes=[
-            {"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "Shall do X.", "tags": []},
-            {"temp_id": "n1", "type": "Requirement", "parent_temp_id": None, "text": "Shall do Y.", "tags": []},
-            {"temp_id": "n2", "type": "Requirement", "parent_temp_id": None, "text": "Shall do Z.", "tags": []},
+            {
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "text": "Shall do X.",
+                "tags": [],
+            },
+            {
+                "temp_id": "n1",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "text": "Shall do Y.",
+                "tags": [],
+            },
+            {
+                "temp_id": "n2",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "text": "Shall do Z.",
+                "tags": [],
+            },
         ]
     )
     tree = build_survey_tree(_small_doc(), fake)
@@ -5695,7 +7823,13 @@ def _structural_heading_doc() -> CanonicalDoc:
     path = "structural_survey_input.txt"
 
     def h(block_id: str, level: int, text: str) -> Block:
-        return Block(id=block_id, kind=BlockKind.HEADING, heading_level=level, text=text, source_ref=_sr(path))
+        return Block(
+            id=block_id,
+            kind=BlockKind.HEADING,
+            heading_level=level,
+            text=text,
+            source_ref=_sr(path),
+        )
 
     return CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
@@ -5717,7 +7851,9 @@ def test_build_survey_tree_uses_a_live_derived_token_budget_for_the_parent_summa
     # REAL derived budget from it, not the flat _PARENT_SUMMARY_TOKEN_BUDGET
     # default, and use it to decide how many summarize_parent_nodes calls
     # this document's Epic/Feature nodes need.
-    doc = _structural_heading_doc()  # Epic "System Domain" -> 5 Requirement leaves, deterministic end to end
+    doc = (
+        _structural_heading_doc()
+    )  # Epic "System Domain" -> 5 Requirement leaves, deterministic end to end
 
     class FakeParentSummaryAndCapsClient:
         def __init__(self, context_length: int) -> None:
@@ -5731,14 +7867,22 @@ def test_build_survey_tree_uses_a_live_derived_token_budget_for_the_parent_summa
 
         def summarize_parent_nodes(self, nodes_by_id: dict, user_id: str | None = None) -> dict:
             self.summarize_calls.append(nodes_by_id)
-            return {node_id: {"title": "Synthesized Epic", "description": "Covers A-E."} for node_id in nodes_by_id}
+            return {
+                node_id: {"title": "Synthesized Epic", "description": "Covers A-E."}
+                for node_id in nodes_by_id
+            }
 
     fake_client = FakeParentSummaryAndCapsClient(context_length=32_000)
     tree = build_survey_tree(
-        doc, FakeSectionAnalysisClient(), parent_summary_client=fake_client, model="some-fresh-model-v9-parent-summary",
+        doc,
+        FakeSectionAnalysisClient(),
+        parent_summary_client=fake_client,
+        model="some-fresh-model-v9-parent-summary",
     )
 
-    assert fake_client.show_model_calls == ["some-fresh-model-v9-parent-summary"]  # live lookup actually happened
+    assert fake_client.show_model_calls == [
+        "some-fresh-model-v9-parent-summary"
+    ]  # live lookup actually happened
     epic = next(n for n in tree.nodes if n.title == "Synthesized Epic")
     assert epic.description == "Covers A-E."
 
@@ -5758,15 +7902,22 @@ def test_build_survey_tree_never_does_a_live_caps_lookup_for_an_already_tuned_mo
             return {"context_length": 1, "capabilities": []}
 
         def summarize_parent_nodes(self, nodes_by_id: dict, user_id: str | None = None) -> dict:
-            return {node_id: {"title": "Synthesized Epic", "description": "Covers A-E."} for node_id in nodes_by_id}
+            return {
+                node_id: {"title": "Synthesized Epic", "description": "Covers A-E."}
+                for node_id in nodes_by_id
+            }
 
     fake_client = FakeParentSummaryAndCapsClient()
-    build_survey_tree(doc, FakeSectionAnalysisClient(), parent_summary_client=fake_client, model="qwen3.6:35b")
+    build_survey_tree(
+        doc, FakeSectionAnalysisClient(), parent_summary_client=fake_client, model="qwen3.6:35b"
+    )
 
     assert fake_client.show_model_calls == []
 
 
-def test_build_survey_tree_never_folds_a_figure_caption_into_the_deterministic_description() -> None:
+def test_build_survey_tree_never_folds_a_figure_caption_into_the_deterministic_description() -> (
+    None
+):
     # A real caption must never leak into a deterministic node's description
     # -- neither as the raw wire-format placeholder ("[FIGURE: {caption or
     # 'none'}]") NOR as a formatted "> Figure: ..." line. The Figures UI
@@ -5780,8 +7931,10 @@ def test_build_survey_tree_never_folds_a_figure_caption_into_the_deterministic_d
             "blocks": [
                 *_structural_heading_doc().blocks,
                 Block(
-                    id="fig0", kind=BlockKind.FIGURE,
-                    text="[FIGURE: a wiring diagram of the power supply]", source_ref=_sr(path),
+                    id="fig0",
+                    kind=BlockKind.FIGURE,
+                    text="[FIGURE: a wiring diagram of the power supply]",
+                    source_ref=_sr(path),
                 ),
             ],
         }
@@ -5816,7 +7969,13 @@ def test_build_survey_tree_parent_summary_preserves_a_deterministically_claimed_
         return SourceRef(document_path=path, start_offset=offset, end_offset=offset + 10)
 
     def h(block_id: str, level: int, text: str, offset: int) -> Block:
-        return Block(id=block_id, kind=BlockKind.HEADING, heading_level=level, text=text, source_ref=sr(offset))
+        return Block(
+            id=block_id,
+            kind=BlockKind.HEADING,
+            heading_level=level,
+            text=text,
+            source_ref=sr(offset),
+        )
 
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
@@ -5829,15 +7988,24 @@ def test_build_survey_tree_parent_summary_preserves_a_deterministically_claimed_
             h("b5", 2, "The system shall do E.", 500),
         ],
         tables=[
-            Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["Rail", "Voltage"]]], source_ref=sr(50)),
+            Table(
+                id="t0",
+                cells=[[TableCell(text=c) for c in row] for row in [["Rail", "Voltage"]]],
+                source_ref=sr(50),
+            ),
         ],
     )
 
     class FakeParentSummaryClient:
         def summarize_parent_nodes(self, nodes_by_id, user_id=None):
-            return {node_id: {"title": "Synthesized Epic", "description": "Covers A-E."} for node_id in nodes_by_id}
+            return {
+                node_id: {"title": "Synthesized Epic", "description": "Covers A-E."}
+                for node_id in nodes_by_id
+            }
 
-    tree = build_survey_tree(doc, FakeSectionAnalysisClient(), parent_summary_client=FakeParentSummaryClient())
+    tree = build_survey_tree(
+        doc, FakeSectionAnalysisClient(), parent_summary_client=FakeParentSummaryClient()
+    )
     epic = next(n for n in tree.nodes if n.title == "Synthesized Epic")
     assert "t0" in epic.table_ids
     assert "Covers A-E." in epic.description
@@ -5855,7 +8023,10 @@ def test_build_survey_tree_drops_a_placeholder_figure_caption_deterministically(
             "blocks": [
                 *_structural_heading_doc().blocks,
                 Block(
-                    id="fig0", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path),
+                    id="fig0",
+                    kind=BlockKind.FIGURE,
+                    text="[FIGURE: none]",
+                    source_ref=_sr(path),
                 ),
             ],
         }
@@ -5908,11 +8079,15 @@ def test_build_survey_tree_deterministic_block_span_fold_widens_page_end() -> No
     path = "structural_survey_input.txt"
     base_doc = _structural_heading_doc()
     paged_blocks = [
-        b.model_copy(update={"source_ref": b.source_ref.model_copy(update={"page": 1, "page_end": 1})})
+        b.model_copy(
+            update={"source_ref": b.source_ref.model_copy(update={"page": 1, "page_end": 1})}
+        )
         for b in base_doc.blocks
     ]
     trailing_block = Block(
-        id="trail0", kind=BlockKind.PARAGRAPH, text="Additional clarifying detail for requirement E.",
+        id="trail0",
+        kind=BlockKind.PARAGRAPH,
+        text="Additional clarifying detail for requirement E.",
         source_ref=SourceRef(document_path=path, start_offset=0, end_offset=10, page=3, page_end=3),
     )
     doc = base_doc.model_copy(update={"blocks": [*paged_blocks, trailing_block]})
@@ -5935,7 +8110,11 @@ def test_build_survey_tree_deterministic_table_span_fold_widens_page_end() -> No
         b.model_copy(
             update={
                 "source_ref": SourceRef(
-                    document_path=path, start_offset=i * 10, end_offset=i * 10 + 9, page=1, page_end=1,
+                    document_path=path,
+                    start_offset=i * 10,
+                    end_offset=i * 10 + 9,
+                    page=1,
+                    page_end=1,
                 )
             }
         )
@@ -5946,8 +8125,14 @@ def test_build_survey_tree_deterministic_table_span_fold_widens_page_end() -> No
             "blocks": paged_blocks,
             "tables": [
                 Table(
-                    id="t0", cells=[[TableCell(text=c) for c in row] for row in [["Note", "See appendix for full rationale."]]],
-                    source_ref=SourceRef(document_path=path, start_offset=999, end_offset=1000, page=4, page_end=4),
+                    id="t0",
+                    cells=[
+                        [TableCell(text=c) for c in row]
+                        for row in [["Note", "See appendix for full rationale."]]
+                    ],
+                    source_ref=SourceRef(
+                        document_path=path, start_offset=999, end_offset=1000, page=4, page_end=4
+                    ),
                 ),
             ],
         }
@@ -5974,7 +8159,11 @@ def test_build_survey_tree_deterministic_table_span_fold_drops_a_blank_table_and
         b.model_copy(
             update={
                 "source_ref": SourceRef(
-                    document_path=path, start_offset=i * 10, end_offset=i * 10 + 9, page=1, page_end=1,
+                    document_path=path,
+                    start_offset=i * 10,
+                    end_offset=i * 10 + 9,
+                    page=1,
+                    page_end=1,
                 )
             }
         )
@@ -5985,8 +8174,11 @@ def test_build_survey_tree_deterministic_table_span_fold_drops_a_blank_table_and
             "blocks": paged_blocks,
             "tables": [
                 Table(
-                    id="t0", cells=[[TableCell(text=""), TableCell(text="")]],
-                    source_ref=SourceRef(document_path=path, start_offset=999, end_offset=1000, page=4, page_end=4),
+                    id="t0",
+                    cells=[[TableCell(text=""), TableCell(text="")]],
+                    source_ref=SourceRef(
+                        document_path=path, start_offset=999, end_offset=1000, page=4, page_end=4
+                    ),
                 ),
             ],
         }
@@ -6004,7 +8196,9 @@ def test_build_survey_tree_deterministic_table_span_fold_drops_a_blank_table_and
 # --- section_path / figure_ids / table_ids / uncaptioned_figure_ids (Phase 2) ---
 
 
-def test_build_survey_tree_deterministic_span_fold_records_figure_ids_and_uncaptioned_figure_ids() -> None:
+def test_build_survey_tree_deterministic_span_fold_records_figure_ids_and_uncaptioned_figure_ids() -> (
+    None
+):
     # Companion to the two "folds/drops a figure caption deterministically"
     # tests above -- those only prove the DESCRIPTION text; this proves the
     # id lists a real Figure now attributes to the span-claiming target.
@@ -6013,8 +8207,15 @@ def test_build_survey_tree_deterministic_span_fold_records_figure_ids_and_uncapt
         update={
             "blocks": [
                 *_structural_heading_doc().blocks,
-                Block(id="fig0", kind=BlockKind.FIGURE, text="[FIGURE: a wiring diagram]", source_ref=_sr(path)),
-                Block(id="fig1", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path)),
+                Block(
+                    id="fig0",
+                    kind=BlockKind.FIGURE,
+                    text="[FIGURE: a wiring diagram]",
+                    source_ref=_sr(path),
+                ),
+                Block(
+                    id="fig1", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path)
+                ),
             ],
             "figures": [
                 Figure(id="f0", caption="a wiring diagram", source_ref=_sr(path)),
@@ -6029,7 +8230,9 @@ def test_build_survey_tree_deterministic_span_fold_records_figure_ids_and_uncapt
     assert set(last_leaf.figure_ids).isdisjoint(last_leaf.uncaptioned_figure_ids)
 
 
-def test_build_survey_tree_deterministic_span_fold_populates_insignificant_figure_ids_as_a_subset() -> None:
+def test_build_survey_tree_deterministic_span_fold_populates_insignificant_figure_ids_as_a_subset() -> (
+    None
+):
     # Task 4b sub-fix (ii), call site 4/5 (_detect_deterministic_subtrees).
     # f1 (caption_status="insignificant") must land in BOTH
     # uncaptioned_figure_ids and insignificant_figure_ids; f2
@@ -6040,8 +8243,12 @@ def test_build_survey_tree_deterministic_span_fold_populates_insignificant_figur
         update={
             "blocks": [
                 *_structural_heading_doc().blocks,
-                Block(id="fig1", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path)),
-                Block(id="fig2", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path)),
+                Block(
+                    id="fig1", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path)
+                ),
+                Block(
+                    id="fig2", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path)
+                ),
             ],
             "figures": [
                 Figure(id="f1", caption=None, caption_status="insignificant", source_ref=_sr(path)),
@@ -6072,12 +8279,14 @@ def test_build_survey_tree_table_row_subtree_sets_table_ids_and_section_path() -
     doc = _small_doc().model_copy(
         update={
             "tables": [
-                _table_with_group([
-                    ["Requirement ID", "Requirement / Section"],
-                    ["1.1", "External Source Detection"],
-                    ["1.1.1", "The system shall detect X."],
-                    ["1.1.2", "The system shall detect Y."],
-                ])
+                _table_with_group(
+                    [
+                        ["Requirement ID", "Requirement / Section"],
+                        ["1.1", "External Source Detection"],
+                        ["1.1.1", "The system shall detect X."],
+                        ["1.1.2", "The system shall detect Y."],
+                    ]
+                )
             ]
         }
     )
@@ -6101,7 +8310,9 @@ def test_build_survey_tree_llm_branch_section_path_is_the_sections_own_label() -
         assert node.source_ref.section_path == ["Display"]
 
 
-def test_build_survey_tree_llm_branch_representative_source_ref_reflects_branch_page_range() -> None:
+def test_build_survey_tree_llm_branch_representative_source_ref_reflects_branch_page_range() -> (
+    None
+):
     # Task 1b: representative_source_ref used to pass blocks[0]'s own
     # page/page_end through VERBATIM (see _build_survey_skeleton_for_branch's
     # docstring) -- every node synthesized from this branch shared that one
@@ -6115,16 +8326,28 @@ def test_build_survey_tree_llm_branch_representative_source_ref_reflects_branch_
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
             Block(
-                id="b0", kind=BlockKind.PARAGRAPH, text="Display",
-                source_ref=SourceRef(document_path=path, start_offset=0, end_offset=10, page=3, page_end=3),
+                id="b0",
+                kind=BlockKind.PARAGRAPH,
+                text="Display",
+                source_ref=SourceRef(
+                    document_path=path, start_offset=0, end_offset=10, page=3, page_end=3
+                ),
             ),
             Block(
-                id="b1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.",
-                source_ref=SourceRef(document_path=path, start_offset=10, end_offset=20, page=5, page_end=5),
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
+                text="The display shall support HDR.",
+                source_ref=SourceRef(
+                    document_path=path, start_offset=10, end_offset=20, page=5, page_end=5
+                ),
             ),
             Block(
-                id="b2", kind=BlockKind.PARAGRAPH, text="Additional clarifying detail.",
-                source_ref=SourceRef(document_path=path, start_offset=20, end_offset=30, page=8, page_end=8),
+                id="b2",
+                kind=BlockKind.PARAGRAPH,
+                text="Additional clarifying detail.",
+                source_ref=SourceRef(
+                    document_path=path, start_offset=20, end_offset=30, page=8, page_end=8
+                ),
             ),
         ],
     )
@@ -6132,10 +8355,14 @@ def test_build_survey_tree_llm_branch_representative_source_ref_reflects_branch_
     assert tree.nodes
     for node in tree.nodes:
         assert node.source_ref.page == 3  # the branch's real minimum page (blocks[0]'s own here)
-        assert node.source_ref.page_end == 8  # widened to the branch's real maximum page, not blocks[0]'s
+        assert (
+            node.source_ref.page_end == 8
+        )  # widened to the branch's real maximum page, not blocks[0]'s
 
 
-def test_widen_branch_page_range_finds_the_minimum_page_even_when_blocks_0_is_not_earliest() -> None:
+def test_widen_branch_page_range_finds_the_minimum_page_even_when_blocks_0_is_not_earliest() -> (
+    None
+):
     # Companion to the build_survey_tree-level test above, which (following
     # the plan's own worked example) happens to use an already-sorted
     # blocks[0]-is-earliest fixture -- that alone can't distinguish "real
@@ -6144,16 +8371,26 @@ def test_widen_branch_page_range_finds_the_minimum_page_even_when_blocks_0_is_no
     # page sequence to confirm the min is genuinely computed over every
     # block, not just inherited from whichever happens to be first.
     path = "survey_input.txt"
-    representative = SourceRef(document_path=path, start_offset=0, end_offset=10, page=5, page_end=5)
+    representative = SourceRef(
+        document_path=path, start_offset=0, end_offset=10, page=5, page_end=5
+    )
     blocks = [
         Block(id="b0", kind=BlockKind.PARAGRAPH, text="first", source_ref=representative),
         Block(
-            id="b1", kind=BlockKind.PARAGRAPH, text="second",
-            source_ref=SourceRef(document_path=path, start_offset=10, end_offset=20, page=3, page_end=3),
+            id="b1",
+            kind=BlockKind.PARAGRAPH,
+            text="second",
+            source_ref=SourceRef(
+                document_path=path, start_offset=10, end_offset=20, page=3, page_end=3
+            ),
         ),
         Block(
-            id="b2", kind=BlockKind.PARAGRAPH, text="third",
-            source_ref=SourceRef(document_path=path, start_offset=20, end_offset=30, page=8, page_end=8),
+            id="b2",
+            kind=BlockKind.PARAGRAPH,
+            text="third",
+            source_ref=SourceRef(
+                document_path=path, start_offset=20, end_offset=30, page=8, page_end=8
+            ),
         ),
     ]
     widened = _widen_branch_page_range(representative, blocks, None, None)
@@ -6161,7 +8398,9 @@ def test_widen_branch_page_range_finds_the_minimum_page_even_when_blocks_0_is_no
     assert widened.page_end == 8  # real maximum across all blocks
 
 
-def test_build_survey_tree_llm_branch_attributes_an_uncaptioned_figure_positionally_and_stays_disjoint() -> None:
+def test_build_survey_tree_llm_branch_attributes_an_uncaptioned_figure_positionally_and_stays_disjoint() -> (
+    None
+):
     # An uncaptioned figure's id is never rendered into section_text at all
     # (_render_block_line returns None for it), so the model can never name
     # it in figure_ids -- attributed instead via this branch's own
@@ -6173,8 +8412,19 @@ def test_build_survey_tree_llm_branch_attributes_an_uncaptioned_figure_positiona
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Display", source_ref=_sr(path)),
-            Block(id="b1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Display",
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
+                text="The display shall support HDR.",
+                source_ref=_sr(path),
+            ),
             Block(id="b2", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path)),
         ],
         figures=[Figure(id="fig0", caption=None, source_ref=_sr(path))],
@@ -6182,13 +8432,21 @@ def test_build_survey_tree_llm_branch_attributes_an_uncaptioned_figure_positiona
     fake = FakeSectionAnalysisClient(
         nodes=[
             {
-                "temp_id": "n0", "type": "Feature", "parent_temp_id": None,
-                "title": "Display", "text": "The system shall handle: Display", "tags": [],
+                "temp_id": "n0",
+                "type": "Feature",
+                "parent_temp_id": None,
+                "title": "Display",
+                "text": "The system shall handle: Display",
+                "tags": [],
                 "figure_ids": ["fig0"],  # hallucinated -- fig0 was never offered (uncaptioned)
             },
             {
-                "temp_id": "n1", "type": "Requirement", "parent_temp_id": "n0",
-                "title": "HDR support", "text": "The system shall handle: HDR.", "tags": [],
+                "temp_id": "n1",
+                "type": "Requirement",
+                "parent_temp_id": "n0",
+                "title": "HDR support",
+                "text": "The system shall handle: HDR.",
+                "tags": [],
             },
         ]
     )
@@ -6200,7 +8458,9 @@ def test_build_survey_tree_llm_branch_attributes_an_uncaptioned_figure_positiona
     assert set(all_figure_ids).isdisjoint(all_uncaptioned_ids)
 
 
-def test_build_survey_tree_llm_branch_positional_attribution_also_populates_insignificant_figure_ids() -> None:
+def test_build_survey_tree_llm_branch_positional_attribution_also_populates_insignificant_figure_ids() -> (
+    None
+):
     # Task 4b sub-fix (ii), call site 5/5 (_build_survey_skeleton_for_branch's
     # own positional-bracketing fallback). fig0 (caption_status=
     # "insignificant") lands in both lists; fig1 (caption_status=
@@ -6209,8 +8469,19 @@ def test_build_survey_tree_llm_branch_positional_attribution_also_populates_insi
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Display", source_ref=_sr(path)),
-            Block(id="b1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Display",
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
+                text="The display shall support HDR.",
+                source_ref=_sr(path),
+            ),
             Block(id="b2", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path)),
             Block(id="b3", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path)),
         ],
@@ -6222,12 +8493,20 @@ def test_build_survey_tree_llm_branch_positional_attribution_also_populates_insi
     fake = FakeSectionAnalysisClient(
         nodes=[
             {
-                "temp_id": "n0", "type": "Feature", "parent_temp_id": None,
-                "title": "Display", "text": "The system shall handle: Display", "tags": [],
+                "temp_id": "n0",
+                "type": "Feature",
+                "parent_temp_id": None,
+                "title": "Display",
+                "text": "The system shall handle: Display",
+                "tags": [],
             },
             {
-                "temp_id": "n1", "type": "Requirement", "parent_temp_id": "n0",
-                "title": "HDR support", "text": "The system shall handle: HDR.", "tags": [],
+                "temp_id": "n1",
+                "type": "Requirement",
+                "parent_temp_id": "n0",
+                "title": "HDR support",
+                "text": "The system shall handle: HDR.",
+                "tags": [],
             },
         ]
     )
@@ -6239,7 +8518,9 @@ def test_build_survey_tree_llm_branch_positional_attribution_also_populates_insi
     assert set(all_insignificant_ids) <= set(all_uncaptioned_ids)
 
 
-def test_build_survey_tree_multi_branch_path_also_populates_insignificant_figure_ids(monkeypatch) -> None:
+def test_build_survey_tree_multi_branch_path_also_populates_insignificant_figure_ids(
+    monkeypatch,
+) -> None:
     # Regression guard (review finding on commit 839532a): the multi-branch
     # loop's own _build_survey_skeleton_for_branch call site (build_survey_tree's
     # _run_branch, distinct from the single-call/whole-document call site the
@@ -6261,21 +8542,45 @@ def test_build_survey_tree_multi_branch_path_also_populates_insignificant_figure
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Display", source_ref=_sr(path)),
-            Block(id="b1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
-            Block(id="b2", kind=BlockKind.HEADING, heading_level=1, text="Audio", source_ref=_sr(path)),
-            Block(id="b3", kind=BlockKind.PARAGRAPH, text="The speaker shall support 5.1 surround.", source_ref=_sr(path)),
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Display",
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
+                text="The display shall support HDR.",
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b2", kind=BlockKind.HEADING, heading_level=1, text="Audio", source_ref=_sr(path)
+            ),
+            Block(
+                id="b3",
+                kind=BlockKind.PARAGRAPH,
+                text="The speaker shall support 5.1 surround.",
+                source_ref=_sr(path),
+            ),
             Block(id="b4", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path)),
         ],
-        figures=[Figure(id="fig0", caption=None, caption_status="insignificant", source_ref=_sr(path))],
+        figures=[
+            Figure(id="fig0", caption=None, caption_status="insignificant", source_ref=_sr(path))
+        ],
     )
     fake = FakeSectionAnalysisClient()
     tree = build_survey_tree(doc, fake)
-    assert len(fake.calls) == 2  # confirms the multi-branch path (not the single-call path) actually ran
+    assert (
+        len(fake.calls) == 2
+    )  # confirms the multi-branch path (not the single-call path) actually ran
     all_uncaptioned_ids = [fid for n in tree.nodes for fid in n.uncaptioned_figure_ids]
     all_insignificant_ids = [fid for n in tree.nodes for fid in n.insignificant_figure_ids]
     assert all_uncaptioned_ids == ["fig0"]
-    assert all_insignificant_ids == ["fig0"]  # the field this bug left permanently empty on this path
+    assert all_insignificant_ids == [
+        "fig0"
+    ]  # the field this bug left permanently empty on this path
 
 
 def test_build_survey_tree_identity_and_fidelity_hashes_are_unaffected_by_section_path() -> None:
@@ -6301,9 +8606,16 @@ def test_build_survey_tree_identity_and_fidelity_hashes_are_unaffected_by_sectio
     path = "hybrid_survey_input.txt"
     residual = [
         Block(id="r0", kind=BlockKind.PARAGRAPH, text="Display", source_ref=_sr(path)),
-        Block(id="r1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
+        Block(
+            id="r1",
+            kind=BlockKind.PARAGRAPH,
+            text="The display shall support HDR.",
+            source_ref=_sr(path),
+        ),
     ]
-    doc = _structural_heading_doc().model_copy(update={"blocks": residual + _structural_heading_doc().blocks})
+    doc = _structural_heading_doc().model_copy(
+        update={"blocks": residual + _structural_heading_doc().blocks}
+    )
     tree = build_survey_tree(doc, FakeSectionAnalysisClient())
     det_root = next(n for n in tree.nodes if n.title == "System Domain")
     llm_root = next(n for n in tree.nodes if n.title == "Display")
@@ -6323,7 +8635,9 @@ def test_build_survey_tree_identity_and_fidelity_hashes_are_unaffected_by_sectio
             # LLM branch node -- identity is keyed on local_id (see
             # _hash_identity_for_synthesized_node's own docstring), never on
             # the generated (wording-unstable) description text.
-            assert node.identity_hash == _hash_identity_for_synthesized_node(node.local_id, bare_ref)
+            assert node.identity_hash == _hash_identity_for_synthesized_node(
+                node.local_id, bare_ref
+            )
 
 
 def test_build_survey_tree_never_calls_the_llm_for_a_pure_deterministic_document() -> None:
@@ -6361,7 +8675,9 @@ def test_build_survey_tree_merges_deterministic_and_llm_nodes_as_sibling_roots()
     residual = [
         Block(id="r0", kind=BlockKind.PARAGRAPH, text="Display", source_ref=_sr(path)),
         Block(
-            id="r1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.",
+            id="r1",
+            kind=BlockKind.PARAGRAPH,
+            text="The display shall support HDR.",
             source_ref=_sr(path),
         ),
     ]
@@ -6432,14 +8748,25 @@ def test_build_survey_tree_infers_trace_links_on_the_pure_deterministic_path() -
     # (root -> its own child), which the parent/child redundancy filter
     # below now correctly drops on its own merits.
     fake_client = FakeTraceLinkInferenceClient(
-        results=[{"source_node_id": "det0_h1_1", "reference_name": "Rel", "target_ref": "det0_h1_2", "evidence_quote": "The system shall do B"}]
+        results=[
+            {
+                "source_node_id": "det0_h1_1",
+                "reference_name": "Rel",
+                "target_ref": "det0_h1_2",
+                "evidence_quote": "The system shall do B",
+            }
+        ]
     )
     catalog = [{"reference_name": "Rel", "name": "Related", "semantic_hint": None}]
     doc = _structural_heading_doc()
-    doc.blocks[1] = doc.blocks[1].model_copy(update={"text": "The system shall do A per The system shall do B."})
+    doc.blocks[1] = doc.blocks[1].model_copy(
+        update={"text": "The system shall do A per The system shall do B."}
+    )
     tree = build_survey_tree(
-        doc, FakeSectionAnalysisClient(),
-        link_type_client=fake_client, link_type_catalog=catalog,
+        doc,
+        FakeSectionAnalysisClient(),
+        link_type_client=fake_client,
+        link_type_catalog=catalog,
     )
     assert len(fake_client.calls) == 1
     assert any(link.source_local_id == "det0_h1_1" for link in tree.trace_links)
@@ -6480,7 +8807,9 @@ class _FakeConflictClient:
         self._verdict = verdict
         self.calls: list[dict[str, str]] = []
 
-    def judge_duplicate_cluster(self, texts_by_id: dict[str, str], user_id: str | None = None) -> dict:
+    def judge_duplicate_cluster(
+        self, texts_by_id: dict[str, str], user_id: str | None = None
+    ) -> dict:
         self.calls.append(texts_by_id)
         return self._verdict
 
@@ -6536,7 +8865,13 @@ def test_detect_conflicting_duplicates_emits_progress_narration_before_the_llm_c
     events: list[LevelingProgress] = []
 
     _detect_conflicting_duplicates(
-        nodes, embed_client, conflict_client, [], events.append, 42, 7,
+        nodes,
+        embed_client,
+        conflict_client,
+        [],
+        events.append,
+        42,
+        7,
     )
 
     assert len(events) == 1
@@ -6562,7 +8897,9 @@ class _FlakyConflictClient:
         self._verdict = verdict or {"verdict": "redundant", "conflicting_values": []}
         self.calls: list[int] = []
 
-    def judge_duplicate_cluster(self, texts_by_id: dict[str, str], user_id: str | None = None) -> dict:
+    def judge_duplicate_cluster(
+        self, texts_by_id: dict[str, str], user_id: str | None = None
+    ) -> dict:
         self.calls.append(len(texts_by_id))
         if self._max_ok is None or len(texts_by_id) > self._max_ok:
             raise RuntimeError("400 schema rejected")
@@ -6659,7 +8996,9 @@ def test_detect_conflicting_duplicates_is_fail_open_on_embed_error() -> None:
     assert nodes[0].quality_issues == []
 
 
-def test_detect_conflicting_duplicates_clusters_a_terse_fragment_with_its_formal_restatement() -> None:
+def test_detect_conflicting_duplicates_clusters_a_terse_fragment_with_its_formal_restatement() -> (
+    None
+):
     # Confirmed live bug this locks in: a spec table's terse fragment and the
     # body's full formal sentence state the SAME parameter with CONTRADICTING
     # values, but description-alone embedding measured only 0.65 against the
@@ -6676,11 +9015,13 @@ def test_detect_conflicting_duplicates_clusters_a_terse_fragment_with_its_formal
     # measured real-model value) while the shared title sits on their
     # bisector (cosine 0.9083 to each) -- blending each description 50/50
     # with that title lands the pair at 0.9083, over threshold.
-    embed_client = _FakeEmbedClientForConflicts({
-        title: [0.9083, 0.4183],
-        text_a: [1.0, 0.0],
-        text_b: [0.65, 0.7599],
-    })
+    embed_client = _FakeEmbedClientForConflicts(
+        {
+            title: [0.9083, 0.4183],
+            text_a: [1.0, 0.0],
+            text_b: [0.65, 0.7599],
+        }
+    )
     # Pins the "previously would NOT have been detected" half of this test:
     # if the descriptions alone ever clear the threshold, this test has
     # stopped proving anything.
@@ -6753,7 +9094,9 @@ def test_detect_conflicting_duplicates_clusters_correctly_at_scale_vectorized_vs
     assert b_ids in clustered_id_sets
 
 
-def test_detect_conflicting_duplicates_does_not_cluster_unrelated_bodies_under_one_shared_title() -> None:
+def test_detect_conflicting_duplicates_does_not_cluster_unrelated_bodies_under_one_shared_title() -> (
+    None
+):
     # Over-clustering safety net for the title+description blend: two nodes
     # legitimately carry the SAME title over totally unrelated bodies (a
     # "Power Supply" section states an input voltage in one place and a paint
@@ -6770,11 +9113,13 @@ def test_detect_conflicting_duplicates_does_not_cluster_unrelated_bodies_under_o
     # -- the worst realistic case for the blend, not an artificially
     # orthogonal title. Blended cosine: 0.75, under the 0.85 threshold.
     # Title-alone would be 1.0, which is what this test exists to forbid.
-    embed_client = _FakeEmbedClientForConflicts({
-        title: [0.6, 0.4899, 0.6325],
-        text_a: [1.0, 0.0, 0.0],
-        text_b: [0.2, 0.9798, 0.0],
-    })
+    embed_client = _FakeEmbedClientForConflicts(
+        {
+            title: [0.6, 0.4899, 0.6325],
+            text_a: [1.0, 0.0, 0.0],
+            text_b: [0.2, 0.9798, 0.0],
+        }
+    )
     conflict_client = _FakeConflictClient({"verdict": "contradictory", "conflicting_values": []})
     warnings: list[IntegrityWarning] = []
 
@@ -6895,13 +9240,17 @@ def test_regroup_disconnected_roots_stays_a_feature_when_every_member_is_a_requi
         _node("n0", WorkItemType.REQUIREMENT, None, "Bare Requirement A"),
         _node("n1", WorkItemType.REQUIREMENT, None, "Bare Requirement B"),
     ]
-    client = _FakeGroupingClient({"groups": [{"title": "Leftover Requirements", "member_ids": ["n0", "n1"]}]})
+    client = _FakeGroupingClient(
+        {"groups": [{"title": "Leftover Requirements", "member_ids": ["n0", "n1"]}]}
+    )
     _regroup_disconnected_roots(nodes, "regroup_", client, [])
     group_node = next(n for n in nodes if n.title == "Leftover Requirements")
     assert group_node.type == WorkItemType.FEATURE  # all-Requirement leaves -> Feature, not Epic
 
 
-def test_a_well_formed_thematic_group_of_root_features_becomes_an_epic_and_escapes_the_catchall() -> None:
+def test_a_well_formed_thematic_group_of_root_features_becomes_an_epic_and_escapes_the_catchall() -> (
+    None
+):
     # Reproduces the real document's exact shape (Gap A): several
     # disconnected root Features get topically regrouped, and the real
     # Epic elsewhere in the tree must not cause the new groups to be
@@ -6914,12 +9263,14 @@ def test_a_well_formed_thematic_group_of_root_features_becomes_an_epic_and_escap
         _node("n2", WorkItemType.FEATURE, None, "NVMRO"),
         _node("n3", WorkItemType.FEATURE, None, "NVMRW"),
     ]
-    client = _FakeGroupingClient({
-        "groups": [
-            {"title": "Power Sequencing Signals", "member_ids": ["n0", "n1"]},
-            {"title": "Non-Volatile Memory Signals", "member_ids": ["n2", "n3"]},
-        ]
-    })
+    client = _FakeGroupingClient(
+        {
+            "groups": [
+                {"title": "Power Sequencing Signals", "member_ids": ["n0", "n1"]},
+                {"title": "Non-Volatile Memory Signals", "member_ids": ["n2", "n3"]},
+            ]
+        }
+    )
     warnings: list[IntegrityWarning] = []
 
     _regroup_disconnected_roots(nodes, "regroup_", client, warnings)
@@ -6962,7 +9313,9 @@ def test_regroup_disconnected_roots_skips_a_single_member_group() -> None:
 
 def test_regroup_disconnected_roots_is_fail_open() -> None:
     class RaisingGroupingClient:
-        def group_root_topics(self, titles_by_id: dict[str, str], user_id: str | None = None) -> dict:
+        def group_root_topics(
+            self, titles_by_id: dict[str, str], user_id: str | None = None
+        ) -> dict:
             raise RuntimeError("boom")
 
     nodes = [
@@ -6988,7 +9341,9 @@ def test_regroup_disconnected_roots_captures_the_failure_when_group_root_topics_
     # failure was only ever a log line -- unlike score_epics_and_features'
     # own failure, which was already captured for the debug-read endpoint.
     class RaisingGroupingClient:
-        def group_root_topics(self, titles_by_id: dict[str, str], user_id: str | None = None) -> dict:
+        def group_root_topics(
+            self, titles_by_id: dict[str, str], user_id: str | None = None
+        ) -> dict:
             raise RuntimeError("boom")
 
     nodes = [
@@ -6996,7 +9351,9 @@ def test_regroup_disconnected_roots_captures_the_failure_when_group_root_topics_
         _node("n1", WorkItemType.FEATURE, None, "PS_SYNC"),
     ]
     debug_capture = _FakeDebugCapture()
-    _regroup_disconnected_roots(nodes, "regroup_", RaisingGroupingClient(), [], debug_capture=debug_capture)
+    _regroup_disconnected_roots(
+        nodes, "regroup_", RaisingGroupingClient(), [], debug_capture=debug_capture
+    )
     assert len(debug_capture.calls) == 1
     kind, identifier, raw_response = debug_capture.calls[0]
     assert kind == "group_root_topics"
@@ -7004,12 +9361,25 @@ def test_regroup_disconnected_roots_captures_the_failure_when_group_root_topics_
     assert "boom" in raw_response
 
 
-def test_regroup_disconnected_roots_captures_the_failure_when_assign_leftover_roots_raises() -> None:
+def test_regroup_disconnected_roots_captures_the_failure_when_assign_leftover_roots_raises() -> (
+    None
+):
     class RaisingAssignmentClient:
-        def group_root_topics(self, titles_by_id: dict[str, str], user_id: str | None = None) -> dict:
-            return {"groups": [{"title": "VPX Utility & Management Signals", "member_ids": ["n0", "n1"]}]}
+        def group_root_topics(
+            self, titles_by_id: dict[str, str], user_id: str | None = None
+        ) -> dict:
+            return {
+                "groups": [
+                    {"title": "VPX Utility & Management Signals", "member_ids": ["n0", "n1"]}
+                ]
+            }
 
-        def assign_leftover_roots(self, leftover_titles_by_id: dict[str, str], group_titles_by_id: dict[str, str], user_id: str | None = None) -> dict:
+        def assign_leftover_roots(
+            self,
+            leftover_titles_by_id: dict[str, str],
+            group_titles_by_id: dict[str, str],
+            user_id: str | None = None,
+        ) -> dict:
             raise RuntimeError("kaboom")
 
     nodes = [
@@ -7018,7 +9388,9 @@ def test_regroup_disconnected_roots_captures_the_failure_when_assign_leftover_ro
         _node("n2", WorkItemType.FEATURE, None, "Truly Standalone"),
     ]
     debug_capture = _FakeDebugCapture()
-    _regroup_disconnected_roots(nodes, "regroup_", RaisingAssignmentClient(), [], debug_capture=debug_capture)
+    _regroup_disconnected_roots(
+        nodes, "regroup_", RaisingAssignmentClient(), [], debug_capture=debug_capture
+    )
     assert len(debug_capture.calls) == 1
     kind, identifier, raw_response = debug_capture.calls[0]
     assert kind == "assign_leftover_roots"
@@ -7058,7 +9430,12 @@ class _FakeGroupingClientWithAssignment:
     def group_root_topics(self, titles_by_id: dict[str, str], user_id: str | None = None) -> dict:
         return self._group_result
 
-    def assign_leftover_roots(self, leftover_titles_by_id: dict[str, str], group_titles_by_id: dict[str, str], user_id: str | None = None) -> dict:
+    def assign_leftover_roots(
+        self,
+        leftover_titles_by_id: dict[str, str],
+        group_titles_by_id: dict[str, str],
+        user_id: str | None = None,
+    ) -> dict:
         self.assignment_calls.append((leftover_titles_by_id, group_titles_by_id))
         return self._assignment_result
 
@@ -7081,14 +9458,21 @@ def test_regroup_disconnected_roots_places_a_leftover_into_an_existing_group() -
     assert nodes[2].parent_local_id == group_node.local_id
     # The second call receives the REAL leftover title and the REAL created
     # group's own title -- not raw ids/placeholders.
-    assert client.assignment_calls == [({"n2": "SBC Serial Communication Routing"}, {group_node.local_id: group_node.title})]
+    assert client.assignment_calls == [
+        ({"n2": "SBC Serial Communication Routing"}, {group_node.local_id: group_node.title})
+    ]
     # Group's own description grows to mention the late-added member --
     # it must not silently claim it only ever contained its original two.
     assert "SBC Serial Communication Routing" in group_node.description
-    assert any(w.kind == WarningKind.ROOTS_REGROUPED and "SBC Serial Communication Routing" in w.raw for w in warnings)
+    assert any(
+        w.kind == WarningKind.ROOTS_REGROUPED and "SBC Serial Communication Routing" in w.raw
+        for w in warnings
+    )
 
 
-def test_regroup_disconnected_roots_promotes_a_feature_group_to_epic_when_a_leftover_is_not_a_requirement() -> None:
+def test_regroup_disconnected_roots_promotes_a_feature_group_to_epic_when_a_leftover_is_not_a_requirement() -> (
+    None
+):
     # Same CMMI depth rule as the first pass: a Feature-typed group (all
     # original members were Requirements) absorbing a non-Requirement
     # leftover must be promoted to Epic, or the tier rule is violated.
@@ -7149,7 +9533,9 @@ def test_regroup_disconnected_roots_skips_the_second_pass_when_no_groups_were_cr
     assert nodes[1].parent_local_id is None
 
 
-def test_regroup_disconnected_roots_second_pass_is_fail_open_when_the_client_lacks_the_method() -> None:
+def test_regroup_disconnected_roots_second_pass_is_fail_open_when_the_client_lacks_the_method() -> (
+    None
+):
     # The REAL regression guard: _FakeGroupingClient (unchanged, every
     # other test in this file uses it) has no assign_leftover_roots at
     # all -- this must degrade to leaving the leftover exactly where it
@@ -7159,7 +9545,9 @@ def test_regroup_disconnected_roots_second_pass_is_fail_open_when_the_client_lac
         _node("n1", WorkItemType.FEATURE, None, "PS_SYNC"),
         _node("n2", WorkItemType.FEATURE, None, "Truly Standalone"),
     ]
-    client = _FakeGroupingClient({"groups": [{"title": "VPX Utility & Management Signals", "member_ids": ["n0", "n1"]}]})
+    client = _FakeGroupingClient(
+        {"groups": [{"title": "VPX Utility & Management Signals", "member_ids": ["n0", "n1"]}]}
+    )
     warnings: list = []
     _regroup_disconnected_roots(nodes, "regroup_", client, warnings)
     assert nodes[2].parent_local_id is None
@@ -7221,13 +9609,17 @@ def test_ensure_root_features_have_epic_parent_is_a_noop_without_orphan_features
 def test_build_survey_tree_threads_primer_context_into_every_branch(monkeypatch) -> None:
     _force_multi_branch(monkeypatch)
     fake = FakeSectionAnalysisClient()
-    build_survey_tree(_two_branch_doc(), fake, primer_context="This document specifies an avionics interface.")
+    build_survey_tree(
+        _two_branch_doc(), fake, primer_context="This document specifies an avionics interface."
+    )
     assert len(fake.calls) == 2
     for call in fake.calls:
         assert "This document specifies an avionics interface." in call["section_text"]
 
 
-def test_the_primer_is_given_to_the_model_as_background_about_the_document_and_never_as_instructions() -> None:
+def test_the_primer_is_given_to_the_model_as_background_about_the_document_and_never_as_instructions() -> (
+    None
+):
     # The primer is written by a model from the customer's whole file (and carries the user's structure hint), so a document that says
     # "ignore the rules above" can reach it. It must arrive labelled as data about the document, after the rules, not as one of them.
     from app.leveling.llm_leveling import _combine_global_context
@@ -7239,14 +9631,18 @@ def test_the_primer_is_given_to_the_model_as_background_about_the_document_and_n
     assert label_at < text_at
     assert "never" in combined[label_at:text_at] and "instruction" in combined[label_at:text_at]
     assert combined.index("outline") < label_at  # the base outline stays outside the quoted block
-    assert _combine_global_context("outline", 0, [], None) == "outline"  # no primer: byte-identical to before
+    assert (
+        _combine_global_context("outline", 0, [], None) == "outline"
+    )  # no primer: byte-identical to before
 
 
 def test_build_survey_tree_defaults_primer_context_to_none_byte_identical() -> None:
     # None (the default) must be byte-identical to before this capability
     # existed -- same convention as every other optional *_client param.
     tree_without = build_survey_tree(_small_doc(), FakeSectionAnalysisClient())
-    tree_with_none = build_survey_tree(_small_doc(), FakeSectionAnalysisClient(), primer_context=None)
+    tree_with_none = build_survey_tree(
+        _small_doc(), FakeSectionAnalysisClient(), primer_context=None
+    )
     assert tree_without.nodes == tree_with_none.nodes
 
 
@@ -7297,9 +9693,22 @@ def test_skeleton_stage_ignores_content_fields_a_model_leaks_into_its_response()
     path = "leaky.txt"
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
-        blocks=[Block(id="b0", kind=BlockKind.FIGURE, text="[FIGURE: A wiring diagram]", source_ref=_sr(path))],
+        blocks=[
+            Block(
+                id="b0",
+                kind=BlockKind.FIGURE,
+                text="[FIGURE: A wiring diagram]",
+                source_ref=_sr(path),
+            )
+        ],
         figures=[Figure(id="f0", caption="A wiring diagram", source_ref=_sr(path))],
-        tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]], source_ref=_sr(path))],
+        tables=[
+            Table(
+                id="t0",
+                cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]],
+                source_ref=_sr(path),
+            )
+        ],
     )
 
     class _LeakyClient(FakeSectionAnalysisClient):
@@ -7307,17 +9716,28 @@ def test_skeleton_stage_ignores_content_fields_a_model_leaks_into_its_response()
             # Every leaked id here is a REAL candidate this branch actually
             # offered, so they would sail through validation if anything
             # ever read them -- the point is that nothing does.
-            return [{
-                "temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "Display",
-                "description": "LEAKED description", "text": "LEAKED text",
-                "tags": ["safety"], "figure_ids": ["f0"], "table_ids": ["t0"],
-            }], False
+            return [
+                {
+                    "temp_id": "n0",
+                    "type": "Feature",
+                    "parent_temp_id": None,
+                    "title": "Display",
+                    "description": "LEAKED description",
+                    "text": "LEAKED text",
+                    "tags": ["safety"],
+                    "figure_ids": ["f0"],
+                    "table_ids": ["t0"],
+                }
+            ], False
 
     fake = _LeakyClient()
 
-    skeleton = _skeleton_for(doc.blocks, fake, tables=doc.tables, figures=doc.figures,
-                             figure_id_by_block_id={"b0": "f0"})
-    assert [(n.description, n.tags, n.figure_ids, n.table_ids) for n in skeleton.nodes] == [("", [], [], [])]
+    skeleton = _skeleton_for(
+        doc.blocks, fake, tables=doc.tables, figures=doc.figures, figure_id_by_block_id={"b0": "f0"}
+    )
+    assert [(n.description, n.tags, n.figure_ids, n.table_ids) for n in skeleton.nodes] == [
+        ("", [], [], [])
+    ]
 
     # ...and end to end, the description that ships is stage 3's, never the
     # one stage 1 tried to smuggle through.
@@ -7353,8 +9773,12 @@ def test_skeleton_stage_carries_every_structural_steering_parameter() -> None:
     # and none of them leaks into stage 3 -- with nothing weakened.
     assert set(fake.calls[0]) == {"section_text", "kb_context", "options"}
     assert {f.name for f in dataclasses.fields(fake.calls[0]["options"])} == {
-        "whole_document", "topic_count", "table_group_hints", "expected_root_count",
-        "requirement_row_hints", "heading_type_hints",
+        "whole_document",
+        "topic_count",
+        "table_group_hints",
+        "expected_root_count",
+        "requirement_row_hints",
+        "heading_type_hints",
     }
     # Deliberately unchanged: 'customer_id' is stage 1's own concern (it's
     # read from the SKELETON entry, see _validated_skeleton_customer_id) --
@@ -7385,24 +9809,72 @@ def test_skeleton_stage_receives_the_documents_own_heading_1_and_2_outline() -> 
         return SourceRef(document_path=path, start_offset=start, end_offset=end)
 
     blocks = [
-        Block(id="b0", kind=BlockKind.HEADING, text="Alpha Domain", heading_level=1, source_ref=sr(0, 1)),
-        Block(id="b1", kind=BlockKind.HEADING, text="Alpha Feature", heading_level=2, source_ref=sr(1, 2)),
-        Block(id="b2", kind=BlockKind.PARAGRAPH, text="The system shall support alpha synchronization.", source_ref=sr(2, 3)),
-        Block(id="b3", kind=BlockKind.PARAGRAPH, text="The system shall report alpha status regularly.", source_ref=sr(3, 4)),
-        Block(id="b4", kind=BlockKind.HEADING, text="Beta Domain", heading_level=1, source_ref=sr(4, 5)),
-        Block(id="b5", kind=BlockKind.HEADING, text="Beta Feature", heading_level=2, source_ref=sr(5, 6)),
-        Block(id="b6", kind=BlockKind.PARAGRAPH, text="The system shall support beta synchronization.", source_ref=sr(6, 7)),
-        Block(id="b7", kind=BlockKind.PARAGRAPH, text="The system shall report beta status regularly.", source_ref=sr(7, 8)),
+        Block(
+            id="b0",
+            kind=BlockKind.HEADING,
+            text="Alpha Domain",
+            heading_level=1,
+            source_ref=sr(0, 1),
+        ),
+        Block(
+            id="b1",
+            kind=BlockKind.HEADING,
+            text="Alpha Feature",
+            heading_level=2,
+            source_ref=sr(1, 2),
+        ),
+        Block(
+            id="b2",
+            kind=BlockKind.PARAGRAPH,
+            text="The system shall support alpha synchronization.",
+            source_ref=sr(2, 3),
+        ),
+        Block(
+            id="b3",
+            kind=BlockKind.PARAGRAPH,
+            text="The system shall report alpha status regularly.",
+            source_ref=sr(3, 4),
+        ),
+        Block(
+            id="b4",
+            kind=BlockKind.HEADING,
+            text="Beta Domain",
+            heading_level=1,
+            source_ref=sr(4, 5),
+        ),
+        Block(
+            id="b5",
+            kind=BlockKind.HEADING,
+            text="Beta Feature",
+            heading_level=2,
+            source_ref=sr(5, 6),
+        ),
+        Block(
+            id="b6",
+            kind=BlockKind.PARAGRAPH,
+            text="The system shall support beta synchronization.",
+            source_ref=sr(6, 7),
+        ),
+        Block(
+            id="b7",
+            kind=BlockKind.PARAGRAPH,
+            text="The system shall report beta status regularly.",
+            source_ref=sr(7, 8),
+        ),
     ]
-    doc = CanonicalDoc(document=Document(path=path, format=DocumentFormat.TXT, sha256="h"), blocks=blocks)
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"), blocks=blocks
+    )
     fake = FakeSectionAnalysisClient()
 
     build_survey_tree(doc, fake)
 
     assert len(fake.calls) == 1
     assert fake.calls[0]["options"].heading_type_hints == [
-        ("Alpha Domain", "Epic"), ("Alpha Feature", "Feature"),
-        ("Beta Domain", "Epic"), ("Beta Feature", "Feature"),
+        ("Alpha Domain", "Epic"),
+        ("Alpha Feature", "Feature"),
+        ("Beta Domain", "Epic"),
+        ("Beta Feature", "Feature"),
     ]
 
 
@@ -7429,20 +9901,43 @@ def test_skeleton_stage_names_no_epic_for_a_flat_single_tier_document() -> None:
         rows = [["#", "Requirement"]]
         for i in range(2):
             rows.append([f"{prefix}-{i:03d}#", f"The system shall handle {prefix} case {i}."])
-        return Table(id=table_id, cells=[[TableCell(text=c) for c in row] for row in rows], source_ref=sr(offset, offset + 1))
+        return Table(
+            id=table_id,
+            cells=[[TableCell(text=c) for c in row] for row in rows],
+            source_ref=sr(offset, offset + 1),
+        )
 
     blocks = [
-        Block(id="b0", kind=BlockKind.HEADING, text="Alpha Feature", heading_level=2, source_ref=sr(0, 1)),
-        Block(id="b1", kind=BlockKind.HEADING, text="Beta Feature", heading_level=2, source_ref=sr(2, 3)),
+        Block(
+            id="b0",
+            kind=BlockKind.HEADING,
+            text="Alpha Feature",
+            heading_level=2,
+            source_ref=sr(0, 1),
+        ),
+        Block(
+            id="b1",
+            kind=BlockKind.HEADING,
+            text="Beta Feature",
+            heading_level=2,
+            source_ref=sr(2, 3),
+        ),
     ]
     tables = [_id_table("t0", 1, "ALPHA"), _id_table("t1", 3, "BETA")]
-    doc = CanonicalDoc(document=Document(path=path, format=DocumentFormat.TXT, sha256="h"), blocks=blocks, tables=tables)
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=blocks,
+        tables=tables,
+    )
     fake = FakeSectionAnalysisClient()
 
     build_survey_tree(doc, fake)
 
     assert len(fake.calls) == 1
-    assert fake.calls[0]["options"].heading_type_hints == [("Alpha Feature", "Feature"), ("Beta Feature", "Feature")]
+    assert fake.calls[0]["options"].heading_type_hints == [
+        ("Alpha Feature", "Feature"),
+        ("Beta Feature", "Feature"),
+    ]
 
 
 def test_content_stage_is_given_the_already_decided_skeleton() -> None:
@@ -7467,7 +9962,13 @@ def test_content_stage_cannot_change_the_hierarchy_it_was_given() -> None:
         def author_content(self, section_text, skeleton_nodes, kb_context=None, user_id=None):
             self.author_calls.append({"skeleton_nodes": skeleton_nodes})
             return {
-                "n0": {"description": "Root feature text.", "type": "Requirement", "title": "Renamed", "parent_id": "n1", "tags": []},
+                "n0": {
+                    "description": "Root feature text.",
+                    "type": "Requirement",
+                    "title": "Renamed",
+                    "parent_id": "n1",
+                    "tags": [],
+                },
                 "n1": {"description": "Child requirement text.", "tags": ["safety"]},
                 "invented": {"description": "A node nobody asked for.", "tags": []},
             }, False
@@ -7482,7 +9983,9 @@ def test_content_stage_cannot_change_the_hierarchy_it_was_given() -> None:
     assert tree.nodes[1].tags == [RequirementTag.SAFETY]
 
 
-def test_content_stage_never_tags_an_epic_or_feature_even_when_the_model_returns_tags_for_it() -> None:
+def test_content_stage_never_tags_an_epic_or_feature_even_when_the_model_returns_tags_for_it() -> (
+    None
+):
     # Confirmed real bug this guards against: author_content's own prompt
     # used to ask for 'tags' on every node id including Epic/Feature, and
     # the assignment applied whatever the model returned with no type
@@ -7516,7 +10019,9 @@ def test_content_stage_falls_back_to_the_title_for_an_omitted_node_and_warns() -
     # Honest, already source-derived, and never an empty work item.
     assert unauthored.description == "Display"
     assert unauthored.fidelity_hash is not None
-    warning = next(w for w in tree.warnings if w.kind == WarningKind.ENHANCEMENT_RESPONSE_INCOMPLETE)
+    warning = next(
+        w for w in tree.warnings if w.kind == WarningKind.ENHANCEMENT_RESPONSE_INCOMPLETE
+    )
     assert warning.detail["pass"] == "content_authoring"
     assert warning.detail["missing"] == 1
     assert warning.node_ids == ["n0"]
@@ -7524,10 +10029,20 @@ def test_content_stage_falls_back_to_the_title_for_an_omitted_node_and_warns() -
 
 def test_content_stage_truncation_is_reported_separately_from_skeleton_truncation() -> None:
     skeleton_truncated = build_survey_tree(_small_doc(), FakeSectionAnalysisClient(truncated=True))
-    content_truncated = build_survey_tree(_small_doc(), FakeSectionAnalysisClient(content_truncated=True))
+    content_truncated = build_survey_tree(
+        _small_doc(), FakeSectionAnalysisClient(content_truncated=True)
+    )
 
-    assert [w.detail["stage"] for w in skeleton_truncated.warnings if w.kind == WarningKind.OUTPUT_TRUNCATED] == ["skeleton"]
-    assert [w.detail["stage"] for w in content_truncated.warnings if w.kind == WarningKind.OUTPUT_TRUNCATED] == ["content"]
+    assert [
+        w.detail["stage"]
+        for w in skeleton_truncated.warnings
+        if w.kind == WarningKind.OUTPUT_TRUNCATED
+    ] == ["skeleton"]
+    assert [
+        w.detail["stage"]
+        for w in content_truncated.warnings
+        if w.kind == WarningKind.OUTPUT_TRUNCATED
+    ] == ["content"]
 
 
 def test_both_generation_stages_fail_hard() -> None:
@@ -7555,8 +10070,22 @@ def test_repair_requirement_hierarchy_runs_on_the_skeleton_before_authoring() ->
     # "no content invented" description.
     fake = FakeSectionAnalysisClient(
         nodes=[
-            {"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "title": "Receiver", "text": "Receiver epic.", "tags": []},
-            {"temp_id": "n1", "type": "Requirement", "parent_temp_id": "n0", "title": "Channel scan", "text": "The receiver shall scan channels.", "tags": []},
+            {
+                "temp_id": "n0",
+                "type": "Epic",
+                "parent_temp_id": None,
+                "title": "Receiver",
+                "text": "Receiver epic.",
+                "tags": [],
+            },
+            {
+                "temp_id": "n1",
+                "type": "Requirement",
+                "parent_temp_id": "n0",
+                "title": "Channel scan",
+                "text": "The receiver shall scan channels.",
+                "tags": [],
+            },
         ]
     )
 
@@ -7581,16 +10110,29 @@ def test_root_regrouping_runs_between_the_two_stages(monkeypatch) -> None:
     _force_multi_branch(monkeypatch)
 
     class _FakeGroupingClient:
-        def group_root_topics(self, titles_by_id: dict[str, str], user_id: str | None = None) -> dict:
+        def group_root_topics(
+            self, titles_by_id: dict[str, str], user_id: str | None = None
+        ) -> dict:
             return {"groups": [{"title": "Media Subsystems", "member_ids": list(titles_by_id)}]}
 
     fake = FakeSectionAnalysisClient(
-        nodes=[{"temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "Section", "text": "Section text.", "tags": []}]
+        nodes=[
+            {
+                "temp_id": "n0",
+                "type": "Feature",
+                "parent_temp_id": None,
+                "title": "Section",
+                "text": "Section text.",
+                "tags": [],
+            }
+        ]
     )
     tree = build_survey_tree(_two_branch_doc(), fake, grouping_client=_FakeGroupingClient())
 
     group = next(n for n in tree.nodes if n.local_id == "regroup_synth_group_0")
-    assert {n.parent_local_id for n in tree.nodes if n.local_id.startswith("br")} == {group.local_id}
+    assert {n.parent_local_id for n in tree.nodes if n.local_id.startswith("br")} == {
+        group.local_id
+    }
     assert len(fake.author_calls) == 2
     for call in fake.author_calls:
         assert [entry["parent_id"] for entry in call["skeleton_nodes"].values()] == [group.local_id]
@@ -7604,15 +10146,32 @@ def test_catchall_epic_wrap_runs_between_the_two_stages(monkeypatch) -> None:
     _force_multi_branch(monkeypatch)
     fake = FakeSectionAnalysisClient(
         nodes=[
-            {"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "title": "Root epic", "text": "Root epic text.", "tags": []},
-            {"temp_id": "n1", "type": "Feature", "parent_temp_id": None, "title": "Bare feature", "text": "Bare feature text.", "tags": []},
+            {
+                "temp_id": "n0",
+                "type": "Epic",
+                "parent_temp_id": None,
+                "title": "Root epic",
+                "text": "Root epic text.",
+                "tags": [],
+            },
+            {
+                "temp_id": "n1",
+                "type": "Feature",
+                "parent_temp_id": None,
+                "title": "Bare feature",
+                "text": "Bare feature text.",
+                "tags": [],
+            },
         ]
     )
 
     tree = build_survey_tree(_two_branch_doc(), fake, grouping_client=None)
 
     catchall = next(n for n in tree.nodes if n.local_id == "regroup_synth_root_epic")
-    assert {n.local_id for n in tree.nodes if n.parent_local_id == catchall.local_id} == {"br0_n1", "br1_n1"}
+    assert {n.local_id for n in tree.nodes if n.parent_local_id == catchall.local_id} == {
+        "br0_n1",
+        "br1_n1",
+    }
     authored_parents = {
         local_id: entry["parent_id"]
         for call in fake.author_calls
@@ -7631,18 +10190,25 @@ def test_agentic_retrieval_grounds_the_authoring_call_too(monkeypatch) -> None:
     import app.leveling.llm_leveling as llm_leveling_module
 
     monkeypatch.setattr(
-        llm_leveling_module, "_resolve_caps",
+        llm_leveling_module,
+        "_resolve_caps",
         lambda model, caps_client=None: (100, 100_000, 100_000, True),
     )
     monkeypatch.setattr(
-        llm_leveling_module, "retrieve_context",
+        llm_leveling_module,
+        "retrieve_context",
         lambda user_id, query, embed_client, vector_store, **_: (
-            "Snippet text.", [{"source_file": "ref.docx", "similarity": 0.9, "text": "Snippet text."}]
+            "Snippet text.",
+            [{"source_file": "ref.docx", "similarity": 0.9, "text": "Snippet text."}],
         ),
     )
-    fake = FakeSectionAnalysisClient(agentic_citations=[{"source_file": "ref.docx", "similarity": 0.9, "text": "Snippet text."}])
+    fake = FakeSectionAnalysisClient(
+        agentic_citations=[{"source_file": "ref.docx", "similarity": 0.9, "text": "Snippet text."}]
+    )
 
-    build_survey_tree(_small_doc(), fake, user_id="u1", embed_client=object(), vector_store=object())
+    build_survey_tree(
+        _small_doc(), fake, user_id="u1", embed_client=object(), vector_store=object()
+    )
 
     assert len(fake.agentic_calls) == 1
     assert fake.author_calls[0]["kb_context"] == "Snippet text."
@@ -7657,20 +10223,29 @@ def test_agentic_build_skeleton_refires_with_the_real_kb_grounded_result(monkeyp
     import app.leveling.llm_leveling as llm_leveling_module
 
     monkeypatch.setattr(
-        llm_leveling_module, "_resolve_caps",
+        llm_leveling_module,
+        "_resolve_caps",
         lambda model, caps_client=None: (100, 100_000, 100_000, True),
     )
     monkeypatch.setattr(
-        llm_leveling_module, "retrieve_context",
+        llm_leveling_module,
+        "retrieve_context",
         lambda user_id, query, embed_client, vector_store, **_: (
-            "Snippet text.", [{"source_file": "ref.docx", "similarity": 0.9, "text": "Snippet text."}]
+            "Snippet text.",
+            [{"source_file": "ref.docx", "similarity": 0.9, "text": "Snippet text."}],
         ),
     )
-    fake = FakeSectionAnalysisClient(agentic_citations=[{"source_file": "ref.docx", "similarity": 0.9, "text": "Snippet text."}])
+    fake = FakeSectionAnalysisClient(
+        agentic_citations=[{"source_file": "ref.docx", "similarity": 0.9, "text": "Snippet text."}]
+    )
 
     events: list[LevelingProgress] = []
     build_survey_tree(
-        _small_doc(), fake, user_id="u1", embed_client=object(), vector_store=object(),
+        _small_doc(),
+        fake,
+        user_id="u1",
+        embed_client=object(),
+        vector_store=object(),
         progress_callback=lambda p: events.append(p),
     )
 
@@ -7689,9 +10264,30 @@ def test_full_two_stage_pipeline_produces_a_coherent_multi_branch_tree(monkeypat
     _force_multi_branch(monkeypatch)
     fake = FakeSectionAnalysisClient(
         nodes=[
-            {"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "title": "Subsystem", "text": "The subsystem covers the section's obligations.", "tags": []},
-            {"temp_id": "n1", "type": "Feature", "parent_temp_id": "n0", "title": "Capability", "text": "The capability groups the section's requirements.", "tags": []},
-            {"temp_id": "n2", "type": "Requirement", "parent_temp_id": "n1", "title": "Obligation", "text": "The system shall satisfy the stated obligation.", "tags": ["functional"]},
+            {
+                "temp_id": "n0",
+                "type": "Epic",
+                "parent_temp_id": None,
+                "title": "Subsystem",
+                "text": "The subsystem covers the section's obligations.",
+                "tags": [],
+            },
+            {
+                "temp_id": "n1",
+                "type": "Feature",
+                "parent_temp_id": "n0",
+                "title": "Capability",
+                "text": "The capability groups the section's requirements.",
+                "tags": [],
+            },
+            {
+                "temp_id": "n2",
+                "type": "Requirement",
+                "parent_temp_id": "n1",
+                "title": "Obligation",
+                "text": "The system shall satisfy the stated obligation.",
+                "tags": ["functional"],
+            },
         ]
     )
 
@@ -7710,10 +10306,20 @@ def test_full_two_stage_pipeline_produces_a_coherent_multi_branch_tree(monkeypat
             assert node.parent_local_id in by_id, f"{node.local_id} has a dangling parent"
     # Branch namespacing intact, document order preserved, no Requirement
     # left hanging directly off an Epic.
-    assert [n.local_id for n in tree.nodes] == ["br0_n0", "br0_n1", "br0_n2", "br1_n0", "br1_n1", "br1_n2"]
+    assert [n.local_id for n in tree.nodes] == [
+        "br0_n0",
+        "br0_n1",
+        "br0_n2",
+        "br1_n0",
+        "br1_n1",
+        "br1_n2",
+    ]
     for node in tree.nodes:
         if node.type == WorkItemType.REQUIREMENT:
-            assert by_id[node.parent_local_id].type in (WorkItemType.FEATURE, WorkItemType.REQUIREMENT)
+            assert by_id[node.parent_local_id].type in (
+                WorkItemType.FEATURE,
+                WorkItemType.REQUIREMENT,
+            )
 
 
 # --- STAGE 2: whole-document figure/table -> exact-node mapping -------------
@@ -7746,7 +10352,9 @@ class FakeMappingClient(FakeSectionAnalysisClient):
         self._raises = raises
         self.mapping_calls: list[dict] = []
 
-    def map_figures_tables(self, candidates: dict[str, dict], items: dict[str, dict], user_id: str | None = None) -> dict[str, dict]:
+    def map_figures_tables(
+        self, candidates: dict[str, dict], items: dict[str, dict], user_id: str | None = None
+    ) -> dict[str, dict]:
         self.mapping_calls.append({"candidates": candidates, "items": items})
         if self._raises:
             raise RuntimeError("mapping backend exploded")
@@ -7764,14 +10372,26 @@ def _mapping_doc() -> CanonicalDoc:
     return CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
-            Block(id="b1", kind=BlockKind.FIGURE, text="[FIGURE: an HDR tone-mapping curve]", source_ref=_sr(path)),
+            Block(
+                id="b0",
+                kind=BlockKind.PARAGRAPH,
+                text="The display shall support HDR.",
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.FIGURE,
+                text="[FIGURE: an HDR tone-mapping curve]",
+                source_ref=_sr(path),
+            ),
         ],
         figures=[Figure(id="f0", caption="an HDR tone-mapping curve", source_ref=_sr(path))],
         tables=[
             Table(
                 id="t0",
-                cells=[[TableCell(text=c) for c in row] for row in [["Signal", "Pin"], ["VCC", "1"]]],
+                cells=[
+                    [TableCell(text=c) for c in row] for row in [["Signal", "Pin"], ["VCC", "1"]]
+                ],
                 source_ref=_sr(path),
             )
         ],
@@ -7785,12 +10405,40 @@ def _two_branch_figure_doc() -> CanonicalDoc:
     return CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Display", source_ref=_sr(path)),
-            Block(id="b1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
-            Block(id="b2", kind=BlockKind.FIGURE, text="[FIGURE: a display wiring diagram]", source_ref=_sr(path)),
-            Block(id="b3", kind=BlockKind.HEADING, heading_level=1, text="Audio", source_ref=_sr(path)),
-            Block(id="b4", kind=BlockKind.PARAGRAPH, text="The speaker shall support 5.1 surround.", source_ref=_sr(path)),
-            Block(id="b5", kind=BlockKind.FIGURE, text="[FIGURE: a speaker wiring diagram]", source_ref=_sr(path)),
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Display",
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
+                text="The display shall support HDR.",
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b2",
+                kind=BlockKind.FIGURE,
+                text="[FIGURE: a display wiring diagram]",
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b3", kind=BlockKind.HEADING, heading_level=1, text="Audio", source_ref=_sr(path)
+            ),
+            Block(
+                id="b4",
+                kind=BlockKind.PARAGRAPH,
+                text="The speaker shall support 5.1 surround.",
+                source_ref=_sr(path),
+            ),
+            Block(
+                id="b5",
+                kind=BlockKind.FIGURE,
+                text="[FIGURE: a speaker wiring diagram]",
+                source_ref=_sr(path),
+            ),
         ],
         figures=[
             Figure(id="f0", caption="a display wiring diagram", source_ref=_sr(path)),
@@ -7948,8 +10596,11 @@ def test_mapping_escalates_only_the_escalated_items_to_the_whole_document_tier(m
         if "br1_n1" in candidates and "br0_n1" in candidates:  # tier 2: whole document
             return {item_id: {"node_id": "br1_n1", "escalate": False} for item_id in items}
         return {
-            item_id: ({"node_id": None, "escalate": True} if item_id == "f0"
-                      else {"node_id": "br1_n1", "escalate": False})
+            item_id: (
+                {"node_id": None, "escalate": True}
+                if item_id == "f0"
+                else {"node_id": "br1_n1", "escalate": False}
+            )
             for item_id in items
         }
 
@@ -7982,22 +10633,44 @@ def _mapping_two_branch_table_doc() -> CanonicalDoc:
     return CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Power", source_ref=ref(0)),
-            Block(id="b1", kind=BlockKind.PARAGRAPH, text="The power supply shall regulate 5V.", source_ref=ref(1)),
-            Block(id="b2", kind=BlockKind.HEADING, heading_level=1, text="Harness", source_ref=ref(2)),
-            Block(id="b3", kind=BlockKind.PARAGRAPH, text="The harness shall use 22 AWG wire.", source_ref=ref(3)),
+            Block(
+                id="b0", kind=BlockKind.HEADING, heading_level=1, text="Power", source_ref=ref(0)
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
+                text="The power supply shall regulate 5V.",
+                source_ref=ref(1),
+            ),
+            Block(
+                id="b2", kind=BlockKind.HEADING, heading_level=1, text="Harness", source_ref=ref(2)
+            ),
+            Block(
+                id="b3",
+                kind=BlockKind.PARAGRAPH,
+                text="The harness shall use 22 AWG wire.",
+                source_ref=ref(3),
+            ),
         ],
         tables=[
             Table(
                 id="t0",
-                cells=[[TableCell(text=c) for c in row] for row in [
-                    ["Wire", "Gauge", "Mass"], ["W1", "22 AWG", "1.2g"], ["W2", "24 AWG", "0.8g"],
-                ]],
+                cells=[
+                    [TableCell(text=c) for c in row]
+                    for row in [
+                        ["Wire", "Gauge", "Mass"],
+                        ["W1", "22 AWG", "1.2g"],
+                        ["W2", "24 AWG", "0.8g"],
+                    ]
+                ],
                 source_ref=ref(1),
             ),
             Table(
                 id="t1",
-                cells=[[TableCell(text=c) for c in row] for row in [["Rev", "Date"], ["A", "2020-01-01"]]],
+                cells=[
+                    [TableCell(text=c) for c in row]
+                    for row in [["Rev", "Date"], ["A", "2020-01-01"]]
+                ],
                 source_ref=ref(1),
             ),
         ],
@@ -8045,18 +10718,29 @@ def test_mapping_items_carry_two_data_rows_of_evidence_for_a_table() -> None:
     long_value = "A" * 100
     table = Table(
         id="t0",
-        cells=[[TableCell(text=c) for c in row] for row in [
-            ["Wire", "Gauge", "Mass"],
-            ["W1", long_value, "1.2g"],
-            ["W2", "24 AWG", "0.8g"],
-            ["W3", "26 AWG", "0.5g"],
-        ]],
+        cells=[
+            [TableCell(text=c) for c in row]
+            for row in [
+                ["Wire", "Gauge", "Mass"],
+                ["W1", long_value, "1.2g"],
+                ["W2", "24 AWG", "0.8g"],
+                ["W3", "26 AWG", "0.5g"],
+            ]
+        ],
         source_ref=_sr("x.docx"),
     )
     skeleton = _BranchSkeleton(
-        nodes=[], warnings=[], kb_citations=[], scoring_kb_context=None,
-        section_text="", section_label=None, blocks=[], tables_by_id={"t0": table},
-        valid_figure_ids=set(), valid_table_ids={"t0"}, node_id_prefix="",
+        nodes=[],
+        warnings=[],
+        kb_citations=[],
+        scoring_kb_context=None,
+        section_text="",
+        section_label=None,
+        blocks=[],
+        tables_by_id={"t0": table},
+        valid_figure_ids=set(),
+        valid_table_ids={"t0"},
+        node_id_prefix="",
         fire=lambda *a, **k: None,
     )
 
@@ -8064,7 +10748,11 @@ def test_mapping_items_carry_two_data_rows_of_evidence_for_a_table() -> None:
 
     rows = items["t0"]["rows"]
     assert len(rows) == 2  # only the first 2 data rows -- W3 is truncated off
-    assert rows[0] == ["W1", "A" * 60 + "...", "1.2g"]  # per-cell preview truncation, same as columns
+    assert rows[0] == [
+        "W1",
+        "A" * 60 + "...",
+        "1.2g",
+    ]  # per-cell preview truncation, same as columns
     assert rows[1] == ["W2", "24 AWG", "0.8g"]
 
 
@@ -8075,9 +10763,17 @@ def test_mapping_items_rows_is_empty_for_a_header_only_table() -> None:
         source_ref=_sr("x.docx"),
     )
     skeleton = _BranchSkeleton(
-        nodes=[], warnings=[], kb_citations=[], scoring_kb_context=None,
-        section_text="", section_label=None, blocks=[], tables_by_id={"t0": table},
-        valid_figure_ids=set(), valid_table_ids={"t0"}, node_id_prefix="",
+        nodes=[],
+        warnings=[],
+        kb_citations=[],
+        scoring_kb_context=None,
+        section_text="",
+        section_label=None,
+        blocks=[],
+        tables_by_id={"t0": table},
+        valid_figure_ids=set(),
+        valid_table_ids={"t0"},
+        node_id_prefix="",
         fire=lambda *a, **k: None,
     )
 
@@ -8094,10 +10790,13 @@ def test_mapping_never_offers_a_table_that_was_already_split_into_requirement_no
     # second, ordinary supplementary table (t1) is unaffected.
     t0 = Table(
         id="t0",
-        cells=[[TableCell(text=c) for c in row] for row in [
-            ["ID", "Requirement"],
-            ["P-SENSOR-001#", "Time sync source"],
-        ]],
+        cells=[
+            [TableCell(text=c) for c in row]
+            for row in [
+                ["ID", "Requirement"],
+                ["P-SENSOR-001#", "Time sync source"],
+            ]
+        ],
         source_ref=_sr("x.docx"),
     )
     t1 = Table(
@@ -8106,10 +10805,19 @@ def test_mapping_never_offers_a_table_that_was_already_split_into_requirement_no
         source_ref=_sr("x.docx"),
     )
     skeleton = _BranchSkeleton(
-        nodes=[], warnings=[], kb_citations=[], scoring_kb_context=None,
-        section_text="", section_label=None, blocks=[], tables_by_id={"t0": t0, "t1": t1},
-        valid_figure_ids=set(), valid_table_ids={"t0", "t1"}, node_id_prefix="",
-        fire=lambda *a, **k: None, requirement_list_table_ids=frozenset({"t0"}),
+        nodes=[],
+        warnings=[],
+        kb_citations=[],
+        scoring_kb_context=None,
+        section_text="",
+        section_label=None,
+        blocks=[],
+        tables_by_id={"t0": t0, "t1": t1},
+        valid_figure_ids=set(),
+        valid_table_ids={"t0", "t1"},
+        node_id_prefix="",
+        fire=lambda *a, **k: None,
+        requirement_list_table_ids=frozenset({"t0"}),
     )
 
     items = _mapping_items_for_branch(skeleton, {}, {})
@@ -8129,8 +10837,11 @@ def test_mapping_fires_map_scope_for_both_tier_1_and_tier_2(monkeypatch) -> None
         if "br1_n1" in candidates and "br0_n1" in candidates:  # tier 2: whole document
             return {item_id: {"node_id": "br1_n1", "escalate": False} for item_id in items}
         return {
-            item_id: ({"node_id": None, "escalate": True} if item_id == "f0"
-                      else {"node_id": "br1_n1", "escalate": False})
+            item_id: (
+                {"node_id": None, "escalate": True}
+                if item_id == "f0"
+                else {"node_id": "br1_n1", "escalate": False}
+            )
             for item_id in items
         }
 
@@ -8151,17 +10862,21 @@ def test_mapping_fires_map_scope_for_both_tier_1_and_tier_2(monkeypatch) -> None
 
 def test_mapping_makes_no_escalation_call_when_nothing_escalates(monkeypatch) -> None:
     _force_multi_branch(monkeypatch)
-    fake = FakeMappingClient(verdicts={
-        "f0": {"node_id": "br0_n1", "escalate": False},
-        "f1": {"node_id": "br1_n1", "escalate": False},
-    })
+    fake = FakeMappingClient(
+        verdicts={
+            "f0": {"node_id": "br0_n1", "escalate": False},
+            "f1": {"node_id": "br1_n1", "escalate": False},
+        }
+    )
 
     build_survey_tree(_two_branch_figure_doc(), fake)
 
     assert len(fake.mapping_calls) == 2  # tier 1 only
 
 
-def test_mapping_treats_an_omitted_verdict_as_an_escalation_then_as_an_exclusion(monkeypatch) -> None:
+def test_mapping_treats_an_omitted_verdict_as_an_escalation_then_as_an_exclusion(
+    monkeypatch,
+) -> None:
     # A model declining to answer is not evidence the item belongs anywhere:
     # it gets the next tier's wider candidate set, and only once no tier is
     # left does it become an exclusion.
@@ -8218,10 +10933,12 @@ def test_mapping_does_not_re_escalate_a_hallucinated_node_id(monkeypatch) -> Non
     # A dropped verdict must not be able to trigger an otherwise-unneeded
     # tier-2 call: one bad answer must never change this stage's call count.
     _force_multi_branch(monkeypatch)
-    fake = FakeMappingClient(verdicts={
-        "f0": {"node_id": "does_not_exist", "escalate": False},
-        "f1": {"node_id": "br1_n1", "escalate": False},
-    })
+    fake = FakeMappingClient(
+        verdicts={
+            "f0": {"node_id": "does_not_exist", "escalate": False},
+            "f1": {"node_id": "br1_n1", "escalate": False},
+        }
+    )
 
     build_survey_tree(_two_branch_figure_doc(), fake)
 
@@ -8233,10 +10950,12 @@ def test_mapping_rejects_a_node_id_from_a_different_branch_in_tier1(monkeypatch)
     # id is still outside the candidate set that call was given -- validation
     # is against what was actually offered, not against "any node anywhere".
     _force_multi_branch(monkeypatch)
-    fake = FakeMappingClient(verdicts={
-        "f0": {"node_id": "br1_n1", "escalate": False},
-        "f1": {"node_id": "br1_n1", "escalate": False},
-    })
+    fake = FakeMappingClient(
+        verdicts={
+            "f0": {"node_id": "br1_n1", "escalate": False},
+            "f1": {"node_id": "br1_n1", "escalate": False},
+        }
+    )
 
     tree = build_survey_tree(_two_branch_figure_doc(), fake)
 
@@ -8311,10 +11030,18 @@ def _many_figures_doc(item_count: int) -> CanonicalDoc:
     return CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
-            Block(id=f"b{i}", kind=BlockKind.FIGURE, text=f"[FIGURE: diagram {i}]", source_ref=_sr(path))
+            Block(
+                id=f"b{i}",
+                kind=BlockKind.FIGURE,
+                text=f"[FIGURE: diagram {i}]",
+                source_ref=_sr(path),
+            )
             for i in range(item_count)
         ],
-        figures=[Figure(id=f"f{i}", caption=f"diagram {i}", source_ref=_sr(path)) for i in range(item_count)],
+        figures=[
+            Figure(id=f"f{i}", caption=f"diagram {i}", source_ref=_sr(path))
+            for i in range(item_count)
+        ],
     )
 
 
@@ -8388,7 +11115,9 @@ def test_mapping_reports_an_unanswered_item_instead_of_silently_excluding_it() -
     assert "returned no answer" in warning.raw
 
 
-def test_mapping_does_not_report_an_unanswered_tier1_item_it_can_still_escalate(monkeypatch) -> None:
+def test_mapping_does_not_report_an_unanswered_tier1_item_it_can_still_escalate(
+    monkeypatch,
+) -> None:
     # The mirror image: in tier 1 an unanswered item loses nothing -- it gets
     # the wider candidate set -- so it must NOT be reported as degraded there.
     _force_multi_branch(monkeypatch)
@@ -8406,7 +11135,9 @@ def test_mapping_does_not_report_an_unanswered_tier1_item_it_can_still_escalate(
     assert not any(w.kind == WarningKind.MAPPING_CALL_FAILED for w in tree.warnings)
 
 
-def test_mapping_runs_branches_concurrently_at_the_same_parallelism_as_its_neighbours(monkeypatch) -> None:
+def test_mapping_runs_branches_concurrently_at_the_same_parallelism_as_its_neighbours(
+    monkeypatch,
+) -> None:
     # Stages 1 and 3 are both parallelized via branch_concurrency; a serial
     # stage 2 between them would insert one sequential LLM round-trip per
     # branch into the middle of the pipeline.
@@ -8420,7 +11151,9 @@ def test_mapping_runs_branches_concurrently_at_the_same_parallelism_as_its_neigh
         time.sleep(0.05)  # long enough for a serial run to use one thread only
         return {item_id: {"node_id": None, "escalate": False} for item_id in items}
 
-    build_survey_tree(_two_branch_figure_doc(), FakeMappingClient(verdict_fn=verdict_fn), branch_concurrency=2)
+    build_survey_tree(
+        _two_branch_figure_doc(), FakeMappingClient(verdict_fn=verdict_fn), branch_concurrency=2
+    )
 
     assert len(threads) == 2  # both branch batches genuinely ran in parallel
 
@@ -8440,10 +11173,14 @@ def test_mapping_concurrent_branches_produce_the_same_result_as_sequential(monke
         return {item_id: {"node_id": None, "escalate": False} for item_id in items}
 
     sequential = build_survey_tree(
-        _two_branch_figure_doc(), FakeMappingClient(verdict_fn=verdict_fn), branch_concurrency=1,
+        _two_branch_figure_doc(),
+        FakeMappingClient(verdict_fn=verdict_fn),
+        branch_concurrency=1,
     )
     concurrent = build_survey_tree(
-        _two_branch_figure_doc(), FakeMappingClient(verdict_fn=verdict_fn), branch_concurrency=2,
+        _two_branch_figure_doc(),
+        FakeMappingClient(verdict_fn=verdict_fn),
+        branch_concurrency=2,
     )
 
     assert sequential.excluded_figure_ids == concurrent.excluded_figure_ids == ["f0", "f1"]
@@ -8461,7 +11198,12 @@ def test_mapping_never_offers_an_uncaptioned_figure_as_an_item() -> None:
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.FIGURE, text="[FIGURE: a real diagram]", source_ref=_sr(path)),
+            Block(
+                id="b0",
+                kind=BlockKind.FIGURE,
+                text="[FIGURE: a real diagram]",
+                source_ref=_sr(path),
+            ),
             Block(id="b1", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path)),
         ],
         figures=[
@@ -8469,7 +11211,9 @@ def test_mapping_never_offers_an_uncaptioned_figure_as_an_item() -> None:
             Figure(id="f1", caption=None, source_ref=_sr(path)),
         ],
     )
-    fake = FakeMappingClient(nodes=[_MAPPING_NODE], verdicts={"f0": {"node_id": "n0", "escalate": False}})
+    fake = FakeMappingClient(
+        nodes=[_MAPPING_NODE], verdicts={"f0": {"node_id": "n0", "escalate": False}}
+    )
 
     tree = build_survey_tree(doc, fake)
 
@@ -8490,10 +11234,26 @@ def test_mapping_never_offers_a_synthesized_structural_node_as_a_candidate(monke
     _force_multi_branch(monkeypatch)
     # A Requirement directly under an Epic makes _repair_requirement_hierarchy
     # synthesize a bridge Feature into the branch's own node list.
-    fake = FakeMappingClient(nodes=[
-        {"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "title": "Root", "text": "Root epic.", "tags": []},
-        {"temp_id": "n1", "type": "Requirement", "parent_temp_id": "n0", "title": "Leaf", "text": "The leaf shall x.", "tags": []},
-    ])
+    fake = FakeMappingClient(
+        nodes=[
+            {
+                "temp_id": "n0",
+                "type": "Epic",
+                "parent_temp_id": None,
+                "title": "Root",
+                "text": "Root epic.",
+                "tags": [],
+            },
+            {
+                "temp_id": "n1",
+                "type": "Requirement",
+                "parent_temp_id": "n0",
+                "title": "Leaf",
+                "text": "The leaf shall x.",
+                "tags": [],
+            },
+        ]
+    )
 
     tree = build_survey_tree(_two_branch_figure_doc(), fake)
 
@@ -8529,11 +11289,22 @@ class _CriteriaSpy:
     def propose_acceptance_criteria(self, items_by_id, user_id=None, background=None):
         self.calls.append(items_by_id)
         self.backgrounds.append(background)
-        return {k: {"criteria": ["Check HDR output on a reference display."], "assumptions": [], "needs_author_input": False} for k in items_by_id}
+        return {
+            k: {
+                "criteria": ["Check HDR output on a reference display."],
+                "assumptions": [],
+                "needs_author_input": False,
+            }
+            for k in items_by_id
+        }
 
 
 _EMPTY_STUDY = {
-    "glossary": [], "placeholder_tokens": [], "verification_statements": [], "standards_cited": [], "table_roles": [],
+    "glossary": [],
+    "placeholder_tokens": [],
+    "verification_statements": [],
+    "standards_cited": [],
+    "table_roles": [],
 }
 
 
@@ -8547,18 +11318,25 @@ class _StudySpy:
 
 
 def _flagged_scoring() -> "FakeScoringClient":
-    return FakeScoringClient(results={
-        "n0": {"score": 90, "issues": []},
-        "n1": {"score": 40, "issues": ["missing_acceptance_criteria"]},
-    })
+    return FakeScoringClient(
+        results={
+            "n0": {"score": 90, "issues": []},
+            "n1": {"score": 40, "issues": ["missing_acceptance_criteria"]},
+        }
+    )
 
 
-def test_build_survey_tree_proposes_criteria_for_flagged_requirements_after_studying_the_document() -> None:
+def test_build_survey_tree_proposes_criteria_for_flagged_requirements_after_studying_the_document() -> (
+    None
+):
     criteria, study = _CriteriaSpy(), _StudySpy()
 
     tree = build_survey_tree(
-        _small_doc(), FakeSectionAnalysisClient(), scoring_client=_flagged_scoring(),
-        acceptance_criteria_client=criteria, document_study_client=study,
+        _small_doc(),
+        FakeSectionAnalysisClient(),
+        scoring_client=_flagged_scoring(),
+        acceptance_criteria_client=criteria,
+        document_study_client=study,
     )
 
     by_id = {n.local_id: n for n in tree.nodes}
@@ -8569,7 +11347,9 @@ def test_build_survey_tree_proposes_criteria_for_flagged_requirements_after_stud
     assert by_id["n1"].quality_score == 40  # the scored verdict is untouched
 
 
-def test_build_survey_tree_stores_study_windows_and_a_second_identical_call_makes_no_study_calls() -> None:
+def test_build_survey_tree_stores_study_windows_and_a_second_identical_call_makes_no_study_calls() -> (
+    None
+):
     from app.leveling.study_store import StudyStore
 
     class _Redis:
@@ -8594,8 +11374,13 @@ def test_build_survey_tree_stores_study_windows_and_a_second_identical_call_make
 
     for study in (first_study, second_study):
         build_survey_tree(
-            _small_doc(), FakeSectionAnalysisClient(), scoring_client=_flagged_scoring(),
-            acceptance_criteria_client=_CriteriaSpy(), document_study_client=study, study_store=store, user_id="user-a",
+            _small_doc(),
+            FakeSectionAnalysisClient(),
+            scoring_client=_flagged_scoring(),
+            acceptance_criteria_client=_CriteriaSpy(),
+            document_study_client=study,
+            study_store=store,
+            user_id="user-a",
         )
 
     assert len(first_study.windows) == 1 and second_study.windows == []
@@ -8606,28 +11391,46 @@ def test_build_survey_tree_gives_the_criteria_step_the_context_primer() -> None:
     criteria = _CriteriaSpy()
 
     build_survey_tree(
-        _small_doc(), FakeSectionAnalysisClient(), scoring_client=_flagged_scoring(), acceptance_criteria_client=criteria,
+        _small_doc(),
+        FakeSectionAnalysisClient(),
+        scoring_client=_flagged_scoring(),
+        acceptance_criteria_client=criteria,
         primer_context="A radar interface control document.",
     )
 
-    assert criteria.backgrounds and set(criteria.backgrounds) == {"A radar interface control document."}
+    assert criteria.backgrounds and set(criteria.backgrounds) == {
+        "A radar interface control document."
+    }
 
 
-def test_build_survey_tree_without_eligible_requirements_proposes_nothing_and_stops_the_study(monkeypatch) -> None:
-    monkeypatch.setattr(llm_leveling_module, "eligible_nodes", lambda nodes: [])  # eligibility is decided by the text (see test_acceptance_criteria)
+def test_build_survey_tree_without_eligible_requirements_proposes_nothing_and_stops_the_study(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        llm_leveling_module, "eligible_nodes", lambda nodes: []
+    )  # eligibility is decided by the text (see test_acceptance_criteria)
     criteria, study = _CriteriaSpy(), _StudySpy()
-    scoring = FakeScoringClient(results={"n0": {"score": 90, "issues": []}, "n1": {"score": 90, "issues": []}})
-
-    build_survey_tree(
-        _small_doc(), FakeSectionAnalysisClient(), scoring_client=scoring,
-        acceptance_criteria_client=criteria, document_study_client=study,
+    scoring = FakeScoringClient(
+        results={"n0": {"score": 90, "issues": []}, "n1": {"score": 90, "issues": []}}
     )
 
-    assert criteria.calls == []  # the study now starts with the job, so a window may already have been read; it is stopped, not joined
+    build_survey_tree(
+        _small_doc(),
+        FakeSectionAnalysisClient(),
+        scoring_client=scoring,
+        acceptance_criteria_client=criteria,
+        document_study_client=study,
+    )
+
+    assert (
+        criteria.calls == []
+    )  # the study now starts with the job, so a window may already have been read; it is stopped, not joined
 
 
 def test_build_survey_tree_without_a_criteria_client_is_unchanged() -> None:
-    tree = build_survey_tree(_small_doc(), FakeSectionAnalysisClient(), scoring_client=_flagged_scoring())
+    tree = build_survey_tree(
+        _small_doc(), FakeSectionAnalysisClient(), scoring_client=_flagged_scoring()
+    )
 
     assert all("Proposed acceptance criteria" not in n.description for n in tree.nodes)
 
@@ -8635,19 +11438,36 @@ def test_build_survey_tree_without_a_criteria_client_is_unchanged() -> None:
 class _CriteriaForEveryKey:
     """Scores every requirement as lacking acceptance criteria, whatever its local id."""
 
-    def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
-        return {k: {"score": 40, "issues": ["missing_acceptance_criteria"]} for k in descriptions_by_node_id}
+    def score_requirements_for_document(
+        self,
+        descriptions_by_node_id,
+        criteria_context=None,
+        kb_context=None,
+        category_checklist=None,
+        user_id=None,
+    ):
+        return {
+            k: {"score": 40, "issues": ["missing_acceptance_criteria"]}
+            for k in descriptions_by_node_id
+        }
 
 
 def test_build_survey_tree_proposes_criteria_on_the_fully_deterministic_path_too() -> None:
     criteria, study = _CriteriaSpy(), _StudySpy()
 
     tree = build_survey_tree(
-        _structural_heading_doc(), FakeSectionAnalysisClient(), scoring_client=_CriteriaForEveryKey(),
-        acceptance_criteria_client=criteria, document_study_client=study,
+        _structural_heading_doc(),
+        FakeSectionAnalysisClient(),
+        scoring_client=_CriteriaForEveryKey(),
+        acceptance_criteria_client=criteria,
+        document_study_client=study,
     )
 
-    assert any("Proposed acceptance criteria" in n.description for n in tree.nodes if n.type == WorkItemType.REQUIREMENT)
+    assert any(
+        "Proposed acceptance criteria" in n.description
+        for n in tree.nodes
+        if n.type == WorkItemType.REQUIREMENT
+    )
     assert len(study.windows) == 1 and "The system shall do A." in study.windows[0]
 
 
@@ -8656,15 +11476,21 @@ class _BrokenStudy:
         raise RuntimeError("model down")
 
 
-def test_build_survey_tree_warns_when_the_document_could_not_be_studied_but_still_proposes() -> None:
+def test_build_survey_tree_warns_when_the_document_could_not_be_studied_but_still_proposes() -> (
+    None
+):
     tree = build_survey_tree(
-        _small_doc(), FakeSectionAnalysisClient(), scoring_client=_flagged_scoring(),
-        acceptance_criteria_client=_CriteriaSpy(), document_study_client=_BrokenStudy(),
+        _small_doc(),
+        FakeSectionAnalysisClient(),
+        scoring_client=_flagged_scoring(),
+        acceptance_criteria_client=_CriteriaSpy(),
+        document_study_client=_BrokenStudy(),
     )
 
-    assert any("read none of the document" in w.raw for w in tree.warnings)  # the study's own wording, now that it runs in the background
+    assert any(
+        "read none of the document" in w.raw for w in tree.warnings
+    )  # the study's own wording, now that it runs in the background
     assert any("Proposed acceptance criteria" in n.description for n in tree.nodes)
-
 
 
 class _FailsOnSecondWindow:
@@ -8683,7 +11509,10 @@ def _long_doc() -> CanonicalDoc:
     text = "The display shall support HDR. " * 800  # ~24k characters: two study windows (20k each)
     return CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
-        blocks=[Block(id="b0", kind=BlockKind.PARAGRAPH, text="Display", source_ref=_sr(path)), Block(id="b1", kind=BlockKind.PARAGRAPH, text=text, source_ref=_sr(path))],
+        blocks=[
+            Block(id="b0", kind=BlockKind.PARAGRAPH, text="Display", source_ref=_sr(path)),
+            Block(id="b1", kind=BlockKind.PARAGRAPH, text=text, source_ref=_sr(path)),
+        ],
     )
 
 
@@ -8691,8 +11520,11 @@ def test_a_partly_read_document_warns_with_how_much_was_read() -> None:
     study = _FailsOnSecondWindow()
 
     tree = build_survey_tree(
-        _long_doc(), FakeSectionAnalysisClient(), scoring_client=_flagged_scoring(),
-        acceptance_criteria_client=_CriteriaSpy(), document_study_client=study,
+        _long_doc(),
+        FakeSectionAnalysisClient(),
+        scoring_client=_flagged_scoring(),
+        acceptance_criteria_client=_CriteriaSpy(),
+        document_study_client=study,
     )
 
     assert study.calls == 2
@@ -8704,14 +11536,28 @@ def test_a_document_with_no_readable_text_is_not_studied_and_does_not_warn() -> 
     from app.leveling.study_runner import StudyHandle
 
     path = "empty.txt"
-    empty = CanonicalDoc(document=Document(path=path, format=DocumentFormat.TXT, sha256="h"), blocks=[])
+    empty = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"), blocks=[]
+    )
     node = WorkItemNode(
-        local_id="r", parent_local_id=None, type=WorkItemType.REQUIREMENT, title="r", description="The unit shall x.",
-        source_ref=_sr(path), mode=WorkItemMode.SURVEY, quality_issues=[RequirementQualityIssue.NOT_TESTABLE],
+        local_id="r",
+        parent_local_id=None,
+        type=WorkItemType.REQUIREMENT,
+        title="r",
+        description="The unit shall x.",
+        source_ref=_sr(path),
+        mode=WorkItemMode.SURVEY,
+        quality_issues=[RequirementQualityIssue.NOT_TESTABLE],
     )
     study, warnings = _StudySpy(), []
     handle = StudyHandle.from_settings(  # the step joins a started study: it no longer reads the document itself
-        render_text=lambda: render_section(empty.blocks, empty.tables), client=study, user_id=None, scope="s", model=None, store=None, limiter=None,
+        render_text=lambda: render_section(empty.blocks, empty.tables),
+        client=study,
+        user_id=None,
+        scope="s",
+        model=None,
+        store=None,
+        limiter=None,
     )
     handle.start()
     try:
@@ -8739,8 +11585,14 @@ class _CancelledCriteria:
 
 def _flagged_requirement() -> WorkItemNode:
     return WorkItemNode(
-        local_id="r", parent_local_id=None, type=WorkItemType.REQUIREMENT, title="r", description="The display shall support HDR.",
-        source_ref=_sr("survey_input.txt"), mode=WorkItemMode.SURVEY, quality_issues=[RequirementQualityIssue.NOT_TESTABLE],
+        local_id="r",
+        parent_local_id=None,
+        type=WorkItemType.REQUIREMENT,
+        title="r",
+        description="The display shall support HDR.",
+        source_ref=_sr("survey_input.txt"),
+        mode=WorkItemMode.SURVEY,
+        quality_issues=[RequirementQualityIssue.NOT_TESTABLE],
     )
 
 
@@ -8749,18 +11601,30 @@ def test_criteria_step_propagates_a_criteria_cancellation_without_a_warning() ->
 
     warnings: list = []
 
-    with pytest.raises(JobCancelled):  # a study's own cancellation comes through the handle (tests/test_study_wiring.py) and the wrapper (below)
-        _propose_criteria_step([_flagged_requirement()], _small_doc(), _CancelledCriteria(), None, warnings)
+    with pytest.raises(
+        JobCancelled
+    ):  # a study's own cancellation comes through the handle (tests/test_study_wiring.py) and the wrapper (below)
+        _propose_criteria_step(
+            [_flagged_requirement()], _small_doc(), _CancelledCriteria(), None, warnings
+        )
 
     assert warnings == []
 
 
-@pytest.mark.parametrize("study_client, criteria_client", [(_CancelledStudy(), _CriteriaSpy()), (_StudySpy(), _CancelledCriteria())])
-def test_build_survey_tree_propagates_a_cancellation_from_the_study_or_the_criteria_client(study_client, criteria_client) -> None:
+@pytest.mark.parametrize(
+    "study_client, criteria_client",
+    [(_CancelledStudy(), _CriteriaSpy()), (_StudySpy(), _CancelledCriteria())],
+)
+def test_build_survey_tree_propagates_a_cancellation_from_the_study_or_the_criteria_client(
+    study_client, criteria_client
+) -> None:
     with pytest.raises(JobCancelled):
         build_survey_tree(
-            _small_doc(), FakeSectionAnalysisClient(), scoring_client=_flagged_scoring(),
-            acceptance_criteria_client=criteria_client, document_study_client=study_client,
+            _small_doc(),
+            FakeSectionAnalysisClient(),
+            scoring_client=_flagged_scoring(),
+            acceptance_criteria_client=criteria_client,
+            document_study_client=study_client,
         )
 
 
@@ -8785,8 +11649,15 @@ def test_a_call_without_a_user_id_never_touches_the_study_store() -> None:
 
     for user_id in (None, ""):
         build_survey_tree(
-            _small_doc(), FakeSectionAnalysisClient(), scoring_client=_flagged_scoring(), acceptance_criteria_client=_CriteriaSpy(),
-            document_study_client=study, study_store=StudyStore(redis, 60), user_id=user_id,
+            _small_doc(),
+            FakeSectionAnalysisClient(),
+            scoring_client=_flagged_scoring(),
+            acceptance_criteria_client=_CriteriaSpy(),
+            document_study_client=study,
+            study_store=StudyStore(redis, 60),
+            user_id=user_id,
         )
 
-    assert redis.calls == [] and len(study.windows) == 2  # read afresh each time, nothing stored or reused
+    assert (
+        redis.calls == [] and len(study.windows) == 2
+    )  # read afresh each time, nothing stored or reused

@@ -3,6 +3,7 @@
 Before: the prompt carried the item's own text, two weak categories and chunks retrieved by the user's message ("improve this"
 retrieves near-random chunks). Nothing said which Feature the item belongs to, what its neighbours say, or what the organization's
 rules and definitions are, and nothing bounded the rewrite."""
+
 import logging
 
 import pytest
@@ -15,12 +16,25 @@ from tests.chat.test_chat_service import _FakePublisher
 from tests.test_kb_profile import DOCS, FakeProfileClient
 
 PROFILE = build_profile(DOCS, FakeProfileClient(), model="m1")
-ITEM = {"type": "Requirement", "title": "Receiver lock time", "description": "The receiver shall lock within 5 ms.", "qualityIssues": []}
+ITEM = {
+    "type": "Requirement",
+    "title": "Receiver lock time",
+    "description": "The receiver shall lock within 5 ms.",
+    "qualityIssues": [],
+}
 CONTEXT = {
     "documentName": "AirPro ICD",
     "parents": [
-        {"type": "Epic", "title": "RF front end", "description": "Everything between the antenna and the ADC."},
-        {"type": "Feature", "title": "Carrier acquisition", "description": "How the receiver finds and holds the carrier."},
+        {
+            "type": "Epic",
+            "title": "RF front end",
+            "description": "Everything between the antenna and the ADC.",
+        },
+        {
+            "type": "Feature",
+            "title": "Carrier acquisition",
+            "description": "How the receiver finds and holds the carrier.",
+        },
     ],
     "siblings": [{"title": "Loss of lock reporting"}, {"title": "Re-acquisition retries"}],
     "linked": [{"relation": "Affects", "title": "Filter settling time"}],
@@ -52,21 +66,44 @@ def test_the_pack_is_bounded() -> None:
     assert "Sibling number 0" in text and "Sibling number 79" not in text
 
 
-@pytest.mark.parametrize("empty", [None, {}, {"parents": [], "siblings": [], "linked": [], "figures": [], "tables": []}, {"documentName": ""}])
+@pytest.mark.parametrize(
+    "empty",
+    [
+        None,
+        {},
+        {"parents": [], "siblings": [], "linked": [], "figures": [], "tables": []},
+        {"documentName": ""},
+    ],
+)
 def test_nothing_is_rendered_when_there_is_no_context(empty) -> None:
     assert render_context_pack(empty) is None
 
 
 def test_malformed_context_is_ignored_not_fatal() -> None:
-    rendered = render_context_pack({"parents": "x", "siblings": [1, None, {"title": 5}], "linked": [{"title": None}], "figures": [3]})
+    rendered = render_context_pack(
+        {
+            "parents": "x",
+            "siblings": [1, None, {"title": 5}],
+            "linked": [{"title": None}],
+            "figures": [3],
+        }
+    )
     assert rendered is None or isinstance(rendered, str)
-    ok = render_context_pack({"parents": [{"type": "Feature", "title": "Real"}, "junk", {"title": None}]})
+    ok = render_context_pack(
+        {"parents": [{"type": "Feature", "title": "Real"}, "junk", {"title": None}]}
+    )
     assert ok is not None and "Real" in ok
 
 
 def test_the_prompt_leads_with_the_standard_then_the_document_then_the_item() -> None:
-    prompt = _build_system_prompt(ITEM, None, None, context=CONTEXT, standard="STANDARD TEXT: every rule and definition")
-    assert prompt.index("STANDARD TEXT") < prompt.index("RF front end") < prompt.index("Receiver lock time")
+    prompt = _build_system_prompt(
+        ITEM, None, None, context=CONTEXT, standard="STANDARD TEXT: every rule and definition"
+    )
+    assert (
+        prompt.index("STANDARD TEXT")
+        < prompt.index("RF front end")
+        < prompt.index("Receiver lock time")
+    )
 
 
 def test_the_prompt_carries_the_rewrite_rules() -> None:
@@ -75,7 +112,9 @@ def test_the_prompt_carries_the_rewrite_rules() -> None:
     assert "one requirement" in lowered or "single requirement" in lowered
     assert "keep the title" in lowered
     assert "number" in lowered and "unit" in lowered and "identifier" in lowered
-    assert "ask" in lowered and "invent" in lowered  # missing information is asked for, never made up
+    assert (
+        "ask" in lowered and "invent" in lowered
+    )  # missing information is asked for, never made up
     assert "times the length" in lowered or "no longer than" in lowered
 
 
@@ -95,7 +134,9 @@ class _Capturing:
 
 
 @pytest.mark.asyncio
-async def test_a_turn_sends_the_standard_and_the_context_and_retrieves_by_the_item_not_the_message(monkeypatch) -> None:
+async def test_a_turn_sends_the_standard_and_the_context_and_retrieves_by_the_item_not_the_message(
+    monkeypatch,
+) -> None:
     queries: list[str] = []
 
     def fake_retrieve(user_id, query, embed_client, vector_store):  # noqa: ANN001, ARG001
@@ -105,13 +146,28 @@ async def test_a_turn_sends_the_standard_and_the_context_and_retrieves_by_the_it
     monkeypatch.setattr(chat_service, "retrieve_context", fake_retrieve)
     client = _Capturing()
     await run_chat_turn(
-        "job-1", "n1", {**ITEM, "context": CONTEXT}, [], "improve this", "m", "u1", object(), object(), client, _FakePublisher(), PROFILE,
+        "job-1",
+        "n1",
+        {**ITEM, "context": CONTEXT},
+        [],
+        "improve this",
+        "m",
+        "u1",
+        object(),
+        object(),
+        client,
+        _FakePublisher(),
+        PROFILE,
     )
     system = client.messages[0]["content"]
     assert "Carrier acquisition" in system and "Filter settling time" in system  # the document
-    assert "One reading only" in system or "Can be verified" in system  # the organization's own pass conditions (the standard)
+    assert (
+        "One reading only" in system or "Can be verified" in system
+    )  # the organization's own pass conditions (the standard)
     assert "KB CHUNK ABOUT LOCK TIMES" in system
-    assert "Receiver lock time" in queries[0] and "lock within 5 ms" in queries[0]  # by the item's own text
+    assert (
+        "Receiver lock time" in queries[0] and "lock within 5 ms" in queries[0]
+    )  # by the item's own text
     assert "improve this" in queries[0]  # and by what was asked
 
 
@@ -119,7 +175,20 @@ async def test_a_turn_sends_the_standard_and_the_context_and_retrieves_by_the_it
 async def test_a_turn_without_context_or_profile_still_works(caplog) -> None:
     client = _Capturing()
     with caplog.at_level(logging.INFO, logger="app.chat.chat_service"):
-        await run_chat_turn("job-1", "n1", dict(ITEM), [], "why?", "m", None, None, None, client, _FakePublisher(), None)
+        await run_chat_turn(
+            "job-1",
+            "n1",
+            dict(ITEM),
+            [],
+            "why?",
+            "m",
+            None,
+            None,
+            None,
+            client,
+            _FakePublisher(),
+            None,
+        )
     assert "Receiver lock time" in client.messages[0]["content"]
 
 
@@ -129,4 +198,6 @@ def test_the_one_statement_rule_is_for_requirements_only() -> None:
     for kind in ("Epic", "Feature"):
         other = _build_system_prompt({**ITEM, "type": kind}, None, None).lower()
         assert "one requirement statement" not in other and "shall/should/must" not in other
-        assert "keep the title" in other and "number" in other and "invent" in other  # the other rules still apply
+        assert (
+            "keep the title" in other and "number" in other and "invent" in other
+        )  # the other rules still apply

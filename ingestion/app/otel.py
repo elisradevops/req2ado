@@ -17,6 +17,7 @@ job" convention every other optional integration in this codebase already
 follows (BatchSpanProcessor drops/retries in the background; it does not
 raise into request-handling code on an unreachable collector).
 """
+
 from __future__ import annotations
 
 from fastapi import FastAPI

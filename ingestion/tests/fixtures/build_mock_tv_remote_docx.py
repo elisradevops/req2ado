@@ -23,6 +23,7 @@ exercise BASELINE title truncation (extract_baseline_title: truncate at a
 word boundary, never summarize/paraphrase) on a real parsed document
 rather than only a hand-built in-memory Block.
 """
+
 from pathlib import Path
 
 from docx import Document as DocxDocument

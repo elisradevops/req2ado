@@ -32,7 +32,9 @@ def sniff_vector_image_extension(image_bytes: bytes) -> str | None:
         and image_bytes[_EMF_SIGNATURE_OFFSET : _EMF_SIGNATURE_OFFSET + 4] == _EMF_SIGNATURE
     ):
         return ".emf"
-    if image_bytes.startswith(_WMF_PLACEABLE_SIGNATURE) or image_bytes.startswith(_WMF_STANDARD_SIGNATURES):
+    if image_bytes.startswith(_WMF_PLACEABLE_SIGNATURE) or image_bytes.startswith(
+        _WMF_STANDARD_SIGNATURES
+    ):
         return ".wmf"
     return None
 
@@ -58,8 +60,14 @@ def convert_vector_image_to_png(image_bytes: bytes, extension: str) -> bytes | N
             profile_dir = Path(tmpdir) / "lo_profile"
             subprocess.run(
                 [
-                    "soffice", "--headless", f"-env:UserInstallation=file://{profile_dir}",
-                    "--convert-to", "png", "--outdir", tmpdir, str(input_path),
+                    "soffice",
+                    "--headless",
+                    f"-env:UserInstallation=file://{profile_dir}",
+                    "--convert-to",
+                    "png",
+                    "--outdir",
+                    tmpdir,
+                    str(input_path),
                 ],
                 capture_output=True,
                 timeout=_CONVERT_TIMEOUT_SECONDS,

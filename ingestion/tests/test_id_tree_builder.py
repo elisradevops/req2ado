@@ -29,9 +29,15 @@ def _row(
     id_text_is_authored: bool = False,
 ) -> HierarchyRow:
     return HierarchyRow(
-        label=label, has_shall=has_shall, source_ref=source_ref or _sr(), node_type=node_type,
-        parent_index=parent_index, id_text=id_text, id_disambiguator_needed=id_disambiguator_needed,
-        needs_synthesis=needs_synthesis, id_text_is_authored=id_text_is_authored,
+        label=label,
+        has_shall=has_shall,
+        source_ref=source_ref or _sr(),
+        node_type=node_type,
+        parent_index=parent_index,
+        id_text=id_text,
+        id_disambiguator_needed=id_disambiguator_needed,
+        needs_synthesis=needs_synthesis,
+        id_text_is_authored=id_text_is_authored,
     )
 
 
@@ -50,7 +56,9 @@ def test_build_hierarchy_subtree_basic_construction() -> None:
     assert parent.grounding_score == 1.0
 
 
-def test_build_hierarchy_subtree_never_extracts_a_customer_id_for_a_convention_with_no_real_id_text() -> None:
+def test_build_hierarchy_subtree_never_extracts_a_customer_id_for_a_convention_with_no_real_id_text() -> (
+    None
+):
     # Confirmed real bug, live (AirPro_BP_ICD_Revision_0.3.docx, convention
     # 3 -- id_text_is_authored defaults False, matching _row's own
     # default): convention 3 has NO id concept at all (see
@@ -64,33 +72,51 @@ def test_build_hierarchy_subtree_never_extracts_a_customer_id_for_a_convention_w
     rows = [
         _row(
             "PS_SYSRESET shall comply to SOSA 2.0/Para 13.2.6.5 & VITA62.0-2022[12V-only Profile]/para 4.6.3.3.",
-            "Requirement", None, "h1", has_shall=True,
+            "Requirement",
+            None,
+            "h1",
+            has_shall=True,
         ),
     ]
     nodes, _warnings = build_hierarchy_subtree(rows, "det0_")
     assert nodes[0].customer_id is None
 
 
-def test_build_hierarchy_subtree_still_extracts_a_customer_id_when_the_convention_has_a_real_id_text() -> None:
+def test_build_hierarchy_subtree_still_extracts_a_customer_id_when_the_convention_has_a_real_id_text() -> (
+    None
+):
     # Conventions 1/2 (id_text_is_authored=True) are unaffected -- a
     # genuine customer-assigned code embedded in the row's own text still
     # wins, exactly as before this fix.
     rows = [
         _row(
             "REQ-AV-014: The system shall control cabin lighting.",
-            "Requirement", None, "1.1", has_shall=True, id_text_is_authored=True,
+            "Requirement",
+            None,
+            "1.1",
+            has_shall=True,
+            id_text_is_authored=True,
         ),
     ]
     nodes, _warnings = build_hierarchy_subtree(rows, "det0_")
     assert nodes[0].customer_id == "REQ-AV-014"
 
 
-def test_build_hierarchy_subtree_falls_back_to_the_authored_numeric_id_only_for_conventions_1_and_2() -> None:
+def test_build_hierarchy_subtree_falls_back_to_the_authored_numeric_id_only_for_conventions_1_and_2() -> (
+    None
+):
     # The numeric id_text fallback was already gated on id_text_is_authored
     # before this fix -- confirms that gate is preserved, not just the new
     # alphanumeric-extraction gate.
     rows = [
-        _row("The system shall control volume.", "Requirement", None, "1.1.1", has_shall=True, id_text_is_authored=True),
+        _row(
+            "The system shall control volume.",
+            "Requirement",
+            None,
+            "1.1.1",
+            has_shall=True,
+            id_text_is_authored=True,
+        ),
         _row("The system shall control brightness.", "Requirement", None, "h1", has_shall=True),
     ]
     nodes, _warnings = build_hierarchy_subtree(rows, "det0_")
@@ -224,12 +250,22 @@ def test_build_hierarchy_subtree_uses_disambiguated_identity_hash_for_table_rows
     rows = [
         _row("Group", "Feature", None, "1", source_ref=shared_ref, id_disambiguator_needed=True),
         _row(
-            "The system shall comply.", "Requirement", 0, "1.1", has_shall=True,
-            source_ref=shared_ref, id_disambiguator_needed=True,
+            "The system shall comply.",
+            "Requirement",
+            0,
+            "1.1",
+            has_shall=True,
+            source_ref=shared_ref,
+            id_disambiguator_needed=True,
         ),
         _row(
-            "The system shall comply.", "Requirement", 0, "1.2", has_shall=True,
-            source_ref=shared_ref, id_disambiguator_needed=True,
+            "The system shall comply.",
+            "Requirement",
+            0,
+            "1.2",
+            has_shall=True,
+            source_ref=shared_ref,
+            id_disambiguator_needed=True,
         ),
     ]
     nodes, warnings = build_hierarchy_subtree(rows, "det0_")
@@ -266,11 +302,16 @@ def _epic_feature_requirement_nodes():
     return nodes
 
 
-def test_apply_parent_summary_pass_replaces_verbatim_title_and_gives_a_distinct_description() -> None:
+def test_apply_parent_summary_pass_replaces_verbatim_title_and_gives_a_distinct_description() -> (
+    None
+):
     class FakeParentSummaryClient:
         def summarize_parent_nodes(self, nodes_by_id, user_id=None):
             return {
-                node_id: {"title": f"Synthesized: {entry['title']}", "description": "A synthesized capability summary."}
+                node_id: {
+                    "title": f"Synthesized: {entry['title']}",
+                    "description": "A synthesized capability summary.",
+                }
                 for node_id, entry in nodes_by_id.items()
             }
 
@@ -295,21 +336,29 @@ def _summary_client_returning(title_for):
     class _Client:
         def summarize_parent_nodes(self, nodes_by_id, user_id=None):
             return {
-                node_id: {"title": title_for(node_id, entry), "description": "A synthesized capability summary."}
+                node_id: {
+                    "title": title_for(node_id, entry),
+                    "description": "A synthesized capability summary.",
+                }
                 for node_id, entry in nodes_by_id.items()
             }
 
     return _Client()
 
 
-def test_parent_summary_title_equal_to_its_only_requirements_title_keeps_the_heading_and_warns() -> None:
+def test_parent_summary_title_equal_to_its_only_requirements_title_keeps_the_heading_and_warns() -> (
+    None
+):
     nodes = _epic_feature_requirement_nodes()
     feature = next(n for n in nodes if n.type == WorkItemType.FEATURE)
     requirement = next(n for n in nodes if n.type == WorkItemType.REQUIREMENT)
     warnings: list = []
 
     _apply_parent_summary_pass(
-        nodes, [feature.local_id], _summary_client_returning(lambda _id, _entry: requirement.title), warnings,
+        nodes,
+        [feature.local_id],
+        _summary_client_returning(lambda _id, _entry: requirement.title),
+        warnings,
     )
 
     assert feature.title == "Over 28V VDC input"
@@ -327,7 +376,9 @@ def test_parent_summary_title_collision_ignores_case_whitespace_and_punctuation(
     warnings: list = []
 
     variant = f"  {requirement.title.upper()}.. "
-    _apply_parent_summary_pass(nodes, [feature.local_id], _summary_client_returning(lambda _id, _entry: variant), warnings)
+    _apply_parent_summary_pass(
+        nodes, [feature.local_id], _summary_client_returning(lambda _id, _entry: variant), warnings
+    )
 
     assert feature.title == "Over 28V VDC input"
     assert [w.kind for w in warnings] == [WarningKind.PARENT_TITLE_COLLISION]
@@ -341,7 +392,10 @@ def test_parent_summary_flags_when_even_the_heading_title_collides() -> None:
     warnings: list = []
 
     _apply_parent_summary_pass(
-        nodes, [feature.local_id], _summary_client_returning(lambda _id, _entry: requirement.title), warnings,
+        nodes,
+        [feature.local_id],
+        _summary_client_returning(lambda _id, _entry: requirement.title),
+        warnings,
     )
 
     assert feature.title == requirement.title
@@ -354,14 +408,19 @@ def test_parent_summary_distinct_title_is_applied_without_a_warning() -> None:
     warnings: list = []
 
     _apply_parent_summary_pass(
-        nodes, [feature.local_id], _summary_client_returning(lambda _id, _entry: "Input overvoltage protection"), warnings,
+        nodes,
+        [feature.local_id],
+        _summary_client_returning(lambda _id, _entry: "Input overvoltage protection"),
+        warnings,
     )
 
     assert feature.title == "Input overvoltage protection"
     assert warnings == []
 
 
-def test_apply_parent_summary_pass_recomputes_grounding_score_against_descendant_text_not_a_self_comparison() -> None:
+def test_apply_parent_summary_pass_recomputes_grounding_score_against_descendant_text_not_a_self_comparison() -> (
+    None
+):
     # Descendant requirement text shares almost no vocabulary with the
     # synthesized summary the FakeParentSummaryClient returns -- if
     # grounding_score were still a frozen self-comparison (the pre-fix
@@ -370,7 +429,10 @@ def test_apply_parent_summary_pass_recomputes_grounding_score_against_descendant
     class FakeParentSummaryClient:
         def summarize_parent_nodes(self, nodes_by_id, user_id=None):
             return {
-                node_id: {"title": f"Synthesized: {entry['title']}", "description": "A synthesized capability summary."}
+                node_id: {
+                    "title": f"Synthesized: {entry['title']}",
+                    "description": "A synthesized capability summary.",
+                }
                 for node_id, entry in nodes_by_id.items()
             }
 
@@ -384,7 +446,9 @@ def test_apply_parent_summary_pass_recomputes_grounding_score_against_descendant
     assert feature.grounding_score < 1.0
 
 
-def test_apply_parent_summary_pass_preserves_already_embedded_table_content_but_not_figure_captions() -> None:
+def test_apply_parent_summary_pass_preserves_already_embedded_table_content_but_not_figure_captions() -> (
+    None
+):
     # Real, root-caused bug (confirmed live against a real SURVEY job): the
     # heading-span-claiming loop in _detect_deterministic_subtrees folds a
     # table's HTML into a node's description via assemble_description,
@@ -404,7 +468,10 @@ def test_apply_parent_summary_pass_preserves_already_embedded_table_content_but_
     class FakeParentSummaryClient:
         def summarize_parent_nodes(self, nodes_by_id, user_id=None):
             return {
-                node_id: {"title": entry["title"], "description": "A synthesized capability summary."}
+                node_id: {
+                    "title": entry["title"],
+                    "description": "A synthesized capability summary.",
+                }
                 for node_id, entry in nodes_by_id.items()
             }
 
@@ -424,7 +491,10 @@ def test_apply_parent_summary_pass_preserves_already_embedded_table_content_but_
     feature.figure_ids = ["f1"]
 
     _apply_parent_summary_pass(
-        nodes, [feature.local_id], FakeParentSummaryClient(), warnings,
+        nodes,
+        [feature.local_id],
+        FakeParentSummaryClient(),
+        warnings,
         tables_by_id={table.id: table},
     )
 
@@ -434,7 +504,9 @@ def test_apply_parent_summary_pass_preserves_already_embedded_table_content_but_
     assert "Figure" not in feature.description
 
 
-def test_apply_parent_summary_pass_grounding_score_is_not_deflated_by_reembedded_table_html() -> None:
+def test_apply_parent_summary_pass_grounding_score_is_not_deflated_by_reembedded_table_html() -> (
+    None
+):
     # M1: grounding_score must be computed against the summary text captured
     # BEFORE the table-HTML re-embed loop runs, not the final post-embed
     # description -- a re-embedded table's cell content was folded into
@@ -450,12 +522,17 @@ def test_apply_parent_summary_pass_grounding_score_is_not_deflated_by_reembedded
 
     class FakeParentSummaryClient:
         def summarize_parent_nodes(self, nodes_by_id, user_id=None):
-            return {node_id: {"title": entry["title"], "description": summary_text} for node_id, entry in nodes_by_id.items()}
+            return {
+                node_id: {"title": entry["title"], "description": summary_text}
+                for node_id, entry in nodes_by_id.items()
+            }
 
     nodes_without_table = _epic_feature_requirement_nodes()
     warnings: list[str] = []
     feature_without_table = next(n for n in nodes_without_table if n.type == WorkItemType.FEATURE)
-    _apply_parent_summary_pass(nodes_without_table, [feature_without_table.local_id], FakeParentSummaryClient(), warnings)
+    _apply_parent_summary_pass(
+        nodes_without_table, [feature_without_table.local_id], FakeParentSummaryClient(), warnings
+    )
 
     nodes_with_table = _epic_feature_requirement_nodes()
     feature_with_table = next(n for n in nodes_with_table if n.type == WorkItemType.FEATURE)
@@ -468,7 +545,10 @@ def test_apply_parent_summary_pass_grounding_score_is_not_deflated_by_reembedded
     assert table_html  # sanity: this fixture table really does produce real HTML
     feature_with_table.table_ids = [table.id]
     _apply_parent_summary_pass(
-        nodes_with_table, [feature_with_table.local_id], FakeParentSummaryClient(), warnings,
+        nodes_with_table,
+        [feature_with_table.local_id],
+        FakeParentSummaryClient(),
+        warnings,
         tables_by_id={table.id: table},
     )
 
@@ -478,7 +558,9 @@ def test_apply_parent_summary_pass_grounding_score_is_not_deflated_by_reembedded
     assert feature_with_table.grounding_score > 0.0
 
 
-def test_apply_parent_summary_pass_sees_a_nested_sub_requirement_not_just_the_direct_child() -> None:
+def test_apply_parent_summary_pass_sees_a_nested_sub_requirement_not_just_the_direct_child() -> (
+    None
+):
     # Real hierarchy rule (id_hierarchy.classify_by_nesting's own
     # docstring): "a Requirement MAY be a child of a Requirement
     # (sub-Req)". An Epic whose direct child is a Requirement that ITSELF
@@ -488,20 +570,31 @@ def test_apply_parent_summary_pass_sees_a_nested_sub_requirement_not_just_the_di
     rows = [
         _row("Controls:", "Epic", None, "1"),
         _row("The system shall support mode A.", "Requirement", 0, "1.1", has_shall=True),
-        _row("The system shall also support mode A fallback.", "Requirement", 1, "1.1.a", has_shall=True),
+        _row(
+            "The system shall also support mode A fallback.",
+            "Requirement",
+            1,
+            "1.1.a",
+            has_shall=True,
+        ),
     ]
     nodes, _ = build_hierarchy_subtree(rows, "det0_")
     recompute_child_types(nodes)
     epic = next(n for n in nodes if n.type == WorkItemType.EPIC)
     requirements = [n for n in nodes if n.type == WorkItemType.REQUIREMENT]
-    assert len(requirements) == 2  # confirms the fixture actually nests one Requirement under another
+    assert (
+        len(requirements) == 2
+    )  # confirms the fixture actually nests one Requirement under another
 
     seen_payloads: list[dict] = []
 
     class RecordingClient:
         def summarize_parent_nodes(self, nodes_by_id, user_id=None):
             seen_payloads.append(nodes_by_id[epic.local_id])
-            return {node_id: {"title": "Synthesized Epic", "description": "Covers mode A."} for node_id in nodes_by_id}
+            return {
+                node_id: {"title": "Synthesized Epic", "description": "Covers mode A."}
+                for node_id in nodes_by_id
+            }
 
     _apply_parent_summary_pass(nodes, [epic.local_id], RecordingClient(), [])
 
@@ -510,7 +603,9 @@ def test_apply_parent_summary_pass_sees_a_nested_sub_requirement_not_just_the_di
     assert all(r.title in seen_titles for r in requirements)
 
 
-def test_apply_parent_summary_pass_gives_each_nested_epic_its_own_full_rollup_in_one_unordered_call() -> None:
+def test_apply_parent_summary_pass_gives_each_nested_epic_its_own_full_rollup_in_one_unordered_call() -> (
+    None
+):
     # Real hierarchy rule: "an Epic child of an Epic (sub-Epic)". A single
     # combined call over BOTH epics (any order -- this is exactly how
     # _apply_det_parent_summary now invokes this function, no more
@@ -534,10 +629,15 @@ def test_apply_parent_summary_pass_gives_each_nested_epic_its_own_full_rollup_in
     class RecordingClient:
         def summarize_parent_nodes(self, nodes_by_id, user_id=None):
             seen_payloads.update(nodes_by_id)
-            return {node_id: {"title": f"Synthesized {node_id}", "description": "A rollup summary."} for node_id in nodes_by_id}
+            return {
+                node_id: {"title": f"Synthesized {node_id}", "description": "A rollup summary."}
+                for node_id in nodes_by_id
+            }
 
     # Both epics in ONE call, together -- proves no ordering is required.
-    _apply_parent_summary_pass(nodes, [grandparent.local_id, child_epic.local_id], RecordingClient(), [])
+    _apply_parent_summary_pass(
+        nodes, [grandparent.local_id, child_epic.local_id], RecordingClient(), []
+    )
 
     # The grandparent's own payload already contains the requirement text
     # nested two levels down (through the child Epic), independent of
@@ -572,7 +672,10 @@ def test_apply_parent_summary_pass_splits_by_token_budget_without_dropping_any_p
         def summarize_parent_nodes(self, nodes_by_id, user_id=None):
             nonlocal call_count
             call_count += 1
-            return {node_id: {"title": f"Synthesized {node_id}", "description": "A rollup summary."} for node_id in nodes_by_id}
+            return {
+                node_id: {"title": f"Synthesized {node_id}", "description": "A rollup summary."}
+                for node_id in nodes_by_id
+            }
 
     warnings: list[str] = []
     _apply_parent_summary_pass(nodes, [f.local_id for f in features], RecordingClient(), warnings)
@@ -585,7 +688,9 @@ def test_apply_parent_summary_pass_splits_by_token_budget_without_dropping_any_p
     assert all(f.title == f"Synthesized {f.local_id}" for f in features)
 
 
-def test_apply_parent_summary_pass_never_splits_a_single_oversized_parent_it_just_sends_it_alone() -> None:
+def test_apply_parent_summary_pass_never_splits_a_single_oversized_parent_it_just_sends_it_alone() -> (
+    None
+):
     # Completeness over cost: even a parent whose OWN rollup alone exceeds
     # the token budget must still go out whole in one call (alone), never
     # truncated and never dropped.
@@ -603,13 +708,19 @@ def test_apply_parent_summary_pass_never_splits_a_single_oversized_parent_it_jus
     class RecordingClient:
         def summarize_parent_nodes(self, nodes_by_id, user_id=None):
             seen.append(nodes_by_id)
-            return {node_id: {"title": "Synthesized", "description": "A rollup summary."} for node_id in nodes_by_id}
+            return {
+                node_id: {"title": "Synthesized", "description": "A rollup summary."}
+                for node_id in nodes_by_id
+            }
 
     _apply_parent_summary_pass(nodes, [feature.local_id], RecordingClient(), [])
 
     assert len(seen) == 1
     assert feature.title == "Synthesized"
-    assert len("".join(seen[0][feature.local_id]["requirement_descriptions"])) // 4 > _PARENT_SUMMARY_TOKEN_BUDGET
+    assert (
+        len("".join(seen[0][feature.local_id]["requirement_descriptions"])) // 4
+        > _PARENT_SUMMARY_TOKEN_BUDGET
+    )
 
 
 def test_apply_parent_summary_pass_is_fail_open() -> None:
@@ -643,7 +754,9 @@ def test_apply_parent_summary_pass_fires_chunk_warning_alongside_the_appended_wa
     feature = next(n for n in nodes if n.type == WorkItemType.FEATURE)
     fired: list[LevelingProgress] = []
 
-    _apply_parent_summary_pass(nodes, [feature.local_id], RaisingClient(), warnings, progress_callback=fired.append)
+    _apply_parent_summary_pass(
+        nodes, [feature.local_id], RaisingClient(), warnings, progress_callback=fired.append
+    )
 
     assert len(fired) == 1
     assert fired[0].phase == "chunk_warning"
@@ -680,7 +793,9 @@ def test_build_hierarchy_subtree_title_tag_failure_fires_chunk_warning() -> None
 
     rows = [_row("The system shall do A.", "Requirement", None, "1", has_shall=True)]
     fired: list[LevelingProgress] = []
-    nodes, warnings = build_hierarchy_subtree(rows, "det0_", RaisingClient(), progress_callback=fired.append)
+    nodes, warnings = build_hierarchy_subtree(
+        rows, "det0_", RaisingClient(), progress_callback=fired.append
+    )
 
     chunk_warnings = [p for p in fired if p.phase == "chunk_warning"]
     assert len(chunk_warnings) == 1
@@ -704,7 +819,10 @@ def test_build_hierarchy_subtree_synthesizes_a_flagged_fragment_leaf() -> None:
         _row('Size: 3U 1"', "Requirement", 0, "1.1", needs_synthesis=True),
     ]
     nodes, warnings = build_hierarchy_subtree(
-        rows, "det0_", None, synthesis_client=FakeSynthesisClient(),
+        rows,
+        "det0_",
+        None,
+        synthesis_client=FakeSynthesisClient(),
     )
     leaf = next(n for n in nodes if n.type == WorkItemType.REQUIREMENT)
     assert leaf.description == "The COTS power supply shall have a 3U, 1-inch form factor."
@@ -715,7 +833,9 @@ def test_build_hierarchy_subtree_synthesizes_a_flagged_fragment_leaf() -> None:
     assert leaf.grounding_score is not None and leaf.grounding_score < 1.0
 
 
-def test_build_hierarchy_subtree_grounding_score_is_not_trivially_1_for_unrelated_hebrew_text() -> None:
+def test_build_hierarchy_subtree_grounding_score_is_not_trivially_1_for_unrelated_hebrew_text() -> (
+    None
+):
     # NEW-04/Phase 6 regression guard: before extracting to grounding.py,
     # this module had its own ASCII-only word pattern, which silently
     # emptied significant_words() for Hebrew and made grounding_score
@@ -740,7 +860,10 @@ def test_build_hierarchy_subtree_grounding_score_is_not_trivially_1_for_unrelate
         _row("המערכת תציג התרעה על תקלה בחיישן", "Requirement", 0, "1.1", needs_synthesis=True),
     ]
     nodes, warnings = build_hierarchy_subtree(
-        rows, "det0_", None, synthesis_client=FakeSynthesisClient(),
+        rows,
+        "det0_",
+        None,
+        synthesis_client=FakeSynthesisClient(),
     )
     leaf = next(n for n in nodes if n.type == WorkItemType.REQUIREMENT)
     assert leaf.grounding_score is not None and leaf.grounding_score < 1.0
@@ -767,7 +890,10 @@ def test_build_hierarchy_subtree_never_tags_a_non_requirement_synthesized_leaf()
 
     rows = [_row('Size: 3U 1"', "Feature", None, "1", needs_synthesis=True)]
     nodes, warnings = build_hierarchy_subtree(
-        rows, "det0_", None, synthesis_client=FakeSynthesisClient(),
+        rows,
+        "det0_",
+        None,
+        synthesis_client=FakeSynthesisClient(),
     )
     assert len(nodes) == 1
     assert nodes[0].type == WorkItemType.FEATURE
@@ -783,7 +909,10 @@ def test_build_hierarchy_subtree_synthesis_is_fail_open() -> None:
 
     rows = [_row('Size: 3U 1"', "Requirement", None, "1", needs_synthesis=True)]
     nodes, warnings = build_hierarchy_subtree(
-        rows, "det0_", None, synthesis_client=RaisingSynthesisClient(),
+        rows,
+        "det0_",
+        None,
+        synthesis_client=RaisingSynthesisClient(),
     )
     assert len(nodes) == 1
     assert nodes[0].description == 'Size: 3U 1"'  # kept verbatim, exactly as constructed
@@ -798,7 +927,11 @@ def test_build_hierarchy_subtree_synthesis_failure_fires_chunk_warning() -> None
     rows = [_row('Size: 3U 1"', "Requirement", None, "1", needs_synthesis=True)]
     fired: list[LevelingProgress] = []
     nodes, warnings = build_hierarchy_subtree(
-        rows, "det0_", None, synthesis_client=RaisingSynthesisClient(), progress_callback=fired.append,
+        rows,
+        "det0_",
+        None,
+        synthesis_client=RaisingSynthesisClient(),
+        progress_callback=fired.append,
     )
 
     chunk_warnings = [p for p in fired if p.phase == "chunk_warning"]
@@ -839,16 +972,23 @@ def test_build_hierarchy_subtree_fires_progress_before_the_title_tag_chunk() -> 
     rows = [_row("The system shall do A.", "Requirement", None, "1", has_shall=True)]
     events: list[LevelingProgress] = []
     build_hierarchy_subtree(
-        rows, "det0_", title_tag_client=FakeTitleTagClient(),
+        rows,
+        "det0_",
+        title_tag_client=FakeTitleTagClient(),
         progress_callback=lambda p: events.append(p),
-        subtree_index=0, subtree_count=2, subtree_label="Table t0",
+        subtree_index=0,
+        subtree_count=2,
+        subtree_label="Table t0",
     )
 
     subtree_events = [e for e in events if e.phase == "deterministic_subtree"]
     assert len(subtree_events) == 1
     assert subtree_events[0].subtree_index == 0
     assert subtree_events[0].subtree_count == 2
-    assert subtree_events[0].subtree_label == "Table t0 -- enhancing titles/tags for 1 node(s) (chunk 1 of 1)"
+    assert (
+        subtree_events[0].subtree_label
+        == "Table t0 -- enhancing titles/tags for 1 node(s) (chunk 1 of 1)"
+    )
 
 
 def test_build_hierarchy_subtree_fires_progress_before_the_synthesis_chunk() -> None:
@@ -859,16 +999,24 @@ def test_build_hierarchy_subtree_fires_progress_before_the_synthesis_chunk() -> 
     rows = [_row('Size: 3U 1"', "Requirement", None, "1", needs_synthesis=True)]
     events: list[LevelingProgress] = []
     build_hierarchy_subtree(
-        rows, "det0_", None, synthesis_client=FakeSynthesisClient(),
+        rows,
+        "det0_",
+        None,
+        synthesis_client=FakeSynthesisClient(),
         progress_callback=lambda p: events.append(p),
-        subtree_index=1, subtree_count=2, subtree_label="Heading hierarchy",
+        subtree_index=1,
+        subtree_count=2,
+        subtree_label="Heading hierarchy",
     )
 
     subtree_events = [e for e in events if e.phase == "deterministic_subtree"]
     assert len(subtree_events) == 1
     assert subtree_events[0].subtree_index == 1
     assert subtree_events[0].subtree_count == 2
-    assert subtree_events[0].subtree_label == "Heading hierarchy -- synthesizing requirement text for 1 node(s) (chunk 1 of 1)"
+    assert (
+        subtree_events[0].subtree_label
+        == "Heading hierarchy -- synthesizing requirement text for 1 node(s) (chunk 1 of 1)"
+    )
     # Same blocks_done/blocks_total fix as the title-tag pass above.
     assert subtree_events[0].blocks_done == 0
     assert subtree_events[0].blocks_total == 1
@@ -889,9 +1037,13 @@ def test_build_hierarchy_subtree_fires_one_progress_event_per_chunk_not_per_subt
     ]
     events: list[LevelingProgress] = []
     build_hierarchy_subtree(
-        rows, "det0_", title_tag_client=FakeTitleTagClient(),
+        rows,
+        "det0_",
+        title_tag_client=FakeTitleTagClient(),
         progress_callback=lambda p: events.append(p),
-        subtree_index=0, subtree_count=1, subtree_label="Heading hierarchy",
+        subtree_index=0,
+        subtree_count=1,
+        subtree_label="Heading hierarchy",
     )
 
     subtree_events = [e for e in events if e.phase == "deterministic_subtree"]
@@ -960,7 +1112,9 @@ def test_build_hierarchy_subtree_section_path_root_seeds_a_table_subtrees_own_id
     assert leaf.source_ref.section_path == ["Table t7", "Power Requirements"]
 
 
-def test_build_hierarchy_subtree_identity_and_fidelity_hashes_are_unaffected_by_section_path() -> None:
+def test_build_hierarchy_subtree_identity_and_fidelity_hashes_are_unaffected_by_section_path() -> (
+    None
+):
     # Same invariant as tree_builder.py's own identical test: section_path
     # is additive provenance, deliberately excluded from _hash_identity's
     # input -- widening it must never change identity_hash/fidelity_hash.
@@ -1034,10 +1188,15 @@ def test_apply_title_tag_pass_output_is_identical_serial_vs_concurrent() -> None
         nodes, _ = build_hierarchy_subtree(_many_requirement_rows(320), "det0_")
         warnings: list = []
         _apply_title_tag_pass(
-            nodes, [n.local_id for n in nodes], OrderSensitiveClient(), warnings,
+            nodes,
+            [n.local_id for n in nodes],
+            OrderSensitiveClient(),
+            warnings,
             chunk_concurrency=concurrency,
         )
-        return [(n.local_id, n.title, [t.value for t in n.tags]) for n in nodes], [w.raw for w in warnings]
+        return [(n.local_id, n.title, [t.value for t in n.tags]) for n in nodes], [
+            w.raw for w in warnings
+        ]
 
     assert run(1) == run(4)
 
@@ -1057,8 +1216,12 @@ def test_apply_title_tag_pass_narrates_chunks_in_document_order_under_concurrenc
     nodes, _ = build_hierarchy_subtree(_many_requirement_rows(320), "det0_")
 
     _apply_title_tag_pass(
-        nodes, [n.local_id for n in nodes], SlowFirstChunkClient(), [],
-        progress_callback=fired.append, chunk_concurrency=4,
+        nodes,
+        [n.local_id for n in nodes],
+        SlowFirstChunkClient(),
+        [],
+        progress_callback=fired.append,
+        chunk_concurrency=4,
     )
 
     labels = [e.subtree_label for e in fired if e.phase == "deterministic_subtree"]
@@ -1095,7 +1258,10 @@ def test_apply_title_tag_pass_narrates_each_chunk_immediately_before_its_own_cal
     nodes, _ = build_hierarchy_subtree(_many_requirement_rows(320), "det0_")
 
     _apply_title_tag_pass(
-        nodes, [n.local_id for n in nodes], TracingClient(), [],
+        nodes,
+        [n.local_id for n in nodes],
+        TracingClient(),
+        [],
         progress_callback=lambda event: trace.append("NARRATE"),
         chunk_concurrency=1,
     )
@@ -1103,7 +1269,9 @@ def test_apply_title_tag_pass_narrates_each_chunk_immediately_before_its_own_cal
     assert trace == ["NARRATE", "CALL", "NARRATE", "CALL", "NARRATE", "CALL"]
 
 
-def test_apply_title_tag_pass_one_failing_chunk_still_applies_the_others_under_concurrency() -> None:
+def test_apply_title_tag_pass_one_failing_chunk_still_applies_the_others_under_concurrency() -> (
+    None
+):
     from app.leveling.id_tree_builder import _apply_title_tag_pass, build_hierarchy_subtree
 
     class SecondChunkRaisesClient:
@@ -1117,8 +1285,12 @@ def test_apply_title_tag_pass_one_failing_chunk_still_applies_the_others_under_c
     fired: list = []
 
     _apply_title_tag_pass(
-        nodes, [n.local_id for n in nodes], SecondChunkRaisesClient(), warnings,
-        progress_callback=fired.append, chunk_concurrency=4,
+        nodes,
+        [n.local_id for n in nodes],
+        SecondChunkRaisesClient(),
+        warnings,
+        progress_callback=fired.append,
+        chunk_concurrency=4,
     )
 
     # Fail-soft per chunk, exactly as before: chunk 1's failure never stops
@@ -1149,7 +1321,11 @@ def test_apply_synthesis_pass_runs_chunks_concurrently() -> None:
     nodes, _ = build_hierarchy_subtree(_many_requirement_rows(320), "det0_")
 
     _apply_synthesis_pass(
-        nodes, [n.local_id for n in nodes], ThreadRecordingClient(), [], chunk_concurrency=3,
+        nodes,
+        [n.local_id for n in nodes],
+        ThreadRecordingClient(),
+        [],
+        chunk_concurrency=3,
     )
 
     assert len(seen) > 1
@@ -1165,7 +1341,11 @@ def test_apply_synthesis_pass_output_is_identical_serial_vs_concurrent() -> None
             if "det0_1" in items_by_id:
                 time.sleep(0.2)
             return {
-                node_id: {"text": f"The system shall handle {node_id}.", "title": f"T {node_id}", "tags": []}
+                node_id: {
+                    "text": f"The system shall handle {node_id}.",
+                    "title": f"T {node_id}",
+                    "tags": [],
+                }
                 for node_id in items_by_id
             }
 
@@ -1173,11 +1353,17 @@ def test_apply_synthesis_pass_output_is_identical_serial_vs_concurrent() -> None
         nodes, _ = build_hierarchy_subtree(_many_requirement_rows(320), "det0_")
         warnings: list = []
         _apply_synthesis_pass(
-            nodes, [n.local_id for n in nodes], OrderSensitiveClient(), warnings,
+            nodes,
+            [n.local_id for n in nodes],
+            OrderSensitiveClient(),
+            warnings,
             chunk_concurrency=concurrency,
         )
         return (
-            [(n.local_id, n.title, n.description, n.grounding_score, n.fidelity_hash) for n in nodes],
+            [
+                (n.local_id, n.title, n.description, n.grounding_score, n.fidelity_hash)
+                for n in nodes
+            ],
             [w.raw for w in warnings],
         )
 
@@ -1199,8 +1385,12 @@ def test_apply_synthesis_pass_narrates_chunks_in_document_order_under_concurrenc
     nodes, _ = build_hierarchy_subtree(_many_requirement_rows(320), "det0_")
 
     _apply_synthesis_pass(
-        nodes, [n.local_id for n in nodes], SlowFirstChunkClient(), [],
-        progress_callback=fired.append, chunk_concurrency=4,
+        nodes,
+        [n.local_id for n in nodes],
+        SlowFirstChunkClient(),
+        [],
+        progress_callback=fired.append,
+        chunk_concurrency=4,
     )
 
     labels = [e.subtree_label for e in fired if e.phase == "deterministic_subtree"]
@@ -1223,7 +1413,10 @@ def test_apply_synthesis_pass_narrates_each_chunk_immediately_before_its_own_cal
     nodes, _ = build_hierarchy_subtree(_many_requirement_rows(320), "det0_")
 
     _apply_synthesis_pass(
-        nodes, [n.local_id for n in nodes], TracingClient(), [],
+        nodes,
+        [n.local_id for n in nodes],
+        TracingClient(),
+        [],
         progress_callback=lambda event: trace.append("NARRATE"),
         chunk_concurrency=1,
     )
@@ -1231,7 +1424,9 @@ def test_apply_synthesis_pass_narrates_each_chunk_immediately_before_its_own_cal
     assert trace == ["NARRATE", "CALL", "NARRATE", "CALL", "NARRATE", "CALL"]
 
 
-def test_apply_synthesis_pass_context_is_built_from_pre_pass_titles_not_a_prior_chunks_output() -> None:
+def test_apply_synthesis_pass_context_is_built_from_pre_pass_titles_not_a_prior_chunks_output() -> (
+    None
+):
     # Deliberate, documented behavior change (see this plan's design
     # decisions): payload construction is hoisted above the chunk loop, so a
     # node's `context` string is always built from titles as they were
@@ -1245,21 +1440,27 @@ def test_apply_synthesis_pass_context_is_built_from_pre_pass_titles_not_a_prior_
     class RecordingClient:
         def synthesize_leaf_requirements(self, items_by_id, user_id=None):
             captured.append(dict(items_by_id))
-            return {node_id: {"text": "The system shall X.", "title": "REWRITTEN"} for node_id in items_by_id}
+            return {
+                node_id: {"text": "The system shall X.", "title": "REWRITTEN"}
+                for node_id in items_by_id
+            }
 
     # An ancestor Requirement with a nested child Requirement -- both flagged
     # for synthesis, and forced into different chunks by padding between them.
     rows = [_row("Power stuff", "Requirement", None, "1", has_shall=True)]
     rows += [
-        _row(f"Filler {i}", "Requirement", 0, f"1.{i + 1}", has_shall=True)
-        for i in range(200)
+        _row(f"Filler {i}", "Requirement", 0, f"1.{i + 1}", has_shall=True) for i in range(200)
     ]
     nodes, _ = build_hierarchy_subtree(rows, "det0_")
     ancestor_id = nodes[0].local_id
     descendant_id = nodes[-1].local_id
 
     _apply_synthesis_pass(
-        nodes, [n.local_id for n in nodes], RecordingClient(), [], chunk_concurrency=1,
+        nodes,
+        [n.local_id for n in nodes],
+        RecordingClient(),
+        [],
+        chunk_concurrency=1,
     )
 
     # The descendant is in chunk 1; the ancestor was rewritten to "REWRITTEN"
@@ -1270,7 +1471,9 @@ def test_apply_synthesis_pass_context_is_built_from_pre_pass_titles_not_a_prior_
     assert ancestor_id  # referenced so the id is asserted to exist
 
 
-def test_apply_synthesis_pass_one_failing_chunk_still_applies_the_others_under_concurrency() -> None:
+def test_apply_synthesis_pass_one_failing_chunk_still_applies_the_others_under_concurrency() -> (
+    None
+):
     from app.leveling.id_tree_builder import _apply_synthesis_pass, build_hierarchy_subtree
 
     class SecondChunkRaisesClient:
@@ -1284,8 +1487,12 @@ def test_apply_synthesis_pass_one_failing_chunk_still_applies_the_others_under_c
     fired: list = []
 
     _apply_synthesis_pass(
-        nodes, [n.local_id for n in nodes], SecondChunkRaisesClient(), warnings,
-        progress_callback=fired.append, chunk_concurrency=4,
+        nodes,
+        [n.local_id for n in nodes],
+        SecondChunkRaisesClient(),
+        warnings,
+        progress_callback=fired.append,
+        chunk_concurrency=4,
     )
 
     assert nodes[0].description == "The system shall X."
@@ -1334,7 +1541,11 @@ def test_apply_parent_summary_pass_runs_chunks_concurrently() -> None:
     nodes, feature_ids = _many_feature_nodes(40)
 
     _apply_parent_summary_pass(
-        nodes, feature_ids, ThreadRecordingClient(), [], chunk_concurrency=3,
+        nodes,
+        feature_ids,
+        ThreadRecordingClient(),
+        [],
+        chunk_concurrency=3,
     )
 
     assert len(seen) > 1
@@ -1358,17 +1569,26 @@ def test_apply_parent_summary_pass_output_is_identical_serial_vs_concurrent() ->
         nodes, feature_ids = _many_feature_nodes(40)
         warnings: list = []
         _apply_parent_summary_pass(
-            nodes, feature_ids, OrderSensitiveClient(), warnings, chunk_concurrency=concurrency,
+            nodes,
+            feature_ids,
+            OrderSensitiveClient(),
+            warnings,
+            chunk_concurrency=concurrency,
         )
         return (
-            [(n.local_id, n.title, n.description, n.grounding_score, n.fidelity_hash) for n in nodes],
+            [
+                (n.local_id, n.title, n.description, n.grounding_score, n.fidelity_hash)
+                for n in nodes
+            ],
             [w.raw for w in warnings],
         )
 
     assert run(1) == run(4)
 
 
-def test_apply_parent_summary_pass_one_failing_chunk_still_applies_the_others_under_concurrency() -> None:
+def test_apply_parent_summary_pass_one_failing_chunk_still_applies_the_others_under_concurrency() -> (
+    None
+):
     from app.leveling.id_tree_builder import _apply_parent_summary_pass
 
     nodes, feature_ids = _many_feature_nodes(40)
@@ -1384,13 +1604,17 @@ def test_apply_parent_summary_pass_one_failing_chunk_still_applies_the_others_un
     fired: list = []
 
     _apply_parent_summary_pass(
-        nodes, feature_ids, FirstChunkRaisesClient(), warnings,
-        progress_callback=fired.append, chunk_concurrency=4,
+        nodes,
+        feature_ids,
+        FirstChunkRaisesClient(),
+        warnings,
+        progress_callback=fired.append,
+        chunk_concurrency=4,
     )
 
     by_id = {n.local_id: n for n in nodes}
-    assert by_id[first_id].title != "T"          # its own chunk failed
-    assert by_id[feature_ids[-1]].title == "T"   # a later chunk still applied
+    assert by_id[first_id].title != "T"  # its own chunk failed
+    assert by_id[feature_ids[-1]].title == "T"  # a later chunk still applied
     assert any(w.kind.value == "enhancement_call_failed" for w in warnings)
     assert any(e.phase == "chunk_warning" for e in fired)
 
@@ -1409,7 +1633,11 @@ def test_keyed_pass_unwraps_a_single_wrapper_key_and_trims_ids_without_a_warning
 
     class WrappedClient:
         def title_and_tags_for_rows(self, texts_by_row_id, user_id=None):
-            return {"results": {f" {node_id} ": {"title": "Wrapped", "tags": []} for node_id in texts_by_row_id}}
+            return {
+                "results": {
+                    f" {node_id} ": {"title": "Wrapped", "tags": []} for node_id in texts_by_row_id
+                }
+            }
 
     warnings: list = []
     _apply_title_tag_pass(nodes, leaf_ids, WrappedClient(), warnings)
@@ -1428,7 +1656,9 @@ def test_keyed_pass_retries_only_the_omitted_ids_once_in_halves() -> None:
         def title_and_tags_for_rows(self, texts_by_row_id, user_id=None):
             calls.append(list(texts_by_row_id))
             if len(calls) == 1:  # first, full-chunk call: answers only the first two ids
-                return {node_id: {"title": "Got", "tags": []} for node_id in list(texts_by_row_id)[:2]}
+                return {
+                    node_id: {"title": "Got", "tags": []} for node_id in list(texts_by_row_id)[:2]
+                }
             return {node_id: {"title": "Retried", "tags": []} for node_id in texts_by_row_id}
 
     warnings: list = []
@@ -1474,7 +1704,11 @@ def test_keyed_pass_keeps_the_omission_warning_when_the_retry_cannot_recover_eve
 
     class NeverAnswersTheLastIdClient:
         def title_and_tags_for_rows(self, texts_by_row_id, user_id=None):
-            return {node_id: {"title": "A", "tags": []} for node_id in texts_by_row_id if node_id != leaf_ids[-1]}
+            return {
+                node_id: {"title": "A", "tags": []}
+                for node_id in texts_by_row_id
+                if node_id != leaf_ids[-1]
+            }
 
     warnings: list = []
     _apply_title_tag_pass(nodes, leaf_ids, NeverAnswersTheLastIdClient(), warnings)
@@ -1535,21 +1769,33 @@ def test_tags_are_matched_case_insensitively_because_enum_casing_is_not_guarante
     from app.leveling.id_tree_builder import synthesis_updates, title_tag_updates
     from app.workitem.model import RequirementTag, WorkItemType
 
-    updates = title_tag_updates({"title": "T", "tags": ["Safety", " NON_FUNCTIONAL ", "bogus", 3, "functional"]})
-    assert updates["tags"] == [RequirementTag.SAFETY, RequirementTag.NON_FUNCTIONAL, RequirementTag.FUNCTIONAL]
+    updates = title_tag_updates(
+        {"title": "T", "tags": ["Safety", " NON_FUNCTIONAL ", "bogus", 3, "functional"]}
+    )
+    assert updates["tags"] == [
+        RequirementTag.SAFETY,
+        RequirementTag.NON_FUNCTIONAL,
+        RequirementTag.FUNCTIONAL,
+    ]
 
     synthesized = synthesis_updates(
-        {"title": "T", "text": "The unit shall do X.", "tags": ["Interface"]}, "Do X", WorkItemType.REQUIREMENT,
+        {"title": "T", "text": "The unit shall do X.", "tags": ["Interface"]},
+        "Do X",
+        WorkItemType.REQUIREMENT,
     )
     assert synthesized["tags"] == [RequirementTag.INTERFACE]
 
 
-def test_nodes_remember_the_heading_text_they_were_built_from_even_after_a_title_pass_rewrites_them() -> None:
+def test_nodes_remember_the_heading_text_they_were_built_from_even_after_a_title_pass_rewrites_them() -> (
+    None
+):
     # The model rewrites titles after the hierarchy is built (title/tag pass, parent summaries), differently on every
     # run. Anything that must not depend on the model (root grouping) reads the verbatim source heading instead.
     class RewritingClient:
         def title_and_tags_for_rows(self, texts_by_row_id, user_id=None):
-            return {row_id: {"title": f"Rewritten {row_id}", "tags": []} for row_id in texts_by_row_id}
+            return {
+                row_id: {"title": f"Rewritten {row_id}", "tags": []} for row_id in texts_by_row_id
+            }
 
     rows = [
         _row("Audio Control", "Feature", None, "1.1"),
@@ -1569,13 +1815,18 @@ def test_repairing_many_requirements_logs_one_summary_not_one_warning_each(caplo
     import logging
 
     rows = [_row("Mislabeled Epic", "Epic", None, "1")] + [
-        _row(f"The system shall do thing {i}.", "Requirement", 0, f"1.{i}", has_shall=True) for i in range(1, 31)
+        _row(f"The system shall do thing {i}.", "Requirement", 0, f"1.{i}", has_shall=True)
+        for i in range(1, 31)
     ]
     nodes, warnings = build_hierarchy_subtree(rows, "det0_")
     with caplog.at_level(logging.DEBUG, logger="app.leveling.root_regrouping"):
         _repair_requirement_hierarchy(nodes, "det0_", warnings)
 
-    repaired = [w for w in warnings if w.kind.value in ("reparented_to_feature", "bridge_feature_synthesized")]
+    repaired = [
+        w
+        for w in warnings
+        if w.kind.value in ("reparented_to_feature", "bridge_feature_synthesized")
+    ]
     assert len(repaired) >= 30  # every fact still reaches the job's warnings
     loud = [r for r in caplog.records if r.levelno >= logging.WARNING]
     assert loud == []

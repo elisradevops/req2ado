@@ -33,6 +33,7 @@ were several distinct figures. Here the emblem is drawn at position A on
 it. Content-hash-only keying must suppress all 9 placements; the buggy
 position-sensitive keying suppresses none.
 """
+
 import tempfile
 from pathlib import Path
 
@@ -149,7 +150,9 @@ with tempfile.TemporaryDirectory() as tmp_dir:
         if page_index in (0, 2, 4):
             c.drawImage(str(reused_diagram_path), BODY_X, BODY_Y, width=150, height=150)
         else:
-            c.drawImage(str(unique_figure_paths[unique_index]), BODY_X, BODY_Y, width=150, height=150)
+            c.drawImage(
+                str(unique_figure_paths[unique_index]), BODY_X, BODY_Y, width=150, height=150
+            )
             unique_index += 1
         c.showPage()
     c.save()

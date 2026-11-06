@@ -61,6 +61,7 @@ def _count_real_notes(root, element_tag: str) -> int:
             count += 1
     return count
 
+
 # VML and office namespaces are NOT registered in python-docx's own qn()
 # helper (only OOXML-standard prefixes are) -- these are raw Clark-notation
 # strings for exactly that reason.
@@ -383,7 +384,12 @@ def _resolve_table_style_chain(styles_root, style_id: str | None, *, max_depth: 
         seen.add(current_id)
         depth += 1
         style_el = next(
-            (st for st in styles_root.findall(qn("w:style")) if st.get(qn("w:styleId")) == current_id), None
+            (
+                st
+                for st in styles_root.findall(qn("w:style"))
+                if st.get(qn("w:styleId")) == current_id
+            ),
+            None,
         )
         if style_el is None:
             break
@@ -686,12 +692,12 @@ def _is_degenerate_image_bytes(image_bytes: bytes) -> bool:
             width, height = image.size
     except (UnidentifiedImageError, OSError, ValueError):
         return False
-    return width <= _DEGENERATE_IMAGE_MAX_DIMENSION_PX and height <= _DEGENERATE_IMAGE_MAX_DIMENSION_PX
+    return (
+        width <= _DEGENERATE_IMAGE_MAX_DIMENSION_PX and height <= _DEGENERATE_IMAGE_MAX_DIMENSION_PX
+    )
 
 
-def _describe_one_figure(
-    rel, describe_figure: Callable[[bytes], str | None] | None
-) -> str | None:
+def _describe_one_figure(rel, describe_figure: Callable[[bytes], str | None] | None) -> str | None:
     """Shared per-image describe_figure call + failure handling, used by
     both the inline (real document-order) and fallback (floating/unmatched
     rel) figure paths below -- a vision failure for one image must not
@@ -702,7 +708,10 @@ def _describe_one_figure(
         return describe_figure(rel.target_part.blob)
     except Exception:  # noqa: BLE001 -- a vision failure must not abort the whole document
         logger.warning(
-            "describe_figure failed for %s (rel target %s)", rel.target_part.content_type, rel.target_ref, exc_info=True
+            "describe_figure failed for %s (rel target %s)",
+            rel.target_part.content_type,
+            rel.target_ref,
+            exc_info=True,
         )
         return None
 
@@ -781,7 +790,9 @@ def _heading_level_for_paragraph(paragraph: DocxParagraph) -> int | None:
     return None
 
 
-def load_docx(path: str, describe_figure: Callable[[bytes], str | None] | None = None) -> CanonicalDoc:
+def load_docx(
+    path: str, describe_figure: Callable[[bytes], str | None] | None = None
+) -> CanonicalDoc:
     """`describe_figure`, when provided, is called with each embedded
     image's raw bytes and must return a short text description -- used to
     replace the `[FIGURE: none]` placeholder with real content (see
@@ -844,7 +855,9 @@ def load_docx(path: str, describe_figure: Callable[[bytes], str | None] | None =
                         id=f"b{block_id}",
                         kind=BlockKind.NOTE,
                         text="[UNSUPPORTED: embedded document (altChunk) -- content not extracted]",
-                        source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end),
+                        source_ref=SourceRef(
+                            document_path=path, start_offset=start, end_offset=end
+                        ),
                     )
                 )
                 block_id += 1
@@ -969,7 +982,9 @@ def load_docx(path: str, describe_figure: Callable[[bytes], str | None] | None =
                             text=content,
                             heading_level=heading_level,
                             number_label=number_label,
-                            source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end),
+                            source_ref=SourceRef(
+                                document_path=path, start_offset=start, end_offset=end
+                            ),
                         )
                     )
                 else:
@@ -980,7 +995,9 @@ def load_docx(path: str, describe_figure: Callable[[bytes], str | None] | None =
                             id=f"b{block_id}",
                             kind=BlockKind.LIST_ITEM if is_list_item else BlockKind.PARAGRAPH,
                             text=content,
-                            source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end),
+                            source_ref=SourceRef(
+                                document_path=path, start_offset=start, end_offset=end
+                            ),
                         )
                     )
                 block_id += 1

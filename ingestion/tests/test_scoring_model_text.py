@@ -1,4 +1,5 @@
 """Scoring sends a model the plain-text form of a description (tables as CSV), never the HTML the description is stored as."""
+
 from app.leveling import scoring
 from app.leveling.scoring import (
     _apply_quality_scores,
@@ -20,8 +21,17 @@ class Recorder:
         self.sent: list[dict] = []
         self.answers = answers
 
-    def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
-        self.sent.append({k: v for k, v in descriptions_by_node_id.items() if not k.startswith("__")})
+    def score_requirements_for_document(
+        self,
+        descriptions_by_node_id,
+        criteria_context=None,
+        kb_context=None,
+        category_checklist=None,
+        user_id=None,
+    ):
+        self.sent.append(
+            {k: v for k, v in descriptions_by_node_id.items() if not k.startswith("__")}
+        )
         build = self.answers[min(len(self.sent) - 1, len(self.answers) - 1)]
         return {k: build(k) for k in descriptions_by_node_id}
 
@@ -32,19 +42,37 @@ def full(_id):
 
 def test_requirement_scoring_sends_the_table_as_csv() -> None:
     client = Recorder([full])
-    _apply_quality_scores([_requirement_node("r1", HTML_DESCRIPTION)], client, [], "", kb_context="KB", category_checklist=LIST)
+    _apply_quality_scores(
+        [_requirement_node("r1", HTML_DESCRIPTION)],
+        client,
+        [],
+        "",
+        kb_context="KB",
+        category_checklist=LIST,
+    )
     assert client.sent[0] == {"r1": AS_SENT}
 
 
 def test_the_follow_up_for_a_missing_category_sends_the_same_text() -> None:
     def partial(_id):
-        return {"score": 70, "issues": [], "categoryScores": {"Clarity": 70, "completeness_as_requirement": 90}}
+        return {
+            "score": 70,
+            "issues": [],
+            "categoryScores": {"Clarity": 70, "completeness_as_requirement": 90},
+        }
 
     def follow_up(_id):
         return {"score": 1, "issues": [], "categoryScores": {"Testable": 50}}
 
     client = Recorder([partial, follow_up])
-    _apply_quality_scores([_requirement_node("r1", HTML_DESCRIPTION)], client, [], "", kb_context="KB", category_checklist=LIST)
+    _apply_quality_scores(
+        [_requirement_node("r1", HTML_DESCRIPTION)],
+        client,
+        [],
+        "",
+        kb_context="KB",
+        category_checklist=LIST,
+    )
     assert len(client.sent) == 2 and client.sent[1] == {"r1": AS_SENT}
 
 
@@ -62,7 +90,10 @@ def test_epic_and_feature_scoring_sends_the_text_form() -> None:
     class EpicClient:
         def score_epics_and_features_for_document(self, nodes_by_id, user_id=None):
             seen.append(nodes_by_id)
-            return {k: {"score": 80, "issues": [], "categoryScores": {"Clarity": 80}} for k in nodes_by_id}
+            return {
+                k: {"score": 80, "issues": [], "categoryScores": {"Clarity": 80}}
+                for k in nodes_by_id
+            }
 
     node = _epic_nodes(1)[0]
     node.description = HTML_DESCRIPTION
@@ -73,5 +104,7 @@ def test_epic_and_feature_scoring_sends_the_text_form() -> None:
 
 def test_the_stored_description_is_left_as_it_was() -> None:
     node = _requirement_node("r1", HTML_DESCRIPTION)
-    _apply_quality_scores([node], Recorder([full]), [], "", kb_context="KB", category_checklist=LIST)
+    _apply_quality_scores(
+        [node], Recorder([full]), [], "", kb_context="KB", category_checklist=LIST
+    )
     assert node.description == HTML_DESCRIPTION

@@ -1,4 +1,5 @@
 """Run once to (re)generate sample.png: `python build_image_fixture.py`."""
+
 from pathlib import Path
 
 from PIL import Image

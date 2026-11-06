@@ -1,4 +1,5 @@
 """Run once to (re)generate sample.docx: `python build_docx_fixture.py`."""
+
 import tempfile
 from pathlib import Path
 

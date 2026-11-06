@@ -45,7 +45,10 @@ def test_capture_stores_the_raw_response_keyed_by_job_id_kind_and_identifier() -
         capture.capture("kb_relevance", "br0", "malformed JSON in LLM response content: 'Based'")
 
     assert redis_client._store == {
-        "req2ado:debug:job-123:kb_relevance:br0": ("malformed JSON in LLM response content: 'Based'", 7 * 24 * 3600)
+        "req2ado:debug:job-123:kb_relevance:br0": (
+            "malformed JSON in LLM response content: 'Based'",
+            7 * 24 * 3600,
+        )
     }
 
 
@@ -81,7 +84,11 @@ def test_list_captures_returns_every_capture_for_the_job() -> None:
     results = capture.list_captures("job-123")
     assert len(results) == 2
     assert {"kind": "kb_relevance", "identifier": "br0", "content": "content one"} in results
-    assert {"kind": "infer_trace_links", "identifier": "document", "content": "content two"} in results
+    assert {
+        "kind": "infer_trace_links",
+        "identifier": "document",
+        "content": "content two",
+    } in results
 
 
 def test_list_captures_returns_empty_when_nothing_was_captured() -> None:

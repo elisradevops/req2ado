@@ -23,7 +23,9 @@ class MisbehavingTitleDistillationClient:
 
 
 def test_distill_survey_title_uses_the_injected_client() -> None:
-    result = distill_survey_title("The unit shall survive a 1m drop onto concrete.", FakeTitleDistillationClient())
+    result = distill_survey_title(
+        "The unit shall survive a 1m drop onto concrete.", FakeTitleDistillationClient()
+    )
     assert result == "Physical robustness"
 
 

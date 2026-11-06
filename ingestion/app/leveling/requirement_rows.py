@@ -57,6 +57,7 @@ Known, deliberate limitations (accepted, not silently papered over):
   (extract_customer_requirement_code) -- a convention that pattern can't
   read (no uppercase-letter-prefixed code at all) contributes nothing here,
   even if a human reader would recognize it as an id column."""
+
 from __future__ import annotations
 
 import re
@@ -194,7 +195,11 @@ def qualifying_requirement_rows(tables: Iterable[Table] | None) -> list[Requirem
                 continue
             code = row[id_column].strip()
             if code and extract_customer_requirement_code(code) == code:
-                results.append(RequirementRowInfo(table_id=table.id, code=code, label=_row_label(row, id_column)))
+                results.append(
+                    RequirementRowInfo(
+                        table_id=table.id, code=code, label=_row_label(row, id_column)
+                    )
+                )
     return results
 
 
@@ -241,7 +246,9 @@ def _looks_like_header_row(row: list[str]) -> bool:
     and not sentence-like. A lone spanning title row or a data row with a
     missing id fails this, so the table stays folded and its text is kept."""
     cells = [cell.strip() for cell in row if cell.strip()]
-    return len(cells) >= 2 and all(len(c) <= _HEADER_CELL_MAX_LENGTH and not c.endswith(".") for c in cells)
+    return len(cells) >= 2 and all(
+        len(c) <= _HEADER_CELL_MAX_LENGTH and not c.endswith(".") for c in cells
+    )
 
 
 def atomizable_requirement_rows(table: Table | None) -> list[AtomicRow] | None:
@@ -265,7 +272,9 @@ def atomizable_requirement_rows(table: Table | None) -> list[AtomicRow] | None:
     for position, row in enumerate(rows):
         code = row[id_column].strip() if id_column < len(row) else ""
         if code and extract_customer_requirement_code(code) == code:
-            cells = tuple(cell.strip() for i, cell in enumerate(row) if i != id_column and cell.strip())
+            cells = tuple(
+                cell.strip() for i, cell in enumerate(row) if i != id_column and cell.strip()
+            )
             atoms.append(AtomicRow(code=code, cells=cells))
         elif position != 0 or not _looks_like_header_row(row):
             return None

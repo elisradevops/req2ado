@@ -20,7 +20,9 @@ class FakeEmbeddingClient:
 def _corpus_of_two() -> list[QualityCriterion]:
     return [
         QualityCriterion(RequirementQualityIssue.VAGUE_TERM, "vague terms like fast or robust"),
-        QualityCriterion(RequirementQualityIssue.PASSIVE_VOICE, "prefer active voice over passive voice"),
+        QualityCriterion(
+            RequirementQualityIssue.PASSIVE_VOICE, "prefer active voice over passive voice"
+        ),
     ]
 
 

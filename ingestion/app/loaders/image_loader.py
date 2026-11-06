@@ -15,7 +15,9 @@ from app.canonical.model import (
 )
 
 
-def load_image(path: str, describe_figure: Callable[[bytes], str | None] | None = None) -> CanonicalDoc:
+def load_image(
+    path: str, describe_figure: Callable[[bytes], str | None] | None = None
+) -> CanonicalDoc:
     """A standalone image file (not embedded in a docx/pptx) is treated as
     ONE Figure + ONE FIGURE-kind Block spanning the whole document -- there
     is no other content to extract. `describe_figure` uses the SAME
@@ -41,7 +43,11 @@ def load_image(path: str, describe_figure: Callable[[bytes], str | None] | None 
         except Exception:  # noqa: BLE001 -- a vision failure must not abort ingestion
             caption = None
 
-    figure = Figure(id="f0", caption=caption, source_ref=SourceRef(document_path=path, start_offset=0, end_offset=0))
+    figure = Figure(
+        id="f0",
+        caption=caption,
+        source_ref=SourceRef(document_path=path, start_offset=0, end_offset=0),
+    )
     block = Block(
         id="b0",
         kind=BlockKind.FIGURE,

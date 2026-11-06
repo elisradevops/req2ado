@@ -448,7 +448,9 @@ def load_xlsx(path: str) -> CanonicalDoc:
                 # work item, silently collapsing an entire workbook into one
                 # item. Same running-offset-per-table convention
                 # pptx_loader.py already uses for the identical reason.
-                source_ref=SourceRef(document_path=path, start_offset=sheet_index, end_offset=sheet_index + 1),
+                source_ref=SourceRef(
+                    document_path=path, start_offset=sheet_index, end_offset=sheet_index + 1
+                ),
             )
         )
 

@@ -8,6 +8,7 @@ file, with the structure taken from the document (`structure_mode="baseline"`):
   * every block, table and figure of the document is a node or folded into one (nothing silently lost);
   * the nodes are exactly the BASELINE nodes of the same file (plus the deterministic grouping nodes), so BASELINE and
     SURVEY agree on what the items are."""
+
 from __future__ import annotations
 
 import random
@@ -71,7 +72,14 @@ class SimulatedGrouper:
     def group_root_topics(self, titles_by_id, user_id=None):
         ids = list(titles_by_id)
         self._random.shuffle(ids)
-        return {"groups": [{"title": f"Group {self._random.random()}", "member_ids": ids[: self._random.randint(2, max(2, len(ids)))]}]}
+        return {
+            "groups": [
+                {
+                    "title": f"Group {self._random.random()}",
+                    "member_ids": ids[: self._random.randint(2, max(2, len(ids)))],
+                }
+            ]
+        }
 
     def assign_leftover_roots(self, leftovers, groups, user_id=None):
         return {"assignments": {}}
@@ -84,7 +92,9 @@ def _load(filename: str):
     path = FIXTURES / filename
     if filename.endswith(".pdf") and "scanned" in filename and not HAS_OCR:
         pytest.skip("OCR tools are not installed")
-    return dispatch_by_extension(filename, str(path), languages="eng+heb" if "hebrew" in filename else "eng")
+    return dispatch_by_extension(
+        filename, str(path), languages="eng+heb" if "hebrew" in filename else "eng"
+    )
 
 
 class TitleHashEmbedder:
@@ -104,16 +114,24 @@ class TitleHashEmbedder:
 
 def _survey(doc, seed: int, mode: str = "baseline"):
     return build_survey_tree(
-        doc, StructureRefusingClient(), grouping_client=SimulatedGrouper(seed), embed_client=TitleHashEmbedder(),
-        structure_mode=mode, root_regroup_mode="deterministic",
+        doc,
+        StructureRefusingClient(),
+        grouping_client=SimulatedGrouper(seed),
+        embed_client=TitleHashEmbedder(),
+        structure_mode=mode,
+        root_regroup_mode="deterministic",
     )
 
 
 @pytest.mark.parametrize("label,filename", REGISTRY, ids=[label for label, _ in REGISTRY])
-def test_the_item_count_is_the_same_for_every_model_and_every_run(label: str, filename: str) -> None:
+def test_the_item_count_is_the_same_for_every_model_and_every_run(
+    label: str, filename: str
+) -> None:
     doc = _load(filename)
     counts = {len(_survey(doc, seed).nodes) for seed in (1, 2, 3, 4)}
-    assert len(counts) == 1, f"{label}: counts differ between simulated models/runs: {sorted(counts)}"
+    assert len(counts) == 1, (
+        f"{label}: counts differ between simulated models/runs: {sorted(counts)}"
+    )
 
 
 @pytest.mark.parametrize("label,filename", REGISTRY, ids=[label for label, _ in REGISTRY])
@@ -122,7 +140,9 @@ def test_the_items_are_the_baseline_items_of_the_same_file(label: str, filename:
     baseline = build_baseline_tree(doc)
     survey = _survey(doc, 1)
     baseline_titles = sorted(n.title for n in baseline.nodes if "synth_" not in n.local_id)
-    survey_titles = sorted(n.title for n in survey.nodes if not ("regroup_" in n.local_id or "synth_" in n.local_id))
+    survey_titles = sorted(
+        n.title for n in survey.nodes if not ("regroup_" in n.local_id or "synth_" in n.local_id)
+    )
     assert survey_titles == baseline_titles, label
     assert not any(w.kind.value == "items_lost" for w in survey.warnings)
 
@@ -131,7 +151,11 @@ def ladder_violations(tree) -> list[str]:
     """Every way a tree can break Epic -> Feature -> Requirement (an Epic may hold Epics, a Feature Features, a
     Requirement Requirements): only Epics are roots, a Feature sits under an Epic or Feature, a Requirement under a
     Feature or Requirement."""
-    allowed = {"Epic": {"Epic"}, "Feature": {"Epic", "Feature"}, "Requirement": {"Feature", "Requirement"}}
+    allowed = {
+        "Epic": {"Epic"},
+        "Feature": {"Epic", "Feature"},
+        "Requirement": {"Feature", "Requirement"},
+    }
     by_id = {n.local_id: n for n in tree.nodes}
     problems = []
     for n in tree.nodes:
@@ -145,7 +169,9 @@ def ladder_violations(tree) -> list[str]:
 
 
 @pytest.mark.parametrize("label,filename", REGISTRY, ids=[label for label, _ in REGISTRY])
-def test_the_tree_is_a_valid_epic_feature_requirement_ladder_in_both_modes(label: str, filename: str) -> None:
+def test_the_tree_is_a_valid_epic_feature_requirement_ladder_in_both_modes(
+    label: str, filename: str
+) -> None:
     doc = _load(filename)
     assert ladder_violations(build_baseline_tree(doc)) == [], label
     assert ladder_violations(_survey(doc, 1)) == [], label
@@ -158,7 +184,11 @@ def test_survey_and_baseline_give_the_same_types_and_parents(label: str, filenam
     def shape(tree):
         by_id = {n.local_id: n for n in tree.nodes}
         return sorted(
-            (n.title, n.type.value, by_id[n.parent_local_id].title if n.parent_local_id in by_id else None)
+            (
+                n.title,
+                n.type.value,
+                by_id[n.parent_local_id].title if n.parent_local_id in by_id else None,
+            )
             for n in tree.nodes
         )
 
@@ -170,7 +200,11 @@ def test_nothing_in_the_document_is_dropped(label: str, filename: str) -> None:
     doc = _load(filename)
     survey = _survey(doc, 1)
     assert survey.nodes, f"{label}: a document with content must produce items"
-    assert not [w for w in survey.warnings if w.kind.value in ("dropped_blocks", "missing_table_group_coverage")]
+    assert not [
+        w
+        for w in survey.warnings
+        if w.kind.value in ("dropped_blocks", "missing_table_group_coverage")
+    ]
     text = " ".join(f"{n.title} {n.description}" for n in survey.nodes)
     import re
 
@@ -178,10 +212,18 @@ def test_nothing_in_the_document_is_dropped(label: str, filename: str) -> None:
         if block.kind.value == "figure":
             continue  # a figure is covered through the figure ids below, its placeholder text is not content
         words = [w for w in re.findall(r"[^\W\d_]{4,}", block.text)][:3]
-        assert all(word in text for word in words), f"{label}: block {block.id} text is not in any item"
-    attached = {fid for n in survey.nodes for fid in [*n.figure_ids, *n.uncaptioned_figure_ids, *n.insignificant_figure_ids]}
+        assert all(word in text for word in words), (
+            f"{label}: block {block.id} text is not in any item"
+        )
+    attached = {
+        fid
+        for n in survey.nodes
+        for fid in [*n.figure_ids, *n.uncaptioned_figure_ids, *n.insignificant_figure_ids]
+    }
     for figure in doc.figures:
-        assert figure.id in attached or figure.id in text, f"{label}: figure {figure.id} is attached to no item"
+        assert figure.id in attached or figure.id in text, (
+            f"{label}: figure {figure.id} is attached to no item"
+        )
 
 
 def test_the_model_mode_is_still_available_as_the_rollback() -> None:
@@ -190,7 +232,9 @@ def test_the_model_mode_is_still_available_as_the_rollback() -> None:
     assert "structure_mode" in llm_leveling.build_survey_tree.__code__.co_varnames
 
 
-def test_a_document_with_an_epic_a_bare_section_and_a_lone_requirement_gets_one_shape_in_both_modes() -> None:
+def test_a_document_with_an_epic_a_bare_section_and_a_lone_requirement_gets_one_shape_in_both_modes() -> (
+    None
+):
     from app.canonical.model import (
         Block,
         BlockKind,
@@ -202,23 +246,40 @@ def test_a_document_with_an_epic_a_bare_section_and_a_lone_requirement_gets_one_
 
     path = "mixed_roots.docx"
     texts = [
-        (2, "Platform"), (3, "Boot"), (4, "Boot time shall be fast"), (4, "Boot logs shall be kept"), (3, "Power"),
-        (4, "Power shall be 5V"), (4, "Power must be stable"), (2, "Misc"), (3, "Fan speed shall be set"),
-        (3, "Fan noise shall be low"), (2, "A lone requirement heading"),
+        (2, "Platform"),
+        (3, "Boot"),
+        (4, "Boot time shall be fast"),
+        (4, "Boot logs shall be kept"),
+        (3, "Power"),
+        (4, "Power shall be 5V"),
+        (4, "Power must be stable"),
+        (2, "Misc"),
+        (3, "Fan speed shall be set"),
+        (3, "Fan noise shall be low"),
+        (2, "A lone requirement heading"),
     ]
     blocks = [
         Block(
-            id=f"b{i}", kind=BlockKind.HEADING, heading_level=level, text=text,
+            id=f"b{i}",
+            kind=BlockKind.HEADING,
+            heading_level=level,
+            text=text,
             source_ref=SourceRef(document_path=path, start_offset=i * 10, end_offset=i * 10 + 9),
         )
         for i, (level, text) in enumerate(texts)
     ]
-    doc = CanonicalDoc(document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"), blocks=blocks)
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"), blocks=blocks
+    )
 
     def shape(tree):
         by_id = {n.local_id: n for n in tree.nodes}
         return sorted(
-            (n.title, n.type.value, by_id[n.parent_local_id].title if n.parent_local_id in by_id else None)
+            (
+                n.title,
+                n.type.value,
+                by_id[n.parent_local_id].title if n.parent_local_id in by_id else None,
+            )
             for n in tree.nodes
         )
 

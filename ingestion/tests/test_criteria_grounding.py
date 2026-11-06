@@ -8,7 +8,9 @@ def _check(criterion: str, *given: str) -> list[str]:
 
 
 def test_a_number_copied_from_the_input_is_grounded() -> None:
-    assert _check("Verify the latency is below 5 ms.", "The system shall respond within 5 ms.") == []
+    assert (
+        _check("Verify the latency is below 5 ms.", "The system shall respond within 5 ms.") == []
+    )
 
 
 def test_an_invented_number_is_reported() -> None:
@@ -62,7 +64,9 @@ def test_a_standard_is_grounded_as_a_whole_token_and_its_digits_are_not_numbers(
     assert _check("Comply with MIL-STD-810G.", "Environmental tests per MIL-STD-810G.") == []
     assert _check("Comply with MIL-STD-810G.", "Environmental tests per MIL STD 810G.") == []
     assert _check("Use RS-422.", "Use RS-232.") != []
-    assert _check("Per ISO 9001.", "Per ISO 9001:2015.") == []  # a year suffix is its own number; the base standard matches
+    assert (
+        _check("Per ISO 9001.", "Per ISO 9001:2015.") == []
+    )  # a year suffix is its own number; the base standard matches
 
 
 def test_a_standard_in_a_criterion_missing_from_the_input_is_reported() -> None:
@@ -88,46 +92,52 @@ def test_text_without_digits_has_nothing_to_ground() -> None:
     assert _check("Verify the display shows an error.", "The display shall show an error.") == []
 
 
-@pytest.mark.parametrize("text", [
-    "The latency shall not exceed 5 ms.",
-    "Supply voltage 28 V.",
-    "Accuracy of 2%.",
-    "Operate at 85 °C.",
-    "The response time shall be at least 3 seconds.",
-    "No more than 10 retries.",
-    "At most 4 channels.",
-    "The value shall be >= 5.",
-    "Mass < 3 kg",
-    "המערכת תגיב תוך 5 שניות.",
-    "לפחות 3 ניסיונות.",
-    "Startup power draw should stay under two watts.",
-    "The unit shall survive a one-meter drop onto a hard surface.",
-    "The unit shall run for one hour.",
-    "The unit shall comply with MIL-STD-810G.",
-    "The unit shall meet RS-422.",
-    "Conforms to IEEE 802.3.",
-    "The function shall be verified by test.",
-    "Compliance is demonstrated by inspection.",
-    "This shall be tested.",
-    "יאומת בבדיקה.",
-    "ייבדק בניתוח.",
-])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The latency shall not exceed 5 ms.",
+        "Supply voltage 28 V.",
+        "Accuracy of 2%.",
+        "Operate at 85 °C.",
+        "The response time shall be at least 3 seconds.",
+        "No more than 10 retries.",
+        "At most 4 channels.",
+        "The value shall be >= 5.",
+        "Mass < 3 kg",
+        "המערכת תגיב תוך 5 שניות.",
+        "לפחות 3 ניסיונות.",
+        "Startup power draw should stay under two watts.",
+        "The unit shall survive a one-meter drop onto a hard surface.",
+        "The unit shall run for one hour.",
+        "The unit shall comply with MIL-STD-810G.",
+        "The unit shall meet RS-422.",
+        "Conforms to IEEE 802.3.",
+        "The function shall be verified by test.",
+        "Compliance is demonstrated by inspection.",
+        "This shall be tested.",
+        "יאומת בבדיקה.",
+        "ייבדק בניתוח.",
+    ],
+)
 def test_text_with_a_checkable_value_or_verification_has_a_quantity(text: str) -> None:
     assert has_quantity(text)
 
 
-@pytest.mark.parametrize("text", [
-    "The system shall support 4 channels.",
-    "The unit shall be described in section 4.2.1.",
-    "See Table 3.",
-    "The system shall be reliable.",
-    "Version 2.0 of the tool shall be used.",
-    "The product shall start quickly.",
-    "No one shall enter the room.",
-    "Step 3-A shall be reviewed later.",
-    "המערכת תהיה אמינה.",
-    "",
-])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The system shall support 4 channels.",
+        "The unit shall be described in section 4.2.1.",
+        "See Table 3.",
+        "The system shall be reliable.",
+        "Version 2.0 of the tool shall be used.",
+        "The product shall start quickly.",
+        "No one shall enter the room.",
+        "Step 3-A shall be reviewed later.",
+        "המערכת תהיה אמינה.",
+        "",
+    ],
+)
 def test_text_without_a_checkable_value_has_no_quantity(text: str) -> None:
     assert not has_quantity(text)
 
@@ -147,10 +157,18 @@ def test_the_digits_of_a_standard_in_a_criterion_are_not_checked_as_numbers() ->
 
 
 def test_one_before_a_unit_and_big_number_words_are_values_in_a_criterion() -> None:
-    assert _check("Verify the unit responds within one second.", "The unit shall respond promptly.") != []
-    assert _check("Verify the unit responds within one second.", "The unit shall respond within 1 s.") == []
+    assert (
+        _check("Verify the unit responds within one second.", "The unit shall respond promptly.")
+        != []
+    )
+    assert (
+        _check("Verify the unit responds within one second.", "The unit shall respond within 1 s.")
+        == []
+    )
     assert _check("Verify a thousand samples.", "The unit shall log samples.") != []
-    assert _check("Verify no one is hurt.", "The unit shall be safe.") == []  # "one" without a unit is a pronoun
+    assert (
+        _check("Verify no one is hurt.", "The unit shall be safe.") == []
+    )  # "one" without a unit is a pronoun
 
 
 def test_a_decimal_at_the_start_of_a_criterion_is_not_a_list_enumerator() -> None:
@@ -159,25 +177,31 @@ def test_a_decimal_at_the_start_of_a_criterion_is_not_a_list_enumerator() -> Non
     assert _check("1. Record the result.", "The unit shall log.") == []
 
 
-@pytest.mark.parametrize("text", [
-    "SRS-045 The system shall log faults.",
-    "REQ-12: Operator shall confirm the action.",
-    "The UART 2 shall carry telemetry.",
-    "The CAN 2.0B bus shall carry telemetry.",
-    "The display shall show the measured temperature.",
-    "The tool shall store analyzed results.",
-    "המערכת תציג ניתוח נתונים.",
-])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "SRS-045 The system shall log faults.",
+        "REQ-12: Operator shall confirm the action.",
+        "The UART 2 shall carry telemetry.",
+        "The CAN 2.0B bus shall carry telemetry.",
+        "The display shall show the measured temperature.",
+        "The tool shall store analyzed results.",
+        "המערכת תציג ניתוח נתונים.",
+    ],
+)
 def test_a_requirement_id_a_port_name_or_a_content_word_is_not_a_checkable_value(text: str) -> None:
     assert not has_quantity(text)
 
 
-@pytest.mark.parametrize("text", [
-    "The temperature shall be measured by an external probe.",
-    "Compliance shall be verified per TP-11.",
-    "Per ARINC 429 the bus shall carry data.",
-    "The unit shall meet IEC 61508.",
-    "הדרישה תיבדק בניתוח.",
-])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The temperature shall be measured by an external probe.",
+        "Compliance shall be verified per TP-11.",
+        "Per ARINC 429 the bus shall carry data.",
+        "The unit shall meet IEC 61508.",
+        "הדרישה תיבדק בניתוח.",
+    ],
+)
 def test_a_verification_phrase_or_a_real_standard_is_still_a_checkable_value(text: str) -> None:
     assert has_quantity(text)

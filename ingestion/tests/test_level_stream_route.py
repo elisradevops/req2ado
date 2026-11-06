@@ -1,4 +1,5 @@
 """POST /level answers as a stream of lines when the caller asks for it (Accept: application/x-ndjson), and exactly as before otherwise."""
+
 import json
 import threading
 
@@ -16,7 +17,14 @@ def doc_json() -> str:
     ref = SourceRef(document_path="x.txt", start_offset=0, end_offset=10)
     doc = CanonicalDoc(
         document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
-        blocks=[Block(id="b0", kind=BlockKind.PARAGRAPH, text="The receiver shall do a thing.", source_ref=ref)],
+        blocks=[
+            Block(
+                id="b0",
+                kind=BlockKind.PARAGRAPH,
+                text="The receiver shall do a thing.",
+                source_ref=ref,
+            )
+        ],
     )
     return doc.model_dump_json()
 
@@ -28,7 +36,10 @@ def patch_run(monkeypatch, build, wait: float = 0.0) -> None:
         return build()
 
     monkeypatch.setattr("app.main._build_survey_tree_with_scoring", fake)
-    monkeypatch.setattr("app.main._resolve_caps", lambda *a, **k: type("Caps", (), {"context_budget_tokens": 8000})())
+    monkeypatch.setattr(
+        "app.main._resolve_caps",
+        lambda *a, **k: type("Caps", (), {"context_budget_tokens": 8000})(),
+    )
 
 
 def post(accept: str | None = None):
@@ -46,7 +57,9 @@ def tree() -> WorkItemTree:
     return WorkItemTree(nodes=[], warnings=[])
 
 
-def test_the_stream_ends_with_one_result_line_holding_the_same_tree_and_rubric_as_the_plain_answer(monkeypatch) -> None:
+def test_the_stream_ends_with_one_result_line_holding_the_same_tree_and_rubric_as_the_plain_answer(
+    monkeypatch,
+) -> None:
     patch_run(monkeypatch, tree)
     plain = post()
     streamed = post(NDJSON)
@@ -54,7 +67,11 @@ def test_the_stream_ends_with_one_result_line_holding_the_same_tree_and_rubric_a
     lines = lines_of(streamed)
     assert [line["type"] for line in lines] == ["result"]
     assert lines[0]["tree"] == plain.json()
-    assert lines[0]["rubric"] == {"version": plain.headers["x-req2ado-rubric-version"], "degraded": False} == {"version": "rubric-7", "degraded": False}
+    assert (
+        lines[0]["rubric"]
+        == {"version": plain.headers["x-req2ado-rubric-version"], "degraded": False}
+        == {"version": "rubric-7", "degraded": False}
+    )
 
 
 def test_a_slow_run_sends_heartbeats_first(monkeypatch) -> None:
@@ -67,7 +84,10 @@ def test_a_slow_run_sends_heartbeats_first(monkeypatch) -> None:
 def test_without_the_header_the_answer_is_the_plain_json_it_always_was(monkeypatch) -> None:
     patch_run(monkeypatch, tree)
     response = post()
-    assert response.headers["content-type"].startswith("application/json") and response.json()["nodes"] == []
+    assert (
+        response.headers["content-type"].startswith("application/json")
+        and response.json()["nodes"] == []
+    )
     assert response.headers["x-req2ado-rubric-version"] == "rubric-7"
 
 

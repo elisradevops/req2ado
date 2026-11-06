@@ -345,6 +345,7 @@ def _truncate_caption(caption: str) -> str:
         return collapsed
     return f"{collapsed[:_CAPTION_PREVIEW_LENGTH]}…"
 
+
 _PHASE_MESSAGES: dict[Phase, str] = {
     "describe_figure": "Describing an embedded figure via the vision model",
     "parse_done": "Finished parsing the document",
@@ -411,7 +412,11 @@ def _format_message(progress: LevelingProgress) -> str:
             base += f" (table {progress.table_index} of {progress.table_count})"
         if progress.table_row_count is not None:
             base += f" -- {progress.table_row_count} row(s)"
-        base += " (qualifies for deterministic hierarchy detection)" if progress.table_qualifies else " (not ID-shaped, will go through LLM analysis)"
+        base += (
+            " (qualifies for deterministic hierarchy detection)"
+            if progress.table_qualifies
+            else " (not ID-shaped, will go through LLM analysis)"
+        )
         return base
     if progress.phase == "preparing_analysis":
         return base
@@ -544,7 +549,8 @@ class NarrationPublisher:
                 "blocksTotal": progress.blocks_total,
                 "kbGrounded": progress.kb_grounded,
                 "kbCitations": [
-                    {"sourceFile": c["source_file"], "similarity": c["similarity"]} for c in progress.kb_citations
+                    {"sourceFile": c["source_file"], "similarity": c["similarity"]}
+                    for c in progress.kb_citations
                 ],
                 "kbFilesAvailable": progress.kb_files_available,
                 "model": progress.model,

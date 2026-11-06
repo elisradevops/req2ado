@@ -53,14 +53,23 @@ class _DownRedis:
 
 
 _EMPTY = {
-    "glossary": [], "placeholder_tokens": [], "verification_statements": [], "standards_cited": [], "table_roles": [],
+    "glossary": [],
+    "placeholder_tokens": [],
+    "verification_statements": [],
+    "standards_cited": [],
+    "table_roles": [],
 }
 
 
 class _Client:
     """Answers each window by its position in the document, so two runs over one document get the same findings; counts calls."""
 
-    def __init__(self, fail_on: int | None = None, error: Exception | None = None, cancel_on: int | None = None) -> None:
+    def __init__(
+        self,
+        fail_on: int | None = None,
+        error: Exception | None = None,
+        cancel_on: int | None = None,
+    ) -> None:
         self.windows: list[str] = []
         self.fail_on, self.error, self.cancel_on = fail_on, error, cancel_on
 
@@ -71,7 +80,12 @@ class _Client:
             raise JobCancelled("gone")
         if n == self.fail_on:
             raise self.error
-        return {**_EMPTY, "placeholder_tokens": ["word"], "standards_cited": ["word word"], "verification_statements": ["word"]}
+        return {
+            **_EMPTY,
+            "placeholder_tokens": ["word"],
+            "standards_cited": ["word word"],
+            "verification_statements": ["word"],
+        }
 
 
 DOC = ("word " * 7000) + "TBD " + ("word " * 7000)
@@ -84,7 +98,11 @@ def _store(redis=None, ttl: int = 60) -> StudyStore:
 
 
 def _findings(token: str) -> WindowFindings:
-    return WindowFindings(placeholder_tokens=(token,), glossary=(("term", "definition"),), table_roles=(("t1", "role"),))
+    return WindowFindings(
+        placeholder_tokens=(token,),
+        glossary=(("term", "definition"),),
+        table_roles=(("t1", "role"),),
+    )
 
 
 def test_second_writer_gets_first_result() -> None:
@@ -122,12 +140,16 @@ def test_resume_skips_stored_windows() -> None:
 def test_cancel_deletes_only_own_keys() -> None:
     redis = _FakeRedis()
     other_run = _store(redis).run(SCOPE, None, DOC)
-    other_run.put(0, _findings("earlier"))  # same user, same document, written by a run that is still alive
+    other_run.put(
+        0, _findings("earlier")
+    )  # same user, same document, written by a run that is still alive
     foreign = _store(redis).run("0123456789abcdef", None, DOC)
     foreign.put(1, _findings("other user"))
     earlier_keys = set(redis.data)
 
-    client = _Client(cancel_on=3)  # window 0 is served from the store, windows 1 and 2 are written, 3 is cancelled
+    client = _Client(
+        cancel_on=3
+    )  # window 0 is served from the store, windows 1 and 2 are written, 3 is cancelled
     with pytest.raises(JobCancelled):
         study_document(DOC, client, store=_store(redis), scope=SCOPE)
 
@@ -215,10 +237,15 @@ def test_stored_value_never_holds_window_text_the_model_did_not_return() -> None
         def study_document_window(self, window_text, user_id=None):
             return {**_EMPTY, "verification_statements": ["TBD"]}
 
-    study_document(f"{sentence}. Latency shall be TBD ms.", _Quoting(), store=_store(redis), scope=SCOPE)
+    study_document(
+        f"{sentence}. Latency shall be TBD ms.", _Quoting(), store=_store(redis), scope=SCOPE
+    )
 
     assert redis.data
-    assert all(sentence.casefold() not in value.decode().casefold() and "Zebra" not in value.decode() for value in redis.data.values())
+    assert all(
+        sentence.casefold() not in value.decode().casefold() and "Zebra" not in value.decode()
+        for value in redis.data.values()
+    )
 
 
 def test_every_key_has_ttl() -> None:
@@ -233,7 +260,7 @@ def test_keys_never_contain_the_raw_user_id() -> None:
     user_id = "Microsoft.Identity;distinctive-user@example.com"
     study_document(DOC, _Client(), user_id=user_id, store=_store(redis), scope=user_scope(user_id))
 
-    pieces = {user_id[i:i + 7] for i in range(len(user_id) - 6)}
+    pieces = {user_id[i : i + 7] for i in range(len(user_id) - 6)}
     for key in redis.data:
         assert user_scope(user_id) in key and not any(piece in key for piece in pieces)
 
@@ -264,7 +291,11 @@ def test_study_version_changes_with_prompt_window_size_or_code_pass(monkeypatch)
     monkeypatch.setattr(study_store_module, "_CODE_PASS_VERSION", "1")
     assert study_version() == base
     real_load_prompt = study_store_module.load_prompt
-    monkeypatch.setattr(study_store_module, "load_prompt", lambda name, *a, **k: real_load_prompt(name, *a, **k) + " changed")
+    monkeypatch.setattr(
+        study_store_module,
+        "load_prompt",
+        lambda name, *a, **k: real_load_prompt(name, *a, **k) + " changed",
+    )
     assert study_version() != base
     monkeypatch.undo()
     monkeypatch.setattr(study_store_module, "document_study_schema", lambda: {"changed": True})
@@ -286,8 +317,13 @@ def test_study_version_changes_when_the_source_of_windows_of_changes(monkeypatch
     base = study_version()
     real_getsource = study_store_module.inspect.getsource
     monkeypatch.setattr(
-        study_store_module.inspect, "getsource",
-        lambda fn: real_getsource(fn) + "# changed" if fn is study_store_module.windows_of else real_getsource(fn),
+        study_store_module.inspect,
+        "getsource",
+        lambda fn: (
+            real_getsource(fn) + "# changed"
+            if fn is study_store_module.windows_of
+            else real_getsource(fn)
+        ),
     )
     assert study_version() != base
     monkeypatch.undo()
@@ -320,12 +356,20 @@ def test_malformed_stored_value_is_a_miss_and_not_deleted() -> None:
     seed.put(0, _findings("A"))
     (key,) = redis.data
     valid = json.loads(redis.data[key])
-    for foreign in (b"not json", b"[1, 2]", b'{"glossary": "x"}', json.dumps({**valid, "placeholder_tokens": [1]}).encode(),
-                    json.dumps({**valid, "glossary": [["only-one"]]}).encode(), json.dumps({"glossary": []}).encode()):
+    for foreign in (
+        b"not json",
+        b"[1, 2]",
+        b'{"glossary": "x"}',
+        json.dumps({**valid, "placeholder_tokens": [1]}).encode(),
+        json.dumps({**valid, "glossary": [["only-one"]]}).encode(),
+        json.dumps({"glossary": []}).encode(),
+    ):
         redis.data[key] = foreign
         run = _store(redis).run(SCOPE, None, DOC)
         assert run.get(0) is None
-        assert run.put(0, _findings("B")) == _findings("B")  # lost the race to a value it cannot read: own findings, nothing stored
+        assert run.put(0, _findings("B")) == _findings(
+            "B"
+        )  # lost the race to a value it cannot read: own findings, nothing stored
         run.cleanup()
         assert redis.data[key] == foreign
 
@@ -377,7 +421,10 @@ def test_degenerate_answers_are_never_stored_but_an_all_empty_answer_is() -> Non
     study = study_document(text, _Toc(), store=_store(redis), scope=SCOPE)
 
     assert study is not None and study.windows_studied == 1
-    assert len(redis.data) == 1 and json.loads(next(iter(redis.data.values())))["placeholder_tokens"] == []
+    assert (
+        len(redis.data) == 1
+        and json.loads(next(iter(redis.data.values())))["placeholder_tokens"] == []
+    )
 
 
 def _store_windows(redis: _FakeRedis, indexes) -> None:
@@ -401,7 +448,9 @@ def test_windows_stored_after_the_breaker_trips_are_still_used(monkeypatch) -> N
 
     study = study_document(DOC, client, store=_store(redis), scope=SCOPE, sleep=slept.append)
 
-    assert len(client.windows) == 2 and slept == []  # two failures open the breaker; windows 2 and 3 cost no model call
+    assert (
+        len(client.windows) == 2 and slept == []
+    )  # two failures open the breaker; windows 2 and 3 cost no model call
     assert study.read_stats.breaker_opened and study.read_stats.windows_cached == 2
     assert study.placeholder_tokens == ["S2", "S3"] and study.windows_studied == 2
 
@@ -420,8 +469,13 @@ def test_an_unstored_window_after_the_breaker_is_skipped_unread(monkeypatch) -> 
 
     study = study_document(DOC, client, store=_store(redis), scope=SCOPE)
 
-    assert len(client.windows) == 1  # window 0 trips the breaker; 1 and 2 are unstored: skipped, not read
-    assert study.placeholder_tokens == ["S3"] and (study.windows_studied, study.windows_total) == (1, WINDOWS)
+    assert (
+        len(client.windows) == 1
+    )  # window 0 trips the breaker; 1 and 2 are unstored: skipped, not read
+    assert study.placeholder_tokens == ["S3"] and (study.windows_studied, study.windows_total) == (
+        1,
+        WINDOWS,
+    )
 
 
 def test_windows_stored_after_the_hard_budget_are_still_used(monkeypatch) -> None:
@@ -447,10 +501,18 @@ def test_windows_stored_after_the_hard_budget_are_still_used(monkeypatch) -> Non
 def test_study_version_changes_with_the_quote_and_token_limits(monkeypatch) -> None:
     base = study_version()
 
-    monkeypatch.setattr(study_store_module, "_MAX_QUOTE_CHARS", study_document_module._MAX_QUOTE_CHARS + 1)
+    monkeypatch.setattr(
+        study_store_module, "_MAX_QUOTE_CHARS", study_document_module._MAX_QUOTE_CHARS + 1
+    )
     assert study_version() != base
-    monkeypatch.setattr(study_store_module, "_MAX_QUOTE_CHARS", study_document_module._MAX_QUOTE_CHARS)
-    monkeypatch.setattr(study_store_module, "_MAX_TOKEN_CHARS", study_document_module._MAX_TOKEN_CHARS + 1)
+    monkeypatch.setattr(
+        study_store_module, "_MAX_QUOTE_CHARS", study_document_module._MAX_QUOTE_CHARS
+    )
+    monkeypatch.setattr(
+        study_store_module, "_MAX_TOKEN_CHARS", study_document_module._MAX_TOKEN_CHARS + 1
+    )
     assert study_version() != base
-    monkeypatch.setattr(study_store_module, "_MAX_TOKEN_CHARS", study_document_module._MAX_TOKEN_CHARS)
+    monkeypatch.setattr(
+        study_store_module, "_MAX_TOKEN_CHARS", study_document_module._MAX_TOKEN_CHARS
+    )
     assert study_version() == base

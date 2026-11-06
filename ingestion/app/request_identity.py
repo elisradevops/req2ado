@@ -5,6 +5,7 @@ the customer's document) as query parameters of `/ingest` and `/level`. The serv
 both ended up in the pod log on every job. They travel in headers only (the query form was removed one release after the
 orchestrator stopped sending it; an orchestrator older than 0.3.12 no longer works). The overview can contain any language,
 so it is base64 of its UTF-8 bytes."""
+
 from __future__ import annotations
 
 import base64
@@ -45,7 +46,6 @@ def decode_primer_header(value: str) -> str | None:
 def resolve_primer_context(header_value: str | None) -> str | None:
     """The document overview, decoded from its header; None when absent or not valid base64 of UTF-8."""
     return decode_primer_header(header_value) if header_value else None
-
 
 
 # A Windows identity (the user ids this deployment stores look like `System.Security.Principal.WindowsIdentity;S-1-5-21-...`)

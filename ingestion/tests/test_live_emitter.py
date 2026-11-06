@@ -75,6 +75,7 @@ def make(**kwargs):  # noqa: ANN003, ANN202
 
 # ---- text clipping --------------------------------------------------------
 
+
 def test_clip_text_collapses_whitespace_and_strips_control_characters() -> None:
     messy = "  The BP\n\tshall \x00provide\x07 power.  "
     assert clip_text(messy, 100) == "The BP shall provide power."
@@ -103,16 +104,26 @@ def test_clip_text_keeps_unicode_intact() -> None:
 
 # ---- frame content ---------------------------------------------------------
 
+
 def test_every_frame_kind_conforms_to_the_live_frame_schema() -> None:
     emitter, redis, clock = make(hz=1000, excerpt_max_chars=240)
     emitter.working_on(
-        ref="s0.1", title="Power", item_type="Epic",
-        excerpt="The BP shall provide power.", cursor=0.4,
+        ref="s0.1",
+        title="Power",
+        item_type="Epic",
+        excerpt="The BP shall provide power.",
+        cursor=0.4,
     )
     emitter.writing(ref="s0.2", title="Limit ripple", item_type="Requirement", partial=True)
     emitter.item(ref="s0.2", title="Limit ripple to 50 mV", item_type="Requirement")
-    emitter.compare(kind="conflict", a_ref="r1", a_text="Ripple is 50 mV.", b_ref="r2",
-                    b_text="Ripple is 30 mV.", similarity=0.93)
+    emitter.compare(
+        kind="conflict",
+        a_ref="r1",
+        a_text="Ripple is 50 mV.",
+        b_ref="r2",
+        b_text="Ripple is 30 mV.",
+        similarity=0.93,
+    )
     emitter.ocr_page(page=3, pages=48, excerpt="Recognised text of page three.")
     emitter.reset(lane=1)
     emitter.flush()
@@ -127,7 +138,12 @@ def test_text_fields_are_capped_before_sending() -> None:
     emitter, redis, _ = make(hz=1000, excerpt_max_chars=50)
     emitter.working_on(title="t" * 500, excerpt="word " * 400, cursor=7)
     emitter.compare(
-        kind="duplicate", a_ref="a", a_text="x" * 900, b_ref="b", b_text="y", similarity=2,
+        kind="duplicate",
+        a_ref="a",
+        a_text="x" * 900,
+        b_ref="b",
+        b_text="y",
+        similarity=2,
     )
     emitter.flush()
     working, compare = frames(redis)
@@ -159,6 +175,7 @@ def test_frames_go_to_the_live_channel_and_the_latest_per_lane_is_kept() -> None
 
 
 # ---- rate limiting and coalescing -----------------------------------------
+
 
 def test_coalesced_frames_are_rate_limited_and_only_the_latest_survives() -> None:
     emitter, redis, clock = make(hz=4)
@@ -231,6 +248,7 @@ def test_reset_discards_an_unsent_frame_for_that_lane_and_announces_itself() -> 
 
 # ---- ordering and concurrency ---------------------------------------------
 
+
 def test_sequence_numbers_increase_across_frames() -> None:
     emitter, redis, _ = make(hz=1000)
     for i in range(5):
@@ -258,6 +276,7 @@ def test_concurrent_lanes_never_share_or_lose_a_sequence_number() -> None:
 
 # ---- failure handling ------------------------------------------------------
 
+
 def test_a_redis_outage_never_raises_and_recovers_afterwards() -> None:
     emitter, redis, _ = make(hz=1000)
     redis.fail = True
@@ -274,7 +293,11 @@ def test_a_redis_outage_never_raises_and_recovers_afterwards() -> None:
 def test_a_malformed_call_never_raises() -> None:
     emitter, redis, _ = make(hz=1000)
     emitter.compare(
-        kind="conflict", a_ref="a", a_text="x", b_ref="b", b_text="y",
+        kind="conflict",
+        a_ref="a",
+        a_text="x",
+        b_ref="b",
+        b_text="y",
         similarity="not a number",  # type: ignore[arg-type]
     )
     emitter.flush()

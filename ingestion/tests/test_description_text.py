@@ -2,18 +2,26 @@
 
 The stored description is rich HTML (the ADO System.Description field, with tables as <table> markup, or pasted from Word/Excel). A model
 graded the markup together with the content, so what it is sent is plain text with every table as CSV: all rows, one line each."""
+
 from app.canonical.model import SourceRef, Table, TableCell
 from app.leveling.description_text import description_for_model
 from app.leveling.tree_builder import _table_to_html
 
 
 def test_text_without_html_is_returned_unchanged() -> None:
-    for text in ("", "The receiver shall lock within 2 s.", "# Title\n\n- one\n- two\n\n**bold** and `code`", "if x <10 and y> 5 then lock"):
+    for text in (
+        "",
+        "The receiver shall lock within 2 s.",
+        "# Title\n\n- one\n- two\n\n**bold** and `code`",
+        "if x <10 and y> 5 then lock",
+    ):
         assert description_for_model(text) == text
 
 
 def test_an_unknown_tag_like_text_is_kept() -> None:
-    assert description_for_model("The <value> shall be reported.") == "The <value> shall be reported."
+    assert (
+        description_for_model("The <value> shall be reported.") == "The <value> shall be reported."
+    )
 
 
 def test_a_table_becomes_csv_with_its_header_and_every_row() -> None:
@@ -22,12 +30,20 @@ def test_a_table_becomes_csv_with_its_header_and_every_row() -> None:
 
 
 def test_a_table_without_a_header_row_gets_no_invented_header() -> None:
-    assert description_for_model("<table><tr><td>VDD</td><td>3.3</td></tr><tr><td>VIO</td><td>1.8</td></tr></table>") == "Table (CSV):\nVDD,3.3\nVIO,1.8"
+    assert (
+        description_for_model(
+            "<table><tr><td>VDD</td><td>3.3</td></tr><tr><td>VIO</td><td>1.8</td></tr></table>"
+        )
+        == "Table (CSV):\nVDD,3.3\nVIO,1.8"
+    )
 
 
 def test_the_caption_is_kept_and_cells_are_quoted_when_needed() -> None:
     html = '<table><caption>Power rails</caption><tr><th>Name</th><th>Note</th></tr><tr><td>VDD, core</td><td>said "ok"<br>twice</td></tr></table>'
-    assert description_for_model(html) == 'Table (CSV): Power rails\nName,Note\n"VDD, core","said ""ok"" twice"'
+    assert (
+        description_for_model(html)
+        == 'Table (CSV): Power rails\nName,Note\n"VDD, core","said ""ok"" twice"'
+    )
 
 
 def test_colspan_and_rowspan_repeat_the_owning_cell_so_every_row_stands_alone() -> None:
@@ -36,7 +52,10 @@ def test_colspan_and_rowspan_repeat_the_owning_cell_so_every_row_stands_alone() 
         '<tr><td rowspan="2">Power</td><td>VDD</td><td>3.3</td></tr><tr><td>VIO</td><td>1.8</td></tr>'
         '<tr><td colspan="2">Total</td><td>5.1</td></tr></table>'
     )
-    assert description_for_model(html) == "Table (CSV):\nGroup,Item,Value\nPower,VDD,3.3\nPower,VIO,1.8\nTotal,Total,5.1"
+    assert (
+        description_for_model(html)
+        == "Table (CSV):\nGroup,Item,Value\nPower,VDD,3.3\nPower,VIO,1.8\nTotal,Total,5.1"
+    )
 
 
 def test_several_header_rows_become_one_label_per_column() -> None:
@@ -44,7 +63,10 @@ def test_several_header_rows_become_one_label_per_column() -> None:
         '<table><thead><tr><th colspan="2">Supply</th><th>Limit</th></tr><tr><th>Name</th><th>Typ</th><th>Max</th></tr></thead>'
         "<tbody><tr><td>VDD</td><td>3.3</td><td>3.6</td></tr></tbody></table>"
     )
-    assert description_for_model(html) == "Table (CSV):\nSupply / Name,Supply / Typ,Limit / Max\nVDD,3.3,3.6"
+    assert (
+        description_for_model(html)
+        == "Table (CSV):\nSupply / Name,Supply / Typ,Limit / Max\nVDD,3.3,3.6"
+    )
 
 
 def test_a_blank_spacer_row_is_dropped_but_a_gap_inside_a_row_is_kept() -> None:
@@ -60,7 +82,12 @@ def test_no_row_is_ever_dropped_for_size() -> None:
 
 def test_the_table_the_pipeline_itself_renders_is_converted() -> None:
     table = Table(
-        id="t0", caption="Rails", cells=[[TableCell(text="Rail", is_header=True), TableCell(text="V", is_header=True)], [TableCell(text="VDD"), TableCell(text="3.3")]],
+        id="t0",
+        caption="Rails",
+        cells=[
+            [TableCell(text="Rail", is_header=True), TableCell(text="V", is_header=True)],
+            [TableCell(text="VDD"), TableCell(text="3.3")],
+        ],
         source_ref=SourceRef(document_path="x.docx", start_offset=0, end_offset=1),
     )
     assert description_for_model(_table_to_html(table)) == "Table (CSV): Rails\nRail,V\nVDD,3.3"
@@ -68,7 +95,10 @@ def test_the_table_the_pipeline_itself_renders_is_converted() -> None:
 
 def test_prose_around_tables_is_kept_and_each_table_is_converted() -> None:
     html = "The rails are:\n\n<table><tr><td>VDD</td><td>3.3</td></tr></table>\n\nand the limits:\n\n<table><tr><td>T</td><td>85</td></tr></table>\n\nEnd."
-    assert description_for_model(html) == "The rails are:\n\nTable (CSV):\nVDD,3.3\n\nand the limits:\n\nTable (CSV):\nT,85\n\nEnd."
+    assert (
+        description_for_model(html)
+        == "The rails are:\n\nTable (CSV):\nVDD,3.3\n\nand the limits:\n\nTable (CSV):\nT,85\n\nEnd."
+    )
 
 
 def test_a_nested_table_is_flattened_into_its_cell() -> None:
@@ -78,7 +108,10 @@ def test_a_nested_table_is_flattened_into_its_cell() -> None:
 
 def test_rich_text_from_ado_becomes_plain_text() -> None:
     html = "<div><p>The <strong>receiver</strong> shall:</p><ul><li>lock &amp; report</li><li>recover</li></ul><p>Done<br>now</p></div><script>x()</script>"
-    assert description_for_model(html) == "The receiver shall:\n\n- lock & report\n- recover\n\nDone\nnow"
+    assert (
+        description_for_model(html)
+        == "The receiver shall:\n\n- lock & report\n- recover\n\nDone\nnow"
+    )
 
 
 def test_word_and_excel_paste_markup_is_dropped() -> None:
@@ -95,20 +128,28 @@ def test_the_result_is_deterministic_and_converting_it_again_changes_nothing() -
     assert description_for_model(html) == once and description_for_model(once) == once
 
 
-TABLE_DESCRIPTION = "Use:\n\n<table><tr><th>Rail</th><th>V</th></tr><tr><td>VDD</td><td>3.3</td></tr></table>"
+TABLE_DESCRIPTION = (
+    "Use:\n\n<table><tr><th>Rail</th><th>V</th></tr><tr><td>VDD</td><td>3.3</td></tr></table>"
+)
 AS_TEXT = "Use:\n\nTable (CSV):\nRail,V\nVDD,3.3"
 
 
 def test_with_the_flag_off_a_description_is_sent_as_it_is(monkeypatch) -> None:
-    monkeypatch.setattr("app.leveling.description_text.settings.description_text_for_model_enabled", False)
+    monkeypatch.setattr(
+        "app.leveling.description_text.settings.description_text_for_model_enabled", False
+    )
     assert description_for_model(TABLE_DESCRIPTION) == TABLE_DESCRIPTION
 
 
 def test_the_chat_table_listing_is_csv_even_with_the_flag_off(monkeypatch) -> None:
     from app.leveling.description_text import table_context
 
-    monkeypatch.setattr("app.leveling.description_text.settings.description_text_for_model_enabled", False)
-    assert "Table (CSV):\nRail,V" in table_context(["<table><tr><th>Rail</th><th>V</th></tr></table>"])
+    monkeypatch.setattr(
+        "app.leveling.description_text.settings.description_text_for_model_enabled", False
+    )
+    assert "Table (CSV):\nRail,V" in table_context(
+        ["<table><tr><th>Rail</th><th>V</th></tr></table>"]
+    )
 
 
 def test_the_cache_scope_changes_when_the_flag_is_off(monkeypatch) -> None:
@@ -122,7 +163,9 @@ def test_the_cache_scope_changes_when_the_flag_is_off(monkeypatch) -> None:
     version = metadata.version("req2ado-ingestion")
     client = TestClient(app)
     assert client.get("/cache-scope").json()["ingestion"] == version
-    monkeypatch.setattr("app.leveling.description_text.settings.description_text_for_model_enabled", False)
+    monkeypatch.setattr(
+        "app.leveling.description_text.settings.description_text_for_model_enabled", False
+    )
     assert client.get("/cache-scope").json()["ingestion"] == f"{version}+html"
 
 
@@ -154,6 +197,10 @@ def test_the_kb_retrieval_of_a_rescore_reads_the_text_form(monkeypatch) -> None:
 
     seen: list[str] = []
     monkeypatch.setattr(main, "_stored_profile_or_none", lambda user_id: None)
-    monkeypatch.setattr(main, "retrieve_context", lambda user_id, text, embed, store: (seen.append(text), ("ctx", []))[1])
+    monkeypatch.setattr(
+        main,
+        "retrieve_context",
+        lambda user_id, text, embed, store: (seen.append(text), ("ctx", []))[1],
+    )
     assert asyncio.run(main._rescoring_kb_context("u1", TABLE_DESCRIPTION)) == "ctx"
     assert seen == [AS_TEXT]

@@ -4,6 +4,7 @@ in a prod run) and those calls starved the next jobs of the same model.
 
 The cancel flag belongs to ONE request (a token in a contextvar), not to a job id: a re-run of the same job id (BullMQ
 reprocessing a stalled job) must not inherit the cancellation of the request that was abandoned."""
+
 import asyncio
 
 import httpx
@@ -63,7 +64,9 @@ class _Request:
 def test_the_watcher_cancels_the_scope_when_the_caller_disconnects() -> None:
     async def scenario() -> bool:
         with job_cancel.cancellation_scope() as token:
-            async with job_cancel.watch_for_disconnect(_Request(disconnect_after=2), token, poll_seconds=0.01):
+            async with job_cancel.watch_for_disconnect(
+                _Request(disconnect_after=2), token, poll_seconds=0.01
+            ):
                 await asyncio.sleep(0.2)
             return token.cancelled
 
@@ -99,14 +102,18 @@ def test_the_level_route_refuses_to_return_the_result_of_a_cancelled_run() -> No
 
     with patch("app.main._build_survey_tree_with_scoring", side_effect=cancelled_while_running):
         response = TestClient(app).post(
-            "/level?mode=survey&job_id=job-route", content=_doc().model_dump_json(),
+            "/level?mode=survey&job_id=job-route",
+            content=_doc().model_dump_json(),
             headers={"Content-Type": "application/json", "X-Req2Ado-User-Id": "u"},
         )
     assert response.status_code == 499
     # and the next run of the same job id is not affected
-    with patch("app.main._build_survey_tree_with_scoring", return_value=WorkItemTree(nodes=[], warnings=[])):
+    with patch(
+        "app.main._build_survey_tree_with_scoring", return_value=WorkItemTree(nodes=[], warnings=[])
+    ):
         again = TestClient(app).post(
-            "/level?mode=survey&job_id=job-route", content=_doc().model_dump_json(),
+            "/level?mode=survey&job_id=job-route",
+            content=_doc().model_dump_json(),
             headers={"Content-Type": "application/json", "X-Req2Ado-User-Id": "u"},
         )
     assert again.status_code == 200
@@ -142,10 +149,13 @@ def test_a_pool_that_submits_in_context_sees_the_token_and_a_plain_submit_does_n
         token.cancel()
         with ThreadPoolExecutor(max_workers=2) as pool:
             assert job_cancel.submit_in_context(pool, probe).result() is True
-            assert pool.submit(probe).result() is False  # the reason every submit site needs the helper
+            assert (
+                pool.submit(probe).result() is False
+            )  # the reason every submit site needs the helper
 
 
 # --- cancelling also stops a call that is already in flight --------------------------------------------------------
+
 
 def test_a_token_runs_its_cancel_callbacks_once_and_an_unregistered_one_never() -> None:
     token = job_cancel.CancelToken()

@@ -23,6 +23,7 @@ This module is the single owner of that contract for the passes migrated to it:
   `KeyedEntries`: a plain dict (so every existing consumer keeps working unchanged) that
   also records what was requested, what is missing and why.
 """
+
 from __future__ import annotations
 
 import logging
@@ -153,7 +154,7 @@ def schema_for(spec: KeyedSpec, mode: KeyedMode) -> dict | None:
 def _array_prefix(spec: KeyedSpec) -> str:
     return (
         f'Return ONLY a JSON object of the form {{"items": [...]}} whose "items" array has exactly one '
-        f'element for EVERY {spec.id_noun} in the input, in the same order; each element is an object with '
+        f"element for EVERY {spec.id_noun} in the input, in the same order; each element is an object with "
         f'"id" (the {spec.id_noun}, copied exactly from the input)'
     )
 
@@ -172,8 +173,10 @@ def describe_output(spec: KeyedSpec, mode: KeyedMode) -> str:
     field list the schema is built from."""
     described = [spec.field_prompts[name] for name in spec.fields]
     fields = (
-        described[0] if len(described) == 1
-        else " and ".join(described) if len(described) == 2
+        described[0]
+        if len(described) == 1
+        else " and ".join(described)
+        if len(described) == 2
         else ", ".join(described[:-1]) + ", and " + described[-1]
     )
     if mode == "array":
@@ -189,16 +192,20 @@ def wrap_scalar_entries(parsed: object, field: str) -> object:
     Anything else (the array format, a wrapper around such a map, garbage) is returned as it came."""
     if not isinstance(parsed, dict) or not parsed:
         return parsed
-    if all(isinstance(value, (str, int, float, bool)) or value is None for value in parsed.values()):
+    if all(
+        isinstance(value, (str, int, float, bool)) or value is None for value in parsed.values()
+    ):
         return {key: {field: value} for key, value in parsed.items()}
     if len(parsed) == 1:
-        (key, inner), = parsed.items()
+        ((key, inner),) = parsed.items()
         if isinstance(inner, dict) and inner and all(isinstance(v, str) for v in inner.values()):
             return {key: wrap_scalar_entries(inner, field)}
     return parsed
 
 
-def normalize_keyed_result(result: object, requested_ids: list[str], fields: Collection[str] | None = None) -> dict:
+def normalize_keyed_result(
+    result: object, requested_ids: list[str], fields: Collection[str] | None = None
+) -> dict:
     """What the model sent back as a plain id -> entry dict, tolerant of the harmless
     deviations seen in practice: the array wire format (`{"items":[{"id":...}]}`, or a
     bare array of the same), the legacy id->entry map, the whole answer wrapped in one
@@ -211,7 +218,11 @@ def normalize_keyed_result(result: object, requested_ids: list[str], fields: Col
     # An entry that carries none of the contract's fields is not an answer: a response cut off by the
     # token limit is repaired by the JSON reader into `{"id": "x"}` for the element it stopped in, which
     # would otherwise count as "returned" and never be asked again.
-    return {key: value for key, value in entries.items() if isinstance(value, dict) and any(f in value for f in fields)}
+    return {
+        key: value
+        for key, value in entries.items()
+        if isinstance(value, dict) and any(f in value for f in fields)
+    }
 
 
 def _normalize_shapes(result: object, requested_ids: list[str]) -> dict:
@@ -223,7 +234,9 @@ def _normalize_shapes(result: object, requested_ids: list[str]) -> dict:
         entries: dict = {}
         for element in elements:
             if isinstance(element, dict) and isinstance(element.get("id"), (str, int)):
-                entries.setdefault(str(element["id"]).strip(), {k: v for k, v in element.items() if k != "id"})
+                entries.setdefault(
+                    str(element["id"]).strip(), {k: v for k, v in element.items() if k != "id"}
+                )
         return entries
 
     if isinstance(result, list):
@@ -257,7 +270,11 @@ def drop_possibly_cut_last_entry(parsed: object) -> object:
     is returned untouched."""
     if isinstance(parsed, dict) and isinstance(parsed.get("items"), list) and parsed["items"]:
         return {**parsed, "items": parsed["items"][:-1]}
-    if isinstance(parsed, dict) and len(parsed) >= 2 and all(isinstance(value, dict) for value in parsed.values()):
+    if (
+        isinstance(parsed, dict)
+        and len(parsed) >= 2
+        and all(isinstance(value, dict) for value in parsed.values())
+    ):
         keys = list(parsed)
         return {key: parsed[key] for key in keys[:-1]}
     return parsed
@@ -286,7 +303,9 @@ def retry_omitted(
     for half in halves:
         calls += 1
         try:
-            half_result = normalize_keyed_result(send({node_id: payload[node_id] for node_id in half}), half, fields)
+            half_result = normalize_keyed_result(
+                send({node_id: payload[node_id] for node_id in half}), half, fields
+            )
         except Exception as exc:  # noqa: BLE001 -- the retry is best-effort; the ids just stay omitted
             logger.warning("%s retry for %d omitted id(s) failed: %s", label, len(half), exc)
             break
@@ -310,7 +329,13 @@ class KeyedEntries(dict):
     mode: KeyedMode
     degraded: bool
 
-    def __init__(self, entries: Mapping, requested: list[str], mode: KeyedMode = "none", degraded: bool = False) -> None:
+    def __init__(
+        self,
+        entries: Mapping,
+        requested: list[str],
+        mode: KeyedMode = "none",
+        degraded: bool = False,
+    ) -> None:
         super().__init__(entries)
         self.mode = mode
         self.degraded = degraded
@@ -361,7 +386,9 @@ def run_keyed(
             logger.warning(
                 "keyed call %s: the array schema returned none of the %d requested ids but the same call "
                 "prompt-only did -- using prompt-only for this pass on model=%s from now on (until restart)",
-                spec.name, len(ids), model,
+                spec.name,
+                len(ids),
+                model,
             )
             mode, degraded, raw, first = "none", True, fallback_raw, fallback
         else:
@@ -370,14 +397,29 @@ def run_keyed(
     merged, retried = (
         (first, 0)
         if fallback_failed or not retry
-        else retry_omitted(first, ids, payload, lambda subset: send(subset, mode), f"{spec.name} keyed call", spec.fields)
+        else retry_omitted(
+            first,
+            ids,
+            payload,
+            lambda subset: send(subset, mode),
+            f"{spec.name} keyed call",
+            spec.fields,
+        )
     )
     extra_calls += retried
-    entries = KeyedEntries({node_id: merged[node_id] for node_id in ids if node_id in merged}, ids, mode, degraded)
+    entries = KeyedEntries(
+        {node_id: merged[node_id] for node_id in ids if node_id in merged}, ids, mode, degraded
+    )
     logger.log(
         logging.INFO if entries.reason is None else logging.WARNING,
         "keyed call %s: mode=%s requested=%d matched=%d attempts=%d reason=%s%s",
-        spec.name, mode, len(ids), len(entries), 1 + extra_calls, entries.reason, " degraded=true" if degraded else "",
+        spec.name,
+        mode,
+        len(ids),
+        len(entries),
+        1 + extra_calls,
+        entries.reason,
+        " degraded=true" if degraded else "",
     )
     if entries.reason == "no_matching_keys":
         # Ids only, never content, and each cut short: a model that answers in prose can put
@@ -385,6 +427,10 @@ def run_keyed(
         sample = [str(key)[:40] for key in list(raw)[:3]] if isinstance(raw, dict) else []
         logger.warning(
             "keyed call %s: none of the %d requested ids came back (type=%s, top-level keys=%d, first keys=%s)",
-            spec.name, len(ids), type(raw).__name__, len(raw) if isinstance(raw, dict) else 0, sample,
+            spec.name,
+            len(ids),
+            type(raw).__name__,
+            len(raw) if isinstance(raw, dict) else 0,
+            sample,
         )
     return entries

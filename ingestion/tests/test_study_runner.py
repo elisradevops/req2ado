@@ -26,7 +26,11 @@ USER = "user-raw-id"
 WAIT = 10.0
 
 _EMPTY = {
-    "glossary": [], "placeholder_tokens": [], "verification_statements": [], "standards_cited": [], "table_roles": [],
+    "glossary": [],
+    "placeholder_tokens": [],
+    "verification_statements": [],
+    "standards_cited": [],
+    "table_roles": [],
 }
 
 
@@ -41,7 +45,9 @@ def _index_of(text: str) -> int:
 
 def _http_error(status: int) -> httpx.HTTPStatusError:
     request = httpx.Request("POST", "http://study.invalid/")
-    return httpx.HTTPStatusError(str(status), request=request, response=httpx.Response(status, request=request))
+    return httpx.HTTPStatusError(
+        str(status), request=request, response=httpx.Response(status, request=request)
+    )
 
 
 class _Clock:
@@ -195,16 +201,33 @@ class _Limiter:
         if self.on_acquire is not None:
             self.on_acquire()
         if none:
-            threading.Event().wait(0.001)  # a real limiter blocks for its max wait; yield instead of spinning
+            threading.Event().wait(
+                0.001
+            )  # a real limiter blocks for its max wait; yield instead of spinning
             return None
         return _Lease(self)
 
 
 def _handle(text: str, client, **over) -> StudyHandle:
     params = dict(
-        render_text=lambda: text, client=client, user_id=USER, scope=SCOPE, model=MODEL, store=None, limiter=None, concurrency=4,
-        lookahead=8, deadline_seconds=1000.0, soft_budget_seconds=500.0, breaker_failures=5, max_windows=300, lease_max_wait_seconds=30.0,
-        sleep=lambda seconds: None, rng=random.Random(0), clock=_Clock(), poll_seconds=0.01,
+        render_text=lambda: text,
+        client=client,
+        user_id=USER,
+        scope=SCOPE,
+        model=MODEL,
+        store=None,
+        limiter=None,
+        concurrency=4,
+        lookahead=8,
+        deadline_seconds=1000.0,
+        soft_budget_seconds=500.0,
+        breaker_failures=5,
+        max_windows=300,
+        lease_max_wait_seconds=30.0,
+        sleep=lambda seconds: None,
+        rng=random.Random(0),
+        clock=_Clock(),
+        poll_seconds=0.01,
     )
     params.update(over)
     return StudyHandle(**params)
@@ -223,13 +246,17 @@ def _wait(event: threading.Event) -> None:
 
 
 def _sequential(text: str, stub: _Stub, **kwargs):
-    return study_document(text, stub, USER, sleep=lambda seconds: None, rng=random.Random(0), **kwargs)
+    return study_document(
+        text, stub, USER, sleep=lambda seconds: None, rng=random.Random(0), **kwargs
+    )
 
 
 @pytest.fixture(autouse=True)
 def _no_study_thread_survives():
     yield
-    leaked = [t for t in threading.enumerate() if t.name.startswith(("study-coordinator", "study-worker"))]
+    leaked = [
+        t for t in threading.enumerate() if t.name.startswith(("study-coordinator", "study-worker"))
+    ]
     for thread in leaked:
         thread.join(5)
     assert not [t for t in leaked if t.is_alive()], "a study thread outlived its test"
@@ -254,7 +281,12 @@ def test_result_is_independent_of_completion_order() -> None:
     try:
         for i in range(4):
             _wait(stub.started[i])
-        for i in (3, 2, 1, 0):  # finish in reverse; the next one is released only after this one has returned
+        for i in (
+            3,
+            2,
+            1,
+            0,
+        ):  # finish in reverse; the next one is released only after this one has returned
             stub.gates[i].set()
             _wait(stub.finished[i])
         outcome = handle.result(timeout=WAIT)
@@ -273,7 +305,9 @@ def test_never_more_than_n_windows_in_flight() -> None:
         for i in range(3):
             _wait(stub.started[i])
         clock.cycles(20)  # the coordinator has looked again many times, every gate still closed
-        assert [e.is_set() for e in stub.started] == [True] * 3 + [False] * 5  # a fourth window never starts while three are in flight
+        assert [e.is_set() for e in stub.started] == [True] * 3 + [
+            False
+        ] * 5  # a fourth window never starts while three are in flight
         stub.open_all()
         outcome = handle.result(timeout=WAIT)
     finally:
@@ -291,7 +325,9 @@ def test_lookahead_caps_submitted_windows() -> None:
     try:
         _wait(stub.started[1])
         clock.cycles(20)
-        assert not stub.started[2].is_set()  # window 0 is unconsumed and window 1 is done: two submitted, the cap
+        assert not stub.started[
+            2
+        ].is_set()  # window 0 is unconsumed and window 1 is done: two submitted, the cap
         stub.gates[0].set()
         outcome = handle.result(timeout=WAIT)
     finally:
@@ -389,7 +425,9 @@ def test_a_window_that_finished_is_consumed_even_when_the_deadline_has_passed(mo
 
     monkeypatch.setattr(study_runner_module, "submit_in_context", submit)
     stub = _Stub(2, hold={0})
-    handle = _handle(_doc(2), stub, concurrency=1, clock=_PastDeadlineOnceDone(), deadline_seconds=100.0)
+    handle = _handle(
+        _doc(2), stub, concurrency=1, clock=_PastDeadlineOnceDone(), deadline_seconds=100.0
+    )
     handle.start()
     try:
         outcome = handle.result(timeout=WAIT)
@@ -397,7 +435,9 @@ def test_a_window_that_finished_is_consumed_even_when_the_deadline_has_passed(mo
         stub.open_all()
         handle.close()
     assert outcome.stopped_by == "deadline"
-    assert outcome.study is not None and outcome.study.windows_studied == 1  # finished work is not thrown away
+    assert (
+        outcome.study is not None and outcome.study.windows_studied == 1
+    )  # finished work is not thrown away
 
 
 def test_store_hits_skip_the_model_and_the_workers() -> None:
@@ -411,7 +451,10 @@ def test_store_hits_skip_the_model_and_the_workers() -> None:
     assert stub.calls == []
     assert outcome.study.read_stats.windows_cached == 4
     assert outcome.study.windows_studied == 4
-    assert outcome.study.glossary == first.study.glossary and outcome.study.standards_cited == first.study.standards_cited
+    assert (
+        outcome.study.glossary == first.study.glossary
+        and outcome.study.standards_cited == first.study.standards_cited
+    )
 
     del redis.data[_own_keys(redis, text)[2]]
     stub = _Stub(4)
@@ -462,7 +505,10 @@ def test_render_runs_in_the_study_thread() -> None:
 def test_parent_cancel_stops_dispatch_and_cleans_up_own_keys_only() -> None:
     text = _doc(6)
     redis = _Redis()
-    other_doc, other_user = _store(redis).run(SCOPE, MODEL, "another document"), _store(redis).run(OTHER_SCOPE, MODEL, text)
+    other_doc, other_user = (
+        _store(redis).run(SCOPE, MODEL, "another document"),
+        _store(redis).run(OTHER_SCOPE, MODEL, text),
+    )
     other_doc.put(0, WindowFindings())
     other_user.put(0, WindowFindings())
     foreign = set(redis.data)
@@ -496,7 +542,9 @@ def test_child_token_inherits_parent_cancel_and_never_cancels_the_parent() -> No
         handle.start()
         try:
             _wait(stub.started[1])
-            handle.stop(keep_results=True)  # the study's own stop cancels its child, never the job's token
+            handle.stop(
+                keep_results=True
+            )  # the study's own stop cancels its child, never the job's token
             handle.result(timeout=WAIT)
             stub.gates[1].set()
             _wait(stub.finished[1])
@@ -523,7 +571,11 @@ def test_stop_keep_results_keeps_keys_and_returns_a_partial_outcome() -> None:
         stub.open_all()
         handle.close()
     assert outcome.stopped_by == "stopped"
-    assert outcome.study is not None and outcome.study.windows_studied == 1 and outcome.study.windows_total == 4
+    assert (
+        outcome.study is not None
+        and outcome.study.windows_studied == 1
+        and outcome.study.windows_total == 4
+    )
     assert any("1 of 4" in warning for warning in outcome.warnings)
     assert len(_own_keys(redis, text)) == 1
 
@@ -610,7 +662,9 @@ def test_unexpected_exception_in_a_worker_is_a_failed_window(caplog) -> None:
     def broken_sleep(seconds: float) -> None:
         raise RuntimeError("sleep exploded")
 
-    stub = _Stub(3, once_429={1})  # the 429 back-off sleep raises something the read does not expect
+    stub = _Stub(
+        3, once_429={1}
+    )  # the 429 back-off sleep raises something the read does not expect
     outcome = _run(_handle(_doc(3), stub, sleep=broken_sleep))
     assert outcome.study.read_stats.windows_failed == 1
     assert outcome.study.windows_studied == 2
@@ -636,7 +690,9 @@ def test_deadline_returns_a_partial_outcome_with_a_warning() -> None:
     redis = _Redis()
     text = _doc(4)
     stub = _Stub(4, hold={1, 2, 3})
-    handle = _handle(text, stub, store=_store(redis), concurrency=2, clock=clock, deadline_seconds=100.0)
+    handle = _handle(
+        text, stub, store=_store(redis), concurrency=2, clock=clock, deadline_seconds=100.0
+    )
     handle.start()
     try:
         _wait(redis.stored)
@@ -667,7 +723,9 @@ def test_soft_budget_logs_one_warning_and_carries_on() -> None:
     flag = _Flag()
     runner_logger.addHandler(flag)
     stub = _Stub(3, hold={1})
-    handle = _handle(_doc(3), stub, clock=clock, soft_budget_seconds=50.0, deadline_seconds=1000.0, concurrency=2)
+    handle = _handle(
+        _doc(3), stub, clock=clock, soft_budget_seconds=50.0, deadline_seconds=1000.0, concurrency=2
+    )
     handle.start()
     try:
         _wait(stub.started[1])
@@ -698,7 +756,9 @@ def test_result_timeout_returns_the_partial_outcome() -> None:
         handle.close()
     assert outcome.stopped_by == "stopped"
     assert outcome.study.windows_studied == 1
-    assert len(_own_keys(redis, text)) == 1  # a timed-out result is "not needed any more": it keeps the cache, even through close()
+    assert (
+        len(_own_keys(redis, text)) == 1
+    )  # a timed-out result is "not needed any more": it keeps the cache, even through close()
 
 
 def test_result_timeout_gives_up_waiting_for_a_stuck_coordinator(monkeypatch) -> None:
@@ -760,7 +820,10 @@ def test_lease_wait_is_not_a_failure_and_does_not_trip_the_breaker() -> None:
     outcome = _run(_handle(_doc(3), stub, limiter=limiter, breaker_failures=1, concurrency=1))
     assert outcome.stopped_by == "completed"
     assert outcome.study.windows_studied == 3
-    assert outcome.study.read_stats.windows_failed == 0 and outcome.study.read_stats.breaker_opened is False
+    assert (
+        outcome.study.read_stats.windows_failed == 0
+        and outcome.study.read_stats.breaker_opened is False
+    )
     assert len(limiter.acquires) == 7 + len(stub.calls)
 
 
@@ -772,8 +835,12 @@ def test_lease_wait_past_the_deadline_raises_and_holds_nothing() -> None:
     with pytest.raises(StudyDeadlineExceeded):
         client.study_document_window("S000 text", USER)
     assert client.deadline_exceeded is True and inner.calls == [] and limiter.held == 0
-    with pytest.raises(StudyDeadlineExceeded):  # also with no limiter at all: no attempt starts after the deadline
-        LeasedStudyClient(inner, None, MODEL, SCOPE, clock, 100.0, 30.0).study_document_window("S000 text", USER)
+    with pytest.raises(
+        StudyDeadlineExceeded
+    ):  # also with no limiter at all: no attempt starts after the deadline
+        LeasedStudyClient(inner, None, MODEL, SCOPE, clock, 100.0, 30.0).study_document_window(
+            "S000 text", USER
+        )
 
 
 def test_lease_wait_honours_cancellation() -> None:
@@ -789,7 +856,9 @@ def test_lease_wait_honours_cancellation() -> None:
 def test_a_study_blocked_on_leases_stops_at_the_deadline() -> None:
     clock = _Clock()
     limiter = _Limiter(always_none=True)
-    handle = _handle(_doc(3), _Stub(3), limiter=limiter, clock=clock, deadline_seconds=100.0, breaker_failures=1)
+    handle = _handle(
+        _doc(3), _Stub(3), limiter=limiter, clock=clock, deadline_seconds=100.0, breaker_failures=1
+    )
     handle.start()
     try:
         _wait(limiter.tried)
@@ -840,15 +909,30 @@ def test_429_pressure_reduces_workers_to_a_floor_of_one() -> None:
 
 def _status_504() -> httpx.HTTPStatusError:
     request = httpx.Request("POST", "http://upstream.invalid/chat")
-    return httpx.HTTPStatusError("504", request=request, response=httpx.Response(504, request=request))
+    return httpx.HTTPStatusError(
+        "504", request=request, response=httpx.Response(504, request=request)
+    )
 
 
 def test_a_504_or_timeout_lowers_the_workers_like_a_429_and_the_window_is_unread() -> None:
     handle = _handle(_doc(6), _Stub(6, fail={0: _status_504()}), concurrency=4)
     outcome = _run(handle)
     assert handle.current_workers == 3
-    assert outcome.study.read_stats.windows_failed == 1 and outcome.study.read_stats.windows_split == 0
-    handle = _handle(_doc(6), _Stub(6, fail={0: httpx.ReadTimeout("slow"), 1: httpx.ReadTimeout("slow"), 2: httpx.ReadTimeout("slow")}), concurrency=3)
+    assert (
+        outcome.study.read_stats.windows_failed == 1 and outcome.study.read_stats.windows_split == 0
+    )
+    handle = _handle(
+        _doc(6),
+        _Stub(
+            6,
+            fail={
+                0: httpx.ReadTimeout("slow"),
+                1: httpx.ReadTimeout("slow"),
+                2: httpx.ReadTimeout("slow"),
+            },
+        ),
+        concurrency=3,
+    )
     _run(handle)
     assert handle.current_workers == 1
 
@@ -871,14 +955,22 @@ def test_a_429_resets_the_clean_streak_and_still_lowers_the_workers() -> None:
     assert _final_workers(9, {0, 6}) == 2
     # a 429 at the very window that would have been the 8th clean one: lowered again, not raised
     assert _final_workers(9, {0, 8}) == 2
-    assert _final_workers(18, {0, 6}) == 3  # 11 clean windows after the second 429: one recovery step (2 -> 3)
+    assert (
+        _final_workers(18, {0, 6}) == 3
+    )  # 11 clean windows after the second 429: one recovery step (2 -> 3)
 
 
 def test_recovery_steps_up_one_at_a_time_and_never_exceeds_the_configured_concurrency() -> None:
-    assert _final_workers(19, {0, 1, 2}) == 3  # 1 after three 429s, then 16 clean windows: two steps
-    assert _final_workers(30, {0}) == 4  # 3, raised to 4, then more clean windows: never above the configured 4
+    assert (
+        _final_workers(19, {0, 1, 2}) == 3
+    )  # 1 after three 429s, then 16 clean windows: two steps
+    assert (
+        _final_workers(30, {0}) == 4
+    )  # 3, raised to 4, then more clean windows: never above the configured 4
     assert _final_workers(30, set(), concurrency=3) == 3
-    assert _final_workers(12, {0, 1, 2, 3, 4}, concurrency=3) == 1  # five 429s, then only six clean windows: no recovery
+    assert (
+        _final_workers(12, {0, 1, 2, 3, 4}, concurrency=3) == 1
+    )  # five 429s, then only six clean windows: no recovery
 
 
 def test_cached_windows_do_not_count_towards_the_recovery_streak() -> None:
@@ -889,13 +981,17 @@ def test_cached_windows_do_not_count_towards_the_recovery_streak() -> None:
         run.put(index, WindowFindings(standards_cited=(f"S{index:03d}",)))
     handle = _handle(text, _Stub(10, once_429={0}), store=_store(redis), concurrency=4)
     _run(handle)
-    assert handle.current_workers == 3  # 4 cached + 5 read windows would have made 9 if the cached ones counted
+    assert (
+        handle.current_workers == 3
+    )  # 4 cached + 5 read windows would have made 9 if the cached ones counted
 
 
 def test_the_recovered_workers_are_in_the_statistics(caplog) -> None:
     caplog.set_level(logging.INFO)
     _run(_handle(_doc(9), _Stub(9, once_429={0}), concurrency=4))
-    assert _stats_lines(caplog) == [_stats(reason="completed", total=9, studied=9, retried=1, workers=4)]
+    assert _stats_lines(caplog) == [
+        _stats(reason="completed", total=9, studied=9, retried=1, workers=4)
+    ]
 
 
 def test_no_study_thread_survives_close() -> None:
@@ -959,15 +1055,36 @@ def test_a_handle_starts_once_and_result_needs_a_start() -> None:
 def test_from_settings_fills_the_budgets_from_settings(monkeypatch) -> None:
     settings = study_runner_module.settings
     for name, value in dict(
-        survey_study_concurrency=3, survey_study_lookahead=5, survey_study_max_windows=7, survey_study_breaker_failures=2,
-        survey_study_soft_budget_seconds=11, survey_study_hard_budget_seconds=22, survey_study_lease_max_wait_seconds=33,
+        survey_study_concurrency=3,
+        survey_study_lookahead=5,
+        survey_study_max_windows=7,
+        survey_study_breaker_failures=2,
+        survey_study_soft_budget_seconds=11,
+        survey_study_hard_budget_seconds=22,
+        survey_study_lease_max_wait_seconds=33,
     ).items():
         monkeypatch.setattr(settings, name, value)
     handle = StudyHandle.from_settings(
-        render_text=lambda: _doc(1), client=_Stub(1), user_id=USER, scope=SCOPE, model=MODEL, store=None, limiter=None, poll_seconds=0.01,
+        render_text=lambda: _doc(1),
+        client=_Stub(1),
+        user_id=USER,
+        scope=SCOPE,
+        model=MODEL,
+        store=None,
+        limiter=None,
+        poll_seconds=0.01,
     )
-    assert (handle._concurrency, handle._lookahead, handle._max_windows, handle._breaker_failures) == (3, 5, 7, 2)
-    assert (handle._soft_budget_seconds, handle._deadline_seconds, handle._lease_max_wait_seconds) == (11, 22, 33)
+    assert (
+        handle._concurrency,
+        handle._lookahead,
+        handle._max_windows,
+        handle._breaker_failures,
+    ) == (3, 5, 7, 2)
+    assert (
+        handle._soft_budget_seconds,
+        handle._deadline_seconds,
+        handle._lease_max_wait_seconds,
+    ) == (11, 22, 33)
     assert _run(handle).study.windows_studied == 1
 
 
@@ -978,17 +1095,38 @@ def test_settings_defaults() -> None:
 
     s = Settings()
     assert (s.survey_study_concurrency, s.survey_study_lookahead) == (4, 8)
-    for bad in ({"survey_study_concurrency": 0}, {"survey_study_concurrency": 9}, {"survey_study_lookahead": 0}):
+    for bad in (
+        {"survey_study_concurrency": 0},
+        {"survey_study_concurrency": 9},
+        {"survey_study_lookahead": 0},
+    ):
         with pytest.raises(ValidationError):
             Settings(**bad)
     assert study_runner_module.__doc__
 
 
 def _stats_lines(caplog) -> list[str]:
-    return [r.getMessage() for r in caplog.records if r.getMessage().startswith("Document study finished:")]
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.getMessage().startswith("Document study finished:")
+    ]
 
 
-def _stats(*, reason, total=0, studied=0, cached=0, retried=0, split=0, failed=0, breaker=False, budget=False, seconds=0.0, workers=4) -> str:
+def _stats(
+    *,
+    reason,
+    total=0,
+    studied=0,
+    cached=0,
+    retried=0,
+    split=0,
+    failed=0,
+    breaker=False,
+    budget=False,
+    seconds=0.0,
+    workers=4,
+) -> str:
     return (
         f"Document study finished: stopped_by={reason} windows_total={total} studied={studied} cached={cached} retried={retried} split={split} "
         f"failed={failed} breaker_opened={breaker} budget_stopped={budget} seconds={seconds:.1f} workers_final={workers}"
@@ -1005,7 +1143,9 @@ def test_a_completed_run_logs_its_statistics_once(caplog) -> None:
 def test_a_retried_window_and_the_lowered_workers_are_in_the_statistics(caplog) -> None:
     caplog.set_level(logging.INFO)
     _run(_handle(_doc(6), _Stub(6, once_429={0}), concurrency=4))
-    assert _stats_lines(caplog) == [_stats(reason="completed", total=6, studied=6, retried=1, workers=3)]
+    assert _stats_lines(caplog) == [
+        _stats(reason="completed", total=6, studied=6, retried=1, workers=3)
+    ]
 
 
 def test_a_breaker_stop_logs_its_statistics(caplog) -> None:
@@ -1014,10 +1154,18 @@ def test_a_breaker_stop_logs_its_statistics(caplog) -> None:
     outcome = _run(_handle(_doc(8), stub, concurrency=1, breaker_failures=2))
     stats = outcome.study.read_stats
     assert outcome.stopped_by == "breaker"
-    assert _stats_lines(caplog) == [_stats(
-        reason="breaker", total=8, studied=outcome.study.windows_studied, retried=stats.windows_retried, split=stats.windows_split,
-        failed=stats.windows_failed, breaker=True, workers=1,
-    )]
+    assert _stats_lines(caplog) == [
+        _stats(
+            reason="breaker",
+            total=8,
+            studied=outcome.study.windows_studied,
+            retried=stats.windows_retried,
+            split=stats.windows_split,
+            failed=stats.windows_failed,
+            breaker=True,
+            workers=1,
+        )
+    ]
     assert stats.windows_failed == 2 and outcome.study.windows_studied == 2
 
 
@@ -1026,7 +1174,9 @@ def test_a_deadline_stop_logs_its_statistics_and_the_engines_own_clock(caplog) -
     clock = _Clock()
     redis = _Redis()
     stub = _Stub(4, hold={1, 2, 3})
-    handle = _handle(_doc(4), stub, store=_store(redis), concurrency=2, clock=clock, deadline_seconds=100.0)
+    handle = _handle(
+        _doc(4), stub, store=_store(redis), concurrency=2, clock=clock, deadline_seconds=100.0
+    )
     handle.start()
     try:
         _wait(redis.stored)
@@ -1037,7 +1187,9 @@ def test_a_deadline_stop_logs_its_statistics_and_the_engines_own_clock(caplog) -
         stub.open_all()
         handle.close()
     assert outcome.stopped_by == "deadline"
-    assert _stats_lines(caplog) == [_stats(reason="deadline", total=4, studied=1, budget=True, seconds=101.0, workers=2)]
+    assert _stats_lines(caplog) == [
+        _stats(reason="deadline", total=4, studied=1, budget=True, seconds=101.0, workers=2)
+    ]
 
 
 def test_a_cached_resume_logs_its_cached_windows(caplog) -> None:
@@ -1078,12 +1230,29 @@ def test_no_log_record_of_a_run_carries_the_user_the_scope_or_any_text(caplog) -
     secret_user = "Microsoft.Identity;secret-person-77@example.com"
     secret_scope = user_scope(secret_user)
     text = _doc(6).replace("word", "zqxsecretwindowtext", 3)
-    stub = _Stub(6, fail={2: RuntimeError("model down"), 3: RuntimeError("model down")}, once_429={0})
-    _run(_handle(text, stub, user_id=secret_user, scope=secret_scope, store=_store(_Redis()), breaker_failures=2))
+    stub = _Stub(
+        6, fail={2: RuntimeError("model down"), 3: RuntimeError("model down")}, once_429={0}
+    )
+    _run(
+        _handle(
+            text,
+            stub,
+            user_id=secret_user,
+            scope=secret_scope,
+            store=_store(_Redis()),
+            breaker_failures=2,
+        )
+    )
     assert _stats_lines(caplog)
     for record in caplog.records:
         shown = f"{record.getMessage()} {record.args} {record.exc_text}"
-        for private in (secret_user, secret_scope, "secret-person-77", "zqxsecretwindowtext", MODEL):
+        for private in (
+            secret_user,
+            secret_scope,
+            "secret-person-77",
+            "zqxsecretwindowtext",
+            MODEL,
+        ):
             assert private not in shown
 
 
@@ -1111,7 +1280,9 @@ def _finished_study(text: str, redis, n: int, **over) -> StudyHandle:
 def test_discard_deletes_only_this_runs_keys() -> None:
     text = _doc(3)
     redis = _Redis()
-    _store(redis).run(SCOPE, MODEL, text).put(0, WindowFindings())  # an earlier run of the same user and document
+    _store(redis).run(SCOPE, MODEL, text).put(
+        0, WindowFindings()
+    )  # an earlier run of the same user and document
     _store(redis).run(OTHER_SCOPE, MODEL, text).put(1, WindowFindings())  # another user's
     earlier = set(redis.data)
     handle = _finished_study(text, redis, 3)
@@ -1134,7 +1305,9 @@ def test_discard_after_completion_cleans_up_in_the_calling_thread() -> None:
     handle = _finished_study(text, redis, 2)
     handle.close(discard=True)
     assert _own_keys(redis, text) == []
-    assert redis.delete_threads == {threading.get_ident()}  # the coordinator had finished: no put can be in flight
+    assert redis.delete_threads == {
+        threading.get_ident()
+    }  # the coordinator had finished: no put can be in flight
 
 
 def test_discard_overrides_an_earlier_keep_results_stop() -> None:
@@ -1189,13 +1362,17 @@ def test_discard_with_a_coordinator_that_outlives_the_join_leaves_the_cleanup_to
     redis = _DeleteRedis()
     gate = threading.Event()
     handle = _handle(text, _Stub(2), store=_store(redis), sleep=lambda seconds: gate.wait(WAIT))
-    handle._thread = threading.Thread(target=gate.wait, args=(WAIT,), name="study-coordinator", daemon=True)
+    handle._thread = threading.Thread(
+        target=gate.wait, args=(WAIT,), name="study-coordinator", daemon=True
+    )
     handle._thread.start()  # a coordinator that does not end within the join
     try:
         with caplog.at_level("WARNING"):
             handle.close(join_timeout=0.01, discard=True)
         assert [r for r in caplog.records if "did not stop" in r.getMessage()]
-        assert handle._discard is True and redis.threads == set()  # the calling thread did not touch the run
+        assert (
+            handle._discard is True and redis.threads == set()
+        )  # the calling thread did not touch the run
     finally:
         gate.set()
         handle._thread.join(WAIT)
@@ -1210,7 +1387,9 @@ class _Notices:
     def __init__(self) -> None:
         self.calls: list[tuple[int, str, str, str | None, dict]] = []
 
-    def __call__(self, kind, severity="info", *, once_key=None, with_last_item=False, **facts) -> None:
+    def __call__(
+        self, kind, severity="info", *, once_key=None, with_last_item=False, **facts
+    ) -> None:
         self.calls.append((threading.get_ident(), kind, severity, once_key, facts))
 
     def keys(self) -> list[str | None]:
@@ -1230,16 +1409,26 @@ def notices(monkeypatch) -> _Notices:
 def test_a_small_completed_run_says_it_started_and_that_it_is_done(notices) -> None:
     _run(_handle(_doc(4), _Stub(4)))
     assert notices.keys() == ["start", "end"]
-    assert {call[1] for call in notices.calls} == {"document_study"} and {call[2] for call in notices.calls} == {"info"}
+    assert {call[1] for call in notices.calls} == {"document_study"} and {
+        call[2] for call in notices.calls
+    } == {"info"}
     assert notices.facts("start") == {"state": "reading", "windows": 4, "cached": 0}
-    assert notices.facts("end") == {"state": "done", "studied": 4, "windows": 4, "cached": 0, "split": 0, "failed": 0}
+    assert notices.facts("end") == {
+        "state": "done",
+        "studied": 4,
+        "windows": 4,
+        "cached": 0,
+        "split": 0,
+        "failed": 0,
+    }
 
 
 def test_a_long_document_reports_each_quarter_once_in_order(notices) -> None:
     _run(_handle(_doc(8), _Stub(8), concurrency=2))
     assert notices.keys() == ["start", "p25", "p50", "p75", "end"]
     assert [notices.facts(key) for key in ("p25", "p50", "p75")] == [
-        {"state": "reading", "done": 2, "windows": 8}, {"state": "reading", "done": 4, "windows": 8},
+        {"state": "reading", "done": 2, "windows": 8},
+        {"state": "reading", "done": 4, "windows": 8},
         {"state": "reading", "done": 6, "windows": 8},
     ]
 
@@ -1248,7 +1437,14 @@ def test_a_long_document_reports_each_quarter_once_in_order(notices) -> None:
 # in window order, whichever order the model calls finish in. Cached windows count too: they are accounted for without a call.
 def test_progress_is_reported_from_zero_to_every_window_in_order() -> None:
     calls: list[tuple[int, int]] = []
-    _run(_handle(_doc(3), _Stub(3), concurrency=3, on_progress=lambda done, total: calls.append((done, total))))
+    _run(
+        _handle(
+            _doc(3),
+            _Stub(3),
+            concurrency=3,
+            on_progress=lambda done, total: calls.append((done, total)),
+        )
+    )
     assert calls == [(0, 3), (1, 3), (2, 3), (3, 3)]
 
 
@@ -1276,7 +1472,14 @@ def test_a_breaker_stop_ends_with_a_partial_warning(notices) -> None:
     _run(_handle(_doc(8), stub, concurrency=1, breaker_failures=2))
     *_, last = notices.calls
     assert last[2:4] == ("warning", "end")
-    assert last[4] == {"state": "partial", "studied": 2, "windows": 8, "cached": 0, "split": 0, "failed": 2}
+    assert last[4] == {
+        "state": "partial",
+        "studied": 2,
+        "windows": 8,
+        "cached": 0,
+        "split": 0,
+        "failed": 2,
+    }
     assert notices.keys().count("end") == 1
 
 
@@ -1284,7 +1487,9 @@ def test_a_deadline_stop_ends_with_a_partial_warning(notices) -> None:
     clock = _Clock()
     redis = _Redis()
     stub = _Stub(4, hold={1, 2, 3})
-    handle = _handle(_doc(4), stub, store=_store(redis), concurrency=2, clock=clock, deadline_seconds=100.0)
+    handle = _handle(
+        _doc(4), stub, store=_store(redis), concurrency=2, clock=clock, deadline_seconds=100.0
+    )
     handle.start()
     try:
         _wait(redis.stored)
@@ -1296,7 +1501,14 @@ def test_a_deadline_stop_ends_with_a_partial_warning(notices) -> None:
         handle.close()
     *_, last = notices.calls
     assert last[2:4] == ("warning", "end")
-    assert last[4] == {"state": "partial", "studied": 1, "windows": 4, "cached": 0, "split": 0, "failed": 0}
+    assert last[4] == {
+        "state": "partial",
+        "studied": 1,
+        "windows": 4,
+        "cached": 0,
+        "split": 0,
+        "failed": 0,
+    }
 
 
 def test_a_fully_cached_resume_says_only_that_it_is_done(notices) -> None:
@@ -1308,7 +1520,14 @@ def test_a_fully_cached_resume_says_only_that_it_is_done(notices) -> None:
     _run(_handle(text, stub, store=_store(redis)))
     assert stub.calls == []
     assert notices.keys() == ["end"]
-    assert notices.facts("end") == {"state": "done", "studied": 8, "windows": 8, "cached": 8, "split": 0, "failed": 0}
+    assert notices.facts("end") == {
+        "state": "done",
+        "studied": 8,
+        "windows": 8,
+        "cached": 8,
+        "split": 0,
+        "failed": 0,
+    }
 
 
 def test_a_partly_cached_resume_names_the_cached_windows_at_the_start(notices) -> None:
@@ -1334,12 +1553,16 @@ def test_a_cancelled_run_emits_no_finish_notice(notices) -> None:
 
 
 def test_a_run_that_announced_nothing_and_has_no_study_emits_no_finish_notice(notices) -> None:
-    assert _run(_handle(_doc(2), _Stub(2), store=_BrokenStore())).stopped_by == "error"  # fails before the start notice
+    assert (
+        _run(_handle(_doc(2), _Stub(2), store=_BrokenStore())).stopped_by == "error"
+    )  # fails before the start notice
     assert _run(_handle("  \n ", _Stub(1))).stopped_by == "completed"  # blank: nothing to read
     assert notices.calls == []
 
 
-def test_an_error_after_the_start_notice_ends_with_a_partial_warning_of_zeros(notices, monkeypatch) -> None:
+def test_an_error_after_the_start_notice_ends_with_a_partial_warning_of_zeros(
+    notices, monkeypatch
+) -> None:
     def broken(results):
         raise RuntimeError("merge failed")
 
@@ -1349,7 +1572,14 @@ def test_an_error_after_the_start_notice_ends_with_a_partial_warning_of_zeros(no
     assert notices.keys() == ["start", "end"]
     *_, last = notices.calls
     assert last[2:4] == ("warning", "end")
-    assert last[4] == {"state": "partial", "studied": 0, "windows": 4, "cached": 0, "split": 0, "failed": 0}
+    assert last[4] == {
+        "state": "partial",
+        "studied": 0,
+        "windows": 4,
+        "cached": 0,
+        "split": 0,
+        "failed": 0,
+    }
 
 
 def test_a_run_that_read_nothing_after_announcing_ends_with_a_partial_warning(notices) -> None:
@@ -1358,7 +1588,14 @@ def test_a_run_that_read_nothing_after_announcing_ends_with_a_partial_warning(no
     assert outcome.study is None
     *_, last = notices.calls
     assert last[2:4] == ("warning", "end")
-    assert last[4] == {"state": "partial", "studied": 0, "windows": 3, "cached": 0, "split": 0, "failed": 0}
+    assert last[4] == {
+        "state": "partial",
+        "studied": 0,
+        "windows": 3,
+        "cached": 0,
+        "split": 0,
+        "failed": 0,
+    }
     assert notices.keys().count("end") == 1
 
 
@@ -1383,7 +1620,9 @@ def test_a_stop_because_nothing_needed_proposals_ends_with_an_info_stopped_notic
     assert notices.keys().count("end") == 1
 
 
-def test_notice_facts_are_integers_and_short_enums_from_the_coordinator_thread_only(notices) -> None:
+def test_notice_facts_are_integers_and_short_enums_from_the_coordinator_thread_only(
+    notices,
+) -> None:
     text = _doc(8)
     stub = _Stub(8, fail={5: RuntimeError("x")})
     caller = threading.get_ident()
@@ -1399,13 +1638,17 @@ def test_notice_facts_are_integers_and_short_enums_from_the_coordinator_thread_o
     for _, _, _, once_key, facts in notices.calls:
         assert len(facts) <= 6
         for key, value in facts.items():
-            assert isinstance(value, (int, bool)) or (key == "state" and value in {"reading", "done", "partial", "stopped"})
+            assert isinstance(value, (int, bool)) or (
+                key == "state" and value in {"reading", "done", "partial", "stopped"}
+            )
         blob = repr((once_key, facts))
         assert not any(secret in blob for secret in (USER, SCOPE, MODEL, "S00", "word"))
 
 
 def test_the_notices_come_from_a_run_with_no_job_in_scope_without_error() -> None:
-    outcome = _run(_handle(_doc(2), _Stub(2)))  # the real `notice`: no job is in scope, so it is a no-op
+    outcome = _run(
+        _handle(_doc(2), _Stub(2))
+    )  # the real `notice`: no job is in scope, so it is a no-op
     assert outcome.stopped_by == "completed"
 
 
@@ -1415,7 +1658,9 @@ def _headed_doc(n: int) -> str:
 
 
 def test_an_unread_window_is_reported_by_part_and_section_never_as_a_finished_study() -> None:
-    handle = _handle(_headed_doc(4), _Stub(4, fail={1: _status_504(), 2: _status_504()}), concurrency=1)
+    handle = _handle(
+        _headed_doc(4), _Stub(4, fail={1: _status_504(), 2: _status_504()}), concurrency=1
+    )
     outcome = _run(handle)
     message = next(w for w in outcome.warnings if "2 of 4" in w)
     assert "Not read: parts 2-3" in message
@@ -1424,20 +1669,37 @@ def test_an_unread_window_is_reported_by_part_and_section_never_as_a_finished_st
 
 
 def test_separate_unread_runs_are_listed_separately() -> None:
-    handle = _handle(_headed_doc(5), _Stub(5, fail={1: _status_504(), 3: _status_504()}), concurrency=1)
+    handle = _handle(
+        _headed_doc(5), _Stub(5, fail={1: _status_504(), 3: _status_504()}), concurrency=1
+    )
     message = next(w for w in _run(handle).warnings if "3 of 5" in w)
-    assert "part 2" in message and "part 4" in message and "parts" not in message.split("Not read:")[1].split(";")[0]
+    assert (
+        "part 2" in message
+        and "part 4" in message
+        and "parts" not in message.split("Not read:")[1].split(";")[0]
+    )
 
 
 def test_windows_never_reached_because_the_study_stopped_count_as_unread(monkeypatch) -> None:
     monkeypatch.setattr(study_document_module.settings, "survey_study_breaker_failures", 2)
-    handle = _handle(_headed_doc(5), _Stub(5, fail={0: _status_504(), 1: _status_504()}), concurrency=1, breaker_failures=2)
+    handle = _handle(
+        _headed_doc(5),
+        _Stub(5, fail={0: _status_504(), 1: _status_504()}),
+        concurrency=1,
+        breaker_failures=2,
+    )
     outcome = _run(handle)
-    assert outcome.study is None or any("Not read: parts 1-5" in w or "none of the document" in w for w in outcome.warnings)
+    assert outcome.study is None or any(
+        "Not read: parts 1-5" in w or "none of the document" in w for w in outcome.warnings
+    )
 
 
-def test_the_unread_report_names_sections_by_a_short_label_even_when_headings_are_whole_sentences() -> None:
-    long_heading = "The Backplane Mezzanine (BP_MEZ) board shall support twelve independent channels at once"
+def test_the_unread_report_names_sections_by_a_short_label_even_when_headings_are_whole_sentences() -> (
+    None
+):
+    long_heading = (
+        "The Backplane Mezzanine (BP_MEZ) board shall support twelve independent channels at once"
+    )
     text = "".join((f"# {long_heading} {i}\nS{i:03d} " + "word " * 4000)[:19500] for i in range(3))
     outcome = _run(_handle(text, _Stub(3, fail={1: _status_504()}), concurrency=1))
     message = next(w for w in outcome.warnings if "2 of 3" in w)

@@ -118,42 +118,92 @@ class LiveEmitter:
     # ---- public API -------------------------------------------------------
 
     def working_on(
-        self, *, lane: int = 0, ref: str | None = None, title: str | None = None,
-        item_type: str | None = None, excerpt: str | None = None, cursor: float | None = None,
+        self,
+        *,
+        lane: int = 0,
+        ref: str | None = None,
+        title: str | None = None,
+        item_type: str | None = None,
+        excerpt: str | None = None,
+        cursor: float | None = None,
     ) -> None:
         self._submit(
-            {"kind": "working_on", "lane": lane, "ref": ref, "title": title,
-             "itemType": item_type, "excerpt": excerpt, "cursor": cursor}
+            {
+                "kind": "working_on",
+                "lane": lane,
+                "ref": ref,
+                "title": title,
+                "itemType": item_type,
+                "excerpt": excerpt,
+                "cursor": cursor,
+            }
         )
 
     def writing(
-        self, *, lane: int = 0, ref: str | None = None, title: str | None = None,
-        item_type: str | None = None, partial: bool = True,
+        self,
+        *,
+        lane: int = 0,
+        ref: str | None = None,
+        title: str | None = None,
+        item_type: str | None = None,
+        partial: bool = True,
     ) -> None:
         self._submit(
-            {"kind": "writing", "lane": lane, "ref": ref, "title": title,
-             "itemType": item_type, "partial": partial}
+            {
+                "kind": "writing",
+                "lane": lane,
+                "ref": ref,
+                "title": title,
+                "itemType": item_type,
+                "partial": partial,
+            }
         )
 
     def item(
-        self, *, lane: int = 0, ref: str, title: str | None, item_type: str | None = None,
+        self,
+        *,
+        lane: int = 0,
+        ref: str,
+        title: str | None,
+        item_type: str | None = None,
         excerpt: str | None = None,
     ) -> None:
         """A finished work item. Never coalesced: every item is delivered."""
         self.last_item_ref = str(ref)
         self._submit(
-            {"kind": "item", "lane": lane, "ref": ref, "title": title, "itemType": item_type,
-             "excerpt": excerpt, "partial": False}
+            {
+                "kind": "item",
+                "lane": lane,
+                "ref": ref,
+                "title": title,
+                "itemType": item_type,
+                "excerpt": excerpt,
+                "partial": False,
+            }
         )
 
     def compare(
-        self, *, lane: int = 0, kind: str, a_ref: str, a_text: str, b_ref: str, b_text: str,
+        self,
+        *,
+        lane: int = 0,
+        kind: str,
+        a_ref: str,
+        a_text: str,
+        b_ref: str,
+        b_text: str,
         similarity: float,
     ) -> None:
         self._submit(
-            {"kind": "compare", "lane": lane,
-             "compare": {"kind": kind, "similarity": similarity,
-                         "a": {"ref": a_ref, "text": a_text}, "b": {"ref": b_ref, "text": b_text}}}
+            {
+                "kind": "compare",
+                "lane": lane,
+                "compare": {
+                    "kind": kind,
+                    "similarity": similarity,
+                    "a": {"ref": a_ref, "text": a_text},
+                    "b": {"ref": b_ref, "text": b_text},
+                },
+            }
         )
 
     def ocr_page(self, *, page: int, pages: int, excerpt: str | None = None) -> None:
@@ -255,10 +305,14 @@ class LiveEmitter:
             frame["compare"] = {
                 "kind": compare["kind"],
                 "similarity": max(0.0, min(1.0, float(compare["similarity"]))),
-                "a": {"ref": str(compare["a"]["ref"]),
-                      "text": clip_text(compare["a"]["text"], COMPARE_TEXT_MAX_CHARS) or ""},
-                "b": {"ref": str(compare["b"]["ref"]),
-                      "text": clip_text(compare["b"]["text"], COMPARE_TEXT_MAX_CHARS) or ""},
+                "a": {
+                    "ref": str(compare["a"]["ref"]),
+                    "text": clip_text(compare["a"]["text"], COMPARE_TEXT_MAX_CHARS) or "",
+                },
+                "b": {
+                    "ref": str(compare["b"]["ref"]),
+                    "text": clip_text(compare["b"]["text"], COMPARE_TEXT_MAX_CHARS) or "",
+                },
             }
         if fields.get("page") is not None:
             frame["page"] = int(fields["page"])
@@ -286,5 +340,6 @@ class LiveEmitter:
             self._warned = True
             logger.warning(
                 "Live frame dropped for job %s (further drops not logged)",
-                self._job_id, exc_info=True,
+                self._job_id,
+                exc_info=True,
             )

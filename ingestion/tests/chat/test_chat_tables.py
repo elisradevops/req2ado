@@ -1,5 +1,6 @@
 """Chat and tables: the model READS every table (as CSV, to understand the item) but never writes one. The stored HTML of each table,
 with its styling, is put back by code in whatever proposal the model makes, byte for byte."""
+
 import json
 
 import pytest
@@ -11,12 +12,17 @@ from tests.chat.test_chat_service import _FakePublisher
 
 STYLED = '<table style="border:1px solid #333;width:100%"><colgroup><col style="width:30%"><col></colgroup><tr><th style="background:#eee">Rail</th><th>V</th></tr><tr><td colspan="1">VDD</td><td>3.3</td></tr></table>'
 OTHER = "<table><tr><td>T</td><td>85</td></tr></table>"
-DESCRIPTION = f"The receiver shall use these rails:\n\n{STYLED}\n\nand obey the limits:\n\n{OTHER}\n\nEnd."
+DESCRIPTION = (
+    f"The receiver shall use these rails:\n\n{STYLED}\n\nand obey the limits:\n\n{OTHER}\n\nEnd."
+)
 
 
 def test_each_outermost_table_becomes_a_numbered_marker_and_is_kept_untouched() -> None:
     text, tables = split_tables(DESCRIPTION)
-    assert text == "The receiver shall use these rails:\n\n[[TABLE 1]]\n\nand obey the limits:\n\n[[TABLE 2]]\n\nEnd."
+    assert (
+        text
+        == "The receiver shall use these rails:\n\n[[TABLE 1]]\n\nand obey the limits:\n\n[[TABLE 2]]\n\nEnd."
+    )
     assert tables == [STYLED, OTHER]
 
 
@@ -46,21 +52,34 @@ def test_restoring_an_unchanged_proposal_gives_the_original_byte_for_byte() -> N
 def test_the_model_rewrites_the_prose_and_the_tables_come_back_in_place() -> None:
     proposed = "The receiver shall use the rails below:\n\n[[TABLE 1]]\n\nThe receiver shall obey:\n\n[[TABLE 2]]"
     restored, _ = restore_tables(proposed, [STYLED, OTHER])
-    assert restored == f"The receiver shall use the rails below:\n\n{STYLED}\n\nThe receiver shall obey:\n\n{OTHER}"
+    assert (
+        restored
+        == f"The receiver shall use the rails below:\n\n{STYLED}\n\nThe receiver shall obey:\n\n{OTHER}"
+    )
 
 
 def test_an_edited_marker_still_matches() -> None:
     restored, counts = restore_tables("a [[table 1]] b [ [Table  2 ] ] c", [STYLED, OTHER])
-    assert restored == f"a {STYLED} b {OTHER} c" and counts["restored"] == 2 and counts["reattached"] == 0
+    assert (
+        restored == f"a {STYLED} b {OTHER} c"
+        and counts["restored"] == 2
+        and counts["reattached"] == 0
+    )
 
 
 def test_a_marker_that_lost_one_bracket_matches_only_alone_on_its_line() -> None:
     restored, counts = restore_tables("Rails:\n  [Table 1]\nEnd.", [STYLED])
-    assert restored == f"Rails:\n  {STYLED}\nEnd." and counts["restored"] == 1 and counts["reattached"] == 0
+    assert (
+        restored == f"Rails:\n  {STYLED}\nEnd."
+        and counts["restored"] == 1
+        and counts["reattached"] == 0
+    )
 
 
 def test_author_prose_that_looks_like_a_single_bracket_marker_is_left_alone() -> None:
-    restored, counts = restore_tables("As shown in [Table 1], the rail is 3.3 V.\n\n[[TABLE 1]]", [STYLED])
+    restored, counts = restore_tables(
+        "As shown in [Table 1], the rail is 3.3 V.\n\n[[TABLE 1]]", [STYLED]
+    )
     assert restored == f"As shown in [Table 1], the rail is 3.3 V.\n\n{STYLED}"
     assert counts["restored"] == 1 and counts["dropped_extra"] == 0
 
@@ -76,7 +95,9 @@ def test_a_duplicated_or_unknown_marker_is_dropped_and_the_table_appears_once() 
     assert restored == f"a {STYLED} b  c  d" and counts["dropped_extra"] == 2
 
 
-def test_csv_the_model_echoed_into_the_prose_is_removed_but_the_restored_table_is_not_touched() -> None:
+def test_csv_the_model_echoed_into_the_prose_is_removed_but_the_restored_table_is_not_touched() -> (
+    None
+):
     proposed = "Rails:\n\nTable (CSV):\nRail,V\nVDD,3.3\n\n[[TABLE 1]]\n\nDone."
     restored, counts = restore_tables(proposed, [STYLED])
     assert "Table (CSV)" not in restored and "Rail,V" not in restored.replace(STYLED, "")
@@ -106,12 +127,20 @@ class _Recording:
 
 
 def _item(description: str) -> dict:
-    return {"type": "Requirement", "title": "T", "description": description, "childType": None, "qualityIssues": []}
+    return {
+        "type": "Requirement",
+        "title": "T",
+        "description": description,
+        "childType": None,
+        "qualityIssues": [],
+    }
 
 
 async def _turn(description: str, deltas: list[str]):
     chat, publisher = _Recording(deltas), _FakePublisher()
-    await run_chat_turn("job-1", "n0", _item(description), [], "rewrite it", None, None, None, None, chat, publisher)
+    await run_chat_turn(
+        "job-1", "n0", _item(description), [], "rewrite it", None, None, None, None, chat, publisher
+    )
     return chat.messages[0]["content"], publisher
 
 
@@ -126,7 +155,12 @@ async def test_the_model_sees_markers_and_csv_never_the_table_markup() -> None:
 
 @pytest.mark.asyncio
 async def test_a_proposal_is_published_with_the_original_tables_restored() -> None:
-    proposal = json.dumps({"proposedTitle": None, "proposedDescription": "Better prose:\n\n[[TABLE 1]]\n\nMore:\n\n[[TABLE 2]]"})
+    proposal = json.dumps(
+        {
+            "proposedTitle": None,
+            "proposedDescription": "Better prose:\n\n[[TABLE 1]]\n\nMore:\n\n[[TABLE 2]]",
+        }
+    )
     _, publisher = await _turn(DESCRIPTION, [f"Done.\n{PROPOSAL_SENTINEL}\n{proposal}"])
     assert publisher.done["proposedDescription"] == f"Better prose:\n\n{STYLED}\n\nMore:\n\n{OTHER}"
 
@@ -139,7 +173,13 @@ async def test_a_marker_in_the_conversational_reply_reads_as_plain_words() -> No
 
 @pytest.mark.asyncio
 async def test_a_description_without_a_table_gets_the_prompt_it_always_had() -> None:
-    prompt, publisher = await _turn("The receiver shall lock.", [f"Ok\n{PROPOSAL_SENTINEL}\n" + json.dumps({"proposedTitle": None, "proposedDescription": "Better."})])
+    prompt, publisher = await _turn(
+        "The receiver shall lock.",
+        [
+            f"Ok\n{PROPOSAL_SENTINEL}\n"
+            + json.dumps({"proposedTitle": None, "proposedDescription": "Better."})
+        ],
+    )
     assert "TABLE" not in prompt and "Item description: The receiver shall lock." in prompt
     assert publisher.done["proposedDescription"] == "Better."
 

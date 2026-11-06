@@ -31,6 +31,7 @@ specific gates. Under-triggering (missing a real hierarchy) is the
 accepted failure direction everywhere in this module, never
 over-triggering (inventing structure that isn't there).
 """
+
 from __future__ import annotations
 
 import re
@@ -126,7 +127,8 @@ MIN_REQUIREMENT_SHAPED_LEAF_FRACTION = 0.7
 # a trailing-colon section label with nothing else ("Voltage Distribution:").
 _REQUIREMENT_SHAPE_MIN_WORDS = 6
 _REQUIREMENT_SHAPE_MODAL_PATTERN = re.compile(
-    r"\b(shall|should|must|will|is|are|provides|supports|complies)\b", re.IGNORECASE,
+    r"\b(shall|should|must|will|is|are|provides|supports|complies)\b",
+    re.IGNORECASE,
 )
 # A short label followed by a colon then a value, e.g. "Size: 3U 1\"" or
 # "Zodiac: 3.3V 494uF" -- deliberately generous (up to 40 chars before the
@@ -149,6 +151,7 @@ def is_requirement_shaped(text: str) -> bool:
     if _SPEC_CELL_LABEL_PATTERN.match(stripped):
         return False
     return bool(_REQUIREMENT_SHAPE_MODAL_PATTERN.search(stripped))
+
 
 EPIC = "Epic"
 FEATURE = "Feature"
@@ -204,6 +207,7 @@ class HierarchyRow(NamedTuple):
     This is what keeps "one builder, three sources" literally true instead
     of aspirational: each adapter's job ends exactly at producing a
     correct `list[HierarchyRow]`."""
+
     label: str  # ID-stripped text (or the group's own label) -- becomes description/title source
     has_shall: bool
     source_ref: SourceRef
@@ -351,14 +355,18 @@ def qualifying_groups(parsed: list[tuple[tuple[int, ...], str]]) -> list[TableGr
         else:
             suggested_type = FEATURE
 
-        entries.append((
-            segments,
-            TableGroupInfo(
-                label=label, child_count=child_count,
-                id_text=id_text_from_segments(segments), suggested_type=suggested_type,
-                is_top_level=len(segments) == 1,
-            ),
-        ))
+        entries.append(
+            (
+                segments,
+                TableGroupInfo(
+                    label=label,
+                    child_count=child_count,
+                    id_text=id_text_from_segments(segments),
+                    suggested_type=suggested_type,
+                    is_top_level=len(segments) == 1,
+                ),
+            )
+        )
 
     qualifying_label_by_segments = {segments: entry.label for segments, entry in entries}
     results: list[TableGroupInfo] = []
@@ -421,9 +429,7 @@ def _resolve_hierarchy_rows(
     `parent_index` chains through fold rows until it reaches a
     node-producing one."""
     groups = qualifying_groups(parsed)
-    group_type_by_segments = {
-        parse_id_segments(g.id_text): g.suggested_type for g in groups
-    }
+    group_type_by_segments = {parse_id_segments(g.id_text): g.suggested_type for g in groups}
     index_by_segments = {segments: i for i, (segments, _label) in enumerate(parsed)}
 
     rows: list[HierarchyRow] = []
@@ -440,16 +446,21 @@ def _resolve_hierarchy_rows(
         parent_segments = segments[:-1] if len(segments) > 1 else None
         parent_index = index_by_segments.get(parent_segments) if parent_segments else None
 
-        rows.append(HierarchyRow(
-            label=label, has_shall=has_shall, source_ref=source_refs[i],
-            node_type=node_type, parent_index=parent_index,
-            id_text=id_text_from_segments(segments),
-            id_disambiguator_needed=id_disambiguator_needed,
-            # Conventions 1/2 only (this resolver's only two callers) --
-            # id_text here is a REAL document-authored identifier (see
-            # HierarchyRow.id_text_is_authored's own docstring).
-            id_text_is_authored=True,
-        ))
+        rows.append(
+            HierarchyRow(
+                label=label,
+                has_shall=has_shall,
+                source_ref=source_refs[i],
+                node_type=node_type,
+                parent_index=parent_index,
+                id_text=id_text_from_segments(segments),
+                id_disambiguator_needed=id_disambiguator_needed,
+                # Conventions 1/2 only (this resolver's only two callers) --
+                # id_text here is a REAL document-authored identifier (see
+                # HierarchyRow.id_text_is_authored's own docstring).
+                id_text_is_authored=True,
+            )
+        )
     return rows
 
 
@@ -706,7 +717,9 @@ def rows_from_id_headings(
         return [], [], []
 
     rows = _resolve_hierarchy_rows(
-        parsed, [block.source_ref for block, _s, _l in confirmed], id_disambiguator_needed=False,
+        parsed,
+        [block.source_ref for block, _s, _l in confirmed],
+        id_disambiguator_needed=False,
     )
     claimed_block_ids = [block.id for block, _s, _l in confirmed]
     return rows, warnings, claimed_block_ids
@@ -874,20 +887,25 @@ def rows_from_heading_structure(
     for i, block in enumerate(candidates):
         node_type, _child_type = types_by_index[i]
         root = root_of_index[i]
-        rows.append(HierarchyRow(
-            label=block.text, has_shall=bool(SHALL_PATTERN.search(block.text)),
-            source_ref=block.source_ref, node_type=node_type.value,
-            parent_index=parent_index[i], id_text=id_texts[i],
-            id_disambiguator_needed=False,
-            # Only meaningful for LEAF rows (group/Epic/Feature headings
-            # are already just short descriptive labels, never claimed as
-            # full requirement text) -- a leaf in a root subtree below
-            # MIN_REQUIREMENT_SHAPED_LEAF_FRACTION needs its text
-            # synthesized rather than trusted verbatim.
-            needs_synthesis=(
-                is_leaf[i] and root is not None and needs_synthesis_by_root.get(root, False)
-            ),
-        ))
+        rows.append(
+            HierarchyRow(
+                label=block.text,
+                has_shall=bool(SHALL_PATTERN.search(block.text)),
+                source_ref=block.source_ref,
+                node_type=node_type.value,
+                parent_index=parent_index[i],
+                id_text=id_texts[i],
+                id_disambiguator_needed=False,
+                # Only meaningful for LEAF rows (group/Epic/Feature headings
+                # are already just short descriptive labels, never claimed as
+                # full requirement text) -- a leaf in a root subtree below
+                # MIN_REQUIREMENT_SHAPED_LEAF_FRACTION needs its text
+                # synthesized rather than trusted verbatim.
+                needs_synthesis=(
+                    is_leaf[i] and root is not None and needs_synthesis_by_root.get(root, False)
+                ),
+            )
+        )
 
     claimed_block_ids = [b.id for b in candidates]
     return rows, [], claimed_block_ids

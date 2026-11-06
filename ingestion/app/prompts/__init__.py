@@ -24,6 +24,7 @@ str.format() would try to parse as its own placeholder syntax and crash on.
 Marker-replace has no such collision risk regardless of what a prompt's
 own literal content contains.
 """
+
 from __future__ import annotations
 
 import re
@@ -65,6 +66,8 @@ def load_prompt(name: str, version: int | None = None, **markers: str) -> str:
     for key, value in markers.items():
         placeholder = f"__{key.upper()}__"
         if placeholder not in text:
-            raise ValueError(f"Prompt {name!r} has no {placeholder!r} placeholder to fill with marker {key!r}")
+            raise ValueError(
+                f"Prompt {name!r} has no {placeholder!r} placeholder to fill with marker {key!r}"
+            )
         text = text.replace(placeholder, value)
     return text

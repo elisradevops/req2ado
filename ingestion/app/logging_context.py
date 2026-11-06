@@ -11,6 +11,7 @@ job_id_scope() is entered once, at the top of the real work
 a parameter) -- every logger call anywhere beneath it in the call stack
 picks up the same job_id automatically via JobIdLogFilter, attached to the
 root logger's handler in app.main alongside logging.basicConfig."""
+
 from __future__ import annotations
 
 import contextvars

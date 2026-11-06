@@ -28,7 +28,10 @@ class TitleDistillationClient(Protocol):
 
 
 def distill_survey_title(
-    text: str, client: TitleDistillationClient, max_length: int = 256, user_id: str | None = None,
+    text: str,
+    client: TitleDistillationClient,
+    max_length: int = 256,
+    user_id: str | None = None,
 ) -> str:
     """SURVEY-mode title distillation: delegates to the injected client (a
     real LLM chat call, once the orchestrator's redaction-proxy exists), then

@@ -9,8 +9,14 @@ def _sr(offset: int = 0) -> SourceRef:
 
 def _node(local_id: str, node_type, title: str, customer_id: str | None = None) -> WorkItemNode:
     return WorkItemNode(
-        local_id=local_id, type=node_type, parent_local_id=None, title=title, description=title,
-        source_ref=_sr(), mode=WorkItemMode.SURVEY, customer_id=customer_id,
+        local_id=local_id,
+        type=node_type,
+        parent_local_id=None,
+        title=title,
+        description=title,
+        source_ref=_sr(),
+        mode=WorkItemMode.SURVEY,
+        customer_id=customer_id,
     )
 
 
@@ -31,11 +37,13 @@ def test_a_customer_id_reported_on_two_requirements_is_stripped_from_both() -> N
     # for either node, so both get stripped rather than guessing.
     from app.workitem.model import WorkItemType
 
-    tree = WorkItemTree(nodes=[
-        _node("n0", WorkItemType.REQUIREMENT, "PC104 Variant A", "PC104"),
-        _node("n1", WorkItemType.REQUIREMENT, "PC104 Variant B", "PC104"),
-        _node("n2", WorkItemType.REQUIREMENT, "Unrelated", "REQ-042"),
-    ])
+    tree = WorkItemTree(
+        nodes=[
+            _node("n0", WorkItemType.REQUIREMENT, "PC104 Variant A", "PC104"),
+            _node("n1", WorkItemType.REQUIREMENT, "PC104 Variant B", "PC104"),
+            _node("n2", WorkItemType.REQUIREMENT, "Unrelated", "REQ-042"),
+        ]
+    )
     result = _enforce_requirement_only_fields(tree)
     by_id = {n.local_id: n for n in result.nodes}
     assert by_id["n0"].customer_id is None
@@ -49,21 +57,29 @@ def test_a_customer_id_reported_on_two_requirements_is_stripped_from_both() -> N
 
     # A duplicate-stripped node is reported ONLY via DUPLICATE_CUSTOMER_ID,
     # never also double-counted in MISSING_SOURCE_REFERENCE.
-    missing_warnings = [w for w in result.warnings if w.kind == WarningKind.MISSING_SOURCE_REFERENCE]
+    missing_warnings = [
+        w for w in result.warnings if w.kind == WarningKind.MISSING_SOURCE_REFERENCE
+    ]
     assert missing_warnings == []
 
 
 def test_two_independent_duplicate_groups_each_get_their_own_warning() -> None:
     from app.workitem.model import WorkItemType
 
-    tree = WorkItemTree(nodes=[
-        _node("n0", WorkItemType.REQUIREMENT, "A", "PC104"),
-        _node("n1", WorkItemType.REQUIREMENT, "B", "PC104"),
-        _node("n2", WorkItemType.REQUIREMENT, "C", "RS485"),
-        _node("n3", WorkItemType.REQUIREMENT, "D", "RS485"),
-    ])
+    tree = WorkItemTree(
+        nodes=[
+            _node("n0", WorkItemType.REQUIREMENT, "A", "PC104"),
+            _node("n1", WorkItemType.REQUIREMENT, "B", "PC104"),
+            _node("n2", WorkItemType.REQUIREMENT, "C", "RS485"),
+            _node("n3", WorkItemType.REQUIREMENT, "D", "RS485"),
+        ]
+    )
     result = _enforce_requirement_only_fields(tree)
-    dup_warnings = {w.detail["duplicateValue"]: set(w.node_ids) for w in result.warnings if w.kind == WarningKind.DUPLICATE_CUSTOMER_ID}
+    dup_warnings = {
+        w.detail["duplicateValue"]: set(w.node_ids)
+        for w in result.warnings
+        if w.kind == WarningKind.DUPLICATE_CUSTOMER_ID
+    }
     assert dup_warnings == {"PC104": {"n0", "n1"}, "RS485": {"n2", "n3"}}
 
 
@@ -73,10 +89,12 @@ def test_a_duplicate_customer_id_on_a_non_requirement_is_not_flagged_as_duplicat
     # new duplicate-detection warning for what's just an ordinary strip.
     from app.workitem.model import WorkItemType
 
-    tree = WorkItemTree(nodes=[
-        _node("n0", WorkItemType.FEATURE, "Feature", "PC104"),
-        _node("n1", WorkItemType.REQUIREMENT, "Requirement", "PC104"),
-    ])
+    tree = WorkItemTree(
+        nodes=[
+            _node("n0", WorkItemType.FEATURE, "Feature", "PC104"),
+            _node("n1", WorkItemType.REQUIREMENT, "Requirement", "PC104"),
+        ]
+    )
     result = _enforce_requirement_only_fields(tree)
     by_id = {n.local_id: n for n in result.nodes}
     assert by_id["n0"].customer_id is None

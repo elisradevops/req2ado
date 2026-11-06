@@ -1,4 +1,5 @@
 """Run once to (re)generate sample.pdf: `python build_pdf_fixture.py`."""
+
 from pathlib import Path
 
 from reportlab.lib import colors

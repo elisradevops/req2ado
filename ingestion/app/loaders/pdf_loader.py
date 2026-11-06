@@ -333,7 +333,9 @@ def _cell_text_color(cell_chars: list[dict]) -> str | None:
     return None
 
 
-def _cell_background_color(page_rects: list[dict], bbox: tuple[float, float, float, float]) -> str | None:
+def _cell_background_color(
+    page_rects: list[dict], bbox: tuple[float, float, float, float]
+) -> str | None:
     """Best-effort per-cell background color via `page.rects` bbox overlap
     -- EXPLICITLY the weakest signal in this whole feature. Real PDF table
     backgrounds are very often drawn as ONE big filled rect behind an
@@ -367,11 +369,19 @@ def _cell_background_color(page_rects: list[dict], bbox: tuple[float, float, flo
         for rect in page_rects:
             if not rect.get("fill"):
                 continue
-            rx0, rtop, rx1, rbottom = rect.get("x0", 0), rect.get("top", 0), rect.get("x1", 0), rect.get("bottom", 0)
+            rx0, rtop, rx1, rbottom = (
+                rect.get("x0", 0),
+                rect.get("top", 0),
+                rect.get("x1", 0),
+                rect.get("bottom", 0),
+            )
             iw = max(min(x1, rx1) - max(x0, rx0), 0.0)
             ih = max(min(bottom, rbottom) - max(top, rtop), 0.0)
             overlap_fraction = (iw * ih) / cell_area
-            if overlap_fraction >= _BACKGROUND_OVERLAP_THRESHOLD and overlap_fraction > best_overlap:
+            if (
+                overlap_fraction >= _BACKGROUND_OVERLAP_THRESHOLD
+                and overlap_fraction > best_overlap
+            ):
                 candidate = _pdf_color_to_hex(rect.get("non_stroking_color"))
                 if candidate is not None:
                     best_overlap = overlap_fraction
@@ -594,7 +604,12 @@ def _cell_ocr_recovery(
 
 
 def _build_pdf_table_grid(
-    page, found_table, path: str, page_index: int, languages: str, page_image_cache: dict[int, Image.Image]
+    page,
+    found_table,
+    path: str,
+    page_index: int,
+    languages: str,
+    page_image_cache: dict[int, Image.Image],
 ) -> tuple[list[list[TableCell | None]], list[float] | None, list[float]]:
     """Builds the real per-cell styled grid for one `pdfplumber`-detected
     table, replacing the old Phase-1 bare-`TableCell(text=cell or "")`
@@ -670,7 +685,9 @@ def _build_pdf_table_grid(
 
             ocr_recovered = False
             if not text.strip():
-                recovered_text = _cell_ocr_recovery(path, page_index, bbox, languages, page_image_cache)
+                recovered_text = _cell_ocr_recovery(
+                    path, page_index, bbox, languages, page_image_cache
+                )
                 if recovered_text:
                     text = recovered_text
                     ocr_recovered = True
@@ -744,8 +761,11 @@ _TABLE_CONTINUATION_X_TOLERANCE = 2.0
 
 
 def _tables_continue(
-    prev_table_xs: list[float], prev_bottom: float, prev_page_height: float,
-    next_table_xs: list[float], next_top: float,
+    prev_table_xs: list[float],
+    prev_bottom: float,
+    prev_page_height: float,
+    next_table_xs: list[float],
+    next_top: float,
 ) -> bool:
     """True when a table ending near the bottom of one page and a table
     starting near the top of the next page are plausibly the SAME table,
@@ -770,12 +790,16 @@ def _tables_continue(
         return False
     if len(prev_table_xs) != len(next_table_xs):
         return False
-    return all(abs(a - b) <= _TABLE_CONTINUATION_X_TOLERANCE for a, b in zip(prev_table_xs, next_table_xs))
+    return all(
+        abs(a - b) <= _TABLE_CONTINUATION_X_TOLERANCE for a, b in zip(prev_table_xs, next_table_xs)
+    )
 
 
 def _merge_continued_tables(
-    tables: list[Table], table_xs_by_id: dict[str, list[float]],
-    table_bbox_by_id: dict[str, tuple[float, float, float, float]], page_height: float,
+    tables: list[Table],
+    table_xs_by_id: dict[str, list[float]],
+    table_bbox_by_id: dict[str, tuple[float, float, float, float]],
+    page_height: float,
 ) -> list[Table]:
     """Post-pass merging cross-page table continuations -- must run AFTER
     every table on every page has been built (needs real page numbers to
@@ -808,8 +832,16 @@ def _merge_continued_tables(
         prev_bottom = table_bbox_by_id.get(prev.id, (0, 0, 0, 0))[3]
         this_top = table_bbox_by_id.get(table.id, (0, 0, 0, 0))[1]
         if (
-            prev_page is not None and this_page is not None and this_page == prev_page + 1
-            and _tables_continue(table_xs_by_id.get(prev.id, []), prev_bottom, page_height, table_xs_by_id.get(table.id, []), this_top)
+            prev_page is not None
+            and this_page is not None
+            and this_page == prev_page + 1
+            and _tables_continue(
+                table_xs_by_id.get(prev.id, []),
+                prev_bottom,
+                page_height,
+                table_xs_by_id.get(table.id, []),
+                this_top,
+            )
         ):
             # The continuation's own first row sits mid-table after the
             # merge -- `_build_pdf_table_grid` stamped it `is_header=True`
@@ -818,12 +850,17 @@ def _merge_continued_tables(
             # very first table's real header row should ever carry
             # `is_header=True`.
             continuation_cells = [
-                [cell.model_copy(update={"is_header": False}) if cell is not None else None for cell in row]
+                [
+                    cell.model_copy(update={"is_header": False}) if cell is not None else None
+                    for cell in row
+                ]
                 for row in table.cells
             ]
             merged[-1] = prev.model_copy(update={"cells": prev.cells + continuation_cells})
             tail_page[prev.id] = this_page
-            table_bbox_by_id[prev.id] = table_bbox_by_id.get(table.id, table_bbox_by_id.get(prev.id, (0, 0, 0, 0)))
+            table_bbox_by_id[prev.id] = table_bbox_by_id.get(
+                table.id, table_bbox_by_id.get(prev.id, (0, 0, 0, 0))
+            )
             table_xs_by_id[prev.id] = table_xs_by_id.get(table.id, table_xs_by_id.get(prev.id, []))
         else:
             merged.append(table)
@@ -850,11 +887,21 @@ def page_has_extractable_text(path: str, page_index: int) -> bool:
 
 
 def _inside_any_bbox(obj: dict, bboxes: list[tuple[float, float, float, float]]) -> bool:
-    ox0, otop, ox1, obottom = obj.get("x0", 0), obj.get("top", 0), obj.get("x1", 0), obj.get("bottom", 0)
-    return any(x0 <= ox0 and ox1 <= x1 and top <= otop and obottom <= bottom for x0, top, x1, bottom in bboxes)
+    ox0, otop, ox1, obottom = (
+        obj.get("x0", 0),
+        obj.get("top", 0),
+        obj.get("x1", 0),
+        obj.get("bottom", 0),
+    )
+    return any(
+        x0 <= ox0 and ox1 <= x1 and top <= otop and obottom <= bottom
+        for x0, top, x1, bottom in bboxes
+    )
 
 
-def _bboxes_overlap(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> bool:
+def _bboxes_overlap(
+    a: tuple[float, float, float, float], b: tuple[float, float, float, float]
+) -> bool:
     """Standard axis-aligned bbox overlap test (ANY intersection at all --
     partial or full), as opposed to `_inside_any_bbox`'s FULL-containment
     test above. Fix-round addition (Task 7 review): the text-strategy
@@ -1004,7 +1051,9 @@ def _dominant_body_size(all_pages_lines: list[list[dict]]) -> float:
     return min(size for size, count in counts.items() if count == max_count)
 
 
-def _heading_level_from_size_rank(size: float, body_size: float, size_ranks: dict[float, int]) -> int:
+def _heading_level_from_size_rank(
+    size: float, body_size: float, size_ranks: dict[float, int]
+) -> int:
     """Font-size-cluster rank as the heading DEPTH fallback -- used only
     when a heading candidate's own text has no parseable number (see the
     layered-signal design: font size decides IF a line is a heading;
@@ -1041,7 +1090,9 @@ def _heading_level_from_size_rank(size: float, body_size: float, size_ranks: dic
     return size_ranks[size]
 
 
-def _advance_heading_counter(heading_counters: list[int], heading_level: int, existing_label: str | None) -> str | None:
+def _advance_heading_counter(
+    heading_counters: list[int], heading_level: int, existing_label: str | None
+) -> str | None:
     """Same validated algorithm as docx_loader.py's heading-number
     synthesis (commit history: fc16a9e, 6c07360) -- reimplemented here
     per this task's own non-goal (no shared-module refactor of
@@ -1201,19 +1252,31 @@ def _line_segments(line: dict) -> list[dict]:
     for ch in chars[1:]:
         if ch["x0"] - max(c["x1"] for c in run) >= _COLUMN_GAP_MIN_WIDTH:
             segments.append(
-                {"x0": min(c["x0"] for c in run), "x1": max(c["x1"] for c in run), "top": line["top"], "bottom": line["bottom"]}
+                {
+                    "x0": min(c["x0"] for c in run),
+                    "x1": max(c["x1"] for c in run),
+                    "top": line["top"],
+                    "bottom": line["bottom"],
+                }
             )
             run = [ch]
         else:
             run.append(ch)
     segments.append(
-        {"x0": min(c["x0"] for c in run), "x1": max(c["x1"] for c in run), "top": line["top"], "bottom": line["bottom"]}
+        {
+            "x0": min(c["x0"] for c in run),
+            "x1": max(c["x1"] for c in run),
+            "top": line["top"],
+            "bottom": line["bottom"],
+        }
     )
     return segments
 
 
 def _detect_suspected_column_gap(
-    lines: list[dict], page_width: float, table_bboxes: list[tuple[float, float, float, float]],
+    lines: list[dict],
+    page_width: float,
+    table_bboxes: list[tuple[float, float, float, float]],
 ) -> tuple[float, float] | None:
     """Flags (never splits) a page as SUSPECTED multi-column: a vertical
     band with NO word crossing it, spanning at least
@@ -1324,7 +1387,9 @@ def _normalize_digits(text: str) -> str:
     return _DIGIT_RUN_PATTERN.sub("#", text)
 
 
-def _detect_boilerplate_templates(pages_first_lines: list[str], pages_last_lines: list[str]) -> tuple[set[str], set[str]]:
+def _detect_boilerplate_templates(
+    pages_first_lines: list[str], pages_last_lines: list[str]
+) -> tuple[set[str], set[str]]:
     """Returns (header_templates, footer_templates) -- the set of
     digit-normalized line templates that recur on at least
     _BOILERPLATE_RECURRENCE_FRACTION of pages, checked separately for the
@@ -1451,7 +1516,9 @@ def _is_degenerate_pdf_image(pypdf_image: object) -> bool:
         width, height = image.size
     except Exception:  # noqa: BLE001 -- see docstring: fail open, never drop a real figure over a decode hiccup
         return False
-    return width <= _DEGENERATE_IMAGE_MAX_DIMENSION_PX and height <= _DEGENERATE_IMAGE_MAX_DIMENSION_PX
+    return (
+        width <= _DEGENERATE_IMAGE_MAX_DIMENSION_PX and height <= _DEGENERATE_IMAGE_MAX_DIMENSION_PX
+    )
 
 
 def count_image_xobjects(path: str) -> int:
@@ -1549,7 +1616,9 @@ def load_pdf(
         all_pages_lines: list[list[dict]] = [page.extract_text_lines() for page in pdf.pages]
         pages_first_lines = [lines[0]["text"] if lines else "" for lines in all_pages_lines]
         pages_last_lines = [lines[-1]["text"] if lines else "" for lines in all_pages_lines]
-        header_templates, footer_templates = _detect_boilerplate_templates(pages_first_lines, pages_last_lines)
+        header_templates, footer_templates = _detect_boilerplate_templates(
+            pages_first_lines, pages_last_lines
+        )
 
         # First pass (Gap B): every page's own images (full pdfplumber bbox
         # paired with each pypdf image, same best-effort positional pairing
@@ -1568,7 +1637,9 @@ def load_pdf(
                 plumber_images = plumber_page.images
                 all_pages_images[page_index] = [
                     (
-                        plumber_images[i] if i < len(plumber_images) else {"x0": 0.0, "top": 0.0, "x1": 0.0, "bottom": 0.0},
+                        plumber_images[i]
+                        if i < len(plumber_images)
+                        else {"x0": 0.0, "top": 0.0, "x1": 0.0, "bottom": 0.0},
                         pypdf_image,
                     )
                     for i, pypdf_image in enumerate(pypdf_page.images)
@@ -1608,7 +1679,9 @@ def load_pdf(
             found_tables = (
                 []
                 if text_only
-                else page.find_tables(table_settings={"snap_x_tolerance": _DECORATIVE_RECT_SNAP_TOLERANCE})
+                else page.find_tables(
+                    table_settings={"snap_x_tolerance": _DECORATIVE_RECT_SNAP_TOLERANCE}
+                )
             )
             # Phase 3c (Task 7): borderless (text-strategy) table detection,
             # additive to the lines-strategy pass above -- real government
@@ -1670,7 +1743,13 @@ def load_pdf(
                     line
                     for line in page_lines
                     if not _inside_any_bbox(
-                        {"x0": line["x0"], "top": line["top"], "x1": line["x1"], "bottom": line["bottom"]}, table_bboxes
+                        {
+                            "x0": line["x0"],
+                            "top": line["top"],
+                            "x1": line["x1"],
+                            "bottom": line["bottom"],
+                        },
+                        table_bboxes,
                     )
                 ]
 
@@ -1749,7 +1828,10 @@ def load_pdf(
                         page_image_cache=page_image_cache,
                     )
                 except Exception:  # noqa: BLE001 -- a structural extraction failure degrades to Phase-1-shaped bare cells, never aborts the document
-                    cells = [[TableCell(text=cell or "") for cell in row] for row in found_table.extract()]
+                    cells = [
+                        [TableCell(text=cell or "") for cell in row]
+                        for row in found_table.extract()
+                    ]
                     column_widths = None
                     xs = []
                     # Task 6: surface this degradation as an UNSUPPORTED NOTE
@@ -1759,9 +1841,12 @@ def load_pdf(
                     # multi-column-gap and AcroForm NOTE blocks in this file.
                     blocks.append(
                         Block(
-                            id=f"b{block_id}", kind=BlockKind.NOTE,
+                            id=f"b{block_id}",
+                            kind=BlockKind.NOTE,
                             text=f"[UNSUPPORTED: table extraction degraded structure (span/gap information lost) for a table on page {page_number}]",
-                            source_ref=SourceRef(document_path=path, start_offset=0, end_offset=0, page=page_number),
+                            source_ref=SourceRef(
+                                document_path=path, start_offset=0, end_offset=0, page=page_number
+                            ),
                         )
                     )
                     block_id += 1
@@ -1792,7 +1877,9 @@ def load_pdf(
                         # qualifier for a PDF table, with no code path that
                         # accidentally leaves this `None`.
                         style_provenance="heuristic",
-                        source_ref=SourceRef(document_path=path, start_offset=0, end_offset=0, page=page_number),
+                        source_ref=SourceRef(
+                            document_path=path, start_offset=0, end_offset=0, page=page_number
+                        ),
                     )
                 )
                 # Side dicts for Task 5's post-loop cross-page continuation
@@ -1828,7 +1915,8 @@ def load_pdf(
             # degrades to the exact same code path a page with zero images
             # already takes below.
             page_images: list[tuple[float, dict, object]] = [
-                (bbox["top"], bbox, pypdf_image) for bbox, pypdf_image in all_pages_images[page_number - 1]
+                (bbox["top"], bbox, pypdf_image)
+                for bbox, pypdf_image in all_pages_images[page_number - 1]
             ]
 
             # Merge paragraphs, tables, and images into real document order
@@ -1845,7 +1933,10 @@ def load_pdf(
             # of its real position -- interleaving them here gives each
             # figure the same real-position treatment tables already got.
             merged = sorted(
-                [("paragraph", top, (text, size, is_bold, top)) for text, top, size, is_bold in paragraphs_with_meta]
+                [
+                    ("paragraph", top, (text, size, is_bold, top))
+                    for text, top, size, is_bold in paragraphs_with_meta
+                ]
                 + [("table", bbox[1], table) for bbox, table in zip(table_bboxes, page_tables)]
                 + [("image", top, (bbox, pypdf_image)) for top, bbox, pypdf_image in page_images],
                 key=lambda entry: entry[1],
@@ -1876,7 +1967,9 @@ def load_pdf(
             # than no flag, and `text_only`'s consumer wants plain page text
             # anyway, never layout markers.
             suspected_gap = (
-                None if text_only else _detect_suspected_column_gap(page_lines, page.width, table_bboxes)
+                None
+                if text_only
+                else _detect_suspected_column_gap(page_lines, page.width, table_bboxes)
             )
             if suspected_gap is not None:
                 start = offset
@@ -1884,9 +1977,12 @@ def load_pdf(
                 offset = end
                 blocks.append(
                     Block(
-                        id=f"b{block_id}", kind=BlockKind.NOTE,
+                        id=f"b{block_id}",
+                        kind=BlockKind.NOTE,
                         text=f"[UNSUPPORTED: page {page_number} appears multi-column (gap at x={suspected_gap[0]:.0f}-{suspected_gap[1]:.0f}) -- reading order below may be incorrect]",
-                        source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end, page=page_number),
+                        source_ref=SourceRef(
+                            document_path=path, start_offset=start, end_offset=end, page=page_number
+                        ),
                     )
                 )
                 block_id += 1
@@ -1967,7 +2063,9 @@ def load_pdf(
                     if outline_depth is not None:
                         heading_level = outline_depth
                     elif (
-                        body_size + _HEADING_SIZE_MARGIN < size <= body_size * _HEADING_SIZE_MAX_RATIO
+                        body_size + _HEADING_SIZE_MARGIN
+                        < size
+                        <= body_size * _HEADING_SIZE_MAX_RATIO
                         # Content gate -- a size outlier with no real
                         # textual substance (a bulleted list's own bullet
                         # glyph, most commonly) must never become a heading
@@ -1979,10 +2077,14 @@ def load_pdf(
                         if existing_label is not None:
                             heading_level = numbering_depth(existing_label)
                         else:
-                            heading_level = _heading_level_from_size_rank(size, body_size, size_ranks)
+                            heading_level = _heading_level_from_size_rank(
+                                size, body_size, size_ranks
+                            )
                     if heading_level is not None:
                         existing_label, _ = parse_numbering(text)
-                        number_label = _advance_heading_counter(heading_counters, heading_level, existing_label)
+                        number_label = _advance_heading_counter(
+                            heading_counters, heading_level, existing_label
+                        )
                         blocks.append(
                             Block(
                                 id=f"b{block_id}",
@@ -1990,7 +2092,12 @@ def load_pdf(
                                 text=text,
                                 heading_level=heading_level,
                                 number_label=number_label,
-                                source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end, page=page_number),
+                                source_ref=SourceRef(
+                                    document_path=path,
+                                    start_offset=start,
+                                    end_offset=end,
+                                    page=page_number,
+                                ),
                             )
                         )
                     else:
@@ -1999,7 +2106,12 @@ def load_pdf(
                                 id=f"b{block_id}",
                                 kind=BlockKind.PARAGRAPH,
                                 text=text,
-                                source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end, page=page_number),
+                                source_ref=SourceRef(
+                                    document_path=path,
+                                    start_offset=start,
+                                    end_offset=end,
+                                    page=page_number,
+                                ),
                             )
                         )
                     block_id += 1
@@ -2029,7 +2141,12 @@ def load_pdf(
                             border_style=table.border_style,
                             style_provenance=table.style_provenance,
                             caption=caption,
-                            source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end, page=page_number),
+                            source_ref=SourceRef(
+                                document_path=path,
+                                start_offset=start,
+                                end_offset=end,
+                                page=page_number,
+                            ),
                         )
                     )
                 else:
@@ -2062,7 +2179,10 @@ def load_pdf(
                     if (
                         image_key is not None
                         and image_key in boilerplate_image_keys
-                        and (bbox["top"] <= _HEADER_FOOTER_MARGIN_POINTS or bbox["bottom"] >= page.height - _HEADER_FOOTER_MARGIN_POINTS)
+                        and (
+                            bbox["top"] <= _HEADER_FOOTER_MARGIN_POINTS
+                            or bbox["bottom"] >= page.height - _HEADER_FOOTER_MARGIN_POINTS
+                        )
                     ):
                         suppressed_boilerplate_image_count += 1
                         continue
@@ -2157,11 +2277,16 @@ def load_pdf(
     if fields:
         filled = {name: field.get("/V") for name, field in fields.items() if field.get("/V")}
         if filled:
-            note_text = "[UNSUPPORTED: AcroForm fields with values -- not extracted into body content: " + \
-                ", ".join(f"{name}: {value}" for name, value in filled.items()) + "]"
+            note_text = (
+                "[UNSUPPORTED: AcroForm fields with values -- not extracted into body content: "
+                + ", ".join(f"{name}: {value}" for name, value in filled.items())
+                + "]"
+            )
             blocks.append(
                 Block(
-                    id=f"b{block_id}", kind=BlockKind.NOTE, text=note_text,
+                    id=f"b{block_id}",
+                    kind=BlockKind.NOTE,
+                    text=note_text,
                     source_ref=SourceRef(document_path=path, start_offset=0, end_offset=0),
                 )
             )

@@ -115,7 +115,9 @@ class ChromaVectorStore:
         self._collection_cache[area_path] = collection
         return collection
 
-    def upsert(self, item_id: str, embedding: list[float], area_path: str, document: str | None = None) -> None:
+    def upsert(
+        self, item_id: str, embedding: list[float], area_path: str, document: str | None = None
+    ) -> None:
         # `document` (optional) stores the item's original text alongside its
         # embedding -- needed by check_for_duplicates.py's numeric-literal
         # guard (X7), which must compare the actual matched text, not just
@@ -126,7 +128,9 @@ class ChromaVectorStore:
         # this option existed has no stored text, and query_nearest reports
         # that honestly as `matched_document=None` rather than guessing.
         collection = self._get_collection(area_path)
-        collection.upsert(ids=[item_id], embeddings=[embedding], documents=[document] if document else None)
+        collection.upsert(
+            ids=[item_id], embeddings=[embedding], documents=[document] if document else None
+        )
         self._count_cache.pop(area_path, None)
 
     def upsert_many(self, items: list[tuple[str, list[float], str | None]], area_path: str) -> None:
@@ -144,7 +148,9 @@ class ChromaVectorStore:
         ids = [item_id for item_id, _, _ in items]
         embeddings = [embedding for _, embedding, _ in items]
         documents = [document for _, _, document in items]
-        collection.upsert(ids=ids, embeddings=embeddings, documents=documents if all(documents) else None)
+        collection.upsert(
+            ids=ids, embeddings=embeddings, documents=documents if all(documents) else None
+        )
         self._count_cache.pop(area_path, None)
 
     def delete(self, item_id: str, area_path: str) -> None:
@@ -160,7 +166,9 @@ class ChromaVectorStore:
         collection.delete(ids=[item_id])
         self._count_cache.pop(area_path, None)
 
-    def query_nearest(self, embedding: list[float], area_path: str) -> tuple[str, float, str | None] | None:
+    def query_nearest(
+        self, embedding: list[float], area_path: str
+    ) -> tuple[str, float, str | None] | None:
         collection = self._get_collection(area_path)
         count = self._count_cache.get(area_path)
         if count is None:
@@ -168,7 +176,9 @@ class ChromaVectorStore:
             self._count_cache[area_path] = count
         if count == 0:
             return None
-        result = collection.query(query_embeddings=[embedding], n_results=1, include=["distances", "documents"])
+        result = collection.query(
+            query_embeddings=[embedding], n_results=1, include=["distances", "documents"]
+        )
         matched_id = result["ids"][0][0]
         distance = result["distances"][0][0]
         similarity = 1.0 - distance

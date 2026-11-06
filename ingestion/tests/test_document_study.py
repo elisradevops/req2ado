@@ -22,7 +22,11 @@ from app.leveling.document_study import (
 )
 
 _EMPTY_ANSWER = {
-    "glossary": [], "placeholder_tokens": [], "verification_statements": [], "standards_cited": [], "table_roles": [],
+    "glossary": [],
+    "placeholder_tokens": [],
+    "verification_statements": [],
+    "standards_cited": [],
+    "table_roles": [],
 }
 
 
@@ -46,13 +50,23 @@ TEXT = "Report rate shall be N Hz. Latency shall be TBD ms. Power per MIL-STD-70
 
 
 def test_keeps_only_what_the_window_text_states() -> None:
-    client = _StubClient([{
-        "glossary": [{"term": "SRU", "definition": "Shop replaceable unit"}, {"term": "LRU", "definition": "invented"}],
-        "placeholder_tokens": ["N", "TBD", "XYZ"],
-        "verification_statements": ["Report rate shall be N Hz.", "verified by magic"],
-        "standards_cited": ["MIL-STD-704", "ISO 9999"],
-        "table_roles": [{"table": "t1", "role": "configuration values"}, {"table": "t9", "role": "ghost"}],
-    }])
+    client = _StubClient(
+        [
+            {
+                "glossary": [
+                    {"term": "SRU", "definition": "Shop replaceable unit"},
+                    {"term": "LRU", "definition": "invented"},
+                ],
+                "placeholder_tokens": ["N", "TBD", "XYZ"],
+                "verification_statements": ["Report rate shall be N Hz.", "verified by magic"],
+                "standards_cited": ["MIL-STD-704", "ISO 9999"],
+                "table_roles": [
+                    {"table": "t1", "role": "configuration values"},
+                    {"table": "t9", "role": "ghost"},
+                ],
+            }
+        ]
+    )
 
     study = study_document(TEXT + " SRU is defined here.", client)
 
@@ -65,13 +79,17 @@ def test_keeps_only_what_the_window_text_states() -> None:
 
 
 def test_malformed_entries_are_dropped_not_trusted() -> None:
-    client = _StubClient([{
-        "glossary": ["x", {"term": 3, "definition": "d"}, {"term": "N", "definition": ""}],
-        "placeholder_tokens": [1, None, "", "N"],
-        "verification_statements": [5, ""],
-        "standards_cited": [None],
-        "table_roles": [{"table": "t1"}],
-    }])
+    client = _StubClient(
+        [
+            {
+                "glossary": ["x", {"term": 3, "definition": "d"}, {"term": "N", "definition": ""}],
+                "placeholder_tokens": [1, None, "", "N"],
+                "verification_statements": [5, ""],
+                "standards_cited": [None],
+                "table_roles": [{"table": "t1"}],
+            }
+        ]
+    )
 
     study = study_document(TEXT, client)
 
@@ -84,15 +102,25 @@ def test_malformed_entries_are_dropped_not_trusted() -> None:
 
 
 def test_windows_merge_without_duplicates_and_failures_are_skipped() -> None:
-    text = ("word " * 7000) + "TBD " + ("word " * 7000)  # 4 windows of 20k; "TBD" sits in the second one only
-    client = _StubClient([{"placeholder_tokens": ["word"]}, {"placeholder_tokens": ["word", "TBD"]}, RuntimeError("model down")])
+    text = (
+        ("word " * 7000) + "TBD " + ("word " * 7000)
+    )  # 4 windows of 20k; "TBD" sits in the second one only
+    client = _StubClient(
+        [
+            {"placeholder_tokens": ["word"]},
+            {"placeholder_tokens": ["word", "TBD"]},
+            RuntimeError("model down"),
+        ]
+    )
 
     study = study_document(text, client)
 
     assert study is not None
     assert study.placeholder_tokens == ["word", "TBD"]
     assert study.windows_total == len(client.windows) >= 3
-    assert study.windows_studied == study.windows_total - 1  # exactly the one failing window is skipped
+    assert (
+        study.windows_studied == study.windows_total - 1
+    )  # exactly the one failing window is skipped
 
 
 def test_every_window_failing_returns_none() -> None:
@@ -125,7 +153,12 @@ def test_a_marker_must_stand_alone_in_the_window_exactly_as_returned() -> None:
     study = study_document(text, client)
 
     assert study is not None
-    assert study.placeholder_tokens == ["TBD", "CNC", "N+1", "Y/N"]  # "N" only appears as a unit / joined; "tbd" differs in case
+    assert study.placeholder_tokens == [
+        "TBD",
+        "CNC",
+        "N+1",
+        "Y/N",
+    ]  # "N" only appears as a unit / joined; "tbd" differs in case
 
 
 def test_contains_token_ignores_units_joined_forms_and_longer_words() -> None:
@@ -160,9 +193,31 @@ def _wf(**kw) -> WindowFindings:
 
 def test_merge_is_identical_for_shuffled_completion_order() -> None:
     windows = [
-        (0, _wf(glossary=[("SRU", "unit")], placeholder_tokens=["TBD"], standards_cited=["MIL-STD-704"], table_roles=[("t1", "values")])),
-        (1, _wf(glossary=[("LRU", "line unit")], placeholder_tokens=["XXxx", "TBD"], verification_statements=["Verified by test."])),
-        (2, _wf(glossary=[("sru", "other")], placeholder_tokens=["XXXX"], standards_cited=["mil-std-704"])),
+        (
+            0,
+            _wf(
+                glossary=[("SRU", "unit")],
+                placeholder_tokens=["TBD"],
+                standards_cited=["MIL-STD-704"],
+                table_roles=[("t1", "values")],
+            ),
+        ),
+        (
+            1,
+            _wf(
+                glossary=[("LRU", "line unit")],
+                placeholder_tokens=["XXxx", "TBD"],
+                verification_statements=["Verified by test."],
+            ),
+        ),
+        (
+            2,
+            _wf(
+                glossary=[("sru", "other")],
+                placeholder_tokens=["XXXX"],
+                standards_cited=["mil-std-704"],
+            ),
+        ),
         (3, _wf(placeholder_tokens=["??"], table_roles=[("t2", "limits")])),
     ]
     expected = merge_findings(windows)
@@ -175,20 +230,38 @@ def test_merge_is_identical_for_shuffled_completion_order() -> None:
 
 
 def test_merge_keeps_first_verbatim_spelling_and_dedups_by_normalised_form() -> None:
-    hebrew = "\ufb2a\u05d1\u05d3\u05d9\u05e7\u05d4"  # a Hebrew presentation form: NFKC would rewrite it
-    merged = merge_findings([
-        (1, _wf(standards_cited=["vita  65", "\uff36ITA 66"], glossary=[("\u05d1\u05d3\u05d9\u05e7\u05d4", "x")])),
-        (0, _wf(standards_cited=["VITA 65"], verification_statements=[hebrew])),
-        (2, _wf(verification_statements=[hebrew], standards_cited=["VITA 66"])),
-    ])
+    hebrew = (
+        "\ufb2a\u05d1\u05d3\u05d9\u05e7\u05d4"  # a Hebrew presentation form: NFKC would rewrite it
+    )
+    merged = merge_findings(
+        [
+            (
+                1,
+                _wf(
+                    standards_cited=["vita  65", "\uff36ITA 66"],
+                    glossary=[("\u05d1\u05d3\u05d9\u05e7\u05d4", "x")],
+                ),
+            ),
+            (0, _wf(standards_cited=["VITA 65"], verification_statements=[hebrew])),
+            (2, _wf(verification_statements=[hebrew], standards_cited=["VITA 66"])),
+        ]
+    )
 
-    assert merged.standards_cited == ["VITA 65", "\uff36ITA 66"]  # window 0's spelling wins; full-width V is equal to "V" under NFKC
+    assert merged.standards_cited == [
+        "VITA 65",
+        "\uff36ITA 66",
+    ]  # window 0's spelling wins; full-width V is equal to "V" under NFKC
     assert merged.verification_statements == [hebrew]  # stored untouched, not NFKC-rewritten
     assert merged.verification_statements[0] != __import__("unicodedata").normalize("NFKC", hebrew)
 
 
 def test_placeholder_tokens_dedup_is_case_sensitive() -> None:
-    merged = merge_findings([(0, _wf(placeholder_tokens=["XXxx", "XXXX", "XXxx"])), (1, _wf(placeholder_tokens=["XXXX", "xxxx"]))])
+    merged = merge_findings(
+        [
+            (0, _wf(placeholder_tokens=["XXxx", "XXXX", "XXxx"])),
+            (1, _wf(placeholder_tokens=["XXXX", "xxxx"])),
+        ]
+    )
 
     assert merged.placeholder_tokens == ["XXxx", "XXXX", "xxxx"]
 
@@ -196,7 +269,17 @@ def test_placeholder_tokens_dedup_is_case_sensitive() -> None:
 def test_marker_named_redacted_or_table_is_rejected() -> None:
     text = "Value <redacted> and <REDACTED> and [TABLE t3] and TBD."
     found = window_findings(
-        {"placeholder_tokens": ["<redacted>", "<REDACTED>", "<Redacted>", "[TABLE t3]", "[TABLE", "TBD"]}, text,
+        {
+            "placeholder_tokens": [
+                "<redacted>",
+                "<REDACTED>",
+                "<Redacted>",
+                "[TABLE t3]",
+                "[TABLE",
+                "TBD",
+            ]
+        },
+        text,
     )
 
     assert found.placeholder_tokens == ("TBD",)
@@ -204,15 +287,24 @@ def test_marker_named_redacted_or_table_is_rejected() -> None:
 
 def test_hebrew_and_redacted_text_still_matches_quotes() -> None:
     text = "\u05d4\u05d1\u05d3\u05d9\u05e7\u05d4 \u05ea\u05ea\u05d1\u05e6\u05e2 \u05d1\u05de\u05e2\u05d1\u05d3\u05d4 <redacted> \u05d0\u05d5 <redacted>. Rate is TBD."
-    client = _StubClient([{
-        "verification_statements": ["\u05d4\u05d1\u05d3\u05d9\u05e7\u05d4 \u05ea\u05ea\u05d1\u05e6\u05e2  \u05d1\u05de\u05e2\u05d1\u05d3\u05d4", "\u05de\u05e9\u05e4\u05d8 \u05de\u05d1\u05d5\u05d3\u05d4"],
-        "placeholder_tokens": ["<redacted>", "TBD"],
-    }])
+    client = _StubClient(
+        [
+            {
+                "verification_statements": [
+                    "\u05d4\u05d1\u05d3\u05d9\u05e7\u05d4 \u05ea\u05ea\u05d1\u05e6\u05e2  \u05d1\u05de\u05e2\u05d1\u05d3\u05d4",
+                    "\u05de\u05e9\u05e4\u05d8 \u05de\u05d1\u05d5\u05d3\u05d4",
+                ],
+                "placeholder_tokens": ["<redacted>", "TBD"],
+            }
+        ]
+    )
 
     study = study_document(text, client)
 
     assert study is not None
-    assert study.verification_statements == ["\u05d4\u05d1\u05d3\u05d9\u05e7\u05d4 \u05ea\u05ea\u05d1\u05e6\u05e2  \u05d1\u05de\u05e2\u05d1\u05d3\u05d4"]
+    assert study.verification_statements == [
+        "\u05d4\u05d1\u05d3\u05d9\u05e7\u05d4 \u05ea\u05ea\u05d1\u05e6\u05e2  \u05d1\u05de\u05e2\u05d1\u05d3\u05d4"
+    ]
     assert study.placeholder_tokens == ["TBD"]
 
 
@@ -244,13 +336,20 @@ def test_window_cap_comes_from_settings(monkeypatch) -> None:
 
 def test_study_document_result_is_the_merge_of_per_window_findings() -> None:
     text = ("word " * 7000) + "TBD " + ("word " * 7000)
-    answers = [{"placeholder_tokens": ["word"]}, {"placeholder_tokens": ["TBD", "word"]}, {"standards_cited": ["word"]}, {}]
+    answers = [
+        {"placeholder_tokens": ["word"]},
+        {"placeholder_tokens": ["TBD", "word"]},
+        {"standards_cited": ["word"]},
+        {},
+    ]
     client = _StubClient(answers)
 
     study = study_document(text, client)
 
     windows = windows_of(text, STUDY_WINDOW_CHARS, STUDY_WINDOW_OVERLAP)
-    expected = merge_findings((i, window_findings(a, w)) for i, (a, w) in enumerate(zip(answers, windows)))
+    expected = merge_findings(
+        (i, window_findings(a, w)) for i, (a, w) in enumerate(zip(answers, windows))
+    )
     expected.windows_total = len(windows)
     assert study == expected
 
@@ -268,7 +367,11 @@ def test_window_findings_are_immutable() -> None:
 
 def _status_error(status: int, headers: dict | None = None) -> httpx.HTTPStatusError:
     request = httpx.Request("POST", "http://upstream.invalid/chat")
-    return httpx.HTTPStatusError(f"{status}", request=request, response=httpx.Response(status, headers=headers, request=request))
+    return httpx.HTTPStatusError(
+        f"{status}",
+        request=request,
+        response=httpx.Response(status, headers=headers, request=request),
+    )
 
 
 class _TopRng:
@@ -316,14 +419,19 @@ def test_429_backs_off_with_jitter_then_succeeds() -> None:
 
     read = read_window(client, HALVES_TEXT, sleep=sleeps, rng=_TopRng())
 
-    assert sleeps.delays == [2, 4]  # full jitter: uniform(0, min(60, 2 * 2**attempt)), here at the upper bound
+    assert sleeps.delays == [
+        2,
+        4,
+    ]  # full jitter: uniform(0, min(60, 2 * 2**attempt)), here at the upper bound
     assert client.windows == [HALVES_TEXT] * 3
     assert read.findings is not None and read.findings.placeholder_tokens == ("TBD",)
     assert (read.retries, read.split, read.failed) == (2, False, False)
 
 
 def test_429_retry_after_header_is_honoured_and_capped() -> None:
-    client = _StubClient([_status_error(429, {"Retry-After": "7"}), _status_error(429, {"Retry-After": "900"}), {}])
+    client = _StubClient(
+        [_status_error(429, {"Retry-After": "7"}), _status_error(429, {"Retry-After": "900"}), {}]
+    )
     sleeps = _Sleeps()
 
     read = read_window(client, HALVES_TEXT, sleep=sleeps, rng=_TopRng())
@@ -344,25 +452,35 @@ def test_429_gives_up_after_two_backoffs_and_counts_failed() -> None:
 
     read = read_window(client, HALVES_TEXT, sleep=sleeps, rng=_TopRng())
 
-    assert len(client.windows) == 3 and len(sleeps.delays) == 2  # no third backoff, and no split for a 429
+    assert (
+        len(client.windows) == 3 and len(sleeps.delays) == 2
+    )  # no third backoff, and no split for a 429
     assert read.findings is None
     assert (read.retries, read.split, read.failed) == (2, False, True)
 
 
 def test_cutoff_splits_once_and_merges_halves_in_order() -> None:
-    client = _StubClient([
-        _status_error(502), {"placeholder_tokens": ["TBD"]}, {"standards_cited": ["MIL-STD-704"], "placeholder_tokens": ["TBD"]},
-    ])
+    client = _StubClient(
+        [
+            _status_error(502),
+            {"placeholder_tokens": ["TBD"]},
+            {"standards_cited": ["MIL-STD-704"], "placeholder_tokens": ["TBD"]},
+        ]
+    )
 
     read = read_window(client, HALVES_TEXT, sleep=_Sleeps(), rng=_TopRng())
 
     first, second = split_window(HALVES_TEXT)
     assert client.windows == [HALVES_TEXT, first, second]
-    assert read.findings == WindowFindings(placeholder_tokens=("TBD",), standards_cited=("MIL-STD-704",))
+    assert read.findings == WindowFindings(
+        placeholder_tokens=("TBD",), standards_cited=("MIL-STD-704",)
+    )
     assert (read.split, read.failed) == (True, False)
 
 
-@pytest.mark.parametrize("error", [ValueError("empty completion"), _status_error(502), _status_error(400)])
+@pytest.mark.parametrize(
+    "error", [ValueError("empty completion"), _status_error(502), _status_error(400)]
+)
 def test_empty_or_malformed_completion_splits(error: Exception) -> None:
     client = _StubClient([error, {}, {}])
 
@@ -373,18 +491,29 @@ def test_empty_or_malformed_completion_splits(error: Exception) -> None:
 
 
 def test_half_failure_is_not_retried_again_and_window_is_not_counted_studied() -> None:
-    client = _StubClient([_status_error(502), {"placeholder_tokens": ["TBD"]}, _status_error(502), {}, {}])
+    client = _StubClient(
+        [_status_error(502), {"placeholder_tokens": ["TBD"]}, _status_error(502), {}, {}]
+    )
 
     study = study_document(HALVES_TEXT, client, sleep=_Sleeps(), rng=_TopRng())
 
-    assert len(client.windows) == 3  # whole, first half, second half: the failed half is not split or retried again
-    assert study is not None and study.placeholder_tokens == ["TBD"]  # the good half's findings are kept
-    assert (study.windows_studied, study.windows_total) == (0, 1)  # so the caller's "partly read" warning still fires
+    assert (
+        len(client.windows) == 3
+    )  # whole, first half, second half: the failed half is not split or retried again
+    assert study is not None and study.placeholder_tokens == [
+        "TBD"
+    ]  # the good half's findings are kept
+    assert (study.windows_studied, study.windows_total) == (
+        0,
+        1,
+    )  # so the caller's "partly read" warning still fires
     assert study.read_stats == StudyReadStats(windows_retried=0, windows_split=1, windows_failed=1)
 
 
 def test_half_gets_one_429_retry_only() -> None:
-    client = _StubClient([_status_error(502), _status_error(429), {}, _status_error(429), _status_error(429)])
+    client = _StubClient(
+        [_status_error(502), _status_error(429), {}, _status_error(429), _status_error(429)]
+    )
     sleeps = _Sleeps()
 
     read = read_window(client, HALVES_TEXT, sleep=sleeps, rng=_TopRng())
@@ -395,7 +524,12 @@ def test_half_gets_one_429_retry_only() -> None:
 
 def test_split_window_is_deterministic_whitespace_aligned_and_lossless() -> None:
     hebrew = "שלום עולם זה טקסט בדיקה ארוך מספיק כדי לפצל אותו באמצע המשפט הזה"
-    for text in (hebrew, "alpha beta gamma delta epsilon zeta", "one two three four five six seven eight nine ten", "a\tb\u00a0c d"):
+    for text in (
+        hebrew,
+        "alpha beta gamma delta epsilon zeta",
+        "one two three four five six seven eight nine ten",
+        "a\tb\u00a0c d",
+    ):
         first, second = split_window(text)
         assert split_window(text) == (first, second)
         separator = text[len(first)]
@@ -417,7 +551,9 @@ def test_combine_window_findings_keeps_part_order() -> None:
     b = WindowFindings(placeholder_tokens=("B",), table_roles=(("t1", "r"),))
 
     assert combine_window_findings([a, b]) == WindowFindings(
-        placeholder_tokens=("A", "B"), glossary=(("t", "d"),), table_roles=(("t1", "r"),),
+        placeholder_tokens=("A", "B"),
+        glossary=(("t", "d"),),
+        table_roles=(("t1", "r"),),
     )
     assert combine_window_findings([]) == WindowFindings()
 
@@ -471,7 +607,9 @@ def test_a_fully_studied_window_resets_the_breaker_count(monkeypatch) -> None:
 def test_hard_budget_keeps_what_was_read(monkeypatch) -> None:
     monkeypatch.setattr(settings, "survey_study_hard_budget_seconds", 100)
     clock = _FakeClock()
-    client = _TickingClient(clock, 60, [{"placeholder_tokens": ["word"]}, {"placeholder_tokens": ["TBD"]}])
+    client = _TickingClient(
+        clock, 60, [{"placeholder_tokens": ["word"]}, {"placeholder_tokens": ["TBD"]}]
+    )
 
     study = study_document(FOUR_WINDOWS, client, clock=clock, sleep=_Sleeps(), rng=_TopRng())
 
@@ -500,14 +638,18 @@ def test_split_is_counted_once_in_stats() -> None:
     study = study_document(HALVES_TEXT, client, sleep=_Sleeps(), rng=_TopRng())
 
     assert study is not None
-    assert study.read_stats == StudyReadStats(windows_split=1)  # two halves, one split; both read, so nothing failed
+    assert study.read_stats == StudyReadStats(
+        windows_split=1
+    )  # two halves, one split; both read, so nothing failed
     assert study.windows_studied == 1
 
 
 def test_study_with_every_window_failing_still_returns_none() -> None:
     client = _StubClient([RuntimeError("down")] * 10)
     assert study_document(FOUR_WINDOWS, client, sleep=_Sleeps(), rng=_TopRng()) is None
-    assert len(client.windows) == 4  # fewer failures than the breaker's limit, so every window is tried
+    assert (
+        len(client.windows) == 4
+    )  # fewer failures than the breaker's limit, so every window is tried
 
 
 def test_study_settings_defaults() -> None:
@@ -519,7 +661,17 @@ def test_study_settings_defaults() -> None:
 
 # malformed answers, cancel-aware sleep and blank halves (fix pass T4b) ----
 
-@pytest.mark.parametrize("answer", [{}, {"glossary": []}, {**_EMPTY_ANSWER, "table_roles": None}, {**_EMPTY_ANSWER, "standards_cited": "x"}, []])
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        {},
+        {"glossary": []},
+        {**_EMPTY_ANSWER, "table_roles": None},
+        {**_EMPTY_ANSWER, "standards_cited": "x"},
+        [],
+    ],
+)
 def test_a_degenerate_answer_is_malformed_and_reads_the_window_as_halves(answer) -> None:
     client = _StubClient([answer, answer, answer], raw=True)
 
@@ -530,17 +682,24 @@ def test_a_degenerate_answer_is_malformed_and_reads_the_window_as_halves(answer)
 
 
 def test_a_degenerate_whole_answer_is_healed_by_well_formed_halves() -> None:
-    client = _StubClient([{}, {**_EMPTY_ANSWER, "placeholder_tokens": ["TBD"]}, _EMPTY_ANSWER], raw=True)
+    client = _StubClient(
+        [{}, {**_EMPTY_ANSWER, "placeholder_tokens": ["TBD"]}, _EMPTY_ANSWER], raw=True
+    )
 
     read = read_window(client, HALVES_TEXT, sleep=_Sleeps(), rng=_TopRng())
 
-    assert read.findings == WindowFindings(placeholder_tokens=("TBD",)) and (read.split, read.failed) == (True, False)
+    assert read.findings == WindowFindings(placeholder_tokens=("TBD",)) and (
+        read.split,
+        read.failed,
+    ) == (True, False)
 
 
 def test_an_answer_with_all_six_keys_empty_is_a_legitimately_empty_window() -> None:
     client = _StubClient([_EMPTY_ANSWER])
 
-    study = study_document("Table of contents\n1 Scope 3\n2 Purpose 4", client, sleep=_Sleeps(), rng=_TopRng())
+    study = study_document(
+        "Table of contents\n1 Scope 3\n2 Purpose 4", client, sleep=_Sleeps(), rng=_TopRng()
+    )
 
     assert len(client.windows) == 1
     assert study is not None and (study.windows_studied, study.windows_total) == (1, 1)
@@ -579,7 +738,9 @@ def test_cancellable_sleep_is_the_default_of_read_window_and_study_document() ->
     from app.leveling import document_study as module
 
     assert inspect.signature(read_window).parameters["sleep"].default is module._cancellable_sleep
-    assert inspect.signature(study_document).parameters["sleep"].default is module._cancellable_sleep
+    assert (
+        inspect.signature(study_document).parameters["sleep"].default is module._cancellable_sleep
+    )
 
 
 def test_a_blank_half_is_not_sent_and_does_not_fail_the_window() -> None:
@@ -597,7 +758,10 @@ def test_a_one_character_window_with_an_empty_half_is_read_once_more_and_not_fai
 
     read = read_window(client, "a", sleep=_Sleeps(), rng=_TopRng())
 
-    assert client.windows == ["a", "a"]  # the empty half is skipped, the other half is the whole character
+    assert client.windows == [
+        "a",
+        "a",
+    ]  # the empty half is skipped, the other half is the whole character
     assert read.findings == WindowFindings() and (read.split, read.failed) == (True, False)
 
 
@@ -618,7 +782,11 @@ def test_failed_window_logs_never_carry_the_error_text(caplog) -> None:
 
     class _Failing502:
         def study_document_window(self, window_text, user_id=None):
-            raise httpx.HTTPStatusError(f"bad gateway: {secret}", request=request, response=httpx.Response(502, request=request))
+            raise httpx.HTTPStatusError(
+                f"bad gateway: {secret}",
+                request=request,
+                response=httpx.Response(502, request=request),
+            )
 
     class _Odd:
         def study_document_window(self, window_text, user_id=None):
@@ -628,13 +796,29 @@ def test_failed_window_logs_never_carry_the_error_text(caplog) -> None:
         read_window(client, "some window text here", sleep=lambda _s: None)
 
     assert secret not in caplog.text
-    assert "ValueError" in caplog.text and "HTTP 502" in caplog.text and "RuntimeError" in caplog.text
+    assert (
+        "ValueError" in caplog.text and "HTTP 502" in caplog.text and "RuntimeError" in caplog.text
+    )
 
 
 def test_an_answer_missing_a_key_is_malformed_so_the_window_is_read_again() -> None:
-    client = _StubClient([{k: [] for k in ("glossary", "placeholder_tokens", "verification_statements", "standards_cited")}], raw=True)
-    assert study_document(TEXT, client) is None  # the answer lacks table_roles: malformed, nothing counts as read
-
+    client = _StubClient(
+        [
+            {
+                k: []
+                for k in (
+                    "glossary",
+                    "placeholder_tokens",
+                    "verification_statements",
+                    "standards_cited",
+                )
+            }
+        ],
+        raw=True,
+    )
+    assert (
+        study_document(TEXT, client) is None
+    )  # the answer lacks table_roles: malformed, nothing counts as read
 
 
 def test_an_empty_answer_cut_off_after_the_ladder_is_skipped_not_split() -> None:
@@ -660,7 +844,9 @@ def test_a_partial_answer_cut_off_is_split_because_halving_halves_the_output() -
     assert (read.split, read.failed) == (True, False)
 
 
-@pytest.mark.parametrize("error", [_status_error(504), httpx.ReadTimeout("slow"), httpx.ConnectTimeout("slow")])
+@pytest.mark.parametrize(
+    "error", [_status_error(504), httpx.ReadTimeout("slow"), httpx.ConnectTimeout("slow")]
+)
 def test_a_504_or_timeout_is_load_not_size_so_the_window_is_not_split(error: Exception) -> None:
     # Halves cost the same model time, so a slow backend fails them the same way: one call, window unread, backend marked overloaded.
     client = _StubClient([error])

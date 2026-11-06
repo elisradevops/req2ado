@@ -53,7 +53,9 @@ def test_level_reads_identity_and_primer_from_headers_so_they_never_ride_in_the_
         return WorkItemTree(nodes=[], warnings=[])
 
     primer = "A short document overview."
-    with patch("app.main._build_survey_tree_with_scoring", side_effect=lambda *a, **k: fake_build(*a, **k)) as mocked:
+    with patch(
+        "app.main._build_survey_tree_with_scoring", side_effect=lambda *a, **k: fake_build(*a, **k)
+    ) as mocked:
         response = client.post(
             "/level?mode=survey&job_id=j1",
             content=_doc().model_dump_json(),
@@ -64,23 +66,33 @@ def test_level_reads_identity_and_primer_from_headers_so_they_never_ride_in_the_
             },
         )
     assert response.status_code == 200, response.text
-    seen = {**{f"arg{i}": a for i, a in enumerate(mocked.call_args.args)}, **mocked.call_args.kwargs}
+    seen = {
+        **{f"arg{i}": a for i, a in enumerate(mocked.call_args.args)},
+        **mocked.call_args.kwargs,
+    }
     assert "user-from-header" in seen.values()
     assert primer in seen.values()
-    assert "user-from-header" not in str(response.request.url) and "overview" not in str(response.request.url)
+    assert "user-from-header" not in str(response.request.url) and "overview" not in str(
+        response.request.url
+    )
 
 
 def test_level_ignores_the_old_query_form() -> None:
     from app.workitem.model import WorkItemTree
 
-    with patch("app.main._build_survey_tree_with_scoring", return_value=WorkItemTree(nodes=[], warnings=[])) as mocked:
+    with patch(
+        "app.main._build_survey_tree_with_scoring", return_value=WorkItemTree(nodes=[], warnings=[])
+    ) as mocked:
         response = client.post(
             "/level?mode=survey&user_id=old-user&primer_context=old+primer",
             content=_doc().model_dump_json(),
             headers={"Content-Type": "application/json"},
         )
     assert response.status_code == 200, response.text
-    seen = {**{f"arg{i}": a for i, a in enumerate(mocked.call_args.args)}, **mocked.call_args.kwargs}
+    seen = {
+        **{f"arg{i}": a for i, a in enumerate(mocked.call_args.args)},
+        **mocked.call_args.kwargs,
+    }
     assert "old-user" not in seen.values() and "old primer" not in seen.values()
 
 
@@ -92,7 +104,10 @@ def test_describe_exception_never_carries_a_user_identity() -> None:
     assert describe_exception(KeyError(sid)) == "'[user]'"
     assert "S-1-5-21" not in redact_identity(f"failed for {sid} and again S-1-5-21-1-2-3-4")
     assert redact_identity("vstfs:///Framework/Identity/abc-123 failed") == "[user] failed"
-    assert redact_identity("a normal message about the Receiver") == "a normal message about the Receiver"
+    assert (
+        redact_identity("a normal message about the Receiver")
+        == "a normal message about the Receiver"
+    )
     assert redact_identity("") == ""
 
 
@@ -100,14 +115,24 @@ def test_ingest_reads_the_user_from_the_header_so_figure_captioning_still_runs()
     # Review finding: the orchestrator sends the user only in a header; /ingest read it from the query alone, so vision (which
     # needs a user to pick a model credential) silently stayed off and no figure was captioned.
     files = {"file": ("x.txt", b"The receiver shall lock.\n", "text/plain")}
-    by_header = client.post("/ingest?mode=survey", files=files, headers={"X-Req2Ado-User-Id": "user-1"})
+    by_header = client.post(
+        "/ingest?mode=survey", files=files, headers={"X-Req2Ado-User-Id": "user-1"}
+    )
     assert by_header.status_code == 200, by_header.text
     assert by_header.json()["vision_active"] is True
 
-    by_query = client.post("/ingest?mode=survey&user_id=user-1", files={"file": ("x.txt", b"The receiver shall lock.\n", "text/plain")})
-    assert by_query.json()["vision_active"] is False  # the old query form is ignored: identity does not travel in URLs
+    by_query = client.post(
+        "/ingest?mode=survey&user_id=user-1",
+        files={"file": ("x.txt", b"The receiver shall lock.\n", "text/plain")},
+    )
+    assert (
+        by_query.json()["vision_active"] is False
+    )  # the old query form is ignored: identity does not travel in URLs
 
-    neither = client.post("/ingest?mode=survey", files={"file": ("x.txt", b"The receiver shall lock.\n", "text/plain")})
+    neither = client.post(
+        "/ingest?mode=survey",
+        files={"file": ("x.txt", b"The receiver shall lock.\n", "text/plain")},
+    )
     assert neither.json()["vision_active"] is False
 
 

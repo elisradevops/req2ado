@@ -12,6 +12,7 @@ copies the context) and the bounded chunk workers (they run under a copy of it),
 
 `JobCancelled` is an ordinary exception on purpose: stages already treat a failed call as fail-open and move on, so the
 remaining calls of a cancelled run each raise at once and the run winds down in moments."""
+
 from __future__ import annotations
 
 import asyncio
@@ -63,7 +64,9 @@ class CancelToken:
                 self._callbacks.remove(callback)
 
 
-_token_var: contextvars.ContextVar[CancelToken | None] = contextvars.ContextVar("_cancel_token_var", default=None)
+_token_var: contextvars.ContextVar[CancelToken | None] = contextvars.ContextVar(
+    "_cancel_token_var", default=None
+)
 
 
 @contextmanager
@@ -106,7 +109,9 @@ class _Disconnectable(Protocol):
 
 
 @asynccontextmanager
-async def watch_for_disconnect(request: _Disconnectable, token: CancelToken, poll_seconds: float = 2.0):
+async def watch_for_disconnect(
+    request: _Disconnectable, token: CancelToken, poll_seconds: float = 2.0
+):
     """Within the block, cancels `token` as soon as the request's client disconnects."""
     # Stopped with a flag, not task.cancel(): Starlette's is_disconnected() runs inside an anyio cancel scope that can swallow
     # a plain asyncio cancellation, which left the watcher looping and the request hanging.

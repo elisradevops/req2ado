@@ -27,11 +27,23 @@ def test_heading_level_from_size_rank_ranks_by_size_regardless_of_arrival_order(
     # larger size arrived, colliding two real, distinct heading tiers onto
     # the same rank number.
     size_ranks: dict[float, int] = {}
-    assert _heading_level_from_size_rank(12.0, 10.0, size_ranks) == 1  # first size seen, provisionally rank 1
-    assert _heading_level_from_size_rank(16.0, 10.0, size_ranks) == 1  # genuinely larger -- takes over rank 1
-    assert size_ranks[12.0] == 2  # 12's own rank correctly pushed deeper, not left colliding with 16 at rank 1
-    assert _heading_level_from_size_rank(14.0, 10.0, size_ranks) == 2  # inserts between the two existing sizes
-    assert size_ranks == {16.0: 1, 14.0: 2, 12.0: 3}  # final ranking matches sorted size order, largest first
+    assert (
+        _heading_level_from_size_rank(12.0, 10.0, size_ranks) == 1
+    )  # first size seen, provisionally rank 1
+    assert (
+        _heading_level_from_size_rank(16.0, 10.0, size_ranks) == 1
+    )  # genuinely larger -- takes over rank 1
+    assert (
+        size_ranks[12.0] == 2
+    )  # 12's own rank correctly pushed deeper, not left colliding with 16 at rank 1
+    assert (
+        _heading_level_from_size_rank(14.0, 10.0, size_ranks) == 2
+    )  # inserts between the two existing sizes
+    assert size_ranks == {
+        16.0: 1,
+        14.0: 2,
+        12.0: 3,
+    }  # final ranking matches sorted size order, largest first
 
 
 def test_heading_level_from_size_rank_is_stable_once_every_size_has_been_seen() -> None:
@@ -93,7 +105,9 @@ def test_ocr_image_to_text_filtered_drops_low_confidence_words() -> None:
     with patch("app.loaders.pdf_loader.pytesseract.image_to_data", return_value=fake_data):
         from PIL import Image
 
-        result = ocr_image_to_text_filtered(Image.new("RGB", (10, 10)), languages="eng", confidence_threshold=30)
+        result = ocr_image_to_text_filtered(
+            Image.new("RGB", (10, 10)), languages="eng", confidence_threshold=30
+        )
     assert result == "Real"
 
 
@@ -190,7 +204,9 @@ def test_is_degenerate_pdf_image_fails_open_when_size_cannot_be_read() -> None:
     assert _is_degenerate_pdf_image(_RaisingPypdfImage()) is False
 
 
-def test_load_pdf_skips_a_degenerate_2x2_image_without_calling_describe_figure(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_pdf_skips_a_degenerate_2x2_image_without_calling_describe_figure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # Integration-level regression for the real bug: injects one real
     # (10x10, kept) and one synthetic degenerate (2x2, skipped) image into
     # the same page's pypdf image list, via the same "kind == 'image'"
@@ -347,7 +363,9 @@ def test_load_pdf_flags_filled_acroform_fields_with_a_note() -> None:
         c = rl_canvas.Canvas(str(path), pagesize=letter)
         c.drawString(72, 700, "Static label text.")
         form = c.acroForm
-        form.textfield(name="approver", tooltip="Approver", x=72, y=650, width=200, height=20, value="J. Smith")
+        form.textfield(
+            name="approver", tooltip="Approver", x=72, y=650, width=200, height=20, value="J. Smith"
+        )
         c.save()
         result = load_pdf(str(path))
 
@@ -526,7 +544,9 @@ def test_load_pdf_column_widths_reflect_real_ratio_for_unequal_columns(tmp_path:
     assert t.column_widths == pytest.approx([0.25, 0.5, 0.25], abs=1e-6)
 
 
-def test_load_pdf_border_style_is_grid_and_provenance_is_heuristic_unconditionally(tmp_path: Path) -> None:
+def test_load_pdf_border_style_is_grid_and_provenance_is_heuristic_unconditionally(
+    tmp_path: Path,
+) -> None:
     # style_provenance="heuristic" must be present on EVERY table this
     # loader produces, unconditionally -- it's the field's entire purpose
     # (see Table.style_provenance's docstring / SourceRef.page_provenance's
@@ -696,7 +716,14 @@ def test_cell_background_color_defensive_degrades_to_none_on_malformed_rect() ->
     # An unfilled rect (fill=False) must never be considered, even with a
     # real-looking color and perfect overlap.
     unfilled_rects = [
-        {"fill": False, "non_stroking_color": (1.0, 0.0, 0.0), "x0": 0.0, "x1": 10.0, "top": 0.0, "bottom": 10.0}
+        {
+            "fill": False,
+            "non_stroking_color": (1.0, 0.0, 0.0),
+            "x0": 0.0,
+            "x1": 10.0,
+            "top": 0.0,
+            "bottom": 10.0,
+        }
     ]
     assert _cell_background_color(unfilled_rects, (0.0, 0.0, 10.0, 10.0)) is None
 
@@ -722,6 +749,7 @@ def _build_mixed_text_and_scanned_pdf_with_figure(tmp_path: Path) -> Path:
     c2.save()
 
     from pypdf import PdfReader, PdfWriter
+
     writer = PdfWriter()
     for p in (text_page_path, scanned_page_path):
         reader = PdfReader(str(p))
@@ -758,12 +786,17 @@ def test_load_pdf_merges_wrapped_lines_into_one_paragraph_block() -> None:
         path = Path(tmp_dir) / "wrapped.pdf"
         styles = getSampleStyleSheet()
         doc = SimpleDocTemplate(str(path), pagesize=letter)
-        long_text = "This is a long sentence that must wrap across multiple lines when rendered at normal body width in a standard page layout. " * 3
-        doc.build([
-            Paragraph("Title Heading", styles["Title"]),
-            Paragraph(long_text, styles["BodyText"]),
-            Paragraph("A second, separate paragraph.", styles["BodyText"]),
-        ])
+        long_text = (
+            "This is a long sentence that must wrap across multiple lines when rendered at normal body width in a standard page layout. "
+            * 3
+        )
+        doc.build(
+            [
+                Paragraph("Title Heading", styles["Title"]),
+                Paragraph(long_text, styles["BodyText"]),
+                Paragraph("A second, separate paragraph.", styles["BodyText"]),
+            ]
+        )
         result = load_pdf(str(path))
 
     # Exactly 3 blocks: title, the wrapped long paragraph (merged back into
@@ -777,7 +810,9 @@ def test_load_pdf_merges_wrapped_lines_into_one_paragraph_block() -> None:
     # block list.
     assert len(result.blocks) == 3
     assert result.blocks[1].text.startswith("This is a long sentence")
-    assert result.blocks[1].text.count("This is a long sentence") == 3  # all 3 repeats intact, still one block
+    assert (
+        result.blocks[1].text.count("This is a long sentence") == 3
+    )  # all 3 repeats intact, still one block
 
 
 def test_load_pdf_suppresses_a_running_header_recurring_across_most_pages() -> None:
@@ -981,7 +1016,11 @@ def test_load_pdf_bullet_glyph_line_is_not_classified_as_a_heading() -> None:
     # fabricated for one -- the whole document has no real heading at all.
     assert not any(b.kind == BlockKind.HEADING for b in result.blocks)
     # Each bulleted item's own body text is still emitted, as a PARAGRAPH.
-    for body in ("redundant 28 VDC power", "fault within 500 milliseconds", "single-point power interruption"):
+    for body in (
+        "redundant 28 VDC power",
+        "fault within 500 milliseconds",
+        "single-point power interruption",
+    ):
         block = next(b for b in result.blocks if body in b.text)
         assert block.kind == BlockKind.PARAGRAPH
 
@@ -1131,6 +1170,7 @@ def test_load_pdf_merges_a_table_continuing_across_a_page_break() -> None:
 
     assert len(result.tables) == 1
     from app.canonical.model import plain_text_rows
+
     all_rows = plain_text_rows(result.tables[0])
     assert len(all_rows) == 61  # header + 60 rows, all in ONE table, not split
     assert all_rows[-1] == ["59", "Reason 59"]
@@ -1182,7 +1222,10 @@ def test_merge_continued_tables_does_not_merge_unrelated_same_shape_tables() -> 
         cells=[[TableCell(text="X"), TableCell(text="Y")]],
         source_ref=SourceRef(document_path="doc.pdf", start_offset=0, end_offset=1, page=2),
     )
-    table_xs_by_id = {"t0": [10.0, 100.0], "t1": [50.0, 140.0]}  # same count, clearly different positions
+    table_xs_by_id = {
+        "t0": [10.0, 100.0],
+        "t1": [50.0, 140.0],
+    }  # same count, clearly different positions
     table_bbox_by_id = {"t0": (0.0, 0.0, 200.0, 750.0), "t1": (0.0, 40.0, 200.0, 100.0)}
 
     merged = _merge_continued_tables([t0, t1], table_xs_by_id, table_bbox_by_id, page_height)
@@ -1270,8 +1313,7 @@ def test_load_pdf_table_structural_failure_emits_unsupported_note() -> None:
     assert len(doc.tables) >= 1
     note_blocks = [b for b in doc.blocks if b.kind == BlockKind.NOTE]
     assert any(
-        b.text.startswith("[UNSUPPORTED: table extraction degraded structure")
-        for b in note_blocks
+        b.text.startswith("[UNSUPPORTED: table extraction degraded structure") for b in note_blocks
     )
 
 
@@ -1310,6 +1352,7 @@ def test_load_pdf_detects_a_borderless_table_via_text_strategy() -> None:
 
     assert len(result.tables) == 1
     from app.canonical.model import plain_text_rows
+
     assert plain_text_rows(result.tables[0])[0] == ["Code", "Meaning"]
     assert result.tables[0].border_style is None  # no ruling lines exist -- must not be "grid"
 
@@ -1362,7 +1405,9 @@ def test_load_pdf_rejects_a_prose_page_mistaken_for_a_borderless_table() -> None
     assert result.tables == []
 
 
-def test_load_pdf_two_ruled_tables_with_aligned_columns_do_not_produce_a_bogus_third_table() -> None:
+def test_load_pdf_two_ruled_tables_with_aligned_columns_do_not_produce_a_bogus_third_table() -> (
+    None
+):
     # Fix-round regression guard (Task 7 review finding): the text-strategy
     # double-detection guard originally rejected a candidate only when it
     # was FULLY CONTAINED inside one lines-strategy bbox (`_inside_any_bbox`,
@@ -1396,6 +1441,7 @@ def test_load_pdf_two_ruled_tables_with_aligned_columns_do_not_produce_a_bogus_t
         result = load_pdf(str(path))
 
     from app.canonical.model import plain_text_rows
+
     assert len(result.tables) == 2
     assert all(t.border_style == "grid" for t in result.tables)
     assert plain_text_rows(result.tables[0]) == [["Rail", "Voltage"], ["3V3", "3.3"]]
@@ -1416,10 +1462,12 @@ def test_load_pdf_attaches_a_table_caption_from_the_preceding_line() -> None:
         styles = getSampleStyleSheet()
         doc = SimpleDocTemplate(str(path), pagesize=letter)
         style = TableStyle([("GRID", (0, 0), (-1, -1), 0.5, colors.black)])
-        doc.build([
-            Paragraph("Table 3.4: Response Codes", styles["BodyText"]),
-            RLTable([["Code", "Meaning"], ["01", "Rejected"]], style=style),
-        ])
+        doc.build(
+            [
+                Paragraph("Table 3.4: Response Codes", styles["BodyText"]),
+                RLTable([["Code", "Meaning"], ["01", "Rejected"]], style=style),
+            ]
+        )
         result = load_pdf(str(path))
 
     assert len(result.tables) == 1
@@ -1445,7 +1493,9 @@ def test_load_pdf_flags_a_suspected_multi_column_page() -> None:
         c.save()
         result = load_pdf(str(path))
 
-    note_blocks = [b for b in result.blocks if b.kind == BlockKind.NOTE and "multi-column" in b.text]
+    note_blocks = [
+        b for b in result.blocks if b.kind == BlockKind.NOTE and "multi-column" in b.text
+    ]
     assert len(note_blocks) == 1
 
 
@@ -1498,7 +1548,15 @@ def test_load_pdf_does_not_flag_a_wide_table_column_as_multi_column() -> None:
         path = Path(tmp_dir) / "wide_table.pdf"
         doc = SimpleDocTemplate(str(path), pagesize=letter)
         style = TableStyle([("GRID", (0, 0), (-1, -1), 0.5, colors.black)])
-        doc.build([RLTable([["Narrow", "A much wider column with more text content in it"]], style=style, colWidths=[80, 380])])
+        doc.build(
+            [
+                RLTable(
+                    [["Narrow", "A much wider column with more text content in it"]],
+                    style=style,
+                    colWidths=[80, 380],
+                )
+            ]
+        )
         result = load_pdf(str(path))
 
     assert not any(b.kind == BlockKind.NOTE and "multi-column" in b.text for b in result.blocks)
@@ -1620,8 +1678,12 @@ def test_cell_ocr_recovery_renders_the_page_once_and_caches_it() -> None:
 
     page_image = Image.effect_noise((400, 400), 60).convert("RGB")
     cache: dict[int, Image.Image] = {}
-    with patch("app.loaders.pdf_loader.convert_from_path", return_value=[page_image]) as mock_convert, \
-         patch("app.loaders.pdf_loader.ocr_image_to_text_filtered", return_value="x"):
+    with (
+        patch(
+            "app.loaders.pdf_loader.convert_from_path", return_value=[page_image]
+        ) as mock_convert,
+        patch("app.loaders.pdf_loader.ocr_image_to_text_filtered", return_value="x"),
+    ):
         _cell_ocr_recovery("some.pdf", 2, (10.0, 10.0, 100.0, 40.0), "eng", cache)
         _cell_ocr_recovery("some.pdf", 2, (110.0, 10.0, 200.0, 40.0), "eng", cache)
     mock_convert.assert_called_once_with("some.pdf", first_page=3, last_page=3)
@@ -1646,7 +1708,9 @@ def test_build_pdf_table_grid_calls_ocr_recovery_only_for_empty_text_cells() -> 
     assert len(calls) == 1
     flat = [cell for row in doc.tables[0].cells for cell in row]
     recovered_cells = [c for c in flat if c is not None and c.text == "RECOVERED"]
-    assert recovered_cells == []  # this fixture's one empty cell is genuinely blank, fake_recovery returns "" for it
+    assert (
+        recovered_cells == []
+    )  # this fixture's one empty cell is genuinely blank, fake_recovery returns "" for it
 
 
 def test_table_ocr_recovery_recovers_an_image_only_header_cell_end_to_end() -> None:
@@ -1777,7 +1841,9 @@ def test_load_pdf_does_not_merge_a_genuinely_narrow_real_column() -> None:
     assert cells[2][1] is not None and cells[2][1].text.strip() == "N"
 
 
-def _build_pdf_with_image_and_line(tmp_dir: Path, image_y: float, image_height: float, line_y: float | None, line_text: str | None) -> Path:
+def _build_pdf_with_image_and_line(
+    tmp_dir: Path, image_y: float, image_height: float, line_y: float | None, line_text: str | None
+) -> Path:
     """Draws a single 150x150 image at (100, image_y) and, if `line_text` is
     given, one text line at (100, line_y) -- low-level canvas positioning
     (not platypus flow) so the vertical gap between image bottom and
@@ -1807,7 +1873,13 @@ def test_load_pdf_names_a_figure_from_its_own_caption_line(tmp_path: Path) -> No
     # Task 4: the document's own "Figure N: Title" line, sitting just below
     # the image, becomes Figure.name -- verified against real geometry
     # measured on cubeadcs_icd.pdf (image->caption gaps consistently ~16pt).
-    out_path = _build_pdf_with_image_and_line(tmp_path, image_y=400, image_height=100, line_y=375, line_text="Figure 1: Panel Layout Diagram")
+    out_path = _build_pdf_with_image_and_line(
+        tmp_path,
+        image_y=400,
+        image_height=100,
+        line_y=375,
+        line_text="Figure 1: Panel Layout Diagram",
+    )
     doc = load_pdf(str(out_path))
     assert len(doc.figures) == 1
     assert doc.figures[0].name == "Panel Layout Diagram"
@@ -1823,7 +1895,10 @@ def test_load_pdf_does_not_treat_a_toc_dot_leader_line_as_a_figure_caption(tmp_p
     # cubeadcs_icd.pdf's own TOC page contributes 41 such lines. Must never
     # be read as this image's real name.
     out_path = _build_pdf_with_image_and_line(
-        tmp_path, image_y=400, image_height=100, line_y=375,
+        tmp_path,
+        image_y=400,
+        image_height=100,
+        line_y=375,
         line_text="Figure 1: Panel Layout Diagram .................... 12",
     )
     doc = load_pdf(str(out_path))
@@ -1834,13 +1909,17 @@ def test_load_pdf_does_not_treat_a_toc_dot_leader_line_as_a_figure_caption(tmp_p
 def test_load_pdf_leaves_figure_name_none_when_no_caption_line_exists(tmp_path: Path) -> None:
     # Task 4: an image with nothing caption-shaped nearby keeps name=None
     # -- the document's own naming is opportunistic, not assumed present.
-    out_path = _build_pdf_with_image_and_line(tmp_path, image_y=400, image_height=100, line_y=None, line_text=None)
+    out_path = _build_pdf_with_image_and_line(
+        tmp_path, image_y=400, image_height=100, line_y=None, line_text=None
+    )
     doc = load_pdf(str(out_path))
     assert len(doc.figures) == 1
     assert doc.figures[0].name is None
 
 
-def test_load_pdf_uses_the_harvested_figure_title_as_block_text_when_vision_never_ran(tmp_path: Path) -> None:
+def test_load_pdf_uses_the_harvested_figure_title_as_block_text_when_vision_never_ran(
+    tmp_path: Path,
+) -> None:
     # SWEEP.md section 3: the same M1-class gap already fixed for docx. The
     # document's own "Figure N: Title" line is harvested into Figure.name,
     # but append_figure derives block text from `caption` alone -- so with
@@ -1850,7 +1929,11 @@ def test_load_pdf_uses_the_harvested_figure_title_as_block_text_when_vision_neve
     # mode / vision disabled), which is the only case where the author's
     # line is the sole description that will ever exist.
     out_path = _build_pdf_with_image_and_line(
-        tmp_path, image_y=400, image_height=100, line_y=375, line_text="Figure 1: Panel Layout Diagram",
+        tmp_path,
+        image_y=400,
+        image_height=100,
+        line_y=375,
+        line_text="Figure 1: Panel Layout Diagram",
     )
     doc = load_pdf(str(out_path))
 
@@ -1863,14 +1946,20 @@ def test_load_pdf_uses_the_harvested_figure_title_as_block_text_when_vision_neve
     assert figure_block.text == "[FIGURE: Panel Layout Diagram]"
 
 
-def test_load_pdf_does_not_use_the_harvested_title_as_block_text_when_vision_ran_and_declined(tmp_path: Path) -> None:
+def test_load_pdf_does_not_use_the_harvested_title_as_block_text_when_vision_ran_and_declined(
+    tmp_path: Path,
+) -> None:
     # The sibling guard to Task 4's docx gate: vision ran and returned
     # nothing (how an INSIGNIFICANT verdict reaches a loader), so the figure
     # must stay uncaptioned rather than being promoted out of
     # insignificant_figure_ids/uncaptioned_figure_ids by a rewritten
     # block.text.
     out_path = _build_pdf_with_image_and_line(
-        tmp_path, image_y=400, image_height=100, line_y=375, line_text="Figure 1: Panel Layout Diagram",
+        tmp_path,
+        image_y=400,
+        image_height=100,
+        line_y=375,
+        line_text="Figure 1: Panel Layout Diagram",
     )
     doc = load_pdf(str(out_path), describe_figure=lambda _b: None)
 

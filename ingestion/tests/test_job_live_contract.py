@@ -48,7 +48,8 @@ def _sr(i: int) -> SourceRef:
 
 def _heading_doc() -> CanonicalDoc:
     headings = [
-        (1, "1  Power"), (2, "1.1  Bus voltage"),
+        (1, "1  Power"),
+        (2, "1.1  Bus voltage"),
         (3, "1.1.1  The system shall limit ripple."),
         (3, "1.1.2  The system shall report faults."),
     ]
@@ -63,7 +64,9 @@ def _heading_doc() -> CanonicalDoc:
 
 def _table_doc() -> CanonicalDoc:
     rows = [
-        ["ID", "Text"], ["1.1", "Detection"], ["1.1.1", "The system shall detect it."],
+        ["ID", "Text"],
+        ["1.1", "Detection"],
+        ["1.1.1", "The system shall detect it."],
         ["1.1.2", "The system shall react."],
     ]
     table = Table(id="t1", cells=[[TableCell(text=c) for c in r] for r in rows], source_ref=_sr(0))
@@ -92,8 +95,12 @@ def test_every_document_map_the_backend_builds_conforms(make_doc) -> None:  # no
 
 def _p(phase: str, **kwargs) -> LevelingProgress:  # noqa: ANN003
     base = dict(
-        branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
-        kb_grounded=False, kb_citations=[],
+        branch_index=None,
+        branch_count=0,
+        blocks_done=0,
+        blocks_total=0,
+        kb_grounded=False,
+        kb_citations=[],
     )
     base.update(kwargs)
     return LevelingProgress(phase=phase, **base)  # type: ignore[arg-type]
@@ -123,8 +130,15 @@ def test_every_stage_units_payload_the_backend_publishes_conforms(event) -> None
 
 def test_progress_event_accepts_a_valid_frame_and_rejects_bad_ones() -> None:
     good = {
-        "type": "progress", "seq": 4, "pct": 42, "stage": "draft", "unit": "items",
-        "done": 150, "total": 275, "estimated": True, "emittedAt": "2026-10-05T10:00:00Z",
+        "type": "progress",
+        "seq": 4,
+        "pct": 42,
+        "stage": "draft",
+        "unit": "items",
+        "done": 150,
+        "total": 275,
+        "estimated": True,
+        "emittedAt": "2026-10-05T10:00:00Z",
     }
     _assert_valid("ProgressEvent", good)
     _assert_invalid("ProgressEvent", {**good, "pct": 101})
@@ -136,16 +150,24 @@ def test_progress_event_accepts_a_valid_frame_and_rejects_bad_ones() -> None:
 
 def test_live_frame_accepts_valid_frames_and_enforces_the_text_caps() -> None:
     base = {
-        "type": "live", "seq": 1, "lane": 0, "kind": "writing",
+        "type": "live",
+        "seq": 1,
+        "lane": 0,
+        "kind": "writing",
         "emittedAt": "2026-10-05T10:00:00Z",
     }
     writing = {
-        "ref": "s0.4", "title": "Limit ripple", "itemType": "Requirement",
-        "excerpt": "The BP shall provide power.", "cursor": 0.4, "partial": True,
+        "ref": "s0.4",
+        "title": "Limit ripple",
+        "itemType": "Requirement",
+        "excerpt": "The BP shall provide power.",
+        "cursor": 0.4,
+        "partial": True,
     }
     _assert_valid("LiveFrame", {**base, **writing})
     conflict = {
-        "kind": "conflict", "similarity": 0.93,
+        "kind": "conflict",
+        "similarity": 0.93,
         "a": {"ref": "r1", "text": "Ripple is 50 mV."},
         "b": {"ref": "r2", "text": "Ripple is 30 mV."},
     }
@@ -156,8 +178,10 @@ def test_live_frame_accepts_valid_frames_and_enforces_the_text_caps() -> None:
     _assert_invalid("LiveFrame", {**base, "cursor": 1.5})
     _assert_invalid("LiveFrame", {**base, "kind": "invented"})
     too_long = {
-        "kind": "duplicate", "similarity": 0.5,
-        "a": {"ref": "r1", "text": "x" * 401}, "b": {"ref": "r2", "text": "ok"},
+        "kind": "duplicate",
+        "similarity": 0.5,
+        "a": {"ref": "r1", "text": "x" * 401},
+        "b": {"ref": "r2", "text": "ok"},
     }
     _assert_invalid("LiveFrame", {**base, "compare": too_long})
 
@@ -172,7 +196,8 @@ def test_heartbeat_accepts_what_the_event_stream_sends_and_rejects_bad_shapes() 
     quiet = {"type": "heartbeat", "at": "2026-10-05T10:00:00Z", "idleSeconds": 0, "inFlight": []}
     _assert_valid("Heartbeat", quiet)
     busy = {
-        **quiet, "idleSeconds": 42,
+        **quiet,
+        "idleSeconds": 42,
         "inFlight": [
             {"lane": 0, "kind": "working_on", "ref": "r1", "title": "Power"},
             {"lane": 1, "kind": "ocr_page", "ref": None, "title": None},
@@ -227,7 +252,9 @@ def test_notice_accepts_what_the_publisher_sends_and_rejects_free_text_shapes() 
             self.bodies.append(message)
 
     capture = Capture()
-    NoticePublisher(capture, "j1").publish("output_limit_reached", "warning", step="analyze", lastRef="det0_1")
+    NoticePublisher(capture, "j1").publish(
+        "output_limit_reached", "warning", step="analyze", lastRef="det0_1"
+    )
     sent = json.loads(capture.bodies[0])
     _assert_valid("Notice", sent)
     _assert_invalid("Notice", {**sent, "kind": "anything_else"})

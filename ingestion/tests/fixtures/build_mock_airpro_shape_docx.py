@@ -3,6 +3,7 @@
 Synthetic stand-in for the shape of a real ICD whose requirements ARE its headings: no Heading 1 anywhere, section
 headings at levels 2-4, requirement statements as headings (one of them with sub-requirements below it), a section that
 mixes a loose requirement with a sub-section, and a deeper section chain. All text is invented."""
+
 from pathlib import Path
 
 from docx import Document as DocxDocument

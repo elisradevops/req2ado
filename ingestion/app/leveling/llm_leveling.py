@@ -317,7 +317,11 @@ _MAX_MODEL_REPORTED_CUSTOMER_ID_LENGTH = 64
 
 
 def _validated_skeleton_customer_id(
-    raw_value: object, node_type: WorkItemType, rendered_section_text: str, local_id: str, title: str
+    raw_value: object,
+    node_type: WorkItemType,
+    rendered_section_text: str,
+    local_id: str,
+    title: str,
 ) -> str | None:
     """Stage 1's model-reported 'customer_id' (see section_skeleton_schema),
     validated before being trusted -- never fabricated, same "never invent
@@ -353,7 +357,10 @@ def _validated_skeleton_customer_id(
     if len(value) > _MAX_MODEL_REPORTED_CUSTOMER_ID_LENGTH:
         logger.warning(
             "Dropped an implausibly long model-reported customer_id (%d chars) for %r (%r): %r",
-            len(value), local_id, title, value,
+            len(value),
+            local_id,
+            title,
+            value,
         )
         return None
     if node_type is not WorkItemType.REQUIREMENT:
@@ -362,7 +369,9 @@ def _validated_skeleton_customer_id(
         logger.warning(
             "Dropped a model-reported customer_id not found verbatim in this branch's own source "
             "text for %r (%r): %r",
-            local_id, title, value,
+            local_id,
+            title,
+            value,
         )
         return None
     return value
@@ -464,7 +473,7 @@ def _repair_group_attachment(
         message = (
             f'"{node.title}" ({node.type.value}) matching source table group '
             f"'{group.label}' was attached under the wrong ancestor -- re-parented under "
-            f'"{correct_parent.title}" to match its known correct parent (\'{group.parent_label}\') '
+            f"\"{correct_parent.title}\" to match its known correct parent ('{group.parent_label}') "
             "from the table's own ID hierarchy."
         )
         logger.warning(message)
@@ -517,7 +526,10 @@ class KbRelevanceClient(Protocol):
     pre-verification behavior exactly."""
 
     def judge_kb_relevance(
-        self, branch_content: str, snippets: list[dict], user_id: str | None = None,
+        self,
+        branch_content: str,
+        snippets: list[dict],
+        user_id: str | None = None,
     ) -> dict[str, str]: ...
 
 
@@ -683,7 +695,8 @@ def _kb_coverage(files_available: int | None, citations: list[KbCitation]) -> Kb
 
 
 def _stamp_kb_files_available(
-    progress_callback: Callable[[LevelingProgress], None] | None, files_available: int | None,
+    progress_callback: Callable[[LevelingProgress], None] | None,
+    files_available: int | None,
 ) -> Callable[[LevelingProgress], None] | None:
     """Wraps the progress callback so every narration event emitted after KB
     retrieval carries how many KB files were available, without threading a
@@ -721,16 +734,26 @@ def _resolve_kb_citations(
         except Exception as exc:  # noqa: BLE001 - KB relevance verification must never fail a SURVEY job
             logger.warning("KB relevance verification failed: %s", exc)
             if debug_capture is not None:
-                debug_capture.capture("kb_relevance", node_id_prefix.rstrip("_") or "root", str(exc))
+                debug_capture.capture(
+                    "kb_relevance", node_id_prefix.rstrip("_") or "root", str(exc)
+                )
             verdicts = {}
     citations: list[KbCitation] = []
     for i, raw in enumerate(raw_citations):
         verdict_str = verdicts.get(str(i))
         try:
-            relevance = KbCitationRelevance(verdict_str) if verdict_str is not None else KbCitationRelevance.UNKNOWN
+            relevance = (
+                KbCitationRelevance(verdict_str)
+                if verdict_str is not None
+                else KbCitationRelevance.UNKNOWN
+            )
         except ValueError:
             relevance = KbCitationRelevance.UNKNOWN
-        citations.append(KbCitation(source_file=raw["source_file"], similarity=raw["similarity"], relevance=relevance))
+        citations.append(
+            KbCitation(
+                source_file=raw["source_file"], similarity=raw["similarity"], relevance=relevance
+            )
+        )
     return citations
 
 
@@ -759,10 +782,21 @@ def _merge_always_include_context(
     always_include_context, always_include_raw = prefetched
     if always_include_context is None:
         return kb_context, kb_citations
-    merged_context = always_include_context if kb_context is None else f"{always_include_context}\n\n{kb_context}"
+    merged_context = (
+        always_include_context
+        if kb_context is None
+        else f"{always_include_context}\n\n{kb_context}"
+    )
     merged_citations = [
         *kb_citations,
-        *(KbCitation(source_file=c["source_file"], similarity=c["similarity"], relevance=KbCitationRelevance.RELEVANT) for c in always_include_raw),
+        *(
+            KbCitation(
+                source_file=c["source_file"],
+                similarity=c["similarity"],
+                relevance=KbCitationRelevance.RELEVANT,
+            )
+            for c in always_include_raw
+        ),
     ]
     return merged_context, merged_citations
 
@@ -799,11 +833,14 @@ def _document_level_query_text(doc: CanonicalDoc) -> str:
 # read_kb_document; ADO-resolution needs a new cross-service route, a much
 # larger follow-up, deferred).
 _REFERENCED_ATTACHMENT_PATTERN = re.compile(
-    r"reqid(?:\s*\d+)?|see excel|attached|refer(?:s|red)? to (?:the )?document|appendix|annex", re.IGNORECASE
+    r"reqid(?:\s*\d+)?|see excel|attached|refer(?:s|red)? to (?:the )?document|appendix|annex",
+    re.IGNORECASE,
 )
 
 
-def _referenced_attachment_warnings(section_text: str, section_label: str | None) -> list[IntegrityWarning]:
+def _referenced_attachment_warnings(
+    section_text: str, section_label: str | None
+) -> list[IntegrityWarning]:
     """One warning per distinct matched reference phrase in this branch's
     rendered section text, deduped case-insensitively (so a phrase repeated
     many times in one section doesn't spam the warnings list) while
@@ -823,7 +860,9 @@ def _referenced_attachment_warnings(section_text: str, section_label: str | None
     ]
 
 
-def _unsupported_content_warnings(blocks: list[Block], section_label: str | None) -> list[IntegrityWarning]:
+def _unsupported_content_warnings(
+    blocks: list[Block], section_label: str | None
+) -> list[IntegrityWarning]:
     """One warning per distinct loader diagnostic NOTE block (see
     _is_unsupported_content_note) in this branch, deduped by exact text (so a
     diagnostic repeated verbatim across several blocks in one section doesn't
@@ -848,7 +887,9 @@ def _unsupported_content_warnings(blocks: list[Block], section_label: str | None
     ]
 
 
-def _ocr_recovered_table_warnings(tables: list[Table] | None, section_label: str | None) -> list[IntegrityWarning]:
+def _ocr_recovered_table_warnings(
+    tables: list[Table] | None, section_label: str | None
+) -> list[IntegrityWarning]:
     """One warning per table in this branch with 1+ OCR-recovered cell
     (TableCell.ocr_recovered, set by pdf_loader.py's _cell_ocr_recovery) --
     one warning per TABLE, not per cell, same "don't spam the warnings
@@ -863,7 +904,9 @@ def _ocr_recovered_table_warnings(tables: list[Table] | None, section_label: str
     section_ref = f'The "{section_label}" section' if section_label else "This section"
     out: list[IntegrityWarning] = []
     for table in tables or []:
-        recovered_count = sum(1 for row in table.cells for cell in row if cell is not None and cell.ocr_recovered)
+        recovered_count = sum(
+            1 for row in table.cells for cell in row if cell is not None and cell.ocr_recovered
+        )
         if recovered_count == 0:
             continue
         out.append(
@@ -872,13 +915,19 @@ def _ocr_recovered_table_warnings(tables: list[Table] | None, section_label: str
                 f"{section_ref} contains a table ({table.id}) with {recovered_count} cell(s) whose text "
                 "could not be extracted directly and was recovered via OCR -- please spot-check against "
                 "the source document.",
-                detail={"section": section_label or "(root)", "tableId": table.id, "recoveredCellCount": recovered_count},
+                detail={
+                    "section": section_label or "(root)",
+                    "tableId": table.id,
+                    "recoveredCellCount": recovered_count,
+                },
             )
         )
     return out
 
 
-def _nested_table_dropped_warnings(tables: list[Table] | None, section_label: str | None) -> list[IntegrityWarning]:
+def _nested_table_dropped_warnings(
+    tables: list[Table] | None, section_label: str | None
+) -> list[IntegrityWarning]:
     """One warning per table in this branch with 1+ cell whose nested table
     was dropped (TableCell.nested_table_dropped) -- mirrors
     _ocr_recovered_table_warnings exactly (same branch-wide scan, same
@@ -888,7 +937,12 @@ def _nested_table_dropped_warnings(tables: list[Table] | None, section_label: st
     section_ref = f'The "{section_label}" section' if section_label else "This section"
     out: list[IntegrityWarning] = []
     for table in tables or []:
-        dropped_count = sum(1 for row in table.cells for cell in row if cell is not None and cell.nested_table_dropped)
+        dropped_count = sum(
+            1
+            for row in table.cells
+            for cell in row
+            if cell is not None and cell.nested_table_dropped
+        )
         if dropped_count == 0:
             continue
         out.append(
@@ -896,7 +950,11 @@ def _nested_table_dropped_warnings(tables: list[Table] | None, section_label: st
                 WarningKind.NESTED_TABLE_DROPPED,
                 f"{section_ref} contains a table ({table.id}) with {dropped_count} cell(s) containing a "
                 "nested table whose content was not extracted -- please check the source document manually.",
-                detail={"section": section_label or "(root)", "tableId": table.id, "droppedCellCount": dropped_count},
+                detail={
+                    "section": section_label or "(root)",
+                    "tableId": table.id,
+                    "droppedCellCount": dropped_count,
+                },
             )
         )
     return out
@@ -905,7 +963,9 @@ def _nested_table_dropped_warnings(tables: list[Table] | None, section_label: st
 _SECTION_LABEL_EXCERPT_CHARS = 60
 
 
-def _derive_section_label(blocks: list[Block], tables: list[Table] | None, figures: list[Figure] | None) -> str | None:
+def _derive_section_label(
+    blocks: list[Block], tables: list[Table] | None, figures: list[Figure] | None
+) -> str | None:
     """Human-readable label for a branch's section, threaded into narration
     (see NarrationPublisher) so the progress UI can show WHICH real content
     a job is analyzing/failed on, not just an anonymous "Section N of M".
@@ -1000,7 +1060,9 @@ def _build_document_outline(branches: list[list[Block]]) -> str:
     return "\n".join(lines)
 
 
-_GLOSSARY_HEADING_PATTERN = re.compile(r"(?i)\b(definition|acronym|glossary|abbreviation|terminolog)")
+_GLOSSARY_HEADING_PATTERN = re.compile(
+    r"(?i)\b(definition|acronym|glossary|abbreviation|terminolog)"
+)
 _GLOSSARY_INLINE_MAX_TOKENS = 500
 
 # Mirrors _GLOSSARY_HEADING_PATTERN's own shape exactly -- a deterministic,
@@ -1082,7 +1144,11 @@ def _front_matter_guard_for_whole_document(blocks: list[Block]) -> str | None:
     Returns None when no heading matches -- byte-identical prompt to before
     this guard existed. Purely advisory, exactly like the per-branch guard:
     nothing is ever skipped, merged, or suppressed."""
-    labels = [label for label in _branch_heading_labels(blocks) if _FRONT_MATTER_HEADING_PATTERN.search(label)]
+    labels = [
+        label
+        for label in _branch_heading_labels(blocks)
+        if _FRONT_MATTER_HEADING_PATTERN.search(label)
+    ]
     if not labels:
         return None
     named = "; ".join(f'"{label}"' for label in dict.fromkeys(labels))
@@ -1124,8 +1190,11 @@ _PRIMER_BACKGROUND_LABEL = (
 
 
 def _combine_global_context(
-    base: str | None, branch_index: int, glossary_sections: list[tuple[int, str, str]],
-    primer_context: str | None = None, front_matter_branch_indices: set[int] | None = None,
+    base: str | None,
+    branch_index: int,
+    glossary_sections: list[tuple[int, str, str]],
+    primer_context: str | None = None,
+    front_matter_branch_indices: set[int] | None = None,
 ) -> str | None:
     extra = _glossary_context_for_branch(branch_index, glossary_sections)
     guard = (
@@ -1157,7 +1226,9 @@ def _table_to_markdown(table: Table) -> str | None:
     return "\n".join(lines)
 
 
-def _render_block_line(block: Block, figure_id_by_block_id: dict[str, str] | None = None) -> str | None:
+def _render_block_line(
+    block: Block, figure_id_by_block_id: dict[str, str] | None = None
+) -> str | None:
     """One block rendered as a markdown-ish line for render_section, or None
     to omit it entirely (a 'none'-caption figure placeholder, a
     never-actually-emitted TABLE-kind block -- tables live in the separate
@@ -1289,7 +1360,9 @@ def _apply_det_parent_summary(
         counter.complete("improve")
     if parent_summary_client is None:
         return
-    parent_ids = [n.local_id for n in det_nodes if n.type in (WorkItemType.EPIC, WorkItemType.FEATURE)]
+    parent_ids = [
+        n.local_id for n in det_nodes if n.type in (WorkItemType.EPIC, WorkItemType.FEATURE)
+    ]
     # Only a document that had deterministic subtrees was planned; for any other
     # (a text PDF, a scan) a "summarize 0 of 0" marker would be noise.
     if counter is not None and counter.is_planned("summarize"):
@@ -1303,9 +1376,15 @@ def _apply_det_parent_summary(
     token_budget = _resolve_caps(model, caps_client=parent_summary_client).coverage_budget_tokens
     try:
         _apply_parent_summary_pass(
-            det_nodes, parent_ids, parent_summary_client, det_warnings,
-            token_budget=token_budget, progress_callback=progress_callback,
-            tables_by_id=tables_by_id, chunk_concurrency=chunk_concurrency, user_id=user_id,
+            det_nodes,
+            parent_ids,
+            parent_summary_client,
+            det_warnings,
+            token_budget=token_budget,
+            progress_callback=progress_callback,
+            tables_by_id=tables_by_id,
+            chunk_concurrency=chunk_concurrency,
+            user_id=user_id,
         )
     finally:
         if counter is not None:
@@ -1419,18 +1498,30 @@ def _detect_deterministic_subtrees(
             return
         progress_callback(
             LevelingProgress(
-                phase="deterministic_subtree", branch_index=None, branch_count=0,
-                blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[],
-                subtree_index=subtree_index, subtree_count=subtree_count, subtree_label=label,
+                phase="deterministic_subtree",
+                branch_index=None,
+                branch_count=0,
+                blocks_done=0,
+                blocks_total=0,
+                kb_grounded=False,
+                kb_citations=[],
+                subtree_index=subtree_index,
+                subtree_count=subtree_count,
+                subtree_label=label,
             )
         )
 
     for table, rows in qualifying_table_rows:
         _fire_subtree(f"Table {table.id}")
         nodes, warnings = build_hierarchy_subtree(
-            rows, f"det{subtree_index}_", title_tag_client, synthesis_client,
-            progress_callback=progress_callback, subtree_index=subtree_index,
-            subtree_count=subtree_count, subtree_label=f"Table {table.id}",
+            rows,
+            f"det{subtree_index}_",
+            title_tag_client,
+            synthesis_client,
+            progress_callback=progress_callback,
+            subtree_index=subtree_index,
+            subtree_count=subtree_count,
+            subtree_label=f"Table {table.id}",
             # Every row here came from parsing THIS one table (see
             # rows_from_table) -- there is no heading ancestor above it to
             # walk via parent_index alone, so section_path is seeded with
@@ -1438,7 +1529,8 @@ def _detect_deterministic_subtrees(
             # caption-or-id-fallback convention _build_headingless_tree's
             # own per-table title already uses.
             section_path_root=table.caption or f"Table {table.id}",
-            chunk_concurrency=chunk_concurrency, user_id=user_id,
+            chunk_concurrency=chunk_concurrency,
+            user_id=user_id,
         )
         # Every node in this subtree came from THIS one Table -- unlike a
         # heading-derived node, which can fold zero or more Tables into its
@@ -1472,10 +1564,17 @@ def _detect_deterministic_subtrees(
     if heading_rows:
         _fire_subtree("Heading hierarchy")
         nodes, build_warnings = build_hierarchy_subtree(
-            heading_rows, f"det{subtree_index}_", title_tag_client, synthesis_client,
-            progress_callback=progress_callback, subtree_index=subtree_index,
-            subtree_count=subtree_count, subtree_label="Heading hierarchy",
-            chunk_concurrency=chunk_concurrency, user_id=user_id, strip_titles=False,
+            heading_rows,
+            f"det{subtree_index}_",
+            title_tag_client,
+            synthesis_client,
+            progress_callback=progress_callback,
+            subtree_index=subtree_index,
+            subtree_count=subtree_count,
+            subtree_label="Heading hierarchy",
+            chunk_concurrency=chunk_concurrency,
+            user_id=user_id,
+            strip_titles=False,
         )
         # The same typing BASELINE applies to heading documents (see tree_builder.build_baseline_tree), so both modes
         # give one shape; the missing parents are added once, over the whole tree, by ensure_ladder at the end.
@@ -1511,7 +1610,8 @@ def _detect_deterministic_subtrees(
         # perceive, regardless of which headings this pass happened to
         # claim.
         heading_boundaries = [
-            i for i, b in enumerate(doc.blocks)
+            i
+            for i, b in enumerate(doc.blocks)
             if b.kind == BlockKind.HEADING and b.heading_level is not None
         ]
         fig_map = figures_by_id(doc.figures)
@@ -1559,7 +1659,9 @@ def _detect_deterministic_subtrees(
                 # wasn't supplied at all (an older/未-updated caller),
                 # matching pre-figure_ids behavior.
                 figure_id = (
-                    figure_id_by_block_id.get(block.id) if figure_id_by_block_id is not None else None
+                    figure_id_by_block_id.get(block.id)
+                    if figure_id_by_block_id is not None
+                    else None
                 )
                 figure_line = _figure_line(block)
                 if figure_line is None:
@@ -1583,17 +1685,21 @@ def _detect_deterministic_subtrees(
                 # "> Figure: ..." line was pure duplication (removed per
                 # explicit user request), matching build_baseline_tree's
                 # identical fix.
-                current_target.source_ref = _widen_page_end(current_target.source_ref, block.source_ref)
+                current_target.source_ref = _widen_page_end(
+                    current_target.source_ref, block.source_ref
+                )
                 if figure_id is not None:
                     current_target.figure_ids.append(figure_id)
                 continue
 
             current_target.description = assemble_description(
-                current_target.description, block.text,
+                current_target.description,
+                block.text,
             )
             current_target.fidelity_hash = _hash_description(current_target.description)
             current_target.identity_hash = _hash_identity(
-                current_target.description, current_target.source_ref,
+                current_target.description,
+                current_target.source_ref,
             )
             current_target.source_ref = _widen_page_end(current_target.source_ref, block.source_ref)
 
@@ -1605,9 +1711,13 @@ def _detect_deterministic_subtrees(
         # pass O(T*H^2) instead of O(T*H).
         boundary_upper_by_idx: dict[int, tuple | None] = {}
         for k, boundary_idx in enumerate(heading_boundaries):
-            next_boundary_idx = heading_boundaries[k + 1] if k + 1 < len(heading_boundaries) else None
+            next_boundary_idx = (
+                heading_boundaries[k + 1] if k + 1 < len(heading_boundaries) else None
+            )
             boundary_upper_by_idx[boundary_idx] = (
-                _order_key(doc.blocks[next_boundary_idx].source_ref) if next_boundary_idx is not None else None
+                _order_key(doc.blocks[next_boundary_idx].source_ref)
+                if next_boundary_idx is not None
+                else None
             )
 
         for table in doc.tables:
@@ -1672,8 +1782,13 @@ def _detect_deterministic_subtrees(
 
     if not claimed_heading_block_ids and not claimed_table_ids:
         _apply_det_parent_summary(
-            det_nodes, det_warnings, parent_summary_client, model, progress_callback,
-            tables_by_id={t.id: t for t in doc.tables}, chunk_concurrency=chunk_concurrency,
+            det_nodes,
+            det_warnings,
+            parent_summary_client,
+            model,
+            progress_callback,
+            tables_by_id={t.id: t for t in doc.tables},
+            chunk_concurrency=chunk_concurrency,
             user_id=user_id,
         )
         return det_nodes, det_warnings, doc
@@ -1696,7 +1811,8 @@ def _detect_deterministic_subtrees(
         if b.kind == BlockKind.FIGURE and b.id in claimed_heading_block_ids
     }
     residual_figures = [
-        f for f in doc.figures
+        f
+        for f in doc.figures
         if (f.source_ref.document_path, f.source_ref.start_offset) not in claimed_figure_offsets
     ]
     llm_doc = doc.model_copy(
@@ -1704,8 +1820,13 @@ def _detect_deterministic_subtrees(
     )
 
     _apply_det_parent_summary(
-        det_nodes, det_warnings, parent_summary_client, model, progress_callback,
-        tables_by_id={t.id: t for t in doc.tables}, chunk_concurrency=chunk_concurrency,
+        det_nodes,
+        det_warnings,
+        parent_summary_client,
+        model,
+        progress_callback,
+        tables_by_id={t.id: t for t in doc.tables},
+        chunk_concurrency=chunk_concurrency,
         user_id=user_id,
     )
     return det_nodes, det_warnings, llm_doc
@@ -1833,8 +1954,13 @@ def _build_survey_tree(
     if progress_callback is not None:
         progress_callback(
             LevelingProgress(
-                phase="preparing_analysis", branch_index=None, branch_count=0,
-                blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[],
+                phase="preparing_analysis",
+                branch_index=None,
+                branch_count=0,
+                blocks_done=0,
+                blocks_total=0,
+                kb_grounded=False,
+                kb_citations=[],
                 model=getattr(analysis_client, "model", None),
             )
         )
@@ -1889,7 +2015,11 @@ def _build_survey_tree(
     # that doesn't use any of these conventions -- `llm_doc is doc` in that
     # case (a true no-op, not a copy).
     det_nodes, det_warnings, llm_doc = _detect_deterministic_subtrees(
-        doc, title_tag_client, synthesis_client, parent_summary_client, model,
+        doc,
+        title_tag_client,
+        synthesis_client,
+        parent_summary_client,
+        model,
         progress_callback=progress_callback,
         figure_id_by_block_id=figure_id_by_block_id,
         chunk_concurrency=chunk_concurrency,
@@ -1930,13 +2060,23 @@ def _build_survey_tree(
         if kb_deps_present:
             query_text = _document_level_query_text(doc)
             doc_kb_context, raw_doc_citations = retrieve_context(
-                user_id, query_text, embed_client, vector_store,
+                user_id,
+                query_text,
+                embed_client,
+                vector_store,
             )
             doc_kb_citations = _resolve_kb_citations(
-                query_text, raw_doc_citations, kb_relevance_client, debug_capture=debug_capture, user_id=user_id,
+                query_text,
+                raw_doc_citations,
+                kb_relevance_client,
+                debug_capture=debug_capture,
+                user_id=user_id,
             )
             doc_kb_context, doc_kb_citations = _merge_always_include_context(
-                doc_kb_context, doc_kb_citations, user_id, vector_store,
+                doc_kb_context,
+                doc_kb_citations,
+                user_id,
+                vector_store,
             )
         deduped_citations = sorted(doc_kb_citations, key=lambda c: c.source_file)
         kb_files_available = _count_kb_files(user_id, vector_store) if kb_deps_present else None
@@ -1964,73 +2104,139 @@ def _build_survey_tree(
                 category_checklist_definitions: dict[str, str] | None = None
                 if vector_store is not None and user_id is not None:
                     sorted_citations = sorted(
-                        doc_kb_citations, key=lambda c: c.similarity, reverse=True,
+                        doc_kb_citations,
+                        key=lambda c: c.similarity,
+                        reverse=True,
                     )
                     for citation in sorted_citations:
                         checklist = vector_store.get_quality_checklist(
-                            user_id, citation.source_file,
+                            user_id,
+                            citation.source_file,
                         )
                         if checklist:
                             category_checklist = checklist
-                            category_checklist_definitions = vector_store.get_quality_checklist_definitions(
-                                user_id, citation.source_file,
+                            category_checklist_definitions = (
+                                vector_store.get_quality_checklist_definitions(
+                                    user_id,
+                                    citation.source_file,
+                                )
                             )
                             break
                 scoring_kb_context = doc_kb_context
                 profile_checklist, profile_definitions, profile_context = scoring_inputs(kb_profile)
                 if profile_checklist is not None:
-                    category_checklist, category_checklist_definitions, scoring_kb_context = profile_checklist, profile_definitions, profile_context
+                    category_checklist, category_checklist_definitions, scoring_kb_context = (
+                        profile_checklist,
+                        profile_definitions,
+                        profile_context,
+                    )
                 _score_all_requirements(
-                    requirement_nodes, scoring_client, all_warnings, criteria_retriever,
-                    scoring_kb_context, doc_kb_citations, progress_callback, model_name,
-                    len(det_nodes), 0, category_checklist, category_checklist_definitions,
-                    chunk_concurrency=chunk_concurrency, user_id=user_id,
+                    requirement_nodes,
+                    scoring_client,
+                    all_warnings,
+                    criteria_retriever,
+                    scoring_kb_context,
+                    doc_kb_citations,
+                    progress_callback,
+                    model_name,
+                    len(det_nodes),
+                    0,
+                    category_checklist,
+                    category_checklist_definitions,
+                    chunk_concurrency=chunk_concurrency,
+                    user_id=user_id,
                 )
             _score_epics_and_features(
-                all_nodes, scoring_client, all_warnings, progress_callback, model_name,
-                len(det_nodes), 0, debug_capture=debug_capture, chunk_concurrency=chunk_concurrency,
+                all_nodes,
+                scoring_client,
+                all_warnings,
+                progress_callback,
+                model_name,
+                len(det_nodes),
+                0,
+                debug_capture=debug_capture,
+                chunk_concurrency=chunk_concurrency,
                 user_id=user_id,
             )
 
         _detect_conflicting_duplicates(
-            all_nodes, embed_client, conflict_client, all_warnings,
-            progress_callback, len(det_nodes), 0, user_id=user_id,
+            all_nodes,
+            embed_client,
+            conflict_client,
+            all_warnings,
+            progress_callback,
+            len(det_nodes),
+            0,
+            user_id=user_id,
         )
         # Complete the document's own structure first, so one Epic titled from the document wraps every orphan and the
         # catch-all below has nothing left to do (the same shape BASELINE gives).
         ensure_ladder(
-            all_nodes, _derive_doc_title(doc), all_warnings, scope=scope_with_ancestors(det_nodes, all_nodes)
+            all_nodes,
+            _derive_doc_title(doc),
+            all_warnings,
+            scope=scope_with_ancestors(det_nodes, all_nodes),
         )
         _regroup_disconnected_roots(
-            all_nodes, "regroup_", grouping_client, all_warnings,
-            progress_callback, len(det_nodes), 0, debug_capture=debug_capture, user_id=user_id,
-            embed_client=embed_client, deterministic=root_regroup_mode == "deterministic",
+            all_nodes,
+            "regroup_",
+            grouping_client,
+            all_warnings,
+            progress_callback,
+            len(det_nodes),
+            0,
+            debug_capture=debug_capture,
+            user_id=user_id,
+            embed_client=embed_client,
+            deterministic=root_regroup_mode == "deterministic",
             cosine_threshold=root_regroup_cosine_threshold,
         )
-        _ensure_root_features_have_epic_parent(all_nodes, "regroup_", all_warnings, _derive_doc_title(doc))
+        _ensure_root_features_have_epic_parent(
+            all_nodes, "regroup_", all_warnings, _derive_doc_title(doc)
+        )
         recompute_child_types(all_nodes)
         # Every node that came from the document's own structure must have survived the stages above.
         restore_lost_nodes(det_nodes, all_nodes, all_warnings, "structure stages")
         ensure_ladder(
-            all_nodes, _derive_doc_title(doc), all_warnings, scope=scope_with_ancestors(det_nodes, all_nodes)
+            all_nodes,
+            _derive_doc_title(doc),
+            all_warnings,
+            scope=scope_with_ancestors(det_nodes, all_nodes),
         )
 
         trace_links: list[TraceLink] = []
         if link_type_client is not None:
             trace_links = _infer_trace_links_for_nodes(
-                all_nodes, link_type_client, link_type_catalog or [], all_warnings,
-                progress_callback, len(det_nodes), 0, debug_capture=debug_capture, kb_context=doc_kb_context,
+                all_nodes,
+                link_type_client,
+                link_type_catalog or [],
+                all_warnings,
+                progress_callback,
+                len(det_nodes),
+                0,
+                debug_capture=debug_capture,
+                kb_context=doc_kb_context,
                 user_id=user_id,
             )
 
         _propose_criteria_step(
-            all_nodes, doc, acceptance_criteria_client, document_study_client, all_warnings, user_id=user_id,
-            study_handle=study_handle, study_enabled=study_enabled,
-            background=primer_context, limiter=criteria_limiter, model=model,
+            all_nodes,
+            doc,
+            acceptance_criteria_client,
+            document_study_client,
+            all_warnings,
+            user_id=user_id,
+            study_handle=study_handle,
+            study_enabled=study_enabled,
+            background=primer_context,
+            limiter=criteria_limiter,
+            model=model,
         )
         return WorkItemTree(
-            nodes=all_nodes, warnings=finalize_warnings(all_warnings),
-            kb_citations=deduped_citations, kb_coverage=_kb_coverage(kb_files_available, deduped_citations),
+            nodes=all_nodes,
+            warnings=finalize_warnings(all_warnings),
+            kb_citations=deduped_citations,
+            kb_coverage=_kb_coverage(kb_files_available, deduped_citations),
             trace_links=trace_links,
         )
 
@@ -2051,7 +2257,9 @@ def _build_survey_tree(
     # analysis_client is the same OrchestratorLlmClient instance already
     # implementing every other Protocol here -- reused as the live caps
     # lookup for a model not already in _MODEL_CAPS, no new client wiring.
-    branch_cap, context_budget_tokens, coverage_budget_tokens, supports_tools = _resolve_caps(model, caps_client=analysis_client)
+    branch_cap, context_budget_tokens, coverage_budget_tokens, supports_tools = _resolve_caps(
+        model, caps_client=analysis_client
+    )
 
     # §3: whole-document single-call gate. A single long-context call over
     # the WHOLE document is not the "repeated raw-text stuffing across many
@@ -2066,7 +2274,9 @@ def _build_survey_tree(
     # still under-synthesizes in one holistic call (see _ModelCaps.
     # coverage_budget_tokens's own docstring).
     whole_doc_text = render_section(doc.blocks, doc.tables, doc.figures)
-    fits_whole_document = _estimate_tokens(whole_doc_text) + _WHOLE_DOC_HEADROOM_TOKENS <= coverage_budget_tokens
+    fits_whole_document = (
+        _estimate_tokens(whole_doc_text) + _WHOLE_DOC_HEADROOM_TOKENS <= coverage_budget_tokens
+    )
 
     # Real heading count, computed once here (where doc.blocks is already in
     # scope) for the whole-document coverage hint (§3, see
@@ -2154,7 +2364,9 @@ def _build_survey_tree(
         # docstring for why this is SURVEY-only, not applied to
         # build_baseline_tree's branches.
         branches = [
-            bounded_branch for branch in branches for bounded_branch in _bound_branch_size(branch, branch_cap)
+            bounded_branch
+            for branch in branches
+            for bounded_branch in _bound_branch_size(branch, branch_cap)
         ]
         # §3.3: the document doesn't fit in one call, so every branch's own
         # call would otherwise see ONLY its own fragment -- the exact
@@ -2164,7 +2376,9 @@ def _build_survey_tree(
         # awareness without repeating the confirmed degrading pattern of
         # re-sending the same raw full document on every one of many calls.
         global_context = _build_document_outline(branches)
-        glossary_branch_tables = _partition_tables_by_branch(branches, doc.tables) if branches else []
+        glossary_branch_tables = (
+            _partition_tables_by_branch(branches, doc.tables) if branches else []
+        )
         glossary_sections = _find_glossary_sections(branches, glossary_branch_tables)
         front_matter_branch_indices = _find_front_matter_branches(branches)
 
@@ -2179,13 +2393,22 @@ def _build_survey_tree(
         # document, not one per branch -- the SAME resulting kb_context
         # string grounds every branch's analyze_section + scoring call.
         query_text = _document_level_query_text(doc)
-        doc_kb_context, raw_doc_citations = retrieve_context(user_id, query_text, embed_client, vector_store)
+        doc_kb_context, raw_doc_citations = retrieve_context(
+            user_id, query_text, embed_client, vector_store
+        )
         doc_kb_citations = _resolve_kb_citations(
-            query_text, raw_doc_citations, kb_relevance_client, debug_capture=debug_capture, user_id=user_id,
+            query_text,
+            raw_doc_citations,
+            kb_relevance_client,
+            debug_capture=debug_capture,
+            user_id=user_id,
         )
         fallback_always_include = fetch_always_include_context(user_id, vector_store)
         doc_kb_context, doc_kb_citations = _merge_always_include_context(
-            doc_kb_context, doc_kb_citations, user_id, vector_store,
+            doc_kb_context,
+            doc_kb_citations,
+            user_id,
+            vector_store,
             prefetched=fallback_always_include,
         )
     elif kb_deps_present and supports_tools:
@@ -2193,7 +2416,9 @@ def _build_survey_tree(
         # during analyze_section_agentic -- retrieve_fn just executes
         # whatever query the model asks for, closing over these three deps
         # so OrchestratorLlmClient/analyze_section_agentic stay KB-agnostic.
-        def retrieve_fn(query: str, _uid=user_id, _ec=embed_client, _vs=vector_store) -> tuple[str | None, list[dict]]:
+        def retrieve_fn(
+            query: str, _uid=user_id, _ec=embed_client, _vs=vector_store
+        ) -> tuple[str | None, list[dict]]:
             return retrieve_context(_uid, query, _ec, _vs)
 
         # §15: same injected-closure convention, offering the model a
@@ -2226,7 +2451,10 @@ def _build_survey_tree(
         # here too so it grounds every branch call the same way it does on
         # the fallback path above.
         doc_kb_context, doc_kb_citations = _merge_always_include_context(
-            doc_kb_context, doc_kb_citations, user_id, vector_store,
+            doc_kb_context,
+            doc_kb_citations,
+            user_id,
+            vector_store,
         )
 
     kb_files_available = _count_kb_files(user_id, vector_store) if kb_deps_present else None
@@ -2240,7 +2468,9 @@ def _build_survey_tree(
     # to "section 3" the same way the outline names it.
     read_other_section_fn: Callable[[str], str | None] | None = None
     if global_context is not None:
-        branch_texts_by_id = {str(i + 1): render_section(b, None, None) for i, b in enumerate(branches)}
+        branch_texts_by_id = {
+            str(i + 1): render_section(b, None, None) for i, b in enumerate(branches)
+        }
 
         def read_other_section_fn(section_id: str, _texts=branch_texts_by_id) -> str | None:
             return _texts.get(section_id)
@@ -2294,31 +2524,41 @@ def _build_survey_tree(
         # variable: that variable's None-ness is what `whole_document` below
         # is derived from, and a guard string must not flip that flag.
         single_call_front_matter_guard = _front_matter_guard_for_whole_document(doc.blocks)
-        branch_skeletons = [_build_survey_skeleton_for_branch(
-            doc.blocks, analysis_client,
-            node_id_prefix="",
-            tables=doc.tables, figures=doc.figures,
-            supports_tools=supports_tools, retrieve_fn=retrieve_fn, kb_context=doc_kb_context,
-            kb_context_citations=doc_kb_citations,
-            list_documents_fn=list_documents_fn, read_document_fn=read_document_fn,
-            global_context=single_call_front_matter_guard,
-            # True precisely when the entire document was analyzed in one
-            # pass with no compact outline built (global_context is None) --
-            # even a "single branch" can have global_context set if
-            # _merge_branches_by_budget collapsed everything back into one
-            # branch on the doesn't-fit path (§4), which is NOT the
-            # whole-doc-gate's "fits in one call outright" case.
-            whole_document=(global_context is None),
-            topic_count=heading_count + len(doc_table_groups) + len(doc_requirement_rows),
-            table_groups=doc_table_groups,
-            requirement_rows=doc_requirement_rows,
-            heading_hints=doc_heading_hints,
-            branch_index=0, branch_count=1, blocks_done_before=0, blocks_total=blocks_total,
-            progress_callback=progress_callback,
-            figure_id_by_block_id=figure_id_by_block_id,
-            figure_caption_status_by_id=figure_caption_status_by_id,
-            user_id=user_id,
-        )]
+        branch_skeletons = [
+            _build_survey_skeleton_for_branch(
+                doc.blocks,
+                analysis_client,
+                node_id_prefix="",
+                tables=doc.tables,
+                figures=doc.figures,
+                supports_tools=supports_tools,
+                retrieve_fn=retrieve_fn,
+                kb_context=doc_kb_context,
+                kb_context_citations=doc_kb_citations,
+                list_documents_fn=list_documents_fn,
+                read_document_fn=read_document_fn,
+                global_context=single_call_front_matter_guard,
+                # True precisely when the entire document was analyzed in one
+                # pass with no compact outline built (global_context is None) --
+                # even a "single branch" can have global_context set if
+                # _merge_branches_by_budget collapsed everything back into one
+                # branch on the doesn't-fit path (§4), which is NOT the
+                # whole-doc-gate's "fits in one call outright" case.
+                whole_document=(global_context is None),
+                topic_count=heading_count + len(doc_table_groups) + len(doc_requirement_rows),
+                table_groups=doc_table_groups,
+                requirement_rows=doc_requirement_rows,
+                heading_hints=doc_heading_hints,
+                branch_index=0,
+                branch_count=1,
+                blocks_done_before=0,
+                blocks_total=blocks_total,
+                progress_callback=progress_callback,
+                figure_id_by_block_id=figure_id_by_block_id,
+                figure_caption_status_by_id=figure_caption_status_by_id,
+                user_id=user_id,
+            )
+        ]
     else:
         # blocks_done_before is precomputed per branch (each branch's own
         # fixed offset into the document, from branch sizes known upfront)
@@ -2359,7 +2599,9 @@ def _build_survey_tree(
             # beats a qualitative reminder" finding to the multi-branch path,
             # which previously passed no topic_count here at all. See
             # orchestrator_llm_client._branch_topic_hint's own docstring.
-            branch_heading_count = sum(1 for b in branch_blocks if resolve_block_depth(b)[0] is not None)
+            branch_heading_count = sum(
+                1 for b in branch_blocks if resolve_block_depth(b)[0] is not None
+            )
             # Per-branch table-group floor -- mirrors branch_heading_count's
             # own per-branch scoping directly above. A single Table's rows
             # are never split across branches (branch_tables buckets whole
@@ -2402,16 +2644,25 @@ def _build_survey_tree(
                 # keeps the document-level grounding.
                 branch_query = _blocks_query_text(branch_blocks)
                 branch_context, raw_branch_citations = retrieve_context(
-                    user_id, branch_query, embed_client, vector_store,
+                    user_id,
+                    branch_query,
+                    embed_client,
+                    vector_store,
                 )
                 if branch_context is not None:
                     branch_kb_citations = _resolve_kb_citations(
-                        branch_query, raw_branch_citations, kb_relevance_client,
-                        node_id_prefix=f"br{branch_index}_", debug_capture=debug_capture,
+                        branch_query,
+                        raw_branch_citations,
+                        kb_relevance_client,
+                        node_id_prefix=f"br{branch_index}_",
+                        debug_capture=debug_capture,
                         user_id=user_id,
                     )
                     branch_kb_context, branch_kb_citations = _merge_always_include_context(
-                        branch_context, branch_kb_citations, user_id, vector_store,
+                        branch_context,
+                        branch_kb_citations,
+                        user_id,
+                        vector_store,
                         prefetched=fallback_always_include,
                     )
                     # The fallback skeleton reports no citations of its own
@@ -2420,24 +2671,35 @@ def _build_survey_tree(
                     # list in document order, whatever order threads finish.
                     branch_fallback_citations[branch_index] = branch_kb_citations
             return _build_survey_skeleton_for_branch(
-                branch_blocks, analysis_client,
+                branch_blocks,
+                analysis_client,
                 node_id_prefix=f"br{branch_index}_",
                 tables=branch_tables[branch_index] if branch_tables is not None else None,
-                supports_tools=supports_tools, retrieve_fn=retrieve_fn,
+                supports_tools=supports_tools,
+                retrieve_fn=retrieve_fn,
                 kb_context=branch_kb_context,
                 kb_context_citations=branch_kb_citations,
-                list_documents_fn=list_documents_fn, read_document_fn=read_document_fn,
+                list_documents_fn=list_documents_fn,
+                read_document_fn=read_document_fn,
                 global_context=_combine_global_context(
-                    global_context, branch_index, glossary_sections, primer_context, front_matter_branch_indices,
+                    global_context,
+                    branch_index,
+                    glossary_sections,
+                    primer_context,
+                    front_matter_branch_indices,
                 ),
                 read_other_section_fn=read_other_section_fn,
-                topic_count=branch_heading_count + len(branch_table_groups) + len(branch_requirement_rows),
+                topic_count=branch_heading_count
+                + len(branch_table_groups)
+                + len(branch_requirement_rows),
                 table_groups=branch_table_groups,
                 requirement_rows=branch_requirement_rows,
                 heading_hints=branch_heading_hints,
-                branch_index=branch_index, branch_count=len(branches),
+                branch_index=branch_index,
+                branch_count=len(branches),
                 blocks_done_before=blocks_done_before_by_branch[branch_index],
-                blocks_total=blocks_total, progress_callback=_fire_progress,
+                blocks_total=blocks_total,
+                progress_callback=_fire_progress,
                 figure_id_by_block_id=figure_id_by_block_id,
                 figure_caption_status_by_id=figure_caption_status_by_id,
                 user_id=user_id,
@@ -2458,7 +2720,10 @@ def _build_survey_tree(
             # a sequential run would produce regardless of which branch's
             # LLM call happens to come back first.
             with ThreadPoolExecutor(max_workers=branch_concurrency) as executor:
-                futures = [submit_in_context(executor, _run_branch, i, branch_blocks) for i, branch_blocks in enumerate(branches)]
+                futures = [
+                    submit_in_context(executor, _run_branch, i, branch_blocks)
+                    for i, branch_blocks in enumerate(branches)
+                ]
                 branch_skeletons = [future.result() for future in futures]
         for branch_index in sorted(branch_fallback_citations):
             all_kb_citations.extend(branch_fallback_citations[branch_index])
@@ -2499,16 +2764,32 @@ def _build_survey_tree(
     # narrates via its own new 'map_scope' phase, added alongside the
     # frontend phase-mapping changes that let it do so without regroup_roots'
     # own stepper-regression problem.
-    ensure_ladder(all_nodes, _derive_doc_title(doc), all_warnings, scope=scope_with_ancestors(det_nodes, all_nodes))
+    ensure_ladder(
+        all_nodes,
+        _derive_doc_title(doc),
+        all_warnings,
+        scope=scope_with_ancestors(det_nodes, all_nodes),
+    )
     _regroup_disconnected_roots(
-        all_nodes, "regroup_", grouping_client, all_warnings, debug_capture=debug_capture, user_id=user_id,
-        embed_client=embed_client, deterministic=root_regroup_mode == "deterministic",
+        all_nodes,
+        "regroup_",
+        grouping_client,
+        all_warnings,
+        debug_capture=debug_capture,
+        user_id=user_id,
+        embed_client=embed_client,
+        deterministic=root_regroup_mode == "deterministic",
         cosine_threshold=root_regroup_cosine_threshold,
     )
-    _ensure_root_features_have_epic_parent(all_nodes, "regroup_", all_warnings, _derive_doc_title(doc))
+    _ensure_root_features_have_epic_parent(
+        all_nodes, "regroup_", all_warnings, _derive_doc_title(doc)
+    )
     restore_lost_nodes(det_nodes, all_nodes, all_warnings, "structure stages")
     ensure_ladder(
-        all_nodes, _derive_doc_title(doc), all_warnings, scope=scope_with_ancestors(det_nodes, all_nodes)
+        all_nodes,
+        _derive_doc_title(doc),
+        all_warnings,
+        scope=scope_with_ancestors(det_nodes, all_nodes),
     )
 
     # STAGE 2: whole-document figure/table -> EXACT node mapping, run here
@@ -2532,12 +2813,18 @@ def _build_survey_tree(
     excluded_table_ids: list[str] = []
     map_fn = getattr(analysis_client, "map_figures_tables", None)
     if map_fn is not None:
-        (
-            figure_table_ids_by_local_id, excluded_figure_ids, excluded_table_ids
-        ) = _map_figures_tables_to_nodes(
-            branch_skeletons, map_fn, figures_by_id(doc.figures),
-            figure_id_by_block_id, all_warnings, branch_concurrency,
-            progress_callback=progress_callback, blocks_total=blocks_total, user_id=user_id,
+        (figure_table_ids_by_local_id, excluded_figure_ids, excluded_table_ids) = (
+            _map_figures_tables_to_nodes(
+                branch_skeletons,
+                map_fn,
+                figures_by_id(doc.figures),
+                figure_id_by_block_id,
+                all_warnings,
+                branch_concurrency,
+                progress_callback=progress_callback,
+                blocks_total=blocks_total,
+                user_id=user_id,
+            )
         )
         # Stage 3's hallucination guard (see _author_branch_content) checks a
         # node's assigned ids against what was OFFERED for it -- per branch
@@ -2577,7 +2864,10 @@ def _build_survey_tree(
     if branch_concurrency <= 1 or len(branch_skeletons) <= 1:
         branch_results: list[_BranchContentResult] = [
             _author_branch_content(
-                skeleton, analysis_client, figure_table_ids_by_local_id, title_distillation_client,
+                skeleton,
+                analysis_client,
+                figure_table_ids_by_local_id,
+                title_distillation_client,
                 user_id=user_id,
             )
             for skeleton in branch_skeletons
@@ -2586,8 +2876,13 @@ def _build_survey_tree(
         with ThreadPoolExecutor(max_workers=branch_concurrency) as executor:
             content_futures = [
                 submit_in_context(
-                    executor, _author_branch_content, skeleton, analysis_client, figure_table_ids_by_local_id,
-                    title_distillation_client, user_id=user_id,
+                    executor,
+                    _author_branch_content,
+                    skeleton,
+                    analysis_client,
+                    figure_table_ids_by_local_id,
+                    title_distillation_client,
+                    user_id=user_id,
                 )
                 for skeleton in branch_skeletons
             ]
@@ -2659,18 +2954,35 @@ def _build_survey_tree(
                     checklist = vector_store.get_quality_checklist(user_id, citation.source_file)
                     if checklist:
                         category_checklist = checklist
-                        category_checklist_definitions = vector_store.get_quality_checklist_definitions(
-                            user_id, citation.source_file,
+                        category_checklist_definitions = (
+                            vector_store.get_quality_checklist_definitions(
+                                user_id,
+                                citation.source_file,
+                            )
                         )
                         break
             profile_checklist, profile_definitions, profile_context = scoring_inputs(kb_profile)
             if profile_checklist is not None:
-                category_checklist, category_checklist_definitions, combined_kb_context = profile_checklist, profile_definitions, profile_context
+                category_checklist, category_checklist_definitions, combined_kb_context = (
+                    profile_checklist,
+                    profile_definitions,
+                    profile_context,
+                )
             _score_all_requirements(
-                requirement_nodes, scoring_client, all_warnings, criteria_retriever,
-                combined_kb_context, deduped_citations, progress_callback, model_name, blocks_total,
-                len(branches), category_checklist, category_checklist_definitions,
-                chunk_concurrency=chunk_concurrency, user_id=user_id,
+                requirement_nodes,
+                scoring_client,
+                all_warnings,
+                criteria_retriever,
+                combined_kb_context,
+                deduped_citations,
+                progress_callback,
+                model_name,
+                blocks_total,
+                len(branches),
+                category_checklist,
+                category_checklist_definitions,
+                chunk_concurrency=chunk_concurrency,
+                user_id=user_id,
             )
         # Separate rubric/prompt from Requirement scoring above -- see
         # OrchestratorLlmClient.score_epics_and_features_for_document's own
@@ -2679,13 +2991,27 @@ def _build_survey_tree(
         # reviewed) -- its own internal empty-list guard is a no-op when
         # there's nothing of that type either.
         _score_epics_and_features(
-            all_nodes, scoring_client, all_warnings, progress_callback, model_name, blocks_total, len(branches),
-            debug_capture=debug_capture, chunk_concurrency=chunk_concurrency, user_id=user_id,
+            all_nodes,
+            scoring_client,
+            all_warnings,
+            progress_callback,
+            model_name,
+            blocks_total,
+            len(branches),
+            debug_capture=debug_capture,
+            chunk_concurrency=chunk_concurrency,
+            user_id=user_id,
         )
 
     _detect_conflicting_duplicates(
-        all_nodes, embed_client, conflict_client, all_warnings,
-        progress_callback, blocks_total, len(branches), user_id=user_id,
+        all_nodes,
+        embed_client,
+        conflict_client,
+        all_warnings,
+        progress_callback,
+        blocks_total,
+        len(branches),
+        user_id=user_id,
     )
     # _regroup_disconnected_roots/_ensure_root_features_have_epic_parent used
     # to run right here, after every branch's full text had already been
@@ -2714,21 +3040,39 @@ def _build_survey_tree(
         # on the agentic path specifically -- only always-include grounding
         # -- a real (narrower) gap, tracked as a follow-up, not closed here.
         trace_links = _infer_trace_links_for_nodes(
-            all_nodes, link_type_client, link_type_catalog or [], all_warnings,
-            progress_callback, blocks_total, len(branches), debug_capture=debug_capture, kb_context=doc_kb_context,
+            all_nodes,
+            link_type_client,
+            link_type_catalog or [],
+            all_warnings,
+            progress_callback,
+            blocks_total,
+            len(branches),
+            debug_capture=debug_capture,
+            kb_context=doc_kb_context,
             user_id=user_id,
         )
 
     _propose_criteria_step(
-        all_nodes, study_source_doc, acceptance_criteria_client, document_study_client, all_warnings, user_id=user_id,
-        study_handle=study_handle, study_enabled=study_enabled,
-        background=primer_context, limiter=criteria_limiter, model=model,
+        all_nodes,
+        study_source_doc,
+        acceptance_criteria_client,
+        document_study_client,
+        all_warnings,
+        user_id=user_id,
+        study_handle=study_handle,
+        study_enabled=study_enabled,
+        background=primer_context,
+        limiter=criteria_limiter,
+        model=model,
     )
     return WorkItemTree(
-        nodes=all_nodes, warnings=finalize_warnings(all_warnings),
-        kb_citations=deduped_citations, kb_coverage=_kb_coverage(kb_files_available, deduped_citations),
+        nodes=all_nodes,
+        warnings=finalize_warnings(all_warnings),
+        kb_citations=deduped_citations,
+        kb_coverage=_kb_coverage(kb_files_available, deduped_citations),
         trace_links=trace_links,
-        excluded_figure_ids=excluded_figure_ids, excluded_table_ids=excluded_table_ids,
+        excluded_figure_ids=excluded_figure_ids,
+        excluded_table_ids=excluded_table_ids,
     )
 
 
@@ -2901,30 +3245,50 @@ def build_survey_tree(
     that catalog is dropped too. A link's target_ref is classified as
     intraJob when it matches another node's local_id in this same tree, and
     as crossJob (an opaque customer-id string) otherwise."""
-    arguments = dict(locals())  # every parameter as passed, whether it was given by position or by name
+    arguments = dict(
+        locals()
+    )  # every parameter as passed, whether it was given by position or by name
     study_limiter = arguments.pop("study_limiter")
     # The study is owned here, never by the last step, so no thread of it outlives the job on any exit path (see app.leveling.study_runner).
     study_enabled = settings.survey_study_enabled
     handle: StudyHandle | None = None
-    if study_enabled and acceptance_criteria_client is not None and document_study_client is not None:
+    if (
+        study_enabled
+        and acceptance_criteria_client is not None
+        and document_study_client is not None
+    ):
         # One snapshot of the full document, taken here before any stage runs: the study thread reads this string and never the live blocks,
         # so a stage that touches them cannot change what is read (and so the stored study's key).
         try:
             document_text = render_section(doc.blocks, doc.tables)
             handle = StudyHandle.from_settings(
-                render_text=lambda: document_text, client=document_study_client, user_id=user_id,
-                scope=user_scope(user_id), model=model, store=study_store if user_id else None, limiter=study_limiter if user_id else None,
+                render_text=lambda: document_text,
+                client=document_study_client,
+                user_id=user_id,
+                scope=user_scope(user_id),
+                model=model,
+                store=study_store if user_id else None,
+                limiter=study_limiter if user_id else None,
             )
             handle.start()  # before anything else runs, so it reads while the pipeline works; `doc` here is the full document, not the residual
         except JobCancelled:
             raise
         except Exception as error:  # noqa: BLE001 -- the study is context only: the criteria step falls back to reading the document itself
-            logger.warning("Document study could not start (%s); carrying on without it.", type(error).__name__)
+            logger.warning(
+                "Document study could not start (%s); carrying on without it.", type(error).__name__
+            )
             handle = None
     try:
-        tree = _build_survey_tree(**arguments, study_handle=handle, study_enabled=study_enabled, criteria_limiter=study_limiter)
+        tree = _build_survey_tree(
+            **arguments,
+            study_handle=handle,
+            study_enabled=study_enabled,
+            criteria_limiter=study_limiter,
+        )
     except BaseException:
-        if handle is not None:  # the job failed or was cancelled: the study's stored windows go too, even a finished study's
+        if (
+            handle is not None
+        ):  # the job failed or was cancelled: the study's stored windows go too, even a finished study's
             try:
                 handle.close(discard=True)
             except Exception as error:  # noqa: BLE001 -- must not mask the job's own exception
@@ -2966,19 +3330,39 @@ def _propose_criteria_step(
         return _table_to_markdown(table) if table is not None else None
 
     if study_handle is not None:
-        outcome = study_handle.result(timeout=settings.survey_study_hard_budget_seconds + 60)  # JobCancelled is not swallowed
+        outcome = study_handle.result(
+            timeout=settings.survey_study_hard_budget_seconds + 60
+        )  # JobCancelled is not swallowed
         study = outcome.study
         for message in outcome.warnings:  # turned into warnings here, in the job's own thread
-            warnings.append(IntegrityWarning.make(WarningKind.DOCUMENT_STUDY_INCOMPLETE, message, detail={"pass": "document_study"}))
-    elif study_enabled and study_client is not None:  # wanted, but the wrapper could not start it: the job's thread never reads the document
-        warnings.append(IntegrityWarning.make(
-            WarningKind.DOCUMENT_STUDY_INCOMPLETE,
-            "The document study could not be started, so acceptance criteria proposals used the hierarchy alone.",
-            detail={"pass": "document_study"},
-        ))
+            warnings.append(
+                IntegrityWarning.make(
+                    WarningKind.DOCUMENT_STUDY_INCOMPLETE,
+                    message,
+                    detail={"pass": "document_study"},
+                )
+            )
+    elif (
+        study_enabled and study_client is not None
+    ):  # wanted, but the wrapper could not start it: the job's thread never reads the document
+        warnings.append(
+            IntegrityWarning.make(
+                WarningKind.DOCUMENT_STUDY_INCOMPLETE,
+                "The document study could not be started, so acceptance criteria proposals used the hierarchy alone.",
+                detail={"pass": "document_study"},
+            )
+        )
 
     propose_acceptance_criteria(
-        nodes, study, criteria_client, warnings, table_text, user_id=user_id, background=background, limiter=limiter, model=model,
+        nodes,
+        study,
+        criteria_client,
+        warnings,
+        table_text,
+        user_id=user_id,
+        background=background,
+        limiter=limiter,
+        model=model,
     )
 
 
@@ -3060,7 +3444,10 @@ class _BranchSkeleton(NamedTuple):
 
 
 def _widen_branch_page_range(
-    representative: SourceRef, blocks: list[Block], tables: list[Table] | None, figures: list[Figure] | None
+    representative: SourceRef,
+    blocks: list[Block],
+    tables: list[Table] | None,
+    figures: list[Figure] | None,
 ) -> SourceRef:
     """Per-BRANCH counterpart to tree_builder.py's _widen_page_end (same
     max-page_end pattern, proven there for the deterministic path), plus a
@@ -3078,7 +3465,9 @@ def _widen_branch_page_range(
     if representative.page is None:
         return representative
     min_page = representative.page
-    max_page_end = representative.page_end if representative.page_end is not None else representative.page
+    max_page_end = (
+        representative.page_end if representative.page_end is not None else representative.page
+    )
     for ref in itertools.chain(
         (b.source_ref for b in blocks),
         (t.source_ref for t in (tables or [])),
@@ -3091,7 +3480,9 @@ def _widen_branch_page_range(
     updates: dict[str, int] = {}
     if min_page != representative.page:
         updates["page"] = min_page
-    if max_page_end != (representative.page_end if representative.page_end is not None else representative.page):
+    if max_page_end != (
+        representative.page_end if representative.page_end is not None else representative.page
+    ):
         updates["page_end"] = max_page_end
     return representative.model_copy(update=updates) if updates else representative
 
@@ -3292,11 +3683,17 @@ def _build_survey_skeleton_for_branch(
             return
         progress_callback(
             LevelingProgress(
-                phase=phase, branch_index=branch_index, branch_count=branch_count,
-                blocks_done=blocks_done_before, blocks_total=blocks_total,
-                kb_grounded=kb_grounded, kb_citations=kb_citations_raw,
-                section_label=section_label, model=model_name,
-                draft_count=draft_count, issues_found=issues_found,
+                phase=phase,
+                branch_index=branch_index,
+                branch_count=branch_count,
+                blocks_done=blocks_done_before,
+                blocks_total=blocks_total,
+                kb_grounded=kb_grounded,
+                kb_citations=kb_citations_raw,
+                section_label=section_label,
+                model=model_name,
+                draft_count=draft_count,
+                issues_found=issues_found,
                 section_nodes=section_nodes,
             )
         )
@@ -3363,7 +3760,10 @@ def _build_survey_skeleton_for_branch(
     if supports_tools and retrieve_fn is not None:
         _fire("build_skeleton", kb_grounded=False, kb_citations_raw=[])
         raw_nodes, raw_hits, truncated = analysis_client.analyze_section_skeleton_agentic(
-            section_text, retrieve_fn, list_documents_fn=list_documents_fn, read_document_fn=read_document_fn,
+            section_text,
+            retrieve_fn,
+            list_documents_fn=list_documents_fn,
+            read_document_fn=read_document_fn,
             read_other_section_fn=read_other_section_fn,
             options=section_analysis_options,
             user_id=user_id,
@@ -3388,7 +3788,9 @@ def _build_survey_skeleton_for_branch(
             existing = best_citation_by_file.get(hit["source_file"])
             if existing is None or hit["similarity"] > existing.similarity:
                 best_citation_by_file[hit["source_file"]] = KbCitation(
-                    source_file=hit["source_file"], similarity=hit["similarity"], relevance=KbCitationRelevance.RELEVANT
+                    source_file=hit["source_file"],
+                    similarity=hit["similarity"],
+                    relevance=KbCitationRelevance.RELEVANT,
                 )
         kb_citations = list(best_citation_by_file.values())
         # Real gap this closes: the in-flight _fire above hardcodes
@@ -3402,7 +3804,9 @@ def _build_survey_skeleton_for_branch(
         _fire(
             "build_skeleton",
             kb_grounded=bool(kb_citations),
-            kb_citations_raw=[{"source_file": c.source_file, "similarity": c.similarity} for c in kb_citations],
+            kb_citations_raw=[
+                {"source_file": c.source_file, "similarity": c.similarity} for c in kb_citations
+            ],
         )
         # Dedup by exact text (not by source_file -- a real query_kb call
         # can legitimately pull several DIFFERENT chunks from the same
@@ -3426,7 +3830,9 @@ def _build_survey_skeleton_for_branch(
         # though that file's citation still renders in the UI as
         # "Grounded against: <file> · 100%" (seeded into all_kb_citations
         # from doc_kb_citations at the top of build_survey_tree).
-        scoring_kb_context = "\n\n".join(([kb_context] if kb_context else []) + unique_texts) or None
+        scoring_kb_context = (
+            "\n\n".join(([kb_context] if kb_context else []) + unique_texts) or None
+        )
     else:
         # §item-4-fabricated-citation fix: previously synthesized a single
         # fake `{"source_file": "(document-level)", "similarity": 1.0}"`
@@ -3438,12 +3844,19 @@ def _build_survey_skeleton_for_branch(
         # docstring) carries the real per-file identity, so use that
         # instead of fabricating one.
         kb_citations_raw_dicts = (
-            [{"source_file": c.source_file, "similarity": c.similarity} for c in kb_context_citations]
-            if kb_context_citations else []
+            [
+                {"source_file": c.source_file, "similarity": c.similarity}
+                for c in kb_context_citations
+            ]
+            if kb_context_citations
+            else []
         )
-        _fire("build_skeleton", kb_grounded=bool(kb_context), kb_citations_raw=kb_citations_raw_dicts)
+        _fire(
+            "build_skeleton", kb_grounded=bool(kb_context), kb_citations_raw=kb_citations_raw_dicts
+        )
         raw_nodes, truncated = analysis_client.analyze_section_skeleton(
-            section_text, kb_context=kb_context,
+            section_text,
+            kb_context=kb_context,
             options=section_analysis_options,
             user_id=user_id,
         )
@@ -3464,14 +3877,18 @@ def _build_survey_skeleton_for_branch(
     nodes: list[WorkItemNode] = []
 
     representative_source_ref = (
-        blocks[0].source_ref if blocks else (tables[0].source_ref if tables else (figures[0].source_ref if figures else None))
+        blocks[0].source_ref
+        if blocks
+        else (tables[0].source_ref if tables else (figures[0].source_ref if figures else None))
     )
     if representative_source_ref is not None:
         # Widens page/page_end to the branch's real min/max BEFORE the
         # section_path copy below -- see _widen_branch_page_range's own
         # docstring (mirrors tree_builder.py's _widen_page_end pattern,
         # applied once per branch here rather than per fold).
-        representative_source_ref = _widen_branch_page_range(representative_source_ref, blocks, tables, figures)
+        representative_source_ref = _widen_branch_page_range(
+            representative_source_ref, blocks, tables, figures
+        )
         # section_label (computed above, right next to where this ref is
         # built) is this branch's own heading/excerpt label -- see
         # _derive_section_label's own docstring. A single-element path, not
@@ -3592,7 +4009,9 @@ def _build_survey_skeleton_for_branch(
             WorkItemNode(
                 local_id=local_id,
                 type=node_type,
-                parent_local_id=f"{node_id_prefix}{parent_temp_id}" if parent_temp_id is not None else None,
+                parent_local_id=f"{node_id_prefix}{parent_temp_id}"
+                if parent_temp_id is not None
+                else None,
                 title=title,
                 # Empty until _author_branch_content runs -- and that
                 # emptiness is load-bearing, not a placeholder: it is
@@ -3636,7 +4055,9 @@ def _build_survey_skeleton_for_branch(
                 # fixing it for real needs per-node source offsets from the
                 # model, a bigger schema/prompt change tracked separately,
                 # not this hash function.
-                identity_hash=_hash_identity_for_synthesized_node(local_id, representative_source_ref),
+                identity_hash=_hash_identity_for_synthesized_node(
+                    local_id, representative_source_ref
+                ),
                 mode=WorkItemMode.SURVEY,
             )
         )
@@ -3725,7 +4146,12 @@ def _build_survey_skeleton_for_branch(
             IntegrityWarning.make(
                 WarningKind.ZERO_NODES,
                 message,
-                detail={"branch": node_id_prefix or "(root)", "blockCount": len(blocks), "tableCount": len(tables or []), "figureCount": len(figures or [])},
+                detail={
+                    "branch": node_id_prefix or "(root)",
+                    "blockCount": len(blocks),
+                    "tableCount": len(tables or []),
+                    "figureCount": len(figures or []),
+                },
             )
         )
 
@@ -3758,7 +4184,10 @@ def _build_survey_skeleton_for_branch(
             IntegrityWarning.make(
                 WarningKind.MISSING_TABLE_GROUP_COVERAGE,
                 message,
-                detail={"branch": node_id_prefix or "(root)", "groupLabels": [g.label for g in missing_groups[:10]]},
+                detail={
+                    "branch": node_id_prefix or "(root)",
+                    "groupLabels": [g.label for g in missing_groups[:10]],
+                },
             )
         )
 
@@ -3775,7 +4204,9 @@ def _build_survey_skeleton_for_branch(
     claimed_codes = {n.customer_id for n in nodes if n.customer_id}
     unclaimed_rows = [r for r in (requirement_rows or []) if r.code not in claimed_codes]
     if unclaimed_rows:
-        row_previews = "; ".join(f"{r.code} ({r.label})" if r.label else r.code for r in unclaimed_rows[:10])
+        row_previews = "; ".join(
+            f"{r.code} ({r.label})" if r.label else r.code for r in unclaimed_rows[:10]
+        )
         message = (
             f"{len(unclaimed_rows)} source table row(s) carry their own literal requirement "
             "identifier but no generated work item claims it -- those rows may have been merged "
@@ -3942,7 +4373,8 @@ def _mapping_items_for_branch(
             [
                 preview
                 for cell in row[:_MAPPING_TABLE_COLUMN_COUNT]
-                if (preview := _mapping_preview(cell, _MAPPING_TABLE_COLUMN_PREVIEW_CHARS)) is not None
+                if (preview := _mapping_preview(cell, _MAPPING_TABLE_COLUMN_PREVIEW_CHARS))
+                is not None
             ]
             for row in table_rows[1 : 1 + _MAPPING_TABLE_ROW_COUNT]
         ]
@@ -4058,7 +4490,9 @@ def _run_mapping_batch(
                 WarningKind.MAPPING_CALL_FAILED,
                 message,
                 detail={
-                    **batch.detail, "reason": reason, "figureCount": figure_count,
+                    **batch.detail,
+                    "reason": reason,
+                    "figureCount": figure_count,
                     "tableCount": len(degraded_items) - figure_count,
                 },
             )
@@ -4225,7 +4659,8 @@ def _map_figures_tables_to_nodes(
             return [_run_mapping_batch(batch, map_fn, user_id=user_id) for batch in batches]
         with ThreadPoolExecutor(max_workers=branch_concurrency) as executor:
             futures = [
-                submit_in_context(executor, _run_mapping_batch, batch, map_fn, user_id=user_id) for batch in batches
+                submit_in_context(executor, _run_mapping_batch, batch, map_fn, user_id=user_id)
+                for batch in batches
             ]
             return [future.result() for future in futures]
 
@@ -4251,7 +4686,9 @@ def _map_figures_tables_to_nodes(
             return
         progress_callback(
             LevelingProgress(
-                phase="map_scope", branch_index=None, branch_count=len(branch_skeletons),
+                phase="map_scope",
+                branch_index=None,
+                branch_count=len(branch_skeletons),
                 # blocks_done == blocks_total, the convention EVERY other
                 # whole-document phase follows (detect_conflicts,
                 # regroup_roots, infer_trace_links): every branch's blocks
@@ -4260,8 +4697,10 @@ def _map_figures_tables_to_nodes(
                 # verbatim in ProgressBanner's metrics chip ("0 / 682
                 # blocks") and in this phase's own narration message
                 # ("-- 0 of 682 blocks") for the whole mapping window.
-                blocks_done=blocks_total, blocks_total=blocks_total,
-                kb_grounded=False, kb_citations=[],
+                blocks_done=blocks_total,
+                blocks_total=blocks_total,
+                kb_grounded=False,
+                kb_citations=[],
                 section_label=batch.scope,
             )
         )
@@ -4272,7 +4711,9 @@ def _map_figures_tables_to_nodes(
     pre_escalated: list[str] = []
     for skeleton in branch_skeletons:
         branch_items = _mapping_items_for_branch(
-            skeleton, figures_by_figure_id, figure_id_by_block_id,
+            skeleton,
+            figures_by_figure_id,
+            figure_id_by_block_id,
         )
         if not branch_items:
             continue
@@ -4295,7 +4736,8 @@ def _map_figures_tables_to_nodes(
                 allow_escalation=True,
                 scope=scope,
                 detail={
-                    "tier": 1, "branch": skeleton.node_id_prefix or "(root)",
+                    "tier": 1,
+                    "branch": skeleton.node_id_prefix or "(root)",
                     "chunkIndex": chunk_index,
                 },
             )
@@ -4418,7 +4860,10 @@ def _author_branch_content(
     skeleton.fire(
         "analyze_section",
         kb_grounded=bool(skeleton.kb_citations),
-        kb_citations_raw=[{"source_file": c.source_file, "similarity": c.similarity} for c in skeleton.kb_citations],
+        kb_citations_raw=[
+            {"source_file": c.source_file, "similarity": c.similarity}
+            for c in skeleton.kb_citations
+        ],
     )
 
     # An empty description is exactly the "still awaiting authoring" marker
@@ -4440,7 +4885,10 @@ def _author_branch_content(
             for node in authorable
         }
         content, truncated = analysis_client.author_content(
-            section_text, skeleton_payload, kb_context=skeleton.scoring_kb_context, user_id=user_id,
+            section_text,
+            skeleton_payload,
+            kb_context=skeleton.scoring_kb_context,
+            user_id=user_id,
         )
         if truncated:
             warnings.append(
@@ -4484,7 +4932,11 @@ def _author_branch_content(
         # at all.
         node.tags = (
             sorted(
-                {RequirementTag(tag) for tag in (entry.get("tags") or []) if tag in valid_tag_values},
+                {
+                    RequirementTag(tag)
+                    for tag in (entry.get("tags") or [])
+                    if tag in valid_tag_values
+                },
                 key=lambda t: t.value,
             )
             if node.type == WorkItemType.REQUIREMENT
@@ -4500,7 +4952,13 @@ def _author_branch_content(
         # no mapping ran at all: both sides are then empty.
         mapping = (figure_table_ids_by_local_id or {}).get(node.local_id) or {}
         raw_figure_ids = mapping.get("figure_ids") or []
-        figure_ids = sorted({fid for fid in raw_figure_ids if isinstance(fid, str) and fid in skeleton.valid_figure_ids})
+        figure_ids = sorted(
+            {
+                fid
+                for fid in raw_figure_ids
+                if isinstance(fid, str) and fid in skeleton.valid_figure_ids
+            }
+        )
         if len(figure_ids) < len(raw_figure_ids):
             dropped_figure_count = len(raw_figure_ids) - len(figure_ids)
             message = (
@@ -4525,10 +4983,15 @@ def _author_branch_content(
         # it unconditionally), so a hallucinated claim naming it anyway must
         # be rejected here too, same treatment as any other id outside what
         # stage 2 actually offered.
-        table_ids_requested = sorted({
-            tid for tid in raw_table_ids
-            if isinstance(tid, str) and tid in skeleton.valid_table_ids and tid not in skeleton.requirement_list_table_ids
-        })
+        table_ids_requested = sorted(
+            {
+                tid
+                for tid in raw_table_ids
+                if isinstance(tid, str)
+                and tid in skeleton.valid_table_ids
+                and tid not in skeleton.requirement_list_table_ids
+            }
+        )
         if len(table_ids_requested) < len(raw_table_ids):
             dropped_table_count = len(raw_table_ids) - len(table_ids_requested)
             message = (
@@ -4657,7 +5120,9 @@ def _author_branch_content(
             and not used_title_as_description
             and title_is_low_quality(node.title)
         ):
-            node.title = distill_survey_title(node.description, title_distillation_client, user_id=user_id)
+            node.title = distill_survey_title(
+                node.description, title_distillation_client, user_id=user_id
+            )
             distilled_title_local_ids.append(node.local_id)
 
         grounding_score = _grounding_score(text, section_text)
@@ -4674,7 +5139,10 @@ def _author_branch_content(
                     WarningKind.LOW_GROUNDING,
                     message,
                     node_ids=[node.local_id],
-                    detail={"groundingScore": grounding_score, "threshold": _LOW_GROUNDING_THRESHOLD},
+                    detail={
+                        "groundingScore": grounding_score,
+                        "threshold": _LOW_GROUNDING_THRESHOLD,
+                    },
                 )
             )
 
@@ -4690,7 +5158,10 @@ def _author_branch_content(
                 WarningKind.SURVEY_TITLE_DISTILLED,
                 message,
                 node_ids=distilled_title_local_ids[:10],
-                detail={"branch": skeleton.node_id_prefix or "(root)", "totalDistilled": len(distilled_title_local_ids)},
+                detail={
+                    "branch": skeleton.node_id_prefix or "(root)",
+                    "totalDistilled": len(distilled_title_local_ids),
+                },
             )
         )
 
@@ -4768,7 +5239,11 @@ def _author_branch_content(
             IntegrityWarning.make(
                 WarningKind.DROPPED_BLOCKS,
                 message,
-                detail={"branch": skeleton.node_id_prefix or "(root)", "droppedIndices": dropped_blocks[:10], "totalBlocks": len(blocks)},
+                detail={
+                    "branch": skeleton.node_id_prefix or "(root)",
+                    "droppedIndices": dropped_blocks[:10],
+                    "totalBlocks": len(blocks),
+                },
             )
         )
 
@@ -4799,10 +5274,15 @@ def _author_branch_content(
     skeleton.fire(
         "section_complete",
         kb_grounded=bool(skeleton.kb_citations),
-        kb_citations_raw=[{"source_file": c.source_file, "similarity": c.similarity} for c in skeleton.kb_citations],
+        kb_citations_raw=[
+            {"source_file": c.source_file, "similarity": c.similarity}
+            for c in skeleton.kb_citations
+        ],
         section_nodes=[
             {
-                "type": node.type.value, "title": node.title, "text": node.description,
+                "type": node.type.value,
+                "title": node.title,
+                "text": node.description,
                 "quality_score": node.quality_score,
                 # Live UI visibility for the per-row splitting fix (2026-08-26):
                 # a reviewer watching the run see this node's own model-

@@ -36,40 +36,60 @@ def _mock_transport(response_json: dict, expected_status: int = 200) -> httpx.Mo
 
 
 def test_model_property_exposes_the_configured_per_job_override() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", model="qwen2.5:32b")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer", model="qwen2.5:32b"
+    )
     assert client.model == "qwen2.5:32b"
 
 
 def test_model_property_is_none_when_no_override_was_configured() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     assert client.model is None
 
 
 def test_score_requirements_for_document_sends_all_descriptions_in_one_call() -> None:
     call_count = {"n": 0}
-    response_body = {"n0": {"score": 85, "issues": []}, "n1": {"score": 40, "issues": ["ambiguous", "vague_term"]}}
+    response_body = {
+        "n0": {"score": 85, "issues": []},
+        "n1": {"score": 40, "issues": ["ambiguous", "vague_term"]},
+    }
 
     def handler(request: httpx.Request) -> httpx.Response:
         call_count["n"] += 1
         return httpx.Response(200, json={"content": json.dumps(response_body)})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
-    result = client.score_requirements_for_document({"n0": "The unit shall power on within 2 seconds.", "n1": "The unit shall be user-friendly."})
+    result = client.score_requirements_for_document(
+        {
+            "n0": "The unit shall power on within 2 seconds.",
+            "n1": "The unit shall be user-friendly.",
+        }
+    )
 
     assert result == response_body
     assert call_count["n"] == 1
 
 
-def test_score_requirements_for_document_includes_criteria_context_in_the_system_prompt_when_supplied() -> None:
+def test_score_requirements_for_document_includes_criteria_context_in_the_system_prompt_when_supplied() -> (
+    None
+):
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["body"] = json.loads(request.content)
-        return httpx.Response(200, json={"content": json.dumps({"n0": {"score": 90, "issues": []}})})
+        return httpx.Response(
+            200, json={"content": json.dumps({"n0": {"score": 90, "issues": []}})}
+        )
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.score_requirements_for_document(
@@ -86,9 +106,13 @@ def test_score_requirements_for_document_omits_criteria_context_section_when_not
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["body"] = json.loads(request.content)
-        return httpx.Response(200, json={"content": json.dumps({"n0": {"score": 90, "issues": []}})})
+        return httpx.Response(
+            200, json={"content": json.dumps({"n0": {"score": 90, "issues": []}})}
+        )
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.score_requirements_for_document({"n0": "The unit shall power on within 2 seconds."})
@@ -100,7 +124,9 @@ def test_score_requirements_for_document_omits_criteria_context_section_when_not
 def test_score_requirements_for_document_strips_a_markdown_json_fence() -> None:
     response_body = {"n0": {"score": 90, "issues": []}}
     response_json = {"content": "```json\n" + json.dumps(response_body) + "\n```"}
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport(response_json)
 
     result = client.score_requirements_for_document({"n0": "text"})
@@ -108,7 +134,9 @@ def test_score_requirements_for_document_strips_a_markdown_json_fence() -> None:
 
 
 def test_score_requirements_for_document_raises_on_malformed_json() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport({"content": "not json"})
 
     with pytest.raises(ValueError, match="malformed JSON"):
@@ -116,7 +144,9 @@ def test_score_requirements_for_document_raises_on_malformed_json() -> None:
 
 
 def test_score_requirements_for_document_raises_on_non_200_response() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport({"content": "{}"}, expected_status=429)
 
     with pytest.raises(httpx.HTTPStatusError):
@@ -124,10 +154,10 @@ def test_score_requirements_for_document_raises_on_non_200_response() -> None:
 
 
 def test_score_requirements_for_document_parses_valid_json_response() -> None:
-    response_json = {
-        "content": json.dumps({"0": {"score": 85, "issues": ["vague_term"]}})
-    }
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    response_json = {"content": json.dumps({"0": {"score": 85, "issues": ["vague_term"]}})}
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport(response_json)
 
     result = client.score_requirements_for_document({"0": "The system shall be fast."})
@@ -142,7 +172,9 @@ def test_score_requirements_for_document_sends_temperature_zero() -> None:
         captured["temperature"] = body["temperature"]
         return httpx.Response(200, json={"content": "{}"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.score_requirements_for_document({"0": "text"})
@@ -159,7 +191,9 @@ def test_score_requirements_for_document_forwards_num_ctx_when_configured() -> N
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": "{}"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", num_ctx=32768)
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer", num_ctx=32768
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.score_requirements_for_document({"n0": "text"})
@@ -174,7 +208,9 @@ def test_score_requirements_for_document_omits_num_ctx_when_not_configured() -> 
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": "{}"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.score_requirements_for_document({"n0": "text"})
@@ -212,7 +248,9 @@ def test_score_requirements_for_document_prompt_states_the_exact_expected_entry_
         captured.setdefault("body", json.loads(request.content))
         return httpx.Response(200, json={"content": "{}"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.score_requirements_for_document({"n0": "text", "n1": "text2", "n2": "text3"})
@@ -224,14 +262,18 @@ def test_score_requirements_for_document_prompt_states_the_exact_expected_entry_
 
 def test_score_requirements_for_document_raises_on_malformed_json_content() -> None:
     response_json = {"content": "not valid json"}
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport(response_json)
 
     with pytest.raises(ValueError, match="malformed"):
         client.score_requirements_for_document({"0": "text"})
 
 
-def test_score_requirements_for_document_repairs_a_bare_unescaped_quote_inside_a_string_value() -> None:
+def test_score_requirements_for_document_repairs_a_bare_unescaped_quote_inside_a_string_value() -> (
+    None
+):
     # Confirmed real job failure (AirPro Backplane ICD, job d8cd0779): the
     # model embedded literal, unescaped double quotes inside a string value
     # for emphasis -- e.g. `the "Power-ON" Event` -- breaking the JSON
@@ -244,7 +286,9 @@ def test_score_requirements_for_document_repairs_a_bare_unescaped_quote_inside_a
         '{"n0": {"score": 40, "issues": [], '
         '"note": "the shall include the "Power-ON" Event function"}}'
     )
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport({"content": raw_broken_json})
 
     result = client.score_requirements_for_document({"n0": "text"})
@@ -263,10 +307,14 @@ def test_score_requirements_for_document_prepends_kb_context_as_an_authoritative
         captured["system_prompt"] = json.loads(request.content)["messages"][0]["content"]
         return httpx.Response(200, json={"content": "{}"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
-    client.score_requirements_for_document({"0": "text"}, kb_context="Org rule: always specify units.")
+    client.score_requirements_for_document(
+        {"0": "text"}, kb_context="Org rule: always specify units."
+    )
     assert captured["system_prompt"].startswith(
         "The following knowledge-base material was retrieved for this "
         "organization. If it defines its own requirements-writing "
@@ -283,7 +331,9 @@ def test_score_requirements_for_document_prompt_unchanged_when_kb_context_is_non
         captured["system_prompt"] = json.loads(request.content)["messages"][0]["content"]
         return httpx.Response(200, json={"content": "{}"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.score_requirements_for_document({"0": "text"})
@@ -291,16 +341,24 @@ def test_score_requirements_for_document_prompt_unchanged_when_kb_context_is_non
 
 
 def test_extract_quality_checklist_parses_a_real_list() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
-    client._transport = _mock_transport({"content": json.dumps(["Necessary", "Unambiguous", "Verifiable"])})
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
+    client._transport = _mock_transport(
+        {"content": json.dumps(["Necessary", "Unambiguous", "Verifiable"])}
+    )
 
     result = client.extract_quality_checklist("3.3 Customer requirement quality checklist\n...")
     assert result == ["Necessary", "Unambiguous", "Verifiable"]
 
 
 def test_extract_quality_checklist_reads_the_object_the_schema_asks_for() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
-    client._transport = _mock_transport({"content": json.dumps({"categories": ["Necessary", "Unambiguous"]})})
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
+    client._transport = _mock_transport(
+        {"content": json.dumps({"categories": ["Necessary", "Unambiguous"]})}
+    )
     assert client.extract_quality_checklist("doc") == ["Necessary", "Unambiguous"]
     client._transport = _mock_transport({"content": json.dumps({"categories": []})})
     assert client.extract_quality_checklist("doc") == []
@@ -315,7 +373,9 @@ def test_the_checklist_schema_has_an_object_root_for_azure_strict_mode() -> None
 
 
 def test_extract_quality_checklist_returns_empty_list_when_document_has_no_checklist() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport({"content": "[]"})
 
     result = client.extract_quality_checklist("Some unrelated document about airplanes.")
@@ -323,7 +383,9 @@ def test_extract_quality_checklist_returns_empty_list_when_document_has_no_check
 
 
 def test_extract_quality_checklist_raises_on_a_non_list_response() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport({"content": '{"not": "a list"}'})
 
     with pytest.raises(ValueError, match="malformed JSON"):
@@ -331,7 +393,9 @@ def test_extract_quality_checklist_raises_on_a_non_list_response() -> None:
 
 
 def test_extract_quality_checklist_raises_on_a_list_with_non_string_items() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport({"content": "[1, 2, 3]"})
 
     with pytest.raises(ValueError, match="malformed JSON"):
@@ -348,7 +412,9 @@ def test_extract_quality_checklist_caps_input_length() -> None:
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": "[]"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.extract_quality_checklist("x" * 50_000)
@@ -361,7 +427,9 @@ def test_extract_quality_checklist_falls_back_to_empty_when_too_many_items() -> 
     # A nonsense/runaway extraction (way more than a real checklist would
     # ever have) is treated as "no checklist found" rather than stored and
     # replayed into every future scoring prompt.
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport({"content": json.dumps([f"Item {i}" for i in range(40)])})
 
     result = client.extract_quality_checklist("text")
@@ -369,7 +437,9 @@ def test_extract_quality_checklist_falls_back_to_empty_when_too_many_items() -> 
 
 
 def test_extract_quality_checklist_falls_back_to_empty_when_only_one_item_survives() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport({"content": json.dumps(["Solo item"])})
 
     result = client.extract_quality_checklist("text")
@@ -377,7 +447,9 @@ def test_extract_quality_checklist_falls_back_to_empty_when_only_one_item_surviv
 
 
 def test_extract_quality_checklist_drops_an_oversized_item_but_keeps_the_rest() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     oversized = "x" * 500
     client._transport = _mock_transport(
         {"content": json.dumps(["Necessary", "Unambiguous", "Verifiable", oversized])}
@@ -387,10 +459,18 @@ def test_extract_quality_checklist_drops_an_oversized_item_but_keeps_the_rest() 
     assert result == ["Necessary", "Unambiguous", "Verifiable"]
 
 
-def test_extract_quality_checklist_dedups_case_insensitively_preserving_first_seen_order_and_casing() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+def test_extract_quality_checklist_dedups_case_insensitively_preserving_first_seen_order_and_casing() -> (
+    None
+):
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport(
-        {"content": json.dumps(["Necessary", "NECESSARY", "Unambiguous", "unambiguous", "Verifiable"])}
+        {
+            "content": json.dumps(
+                ["Necessary", "NECESSARY", "Unambiguous", "unambiguous", "Verifiable"]
+            )
+        }
     )
 
     result = client.extract_quality_checklist("text")
@@ -399,10 +479,21 @@ def test_extract_quality_checklist_dedups_case_insensitively_preserving_first_se
 
 def test_extract_quality_checklist_well_formed_eleven_item_list_passes_through_unchanged() -> None:
     items = [
-        "Necessary", "Unambiguous", "Verifiable", "Complete", "Consistent",
-        "Feasible", "Traceable", "Correct", "Singular", "Testable", "Ranked",
+        "Necessary",
+        "Unambiguous",
+        "Verifiable",
+        "Complete",
+        "Consistent",
+        "Feasible",
+        "Traceable",
+        "Correct",
+        "Singular",
+        "Testable",
+        "Ranked",
     ]
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport({"content": json.dumps(items)})
 
     result = client.extract_quality_checklist("text")
@@ -420,7 +511,9 @@ def test_extract_quality_checklist_sends_temperature_zero_and_think_false() -> N
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": "[]"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.extract_quality_checklist("text")
@@ -430,13 +523,20 @@ def test_extract_quality_checklist_sends_temperature_zero_and_think_false() -> N
 
 
 def test_extract_quality_checklist_definitions_parses_a_real_mapping() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport(
-        {"content": json.dumps({"Necessary": "The requirement states something not already satisfied."})}
+        {
+            "content": json.dumps(
+                {"Necessary": "The requirement states something not already satisfied."}
+            )
+        }
     )
 
     result = client.extract_quality_checklist_definitions(
-        "3.3 Customer requirement quality checklist\n...", ["Necessary", "Unambiguous"],
+        "3.3 Customer requirement quality checklist\n...",
+        ["Necessary", "Unambiguous"],
     )
     assert result == {"Necessary": "The requirement states something not already satisfied."}
 
@@ -445,8 +545,12 @@ def test_extract_quality_checklist_definitions_returns_empty_dict_with_no_catego
     # Deliberately never issues a call at all when the first extraction
     # pass (extract_quality_checklist) found no checklist -- nothing to ask
     # a definition for, see this method's own docstring.
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
-    client._transport = httpx.MockTransport(lambda request: (_ for _ in ()).throw(AssertionError("should not be called")))
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
+    client._transport = httpx.MockTransport(
+        lambda request: (_ for _ in ()).throw(AssertionError("should not be called"))
+    )
 
     result = client.extract_quality_checklist_definitions("text", [])
     assert result == {}
@@ -457,17 +561,27 @@ def test_extract_quality_checklist_definitions_drops_a_key_not_in_category_names
     # category name in its response must never introduce a NEW key the
     # scores dict never had -- only the FIXED, already-decided names given
     # to this call are ever accepted.
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport(
-        {"content": json.dumps({"Necessary": "Real def.", "Made Up Category": "Should be dropped."})}
+        {
+            "content": json.dumps(
+                {"Necessary": "Real def.", "Made Up Category": "Should be dropped."}
+            )
+        }
     )
 
     result = client.extract_quality_checklist_definitions("text", ["Necessary", "Unambiguous"])
     assert result == {"Necessary": "Real def."}
 
 
-def test_extract_quality_checklist_definitions_matches_case_insensitively_but_keys_by_canonical_name() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+def test_extract_quality_checklist_definitions_matches_case_insensitively_but_keys_by_canonical_name() -> (
+    None
+):
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport({"content": json.dumps({"NECESSARY": "Real def."})})
 
     result = client.extract_quality_checklist_definitions("text", ["Necessary"])
@@ -475,7 +589,9 @@ def test_extract_quality_checklist_definitions_matches_case_insensitively_but_ke
 
 
 def test_extract_quality_checklist_definitions_truncates_an_oversized_definition() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     oversized = "x" * 500
     client._transport = _mock_transport({"content": json.dumps({"Necessary": oversized})})
 
@@ -484,7 +600,9 @@ def test_extract_quality_checklist_definitions_truncates_an_oversized_definition
 
 
 def test_extract_quality_checklist_definitions_drops_empty_and_non_string_values() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport(
         {"content": json.dumps({"Necessary": "   ", "Unambiguous": 5})}
     )
@@ -494,7 +612,9 @@ def test_extract_quality_checklist_definitions_drops_empty_and_non_string_values
 
 
 def test_extract_quality_checklist_definitions_raises_on_a_non_object_response() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport({"content": "[1, 2, 3]"})
 
     with pytest.raises(ValueError, match="malformed JSON"):
@@ -508,7 +628,9 @@ def test_infer_trace_links_now_sends_a_response_schema() -> None:
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"links": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.infer_trace_links([], [])
@@ -530,29 +652,57 @@ def test_infer_trace_links_sends_nodes_and_catalog_returns_parsed_links() -> Non
             200,
             json={
                 "content": json.dumps(
-                    {"links": [{"source_node_id": "1", "target_ref": "0", "reference_name": "Elisra.CoveredBy-Forward"}]}
+                    {
+                        "links": [
+                            {
+                                "source_node_id": "1",
+                                "target_ref": "0",
+                                "reference_name": "Elisra.CoveredBy-Forward",
+                            }
+                        ]
+                    }
                 )
             },
         )
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     result = client.infer_trace_links(
         nodes=[
-            {"node_id": "0", "type": "Requirement", "title": "Sys Req", "text": "The system shall X."},
-            {"node_id": "1", "type": "Requirement", "title": "Cust Req", "text": "The customer requires X."},
+            {
+                "node_id": "0",
+                "type": "Requirement",
+                "title": "Sys Req",
+                "text": "The system shall X.",
+            },
+            {
+                "node_id": "1",
+                "type": "Requirement",
+                "title": "Cust Req",
+                "text": "The customer requires X.",
+            },
         ],
         link_type_catalog=[
-            {"reference_name": "Elisra.CoveredBy-Forward", "name": "Covered by", "semantic_hint": "system req covers customer req"},
+            {
+                "reference_name": "Elisra.CoveredBy-Forward",
+                "name": "Covered by",
+                "semantic_hint": "system req covers customer req",
+            },
         ],
     )
 
-    assert result == [{"source_node_id": "1", "target_ref": "0", "reference_name": "Elisra.CoveredBy-Forward"}]
+    assert result == [
+        {"source_node_id": "1", "target_ref": "0", "reference_name": "Elisra.CoveredBy-Forward"}
+    ]
 
 
 def test_infer_trace_links_raises_on_malformed_json() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport({"content": "not json"})
 
     with pytest.raises(ValueError, match="malformed JSON"):
@@ -571,7 +721,9 @@ def test_infer_trace_links_parses_json_prefaced_with_unfenced_conversational_pro
     link = {"source_node_id": "1", "target_ref": "0", "reference_name": "Elisra.CoveredBy-Forward"}
     preamble = "Based on the provided nodes, here are the inferred links:\n\n"
     unfenced_prefaced_content = preamble + json.dumps({"links": [link]})
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport({"content": unfenced_prefaced_content})
 
     result = client.infer_trace_links(nodes=[], link_type_catalog=[])
@@ -585,7 +737,9 @@ def test_infer_trace_links_with_no_catalog_still_sends_a_valid_request() -> None
         assert body["messages"][1]["content"]  # user content present
         return httpx.Response(200, json={"content": json.dumps({"links": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     result = client.infer_trace_links(
@@ -607,7 +761,9 @@ def test_infer_trace_links_prompt_mentions_external_customer_cited_targets() -> 
         captured["system_prompt"] = body["messages"][0]["content"]
         return httpx.Response(200, json={"content": "[]"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.infer_trace_links(nodes=[], link_type_catalog=[])
@@ -616,14 +772,18 @@ def test_infer_trace_links_prompt_mentions_external_customer_cited_targets() -> 
     assert "external" in system_prompt or "customer" in system_prompt
 
 
-def test_score_requirements_for_document_includes_an_issues_enum_schema_with_additional_properties() -> None:
+def test_score_requirements_for_document_includes_an_issues_enum_schema_with_additional_properties() -> (
+    None
+):
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": "{}"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.score_requirements_for_document({"0": "The unit shall survive a 1m drop."})
@@ -665,7 +825,9 @@ def test_score_requirements_for_document_schema_allows_dynamic_category_scores()
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": "{}"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.score_requirements_for_document({"0": "The unit shall survive a 1m drop."})
@@ -674,7 +836,11 @@ def test_score_requirements_for_document_schema_allows_dynamic_category_scores()
     assert "categoryScores" in entry_schema["required"]
     category_schema = entry_schema["properties"]["categoryScores"]
     assert "properties" not in category_schema
-    assert category_schema["additionalProperties"] == {"type": "integer", "minimum": 0, "maximum": 100}
+    assert category_schema["additionalProperties"] == {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 100,
+    }
 
 
 def test_score_requirements_for_document_prompt_explains_all_five_categories() -> None:
@@ -684,7 +850,9 @@ def test_score_requirements_for_document_prompt_explains_all_five_categories() -
         captured["system_prompt"] = json.loads(request.content)["messages"][0]["content"]
         return httpx.Response(200, json={"content": "{}"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.score_requirements_for_document({"0": "text"})
@@ -704,7 +872,9 @@ def test_score_requirements_for_document_prompt_covers_completeness_and_new_issu
         captured["system_prompt"] = json.loads(request.content)["messages"][0]["content"]
         return httpx.Response(200, json={"content": "{}"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.score_requirements_for_document({"0": "text"})
@@ -712,13 +882,19 @@ def test_score_requirements_for_document_prompt_covers_completeness_and_new_issu
     prompt = captured["system_prompt"]
     assert "completeness_as_requirement" in prompt
     for issue in (
-        "not_a_requirement", "fragment", "placeholder", "open_item_tbd",
-        "rationale_as_requirement", "conflicting_value",
+        "not_a_requirement",
+        "fragment",
+        "placeholder",
+        "open_item_tbd",
+        "rationale_as_requirement",
+        "conflicting_value",
     ):
         assert issue in prompt
 
 
-def test_score_requirements_for_document_derives_dynamic_categories_when_kb_context_is_present() -> None:
+def test_score_requirements_for_document_derives_dynamic_categories_when_kb_context_is_present() -> (
+    None
+):
     # Confirmed real gap fixed here (user-reported): with a real ingested KB
     # standard, the prompt must ask the model to derive categoryScores KEYS
     # from that material's own checklist instead of always locking to the
@@ -729,10 +905,14 @@ def test_score_requirements_for_document_derives_dynamic_categories_when_kb_cont
         captured["system_prompt"] = json.loads(request.content)["messages"][0]["content"]
         return httpx.Response(200, json={"content": "{}"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
-    client.score_requirements_for_document({"0": "text"}, kb_context="Org standard: Necessary, Unambiguous, Verifiable.")
+    client.score_requirements_for_document(
+        {"0": "text"}, kb_context="Org standard: Necessary, Unambiguous, Verifiable."
+    )
 
     prompt = captured["system_prompt"]
     assert "you derive from the organization" in prompt
@@ -752,7 +932,9 @@ def test_score_requirements_for_document_uses_fixed_categories_without_kb_contex
         captured["system_prompt"] = json.loads(request.content)["messages"][0]["content"]
         return httpx.Response(200, json={"content": "{}"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.score_requirements_for_document({"0": "text"})
@@ -762,7 +944,9 @@ def test_score_requirements_for_document_uses_fixed_categories_without_kb_contex
     assert "you derive from the organization" not in prompt
 
 
-def test_score_requirements_for_document_with_fixed_checklist_and_kb_context_drops_derive_language() -> None:
+def test_score_requirements_for_document_with_fixed_checklist_and_kb_context_drops_derive_language() -> (
+    None
+):
     # Real contradiction fixed here: when category_checklist (fixed,
     # pre-extracted) AND kb_context are BOTH present -- the common case --
     # the prompt used to contain both "derive your categoryScores key names
@@ -777,7 +961,9 @@ def test_score_requirements_for_document_with_fixed_checklist_and_kb_context_dro
         captured["system_prompt"] = json.loads(request.content)["messages"][0]["content"]
         return httpx.Response(200, json={"content": "{}"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.score_requirements_for_document(
@@ -800,13 +986,18 @@ def test_score_epics_and_features_for_document_sends_type_aware_prompt_and_schem
         captured.setdefault("body", json.loads(request.content))
         return httpx.Response(200, json={"content": "{}"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.score_epics_and_features_for_document(
         {
             "n0": {"type": "Epic", "text": "Automated Customer Requirements Processing."},
-            "n1": {"type": "Feature", "text": "Parse and normalize uploaded requirement documents."},
+            "n1": {
+                "type": "Feature",
+                "text": "Parse and normalize uploaded requirement documents.",
+            },
         }
     )
 
@@ -835,7 +1026,9 @@ def test_score_epics_and_features_for_document_parses_valid_response() -> None:
             }
         )
     }
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport(response_json)
 
     result = client.score_epics_and_features_for_document({"n0": {"type": "Epic", "text": "text"}})
@@ -868,7 +1061,9 @@ def test_chat_json_sends_the_expected_payload_shape_with_schema() -> None:
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": '{"ok": true}'})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     result = client._chat_json("system text", "user text", schema={"type": "object"})
@@ -910,7 +1105,9 @@ def test_chat_json_omits_top_k_and_min_p_when_not_configured() -> None:
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"ok": True})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client._chat_json("system prompt", "user content")
@@ -926,7 +1123,9 @@ def test_chat_json_omits_response_schema_when_none() -> None:
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": "[]"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client._chat_json("system text", "user text", schema=None)
@@ -941,7 +1140,9 @@ def test_chat_json_respects_a_custom_max_tokens() -> None:
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": "{}"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client._chat_json("s", "u", schema={"type": "object"}, max_tokens=2000)
@@ -958,10 +1159,12 @@ def test_title_and_tags_for_rows_sends_the_closed_tag_vocabulary_and_schema() ->
         captured.setdefault("body", json.loads(request.content))
         return httpx.Response(200, json={"content": "{}"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
-    client.title_and_tags_for_rows({"det0_h1": "Size: 3U 1\"", "det0_h2": "Over-current"})
+    client.title_and_tags_for_rows({"det0_h1": 'Size: 3U 1"', "det0_h2": "Over-current"})
 
     prompt = captured["body"]["messages"][0]["content"]
     assert "exactly 2 row(s)" in prompt
@@ -979,10 +1182,12 @@ def test_title_and_tags_for_rows_parses_valid_response() -> None:
             {"det0_h1": {"title": "COTS power supply form factor", "tags": ["interface"]}}
         )
     }
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport(response_json)
 
-    result = client.title_and_tags_for_rows({"det0_h1": "Size: 3U 1\""})
+    result = client.title_and_tags_for_rows({"det0_h1": 'Size: 3U 1"'})
     assert result["det0_h1"]["title"] == "COTS power supply form factor"
     assert result["det0_h1"]["tags"] == ["interface"]
 
@@ -994,16 +1199,18 @@ def test_synthesize_leaf_requirements_sends_context_and_schema() -> None:
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": "{}"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.synthesize_leaf_requirements(
-        {"det0_h1": {"text": "Size: 3U 1\"", "context": "Power Supply"}}
+        {"det0_h1": {"text": 'Size: 3U 1"', "context": "Power Supply"}}
     )
 
     body = captured["body"]
     assert json.loads(body["messages"][1]["content"]) == {
-        "det0_h1": {"text": "Size: 3U 1\"", "context": "Power Supply"}
+        "det0_h1": {"text": 'Size: 3U 1"', "context": "Power Supply"}
     }
     prompt = body["messages"][0]["content"]
     assert "exactly 1 row(s)" in prompt
@@ -1026,11 +1233,13 @@ def test_synthesize_leaf_requirements_parses_valid_response() -> None:
             }
         )
     }
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport(response_json)
 
     result = client.synthesize_leaf_requirements(
-        {"det0_h1": {"text": "Size: 3U 1\"", "context": "Power Supply"}}
+        {"det0_h1": {"text": 'Size: 3U 1"', "context": "Power Supply"}}
     )
     assert result["det0_h1"]["text"] == "The COTS power supply shall have a 3U, 1-inch form factor."
     assert result["det0_h1"]["title"] == "COTS power supply form factor"
@@ -1044,7 +1253,9 @@ def test_judge_duplicate_cluster_sends_the_verdict_schema() -> None:
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": "{}"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.judge_duplicate_cluster({"n0": "at least 85%", "n1": "at-least 93%"})
@@ -1054,7 +1265,11 @@ def test_judge_duplicate_cluster_sends_the_verdict_schema() -> None:
     assert "contradictory" in prompt
     assert "redundant" in prompt
     schema = body["responseSchema"]["schema"]
-    assert set(schema["properties"]["verdict"]["enum"]) == {"redundant", "contradictory", "distinct"}
+    assert set(schema["properties"]["verdict"]["enum"]) == {
+        "redundant",
+        "contradictory",
+        "distinct",
+    }
     assert schema["required"] == ["verdict", "conflicting_values"]
     assert body["temperature"] == 0
     assert body["think"] is False
@@ -1064,7 +1279,9 @@ def test_judge_duplicate_cluster_parses_a_contradictory_verdict() -> None:
     response_json = {
         "content": json.dumps({"verdict": "contradictory", "conflicting_values": ["85%", "93%"]})
     }
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport(response_json)
 
     result = client.judge_duplicate_cluster({"n0": "at least 85%", "n1": "at-least 93%"})
@@ -1079,7 +1296,9 @@ def test_group_root_topics_sends_only_titles_and_the_groups_schema() -> None:
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": "{}"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.group_root_topics({"n0": "PS_SYSRESET", "n1": "PS_SYNC"})
@@ -1100,7 +1319,9 @@ def test_group_root_topics_parses_a_valid_response() -> None:
             {"groups": [{"title": "VPX Utility & Management Signals", "member_ids": ["n0", "n1"]}]}
         )
     }
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport(response_json)
 
     result = client.group_root_topics({"n0": "PS_SYSRESET", "n1": "PS_SYNC"})
@@ -1115,7 +1336,9 @@ def test_assign_leftover_roots_sends_leftovers_and_groups_and_the_assignments_sc
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": "{}"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.assign_leftover_roots(
@@ -1135,17 +1358,25 @@ def test_assign_leftover_roots_sends_leftovers_and_groups_and_the_assignments_sc
 
 
 def test_assign_leftover_roots_parses_a_valid_response() -> None:
-    response_json = {"content": json.dumps({"assignments": [{"id": "n2", "group_id": "regroup_synth_group_0"}]})}
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    response_json = {
+        "content": json.dumps({"assignments": [{"id": "n2", "group_id": "regroup_synth_group_0"}]})
+    }
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport(response_json)
 
-    result = client.assign_leftover_roots({"n2": "SBC Serial Communication Routing"}, {"regroup_synth_group_0": "Bus Interfaces"})
+    result = client.assign_leftover_roots(
+        {"n2": "SBC Serial Communication Routing"}, {"regroup_synth_group_0": "Bus Interfaces"}
+    )
     assert result["assignments"] == {"n2": "regroup_synth_group_0"}
 
 
 def test_assign_leftover_roots_still_accepts_the_older_map_answer() -> None:
     response_json = {"content": json.dumps({"assignments": {"n2": "regroup_synth_group_0"}})}
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport(response_json)
 
     result = client.assign_leftover_roots({"n2": "T"}, {"regroup_synth_group_0": "G"})
@@ -1163,8 +1394,11 @@ def test_post_scoring_schemas_follow_the_strict_vendor_rules() -> None:
     from app.survey import _response_schemas as rs
 
     for build in (
-        rs.duplicate_cluster_verdict_schema, rs.duplicate_pair_verdict_schema, rs.root_grouping_schema,
-        rs.leftover_assignment_schema, rs.trace_links_schema,
+        rs.duplicate_cluster_verdict_schema,
+        rs.duplicate_pair_verdict_schema,
+        rs.root_grouping_schema,
+        rs.leftover_assignment_schema,
+        rs.trace_links_schema,
     ):
         assert _strict_violations(build()["schema"]) == [], build.__name__
 
@@ -1183,14 +1417,19 @@ def test_infer_trace_links_sends_response_schema_even_with_a_nonempty_catalog() 
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"links": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     catalog = [
         {"reference_name": "Elisra.CoveredBy-Forward", "name": "Covered by"},
         {"reference_name": "System.LinkTypes.Related", "name": "Related"},
     ]
-    client.infer_trace_links(nodes=[{"node_id": "0", "type": "Requirement", "title": "t", "text": "x"}], link_type_catalog=catalog)
+    client.infer_trace_links(
+        nodes=[{"node_id": "0", "type": "Requirement", "title": "t", "text": "x"}],
+        link_type_catalog=catalog,
+    )
 
     assert "responseSchema" in captured["body"]
     assert captured["body"]["maxTokens"] == 20000
@@ -1210,10 +1449,15 @@ def test_infer_trace_links_disables_reasoning_and_forwards_num_ctx_when_configur
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"links": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", num_ctx=32768)
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer", num_ctx=32768
+    )
     client._transport = httpx.MockTransport(handler)
 
-    client.infer_trace_links(nodes=[{"node_id": "0", "type": "Requirement", "title": "t", "text": "x"}], link_type_catalog=[])
+    client.infer_trace_links(
+        nodes=[{"node_id": "0", "type": "Requirement", "title": "t", "text": "x"}],
+        link_type_catalog=[],
+    )
 
     assert captured["body"]["think"] is False
     assert captured["body"]["numCtx"] == 32768
@@ -1231,7 +1475,9 @@ def test_judge_kb_relevance_disables_reasoning_caps_output_and_forwards_num_ctx(
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": "{}"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", num_ctx=32768)
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer", num_ctx=32768
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.judge_kb_relevance("some section content", [{"source_file": "a.pdf", "text": "snippet"}])
@@ -1248,7 +1494,9 @@ def test_judge_kb_relevance_parses_the_verdict_map_and_includes_an_enum_schema()
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": '{"0": "relevant", "1": "not_relevant"}'})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     result = client.judge_kb_relevance(
@@ -1273,10 +1521,15 @@ def test_infer_trace_links_sends_response_schema_when_catalog_is_empty() -> None
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"links": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
-    client.infer_trace_links(nodes=[{"node_id": "0", "type": "Requirement", "title": "t", "text": "x"}], link_type_catalog=[])
+    client.infer_trace_links(
+        nodes=[{"node_id": "0", "type": "Requirement", "title": "t", "text": "x"}],
+        link_type_catalog=[],
+    )
 
     assert "responseSchema" in captured["body"]
 
@@ -1292,7 +1545,9 @@ def test_infer_trace_links_orders_catalog_native_types_first() -> None:
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": "[]"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     # Input catalog: custom type first, native type second
@@ -1300,13 +1555,18 @@ def test_infer_trace_links_orders_catalog_native_types_first() -> None:
         {"reference_name": "Elisra.CoveredBy-Forward", "name": "Covered by"},
         {"reference_name": "System.LinkTypes.Affects-Forward", "name": "Affects"},
     ]
-    client.infer_trace_links(nodes=[{"node_id": "0", "type": "Requirement", "title": "t", "text": "x"}], link_type_catalog=catalog)
+    client.infer_trace_links(
+        nodes=[{"node_id": "0", "type": "Requirement", "title": "t", "text": "x"}],
+        link_type_catalog=catalog,
+    )
 
     system_prompt = captured["body"]["messages"][0]["content"]
     # Native type should appear before custom type in the system prompt
     native_index = system_prompt.index("System.LinkTypes.Affects-Forward")
     custom_index = system_prompt.index("Elisra.CoveredBy-Forward")
-    assert native_index < custom_index, "Native types should be ordered before custom types in the catalog"
+    assert native_index < custom_index, (
+        "Native types should be ordered before custom types in the catalog"
+    )
 
 
 # --- analyze_section / analyze_section_agentic (§2b/§5b holistic redesign) ---
@@ -1317,14 +1577,24 @@ def test_analyze_section_parses_the_nodes_object_and_sends_response_schema() -> 
     # responseSchema -- section_analysis_schema() is object-wrapped
     # ({"nodes": [...]}) and deliberately maxItems-free, so it doesn't hit
     # the GBNF grammar-cost cliff the legacy methods avoid by omitting it.
-    nodes = [{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The unit shall survive a 1m drop.", "tags": ["safety"]}]
+    nodes = [
+        {
+            "temp_id": "n0",
+            "type": "Requirement",
+            "parent_temp_id": None,
+            "text": "The unit shall survive a 1m drop.",
+            "tags": ["safety"],
+        }
+    ]
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     result, truncated = client.analyze_section("Some section text.")
@@ -1357,7 +1627,15 @@ class _CountingFakeRedis:
 def test_analyze_section_cache_miss_then_hit_skips_the_second_llm_call() -> None:
     from app.survey.llm_cache import LlmResponseCache
 
-    nodes = [{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "Cached node.", "tags": []}]
+    nodes = [
+        {
+            "temp_id": "n0",
+            "type": "Requirement",
+            "parent_temp_id": None,
+            "text": "Cached node.",
+            "tags": [],
+        }
+    ]
     call_count = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -1366,7 +1644,9 @@ def test_analyze_section_cache_miss_then_hit_skips_the_second_llm_call() -> None
         return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
 
     cache = LlmResponseCache(_CountingFakeRedis())
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=cache)
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=cache
+    )
     client._transport = httpx.MockTransport(handler)
 
     first_result, first_truncated = client.analyze_section("Some section text.")
@@ -1387,10 +1667,14 @@ def test_analyze_section_cache_never_stores_a_truncated_result() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal call_count
         call_count += 1
-        return httpx.Response(200, json={"content": json.dumps({"nodes": []}), "finishReason": "length"})
+        return httpx.Response(
+            200, json={"content": json.dumps({"nodes": []}), "finishReason": "length"}
+        )
 
     cache = LlmResponseCache(_CountingFakeRedis())
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=cache)
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=cache
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section("Some section text.")
@@ -1411,7 +1695,9 @@ def test_analyze_section_cache_key_differs_by_section_text_no_false_positive_hit
         return httpx.Response(200, json={"content": json.dumps({"nodes": [{"temp_id": text}]})})
 
     cache = LlmResponseCache(_CountingFakeRedis())
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=cache)
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=cache
+    )
     client._transport = httpx.MockTransport(handler)
 
     result_a, _ = client.analyze_section("Section A text.")
@@ -1432,7 +1718,9 @@ def test_score_requirements_for_document_cache_miss_then_hit_skips_the_second_ll
         return httpx.Response(200, json={"content": json.dumps({"n0": {"score": 80}})})
 
     cache = LlmResponseCache(_CountingFakeRedis())
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=cache)
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=cache
+    )
     client._transport = httpx.MockTransport(handler)
 
     first = client.score_requirements_for_document({"n0": "The unit shall survive a drop."})
@@ -1443,7 +1731,9 @@ def test_score_requirements_for_document_cache_miss_then_hit_skips_the_second_ll
     assert second == {"n0": {"score": 80}}
 
 
-def test_score_epics_and_features_for_document_cache_miss_then_hit_skips_the_second_llm_call() -> None:
+def test_score_epics_and_features_for_document_cache_miss_then_hit_skips_the_second_llm_call() -> (
+    None
+):
     from app.survey.llm_cache import LlmResponseCache
 
     call_count = 0
@@ -1451,14 +1741,22 @@ def test_score_epics_and_features_for_document_cache_miss_then_hit_skips_the_sec
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal call_count
         call_count += 1
-        return httpx.Response(200, json={"content": json.dumps({"n0": {"score": 90, "categoryScores": {}}})})
+        return httpx.Response(
+            200, json={"content": json.dumps({"n0": {"score": 90, "categoryScores": {}}})}
+        )
 
     cache = LlmResponseCache(_CountingFakeRedis())
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=cache)
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=cache
+    )
     client._transport = httpx.MockTransport(handler)
 
-    first = client.score_epics_and_features_for_document({"n0": {"type": "Epic", "text": "Perimeter security"}})
-    second = client.score_epics_and_features_for_document({"n0": {"type": "Epic", "text": "Perimeter security"}})
+    first = client.score_epics_and_features_for_document(
+        {"n0": {"type": "Epic", "text": "Perimeter security"}}
+    )
+    second = client.score_epics_and_features_for_document(
+        {"n0": {"type": "Epic", "text": "Perimeter security"}}
+    )
 
     assert call_count == 1
     assert first == {"n0": {"score": 90, "categoryScores": {}}}
@@ -1476,7 +1774,9 @@ def test_analyze_section_without_a_cache_configured_always_calls_the_llm() -> No
         call_count += 1
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section("Some section text.")
@@ -1503,12 +1803,22 @@ def test_analyze_section_records_a_real_otel_span_with_gen_ai_attributes(monkeyp
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     monkeypatch.setattr(orchestrator_llm_client_module, "_tracer", provider.get_tracer("test"))
 
-    nodes = [{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The unit shall survive a 1m drop.", "tags": []}]
+    nodes = [
+        {
+            "temp_id": "n0",
+            "type": "Requirement",
+            "parent_temp_id": None,
+            "text": "The unit shall survive a 1m drop.",
+            "tags": [],
+        }
+    ]
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", model="qwen3.6:35b")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer", model="qwen3.6:35b"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section("Some section text.")
@@ -1537,7 +1847,9 @@ def test_analyze_section_caps_max_tokens_to_avoid_silent_truncation() -> None:
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section("Some section text.")
@@ -1557,7 +1869,9 @@ def test_analyze_section_disables_reasoning_via_the_think_field() -> None:
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section("Some section text.")
@@ -1580,7 +1894,9 @@ def test_score_requirements_for_document_disables_reasoning_via_the_think_field(
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.score_requirements_for_document({"n0": "text"})
@@ -1598,7 +1914,9 @@ def test_analyze_section_agentic_caps_max_tokens_to_avoid_silent_truncation() ->
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section_agentic("Some section text.", lambda query: (None, []))
@@ -1613,7 +1931,9 @@ def test_analyze_section_agentic_disables_reasoning_via_the_think_field() -> Non
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section_agentic("Some section text.", lambda query: (None, []))
@@ -1630,13 +1950,19 @@ def test_analyze_section_includes_the_whole_document_hint_only_when_requested() 
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
-    client.analyze_section("Some section text.", options=SectionAnalysisOptions(whole_document=True))
+    client.analyze_section(
+        "Some section text.", options=SectionAnalysisOptions(whole_document=True)
+    )
     assert _SECTION_ANALYSIS_WHOLE_DOCUMENT_HINT in captured["body"]["messages"][0]["content"]
 
-    client.analyze_section("Some section text.", options=SectionAnalysisOptions(whole_document=False))
+    client.analyze_section(
+        "Some section text.", options=SectionAnalysisOptions(whole_document=False)
+    )
     assert _SECTION_ANALYSIS_WHOLE_DOCUMENT_HINT not in captured["body"]["messages"][0]["content"]
 
 
@@ -1649,17 +1975,21 @@ def test_analyze_section_agentic_includes_the_whole_document_hint_only_when_requ
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section_agentic(
-        "Some section text.", lambda query: (None, []),
+        "Some section text.",
+        lambda query: (None, []),
         options=SectionAnalysisOptions(whole_document=True),
     )
     assert _SECTION_ANALYSIS_WHOLE_DOCUMENT_HINT in captured["body"]["messages"][0]["content"]
 
     client.analyze_section_agentic(
-        "Some section text.", lambda query: (None, []),
+        "Some section text.",
+        lambda query: (None, []),
         options=SectionAnalysisOptions(whole_document=False),
     )
     assert _SECTION_ANALYSIS_WHOLE_DOCUMENT_HINT not in captured["body"]["messages"][0]["content"]
@@ -1675,11 +2005,14 @@ def test_analyze_section_whole_document_hint_states_the_topic_count() -> None:
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section(
-        "Some section text.", options=SectionAnalysisOptions(whole_document=True, topic_count=79),
+        "Some section text.",
+        options=SectionAnalysisOptions(whole_document=True, topic_count=79),
     )
     system_content = captured["body"]["messages"][0]["content"]
     assert "79" in system_content
@@ -1694,11 +2027,14 @@ def test_analyze_section_agentic_whole_document_hint_states_the_topic_count() ->
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section_agentic(
-        "Some section text.", lambda query: (None, []),
+        "Some section text.",
+        lambda query: (None, []),
         options=SectionAnalysisOptions(whole_document=True, topic_count=79),
     )
     system_content = captured["body"]["messages"][0]["content"]
@@ -1719,7 +2055,9 @@ def test_analyze_section_includes_table_group_hints_when_supplied() -> None:
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section(
@@ -1742,11 +2080,14 @@ def test_analyze_section_agentic_includes_table_group_hints_when_supplied() -> N
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section_agentic(
-        "Some section text.", lambda query: (None, []),
+        "Some section text.",
+        lambda query: (None, []),
         options=SectionAnalysisOptions(topic_count=3, table_group_hints=[("Display", "Feature")]),
     )
     system_content = captured["body"]["messages"][0]["content"]
@@ -1763,7 +2104,9 @@ def test_analyze_section_omits_table_group_hint_when_no_labels_supplied() -> Non
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section("Some section text.", options=SectionAnalysisOptions(topic_count=3))
@@ -1789,12 +2132,16 @@ def test_analyze_section_default_root_wording_when_no_expected_root_count() -> N
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section("Some section text.")
     system_content = captured["body"]["messages"][0]["content"]
-    assert "At most ONE node in your entire response should have parent_temp_id null" in system_content
+    assert (
+        "At most ONE node in your entire response should have parent_temp_id null" in system_content
+    )
 
 
 def test_analyze_section_states_the_expected_root_count_when_multi_root() -> None:
@@ -1809,10 +2156,14 @@ def test_analyze_section_states_the_expected_root_count_when_multi_root() -> Non
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
-    client.analyze_section("Some section text.", options=SectionAnalysisOptions(expected_root_count=2))
+    client.analyze_section(
+        "Some section text.", options=SectionAnalysisOptions(expected_root_count=2)
+    )
     system_content = captured["body"]["messages"][0]["content"]
     assert "At most ONE node" not in system_content
     assert "up to 2 nodes may have parent_temp_id null" in system_content
@@ -1826,11 +2177,14 @@ def test_analyze_section_agentic_states_the_expected_root_count_when_multi_root(
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section_agentic(
-        "Some section text.", lambda query: (None, []),
+        "Some section text.",
+        lambda query: (None, []),
         options=SectionAnalysisOptions(expected_root_count=3),
     )
     system_content = captured["body"]["messages"][0]["content"]
@@ -1874,7 +2228,9 @@ def test_table_group_hint_is_empty_for_no_labels() -> None:
 def test_requirement_row_hint_names_every_identified_row_and_its_true_count() -> None:
     from app.survey.orchestrator_llm_client import _requirement_row_hint
 
-    hint = _requirement_row_hint([("P-SENSOR-001#", "Time sync source"), ("P-SENSOR-002#", "Sync accuracy")])
+    hint = _requirement_row_hint(
+        [("P-SENSOR-001#", "Time sync source"), ("P-SENSOR-002#", "Sync accuracy")]
+    )
     assert "2 individual row(s)" in hint
     assert "P-SENSOR-001#" in hint
     assert "Time sync source" in hint
@@ -1908,7 +2264,9 @@ def test_requirement_row_hint_omits_the_label_parenthetical_when_blank() -> None
 def test_heading_outline_hint_names_every_heading_and_its_true_count() -> None:
     from app.survey.orchestrator_llm_client import _heading_outline_hint
 
-    hint = _heading_outline_hint([("Functional and Performance", "Epic"), ("Synchronization", "Feature")])
+    hint = _heading_outline_hint(
+        [("Functional and Performance", "Epic"), ("Synchronization", "Feature")]
+    )
     assert "for 2 of its real headings" in hint
     assert "'Functional and Performance' (Epic)" in hint
     assert "'Synchronization' (Feature)" in hint
@@ -1923,7 +2281,14 @@ def test_heading_outline_hint_drops_requirement_typed_pairs_before_naming_or_cou
     # count reflects only what's actually named -- not the raw input length.
     from app.survey.orchestrator_llm_client import _heading_outline_hint
 
-    hint = _heading_outline_hint([("Domain", "Epic"), ("Sync", "Feature"), ("Leaf One", "Requirement"), ("Leaf Two", "Requirement")])
+    hint = _heading_outline_hint(
+        [
+            ("Domain", "Epic"),
+            ("Sync", "Feature"),
+            ("Leaf One", "Requirement"),
+            ("Leaf Two", "Requirement"),
+        ]
+    )
     assert "for 2 of its real headings" in hint
     assert "Leaf One" not in hint
     assert "Leaf Two" not in hint
@@ -1943,7 +2308,9 @@ def test_heading_outline_hint_caps_features_named_but_never_epics() -> None:
     assert f"'Feature {_MAX_HEADING_FEATURES_NAMED - 1}' (Feature)" in hint
     assert f"'Feature {_MAX_HEADING_FEATURES_NAMED}' (Feature)" not in hint
     assert "10 more" in hint
-    assert f"for {5 + _MAX_HEADING_FEATURES_NAMED + 10} of its real headings" in hint  # true named count always stated
+    assert (
+        f"for {5 + _MAX_HEADING_FEATURES_NAMED + 10} of its real headings" in hint
+    )  # true named count always stated
 
 
 def test_heading_outline_hint_adds_a_single_tier_clause_only_when_no_epic_is_named() -> None:
@@ -1972,7 +2339,9 @@ def test_analyze_section_skeleton_prompt_names_every_identified_heading() -> Non
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section_skeleton(
@@ -1994,7 +2363,9 @@ def test_analyze_section_skeleton_omits_the_heading_outline_hint_when_none_suppl
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section_skeleton("Some section text.")
@@ -2007,7 +2378,9 @@ def test_analyze_section_skeleton_cache_key_covers_the_heading_type_hints() -> N
     from app.survey.llm_cache import LlmResponseCache
 
     cache = LlmResponseCache(_CountingFakeRedis())
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=cache)
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=cache
+    )
     call_count = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -2026,7 +2399,9 @@ def test_analyze_section_skeleton_cache_key_covers_the_heading_type_hints() -> N
     assert call_count["n"] == 2  # same hints as the first call -- real cache hit
 
 
-def test_analyze_section_skeleton_agentic_forwards_heading_type_hints_into_its_degraded_fallback_call() -> None:
+def test_analyze_section_skeleton_agentic_forwards_heading_type_hints_into_its_degraded_fallback_call() -> (
+    None
+):
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -2036,11 +2411,14 @@ def test_analyze_section_skeleton_agentic_forwards_heading_type_hints_into_its_d
         captured["body"] = body
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section_skeleton_agentic(
-        "Some section text.", lambda query: (None, []),
+        "Some section text.",
+        lambda query: (None, []),
         options=SectionAnalysisOptions(heading_type_hints=[("Target Handling", "Epic")]),
     )
 
@@ -2069,41 +2447,59 @@ def test_whole_document_hint_falls_back_to_qualitative_when_no_topics() -> None:
 
 
 def test_analyze_section_reports_truncated_when_finish_reason_is_length() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
-    client._transport = _mock_transport({"content": json.dumps({"nodes": []}), "finishReason": "length"})
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
+    client._transport = _mock_transport(
+        {"content": json.dumps({"nodes": []}), "finishReason": "length"}
+    )
 
     _, truncated = client.analyze_section("Some section text.")
     assert truncated is True
 
 
 def test_analyze_section_reports_not_truncated_when_finish_reason_is_stop() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
-    client._transport = _mock_transport({"content": json.dumps({"nodes": []}), "finishReason": "stop"})
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
+    client._transport = _mock_transport(
+        {"content": json.dumps({"nodes": []}), "finishReason": "stop"}
+    )
 
     _, truncated = client.analyze_section("Some section text.")
     assert truncated is False
 
 
 def test_analyze_section_reports_not_truncated_when_finish_reason_is_absent() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport({"content": json.dumps({"nodes": []})})
 
     _, truncated = client.analyze_section("Some section text.")
     assert truncated is False
 
 
-def test_analyze_section_agentic_reports_truncated_when_final_answer_hits_finish_reason_length() -> None:
+def test_analyze_section_agentic_reports_truncated_when_final_answer_hits_finish_reason_length() -> (
+    None
+):
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"content": json.dumps({"nodes": []}), "finishReason": "length"})
+        return httpx.Response(
+            200, json={"content": json.dumps({"nodes": []}), "finishReason": "length"}
+        )
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     _, _, truncated = client.analyze_section_agentic("Some section text.", lambda query: (None, []))
     assert truncated is True
 
 
-def test_analyze_section_agentic_forces_a_final_answer_on_the_last_round_instead_of_returning_0_nodes() -> None:
+def test_analyze_section_agentic_forces_a_final_answer_on_the_last_round_instead_of_returning_0_nodes() -> (
+    None
+):
     # Regression guard for a confirmed real cause of a branch silently
     # contributing 0 nodes: a model that kept calling query_kb right up to
     # the round budget previously fell straight into "exceeded
@@ -2113,7 +2509,15 @@ def test_analyze_section_agentic_forces_a_final_answer_on_the_last_round_instead
     # again.
     from app.survey.orchestrator_llm_client import _MAX_TOOL_ROUNDS
 
-    final_nodes = [{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "Grounded requirement.", "tags": []}]
+    final_nodes = [
+        {
+            "temp_id": "n0",
+            "type": "Requirement",
+            "parent_temp_id": None,
+            "text": "Grounded requirement.",
+            "tags": [],
+        }
+    ]
     call_count = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -2123,20 +2527,34 @@ def test_analyze_section_agentic_forces_a_final_answer_on_the_last_round_instead
             # The forced-final round -- a compliant model answers.
             return httpx.Response(200, json={"content": json.dumps({"nodes": final_nodes})})
         return httpx.Response(
-            200, json={"toolCalls": [{"id": "call-1", "function": {"name": "query_kb", "arguments": '{"query": "x"}'}}]}
+            200,
+            json={
+                "toolCalls": [
+                    {
+                        "id": "call-1",
+                        "function": {"name": "query_kb", "arguments": '{"query": "x"}'},
+                    }
+                ]
+            },
         )
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
-    nodes, _, truncated = client.analyze_section_agentic("Some section text.", lambda query: (None, []))
+    nodes, _, truncated = client.analyze_section_agentic(
+        "Some section text.", lambda query: (None, [])
+    )
 
     assert nodes == final_nodes
     assert truncated is False
     assert call_count["n"] == _MAX_TOOL_ROUNDS  # forced to answer on the last round, not a 5th call
 
 
-def test_analyze_section_agentic_falls_back_to_analyze_section_when_a_model_ignores_tool_choice_none() -> None:
+def test_analyze_section_agentic_falls_back_to_analyze_section_when_a_model_ignores_tool_choice_none() -> (
+    None
+):
     # Defensive edge case: a model that contradicts toolChoice:'none' (still
     # emits tool_calls on the forced-final round) must not crash or silently
     # return 0 nodes -- falls back to one non-agentic analyze_section call
@@ -2145,17 +2563,54 @@ def test_analyze_section_agentic_falls_back_to_analyze_section_when_a_model_igno
         body = json.loads(request.content)
         if "tools" not in body:
             # The fallback analyze_section call -- no tools offered at all.
-            return httpx.Response(200, json={"content": json.dumps({"nodes": [{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "Fallback requirement.", "tags": []}]})})
+            return httpx.Response(
+                200,
+                json={
+                    "content": json.dumps(
+                        {
+                            "nodes": [
+                                {
+                                    "temp_id": "n0",
+                                    "type": "Requirement",
+                                    "parent_temp_id": None,
+                                    "text": "Fallback requirement.",
+                                    "tags": [],
+                                }
+                            ]
+                        }
+                    )
+                },
+            )
         return httpx.Response(
-            200, json={"toolCalls": [{"id": "call-1", "function": {"name": "query_kb", "arguments": '{"query": "x"}'}}]}
+            200,
+            json={
+                "toolCalls": [
+                    {
+                        "id": "call-1",
+                        "function": {"name": "query_kb", "arguments": '{"query": "x"}'},
+                    }
+                ]
+            },
         )
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
-    nodes, citations, truncated = client.analyze_section_agentic("Some section text.", lambda query: (None, []))
+    nodes, citations, truncated = client.analyze_section_agentic(
+        "Some section text.", lambda query: (None, [])
+    )
 
-    assert nodes == [{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "Fallback requirement.", "tags": []}]
+    assert nodes == [
+        {
+            "temp_id": "n0",
+            "type": "Requirement",
+            "parent_temp_id": None,
+            "text": "Fallback requirement.",
+            "tags": [],
+        }
+    ]
     assert truncated is False
 
 
@@ -2167,9 +2622,19 @@ def test_analyze_section_tolerates_a_response_missing_only_the_final_closing_bra
     # exactly one '}' recovers the full, otherwise well-formed response (all
     # 19 real nodes parsed correctly). Must not raise "malformed JSON" and
     # abort the whole job over this one confirmed failure shape.
-    nodes = [{"temp_id": "n1", "type": "Epic", "parent_temp_id": None, "text": "The Backplane shall comply.", "tags": ["feature"]}]
+    nodes = [
+        {
+            "temp_id": "n1",
+            "type": "Epic",
+            "parent_temp_id": None,
+            "text": "The Backplane shall comply.",
+            "tags": ["feature"],
+        }
+    ]
     content_missing_final_brace = json.dumps({"nodes": nodes})[:-1]  # drop the trailing '}'
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport({"content": content_missing_final_brace})
 
     result, _ = client.analyze_section("Some section text.")
@@ -2180,7 +2645,9 @@ def test_analyze_section_forwards_top_k_and_min_p_when_configured() -> None:
     # Gemma4 repetition-collapse mitigation (ollama/ollama#15502) -- these
     # sampler overrides are only sent when the caller (app.main) configured
     # them, same opt-in convention as num_ctx.
-    nodes = [{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "x", "tags": []}]
+    nodes = [
+        {"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "x", "tags": []}
+    ]
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -2199,14 +2666,18 @@ def test_analyze_section_forwards_top_k_and_min_p_when_configured() -> None:
 
 
 def test_analyze_section_omits_top_k_and_min_p_when_not_configured() -> None:
-    nodes = [{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "x", "tags": []}]
+    nodes = [
+        {"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "x", "tags": []}
+    ]
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section("Some section text.")
@@ -2226,17 +2697,33 @@ def test_analyze_section_tolerates_a_node_missing_its_own_closing_brace() -> Non
     # inserting a single '}' right where the array closes recovers the full,
     # otherwise well-formed response.
     nodes = [
-        {"temp_id": "n1", "type": "Epic", "parent_temp_id": None, "text": "The Backplane shall comply.", "tags": ["feature"]},
-        {"temp_id": "n2", "type": "Requirement", "parent_temp_id": "n1", "text": "The BP shall support 7 slots.", "tags": []},
+        {
+            "temp_id": "n1",
+            "type": "Epic",
+            "parent_temp_id": None,
+            "text": "The Backplane shall comply.",
+            "tags": ["feature"],
+        },
+        {
+            "temp_id": "n2",
+            "type": "Requirement",
+            "parent_temp_id": "n1",
+            "text": "The BP shall support 7 slots.",
+            "tags": [],
+        },
     ]
     well_formed = json.dumps({"nodes": nodes})
     # Remove exactly the LAST node object's own closing '}' (the one right
     # before the "nodes" array's closing ']') -- mirrors the real failure's
     # "Expecting ',' delimiter" at that ']'.
     last_brace_index = well_formed.rindex("}", 0, well_formed.rindex("]"))
-    content_missing_node_brace = well_formed[:last_brace_index] + well_formed[last_brace_index + 1 :]
+    content_missing_node_brace = (
+        well_formed[:last_brace_index] + well_formed[last_brace_index + 1 :]
+    )
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport({"content": content_missing_node_brace})
 
     result, _ = client.analyze_section("Some section text.")
@@ -2248,7 +2735,9 @@ def test_analyze_section_still_raises_when_malformed_for_a_different_reason() ->
     # auto-repair engine -- a response that's malformed for any OTHER
     # reason (not just "missing exactly the outer closing brace") must
     # still raise, same as every other call site's malformed-JSON handling.
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport({"content": "not valid json at all"})
 
     with pytest.raises(ValueError, match="malformed"):
@@ -2256,7 +2745,9 @@ def test_analyze_section_still_raises_when_malformed_for_a_different_reason() ->
 
 
 def test_analyze_section_raises_on_non_200_response() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport({"content": json.dumps({"nodes": []})}, expected_status=401)
 
     with pytest.raises(httpx.HTTPStatusError):
@@ -2264,9 +2755,13 @@ def test_analyze_section_raises_on_non_200_response() -> None:
 
 
 def test_analyze_section_strips_a_markdown_json_fence() -> None:
-    nodes = [{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "x", "tags": []}]
+    nodes = [
+        {"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "x", "tags": []}
+    ]
     response_json = {"content": "```json\n" + json.dumps({"nodes": nodes}) + "\n```"}
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport(response_json)
 
     result, _ = client.analyze_section("Some section text.")
@@ -2277,8 +2772,12 @@ def test_analyze_section_tolerates_a_bare_array_response() -> None:
     # Defensive unwrap (_nodes_from_parsed): the prompt asks for the
     # object-wrapped {"nodes": [...]} shape, but a schema-less degraded
     # response could come back as a bare array -- must not crash.
-    nodes = [{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "x", "tags": []}]
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    nodes = [
+        {"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "x", "tags": []}
+    ]
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport({"content": json.dumps(nodes)})
 
     result, _ = client.analyze_section("Some section text.")
@@ -2292,7 +2791,9 @@ def test_analyze_section_includes_model_in_payload_when_set() -> None:
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", model="qwen3:4b")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer", model="qwen3:4b"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section("Some section text.")
@@ -2307,7 +2808,9 @@ def test_analyze_section_omits_model_from_payload_when_unset() -> None:
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section("Some section text.")
@@ -2322,7 +2825,9 @@ def test_analyze_section_prepends_kb_context_when_present() -> None:
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section("Some section text.", kb_context="Reference material from doc-a.docx")
@@ -2338,7 +2843,9 @@ def test_analyze_section_prompt_unchanged_when_kb_context_is_none() -> None:
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section("Some section text.", kb_context=None)
@@ -2351,7 +2858,15 @@ def test_analyze_section_agentic_calls_retrieve_fn_then_returns_final_nodes() ->
     # Full loop: first turn returns a query_kb tool call, retrieve_fn is
     # invoked with the model's own query, a {role:"tool"} result message is
     # appended, and the second turn's content is the final parsed answer.
-    final_nodes = [{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "Grounded requirement.", "tags": []}]
+    final_nodes = [
+        {
+            "temp_id": "n0",
+            "type": "Requirement",
+            "parent_temp_id": None,
+            "text": "Grounded requirement.",
+            "tags": [],
+        }
+    ]
     call_count = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -2363,12 +2878,22 @@ def test_analyze_section_agentic_calls_retrieve_fn_then_returns_final_nodes() ->
                 200,
                 json={
                     "toolCalls": [
-                        {"id": "call-1", "function": {"name": "query_kb", "arguments": json.dumps({"query": "HDR spec"})}}
+                        {
+                            "id": "call-1",
+                            "function": {
+                                "name": "query_kb",
+                                "arguments": json.dumps({"query": "HDR spec"}),
+                            },
+                        }
                     ]
                 },
             )
         # Second turn: the tool-result message must have been appended.
-        assert body["messages"][-1] == {"role": "tool", "tool_call_id": "call-1", "content": "context for: HDR spec"}
+        assert body["messages"][-1] == {
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "content": "context for: HDR spec",
+        }
         return httpx.Response(200, json={"content": json.dumps({"nodes": final_nodes})})
 
     retrieved_queries: list[str] = []
@@ -2377,7 +2902,9 @@ def test_analyze_section_agentic_calls_retrieve_fn_then_returns_final_nodes() ->
         retrieved_queries.append(query)
         return f"context for: {query}", [{"source_file": "spec.docx", "similarity": 0.8}]
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     nodes, citations, _ = client.analyze_section_agentic("Some section text.", retrieve_fn)
@@ -2394,7 +2921,15 @@ def test_analyze_section_agentic_parses_json_prefaced_with_conversational_prose(
     # completion, so the model prefaced its fenced JSON with prose instead
     # of returning bare JSON -- _strip_json_fence's old anchored-only regex
     # never matched this shape at all, and the whole SURVEY job crashed.
-    final_nodes = [{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "Grounded requirement.", "tags": []}]
+    final_nodes = [
+        {
+            "temp_id": "n0",
+            "type": "Requirement",
+            "parent_temp_id": None,
+            "text": "Grounded requirement.",
+            "tags": [],
+        }
+    ]
     prefaced_content = (
         "Based on the analysis of Section 1, here is the synthesized work-item tree:\n\n"
         f"```json\n{json.dumps({'nodes': final_nodes})}\n```"
@@ -2403,7 +2938,9 @@ def test_analyze_section_agentic_parses_json_prefaced_with_conversational_prose(
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"content": prefaced_content})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     nodes, citations, _ = client.analyze_section_agentic("Some section text.", None)
@@ -2429,7 +2966,9 @@ def test_analyze_section_agentic_sends_both_tools_and_response_schema() -> None:
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section_agentic("Some section text.", lambda query: (None, []))
@@ -2454,19 +2993,29 @@ def test_analyze_section_agentic_bounds_at_max_tool_rounds_then_forces_a_final_a
             200,
             json={
                 "toolCalls": [
-                    {"id": "call-x", "function": {"name": "query_kb", "arguments": json.dumps({"query": "again"})}}
+                    {
+                        "id": "call-x",
+                        "function": {
+                            "name": "query_kb",
+                            "arguments": json.dumps({"query": "again"}),
+                        },
+                    }
                 ]
             },
         )
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     call_count = {"n": 0}
 
     def retrieve_fn(query: str):
         call_count["n"] += 1
-        return f"context {call_count['n']}", [{"source_file": f"doc-{call_count['n']}.docx", "similarity": 0.5}]
+        return f"context {call_count['n']}", [
+            {"source_file": f"doc-{call_count['n']}.docx", "similarity": 0.5}
+        ]
 
     nodes, citations, _ = client.analyze_section_agentic("Some section text.", retrieve_fn)
 
@@ -2488,7 +3037,9 @@ def test_analyze_section_agentic_offers_full_document_tools_when_both_fns_suppli
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section_agentic(
@@ -2509,14 +3060,26 @@ def test_analyze_section_agentic_list_kb_documents_tool_call_returns_document_na
         call_count["n"] += 1
         if call_count["n"] == 1:
             return httpx.Response(
-                200, json={"toolCalls": [{"id": "call-1", "function": {"name": "list_kb_documents", "arguments": "{}"}}]}
+                200,
+                json={
+                    "toolCalls": [
+                        {
+                            "id": "call-1",
+                            "function": {"name": "list_kb_documents", "arguments": "{}"},
+                        }
+                    ]
+                },
             )
         assert json.loads(request.content)["messages"][-1] == {
-            "role": "tool", "tool_call_id": "call-1", "content": "spec.docx, other.docx",
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "content": "spec.docx, other.docx",
         }
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     nodes, citations, _ = client.analyze_section_agentic(
@@ -2542,12 +3105,20 @@ def test_analyze_section_agentic_read_kb_document_tool_call_returns_full_text() 
                 200,
                 json={
                     "toolCalls": [
-                        {"id": "call-1", "function": {"name": "read_kb_document", "arguments": json.dumps({"source_file": "spec.docx"})}}
+                        {
+                            "id": "call-1",
+                            "function": {
+                                "name": "read_kb_document",
+                                "arguments": json.dumps({"source_file": "spec.docx"}),
+                            },
+                        }
                     ]
                 },
             )
         assert json.loads(request.content)["messages"][-1] == {
-            "role": "tool", "tool_call_id": "call-1", "content": "the full spec text",
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "content": "the full spec text",
         }
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
@@ -2555,11 +3126,16 @@ def test_analyze_section_agentic_read_kb_document_tool_call_returns_full_text() 
         requested.append(source_file)
         return "the full spec text"
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section_agentic(
-        "Some section text.", lambda query: (None, []), list_documents_fn=lambda: ["spec.docx"], read_document_fn=read_document_fn
+        "Some section text.",
+        lambda query: (None, []),
+        list_documents_fn=lambda: ["spec.docx"],
+        read_document_fn=read_document_fn,
     )
 
     assert requested == ["spec.docx"]
@@ -2575,18 +3151,29 @@ def test_analyze_section_agentic_read_kb_document_handles_a_missing_document_gra
                 200,
                 json={
                     "toolCalls": [
-                        {"id": "call-1", "function": {"name": "read_kb_document", "arguments": json.dumps({"source_file": "missing.docx"})}}
+                        {
+                            "id": "call-1",
+                            "function": {
+                                "name": "read_kb_document",
+                                "arguments": json.dumps({"source_file": "missing.docx"}),
+                            },
+                        }
                     ]
                 },
             )
         assert "not found" in json.loads(request.content)["messages"][-1]["content"]
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     nodes, _, _ = client.analyze_section_agentic(
-        "Some section text.", lambda query: (None, []), list_documents_fn=lambda: [], read_document_fn=lambda source_file: None
+        "Some section text.",
+        lambda query: (None, []),
+        list_documents_fn=lambda: [],
+        read_document_fn=lambda source_file: None,
     )
     assert nodes == []
 
@@ -2601,11 +3188,18 @@ def test_analyze_section_agentic_handles_no_query_argument_gracefully() -> None:
         call_count["n"] += 1
         if call_count["n"] == 1:
             return httpx.Response(
-                200, json={"toolCalls": [{"id": "call-1", "function": {"name": "query_kb", "arguments": "not json"}}]}
+                200,
+                json={
+                    "toolCalls": [
+                        {"id": "call-1", "function": {"name": "query_kb", "arguments": "not json"}}
+                    ]
+                },
             )
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     retrieve_calls = []
@@ -2628,7 +3222,9 @@ def test_analyze_section_agentic_offers_read_other_section_only_when_fn_supplied
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section_agentic(
@@ -2648,7 +3244,9 @@ def test_analyze_section_agentic_does_not_offer_read_other_section_by_default() 
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section_agentic("Some section text.", lambda query: (None, []))
@@ -2668,12 +3266,20 @@ def test_analyze_section_agentic_read_other_section_tool_call_returns_section_te
                 200,
                 json={
                     "toolCalls": [
-                        {"id": "call-1", "function": {"name": "read_other_section", "arguments": json.dumps({"section_id": "3"})}}
+                        {
+                            "id": "call-1",
+                            "function": {
+                                "name": "read_other_section",
+                                "arguments": json.dumps({"section_id": "3"}),
+                            },
+                        }
                     ]
                 },
             )
         assert json.loads(request.content)["messages"][-1] == {
-            "role": "tool", "tool_call_id": "call-1", "content": "section 3's full text",
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "content": "section 3's full text",
         }
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
@@ -2681,7 +3287,9 @@ def test_analyze_section_agentic_read_other_section_tool_call_returns_section_te
         requested.append(section_id)
         return "section 3's full text"
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section_agentic(
@@ -2701,18 +3309,28 @@ def test_analyze_section_agentic_read_other_section_handles_a_missing_section_gr
                 200,
                 json={
                     "toolCalls": [
-                        {"id": "call-1", "function": {"name": "read_other_section", "arguments": json.dumps({"section_id": "99"})}}
+                        {
+                            "id": "call-1",
+                            "function": {
+                                "name": "read_other_section",
+                                "arguments": json.dumps({"section_id": "99"}),
+                            },
+                        }
                     ]
                 },
             )
         assert "not found" in json.loads(request.content)["messages"][-1]["content"]
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     nodes, _, _ = client.analyze_section_agentic(
-        "Some section text.", lambda query: (None, []), read_other_section_fn=lambda section_id: None
+        "Some section text.",
+        lambda query: (None, []),
+        read_other_section_fn=lambda section_id: None,
     )
     assert nodes == []
 
@@ -2732,7 +3350,9 @@ def _skeleton_nodes() -> list[dict]:
 
 
 def test_analyze_section_skeleton_returns_structure_only_nodes() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport({"content": json.dumps({"nodes": _skeleton_nodes()})})
 
     nodes, truncated = client.analyze_section_skeleton("Display\nThe display shall support HDR.")
@@ -2744,7 +3364,9 @@ def test_analyze_section_skeleton_returns_structure_only_nodes() -> None:
     # structural (see section_skeleton_schema), not content, so its
     # presence here wouldn't violate this test's own premise; this
     # fixture's nodes just don't happen to set it.
-    assert all(not (set(n) & {"text", "description", "tags", "figure_ids", "table_ids"}) for n in nodes)
+    assert all(
+        not (set(n) & {"text", "description", "tags", "figure_ids", "table_ids"}) for n in nodes
+    )
 
 
 def test_analyze_section_skeleton_response_schema_asks_for_no_content_fields() -> None:
@@ -2754,7 +3376,9 @@ def test_analyze_section_skeleton_response_schema_asks_for_no_content_fields() -
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section_skeleton("Some section text.")
@@ -2775,7 +3399,9 @@ def test_analyze_section_skeleton_response_schema_asks_for_no_content_fields() -
 
 
 def test_analyze_section_skeleton_reports_truncated_on_finish_reason_length() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport(
         {"content": json.dumps({"nodes": _skeleton_nodes()}), "finishReason": "length"}
     )
@@ -2791,14 +3417,19 @@ def test_analyze_section_skeleton_prompt_carries_the_structural_steering_paramet
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section_skeleton(
-        "Some section text.", kb_context="Reference material.",
+        "Some section text.",
+        kb_context="Reference material.",
         options=SectionAnalysisOptions(
-            whole_document=True, topic_count=7,
-            table_group_hints=[("Media Buttons", "Feature")], expected_root_count=2,
+            whole_document=True,
+            topic_count=7,
+            table_group_hints=[("Media Buttons", "Feature")],
+            expected_root_count=2,
         ),
     )
 
@@ -2818,7 +3449,9 @@ def test_analyze_section_skeleton_prompt_names_every_identified_requirement_row(
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section_skeleton(
@@ -2842,7 +3475,9 @@ def test_analyze_section_skeleton_omits_the_requirement_row_hint_when_none_suppl
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section_skeleton("Some section text.")
@@ -2855,7 +3490,9 @@ def test_analyze_section_skeleton_cache_key_covers_the_requirement_row_hints() -
     from app.survey.llm_cache import LlmResponseCache
 
     cache = LlmResponseCache(_CountingFakeRedis())
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=cache)
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=cache
+    )
     call_count = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -2864,7 +3501,9 @@ def test_analyze_section_skeleton_cache_key_covers_the_requirement_row_hints() -
 
     client._transport = httpx.MockTransport(handler)
 
-    row_opts_1 = SectionAnalysisOptions(requirement_row_hints=[("P-SENSOR-001#", "Time sync source")])
+    row_opts_1 = SectionAnalysisOptions(
+        requirement_row_hints=[("P-SENSOR-001#", "Time sync source")]
+    )
     row_opts_2 = SectionAnalysisOptions(requirement_row_hints=[("P-SENSOR-002#", "Sync accuracy")])
     client.analyze_section_skeleton("Some section text.", options=row_opts_1)
     client.analyze_section_skeleton("Some section text.", options=row_opts_2)
@@ -2878,20 +3517,43 @@ def test_analyze_section_skeleton_cache_key_changed_with_the_prompt_and_schema_c
     from app.survey.llm_cache import cache_key
 
     key = cache_key(
-        "analyze_section_skeleton.v2", "model", 4096, 40, 0.05, None,
-        "text", None, False, None, None, None, None,
+        "analyze_section_skeleton.v2",
+        "model",
+        4096,
+        40,
+        0.05,
+        None,
+        "text",
+        None,
+        False,
+        None,
+        None,
+        None,
+        None,
     )
     # A same-arguments key computed under the OLD operation string must
     # differ -- proves a pre-existing 24h-TTL cache entry from before this
     # change cannot be replayed as a hit against the new prompt/schema.
     old_key = cache_key(
-        "analyze_section_skeleton", "model", 4096, 40, 0.05, None,
-        "text", None, False, None, None, None,
+        "analyze_section_skeleton",
+        "model",
+        4096,
+        40,
+        0.05,
+        None,
+        "text",
+        None,
+        False,
+        None,
+        None,
+        None,
     )
     assert key != old_key
 
 
-def test_analyze_section_skeleton_agentic_forwards_requirement_row_hints_into_its_degraded_fallback_call() -> None:
+def test_analyze_section_skeleton_agentic_forwards_requirement_row_hints_into_its_degraded_fallback_call() -> (
+    None
+):
     # The easy-to-miss path: a round that returns neither tool_calls nor
     # content degrades to the plain skeleton call -- confirmed here that
     # requirement_row_hints (like table_group_hints/expected_root_count)
@@ -2905,11 +3567,14 @@ def test_analyze_section_skeleton_agentic_forwards_requirement_row_hints_into_it
         captured["body"] = body
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section_skeleton_agentic(
-        "Some section text.", lambda query: (None, []),
+        "Some section text.",
+        lambda query: (None, []),
         options=SectionAnalysisOptions(
             requirement_row_hints=[("P-SENSOR-001#", "Time sync source")],
         ),
@@ -2920,7 +3585,9 @@ def test_analyze_section_skeleton_agentic_forwards_requirement_row_hints_into_it
 
 
 def test_analyze_section_skeleton_raises_on_non_200_response() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport({"content": "{}"}, expected_status=500)
 
     with pytest.raises(httpx.HTTPStatusError):
@@ -2938,7 +3605,13 @@ def test_analyze_section_skeleton_agentic_calls_retrieve_fn_then_returns_skeleto
                 200,
                 json={
                     "toolCalls": [
-                        {"id": "call-1", "function": {"name": "query_kb", "arguments": json.dumps({"query": "HDR"})}}
+                        {
+                            "id": "call-1",
+                            "function": {
+                                "name": "query_kb",
+                                "arguments": json.dumps({"query": "HDR"}),
+                            },
+                        }
                     ]
                 },
             )
@@ -2946,12 +3619,18 @@ def test_analyze_section_skeleton_agentic_calls_retrieve_fn_then_returns_skeleto
 
     def retrieve_fn(query: str) -> tuple[str | None, list[dict]]:
         retrieved.append(query)
-        return "HDR reference material.", [{"source_file": "hdr.pdf", "similarity": 0.9, "text": "HDR."}]
+        return "HDR reference material.", [
+            {"source_file": "hdr.pdf", "similarity": 0.9, "text": "HDR."}
+        ]
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
-    nodes, citations, truncated = client.analyze_section_skeleton_agentic("Some section text.", retrieve_fn)
+    nodes, citations, truncated = client.analyze_section_skeleton_agentic(
+        "Some section text.", retrieve_fn
+    )
 
     assert retrieved == ["HDR"]
     assert nodes == _skeleton_nodes()
@@ -2959,14 +3638,18 @@ def test_analyze_section_skeleton_agentic_calls_retrieve_fn_then_returns_skeleto
     assert truncated is False
 
 
-def test_analyze_section_skeleton_agentic_sends_the_skeleton_schema_not_the_analysis_schema() -> None:
+def test_analyze_section_skeleton_agentic_sends_the_skeleton_schema_not_the_analysis_schema() -> (
+    None
+):
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section_skeleton_agentic("Some section text.", lambda query: (None, []))
@@ -2986,10 +3669,14 @@ def test_analyze_section_skeleton_agentic_falls_back_to_the_non_agentic_skeleton
             return httpx.Response(200, json={})
         return httpx.Response(200, json={"content": json.dumps({"nodes": _skeleton_nodes()})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
-    nodes, _, _ = client.analyze_section_skeleton_agentic("Some section text.", lambda query: (None, []))
+    nodes, _, _ = client.analyze_section_skeleton_agentic(
+        "Some section text.", lambda query: (None, [])
+    )
     assert nodes == _skeleton_nodes()
     assert call_count["n"] == 2
 
@@ -3005,7 +3692,9 @@ def test_author_content_returns_description_and_tags_per_node() -> None:
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps(content)})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     skeleton = {
@@ -3033,10 +3722,14 @@ def test_author_content_response_schema_asks_for_no_structural_fields() -> None:
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": "{}"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
-    client.author_content("Some section text.", {"n0": {"type": "Requirement", "title": "T", "parent_id": None}})
+    client.author_content(
+        "Some section text.", {"n0": {"type": "Requirement", "title": "T", "parent_id": None}}
+    )
 
     value_schema = captured["body"]["responseSchema"]["schema"]["additionalProperties"]
     assert set(value_schema["properties"]) == {"description", "tags"}
@@ -3049,7 +3742,9 @@ def test_author_content_prepends_kb_context_when_supplied() -> None:
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": "{}"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.author_content(
@@ -3058,14 +3753,21 @@ def test_author_content_prepends_kb_context_when_supplied() -> None:
         kb_context="Grounding material the skeleton stage already pulled.",
     )
 
-    assert "Grounding material the skeleton stage already pulled." in captured["body"]["messages"][0]["content"]
+    assert (
+        "Grounding material the skeleton stage already pulled."
+        in captured["body"]["messages"][0]["content"]
+    )
 
 
 def test_author_content_reports_truncated_on_finish_reason_length() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport({"content": "{}", "finishReason": "length"})
 
-    _, truncated = client.author_content("Some section text.", {"n0": {"type": "Requirement", "title": "T", "parent_id": None}})
+    _, truncated = client.author_content(
+        "Some section text.", {"n0": {"type": "Requirement", "title": "T", "parent_id": None}}
+    )
     assert truncated is True
 
 
@@ -3073,26 +3775,35 @@ def test_author_content_tolerates_a_non_object_response() -> None:
     # An omitted/degraded node is the CALLER's problem to degrade around
     # (see llm_leveling._author_branch_content) -- this method never
     # invents an entry, it just reports what came back.
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport({"content": "[]"})
 
-    result, _ = client.author_content("Some section text.", {"n0": {"type": "Requirement", "title": "T", "parent_id": None}})
+    result, _ = client.author_content(
+        "Some section text.", {"n0": {"type": "Requirement", "title": "T", "parent_id": None}}
+    )
     assert result == {}
 
 
 def test_author_content_raises_on_non_200_response() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport({"content": "{}"}, expected_status=500)
 
     with pytest.raises(httpx.HTTPStatusError):
-        client.author_content("Some section text.", {"n0": {"type": "Requirement", "title": "T", "parent_id": None}})
+        client.author_content(
+            "Some section text.", {"n0": {"type": "Requirement", "title": "T", "parent_id": None}}
+        )
 
 
 def _author_content_cached_client(handler) -> OrchestratorLlmClient:
     from app.survey.llm_cache import LlmResponseCache
 
     client = OrchestratorLlmClient(
-        base_url="http://orchestrator.internal", bearer_token="test-bearer",
+        base_url="http://orchestrator.internal",
+        bearer_token="test-bearer",
         cache=LlmResponseCache(_CountingFakeRedis()),
     )
     client._transport = httpx.MockTransport(handler)
@@ -3148,30 +3859,48 @@ def test_author_content_cache_key_covers_the_skeleton_not_just_the_section_text(
     # branch A's content for branch B's structure.
     def handler(request: httpx.Request) -> httpx.Response:
         requested = json.loads(json.loads(request.content)["messages"][1]["content"])["nodes"]
-        return httpx.Response(200, json={"content": json.dumps(
-            {local_id: {"description": entry["title"], "tags": []} for local_id, entry in requested.items()}
-        )})
+        return httpx.Response(
+            200,
+            json={
+                "content": json.dumps(
+                    {
+                        local_id: {"description": entry["title"], "tags": []}
+                        for local_id, entry in requested.items()
+                    }
+                )
+            },
+        )
 
     client = _author_content_cached_client(handler)
 
-    first, _ = client.author_content("Same section text.", {"n0": {"type": "Requirement", "title": "First", "parent_id": None}})
-    second, _ = client.author_content("Same section text.", {"n0": {"type": "Requirement", "title": "Second", "parent_id": None}})
+    first, _ = client.author_content(
+        "Same section text.", {"n0": {"type": "Requirement", "title": "First", "parent_id": None}}
+    )
+    second, _ = client.author_content(
+        "Same section text.", {"n0": {"type": "Requirement", "title": "Second", "parent_id": None}}
+    )
 
     assert first == {"n0": {"description": "First", "tags": []}}
-    assert second == {"n0": {"description": "Second", "tags": []}}  # not a stale hit from the first skeleton
+    assert second == {
+        "n0": {"description": "Second", "tags": []}
+    }  # not a stale hit from the first skeleton
 
 
 def test_author_content_cache_key_differs_by_kb_context() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         system_prompt = json.loads(request.content)["messages"][0]["content"]
         grounded = "Grounding material." in system_prompt
-        return httpx.Response(200, json={"content": json.dumps({"n0": {"description": str(grounded), "tags": []}})})
+        return httpx.Response(
+            200, json={"content": json.dumps({"n0": {"description": str(grounded), "tags": []}})}
+        )
 
     client = _author_content_cached_client(handler)
     skeleton = {"n0": {"type": "Requirement", "title": "T", "parent_id": None}}
 
     ungrounded, _ = client.author_content("Same section text.", skeleton)
-    grounded, _ = client.author_content("Same section text.", skeleton, kb_context="Grounding material.")
+    grounded, _ = client.author_content(
+        "Same section text.", skeleton, kb_context="Grounding material."
+    )
 
     assert ungrounded["n0"]["description"] == "False"
     assert grounded["n0"]["description"] == "True"
@@ -3198,7 +3927,9 @@ def test_map_figures_tables_returns_a_verdict_per_item() -> None:
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps(verdicts)})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     result = client.map_figures_tables(_MAPPING_CANDIDATES, _MAPPING_ITEMS)
@@ -3219,7 +3950,9 @@ def test_map_figures_tables_response_schema_offers_all_three_outcomes() -> None:
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": "{}"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.map_figures_tables(_MAPPING_CANDIDATES, _MAPPING_ITEMS)
@@ -3237,7 +3970,9 @@ def test_map_figures_tables_tolerates_a_non_object_response() -> None:
     # Every unanswered item is the CALLER's own escalate/exclude decision
     # (see llm_leveling._map_figures_tables_to_nodes) -- this method never
     # invents a verdict, it reports what came back.
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport({"content": "[]"})
 
     assert client.map_figures_tables(_MAPPING_CANDIDATES, _MAPPING_ITEMS) == {}
@@ -3247,7 +3982,9 @@ def test_map_figures_tables_raises_on_non_200_response() -> None:
     # The mapping STAGE is fail-open, but that degradation belongs to the
     # caller -- this method still raises like every other client method, so
     # the caller can tell a real failure apart from an empty verdict set.
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport({"content": "{}"}, expected_status=500)
 
     with pytest.raises(httpx.HTTPStatusError):
@@ -3271,7 +4008,8 @@ def test_map_figures_tables_cache_miss_then_hit_skips_the_second_llm_call() -> N
         return httpx.Response(200, json={"content": json.dumps(verdicts)})
 
     client = OrchestratorLlmClient(
-        base_url="http://orchestrator.internal", bearer_token="test-bearer",
+        base_url="http://orchestrator.internal",
+        bearer_token="test-bearer",
         cache=LlmResponseCache(_CountingFakeRedis()),
     )
     client._transport = httpx.MockTransport(handler)
@@ -3294,13 +4032,17 @@ def test_map_figures_tables_never_caches_a_truncated_response() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal call_count
         call_count += 1
-        return httpx.Response(200, json={
-            "content": json.dumps({"f0": {"node_id": "n1", "escalate": False}}),
-            "finishReason": "length",
-        })
+        return httpx.Response(
+            200,
+            json={
+                "content": json.dumps({"f0": {"node_id": "n1", "escalate": False}}),
+                "finishReason": "length",
+            },
+        )
 
     client = OrchestratorLlmClient(
-        base_url="http://orchestrator.internal", bearer_token="test-bearer",
+        base_url="http://orchestrator.internal",
+        bearer_token="test-bearer",
         cache=LlmResponseCache(_CountingFakeRedis()),
     )
     client._transport = httpx.MockTransport(handler)
@@ -3321,12 +4063,18 @@ def test_map_figures_tables_never_caches_a_response_missing_items() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal call_count
         call_count += 1
-        return httpx.Response(200, json={
-            "content": json.dumps({"f0": {"node_id": "n1", "escalate": False}}),  # t0 unanswered
-        })
+        return httpx.Response(
+            200,
+            json={
+                "content": json.dumps(
+                    {"f0": {"node_id": "n1", "escalate": False}}
+                ),  # t0 unanswered
+            },
+        )
 
     client = OrchestratorLlmClient(
-        base_url="http://orchestrator.internal", bearer_token="test-bearer",
+        base_url="http://orchestrator.internal",
+        bearer_token="test-bearer",
         cache=LlmResponseCache(_CountingFakeRedis()),
     )
     client._transport = httpx.MockTransport(handler)
@@ -3346,12 +4094,18 @@ def test_map_figures_tables_cache_key_covers_the_candidates_not_just_the_items()
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(json.loads(request.content)["messages"][1]["content"])
         winner = sorted(body["candidates"])[0]
-        return httpx.Response(200, json={"content": json.dumps(
-            {item_id: {"node_id": winner, "escalate": False} for item_id in body["items"]}
-        )})
+        return httpx.Response(
+            200,
+            json={
+                "content": json.dumps(
+                    {item_id: {"node_id": winner, "escalate": False} for item_id in body["items"]}
+                )
+            },
+        )
 
     client = OrchestratorLlmClient(
-        base_url="http://orchestrator.internal", bearer_token="test-bearer",
+        base_url="http://orchestrator.internal",
+        bearer_token="test-bearer",
         cache=LlmResponseCache(_CountingFakeRedis()),
     )
     client._transport = httpx.MockTransport(handler)
@@ -3370,7 +4124,9 @@ def test_post_chat_retries_a_500_then_succeeds(monkeypatch) -> None:
     # _MAX_CHAT_RETRY_ATTEMPTS times before giving up.
     monkeypatch.setattr(orchestrator_llm_client_module.time, "sleep", lambda _seconds: None)
     call_count = {"n": 0}
-    nodes = [{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "x", "tags": []}]
+    nodes = [
+        {"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "x", "tags": []}
+    ]
 
     def handler(request: httpx.Request) -> httpx.Response:
         call_count["n"] += 1
@@ -3378,7 +4134,9 @@ def test_post_chat_retries_a_500_then_succeeds(monkeypatch) -> None:
             return httpx.Response(500, json={"error": "boom"})
         return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     result, _ = client.analyze_section("Some section text.")
@@ -3394,7 +4152,9 @@ def test_post_chat_gives_up_after_max_attempts_on_a_persistent_500(monkeypatch) 
         call_count["n"] += 1
         return httpx.Response(500, json={"error": "boom"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     with pytest.raises(httpx.HTTPStatusError):
@@ -3407,14 +4167,18 @@ def test_post_chat_does_not_retry_a_4xx(monkeypatch) -> None:
     # burns the full backoff window (10s) for a request that will never
     # succeed.
     sleep_calls: list[float] = []
-    monkeypatch.setattr(orchestrator_llm_client_module.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+    monkeypatch.setattr(
+        orchestrator_llm_client_module.time, "sleep", lambda seconds: sleep_calls.append(seconds)
+    )
     call_count = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
         call_count["n"] += 1
         return httpx.Response(401, json={"error": "unauthorized"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     with pytest.raises(httpx.HTTPStatusError):
@@ -3428,7 +4192,9 @@ def test_post_chat_does_not_retry_a_4xx(monkeypatch) -> None:
 
 def test_distill_title_parses_the_title_out_of_a_valid_json_response() -> None:
     response_json = {"content": '{"title": "Physical robustness"}'}
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport(response_json)
 
     result = client.distill_title("The unit shall survive a 1m drop onto concrete.", 256)
@@ -3444,7 +4210,9 @@ def test_distill_title_sends_temperature_zero_and_the_max_length_hint() -> None:
         captured["user_content"] = json.loads(body["messages"][1]["content"])
         return httpx.Response(200, json={"content": '{"title": "T"}'})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.distill_title("some text", 100)
@@ -3454,7 +4222,9 @@ def test_distill_title_sends_temperature_zero_and_the_max_length_hint() -> None:
 
 def test_distill_title_strips_a_markdown_json_fence() -> None:
     response_json = {"content": '```json\n{"title": "Physical robustness"}\n```'}
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport(response_json)
 
     result = client.distill_title("some text", 256)
@@ -3463,7 +4233,9 @@ def test_distill_title_strips_a_markdown_json_fence() -> None:
 
 def test_distill_title_raises_on_malformed_json_content() -> None:
     response_json = {"content": "not valid json"}
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport(response_json)
 
     with pytest.raises(ValueError, match="malformed"):
@@ -3477,7 +4249,9 @@ def test_distill_title_raises_on_malformed_json_content() -> None:
 # assumed to be. They are deliberately written against the pre-refactor
 # signature and must keep passing, unchanged in intent, afterwards.
 
-_FULLY_STEERED_SKELETON_PROMPT_SHA256 = "aa458b30b0cdf1378ebf467e80c107fa3c43935bb251b631a1e3ae4701fecef3"
+_FULLY_STEERED_SKELETON_PROMPT_SHA256 = (
+    "aa458b30b0cdf1378ebf467e80c107fa3c43935bb251b631a1e3ae4701fecef3"
+)
 
 
 def test_analyze_section_skeleton_fully_steered_payload_is_unchanged() -> None:
@@ -3490,8 +4264,13 @@ def test_analyze_section_skeleton_fully_steered_payload_is_unchanged() -> None:
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
     client = OrchestratorLlmClient(
-        base_url="http://orchestrator.internal", bearer_token="test-bearer",
-        model="qwen3.6:35b", num_ctx=8192, top_k=40, min_p=0.05, seed=7,
+        base_url="http://orchestrator.internal",
+        bearer_token="test-bearer",
+        model="qwen3.6:35b",
+        num_ctx=8192,
+        top_k=40,
+        min_p=0.05,
+        seed=7,
     )
     client._transport = httpx.MockTransport(handler)
 
@@ -3513,7 +4292,9 @@ def test_analyze_section_skeleton_fully_steered_payload_is_unchanged() -> None:
     # A sha256 rather than an inline copy: the assembled prompt is several
     # kilobytes of loaded template text, and the assertion this test needs
     # is "not one byte moved", not "here is what it says".
-    assert hashlib.sha256(system_prompt.encode()).hexdigest() == _FULLY_STEERED_SKELETON_PROMPT_SHA256
+    assert (
+        hashlib.sha256(system_prompt.encode()).hexdigest() == _FULLY_STEERED_SKELETON_PROMPT_SHA256
+    )
     assert body["messages"][1] == {"role": "user", "content": "Some section text."}
     assert len(body["messages"]) == 2
     # Every non-message payload field, exactly as sent today.
@@ -3542,10 +4323,20 @@ def test_analyze_section_skeleton_fully_steered_cache_key_is_unchanged() -> None
     from app.survey.llm_cache import cache_key
 
     expected = cache_key(
-        "analyze_section_skeleton.v4", "qwen3.6:35b", 8192, 40, 0.05, 7,
-        "Some section text.", "Reference material from doc-a.docx", True, 7,
-        [("Media Buttons", "Feature")], 2,
-        [("P-SENSOR-001#", "Time sync source")], [("Target Handling", "Epic")],
+        "analyze_section_skeleton.v4",
+        "qwen3.6:35b",
+        8192,
+        40,
+        0.05,
+        7,
+        "Some section text.",
+        "Reference material from doc-a.docx",
+        True,
+        7,
+        [("Media Buttons", "Feature")],
+        2,
+        [("P-SENSOR-001#", "Time sync source")],
+        [("Target Handling", "Epic")],
     )
 
     recorded: dict = {}
@@ -3562,8 +4353,13 @@ def test_analyze_section_skeleton_fully_steered_cache_key_is_unchanged() -> None
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
     client = OrchestratorLlmClient(
-        base_url="http://orchestrator.internal", bearer_token="test-bearer",
-        model="qwen3.6:35b", num_ctx=8192, top_k=40, min_p=0.05, seed=7,
+        base_url="http://orchestrator.internal",
+        bearer_token="test-bearer",
+        model="qwen3.6:35b",
+        num_ctx=8192,
+        top_k=40,
+        min_p=0.05,
+        seed=7,
         cache=_RecordingCache(),
     )
     client._transport = httpx.MockTransport(handler)
@@ -3585,7 +4381,9 @@ def test_analyze_section_skeleton_fully_steered_cache_key_is_unchanged() -> None
     assert recorded["set_key"] == expected
 
 
-def test_analyze_section_agentic_degraded_fallback_drops_the_table_group_and_root_count_hints() -> None:
+def test_analyze_section_agentic_degraded_fallback_drops_the_table_group_and_root_count_hints() -> (
+    None
+):
     # CHARACTERIZATION, not endorsement. analyze_section_agentic's
     # ignored-toolChoice fallback forwards only whole_document/topic_count
     # into analyze_section -- unlike its sibling
@@ -3605,13 +4403,17 @@ def test_analyze_section_agentic_degraded_fallback_drops_the_table_group_and_roo
         captured["body"] = body
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section_agentic(
-        "Some section text.", lambda query: (None, []),
+        "Some section text.",
+        lambda query: (None, []),
         options=SectionAnalysisOptions(
-            whole_document=True, topic_count=7,
+            whole_document=True,
+            topic_count=7,
             table_group_hints=[("Media Buttons", "Feature")],
             expected_root_count=2,
         ),
@@ -3639,7 +4441,9 @@ def test_analyze_section_ignores_the_two_skeleton_only_option_fields() -> None:
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section(
@@ -3679,7 +4483,9 @@ def test_score_requirements_for_document_sends_the_x_req2ado_user_id_header_when
         captured_headers["value"] = request.headers.get("x-req2ado-user-id")
         return httpx.Response(200, json={"content": json.dumps({})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.score_requirements_for_document({"n0": "The unit shall power on."}, user_id="user-123")
@@ -3687,7 +4493,9 @@ def test_score_requirements_for_document_sends_the_x_req2ado_user_id_header_when
     assert captured_headers["value"] == "user-123"
 
 
-def test_score_requirements_for_document_omits_the_x_req2ado_user_id_header_when_not_supplied() -> None:
+def test_score_requirements_for_document_omits_the_x_req2ado_user_id_header_when_not_supplied() -> (
+    None
+):
     # Omitted entirely (never sent as an empty string) when user_id is None --
     # mirrors how every other optional field in this module is conditionally
     # included.
@@ -3697,7 +4505,9 @@ def test_score_requirements_for_document_omits_the_x_req2ado_user_id_header_when
         captured_headers["present"] = "x-req2ado-user-id" in request.headers
         return httpx.Response(200, json={"content": json.dumps({})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.score_requirements_for_document({"n0": "The unit shall power on."})
@@ -3716,7 +4526,9 @@ def test_show_model_sends_the_x_req2ado_user_id_header_when_supplied() -> None:
         captured_headers["value"] = request.headers.get("x-req2ado-user-id")
         return httpx.Response(200, json={"contextLength": 32000, "capabilities": []})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.show_model("qwen3:4b", user_id="user-456")
@@ -3724,7 +4536,9 @@ def test_show_model_sends_the_x_req2ado_user_id_header_when_supplied() -> None:
     assert captured_headers["value"] == "user-456"
 
 
-def test_shared_singleton_client_sends_the_correct_distinct_user_id_header_for_each_concurrent_call() -> None:
+def test_shared_singleton_client_sends_the_correct_distinct_user_id_header_for_each_concurrent_call() -> (
+    None
+):
     """The single most important regression test for the concurrency hazard
     this task exists to close: a module-level-singleton-shaped client
     instance (mirroring main.py's _dedup_judge_client/_checklist_client --
@@ -3763,12 +4577,15 @@ def test_shared_singleton_client_sends_the_correct_distinct_user_id_header_for_e
 
     # ONE shared client instance -- same module-level-singleton shape as
     # main.py's _dedup_judge_client/_checklist_client.
-    shared_client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    shared_client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     shared_client._transport = httpx.MockTransport(handler)
 
     def call_as(user_id: str) -> None:
         shared_client.score_requirements_for_document(
-            {user_id: "requirement text"}, user_id=user_id,
+            {user_id: "requirement text"},
+            user_id=user_id,
         )
 
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -3791,9 +4608,13 @@ def test_describe_figure_sends_the_x_req2ado_user_id_header_when_supplied() -> N
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/llm/vision"
         captured_headers["value"] = request.headers.get("x-req2ado-user-id")
-        return httpx.Response(200, json={"description": json.dumps({"significant": False, "description": ""})})
+        return httpx.Response(
+            200, json={"description": json.dumps({"significant": False, "description": ""})}
+        )
 
-    client = OrchestratorVisionClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorVisionClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.describe_figure(b"fake-image-bytes", user_id="user-789")
@@ -3808,9 +4629,13 @@ def test_describe_figure_omits_the_x_req2ado_user_id_header_when_not_supplied() 
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured_headers["present"] = "x-req2ado-user-id" in request.headers
-        return httpx.Response(200, json={"description": json.dumps({"significant": False, "description": ""})})
+        return httpx.Response(
+            200, json={"description": json.dumps({"significant": False, "description": ""})}
+        )
 
-    client = OrchestratorVisionClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorVisionClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.describe_figure(b"fake-image-bytes")
@@ -3820,13 +4645,37 @@ def test_describe_figure_omits_the_x_req2ado_user_id_header_when_not_supplied() 
 
 _KEYED_CALLS = [
     ("title_tags", lambda c: c.title_and_tags_for_rows({"r1": "x", "r2": "y"})),
-    ("parent_summary", lambda c: c.summarize_parent_nodes({"p1": {"title": "t", "requirement_titles": [], "requirement_descriptions": []}})),
+    (
+        "parent_summary",
+        lambda c: c.summarize_parent_nodes(
+            {"p1": {"title": "t", "requirement_titles": [], "requirement_descriptions": []}}
+        ),
+    ),
     ("synthesis", lambda c: c.synthesize_leaf_requirements({"s1": {"text": "x", "context": ""}})),
-    ("score_requirements", lambda c: c.score_requirements_for_document({"0": "The unit shall survive a 1m drop."})),
-    ("score_epic_feature", lambda c: c.score_epics_and_features_for_document({"e1": {"type": "Epic", "text": "x"}})),
-    ("authoring", lambda c: c.author_content("Section text.", {"n0": {"type": "Requirement", "title": "T", "parent_id": None}})),
-    ("mapping", lambda c: c.map_figures_tables({"n1": {"type": "Feature", "title": "t"}}, {"f0": {"kind": "figure"}})),
-    ("kb_relevance", lambda c: c.judge_kb_relevance("outline", [{"source_file": "a.docx", "text": "x"}])),
+    (
+        "score_requirements",
+        lambda c: c.score_requirements_for_document({"0": "The unit shall survive a 1m drop."}),
+    ),
+    (
+        "score_epic_feature",
+        lambda c: c.score_epics_and_features_for_document({"e1": {"type": "Epic", "text": "x"}}),
+    ),
+    (
+        "authoring",
+        lambda c: c.author_content(
+            "Section text.", {"n0": {"type": "Requirement", "title": "T", "parent_id": None}}
+        ),
+    ),
+    (
+        "mapping",
+        lambda c: c.map_figures_tables(
+            {"n1": {"type": "Feature", "title": "t"}}, {"f0": {"kind": "figure"}}
+        ),
+    ),
+    (
+        "kb_relevance",
+        lambda c: c.judge_kb_relevance("outline", [{"source_file": "a.docx", "text": "x"}]),
+    ),
 ]
 
 
@@ -3838,7 +4687,9 @@ def _captured_request_body(call, mode: str, monkeypatch) -> dict:
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": "{}"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
     call(client)
     return captured["body"]
@@ -3854,7 +4705,9 @@ def test_keyed_calls_send_no_strict_schema_by_default(name, call, monkeypatch) -
 
 
 @pytest.mark.parametrize(("name", "call"), _KEYED_CALLS, ids=[n for n, _ in _KEYED_CALLS])
-def test_keyed_calls_still_send_the_legacy_schema_when_that_mode_is_selected(name, call, monkeypatch) -> None:
+def test_keyed_calls_still_send_the_legacy_schema_when_that_mode_is_selected(
+    name, call, monkeypatch
+) -> None:
     body = _captured_request_body(call, "legacy_map", monkeypatch)
     assert body["responseSchema"]["schema"]["additionalProperties"]  # the original open map
 
@@ -3865,11 +4718,15 @@ def test_the_keyed_schema_mode_defaults_to_none() -> None:
     assert Settings().keyed_schema_mode == "none"
 
 
-def test_a_structured_call_that_ends_abnormally_logs_its_finish_reason_and_a_normal_stop_does_not(caplog) -> None:
+def test_a_structured_call_that_ends_abnormally_logs_its_finish_reason_and_a_normal_stop_does_not(
+    caplog,
+) -> None:
     import logging
 
     def make(finish_reason: str) -> OrchestratorLlmClient:
-        client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+        client = OrchestratorLlmClient(
+            base_url="http://orchestrator.internal", bearer_token="test-bearer"
+        )
         client._transport = _mock_transport({"content": "{}", "finishReason": finish_reason})
         return client
 
@@ -3881,7 +4738,9 @@ def test_a_structured_call_that_ends_abnormally_logs_its_finish_reason_and_a_nor
     assert [r.getMessage() for r in caplog.records if "finishReason=length" in r.getMessage()]
 
 
-def test_post_chat_does_not_resend_a_request_that_already_ran_long_before_failing(monkeypatch) -> None:
+def test_post_chat_does_not_resend_a_request_that_already_ran_long_before_failing(
+    monkeypatch,
+) -> None:
     # Prod job 0b9a134f: a scoring call hung ~300 s, the upstream gave up, and the identical
     # request was re-sent twice more (~15 minutes per batch). A retryable status that only
     # arrives after the call ran this long is returned to the caller, which can split the work.
@@ -3894,7 +4753,9 @@ def test_post_chat_does_not_resend_a_request_that_already_ran_long_before_failin
         calls["n"] += 1
         return httpx.Response(500, json={"message": "empty completion"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     response = client._post_chat({"messages": []}, None)
@@ -3905,14 +4766,20 @@ def test_post_chat_does_not_resend_a_request_that_already_ran_long_before_failin
 
 def test_post_chat_still_retries_a_fast_5xx_with_backoff(monkeypatch) -> None:
     sleeps: list[float] = []
-    monkeypatch.setattr(orchestrator_llm_client_module.time, "sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(
+        orchestrator_llm_client_module.time, "sleep", lambda seconds: sleeps.append(seconds)
+    )
     calls = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls["n"] += 1
-        return httpx.Response(503) if calls["n"] < 3 else httpx.Response(200, json={"content": "{}"})
+        return (
+            httpx.Response(503) if calls["n"] < 3 else httpx.Response(200, json={"content": "{}"})
+        )
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     response = client._post_chat({"messages": []}, None)
@@ -3944,9 +4811,12 @@ def test_a_chat_call_in_flight_stops_at_once_when_the_run_is_cancelled() -> None
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Slow)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        client = OrchestratorLlmClient(base_url=f"http://127.0.0.1:{server.server_port}", bearer_token="test-bearer")
+        client = OrchestratorLlmClient(
+            base_url=f"http://127.0.0.1:{server.server_port}", bearer_token="test-bearer"
+        )
         outcome: dict = {}
         with cancellation_scope() as token:
+
             def call() -> None:
                 started = time.monotonic()
                 try:
@@ -3975,14 +4845,18 @@ def test_a_chat_call_in_flight_stops_at_once_when_the_run_is_cancelled() -> None
 def test_a_chat_call_leaves_no_cancel_hook_behind_when_it_finishes() -> None:
     from app.job_cancel import cancellation_scope
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport({"content": "{}"})
     with cancellation_scope() as token:
         client._post_chat({"messages": []}, None)
         assert token._callbacks == []
 
 
-def test_a_study_call_is_not_re_sent_after_a_504_because_the_study_treats_it_as_overload(monkeypatch) -> None:
+def test_a_study_call_is_not_re_sent_after_a_504_because_the_study_treats_it_as_overload(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(orchestrator_llm_client_module.time, "sleep", lambda _seconds: None)
     calls = {"n": 0}
 
@@ -3990,21 +4864,36 @@ def test_a_study_call_is_not_re_sent_after_a_504_because_the_study_treats_it_as_
         calls["n"] += 1
         return httpx.Response(504, json={"message": "Upstream did not answer in time"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     assert client._post_chat({"messages": [], "budgetKind": "study"}, None).status_code == 504
     assert calls["n"] == 1
     calls["n"] = 0
-    assert client._post_chat({"messages": []}, None).status_code == 504  # any other call still gets its retries
+    assert (
+        client._post_chat({"messages": []}, None).status_code == 504
+    )  # any other call still gets its retries
     assert calls["n"] == orchestrator_llm_client_module._MAX_CHAT_RETRY_ATTEMPTS
 
 
 def test_name_root_groups_folds_the_names_array_and_ignores_malformed_entries() -> None:
-    answer = {"names": [{"group_id": "g0", "title": " Bus   Interfaces "}, {"group_id": "g1", "title": ""}, "junk", {"title": "x"}]}
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    answer = {
+        "names": [
+            {"group_id": "g0", "title": " Bus   Interfaces "},
+            {"group_id": "g1", "title": ""},
+            "junk",
+            {"title": "x"},
+        ]
+    }
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport({"content": json.dumps(answer)})
-    assert client.name_root_groups({"g0": ["I2C", "UART"], "g1": ["a", "b"]}) == {"g0": "Bus Interfaces"}
+    assert client.name_root_groups({"g0": ["I2C", "UART"], "g1": ["a", "b"]}) == {
+        "g0": "Bus Interfaces"
+    }
     client._transport = _mock_transport({"content": json.dumps({"names": "nope"})})
     assert client.name_root_groups({"g0": ["a", "b"]}) == {}
 
@@ -4020,9 +4909,13 @@ def test_judge_kb_document_relevance_sends_the_name_and_excerpt_and_reads_the_ve
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["body"] = json.loads(request.content)
-        return httpx.Response(200, json={"content": json.dumps({"relevant": False, "reason": "A recipe."})})
+        return httpx.Response(
+            200, json={"content": json.dumps({"relevant": False, "reason": "A recipe."})}
+        )
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
     verdict = client.judge_kb_document_relevance("recipe.pdf", "Mix flour and water.")
 
@@ -4033,7 +4926,9 @@ def test_judge_kb_document_relevance_sends_the_name_and_excerpt_and_reads_the_ve
 
 
 def test_judge_kb_document_relevance_rejects_a_malformed_answer() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport({"content": json.dumps({"relevant": "maybe"})})
     with pytest.raises(ValueError):
         client.judge_kb_document_relevance("a.pdf", "text")
@@ -4041,25 +4936,54 @@ def test_judge_kb_document_relevance_rejects_a_malformed_answer() -> None:
 
 def test_extract_kb_document_profile_keeps_only_well_formed_entries() -> None:
     answer = {
-        "categories": [{"name": "Testable", "pass_condition": "Can be verified"}, {"name": "", "pass_condition": "x"}, "junk"],
-        "type_definitions": [{"item_type": "requirement", "text": "A statement of need"}, {"item_type": "story", "text": "no"}],
+        "categories": [
+            {"name": "Testable", "pass_condition": "Can be verified"},
+            {"name": "", "pass_condition": "x"},
+            "junk",
+        ],
+        "type_definitions": [
+            {"item_type": "requirement", "text": "A statement of need"},
+            {"item_type": "story", "text": "no"},
+        ],
         "rules": ["One requirement per statement", "", 7],
-        "glossary": [{"term": "SRS", "definition": "software requirements specification"}, {"term": "", "definition": "x"}],
+        "glossary": [
+            {"term": "SRS", "definition": "software requirements specification"},
+            {"term": "", "definition": "x"},
+        ],
     }
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport({"content": json.dumps(answer)})
     result = client.extract_kb_document_profile("HowTo.pptx", "window text")
 
     assert result["categories"] == [{"name": "Testable", "pass_condition": "Can be verified"}]
-    assert result["type_definitions"] == [{"item_type": "requirement", "text": "A statement of need"}]
+    assert result["type_definitions"] == [
+        {"item_type": "requirement", "text": "A statement of need"}
+    ]
     assert result["rules"] == ["One requirement per statement"]
-    assert result["glossary"] == [{"term": "SRS", "definition": "software requirements specification"}]
+    assert result["glossary"] == [
+        {"term": "SRS", "definition": "software requirements specification"}
+    ]
 
 
 def test_extract_kb_document_profile_accepts_nothing_found_and_raises_on_a_non_object() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
-    client._transport = _mock_transport({"content": json.dumps({"categories": [], "type_definitions": [], "rules": [], "glossary": []})})
-    assert client.extract_kb_document_profile("a.pptx", "t") == {"categories": [], "type_definitions": [], "rules": [], "glossary": []}
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
+    client._transport = _mock_transport(
+        {
+            "content": json.dumps(
+                {"categories": [], "type_definitions": [], "rules": [], "glossary": []}
+            )
+        }
+    )
+    assert client.extract_kb_document_profile("a.pptx", "t") == {
+        "categories": [],
+        "type_definitions": [],
+        "rules": [],
+        "glossary": [],
+    }
     client._transport = _mock_transport({"content": json.dumps(["x"])})
     with pytest.raises(ValueError):
         client.extract_kb_document_profile("a.pptx", "t")
@@ -4073,21 +4997,31 @@ def _system_prompts(call) -> list[str]:
         prompts.append(body["messages"][0]["content"])
         return httpx.Response(200, json={"content": json.dumps({"rows": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
     call(client)
     return prompts
 
 
 _WRITING_CALLS = {
-    "title_and_tags_for_rows": lambda c: c.title_and_tags_for_rows({"r1": "The receiver shall lock."}),
-    "summarize_parent_nodes": lambda c: c.summarize_parent_nodes({"p1": {"title": "T", "type": "Feature", "children": ["The receiver shall lock."]}}),
-    "synthesize_leaf_requirements": lambda c: c.synthesize_leaf_requirements({"s1": {"label": "Size: 3U", "context": ""}}),
+    "title_and_tags_for_rows": lambda c: c.title_and_tags_for_rows(
+        {"r1": "The receiver shall lock."}
+    ),
+    "summarize_parent_nodes": lambda c: c.summarize_parent_nodes(
+        {"p1": {"title": "T", "type": "Feature", "children": ["The receiver shall lock."]}}
+    ),
+    "synthesize_leaf_requirements": lambda c: c.synthesize_leaf_requirements(
+        {"s1": {"label": "Size: 3U", "context": ""}}
+    ),
 }
 
 
 @pytest.mark.parametrize("name", sorted(_WRITING_CALLS))
-def test_the_authoring_standard_leads_every_item_writing_prompt_once_and_changes_nothing_without_it(name: str) -> None:
+def test_the_authoring_standard_leads_every_item_writing_prompt_once_and_changes_nothing_without_it(
+    name: str,
+) -> None:
     plain = _system_prompts(_WRITING_CALLS[name])
     assert plain and all("authoring standard" not in p for p in plain)
 
@@ -4096,15 +5030,30 @@ def test_the_authoring_standard_leads_every_item_writing_prompt_once_and_changes
         _WRITING_CALLS[name](client)
 
     standard = _system_prompts(with_standard)
-    assert standard and all(p.count("Requirement: A verifiable statement of need") == 1 for p in standard)
-    assert all(p.endswith(plain[0]) for p in standard)  # the original prompt is intact, the standard is only prepended
+    assert standard and all(
+        p.count("Requirement: A verifiable statement of need") == 1 for p in standard
+    )
+    assert all(
+        p.endswith(plain[0]) for p in standard
+    )  # the original prompt is intact, the standard is only prepended
 
 
 def test_judge_rule_conformance_returns_verdicts_for_the_given_items_only() -> None:
-    answer = {"verdicts": [{"id": "n1", "conforms": True}, {"id": "n2", "conforms": False}, {"id": "ghost", "conforms": True}, {"id": "n3", "conforms": "yes"}]}
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    answer = {
+        "verdicts": [
+            {"id": "n1", "conforms": True},
+            {"id": "n2", "conforms": False},
+            {"id": "ghost", "conforms": True},
+            {"id": "n3", "conforms": "yes"},
+        ]
+    }
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport({"content": json.dumps(answer)})
-    assert client.judge_rule_conformance("One shall per sentence", {"n1": "a", "n2": "b", "n3": "c"}) == {"n1": True, "n2": False}
+    assert client.judge_rule_conformance(
+        "One shall per sentence", {"n1": "a", "n2": "b", "n3": "c"}
+    ) == {"n1": True, "n2": False}
     client._transport = _mock_transport({"content": json.dumps({"verdicts": "no"})})
     with pytest.raises(ValueError):
         client.judge_rule_conformance("r", {"n1": "a"})
@@ -4114,7 +5063,11 @@ def test_consolidate_kb_categories_sends_the_categories_and_keeps_only_well_form
     captured: dict = {}
     answer = {
         "categories": [
-            {"name": "Testable", "pass_condition": "Can be verified", "merged_from": ["Testable", "Testability"]},
+            {
+                "name": "Testable",
+                "pass_condition": "Can be verified",
+                "merged_from": ["Testable", "Testability"],
+            },
             {"name": "", "pass_condition": "x", "merged_from": ["Y"]},
             {"name": "NoMembers", "pass_condition": "x", "merged_from": []},
             "junk",
@@ -4125,18 +5078,37 @@ def test_consolidate_kb_categories_sends_the_categories_and_keeps_only_well_form
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"content": json.dumps(answer)})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
-    groups = client.consolidate_kb_categories([{"name": "Testable", "pass_condition": "a"}, {"name": "Testability", "pass_condition": "b"}], 8)
+    groups = client.consolidate_kb_categories(
+        [
+            {"name": "Testable", "pass_condition": "a"},
+            {"name": "Testability", "pass_condition": "b"},
+        ],
+        8,
+    )
 
-    assert groups == [{"name": "Testable", "pass_condition": "Can be verified", "merged_from": ["Testable", "Testability"]}]
+    assert groups == [
+        {
+            "name": "Testable",
+            "pass_condition": "Can be verified",
+            "merged_from": ["Testable", "Testability"],
+        }
+    ]
     user = json.loads(captured["body"]["messages"][1]["content"])
-    assert user["max_categories"] == 8 and [c["name"] for c in user["categories"]] == ["Testable", "Testability"]
+    assert user["max_categories"] == 8 and [c["name"] for c in user["categories"]] == [
+        "Testable",
+        "Testability",
+    ]
     assert captured["body"]["responseSchema"]["name"] == "kb_category_consolidation"
 
 
 def test_consolidate_kb_categories_rejects_a_malformed_answer() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport({"content": json.dumps({"nope": 1})})
     with pytest.raises(ValueError):
         client.consolidate_kb_categories([{"name": "A", "pass_condition": "a"}], 8)
@@ -4149,10 +5121,14 @@ def test_consolidate_kb_categories_offers_the_previous_names_only_when_there_are
         bodies.append(json.loads(request.content))
         return httpx.Response(200, json={"content": json.dumps({"categories": []})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
     client.consolidate_kb_categories([{"name": "A", "pass_condition": "a"}], 16)
-    client.consolidate_kb_categories([{"name": "A", "pass_condition": "a"}], 16, preferred_names=["Testable"])
+    client.consolidate_kb_categories(
+        [{"name": "A", "pass_condition": "a"}], 16, preferred_names=["Testable"]
+    )
     first, second = (json.loads(b["messages"][1]["content"]) for b in bodies)
     assert "preferred_names" not in first and second["preferred_names"] == ["Testable"]
 
@@ -4179,7 +5155,9 @@ def test_study_document_window_returns_the_object_and_sends_the_window_text() ->
         captured["user"] = json.loads(body["messages"][1]["content"])
         return httpx.Response(200, json={"content": '{"placeholder_tokens": ["TBD"]}'})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     assert client.study_document_window("Latency TBD ms") == {"placeholder_tokens": ["TBD"]}
@@ -4187,7 +5165,9 @@ def test_study_document_window_returns_the_object_and_sends_the_window_text() ->
 
 
 def test_study_document_window_rejects_a_non_object_answer() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport({"content": "[1, 2]"})
 
     with pytest.raises(ValueError):
@@ -4202,7 +5182,9 @@ def test_client_study_window_is_no_longer_cached() -> None:
         calls["n"] += 1
         return httpx.Response(200, json={"content": '{"glossary": []}'})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=_DictCache())
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=_DictCache()
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.study_document_window("same window")
@@ -4215,10 +5197,12 @@ def test_client_study_window_is_no_longer_cached() -> None:
 
 def test_propose_acceptance_criteria_keeps_only_asked_ids_and_drops_the_contract_comment() -> None:
     captured: dict = {}
-    answer = {"items": [
-        {"id": "a", "criteria": ["c1"], "assumptions": [], "needs_author_input": False},
-        {"id": "ghost", "criteria": ["x"], "assumptions": [], "needs_author_input": False},
-    ]}
+    answer = {
+        "items": [
+            {"id": "a", "criteria": ["c1"], "assumptions": [], "needs_author_input": False},
+            {"id": "ghost", "criteria": ["x"], "assumptions": [], "needs_author_input": False},
+        ]
+    }
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
@@ -4226,7 +5210,9 @@ def test_propose_acceptance_criteria_keeps_only_asked_ids_and_drops_the_contract
         captured["user"] = json.loads(body["messages"][1]["content"])
         return httpx.Response(200, json={"content": json.dumps(answer)})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     result = client.propose_acceptance_criteria({"a": {"text": "The unit shall x."}})
@@ -4239,7 +5225,9 @@ def test_propose_acceptance_criteria_keeps_only_asked_ids_and_drops_the_contract
 
 
 def test_propose_acceptance_criteria_rejects_an_answer_without_items() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = _mock_transport({"content": '{"nope": 1}'})
 
     with pytest.raises(ValueError):
@@ -4254,12 +5242,18 @@ def test_propose_acceptance_criteria_caches_only_a_complete_answer() -> None:
         items = [{"id": "a", "criteria": ["c"], "assumptions": [], "needs_author_input": False}]
         return httpx.Response(200, json={"content": json.dumps({"items": items})})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=_DictCache())
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=_DictCache()
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.propose_acceptance_criteria({"a": {"text": "t"}}, user_id="user-a")
-    client.propose_acceptance_criteria({"a": {"text": "t"}}, user_id="user-a")  # complete: served from the cache
-    client.propose_acceptance_criteria({"a": {"text": "t"}, "b": {"text": "u"}}, user_id="user-a")  # b missing: not cached
+    client.propose_acceptance_criteria(
+        {"a": {"text": "t"}}, user_id="user-a"
+    )  # complete: served from the cache
+    client.propose_acceptance_criteria(
+        {"a": {"text": "t"}, "b": {"text": "u"}}, user_id="user-a"
+    )  # b missing: not cached
     client.propose_acceptance_criteria({"a": {"text": "t"}, "b": {"text": "u"}}, user_id="user-a")
 
     assert calls["n"] == 3
@@ -4271,11 +5265,18 @@ def test_propose_acceptance_criteria_caches_only_a_complete_answer() -> None:
 def _scoped_cache_client(calls: dict, cache: "_DictCache | None" = None) -> OrchestratorLlmClient:
     def handler(request: httpx.Request) -> httpx.Response:
         calls["n"] += 1
-        content = {"glossary": [], "items": [{"id": "a", "criteria": ["c"], "assumptions": [], "needs_author_input": False}]}
+        content = {
+            "glossary": [],
+            "items": [
+                {"id": "a", "criteria": ["c"], "assumptions": [], "needs_author_input": False}
+            ],
+        }
         return httpx.Response(200, json={"content": json.dumps(content)})
 
     client = OrchestratorLlmClient(
-        base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=cache if cache is not None else _DictCache()
+        base_url="http://orchestrator.internal",
+        bearer_token="test-bearer",
+        cache=cache if cache is not None else _DictCache(),
     )
     client._transport = httpx.MockTransport(handler)
     return client
@@ -4309,7 +5310,7 @@ def test_cache_keys_never_contain_the_raw_user_id() -> None:
     client.propose_acceptance_criteria({"a": {"text": "t"}}, user_id=user_id)
 
     assert len(cache.store) == 1
-    pieces = {user_id[i:i + 7] for i in range(len(user_id) - 6)}
+    pieces = {user_id[i : i + 7] for i in range(len(user_id) - 6)}
     for key in cache.store:
         assert not any(piece in str(key) for piece in pieces)
 
@@ -4344,16 +5345,38 @@ def test_propose_acceptance_criteria_appends_the_background_to_the_prompt_only_w
 
     def handler(request: httpx.Request) -> httpx.Response:
         systems.append(json.loads(request.content)["messages"][0]["content"])
-        return httpx.Response(200, json={"content": json.dumps({"items": [{"id": "a", "criteria": [], "assumptions": [], "needs_author_input": False}]})})
+        return httpx.Response(
+            200,
+            json={
+                "content": json.dumps(
+                    {
+                        "items": [
+                            {
+                                "id": "a",
+                                "criteria": [],
+                                "assumptions": [],
+                                "needs_author_input": False,
+                            }
+                        ]
+                    }
+                )
+            },
+        )
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.propose_acceptance_criteria({"a": {"text": "t"}})
     client.propose_acceptance_criteria({"a": {"text": "t"}}, background="A radar ICD.")
 
     assert "Background" not in systems[0]
-    assert systems[1].startswith(systems[0]) and systems[1].endswith("A radar ICD.") and "never a source of numbers" in systems[1]
+    assert (
+        systems[1].startswith(systems[0])
+        and systems[1].endswith("A radar ICD.")
+        and "never a source of numbers" in systems[1]
+    )
 
 
 def test_propose_acceptance_criteria_cache_key_follows_the_background() -> None:
@@ -4361,19 +5384,40 @@ def test_propose_acceptance_criteria_cache_key_follows_the_background() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls["n"] += 1
-        return httpx.Response(200, json={"content": json.dumps({"items": [{"id": "a", "criteria": [], "assumptions": [], "needs_author_input": False}]})})
+        return httpx.Response(
+            200,
+            json={
+                "content": json.dumps(
+                    {
+                        "items": [
+                            {
+                                "id": "a",
+                                "criteria": [],
+                                "assumptions": [],
+                                "needs_author_input": False,
+                            }
+                        ]
+                    }
+                )
+            },
+        )
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=_DictCache())
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=_DictCache()
+    )
     client._transport = httpx.MockTransport(handler)
 
     for background in (None, "one", "one", "two"):
-        client.propose_acceptance_criteria({"a": {"text": "t"}}, user_id="user-a", background=background)
+        client.propose_acceptance_criteria(
+            {"a": {"text": "t"}}, user_id="user-a", background=background
+        )
 
     assert calls["n"] == 3
 
 
 def test_the_call_gate_wraps_each_attempt_but_not_the_retry_back_off(monkeypatch) -> None:
     from app.leveling.llm_call_gate import use_gate
+
     events: list[str] = []
     answers = iter([429, 200])
 
@@ -4390,8 +5434,12 @@ def test_the_call_gate_wraps_each_attempt_but_not_the_retry_back_off(monkeypatch
         finally:
             events.append("exit")
 
-    monkeypatch.setattr("app.survey.orchestrator_llm_client.time.sleep", lambda seconds: events.append("sleep"))
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    monkeypatch.setattr(
+        "app.survey.orchestrator_llm_client.time.sleep", lambda seconds: events.append("sleep")
+    )
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     with use_gate(gate):
@@ -4400,11 +5448,19 @@ def test_the_call_gate_wraps_each_attempt_but_not_the_retry_back_off(monkeypatch
     assert events == ["enter", "call", "exit", "sleep", "enter", "call", "exit"]
 
 
-_STUDY_ANSWER = {"glossary": [], "placeholder_tokens": [], "verification_statements": [], "standards_cited": [], "table_roles": [],}
+_STUDY_ANSWER = {
+    "glossary": [],
+    "placeholder_tokens": [],
+    "verification_statements": [],
+    "standards_cited": [],
+    "table_roles": [],
+}
 
 
 def _study_client(handler) -> OrchestratorLlmClient:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
     return client
 
@@ -4414,7 +5470,9 @@ def test_a_study_window_call_asks_for_the_study_ladder_with_a_deadline() -> None
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["body"] = json.loads(request.content)
-        return httpx.Response(200, json={"content": json.dumps(_STUDY_ANSWER), "finishReason": "stop"})
+        return httpx.Response(
+            200, json={"content": json.dumps(_STUDY_ANSWER), "finishReason": "stop"}
+        )
 
     _study_client(handler).study_document_window("some text")
 
@@ -4435,23 +5493,39 @@ def test_an_empty_answer_cut_off_at_the_limit_is_a_typed_empty_cutoff() -> None:
     assert caught.value.empty is True
 
 
-def test_a_partial_answer_cut_off_at_the_limit_is_a_typed_partial_cutoff_not_a_studied_window() -> None:
+def test_a_partial_answer_cut_off_at_the_limit_is_a_typed_partial_cutoff_not_a_studied_window() -> (
+    None
+):
     from app.leveling.document_study import StudyLengthCutoff
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"content": '{"glossary": [], "placeholder_tokens": ["TB', "finishReason": "length"})
+        return httpx.Response(
+            200,
+            json={
+                "content": '{"glossary": [], "placeholder_tokens": ["TB',
+                "finishReason": "length",
+            },
+        )
 
     with pytest.raises(StudyLengthCutoff) as caught:
         _study_client(handler).study_document_window("some text")
     assert caught.value.empty is False
 
 
-def test_an_ordinary_chat_json_call_sends_no_budget_fields_and_still_ignores_a_length_ending() -> None:
+def test_an_ordinary_chat_json_call_sends_no_budget_fields_and_still_ignores_a_length_ending() -> (
+    None
+):
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["body"] = json.loads(request.content)
-        return httpx.Response(200, json={"content": json.dumps({"n0": {"score": 85, "issues": []}}), "finishReason": "length"})
+        return httpx.Response(
+            200,
+            json={
+                "content": json.dumps({"n0": {"score": 85, "issues": []}}),
+                "finishReason": "length",
+            },
+        )
 
     client = _study_client(handler)
     client.score_requirements_for_document({"n0": "The unit shall power on within 2 seconds."})

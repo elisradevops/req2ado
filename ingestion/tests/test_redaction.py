@@ -95,7 +95,17 @@ def test_redacts_table_cell_content_leaves_style_fields_untouched() -> None:
         tables=[
             Table(
                 id="t0",
-                cells=[[TableCell(text="jane.doe@example.com", colspan=2, is_header=True, bold=True, align="center")]],
+                cells=[
+                    [
+                        TableCell(
+                            text="jane.doe@example.com",
+                            colspan=2,
+                            is_header=True,
+                            bold=True,
+                            align="center",
+                        )
+                    ]
+                ],
                 source_ref=SourceRef(document_path="x.txt", start_offset=0, end_offset=0),
             )
         ],

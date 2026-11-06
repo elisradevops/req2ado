@@ -26,7 +26,10 @@ def test_sentinel_with_valid_json_extracts_proposal() -> None:
 
 
 def test_sentinel_with_null_fields_returns_none() -> None:
-    text = f"Just answering your question.\n{PROPOSAL_SENTINEL}\n" '{"proposedTitle": null, "proposedDescription": null}'
+    text = (
+        f"Just answering your question.\n{PROPOSAL_SENTINEL}\n"
+        '{"proposedTitle": null, "proposedDescription": null}'
+    )
     message, title, description = split_message_and_proposal(text)
     assert message == "Just answering your question."
     assert title is None
@@ -50,7 +53,7 @@ def test_sentinel_with_non_dict_json_falls_back_to_message_only() -> None:
 
 
 def test_sentinel_with_non_string_field_values_treated_as_none() -> None:
-    text = f"Some reply.\n{PROPOSAL_SENTINEL}\n" '{"proposedTitle": 42, "proposedDescription": "ok"}'
+    text = f'Some reply.\n{PROPOSAL_SENTINEL}\n{{"proposedTitle": 42, "proposedDescription": "ok"}}'
     message, title, description = split_message_and_proposal(text)
     assert title is None
     assert description == "ok"
@@ -67,7 +70,12 @@ async def test_stream_reply_yields_deltas_from_ndjson_lines() -> None:
     client = ChatLlmClient("http://orchestrator:3001", "test-token")
     client._transport = transport  # noqa: SLF001 - test injection seam
 
-    chunks = [chunk async for chunk in client.stream_reply([{"role": "user", "content": "hi"}], model="llama3.1")]
+    chunks = [
+        chunk
+        async for chunk in client.stream_reply(
+            [{"role": "user", "content": "hi"}], model="llama3.1"
+        )
+    ]
 
     assert chunks == [("Hel", ""), ("lo", "")]
 
@@ -85,7 +93,12 @@ async def test_stream_reply_yields_reasoning_deltas_separately_from_content() ->
     client = ChatLlmClient("http://orchestrator:3001", "test-token")
     client._transport = transport  # noqa: SLF001
 
-    chunks = [chunk async for chunk in client.stream_reply([{"role": "user", "content": "hi"}], model="llama3.1")]
+    chunks = [
+        chunk
+        async for chunk in client.stream_reply(
+            [{"role": "user", "content": "hi"}], model="llama3.1"
+        )
+    ]
 
     assert chunks == [("", "Hmm, "), ("", "let me think."), ("Sure.", "")]
 
@@ -139,7 +152,12 @@ async def test_stream_reply_sends_user_id_header_when_given() -> None:
     client = ChatLlmClient("http://orchestrator:3001", "test-token")
     client._transport = httpx.MockTransport(handler)  # noqa: SLF001
 
-    [_ async for _ in client.stream_reply([{"role": "user", "content": "hi"}], model=None, user_id="user-1")]
+    [
+        _
+        async for _ in client.stream_reply(
+            [{"role": "user", "content": "hi"}], model=None, user_id="user-1"
+        )
+    ]
 
     assert captured["headers"]["x-req2ado-user-id"] == "user-1"
 
@@ -149,7 +167,9 @@ async def test_stream_reply_error_carries_orchestrator_message_without_mdn_suffi
     from app.http_errors import describe_exception
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(401, json={"statusCode": 401, "message": "X-Req2Ado-User-Id header is required"})
+        return httpx.Response(
+            401, json={"statusCode": 401, "message": "X-Req2Ado-User-Id header is required"}
+        )
 
     client = ChatLlmClient("http://orchestrator:3001", "test-token")
     client._transport = httpx.MockTransport(handler)  # noqa: SLF001

@@ -51,12 +51,17 @@ class CriteriaRetriever:
     Open WebUI connection."""
 
     def __init__(
-        self, embedding_client: EmbeddingClient, corpus: list[QualityCriterion] = CRITERIA_CORPUS, user_id: str | None = None,
+        self,
+        embedding_client: EmbeddingClient,
+        corpus: list[QualityCriterion] = CRITERIA_CORPUS,
+        user_id: str | None = None,
     ) -> None:
         self._corpus = corpus
         self._embedding_client = embedding_client
         self._user_id = user_id
-        self._corpus_embeddings = embedding_client.embed([c.text for c in corpus], user_id=user_id) if corpus else []
+        self._corpus_embeddings = (
+            embedding_client.embed([c.text for c in corpus], user_id=user_id) if corpus else []
+        )
 
     def retrieve(self, query_text: str, top_k: int = 3) -> list[QualityCriterion]:
         if not self._corpus:

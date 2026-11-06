@@ -14,7 +14,9 @@ from app.workitem.model import (
 
 logger = logging.getLogger(__name__)
 
-_OBLIGATION = re.compile(r"\b(shall|must|should|will|may|needs? to|is required|are required)\b", re.IGNORECASE)
+_OBLIGATION = re.compile(
+    r"\b(shall|must|should|will|may|needs? to|is required|are required)\b", re.IGNORECASE
+)
 
 E, F, R = WorkItemType.EPIC, WorkItemType.FEATURE, WorkItemType.REQUIREMENT
 
@@ -28,7 +30,9 @@ def states_a_requirement(title: str) -> bool:
     return bool(_OBLIGATION.search(title or ""))
 
 
-def type_headings_by_shape(nodes: list[WorkItemNode], non_structural_ids: set[str] | frozenset[str] = frozenset()) -> None:
+def type_headings_by_shape(
+    nodes: list[WorkItemNode], non_structural_ids: set[str] | frozenset[str] = frozenset()
+) -> None:
     """Types the nodes of ONE heading-built forest from its shape, keeping the nesting exactly as the headings give it
     (nothing is moved, nothing is dropped, titles/descriptions/source refs/hashes are never touched):
     - a heading with no children is a Requirement;
@@ -96,13 +100,18 @@ def _synthetic(
         fidelity_hash=hashlib.sha256(title.encode()).hexdigest(),
         identity_hash=_hash_identity_for_synthesized_node(node_id, like.source_ref),
         tags=[],
-        mode=like.mode if like.mode in (WorkItemMode.BASELINE, WorkItemMode.SURVEY) else WorkItemMode.BASELINE,
+        mode=like.mode
+        if like.mode in (WorkItemMode.BASELINE, WorkItemMode.SURVEY)
+        else WorkItemMode.BASELINE,
         grounding_score=1.0 if like.grounding_score is not None else None,
     )
 
 
 def _ensure_ladder_on(
-    nodes: list[WorkItemNode], doc_title: str, warnings: list[IntegrityWarning], id_prefix: str = "",
+    nodes: list[WorkItemNode],
+    doc_title: str,
+    warnings: list[IntegrityWarning],
+    id_prefix: str = "",
     existing: dict[str, WorkItemNode] | None = None,
 ) -> None:
     """Makes the tree a valid Epic -> Feature -> Requirement ladder by adding only the missing parents; no existing
@@ -122,10 +131,18 @@ def _ensure_ladder_on(
     def valid_ancestor(node: WorkItemNode) -> str | None:
         parent = by_id.get(node.parent_local_id) if node.parent_local_id else None
         seen: set[str] = {node.local_id}
-        while parent is not None and parent.type not in _VALID_PARENT[node.type] and parent.local_id not in seen:
+        while (
+            parent is not None
+            and parent.type not in _VALID_PARENT[node.type]
+            and parent.local_id not in seen
+        ):
             seen.add(parent.local_id)
             parent = by_id.get(parent.parent_local_id) if parent.parent_local_id else None
-        return parent.local_id if parent is not None and parent.type in _VALID_PARENT[node.type] else None
+        return (
+            parent.local_id
+            if parent is not None and parent.type in _VALID_PARENT[node.type]
+            else None
+        )
 
     for n in nodes:
         parent = by_id.get(n.parent_local_id) if n.parent_local_id else None
@@ -163,7 +180,9 @@ def _ensure_ladder_on(
             )
         )
 
-    orphans = [n for n in nodes if n.type != E and not (n.parent_local_id and n.parent_local_id in by_id)]
+    orphans = [
+        n for n in nodes if n.type != E and not (n.parent_local_id and n.parent_local_id in by_id)
+    ]
     if orphans:
         first = orphans[0]
         epic_id = f"{id_prefix}synth_doc_epic"
@@ -190,7 +209,10 @@ def _ensure_ladder_on(
                 f"{len(orphans)} top-level item(s) had no Epic above them; they were grouped under one Epic "
                 "titled from the document name, structure only, no content invented.",
                 node_ids=[epic_id, *(n.local_id for n in orphans)],
-                detail={"epicId": epic_id, "featureIds": [n.local_id for n in orphans if n.type == F]},
+                detail={
+                    "epicId": epic_id,
+                    "featureIds": [n.local_id for n in orphans if n.type == F],
+                },
             )
         )
     nodes.extend(new_nodes)
@@ -200,7 +222,10 @@ def _ensure_ladder_on(
 
 
 def ensure_ladder(
-    nodes: list[WorkItemNode], doc_title: str, warnings: list[IntegrityWarning], id_prefix: str = "",
+    nodes: list[WorkItemNode],
+    doc_title: str,
+    warnings: list[IntegrityWarning],
+    id_prefix: str = "",
     scope: set[str] | None = None,
 ) -> None:
     """Applies `_ensure_ladder_on` to `nodes`, or only to the nodes whose local_id is in `scope` (which must include
@@ -212,7 +237,9 @@ def ensure_ladder(
         _ensure_ladder_on(nodes, doc_title, warnings, id_prefix)
         return
     scoped = [n for n in nodes if n.local_id in scope]
-    _ensure_ladder_on(scoped, doc_title, warnings, id_prefix, existing={n.local_id: n for n in nodes})
+    _ensure_ladder_on(
+        scoped, doc_title, warnings, id_prefix, existing={n.local_id: n for n in nodes}
+    )
     nodes.extend(n for n in scoped if n.local_id not in scope)
     recompute_child_types(nodes)
 

@@ -12,7 +12,9 @@ client = TestClient(app)
 def _patch_llm(monkeypatch, handler) -> None:
     original_init = OrchestratorLlmClient.__init__
 
-    def patched_init(self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None, cache=None):
+    def patched_init(
+        self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None, cache=None
+    ):
         original_init(self, base_url, bearer_token, model=model)
         self._transport = httpx.MockTransport(handler)
 
@@ -80,7 +82,14 @@ def test_score_item_forces_the_supplied_category_checklist_as_the_exact_key_set(
 def test_score_item_returns_quality_confidence(monkeypatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         content = json.dumps(
-            {"adhoc": {"score": 72, "issues": ["ambiguous"], "categoryScores": {"clarity": 70}, "confidence": "low"}},
+            {
+                "adhoc": {
+                    "score": 72,
+                    "issues": ["ambiguous"],
+                    "categoryScores": {"clarity": 70},
+                    "confidence": "low",
+                }
+            },
         )
         return httpx.Response(200, json={"content": content})
 
@@ -127,7 +136,9 @@ def test_score_item_without_user_id_never_attempts_kb_retrieval(monkeypatch) -> 
     assert response.status_code == 200
 
 
-def test_score_item_client_gets_the_survey_sampling_constants_and_a_resolved_num_ctx(monkeypatch) -> None:
+def test_score_item_client_gets_the_survey_sampling_constants_and_a_resolved_num_ctx(
+    monkeypatch,
+) -> None:
     # The sibling topK/minP fix landed in score_requirements_for_document
     # (which this route reaches via score_single_requirement_text) but was
     # silently inert here, because this route's own client was constructed
@@ -140,14 +151,28 @@ def test_score_item_client_gets_the_survey_sampling_constants_and_a_resolved_num
     captured: dict = {}
     original_init = OrchestratorLlmClient.__init__
 
-    def patched_init(self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None, seed=42, cache=None):
+    def patched_init(
+        self,
+        base_url,
+        bearer_token,
+        model=None,
+        num_ctx=None,
+        top_k=None,
+        min_p=None,
+        seed=42,
+        cache=None,
+    ):
         # Record only the REAL client (the one carrying sampling options);
         # /level's own probe_client pattern constructs a throwaway first.
-        captured.setdefault("calls", []).append({"model": model, "num_ctx": num_ctx, "top_k": top_k, "min_p": min_p})
+        captured.setdefault("calls", []).append(
+            {"model": model, "num_ctx": num_ctx, "top_k": top_k, "min_p": min_p}
+        )
         original_init(self, base_url, bearer_token, model=model)
 
         def handler(request: httpx.Request) -> httpx.Response:
-            content = json.dumps({"adhoc": {"score": 70, "issues": [], "categoryScores": {"clarity": 70}}})
+            content = json.dumps(
+                {"adhoc": {"score": 70, "issues": [], "categoryScores": {"clarity": 70}}}
+            )
             return httpx.Response(200, json={"content": content})
 
         self._transport = httpx.MockTransport(handler)
@@ -155,7 +180,10 @@ def test_score_item_client_gets_the_survey_sampling_constants_and_a_resolved_num
     monkeypatch.setattr(OrchestratorLlmClient, "__init__", patched_init)
     monkeypatch.setattr("app.main.settings.llm_proxy_bearer", "test-bearer")
 
-    response = client.post("/score-item", json={"description": "The system shall be fast.", "model": "some-unknown-model"})
+    response = client.post(
+        "/score-item",
+        json={"description": "The system shall be fast.", "model": "some-unknown-model"},
+    )
 
     assert response.status_code == 200
     real_call = captured["calls"][-1]

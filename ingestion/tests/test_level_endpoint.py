@@ -44,11 +44,21 @@ def _authored_content(nodes: list[dict], request: httpx.Request) -> httpx.Respon
     node_id_prefix)."""
     requested = json.loads(json.loads(request.content)["messages"][1]["content"])["nodes"]
     by_temp_id = {node["temp_id"]: node for node in nodes}
-    return httpx.Response(200, json={"content": json.dumps({
-        local_id: {"description": by_temp_id[local_id]["text"], "tags": by_temp_id[local_id].get("tags", [])}
-        for local_id in requested
-        if local_id in by_temp_id
-    })})
+    return httpx.Response(
+        200,
+        json={
+            "content": json.dumps(
+                {
+                    local_id: {
+                        "description": by_temp_id[local_id]["text"],
+                        "tags": by_temp_id[local_id].get("tags", []),
+                    }
+                    for local_id in requested
+                    if local_id in by_temp_id
+                }
+            )
+        },
+    )
 
 
 def _sr(path: str) -> SourceRef:
@@ -77,8 +87,18 @@ def test_level_endpoint_survey_mode_structures_the_document_itself_by_default() 
     doc = CanonicalDoc(
         document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.PARAGRAPH, text="The receiver shall acquire a lock.", source_ref=_sr("x.txt")),
-            Block(id="b1", kind=BlockKind.PARAGRAPH, text="The receiver shall report its status.", source_ref=_sr("x.txt")),
+            Block(
+                id="b0",
+                kind=BlockKind.PARAGRAPH,
+                text="The receiver shall acquire a lock.",
+                source_ref=_sr("x.txt"),
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
+                text="The receiver shall report its status.",
+                source_ref=_sr("x.txt"),
+            ),
         ],
     )
     original = OrchestratorLlmClient.__init__
@@ -88,10 +108,16 @@ def test_level_endpoint_survey_mode_structures_the_document_itself_by_default() 
         self._transport = httpx.MockTransport(handler)
 
     with patch.object(OrchestratorLlmClient, "__init__", patched):
-        response = client.post("/level?mode=survey", content=doc.model_dump_json(), headers={"Content-Type": "application/json"})
+        response = client.post(
+            "/level?mode=survey",
+            content=doc.model_dump_json(),
+            headers={"Content-Type": "application/json"},
+        )
     assert response.status_code == 200, response.text
     titles = [n["title"] for n in response.json()["nodes"]]
-    assert any("receiver shall acquire" in t.lower() for t in titles) and any("report its status" in t.lower() for t in titles)
+    assert any("receiver shall acquire" in t.lower() for t in titles) and any(
+        "report its status" in t.lower() for t in titles
+    )
     assert not any(_ANALYZE_SECTION_MARKER in c for c in calls)
 
 
@@ -100,8 +126,18 @@ def test_level_endpoint_returns_worktree_json() -> None:
         document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
         blocks=[
             Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr("x.txt")),
-            Block(id="b1", kind=BlockKind.PARAGRAPH, text="1.1 Broadcast & Inputs", source_ref=_sr("x.txt")),
-            Block(id="b2", kind=BlockKind.PARAGRAPH, text="1.1.1 Channel Scan", source_ref=_sr("x.txt")),
+            Block(
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
+                text="1.1 Broadcast & Inputs",
+                source_ref=_sr("x.txt"),
+            ),
+            Block(
+                id="b2",
+                kind=BlockKind.PARAGRAPH,
+                text="1.1.1 Channel Scan",
+                source_ref=_sr("x.txt"),
+            ),
             # A genuine depth-4 leaf, matching the golden mock_tv_remote.docx
             # reference -- without this, max_depth=3 alone is no longer
             # enough to signal tv_style (docs/architecture.md 1g's fix:
@@ -109,7 +145,8 @@ def test_level_endpoint_returns_worktree_json() -> None:
             # depth 4 to stay tv_style/Epic at depth 1, same as a real
             # TV-Receiver-style document would.
             Block(
-                id="b3", kind=BlockKind.PARAGRAPH,
+                id="b3",
+                kind=BlockKind.PARAGRAPH,
                 text="1.1.1.1 The receiver shall scan all channels within 10 seconds.",
                 source_ref=_sr("x.txt"),
             ),
@@ -137,16 +174,29 @@ def test_level_endpoint_derives_customer_id_per_requirement_from_its_own_numberi
         document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
         blocks=[
             Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr("x.txt")),
-            Block(id="b1", kind=BlockKind.PARAGRAPH, text="1.1 Broadcast & Inputs", source_ref=_sr("x.txt")),
-            Block(id="b2", kind=BlockKind.PARAGRAPH, text="1.1.1 Channel Scan", source_ref=_sr("x.txt")),
             Block(
-                id="b3", kind=BlockKind.PARAGRAPH,
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
+                text="1.1 Broadcast & Inputs",
+                source_ref=_sr("x.txt"),
+            ),
+            Block(
+                id="b2",
+                kind=BlockKind.PARAGRAPH,
+                text="1.1.1 Channel Scan",
+                source_ref=_sr("x.txt"),
+            ),
+            Block(
+                id="b3",
+                kind=BlockKind.PARAGRAPH,
                 text="1.1.1.1 The receiver shall scan all channels within 10 seconds.",
                 source_ref=_sr("x.txt"),
             ),
         ],
     )
-    response = client.post("/level", params={"customer_id": "CUST-042"}, json=doc.model_dump(mode="json"))
+    response = client.post(
+        "/level", params={"customer_id": "CUST-042"}, json=doc.model_dump(mode="json")
+    )
     assert response.status_code == 200
     body = response.json()
     assert body["nodes"][3]["type"] == "Requirement"
@@ -156,19 +206,29 @@ def test_level_endpoint_derives_customer_id_per_requirement_from_its_own_numberi
     assert body["nodes"][2]["customer_id"] is None
 
 
-def test_level_endpoint_survey_mode_never_returns_tags_on_a_non_requirement_node(monkeypatch, model_structure) -> None:
+def test_level_endpoint_survey_mode_never_returns_tags_on_a_non_requirement_node(
+    monkeypatch, model_structure
+) -> None:
     # End-to-end guard for the same invariant test_content_stage_never_tags_
     # an_epic_or_feature_even_when_the_model_returns_tags_for_it pins at the
     # unit level: even a real model response carrying tags for an Epic/
     # Feature must never survive into the final tree.
     nodes = [
         {
-            "temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "Power",
-            "text": "Power management features.", "tags": ["safety"],
+            "temp_id": "n0",
+            "type": "Feature",
+            "parent_temp_id": None,
+            "title": "Power",
+            "text": "Power management features.",
+            "tags": ["safety"],
         },
         {
-            "temp_id": "n1", "type": "Requirement", "parent_temp_id": "n0", "title": "Power on",
-            "text": "The system shall power on within 5 seconds.", "tags": ["functional"],
+            "temp_id": "n1",
+            "type": "Requirement",
+            "parent_temp_id": "n0",
+            "title": "Power on",
+            "text": "The system shall power on within 5 seconds.",
+            "tags": ["functional"],
         },
     ]
 
@@ -186,7 +246,9 @@ def test_level_endpoint_survey_mode_never_returns_tags_on_a_non_requirement_node
 
     original_init = OrchestratorLlmClient.__init__
 
-    def patched_init(self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None, cache=None):
+    def patched_init(
+        self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None, cache=None
+    ):
         original_init(self, base_url, bearer_token, model=model)
         self._transport = httpx.MockTransport(handler)
 
@@ -219,8 +281,18 @@ def test_level_endpoint_default_mode_still_uses_baseline_tree(monkeypatch) -> No
         document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
         blocks=[
             Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr("x.txt")),
-            Block(id="b1", kind=BlockKind.PARAGRAPH, text="1.1 Broadcast & Inputs", source_ref=_sr("x.txt")),
-            Block(id="b2", kind=BlockKind.PARAGRAPH, text="1.1.1 Channel Scan", source_ref=_sr("x.txt")),
+            Block(
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
+                text="1.1 Broadcast & Inputs",
+                source_ref=_sr("x.txt"),
+            ),
+            Block(
+                id="b2",
+                kind=BlockKind.PARAGRAPH,
+                text="1.1.1 Channel Scan",
+                source_ref=_sr("x.txt"),
+            ),
             # A genuine depth-4 leaf, matching the golden mock_tv_remote.docx
             # reference -- without this, max_depth=3 alone is no longer
             # enough to signal tv_style (docs/architecture.md 1g's fix:
@@ -228,7 +300,8 @@ def test_level_endpoint_default_mode_still_uses_baseline_tree(monkeypatch) -> No
             # depth 4 to stay tv_style/Epic at depth 1, same as a real
             # TV-Receiver-style document would.
             Block(
-                id="b3", kind=BlockKind.PARAGRAPH,
+                id="b3",
+                kind=BlockKind.PARAGRAPH,
                 text="1.1.1.1 The receiver shall scan all channels within 10 seconds.",
                 source_ref=_sr("x.txt"),
             ),
@@ -241,11 +314,17 @@ def test_level_endpoint_default_mode_still_uses_baseline_tree(monkeypatch) -> No
     assert body["nodes"][0]["mode"] == "BASELINE"
 
 
-def test_level_endpoint_mode_survey_routes_to_build_survey_tree(monkeypatch, model_structure) -> None:
+def test_level_endpoint_mode_survey_routes_to_build_survey_tree(
+    monkeypatch, model_structure
+) -> None:
     nodes = [
         {
-            "temp_id": "n0", "type": "Epic", "parent_temp_id": None, "title": "Power on",
-            "text": "The system shall power on within 5 seconds.", "tags": ["functional"],
+            "temp_id": "n0",
+            "type": "Epic",
+            "parent_temp_id": None,
+            "title": "Power on",
+            "text": "The system shall power on within 5 seconds.",
+            "tags": ["functional"],
         }
     ]
 
@@ -257,11 +336,15 @@ def test_level_endpoint_mode_survey_routes_to_build_survey_tree(monkeypatch, mod
             return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
         if _AUTHOR_CONTENT_MARKER in system_prompt:
             return _authored_content(nodes, request)
-        return httpx.Response(200, json={"content": "{}"})  # scoring call -- degrades harmlessly, not asserted here
+        return httpx.Response(
+            200, json={"content": "{}"}
+        )  # scoring call -- degrades harmlessly, not asserted here
 
     original_init = OrchestratorLlmClient.__init__
 
-    def patched_init(self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None, cache=None):
+    def patched_init(
+        self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None, cache=None
+    ):
         original_init(self, base_url, bearer_token, model=model)
         self._transport = httpx.MockTransport(handler)
 
@@ -282,13 +365,24 @@ def test_level_endpoint_mode_survey_routes_to_build_survey_tree(monkeypatch, mod
     assert "shall" in body["nodes"][0]["description"]
 
 
-def test_level_endpoint_survey_mode_with_area_path_injects_kb_context(monkeypatch, model_structure) -> None:
+def test_level_endpoint_survey_mode_with_area_path_injects_kb_context(
+    monkeypatch, model_structure
+) -> None:
     captured_system_prompts: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         system_prompt = json.loads(request.content)["messages"][0]["content"]
         captured_system_prompts.append(system_prompt)
-        nodes = [{"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "title": "Power on", "text": "The system shall power on.", "tags": ["functional"]}]
+        nodes = [
+            {
+                "temp_id": "n0",
+                "type": "Epic",
+                "parent_temp_id": None,
+                "title": "Power on",
+                "text": "The system shall power on.",
+                "tags": ["functional"],
+            }
+        ]
         if _ANALYZE_SECTION_MARKER in system_prompt:
             return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
         if _AUTHOR_CONTENT_MARKER in system_prompt:
@@ -297,7 +391,9 @@ def test_level_endpoint_survey_mode_with_area_path_injects_kb_context(monkeypatc
 
     original_init = OrchestratorLlmClient.__init__
 
-    def patched_init(self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None, cache=None):
+    def patched_init(
+        self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None, cache=None
+    ):
         original_init(self, base_url, bearer_token, model=model)
         self._transport = httpx.MockTransport(handler)
 
@@ -313,7 +409,14 @@ def test_level_endpoint_survey_mode_with_area_path_injects_kb_context(monkeypatc
         "app.leveling.llm_leveling.retrieve_context",
         lambda user_id, query_text, embed_client, vector_store, **_: (
             "Injected KB reference text.",
-            [{"source_file": "ref-doc.docx", "distance": 0.1, "similarity": 0.9, "text": "Injected KB reference text."}],
+            [
+                {
+                    "source_file": "ref-doc.docx",
+                    "distance": 0.1,
+                    "similarity": 0.9,
+                    "text": "Injected KB reference text.",
+                }
+            ],
         ),
     )
     # judge_kb_relevance is wired for real (user_id is set) and routes
@@ -328,10 +431,15 @@ def test_level_endpoint_survey_mode_with_area_path_injects_kb_context(monkeypatc
 
     doc = CanonicalDoc(
         document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
-        blocks=[Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr("x.txt"))],
+        blocks=[
+            Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr("x.txt"))
+        ],
     )
     response = client.post(
-        "/level", params={"mode": "survey"}, headers={"X-Req2Ado-User-Id": "Project\\Area1"}, json=doc.model_dump(mode="json")
+        "/level",
+        params={"mode": "survey"},
+        headers={"X-Req2Ado-User-Id": "Project\\Area1"},
+        json=doc.model_dump(mode="json"),
     )
     assert response.status_code == 200
     grounded_prompts = [
@@ -339,7 +447,9 @@ def test_level_endpoint_survey_mode_with_area_path_injects_kb_context(monkeypatc
         for p in captured_system_prompts
         if "knowledge-base snippets" not in p and "Epic and Feature work items" not in p
     ]
-    assert grounded_prompts and all("Injected KB reference text." in prompt for prompt in grounded_prompts)
+    assert grounded_prompts and all(
+        "Injected KB reference text." in prompt for prompt in grounded_prompts
+    )
     assert response.json()["kb_citations"] == [
         {"source_file": "ref-doc.docx", "similarity": 0.9, "relevance": "unknown"}
     ]
@@ -356,7 +466,16 @@ def test_level_endpoint_survey_mode_without_area_path_skips_kb_retrieval(monkeyp
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         system_prompt = body["messages"][0]["content"]
-        nodes = [{"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "title": "Power on", "text": "The system shall power on.", "tags": ["functional"]}]
+        nodes = [
+            {
+                "temp_id": "n0",
+                "type": "Epic",
+                "parent_temp_id": None,
+                "title": "Power on",
+                "text": "The system shall power on.",
+                "tags": ["functional"],
+            }
+        ]
         if _ANALYZE_SECTION_MARKER in system_prompt:
             return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
         if _AUTHOR_CONTENT_MARKER in system_prompt:
@@ -365,7 +484,9 @@ def test_level_endpoint_survey_mode_without_area_path_skips_kb_retrieval(monkeyp
 
     original_init = OrchestratorLlmClient.__init__
 
-    def patched_init(self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None, cache=None):
+    def patched_init(
+        self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None, cache=None
+    ):
         original_init(self, base_url, bearer_token, model=model)
         self._transport = httpx.MockTransport(handler)
 
@@ -374,7 +495,9 @@ def test_level_endpoint_survey_mode_without_area_path_skips_kb_retrieval(monkeyp
 
     doc = CanonicalDoc(
         document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
-        blocks=[Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr("x.txt"))],
+        blocks=[
+            Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr("x.txt"))
+        ],
     )
     response = client.post("/level", params={"mode": "survey"}, json=doc.model_dump(mode="json"))
     assert response.status_code == 200
@@ -401,7 +524,16 @@ def test_level_endpoint_survey_mode_passes_link_type_catalog_through(monkeypatch
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         system_prompt = body["messages"][0]["content"]
-        nodes = [{"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "title": "Power on", "text": "The system shall power on.", "tags": ["functional"]}]
+        nodes = [
+            {
+                "temp_id": "n0",
+                "type": "Epic",
+                "parent_temp_id": None,
+                "title": "Power on",
+                "text": "The system shall power on.",
+                "tags": ["functional"],
+            }
+        ]
         if _ANALYZE_SECTION_MARKER in system_prompt:
             return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
         if _AUTHOR_CONTENT_MARKER in system_prompt:
@@ -410,7 +542,9 @@ def test_level_endpoint_survey_mode_passes_link_type_catalog_through(monkeypatch
 
     original_init = OrchestratorLlmClient.__init__
 
-    def patched_init(self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None, cache=None):
+    def patched_init(
+        self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None, cache=None
+    ):
         original_init(self, base_url, bearer_token, model=model)
         self._transport = httpx.MockTransport(handler)
 
@@ -419,7 +553,9 @@ def test_level_endpoint_survey_mode_passes_link_type_catalog_through(monkeypatch
 
     doc = CanonicalDoc(
         document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
-        blocks=[Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr("x.txt"))],
+        blocks=[
+            Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr("x.txt"))
+        ],
     )
     response = client.post(
         "/level",
@@ -431,7 +567,9 @@ def test_level_endpoint_survey_mode_passes_link_type_catalog_through(monkeypatch
     assert captured["link_type_catalog"] == catalog
 
 
-def test_level_endpoint_survey_mode_empty_link_type_catalog_skips_trace_link_inference(monkeypatch) -> None:
+def test_level_endpoint_survey_mode_empty_link_type_catalog_skips_trace_link_inference(
+    monkeypatch,
+) -> None:
     # Regression test: link_type_catalog="[]" decodes to an empty list, which is
     # falsy but `is not None`. The /level route must treat an empty catalog the
     # same as no catalog at all (no link_type_client wired in), so
@@ -453,7 +591,16 @@ def test_level_endpoint_survey_mode_empty_link_type_catalog_skips_trace_link_inf
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         system_prompt = body["messages"][0]["content"]
-        nodes = [{"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "title": "Power on", "text": "The system shall power on.", "tags": ["functional"]}]
+        nodes = [
+            {
+                "temp_id": "n0",
+                "type": "Epic",
+                "parent_temp_id": None,
+                "title": "Power on",
+                "text": "The system shall power on.",
+                "tags": ["functional"],
+            }
+        ]
         if _ANALYZE_SECTION_MARKER in system_prompt:
             return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
         if _AUTHOR_CONTENT_MARKER in system_prompt:
@@ -462,7 +609,9 @@ def test_level_endpoint_survey_mode_empty_link_type_catalog_skips_trace_link_inf
 
     original_init = OrchestratorLlmClient.__init__
 
-    def patched_init(self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None, cache=None):
+    def patched_init(
+        self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None, cache=None
+    ):
         original_init(self, base_url, bearer_token, model=model)
         self._transport = httpx.MockTransport(handler)
 
@@ -471,7 +620,9 @@ def test_level_endpoint_survey_mode_empty_link_type_catalog_skips_trace_link_inf
 
     doc = CanonicalDoc(
         document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
-        blocks=[Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr("x.txt"))],
+        blocks=[
+            Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr("x.txt"))
+        ],
     )
     response = client.post(
         "/level",
@@ -483,7 +634,9 @@ def test_level_endpoint_survey_mode_empty_link_type_catalog_skips_trace_link_inf
     assert captured == {}
 
 
-def test_level_endpoint_survey_mode_populates_quality_score_from_a_real_scoring_call(monkeypatch, model_structure) -> None:
+def test_level_endpoint_survey_mode_populates_quality_score_from_a_real_scoring_call(
+    monkeypatch, model_structure
+) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         system_prompt = json.loads(request.content)["messages"][0]["content"]
         # Requirement, not Epic -- quality scoring is scoped to
@@ -491,18 +644,31 @@ def test_level_endpoint_survey_mode_populates_quality_score_from_a_real_scoring_
         # atomic testable statements, not Epic/Feature groupings), so an
         # Epic node here would never reach the scoring call this test
         # means to exercise.
-        nodes = [{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "title": "Power on", "text": "The system shall power on.", "tags": ["functional"]}]
+        nodes = [
+            {
+                "temp_id": "n0",
+                "type": "Requirement",
+                "parent_temp_id": None,
+                "title": "Power on",
+                "text": "The system shall power on.",
+                "tags": ["functional"],
+            }
+        ]
         if _ANALYZE_SECTION_MARKER in system_prompt:
             return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
         if _AUTHOR_CONTENT_MARKER in system_prompt:
             return _authored_content(nodes, request)
         if "score" in system_prompt.lower() and "EARS" in system_prompt:
-            return httpx.Response(200, json={"content": json.dumps({"n0": {"score": 72, "issues": ["vague_term"]}})})
+            return httpx.Response(
+                200, json={"content": json.dumps({"n0": {"score": 72, "issues": ["vague_term"]}})}
+            )
         return httpx.Response(200, json={"content": "{}"})
 
     original_init = OrchestratorLlmClient.__init__
 
-    def patched_init(self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None, cache=None):
+    def patched_init(
+        self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None, cache=None
+    ):
         original_init(self, base_url, bearer_token, model=model)
         self._transport = httpx.MockTransport(handler)
 
@@ -511,7 +677,9 @@ def test_level_endpoint_survey_mode_populates_quality_score_from_a_real_scoring_
 
     doc = CanonicalDoc(
         document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
-        blocks=[Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr("x.txt"))],
+        blocks=[
+            Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr("x.txt"))
+        ],
     )
     response = client.post("/level", params={"mode": "survey"}, json=doc.model_dump(mode="json"))
     assert response.status_code == 200
@@ -524,7 +692,16 @@ def test_level_endpoint_survey_mode_without_area_path_has_empty_kb_citations(mon
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         system_prompt = body["messages"][0]["content"]
-        nodes = [{"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "title": "Power on", "text": "The system shall power on.", "tags": ["functional"]}]
+        nodes = [
+            {
+                "temp_id": "n0",
+                "type": "Epic",
+                "parent_temp_id": None,
+                "title": "Power on",
+                "text": "The system shall power on.",
+                "tags": ["functional"],
+            }
+        ]
         if _ANALYZE_SECTION_MARKER in system_prompt:
             return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
         if _AUTHOR_CONTENT_MARKER in system_prompt:
@@ -533,7 +710,9 @@ def test_level_endpoint_survey_mode_without_area_path_has_empty_kb_citations(mon
 
     original_init = OrchestratorLlmClient.__init__
 
-    def patched_init(self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None, cache=None):
+    def patched_init(
+        self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None, cache=None
+    ):
         original_init(self, base_url, bearer_token, model=model)
         self._transport = httpx.MockTransport(handler)
 
@@ -542,7 +721,9 @@ def test_level_endpoint_survey_mode_without_area_path_has_empty_kb_citations(mon
 
     doc = CanonicalDoc(
         document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
-        blocks=[Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr("x.txt"))],
+        blocks=[
+            Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr("x.txt"))
+        ],
     )
     response = client.post("/level", params={"mode": "survey"}, json=doc.model_dump(mode="json"))
     assert response.status_code == 200
@@ -552,7 +733,9 @@ def test_level_endpoint_survey_mode_without_area_path_has_empty_kb_citations(mon
 def test_level_endpoint_baseline_mode_has_empty_kb_citations() -> None:
     doc = CanonicalDoc(
         document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
-        blocks=[Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr("x.txt"))],
+        blocks=[
+            Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr("x.txt"))
+        ],
     )
     response = client.post("/level", json=doc.model_dump(mode="json"))
     assert response.status_code == 200

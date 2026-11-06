@@ -36,7 +36,13 @@ class _SignificantVisionClient:
     """Vision-result shape (a): the call succeeded and the model judged the
     figure significant -- a real caption, caption_status stays null."""
 
-    def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None, user_id: str | None = None) -> FigureVisionResult | None:
+    def describe_figure(
+        self,
+        image_bytes: bytes,
+        mime_type: str | None = None,
+        document_context: str | None = None,
+        user_id: str | None = None,
+    ) -> FigureVisionResult | None:
         return FigureVisionResult(significant=True, description="a real caption")
 
 
@@ -44,7 +50,13 @@ class _InsignificantVisionClient:
     """Vision-result shape (b): the call succeeded but the model judged the
     figure decorative/non-technical -- caption=None, caption_status="insignificant"."""
 
-    def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None, user_id: str | None = None) -> FigureVisionResult | None:
+    def describe_figure(
+        self,
+        image_bytes: bytes,
+        mime_type: str | None = None,
+        document_context: str | None = None,
+        user_id: str | None = None,
+    ) -> FigureVisionResult | None:
         return FigureVisionResult(significant=False, description="")
 
 
@@ -52,8 +64,16 @@ class _SignificantVisionClientWithTitle:
     """Task 7: vision-result shape (a) plus a title -- the LLM-generated
     name fallback."""
 
-    def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None, user_id: str | None = None) -> FigureVisionResult | None:
-        return FigureVisionResult(significant=True, description="a real caption", title="Panel Layout Diagram")
+    def describe_figure(
+        self,
+        image_bytes: bytes,
+        mime_type: str | None = None,
+        document_context: str | None = None,
+        user_id: str | None = None,
+    ) -> FigureVisionResult | None:
+        return FigureVisionResult(
+            significant=True, description="a real caption", title="Panel Layout Diagram"
+        )
 
 
 class _FailingVisionClient:
@@ -61,7 +81,13 @@ class _FailingVisionClient:
     unparseable response -- main.py's _describe_figure ambiguous-result
     branch, caption=None, caption_status="vision_failed"."""
 
-    def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None, user_id: str | None = None) -> FigureVisionResult | None:
+    def describe_figure(
+        self,
+        image_bytes: bytes,
+        mime_type: str | None = None,
+        document_context: str | None = None,
+        user_id: str | None = None,
+    ) -> FigureVisionResult | None:
         return None
 
 
@@ -76,7 +102,12 @@ def test_significant_figure_has_no_caption_status(monkeypatch) -> None:
     # test's cached entry for the byte-identical sample.docx figure image
     # (this module's tests run against a real, persistent Redis, not a
     # per-test fake).
-    result = _upload("sample.docx", FIXTURES / "sample.docx", mode="survey", primer_context="caption-status-significant")
+    result = _upload(
+        "sample.docx",
+        FIXTURES / "sample.docx",
+        mode="survey",
+        primer_context="caption-status-significant",
+    )
 
     assert result["figures"][0]["caption"] == "a real caption"
     assert result["figures"][0]["caption_status"] is None
@@ -88,14 +119,21 @@ def test_insignificant_figure_gets_insignificant_caption_status(monkeypatch) -> 
 
     monkeypatch.setattr(main_module, "_vision_client", _InsignificantVisionClient())
 
-    result = _upload("sample.docx", FIXTURES / "sample.docx", mode="survey", primer_context="caption-status-insignificant")
+    result = _upload(
+        "sample.docx",
+        FIXTURES / "sample.docx",
+        mode="survey",
+        primer_context="caption-status-insignificant",
+    )
 
     assert result["figures"][0]["caption"] is None
     assert result["figures"][0]["caption_status"] == "insignificant"
     assert result["vision_active"] is True
 
 
-def test_the_reason_for_an_insignificant_verdict_is_kept_on_the_figure_so_a_reloaded_job_can_show_it(monkeypatch) -> None:
+def test_the_reason_for_an_insignificant_verdict_is_kept_on_the_figure_so_a_reloaded_job_can_show_it(
+    monkeypatch,
+) -> None:
     import app.main as main_module
 
     class _WithReason:
@@ -103,7 +141,12 @@ def test_the_reason_for_an_insignificant_verdict_is_kept_on_the_figure_so_a_relo
             return FigureVisionResult(significant=False, description="", reason="A company logo.")
 
     monkeypatch.setattr(main_module, "_vision_client", _WithReason())
-    result = _upload("sample.docx", FIXTURES / "sample.docx", mode="survey", primer_context=f"caption-reason-{uuid.uuid4()}")
+    result = _upload(
+        "sample.docx",
+        FIXTURES / "sample.docx",
+        mode="survey",
+        primer_context=f"caption-reason-{uuid.uuid4()}",
+    )
     assert result["figures"][0]["caption_status"] == "insignificant"
     assert result["figures"][0]["caption_reason"] == "A company logo."
 
@@ -112,11 +155,18 @@ def test_a_figure_that_was_described_or_never_judged_has_no_reason(monkeypatch) 
     import app.main as main_module
 
     monkeypatch.setattr(main_module, "_vision_client", _SignificantVisionClient())
-    result = _upload("sample.docx", FIXTURES / "sample.docx", mode="survey", primer_context=f"caption-no-reason-{uuid.uuid4()}")
+    result = _upload(
+        "sample.docx",
+        FIXTURES / "sample.docx",
+        mode="survey",
+        primer_context=f"caption-no-reason-{uuid.uuid4()}",
+    )
     assert result["figures"][0]["caption_reason"] is None
 
 
-def test_task7_vision_title_is_used_as_figure_name_when_the_document_provides_no_caption(monkeypatch) -> None:
+def test_task7_vision_title_is_used_as_figure_name_when_the_document_provides_no_caption(
+    monkeypatch,
+) -> None:
     # sample.docx never has a document-provided caption (Task 4's
     # _FIGURE_CAPTION_PATTERN is PDF-only), so this exercises the pure
     # fallback path: the vision model's own title becomes Figure.name.
@@ -124,7 +174,12 @@ def test_task7_vision_title_is_used_as_figure_name_when_the_document_provides_no
 
     monkeypatch.setattr(main_module, "_vision_client", _SignificantVisionClientWithTitle())
 
-    result = _upload("sample.docx", FIXTURES / "sample.docx", mode="survey", primer_context="caption-status-title-fallback")
+    result = _upload(
+        "sample.docx",
+        FIXTURES / "sample.docx",
+        mode="survey",
+        primer_context="caption-status-title-fallback",
+    )
 
     assert result["figures"][0]["caption"] == "a real caption"
     assert result["figures"][0]["name"] == "Panel Layout Diagram"
@@ -137,7 +192,12 @@ def test_task7_no_vision_title_leaves_figure_name_none(monkeypatch) -> None:
 
     monkeypatch.setattr(main_module, "_vision_client", _SignificantVisionClient())
 
-    result = _upload("sample.docx", FIXTURES / "sample.docx", mode="survey", primer_context="caption-status-no-title")
+    result = _upload(
+        "sample.docx",
+        FIXTURES / "sample.docx",
+        mode="survey",
+        primer_context="caption-status-no-title",
+    )
 
     assert result["figures"][0]["caption"] == "a real caption"
     assert result["figures"][0]["name"] is None
@@ -150,7 +210,12 @@ def test_task7_insignificant_figure_gets_no_title_fallback_either(monkeypatch) -
 
     monkeypatch.setattr(main_module, "_vision_client", _InsignificantVisionClient())
 
-    result = _upload("sample.docx", FIXTURES / "sample.docx", mode="survey", primer_context="caption-status-insignificant-no-title")
+    result = _upload(
+        "sample.docx",
+        FIXTURES / "sample.docx",
+        mode="survey",
+        primer_context="caption-status-insignificant-no-title",
+    )
 
     assert result["figures"][0]["caption"] is None
     assert result["figures"][0]["name"] is None
@@ -177,7 +242,9 @@ def _build_pdf_with_named_figure(tmp_path: Path) -> Path:
     return out_path
 
 
-def test_task7_document_caption_wins_over_a_vision_title_when_both_exist(tmp_path, monkeypatch) -> None:
+def test_task7_document_caption_wins_over_a_vision_title_when_both_exist(
+    tmp_path, monkeypatch
+) -> None:
     # Task 4's document-provided name must never be overridden by Task 7's
     # LLM fallback -- the fallback only ever fills a gap, never replaces an
     # already-known name.
@@ -186,7 +253,12 @@ def test_task7_document_caption_wins_over_a_vision_title_when_both_exist(tmp_pat
     monkeypatch.setattr(main_module, "_vision_client", _SignificantVisionClientWithTitle())
 
     pdf_path = _build_pdf_with_named_figure(tmp_path)
-    result = _upload("figure_with_caption.pdf", pdf_path, mode="survey", primer_context="caption-status-document-wins")
+    result = _upload(
+        "figure_with_caption.pdf",
+        pdf_path,
+        mode="survey",
+        primer_context="caption-status-document-wins",
+    )
 
     assert result["figures"][0]["name"] == "Document-Provided Diagram Title"
 
@@ -196,14 +268,21 @@ def test_failed_vision_call_gets_vision_failed_caption_status(monkeypatch) -> No
 
     monkeypatch.setattr(main_module, "_vision_client", _FailingVisionClient())
 
-    result = _upload("sample.docx", FIXTURES / "sample.docx", mode="survey", primer_context="caption-status-vision-failed")
+    result = _upload(
+        "sample.docx",
+        FIXTURES / "sample.docx",
+        mode="survey",
+        primer_context="caption-status-vision-failed",
+    )
 
     assert result["figures"][0]["caption"] is None
     assert result["figures"][0]["caption_status"] == "vision_failed"
     assert result["vision_active"] is True
 
 
-def test_vision_active_is_false_and_caption_status_stays_null_for_baseline_mode(monkeypatch) -> None:
+def test_vision_active_is_false_and_caption_status_stays_null_for_baseline_mode(
+    monkeypatch,
+) -> None:
     # BASELINE never opens the vision gate at all, regardless of what
     # _vision_client would have said -- describe_figure is never called, so
     # caption_status must never be set even though the document has a real
@@ -254,7 +333,11 @@ def test_vision_skip_reason_reflects_why_the_gate_stayed_shut(monkeypatch) -> No
     baseline = _upload("sample.docx", path, mode="baseline")
     skipped = _upload("sample.docx", path, mode="survey", skip_vision=True)
     orchestrator_decided = _upload(
-        "sample.docx", path, mode="survey", skip_vision=True, vision_skip_reason="model_not_vision_capable",
+        "sample.docx",
+        path,
+        mode="survey",
+        skip_vision=True,
+        vision_skip_reason="model_not_vision_capable",
     )
     active = _upload("sample.docx", path, mode="survey", primer_context="skip-reason-active")
 
@@ -279,7 +362,13 @@ def test_multi_figure_document_captions_every_figure_with_matching_ids(monkeypat
         """A distinct caption per distinct image, so a mis-ordered
         reassignment is detectable rather than masked by identical text."""
 
-        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None, user_id: str | None = None):
+        def describe_figure(
+            self,
+            image_bytes: bytes,
+            mime_type: str | None = None,
+            document_context: str | None = None,
+            user_id: str | None = None,
+        ):
             import hashlib
 
             digest = hashlib.sha256(image_bytes).hexdigest()[:8]
@@ -288,7 +377,9 @@ def test_multi_figure_document_captions_every_figure_with_matching_ids(monkeypat
     monkeypatch.setattr(main_module, "_vision_client", _PerImageVisionClient())
 
     result = _upload(
-        MULTI_FIGURE_FIXTURE_NAME, FIXTURES / MULTI_FIGURE_FIXTURE_NAME, mode="survey",
+        MULTI_FIGURE_FIXTURE_NAME,
+        FIXTURES / MULTI_FIGURE_FIXTURE_NAME,
+        mode="survey",
         primer_context="multi-figure-caption-ids",
     )
 
@@ -314,13 +405,21 @@ def test_an_uncaptioned_figure_keeps_the_none_placeholder_block_text(monkeypatch
     import app.main as main_module
 
     class _InsignificantVisionClient:
-        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None, user_id: str | None = None):
+        def describe_figure(
+            self,
+            image_bytes: bytes,
+            mime_type: str | None = None,
+            document_context: str | None = None,
+            user_id: str | None = None,
+        ):
             return FigureVisionResult(significant=False, description="")
 
     monkeypatch.setattr(main_module, "_vision_client", _InsignificantVisionClient())
 
     result = _upload(
-        "sample.docx", FIXTURES / "sample.docx", mode="survey",
+        "sample.docx",
+        FIXTURES / "sample.docx",
+        mode="survey",
         primer_context="uncaptioned-placeholder-block-text",
     )
 
@@ -346,7 +445,13 @@ def test_figure_captioning_happens_after_parsing_not_during_it(monkeypatch) -> N
         return doc
 
     class _RecordingVisionClient:
-        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None, user_id: str | None = None):
+        def describe_figure(
+            self,
+            image_bytes: bytes,
+            mime_type: str | None = None,
+            document_context: str | None = None,
+            user_id: str | None = None,
+        ):
             events.append("vision")
             return FigureVisionResult(significant=True, description="a real caption")
 
@@ -354,7 +459,9 @@ def test_figure_captioning_happens_after_parsing_not_during_it(monkeypatch) -> N
     monkeypatch.setattr(main_module, "_vision_client", _RecordingVisionClient())
 
     _upload(
-        "sample.docx", FIXTURES / "sample.docx", mode="survey",
+        "sample.docx",
+        FIXTURES / "sample.docx",
+        mode="survey",
         # uuid, not a fixed literal: the caption cache key includes this
         # context and lives for 7 days in a real Redis, so a fixed value makes
         # every rerun a cache hit -- no vision call at all, and the

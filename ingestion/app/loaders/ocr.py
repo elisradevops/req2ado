@@ -32,11 +32,15 @@ def ocr_page_to_text_filtered(
     Full watermark detection (image-processing based) is out of scope for
     this function."""
     images = convert_from_path(path, first_page=page_index + 1, last_page=page_index + 1)
-    return ocr_image_to_text_filtered(images[0], languages=languages, confidence_threshold=confidence_threshold)
+    return ocr_image_to_text_filtered(
+        images[0], languages=languages, confidence_threshold=confidence_threshold
+    )
 
 
 def load_pdf_with_ocr_fallback(
-    path: str, languages: str = "eng", describe_figure: Callable[[bytes], str | None] | None = None,
+    path: str,
+    languages: str = "eng",
+    describe_figure: Callable[[bytes], str | None] | None = None,
     on_ocr_page: Callable[[int, int, int, int, str], None] | None = None,
 ) -> CanonicalDoc:
     """`on_ocr_page(done, total, page_number, page_count, text)` is optional
@@ -60,7 +64,8 @@ def load_pdf_with_ocr_fallback(
 
     scanned_total = (
         sum(1 for i in range(num_pages) if not page_has_extractable_text(path, i))
-        if on_ocr_page is not None else 0
+        if on_ocr_page is not None
+        else 0
     )
     scanned_done = 0
     for page_index in range(num_pages):
@@ -82,7 +87,10 @@ def load_pdf_with_ocr_fallback(
                 kind=kind,
                 text=ocr_text,
                 source_ref=SourceRef(
-                    document_path=path, start_offset=0, end_offset=len(ocr_text), page=page_index + 1
+                    document_path=path,
+                    start_offset=0,
+                    end_offset=len(ocr_text),
+                    page=page_index + 1,
                 ),
             )
         )
@@ -98,4 +106,6 @@ def load_pdf_with_ocr_fallback(
     for i, block in enumerate(blocks):
         block.id = f"b{i}"
 
-    return CanonicalDoc(document=document, blocks=blocks, tables=text_doc.tables, figures=text_doc.figures)
+    return CanonicalDoc(
+        document=document, blocks=blocks, tables=text_doc.tables, figures=text_doc.figures
+    )

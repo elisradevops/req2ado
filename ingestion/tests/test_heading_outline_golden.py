@@ -32,7 +32,9 @@ def test_mock_prd_sensor_golden_produces_four_epics_and_five_features() -> None:
         ("Hardware Interfaces", "Epic"),
         ("Connectors", "Feature"),
     ]
-    assert "Product Requirements Document" not in {e.title for e in entries}  # the Title, correctly excluded
+    assert "Product Requirements Document" not in {
+        e.title for e in entries
+    }  # the Title, correctly excluded
 
 
 def test_mock_prd_flat_golden_produces_features_only_no_epic() -> None:
@@ -46,5 +48,7 @@ def test_mock_prd_flat_golden_produces_features_only_no_epic() -> None:
         ("Connectors", "Feature"),
     ]
     titles = {e.title for e in entries}
-    assert "Product Requirements Document" not in titles  # the confirmed live defect this fixture guards against
+    assert (
+        "Product Requirements Document" not in titles
+    )  # the confirmed live defect this fixture guards against
     assert "Epic" not in {e.suggested_type for e in entries}

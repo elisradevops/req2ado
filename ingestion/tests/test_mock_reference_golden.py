@@ -13,6 +13,7 @@ Regenerate the fixtures with:
     python tests/fixtures/build_mock_icd_docx.py
     python tests/fixtures/build_mock_tv_remote_docx.py
 """
+
 from pathlib import Path
 
 from app.leveling.tree_builder import build_baseline_tree
@@ -41,13 +42,26 @@ def test_mock_icd_docx_is_a_valid_epic_feature_requirement_ladder() -> None:
     assert by_title["Power Distribution"].type == WorkItemType.EPIC
     assert by_title["Power Distribution"].parent_local_id is None
     assert by_title["3.3V Rail Requirements"].type == WorkItemType.FEATURE
-    assert by_title["3.3V Rail Requirements"].parent_local_id == by_title["Power Distribution"].local_id
+    assert (
+        by_title["3.3V Rail Requirements"].parent_local_id
+        == by_title["Power Distribution"].local_id
+    )
     assert by_title["Ripple Sub-Requirement"].type == WorkItemType.REQUIREMENT
-    assert by_title["Ripple Sub-Requirement"].parent_local_id == by_title["3.3V Rail Requirements"].local_id
-    assert same_title_feature.title == "Power Distribution" and same_title_feature.type == WorkItemType.FEATURE
+    assert (
+        by_title["Ripple Sub-Requirement"].parent_local_id
+        == by_title["3.3V Rail Requirements"].local_id
+    )
+    assert (
+        same_title_feature.title == "Power Distribution"
+        and same_title_feature.type == WorkItemType.FEATURE
+    )
     assert by_title["Rail Sequencing Requirements"].parent_local_id == same_title_feature.local_id
 
-    assert doc_epic.type == WorkItemType.EPIC and doc_epic.parent_local_id is None and doc_epic.title == "mock icd"
+    assert (
+        doc_epic.type == WorkItemType.EPIC
+        and doc_epic.parent_local_id is None
+        and doc_epic.title == "mock icd"
+    )
     assert by_title["Thermal Management"].type == WorkItemType.FEATURE
     assert by_title["Thermal Management"].parent_local_id == doc_epic.local_id
     assert by_title["Fan Control"].type == WorkItemType.REQUIREMENT
@@ -55,7 +69,9 @@ def test_mock_icd_docx_is_a_valid_epic_feature_requirement_ladder() -> None:
     assert all(n.type == WorkItemType.EPIC for n in tree.nodes if n.parent_local_id is None)
 
 
-def test_mock_tv_remote_docx_same_nominal_depth_resolves_to_different_types_across_branches() -> None:
+def test_mock_tv_remote_docx_same_nominal_depth_resolves_to_different_types_across_branches() -> (
+    None
+):
     """The literal 'Title 2 dual-role' case from the original request:
     branch 1's depth-1 node ("1 Remote Control") is an Epic (branch nests 5
     levels deep -> tv_style); branch 2's depth-1 node ("2 Menu System") is a
@@ -88,9 +104,7 @@ def test_mock_tv_remote_docx_full_epic_to_subrequirement_chain() -> None:
 
     requirement = next(n for n in tree.nodes if n.parent_local_id == volume_buttons.local_id)
     assert requirement.type == WorkItemType.REQUIREMENT
-    sub_requirement = next(
-        n for n in tree.nodes if n.parent_local_id == requirement.local_id
-    )
+    sub_requirement = next(n for n in tree.nodes if n.parent_local_id == requirement.local_id)
     assert sub_requirement.type == WorkItemType.REQUIREMENT
 
 

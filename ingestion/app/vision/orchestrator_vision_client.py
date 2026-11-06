@@ -229,12 +229,16 @@ def _parse_figure_response(raw: str) -> FigureVisionResult | None:
     specific positional tolerances."""
     for attempt in (raw, None):
         try:
-            parsed = json.loads(raw) if attempt is not None else repair_json(raw, return_objects=True)
+            parsed = (
+                json.loads(raw) if attempt is not None else repair_json(raw, return_objects=True)
+            )
         except Exception:
             continue
         if isinstance(parsed, dict) and isinstance(parsed.get("significant"), bool):
             raw_description = parsed.get("description")
-            description = _strip_degenerate_continuation(raw_description if isinstance(raw_description, str) else "")
+            description = _strip_degenerate_continuation(
+                raw_description if isinstance(raw_description, str) else ""
+            )
             if parsed["significant"] and not description.strip():
                 # significant=True with a blank/whitespace-only description is
                 # the exact cache-poisoning state a confirmed live incident
@@ -251,7 +255,10 @@ def _parse_figure_response(raw: str) -> FigureVisionResult | None:
                 # ambiguous (the schema's own `description` field says it may
                 # be empty when not significant) and is returned -- and cached
                 # -- normally.
-                logger.warning("Vision reply unusable (blank_description): the model called the figure significant but described nothing (%d chars)", len(raw))
+                logger.warning(
+                    "Vision reply unusable (blank_description): the model called the figure significant but described nothing (%d chars)",
+                    len(raw),
+                )
                 return None
             # Task 7: title is optional (not in the schema's `required`
             # list -- a model that omits it must not fail the whole parse,
@@ -263,10 +270,21 @@ def _parse_figure_response(raw: str) -> FigureVisionResult | None:
             raw_title = parsed.get("title")
             title = raw_title.strip() if isinstance(raw_title, str) and raw_title.strip() else None
             raw_reason = parsed.get("reason")
-            reason = _short_reason(raw_reason) if not parsed["significant"] and isinstance(raw_reason, str) else None
-            return FigureVisionResult(significant=parsed["significant"], description=description, title=title, reason=reason)
+            reason = (
+                _short_reason(raw_reason)
+                if not parsed["significant"] and isinstance(raw_reason, str)
+                else None
+            )
+            return FigureVisionResult(
+                significant=parsed["significant"],
+                description=description,
+                title=title,
+                reason=reason,
+            )
     # Sizes only, never the reply: it is model output about a customer document.
-    logger.warning("Vision reply unusable (unparseable): not the expected JSON verdict (%d chars)", len(raw))
+    logger.warning(
+        "Vision reply unusable (unparseable): not the expected JSON verdict (%d chars)", len(raw)
+    )
     return None
 
 
@@ -306,10 +324,14 @@ class OrchestratorVisionClient:
     def __init__(self, base_url: str, bearer_token: str) -> None:
         self._base_url = base_url.rstrip("/")
         self._bearer_token = bearer_token
-        self._transport: httpx.BaseTransport | httpx.AsyncBaseTransport | None = None  # test-only injection seam (a MockTransport serves both)
+        self._transport: httpx.BaseTransport | httpx.AsyncBaseTransport | None = (
+            None  # test-only injection seam (a MockTransport serves both)
+        )
         self._retry_pause_seconds = 2.0
 
-    def _post(self, url: str, body: dict, headers: dict[str, str], timeout: float) -> httpx.Response:
+    def _post(
+        self, url: str, body: dict, headers: dict[str, str], timeout: float
+    ) -> httpx.Response:
         """One POST that a cancelled run can really stop.
 
         A blocking sync call cannot be interrupted from another thread (closing the client leaves a read that is already
@@ -325,7 +347,11 @@ class OrchestratorVisionClient:
         loop = asyncio.new_event_loop()
         try:
             task = loop.create_task(call())
-            unregister = token.on_cancel(lambda: loop.call_soon_threadsafe(task.cancel)) if token is not None else (lambda: None)
+            unregister = (
+                token.on_cancel(lambda: loop.call_soon_threadsafe(task.cancel))
+                if token is not None
+                else (lambda: None)
+            )
             try:
                 return loop.run_until_complete(task)
             except asyncio.CancelledError:
@@ -380,7 +406,10 @@ class OrchestratorVisionClient:
             body = {
                 "prompt": _build_prompt(document_context),
                 "images": [base64.b64encode(data).decode("ascii")],
-                "responseSchema": {"name": "figure_significance", "schema": _FIGURE_SIGNIFICANCE_SCHEMA},
+                "responseSchema": {
+                    "name": "figure_significance",
+                    "schema": _FIGURE_SIGNIFICANCE_SCHEMA,
+                },
                 **({"mimeType": mime} if mime else {}),
                 **({"model": model} if model else {}),
             }
@@ -392,7 +421,12 @@ class OrchestratorVisionClient:
             left = remaining()
             ok = left is None or left > wait + _MIN_BUDGET_FOR_A_RETRY_SECONDS
             if not ok:
-                logger.info("Vision call not retried: %.0fs of the %.0fs figure budget left, a retry needs %.0fs plus its wait", left, budget, _MIN_BUDGET_FOR_A_RETRY_SECONDS)
+                logger.info(
+                    "Vision call not retried: %.0fs of the %.0fs figure budget left, a retry needs %.0fs plus its wait",
+                    left,
+                    budget,
+                    _MIN_BUDGET_FOR_A_RETRY_SECONDS,
+                )
             return ok
 
         # One more try before a figure is given up on (a figure with no caption stays uncaptioned for the whole job). A 400
@@ -410,10 +444,14 @@ class OrchestratorVisionClient:
                 if not fits(0.0):
                     raise
                 normalized = _normalize_for_vision(image_bytes)
-                return attempt(*(normalized if normalized is not None else (image_bytes, mime_type)))
+                return attempt(
+                    *(normalized if normalized is not None else (image_bytes, mime_type))
+                )
             if status >= 500 or status == 429:
                 wait = self._retry_pause_seconds
-                if status == 429 and budget > 0:  # with the budget off the wait is the old fixed pause
+                if (
+                    status == 429 and budget > 0
+                ):  # with the budget off the wait is the old fixed pause
                     retry_after = _parse_retry_after(exc.response.headers.get("retry-after"))
                     if retry_after is not None:
                         if retry_after > _MAX_RETRY_AFTER_SECONDS:
@@ -428,7 +466,8 @@ class OrchestratorVisionClient:
             if budget > 0:
                 logger.info(
                     "Vision call timed out after %.0fs of a %.0fs figure budget; not retried (the model is slow and the abandoned call is still running)",
-                    time.monotonic() - started, budget,
+                    time.monotonic() - started,
+                    budget,
                 )
                 raise
             job_cancel.sleep(self._retry_pause_seconds)

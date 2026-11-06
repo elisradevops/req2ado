@@ -4,6 +4,7 @@ capability resolution (S12 -- extracted out of llm_leveling.py, whose
 build_survey_tree is the sole real caller alongside app.main's /level route,
 which resolves the SAME caps for num_ctx before constructing its
 OrchestratorLlmClient)."""
+
 from __future__ import annotations
 
 import json
@@ -56,20 +57,24 @@ _COVERAGE_BUDGET_TOKENS = 10_000
 
 
 class _ModelCaps(NamedTuple):
-    branch_cap: int              # _bound_branch_size's oversized-branch safety net (unchanged role)
-    context_budget_tokens: int   # true context-window ceiling -- documented for future overflow-guarding/
-                                  # num_ctx alignment, but NOT what drives chunking control flow (see
-                                  # coverage_budget_tokens)
-    coverage_budget_tokens: int  # drives the whole-doc single-call gate + budget-merge splitter. Deliberately
-                                  # much smaller than context_budget_tokens for local models: confirmed live
-                                  # that a document comfortably fitting the context window still under-
-                                  # synthesizes when analyzed in one holistic call (lost-in-the-middle
-                                  # positional bias, arXiv 2410.23609 -- an attention-architecture property
-                                  # that degrades middle-of-input recall well before the context window
-                                  # fills, so "fits in context" must NOT be treated as "safe to analyze in
-                                  # one pass"). Equal to context_budget_tokens for frontier models -- the
-                                  # reported under-synthesis is local-model-only so far; revisit if frontier
-                                  # models show the same symptom.
+    branch_cap: int  # _bound_branch_size's oversized-branch safety net (unchanged role)
+    context_budget_tokens: (
+        int  # true context-window ceiling -- documented for future overflow-guarding/
+    )
+    # num_ctx alignment, but NOT what drives chunking control flow (see
+    # coverage_budget_tokens)
+    coverage_budget_tokens: (
+        int  # drives the whole-doc single-call gate + budget-merge splitter. Deliberately
+    )
+    # much smaller than context_budget_tokens for local models: confirmed live
+    # that a document comfortably fitting the context window still under-
+    # synthesizes when analyzed in one holistic call (lost-in-the-middle
+    # positional bias, arXiv 2410.23609 -- an attention-architecture property
+    # that degrades middle-of-input recall well before the context window
+    # fills, so "fits in context" must NOT be treated as "safe to analyze in
+    # one pass"). Equal to context_budget_tokens for frontier models -- the
+    # reported under-synthesis is local-model-only so far; revisit if frontier
+    # models show the same symptom.
     supports_tools: bool
 
 
@@ -234,7 +239,11 @@ def family_facts(model: str | None) -> FamilyFacts | None:
             return FamilyFacts(128_000, 128_000, 16_384, False)
         if major >= 6 or (major == 5 and minor >= 4):
             small = major == 5 and minor == 4 and ("mini" in name or "nano" in name)
-            return FamilyFacts(400_000, 272_000, 128_000, True) if small else FamilyFacts(1_050_000, 922_000, 128_000, True)
+            return (
+                FamilyFacts(400_000, 272_000, 128_000, True)
+                if small
+                else FamilyFacts(1_050_000, 922_000, 128_000, True)
+            )
         if major == 5:
             return FamilyFacts(400_000, 272_000, 128_000, True)
     return None
@@ -276,8 +285,12 @@ def _apply_profile(caps: _ModelCaps, profile: dict) -> _ModelCaps:
     cap = profile.get("branch_cap")
     cap = cap if isinstance(cap, int) and cap > 0 else caps.branch_cap
     tools = profile.get("supports_tools")
-    return _ModelCaps(cap, budget, budget if budget != caps.context_budget_tokens else caps.coverage_budget_tokens,
-                      tools if isinstance(tools, bool) else caps.supports_tools)
+    return _ModelCaps(
+        cap,
+        budget,
+        budget if budget != caps.context_budget_tokens else caps.coverage_budget_tokens,
+        tools if isinstance(tools, bool) else caps.supports_tools,
+    )
 
 
 # What the proxy stated about each model, remembered with the caps so the answer budget can use the model's own
@@ -301,7 +314,9 @@ def output_token_budget(model: str | None) -> int:
 
 
 def _derive_caps_from_live_lookup(
-    model: str, caps_client: ModelCapsClient, user_id: str | None = None,
+    model: str,
+    caps_client: ModelCapsClient,
+    user_id: str | None = None,
 ) -> _ModelCaps | None:
     """Real caps from a live lookup instead of the blanket conservative guess. Two kinds of answer:
 
@@ -316,7 +331,9 @@ def _derive_caps_from_live_lookup(
     here -- this function's job is only the derivation, not the fail-open fallback."""
     info = caps_client.show_model(model, user_id=user_id)
     context_length = info.get("context_length")
-    context_length = context_length if isinstance(context_length, int) and context_length > 0 else None
+    context_length = (
+        context_length if isinstance(context_length, int) and context_length > 0 else None
+    )
     capabilities = info.get("capabilities") or []
     max_output = info.get("max_output_tokens")
     if isinstance(max_output, int) and max_output > 0:
@@ -324,16 +341,25 @@ def _derive_caps_from_live_lookup(
     if info.get("source") == "litellm":
         if context_length is None:
             return None
-        return _frontier_caps(context_length, "tools" in capabilities and settings.tools_from_model_info)
+        return _frontier_caps(
+            context_length, "tools" in capabilities and settings.tools_from_model_info
+        )
     context_budget_tokens = context_length if context_length is not None else 28_000
     supports_tools = "tools" in capabilities
     if context_budget_tokens >= _FRONTIER_SCALE_CONTEXT_THRESHOLD:
         return _ModelCaps(100_000, context_budget_tokens, context_budget_tokens, supports_tools)
-    return _ModelCaps(_MAX_SURVEY_BRANCH_BLOCK_COUNT, context_budget_tokens, _COVERAGE_BUDGET_TOKENS, supports_tools)
+    return _ModelCaps(
+        _MAX_SURVEY_BRANCH_BLOCK_COUNT,
+        context_budget_tokens,
+        _COVERAGE_BUDGET_TOKENS,
+        supports_tools,
+    )
 
 
 def _resolve_caps(
-    model: str | None, caps_client: ModelCapsClient | None = None, user_id: str | None = None,
+    model: str | None,
+    caps_client: ModelCapsClient | None = None,
+    user_id: str | None = None,
 ) -> _ModelCaps:
     """Resolves a model name to its branch-size cap, context-token budget, and tool-calling support, in this order:
 
@@ -349,7 +375,9 @@ def _resolve_caps(
     return _apply_profile(caps, profile) if profile else caps
 
 
-def _resolve_base_caps(model: str | None, caps_client: ModelCapsClient | None, user_id: str | None) -> _ModelCaps:
+def _resolve_base_caps(
+    model: str | None, caps_client: ModelCapsClient | None, user_id: str | None
+) -> _ModelCaps:
     if model and model in _MODEL_CAPS:
         return _MODEL_CAPS[model]
     if model and model.startswith(("claude-opus", "gpt-5")):
@@ -366,8 +394,12 @@ def _resolve_base_caps(model: str | None, caps_client: ModelCapsClient | None, u
             return derived
     facts = family_facts(model)
     if facts is not None:
-        return _frontier_caps(facts.input_tokens or facts.context_tokens, settings.tools_for_known_families)
-    static_default = _ModelCaps(_MAX_SURVEY_BRANCH_BLOCK_COUNT, 28_000, _COVERAGE_BUDGET_TOKENS, False)
+        return _frontier_caps(
+            facts.input_tokens or facts.context_tokens, settings.tools_for_known_families
+        )
+    static_default = _ModelCaps(
+        _MAX_SURVEY_BRANCH_BLOCK_COUNT, 28_000, _COVERAGE_BUDGET_TOKENS, False
+    )
     if model:
         notice("context_assumed", once_key=model, tokens=static_default.context_budget_tokens)
     return static_default

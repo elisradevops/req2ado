@@ -47,7 +47,7 @@ def test_validate_hex_color_rejects_css_injection_shaped_garbage() -> None:
     # Real defense-in-depth proof, per the design spec's security section --
     # this must never be reachable from a real loader today, but the guard
     # must independently reject it if it ever were.
-    assert validate_hex_color('#ffffff; } body { background: red') is None
+    assert validate_hex_color("#ffffff; } body { background: red") is None
     assert validate_hex_color('#ffffff" onmouseover="alert(1)') is None
 
 
@@ -105,7 +105,9 @@ def test_normalize_background_treats_a_near_white_tint_as_no_fill() -> None:
 
 
 def test_normalize_background_keeps_a_real_saturated_color() -> None:
-    assert normalize_background("#fff2cc") == "#fff2cc"  # a real pale-yellow header tint, below the threshold
+    assert (
+        normalize_background("#fff2cc") == "#fff2cc"
+    )  # a real pale-yellow header tint, below the threshold
 
 
 def test_normalize_background_keeps_a_strongly_colored_background() -> None:
@@ -127,8 +129,12 @@ def test_normalize_background_preserves_other_bright_saturated_colors() -> None:
     # Not just yellow specifically -- any bright, fully-saturated primary/
     # secondary color must survive, since the underlying bug (luminance
     # alone) would affect any color whose luminance happens to exceed 0.92.
-    assert normalize_background("#00ffff") == "#00ffff"  # cyan, luminance ~0.787 -- sanity check, well below threshold anyway
-    assert normalize_background("#ffff33") == "#ffff33"  # a slightly-softened yellow, still bright + saturated
+    assert (
+        normalize_background("#00ffff") == "#00ffff"
+    )  # cyan, luminance ~0.787 -- sanity check, well below threshold anyway
+    assert (
+        normalize_background("#ffff33") == "#ffff33"
+    )  # a slightly-softened yellow, still bright + saturated
 
 
 def test_normalize_background_still_treats_genuinely_near_gray_bright_colors_as_no_fill() -> None:
@@ -185,7 +191,9 @@ _REPRESENTATIVE_COLORS = [
 ]
 
 
-def test_adapt_text_color_no_background_hits_the_3_to_1_floor_against_both_themes_for_every_representative_color() -> None:
+def test_adapt_text_color_no_background_hits_the_3_to_1_floor_against_both_themes_for_every_representative_color() -> (
+    None
+):
     for source_color in _REPRESENTATIVE_COLORS:
         adapted = adapt_text_color_no_background(source_color)
         assert adapted is not None, f"{source_color} unexpectedly failed validation"
@@ -268,7 +276,9 @@ def test_resolve_cell_style_colors_with_no_background_and_no_text_color_returns_
     assert resolve_cell_style_colors(None, None) == (None, None)
 
 
-def test_resolve_cell_style_colors_keeps_source_text_color_when_contrast_already_sufficient() -> None:
+def test_resolve_cell_style_colors_keeps_source_text_color_when_contrast_already_sufficient() -> (
+    None
+):
     # A real high-contrast pair (near-black text on a pale-yellow
     # background) -- the source text color must be kept AS-IS, not swapped
     # to a fallback, since real WCAG AA (4.5:1) is achievable here (both
@@ -279,7 +289,9 @@ def test_resolve_cell_style_colors_keeps_source_text_color_when_contrast_already
     assert contrast_ratio("#fff2cc", "#1b1b1b") >= 4.5
 
 
-def test_resolve_cell_style_colors_swaps_to_a_fallback_when_source_text_contrast_is_insufficient() -> None:
+def test_resolve_cell_style_colors_swaps_to_a_fallback_when_source_text_contrast_is_insufficient() -> (
+    None
+):
     # A background/text pair with real but insufficient contrast (both
     # mid-toned) -- the text color must be REPLACED by whichever fallback
     # (SAFE_DARK_TEXT/SAFE_LIGHT_TEXT) scores higher, not passed through.
@@ -292,10 +304,14 @@ def test_resolve_cell_style_colors_swaps_to_a_fallback_when_source_text_contrast
 def test_resolve_cell_style_colors_picks_the_higher_contrast_fallback_not_a_fixed_default() -> None:
     # A real computed comparison, not "always pick white for a dark-looking
     # background" -- prove both fallback directions are reachable.
-    _, light_bg_text = resolve_cell_style_colors("#f5f5f0", "#eeeeee")  # very light bg, low-contrast text
+    _, light_bg_text = resolve_cell_style_colors(
+        "#f5f5f0", "#eeeeee"
+    )  # very light bg, low-contrast text
     assert light_bg_text == SAFE_DARK_TEXT  # dark text wins against a light background
 
-    _, dark_bg_text = resolve_cell_style_colors("#202020", "#303030")  # very dark bg, low-contrast text
+    _, dark_bg_text = resolve_cell_style_colors(
+        "#202020", "#303030"
+    )  # very dark bg, low-contrast text
     assert dark_bg_text == SAFE_LIGHT_TEXT  # light text wins against a dark background
 
 
@@ -351,7 +367,10 @@ def test_border_css_absent_emits_nothing() -> None:
 
 def test_colgroup_html_renders_one_col_per_fraction_as_a_percentage() -> None:
     html = colgroup_html([0.5, 0.25, 0.25])
-    assert html == '<colgroup><col style="width:50%"><col style="width:25%"><col style="width:25%"></colgroup>'
+    assert (
+        html
+        == '<colgroup><col style="width:50%"><col style="width:25%"><col style="width:25%"></colgroup>'
+    )
 
 
 def test_colgroup_html_returns_empty_string_for_none() -> None:
@@ -387,8 +406,8 @@ def test_table_style_attr_width_only_when_column_widths_present_and_no_border() 
 
 def test_table_style_attr_outer_border_includes_border_collapse_and_the_border_itself() -> None:
     css = table_style_attr("outer", False)
-    assert 'border-collapse:collapse' in css
-    assert 'border:1px solid' in css
+    assert "border-collapse:collapse" in css
+    assert "border:1px solid" in css
 
 
 def test_table_style_attr_grid_border_includes_border_collapse_but_not_the_border_itself() -> None:
@@ -396,12 +415,12 @@ def test_table_style_attr_grid_border_includes_border_collapse_but_not_the_borde
     # not on the <table> tag itself -- only border-collapse belongs here
     # for the grid case, per table_style_attr's own docstring.
     css = table_style_attr("grid", False)
-    assert 'border-collapse:collapse' in css
-    assert css.count('border:1px solid') == 0
+    assert "border-collapse:collapse" in css
+    assert css.count("border:1px solid") == 0
 
 
 def test_table_style_attr_combines_width_and_outer_border() -> None:
     css = table_style_attr("outer", True)
-    assert 'width:100%' in css
-    assert 'border-collapse:collapse' in css
-    assert 'border:1px solid' in css
+    assert "width:100%" in css
+    assert "border-collapse:collapse" in css
+    assert "border:1px solid" in css

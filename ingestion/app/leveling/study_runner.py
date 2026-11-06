@@ -30,6 +30,7 @@ a scope, a key or a model.
 
 Fail open, like the sequential study: a worker that fails unexpectedly is one failed window and the run carries on; only `JobCancelled`
 ends the run, and `result` raises only that. Anything else the coordinator hits comes back as an outcome with no study."""
+
 from __future__ import annotations
 
 import contextvars
@@ -74,10 +75,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _POLL_SECONDS = 1.0  # how often the coordinator looks at the stop flag, the job's token and the deadline while waiting for a window
-_RESULT_GRACE_SECONDS = 5.0  # how long `result` waits for the coordinator to wind down after a timeout
+_RESULT_GRACE_SECONDS = (
+    5.0  # how long `result` waits for the coordinator to wind down after a timeout
+)
 # What a run that ended early removes: the keys it wrote, unless something asked to keep them.
 _DISCARDING = ("stopped", "cancelled", "error")
-_MILESTONES = ((1, "p25"), (2, "p50"), (3, "p75"))  # quarters of the windows consumed; reported only for a document of this many windows
+_MILESTONES = (
+    (1, "p25"),
+    (2, "p50"),
+    (3, "p75"),
+)  # quarters of the windows consumed; reported only for a document of this many windows
 _MILESTONE_MIN_WINDOWS = 8
 _RECOVERY_CLEAN_WINDOWS = 8  # consecutive consumed windows without a 429 that win back one worker
 
@@ -90,6 +97,7 @@ class StudyDeadlineExceeded(Exception):
 class StudyOutcome:
     """`warnings` are plain messages for the caller to turn into the job's warnings; `stopped_by` is one of completed, breaker, deadline,
     stopped (asked to stop), cancelled (the job's run was cancelled) or error."""
+
     study: DocumentStudy | None
     warnings: tuple[str, ...]
     stopped_by: str
@@ -134,7 +142,13 @@ def _unread_report(all_windows: list[str], read_ok: set[int]) -> str:
         parts = f"part {run[0] + 1}" if len(run) == 1 else f"parts {run[0] + 1}-{run[-1] + 1}"
         first = next(iter(_headings_of(all_windows[run[0]])), None)
         last = next(iter(reversed(_headings_of(all_windows[run[-1]]))), None)
-        where = "" if first is None else f" ({first})" if last in (None, first) else f" ({first} ... {last})"
+        where = (
+            ""
+            if first is None
+            else f" ({first})"
+            if last in (None, first)
+            else f" ({first} ... {last})"
+        )
         described.append(f"{parts}{where}")
     return "Not read: " + "; ".join(described) + "."
 
@@ -145,8 +159,14 @@ class LeasedStudyClient:
     deadline passes (StudyDeadlineExceeded). One instance serves one window read, so `deadline_exceeded` is never shared between threads."""
 
     def __init__(
-        self, inner: DocumentStudyClient, limiter: LeaseLimiter | None, model: str | None, scope: str,
-        deadline_clock: Callable[[], float], deadline: float, max_wait: float,
+        self,
+        inner: DocumentStudyClient,
+        limiter: LeaseLimiter | None,
+        model: str | None,
+        scope: str,
+        deadline_clock: Callable[[], float],
+        deadline: float,
+        max_wait: float,
     ) -> None:
         self._inner = inner
         self._limiter = limiter
@@ -170,7 +190,9 @@ class LeasedStudyClient:
         if self._limiter is None:
             return self._inner.study_document_window(window_text, user_id=user_id)
         while True:
-            lease = self._limiter.acquire(self._model, self._scope, max_wait_seconds=min(self._max_wait, left))
+            lease = self._limiter.acquire(
+                self._model, self._scope, max_wait_seconds=min(self._max_wait, left)
+            )
             if lease is not None:
                 break
             raise_if_cancelled()  # no lease within the wait: keep waiting, unless the run is cancelled or out of time
@@ -220,11 +242,26 @@ class _Dispatch:
 
 class StudyHandle:
     def __init__(
-        self, *, render_text: Callable[[], str], client: DocumentStudyClient, user_id: str | None, scope: str, model: str | None,
-        store: StudyStore | None, limiter: LeaseLimiter | None, concurrency: int, lookahead: int, deadline_seconds: float,
-        soft_budget_seconds: float, breaker_failures: int, max_windows: int, lease_max_wait_seconds: float,
-        sleep: Callable[[float], None] = _cancellable_sleep, rng: random.Random | None = None,
-        clock: Callable[[], float] = time.monotonic, poll_seconds: float = _POLL_SECONDS,
+        self,
+        *,
+        render_text: Callable[[], str],
+        client: DocumentStudyClient,
+        user_id: str | None,
+        scope: str,
+        model: str | None,
+        store: StudyStore | None,
+        limiter: LeaseLimiter | None,
+        concurrency: int,
+        lookahead: int,
+        deadline_seconds: float,
+        soft_budget_seconds: float,
+        breaker_failures: int,
+        max_windows: int,
+        lease_max_wait_seconds: float,
+        sleep: Callable[[float], None] = _cancellable_sleep,
+        rng: random.Random | None = None,
+        clock: Callable[[], float] = time.monotonic,
+        poll_seconds: float = _POLL_SECONDS,
         on_progress: Callable[[int, int], None] | None = None,
     ) -> None:
         self._on_progress = on_progress  # (windows accounted for, windows to read): what a caller shows while the study runs (the coordinator's alone)
@@ -243,7 +280,9 @@ class StudyHandle:
         self._max_windows = max_windows
         self._lease_max_wait_seconds = lease_max_wait_seconds
         self._sleep = sleep
-        self._rng = rng or random.Random()  # shared by the workers: its methods are atomic under the GIL
+        self._rng = (
+            rng or random.Random()
+        )  # shared by the workers: its methods are atomic under the GIL
         self._clock = clock
         self._poll_seconds = poll_seconds
         self._workers = concurrency
@@ -261,15 +300,33 @@ class StudyHandle:
 
     @classmethod
     def from_settings(
-        cls, *, render_text: Callable[[], str], client: DocumentStudyClient, user_id: str | None, scope: str, model: str | None,
-        store: StudyStore | None, limiter: LeaseLimiter | None, **overrides,
+        cls,
+        *,
+        render_text: Callable[[], str],
+        client: DocumentStudyClient,
+        user_id: str | None,
+        scope: str,
+        model: str | None,
+        store: StudyStore | None,
+        limiter: LeaseLimiter | None,
+        **overrides,
     ) -> StudyHandle:
         return cls(
-            render_text=render_text, client=client, user_id=user_id, scope=scope, model=model, store=store, limiter=limiter,
-            concurrency=settings.survey_study_concurrency, lookahead=settings.survey_study_lookahead,
-            deadline_seconds=settings.survey_study_hard_budget_seconds, soft_budget_seconds=settings.survey_study_soft_budget_seconds,
-            breaker_failures=settings.survey_study_breaker_failures, max_windows=settings.survey_study_max_windows,
-            lease_max_wait_seconds=float(settings.survey_study_lease_max_wait_seconds), **overrides,
+            render_text=render_text,
+            client=client,
+            user_id=user_id,
+            scope=scope,
+            model=model,
+            store=store,
+            limiter=limiter,
+            concurrency=settings.survey_study_concurrency,
+            lookahead=settings.survey_study_lookahead,
+            deadline_seconds=settings.survey_study_hard_budget_seconds,
+            soft_budget_seconds=settings.survey_study_soft_budget_seconds,
+            breaker_failures=settings.survey_study_breaker_failures,
+            max_windows=settings.survey_study_max_windows,
+            lease_max_wait_seconds=float(settings.survey_study_lease_max_wait_seconds),
+            **overrides,
         )
 
     def _report_progress(self, done: int, total: int) -> None:
@@ -293,7 +350,10 @@ class StudyHandle:
         self._parent = current_token()
         self._started_at = self._clock()
         self._thread = threading.Thread(
-            target=contextvars.copy_context().run, args=(self._coordinate,), name="study-coordinator", daemon=True,
+            target=contextvars.copy_context().run,
+            args=(self._coordinate,),
+            name="study-coordinator",
+            daemon=True,
         )
         self._thread.start()
 
@@ -312,7 +372,11 @@ class StudyHandle:
         if not self._done.wait(timeout):
             self.stop(keep_results=True)
             if not self._done.wait(_RESULT_GRACE_SECONDS):
-                return StudyOutcome(None, ("The document study did not finish in time and was left unread.",), "stopped")
+                return StudyOutcome(
+                    None,
+                    ("The document study did not finish in time and was left unread.",),
+                    "stopped",
+                )
         if self._outcome.stopped_by == "cancelled":
             raise JobCancelled("the run was cancelled: its caller is gone")
         return self._outcome
@@ -324,7 +388,9 @@ class StudyHandle:
         if self._thread is None:
             return
         if discard:
-            self._discard = True  # before the stop flag, so a coordinator that ends because of it sees it
+            self._discard = (
+                True  # before the stop flag, so a coordinator that ends because of it sees it
+            )
         if not self._done.is_set():
             self.stop(keep_results=False)
         self._thread.join(join_timeout)
@@ -343,11 +409,15 @@ class StudyHandle:
         except JobCancelled:
             outcome = StudyOutcome(None, (), "cancelled")
         except Exception as error:  # noqa: BLE001 -- the study is context only: the caller carries on without it
-            logger.warning("Document study failed (%s); carrying on without it.", type(error).__name__)
+            logger.warning(
+                "Document study failed (%s); carrying on without it.", type(error).__name__
+            )
             outcome = StudyOutcome(None, ("The document study stopped unexpectedly.",), "error")
         finally:
             try:
-                if self._run is not None and ((outcome.stopped_by in _DISCARDING and not self._keep_results) or self._discard):
+                if self._run is not None and (
+                    (outcome.stopped_by in _DISCARDING and not self._keep_results) or self._discard
+                ):
                     self._run.cleanup()
             finally:
                 self._log_statistics(outcome)
@@ -362,9 +432,17 @@ class StudyHandle:
         logger.info(
             "Document study finished: stopped_by=%s windows_total=%d studied=%d cached=%d retried=%d split=%d failed=%d breaker_opened=%s "
             "budget_stopped=%s seconds=%.1f workers_final=%d",
-            outcome.stopped_by, study.windows_total if study else 0, study.windows_studied if study else 0, stats.windows_cached,
-            stats.windows_retried, stats.windows_split, stats.windows_failed, stats.breaker_opened, stats.budget_stopped,
-            self._clock() - self._started_at, self._workers,
+            outcome.stopped_by,
+            study.windows_total if study else 0,
+            study.windows_studied if study else 0,
+            stats.windows_cached,
+            stats.windows_retried,
+            stats.windows_split,
+            stats.windows_failed,
+            stats.breaker_opened,
+            stats.budget_stopped,
+            self._clock() - self._started_at,
+            self._workers,
         )
 
     def _announce_finish(self, outcome: StudyOutcome) -> None:
@@ -373,19 +451,48 @@ class StudyHandle:
         study = outcome.study
         if outcome.stopped_by == "cancelled" or (study is None and not self._announced):
             return
-        if outcome.stopped_by == "error" or (study is None and outcome.stopped_by != "stopped"):  # failed, or announced reading and read nothing
-            notice("document_study", "warning", once_key="end", state="partial", studied=0, windows=study.windows_total if study else self._windows_total,
-                   cached=0, split=0, failed=0)
+        if outcome.stopped_by == "error" or (
+            study is None and outcome.stopped_by != "stopped"
+        ):  # failed, or announced reading and read nothing
+            notice(
+                "document_study",
+                "warning",
+                once_key="end",
+                state="partial",
+                studied=0,
+                windows=study.windows_total if study else self._windows_total,
+                cached=0,
+                split=0,
+                failed=0,
+            )
             return
         stats = study.read_stats if study else StudyReadStats()
-        studied, total = (study.windows_studied, study.windows_total) if study else (0, self._windows_total)
-        if outcome.stopped_by == "stopped":  # asked to stop (nothing needed proposals): what was read stays as the cache
-            notice("document_study", once_key="end", state="stopped", studied=studied, windows=total, cached=stats.windows_cached)
+        studied, total = (
+            (study.windows_studied, study.windows_total) if study else (0, self._windows_total)
+        )
+        if (
+            outcome.stopped_by == "stopped"
+        ):  # asked to stop (nothing needed proposals): what was read stays as the cache
+            notice(
+                "document_study",
+                once_key="end",
+                state="stopped",
+                studied=studied,
+                windows=total,
+                cached=stats.windows_cached,
+            )
             return
         complete = studied >= total
         notice(
-            "document_study", "info" if complete else "warning", once_key="end", state="done" if complete else "partial",
-            studied=studied, windows=total, cached=stats.windows_cached, split=stats.windows_split, failed=stats.windows_failed,
+            "document_study",
+            "info" if complete else "warning",
+            once_key="end",
+            state="done" if complete else "partial",
+            studied=studied,
+            windows=total,
+            cached=stats.windows_cached,
+            split=stats.windows_split,
+            failed=stats.windows_failed,
         )
 
     def _stop_reason(self) -> str | None:
@@ -401,14 +508,23 @@ class StudyHandle:
         """Runs in a worker thread."""
         deadline = self._started_at + self._deadline_seconds
         leased = LeasedStudyClient(
-            self._client, self._limiter, self._model, self._scope, self._clock, deadline, self._lease_max_wait_seconds,
+            self._client,
+            self._limiter,
+            self._model,
+            self._scope,
+            self._clock,
+            deadline,
+            self._lease_max_wait_seconds,
         )
         try:
             read = read_window(leased, window, self._user_id, self._sleep, self._rng)
         except JobCancelled:
             raise
         except Exception as error:  # noqa: BLE001 -- one window's unexpected failure is data: that window is failed, the run goes on
-            logger.warning("Document study: a window could not be read (%s); skipping it.", type(error).__name__)
+            logger.warning(
+                "Document study: a window could not be read (%s); skipping it.",
+                type(error).__name__,
+            )
             read = WindowRead(None, failed=True)
         return _Read(read, leased.deadline_exceeded)
 
@@ -418,13 +534,17 @@ class StudyHandle:
             return StudyOutcome(None, (), "completed")
         all_windows = windows_of(text, STUDY_WINDOW_CHARS, STUDY_WINDOW_OVERLAP)
         self._windows_total = len(all_windows)
-        windows = all_windows[:self._max_windows]
+        windows = all_windows[: self._max_windows]
         self._report_progress(0, len(windows))
-        run = self._run = self._store.run(self._scope, self._model, text) if self._store is not None else None
+        run = self._run = (
+            self._store.run(self._scope, self._model, text) if self._store is not None else None
+        )
         cached: dict[int, WindowFindings] = {}
         if run is not None:
             for index in range(len(windows)):
-                if self._stop_reason() is not None:  # a slow store must not keep the thread alive: the windows left are simply uncached
+                if (
+                    self._stop_reason() is not None
+                ):  # a slow store must not keep the thread alive: the windows left are simply uncached
                     break
                 stored = run.get(index)
                 if stored is not None:
@@ -437,15 +557,26 @@ class StudyHandle:
         announced: set[str] = set()  # the milestones already sent
         if len(cached) < len(windows):  # a fully cached run says nothing until it is done
             self._announced = True
-            notice("document_study", once_key="start", state="reading", windows=len(all_windows), cached=len(cached))
-        executor = ThreadPoolExecutor(max_workers=self._concurrency, thread_name_prefix="study-worker")
+            notice(
+                "document_study",
+                once_key="start",
+                state="reading",
+                windows=len(all_windows),
+                cached=len(cached),
+            )
+        executor = ThreadPoolExecutor(
+            max_workers=self._concurrency, thread_name_prefix="study-worker"
+        )
         dispatch = _Dispatch(
             lambda index: submit_in_context(executor, self._read_one, windows[index]),
-            [index for index in range(len(windows)) if index not in cached], self._lookahead,
+            [index for index in range(len(windows)) if index not in cached],
+            self._lookahead,
         )
         try:
             for index in range(len(windows)):
-                if index in cached:  # no model call, no budget, no wait; a cached window resets the breaker
+                if (
+                    index in cached
+                ):  # no model call, no budget, no wait; a cached window resets the breaker
                     results.append((index, cached[index]))
                     studied += 1
                     read_ok.add(index)
@@ -459,10 +590,17 @@ class StudyHandle:
                         break
                     if reason is not None:
                         break
-                    if not soft_warned and self._clock() - self._started_at >= self._soft_budget_seconds:
+                    if (
+                        not soft_warned
+                        and self._clock() - self._started_at >= self._soft_budget_seconds
+                    ):
                         soft_warned = True
-                        logger.warning("Document study: past %ss and still reading (window %d of %d).",
-                                       self._soft_budget_seconds, index + 1, len(all_windows))
+                        logger.warning(
+                            "Document study: past %ss and still reading (window %d of %d).",
+                            self._soft_budget_seconds,
+                            index + 1,
+                            len(all_windows),
+                        )
                     dispatch.fill(self._workers)
                     if dispatch.done(index):
                         break
@@ -483,7 +621,9 @@ class StudyHandle:
                 retried += read.retries > 0
                 split += read.split
                 failed += read.failed
-                if read.retries > 0 or read.overloaded:  # a 429 (the job's own calls share the proxy's rate limit) or a timeout/504 (a slow backend): ease off
+                if (
+                    read.retries > 0 or read.overloaded
+                ):  # a 429 (the job's own calls share the proxy's rate limit) or a timeout/504 (a slow backend): ease off
                     self._workers = max(1, self._workers - 1)
                     clean = 0
                 else:  # a streak of calm windows (cached ones are not counted) wins a worker back, one at a time
@@ -493,13 +633,18 @@ class StudyHandle:
                         self._workers = min(self._concurrency, self._workers + 1)
                 findings = read.findings
                 if findings is not None and run is not None and not read.failed:
-                    findings = run.put(index, findings)  # the first writer's findings win, so concurrent jobs agree
+                    findings = run.put(
+                        index, findings
+                    )  # the first writer's findings win, so concurrent jobs agree
                 if findings is not None:
                     results.append((index, findings))
                 if read.failed:
                     consecutive += 1
                     if consecutive >= self._breaker_failures:
-                        logger.warning("Document study: %d windows in a row could not be read; stopping the study.", consecutive)
+                        logger.warning(
+                            "Document study: %d windows in a row could not be read; stopping the study.",
+                            consecutive,
+                        )
                         reason = "breaker"
                         child.cancel()
                         dispatch.cancel_waiting()
@@ -513,7 +658,13 @@ class StudyHandle:
                         if key not in announced and (index + 1) * 4 >= len(all_windows) * quarter:
                             announced.add(key)
                             self._announced = True
-                            notice("document_study", once_key=key, state="reading", done=index + 1, windows=len(all_windows))
+                            notice(
+                                "document_study",
+                                once_key=key,
+                                state="reading",
+                                done=index + 1,
+                                windows=len(all_windows),
+                            )
             if reason is None:
                 executor.shutdown(wait=True)  # every window was consumed: nothing is running
         except BaseException:
@@ -521,27 +672,44 @@ class StudyHandle:
             dispatch.cancel_waiting()
             raise
         finally:
-            executor.shutdown(wait=False, cancel_futures=True)  # never waits for a model call that is under way: it ends by itself
-        return self._outcome_of(results, all_windows, studied, (retried, split, failed, len(cached)), reason, read_ok)
+            executor.shutdown(
+                wait=False, cancel_futures=True
+            )  # never waits for a model call that is under way: it ends by itself
+        return self._outcome_of(
+            results, all_windows, studied, (retried, split, failed, len(cached)), reason, read_ok
+        )
 
     def _outcome_of(
-        self, results: list[tuple[int, WindowFindings]], all_windows: list[str], studied: int, counts: tuple[int, int, int, int],
-        reason: str | None, read_ok: set[int],
+        self,
+        results: list[tuple[int, WindowFindings]],
+        all_windows: list[str],
+        studied: int,
+        counts: tuple[int, int, int, int],
+        reason: str | None,
+        read_ok: set[int],
     ) -> StudyOutcome:
         retried, split, failed, cached = counts
         warnings: list[str] = []
         if not results:
             study = None
-            warnings.append(f"The document study read none of the document, so proposals used the hierarchy alone. {_unread_report(all_windows, read_ok)}")
+            warnings.append(
+                f"The document study read none of the document, so proposals used the hierarchy alone. {_unread_report(all_windows, read_ok)}"
+            )
         else:
             study = merge_findings(results)
             study.windows_studied = studied  # a window with only one half read keeps its findings but does not count as studied
             study.windows_total = len(all_windows)
-            study.read_stats = StudyReadStats(retried, split, failed, reason == "breaker", reason == "deadline", cached)
+            study.read_stats = StudyReadStats(
+                retried, split, failed, reason == "breaker", reason == "deadline", cached
+            )
             if studied < len(all_windows):
-                warnings.append(f"The document study read {studied} of {len(all_windows)} parts of the document. {_unread_report(all_windows, read_ok)}")
+                warnings.append(
+                    f"The document study read {studied} of {len(all_windows)} parts of the document. {_unread_report(all_windows, read_ok)}"
+                )
         if reason == "breaker":
-            warnings.append(f"The document study stopped after {self._breaker_failures} parts in a row could not be read.")
+            warnings.append(
+                f"The document study stopped after {self._breaker_failures} parts in a row could not be read."
+            )
         elif reason == "deadline":
             warnings.append("The document study stopped because its time budget was spent.")
         return StudyOutcome(study, tuple(warnings), reason or "completed")

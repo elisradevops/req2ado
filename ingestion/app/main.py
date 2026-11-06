@@ -116,6 +116,7 @@ for _handler in logging.getLogger().handlers:
 
 logger = logging.getLogger(__name__)
 
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     yield
@@ -184,10 +185,16 @@ def _publish_job_failed(request: Request, exc: Exception) -> None:
         NarrationPublisher(_narration_redis, job_id).publish(
             LevelingProgress(
                 phase="job_failed",
-                branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
-                kb_grounded=False, kb_citations=[],
-                error_type=type(exc).__name__, error_message=describe_exception(exc),
-                elapsed_seconds=elapsed_seconds, last_phase=last_known_phase(job_id),
+                branch_index=None,
+                branch_count=0,
+                blocks_done=0,
+                blocks_total=0,
+                kb_grounded=False,
+                kb_citations=[],
+                error_type=type(exc).__name__,
+                error_message=describe_exception(exc),
+                elapsed_seconds=elapsed_seconds,
+                last_phase=last_known_phase(job_id),
             )
         )
     except Exception:  # noqa: BLE001 - this enrichment must never mask the real error response
@@ -202,7 +209,10 @@ async def _value_error_handler(request: Request, exc: ValueError) -> JSONRespons
     _publish_job_failed(request, exc)
     return JSONResponse(
         status_code=502,
-        content={"detail": describe_exception(exc), **exception_details(exc, settings.expose_error_details)},
+        content={
+            "detail": describe_exception(exc),
+            **exception_details(exc, settings.expose_error_details),
+        },
     )
 
 
@@ -212,8 +222,12 @@ async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSON
     _publish_job_failed(request, exc)
     return JSONResponse(
         status_code=500,
-        content={"detail": describe_exception(exc), **exception_details(exc, settings.expose_error_details)},
+        content={
+            "detail": describe_exception(exc),
+            **exception_details(exc, settings.expose_error_details),
+        },
     )
+
 
 # settings.chroma_mode="embedded" (default, unset = same behavior as
 # before this option existed) means a local PersistentClient -- does NOT
@@ -244,7 +258,10 @@ def _overrides_of(user_id: str) -> RubricOverrides:
     try:
         return _kb_profile_store.get_overrides(user_id)
     except Exception:  # noqa: BLE001 -- a pin that cannot be read must not fail a job: the rubric is then the model's own
-        logger.warning("The user's rubric overrides could not be read; using the rubric without them", exc_info=True)
+        logger.warning(
+            "The user's rubric overrides could not be read; using the rubric without them",
+            exc_info=True,
+        )
         return RubricOverrides()
 
 
@@ -269,16 +286,25 @@ def _profile_for_job(user_id: str | None, job_model: str | None) -> KbProfile | 
         model = settings.kb_profile_model or (stored.built_with if stored else None) or job_model
         if not model:
             return _effective_rubric(user_id, default_profile())
-        profile = ensure_profile(user_id, _kb_vector_store, _kb_profile_store, _make_profile_client(model), model=model)
+        profile = ensure_profile(
+            user_id, _kb_vector_store, _kb_profile_store, _make_profile_client(model), model=model
+        )
         degraded = False
         if profile is not None and profile.degraded:
             # Half a profile would give this job categories that no later job has: keep the last good one (or the default).
-            logger.warning("KB profile build was incomplete; scoring with the last stored profile, if any")
+            logger.warning(
+                "KB profile build was incomplete; scoring with the last stored profile, if any"
+            )
             profile, degraded = stored, True
-        effective = _effective_rubric(user_id, profile if profile is not None and profile.categories else default_profile())
+        effective = _effective_rubric(
+            user_id, profile if profile is not None and profile.categories else default_profile()
+        )
         return effective.model_copy(update={"degraded": True}) if degraded else effective
     except Exception:  # noqa: BLE001 -- the rubric improves scoring; it must never fail a job
-        logger.warning("KB profile unavailable for this job; scoring with the last stored rubric, if any", exc_info=True)
+        logger.warning(
+            "KB profile unavailable for this job; scoring with the last stored rubric, if any",
+            exc_info=True,
+        )
         base = stored if stored is not None and stored.categories else default_profile()
         return _effective_rubric(user_id, base).model_copy(update={"degraded": True})
 
@@ -292,7 +318,9 @@ def _stored_profile_or_none(user_id: str | None) -> KbProfile | None:
         stored = _kb_profile_store.get(user_id)
     except Exception:  # noqa: BLE001 -- the rubric only sharpens a rewrite
         stored = None
-    return _effective_rubric(user_id, stored if stored is not None and stored.categories else default_profile())
+    return _effective_rubric(
+        user_id, stored if stored is not None and stored.categories else default_profile()
+    )
 
 
 def _make_profile_client(model: str) -> OrchestratorLlmClient:
@@ -326,7 +354,9 @@ _vision_client = OrchestratorVisionClient(settings.orchestrator_url, settings.ll
 # Same bearer/base_url -- storing figure bytes for later ADO attachment
 # only ever makes sense alongside real vision-based figure description in
 # the first place (see _caption_and_store_one_figure).
-_figure_file_client = OrchestratorFigureFileClient(settings.orchestrator_url, settings.llm_proxy_bearer)
+_figure_file_client = OrchestratorFigureFileClient(
+    settings.orchestrator_url, settings.llm_proxy_bearer
+)
 # KB quality-checklist extraction (runs ONCE per document, at ingest time --
 # see OrchestratorLlmClient.extract_quality_checklist's own docstring for
 # the cross-run scoring-determinism problem this fixes). Same always-on
@@ -368,7 +398,10 @@ _llm_response_cache = LlmResponseCache(_narration_redis)
 _study_store = StudyStore(_study_redis, settings.survey_study_cache_ttl_seconds)
 # Global, lease-based limit on the study's concurrent model calls (shared proxy; fail-open, see LeaseLimiter's docstring). Same short-timeout client.
 _study_limiter = LeaseLimiter(
-    _study_redis, settings.survey_study_global_slots, settings.survey_study_user_slots, settings.survey_study_lease_seconds,
+    _study_redis,
+    settings.survey_study_global_slots,
+    settings.survey_study_user_slots,
+    settings.survey_study_lease_seconds,
 )
 
 
@@ -406,9 +439,10 @@ _FIGURE_CAPTION_CACHE_TTL_SECONDS = 60 * 60 * 24 * 7
 _VISION_INPUT_VERSION = "2"
 
 
-
 def _figure_caption_cache_key(
-    original_image_bytes: bytes, document_context: str | None, model: str | None = None,
+    original_image_bytes: bytes,
+    document_context: str | None,
+    model: str | None = None,
 ) -> str:
     # Keyed on the ORIGINAL bytes handed to _describe_figure, before any
     # EMF/WMF->PNG conversion below -- two callers with byte-identical
@@ -466,7 +500,11 @@ def _flatten_for_vision(image_bytes: bytes, mime_type: str | None) -> tuple[byte
         from PIL import Image  # local: only this path needs it
 
         with Image.open(io.BytesIO(image_bytes)) as image:
-            has_alpha = image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info) or "transparency" in image.info
+            has_alpha = (
+                image.mode in ("RGBA", "LA")
+                or (image.mode == "P" and "transparency" in image.info)
+                or "transparency" in image.info
+            )
             if not has_alpha:
                 return image_bytes, mime_type
             rgba = image.convert("RGBA")
@@ -546,7 +584,9 @@ def _describe_figure(
                 cached_obj = json.loads(cached.decode("utf-8"))
                 if not cached_obj["significant"] and caption_status_out is not None:
                     caption_status_out["status"] = "insignificant"
-                    if cached_obj.get("reason"):  # `.get`: an entry written before the reason existed simply has none
+                    if cached_obj.get(
+                        "reason"
+                    ):  # `.get`: an entry written before the reason existed simply has none
                         caption_status_out["reason"] = cached_obj["reason"]
                 if not cached_obj["significant"]:
                     return None
@@ -569,14 +609,23 @@ def _describe_figure(
             except (json.JSONDecodeError, KeyError, UnicodeDecodeError):
                 pass  # Treat an unparseable cache entry as a miss -- fall through to a live vision call.
     except Exception:
-        logger.warning("Figure-caption cache read failed -- falling through to a live vision call", exc_info=True)
+        logger.warning(
+            "Figure-caption cache read failed -- falling through to a live vision call",
+            exc_info=True,
+        )
 
     describe_bytes, mime_type = _rasterize_for_vision(image_bytes)
     if caption_status_out is not None:
-        caption_status_out["rasterized_bytes"] = describe_bytes  # what is stored for the review UI stays as it was drawn
-    describe_bytes, mime_type = _flatten_for_vision(describe_bytes, mime_type)  # what the model is sent: transparency onto white
+        caption_status_out["rasterized_bytes"] = (
+            describe_bytes  # what is stored for the review UI stays as it was drawn
+        )
+    describe_bytes, mime_type = _flatten_for_vision(
+        describe_bytes, mime_type
+    )  # what the model is sent: transparency onto white
     model_args = {"model": model} if model else {}
-    result = _vision_client.describe_figure(describe_bytes, mime_type, document_context, user_id=user_id, **model_args)
+    result = _vision_client.describe_figure(
+        describe_bytes, mime_type, document_context, user_id=user_id, **model_args
+    )
     cacheable = True
     if result is not None and not result.significant:
         # One verdict from one sample of a model is thin evidence for dropping a figure for good (a layout drawing was called "not
@@ -586,11 +635,16 @@ def _describe_figure(
         # the breaker that stops captioning).
         cacheable = False
         try:
-            second = _vision_client.describe_figure(describe_bytes, mime_type, document_context, user_id=user_id, **model_args)
+            second = _vision_client.describe_figure(
+                describe_bytes, mime_type, document_context, user_id=user_id, **model_args
+            )
         except job_cancel.JobCancelled:
             raise
         except Exception:  # noqa: BLE001 -- the first verdict stands; the second look is a check, not the figure's only chance
-            logger.warning("Second look at a not-significant figure failed -- keeping the first verdict, not caching it", exc_info=True)
+            logger.warning(
+                "Second look at a not-significant figure failed -- keeping the first verdict, not caching it",
+                exc_info=True,
+            )
             second = None
         if second is not None and second.significant and second.description.strip():
             logger.info("Figure verdict changed on the second look: not significant -> significant")
@@ -615,11 +669,21 @@ def _describe_figure(
         try:
             _narration_redis.set(
                 cache_key,
-                json.dumps({"significant": result.significant, "description": result.description, "title": result.title, "reason": result.reason}),
+                json.dumps(
+                    {
+                        "significant": result.significant,
+                        "description": result.description,
+                        "title": result.title,
+                        "reason": result.reason,
+                    }
+                ),
                 ex=_FIGURE_CAPTION_CACHE_TTL_SECONDS,
             )
         except Exception:
-            logger.warning("Figure-caption cache write failed -- caption still returned, just not cached", exc_info=True)
+            logger.warning(
+                "Figure-caption cache write failed -- caption still returned, just not cached",
+                exc_info=True,
+            )
     if not result.significant and caption_status_out is not None:
         caption_status_out["status"] = "insignificant"
         if result.reason:
@@ -694,7 +758,9 @@ class FigureCaptionOutcome(NamedTuple):
     reason: str | None = None
 
 
-def _store_figure_only(figure_id: str, image_bytes: bytes, job_id: str | None) -> FigureCaptionOutcome:
+def _store_figure_only(
+    figure_id: str, image_bytes: bytes, job_id: str | None
+) -> FigureCaptionOutcome:
     """Breaker-tripped path: no vision call, but the figure's bytes are still
     stored (best-effort, same as the captioning path) so it stays
     viewable/attachable in the review UI."""
@@ -707,12 +773,18 @@ def _store_figure_only(figure_id: str, image_bytes: bytes, job_id: str | None) -
                 _figure_file_client.store(job_id, figure_id, compressed[0], compressed[1])
         except Exception:
             logger.warning(
-                "Figure-file storage failed for %s -- it will not be attachable in ADO", figure_id, exc_info=True
+                "Figure-file storage failed for %s -- it will not be attachable in ADO",
+                figure_id,
+                exc_info=True,
             )
             storage_failed = True
     return FigureCaptionOutcome(
-        figure_id=figure_id, caption=None, status="vision_failed", title=None,
-        storage_failed=storage_failed, skipped=True,
+        figure_id=figure_id,
+        caption=None,
+        status="vision_failed",
+        title=None,
+        storage_failed=storage_failed,
+        skipped=True,
     )
 
 
@@ -762,13 +834,21 @@ def _caption_and_store_one_figure(
     # same call the loader's except swallowed, so a failed caption never
     # attempted a store either.
     try:
-        caption = _describe_figure(image_bytes, document_context, caption_status_out, user_id=user_id, model=model)
+        caption = _describe_figure(
+            image_bytes, document_context, caption_status_out, user_id=user_id, model=model
+        )
     except job_cancel.JobCancelled:
         raise  # a cancelled run is not a vision failure: stop, do not carry on with the next figure
     except Exception:  # noqa: BLE001 -- one figure's vision failure must not abort the whole document
-        logger.warning("Vision captioning failed for %s -- figure left uncaptioned", figure_id, exc_info=True)
+        logger.warning(
+            "Vision captioning failed for %s -- figure left uncaptioned", figure_id, exc_info=True
+        )
         return FigureCaptionOutcome(
-            figure_id=figure_id, caption=None, status="vision_failed", title=None, storage_failed=False,
+            figure_id=figure_id,
+            caption=None,
+            status="vision_failed",
+            title=None,
+            storage_failed=False,
         )
     status = cast(str, caption_status_out["status"]) if "status" in caption_status_out else None
     title = cast(str, caption_status_out["title"]) if "title" in caption_status_out else None
@@ -805,16 +885,28 @@ def _caption_and_store_one_figure(
                 _figure_file_client.store(job_id, figure_id, compressed[0], compressed[1])
         except Exception:
             logger.warning(
-                "Figure-file storage failed for %s -- it will not be attachable in ADO", figure_id, exc_info=True
+                "Figure-file storage failed for %s -- it will not be attachable in ADO",
+                figure_id,
+                exc_info=True,
             )
             storage_failed = True
     logger.info(
-        "Figure %s: %s in %.0fs", figure_id,
-        "no usable reply" if status == "vision_failed" else "not significant" if status == "insignificant" else "described",
+        "Figure %s: %s in %.0fs",
+        figure_id,
+        "no usable reply"
+        if status == "vision_failed"
+        else "not significant"
+        if status == "insignificant"
+        else "described",
         time.monotonic() - figure_started,
     )
     return FigureCaptionOutcome(
-        figure_id=figure_id, caption=caption, status=status, title=title, storage_failed=storage_failed, reason=reason,
+        figure_id=figure_id,
+        caption=caption,
+        status=status,
+        title=title,
+        storage_failed=storage_failed,
+        reason=reason,
     )
 
 
@@ -917,7 +1009,11 @@ def _get_criteria_retriever(user_id: str | None) -> CriteriaRetriever | None:
         try:
             _criteria_retrievers[user_id] = CriteriaRetriever(_embed_client, user_id=user_id)
         except Exception:
-            logger.warning("Failed to build CriteriaRetriever for user_id=%s -- SURVEY quality scoring will run ungrounded", user_id, exc_info=True)
+            logger.warning(
+                "Failed to build CriteriaRetriever for user_id=%s -- SURVEY quality scoring will run ungrounded",
+                user_id,
+                exc_info=True,
+            )
             _criteria_retrievers[user_id] = None
         _criteria_retrievers_build_attempted.add(user_id)
         return _criteria_retrievers[user_id]
@@ -975,12 +1071,18 @@ def _build_survey_tree_with_scoring(
         if settings.live_progress and job_id is not None:
             publish_document_map(_narration_redis, job_id, doc)
         profile = _profile_for_job(user_id, model)
-        if rubric_report is not None:  # what this job was scored with, for the route to report (the result cache keys on it)
+        if (
+            rubric_report is not None
+        ):  # what this job was scored with, for the route to report (the result cache keys on it)
             rubric_report["version"] = profile.version if profile is not None else None
             rubric_report["degraded"] = bool(profile is not None and profile.degraded)
         try:
-            client.authoring_standard = render_authoring_standard(profile) if settings.kb_profile_generation else None
-        except AttributeError:  # a client double that is not an OrchestratorLlmClient has nowhere to put it
+            client.authoring_standard = (
+                render_authoring_standard(profile) if settings.kb_profile_generation else None
+            )
+        except (
+            AttributeError
+        ):  # a client double that is not an OrchestratorLlmClient has nowhere to put it
             pass
         return build_survey_tree(
             doc,
@@ -1346,7 +1448,9 @@ async def ingest(
     # None default) whenever vision_active is False, matching sub-fix (i)'s
     # "never disambiguate insignificant/failed when vision never ran" rule.
     figure_caption_status: dict[str, str] = {}
-    figure_caption_reason: dict[str, str] = {}  # same shape: the model's reason for a not-significant verdict
+    figure_caption_reason: dict[
+        str, str
+    ] = {}  # same shape: the model's reason for a not-significant verdict
     # Task 7: figure_id -> the vision model's own short title, same
     # side-channel/patch-after-doc-exists shape as figure_caption_status
     # above. Only ever used as a FALLBACK once `doc` exists (see the patch
@@ -1417,8 +1521,12 @@ async def ingest(
                 narration_publisher.publish(
                     LevelingProgress(
                         phase="page_alignment",
-                        branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
-                        kb_grounded=False, kb_citations=[],
+                        branch_index=None,
+                        branch_count=0,
+                        blocks_done=0,
+                        blocks_total=0,
+                        kb_grounded=False,
+                        kb_citations=[],
                     )
                 )
             doc, page_alignment = await run_in_threadpool(annotate_docx_pages, doc, tmp_path)
@@ -1426,8 +1534,12 @@ async def ingest(
                 narration_publisher.publish(
                     LevelingProgress(
                         phase="page_alignment",
-                        branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
-                        kb_grounded=False, kb_citations=[],
+                        branch_index=None,
+                        branch_count=0,
+                        blocks_done=0,
+                        blocks_total=0,
+                        kb_grounded=False,
+                        kb_citations=[],
                         page_align_page_count=page_alignment.page_count,
                         page_align_anchored_ratio=page_alignment.anchored_ratio,
                     )
@@ -1498,9 +1610,14 @@ async def ingest(
             narration_publisher.publish(
                 LevelingProgress(
                     phase="describe_figure",
-                    branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
-                    kb_grounded=False, kb_citations=[],
-                    figure_index=figure_position + 1, figure_count=figure_total,
+                    branch_index=None,
+                    branch_count=0,
+                    blocks_done=0,
+                    blocks_total=0,
+                    kb_grounded=False,
+                    kb_citations=[],
+                    figure_index=figure_position + 1,
+                    figure_count=figure_total,
                 )
             )
 
@@ -1541,16 +1658,22 @@ async def ingest(
                 # figure non-significant (or vision failed) -- both cases get
                 # the same honest "nothing here" narration copy.
                 display_caption = (
-                    outcome.caption if outcome.caption is not None
+                    outcome.caption
+                    if outcome.caption is not None
                     else "this figure has no discernible technical content"
                 )
                 narration_publisher.publish(
                     LevelingProgress(
                         phase="describe_figure",
-                        branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
-                        kb_grounded=False, kb_citations=[],
+                        branch_index=None,
+                        branch_count=0,
+                        blocks_done=0,
+                        blocks_total=0,
+                        kb_grounded=False,
+                        kb_citations=[],
                         figure_index=int(outcome.figure_id[1:]) + 1,
-                        figure_caption=display_caption, figure_count=figure_total,
+                        figure_caption=display_caption,
+                        figure_count=figure_total,
                         # Distinct from display_caption above -- see
                         # LevelingProgress.figure_caption_status's own docstring.
                         figure_caption_status=outcome.status,
@@ -1598,9 +1721,13 @@ async def ingest(
                 try:
                     await run_in_threadpool(_run_captioning_pass)
                 except job_cancel.JobCancelled:
-                    raise HTTPException(status_code=499, detail="the caller disconnected; the run was cancelled") from None
+                    raise HTTPException(
+                        status_code=499, detail="the caller disconnected; the run was cancelled"
+                    ) from None
             if cancel_token.cancelled:
-                raise HTTPException(status_code=499, detail="the caller disconnected; the run was cancelled")
+                raise HTTPException(
+                    status_code=499, detail="the caller disconnected; the run was cancelled"
+                )
 
     doc.failed_figure_storage_ids = failed_figure_ids
     doc.vision_active = vision_active
@@ -1634,9 +1761,15 @@ async def ingest(
         narration_publisher.publish(
             LevelingProgress(
                 phase="parse_done",
-                branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
-                kb_grounded=False, kb_citations=[],
-                block_count=len(doc.blocks), table_count=len(doc.tables), figure_count=len(doc.figures),
+                branch_index=None,
+                branch_count=0,
+                blocks_done=0,
+                blocks_total=0,
+                kb_grounded=False,
+                kb_citations=[],
+                block_count=len(doc.blocks),
+                table_count=len(doc.tables),
+                figure_count=len(doc.figures),
             )
         )
         # One event per Table, right after parse_done -- answers "did my
@@ -1655,10 +1788,17 @@ async def ingest(
             narration_publisher.publish(
                 LevelingProgress(
                     phase="table_detected",
-                    branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
-                    kb_grounded=False, kb_citations=[],
-                    table_id=table.id, table_row_count=len(table.cells), table_qualifies=bool(qualifying_rows),
-                    table_index=table_index, table_count=len(doc.tables),
+                    branch_index=None,
+                    branch_count=0,
+                    blocks_done=0,
+                    blocks_total=0,
+                    kb_grounded=False,
+                    kb_citations=[],
+                    table_id=table.id,
+                    table_row_count=len(table.cells),
+                    table_qualifies=bool(qualifying_rows),
+                    table_index=table_index,
+                    table_count=len(doc.tables),
                 )
             )
 
@@ -1678,7 +1818,9 @@ async def document_map(doc: CanonicalDoc, job_id: str) -> dict[str, bool]:
     progress is on."""
     if not settings.live_progress:
         return {"published": False}
-    return {"published": await run_in_threadpool(publish_document_map, _narration_redis, job_id, doc)}
+    return {
+        "published": await run_in_threadpool(publish_document_map, _narration_redis, job_id, doc)
+    }
 
 
 _VISION_SKIP_EXPLANATIONS = {
@@ -1692,7 +1834,9 @@ _VISION_SKIP_EXPLANATIONS = {
 
 
 def _append_vision_disabled_warning(
-    tree: WorkItemTree, doc: CanonicalDoc, mode: str,
+    tree: WorkItemTree,
+    doc: CanonicalDoc,
+    mode: str,
 ) -> WorkItemTree:
     """Sub-fix (i) of issue 4(b): a single TREE-level warning (never one per
     figure) explaining every one of this tree's uncaptioned_figure_ids at
@@ -1720,7 +1864,9 @@ def _append_vision_disabled_warning(
     breaker_tripped = doc.vision_skip_reason == "breaker_tripped"
     if mode == "survey" and doc.figures and (not doc.vision_active or breaker_tripped):
         reason = doc.vision_skip_reason
-        explanation = _VISION_SKIP_EXPLANATIONS.get(reason or "", "vision captioning was disabled for this run")
+        explanation = _VISION_SKIP_EXPLANATIONS.get(
+            reason or "", "vision captioning was disabled for this run"
+        )
         if breaker_tripped:
             message = (
                 f"Figure captioning stopped early -- {explanation}. Figures from that point on have no "
@@ -1837,22 +1983,35 @@ async def _survey_client(model: str | None, user_id: str | None) -> Orchestrator
     """The LLM client of a SURVEY run for `model`: its context window is sized the same way the whole-document gate sizes it (see _survey_level),
     so the job and the wizard's study read the document with identical settings."""
     probe_client = OrchestratorLlmClient(
-        settings.orchestrator_url, settings.llm_proxy_bearer, model=model,
-        top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
+        settings.orchestrator_url,
+        settings.llm_proxy_bearer,
+        model=model,
+        top_k=_SURVEY_TOP_K,
+        min_p=_SURVEY_MIN_P,
     )
     num_ctx = (
         await run_in_threadpool(_resolve_caps, model, probe_client, user_id)
     ).context_budget_tokens
     client = OrchestratorLlmClient(
-        settings.orchestrator_url, settings.llm_proxy_bearer, model=model, num_ctx=num_ctx,
-        top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P, cache=_llm_response_cache,
+        settings.orchestrator_url,
+        settings.llm_proxy_bearer,
+        model=model,
+        num_ctx=num_ctx,
+        top_k=_SURVEY_TOP_K,
+        min_p=_SURVEY_MIN_P,
+        cache=_llm_response_cache,
     )
     return client
 
 
 async def _survey_level(
-    doc: CanonicalDoc, model: str | None, user_id: str | None, link_type_catalog: str | None, job_id: str | None,
-    primer_context: str | None, rubric_report: dict,
+    doc: CanonicalDoc,
+    model: str | None,
+    user_id: str | None,
+    link_type_catalog: str | None,
+    job_id: str | None,
+    primer_context: str | None,
+    rubric_report: dict,
 ) -> WorkItemTree:
     """The SURVEY run of /level: the clients for the job's model, then the build in the threadpool. The caller owns the cancellation scope.
     `rubric_report` is filled with the rubric the job was scored with."""
@@ -1897,7 +2056,15 @@ async def _survey_level(
     client = await _survey_client(model, user_id)
     catalog = json.loads(link_type_catalog) if link_type_catalog else None
     return await run_in_threadpool(
-        _build_survey_tree_with_scoring, doc, client, user_id, catalog, job_id, model, primer_context, rubric_report
+        _build_survey_tree_with_scoring,
+        doc,
+        client,
+        user_id,
+        catalog,
+        job_id,
+        model,
+        primer_context,
+        rubric_report,
     )
 
 
@@ -1918,7 +2085,10 @@ def _level_result(doc: CanonicalDoc, tree: WorkItemTree, rubric_report: dict) ->
     final = _enforce_requirement_only_fields(_append_vision_disabled_warning(tree, doc, "survey"))
     return {
         "tree": final.model_dump(mode="json", by_alias=True),
-        "rubric": {"version": rubric_report.get("version") or None, "degraded": bool(rubric_report.get("degraded"))},
+        "rubric": {
+            "version": rubric_report.get("version") or None,
+            "degraded": bool(rubric_report.get("degraded")),
+        },
     }
 
 
@@ -1946,12 +2116,23 @@ async def level(
             async def work() -> dict:
                 with job_cancel.cancellation_scope(token):
                     rubric_report: dict = {}
-                    tree = await _survey_level(doc, model, user_id, link_type_catalog, job_id, primer_context, rubric_report)
+                    tree = await _survey_level(
+                        doc,
+                        model,
+                        user_id,
+                        link_type_catalog,
+                        job_id,
+                        primer_context,
+                        rubric_report,
+                    )
                 return await run_in_threadpool(_level_result, doc, tree, rubric_report)
 
             return StreamingResponse(
                 ndjson_stream(
-                    work, token, heartbeat_seconds=LEVEL_HEARTBEAT_SECONDS, describe_failure=lambda exc: _level_failure(request, exc),
+                    work,
+                    token,
+                    heartbeat_seconds=LEVEL_HEARTBEAT_SECONDS,
+                    describe_failure=lambda exc: _level_failure(request, exc),
                 ),
                 media_type=NDJSON,
             )
@@ -1959,9 +2140,13 @@ async def level(
         with job_cancel.cancellation_scope() as cancel_token:
             async with job_cancel.watch_for_disconnect(request, cancel_token):
                 rubric_report: dict = {}
-                tree = await _survey_level(doc, model, user_id, link_type_catalog, job_id, primer_context, rubric_report)
+                tree = await _survey_level(
+                    doc, model, user_id, link_type_catalog, job_id, primer_context, rubric_report
+                )
             if cancel_token.cancelled:
-                raise HTTPException(status_code=499, detail="the caller disconnected; the run was cancelled")
+                raise HTTPException(
+                    status_code=499, detail="the caller disconnected; the run was cancelled"
+                )
         # Which rubric the job was scored with (and whether it got the one it should have): the result cache keys on it, not on whatever the
         # user's rubric is by the time the job ends.
         response.headers["X-Req2Ado-Rubric-Version"] = rubric_report.get("version") or ""
@@ -2005,13 +2190,19 @@ async def _rescoring_kb_context(user_id: str | None, text: str) -> str | None:
     if not user_id:
         return None
     # Same switch as the job's own scoring (_profile_for_job): a rescore must be judged in the frame the job was.
-    profile = await run_in_threadpool(_stored_profile_or_none, user_id) if settings.kb_profile_scoring else None
+    profile = (
+        await run_in_threadpool(_stored_profile_or_none, user_id)
+        if settings.kb_profile_scoring
+        else None
+    )
     if profile is not None:
         _names, _definitions, context = scoring_inputs(profile)
         if context:
             return context
     # Blocking embed + vector-store calls: off the event loop, like every other blocking call here (a blocked loop fails /health).
-    kb_context, _ = await run_in_threadpool(retrieve_context, user_id, description_for_model(text), _embed_client, _kb_vector_store)
+    kb_context, _ = await run_in_threadpool(
+        retrieve_context, user_id, description_for_model(text), _embed_client, _kb_vector_store
+    )
     return kb_context
 
 
@@ -2033,25 +2224,39 @@ async def score_item(body: ScoreItemRequest) -> ScoreItemResponse:
     # score_requirements_for_document (which this route reaches via
     # score_single_requirement_text) was silently inert on this route.
     probe_client = OrchestratorLlmClient(
-        settings.orchestrator_url, settings.llm_proxy_bearer, model=body.model,
-        top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
+        settings.orchestrator_url,
+        settings.llm_proxy_bearer,
+        model=body.model,
+        top_k=_SURVEY_TOP_K,
+        min_p=_SURVEY_MIN_P,
     )
     num_ctx = (
         await run_in_threadpool(_resolve_caps, body.model, probe_client, body.user_id)
     ).context_budget_tokens
     client = OrchestratorLlmClient(
-        settings.orchestrator_url, settings.llm_proxy_bearer, model=body.model, num_ctx=num_ctx,
-        top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
+        settings.orchestrator_url,
+        settings.llm_proxy_bearer,
+        model=body.model,
+        num_ctx=num_ctx,
+        top_k=_SURVEY_TOP_K,
+        min_p=_SURVEY_MIN_P,
     )
+
     def _score() -> tuple:
         return score_single_requirement_text(
-            body.description, client, _get_criteria_retriever(body.user_id), kb_context, body.category_checklist,
+            body.description,
+            client,
+            _get_criteria_retriever(body.user_id),
+            kb_context,
+            body.category_checklist,
             user_id=body.user_id,
         )
 
     score, issues, category_scores, confidence = await run_in_threadpool(_score)
     return ScoreItemResponse(
-        quality_score=score, quality_issues=issues, quality_category_scores=category_scores,
+        quality_score=score,
+        quality_issues=issues,
+        quality_category_scores=category_scores,
         quality_confidence=confidence.value if confidence is not None else None,
     )
 
@@ -2077,7 +2282,12 @@ class RewriteCompareRequest(BaseModel):
 
 def _score_view(scored: tuple) -> dict:
     score, issues, categories, confidence = scored
-    return {"score": score, "issues": issues, "categoryScores": categories, "confidence": confidence.value if confidence is not None else None}
+    return {
+        "score": score,
+        "issues": issues,
+        "categoryScores": categories,
+        "confidence": confidence.value if confidence is not None else None,
+    }
 
 
 @app.post("/rewrite/compare")
@@ -2086,28 +2296,56 @@ async def rewrite_compare(body: RewriteCompareRequest) -> dict:
     app.chat.rewrite_check. The delta is only meaningful because of that: two separate scorings were never comparable."""
     if not body.original_description.strip() or not body.proposed_description.strip():
         raise HTTPException(status_code=400, detail="both descriptions must be non-blank")
-    warnings = check_rewrite(body.original_title, body.original_description, body.proposed_title, body.proposed_description)
+    warnings = check_rewrite(
+        body.original_title,
+        body.original_description,
+        body.proposed_title,
+        body.proposed_description,
+    )
     nothing = {"score": None, "issues": [], "categoryScores": None, "confidence": None}
     if body.warnings_only:
-        return {"before": nothing, "after": nothing, "delta": None, "categoryDeltas": {}, "warnings": warnings}
+        return {
+            "before": nothing,
+            "after": nothing,
+            "delta": None,
+            "categoryDeltas": {},
+            "warnings": warnings,
+        }
     kb_context = await _rescoring_kb_context(body.user_id, body.original_description)
     checklist = body.category_checklist
     if not checklist and body.user_id and settings.kb_profile_scoring:
-        names, _definitions, _context = scoring_inputs(await run_in_threadpool(_stored_profile_or_none, body.user_id))
+        names, _definitions, _context = scoring_inputs(
+            await run_in_threadpool(_stored_profile_or_none, body.user_id)
+        )
         checklist = names
     probe_client = OrchestratorLlmClient(
-        settings.orchestrator_url, settings.llm_proxy_bearer, model=body.model, top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
+        settings.orchestrator_url,
+        settings.llm_proxy_bearer,
+        model=body.model,
+        top_k=_SURVEY_TOP_K,
+        min_p=_SURVEY_MIN_P,
     )
-    num_ctx = (await run_in_threadpool(_resolve_caps, body.model, probe_client, body.user_id)).context_budget_tokens
+    num_ctx = (
+        await run_in_threadpool(_resolve_caps, body.model, probe_client, body.user_id)
+    ).context_budget_tokens
     client = OrchestratorLlmClient(
-        settings.orchestrator_url, settings.llm_proxy_bearer, model=body.model, num_ctx=num_ctx, top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
+        settings.orchestrator_url,
+        settings.llm_proxy_bearer,
+        model=body.model,
+        num_ctx=num_ctx,
+        top_k=_SURVEY_TOP_K,
+        min_p=_SURVEY_MIN_P,
     )
     client.request_timeout_seconds = REWRITE_PREDICTION_SECONDS + CAPPED_CALL_GRACE_SECONDS
 
     def _score() -> dict:
         return score_texts_together(
-            {"before": body.original_description, "after": body.proposed_description}, client,
-            _get_criteria_retriever(body.user_id), kb_context, checklist, user_id=body.user_id,
+            {"before": body.original_description, "after": body.proposed_description},
+            client,
+            _get_criteria_retriever(body.user_id),
+            kb_context,
+            checklist,
+            user_id=body.user_id,
         )
 
     try:
@@ -2115,27 +2353,49 @@ async def rewrite_compare(body: RewriteCompareRequest) -> dict:
         # the user gets the warnings and no score, and the run is cancelled so it asks no further.
         with job_cancel.cancellation_scope() as token:
             try:
-                scored = await asyncio.wait_for(run_in_threadpool(_score), timeout=REWRITE_PREDICTION_SECONDS)
+                scored = await asyncio.wait_for(
+                    run_in_threadpool(_score), timeout=REWRITE_PREDICTION_SECONDS
+                )
             except TimeoutError:
                 token.cancel()
-                logger.warning("Rewrite prediction took longer than %ss; answering with the warnings only", REWRITE_PREDICTION_SECONDS)
-                return {"before": nothing, "after": nothing, "delta": None, "categoryDeltas": {}, "warnings": warnings}
+                logger.warning(
+                    "Rewrite prediction took longer than %ss; answering with the warnings only",
+                    REWRITE_PREDICTION_SECONDS,
+                )
+                return {
+                    "before": nothing,
+                    "after": nothing,
+                    "delta": None,
+                    "categoryDeltas": {},
+                    "warnings": warnings,
+                }
     except Exception as exc:  # noqa: BLE001 -- the checks of the two texts need no model; only the prediction is lost
         logger.warning("Rewrite comparison could not be scored: %s", describe_exception(exc))
-        return {"before": nothing, "after": nothing, "delta": None, "categoryDeltas": {}, "warnings": warnings}
+        return {
+            "before": nothing,
+            "after": nothing,
+            "delta": None,
+            "categoryDeltas": {},
+            "warnings": warnings,
+        }
     before, after = scored["before"], scored["after"]
     if before is None or after is None or before[0] is None or after[0] is None:
         # Never a made-up comparison: without both scores there is no delta, but the warnings stand.
         return {
-            "before": _score_view(before) if before else nothing, "after": _score_view(after) if after else nothing,
-            "delta": None, "categoryDeltas": {}, "warnings": warnings,
+            "before": _score_view(before) if before else nothing,
+            "after": _score_view(after) if after else nothing,
+            "delta": None,
+            "categoryDeltas": {},
+            "warnings": warnings,
         }
     shared = [name for name in (after[2] or {}) if name in (before[2] or {})]
     return {
         "before": _score_view(before),
         "after": _score_view(after),
         "delta": after[0] - before[0],
-        "categoryDeltas": {name: (after[2] or {})[name] - (before[2] or {})[name] for name in shared},
+        "categoryDeltas": {
+            name: (after[2] or {})[name] - (before[2] or {})[name] for name in shared
+        },
         "warnings": warnings,
     }
 
@@ -2165,45 +2425,80 @@ async def score_explain(body: ScoreExplainRequest) -> dict:
     user) when there is one, otherwise from the built-in rubric and its design philosophy. One model call; it explains, it never rewrites."""
     if not body.description.strip():
         raise HTTPException(status_code=400, detail="description must not be blank")
-    rubric = await run_in_threadpool(_stored_profile_or_none, body.user_id) if body.user_id else default_profile()
+    rubric = (
+        await run_in_threadpool(_stored_profile_or_none, body.user_id)
+        if body.user_id
+        else default_profile()
+    )
     names = choose_categories(body.category_scores, body.categories)
     if not names:
         raise HTTPException(status_code=400, detail="the item has no category scores to explain")
     described = describe_categories(rubric, names, body.category_scores)
     basis, basis_tag = basis_for(rubric)
     probe_client = OrchestratorLlmClient(
-        settings.orchestrator_url, settings.llm_proxy_bearer, model=body.model, top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
+        settings.orchestrator_url,
+        settings.llm_proxy_bearer,
+        model=body.model,
+        top_k=_SURVEY_TOP_K,
+        min_p=_SURVEY_MIN_P,
     )
-    num_ctx = (await run_in_threadpool(_resolve_caps, body.model, probe_client, body.user_id)).context_budget_tokens
+    num_ctx = (
+        await run_in_threadpool(_resolve_caps, body.model, probe_client, body.user_id)
+    ).context_budget_tokens
     client = OrchestratorLlmClient(
-        settings.orchestrator_url, settings.llm_proxy_bearer, model=body.model, num_ctx=num_ctx, top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
+        settings.orchestrator_url,
+        settings.llm_proxy_bearer,
+        model=body.model,
+        num_ctx=num_ctx,
+        top_k=_SURVEY_TOP_K,
+        min_p=_SURVEY_MIN_P,
     )
     client.request_timeout_seconds = EXPLAIN_SECONDS + CAPPED_CALL_GRACE_SECONDS
-    item = {"type": body.type or "Requirement", "title": body.title or "", "description": description_for_model(body.description)}
+    item = {
+        "type": body.type or "Requirement",
+        "title": body.title or "",
+        "description": description_for_model(body.description),
+    }
 
     def _explain() -> list[dict]:
-        return client.explain_category_scores(item, render_context_pack(body.context), described, basis, user_id=body.user_id)
+        return client.explain_category_scores(
+            item, render_context_pack(body.context), described, basis, user_id=body.user_id
+        )
 
     try:
         with job_cancel.cancellation_scope() as token:
             try:
-                answered = await asyncio.wait_for(run_in_threadpool(_explain), timeout=EXPLAIN_SECONDS)
+                answered = await asyncio.wait_for(
+                    run_in_threadpool(_explain), timeout=EXPLAIN_SECONDS
+                )
             except TimeoutError as exc:
                 token.cancel()
-                raise HTTPException(status_code=504, detail="the explanation is taking too long; try again") from exc
+                raise HTTPException(
+                    status_code=504, detail="the explanation is taking too long; try again"
+                ) from exc
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
         logger.warning("Score explanation failed: %s", describe_exception(exc))
-        raise HTTPException(status_code=502, detail=f"the explanation could not be made: {describe_exception(exc)}") from exc
+        raise HTTPException(
+            status_code=502, detail=f"the explanation could not be made: {describe_exception(exc)}"
+        ) from exc
     reasons = {_explain_key(e["category"]): " ".join(e["reason"].split())[:300] for e in answered}
     return {
         "explanations": [
-            {"category": d["name"], "score": d["score"], "reason": reasons.get(_explain_key(d["name"])) or None, "passCondition": d["pass_condition"]}
+            {
+                "category": d["name"],
+                "score": d["score"],
+                "reason": reasons.get(_explain_key(d["name"])) or None,
+                "passCondition": d["pass_condition"],
+            }
             for d in described
         ],
         "basis": basis_tag,
-        "rubric": {"source": rubric.source if rubric else "default", "version": rubric.version if rubric else None},
+        "rubric": {
+            "source": rubric.source if rubric else "default",
+            "version": rubric.version if rubric else None,
+        },
     }
 
 
@@ -2272,7 +2567,11 @@ _ENHANCE_PARENT_ITEMS_MAX = 25
 async def enhance_items(body: EnhanceItemsRequest) -> EnhanceItemsResponse:
     if not body.items:
         raise HTTPException(status_code=400, detail="items must not be empty")
-    max_items = _ENHANCE_PARENT_ITEMS_MAX if body.enhancement_pass == "parent_summary" else _ENHANCE_ITEMS_MAX
+    max_items = (
+        _ENHANCE_PARENT_ITEMS_MAX
+        if body.enhancement_pass == "parent_summary"
+        else _ENHANCE_ITEMS_MAX
+    )
     if len(body.items) > max_items:
         raise HTTPException(status_code=400, detail=f"at most {max_items} items per request")
     try:
@@ -2280,9 +2579,12 @@ async def enhance_items(body: EnhanceItemsRequest) -> EnhanceItemsResponse:
     except ValueError as error:
         raise HTTPException(status_code=400, detail=f"unknown item type: {error}") from error
     if body.enhancement_pass == "parent_summary" and any(
-        node_type not in (WorkItemType.EPIC, WorkItemType.FEATURE) for node_type in node_types.values()
+        node_type not in (WorkItemType.EPIC, WorkItemType.FEATURE)
+        for node_type in node_types.values()
     ):
-        raise HTTPException(status_code=400, detail="parent_summary applies to Epic and Feature items only")
+        raise HTTPException(
+            status_code=400, detail="parent_summary applies to Epic and Feature items only"
+        )
 
     # Blank text can't be enhanced; report it rather than spend a call on it.
     sendable = [item for item in body.items if item.text.strip()]
@@ -2294,15 +2596,22 @@ async def enhance_items(body: EnhanceItemsRequest) -> EnhanceItemsResponse:
     # the same reasons (num_ctx needs the model's caps, which is a blocking
     # lookup that must not run inline in an async route).
     probe_client = OrchestratorLlmClient(
-        settings.orchestrator_url, settings.llm_proxy_bearer, model=body.model,
-        top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
+        settings.orchestrator_url,
+        settings.llm_proxy_bearer,
+        model=body.model,
+        top_k=_SURVEY_TOP_K,
+        min_p=_SURVEY_MIN_P,
     )
     num_ctx = (
         await run_in_threadpool(_resolve_caps, body.model, probe_client, body.user_id)
     ).context_budget_tokens
     client = OrchestratorLlmClient(
-        settings.orchestrator_url, settings.llm_proxy_bearer, model=body.model, num_ctx=num_ctx,
-        top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
+        settings.orchestrator_url,
+        settings.llm_proxy_bearer,
+        model=body.model,
+        num_ctx=num_ctx,
+        top_k=_SURVEY_TOP_K,
+        min_p=_SURVEY_MIN_P,
     )
 
     try:
@@ -2347,7 +2656,11 @@ async def enhance_items(body: EnhanceItemsRequest) -> EnhanceItemsResponse:
             continue
         if body.enhancement_pass == "parent_summary":
             parent_updates = parent_summary_updates(
-                entry, item.text, item.requirement_titles, item.requirement_descriptions, item.child_titles,
+                entry,
+                item.text,
+                item.requirement_titles,
+                item.requirement_descriptions,
+                item.child_titles,
             )
             if not parent_updates:
                 omitted.append(item.id)
@@ -2409,10 +2722,15 @@ def dedup_check(body: DedupCheckRequest) -> DuplicateCheckResult:
         )
     )
     total_ms = round((time.monotonic() - check_started) * 1000)
-    if total_ms >= _SLOW_DEDUP_CHECK_MS:  # a slow check says where its time went: embed, store or judge (counts only)
+    if (
+        total_ms >= _SLOW_DEDUP_CHECK_MS
+    ):  # a slow check says where its time went: embed, store or judge (counts only)
         logger.info(
-            "dedup_check timing job=%s embed_ms=%s query_ms=%s judge_ms=%s", body.job_id or "-", timings.get("embed_ms", "-"),
-            timings.get("query_ms", "-"), timings.get("judge_ms", "-"),
+            "dedup_check timing job=%s embed_ms=%s query_ms=%s judge_ms=%s",
+            body.job_id or "-",
+            timings.get("embed_ms", "-"),
+            timings.get("query_ms", "-"),
+            timings.get("judge_ms", "-"),
         )
     if body.job_id and result.is_duplicate and result.matched_text is not None:
         # Display only: a no-op unless LIVE_PROGRESS is on, and never raises.
@@ -2420,8 +2738,10 @@ def dedup_check(body: DedupCheckRequest) -> DuplicateCheckResult:
             if emitter is not None:
                 emitter.compare(
                     kind="duplicate",
-                    a_ref="proposed", a_text=body.text,
-                    b_ref=result.matched_item_id or "existing", b_text=result.matched_text,
+                    a_ref="proposed",
+                    a_text=body.text,
+                    b_ref=result.matched_item_id or "existing",
+                    b_text=result.matched_text,
                     similarity=result.similarity or 0.0,
                 )
     return result
@@ -2464,7 +2784,9 @@ def _with_embedding_retry(call):
         except httpx.TransportError as exc:
             last = exc
     if isinstance(last, httpx.HTTPStatusError):
-        raise HTTPException(status_code=502, detail=f"the embedding service answered {last.response.status_code}") from last
+        raise HTTPException(
+            status_code=502, detail=f"the embedding service answered {last.response.status_code}"
+        ) from last
     raise HTTPException(status_code=502, detail="the embedding service is unreachable") from last
 
 
@@ -2482,7 +2804,9 @@ def dedup_upsert_batch(body: DedupUpsertBatchRequest) -> dict[str, bool]:
     if not body.items:
         return {"ok": True}
     n = len(body.items)
-    embeddings = _embed_for_dedup([item.title for item in body.items] + [item.text for item in body.items], body.user_id)
+    embeddings = _embed_for_dedup(
+        [item.title for item in body.items] + [item.text for item in body.items], body.user_id
+    )
     title_embeddings, description_embeddings = embeddings[:n], embeddings[n:]
     blended_embeddings = [
         blend_embeddings(title_embedding, description_embedding)
@@ -2500,7 +2824,9 @@ def dedup_upsert_batch(body: DedupUpsertBatchRequest) -> dict[str, bool]:
     # stays correct even if that ever stops holding.
     items_by_area_path: dict[str, list[tuple[str, list[float], str]]] = {}
     for item, embedding in zip(body.items, blended_embeddings):
-        items_by_area_path.setdefault(item.area_path, []).append((item.item_id, embedding, item.text))
+        items_by_area_path.setdefault(item.area_path, []).append(
+            (item.item_id, embedding, item.text)
+        )
 
     for area_path, items in items_by_area_path.items():
         _vector_store.upsert_many(items, area_path)
@@ -2531,7 +2857,12 @@ async def kb_build_profile(body: KbProfileRequest) -> dict:
     """The user's KB profile: the stored one while their documents and the model are unchanged, otherwise rebuilt from
     every document and stored. 404 when the user has no KB documents."""
     profile = await run_in_threadpool(
-        ensure_profile, body.user_id, _kb_vector_store, _kb_profile_store, _make_profile_client(body.model), model=body.model,
+        ensure_profile,
+        body.user_id,
+        _kb_vector_store,
+        _kb_profile_store,
+        _make_profile_client(body.model),
+        model=body.model,
         refresh=body.refresh,
     )
     if profile is None:
@@ -2607,13 +2938,17 @@ async def kb_get_rubric(
 @app.put("/kb/rubric")
 async def kb_put_rubric(body: RubricPutRequest) -> dict:
     try:
-        overrides = validate_overrides([{"name": p.name, "pass_condition": p.passCondition} for p in body.pinned], body.removed)
+        overrides = validate_overrides(
+            [{"name": p.name, "pass_condition": p.passCondition} for p in body.pinned], body.removed
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     def store() -> dict:
         if not apply_overrides(_rubric_base(body.user_id), overrides).categories:
-            raise HTTPException(status_code=400, detail="the rubric must keep at least one category")
+            raise HTTPException(
+                status_code=400, detail="the rubric must keep at least one category"
+            )
         _kb_profile_store.put_overrides(body.user_id, overrides)
         return _rubric_view_for(body.user_id)
 
@@ -2635,7 +2970,9 @@ async def kb_ingest_url(body: KbIngestUrlRequest) -> IngestResult:
     # makes synchronous httpx calls; run in the threadpool like /level and
     # the old /kb/sync so it never blocks the single-worker event loop.
     try:
-        graph_client = GraphClient(body.graph_token or settings.sharepoint_token or "", settings.graph_base_url)
+        graph_client = GraphClient(
+            body.graph_token or settings.sharepoint_token or "", settings.graph_base_url
+        )
         return await run_in_threadpool(
             ingest_document_from_url,
             body.url,
@@ -2655,7 +2992,8 @@ async def kb_ingest_url(body: KbIngestUrlRequest) -> IngestResult:
             # Callable, so the closure is what threads user_id through.
             describe_figure=(
                 (lambda image_bytes: _describe_figure(image_bytes, user_id=body.user_id))
-                if _vision_client is not None else None
+                if _vision_client is not None
+                else None
             ),
             checklist_client=_checklist_client,
             retrieval_mode=body.retrieval_mode,
@@ -2677,7 +3015,9 @@ async def kb_ingest_folder_url(body: KbIngestUrlRequest) -> FolderIngestResult:
     # Listing the folder itself (validate_share_url, list_folder_children)
     # can still fail with ValueError/GraphApiError, mapped the same way.
     try:
-        graph_client = GraphClient(body.graph_token or settings.sharepoint_token or "", settings.graph_base_url)
+        graph_client = GraphClient(
+            body.graph_token or settings.sharepoint_token or "", settings.graph_base_url
+        )
         return await run_in_threadpool(
             ingest_folder_from_url,
             body.url,
@@ -2693,7 +3033,8 @@ async def kb_ingest_folder_url(body: KbIngestUrlRequest) -> FolderIngestResult:
             # Closes over body.user_id -- see /kb/ingest-url's identical comment.
             describe_figure=(
                 (lambda image_bytes: _describe_figure(image_bytes, user_id=body.user_id))
-                if _vision_client is not None else None
+                if _vision_client is not None
+                else None
             ),
             checklist_client=_checklist_client,
         )
@@ -2716,7 +3057,9 @@ async def kb_ingest_item(body: KbIngestItemRequest) -> IngestResult:
     # own sharing link. Same token/threadpool/error-mapping reasoning as
     # every other Graph-backed route here.
     try:
-        graph_client = GraphClient(body.graph_token or settings.sharepoint_token or "", settings.graph_base_url)
+        graph_client = GraphClient(
+            body.graph_token or settings.sharepoint_token or "", settings.graph_base_url
+        )
         return await run_in_threadpool(
             ingest_folder_child,
             body.name,
@@ -2733,7 +3076,8 @@ async def kb_ingest_item(body: KbIngestItemRequest) -> IngestResult:
             # Closes over body.user_id -- see /kb/ingest-url's identical comment.
             describe_figure=(
                 (lambda image_bytes: _describe_figure(image_bytes, user_id=body.user_id))
-                if _vision_client is not None else None
+                if _vision_client is not None
+                else None
             ),
             checklist_client=_checklist_client,
             retrieval_mode=body.retrieval_mode,
@@ -2756,7 +3100,12 @@ async def kb_delete_document(user_id: str, source_file: str, source_id: str) -> 
     await run_in_threadpool(_kb_vector_store.delete_file_chunks, user_id, source_file, source_id)
     # An audit line for a destructive action (a KB once vanished with no trace of what removed it). The user is shown as a
     # short hash: the line is for correlating events, not for identifying a person.
-    logger.info("KB document removed: user=%s file=%r source_id=%s", _audit_user(user_id), source_file, source_id)
+    logger.info(
+        "KB document removed: user=%s file=%r source_id=%s",
+        _audit_user(user_id),
+        source_file,
+        source_id,
+    )
     return {"ok": True}
 
 
@@ -2766,7 +3115,8 @@ def _audit_user(user_id: str) -> str:
 
 @app.delete("/kb/collection")
 async def kb_purge_collection(
-    user_id: str, x_confirm_purge: str | None = Header(default=None, alias="X-Req2Ado-Confirm-Purge"),
+    user_id: str,
+    x_confirm_purge: str | None = Header(default=None, alias="X-Req2Ado-Confirm-Purge"),
 ) -> dict[str, bool]:
     # Admin/CLI-only remediation (see docs/runbook.md) for a deleted-and-
     # recreated ADO account whose new session resolves to the same
@@ -2784,7 +3134,9 @@ async def kb_purge_collection(
     # The whole collection is dropped, irreversibly: the caller must repeat the exact user id in a confirmation header, so a
     # bare or mistaken request (a script, a retry, a wrong URL) cannot delete a knowledge base.
     if x_confirm_purge != user_id:
-        raise HTTPException(status_code=400, detail="Purging a KB needs X-Req2Ado-Confirm-Purge set to the user id")
+        raise HTTPException(
+            status_code=400, detail="Purging a KB needs X-Req2Ado-Confirm-Purge set to the user id"
+        )
     chunks = await run_in_threadpool(_kb_vector_store.chunk_count, user_id)
     await run_in_threadpool(_kb_vector_store.purge_user, user_id)
     logger.warning("KB collection purged: user=%s chunks=%d", _audit_user(user_id), chunks)
@@ -2799,7 +3151,9 @@ async def kb_browse_folder(body: KbBrowseFolderRequest) -> list[FolderChildSumma
     # ingest. Same token/error-mapping/threadpool reasoning as every other
     # Graph-backed route here.
     try:
-        graph_client = GraphClient(body.graph_token or settings.sharepoint_token or "", settings.graph_base_url)
+        graph_client = GraphClient(
+            body.graph_token or settings.sharepoint_token or "", settings.graph_base_url
+        )
         return await run_in_threadpool(browse_shared_folder, body.url, graph_client)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -2814,7 +3168,9 @@ async def kb_browse_children(body: KbBrowseChildrenRequest) -> list[FolderChildS
     # expansion (addressed by drive_id + item_id, not a share URL -- see
     # browse_service.browse_subfolder's docstring).
     try:
-        graph_client = GraphClient(body.graph_token or settings.sharepoint_token or "", settings.graph_base_url)
+        graph_client = GraphClient(
+            body.graph_token or settings.sharepoint_token or "", settings.graph_base_url
+        )
         return await run_in_threadpool(browse_subfolder, body.drive_id, body.item_id, graph_client)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -43,9 +43,21 @@ def _tv_style_doc() -> CanonicalDoc:
     return CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="tvhash"),
         blocks=[
-            Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr(path, 0, 10)),
-            Block(id="b1", kind=BlockKind.PARAGRAPH, text="1.1 Broadcast & Inputs", source_ref=_sr(path, 11, 33)),
-            Block(id="b2", kind=BlockKind.PARAGRAPH, text="1.1.1 Channel scan", source_ref=_sr(path, 34, 52)),
+            Block(
+                id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr(path, 0, 10)
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
+                text="1.1 Broadcast & Inputs",
+                source_ref=_sr(path, 11, 33),
+            ),
+            Block(
+                id="b2",
+                kind=BlockKind.PARAGRAPH,
+                text="1.1.1 Channel scan",
+                source_ref=_sr(path, 34, 52),
+            ),
             Block(
                 id="b3",
                 kind=BlockKind.PARAGRAPH,
@@ -67,7 +79,13 @@ def _icd_style_doc() -> CanonicalDoc:
     return CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.MD, sha256="icdhash"),
         blocks=[
-            Block(id="c0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 0, 19)),
+            Block(
+                id="c0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Power Distribution",
+                source_ref=_sr(path, 0, 19),
+            ),
             Block(
                 id="c1",
                 kind=BlockKind.HEADING,
@@ -81,7 +99,9 @@ def _icd_style_doc() -> CanonicalDoc:
                 text="OPEN: confirm connector part number before release.",
                 source_ref=_sr(path, 44, 96),
             ),
-            Block(id="c3", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path, 97, 111)),
+            Block(
+                id="c3", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path, 97, 111)
+            ),
         ],
     )
 
@@ -125,7 +145,13 @@ def test_baseline_fold_attaches_a_real_figure_caption_via_figure_ids_not_inline_
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.MD, sha256="icdhash2"),
         blocks=[
-            Block(id="d0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 0, 19)),
+            Block(
+                id="d0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Power Distribution",
+                source_ref=_sr(path, 0, 19),
+            ),
             Block(
                 id="d1",
                 kind=BlockKind.HEADING,
@@ -133,7 +159,12 @@ def test_baseline_fold_attaches_a_real_figure_caption_via_figure_ids_not_inline_
                 text="3.3V Rail Requirements",
                 source_ref=_sr(path, 20, 43),
             ),
-            Block(id="d2", kind=BlockKind.FIGURE, text="[FIGURE: Rail topology diagram]", source_ref=_sr(path, 44, 76)),
+            Block(
+                id="d2",
+                kind=BlockKind.FIGURE,
+                text="[FIGURE: Rail topology diagram]",
+                source_ref=_sr(path, 44, 76),
+            ),
         ],
         figures=[Figure(id="f0", caption="Rail topology diagram", source_ref=_sr(path, 44, 76))],
     )
@@ -170,7 +201,9 @@ def test_build_baseline_tree_is_deterministic() -> None:
     assert tree1.model_dump() == tree2.model_dump()
 
 
-def test_a_branch_starting_with_no_recognized_heading_folds_its_orphan_block_into_front_matter() -> None:
+def test_a_branch_starting_with_no_recognized_heading_folds_its_orphan_block_into_front_matter() -> (
+    None
+):
     # A depth=None block reached before any node is open in its branch (its
     # first line has no heading/numbering the parser recognized) is no
     # longer dropped -- it is buffered and folded into a synthetic
@@ -181,9 +214,21 @@ def test_a_branch_starting_with_no_recognized_heading_folds_its_orphan_block_int
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="orphanhash"),
         blocks=[
-            Block(id="b0", kind=BlockKind.PARAGRAPH, text="a stray line with no numbering at all", source_ref=_sr(path, 0, 38)),
-            Block(id="b1", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr(path, 39, 49)),
-            Block(id="b2", kind=BlockKind.PARAGRAPH, text="1.1 Broadcast & Inputs", source_ref=_sr(path, 50, 72)),
+            Block(
+                id="b0",
+                kind=BlockKind.PARAGRAPH,
+                text="a stray line with no numbering at all",
+                source_ref=_sr(path, 0, 38),
+            ),
+            Block(
+                id="b1", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr(path, 39, 49)
+            ),
+            Block(
+                id="b2",
+                kind=BlockKind.PARAGRAPH,
+                text="1.1 Broadcast & Inputs",
+                source_ref=_sr(path, 50, 72),
+            ),
         ],
     )
     tree = build_baseline_tree(doc)
@@ -211,10 +256,23 @@ def test_structured_walk_drops_an_unsupported_content_note_into_the_open_node() 
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.MD, sha256="h"),
         blocks=[
-            Block(id="c0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 0, 19)),
-            Block(id="c1", kind=BlockKind.HEADING, heading_level=2, text="3.3V Rail Requirements", source_ref=_sr(path, 20, 43)),
             Block(
-                id="c2", kind=BlockKind.NOTE,
+                id="c0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Power Distribution",
+                source_ref=_sr(path, 0, 19),
+            ),
+            Block(
+                id="c1",
+                kind=BlockKind.HEADING,
+                heading_level=2,
+                text="3.3V Rail Requirements",
+                source_ref=_sr(path, 20, 43),
+            ),
+            Block(
+                id="c2",
+                kind=BlockKind.NOTE,
                 text="[UNSUPPORTED: page 4 appears multi-column; extraction may misorder text]",
                 source_ref=_sr(path, 44, 96),
             ),
@@ -239,12 +297,20 @@ def test_structured_walk_drops_an_unsupported_content_note_with_no_open_node_yet
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
             Block(
-                id="b0", kind=BlockKind.NOTE,
+                id="b0",
+                kind=BlockKind.NOTE,
                 text="[UNSUPPORTED: page 1 appears multi-column; extraction may misorder text]",
                 source_ref=_sr(path, 0, 60),
             ),
-            Block(id="b1", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr(path, 61, 71)),
-            Block(id="b2", kind=BlockKind.PARAGRAPH, text="1.1 Broadcast & Inputs", source_ref=_sr(path, 72, 94)),
+            Block(
+                id="b1", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr(path, 61, 71)
+            ),
+            Block(
+                id="b2",
+                kind=BlockKind.PARAGRAPH,
+                text="1.1 Broadcast & Inputs",
+                source_ref=_sr(path, 72, 94),
+            ),
         ],
     )
     tree = build_baseline_tree(doc)
@@ -264,9 +330,26 @@ def test_structured_walk_folds_a_note_block_without_the_unsupported_prefix_norma
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.PPTX, sha256="h"),
         blocks=[
-            Block(id="c0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 0, 19)),
-            Block(id="c1", kind=BlockKind.HEADING, heading_level=2, text="3.3V Rail Requirements", source_ref=_sr(path, 20, 43)),
-            Block(id="c2", kind=BlockKind.NOTE, text="Remember to emphasize the roadmap slide.", source_ref=_sr(path, 44, 85)),
+            Block(
+                id="c0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Power Distribution",
+                source_ref=_sr(path, 0, 19),
+            ),
+            Block(
+                id="c1",
+                kind=BlockKind.HEADING,
+                heading_level=2,
+                text="3.3V Rail Requirements",
+                source_ref=_sr(path, 20, 43),
+            ),
+            Block(
+                id="c2",
+                kind=BlockKind.NOTE,
+                text="Remember to emphasize the roadmap slide.",
+                source_ref=_sr(path, 44, 85),
+            ),
         ],
     )
     tree = build_baseline_tree(doc)
@@ -300,14 +383,21 @@ def test_two_byte_identical_requirement_lines_get_distinct_identity_hashes() -> 
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="repeatshash"),
         blocks=[
-            Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Power Sequencing", source_ref=_sr(path, 0, 18)),
             Block(
-                id="b1", kind=BlockKind.PARAGRAPH,
+                id="b0",
+                kind=BlockKind.PARAGRAPH,
+                text="1 Power Sequencing",
+                source_ref=_sr(path, 0, 18),
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
                 text="1.1 GA2 shall be replaced to signal PS_INPUT_FAIL_L.",
                 source_ref=_sr(path, 19, 72),
             ),
             Block(
-                id="b2", kind=BlockKind.PARAGRAPH,
+                id="b2",
+                kind=BlockKind.PARAGRAPH,
                 text="1.2 GA2 shall be replaced to signal PS_INPUT_FAIL_L.",
                 source_ref=_sr(path, 73, 126),
             ),
@@ -316,8 +406,12 @@ def test_two_byte_identical_requirement_lines_get_distinct_identity_hashes() -> 
     tree = build_baseline_tree(doc)
     repeated = [n for n in tree.nodes if "GA2 shall be replaced" in n.description]
     assert len(repeated) == 2
-    assert repeated[0].fidelity_hash == repeated[1].fidelity_hash  # same text, drift-detection hash is equal
-    assert repeated[0].identity_hash != repeated[1].identity_hash  # different position, distinct identity
+    assert (
+        repeated[0].fidelity_hash == repeated[1].fidelity_hash
+    )  # same text, drift-detection hash is equal
+    assert (
+        repeated[0].identity_hash != repeated[1].identity_hash
+    )  # different position, distinct identity
 
 
 def test_title_is_truncated_to_256_chars() -> None:
@@ -344,7 +438,14 @@ def test_table_only_document_folds_each_table_into_a_requirement_instead_of_an_e
     doc = CanonicalDoc(
         document=Document(path="empty.xlsx", format=DocumentFormat.XLSX, sha256="h"),
         blocks=[],
-        tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]], caption="Sheet1", source_ref=_sr("empty.xlsx", 0, 0))],
+        tables=[
+            Table(
+                id="t0",
+                cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]],
+                caption="Sheet1",
+                source_ref=_sr("empty.xlsx", 0, 0),
+            )
+        ],
     )
     tree = build_baseline_tree(doc)
     assert len(tree.nodes) == 3  # synthetic Epic + Feature + one Requirement for the table
@@ -355,7 +456,10 @@ def test_table_only_document_folds_each_table_into_a_requirement_instead_of_an_e
     assert requirement.parent_local_id == feature.local_id
     # Real semantic HTML now: caption rendered, non-header row grouped
     # into <tbody> (no leading header row here, so no <thead> at all).
-    assert requirement.description == "<table><caption>Sheet1</caption><tbody><tr><td>a</td><td>b</td></tr></tbody></table>"
+    assert (
+        requirement.description
+        == "<table><caption>Sheet1</caption><tbody><tr><td>a</td><td>b</td></tr></tbody></table>"
+    )
 
 
 def test_table_only_document_folds_multiple_tables_into_separate_requirements() -> None:
@@ -363,8 +467,18 @@ def test_table_only_document_folds_multiple_tables_into_separate_requirements() 
         document=Document(path="multi.xlsx", format=DocumentFormat.XLSX, sha256="h"),
         blocks=[],
         tables=[
-            Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["a"]]], caption="Sheet1", source_ref=_sr("multi.xlsx", 0, 0)),
-            Table(id="t1", cells=[[TableCell(text=c) for c in row] for row in [["b"]]], caption="Sheet2", source_ref=_sr("multi.xlsx", 0, 0)),
+            Table(
+                id="t0",
+                cells=[[TableCell(text=c) for c in row] for row in [["a"]]],
+                caption="Sheet1",
+                source_ref=_sr("multi.xlsx", 0, 0),
+            ),
+            Table(
+                id="t1",
+                cells=[[TableCell(text=c) for c in row] for row in [["b"]]],
+                caption="Sheet2",
+                source_ref=_sr("multi.xlsx", 0, 0),
+            ),
         ],
     )
     tree = build_baseline_tree(doc)
@@ -377,7 +491,14 @@ def test_table_only_document_skips_a_fully_blank_table_rather_than_creating_an_e
     doc = CanonicalDoc(
         document=Document(path="blank.xlsx", format=DocumentFormat.XLSX, sha256="h"),
         blocks=[],
-        tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["", ""], ["", ""]]], caption="Sheet1", source_ref=_sr("blank.xlsx", 0, 0))],
+        tables=[
+            Table(
+                id="t0",
+                cells=[[TableCell(text=c) for c in row] for row in [["", ""], ["", ""]]],
+                caption="Sheet1",
+                source_ref=_sr("blank.xlsx", 0, 0),
+            )
+        ],
     )
     tree = build_baseline_tree(doc)
     requirements = [n for n in tree.nodes if n.type == WorkItemType.REQUIREMENT]
@@ -387,7 +508,9 @@ def test_table_only_document_skips_a_fully_blank_table_rather_than_creating_an_e
     assert tree.warnings[0].node_ids == []
 
 
-def test_table_only_document_with_an_unsupported_content_note_still_produces_the_table_and_the_warning() -> None:
+def test_table_only_document_with_an_unsupported_content_note_still_produces_the_table_and_the_warning() -> (
+    None
+):
     # Regression (Finding C1): docx_loader.py's footnote/endnote/comment
     # detection pass appends a single [UNSUPPORTED: ...] NOTE block to
     # doc.blocks even for an otherwise table-only document. A plain
@@ -401,7 +524,8 @@ def test_table_only_document_with_an_unsupported_content_note_still_produces_the
         document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
         blocks=[
             Block(
-                id="f0", kind=BlockKind.NOTE,
+                id="f0",
+                kind=BlockKind.NOTE,
                 # Copied byte-for-byte from docx_loader.py's own f-string
                 # (f"[UNSUPPORTED: {real_count} {label}(s) not extracted]")
                 # rather than approximated -- only the "[UNSUPPORTED:" prefix
@@ -411,7 +535,14 @@ def test_table_only_document_with_an_unsupported_content_note_still_produces_the
                 source_ref=_sr(path, 0, 1),
             ),
         ],
-        tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]], caption="Sheet1", source_ref=_sr(path, 61, 62))],
+        tables=[
+            Table(
+                id="t0",
+                cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]],
+                caption="Sheet1",
+                source_ref=_sr(path, 61, 62),
+            )
+        ],
     )
     tree = build_baseline_tree(doc)
     requirements = [n for n in tree.nodes if n.type == WorkItemType.REQUIREMENT]
@@ -421,7 +552,9 @@ def test_table_only_document_with_an_unsupported_content_note_still_produces_the
     assert tree.warnings[0].kind == WarningKind.UNSUPPORTED_CONTENT_NOTE
 
 
-def test_table_only_document_with_a_note_anchors_the_synthesized_parents_to_the_table_not_the_note() -> None:
+def test_table_only_document_with_a_note_anchors_the_synthesized_parents_to_the_table_not_the_note() -> (
+    None
+):
     # SWEEP.md section 3 (cosmetic provenance): doc.blocks[0] is the
     # diagnostic NOTE block on this path, so both synthesized parents
     # anchored their source_ref (and their identity_hash) to a loader
@@ -443,7 +576,10 @@ def test_table_only_document_with_a_note_anchors_the_synthesized_parents_to_the_
         tables=[
             Table(
                 id="t0",
-                cells=[[TableCell(text=c) for c in row] for row in [["Parameter", "Value"], ["Voltage", "28 VDC"]]],
+                cells=[
+                    [TableCell(text=c) for c in row]
+                    for row in [["Parameter", "Value"], ["Voltage", "28 VDC"]]
+                ],
                 caption="Power budget",
                 source_ref=table_ref,
             )
@@ -472,11 +608,11 @@ def test_child_type_is_computed_one_level_deeper_per_node_tv_style() -> None:
     tree = build_baseline_tree(_tv_style_doc())
     child_types = [n.child_type for n in tree.nodes]
     assert child_types == [
-        WorkItemType.EPIC,        # depth1 Epic -> depth2 is still Epic in tv_style
-        WorkItemType.FEATURE,     # depth2 Epic -> depth3 is Feature
-        WorkItemType.REQUIREMENT, # depth3 Feature -> depth4 is Requirement
-        WorkItemType.REQUIREMENT, # depth4 Requirement -> depth5 stays Requirement
-        WorkItemType.REQUIREMENT, # depth5 Requirement -> depth6 stays Requirement
+        WorkItemType.EPIC,  # depth1 Epic -> depth2 is still Epic in tv_style
+        WorkItemType.FEATURE,  # depth2 Epic -> depth3 is Feature
+        WorkItemType.REQUIREMENT,  # depth3 Feature -> depth4 is Requirement
+        WorkItemType.REQUIREMENT,  # depth4 Requirement -> depth5 stays Requirement
+        WorkItemType.REQUIREMENT,  # depth5 Requirement -> depth6 stays Requirement
     ]
 
 
@@ -486,7 +622,9 @@ def test_child_type_is_computed_one_level_deeper_per_node_icd_style() -> None:
     assert child_types == [WorkItemType.REQUIREMENT, WorkItemType.REQUIREMENT]
 
 
-def test_headingless_document_child_types_follow_the_synthetic_epic_feature_requirement_shape() -> None:
+def test_headingless_document_child_types_follow_the_synthetic_epic_feature_requirement_shape() -> (
+    None
+):
     tree = build_baseline_tree(_headingless_doc())
     epic, feature = tree.nodes[0], tree.nodes[1]
     requirements = tree.nodes[2:]
@@ -526,7 +664,12 @@ def test_long_title_with_word_boundaries_is_trimmed_not_hard_cut() -> None:
     doc = CanonicalDoc(
         document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 " + long_sentence, source_ref=_sr("x.txt", 0, 10)),
+            Block(
+                id="b0",
+                kind=BlockKind.PARAGRAPH,
+                text="1 " + long_sentence,
+                source_ref=_sr("x.txt", 0, 10),
+            ),
         ],
     )
     tree = build_baseline_tree(doc)
@@ -547,7 +690,9 @@ def test_description_assembly_is_used_for_unleveled_block_folding() -> None:
     tree = build_baseline_tree(icd_doc)
     requirement_node = tree.nodes[1]
     # The heading is the title, so the assembled text starts at the body (R5).
-    full = assemble_description("3.3V Rail Requirements", "OPEN: confirm connector part number before release.")
+    full = assemble_description(
+        "3.3V Rail Requirements", "OPEN: confirm connector part number before release."
+    )
     assert requirement_node.title == "3.3V Rail Requirements"
     assert requirement_node.description == full.split("\n", 1)[1]
 
@@ -577,9 +722,21 @@ def test_customer_id_is_the_requirement_nodes_own_literal_numbering() -> None:
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Epic text", source_ref=_sr(path, 0, 1)),
-            Block(id="b1", kind=BlockKind.PARAGRAPH, text="1.1 Feature text", source_ref=_sr(path, 1, 2)),
-            Block(id="b2", kind=BlockKind.PARAGRAPH, text="1.1.1 The system shall do X.", source_ref=_sr(path, 2, 3)),
+            Block(
+                id="b0", kind=BlockKind.PARAGRAPH, text="1 Epic text", source_ref=_sr(path, 0, 1)
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
+                text="1.1 Feature text",
+                source_ref=_sr(path, 1, 2),
+            ),
+            Block(
+                id="b2",
+                kind=BlockKind.PARAGRAPH,
+                text="1.1.1 The system shall do X.",
+                source_ref=_sr(path, 2, 3),
+            ),
         ],
     )
     tree = build_baseline_tree(doc)
@@ -651,9 +808,15 @@ def test_headingless_document_synthesizes_epic_feature_and_requirements() -> Non
     assert all(r.parent_local_id == feature.local_id for r in requirements)
     # Requirement descriptions are verbatim — untouched by the synthetic
     # grouping, unlike the two synthetic parent nodes above them.
-    assert requirements[0].description == "The system shall support at least four simultaneous audio channels."
+    assert (
+        requirements[0].description
+        == "The system shall support at least four simultaneous audio channels."
+    )
     assert requirements[1].description == "Startup power draw should stay under two watts."
-    assert requirements[2].description == "The unit shall survive a one-meter drop onto a hard surface."
+    assert (
+        requirements[2].description
+        == "The unit shall survive a one-meter drop onto a hard surface."
+    )
 
 
 def test_headingless_document_title_is_derived_from_filename() -> None:
@@ -681,12 +844,14 @@ def test_headingless_document_drops_an_unsupported_content_note_and_warns() -> N
         document=Document(path=path, format=DocumentFormat.PDF, sha256="h"),
         blocks=[
             Block(
-                id="f0", kind=BlockKind.NOTE,
+                id="f0",
+                kind=BlockKind.NOTE,
                 text="[UNSUPPORTED: page 2 appears multi-column; extraction may misorder text]",
                 source_ref=_sr(path, 0, 60),
             ),
             Block(
-                id="f1", kind=BlockKind.PARAGRAPH,
+                id="f1",
+                kind=BlockKind.PARAGRAPH,
                 text="The system shall support at least four simultaneous audio channels.",
                 source_ref=_sr(path, 61, 129),
             ),
@@ -695,7 +860,9 @@ def test_headingless_document_drops_an_unsupported_content_note_and_warns() -> N
     tree = build_baseline_tree(doc)
 
     assert not any("[UNSUPPORTED:" in n.description for n in tree.nodes)
-    assert len(tree.nodes) == 3  # Epic + Feature + 1 Requirement (the NOTE never becomes its own node)
+    assert (
+        len(tree.nodes) == 3
+    )  # Epic + Feature + 1 Requirement (the NOTE never becomes its own node)
     assert len(tree.warnings) == 1
     assert tree.warnings[0].kind == WarningKind.UNSUPPORTED_CONTENT_NOTE
 
@@ -708,7 +875,12 @@ def test_headingless_document_does_not_drop_a_note_block_without_the_unsupported
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.PPTX, sha256="h"),
         blocks=[
-            Block(id="f0", kind=BlockKind.NOTE, text="Remember to emphasize the roadmap slide.", source_ref=_sr(path, 0, 41)),
+            Block(
+                id="f0",
+                kind=BlockKind.NOTE,
+                text="Remember to emphasize the roadmap slide.",
+                source_ref=_sr(path, 0, 41),
+            ),
         ],
     )
     tree = build_baseline_tree(doc)
@@ -812,7 +984,10 @@ def test_single_flat_item_is_left_to_the_structured_path_not_regrouped() -> None
     # Not a parentless Requirement: it sits under a Feature, under an Epic, both titled from the document name.
     by_id = {n.local_id: n for n in tree.nodes}
     feature = by_id[_real_nodes(tree)[0].parent_local_id]
-    assert feature.type == WorkItemType.FEATURE and by_id[feature.parent_local_id].type == WorkItemType.EPIC
+    assert (
+        feature.type == WorkItemType.FEATURE
+        and by_id[feature.parent_local_id].type == WorkItemType.EPIC
+    )
     assert by_id[feature.parent_local_id].parent_local_id is None
 
 
@@ -825,9 +1000,21 @@ def test_mixed_numbering_styles_in_one_branch_still_resolve_depth_correctly() ->
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="mixedhash"),
         blocks=[
-            Block(id="m0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr(path, 0, 10)),
-            Block(id="m1", kind=BlockKind.PARAGRAPH, text="1.1 Broadcast & Inputs", source_ref=_sr(path, 11, 33)),
-            Block(id="m2", kind=BlockKind.PARAGRAPH, text="1.1.1 Channel scan", source_ref=_sr(path, 34, 52)),
+            Block(
+                id="m0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr(path, 0, 10)
+            ),
+            Block(
+                id="m1",
+                kind=BlockKind.PARAGRAPH,
+                text="1.1 Broadcast & Inputs",
+                source_ref=_sr(path, 11, 33),
+            ),
+            Block(
+                id="m2",
+                kind=BlockKind.PARAGRAPH,
+                text="1.1.1 Channel scan",
+                source_ref=_sr(path, 34, 52),
+            ),
             Block(
                 id="m3",
                 kind=BlockKind.PARAGRAPH,
@@ -863,7 +1050,10 @@ def test_table_with_a_fully_blank_row_renders_it_as_a_visual_spacer_not_the_whol
     path = "table.xlsx"
     table = Table(
         id="t0",
-        cells=[[TableCell(text=c) for c in row] for row in [["Header A", "Header B"], ["", ""], ["value 1", "value 2"]]],
+        cells=[
+            [TableCell(text=c) for c in row]
+            for row in [["Header A", "Header B"], ["", ""], ["value 1", "value 2"]]
+        ],
         source_ref=_sr(path, 0, 1),
     )
     doc = CanonicalDoc(
@@ -884,7 +1074,9 @@ def test_table_with_a_fully_blank_row_renders_it_as_a_visual_spacer_not_the_whol
     )
 
 
-def test_document_with_both_headings_and_tables_folds_the_table_into_its_parent_description() -> None:
+def test_document_with_both_headings_and_tables_folds_the_table_into_its_parent_description() -> (
+    None
+):
     # A table belongs INSIDE its parent item's Description, never as its own
     # separate work item (non-goal: "turning embedded tables into separate
     # work items" -- see the AirPro ICD's own 294208/294209/294210/294248/
@@ -899,10 +1091,32 @@ def test_document_with_both_headings_and_tables_folds_the_table_into_its_parent_
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 0, 19)),
-            Block(id="b1", kind=BlockKind.HEADING, heading_level=2, text="3.3V Rail Requirements", source_ref=_sr(path, 20, 43)),
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Power Distribution",
+                source_ref=_sr(path, 0, 19),
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.HEADING,
+                heading_level=2,
+                text="3.3V Rail Requirements",
+                source_ref=_sr(path, 20, 43),
+            ),
         ],
-        tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["Rail", "Voltage"], ["3.3V", "3.3"]]], caption="Rail Table", source_ref=_sr(path, 44, 45))],
+        tables=[
+            Table(
+                id="t0",
+                cells=[
+                    [TableCell(text=c) for c in row]
+                    for row in [["Rail", "Voltage"], ["3.3V", "3.3"]]
+                ],
+                caption="Rail Table",
+                source_ref=_sr(path, 44, 45),
+            )
+        ],
     )
     tree = build_baseline_tree(doc)
 
@@ -923,8 +1137,23 @@ def test_a_table_before_any_heading_in_its_branch_is_folded_into_front_matter() 
     path = "table_orphan.docx"
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
-        blocks=[Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 20, 39))],
-        tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["Rail", "Voltage"]]], caption="Rail Table", source_ref=_sr(path, 0, 1))],
+        blocks=[
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Power Distribution",
+                source_ref=_sr(path, 20, 39),
+            )
+        ],
+        tables=[
+            Table(
+                id="t0",
+                cells=[[TableCell(text=c) for c in row] for row in [["Rail", "Voltage"]]],
+                caption="Rail Table",
+                source_ref=_sr(path, 0, 1),
+            )
+        ],
     )
     tree = build_baseline_tree(doc)
 
@@ -944,15 +1173,42 @@ def test_leading_table_and_prose_both_fold_into_one_shared_front_matter_node() -
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.PARAGRAPH, text="Scope: this document covers the power subsystem.", source_ref=_sr(path, 0, 10)),
-            Block(id="b1", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 40, 59)),
+            Block(
+                id="b0",
+                kind=BlockKind.PARAGRAPH,
+                text="Scope: this document covers the power subsystem.",
+                source_ref=_sr(path, 0, 10),
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Power Distribution",
+                source_ref=_sr(path, 40, 59),
+            ),
             # A second, nested heading -- without it this branch would be a
             # single lone block, and _split_into_branches/build_baseline_tree
             # would route the WHOLE document through _build_flat_list_tree
             # instead of the structured per-branch path this test targets.
-            Block(id="b2", kind=BlockKind.HEADING, heading_level=2, text="3.3V Rail", source_ref=_sr(path, 60, 69)),
+            Block(
+                id="b2",
+                kind=BlockKind.HEADING,
+                heading_level=2,
+                text="3.3V Rail",
+                source_ref=_sr(path, 60, 69),
+            ),
         ],
-        tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["Rev", "Date"], ["A", "2026-01-01"]]], caption="Revision History", source_ref=_sr(path, 20, 21))],
+        tables=[
+            Table(
+                id="t0",
+                cells=[
+                    [TableCell(text=c) for c in row]
+                    for row in [["Rev", "Date"], ["A", "2026-01-01"]]
+                ],
+                caption="Revision History",
+                source_ref=_sr(path, 20, 21),
+            )
+        ],
     )
     tree = build_baseline_tree(doc)
 
@@ -964,7 +1220,9 @@ def test_leading_table_and_prose_both_fold_into_one_shared_front_matter_node() -
     # Document order preserved: the table (offset 20) sits between the
     # prose (offset 0) and the heading (offset 40) -- it must appear AFTER
     # the prose in the joined description, not before.
-    assert front_matter_node.description.index("Scope:") < front_matter_node.description.index("Rev")
+    assert front_matter_node.description.index("Scope:") < front_matter_node.description.index(
+        "Rev"
+    )
     # Both front-matter folds (the table AND the prose block) are the same
     # IntegrityWarning kind with no natural sub-key, so finalize_warnings
     # merges them into ONE summary record instead of two near-identical lines.
@@ -976,12 +1234,29 @@ def test_document_with_both_headings_and_tables_skips_a_fully_blank_table() -> N
     path = "mixed_blank.docx"
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
-        blocks=[Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 0, 19))],
-        tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["", ""]]], caption="Blank", source_ref=_sr(path, 20, 21))],
+        blocks=[
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Power Distribution",
+                source_ref=_sr(path, 0, 19),
+            )
+        ],
+        tables=[
+            Table(
+                id="t0",
+                cells=[[TableCell(text=c) for c in row] for row in [["", ""]]],
+                caption="Blank",
+                source_ref=_sr(path, 20, 21),
+            )
+        ],
     )
     tree = build_baseline_tree(doc)
 
-    assert [n.title for n in _real_nodes(tree)] == ["Power Distribution"]  # the blank table added no item
+    assert [n.title for n in _real_nodes(tree)] == [
+        "Power Distribution"
+    ]  # the blank table added no item
     empty_table_warnings = [w for w in tree.warnings if w.kind == WarningKind.EMPTY_TABLE_CONTENT]
     assert len(empty_table_warnings) == 1
 
@@ -993,7 +1268,17 @@ def test_table_html_escapes_cell_content() -> None:
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.XLSX, sha256="h"),
         blocks=[],
-        tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["<script>alert(1)</script>", "A & B"]]], caption="Sheet1", source_ref=_sr(path, 0, 0))],
+        tables=[
+            Table(
+                id="t0",
+                cells=[
+                    [TableCell(text=c) for c in row]
+                    for row in [["<script>alert(1)</script>", "A & B"]]
+                ],
+                caption="Sheet1",
+                source_ref=_sr(path, 0, 0),
+            )
+        ],
     )
     tree = build_baseline_tree(doc)
 
@@ -1184,10 +1469,30 @@ def test_split_into_branches_uses_the_documents_own_shallowest_depth_not_hardcod
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.PARAGRAPH, text="2.1 Section One", source_ref=_sr(path, 0, 10)),
-            Block(id="b1", kind=BlockKind.PARAGRAPH, text="2.1.1 The system shall do A.", source_ref=_sr(path, 11, 20)),
-            Block(id="b2", kind=BlockKind.PARAGRAPH, text="2.2 Section Two", source_ref=_sr(path, 21, 30)),
-            Block(id="b3", kind=BlockKind.PARAGRAPH, text="2.2.1 The system shall do B.", source_ref=_sr(path, 31, 40)),
+            Block(
+                id="b0",
+                kind=BlockKind.PARAGRAPH,
+                text="2.1 Section One",
+                source_ref=_sr(path, 0, 10),
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
+                text="2.1.1 The system shall do A.",
+                source_ref=_sr(path, 11, 20),
+            ),
+            Block(
+                id="b2",
+                kind=BlockKind.PARAGRAPH,
+                text="2.2 Section Two",
+                source_ref=_sr(path, 21, 30),
+            ),
+            Block(
+                id="b3",
+                kind=BlockKind.PARAGRAPH,
+                text="2.2.1 The system shall do B.",
+                source_ref=_sr(path, 31, 40),
+            ),
         ],
     )
 
@@ -1205,9 +1510,21 @@ def test_split_into_branches_still_splits_on_depth_1_when_the_document_has_it() 
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Section One", source_ref=_sr(path, 0, 10)),
-            Block(id="b1", kind=BlockKind.PARAGRAPH, text="1.1 The system shall do A.", source_ref=_sr(path, 11, 20)),
-            Block(id="b2", kind=BlockKind.PARAGRAPH, text="2 Section Two", source_ref=_sr(path, 21, 30)),
+            Block(
+                id="b0", kind=BlockKind.PARAGRAPH, text="1 Section One", source_ref=_sr(path, 0, 10)
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
+                text="1.1 The system shall do A.",
+                source_ref=_sr(path, 11, 20),
+            ),
+            Block(
+                id="b2",
+                kind=BlockKind.PARAGRAPH,
+                text="2 Section Two",
+                source_ref=_sr(path, 21, 30),
+            ),
         ],
     )
 
@@ -1219,7 +1536,12 @@ def test_split_into_branches_still_splits_on_depth_1_when_the_document_has_it() 
 
 
 def _numbered_block(path: str, index: int, label: str) -> Block:
-    return Block(id=f"b{index}", kind=BlockKind.PARAGRAPH, text=f"{label} text", source_ref=_sr(path, index, index + 1))
+    return Block(
+        id=f"b{index}",
+        kind=BlockKind.PARAGRAPH,
+        text=f"{label} text",
+        source_ref=_sr(path, index, index + 1),
+    )
 
 
 def test_bound_branch_size_leaves_a_small_branch_untouched() -> None:
@@ -1304,7 +1626,9 @@ def test_bound_branch_size_merges_many_small_sibling_sections_to_cut_llm_call_co
     assert [b.id for group in result for b in group] == [f"b{i}" for i in range(8)]
 
 
-def test_bound_branch_size_leaves_a_flat_oversized_branch_unsplit_when_no_finer_structure_exists() -> None:
+def test_bound_branch_size_leaves_a_flat_oversized_branch_unsplit_when_no_finer_structure_exists() -> (
+    None
+):
     # A branch that genuinely has no sub-heading structure at all (every
     # block at the same depth, or unleveled body text) cannot be split
     # smaller without an arbitrary cut -- must be returned as-is rather than
@@ -1399,8 +1723,17 @@ def _golden_scenario_doc() -> CanonicalDoc:
         start = offset
         end = start + len(text)
         offset = end + 1
-        blocks.append(Block(id=f"n{index}", kind=BlockKind.PARAGRAPH, text=text, source_ref=_sr(path, start, end)))
-    return CanonicalDoc(document=Document(path=path, format=DocumentFormat.TXT, sha256="goldenhash"), blocks=blocks)
+        blocks.append(
+            Block(
+                id=f"n{index}",
+                kind=BlockKind.PARAGRAPH,
+                text=text,
+                source_ref=_sr(path, start, end),
+            )
+        )
+    return CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="goldenhash"), blocks=blocks
+    )
 
 
 def test_golden_scenario_branch_1_epic_subepic_feature_requirement_ladder() -> None:
@@ -1414,8 +1747,16 @@ def test_golden_scenario_branch_1_epic_subepic_feature_requirement_ladder() -> N
     assert by_title["The system scans channels automatically."].type == WorkItemType.REQUIREMENT
     assert by_title["External source detection"].type == WorkItemType.FEATURE
     assert by_title["Automatic switch to the active source."].type == WorkItemType.REQUIREMENT
-    assert by_title["If multiple active sources exist, a picker is shown instead of switching automatically."].type == WorkItemType.REQUIREMENT
-    assert by_title["If the user dismissed the prompt, it is not shown again for 10 minutes."].type == WorkItemType.REQUIREMENT
+    assert (
+        by_title[
+            "If multiple active sources exist, a picker is shown instead of switching automatically."
+        ].type
+        == WorkItemType.REQUIREMENT
+    )
+    assert (
+        by_title["If the user dismissed the prompt, it is not shown again for 10 minutes."].type
+        == WorkItemType.REQUIREMENT
+    )
     assert by_title["USB playback"].type == WorkItemType.FEATURE
     assert by_title["Settings and User Experience"].type == WorkItemType.EPIC  # sub-Epic
     assert by_title["Display"].type == WorkItemType.FEATURE
@@ -1425,11 +1766,17 @@ def test_golden_scenario_branch_1_epic_subepic_feature_requirement_ladder() -> N
     assert picture_modes.type == WorkItemType.FEATURE
     assert picture_modes.parent_local_id == by_title["Display"].local_id
     assert "SUB-" not in picture_modes.title
-    assert by_title["Cinema mode reduces color sharpness for movie viewing."].type == WorkItemType.REQUIREMENT
+    assert (
+        by_title["Cinema mode reduces color sharpness for movie viewing."].type
+        == WorkItemType.REQUIREMENT
+    )
     assert by_title["Audio Control"].type == WorkItemType.FEATURE
     mute = by_title["Mute and revert behavior"]
     assert mute.type == WorkItemType.REQUIREMENT
-    assert by_title["Exiting mute restores the last volume set before muting."].parent_local_id == mute.local_id
+    assert (
+        by_title["Exiting mute restores the last volume set before muting."].parent_local_id
+        == mute.local_id
+    )
     assert by_title["Language, Region and Clock"].type == WorkItemType.FEATURE
     assert by_title["System Info"].type == WorkItemType.EPIC
     assert by_title["About and Software Version"].type == WorkItemType.FEATURE
@@ -1480,7 +1827,9 @@ def test_golden_scenario_branch_2_epic_directly_over_feature_no_sub_epic() -> No
     assert audio_functions.type == WorkItemType.FEATURE
 
 
-def test_a_heading_styled_block_with_non_numeric_text_inside_a_numbering_label_branch_does_not_crash() -> None:
+def test_a_heading_styled_block_with_non_numeric_text_inside_a_numbering_label_branch_does_not_crash() -> (
+    None
+):
     # Regression: build_baseline_tree crashed with an unhandled KeyError.
     # is_heading_style_branch classifies a branch by its ROOT block only
     # (correct, by design -- see its own docstring), so a branch whose root
@@ -1496,9 +1845,25 @@ def test_a_heading_styled_block_with_non_numeric_text_inside_a_numbering_label_b
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Power Distribution", source_ref=_sr(path, 0, 20)),
-            Block(id="b1", kind=BlockKind.PARAGRAPH, text="1.1 Rail Requirements", source_ref=_sr(path, 21, 42)),
-            Block(id="b2", kind=BlockKind.HEADING, heading_level=3, text="Notes", source_ref=_sr(path, 43, 48)),
+            Block(
+                id="b0",
+                kind=BlockKind.PARAGRAPH,
+                text="1 Power Distribution",
+                source_ref=_sr(path, 0, 20),
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
+                text="1.1 Rail Requirements",
+                source_ref=_sr(path, 21, 42),
+            ),
+            Block(
+                id="b2",
+                kind=BlockKind.HEADING,
+                heading_level=3,
+                text="Notes",
+                source_ref=_sr(path, 43, 48),
+            ),
         ],
     )
 
@@ -1523,8 +1888,20 @@ def test_baseline_structured_tree_section_path_is_the_root_first_ancestor_title_
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.MD, sha256="h"),
         blocks=[
-            Block(id="c0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 0, 19)),
-            Block(id="c1", kind=BlockKind.HEADING, heading_level=2, text="3.3V Rail Requirements", source_ref=_sr(path, 20, 43)),
+            Block(
+                id="c0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Power Distribution",
+                source_ref=_sr(path, 0, 19),
+            ),
+            Block(
+                id="c1",
+                kind=BlockKind.HEADING,
+                heading_level=2,
+                text="3.3V Rail Requirements",
+                source_ref=_sr(path, 20, 43),
+            ),
             Block(
                 id="c2",
                 kind=BlockKind.PARAGRAPH,
@@ -1547,14 +1924,29 @@ def test_baseline_structured_tree_section_path_is_the_root_first_ancestor_title_
     assert leaf.source_ref.section_path == ["Power Distribution", "3.3V Rail Requirements"]
 
 
-def test_baseline_structured_tree_figure_fold_populates_figure_ids_and_uncaptioned_figure_ids() -> None:
+def test_baseline_structured_tree_figure_fold_populates_figure_ids_and_uncaptioned_figure_ids() -> (
+    None
+):
     path = "figures.docx"
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 0, 19)),
-            Block(id="b1", kind=BlockKind.FIGURE, text="[FIGURE: Rail topology diagram]", source_ref=_sr(path, 20, 40)),
-            Block(id="b2", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path, 41, 55)),
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Power Distribution",
+                source_ref=_sr(path, 0, 19),
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.FIGURE,
+                text="[FIGURE: Rail topology diagram]",
+                source_ref=_sr(path, 20, 40),
+            ),
+            Block(
+                id="b2", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path, 41, 55)
+            ),
         ],
         figures=[
             Figure(id="f0", caption="Rail topology diagram", source_ref=_sr(path, 20, 40)),
@@ -1569,7 +1961,9 @@ def test_baseline_structured_tree_figure_fold_populates_figure_ids_and_uncaption
     assert set(parent.figure_ids).isdisjoint(parent.uncaptioned_figure_ids)
 
 
-def test_baseline_structured_tree_populates_insignificant_figure_ids_as_a_subset_of_uncaptioned() -> None:
+def test_baseline_structured_tree_populates_insignificant_figure_ids_as_a_subset_of_uncaptioned() -> (
+    None
+):
     # Task 4b sub-fix (ii), call site 3/5 (build_baseline_tree's own
     # structured path). f1 (caption_status="insignificant") must appear in
     # BOTH uncaptioned_figure_ids and insignificant_figure_ids; f2
@@ -1580,13 +1974,27 @@ def test_baseline_structured_tree_populates_insignificant_figure_ids_as_a_subset
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 0, 19)),
-            Block(id="b1", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path, 20, 40)),
-            Block(id="b2", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path, 41, 55)),
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Power Distribution",
+                source_ref=_sr(path, 0, 19),
+            ),
+            Block(
+                id="b1", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path, 20, 40)
+            ),
+            Block(
+                id="b2", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path, 41, 55)
+            ),
         ],
         figures=[
-            Figure(id="f1", caption=None, caption_status="insignificant", source_ref=_sr(path, 20, 40)),
-            Figure(id="f2", caption=None, caption_status="vision_failed", source_ref=_sr(path, 41, 55)),
+            Figure(
+                id="f1", caption=None, caption_status="insignificant", source_ref=_sr(path, 20, 40)
+            ),
+            Figure(
+                id="f2", caption=None, caption_status="vision_failed", source_ref=_sr(path, 41, 55)
+            ),
         ],
     )
     tree = build_baseline_tree(doc)
@@ -1601,10 +2009,32 @@ def test_baseline_structured_tree_table_fold_populates_table_ids() -> None:
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 0, 19)),
-            Block(id="b1", kind=BlockKind.HEADING, heading_level=2, text="3.3V Rail Requirements", source_ref=_sr(path, 20, 43)),
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Power Distribution",
+                source_ref=_sr(path, 0, 19),
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.HEADING,
+                heading_level=2,
+                text="3.3V Rail Requirements",
+                source_ref=_sr(path, 20, 43),
+            ),
         ],
-        tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["Rail", "Voltage"], ["3.3V", "3.3"]]], caption="Rail Table", source_ref=_sr(path, 44, 45))],
+        tables=[
+            Table(
+                id="t0",
+                cells=[
+                    [TableCell(text=c) for c in row]
+                    for row in [["Rail", "Voltage"], ["3.3V", "3.3"]]
+                ],
+                caption="Rail Table",
+                source_ref=_sr(path, 44, 45),
+            )
+        ],
     )
     tree = build_baseline_tree(doc)
     parent = next(n for n in tree.nodes if n.title == "3.3V Rail Requirements")
@@ -1634,7 +2064,9 @@ def test_baseline_identity_and_fidelity_hashes_are_unaffected_by_section_path() 
     # source_ref.
     ref_no_path = _sr("doc.md", 10, 20)
     ref_with_path = ref_no_path.model_copy(update={"section_path": ["A", "B"]})
-    assert _hash_identity("same description", ref_no_path) == _hash_identity("same description", ref_with_path)
+    assert _hash_identity("same description", ref_no_path) == _hash_identity(
+        "same description", ref_with_path
+    )
 
     icd_doc = _icd_style_doc()
     tree = build_baseline_tree(icd_doc)
@@ -1660,8 +2092,15 @@ def test_headingless_tree_populates_figure_and_table_ids_with_section_path_empty
                 text="The system shall support at least four simultaneous audio channels.",
                 source_ref=_sr(path, 0, 68),
             ),
-            Block(id="f1", kind=BlockKind.FIGURE, text="[FIGURE: Audio routing diagram]", source_ref=_sr(path, 69, 90)),
-            Block(id="f2", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path, 91, 105)),
+            Block(
+                id="f1",
+                kind=BlockKind.FIGURE,
+                text="[FIGURE: Audio routing diagram]",
+                source_ref=_sr(path, 69, 90),
+            ),
+            Block(
+                id="f2", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path, 91, 105)
+            ),
         ],
         figures=[
             Figure(id="fig0", caption="Audio routing diagram", source_ref=_sr(path, 69, 90)),
@@ -1686,16 +2125,29 @@ def test_headingless_tree_populates_insignificant_figure_ids_as_a_subset_of_unca
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
-            Block(id="f0", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path, 0, 21)),
-            Block(id="f1", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path, 22, 43)),
+            Block(
+                id="f0", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path, 0, 21)
+            ),
+            Block(
+                id="f1", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path, 22, 43)
+            ),
         ],
         figures=[
-            Figure(id="fig0", caption=None, caption_status="insignificant", source_ref=_sr(path, 0, 21)),
-            Figure(id="fig1", caption=None, caption_status="vision_failed", source_ref=_sr(path, 22, 43)),
+            Figure(
+                id="fig0", caption=None, caption_status="insignificant", source_ref=_sr(path, 0, 21)
+            ),
+            Figure(
+                id="fig1",
+                caption=None,
+                caption_status="vision_failed",
+                source_ref=_sr(path, 22, 43),
+            ),
         ],
     )
     tree = build_baseline_tree(doc)
-    insignificant_node = next(n for n in tree.nodes if n.local_id == "n2")  # fig0 -> index 0 -> n{0+2}
+    insignificant_node = next(
+        n for n in tree.nodes if n.local_id == "n2"
+    )  # fig0 -> index 0 -> n{0+2}
     failed_node = next(n for n in tree.nodes if n.local_id == "n3")  # fig1 -> index 1 -> n{1+2}
     assert insignificant_node.uncaptioned_figure_ids == ["fig0"]
     assert insignificant_node.insignificant_figure_ids == ["fig0"]
@@ -1706,7 +2158,14 @@ def test_headingless_tree_populates_insignificant_figure_ids_as_a_subset_of_unca
 def test_headingless_table_only_tree_sets_table_ids_to_its_own_table() -> None:
     doc = CanonicalDoc(
         document=Document(path="sheet.xlsx", format=DocumentFormat.XLSX, sha256="h"),
-        tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]], caption="Sheet1", source_ref=_sr("sheet.xlsx", 0, 0))],
+        tables=[
+            Table(
+                id="t0",
+                cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]],
+                caption="Sheet1",
+                source_ref=_sr("sheet.xlsx", 0, 0),
+            )
+        ],
     )
     tree = build_baseline_tree(doc)
     requirement_node = next(n for n in tree.nodes if n.type == WorkItemType.REQUIREMENT)
@@ -1724,7 +2183,10 @@ def test_headingless_document_with_real_paragraphs_and_a_table_keeps_both() -> N
     doc.tables.append(
         Table(
             id="t0",
-            cells=[[TableCell(text=c) for c in row] for row in [["Parameter", "Value"], ["Voltage", "28 VDC"]]],
+            cells=[
+                [TableCell(text=c) for c in row]
+                for row in [["Parameter", "Value"], ["Voltage", "28 VDC"]]
+            ],
             caption="Power budget",
             source_ref=_sr("flat_notes.txt", 182, 240),
         )
@@ -1754,7 +2216,12 @@ def test_flat_list_tree_direct_call_populates_figure_ids_when_a_branch_root_is_a
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.FIGURE, text="[FIGURE: Wiring diagram]", source_ref=_sr(path, 0, 20)),
+            Block(
+                id="b0",
+                kind=BlockKind.FIGURE,
+                text="[FIGURE: Wiring diagram]",
+                source_ref=_sr(path, 0, 20),
+            ),
         ],
         figures=[Figure(id="fig0", caption="Wiring diagram", source_ref=_sr(path, 0, 20))],
     )
@@ -1764,7 +2231,9 @@ def test_flat_list_tree_direct_call_populates_figure_ids_when_a_branch_root_is_a
     assert requirement_node.uncaptioned_figure_ids == []
 
 
-def test_flat_list_tree_direct_call_populates_insignificant_figure_ids_as_a_subset_of_uncaptioned() -> None:
+def test_flat_list_tree_direct_call_populates_insignificant_figure_ids_as_a_subset_of_uncaptioned() -> (
+    None
+):
     # Task 4b sub-fix (ii), call site 2/5 (_build_flat_list_tree). Same
     # direct-invocation rationale as the figure_ids test above -- a
     # FIGURE-kind block can't reach this path via build_baseline_tree's own
@@ -1773,9 +2242,15 @@ def test_flat_list_tree_direct_call_populates_insignificant_figure_ids_as_a_subs
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path, 0, 20)),
+            Block(
+                id="b0", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path, 0, 20)
+            ),
         ],
-        figures=[Figure(id="fig0", caption=None, caption_status="insignificant", source_ref=_sr(path, 0, 20))],
+        figures=[
+            Figure(
+                id="fig0", caption=None, caption_status="insignificant", source_ref=_sr(path, 0, 20)
+            )
+        ],
     )
     tree = _build_flat_list_tree(doc, [[doc.blocks[0]]])
     requirement_node = next(n for n in tree.nodes if n.type == WorkItemType.REQUIREMENT)
@@ -1787,8 +2262,12 @@ def test_flat_list_tree_direct_call_populates_insignificant_figure_ids_as_a_subs
 # app/loaders/docx_pagination.py) ---
 
 
-def _paged_sr(path: str, start: int, end: int, page: int | None, page_end: int | None = None) -> SourceRef:
-    return SourceRef(document_path=path, start_offset=start, end_offset=end, page=page, page_end=page_end)
+def _paged_sr(
+    path: str, start: int, end: int, page: int | None, page_end: int | None = None
+) -> SourceRef:
+    return SourceRef(
+        document_path=path, start_offset=start, end_offset=end, page=page, page_end=page_end
+    )
 
 
 def test_widen_page_end_is_a_no_op_when_the_open_node_has_no_page_at_all() -> None:
@@ -1837,11 +2316,15 @@ def test_build_baseline_tree_widens_page_end_when_a_block_folds_into_an_open_nod
         document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
         blocks=[
             Block(
-                id="b0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution",
+                id="b0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Power Distribution",
                 source_ref=_paged_sr(path, 0, 19, page=1, page_end=1),
             ),
             Block(
-                id="b1", kind=BlockKind.PARAGRAPH,
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
                 text="Additional detail spilling onto a later page in the same section.",
                 source_ref=_paged_sr(path, 20, 88, page=3, page_end=3),
             ),
@@ -1859,13 +2342,20 @@ def test_build_baseline_tree_widens_page_end_when_a_table_folds_into_an_open_nod
         document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
         blocks=[
             Block(
-                id="b0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution",
+                id="b0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Power Distribution",
                 source_ref=_paged_sr(path, 0, 19, page=1, page_end=1),
             ),
         ],
         tables=[
             Table(
-                id="t0", cells=[[TableCell(text=c) for c in row] for row in [["Rail", "Voltage"], ["3.3V", "3.3"]]],
+                id="t0",
+                cells=[
+                    [TableCell(text=c) for c in row]
+                    for row in [["Rail", "Voltage"], ["3.3V", "3.3"]]
+                ],
                 source_ref=_paged_sr(path, 20, 21, page=2, page_end=4),
             ),
         ],
@@ -1881,8 +2371,20 @@ def test_table_with_an_ocr_recovered_cell_emits_a_warning_attributed_to_the_open
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 0, 19)),
-            Block(id="b1", kind=BlockKind.HEADING, heading_level=2, text="Variant Table", source_ref=_sr(path, 20, 33)),
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Power Distribution",
+                source_ref=_sr(path, 0, 19),
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.HEADING,
+                heading_level=2,
+                text="Variant Table",
+                source_ref=_sr(path, 20, 33),
+            ),
         ],
         tables=[
             Table(
@@ -1904,8 +2406,22 @@ def test_table_with_no_ocr_recovered_cells_emits_no_warning() -> None:
     path = "table_no_ocr.docx"
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
-        blocks=[Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 0, 19))],
-        tables=[Table(id="t0", cells=[[TableCell(text="Rail"), TableCell(text="Voltage")]], source_ref=_sr(path, 20, 21))],
+        blocks=[
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Power Distribution",
+                source_ref=_sr(path, 0, 19),
+            )
+        ],
+        tables=[
+            Table(
+                id="t0",
+                cells=[[TableCell(text="Rail"), TableCell(text="Voltage")]],
+                source_ref=_sr(path, 20, 21),
+            )
+        ],
     )
     tree = build_baseline_tree(doc)
     assert _real_warnings(tree) == []
@@ -1915,8 +2431,22 @@ def test_an_orphaned_table_with_an_ocr_recovered_cell_emits_a_warning_with_no_no
     path = "orphan_table_ocr.docx"
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
-        blocks=[Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 20, 39))],
-        tables=[Table(id="t0", cells=[[TableCell(text="Label", ocr_recovered=True)]], source_ref=_sr(path, 0, 1))],
+        blocks=[
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Power Distribution",
+                source_ref=_sr(path, 20, 39),
+            )
+        ],
+        tables=[
+            Table(
+                id="t0",
+                cells=[[TableCell(text="Label", ocr_recovered=True)]],
+                source_ref=_sr(path, 0, 1),
+            )
+        ],
     )
     tree = build_baseline_tree(doc)
     ocr_warnings = [w for w in tree.warnings if w.kind == WarningKind.OCR_RECOVERED_TABLE_TEXT]
@@ -1953,18 +2483,34 @@ def test_headingless_table_only_doc_with_an_ocr_recovered_cell_emits_a_warning()
     assert tree.warnings[0].detail == {"tableId": "t0", "recoveredCellCount": 1}
 
 
-def test_table_with_a_nested_table_dropped_cell_emits_a_warning_attributed_to_the_open_node() -> None:
+def test_table_with_a_nested_table_dropped_cell_emits_a_warning_attributed_to_the_open_node() -> (
+    None
+):
     path = "table_nested.docx"
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 0, 19)),
-            Block(id="b1", kind=BlockKind.HEADING, heading_level=2, text="Variant Table", source_ref=_sr(path, 20, 33)),
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Power Distribution",
+                source_ref=_sr(path, 0, 19),
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.HEADING,
+                heading_level=2,
+                text="Variant Table",
+                source_ref=_sr(path, 20, 33),
+            ),
         ],
         tables=[
             Table(
                 id="t0",
-                cells=[[TableCell(text="Outer A", nested_table_dropped=True), TableCell(text="Alpha")]],
+                cells=[
+                    [TableCell(text="Outer A", nested_table_dropped=True), TableCell(text="Alpha")]
+                ],
                 source_ref=_sr(path, 34, 35),
             )
         ],
@@ -1981,19 +2527,49 @@ def test_table_with_no_nested_tables_dropped_emits_no_such_warning() -> None:
     path = "table_no_nested.docx"
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
-        blocks=[Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 0, 19))],
-        tables=[Table(id="t0", cells=[[TableCell(text="Rail"), TableCell(text="Voltage")]], source_ref=_sr(path, 20, 21))],
+        blocks=[
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Power Distribution",
+                source_ref=_sr(path, 0, 19),
+            )
+        ],
+        tables=[
+            Table(
+                id="t0",
+                cells=[[TableCell(text="Rail"), TableCell(text="Voltage")]],
+                source_ref=_sr(path, 20, 21),
+            )
+        ],
     )
     tree = build_baseline_tree(doc)
     assert not any(w.kind == WarningKind.NESTED_TABLE_DROPPED for w in tree.warnings)
 
 
-def test_an_orphaned_table_with_a_nested_table_dropped_cell_emits_a_warning_with_no_node_ids() -> None:
+def test_an_orphaned_table_with_a_nested_table_dropped_cell_emits_a_warning_with_no_node_ids() -> (
+    None
+):
     path = "orphan_table_nested.docx"
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
-        blocks=[Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 20, 39))],
-        tables=[Table(id="t0", cells=[[TableCell(text="Outer A", nested_table_dropped=True)]], source_ref=_sr(path, 0, 1))],
+        blocks=[
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Power Distribution",
+                source_ref=_sr(path, 20, 39),
+            )
+        ],
+        tables=[
+            Table(
+                id="t0",
+                cells=[[TableCell(text="Outer A", nested_table_dropped=True)]],
+                source_ref=_sr(path, 0, 1),
+            )
+        ],
     )
     tree = build_baseline_tree(doc)
     nested_warnings = [w for w in tree.warnings if w.kind == WarningKind.NESTED_TABLE_DROPPED]
@@ -2016,7 +2592,9 @@ def test_headingless_table_only_doc_with_a_nested_table_dropped_cell_emits_a_war
         tables=[
             Table(
                 id="t0",
-                cells=[[TableCell(text="Outer A", nested_table_dropped=True), TableCell(text="Alpha")]],
+                cells=[
+                    [TableCell(text="Outer A", nested_table_dropped=True), TableCell(text="Alpha")]
+                ],
                 source_ref=_sr(path, 0, 1),
             )
         ],
@@ -2041,7 +2619,15 @@ def test_a_blank_table_that_also_dropped_a_nested_table_emits_both_warnings() ->
     path = "blank_with_nested.docx"
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
-        blocks=[Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 0, 19))],
+        blocks=[
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Power Distribution",
+                source_ref=_sr(path, 0, 19),
+            )
+        ],
         tables=[
             Table(
                 id="t0",
@@ -2057,7 +2643,9 @@ def test_a_blank_table_that_also_dropped_a_nested_table_emits_both_warnings() ->
     assert len(_real_warnings(tree)) == 2
 
 
-def test_headingless_table_only_blank_table_that_also_dropped_a_nested_table_emits_both_warnings() -> None:
+def test_headingless_table_only_blank_table_that_also_dropped_a_nested_table_emits_both_warnings() -> (
+    None
+):
     # Mirrors test_a_blank_table_that_also_dropped_a_nested_table_emits_both_warnings
     # above, but for _build_headingless_tree's own separate blank-table
     # `continue` site.
@@ -2105,8 +2693,19 @@ def _requirement_list_doc(rows: list[list[str]], extra_table: Table | None = Non
     return CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.DOCX, sha256="prdhash"),
         blocks=[
-            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Synchronization", source_ref=_sr(path, 0, 15)),
-            Block(id="b1", kind=BlockKind.PARAGRAPH, text="Intro paragraph.", source_ref=_sr(path, 16, 29)),
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Synchronization",
+                source_ref=_sr(path, 0, 15),
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
+                text="Intro paragraph.",
+                source_ref=_sr(path, 16, 29),
+            ),
         ],
         tables=[table] if extra_table is None else [table, extra_table],
     )
@@ -2114,7 +2713,11 @@ def _requirement_list_doc(rows: list[list[str]], extra_table: Table | None = Non
 
 _PRD_ROWS = [
     ["#", "Parameter", "Requirement / Value"],
-    ["P-SENSOR-001#", "Time sync source", "The system shall synchronize to Standard-XX within N ms."],
+    [
+        "P-SENSOR-001#",
+        "Time sync source",
+        "The system shall synchronize to Standard-XX within N ms.",
+    ],
     ["P-SENSOR-002#", "", "Timing accuracy shall be better than X microseconds."],
 ]
 
@@ -2140,12 +2743,16 @@ def test_split_row_nodes_have_stable_distinct_hashes_and_section_path() -> None:
     second = build_baseline_tree(_requirement_list_doc(_PRD_ROWS))
     rows = [n for n in first.nodes if n.customer_id is not None]
     assert len({n.identity_hash for n in rows}) == 2
-    assert [n.identity_hash for n in rows] == [n.identity_hash for n in second.nodes if n.customer_id is not None]
+    assert [n.identity_hash for n in rows] == [
+        n.identity_hash for n in second.nodes if n.customer_id is not None
+    ]
     assert rows[0].source_ref.section_path == ["Synchronization"]
 
 
 def test_a_values_table_without_ids_still_folds_into_its_parent() -> None:
-    tree = build_baseline_tree(_requirement_list_doc([["SRU module", "QTY"], ["Power supply", "1"], ["Fan", "2"]]))
+    tree = build_baseline_tree(
+        _requirement_list_doc([["SRU module", "QTY"], ["Power supply", "1"], ["Fan", "2"]])
+    )
     parent = next(n for n in tree.nodes if n.title == "Synchronization")
     assert "<table" in parent.description
     assert parent.table_ids == ["t0"]
@@ -2169,9 +2776,15 @@ def test_a_split_table_keeps_its_caption_on_the_parent() -> None:
     assert len([n for n in tree.nodes if n.customer_id]) == 2
 
 
-def test_split_row_identity_survives_an_earlier_row_being_inserted_and_repeated_codes_stay_distinct() -> None:
+def test_split_row_identity_survives_an_earlier_row_being_inserted_and_repeated_codes_stay_distinct() -> (
+    None
+):
     base = build_baseline_tree(_requirement_list_doc(_PRD_ROWS))
-    more = build_baseline_tree(_requirement_list_doc([*_PRD_ROWS[:1], ["P-SENSOR-000#", "New", "The system shall be new."], *_PRD_ROWS[1:]]))
+    more = build_baseline_tree(
+        _requirement_list_doc(
+            [*_PRD_ROWS[:1], ["P-SENSOR-000#", "New", "The system shall be new."], *_PRD_ROWS[1:]]
+        )
+    )
     by_code = lambda tree: {n.customer_id: n.identity_hash for n in tree.nodes if n.customer_id}  # noqa: E731
     assert by_code(base)["P-SENSOR-001#"] == by_code(more)["P-SENSOR-001#"]
     dup = build_baseline_tree(_requirement_list_doc([*_PRD_ROWS, _PRD_ROWS[1]]))
@@ -2185,7 +2798,15 @@ def test_a_heading_retyped_to_requirement_still_gets_its_customer_id() -> None:
     path = "ids.md"
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.MD, sha256="h"),
-        blocks=[Block(id="h0", kind=BlockKind.HEADING, heading_level=1, text="CUST-042 The unit shall boot", source_ref=_sr(path, 0, 29))],
+        blocks=[
+            Block(
+                id="h0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="CUST-042 The unit shall boot",
+                source_ref=_sr(path, 0, 29),
+            )
+        ],
     )
     tree = build_baseline_tree(doc)
     node = next(n for n in tree.nodes if not n.local_id.startswith("synth_"))
@@ -2197,8 +2818,19 @@ def test_a_front_matter_node_does_not_turn_the_first_heading_into_a_section() ->
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.MD, sha256="h"),
         blocks=[
-            Block(id="p0", kind=BlockKind.PARAGRAPH, text="stray line before any heading", source_ref=_sr(path, 0, 29)),
-            Block(id="h0", kind=BlockKind.HEADING, heading_level=1, text="Power", source_ref=_sr(path, 30, 35)),
+            Block(
+                id="p0",
+                kind=BlockKind.PARAGRAPH,
+                text="stray line before any heading",
+                source_ref=_sr(path, 0, 29),
+            ),
+            Block(
+                id="h0",
+                kind=BlockKind.HEADING,
+                heading_level=1,
+                text="Power",
+                source_ref=_sr(path, 30, 35),
+            ),
         ],
     )
     tree = build_baseline_tree(doc)

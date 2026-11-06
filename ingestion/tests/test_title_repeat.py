@@ -1,4 +1,5 @@
 """R5: a title is not repeated atop its description; hashes still identify the full source."""
+
 from __future__ import annotations
 
 from pathlib import Path

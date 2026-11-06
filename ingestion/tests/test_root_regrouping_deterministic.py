@@ -16,15 +16,26 @@ from app.workitem.model import (
 )
 
 
-def _root(local_id: str, title: str, node_type: WorkItemType = WorkItemType.FEATURE) -> WorkItemNode:
+def _root(
+    local_id: str, title: str, node_type: WorkItemType = WorkItemType.FEATURE
+) -> WorkItemNode:
     return WorkItemNode(
-        local_id=local_id, type=node_type, parent_local_id=None, title=title, description=title,
+        local_id=local_id,
+        type=node_type,
+        parent_local_id=None,
+        title=title,
+        description=title,
         source_ref=SourceRef(document_path="d", start_offset=0, end_offset=1),
-        fidelity_hash="f" + local_id, identity_hash="i" + local_id, tags=[], mode=WorkItemMode.SURVEY,
+        fidelity_hash="f" + local_id,
+        identity_hash="i" + local_id,
+        tags=[],
+        mode=WorkItemMode.SURVEY,
     )
 
 
-def _topic_vectors(topics: list[int], dim: int = 8, noise: float = 0.01, seed: int = 1) -> list[list[float]]:
+def _topic_vectors(
+    topics: list[int], dim: int = 8, noise: float = 0.01, seed: int = 1
+) -> list[list[float]]:
     """One tight cluster per topic number: a unit vector per topic plus a little noise."""
     rng = np.random.default_rng(seed)
     base = {t: np.eye(dim)[t] for t in set(topics)}
@@ -33,7 +44,10 @@ def _topic_vectors(topics: list[int], dim: int = 8, noise: float = 0.01, seed: i
 
 def test_similar_titles_form_groups_and_unrelated_ones_stay_alone() -> None:
     vectors = _topic_vectors([0, 0, 1, 1, 1, 2])
-    assert deterministic_root_groups(vectors, 0.75) == [[0, 1], [2, 3, 4]]  # the lone topic-2 vector is no group
+    assert deterministic_root_groups(vectors, 0.75) == [
+        [0, 1],
+        [2, 3, 4],
+    ]  # the lone topic-2 vector is no group
 
 
 def test_groups_do_not_depend_on_anything_but_the_vectors() -> None:
@@ -52,10 +66,14 @@ def test_tiny_float_noise_does_not_change_the_groups() -> None:
 def test_threshold_boundaries_and_degenerate_inputs() -> None:
     vectors = _topic_vectors([0, 1, 2])
     assert deterministic_root_groups(vectors, 0.75) == []
-    assert deterministic_root_groups(vectors, -1.0) == []  # unrelated vectors are never merged, whatever the threshold
+    assert (
+        deterministic_root_groups(vectors, -1.0) == []
+    )  # unrelated vectors are never merged, whatever the threshold
     assert deterministic_root_groups([], 0.75) == []
     assert deterministic_root_groups([[1.0, 0.0]], 0.75) == []
-    assert deterministic_root_groups([[0.0, 0.0], [0.0, 0.0]], 0.75) == []  # zero vectors are never "similar"
+    assert (
+        deterministic_root_groups([[0.0, 0.0], [0.0, 0.0]], 0.75) == []
+    )  # zero vectors are never "similar"
 
 
 class _Embed:
@@ -102,22 +120,34 @@ def _doc(titles_topics: list[tuple[str, int]]):
 
 def _run(nodes, embed, namer, warnings=None):
     _regroup_disconnected_roots(
-        nodes, "regroup_", namer, warnings if warnings is not None else [],
-        embed_client=embed, deterministic=True, cosine_threshold=0.75,
+        nodes,
+        "regroup_",
+        namer,
+        warnings if warnings is not None else [],
+        embed_client=embed,
+        deterministic=True,
+        cosine_threshold=0.75,
     )
 
 
 def test_deterministic_regrouping_builds_the_same_nodes_whichever_model_names_them() -> None:
     spec = [("A1", 0), ("A2", 0), ("B1", 1), ("B2", 1), ("B3", 1), ("C1", 2)]
     results = []
-    for names in ({"regroup_synth_group_0": "Alpha", "regroup_synth_group_1": "Beta"}, {}, RuntimeError("model down")):
+    for names in (
+        {"regroup_synth_group_0": "Alpha", "regroup_synth_group_1": "Beta"},
+        {},
+        RuntimeError("model down"),
+    ):
         nodes, embed = _doc(spec)
         _run(nodes, embed, _Namer(names))
         synth = sorted((n.local_id, n.type.value) for n in nodes if "synth_group" in n.local_id)
         parents = {n.local_id: n.parent_local_id for n in nodes if "synth_group" not in n.local_id}
         results.append((synth, parents))
     assert results[0] == results[1] == results[2]
-    assert results[0][0] == [("regroup_synth_group_0", "Epic"), ("regroup_synth_group_1", "Epic")]  # Feature members -> an Epic above them
+    assert results[0][0] == [
+        ("regroup_synth_group_0", "Epic"),
+        ("regroup_synth_group_1", "Epic"),
+    ]  # Feature members -> an Epic above them
     assert results[0][1]["n5"] is None  # the lone root stays a root
 
 
@@ -171,7 +201,10 @@ def test_a_node_lost_by_a_stage_is_restored_and_reported() -> None:
     restored = restore_lost_nodes(expected, nodes, warnings, "regroup")
 
     assert restored == ["n1", "n2"] and {n.local_id for n in nodes} == {"n0", "n1", "n2"}
-    assert [w.kind for w in warnings] == [WarningKind.ITEMS_LOST] and warnings[0].node_ids == ["n1", "n2"]
+    assert [w.kind for w in warnings] == [WarningKind.ITEMS_LOST] and warnings[0].node_ids == [
+        "n1",
+        "n2",
+    ]
     assert child.parent_local_id == "n1"  # a parent that came back with it is kept
     assert restore_lost_nodes(expected, nodes, warnings, "again") == [] and len(warnings) == 1
 
@@ -193,8 +226,13 @@ def test_shuffling_the_input_order_of_ids_does_not_change_group_membership() -> 
         random.Random(seed).shuffle(order)
         nodes = [_root(f"n{i}", spec[i][0]) for i in sorted(order)]  # same ids and order each time
         _run(nodes, _Embed(vecs), _Namer({}))
-        memberships.add(frozenset(frozenset(m.local_id for m in nodes if m.parent_local_id == g.local_id)
-                                  for g in nodes if "synth_group" in g.local_id))
+        memberships.add(
+            frozenset(
+                frozenset(m.local_id for m in nodes if m.parent_local_id == g.local_id)
+                for g in nodes
+                if "synth_group" in g.local_id
+            )
+        )
     assert len(memberships) == 1
 
 
@@ -206,10 +244,18 @@ def test_groups_are_built_from_the_source_headings_not_from_titles_the_model_rew
     for run in range(3):
         nodes = [_root(f"n{i}", f"Model title {run}-{i}") for i in range(len(spec))]
         for node, (source, _) in zip(nodes, spec):
-            node.source_title = source  # what the document's heading said; the title above changes every run
+            node.source_title = (
+                source  # what the document's heading said; the title above changes every run
+            )
         _run(nodes, _Embed(vecs), _Namer({}))
         totals.add(len(nodes))
-        shapes.add(frozenset(frozenset(m.local_id for m in nodes if m.parent_local_id == g.local_id) for g in nodes if "synth_group" in g.local_id))
+        shapes.add(
+            frozenset(
+                frozenset(m.local_id for m in nodes if m.parent_local_id == g.local_id)
+                for g in nodes
+                if "synth_group" in g.local_id
+            )
+        )
     assert len(totals) == 1 and len(shapes) == 1
 
 
@@ -222,7 +268,10 @@ def test_the_source_title_is_never_serialized_and_survives_a_copy() -> None:
 
 # --- the cut adapts to the embedding scale (prod: at a fixed 0.75 only 8 of 77 short headings were grouped) ------------
 
-def _clusters_with_similarity(topics: list[int], within: float, dim: int = 24, seed: int = 3) -> list[list[float]]:
+
+def _clusters_with_similarity(
+    topics: list[int], within: float, dim: int = 24, seed: int = 3
+) -> list[list[float]]:
     """Unit vectors where members of one topic have cosine similarity close to `within` and different topics are near 0."""
     rng = np.random.default_rng(seed)
     base = {t: np.eye(dim)[t] for t in set(topics)}
@@ -232,21 +281,30 @@ def _clusters_with_similarity(topics: list[int], within: float, dim: int = 24, s
         noise = rng.normal(0, 1, dim)
         noise -= noise @ base[t] * base[t]
         noise /= np.linalg.norm(noise)
-        vectors.append(list(within ** 0.5 * base[t] + shared * noise))
+        vectors.append(list(within**0.5 * base[t] + shared * noise))
     return vectors
 
 
-def test_the_same_clusters_are_found_whether_related_headings_embed_close_together_or_loosely() -> None:
+def test_the_same_clusters_are_found_whether_related_headings_embed_close_together_or_loosely() -> (
+    None
+):
     topics = [0, 0, 0, 1, 1, 1, 2, 2, 3, 4, 5, 6, 6, 6, 6]
     tight = deterministic_root_groups(_clusters_with_similarity(topics, 0.9), 0.75)
     loose = deterministic_root_groups(_clusters_with_similarity(topics, 0.58), 0.75)
     assert tight == loose
-    assert [len(g) for g in loose] == [3, 3, 2, 4]  # topics 0, 1, 2 and 6; the single-heading topics stay alone
+    assert [len(g) for g in loose] == [
+        3,
+        3,
+        2,
+        4,
+    ]  # topics 0, 1, 2 and 6; the single-heading topics stay alone
 
 
 def test_without_a_clear_gap_the_fixed_threshold_decides() -> None:
     rng = np.random.default_rng(5)
-    vectors = [list(v) for v in rng.normal(0, 1, (12, 256))]  # unrelated headings in a real-sized space: similarities near 0
+    vectors = [
+        list(v) for v in rng.normal(0, 1, (12, 256))
+    ]  # unrelated headings in a real-sized space: similarities near 0
     assert deterministic_root_groups(vectors, 0.75) == []
 
 
@@ -254,4 +312,6 @@ def test_a_group_never_grows_past_the_size_cap() -> None:
     vectors = _clusters_with_similarity([0] * 30, 0.95)
     groups = deterministic_root_groups(vectors, 0.75, max_group_size=8)
     assert groups and max(len(g) for g in groups) <= 8
-    assert sorted(i for g in groups for i in g) == sorted(set(i for g in groups for i in g))  # no root in two groups
+    assert sorted(i for g in groups for i in g) == sorted(
+        set(i for g in groups for i in g)
+    )  # no root in two groups

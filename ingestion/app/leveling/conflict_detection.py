@@ -29,7 +29,9 @@ class ConflictJudgeClient(Protocol):
     when omitted, near-duplicate Requirements are simply never checked for
     conflict, matching pre-existing behavior exactly."""
 
-    def judge_duplicate_cluster(self, texts_by_id: dict[str, str], user_id: str | None = None) -> dict: ...
+    def judge_duplicate_cluster(
+        self, texts_by_id: dict[str, str], user_id: str | None = None
+    ) -> dict: ...
 
 
 _DUPLICATE_CLUSTER_COSINE_THRESHOLD = 0.85
@@ -51,14 +53,20 @@ _MIN_NODES_TO_SPLIT = 4
 
 
 def _judge_once(
-    conflict_client: ConflictJudgeClient, nodes: list[WorkItemNode], user_id: str | None,
+    conflict_client: ConflictJudgeClient,
+    nodes: list[WorkItemNode],
+    user_id: str | None,
 ) -> tuple[dict | None, str | None]:
     """(verdict, None) on success, (None, short reason) when the call failed or answered with something unusable."""
     try:
-        entry = conflict_client.judge_duplicate_cluster({n.local_id: description_for_model(n.description) for n in nodes}, user_id=user_id)
+        entry = conflict_client.judge_duplicate_cluster(
+            {n.local_id: description_for_model(n.description) for n in nodes}, user_id=user_id
+        )
     except Exception as exc:  # noqa: BLE001 -- a failed judgment must never fail the job
         reason = " ".join(str(exc).split())[:200] or type(exc).__name__
-        logger.warning("Duplicate-cluster conflict judgment failed for %d node(s): %s", len(nodes), reason)
+        logger.warning(
+            "Duplicate-cluster conflict judgment failed for %d node(s): %s", len(nodes), reason
+        )
         return None, reason
     if not isinstance(entry, dict):
         return None, "the model returned no usable verdict"
@@ -66,7 +74,9 @@ def _judge_once(
 
 
 def _judge_cluster_resilient(
-    conflict_client: ConflictJudgeClient, nodes: list[WorkItemNode], user_id: str | None,
+    conflict_client: ConflictJudgeClient,
+    nodes: list[WorkItemNode],
+    user_id: str | None,
 ) -> tuple[list[tuple[list[WorkItemNode], dict]], list[tuple[list[WorkItemNode], str]]]:
     """(judged, skipped): `judged` is [(nodes, verdict)] for every group the model answered about, `skipped` is
     [(nodes, reason)] for every group it could not be asked about after the retry."""
@@ -166,9 +176,13 @@ def _detect_conflicting_duplicates(
     if progress_callback is not None:
         progress_callback(
             LevelingProgress(
-                phase="detect_conflicts", branch_index=None, branch_count=branch_count,
-                blocks_done=blocks_total, blocks_total=blocks_total,
-                kb_grounded=False, kb_citations=[],
+                phase="detect_conflicts",
+                branch_index=None,
+                branch_count=branch_count,
+                blocks_done=blocks_total,
+                blocks_total=blocks_total,
+                kb_grounded=False,
+                kb_citations=[],
             )
         )
     node_count = len(requirement_nodes)
@@ -270,8 +284,10 @@ def _detect_conflicting_duplicates(
                 node_a, node_b = requirement_nodes[first], requirement_nodes[second]
                 live_emitter.compare(
                     kind="conflict",
-                    a_ref=node_a.local_id, a_text=node_a.description,
-                    b_ref=node_b.local_id, b_text=node_b.description,
+                    a_ref=node_a.local_id,
+                    a_text=node_a.description,
+                    b_ref=node_b.local_id,
+                    b_text=node_b.description,
                     similarity=float(similarity_matrix[first, second]),
                 )
             conflicting_values = verdict_entry.get("conflicting_values") or []

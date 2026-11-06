@@ -117,7 +117,11 @@ def units_from_progress(progress: LevelingProgress) -> StageUnits | None:
             # Scoring runs in batches and a done event is published after EACH one, carrying the cumulative
             # count -- only the last batch (or an event with no batch info) means the pass is finished. Reporting
             # the total for every done event put the bar at 100% after the first batch of ten.
-            last_batch = progress.chunk_count is None or progress.chunk_index is None or progress.chunk_index + 1 >= progress.chunk_count
+            last_batch = (
+                progress.chunk_count is None
+                or progress.chunk_index is None
+                or progress.chunk_index + 1 >= progress.chunk_count
+            )
             if last_batch:
                 done = total
         return StageUnits("score", "requirements", _clamp(done, total), total)
@@ -170,8 +174,12 @@ class StageCounter:
     _STAGES = ("draft", "improve", "summarize")
 
     def __init__(
-        self, redis_client: _RedisLike, job_id: str, *,
-        clock: Any = time.monotonic, min_interval: float = 0.25,
+        self,
+        redis_client: _RedisLike,
+        job_id: str,
+        *,
+        clock: Any = time.monotonic,
+        min_interval: float = 0.25,
     ) -> None:
         self._redis = redis_client
         self._job_id = job_id

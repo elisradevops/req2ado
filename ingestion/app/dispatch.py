@@ -18,7 +18,17 @@ from app.loaders.text_loader import load_markdown, load_txt
 from app.loaders.xlsx_loader import load_xlsx
 
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif"}
-_SUPPORTED_EXTENSIONS = {".txt", ".md", ".docx", ".xlsx", ".pdf", ".pptx", ".csv", ".rtf", *_IMAGE_EXTENSIONS}
+_SUPPORTED_EXTENSIONS = {
+    ".txt",
+    ".md",
+    ".docx",
+    ".xlsx",
+    ".pdf",
+    ".pptx",
+    ".csv",
+    ".rtf",
+    *_IMAGE_EXTENSIONS,
+}
 
 # Mirrors ocr.py's own _OPEN_TBD_PATTERN exactly (kept in sync by eye --
 # both are one line) -- that module was the ONLY place this classification
@@ -102,7 +112,10 @@ def dispatch_by_extension(
         doc = load_image(tmp_path, describe_figure=describe_figure)
     else:
         doc = load_pdf_with_ocr_fallback(
-            tmp_path, languages=languages, describe_figure=describe_figure, on_ocr_page=on_ocr_page,
+            tmp_path,
+            languages=languages,
+            describe_figure=describe_figure,
+            on_ocr_page=on_ocr_page,
         )
     doc = _classify_open_tbd_paragraphs(doc)
     return _normalize_document_identity(doc, filename)

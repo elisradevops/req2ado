@@ -845,7 +845,9 @@ def _inject_conditional_only_style(doc_x, style_id: str) -> None:
     from docx.oxml.ns import qn
 
     styles_root = doc_x.part.styles.element
-    style_el = styles_root.makeelement(qn("w:style"), {qn("w:type"): "table", qn("w:styleId"): style_id})
+    style_el = styles_root.makeelement(
+        qn("w:style"), {qn("w:type"): "table", qn("w:styleId"): style_id}
+    )
     name_el = style_el.makeelement(qn("w:name"), {qn("w:val"): style_id})
     style_el.append(name_el)
     pr = style_el.makeelement(qn("w:tblStylePr"), {qn("w:type"): "firstRow"})
@@ -1037,7 +1039,7 @@ def test_load_docx_unwraps_content_control_wrapped_heading_and_paragraph() -> No
     doc = DocxDocument()
     doc.add_paragraph("Before the content control.")
     sdt_xml = (
-        f'<w:sdt {nsdecls("w")}>'
+        f"<w:sdt {nsdecls('w')}>"
         "<w:sdtContent>"
         '<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr>'
         "<w:r><w:t>Hidden Heading</w:t></w:r></w:p>"
@@ -1163,7 +1165,7 @@ def test_load_docx_does_not_crash_on_a_non_numeric_outline_lvl_val() -> None:
     malformed_vals = ["not-a-number", "--3", "²"]
     for i, val in enumerate(malformed_vals):
         p_xml = (
-            f'<w:p {nsdecls("w")}>'
+            f"<w:p {nsdecls('w')}>"
             f'<w:pPr><w:outlineLvl w:val="{val}"/></w:pPr>'
             f"<w:r><w:t>Malformed outline level {i}.</w:t></w:r></w:p>"
         )
@@ -1215,7 +1217,9 @@ def test_load_docx_does_not_crash_on_a_custom_heading_style_with_non_numeric_suf
         result = load_docx(str(out_path))  # must not raise
 
     custom = next(b for b in result.blocks if b.text == "Not a real numbered heading.")
-    assert custom.kind == BlockKind.PARAGRAPH  # no reliable level signal -- falls through, not a crash
+    assert (
+        custom.kind == BlockKind.PARAGRAPH
+    )  # no reliable level signal -- falls through, not a crash
     normal = next(b for b in result.blocks if b.text == "A normal paragraph after it.")
     assert normal.kind == BlockKind.PARAGRAPH
 
@@ -1230,9 +1234,7 @@ def test_load_docx_detects_a_numbered_list_item_as_list_item_kind() -> None:
     doc = DocxDocument()
     paragraph = doc.add_paragraph("First bullet item.")
     pPr = paragraph._p.get_or_add_pPr()
-    num_pr = parse_xml(
-        f'<w:numPr {nsdecls("w")}><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>'
-    )
+    num_pr = parse_xml(f'<w:numPr {nsdecls("w")}><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>')
     pPr.append(num_pr)
     doc.add_paragraph("A normal paragraph, not a list item.")
 
@@ -1262,9 +1264,7 @@ def test_load_docx_heading_detection_takes_precedence_over_list_item_detection()
     heading = doc.add_paragraph("Numbered Heading", style="Heading 1")
     # Then manually add w:numPr to the same paragraph
     pPr = heading._p.get_or_add_pPr()
-    num_pr = parse_xml(
-        f'<w:numPr {nsdecls("w")}><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>'
-    )
+    num_pr = parse_xml(f'<w:numPr {nsdecls("w")}><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>')
     pPr.append(num_pr)
 
     with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1308,8 +1308,10 @@ def test_load_docx_names_a_figure_from_its_caption_styled_paragraph() -> None:
     figure_block = next(b for b in result.blocks if b.kind == BlockKind.FIGURE)
     assert figure_block.text == "[FIGURE: Figure 1: Power distribution diagram.]"
     # The caption paragraph itself is NOT also emitted as a separate PARAGRAPH block.
-    assert not any(b.text == "Figure 1: Power distribution diagram." and b.kind == BlockKind.PARAGRAPH
-                   for b in result.blocks)
+    assert not any(
+        b.text == "Figure 1: Power distribution diagram." and b.kind == BlockKind.PARAGRAPH
+        for b in result.blocks
+    )
 
 
 def test_load_docx_caption_names_the_figure_without_clobbering_a_real_vision_caption() -> None:
@@ -1338,7 +1340,9 @@ def test_load_docx_caption_names_the_figure_without_clobbering_a_real_vision_cap
     assert figure_block.text == "[FIGURE: a vision-generated guess]"
 
 
-def test_load_docx_caption_falls_back_to_the_raw_line_as_name_when_it_does_not_match_the_figure_label_pattern() -> None:
+def test_load_docx_caption_falls_back_to_the_raw_line_as_name_when_it_does_not_match_the_figure_label_pattern() -> (
+    None
+):
     from docx import Document as DocxDocument
     from PIL import Image
 
@@ -1363,7 +1367,9 @@ def test_load_docx_caption_falls_back_to_the_raw_line_as_name_when_it_does_not_m
     assert figure_block.text == "[FIGURE: Power distribution overview]"
 
 
-def test_load_docx_does_not_backfill_the_caption_into_block_text_when_vision_ran_and_declined() -> None:
+def test_load_docx_does_not_backfill_the_caption_into_block_text_when_vision_ran_and_declined() -> (
+    None
+):
     # SWEEP.md section 3: the M1 caption fix gated on `figures[-1].caption is
     # None`, which cannot tell "vision was never configured" from "vision ran
     # and returned nothing" -- and the latter is how an INSIGNIFICANT figure
@@ -1432,8 +1438,12 @@ def test_load_docx_emits_a_note_block_for_an_altchunk_instead_of_silently_droppi
     assert len(note_blocks) == 1
     assert "UNSUPPORTED" in note_blocks[0].text
     assert "altChunk" in note_blocks[0].text
-    before_idx = next(i for i, b in enumerate(result.blocks) if b.text == "Before the embedded document.")
-    after_idx = next(i for i, b in enumerate(result.blocks) if b.text == "After the embedded document.")
+    before_idx = next(
+        i for i, b in enumerate(result.blocks) if b.text == "Before the embedded document."
+    )
+    after_idx = next(
+        i for i, b in enumerate(result.blocks) if b.text == "After the embedded document."
+    )
     note_idx = next(i for i, b in enumerate(result.blocks) if b.kind == BlockKind.NOTE)
     assert before_idx < note_idx < after_idx
 
@@ -1463,7 +1473,7 @@ def test_load_docx_flags_an_ole_object_and_does_not_emit_its_icon_as_a_phantom_f
         auto_paragraph._p.getparent().remove(auto_paragraph._p)
 
         object_xml = (
-            f'<w:p {nsdecls("w", "r")} '
+            f"<w:p {nsdecls('w', 'r')} "
             'xmlns:v="urn:schemas-microsoft-com:vml" '
             'xmlns:o="urn:schemas-microsoft-com:office:office">'
             "<w:r><w:object>"
@@ -1551,7 +1561,7 @@ def test_load_docx_alternate_content_text_box_emits_one_marker_not_two() -> None
     doc = DocxDocument()
     doc.add_paragraph("Before the text box.")
     alt_content_xml = (
-        f'<w:p {nsdecls("w")} '
+        f"<w:p {nsdecls('w')} "
         'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
         'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" '
         'xmlns:v="urn:schemas-microsoft-com:vml">'
@@ -1660,7 +1670,7 @@ def test_load_docx_does_not_crash_on_a_negative_outline_lvl_val() -> None:
 
     doc = DocxDocument()
     p_xml = (
-        f'<w:p {nsdecls("w")}>'
+        f"<w:p {nsdecls('w')}>"
         f'<w:pPr><w:outlineLvl w:val="-1"/></w:pPr>'
         f"<w:r><w:t>Negative outline level.</w:t></w:r></w:p>"
     )
@@ -1816,14 +1826,19 @@ def test_load_docx_flags_unread_comments_with_one_note_block() -> None:
 
     doc = DocxDocument()
     paragraph = doc.add_paragraph("Reviewed text.")
-    doc.add_comment(paragraph.runs[0] if paragraph.runs else paragraph.add_run(""), text="A real reviewer comment.")
+    doc.add_comment(
+        paragraph.runs[0] if paragraph.runs else paragraph.add_run(""),
+        text="A real reviewer comment.",
+    )
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         out_path = Path(tmp_dir) / "commented.docx"
         doc.save(str(out_path))
         result = load_docx(str(out_path))
 
-    note_blocks = [b for b in result.blocks if b.kind == BlockKind.NOTE and "comment" in b.text.lower()]
+    note_blocks = [
+        b for b in result.blocks if b.kind == BlockKind.NOTE and "comment" in b.text.lower()
+    ]
     assert len(note_blocks) == 1
     assert note_blocks[0].text == "[UNSUPPORTED: 1 comment(s) not extracted]"
 
@@ -1843,7 +1858,7 @@ def test_load_docx_flags_unread_footnotes_with_one_note_block() -> None:
         b'<w:footnote w:type="separator" w:id="-1"><w:p/></w:footnote>'
         b'<w:footnote w:type="continuationSeparator" w:id="0"><w:p/></w:footnote>'
         b'<w:footnote w:id="1"><w:p><w:r><w:t>This is a real footnote body.</w:t></w:r></w:p></w:footnote>'
-        b'</w:footnotes>'
+        b"</w:footnotes>"
     )
     part = Part(
         PackURI("/word/footnotes.xml"),
@@ -1858,7 +1873,9 @@ def test_load_docx_flags_unread_footnotes_with_one_note_block() -> None:
         doc.save(str(out_path))
         result = load_docx(str(out_path))
 
-    note_blocks = [b for b in result.blocks if b.kind == BlockKind.NOTE and "footnote" in b.text.lower()]
+    note_blocks = [
+        b for b in result.blocks if b.kind == BlockKind.NOTE and "footnote" in b.text.lower()
+    ]
     assert len(note_blocks) == 1
     assert note_blocks[0].text == "[UNSUPPORTED: 1 footnote(s) not extracted]"
 
@@ -1877,7 +1894,7 @@ def test_load_docx_does_not_flag_footnotes_when_only_separator_entries_exist() -
         b'<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
         b'<w:footnote w:type="separator" w:id="-1"><w:p/></w:footnote>'
         b'<w:footnote w:type="continuationSeparator" w:id="0"><w:p/></w:footnote>'
-        b'</w:footnotes>'
+        b"</w:footnotes>"
     )
     part = Part(
         PackURI("/word/footnotes.xml"),
@@ -1907,6 +1924,7 @@ def test_load_docx_with_no_footnotes_endnotes_or_comments_emits_no_note_blocks_f
         result = load_docx(str(out_path))
 
     assert not any(
-        b.kind == BlockKind.NOTE and any(kind in b.text.lower() for kind in ("footnote", "endnote", "comment"))
+        b.kind == BlockKind.NOTE
+        and any(kind in b.text.lower() for kind in ("footnote", "endnote", "comment"))
         for b in result.blocks
     )

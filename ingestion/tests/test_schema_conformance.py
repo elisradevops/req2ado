@@ -112,9 +112,24 @@ def test_schema_accepts_each_real_figure_caption_status_value(schema) -> None:
     # also proves the schema actually recognizes the field).
     doc = load_txt(str(FIXTURES / "sample.txt")).model_dump(mode="json")
     doc["figures"] = [
-        {"id": "f0", "caption": None, "source_ref": {"document_path": "x", "start_offset": 0, "end_offset": 1}, "caption_status": "insignificant"},
-        {"id": "f1", "caption": None, "source_ref": {"document_path": "x", "start_offset": 0, "end_offset": 1}, "caption_status": "vision_failed"},
-        {"id": "f2", "caption": "real caption", "source_ref": {"document_path": "x", "start_offset": 0, "end_offset": 1}, "caption_status": None},
+        {
+            "id": "f0",
+            "caption": None,
+            "source_ref": {"document_path": "x", "start_offset": 0, "end_offset": 1},
+            "caption_status": "insignificant",
+        },
+        {
+            "id": "f1",
+            "caption": None,
+            "source_ref": {"document_path": "x", "start_offset": 0, "end_offset": 1},
+            "caption_status": "vision_failed",
+        },
+        {
+            "id": "f2",
+            "caption": "real caption",
+            "source_ref": {"document_path": "x", "start_offset": 0, "end_offset": 1},
+            "caption_status": None,
+        },
     ]
     jsonschema.validate(instance=doc, schema=schema)
 
@@ -122,7 +137,12 @@ def test_schema_accepts_each_real_figure_caption_status_value(schema) -> None:
 def test_schema_rejects_an_out_of_vocabulary_figure_caption_status(schema) -> None:
     doc = load_txt(str(FIXTURES / "sample.txt")).model_dump(mode="json")
     doc["figures"] = [
-        {"id": "f0", "caption": None, "source_ref": {"document_path": "x", "start_offset": 0, "end_offset": 1}, "caption_status": "vision_disabled"},
+        {
+            "id": "f0",
+            "caption": None,
+            "source_ref": {"document_path": "x", "start_offset": 0, "end_offset": 1},
+            "caption_status": "vision_disabled",
+        },
     ]
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(instance=doc, schema=schema)
@@ -133,7 +153,12 @@ def test_schema_accepts_an_ocr_recovered_table_cell(schema) -> None:
     doc["tables"] = [
         {
             "id": "t0",
-            "cells": [[{"text": "Label", "ocr_recovered": True}, {"text": "Alpha", "ocr_recovered": False}]],
+            "cells": [
+                [
+                    {"text": "Label", "ocr_recovered": True},
+                    {"text": "Alpha", "ocr_recovered": False},
+                ]
+            ],
             "source_ref": {"document_path": "x", "start_offset": 0, "end_offset": 1},
         }
     ]
@@ -158,7 +183,12 @@ def test_schema_accepts_a_nested_table_dropped_cell(schema) -> None:
     doc["tables"] = [
         {
             "id": "t0",
-            "cells": [[{"text": "Outer", "nested_table_dropped": True}, {"text": "Alpha", "nested_table_dropped": False}]],
+            "cells": [
+                [
+                    {"text": "Outer", "nested_table_dropped": True},
+                    {"text": "Alpha", "nested_table_dropped": False},
+                ]
+            ],
             "source_ref": {"document_path": "x", "start_offset": 0, "end_offset": 1},
         }
     ]

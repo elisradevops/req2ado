@@ -42,13 +42,13 @@ def _summarized(stage: str):
             finally:
                 recorded = len(warnings) - before
                 if recorded:
-                    logger.info("%s: %d structural fix(es) recorded as warnings on the job", stage, recorded)
+                    logger.info(
+                        "%s: %d structural fix(es) recorded as warnings on the job", stage, recorded
+                    )
 
         return inner
 
     return wrap
-
-
 
 
 class RootGroupingClient(Protocol):
@@ -61,7 +61,9 @@ class RootGroupingClient(Protocol):
     convention as every other client here) -- when omitted, disconnected
     roots are simply left as-is, matching pre-existing behavior exactly."""
 
-    def group_root_topics(self, titles_by_id: dict[str, str], user_id: str | None = None) -> dict: ...
+    def group_root_topics(
+        self, titles_by_id: dict[str, str], user_id: str | None = None
+    ) -> dict: ...
 
     # Optional second pass (see _regroup_disconnected_roots's own call
     # site below for the full rationale): a client implementing only
@@ -92,7 +94,9 @@ _MIN_NATURAL_GAP = 0.08
 _MAX_GROUP_SIZE = 12
 
 
-def deterministic_root_groups(vectors: list[list[float]], threshold: float, max_group_size: int = _MAX_GROUP_SIZE) -> list[list[int]]:
+def deterministic_root_groups(
+    vectors: list[list[float]], threshold: float, max_group_size: int = _MAX_GROUP_SIZE
+) -> list[list[int]]:
     """Groups of indexes (>= 2 each) of vectors that belong together, by a FIXED rule: average-linkage agglomerative
     clustering on cosine similarity. Embedding models place short headings at very different similarity levels (a fixed
     0.75 grouped 8 of 77 headings in prod), so the cut is read from the vectors themselves: the merges happen at falling
@@ -114,9 +118,16 @@ def deterministic_root_groups(vectors: list[list[float]], threshold: float, max_
     members: list[list[int] | None] = [[i] for i in range(count)]
     active = np.ones(count, dtype=bool)
     upper = np.triu(np.ones((count, count), dtype=bool), k=1)
-    performed: list[tuple[float, int, int]] = []  # (similarity, kept index, absorbed index), in order
+    performed: list[
+        tuple[float, int, int]
+    ] = []  # (similarity, kept index, absorbed index), in order
     while True:
-        usable = upper & active[:, None] & active[None, :] & ((sizes[:, None] + sizes[None, :]) <= max_group_size)
+        usable = (
+            upper
+            & active[:, None]
+            & active[None, :]
+            & ((sizes[:, None] + sizes[None, :]) <= max_group_size)
+        )
         masked = np.where(usable, similarity, -np.inf)
         flat = int(np.argmax(masked))  # first maximum in row-major order: a deterministic tie-break
         i, j = divmod(flat, count)
@@ -124,7 +135,9 @@ def deterministic_root_groups(vectors: list[list[float]], threshold: float, max_
         if not np.isfinite(best) or best < _ABSOLUTE_SIMILARITY_FLOOR:
             break
         performed.append((float(best), i, j))
-        merged = (sizes[i] * similarity[i] + sizes[j] * similarity[j]) / (sizes[i] + sizes[j])  # Lance-Williams
+        merged = (sizes[i] * similarity[i] + sizes[j] * similarity[j]) / (
+            sizes[i] + sizes[j]
+        )  # Lance-Williams
         similarity[i, :] = merged
         similarity[:, i] = merged
         sizes[i] += sizes[j]
@@ -146,7 +159,11 @@ def _natural_cut(similarities: list[float], threshold: float) -> float:
         return threshold
     best_gap, cut_index = 0.0, None
     for k in range(len(similarities)):
-        following = similarities[k + 1] if k + 1 < len(similarities) else _ABSOLUTE_SIMILARITY_FLOOR - _MIN_NATURAL_GAP
+        following = (
+            similarities[k + 1]
+            if k + 1 < len(similarities)
+            else _ABSOLUTE_SIMILARITY_FLOOR - _MIN_NATURAL_GAP
+        )
         gap = similarities[k] - following
         if gap > best_gap + 1e-12:
             best_gap, cut_index = gap, k
@@ -173,7 +190,11 @@ def _deterministic_raw_groups(
     """The groups as the same {'title', 'member_ids'} dicts the model path returns, so one loop builds the nodes for
     both. None means "leave every root as it is" (too many roots, or the embeddings were unavailable)."""
     if len(roots) > _MAX_ROOTS_TO_CLUSTER:
-        logger.warning("Root grouping skipped: %d disconnected roots exceed the %d the deterministic rule handles", len(roots), _MAX_ROOTS_TO_CLUSTER)
+        logger.warning(
+            "Root grouping skipped: %d disconnected roots exceed the %d the deterministic rule handles",
+            len(roots),
+            _MAX_ROOTS_TO_CLUSTER,
+        )
         return None
     ordered = list(roots)
     try:
@@ -186,7 +207,10 @@ def _deterministic_raw_groups(
     index_groups = deterministic_root_groups(vectors, cosine_threshold)
     ids_by_group = [[ordered[i].local_id for i in group] for group in index_groups]
     group_keys = [f"{node_id_prefix}synth_group_{index}" for index in range(len(ids_by_group))]
-    titles_by_group = {key: [titles_by_id[member] for member in members] for key, members in zip(group_keys, ids_by_group)}
+    titles_by_group = {
+        key: [titles_by_id[member] for member in members]
+        for key, members in zip(group_keys, ids_by_group)
+    }
     names: dict[str, str] = {}
     namer = getattr(grouping_client, "name_root_groups", None)
     if namer is not None and titles_by_group:
@@ -197,12 +221,15 @@ def _deterministic_raw_groups(
             if debug_capture is not None:
                 debug_capture.capture("name_root_groups", "document", str(exc))
     return [
-        {"title": names.get(key) or _fallback_group_title(titles_by_group[key]), "member_ids": members}
+        {
+            "title": names.get(key) or _fallback_group_title(titles_by_group[key]),
+            "member_ids": members,
+        }
         for key, members in zip(group_keys, ids_by_group)
     ]
 
 
-@_summarized('root regrouping')
+@_summarized("root regrouping")
 def _regroup_disconnected_roots(
     nodes: list[WorkItemNode],
     node_id_prefix: str,
@@ -257,15 +284,26 @@ def _regroup_disconnected_roots(
     if progress_callback is not None:
         progress_callback(
             LevelingProgress(
-                phase="regroup_roots", branch_index=None, branch_count=branch_count,
-                blocks_done=blocks_total, blocks_total=blocks_total,
-                kb_grounded=False, kb_citations=[],
+                phase="regroup_roots",
+                branch_index=None,
+                branch_count=branch_count,
+                blocks_done=blocks_total,
+                blocks_total=blocks_total,
+                kb_grounded=False,
+                kb_citations=[],
             )
         )
     use_deterministic = deterministic and embed_client is not None
     if use_deterministic:
         raw_groups = _deterministic_raw_groups(
-            roots, titles_by_id, grouping_client, embed_client, cosine_threshold, node_id_prefix, debug_capture, user_id,
+            roots,
+            titles_by_id,
+            grouping_client,
+            embed_client,
+            cosine_threshold,
+            node_id_prefix,
+            debug_capture,
+            user_id,
         )
         if raw_groups is None:
             return
@@ -273,7 +311,9 @@ def _regroup_disconnected_roots(
         try:
             result = grouping_client.group_root_topics(titles_by_id, user_id=user_id)
         except Exception as exc:
-            logger.warning("Root topical regrouping failed, leaving disconnected roots as-is: %s", exc)
+            logger.warning(
+                "Root topical regrouping failed, leaving disconnected roots as-is: %s", exc
+            )
             if debug_capture is not None:
                 debug_capture.capture("group_root_topics", "document", str(exc))
             return
@@ -304,7 +344,8 @@ def _regroup_disconnected_roots(
         # dropped rather than trusted, same "never invent, never
         # double-count" discipline as trace-link resolution.
         valid_member_ids = [
-            member_id for member_id in member_ids
+            member_id
+            for member_id in member_ids
             if member_id in root_ids and member_id not in already_grouped
         ]
         if len(valid_member_ids) < 2:
@@ -352,7 +393,11 @@ def _regroup_disconnected_roots(
                 WarningKind.ROOTS_REGROUPED,
                 message,
                 node_ids=[synth_id, *(m.local_id for m in members)],
-                detail={"groupId": synth_id, "groupTitle": group_node.title, "memberIds": [m.local_id for m in members]},
+                detail={
+                    "groupId": synth_id,
+                    "groupTitle": group_node.title,
+                    "memberIds": [m.local_id for m in members],
+                },
             )
         )
 
@@ -376,11 +421,17 @@ def _regroup_disconnected_roots(
     # The deterministic path already considered every root: a leftover is a root that genuinely belongs nowhere, and
     # no second model pass may change that (it would make the count depend on the model again).
     if leftover_ids and created_group_nodes and not use_deterministic:
-        leftover_titles_by_id = {leftover_id: titles_by_id[leftover_id] for leftover_id in leftover_ids}
-        group_titles_by_id = {group_id: node.title for group_id, node in created_group_nodes.items()}
+        leftover_titles_by_id = {
+            leftover_id: titles_by_id[leftover_id] for leftover_id in leftover_ids
+        }
+        group_titles_by_id = {
+            group_id: node.title for group_id, node in created_group_nodes.items()
+        }
         try:
             assign_result = grouping_client.assign_leftover_roots(
-                leftover_titles_by_id, group_titles_by_id, user_id=user_id,
+                leftover_titles_by_id,
+                group_titles_by_id,
+                user_id=user_id,
             )
         except Exception as exc:
             # Same fail-open contract as the first pass above -- covers a
@@ -388,11 +439,15 @@ def _regroup_disconnected_roots(
             # implements group_root_topics (AttributeError), which is
             # every existing test double and, until a live re-run proves
             # this pass out, every real caller too.
-            logger.warning("Leftover-root assignment failed, leaving remaining roots as-is: %s", exc)
+            logger.warning(
+                "Leftover-root assignment failed, leaving remaining roots as-is: %s", exc
+            )
             if debug_capture is not None:
                 debug_capture.capture("assign_leftover_roots", "document", str(exc))
             assign_result = None
-        raw_assignments = assign_result.get("assignments") if isinstance(assign_result, dict) else None
+        raw_assignments = (
+            assign_result.get("assignments") if isinstance(assign_result, dict) else None
+        )
         if isinstance(raw_assignments, dict):
             for leftover_id, group_id in raw_assignments.items():
                 # Only a still-genuinely-leftover id and a group id we
@@ -402,7 +457,9 @@ def _regroup_disconnected_roots(
                 # own valid_member_ids filter.
                 if leftover_id not in leftover_ids or leftover_id in already_grouped:
                     continue
-                group_node = created_group_nodes.get(group_id) if isinstance(group_id, str) else None
+                group_node = (
+                    created_group_nodes.get(group_id) if isinstance(group_id, str) else None
+                )
                 member = by_id.get(leftover_id)
                 if group_node is None or member is None:
                     continue
@@ -411,7 +468,10 @@ def _regroup_disconnected_roots(
                 # must be promoted to Epic, or the depth rule id_hierarchy.
                 # classify() enforces everywhere else in this codebase is
                 # violated in reverse.
-                if group_node.type == WorkItemType.FEATURE and member.type != WorkItemType.REQUIREMENT:
+                if (
+                    group_node.type == WorkItemType.FEATURE
+                    and member.type != WorkItemType.REQUIREMENT
+                ):
                     group_node.type = WorkItemType.EPIC
                 group_node.description += f", {member.title}"
                 member.parent_local_id = group_node.local_id
@@ -427,14 +487,20 @@ def _regroup_disconnected_roots(
                         WarningKind.ROOTS_REGROUPED,
                         message,
                         node_ids=[group_node.local_id, member.local_id],
-                        detail={"groupId": group_node.local_id, "groupTitle": group_node.title, "memberIds": [member.local_id]},
+                        detail={
+                            "groupId": group_node.local_id,
+                            "groupTitle": group_node.title,
+                            "memberIds": [member.local_id],
+                        },
                     )
                 )
 
 
-@_summarized('catch-all Epic')
+@_summarized("catch-all Epic")
 def _ensure_root_features_have_epic_parent(
-    nodes: list[WorkItemNode], node_id_prefix: str, warnings: list[IntegrityWarning],
+    nodes: list[WorkItemNode],
+    node_id_prefix: str,
+    warnings: list[IntegrityWarning],
     epic_title: str = "(auto-grouped) Other Sections",
 ) -> None:
     """Confirmed real gap (user-reported, live review): after
@@ -504,7 +570,7 @@ def _ensure_root_features_have_epic_parent(
     )
 
 
-@_summarized('requirement hierarchy repair')
+@_summarized("requirement hierarchy repair")
 def _repair_requirement_hierarchy(
     nodes: list[WorkItemNode], node_id_prefix: str, warnings: list[IntegrityWarning]
 ) -> None:
@@ -601,7 +667,8 @@ def _repair_requirement_hierarchy(
         if existing is not None:
             return existing
         synth_id = (
-            f"{node_id_prefix}synth_feature" if epic is None
+            f"{node_id_prefix}synth_feature"
+            if epic is None
             else f"{node_id_prefix}synth_feature_{epic.local_id}"
         )
         feature = WorkItemNode(
@@ -632,7 +699,9 @@ def _repair_requirement_hierarchy(
         # (confirmed real gap, user-reported: "det0_h9_3"/"det0_h3_1_1"-style
         # ids mean nothing to a reviewer who never sees ingestion's internal
         # node numbering anywhere else in the product).
-        location = f'under Epic "{epic.title}"' if epic is not None else "at the top level of this section"
+        location = (
+            f'under Epic "{epic.title}"' if epic is not None else "at the top level of this section"
+        )
         message = (
             f'Requirement(s) near "{requirement.title}" had no Feature ancestor -- inserted a '
             f"grouping Feature {location} to keep the Epic -> Feature -> Requirement chain intact."
@@ -669,7 +738,9 @@ def _repair_requirement_hierarchy(
             # dangling-parent-id case below reaches here with a non-None
             # parent_local_id that just failed to resolve, so node is NOT
             # one of the counted roots in that case).
-            other_root_exists = (root_count > 1) if node.parent_local_id is None else (root_count > 0)
+            other_root_exists = (
+                (root_count > 1) if node.parent_local_id is None else (root_count > 0)
+            )
             violates = other_root_exists or has_epic_or_feature
         else:
             # A Requirement parent is valid too (a child Requirement --
@@ -712,7 +783,9 @@ def _repair_requirement_hierarchy(
             # Never falls through to the branch-global first_feature from
             # here (see this function's own docstring for the bug that
             # caused).
-            target = feature_by_epic_parent_id.get(nearest_epic.local_id) or ensure_bridge_feature(node, nearest_epic)
+            target = feature_by_epic_parent_id.get(nearest_epic.local_id) or ensure_bridge_feature(
+                node, nearest_epic
+            )
         else:
             # No Epic ancestor anywhere on this Requirement's own chain --
             # the branch-global fallback is only reachable in this genuinely

@@ -48,9 +48,16 @@ def _quote_names_target(quote: str, target_ref: str, target_node: WorkItemNode |
         return True
     title_words = _words(target_node.title)
     quote_words = _words(quote)
-    if title_words and any(quote_words[i:i + len(title_words)] == title_words for i in range(len(quote_words) - len(title_words) + 1)):
+    if title_words and any(
+        quote_words[i : i + len(title_words)] == title_words
+        for i in range(len(quote_words) - len(title_words) + 1)
+    ):
         return True
-    return any(w in quote_words for w in title_words if len(w) >= _MIN_TARGET_WORD_CHARS and w not in _GENERIC_WORDS)
+    return any(
+        w in quote_words
+        for w in title_words
+        if len(w) >= _MIN_TARGET_WORD_CHARS and w not in _GENERIC_WORDS
+    )
 
 
 _EMBEDDED_TABLE_HTML_PATTERN = re.compile(r"<table.*?</table>", re.DOTALL)
@@ -112,7 +119,9 @@ def _chunk_nodes(llm_nodes: list[dict]) -> list[list[dict]]:
     current_chars = 0
     for node in llm_nodes:
         size = len(node["text"])
-        if current and (len(current) >= _TRACE_CHUNK_MAX_NODES or current_chars + size > _TRACE_CHUNK_MAX_CHARS):
+        if current and (
+            len(current) >= _TRACE_CHUNK_MAX_NODES or current_chars + size > _TRACE_CHUNK_MAX_CHARS
+        ):
             chunks.append(current)
             current, current_chars = [], 0
         current.append(node)
@@ -123,7 +132,10 @@ def _chunk_nodes(llm_nodes: list[dict]) -> list[list[dict]]:
 
 
 def _infer_chunk_once(
-    client: TraceLinkInferenceClient, nodes: list[dict], catalog: list[dict], kb_context: str | None,
+    client: TraceLinkInferenceClient,
+    nodes: list[dict],
+    catalog: list[dict],
+    kb_context: str | None,
     user_id: str | None,
 ) -> tuple[list[dict] | None, str | None]:
     """(links, None) on success, (None, short reason) when the call failed or answered with something unusable."""
@@ -134,18 +146,28 @@ def _infer_chunk_once(
     except Exception as exc:  # noqa: BLE001 -- enrichment must never fail the job
         reason = " ".join(str(exc).split())[:200] or type(exc).__name__
         logger.warning(
-            "Trace-link call failed: nodes=%d chars=%d seconds=%.1f reason=%s", len(nodes), chars, time.monotonic() - started, reason,
+            "Trace-link call failed: nodes=%d chars=%d seconds=%.1f reason=%s",
+            len(nodes),
+            chars,
+            time.monotonic() - started,
+            reason,
         )
         return None, reason
     logger.info(
-        "Trace-link call: nodes=%d chars=%d seconds=%.1f links=%d", len(nodes), chars, time.monotonic() - started,
+        "Trace-link call: nodes=%d chars=%d seconds=%.1f links=%d",
+        len(nodes),
+        chars,
+        time.monotonic() - started,
         len(links) if isinstance(links, list) else 0,
     )
     return (links if isinstance(links, list) else []), None
 
 
 def _infer_chunk_resilient(
-    client: TraceLinkInferenceClient, nodes: list[dict], catalog: list[dict], kb_context: str | None,
+    client: TraceLinkInferenceClient,
+    nodes: list[dict],
+    catalog: list[dict],
+    kb_context: str | None,
     user_id: str | None,
 ) -> tuple[list[list[dict]], list[tuple[list[dict], str]]]:
     """(answered link lists, [(skipped nodes, reason)]): one retry as two halves (a smaller request) when the
@@ -153,7 +175,7 @@ def _infer_chunk_resilient(
     links, reason = _infer_chunk_once(client, nodes, catalog, kb_context, user_id)
     if links is not None:
         return [links], []
-    groups = [nodes[: len(nodes) // 2], nodes[len(nodes) // 2:]] if len(nodes) > 1 else [nodes]
+    groups = [nodes[: len(nodes) // 2], nodes[len(nodes) // 2 :]] if len(nodes) > 1 else [nodes]
     answered: list[list[dict]] = []
     skipped: list[tuple[list[dict], str]] = []
     for group in groups:
@@ -195,7 +217,11 @@ def _infer_trace_links_for_nodes(
     # stripped (see _without_embedded_table_html's own docstring) -- it
     # carries no cross-reference signal and can be very large.
     llm_nodes = [
-        {"node_id": node.local_id, "type": node.type.value, "text": _without_embedded_table_html(node.description)}
+        {
+            "node_id": node.local_id,
+            "type": node.type.value,
+            "text": _without_embedded_table_html(node.description),
+        }
         for node in all_nodes
     ]
     # Whether two nodes relate AT ALL is still judged from node text alone,
@@ -209,8 +235,13 @@ def _infer_trace_links_for_nodes(
     if progress_callback is not None:
         progress_callback(
             LevelingProgress(
-                phase="infer_trace_links", branch_index=None, branch_count=branch_count,
-                blocks_done=blocks_total, blocks_total=blocks_total, kb_grounded=False, kb_citations=[],
+                phase="infer_trace_links",
+                branch_index=None,
+                branch_count=branch_count,
+                blocks_done=blocks_total,
+                blocks_total=blocks_total,
+                kb_grounded=False,
+                kb_citations=[],
                 model=getattr(link_type_client, "model", None),
             )
         )
@@ -222,7 +253,9 @@ def _infer_trace_links_for_nodes(
     skipped_groups: list[tuple[list[dict], str]] = []
     any_answered = False
     for chunk in _chunk_nodes(llm_nodes):
-        answered, skipped = _infer_chunk_resilient(link_type_client, chunk, catalog, kb_context, user_id)
+        answered, skipped = _infer_chunk_resilient(
+            link_type_client, chunk, catalog, kb_context, user_id
+        )
         for links in answered:
             any_answered = True
             raw_links.extend(links)
@@ -251,7 +284,9 @@ def _infer_trace_links_for_nodes(
                     detail={"reason": reason},
                 )
             )
-    catalog_by_ref = {entry["reference_name"]: entry.get("name", entry["reference_name"]) for entry in catalog}
+    catalog_by_ref = {
+        entry["reference_name"]: entry.get("name", entry["reference_name"]) for entry in catalog
+    }
     text_by_node_id = {n["node_id"]: n["text"] for n in llm_nodes}
     links_per_source: dict[str, int] = {}
     for raw_link in raw_links:
@@ -264,7 +299,9 @@ def _infer_trace_links_for_nodes(
         # fail-open philosophy as the rest of this function: skip the one
         # bad entry, keep every valid link either side of it.
         if not isinstance(raw_link, dict):
-            logger.warning("Trace-link inference returned a non-object entry, skipped: %r", raw_link)
+            logger.warning(
+                "Trace-link inference returned a non-object entry, skipped: %r", raw_link
+            )
             continue
         source_node_id = raw_link.get("source_node_id")
         reference_name = raw_link.get("reference_name")
@@ -279,15 +316,27 @@ def _infer_trace_links_for_nodes(
         # philosophy as every other validation check in this loop.
         evidence_quote = raw_link.get("evidence_quote")
         source_text = text_by_node_id.get(source_node_id, "")
-        if not isinstance(evidence_quote, str) or not evidence_quote or evidence_quote not in source_text:
-            logger.warning("Trace-link inference proposed a link with no valid evidence quote, skipped: %r", raw_link)
+        if (
+            not isinstance(evidence_quote, str)
+            or not evidence_quote
+            or evidence_quote not in source_text
+        ):
+            logger.warning(
+                "Trace-link inference proposed a link with no valid evidence quote, skipped: %r",
+                raw_link,
+            )
             continue
         if source_node_id not in node_by_local_id:
             continue
         if catalog and reference_name not in valid_reference_names:
             continue
-        if not isinstance(target_ref, str) or not _quote_names_target(evidence_quote, target_ref, node_by_local_id.get(target_ref)):
-            logger.info("Trace-link inference proposed a link whose evidence does not name its target, skipped: %r", raw_link)
+        if not isinstance(target_ref, str) or not _quote_names_target(
+            evidence_quote, target_ref, node_by_local_id.get(target_ref)
+        ):
+            logger.info(
+                "Trace-link inference proposed a link whose evidence does not name its target, skipped: %r",
+                raw_link,
+            )
             continue
         if links_per_source.get(source_node_id, 0) >= MAX_LINKS_PER_SOURCE:
             continue
@@ -300,7 +349,10 @@ def _infer_trace_links_for_nodes(
         if target_ref in node_by_local_id:
             target_node = node_by_local_id[target_ref]
             source_node = node_by_local_id[source_node_id]
-            if target_node.parent_local_id == source_node_id or source_node.parent_local_id == target_ref:
+            if (
+                target_node.parent_local_id == source_node_id
+                or source_node.parent_local_id == target_ref
+            ):
                 # CONFIRMED REAL BUG, found via live testing: this whole-tree
                 # call has no structural signal telling it two nodes are
                 # already directly related via the tree's OWN parent/child
@@ -353,8 +405,13 @@ def _infer_trace_links_for_nodes(
         ]
         progress_callback(
             LevelingProgress(
-                phase="infer_trace_links", branch_index=None, branch_count=branch_count,
-                blocks_done=blocks_total, blocks_total=blocks_total, kb_grounded=False, kb_citations=[],
+                phase="infer_trace_links",
+                branch_index=None,
+                branch_count=branch_count,
+                blocks_done=blocks_total,
+                blocks_total=blocks_total,
+                kb_grounded=False,
+                kb_citations=[],
                 model=getattr(link_type_client, "model", None),
                 sample_titles=_sample_titles(endpoint_labels),
             )

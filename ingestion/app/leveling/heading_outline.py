@@ -95,6 +95,7 @@ already-tested shape, and `_regroup_disconnected_roots` for the
 purpose-built LLM pass that decides, from ALL root titles at once,
 whether a topical Epic grouping is actually warranted -- a strictly
 better-informed place for that judgment than this per-heading detector."""
+
 from __future__ import annotations
 
 from typing import NamedTuple
@@ -130,7 +131,11 @@ def _merged_entries(blocks: list[Block], tables: list[Table] | None) -> list[_Me
 
 
 def _is_heading_candidate(entry: _MergedEntry) -> bool:
-    return entry.block is not None and entry.block.kind == BlockKind.HEADING and entry.block.heading_level is not None
+    return (
+        entry.block is not None
+        and entry.block.kind == BlockKind.HEADING
+        and entry.block.heading_level is not None
+    )
 
 
 def _obligation_count(span: list[_MergedEntry]) -> int:
@@ -161,7 +166,9 @@ def _obligation_count(span: list[_MergedEntry]) -> int:
     return count
 
 
-def heading_outline_entries(blocks: list[Block] | None, tables: list[Table] | None = None) -> list[HeadingOutlineEntry]:
+def heading_outline_entries(
+    blocks: list[Block] | None, tables: list[Table] | None = None
+) -> list[HeadingOutlineEntry]:
     """Every real heading in `blocks`, typed Epic/Feature/Requirement from
     its own document's observed nesting shape (see module docstring), minus
     a suppressed Title/wrapper heading (S1/S2) and a blank-text heading
@@ -221,9 +228,14 @@ def heading_outline_entries(blocks: list[Block] | None, tables: list[Table] | No
             return False
         span = _span(pos)
         s1 = pos == 0 and not any(
-            e.table is not None or (e.block is not None and e.block.kind == BlockKind.HEADING) for e in span
+            e.table is not None or (e.block is not None and e.block.kind == BlockKind.HEADING)
+            for e in span
         )
-        s2 = pos == 0 and at_min_level == 1 and all(levels[p] > levels[pos] for p in range(1, len(levels)))
+        s2 = (
+            pos == 0
+            and at_min_level == 1
+            and all(levels[p] > levels[pos] for p in range(1, len(levels)))
+        )
         return s1 or s2
 
     entries: list[HeadingOutlineEntry] = []
@@ -236,11 +248,17 @@ def heading_outline_entries(blocks: list[Block] | None, tables: list[Table] | No
         if not title:
             continue
         suggested_type = types_by_key[("h", pos)][0].value
-        entries.append(HeadingOutlineEntry(block_id=block.id, title=title, suggested_type=suggested_type, level=levels[pos]))
+        entries.append(
+            HeadingOutlineEntry(
+                block_id=block.id, title=title, suggested_type=suggested_type, level=levels[pos]
+            )
+        )
     return entries
 
 
-def entries_for_blocks(entries: list[HeadingOutlineEntry] | None, blocks: list[Block] | None) -> list[HeadingOutlineEntry]:
+def entries_for_blocks(
+    entries: list[HeadingOutlineEntry] | None, blocks: list[Block] | None
+) -> list[HeadingOutlineEntry]:
     """Filters a document-wide `heading_outline_entries` result down to
     just the entries whose block is a member of `blocks`, preserving
     order -- see llm_leveling.build_survey_tree's own call sites for why

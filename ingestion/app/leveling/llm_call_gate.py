@@ -3,6 +3,7 @@
 The acceptance-criteria step sets one in each of its worker threads (a context variable, so one worker's gate is never another's): the gate
 takes a lease on the shared limiter for the length of ONE attempt, so a retry's back-off sleep holds no slot. Nothing is set anywhere else,
 and then `gated()` does nothing."""
+
 from __future__ import annotations
 
 import contextlib
@@ -17,7 +18,9 @@ from app.job_cancel import raise_if_cancelled
 if TYPE_CHECKING:
     from app.leveling.llm_lease_limiter import LeaseLimiter
 
-_gate: contextvars.ContextVar[Callable[[], AbstractContextManager[None]] | None] = contextvars.ContextVar("llm_call_gate", default=None)
+_gate: contextvars.ContextVar[Callable[[], AbstractContextManager[None]] | None] = (
+    contextvars.ContextVar("llm_call_gate", default=None)
+)
 
 
 @contextlib.contextmanager
@@ -47,10 +50,22 @@ class LeaseGate:
     workers; it holds no state of its own beyond what it was given."""
 
     def __init__(
-        self, limiter: LeaseLimiter | None, model: str | None, scope: str, deadline: float, max_wait: float,
+        self,
+        limiter: LeaseLimiter | None,
+        model: str | None,
+        scope: str,
+        deadline: float,
+        max_wait: float,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        self._limiter, self._model, self._scope, self._deadline, self._max_wait, self._clock = limiter, model, scope, deadline, max_wait, clock
+        self._limiter, self._model, self._scope, self._deadline, self._max_wait, self._clock = (
+            limiter,
+            model,
+            scope,
+            deadline,
+            max_wait,
+            clock,
+        )
 
     @property
     def deadline(self) -> float:
@@ -69,7 +84,9 @@ class LeaseGate:
         lease = None
         if self._limiter is not None:
             while lease is None:
-                lease = self._limiter.acquire(self._model, self._scope, max_wait_seconds=min(self._max_wait, left))
+                lease = self._limiter.acquire(
+                    self._model, self._scope, max_wait_seconds=min(self._max_wait, left)
+                )
                 if lease is None:
                     raise_if_cancelled()
                     left = self._time_left()

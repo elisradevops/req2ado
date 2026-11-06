@@ -14,7 +14,9 @@ def test_parses_four_level_numbering() -> None:
 
 
 def test_parses_lettered_sub_item_numbering() -> None:
-    label, remainder = parse_numbering("1.1.1.1.a The receiver shall support terrestrial broadcast.")
+    label, remainder = parse_numbering(
+        "1.1.1.1.a The receiver shall support terrestrial broadcast."
+    )
     assert label == "1.1.1.1.a"
     assert remainder == "The receiver shall support terrestrial broadcast."
 

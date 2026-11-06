@@ -57,7 +57,11 @@ class Server:
     """Routes the two endpoints; records what was asked."""
 
     def __init__(
-        self, content: str, *, stream: bytes | Exception | int | None = None, plain_finish_reason: str | None = None
+        self,
+        content: str,
+        *,
+        stream: bytes | Exception | int | None = None,
+        plain_finish_reason: str | None = None,
     ) -> None:
         self.content = content
         self.plain_finish_reason = plain_finish_reason
@@ -172,7 +176,9 @@ def test_live_frames_show_the_rows_being_worked_on_and_each_finished_item(live) 
     kinds = [f["kind"] for f in frames]
     assert [f["ref"] for f in frames if f["kind"] == "item"] == ["r1", "r2", "r3"]
     assert [f["title"] for f in frames if f["kind"] == "item"] == [
-        "Chassis size", "Over-current protection", "Operating temperature range",
+        "Chassis size",
+        "Over-current protection",
+        "Operating temperature range",
     ]
     working = [f for f in frames if f["kind"] == "working_on"]
     assert working and working[0]["ref"] == "r1" and working[0]["excerpt"] == ROWS["r1"]
@@ -285,7 +291,8 @@ def test_worker_threads_always_see_the_job(monkeypatch) -> None:  # noqa: ANN001
 
 
 def test_streamed_items_move_the_pass_count_during_the_call(
-    live, monkeypatch,  # noqa: ANN001
+    live,
+    monkeypatch,  # noqa: ANN001
 ) -> None:
     # The counter's rate limit is out of the way: every observed item publishes.
     from app.leveling import live_context as lc

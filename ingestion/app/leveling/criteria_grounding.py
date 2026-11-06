@@ -12,6 +12,7 @@ Two jobs, both pure code and independent of any model or document layout:
 
 Known limits, accepted: a unit conversion (1 km in the input, 1000 m in the criterion) reads as invented; a number word prefixed in Hebrew
 ("בשלוש") is not recognised; "one" is never read as a number (it is mostly a pronoun)."""
+
 from __future__ import annotations
 
 import re
@@ -25,16 +26,67 @@ _BIDI = dict.fromkeys(map(ord, "‎‏‪‫‬‭‮⁦⁧⁨⁩"), None)
 _THOUSANDS = re.compile(r"(?<=\d)[,   ](?=\d{3}(?!\d))")
 
 _WORD_NUMBERS = {
-    "zero": 0, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
-    "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
-    "twenty": 20, "thousand": 1000, "million": 1000000, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90, "hundred": 100,
-    "שתיים": 2, "שתי": 2, "שני": 2, "שניים": 2, "שלוש": 3, "שלושה": 3, "ארבע": 4, "ארבעה": 4, "חמש": 5, "חמישה": 5, "שש": 6,
-    "שישה": 6, "שבע": 7, "שבעה": 7, "שמונה": 8, "תשע": 9, "תשעה": 9, "עשר": 10, "עשרה": 10,
+    "zero": 0,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+    "thirteen": 13,
+    "fourteen": 14,
+    "fifteen": 15,
+    "sixteen": 16,
+    "seventeen": 17,
+    "eighteen": 18,
+    "nineteen": 19,
+    "twenty": 20,
+    "thousand": 1000,
+    "million": 1000000,
+    "thirty": 30,
+    "forty": 40,
+    "fifty": 50,
+    "sixty": 60,
+    "seventy": 70,
+    "eighty": 80,
+    "ninety": 90,
+    "hundred": 100,
+    "שתיים": 2,
+    "שתי": 2,
+    "שני": 2,
+    "שניים": 2,
+    "שלוש": 3,
+    "שלושה": 3,
+    "ארבע": 4,
+    "ארבעה": 4,
+    "חמש": 5,
+    "חמישה": 5,
+    "שש": 6,
+    "שישה": 6,
+    "שבע": 7,
+    "שבעה": 7,
+    "שמונה": 8,
+    "תשע": 9,
+    "תשעה": 9,
+    "עשר": 10,
+    "עשרה": 10,
 }
-_WORD_NUMBER = re.compile(r"(?<![\w])(" + "|".join(sorted(map(re.escape, _WORD_NUMBERS), key=len, reverse=True)) + r")(?![\w])", re.IGNORECASE)
+_WORD_NUMBER = re.compile(
+    r"(?<![\w])("
+    + "|".join(sorted(map(re.escape, _WORD_NUMBERS), key=len, reverse=True))
+    + r")(?![\w])",
+    re.IGNORECASE,
+)
 
 # A standard: an upper-case designator, then more designators or a number ("MIL-STD-810G", "RS-422", "DO-178C", "ISO 9001", "IEEE 802.3").
-_STANDARD = re.compile(r"(?<![\w-])[A-Z]{2,}(?:[ -][A-Z]{2,}){0,6}[ -]?\d[0-9A-Za-z]*(?:\.\d+[0-9A-Za-z]*)*")
+_STANDARD = re.compile(
+    r"(?<![\w-])[A-Z]{2,}(?:[ -][A-Z]{2,}){0,6}[ -]?\d[0-9A-Za-z]*(?:\.\d+[0-9A-Za-z]*)*"
+)
 _SECTION_REF = re.compile(r"(?<![\w.])\d+(?:\.\d+){2,}(?![\w.]*\d)")
 _NUMBER = re.compile(r"(?<![\d.])\d+(?:\.\d+)?")
 # A unit counts only when attached to a number. Single-letter units are case-sensitive, so "3 a time" has none.
@@ -44,16 +96,63 @@ _UNIT_WORDS = (
     "(?:milli|centi|kilo)?(?:meters?|metres?|grams?)|newtons?|joules?|kelvin|celsius|fahrenheit|degrees?|bytes?|percent|inch(?:es)?|feet|foot|"
     "miles?|pounds?|(?:milli)?liters?|(?:milli)?litres?"
 )
-_UNIT = re.compile(rf"(?<=\d)(?:\s?(?:%|(?i:{_UNIT_WORDS})(?![A-Za-z])|[AVWNsmghΩ](?![A-Za-z]))|-(?i:{_UNIT_WORDS})(?![A-Za-z]))")
+_UNIT = re.compile(
+    rf"(?<=\d)(?:\s?(?:%|(?i:{_UNIT_WORDS})(?![A-Za-z])|[AVWNsmghΩ](?![A-Za-z]))|-(?i:{_UNIT_WORDS})(?![A-Za-z]))"
+)
 # "one" is read as a number only when a unit follows ("one-meter drop", "one second"): elsewhere it is mostly a pronoun.
-_ONE_BEFORE_UNIT = re.compile(rf"(?<![\w])one(?=[\s-]+(?i:{_UNIT_WORDS})(?![A-Za-z]))", re.IGNORECASE)
+_ONE_BEFORE_UNIT = re.compile(
+    rf"(?<![\w])one(?=[\s-]+(?i:{_UNIT_WORDS})(?![A-Za-z]))", re.IGNORECASE
+)
 _UNIT_CANON = {
-    "millisecond": "ms", "milliseconds": "ms", "msec": "ms", "second": "s", "seconds": "s", "sec": "s", "minute": "min", "minutes": "min",
-    "hour": "h", "hours": "h", "hr": "h", "ohm": "Ω", "ohms": "Ω", "μs": "µs", "us": "µs", "watt": "w", "watts": "w", "volt": "v", "volts": "v",
-    "amp": "a", "amps": "a", "ampere": "a", "amperes": "a", "meter": "m", "meters": "m", "metre": "m", "metres": "m", "gram": "g", "grams": "g",
-    "newton": "n", "newtons": "n", "hertz": "hz", "decibel": "db", "decibels": "db", "pascal": "pa", "pascals": "pa", "degree": "°", "degrees": "°",
-    "percent": "%", "byte": "b", "bytes": "b", "kilogram": "kg", "kilograms": "kg", "kilometer": "km", "kilometers": "km",
-    "millimeter": "mm", "millimeters": "mm", "centimeter": "cm", "centimeters": "cm",
+    "millisecond": "ms",
+    "milliseconds": "ms",
+    "msec": "ms",
+    "second": "s",
+    "seconds": "s",
+    "sec": "s",
+    "minute": "min",
+    "minutes": "min",
+    "hour": "h",
+    "hours": "h",
+    "hr": "h",
+    "ohm": "Ω",
+    "ohms": "Ω",
+    "μs": "µs",
+    "us": "µs",
+    "watt": "w",
+    "watts": "w",
+    "volt": "v",
+    "volts": "v",
+    "amp": "a",
+    "amps": "a",
+    "ampere": "a",
+    "amperes": "a",
+    "meter": "m",
+    "meters": "m",
+    "metre": "m",
+    "metres": "m",
+    "gram": "g",
+    "grams": "g",
+    "newton": "n",
+    "newtons": "n",
+    "hertz": "hz",
+    "decibel": "db",
+    "decibels": "db",
+    "pascal": "pa",
+    "pascals": "pa",
+    "degree": "°",
+    "degrees": "°",
+    "percent": "%",
+    "byte": "b",
+    "bytes": "b",
+    "kilogram": "kg",
+    "kilograms": "kg",
+    "kilometer": "km",
+    "kilometers": "km",
+    "millimeter": "mm",
+    "millimeters": "mm",
+    "centimeter": "cm",
+    "centimeters": "cm",
 }
 # "Step 1:", "(2)", "3. ": a separator must be followed by a space, or "99.9% ..." would lose its "99."
 _ENUMERATOR = re.compile(r"^\s*(?:step\s*)?\(?\d{1,3}(?:[.:]\s+|\)\s*)", re.IGNORECASE)
@@ -77,12 +176,16 @@ _MIN_STANDARD_DIGITS = 3  # "RS-422", "ISO 9001", "DO-178C" cite a standard; "UA
 
 
 def _cites_standard(text: str) -> bool:
-    return any(sum(c.isdigit() for c in m.group()) >= _MIN_STANDARD_DIGITS for m in _STANDARD.finditer(text))
+    return any(
+        sum(c.isdigit() for c in m.group()) >= _MIN_STANDARD_DIGITS
+        for m in _STANDARD.finditer(text)
+    )
 
 
 @dataclass(frozen=True)
 class Grounding:
     """The values stated in a body of text (see `given_values`)."""
+
     numbers: frozenset[str] = frozenset()
     units: frozenset[str] = frozenset()
     standards: frozenset[str] = frozenset()
@@ -90,7 +193,11 @@ class Grounding:
 
 
 def _normalise(text: str) -> str:
-    text = unicodedata.normalize("NFKC", _THOUSANDS.sub("", text or "")).translate(_BIDI).translate(_DASHES)  # before NFKC, which turns the thin spaces into plain ones
+    text = (
+        unicodedata.normalize("NFKC", _THOUSANDS.sub("", text or ""))
+        .translate(_BIDI)
+        .translate(_DASHES)
+    )  # before NFKC, which turns the thin spaces into plain ones
     text = _WORD_NUMBER.sub(lambda m: str(_WORD_NUMBERS[m.group(1).casefold()]), text)
     return _ONE_BEFORE_UNIT.sub("1", text)
 
@@ -98,7 +205,9 @@ def _normalise(text: str) -> str:
 def _number_key(raw: str) -> str:
     try:
         return format(Decimal(raw).normalize(), "f")
-    except InvalidOperation:  # unreachable for the number pattern; a value that cannot be read never matches anything
+    except (
+        InvalidOperation
+    ):  # unreachable for the number pattern; a value that cannot be read never matches anything
         return raw
 
 
@@ -116,7 +225,11 @@ def _values(text: str, standard_digits_count: bool) -> Grounding:
     in a criterion they belong to the standard, which is checked as a whole."""
     text = _normalise(text)
     standards = {_standard_key(m.group()) for m in _STANDARD.finditer(text)}
-    numbers = {_number_key(n) for m in _STANDARD.finditer(text) for n in _NUMBER.findall(m.group())} if standard_digits_count else set()
+    numbers = (
+        {_number_key(n) for m in _STANDARD.finditer(text) for n in _NUMBER.findall(m.group())}
+        if standard_digits_count
+        else set()
+    )
     text = _STANDARD.sub(" ", text)
     refs = {m.group() for m in _SECTION_REF.finditer(text)}
     text = _SECTION_REF.sub(" ", text)
@@ -130,7 +243,12 @@ def given_values(texts: Iterable[str]) -> Grounding:
     merged = Grounding()
     for text in texts:
         found = _values(text, True)
-        merged = Grounding(merged.numbers | found.numbers, merged.units | found.units, merged.standards | found.standards, merged.refs | found.refs)
+        merged = Grounding(
+            merged.numbers | found.numbers,
+            merged.units | found.units,
+            merged.standards | found.standards,
+            merged.refs | found.refs,
+        )
     return merged
 
 
@@ -151,6 +269,8 @@ def has_quantity(text: str) -> bool:
     verified. A bare count, a section reference or a version is not one."""
     text = _LEADING_ID.sub("", _normalise(text), count=1)
     return bool(
-        _cites_standard(text) or _VERIFICATION.search(text) or _COMPARATOR_NUMBER.search(text)
+        _cites_standard(text)
+        or _VERIFICATION.search(text)
+        or _COMPARATOR_NUMBER.search(text)
         or _UNIT.search(_SECTION_REF.sub(" ", text))
     )

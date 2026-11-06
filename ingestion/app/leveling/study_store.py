@@ -11,6 +11,7 @@ Fail open, like app.survey.llm_cache: with no Redis client, or after any Redis e
 warning per run, without keys or user data).
 
 Thread use: every call on a StudyRun is made from ONE coordinator thread (a run keeps a plain list of the keys it wrote, no locks)."""
+
 from __future__ import annotations
 
 import hashlib
@@ -54,9 +55,23 @@ def study_version() -> str:
     apply (precedent: app.kb.profile.extraction_version). The source of the validation functions is part of it, so editing them invalidates
     stored findings even when _CODE_PASS_VERSION is not bumped; so is windows_of (app.kb.profile), which defines what window index i means."""
     parts = [
-        load_prompt("study_document"), json.dumps(document_study_schema(), sort_keys=True),
-        STUDY_WINDOW_CHARS, STUDY_WINDOW_OVERLAP, _MAX_QUOTE_CHARS, _MAX_TOKEN_CHARS, _CODE_PASS_VERSION,
-        *(_source_of(fn) for fn in (window_findings, contains_token, _is_marker_text, _checked_answer, windows_of)),
+        load_prompt("study_document"),
+        json.dumps(document_study_schema(), sort_keys=True),
+        STUDY_WINDOW_CHARS,
+        STUDY_WINDOW_OVERLAP,
+        _MAX_QUOTE_CHARS,
+        _MAX_TOKEN_CHARS,
+        _CODE_PASS_VERSION,
+        *(
+            _source_of(fn)
+            for fn in (
+                window_findings,
+                contains_token,
+                _is_marker_text,
+                _checked_answer,
+                windows_of,
+            )
+        ),
     ]
     return hashlib.sha256(json.dumps(parts).encode("utf-8")).hexdigest()[:12]
 
@@ -66,7 +81,9 @@ def _is_strings(value: object) -> bool:
 
 
 def _is_pairs(value: object) -> bool:
-    return isinstance(value, list) and all(isinstance(p, list) and len(p) == 2 and _is_strings(p) for p in value)
+    return isinstance(value, list) and all(
+        isinstance(p, list) and len(p) == 2 and _is_strings(p) for p in value
+    )
 
 
 def _parse(raw: object) -> WindowFindings | None:
@@ -80,13 +97,17 @@ def _parse(raw: object) -> WindowFindings | None:
         return None
     if not all(_is_pairs(data[n]) if n in _PAIR_FIELDS else _is_strings(data[n]) for n in names):
         return None
-    return WindowFindings(**{
-        n: tuple(tuple(item) if n in _PAIR_FIELDS else item for item in data[n]) for n in names
-    })
+    return WindowFindings(
+        **{n: tuple(tuple(item) if n in _PAIR_FIELDS else item for item in data[n]) for n in names}
+    )
 
 
 def _dump(findings: WindowFindings) -> str:
-    return json.dumps({n: getattr(findings, n) for n in WindowFindings.__dataclass_fields__}, ensure_ascii=False, separators=(",", ":"))
+    return json.dumps(
+        {n: getattr(findings, n) for n in WindowFindings.__dataclass_fields__},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 class StudyStore:
@@ -120,7 +141,11 @@ class StudyRun:
         self._down = True
         if not self._warned:
             self._warned = True
-            logger.warning("Study store unavailable (%s: %s); the document study runs without it.", action, type(error).__name__)
+            logger.warning(
+                "Study store unavailable (%s: %s); the document study runs without it.",
+                action,
+                type(error).__name__,
+            )
 
     def get(self, index: int) -> WindowFindings | None:
         """The stored findings of window `index`; a missing, unreadable or foreign value is a miss and is never deleted."""

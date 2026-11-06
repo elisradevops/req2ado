@@ -9,6 +9,7 @@ test_pdf_loader.py). Kept as its own minimal fixture, separate from
 table_with_image_header.pdf, so this regression property is provable
 without any interaction with that fixture's real (mocked-out) OCR call.
 """
+
 from pathlib import Path
 
 from reportlab.lib import colors

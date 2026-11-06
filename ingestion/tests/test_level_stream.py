@@ -3,6 +3,7 @@
 The whole SURVEY run used to be one silent HTTP request, so its caller's socket timer (an hour) was a limit on the job's total duration:
 two Opus jobs that were still scoring were cut at 60 minutes. A heartbeat every few seconds shows the connection is alive and the run
 is working; the caller's limit is now silence, not total time. Closing the stream (the caller went away) cancels the run."""
+
 import asyncio
 import json
 
@@ -26,10 +27,19 @@ def test_heartbeats_while_the_run_works_then_one_result_line_with_the_payload() 
             await asyncio.sleep(0.35)
             return {"tree": {"nodes": []}, "rubric": {"version": "v1", "degraded": False}}
 
-        lines = await collect(ndjson_stream(work, job_cancel.CancelToken(), heartbeat_seconds=0.1, describe_failure=failure))
+        lines = await collect(
+            ndjson_stream(
+                work, job_cancel.CancelToken(), heartbeat_seconds=0.1, describe_failure=failure
+            )
+        )
         kinds = [line["type"] for line in lines]
-        assert kinds[-1] == "result" and kinds.count("result") == 1 and kinds.count("heartbeat") >= 2
-        assert lines[-1]["tree"] == {"nodes": []} and lines[-1]["rubric"] == {"version": "v1", "degraded": False}
+        assert (
+            kinds[-1] == "result" and kinds.count("result") == 1 and kinds.count("heartbeat") >= 2
+        )
+        assert lines[-1]["tree"] == {"nodes": []} and lines[-1]["rubric"] == {
+            "version": "v1",
+            "degraded": False,
+        }
         assert all("elapsed" in line for line in lines if line["type"] == "heartbeat")
 
     asyncio.run(scenario())
@@ -40,7 +50,11 @@ def test_a_quick_run_sends_no_heartbeat() -> None:
         async def work() -> dict:
             return {"tree": {}}
 
-        lines = await collect(ndjson_stream(work, job_cancel.CancelToken(), heartbeat_seconds=5, describe_failure=failure))
+        lines = await collect(
+            ndjson_stream(
+                work, job_cancel.CancelToken(), heartbeat_seconds=5, describe_failure=failure
+            )
+        )
         assert [line["type"] for line in lines] == ["result"]
 
     asyncio.run(scenario())
@@ -52,8 +66,14 @@ def test_a_failing_run_ends_with_one_error_line_and_no_result() -> None:
             await asyncio.sleep(0.15)
             raise ValueError("boom")
 
-        lines = await collect(ndjson_stream(work, job_cancel.CancelToken(), heartbeat_seconds=0.1, describe_failure=failure))
-        assert [line["type"] for line in lines][-1] == "error" and "result" not in [line["type"] for line in lines]
+        lines = await collect(
+            ndjson_stream(
+                work, job_cancel.CancelToken(), heartbeat_seconds=0.1, describe_failure=failure
+            )
+        )
+        assert [line["type"] for line in lines][-1] == "error" and "result" not in [
+            line["type"] for line in lines
+        ]
         assert lines[-1]["status"] == 502 and lines[-1]["detail"] == "failed: boom"
 
     asyncio.run(scenario())
@@ -108,7 +128,9 @@ def test_a_stream_cancelled_while_waiting_cancels_the_run_too() -> None:
         seen: list[dict] = []
 
         async def consume():
-            async for raw in ndjson_stream(work, token, heartbeat_seconds=0.05, describe_failure=failure):
+            async for raw in ndjson_stream(
+                work, token, heartbeat_seconds=0.05, describe_failure=failure
+            ):
                 seen.append(json.loads(raw))
 
         consumer = asyncio.ensure_future(consume())

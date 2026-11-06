@@ -15,6 +15,7 @@ read from the first 12,000 characters only. The profile is built from EVERY docu
 The profile accounts for every document (`docs`): contributed, judged not relevant (with the model's reason), nothing
 extractable, or failed. Nothing is dropped without a record. The merge is a pure function of the per-document results and
 does not depend on the order documents arrive in."""
+
 from __future__ import annotations
 
 import hashlib
@@ -136,9 +137,13 @@ class KbProfile(BaseModel):
 
 
 class KbProfileClient(Protocol):
-    def judge_kb_document_relevance(self, name: str, excerpt: str, user_id: str | None = None) -> dict: ...
+    def judge_kb_document_relevance(
+        self, name: str, excerpt: str, user_id: str | None = None
+    ) -> dict: ...
 
-    def extract_kb_document_profile(self, name: str, window_text: str, user_id: str | None = None) -> dict: ...
+    def extract_kb_document_profile(
+        self, name: str, window_text: str, user_id: str | None = None
+    ) -> dict: ...
 
     # Optional: consolidate_kb_categories(categories, max_categories, user_id=None, preferred_names=None)
     #   -> [{name, pass_condition, merged_from}].
@@ -166,7 +171,15 @@ class DocumentCache(Protocol):
 
 def extraction_version() -> str:
     """Identifies how a document is read: change a prompt, the window size or the schema and stored extractions no longer apply."""
-    parts = [SCHEMA_VERSION, load_prompt("kb_document_relevance"), load_prompt("extract_kb_document_profile"), WINDOW_CHARS, WINDOW_OVERLAP, RELEVANCE_EXCERPT_CHARS, EXTRACTION_RUNS]
+    parts = [
+        SCHEMA_VERSION,
+        load_prompt("kb_document_relevance"),
+        load_prompt("extract_kb_document_profile"),
+        WINDOW_CHARS,
+        WINDOW_OVERLAP,
+        RELEVANCE_EXCERPT_CHARS,
+        EXTRACTION_RUNS,
+    ]
     return hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:24]
 
 
@@ -229,7 +242,7 @@ def windows_of(text: str, size: int = WINDOW_CHARS, overlap: int = WINDOW_OVERLA
         return [text]
     windows, start = [], 0
     while start < len(text):
-        windows.append(text[start:start + size])
+        windows.append(text[start : start + size])
         if start + size >= len(text):
             break
         start += size - overlap
@@ -239,14 +252,26 @@ def windows_of(text: str, size: int = WINDOW_CHARS, overlap: int = WINDOW_OVERLA
 def build_version() -> str:
     """How a profile is built: the extraction (prompts, windows, runs, schema) and the merge (its prompt, runs, ceiling). A change to any
     of them makes a stored profile stale, so an improvement reaches jobs by itself instead of waiting for a document to change."""
-    parts = [extraction_version(), load_prompt("consolidate_kb_categories"), CONSOLIDATION_RUNS, MAX_SCORING_CATEGORIES]
+    parts = [
+        extraction_version(),
+        load_prompt("consolidate_kb_categories"),
+        CONSOLIDATION_RUNS,
+        MAX_SCORING_CATEGORIES,
+    ]
     return hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:24]
 
 
 def profile_version(documents: dict[str, str], model: str) -> str:
     """Changes with any document's text, the set of documents, the building model, or how a profile is built (build_version); nothing
     else."""
-    parts = [SCHEMA_VERSION, build_version(), model, sorted((name, hashlib.sha256(text.encode()).hexdigest()) for name, text in documents.items())]
+    parts = [
+        SCHEMA_VERSION,
+        build_version(),
+        model,
+        sorted(
+            (name, hashlib.sha256(text.encode()).hexdigest()) for name, text in documents.items()
+        ),
+    ]
     return hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:24]
 
 
@@ -260,24 +285,48 @@ def _union(into: dict, extracted: dict) -> None:
         "categories": {_key(c.get("name", "")) for c in into["categories"]},
         "rules": {_key(r) for r in into["rules"]},
         "glossary": {_key(g.get("term", "")) for g in into["glossary"]},
-        "type_definitions": {(d.get("item_type"), _key(d.get("text", ""))) for d in into["type_definitions"]},
+        "type_definitions": {
+            (d.get("item_type"), _key(d.get("text", ""))) for d in into["type_definitions"]
+        },
     }
     for c in extracted.get("categories") or []:
-        if isinstance(c, dict) and str(c.get("name", "")).strip() and _key(c["name"]) not in seen["categories"]:
+        if (
+            isinstance(c, dict)
+            and str(c.get("name", "")).strip()
+            and _key(c["name"]) not in seen["categories"]
+        ):
             seen["categories"].add(_key(c["name"]))
-            into["categories"].append({"name": " ".join(c["name"].split()), "pass_condition": " ".join(str(c.get("pass_condition") or "").split()) or None})
+            into["categories"].append(
+                {
+                    "name": " ".join(c["name"].split()),
+                    "pass_condition": " ".join(str(c.get("pass_condition") or "").split()) or None,
+                }
+            )
     for r in extracted.get("rules") or []:
         if isinstance(r, str) and r.strip() and _key(r) not in seen["rules"]:
             seen["rules"].add(_key(r))
             into["rules"].append(" ".join(r.split()).rstrip("."))
     for g in extracted.get("glossary") or []:
-        if isinstance(g, dict) and str(g.get("term", "")).strip() and _key(g["term"]) not in seen["glossary"]:
+        if (
+            isinstance(g, dict)
+            and str(g.get("term", "")).strip()
+            and _key(g["term"]) not in seen["glossary"]
+        ):
             seen["glossary"].add(_key(g["term"]))
-            into["glossary"].append({"term": " ".join(g["term"].split()), "definition": " ".join(str(g.get("definition", "")).split())})
+            into["glossary"].append(
+                {
+                    "term": " ".join(g["term"].split()),
+                    "definition": " ".join(str(g.get("definition", "")).split()),
+                }
+            )
     for d in extracted.get("type_definitions") or []:
         kind = str(d.get("item_type", "")).casefold() if isinstance(d, dict) else ""
         text = " ".join(str(d.get("text", "")).split()) if isinstance(d, dict) else ""
-        if kind in ("epic", "feature", "requirement") and text and (kind, _key(text)) not in seen["type_definitions"]:
+        if (
+            kind in ("epic", "feature", "requirement")
+            and text
+            and (kind, _key(text)) not in seen["type_definitions"]
+        ):
             seen["type_definitions"].add((kind, _key(text)))
             into["type_definitions"].append({"item_type": kind, "text": text})
 
@@ -290,7 +339,10 @@ def _combine_runs(run_results: list[dict]) -> dict:
     cats: dict[str, dict] = {}
     for run, result in enumerate(run_results):
         for category in result["categories"]:
-            entry = cats.setdefault(_key(category["name"]), {"spellings": {}, "conditions": {}, "runs": [], "first": len(cats)})
+            entry = cats.setdefault(
+                _key(category["name"]),
+                {"spellings": {}, "conditions": {}, "runs": [], "first": len(cats)},
+            )
             entry["runs"].append(run)
             entry["spellings"][category["name"]] = entry["spellings"].get(category["name"], 0) + 1
             condition = category.get("pass_condition")
@@ -301,7 +353,13 @@ def _combine_runs(run_results: list[dict]) -> dict:
         spelling = min(entry["spellings"], key=lambda t: (-entry["spellings"][t], t))
         conditions = entry["conditions"]
         combined["categories"].append(
-            {"name": spelling, "pass_condition": min(conditions, key=lambda t: (-conditions[t], t)) if conditions else None, "runs": entry["runs"]}
+            {
+                "name": spelling,
+                "pass_condition": min(conditions, key=lambda t: (-conditions[t], t))
+                if conditions
+                else None,
+                "runs": entry["runs"],
+            }
         )
     return combined
 
@@ -311,7 +369,10 @@ def _cache_get(cache: DocumentCache, file: str, fingerprint: str) -> dict | None
     try:
         return cache.get(file, fingerprint)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("KB extraction cache read failed (extracting again): %s", redact_identity(" ".join(str(exc).split()))[:200])
+        logger.warning(
+            "KB extraction cache read failed (extracting again): %s",
+            redact_identity(" ".join(str(exc).split()))[:200],
+        )
         return None
 
 
@@ -319,19 +380,31 @@ def _cache_put(cache: DocumentCache, file: str, fingerprint: str, result: dict) 
     try:
         cache.put(file, fingerprint, result)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("KB extraction cache write failed (not stored): %s", redact_identity(" ".join(str(exc).split()))[:200])
+        logger.warning(
+            "KB extraction cache write failed (not stored): %s",
+            redact_identity(" ".join(str(exc).split()))[:200],
+        )
 
 
 def _cache_keep_only(cache: DocumentCache, files: set[str]) -> None:
     try:
         cache.keep_only(files)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("KB extraction cache cleanup failed: %s", redact_identity(" ".join(str(exc).split()))[:200])
+        logger.warning(
+            "KB extraction cache cleanup failed: %s",
+            redact_identity(" ".join(str(exc).split()))[:200],
+        )
 
 
 def build_profile(
-    documents: dict[str, str], client: KbProfileClient, *, model: str, user_id: str | None = None, previous: KbProfile | None = None,
-    cache: DocumentCache | None = None, read_cache: bool = True,
+    documents: dict[str, str],
+    client: KbProfileClient,
+    *,
+    model: str,
+    user_id: str | None = None,
+    previous: KbProfile | None = None,
+    cache: DocumentCache | None = None,
+    read_cache: bool = True,
 ) -> KbProfile:
     """Maps every document, then merges. Never raises for a document: each ends with a recorded status. `previous` (the profile
     this one replaces) only lends its category names and groups to the merge. `cache` holds each document's earlier extraction: a
@@ -346,24 +419,38 @@ def build_profile(
     for name in sorted(documents):
         text = documents[name]
         fingerprint = _fingerprint(text, model) if cache is not None else ""
-        remembered = _cache_get(cache, name, fingerprint) if cache is not None and read_cache else None
+        remembered = (
+            _cache_get(cache, name, fingerprint) if cache is not None and read_cache else None
+        )
         if remembered is not None:
             cached_documents += 1
             if remembered.get("status") == "not_relevant":
-                statuses.append(DocumentStatus(file=name, status="not_relevant", reason=remembered.get("reason") or "judged not relevant"))
+                statuses.append(
+                    DocumentStatus(
+                        file=name,
+                        status="not_relevant",
+                        reason=remembered.get("reason") or "judged not relevant",
+                    )
+                )
             else:
                 counts = {k: len(v) for k, v in remembered["extracted"].items()}
                 extracted[name] = remembered["extracted"]
                 statuses.append(
                     DocumentStatus(
-                        file=name, status="contributed", categories=counts["categories"], rules=counts["rules"],
-                        type_definitions=counts["type_definitions"], glossary=counts["glossary"],
+                        file=name,
+                        status="contributed",
+                        categories=counts["categories"],
+                        rules=counts["rules"],
+                        type_definitions=counts["type_definitions"],
+                        glossary=counts["glossary"],
                     )
                 )
             continue
         verdict_ok = True
         try:
-            verdict = client.judge_kb_document_relevance(name, text[:RELEVANCE_EXCERPT_CHARS], user_id=user_id)
+            verdict = client.judge_kb_document_relevance(
+                name, text[:RELEVANCE_EXCERPT_CHARS], user_id=user_id
+            )
             relevant = bool(verdict.get("relevant", True)) if isinstance(verdict, dict) else True
             reason = str(verdict.get("reason") or "")[:300] if isinstance(verdict, dict) else ""
         except Exception as exc:  # noqa: BLE001 -- relevant unless clearly not: a failed judgement never drops a document
@@ -371,7 +458,11 @@ def build_profile(
             relevant, reason, verdict_ok = True, "", False
             degraded = True
         if not relevant:
-            statuses.append(DocumentStatus(file=name, status="not_relevant", reason=reason or "judged not relevant"))
+            statuses.append(
+                DocumentStatus(
+                    file=name, status="not_relevant", reason=reason or "judged not relevant"
+                )
+            )
             if cache is not None and verdict_ok:
                 _cache_put(cache, name, fingerprint, {"status": "not_relevant", "reason": reason})
             continue
@@ -381,7 +472,9 @@ def build_profile(
         # window), so what is merged, and in which order, is what the sequential loop gave.
         calls_in_order = [(run, window) for run in range(EXTRACTION_RUNS) for window in windows]
         outcomes = run_chunks_bounded(
-            calls_in_order, lambda call: client.extract_kb_document_profile(name, call[1], user_id=user_id), settings.kb_profile_concurrency,
+            calls_in_order,
+            lambda call: client.extract_kb_document_profile(name, call[1], user_id=user_id),
+            settings.kb_profile_concurrency,
         )
         for (run, _window), outcome in zip(calls_in_order, outcomes):
             if outcome.error is None:
@@ -395,34 +488,57 @@ def build_profile(
         if errors and len(errors) == calls:
             statuses.append(DocumentStatus(file=name, status="failed", reason=errors[0]))
         elif sum(counts.values()) == 0:
-            statuses.append(DocumentStatus(file=name, status="extracted_nothing", reason="no categories, definitions, rules or terms found"))
+            statuses.append(
+                DocumentStatus(
+                    file=name,
+                    status="extracted_nothing",
+                    reason="no categories, definitions, rules or terms found",
+                )
+            )
         else:
             extracted[name] = combined
             statuses.append(
                 DocumentStatus(
-                    file=name, status="contributed",
+                    file=name,
+                    status="contributed",
                     reason=f"{len(errors)} of {calls} extraction calls failed" if errors else None,
-                    categories=counts["categories"], rules=counts["rules"],
-                    type_definitions=counts["type_definitions"], glossary=counts["glossary"],
+                    categories=counts["categories"],
+                    rules=counts["rules"],
+                    type_definitions=counts["type_definitions"],
+                    glossary=counts["glossary"],
                 )
             )
             if cache is not None and verdict_ok and not errors:
-                _cache_put(cache, name, fingerprint, {"status": "contributed", "extracted": combined})
+                _cache_put(
+                    cache, name, fingerprint, {"status": "contributed", "extracted": combined}
+                )
     if cache is not None:
         _cache_keep_only(cache, set(documents))
     profile = merge_document_profiles(extracted, model, version, statuses)
     stats: dict = {}
-    profile.categories, cut = consolidate_categories(profile.categories, client, user_id, previous, stats)
+    profile.categories, cut = consolidate_categories(
+        profile.categories, client, user_id, previous, stats
+    )
     profile.truncated = profile.truncated or cut
     # A build that could not read every document, or whose merge pass got no answer at all, is used but never stored as current.
-    profile.degraded = degraded or (stats.get("runs_asked", 0) > 0 and stats.get("runs_answered", 0) == 0)
+    profile.degraded = degraded or (
+        stats.get("runs_asked", 0) > 0 and stats.get("runs_answered", 0) == 0
+    )
     # Counts only: category names are the company's own material.
     logger.info(
         "KB profile built: documents=%d contributing=%d cached_documents=%d categories=%d rules=%d conflicts=%d runs=%s/%s "
         "contested_pairs=%s duration=%.1fs model=%s",
-        profile.docs_in_kb, profile.docs_contributing, cached_documents, len(profile.categories), len(profile.rules), len(profile.conflicts),
-        stats.get("runs_answered", "-"), stats.get("runs_asked", "-"), stats.get("contested_pairs", "-"),
-        time.monotonic() - started, model,
+        profile.docs_in_kb,
+        profile.docs_contributing,
+        cached_documents,
+        len(profile.categories),
+        len(profile.rules),
+        len(profile.conflicts),
+        stats.get("runs_answered", "-"),
+        stats.get("runs_asked", "-"),
+        stats.get("contested_pairs", "-"),
+        time.monotonic() - started,
+        model,
     )
     return profile
 
@@ -432,11 +548,22 @@ def _representative_key(member: Category, preferred: set[str]):
     documents used, then the one more extraction runs gave, then a plainly written one (capitalised, shorter), then alphabetical. A rule over the documents' own
     words: nothing the model wrote is used, so sampling cannot rename a quality."""
     support = sum(len(runs) for runs in member.seen_in.values())
-    return (_key(member.name) not in preferred, -len(member.sources), -support, 0 if member.name[:1].isupper() else 1, len(member.name), member.name.casefold(), member.name)
+    return (
+        _key(member.name) not in preferred,
+        -len(member.sources),
+        -support,
+        0 if member.name[:1].isupper() else 1,
+        len(member.name),
+        member.name.casefold(),
+        member.name,
+    )
 
 
 def consolidate_categories(
-    categories: list[Category], client: object, user_id: str | None = None, previous: KbProfile | None = None,
+    categories: list[Category],
+    client: object,
+    user_id: str | None = None,
+    previous: KbProfile | None = None,
     stats: dict | None = None,
 ) -> tuple[list[Category], bool]:
     """The merged categories as a canonical list: the model decides which categories judge the same quality, a rule names them.
@@ -449,8 +576,11 @@ def consolidate_categories(
     on what the runs said, not on their order, and names are unique because members are. A list over MAX_SCORING_CATEGORIES is cut
     (best-supported first) as a last safeguard. Returns (categories, cut). `stats`, when given, receives runs_asked, runs_answered and
     contested_pairs (pairs that some, but not all, answering runs grouped) for the build's log line."""
+
     def capped(entries: list[Category]) -> tuple[list[Category], bool]:
-        ordered = sorted(entries, key=lambda c: (-len(c.sources), c.sources[0] if c.sources else "", c.name))
+        ordered = sorted(
+            entries, key=lambda c: (-len(c.sources), c.sources[0] if c.sources else "", c.name)
+        )
         return ordered[:MAX_SCORING_CATEGORIES], len(ordered) > MAX_SCORING_CATEGORIES
 
     majority = EXTRACTION_RUNS // 2 + 1
@@ -461,7 +591,9 @@ def consolidate_categories(
 
     def unmerged() -> tuple[list[Category], bool]:
         kept = [c for c in categories if supported(c.seen_in)] or list(categories)
-        return [c.model_copy(update={"merged_from": [c.name]}) for c in kept[:MAX_SCORING_CATEGORIES]], len(kept) > MAX_SCORING_CATEGORIES
+        return [
+            c.model_copy(update={"merged_from": [c.name]}) for c in kept[:MAX_SCORING_CATEGORIES]
+        ], len(kept) > MAX_SCORING_CATEGORIES
 
     by_key = {_key(c.name): c for c in categories}
     keys = list(by_key)
@@ -469,7 +601,12 @@ def consolidate_categories(
     previous_groups = [
         still_named
         for earlier in (previous.categories if previous else [])
-        if len(still_named := [k for k in dict.fromkeys(_key(m) for m in earlier.merged_from) if k in by_key]) > 1
+        if len(
+            still_named := [
+                k for k in dict.fromkeys(_key(m) for m in earlier.merged_from) if k in by_key
+            ]
+        )
+        > 1
     ]
     consolidate = getattr(client, "consolidate_kb_categories", None)
     if len(categories) < 2 or (consolidate is None and not previous_groups):
@@ -478,17 +615,26 @@ def consolidate_categories(
     previous_names = [c.name for c in previous.categories] if previous else []
     extra = {"preferred_names": previous_names} if previous_names else {}
 
-    runs: list[list[list[str]]] = []  # per answering run: groups of member keys, every key exactly once
+    runs: list[
+        list[list[str]]
+    ] = []  # per answering run: groups of member keys, every key exactly once
     for _ in range(CONSOLIDATION_RUNS if consolidate is not None else 0):
         try:
             groups = consolidate(payload, MAX_SCORING_CATEGORIES, user_id=user_id, **extra)
         except Exception as exc:  # noqa: BLE001 -- the merge only shortens the list; the profile is built either way
-            logger.warning("KB category consolidation run failed: %s", redact_identity(" ".join(str(exc).split()))[:200])
+            logger.warning(
+                "KB category consolidation run failed: %s",
+                redact_identity(" ".join(str(exc).split()))[:200],
+            )
             continue
         placed: set[str] = set()
         parsed: list[list[str]] = []
         for group in groups or []:
-            members = [k for k in dict.fromkeys(_key(m) for m in group.get("merged_from", [])) if k in by_key and k not in placed]
+            members = [
+                k
+                for k in dict.fromkeys(_key(m) for m in group.get("merged_from", []))
+                if k in by_key and k not in placed
+            ]
             if members:
                 placed.update(members)
                 parsed.append(members)
@@ -497,7 +643,9 @@ def consolidate_categories(
     if stats is not None and consolidate is not None:
         stats.update(runs_asked=CONSOLIDATION_RUNS, runs_answered=len(runs))
     if not runs and not previous_groups:
-        logger.warning("KB category consolidation gave no usable answer; keeping the capped deterministic list")
+        logger.warning(
+            "KB category consolidation gave no usable answer; keeping the capped deterministic list"
+        )
         return unmerged()
 
     parent = {k: k for k in keys}
@@ -510,7 +658,9 @@ def consolidate_categories(
 
     def union(a: str, b: str) -> None:
         root_a, root_b = find(a), find(b)
-        if root_a != root_b:  # the earlier input is the root, so the outcome never depends on call order
+        if (
+            root_a != root_b
+        ):  # the earlier input is the root, so the outcome never depends on call order
             low, high = sorted((root_a, root_b), key=position.__getitem__)
             parent[high] = low
 
@@ -522,7 +672,7 @@ def consolidate_categories(
     for run in runs:
         for members in run:
             for i, a in enumerate(members):
-                for b in members[i + 1:]:
+                for b in members[i + 1 :]:
                     pair = (a, b) if position[a] < position[b] else (b, a)
                     together[pair] = together.get(pair, 0) + 1
     if stats is not None:
@@ -543,11 +693,15 @@ def consolidate_categories(
         pooled: dict[str, set[int]] = {}
         for m in members:
             for doc, runs in m.seen_in.items():
-                pooled.setdefault(doc, set()).update(runs)  # a run that produced two wordings of one quality counts once
+                pooled.setdefault(doc, set()).update(
+                    runs
+                )  # a run that produced two wordings of one quality counts once
         entries.append(
             Category(
-                name=ranked[0].name, pass_condition=condition,
-                sources=sorted({src for m in members for src in m.sources}), merged_from=[m.name for m in members],
+                name=ranked[0].name,
+                pass_condition=condition,
+                sources=sorted({src for m in members for src in m.sources}),
+                merged_from=[m.name for m in members],
                 seen_in={doc: sorted(runs) for doc, runs in pooled.items()},
             )
         )
@@ -556,13 +710,20 @@ def consolidate_categories(
     return capped(entries)
 
 
-def merge_document_profiles(extracted: dict[str, dict], model: str, version: str, statuses: list[DocumentStatus] | None = None) -> KbProfile:
+def merge_document_profiles(
+    extracted: dict[str, dict],
+    model: str,
+    version: str,
+    statuses: list[DocumentStatus] | None = None,
+) -> KbProfile:
     """The deterministic reduce step; a pure function of the per-document results."""
     names = sorted(extracted)
     rank = {name: i for i, name in enumerate(names)}
 
     def ranked(entries: dict[str, dict], cap: int) -> tuple[list[dict], bool]:
-        ordered = sorted(entries.values(), key=lambda e: (-len(e["sources"]), rank[e["sources"][0]], e["index"]))
+        ordered = sorted(
+            entries.values(), key=lambda e: (-len(e["sources"]), rank[e["sources"][0]], e["index"])
+        )
         return ordered[:cap], len(ordered) > cap
 
     categories: dict[str, dict] = {}
@@ -573,20 +734,33 @@ def merge_document_profiles(extracted: dict[str, dict], model: str, version: str
     for name in names:
         for index, c in enumerate(extracted[name]["categories"]):
             key = _key(c["name"])
-            entry = categories.setdefault(key, {"name": c["name"], "sources": [], "index": index, "seen_in": {}})
+            entry = categories.setdefault(
+                key, {"name": c["name"], "sources": [], "index": index, "seen_in": {}}
+            )
             entry["sources"].append(name)
-            entry["seen_in"][name] = sorted(set(entry["seen_in"].get(name, [])) | set(c.get("runs") or [0]))
+            entry["seen_in"][name] = sorted(
+                set(entry["seen_in"].get(name, [])) | set(c.get("runs") or [0])
+            )
             if c.get("pass_condition"):
-                variant = category_variants.setdefault(key, {}).setdefault(_key(c["pass_condition"]), Variant(text=c["pass_condition"], sources=[]))
+                variant = category_variants.setdefault(key, {}).setdefault(
+                    _key(c["pass_condition"]), Variant(text=c["pass_condition"], sources=[])
+                )
                 variant.sources.append(name)
         for index, rule in enumerate(extracted[name]["rules"]):
             key = _key(rule)
-            rules.setdefault(key, {"text": rule, "sources": [], "index": index})["sources"].append(name)
+            rules.setdefault(key, {"text": rule, "sources": [], "index": index})["sources"].append(
+                name
+            )
         for index, g in enumerate(extracted[name]["glossary"]):
             key = _key(g["term"])
-            glossary.setdefault(key, {"term": g["term"], "definition": g["definition"], "sources": [], "index": index})["sources"].append(name)
+            glossary.setdefault(
+                key,
+                {"term": g["term"], "definition": g["definition"], "sources": [], "index": index},
+            )["sources"].append(name)
         for d in extracted[name]["type_definitions"]:
-            variant = definitions.setdefault(d["item_type"], {}).setdefault(_key(d["text"]), Variant(text=d["text"], sources=[]))
+            variant = definitions.setdefault(d["item_type"], {}).setdefault(
+                _key(d["text"]), Variant(text=d["text"], sources=[])
+            )
             variant.sources.append(name)
 
     conflicts: list[Conflict] = []
@@ -594,24 +768,53 @@ def merge_document_profiles(extracted: dict[str, dict], model: str, version: str
     out_categories = []
     for entry in category_list:
         key = _key(entry["name"])
-        variants = sorted(category_variants.get(key, {}).values(), key=lambda v: (-len(v.sources), v.sources[0]))
-        out_categories.append(Category(name=entry["name"], pass_condition=variants[0].text if variants else None, sources=entry["sources"], seen_in=entry["seen_in"]))
+        variants = sorted(
+            category_variants.get(key, {}).values(), key=lambda v: (-len(v.sources), v.sources[0])
+        )
+        out_categories.append(
+            Category(
+                name=entry["name"],
+                pass_condition=variants[0].text if variants else None,
+                sources=entry["sources"],
+                seen_in=entry["seen_in"],
+            )
+        )
         if len(variants) > 1:
-            conflicts.append(Conflict(kind="category", key=key, variants=sorted(variants, key=lambda v: v.sources[0])))
+            conflicts.append(
+                Conflict(
+                    kind="category", key=key, variants=sorted(variants, key=lambda v: v.sources[0])
+                )
+            )
     out_definitions = []
     for kind in ("epic", "feature", "requirement"):
-        variants = sorted(definitions.get(kind, {}).values(), key=lambda v: (-len(v.sources), v.sources[0]))
+        variants = sorted(
+            definitions.get(kind, {}).values(), key=lambda v: (-len(v.sources), v.sources[0])
+        )
         if variants:
-            out_definitions.append(TypeDefinition(item_type=kind, text=variants[0].text, sources=variants[0].sources))  # type: ignore[arg-type]
+            out_definitions.append(
+                TypeDefinition(item_type=kind, text=variants[0].text, sources=variants[0].sources)
+            )  # type: ignore[arg-type]
         if len(variants) > 1:
-            conflicts.append(Conflict(kind="type_definition", key=kind, variants=sorted(variants, key=lambda v: v.sources[0])))
+            conflicts.append(
+                Conflict(
+                    kind="type_definition",
+                    key=kind,
+                    variants=sorted(variants, key=lambda v: v.sources[0]),
+                )
+            )
     rule_list, cut_rules = ranked(rules, MAX_RULES)
     glossary_list, cut_glossary = ranked(glossary, MAX_GLOSSARY)
     return KbProfile(
-        version=version, built_with=model, docs=sorted(statuses or [], key=lambda d: d.file),
-        categories=out_categories, type_definitions=out_definitions,
+        version=version,
+        built_with=model,
+        docs=sorted(statuses or [], key=lambda d: d.file),
+        categories=out_categories,
+        type_definitions=out_definitions,
         rules=[Rule(text=r["text"], sources=r["sources"]) for r in rule_list],
-        glossary=[GlossaryTerm(term=g["term"], definition=g["definition"], sources=g["sources"]) for g in glossary_list],
+        glossary=[
+            GlossaryTerm(term=g["term"], definition=g["definition"], sources=g["sources"])
+            for g in glossary_list
+        ],
         conflicts=sorted(conflicts, key=lambda c: (c.kind, c.key)),
         truncated=cut_categories or cut_rules or cut_glossary,
     )
@@ -633,7 +836,13 @@ def _lock_for(user_id: str) -> threading.Lock:
 
 
 def ensure_profile(
-    user_id: str, kb: KbDocuments, store: ProfileStore, client: KbProfileClient, *, model: str, refresh: bool = False,
+    user_id: str,
+    kb: KbDocuments,
+    store: ProfileStore,
+    client: KbProfileClient,
+    *,
+    model: str,
+    refresh: bool = False,
 ) -> KbProfile | None:
     """The user's profile: the stored one while nothing changed, otherwise a rebuilt (and stored) one; None with no KB.
 
@@ -650,20 +859,30 @@ def ensure_profile(
         if not texts:
             return None
         existing = store.get(user_id)
-        if existing is not None and not refresh and existing.version == profile_version(texts, model):
+        if (
+            existing is not None
+            and not refresh
+            and existing.version == profile_version(texts, model)
+        ):
             return existing
         make_cache = getattr(store, "document_cache", None)
         profile = build_profile(
-            texts, client, model=model, user_id=user_id,
+            texts,
+            client,
+            model=model,
+            user_id=user_id,
             # A refresh starts from the documents: earlier merges (which only ever grow) are not carried over.
             previous=None if refresh else existing,
-            cache=make_cache(user_id) if make_cache else None, read_cache=not refresh,
+            cache=make_cache(user_id) if make_cache else None,
+            read_cache=not refresh,
         )
         profile.built_at = datetime.now(UTC).isoformat()
         if profile.degraded:
             # Used for the job at hand, never stored as current: the next job rebuilds (the documents that did succeed come from the
             # cache), instead of every later job scoring without the knowledge base's standard until a document changes.
-            logger.warning("KB profile build was incomplete; it is used for this request and not stored")
+            logger.warning(
+                "KB profile build was incomplete; it is used for this request and not stored"
+            )
             return profile
         store.put(user_id, profile)
         return profile
@@ -703,7 +922,9 @@ class ChromaProfileStore:
             return RubricOverrides()
 
     def put_overrides(self, user_id: str, overrides) -> None:
-        self._kb_store.put_profile_part(user_id, "rubric-overrides", overrides.model_dump_json(), "rubric-overrides")
+        self._kb_store.put_profile_part(
+            user_id, "rubric-overrides", overrides.model_dump_json(), "rubric-overrides"
+        )
 
 
 _DOC_PREFIX = "doc:"
@@ -728,23 +949,47 @@ class _ChromaDocumentCache:
 
     def get(self, file: str, fingerprint: str) -> dict | None:
         entry = self._read(_doc_part_id(file))
-        return entry["result"] if entry and entry.get("fingerprint") == fingerprint and entry.get("file") == file else None
+        return (
+            entry["result"]
+            if entry and entry.get("fingerprint") == fingerprint and entry.get("file") == file
+            else None
+        )
 
     def put(self, file: str, fingerprint: str, result: dict) -> None:
-        self._kb_store.put_profile_part(self._user_id, _doc_part_id(file), json.dumps({"file": file, "fingerprint": fingerprint, "result": result}))
+        self._kb_store.put_profile_part(
+            self._user_id,
+            _doc_part_id(file),
+            json.dumps({"file": file, "fingerprint": fingerprint, "result": result}),
+        )
 
     def files(self) -> list[str]:
-        return sorted(e["file"] for e in (self._read(i) for i in self._kb_store.list_profile_part_ids(self._user_id, _DOC_PREFIX)) if e)
+        return sorted(
+            e["file"]
+            for e in (
+                self._read(i)
+                for i in self._kb_store.list_profile_part_ids(self._user_id, _DOC_PREFIX)
+            )
+            if e
+        )
 
     def keep_only(self, files: set[str]) -> None:
         keep = {_doc_part_id(f) for f in files}
-        self._kb_store.delete_profile_parts(self._user_id, [i for i in self._kb_store.list_profile_part_ids(self._user_id, _DOC_PREFIX) if i not in keep])
+        self._kb_store.delete_profile_parts(
+            self._user_id,
+            [
+                i
+                for i in self._kb_store.list_profile_part_ids(self._user_id, _DOC_PREFIX)
+                if i not in keep
+            ],
+        )
 
 
 SCORING_CONTEXT_MAX_CHARS = 7_500
 
 
-def scoring_inputs(profile: KbProfile | None) -> tuple[list[str] | None, dict[str, str] | None, str | None]:
+def scoring_inputs(
+    profile: KbProfile | None,
+) -> tuple[list[str] | None, dict[str, str] | None, str | None]:
     """What requirement scoring takes from the profile: ONE fixed category list (the same for every batch of the job), the
     pass condition of each category, and a short constant context with those conditions and the mandatory writing rules.
     Its size does not depend on how large the knowledge base is, so scoring requests stay small. (None, None, None) when
@@ -759,7 +1004,10 @@ def scoring_inputs(profile: KbProfile | None) -> tuple[list[str] | None, dict[st
         else "The organization's own standard for judging a requirement (from its knowledge base):"
     )
     lines = [header]
-    lines += [f"- {c.name}: {c.pass_condition}" if c.pass_condition else f"- {c.name}" for c in profile.categories]
+    lines += [
+        f"- {c.name}: {c.pass_condition}" if c.pass_condition else f"- {c.name}"
+        for c in profile.categories
+    ]
     if profile.rules:
         lines.append("Mandatory writing rules:")
         lines += [f"- {r.text}" for r in profile.rules]
@@ -775,20 +1023,30 @@ def render_authoring_standard(profile: KbProfile | None) -> str | None:
     organization's own knowledge base says an Epic, Feature and Requirement are, the rules that make a way of writing
     mandatory, its defined terms, and the quality bar a requirement is judged against. None when the profile has none of
     these, so prompts are then byte-identical to what they were before profiles."""
-    if profile is None or profile.source == "default":  # the built-in rubric judges and explains; it is not an authoring standard
+    if (
+        profile is None or profile.source == "default"
+    ):  # the built-in rubric judges and explains; it is not an authoring standard
         return None
     sections: list[str] = []
     if profile.type_definitions:
-        sections.append("Definitions:\n" + "\n".join(f"- {d.item_type.capitalize()}: {d.text}" for d in profile.type_definitions))
+        sections.append(
+            "Definitions:\n"
+            + "\n".join(f"- {d.item_type.capitalize()}: {d.text}" for d in profile.type_definitions)
+        )
     if profile.rules:
         sections.append("Mandatory rules:\n" + "\n".join(f"- {r.text}" for r in profile.rules))
     if profile.categories:
         sections.append(
             "A good requirement is:\n"
-            + "\n".join(f"- {c.name}: {c.pass_condition}" if c.pass_condition else f"- {c.name}" for c in profile.categories)
+            + "\n".join(
+                f"- {c.name}: {c.pass_condition}" if c.pass_condition else f"- {c.name}"
+                for c in profile.categories
+            )
         )
     if profile.glossary:
-        sections.append("Terms:\n" + "\n".join(f"- {g.term}: {g.definition}" for g in profile.glossary))
+        sections.append(
+            "Terms:\n" + "\n".join(f"- {g.term}: {g.definition}" for g in profile.glossary)
+        )
     if not sections:
         return None
     return "\n\n".join(sections)[:AUTHORING_STANDARD_MAX_CHARS]

@@ -18,6 +18,7 @@ one error line when it is unavailable; a release is always attempted, and one th
 
 Thread use: unlike StudyStore, one limiter is shared by the worker threads of a job; `acquire` and `Lease.release` may run on any of
 them. The only shared mutable state is the "down until" time, the probe and the one-time warnings, guarded by a lock."""
+
 from __future__ import annotations
 
 import hashlib
@@ -40,13 +41,17 @@ _PROBE_SCRIPT = "return 1"  # run once per limiter: a server that cannot run the
 _POLL_SECONDS = 0.5  # the first wait between two tries of one acquire; every further miss waits _POLL_BACKOFF times longer, up to _MAX_POLL_SECONDS
 _POLL_BACKOFF = 1.5
 _MAX_POLL_SECONDS = 2.0
-_MAX_SLICE_SECONDS = 1.0  # a wait is slept in slices of at most this, so a cancellation is seen within it
+_MAX_SLICE_SECONDS = (
+    1.0  # a wait is slept in slices of at most this, so a cancellation is seen within it
+)
 
 
 class Lease:
     """The slots one call holds (none for a local lease). Release it when the call ends, or use it as a context manager; releasing twice does nothing."""
 
-    def __init__(self, limiter: LeaseLimiter | None = None, held: tuple[tuple[str, str], ...] = ()) -> None:
+    def __init__(
+        self, limiter: LeaseLimiter | None = None, held: tuple[tuple[str, str], ...] = ()
+    ) -> None:
         self._limiter = limiter
         self._held = held
         self._released = False
@@ -69,14 +74,25 @@ class Lease:
 class LeaseLimiter:
     """`redis_client` is any object with set(key, value, px=..., nx=...) and eval(script, numkeys, key, token) (redis.Redis), or None for no accounting."""
 
-    def __init__(self, redis_client, global_slots: int, user_slots: int, lease_seconds: int, cooldown_seconds: float = 60.0) -> None:
+    def __init__(
+        self,
+        redis_client,
+        global_slots: int,
+        user_slots: int,
+        lease_seconds: int,
+        cooldown_seconds: float = 60.0,
+    ) -> None:
         self._redis = redis_client
         self._global_slots = global_slots
         self._user_slots = user_slots
         self._lease_ms = int(lease_seconds * 1000)
         self._cooldown = cooldown_seconds
-        self._clock: Callable[[], float] = time.monotonic  # the clock of the latest acquire, so a release can start the cooldown too
-        self._down_until = math.inf if redis_client is None else -math.inf  # local leases are served until then
+        self._clock: Callable[[], float] = (
+            time.monotonic
+        )  # the clock of the latest acquire, so a release can start the cooldown too
+        self._down_until = (
+            math.inf if redis_client is None else -math.inf
+        )  # local leases are served until then
         self._probed = False
         self._warned = False
         self._lock = threading.Lock()
@@ -88,7 +104,11 @@ class LeaseLimiter:
             if self._warned:
                 return
             self._warned = True
-        logger.warning("Model lease limiter unavailable (%s: %s); model calls run without a global limit.", action, type(error).__name__)
+        logger.warning(
+            "Model lease limiter unavailable (%s: %s); model calls run without a global limit.",
+            action,
+            type(error).__name__,
+        )
 
     def _lua_available(self) -> bool:
         """Probes once (remembered for the limiter's life) that the server runs scripts; on failure goes local for the cooldown with one error line."""
@@ -96,7 +116,9 @@ class LeaseLimiter:
             if self._probed:
                 return True
         try:
-            self._redis.eval(_PROBE_SCRIPT, 0)  # outside the lock, so a slow server never blocks other workers; a duplicate probe is harmless
+            self._redis.eval(
+                _PROBE_SCRIPT, 0
+            )  # outside the lock, so a slow server never blocks other workers; a duplicate probe is harmless
         except Exception as error:  # noqa: BLE001 -- fail open
             with self._lock:
                 self._down_until = self._clock() + self._cooldown
@@ -105,7 +127,10 @@ class LeaseLimiter:
             with self._lock:
                 self._probed = True
             return True
-        logger.error("Model lease limiter disabled: Lua scripting is unavailable (%s); model calls run without a global limit.", failure)
+        logger.error(
+            "Model lease limiter disabled: Lua scripting is unavailable (%s); model calls run without a global limit.",
+            failure,
+        )
         return False
 
     def _take(self, prefix: str, slots: int, rng: random.Random) -> tuple[str, str] | None:
@@ -133,8 +158,14 @@ class LeaseLimiter:
         return Lease(self, (user, glob))
 
     def acquire(
-        self, model: str | None, scope: str, max_wait_seconds: float, *,
-        sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic, rng: random.Random | None = None,
+        self,
+        model: str | None,
+        scope: str,
+        max_wait_seconds: float,
+        *,
+        sleep: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
+        rng: random.Random | None = None,
     ) -> Lease | None:
         """A lease on one user slot and one global slot, or None when none could be had within `max_wait_seconds`. `scope` is the already-hashed
         user_scope(user_id). Raises JobCancelled while waiting if the run is cancelled; nothing is held then."""
@@ -164,7 +195,9 @@ class LeaseLimiter:
             if remaining <= 0:
                 return None
             wait = min(interval * rng.uniform(0.5, 1.5), _MAX_POLL_SECONDS, remaining)
-            interval = min(interval * _POLL_BACKOFF, _MAX_POLL_SECONDS)  # a waiter that keeps missing polls less often: fewer Redis commands while the slots stay taken
+            interval = min(
+                interval * _POLL_BACKOFF, _MAX_POLL_SECONDS
+            )  # a waiter that keeps missing polls less often: fewer Redis commands while the slots stay taken
             while wait > 0:
                 raise_if_cancelled()
                 piece = min(wait, _MAX_SLICE_SECONDS)
@@ -174,7 +207,10 @@ class LeaseLimiter:
     def _release(self, held: tuple[tuple[str, str], ...]) -> None:
         if self._redis is None:
             return
-        for key, token in held:  # always attempted, whatever the cooldown: it only stops acquires, and a held slot must not wait for its TTL
+        for (
+            key,
+            token,
+        ) in held:  # always attempted, whatever the cooldown: it only stops acquires, and a held slot must not wait for its TTL
             try:
                 self._redis.eval(_RELEASE_SCRIPT, 1, key, token)
             except Exception as error:  # noqa: BLE001 -- the keys expire on their own

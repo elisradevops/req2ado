@@ -95,7 +95,9 @@ def test_load_xlsx_each_sheet_gets_a_distinct_source_ref_offset() -> None:
     doc = load_xlsx(str(FIXTURES / "sample.xlsx"))
     assert len(doc.tables) == 2
     offsets = [(t.source_ref.start_offset, t.source_ref.end_offset) for t in doc.tables]
-    assert len(set(offsets)) == len(offsets), f"sheets must not share a (start, end) offset pair: {offsets}"
+    assert len(set(offsets)) == len(offsets), (
+        f"sheets must not share a (start, end) offset pair: {offsets}"
+    )
 
 
 def test_load_xlsx_horizontal_merge_sets_colspan_and_spans_none(tmp_path: Path) -> None:

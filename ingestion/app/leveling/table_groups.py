@@ -79,6 +79,7 @@ confirmed empirically to produce identical output across both sources on
 the same real document content. Every name below is re-exported for
 backward compatibility; nothing about this module's own behavior changed.
 """
+
 from __future__ import annotations
 
 from collections.abc import Iterable

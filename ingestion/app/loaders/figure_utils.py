@@ -41,6 +41,15 @@ def append_figure(
     hand-repeated at each of the 4 call sites across those 3 loaders.
     Callers still own their own id/offset counters and increment them
     after calling this."""
-    source_ref = SourceRef(document_path=document_path, start_offset=start_offset, end_offset=end_offset, page=page)
+    source_ref = SourceRef(
+        document_path=document_path, start_offset=start_offset, end_offset=end_offset, page=page
+    )
     figures.append(Figure(id=figure_id, caption=caption, name=name, source_ref=source_ref))
-    blocks.append(Block(id=block_id, kind=BlockKind.FIGURE, text=f"[FIGURE: {caption or 'none'}]", source_ref=source_ref))
+    blocks.append(
+        Block(
+            id=block_id,
+            kind=BlockKind.FIGURE,
+            text=f"[FIGURE: {caption or 'none'}]",
+            source_ref=source_ref,
+        )
+    )

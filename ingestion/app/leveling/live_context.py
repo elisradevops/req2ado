@@ -43,7 +43,11 @@ def stage_counter_for(job_id: str | None) -> StageCounter | None:
 
 
 def notice(
-    kind: str, severity: str = "info", *, once_key: str | None = None, with_last_item: bool = False,
+    kind: str,
+    severity: str = "info",
+    *,
+    once_key: str | None = None,
+    with_last_item: bool = False,
     **facts: object,
 ) -> None:
     """Tells the user about a condition that changed the run (job transparency, B12).
@@ -75,7 +79,8 @@ def current_live_emitter() -> LiveEmitter | None:
 
 @contextmanager
 def live_emitter_scope(
-    job_id: str | None, redis_client: _RedisLike,
+    job_id: str | None,
+    redis_client: _RedisLike,
 ) -> Iterator[LiveEmitter | None]:
     """Creates and registers the job's emitter for the duration of the block
     when live progress is on and a job id exists; flushes it and removes it on
@@ -84,7 +89,9 @@ def live_emitter_scope(
     if settings.live_progress and job_id:
         try:
             emitter = LiveEmitter(
-                redis_client, job_id, hz=settings.live_publish_hz,
+                redis_client,
+                job_id,
+                hz=settings.live_publish_hz,
                 excerpt_max_chars=settings.live_excerpt_max_chars,
             )
             with _LOCK:

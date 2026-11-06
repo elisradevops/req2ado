@@ -43,7 +43,9 @@ def test_captioning_runs_figures_concurrently(monkeypatch) -> None:
     monkeypatch.setattr(main_module.settings, "vision_caption_concurrency", 4)
 
     _upload(
-        MULTI_FIGURE_FIXTURE_NAME, FIXTURES / MULTI_FIGURE_FIXTURE_NAME, mode="survey",
+        MULTI_FIGURE_FIXTURE_NAME,
+        FIXTURES / MULTI_FIGURE_FIXTURE_NAME,
+        mode="survey",
         # uuid, not a fixed literal: the caption cache key is
         # (prompt version, image sha256, document_context sha256) with a
         # 7-day TTL against a real Redis, so a fixed context makes the SECOND
@@ -78,7 +80,9 @@ def test_captioning_never_exceeds_the_configured_concurrency(monkeypatch) -> Non
     monkeypatch.setattr(main_module.settings, "vision_caption_concurrency", 2)
 
     _upload(
-        MULTI_FIGURE_FIXTURE_NAME, FIXTURES / MULTI_FIGURE_FIXTURE_NAME, mode="survey",
+        MULTI_FIGURE_FIXTURE_NAME,
+        FIXTURES / MULTI_FIGURE_FIXTURE_NAME,
+        mode="survey",
         primer_context="captioning-concurrency-bounded",
     )
 
@@ -109,7 +113,9 @@ def test_captioning_output_is_identical_serial_vs_concurrent(monkeypatch) -> Non
         monkeypatch.setattr(main_module, "_vision_client", _OrderSensitiveVisionClient())
         monkeypatch.setattr(main_module.settings, "vision_caption_concurrency", concurrency)
         result = _upload(
-            MULTI_FIGURE_FIXTURE_NAME, FIXTURES / MULTI_FIGURE_FIXTURE_NAME, mode="survey",
+            MULTI_FIGURE_FIXTURE_NAME,
+            FIXTURES / MULTI_FIGURE_FIXTURE_NAME,
+            mode="survey",
             primer_context=context,
         )
         return (
@@ -158,8 +164,11 @@ def test_captioning_narrates_figures_in_document_order_under_concurrency(monkeyp
     monkeypatch.setattr(main_module.settings, "vision_caption_concurrency", 4)
 
     _upload(
-        MULTI_FIGURE_FIXTURE_NAME, FIXTURES / MULTI_FIGURE_FIXTURE_NAME, mode="survey",
-        job_id="job-caption-narration-order", primer_context="captioning-narration-order",
+        MULTI_FIGURE_FIXTURE_NAME,
+        FIXTURES / MULTI_FIGURE_FIXTURE_NAME,
+        mode="survey",
+        job_id="job-caption-narration-order",
+        primer_context="captioning-narration-order",
     )
 
     figure_events = [e for e in published if e.phase == "describe_figure"]
@@ -190,7 +199,9 @@ def test_a_raising_vision_call_leaves_one_figure_uncaptioned(monkeypatch, concur
 
     # _upload asserts HTTP 200 -- a propagated exception fails right here.
     result = _upload(
-        MULTI_FIGURE_FIXTURE_NAME, FIXTURES / MULTI_FIGURE_FIXTURE_NAME, mode="survey",
+        MULTI_FIGURE_FIXTURE_NAME,
+        FIXTURES / MULTI_FIGURE_FIXTURE_NAME,
+        mode="survey",
         primer_context=f"captioning-vision-raises-{uuid.uuid4()}",
     )
 
@@ -238,7 +249,9 @@ def test_figure_narration_stream_is_incremental_and_monotonic(monkeypatch, concu
     monkeypatch.setattr(main_module.settings, "vision_caption_concurrency", concurrency)
 
     result = _upload(
-        MULTI_FIGURE_FIXTURE_NAME, FIXTURES / MULTI_FIGURE_FIXTURE_NAME, mode="survey",
+        MULTI_FIGURE_FIXTURE_NAME,
+        FIXTURES / MULTI_FIGURE_FIXTURE_NAME,
+        mode="survey",
         job_id="job-caption-narration-monotonic",
         primer_context=f"captioning-narration-monotonic-{uuid.uuid4()}",
     )
@@ -276,15 +289,20 @@ def test_storage_failures_are_recorded_in_figure_id_order_under_concurrency(monk
     monkeypatch.setattr(main_module.settings, "vision_caption_concurrency", 4)
 
     result = _upload(
-        MULTI_FIGURE_FIXTURE_NAME, FIXTURES / MULTI_FIGURE_FIXTURE_NAME, mode="survey",
-        job_id="job-storage-failure-order", primer_context="captioning-storage-failure-order",
+        MULTI_FIGURE_FIXTURE_NAME,
+        FIXTURES / MULTI_FIGURE_FIXTURE_NAME,
+        mode="survey",
+        job_id="job-storage-failure-order",
+        primer_context="captioning-storage-failure-order",
     )
 
     failed = result["failed_figure_storage_ids"]
     assert failed == [f"f{i}" for i in range(len(result["figures"]))]
 
 
-def test_figure_bytes_are_still_rasterized_exactly_once_per_figure_under_concurrency(monkeypatch) -> None:
+def test_figure_bytes_are_still_rasterized_exactly_once_per_figure_under_concurrency(
+    monkeypatch,
+) -> None:
     # The rasterized-bytes-reuse fix (a prior SWEEP 8b item) must survive the
     # restructuring: captioning and storage stay in ONE worker, sharing one
     # caption_status_out["rasterized_bytes"], so there is still exactly one
@@ -315,8 +333,11 @@ def test_figure_bytes_are_still_rasterized_exactly_once_per_figure_under_concurr
     monkeypatch.setattr(main_module.settings, "vision_caption_concurrency", 4)
 
     result = _upload(
-        MULTI_FIGURE_FIXTURE_NAME, FIXTURES / MULTI_FIGURE_FIXTURE_NAME, mode="survey",
-        job_id="job-rasterize-once-concurrent", primer_context="captioning-rasterize-once-concurrent",
+        MULTI_FIGURE_FIXTURE_NAME,
+        FIXTURES / MULTI_FIGURE_FIXTURE_NAME,
+        mode="survey",
+        job_id="job-rasterize-once-concurrent",
+        primer_context="captioning-rasterize-once-concurrent",
     )
 
     assert len(rasterize_calls) == len(result["figures"])
@@ -346,8 +367,11 @@ def test_figure_count_narration_is_the_exact_collected_count(monkeypatch) -> Non
     monkeypatch.setattr(main_module, "NarrationPublisher", _RecordingNarrationPublisher)
 
     result = _upload(
-        MULTI_FIGURE_FIXTURE_NAME, FIXTURES / MULTI_FIGURE_FIXTURE_NAME, mode="survey",
-        job_id="job-exact-figure-count", primer_context="captioning-exact-figure-count",
+        MULTI_FIGURE_FIXTURE_NAME,
+        FIXTURES / MULTI_FIGURE_FIXTURE_NAME,
+        mode="survey",
+        job_id="job-exact-figure-count",
+        primer_context="captioning-exact-figure-count",
     )
 
     real_count = len(result["figures"])
@@ -378,14 +402,19 @@ def test_a_vision_active_docx_is_parsed_exactly_once(monkeypatch) -> None:
     monkeypatch.setattr(main_module, "_vision_client", _VisionClient())
 
     _upload(
-        "sample.docx", FIXTURES / "sample.docx", mode="survey",
-        job_id="job-single-parse", primer_context="captioning-single-parse",
+        "sample.docx",
+        FIXTURES / "sample.docx",
+        mode="survey",
+        job_id="job-single-parse",
+        primer_context="captioning-single-parse",
     )
 
     assert len(dispatch_calls) == 1
 
 
-def test_breaker_stops_vision_calls_after_consecutive_failures_but_still_stores_bytes(monkeypatch) -> None:
+def test_breaker_stops_vision_calls_after_consecutive_failures_but_still_stores_bytes(
+    monkeypatch,
+) -> None:
     # A model that cannot do vision (or a down backend) fails every figure:
     # after _VISION_BREAKER_THRESHOLD consecutive failures no further vision
     # call is made, the remaining figures stay uncaptioned (vision_failed),
@@ -413,8 +442,11 @@ def test_breaker_stops_vision_calls_after_consecutive_failures_but_still_stores_
     monkeypatch.setattr(main_module, "_VISION_BREAKER_THRESHOLD", 1)
 
     result = _upload(
-        MULTI_FIGURE_FIXTURE_NAME, FIXTURES / MULTI_FIGURE_FIXTURE_NAME, mode="survey",
-        job_id="job-breaker", primer_context=f"breaker-{uuid.uuid4()}",
+        MULTI_FIGURE_FIXTURE_NAME,
+        FIXTURES / MULTI_FIGURE_FIXTURE_NAME,
+        mode="survey",
+        job_id="job-breaker",
+        primer_context=f"breaker-{uuid.uuid4()}",
     )
 
     figure_count = len(result["figures"])
@@ -443,29 +475,51 @@ def test_a_success_resets_the_breaker_streak(monkeypatch) -> None:
     assert outcomes.tripped is True
 
 
-def test_vision_model_is_forwarded_to_the_vision_client_and_part_of_the_cache_key(monkeypatch) -> None:
+def test_vision_model_is_forwarded_to_the_vision_client_and_part_of_the_cache_key(
+    monkeypatch,
+) -> None:
     import app.main as main_module
 
     seen_models: list[str | None] = []
 
     class _ModelRecordingVisionClient:
-        def describe_figure(self, image_bytes, mime_type=None, document_context=None, user_id=None, model=None):
+        def describe_figure(
+            self, image_bytes, mime_type=None, document_context=None, user_id=None, model=None
+        ):
             seen_models.append(model)
             return FigureVisionResult(significant=True, description="a real caption")
 
     monkeypatch.setattr(main_module, "_vision_client", _ModelRecordingVisionClient())
     context = f"model-forwarding-{uuid.uuid4()}"
 
-    _upload("sample.docx", FIXTURES / "sample.docx", mode="survey", primer_context=context, vision_model="claude-opus-4-8")
-    _upload("sample.docx", FIXTURES / "sample.docx", mode="survey", primer_context=context, vision_model="other-model")
+    _upload(
+        "sample.docx",
+        FIXTURES / "sample.docx",
+        mode="survey",
+        primer_context=context,
+        vision_model="claude-opus-4-8",
+    )
+    _upload(
+        "sample.docx",
+        FIXTURES / "sample.docx",
+        mode="survey",
+        primer_context=context,
+        vision_model="other-model",
+    )
 
     # Same image + same context, different model: no cross-model cache hit.
     assert seen_models == ["claude-opus-4-8", "other-model"]
-    assert main_module._figure_caption_cache_key(b"x", "c", "a") != main_module._figure_caption_cache_key(b"x", "c", "b")
-    assert main_module._figure_caption_cache_key(b"x", "c") == main_module._figure_caption_cache_key(b"x", "c", None)
+    assert main_module._figure_caption_cache_key(
+        b"x", "c", "a"
+    ) != main_module._figure_caption_cache_key(b"x", "c", "b")
+    assert main_module._figure_caption_cache_key(
+        b"x", "c"
+    ) == main_module._figure_caption_cache_key(b"x", "c", None)
 
 
-def test_figure_storage_under_concurrency_stores_every_figure_once_with_a_slow_first_store(monkeypatch) -> None:
+def test_figure_storage_under_concurrency_stores_every_figure_once_with_a_slow_first_store(
+    monkeypatch,
+) -> None:
     # The deployment runs the pass at concurrency 3 with every caption cached, so the figure phase is storage. A slow first
     # store must neither lose nor duplicate a figure, and later stores must overlap it rather than queue behind it.
     import app.main as main_module
@@ -498,8 +552,11 @@ def test_figure_storage_under_concurrency_stores_every_figure_once_with_a_slow_f
     monkeypatch.setattr(main_module.settings, "vision_caption_concurrency", 3)
 
     result = _upload(
-        MULTI_FIGURE_FIXTURE_NAME, FIXTURES / MULTI_FIGURE_FIXTURE_NAME, mode="survey",
-        job_id="job-store-concurrency", primer_context=f"store-concurrency-{uuid.uuid4()}",
+        MULTI_FIGURE_FIXTURE_NAME,
+        FIXTURES / MULTI_FIGURE_FIXTURE_NAME,
+        mode="survey",
+        job_id="job-store-concurrency",
+        primer_context=f"store-concurrency-{uuid.uuid4()}",
     )
 
     figure_ids = [f["id"] for f in result["figures"]]
@@ -553,7 +610,9 @@ def test_the_captioning_pass_runs_inside_a_cancellation_scope(monkeypatch, concu
     monkeypatch.setattr(main_module, "_vision_client", _Recording())
     monkeypatch.setattr(main_module.settings, "vision_caption_concurrency", concurrency)
     _upload(
-        MULTI_FIGURE_FIXTURE_NAME, FIXTURES / MULTI_FIGURE_FIXTURE_NAME, mode="survey",
+        MULTI_FIGURE_FIXTURE_NAME,
+        FIXTURES / MULTI_FIGURE_FIXTURE_NAME,
+        mode="survey",
         primer_context=f"captioning-scope-{uuid.uuid4()}",
     )
     assert seen and all(token is not None for token in seen)
@@ -570,10 +629,17 @@ def test_a_cancelled_captioning_pass_answers_499_and_not_a_result(monkeypatch) -
 
     monkeypatch.setattr(main_module, "_vision_client", _Cancelling())
     monkeypatch.setattr(main_module.settings, "vision_caption_concurrency", 1)
-    params = {"redact": False, "user_id": "test-user", "mode": "survey", "primer_context": f"captioning-499-{uuid.uuid4()}"}
+    params = {
+        "redact": False,
+        "user_id": "test-user",
+        "mode": "survey",
+        "primer_context": f"captioning-499-{uuid.uuid4()}",
+    }
     with open(FIXTURES / MULTI_FIGURE_FIXTURE_NAME, "rb") as f:
         response = client.post(
-            "/ingest", params=params, headers=identity_headers(params),
+            "/ingest",
+            params=params,
+            headers=identity_headers(params),
             files={"file": (MULTI_FIGURE_FIXTURE_NAME, f, "application/octet-stream")},
         )
     assert response.status_code == 499
@@ -584,12 +650,16 @@ def test_every_figure_gets_one_outcome_line_with_its_result_and_time(monkeypatch
 
     import app.main as main_module
 
-    outcomes = iter([
-        FigureVisionResult(significant=True, description="a caption"),
-        FigureVisionResult(significant=False, description=""),
-        FigureVisionResult(significant=False, description=""),  # the second look at the not-significant figure
-        None,
-    ])
+    outcomes = iter(
+        [
+            FigureVisionResult(significant=True, description="a caption"),
+            FigureVisionResult(significant=False, description=""),
+            FigureVisionResult(
+                significant=False, description=""
+            ),  # the second look at the not-significant figure
+            None,
+        ]
+    )
 
     class _Scripted:
         def describe_figure(self, image_bytes, mime_type=None, document_context=None, user_id=None):
@@ -599,8 +669,12 @@ def test_every_figure_gets_one_outcome_line_with_its_result_and_time(monkeypatch
     monkeypatch.setattr(main_module.settings, "vision_caption_concurrency", 1)
     with caplog.at_level(logging.INFO, logger="app.main"):
         for index in range(3):
-            main_module._caption_and_store_one_figure(f"f{index}", bytes([index]) * 40, f"ctx-{uuid.uuid4()}", None, user_id="u1")
+            main_module._caption_and_store_one_figure(
+                f"f{index}", bytes([index]) * 40, f"ctx-{uuid.uuid4()}", None, user_id="u1"
+            )
     lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Figure ")]
     assert len(lines) == 3
-    assert "described" in lines[0] and "not significant" in lines[1] and "no usable reply" in lines[2]
+    assert (
+        "described" in lines[0] and "not significant" in lines[1] and "no usable reply" in lines[2]
+    )
     assert all(" in " in line and line.rstrip().endswith("s") for line in lines)

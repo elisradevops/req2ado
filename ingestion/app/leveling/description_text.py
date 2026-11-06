@@ -7,6 +7,7 @@ repeated so each row stands alone, no invented header), other markup is dropped,
 description, the ADO write-back and the review UI keep the HTML; nothing here is ever stored.
 
 Pure, stdlib only, deterministic (the result cache and the score cache key on what the model is sent)."""
+
 from __future__ import annotations
 
 import csv
@@ -17,11 +18,24 @@ from html.parser import HTMLParser
 from app.config import settings
 
 # Tags that make a string "HTML" at all; anything else in angle brackets ("<value>", "x <10") is the author's text and is kept.
-_KNOWN_TAGS = (
-    "table|thead|tbody|tfoot|tr|td|th|caption|colgroup|col|p|div|span|br|hr|ul|ol|li|h[1-6]|b|i|u|em|strong|a|font|img|blockquote|pre|code|sub|sup"
-)
+_KNOWN_TAGS = "table|thead|tbody|tfoot|tr|td|th|caption|colgroup|col|p|div|span|br|hr|ul|ol|li|h[1-6]|b|i|u|em|strong|a|font|img|blockquote|pre|code|sub|sup"
 _LOOKS_LIKE_HTML = re.compile(rf"</?(?:{_KNOWN_TAGS})\b[^>]*>|<!--", re.IGNORECASE)
-_BREAK_BEFORE_AND_AFTER = {"p", "div", "ul", "ol", "blockquote", "pre", "hr", "h1", "h2", "h3", "h4", "h5", "h6", "tr"}
+_BREAK_BEFORE_AND_AFTER = {
+    "p",
+    "div",
+    "ul",
+    "ol",
+    "blockquote",
+    "pre",
+    "hr",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "tr",
+}
 _DROPPED_CONTENT = {"script", "style", "head", "title"}
 _MAX_SPAN = 1000
 
@@ -103,7 +117,9 @@ class _Converter(HTMLParser):
             elif self._cell is not None and tag in ("p", "div", "li", "tr"):
                 self._cell.append(" ")
             return
-        if self._table_depth > 1:  # inside a nested table: its text is flattened into the outer cell
+        if (
+            self._table_depth > 1
+        ):  # inside a nested table: its text is flattened into the outer cell
             if tag in ("td", "th", "tr", "br", "p", "div", "li"):
                 self._emit(" ")
             return
@@ -180,7 +196,12 @@ class _Converter(HTMLParser):
     def _finish_table(self) -> None:
         self._cell = None
         self._in_caption = False
-        rendered = _render_table(self._rows, self._head_rows, self._first_row_all_th, " ".join("".join(self._caption).split()))
+        rendered = _render_table(
+            self._rows,
+            self._head_rows,
+            self._first_row_all_th,
+            " ".join("".join(self._caption).split()),
+        )
         self.out.append("\n\n" + rendered + "\n\n" if rendered else "\n\n")
 
     def finish(self) -> str:
@@ -217,13 +238,17 @@ def _expand(rows: list[list[tuple[str, int, int]]]) -> list[list[str]]:
     return [r + [""] * (width - len(r)) for r in grid]
 
 
-def _render_table(rows: list[list[tuple[str, int, int]]], head_rows: int, first_row_all_th: bool, caption: str) -> str:
+def _render_table(
+    rows: list[list[tuple[str, int, int]]], head_rows: int, first_row_all_th: bool, caption: str
+) -> str:
     grid = _expand(rows)
     if not any(cell.strip() for row in grid for cell in row):
         return ""
     n_head = head_rows or (1 if rows and rows[0] and first_row_all_th else 0)
     head, body = grid[:n_head], grid[n_head:]
-    body = [row for row in body if any(cell.strip() for cell in row)]  # a spacer row carries nothing
+    body = [
+        row for row in body if any(cell.strip() for cell in row)
+    ]  # a spacer row carries nothing
     lines: list[list[str]] = []
     if head:
         labels = []
@@ -271,7 +296,9 @@ _MARKER = re.compile(r"\[\s*\[?\s*TABLE\s*#?\s*(\d+)\s*\]?\s*\]", re.IGNORECASE)
 # What restore_tables accepts as a marker. A single-bracket "[Table 1]" is also what an author writes in prose ("see [Table 1]"), so it
 # counts only alone on its line, where the model put the marker; inline it is left as written.
 _MARKER_DOUBLE = re.compile(r"\[\s*\[\s*TABLE\s*#?\s*(\d+)\s*\]\s*\]", re.IGNORECASE)
-_MARKER_SINGLE_ALONE = re.compile(r"^([ \t]*)\[\s*TABLE\s*#?\s*(\d+)\s*\](?=[ \t]*$)", re.IGNORECASE | re.MULTILINE)
+_MARKER_SINGLE_ALONE = re.compile(
+    r"^([ \t]*)\[\s*TABLE\s*#?\s*(\d+)\s*\](?=[ \t]*$)", re.IGNORECASE | re.MULTILINE
+)
 
 
 def table_marker(number: int) -> str:
@@ -296,7 +323,7 @@ def split_tables(description: str | None) -> tuple[str, list[str]]:
             depth -= 1
             if depth == 0:
                 pieces.append(text[cursor:start])
-                tables.append(text[start:match.end()])
+                tables.append(text[start : match.end()])
                 pieces.append(table_marker(len(tables)))
                 cursor = match.end()
     pieces.append(text[cursor:])
@@ -310,7 +337,10 @@ def markers_as_words(text: str) -> str:
 
 def table_context(tables: list[str]) -> str:
     """The read-only listing of every table for a prompt: its marker and its CSV."""
-    return "\n\n".join(f"{table_marker(n)} (read-only):\n{html_to_model_text(table)}" for n, table in enumerate(tables, start=1))
+    return "\n\n".join(
+        f"{table_marker(n)} (read-only):\n{html_to_model_text(table)}"
+        for n, table in enumerate(tables, start=1)
+    )
 
 
 def _echoed_csv_lines(tables: list[str]) -> set[str]:
@@ -347,7 +377,9 @@ def restore_tables(proposed: str, tables: list[str]) -> tuple[str, dict[str, int
         return tables[number - 1]
 
     text = _MARKER_DOUBLE.sub(lambda match: table_for(int(match.group(1))), text)
-    text = _MARKER_SINGLE_ALONE.sub(lambda match: match.group(1) + table_for(int(match.group(2))), text)
+    text = _MARKER_SINGLE_ALONE.sub(
+        lambda match: match.group(1) + table_for(int(match.group(2))), text
+    )
     for number, table in enumerate(tables, start=1):
         if number not in used:
             text = text.rstrip() + "\n\n" + table

@@ -15,12 +15,18 @@ def _sr(offset: int) -> SourceRef:
 
 
 def _table(rows: list[list[str]]) -> Table:
-    return Table(id="t1", cells=[[TableCell(text=cell) for cell in row] for row in rows], source_ref=_sr(0))
+    return Table(
+        id="t1", cells=[[TableCell(text=cell) for cell in row] for row in rows], source_ref=_sr(0)
+    )
 
 
 def _heading(block_id: str, level: int, text: str, offset: int) -> Block:
     return Block(
-        id=block_id, kind=BlockKind.HEADING, heading_level=level, text=text, source_ref=_sr(offset),
+        id=block_id,
+        kind=BlockKind.HEADING,
+        heading_level=level,
+        text=text,
+        source_ref=_sr(offset),
     )
 
 
@@ -34,12 +40,14 @@ def _para(block_id: str, text: str, offset: int) -> Block:
 
 
 def test_rows_from_table_resolves_type_and_parent_index() -> None:
-    table = _table([
-        ["Requirement ID", "Requirement / Section"],
-        ["1.1", "External Source Detection"],
-        ["1.1.1", "The system shall detect X."],
-        ["1.1.2", "The system shall detect Y."],
-    ])
+    table = _table(
+        [
+            ["Requirement ID", "Requirement / Section"],
+            ["1.1", "External Source Detection"],
+            ["1.1.1", "The system shall detect X."],
+            ["1.1.2", "The system shall detect Y."],
+        ]
+    )
     rows = rows_from_table(table)
     assert len(rows) == 3
     group = next(r for r in rows if r.label == "External Source Detection")
@@ -63,14 +71,16 @@ def test_rows_from_table_returns_empty_for_non_conforming_table() -> None:
 def test_rows_from_table_folds_a_non_qualifying_intermediate_row() -> None:
     # "1.1" has only ONE leaf child -- doesn't qualify as a group, so its
     # own row must fold (node_type=None) rather than become a node.
-    table = _table([
-        ["Requirement ID", "Requirement / Section"],
-        ["1.1", "Lone Wrapper"],
-        ["1.1.1", "The system shall do A."],
-        ["2", "Other Group"],
-        ["2.1", "The system shall do B."],
-        ["2.2", "The system shall do C."],
-    ])
+    table = _table(
+        [
+            ["Requirement ID", "Requirement / Section"],
+            ["1.1", "Lone Wrapper"],
+            ["1.1.1", "The system shall do A."],
+            ["2", "Other Group"],
+            ["2.1", "The system shall do B."],
+            ["2.2", "The system shall do C."],
+        ]
+    )
     rows = rows_from_table(table)
     lone_wrapper = next(r for r in rows if r.label == "Lone Wrapper")
     assert lone_wrapper.node_type is None
@@ -311,7 +321,7 @@ def test_rows_from_heading_structure_flags_a_fragment_heavy_subtree_for_synthesi
         _heading("b2", 3, "Under-voltage", 80),
         _heading("b3", 3, "Short circuits", 90),
         _heading("b4", 3, "ON/OFF control", 100),
-        _heading("b5", 3, "Size: 3U 1\"", 110),
+        _heading("b5", 3, 'Size: 3U 1"', 110),
     ]
     rows, warnings, claimed = rows_from_heading_structure(blocks)
     by_label = {r.label: r for r in rows}
@@ -321,7 +331,11 @@ def test_rows_from_heading_structure_flags_a_fragment_heavy_subtree_for_synthesi
     ):
         assert by_label[label].needs_synthesis is False
     fragment_labels = (
-        "Over-current", "Under-voltage", "Short circuits", "ON/OFF control", 'Size: 3U 1"',
+        "Over-current",
+        "Under-voltage",
+        "Short circuits",
+        "ON/OFF control",
+        'Size: 3U 1"',
     )
     for label in fragment_labels:
         assert by_label[label].needs_synthesis is True
@@ -368,13 +382,16 @@ def test_qualifying_groups_is_identical_across_table_and_heading_sources() -> No
     # (rows_from_id_headings) both funnel into this exact same core --
     # confirmed live this session that the two produce field-for-field
     # identical TableGroupInfo output on real document content.
-    table = _table([
-        ["Requirement ID", "Requirement / Section"],
-        ["1", "Television Receiver"],
-        ["1.1", "Broadcast Reception"],
-        ["1.1.1", "The system shall scan channels."],
-        ["1.1.2", "The system shall detect sources."],
-    ])
+    table = _table(
+        [
+            ["Requirement ID", "Requirement / Section"],
+            ["1", "Television Receiver"],
+            ["1.1", "Broadcast Reception"],
+            ["1.1.1", "The system shall scan channels."],
+            ["1.1.2", "The system shall detect sources."],
+        ]
+    )
+
     def _segments(id_text: str) -> tuple[int, ...]:
         return tuple(int(p) for p in id_text.split("."))
 
@@ -391,9 +408,14 @@ def test_qualifying_groups_is_identical_across_table_and_heading_sources() -> No
     heading_groups = qualifying_groups(
         [(tuple(int(p) for p in r.id_text.split(".")), r.label) for r in heading_rows]
     )
-    assert {g.label for g in table_groups} == {g.label for g in heading_groups} == {
-        "Television Receiver", "Broadcast Reception",
-    }
+    assert (
+        {g.label for g in table_groups}
+        == {g.label for g in heading_groups}
+        == {
+            "Television Receiver",
+            "Broadcast Reception",
+        }
+    )
     by_label_table = {g.label: g.suggested_type for g in table_groups}
     by_label_heading = {g.label: g.suggested_type for g in heading_groups}
     assert by_label_table == by_label_heading

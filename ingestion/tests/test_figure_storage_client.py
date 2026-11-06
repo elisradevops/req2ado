@@ -57,7 +57,9 @@ def test_store_posts_base64_bytes_and_mime_type_with_bearer_auth() -> None:
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"stored": True})
 
-    client = OrchestratorFigureFileClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorFigureFileClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.store("job-1", "f3", b"compressed-png-bytes", "image/png")
@@ -74,7 +76,9 @@ def test_store_raises_on_non_200_response() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(413, json={"message": "too large"})
 
-    client = OrchestratorFigureFileClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorFigureFileClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     with pytest.raises(httpx.HTTPStatusError):

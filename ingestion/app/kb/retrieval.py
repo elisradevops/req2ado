@@ -104,7 +104,9 @@ def _round_robin_by_source(hits: list[dict], limit: int) -> list[dict]:
     return picked
 
 
-def fetch_always_include_context(user_id: str, vector_store: KbVectorStore) -> tuple[str | None, list[dict]]:
+def fetch_always_include_context(
+    user_id: str, vector_store: KbVectorStore
+) -> tuple[str | None, list[dict]]:
     """Full, unconditional text of every KB file tagged retrieval_mode=
     "always_include" at upload time -- the Full-Context-mode counterpart to
     retrieve_context's similarity-gated Focused-Retrieval path, modeled
@@ -135,7 +137,9 @@ def fetch_always_include_context(user_id: str, vector_store: KbVectorStore) -> t
         try:
             text, truncated = vector_store.get_document(user_id, name)
         except Exception as exc:  # noqa: BLE001 - one file's failure must not block the others
-            logger.warning("Failed to fetch always-include document %r for user_id=%s: %s", name, user_id, exc)
+            logger.warning(
+                "Failed to fetch always-include document %r for user_id=%s: %s", name, user_id, exc
+            )
             continue
         if not text:
             continue
@@ -144,7 +148,9 @@ def fetch_always_include_context(user_id: str, vector_store: KbVectorStore) -> t
         # it's included unconditionally, so there is no similarity to
         # report. Fixed at the ceiling rather than omitted so downstream
         # display code (which expects a float) doesn't need a special case.
-        citations.append({"source_file": name, "similarity": 1.0, "text": text, "truncated": truncated})
+        citations.append(
+            {"source_file": name, "similarity": 1.0, "text": text, "truncated": truncated}
+        )
     if not texts:
         return None, []
     return "\n\n".join(texts), citations

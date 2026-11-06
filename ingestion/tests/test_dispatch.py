@@ -22,10 +22,14 @@ def test_document_path_is_the_original_filename_not_the_tmp_path(tmp_path) -> No
     assert doc.document.path == "real-uploaded-name.docx"
     assert all(block.source_ref.document_path == "real-uploaded-name.docx" for block in doc.blocks)
     assert all(table.source_ref.document_path == "real-uploaded-name.docx" for table in doc.tables)
-    assert all(figure.source_ref.document_path == "real-uploaded-name.docx" for figure in doc.figures)
+    assert all(
+        figure.source_ref.document_path == "real-uploaded-name.docx" for figure in doc.figures
+    )
 
 
-def test_identical_uploads_produce_the_same_document_path_even_via_different_tmp_paths(tmp_path) -> None:
+def test_identical_uploads_produce_the_same_document_path_even_via_different_tmp_paths(
+    tmp_path,
+) -> None:
     # The actual end-to-end proof: two "uploads" of the byte-identical file,
     # each landing at its own random tmp path (exactly what tempfile.
     # NamedTemporaryFile produces per request), must normalize to the SAME
@@ -50,7 +54,9 @@ def test_open_tbd_classification_applies_to_a_txt_paragraph_not_just_ocr(tmp_pat
     from app.canonical.model import BlockKind
 
     path = tmp_path / "notes.txt"
-    path.write_text("TBD: finalize the thermal budget before release.\n\nA normal paragraph.", encoding="utf-8")
+    path.write_text(
+        "TBD: finalize the thermal budget before release.\n\nA normal paragraph.", encoding="utf-8"
+    )
 
     doc = dispatch_by_extension("notes.txt", str(path))
 
@@ -79,11 +85,16 @@ def test_open_tbd_classification_applies_to_any_loaders_paragraph_blocks() -> No
         document=Document(path="x.pdf", format=DocumentFormat.PDF, sha256="0" * 64),
         blocks=[
             Block(
-                id="b0", kind=BlockKind.PARAGRAPH, text="OPEN: confirm the vendor part number.",
+                id="b0",
+                kind=BlockKind.PARAGRAPH,
+                text="OPEN: confirm the vendor part number.",
                 source_ref=SourceRef(document_path="x.pdf", start_offset=0, end_offset=0),
             ),
             Block(
-                id="b1", kind=BlockKind.HEADING, text="Open Items", heading_level=1,
+                id="b1",
+                kind=BlockKind.HEADING,
+                text="Open Items",
+                heading_level=1,
                 source_ref=SourceRef(document_path="x.pdf", start_offset=1, end_offset=1),
             ),
         ],

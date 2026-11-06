@@ -34,8 +34,14 @@ def test_get_quality_checklist_returns_none_when_extraction_never_ran() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         store = KbVectorStore(persist_path=tmp)
         store.upsert_chunk(
-            chunk_id="source-1:doc.txt:0", embedding=[1.0, 0.0, 0.0], text="chunk text", user_id="Project\\Area1",
-            source_file="doc.txt", source_id="source-1", chunk_index=0, file_hash="hash-1",
+            chunk_id="source-1:doc.txt:0",
+            embedding=[1.0, 0.0, 0.0],
+            text="chunk text",
+            user_id="Project\\Area1",
+            source_file="doc.txt",
+            source_id="source-1",
+            chunk_index=0,
+            file_hash="hash-1",
         )
         assert store.get_quality_checklist("Project\\Area1", "doc.txt") is None
 
@@ -44,11 +50,21 @@ def test_upsert_chunk_then_get_quality_checklist_round_trips_the_stored_list() -
     with tempfile.TemporaryDirectory() as tmp:
         store = KbVectorStore(persist_path=tmp)
         store.upsert_chunk(
-            chunk_id="source-1:doc.txt:0", embedding=[1.0, 0.0, 0.0], text="chunk text", user_id="Project\\Area1",
-            source_file="doc.txt", source_id="source-1", chunk_index=0, file_hash="hash-1",
+            chunk_id="source-1:doc.txt:0",
+            embedding=[1.0, 0.0, 0.0],
+            text="chunk text",
+            user_id="Project\\Area1",
+            source_file="doc.txt",
+            source_id="source-1",
+            chunk_index=0,
+            file_hash="hash-1",
             quality_checklist=["Necessary", "Unambiguous", "Verifiable"],
         )
-        assert store.get_quality_checklist("Project\\Area1", "doc.txt") == ["Necessary", "Unambiguous", "Verifiable"]
+        assert store.get_quality_checklist("Project\\Area1", "doc.txt") == [
+            "Necessary",
+            "Unambiguous",
+            "Verifiable",
+        ]
 
 
 def test_get_quality_checklist_round_trips_a_genuinely_empty_list() -> None:
@@ -57,8 +73,14 @@ def test_get_quality_checklist_round_trips_a_genuinely_empty_list() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         store = KbVectorStore(persist_path=tmp)
         store.upsert_chunk(
-            chunk_id="source-1:doc.txt:0", embedding=[1.0, 0.0, 0.0], text="chunk text", user_id="Project\\Area1",
-            source_file="doc.txt", source_id="source-1", chunk_index=0, file_hash="hash-1",
+            chunk_id="source-1:doc.txt:0",
+            embedding=[1.0, 0.0, 0.0],
+            text="chunk text",
+            user_id="Project\\Area1",
+            source_file="doc.txt",
+            source_id="source-1",
+            chunk_index=0,
+            file_hash="hash-1",
             quality_checklist=[],
         )
         assert store.get_quality_checklist("Project\\Area1", "doc.txt") == []
@@ -68,8 +90,14 @@ def test_get_quality_checklist_definitions_returns_none_when_extraction_never_ra
     with tempfile.TemporaryDirectory() as tmp:
         store = KbVectorStore(persist_path=tmp)
         store.upsert_chunk(
-            chunk_id="source-1:doc.txt:0", embedding=[1.0, 0.0, 0.0], text="chunk text", user_id="Project\\Area1",
-            source_file="doc.txt", source_id="source-1", chunk_index=0, file_hash="hash-1",
+            chunk_id="source-1:doc.txt:0",
+            embedding=[1.0, 0.0, 0.0],
+            text="chunk text",
+            user_id="Project\\Area1",
+            source_file="doc.txt",
+            source_id="source-1",
+            chunk_index=0,
+            file_hash="hash-1",
             quality_checklist=["Necessary", "Unambiguous"],
         )
         assert store.get_quality_checklist_definitions("Project\\Area1", "doc.txt") is None
@@ -79,8 +107,14 @@ def test_upsert_chunk_then_get_quality_checklist_definitions_round_trips_the_sto
     with tempfile.TemporaryDirectory() as tmp:
         store = KbVectorStore(persist_path=tmp)
         store.upsert_chunk(
-            chunk_id="source-1:doc.txt:0", embedding=[1.0, 0.0, 0.0], text="chunk text", user_id="Project\\Area1",
-            source_file="doc.txt", source_id="source-1", chunk_index=0, file_hash="hash-1",
+            chunk_id="source-1:doc.txt:0",
+            embedding=[1.0, 0.0, 0.0],
+            text="chunk text",
+            user_id="Project\\Area1",
+            source_file="doc.txt",
+            source_id="source-1",
+            chunk_index=0,
+            file_hash="hash-1",
             quality_checklist=["Necessary", "Unambiguous"],
             quality_checklist_definitions={"Necessary": "States something not already satisfied."},
         )
@@ -89,16 +123,26 @@ def test_upsert_chunk_then_get_quality_checklist_definitions_round_trips_the_sto
         }
         # quality_checklist itself (the FIXED categoryScores key list) is
         # untouched by the companion field's presence.
-        assert store.get_quality_checklist("Project\\Area1", "doc.txt") == ["Necessary", "Unambiguous"]
+        assert store.get_quality_checklist("Project\\Area1", "doc.txt") == [
+            "Necessary",
+            "Unambiguous",
+        ]
 
 
 def test_get_quality_checklist_definitions_round_trips_a_genuinely_empty_dict() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         store = KbVectorStore(persist_path=tmp)
         store.upsert_chunk(
-            chunk_id="source-1:doc.txt:0", embedding=[1.0, 0.0, 0.0], text="chunk text", user_id="Project\\Area1",
-            source_file="doc.txt", source_id="source-1", chunk_index=0, file_hash="hash-1",
-            quality_checklist=["Necessary"], quality_checklist_definitions={},
+            chunk_id="source-1:doc.txt:0",
+            embedding=[1.0, 0.0, 0.0],
+            text="chunk text",
+            user_id="Project\\Area1",
+            source_file="doc.txt",
+            source_id="source-1",
+            chunk_index=0,
+            file_hash="hash-1",
+            quality_checklist=["Necessary"],
+            quality_checklist_definitions={},
         )
         assert store.get_quality_checklist_definitions("Project\\Area1", "doc.txt") == {}
 
@@ -110,8 +154,14 @@ def test_kb_collections_are_isolated_from_dedup_collections_for_the_same_area_pa
         kb_store = KbVectorStore(persist_path=tmp)
         dedup_store = ChromaVectorStore(persist_path=tmp)
         kb_store.upsert_chunk(
-            chunk_id="source-1:doc.txt:0", embedding=[1.0, 0.0, 0.0], text="t", user_id="Project\\Area1",
-            source_file="doc.txt", source_id="source-1", chunk_index=0, file_hash="hash-1",
+            chunk_id="source-1:doc.txt:0",
+            embedding=[1.0, 0.0, 0.0],
+            text="t",
+            user_id="Project\\Area1",
+            source_file="doc.txt",
+            source_id="source-1",
+            chunk_index=0,
+            file_hash="hash-1",
         )
         # Dedup's store must see nothing from the KB collection — separate namespace.
         assert dedup_store.query_nearest([1.0, 0.0, 0.0], area_path="Project\\Area1") is None
@@ -124,12 +174,24 @@ def test_delete_file_chunks_removes_all_chunks_for_that_source_id_only() -> None
     with tempfile.TemporaryDirectory() as tmp:
         store = KbVectorStore(persist_path=tmp)
         store.upsert_chunk(
-            chunk_id="source-1:doc.txt:0", embedding=[1.0, 0.0, 0.0], text="t0", user_id="Project\\Area1",
-            source_file="doc.txt", source_id="source-1", chunk_index=0, file_hash="hash-1",
+            chunk_id="source-1:doc.txt:0",
+            embedding=[1.0, 0.0, 0.0],
+            text="t0",
+            user_id="Project\\Area1",
+            source_file="doc.txt",
+            source_id="source-1",
+            chunk_index=0,
+            file_hash="hash-1",
         )
         store.upsert_chunk(
-            chunk_id="source-2:other.txt:0", embedding=[0.0, 1.0, 0.0], text="t1", user_id="Project\\Area1",
-            source_file="other.txt", source_id="source-2", chunk_index=0, file_hash="hash-2",
+            chunk_id="source-2:other.txt:0",
+            embedding=[0.0, 1.0, 0.0],
+            text="t1",
+            user_id="Project\\Area1",
+            source_file="other.txt",
+            source_id="source-2",
+            chunk_index=0,
+            file_hash="hash-2",
         )
         store.delete_file_chunks("Project\\Area1", "doc.txt", "source-1")
         assert store.existing_file_hash("Project\\Area1", "doc.txt", "source-1") is None
@@ -143,8 +205,14 @@ def test_existing_file_hash_matches_by_source_id_even_when_source_file_differs()
     with tempfile.TemporaryDirectory() as tmp:
         store = KbVectorStore(persist_path=tmp)
         store.upsert_chunk(
-            chunk_id="source-1:old.docx:0", embedding=[1.0, 0.0, 0.0], text="t", user_id="Project\\Area1",
-            source_file="old.docx", source_id="source-1", chunk_index=0, file_hash="hash-1",
+            chunk_id="source-1:old.docx:0",
+            embedding=[1.0, 0.0, 0.0],
+            text="t",
+            user_id="Project\\Area1",
+            source_file="old.docx",
+            source_id="source-1",
+            chunk_index=0,
+            file_hash="hash-1",
         )
         assert store.existing_file_hash("Project\\Area1", "new.docx", "source-1") == "hash-1"
 
@@ -157,8 +225,14 @@ def test_delete_file_chunks_removes_the_old_named_chunks_on_a_rename() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         store = KbVectorStore(persist_path=tmp)
         store.upsert_chunk(
-            chunk_id="source-1:old.docx:0", embedding=[1.0, 0.0, 0.0], text="t", user_id="Project\\Area1",
-            source_file="old.docx", source_id="source-1", chunk_index=0, file_hash="hash-1",
+            chunk_id="source-1:old.docx:0",
+            embedding=[1.0, 0.0, 0.0],
+            text="t",
+            user_id="Project\\Area1",
+            source_file="old.docx",
+            source_id="source-1",
+            chunk_index=0,
+            file_hash="hash-1",
         )
         store.delete_file_chunks("Project\\Area1", "new.docx", "source-1")
         assert store.existing_file_hash("Project\\Area1", "old.docx", "source-1") is None
@@ -169,12 +243,24 @@ def test_rename_file_updates_stored_source_file_for_every_chunk() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         store = KbVectorStore(persist_path=tmp)
         store.upsert_chunk(
-            chunk_id="source-1:old.docx:0", embedding=[1.0, 0.0, 0.0], text="first", user_id="Project\\Area1",
-            source_file="old.docx", source_id="source-1", chunk_index=0, file_hash="hash-1",
+            chunk_id="source-1:old.docx:0",
+            embedding=[1.0, 0.0, 0.0],
+            text="first",
+            user_id="Project\\Area1",
+            source_file="old.docx",
+            source_id="source-1",
+            chunk_index=0,
+            file_hash="hash-1",
         )
         store.upsert_chunk(
-            chunk_id="source-1:old.docx:1", embedding=[0.0, 1.0, 0.0], text="second", user_id="Project\\Area1",
-            source_file="old.docx", source_id="source-1", chunk_index=1, file_hash="hash-1",
+            chunk_id="source-1:old.docx:1",
+            embedding=[0.0, 1.0, 0.0],
+            text="second",
+            user_id="Project\\Area1",
+            source_file="old.docx",
+            source_id="source-1",
+            chunk_index=1,
+            file_hash="hash-1",
         )
         store.rename_file("Project\\Area1", "source-1", "new.docx")
         assert store.list_documents("Project\\Area1") == ["new.docx"]
@@ -186,8 +272,14 @@ def test_rename_file_is_a_noop_when_the_name_is_already_current() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         store = KbVectorStore(persist_path=tmp)
         store.upsert_chunk(
-            chunk_id="source-1:doc.docx:0", embedding=[1.0, 0.0, 0.0], text="t", user_id="Project\\Area1",
-            source_file="doc.docx", source_id="source-1", chunk_index=0, file_hash="hash-1",
+            chunk_id="source-1:doc.docx:0",
+            embedding=[1.0, 0.0, 0.0],
+            text="t",
+            user_id="Project\\Area1",
+            source_file="doc.docx",
+            source_id="source-1",
+            chunk_index=0,
+            file_hash="hash-1",
         )
         store.rename_file("Project\\Area1", "source-1", "doc.docx")  # must not raise or corrupt
         assert store.list_documents("Project\\Area1") == ["doc.docx"]
@@ -252,14 +344,24 @@ def test_query_returns_nearest_chunks_ordered_by_distance() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         store = KbVectorStore(persist_path=tmp)
         store.upsert_chunk(
-            chunk_id="source-1:doc.txt:0", embedding=[1.0, 0.0, 0.0], text="near chunk",
-            user_id="Project\\Area1", source_file="doc.txt", source_id="source-1",
-            chunk_index=0, file_hash="hash-1",
+            chunk_id="source-1:doc.txt:0",
+            embedding=[1.0, 0.0, 0.0],
+            text="near chunk",
+            user_id="Project\\Area1",
+            source_file="doc.txt",
+            source_id="source-1",
+            chunk_index=0,
+            file_hash="hash-1",
         )
         store.upsert_chunk(
-            chunk_id="source-1:doc.txt:1", embedding=[0.0, 1.0, 0.0], text="far chunk",
-            user_id="Project\\Area1", source_file="doc.txt", source_id="source-1",
-            chunk_index=1, file_hash="hash-1",
+            chunk_id="source-1:doc.txt:1",
+            embedding=[0.0, 1.0, 0.0],
+            text="far chunk",
+            user_id="Project\\Area1",
+            source_file="doc.txt",
+            source_id="source-1",
+            chunk_index=1,
+            file_hash="hash-1",
         )
         results = store.query("Project\\Area1", embedding=[1.0, 0.0, 0.0], top_k=5)
         assert len(results) == 2
@@ -281,30 +383,53 @@ def test_get_document_reassembles_chunks_in_chunk_index_order() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         store = KbVectorStore(persist_path=tmp)
         store.upsert_chunk(
-            chunk_id="source-1:spec.docx:1", embedding=[0.0, 1.0, 0.0], text="second part",
-            user_id="Project\\Area1", source_file="spec.docx", source_id="source-1",
-            chunk_index=1, file_hash="hash-1",
+            chunk_id="source-1:spec.docx:1",
+            embedding=[0.0, 1.0, 0.0],
+            text="second part",
+            user_id="Project\\Area1",
+            source_file="spec.docx",
+            source_id="source-1",
+            chunk_index=1,
+            file_hash="hash-1",
         )
         store.upsert_chunk(
-            chunk_id="source-1:spec.docx:0", embedding=[1.0, 0.0, 0.0], text="first part",
-            user_id="Project\\Area1", source_file="spec.docx", source_id="source-1",
-            chunk_index=0, file_hash="hash-1",
+            chunk_id="source-1:spec.docx:0",
+            embedding=[1.0, 0.0, 0.0],
+            text="first part",
+            user_id="Project\\Area1",
+            source_file="spec.docx",
+            source_id="source-1",
+            chunk_index=0,
+            file_hash="hash-1",
         )
-        assert store.get_document("Project\\Area1", "spec.docx") == ("first part\n\nsecond part", False)
+        assert store.get_document("Project\\Area1", "spec.docx") == (
+            "first part\n\nsecond part",
+            False,
+        )
 
 
 def test_get_document_only_returns_chunks_for_the_requested_source_file() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         store = KbVectorStore(persist_path=tmp)
         store.upsert_chunk(
-            chunk_id="source-1:spec.docx:0", embedding=[1.0, 0.0, 0.0], text="spec content",
-            user_id="Project\\Area1", source_file="spec.docx", source_id="source-1",
-            chunk_index=0, file_hash="hash-1",
+            chunk_id="source-1:spec.docx:0",
+            embedding=[1.0, 0.0, 0.0],
+            text="spec content",
+            user_id="Project\\Area1",
+            source_file="spec.docx",
+            source_id="source-1",
+            chunk_index=0,
+            file_hash="hash-1",
         )
         store.upsert_chunk(
-            chunk_id="source-1:other.docx:0", embedding=[0.0, 1.0, 0.0], text="other content",
-            user_id="Project\\Area1", source_file="other.docx", source_id="source-1",
-            chunk_index=0, file_hash="hash-2",
+            chunk_id="source-1:other.docx:0",
+            embedding=[0.0, 1.0, 0.0],
+            text="other content",
+            user_id="Project\\Area1",
+            source_file="other.docx",
+            source_id="source-1",
+            chunk_index=0,
+            file_hash="hash-2",
         )
         assert store.get_document("Project\\Area1", "spec.docx") == ("spec content", False)
 
@@ -319,16 +444,34 @@ def test_list_documents_returns_distinct_sorted_source_files() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         store = KbVectorStore(persist_path=tmp)
         store.upsert_chunk(
-            chunk_id="source-1:b.docx:0", embedding=[1.0, 0.0, 0.0], text="t", user_id="Project\\Area1",
-            source_file="b.docx", source_id="source-1", chunk_index=0, file_hash="hash-1",
+            chunk_id="source-1:b.docx:0",
+            embedding=[1.0, 0.0, 0.0],
+            text="t",
+            user_id="Project\\Area1",
+            source_file="b.docx",
+            source_id="source-1",
+            chunk_index=0,
+            file_hash="hash-1",
         )
         store.upsert_chunk(
-            chunk_id="source-1:a.docx:0", embedding=[0.0, 1.0, 0.0], text="t", user_id="Project\\Area1",
-            source_file="a.docx", source_id="source-1", chunk_index=0, file_hash="hash-2",
+            chunk_id="source-1:a.docx:0",
+            embedding=[0.0, 1.0, 0.0],
+            text="t",
+            user_id="Project\\Area1",
+            source_file="a.docx",
+            source_id="source-1",
+            chunk_index=0,
+            file_hash="hash-2",
         )
         store.upsert_chunk(
-            chunk_id="source-1:a.docx:1", embedding=[0.0, 0.0, 1.0], text="t2", user_id="Project\\Area1",
-            source_file="a.docx", source_id="source-1", chunk_index=1, file_hash="hash-2",
+            chunk_id="source-1:a.docx:1",
+            embedding=[0.0, 0.0, 1.0],
+            text="t2",
+            user_id="Project\\Area1",
+            source_file="a.docx",
+            source_id="source-1",
+            chunk_index=1,
+            file_hash="hash-2",
         )
         assert store.list_documents("Project\\Area1") == ["a.docx", "b.docx"]
 
@@ -338,9 +481,14 @@ def test_query_respects_top_k() -> None:
         store = KbVectorStore(persist_path=tmp)
         for i in range(3):
             store.upsert_chunk(
-                chunk_id=f"source-1:doc.txt:{i}", embedding=[1.0, float(i), 0.0], text=f"chunk {i}",
-                user_id="Project\\Area1", source_file="doc.txt", source_id="source-1",
-                chunk_index=i, file_hash="hash-1",
+                chunk_id=f"source-1:doc.txt:{i}",
+                embedding=[1.0, float(i), 0.0],
+                text=f"chunk {i}",
+                user_id="Project\\Area1",
+                source_file="doc.txt",
+                source_id="source-1",
+                chunk_index=i,
+                file_hash="hash-1",
             )
         results = store.query("Project\\Area1", embedding=[1.0, 0.0, 0.0], top_k=2)
         assert len(results) == 2
@@ -358,9 +506,14 @@ def test_get_document_pages_past_a_single_get_page(monkeypatch) -> None:
         chunk_count = 7  # more than one page (3) but under the cap (100)
         for i in reversed(range(chunk_count)):
             store.upsert_chunk(
-                chunk_id=f"source-1:doc.txt:{i}", embedding=[float(i), 0.0, 0.0],
-                text=f"chunk {i}", user_id="Project\\Area1", source_file="doc.txt",
-                source_id="source-1", chunk_index=i, file_hash="hash-1",
+                chunk_id=f"source-1:doc.txt:{i}",
+                embedding=[float(i), 0.0, 0.0],
+                text=f"chunk {i}",
+                user_id="Project\\Area1",
+                source_file="doc.txt",
+                source_id="source-1",
+                chunk_index=i,
+                file_hash="hash-1",
             )
         text, truncated = store.get_document("Project\\Area1", "doc.txt")
         assert text == "\n\n".join(f"chunk {i}" for i in range(chunk_count))
@@ -377,9 +530,14 @@ def test_get_document_stops_at_the_chunk_ceiling_and_reports_truncation(monkeypa
         chunk_count = 8  # more than the cap (5)
         for i in range(chunk_count):
             store.upsert_chunk(
-                chunk_id=f"source-1:doc.txt:{i}", embedding=[float(i), 0.0, 0.0],
-                text=f"chunk {i}", user_id="Project\\Area1", source_file="doc.txt",
-                source_id="source-1", chunk_index=i, file_hash="hash-1",
+                chunk_id=f"source-1:doc.txt:{i}",
+                embedding=[float(i), 0.0, 0.0],
+                text=f"chunk {i}",
+                user_id="Project\\Area1",
+                source_file="doc.txt",
+                source_id="source-1",
+                chunk_index=i,
+                file_hash="hash-1",
             )
         text, truncated = store.get_document("Project\\Area1", "doc.txt")
         assert truncated is True
@@ -397,9 +555,14 @@ def test_list_documents_pages_past_a_single_get_page(monkeypatch) -> None:
         filenames = [f"doc{i}.txt" for i in range(5)]  # more than one page (2)
         for i, name in enumerate(filenames):
             store.upsert_chunk(
-                chunk_id=f"source-1:{name}:0", embedding=[float(i), 0.0, 0.0],
-                text="content", user_id="Project\\Area1", source_file=name,
-                source_id="source-1", chunk_index=0, file_hash="hash-1",
+                chunk_id=f"source-1:{name}:0",
+                embedding=[float(i), 0.0, 0.0],
+                text="content",
+                user_id="Project\\Area1",
+                source_file=name,
+                source_id="source-1",
+                chunk_index=0,
+                file_hash="hash-1",
             )
         assert store.list_documents("Project\\Area1") == sorted(filenames)
 
@@ -408,8 +571,14 @@ def test_list_always_include_documents_returns_empty_list_when_none_are_tagged()
     with tempfile.TemporaryDirectory() as tmp:
         store = KbVectorStore(persist_path=tmp)
         store.upsert_chunk(
-            chunk_id="source-1:doc.txt:0", embedding=[1.0, 0.0, 0.0], text="t", user_id="Project\\Area1",
-            source_file="doc.txt", source_id="source-1", chunk_index=0, file_hash="hash-1",
+            chunk_id="source-1:doc.txt:0",
+            embedding=[1.0, 0.0, 0.0],
+            text="t",
+            user_id="Project\\Area1",
+            source_file="doc.txt",
+            source_id="source-1",
+            chunk_index=0,
+            file_hash="hash-1",
         )
         assert store.list_always_include_documents("Project\\Area1") == []
 
@@ -418,13 +587,25 @@ def test_list_always_include_documents_returns_only_tagged_files() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         store = KbVectorStore(persist_path=tmp)
         store.upsert_chunk(
-            chunk_id="source-1:standards.docx:0", embedding=[1.0, 0.0, 0.0], text="t", user_id="Project\\Area1",
-            source_file="standards.docx", source_id="source-1", chunk_index=0, file_hash="hash-1",
+            chunk_id="source-1:standards.docx:0",
+            embedding=[1.0, 0.0, 0.0],
+            text="t",
+            user_id="Project\\Area1",
+            source_file="standards.docx",
+            source_id="source-1",
+            chunk_index=0,
+            file_hash="hash-1",
             retrieval_mode="always_include",
         )
         store.upsert_chunk(
-            chunk_id="source-1:spec.docx:0", embedding=[0.0, 1.0, 0.0], text="t", user_id="Project\\Area1",
-            source_file="spec.docx", source_id="source-1", chunk_index=0, file_hash="hash-2",
+            chunk_id="source-1:spec.docx:0",
+            embedding=[0.0, 1.0, 0.0],
+            text="t",
+            user_id="Project\\Area1",
+            source_file="spec.docx",
+            source_id="source-1",
+            chunk_index=0,
+            file_hash="hash-2",
         )
         assert store.list_always_include_documents("Project\\Area1") == ["standards.docx"]
 
@@ -435,8 +616,14 @@ def test_upsert_chunk_default_retrieval_mode_is_not_stored_as_always_include() -
     with tempfile.TemporaryDirectory() as tmp:
         store = KbVectorStore(persist_path=tmp)
         store.upsert_chunk(
-            chunk_id="source-1:doc.txt:0", embedding=[1.0, 0.0, 0.0], text="t", user_id="Project\\Area1",
-            source_file="doc.txt", source_id="source-1", chunk_index=0, file_hash="hash-1",
+            chunk_id="source-1:doc.txt:0",
+            embedding=[1.0, 0.0, 0.0],
+            text="t",
+            user_id="Project\\Area1",
+            source_file="doc.txt",
+            source_id="source-1",
+            chunk_index=0,
+            file_hash="hash-1",
             retrieval_mode="retrieve",
         )
         assert store.list_always_include_documents("Project\\Area1") == []
@@ -446,8 +633,14 @@ def test_purge_user_drops_the_collection() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         store = KbVectorStore(persist_path=tmp)
         store.upsert_chunk(
-            chunk_id="source-1:doc.txt:0", embedding=[1.0, 0.0, 0.0], text="t", user_id="user-old",
-            source_file="doc.txt", source_id="source-1", chunk_index=0, file_hash="hash-1",
+            chunk_id="source-1:doc.txt:0",
+            embedding=[1.0, 0.0, 0.0],
+            text="t",
+            user_id="user-old",
+            source_file="doc.txt",
+            source_id="source-1",
+            chunk_index=0,
+            file_hash="hash-1",
         )
         store.purge_user("user-old")
         assert store.list_documents("user-old") == []
@@ -464,12 +657,24 @@ def test_purge_user_does_not_affect_other_users() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         store = KbVectorStore(persist_path=tmp)
         store.upsert_chunk(
-            chunk_id="source-1:doc.txt:0", embedding=[1.0, 0.0, 0.0], text="t", user_id="user-a",
-            source_file="doc.txt", source_id="source-1", chunk_index=0, file_hash="hash-1",
+            chunk_id="source-1:doc.txt:0",
+            embedding=[1.0, 0.0, 0.0],
+            text="t",
+            user_id="user-a",
+            source_file="doc.txt",
+            source_id="source-1",
+            chunk_index=0,
+            file_hash="hash-1",
         )
         store.upsert_chunk(
-            chunk_id="source-1:doc.txt:0", embedding=[1.0, 0.0, 0.0], text="t", user_id="user-b",
-            source_file="doc.txt", source_id="source-1", chunk_index=0, file_hash="hash-1",
+            chunk_id="source-1:doc.txt:0",
+            embedding=[1.0, 0.0, 0.0],
+            text="t",
+            user_id="user-b",
+            source_file="doc.txt",
+            source_id="source-1",
+            chunk_index=0,
+            file_hash="hash-1",
         )
         store.purge_user("user-a")
         assert store.list_documents("user-a") == []
@@ -485,14 +690,28 @@ def test_upsert_after_purge_is_queryable_again() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         store = KbVectorStore(persist_path=tmp)
         store.upsert_chunk(
-            chunk_id="source-1:doc.txt:0", embedding=[1.0, 0.0, 0.0], text="t", user_id="user-old",
-            source_file="doc.txt", source_id="source-1", chunk_index=0, file_hash="hash-1",
+            chunk_id="source-1:doc.txt:0",
+            embedding=[1.0, 0.0, 0.0],
+            text="t",
+            user_id="user-old",
+            source_file="doc.txt",
+            source_id="source-1",
+            chunk_index=0,
+            file_hash="hash-1",
         )
-        store.query("user-old", embedding=[1.0, 0.0, 0.0], top_k=5)  # populates the collection-handle cache
+        store.query(
+            "user-old", embedding=[1.0, 0.0, 0.0], top_k=5
+        )  # populates the collection-handle cache
         store.purge_user("user-old")
         store.upsert_chunk(
-            chunk_id="source-2:doc2.txt:0", embedding=[0.0, 1.0, 0.0], text="t2", user_id="user-old",
-            source_file="doc2.txt", source_id="source-2", chunk_index=0, file_hash="hash-2",
+            chunk_id="source-2:doc2.txt:0",
+            embedding=[0.0, 1.0, 0.0],
+            text="t2",
+            user_id="user-old",
+            source_file="doc2.txt",
+            source_id="source-2",
+            chunk_index=0,
+            file_hash="hash-2",
         )
         assert store.list_documents("user-old") == ["doc2.txt"]
 
@@ -507,9 +726,14 @@ def test_list_documents_stops_at_the_document_ceiling(monkeypatch) -> None:
         filenames = [f"doc{i}.txt" for i in range(5)]  # more than the cap (3)
         for i, name in enumerate(filenames):
             store.upsert_chunk(
-                chunk_id=f"source-1:{name}:0", embedding=[float(i), 0.0, 0.0],
-                text="content", user_id="Project\\Area1", source_file=name,
-                source_id="source-1", chunk_index=0, file_hash="hash-1",
+                chunk_id=f"source-1:{name}:0",
+                embedding=[float(i), 0.0, 0.0],
+                text="content",
+                user_id="Project\\Area1",
+                source_file=name,
+                source_id="source-1",
+                chunk_index=0,
+                file_hash="hash-1",
             )
         result = store.list_documents("Project\\Area1")
         assert len(result) == 3
@@ -606,8 +830,14 @@ def test_upsert_still_creates_the_collection_and_reads_then_see_it() -> None:
         store = KbVectorStore(persist_path=tmp)
         user = "Project\\Area1"
         store.upsert_chunk(
-            chunk_id="s1:doc.txt:0", embedding=[1.0, 0.0, 0.0], text="t",
-            user_id=user, source_file="doc.txt", source_id="s1", chunk_index=0, file_hash="h",
+            chunk_id="s1:doc.txt:0",
+            embedding=[1.0, 0.0, 0.0],
+            text="t",
+            user_id=user,
+            source_file="doc.txt",
+            source_id="s1",
+            chunk_index=0,
+            file_hash="h",
         )
         assert len(_collection_names(store)) == 1
         assert store.list_documents(user) == ["doc.txt"]
@@ -622,8 +852,14 @@ def test_a_read_before_the_first_ingest_does_not_pin_a_stale_missing_state() -> 
         user = "Project\\Area1"
         assert store.list_documents(user) == []
         store.upsert_chunk(
-            chunk_id="s1:doc.txt:0", embedding=[1.0, 0.0, 0.0], text="t",
-            user_id=user, source_file="doc.txt", source_id="s1", chunk_index=0, file_hash="h",
+            chunk_id="s1:doc.txt:0",
+            embedding=[1.0, 0.0, 0.0],
+            text="t",
+            user_id=user,
+            source_file="doc.txt",
+            source_id="s1",
+            chunk_index=0,
+            file_hash="h",
         )
         assert store.list_documents(user) == ["doc.txt"]
 
@@ -635,9 +871,14 @@ def test_count_file_chunks_counts_only_that_source() -> None:
         for source_id, n in (("s1", 3), ("s2", 2)):
             for i in range(n):
                 store.upsert_chunk(
-                    chunk_id=f"{source_id}:f:{i}", embedding=[1.0, 0.0, 0.0], text="t",
-                    user_id=user, source_file=f"{source_id}.txt", source_id=source_id,
-                    chunk_index=i, file_hash="h",
+                    chunk_id=f"{source_id}:f:{i}",
+                    embedding=[1.0, 0.0, 0.0],
+                    text="t",
+                    user_id=user,
+                    source_file=f"{source_id}.txt",
+                    source_id=source_id,
+                    chunk_index=i,
+                    file_hash="h",
                 )
         assert store.count_file_chunks(user, "s1") == 3
         assert store.count_file_chunks(user, "s2") == 2

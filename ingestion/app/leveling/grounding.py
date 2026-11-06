@@ -9,6 +9,7 @@ mode NEW-04/300541 already fixed once here, but not there. A leaf module
 with zero intra-package dependencies, importable from both llm_leveling.py
 and id_tree_builder.py without the circular import a direct cross-import
 between those two would create."""
+
 from __future__ import annotations
 
 import re
@@ -17,8 +18,27 @@ import re
 # calculation so they don't inflate the score for genuinely unrelated
 # content that merely happens to also be phrased as a "shall" statement.
 _GROUNDING_STOPWORDS = {
-    "a", "an", "the", "shall", "system", "is", "are", "of", "to", "and", "or",
-    "in", "on", "for", "with", "be", "will", "this", "that", "it", "its",
+    "a",
+    "an",
+    "the",
+    "shall",
+    "system",
+    "is",
+    "are",
+    "of",
+    "to",
+    "and",
+    "or",
+    "in",
+    "on",
+    "for",
+    "with",
+    "be",
+    "will",
+    "this",
+    "that",
+    "it",
+    "its",
 }
 # Unicode word characters (Python 3 `\w` is Unicode-aware by default for
 # `str` patterns) -- NOT `[a-z0-9]+` (ASCII-only), which would silently empty
@@ -29,7 +49,9 @@ _WORD_PATTERN = re.compile(r"\w+", re.UNICODE)
 
 
 def significant_words(text: str) -> set[str]:
-    return {word for word in _WORD_PATTERN.findall(text.lower()) if word not in _GROUNDING_STOPWORDS}
+    return {
+        word for word in _WORD_PATTERN.findall(text.lower()) if word not in _GROUNDING_STOPWORDS
+    }
 
 
 def grounding_score(generated_text: str, source_text: str) -> float:

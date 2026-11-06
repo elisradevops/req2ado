@@ -46,7 +46,9 @@ def test_ingest_stores_a_compressed_figure_file_when_job_id_is_given(monkeypatch
     monkeypatch.setattr(main_module, "_vision_client", _FakeVisionClient())
     monkeypatch.setattr(main_module, "_figure_file_client", _FakeFigureFileClient())
 
-    _upload("sample.docx", FIXTURES / "sample.docx", mode="survey", job_id="job-figure-storage-test")
+    _upload(
+        "sample.docx", FIXTURES / "sample.docx", mode="survey", job_id="job-figure-storage-test"
+    )
 
     # sample.docx has exactly one figure -- the loader's own 0-based
     # f"f{figure_index}" id scheme assigns it "f0".
@@ -85,7 +87,12 @@ def test_ingest_still_returns_the_caption_when_figure_file_storage_fails(monkeyp
     monkeypatch.setattr(main_module, "_vision_client", _FakeVisionClient())
     monkeypatch.setattr(main_module, "_figure_file_client", _FailingFigureFileClient())
 
-    result = _upload("sample.docx", FIXTURES / "sample.docx", mode="survey", job_id="job-figure-storage-fail-test")
+    result = _upload(
+        "sample.docx",
+        FIXTURES / "sample.docx",
+        mode="survey",
+        job_id="job-figure-storage-fail-test",
+    )
 
     assert result["figures"][0]["caption"] == "a real caption"
     # sample.docx's single figure is "f0" (see the 0-based id comment
@@ -107,7 +114,9 @@ def test_ingest_reports_no_failed_figure_storage_ids_when_storage_succeeds(monke
     monkeypatch.setattr(main_module, "_vision_client", _FakeVisionClient())
     monkeypatch.setattr(main_module, "_figure_file_client", _FakeFigureFileClient())
 
-    result = _upload("sample.docx", FIXTURES / "sample.docx", mode="survey", job_id="job-figure-storage-ok-test")
+    result = _upload(
+        "sample.docx", FIXTURES / "sample.docx", mode="survey", job_id="job-figure-storage-ok-test"
+    )
 
     assert len(stored) == 1
     assert result["failed_figure_storage_ids"] == []

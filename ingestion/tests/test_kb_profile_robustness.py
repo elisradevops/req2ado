@@ -3,6 +3,7 @@
 A model outage (or a caller that disconnected, which cancels the run's model calls) used to leave every extraction and the
 consolidation failing; the empty result was stored under the version of the unchanged documents and returned to every later job
 until a document changed: all later jobs scored without the knowledge base's standard."""
+
 import pytest
 
 from app.job_cancel import JobCancelled
@@ -26,7 +27,9 @@ class Cancelled(Consolidating):
 
 
 @pytest.mark.parametrize("broken", [Failing, Cancelled])
-def test_a_build_where_every_document_failed_is_returned_but_not_stored_and_the_next_job_rebuilds(broken) -> None:
+def test_a_build_where_every_document_failed_is_returned_but_not_stored_and_the_next_job_rebuilds(
+    broken,
+) -> None:
     store, kb = InMemoryProfileStore(), Kb(dict(OVERLAPPING))
     degraded = ensure_profile("u1", kb, store, broken(), model="m1")
     assert degraded is not None and degraded.categories == []
@@ -78,8 +81,14 @@ def test_a_document_with_nothing_to_extract_is_not_a_failure() -> None:
 
 def previous(groups: dict[str, list[str]]) -> KbProfile:
     return KbProfile(
-        version="old", built_with="m1",
-        categories=[Category(name=n, pass_condition="c", sources=["HowTo.pptx", "Principles.pptx"], merged_from=m) for n, m in groups.items()],
+        version="old",
+        built_with="m1",
+        categories=[
+            Category(
+                name=n, pass_condition="c", sources=["HowTo.pptx", "Principles.pptx"], merged_from=m
+            )
+            for n, m in groups.items()
+        ],
     )
 
 
@@ -88,13 +97,18 @@ def test_the_previous_groups_and_names_survive_a_build_whose_merge_pass_got_no_a
     profile = build_profile(OVERLAPPING, Consolidating(fail=True), model="m1", previous=prior)
     names = sorted(c.name for c in profile.categories)
     assert "Testability" in names and "Testable" not in names
-    assert next(c for c in profile.categories if c.name == "Testability").merged_from == ["Testable", "Testability"]
+    assert next(c for c in profile.categories if c.name == "Testability").merged_from == [
+        "Testable",
+        "Testability",
+    ]
 
 
 def test_the_previous_groups_survive_a_client_without_a_merge_pass() -> None:
     prior = previous({"Testability": ["Testable", "Testability"]})
     profile = build_profile(OVERLAPPING, FakeProfileClient(), model="m1", previous=prior)
-    assert "Testable" not in {c.name for c in profile.categories} and "Testability" in {c.name for c in profile.categories}
+    assert "Testable" not in {c.name for c in profile.categories} and "Testability" in {
+        c.name for c in profile.categories
+    }
 
 
 def test_every_entry_records_what_it_stands_for_even_without_a_merge_pass() -> None:
@@ -105,8 +119,12 @@ def test_every_entry_records_what_it_stands_for_even_without_a_merge_pass() -> N
 def test_a_refresh_starts_from_the_documents_not_from_earlier_merges() -> None:
     store, kb = InMemoryProfileStore(), Kb(dict(OVERLAPPING))
     ensure_profile("u1", kb, store, Consolidating(), model="m1")  # Testable + Testability merged
-    refreshed = ensure_profile("u1", kb, store, Consolidating(runs=[SEPARATE] * 3), model="m1", refresh=True)
-    assert {"Testable", "Testability"} <= {c.name for c in refreshed.categories}  # the bad merge can be undone
+    refreshed = ensure_profile(
+        "u1", kb, store, Consolidating(runs=[SEPARATE] * 3), model="m1", refresh=True
+    )
+    assert {"Testable", "Testability"} <= {
+        c.name for c in refreshed.categories
+    }  # the bad merge can be undone
 
 
 class FlakyCache:
@@ -130,21 +148,44 @@ def test_a_failing_cache_store_costs_the_cache_not_the_build() -> None:
     assert profile.docs_contributing == 2 and profile.categories
 
 
-def test_a_job_never_scores_with_a_half_built_profile_it_keeps_the_last_good_one_or_the_default(monkeypatch) -> None:
+def test_a_job_never_scores_with_a_half_built_profile_it_keeps_the_last_good_one_or_the_default(
+    monkeypatch,
+) -> None:
     from app import main
 
-    good = KbProfile(version="v-good", built_with="m1", categories=[Category(name="Testable", sources=["A"], merged_from=["Testable"])])
-    broken = KbProfile(version="v-new", built_with="m1", categories=[Category(name="Half", sources=["A"], merged_from=["Half"])], degraded=True)
+    good = KbProfile(
+        version="v-good",
+        built_with="m1",
+        categories=[Category(name="Testable", sources=["A"], merged_from=["Testable"])],
+    )
+    broken = KbProfile(
+        version="v-new",
+        built_with="m1",
+        categories=[Category(name="Half", sources=["A"], merged_from=["Half"])],
+        degraded=True,
+    )
     store = InMemoryProfileStore()
     monkeypatch.setattr(main, "_kb_profile_store", store)
     monkeypatch.setattr(main, "ensure_profile", lambda *a, **k: broken)
     monkeypatch.setattr(main.settings, "kb_profile_scoring", True)
     monkeypatch.setattr(main, "_make_profile_client", lambda model: object())
 
-    assert main._profile_for_job("u1", "m1").source == "default"  # nothing good stored: the built-in rubric, not a half-built one
+    assert (
+        main._profile_for_job("u1", "m1").source == "default"
+    )  # nothing good stored: the built-in rubric, not a half-built one
     store.put("u1", good)
     kept = main._profile_for_job("u1", "m1")
-    assert kept.version == good.version and [c.name for c in kept.categories] == ["Testable"]  # a good one is stored: keep scoring with it
+    assert kept.version == good.version and [c.name for c in kept.categories] == [
+        "Testable"
+    ]  # a good one is stored: keep scoring with it
     assert kept.degraded is True  # and the job says it did not get the rebuild
-    monkeypatch.setattr(main, "ensure_profile", lambda *a, **k: KbProfile(version="v2", built_with="m1", categories=[Category(name="Full", sources=["A"], merged_from=["Full"])]))
+    monkeypatch.setattr(
+        main,
+        "ensure_profile",
+        lambda *a, **k: KbProfile(
+            version="v2",
+            built_with="m1",
+            categories=[Category(name="Full", sources=["A"], merged_from=["Full"])],
+        ),
+    )
     assert [c.name for c in main._profile_for_job("u1", "m1").categories] == ["Full"]

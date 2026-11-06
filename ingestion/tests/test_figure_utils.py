@@ -2,7 +2,10 @@ from app.loaders.figure_utils import extract_figure_title
 
 
 def test_extract_figure_title_returns_the_text_after_the_figure_label():
-    assert extract_figure_title("Figure 1: Power distribution diagram.") == "Power distribution diagram."
+    assert (
+        extract_figure_title("Figure 1: Power distribution diagram.")
+        == "Power distribution diagram."
+    )
 
 
 def test_extract_figure_title_is_case_insensitive_and_tolerates_a_period():

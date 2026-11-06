@@ -112,8 +112,15 @@ def test_stats_of_an_empty_document_is_all_zero() -> None:
 @pytest.mark.parametrize(
     "filename",
     [
-        "sample.txt", "sample.md", "sample.docx", "sample.xlsx", "sample.csv",
-        "sample.pdf", "sample.pptx", "sample.rtf", "mock_icd.docx",
+        "sample.txt",
+        "sample.md",
+        "sample.docx",
+        "sample.xlsx",
+        "sample.csv",
+        "sample.pdf",
+        "sample.pptx",
+        "sample.rtf",
+        "mock_icd.docx",
     ],
 )
 def test_stats_of_every_supported_loader_are_consistent(filename: str) -> None:

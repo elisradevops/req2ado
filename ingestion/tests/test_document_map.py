@@ -30,7 +30,11 @@ def _sr(offset: int) -> SourceRef:
 
 def _heading(i: int, level: int, text: str) -> Block:
     return Block(
-        id=f"h{i}", kind=BlockKind.HEADING, heading_level=level, text=text, source_ref=_sr(i),
+        id=f"h{i}",
+        kind=BlockKind.HEADING,
+        heading_level=level,
+        text=text,
+        source_ref=_sr(i),
     )
 
 
@@ -73,7 +77,9 @@ def _table_doc() -> CanonicalDoc:
         ["1.1.2", "The system shall switch to it within two seconds."],
     ]
     table = Table(
-        id="t1", cells=[[TableCell(text=c) for c in row] for row in rows], source_ref=_sr(0),
+        id="t1",
+        cells=[[TableCell(text=c) for c in row] for row in rows],
+        source_ref=_sr(0),
         caption="Source requirements",
     )
     return _doc(tables=[table])
@@ -88,7 +94,9 @@ def test_heading_map_lists_every_claimed_heading_in_document_order() -> None:
     assert doc_map.unit == "headings"
     assert doc_map.total_items == 8
     assert [i.title for i in doc_map.items][:3] == [
-        "Power interfaces", "Bus voltage", "The system shall limit ripple to 50 mV.",
+        "Power interfaces",
+        "Bus voltage",
+        "The system shall limit ripple to 50 mV.",
     ]
     assert [i.depth for i in doc_map.items][:4] == [0, 1, 2, 2]
 
@@ -170,8 +178,12 @@ def test_document_without_structure_has_an_empty_map() -> None:
 
 def test_every_shipped_fixture_builds_a_consistent_map() -> None:
     names = [
-        "mock_icd.docx", "mock_prd_sensor.docx", "sample.docx",
-        "sample.xlsx", "sample.csv", "sample.md",
+        "mock_icd.docx",
+        "mock_prd_sensor.docx",
+        "sample.docx",
+        "sample.xlsx",
+        "sample.csv",
+        "sample.md",
     ]
     for name in names:
         doc = dispatch_by_extension(name, str(FIXTURES / name))
@@ -227,7 +239,8 @@ def test_write_never_raises_when_redis_is_down() -> None:
 
 def _empty_stats():  # noqa: ANN202
     doc = CanonicalDoc(
-        document=Document(path="x.docx", format=DocumentFormat.DOCX, sha256="x"), blocks=[],
+        document=Document(path="x.docx", format=DocumentFormat.DOCX, sha256="x"),
+        blocks=[],
     )
     return compute_doc_stats(doc)
 
@@ -238,10 +251,15 @@ def _hierarchy_rows():  # noqa: ANN202
 
     def row(label, node_type, parent, id_text, shall=False):  # noqa: ANN001, ANN202
         return HierarchyRow(
-            label=label, has_shall=shall,
+            label=label,
+            has_shall=shall,
             source_ref=SourceRef(document_path="x.docx", start_offset=0, end_offset=1),
-            node_type=node_type, parent_index=parent, id_text=id_text,
-            id_disambiguator_needed=False, needs_synthesis=False, id_text_is_authored=True,
+            node_type=node_type,
+            parent_index=parent,
+            id_text=id_text,
+            id_disambiguator_needed=False,
+            needs_synthesis=False,
+            id_text_is_authored=True,
         )
 
     return [

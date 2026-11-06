@@ -5,6 +5,7 @@ The MODEL decides which categories judge the same quality (asked several times; 
 name and pass condition of the merged entry are NOT written by the model: they are one of the member categories as the
 documents themselves wrote them, chosen by rule, so a rebuild cannot rename a quality by sampling. A rebuild keeps the previous
 profile's names and groups. The consolidation never loses a source and never fails the profile build."""
+
 import random
 import threading
 
@@ -42,7 +43,9 @@ class Consolidating(FakeProfileClient):
         super().__init__()
         self.groups, self.fail, self.runs, self.calls, self.preferred = groups, fail, runs, [], []
 
-    def consolidate_kb_categories(self, categories, max_categories, user_id=None, preferred_names=None):
+    def consolidate_kb_categories(
+        self, categories, max_categories, user_id=None, preferred_names=None
+    ):
         self.calls.append((categories, max_categories))
         self.preferred.append(preferred_names)
         if self.fail:
@@ -52,7 +55,14 @@ class Consolidating(FakeProfileClient):
             groups = self.runs[(len(self.calls) - 1) % len(self.runs)]
             if groups is None:
                 raise RuntimeError("model down")
-        return [{"name": name, "pass_condition": f"{name} (the model's wording)", "merged_from": members} for name, members in groups.items()]
+        return [
+            {
+                "name": name,
+                "pass_condition": f"{name} (the model's wording)",
+                "merged_from": members,
+            }
+            for name, members in groups.items()
+        ]
 
 
 def names_of(profile) -> list[str]:
@@ -63,7 +73,12 @@ def test_overlapping_categories_become_one_short_list_named_in_the_documents_own
     client = Consolidating()
     profile = build_profile(OVERLAPPING, client, model="m1")
     # Among the members the shorter wording wins when the documents support them equally: Testable, Unambiguity, Essential.
-    assert [c.name for c in profile.categories] == ["Testable", "Unambiguity", "Consistent terminology", "Essential"]
+    assert [c.name for c in profile.categories] == [
+        "Testable",
+        "Unambiguity",
+        "Consistent terminology",
+        "Essential",
+    ]
     by_name = {c.name: c for c in profile.categories}
     assert by_name["Testable"].sources == ["HowTo.pptx", "Principles.pptx"]
     assert by_name["Essential"].sources == ["Principles.pptx"]
@@ -90,17 +105,34 @@ def test_the_merge_pass_receives_each_category_once_with_its_condition() -> None
     client = Consolidating()
     build_profile(OVERLAPPING, client, model="m1")
     sent = {c["name"] for c in client.calls[0][0]}
-    assert sent == {"Clear and unambiguous", "Testable", "Consistent terminology", "Unambiguity", "Testability", "Traceability", "Essential"}
+    assert sent == {
+        "Clear and unambiguous",
+        "Testable",
+        "Consistent terminology",
+        "Unambiguity",
+        "Testability",
+        "Traceability",
+        "Essential",
+    }
 
 
 def test_a_category_the_model_did_not_place_is_kept_not_lost() -> None:
-    profile = build_profile(OVERLAPPING, Consolidating(groups={"Clear": ["Clear and unambiguous", "Unambiguity"]}), model="m1")
-    assert "Testable" in names_of(profile) and "Testability" in names_of(profile)  # unplaced entries survive under their own name
+    profile = build_profile(
+        OVERLAPPING,
+        Consolidating(groups={"Clear": ["Clear and unambiguous", "Unambiguity"]}),
+        model="m1",
+    )
+    assert "Testable" in names_of(profile) and "Testability" in names_of(
+        profile
+    )  # unplaced entries survive under their own name
 
 
 def test_the_list_never_exceeds_the_ceiling_and_keeps_the_best_supported_entries() -> None:
     many = {f"C{i}": [f"Cat{i}"] for i in range(MAX_SCORING_CATEGORIES + 4)}
-    docs = {"A.pptx": "\n".join(f"CAT: Cat{i} | c" for i in range(MAX_SCORING_CATEGORIES + 4)), "B.pptx": "CAT: Cat3 | c"}
+    docs = {
+        "A.pptx": "\n".join(f"CAT: Cat{i} | c" for i in range(MAX_SCORING_CATEGORIES + 4)),
+        "B.pptx": "CAT: Cat3 | c",
+    }
     profile = build_profile(docs, Consolidating(groups=many), model="m1")
     assert len(profile.categories) == MAX_SCORING_CATEGORIES
     assert "Cat3" in names_of(profile)  # supported by two documents
@@ -126,24 +158,48 @@ def test_the_schema_version_changed_so_stored_profiles_are_rebuilt() -> None:
 
 # ---- the model decides the groups; most runs must agree ----
 
-SEPARATE = {"Testable": ["Testable"], "Testability": ["Testability"], "Clear": ["Clear and unambiguous", "Unambiguity"], "Consistent": ["Consistent terminology"], "Traceability": ["Traceability"], "Essential": ["Essential"]}
-MERGED = {**{k: v for k, v in SEPARATE.items() if k not in ("Testable", "Testability")}, "Verifiable": ["Testable", "Testability"]}
+SEPARATE = {
+    "Testable": ["Testable"],
+    "Testability": ["Testability"],
+    "Clear": ["Clear and unambiguous", "Unambiguity"],
+    "Consistent": ["Consistent terminology"],
+    "Traceability": ["Traceability"],
+    "Essential": ["Essential"],
+}
+MERGED = {
+    **{k: v for k, v in SEPARATE.items() if k not in ("Testable", "Testability")},
+    "Verifiable": ["Testable", "Testability"],
+}
 
 
-def test_a_merge_most_runs_agree_on_is_made_and_one_dissenting_run_does_not_change_the_result() -> None:
+def test_a_merge_most_runs_agree_on_is_made_and_one_dissenting_run_does_not_change_the_result() -> (
+    None
+):
     profile = build_profile(OVERLAPPING, Consolidating(runs=[MERGED, SEPARATE, MERGED]), model="m1")
     assert "Testable" in names_of(profile) and "Testability" not in names_of(profile)
-    assert next(c for c in profile.categories if c.name == "Testable").sources == ["HowTo.pptx", "Principles.pptx"]
+    assert next(c for c in profile.categories if c.name == "Testable").sources == [
+        "HowTo.pptx",
+        "Principles.pptx",
+    ]
 
 
 def test_a_merge_only_one_run_proposed_is_not_made() -> None:
-    profile = build_profile(OVERLAPPING, Consolidating(runs=[SEPARATE, MERGED, SEPARATE]), model="m1")
+    profile = build_profile(
+        OVERLAPPING, Consolidating(runs=[SEPARATE, MERGED, SEPARATE]), model="m1"
+    )
     assert {"Testable", "Testability"} <= set(names_of(profile))
 
 
 def test_the_result_does_not_depend_on_the_order_the_runs_come_in() -> None:
     runs = [MERGED, SEPARATE, MERGED]
-    results = {tuple(names_of(build_profile(OVERLAPPING, Consolidating(runs=[runs[i] for i in order]), model="m1"))) for order in [(0, 1, 2), (1, 2, 0), (2, 0, 1), (1, 0, 2)]}
+    results = {
+        tuple(
+            names_of(
+                build_profile(OVERLAPPING, Consolidating(runs=[runs[i] for i in order]), model="m1")
+            )
+        )
+        for order in [(0, 1, 2), (1, 2, 0), (2, 0, 1), (1, 0, 2)]
+    }
     assert len(results) == 1
 
 
@@ -170,12 +226,22 @@ def test_the_model_decides_how_many_categories_there_are_no_cut_to_a_small_numbe
     assert len(profile.categories) == 12 and profile.truncated is False
 
 
-def test_names_are_unique_whatever_the_model_says_and_the_result_is_independent_of_run_order() -> None:
+def test_names_are_unique_whatever_the_model_says_and_the_result_is_independent_of_run_order() -> (
+    None
+):
     docs = {
         "A.pptx": "CAT: Essential | a\nCAT: Clarity | b\nCAT: Testable | c\nCAT: Necessary | d",
         "B.pptx": "CAT: essential | a\nCAT: Unambiguity | b\nCAT: Testability | c\nCAT: Traceability | e",
     }
-    inputs = ["Essential", "Clarity", "Testable", "Necessary", "Unambiguity", "Testability", "Traceability"]
+    inputs = [
+        "Essential",
+        "Clarity",
+        "Testable",
+        "Necessary",
+        "Unambiguity",
+        "Testability",
+        "Traceability",
+    ]
     for seed in range(40):
         rng = random.Random(seed)
 
@@ -185,7 +251,7 @@ def test_names_are_unique_whatever_the_model_says_and_the_result_is_independent_
             groups, i = {}, 0
             while i < len(shuffled):
                 size = rng.randint(1, 3)
-                groups[f"G{len(groups)}"] = shuffled[i:i + size]
+                groups[f"G{len(groups)}"] = shuffled[i : i + size]
                 i += size
             return groups
 
@@ -193,41 +259,68 @@ def test_names_are_unique_whatever_the_model_says_and_the_result_is_independent_
         a = build_profile(docs, Consolidating(runs=runs), model="m1")
         b = build_profile(docs, Consolidating(runs=list(reversed(runs))), model="m1")
         assert [c.name for c in a.categories] == [c.name for c in b.categories], seed
-        assert len({_key(c.name) for c in a.categories}) == len(a.categories), seed  # no two entries share a name
+        assert len({_key(c.name) for c in a.categories}) == len(a.categories), (
+            seed
+        )  # no two entries share a name
         assert {src for c in a.categories for src in c.sources} == {"A.pptx", "B.pptx"}
 
 
 # ---- a rebuild keeps what the previous profile decided ----
 
-def previous_profile(names_to_members: dict[str, list[str]], sources=("HowTo.pptx", "Principles.pptx")) -> KbProfile:
+
+def previous_profile(
+    names_to_members: dict[str, list[str]], sources=("HowTo.pptx", "Principles.pptx")
+) -> KbProfile:
     return KbProfile(
-        version="old", built_with="m1",
-        categories=[Category(name=name, pass_condition="old condition", sources=list(sources), merged_from=members) for name, members in names_to_members.items()],
+        version="old",
+        built_with="m1",
+        categories=[
+            Category(
+                name=name,
+                pass_condition="old condition",
+                sources=list(sources),
+                merged_from=members,
+            )
+            for name, members in names_to_members.items()
+        ],
     )
 
 
 def test_the_previous_profiles_names_win_over_the_rule_on_a_rebuild() -> None:
     previous = previous_profile({"Testability": ["Testable", "Testability"]})
     profile = build_profile(OVERLAPPING, Consolidating(), model="m1", previous=previous)
-    assert "Testability" in names_of(profile) and "Testable" not in names_of(profile)  # the rule alone would pick "Testable"
+    assert "Testability" in names_of(profile) and "Testable" not in names_of(
+        profile
+    )  # the rule alone would pick "Testable"
 
 
-def test_a_group_the_previous_profile_made_stays_together_even_if_this_time_no_run_merges_it() -> None:
+def test_a_group_the_previous_profile_made_stays_together_even_if_this_time_no_run_merges_it() -> (
+    None
+):
     previous = previous_profile({"Testable": ["Testable", "Testability"]})
-    profile = build_profile(OVERLAPPING, Consolidating(runs=[SEPARATE, SEPARATE, SEPARATE]), model="m1", previous=previous)
+    profile = build_profile(
+        OVERLAPPING,
+        Consolidating(runs=[SEPARATE, SEPARATE, SEPARATE]),
+        model="m1",
+        previous=previous,
+    )
     assert "Testable" in names_of(profile) and "Testability" not in names_of(profile)
 
 
 def test_a_previous_member_that_no_document_names_any_more_is_forgotten() -> None:
     previous = previous_profile({"Gone": ["Gone", "Testable"]})
-    profile = build_profile(OVERLAPPING, Consolidating(runs=[SEPARATE] * 3), model="m1", previous=previous)
+    profile = build_profile(
+        OVERLAPPING, Consolidating(runs=[SEPARATE] * 3), model="m1", previous=previous
+    )
     assert "Gone" not in names_of(profile) and "Testable" in names_of(profile)
 
 
 def test_the_previous_category_names_are_offered_to_the_model_only_on_a_rebuild() -> None:
     first = build_profile(OVERLAPPING, Consolidating(), model="m1")
     client = Consolidating()
-    build_profile({**OVERLAPPING, "New.pptx": "CAT: Testable | Verified"}, client, model="m1", previous=first)
+    build_profile(
+        {**OVERLAPPING, "New.pptx": "CAT: Testable | Verified"}, client, model="m1", previous=first
+    )
     assert all(set(p or []) == {c.name for c in first.categories} for p in client.preferred)
     fresh = Consolidating()
     build_profile(OVERLAPPING, fresh, model="m1")
@@ -242,6 +335,7 @@ def test_a_profile_stored_before_merged_from_existed_still_reads() -> None:
 
 
 # ---- one build at a time per user ----
+
 
 def test_two_concurrent_requests_for_the_same_users_profile_build_it_once() -> None:
     class SlowClient(Consolidating):
@@ -266,11 +360,14 @@ def test_two_concurrent_requests_for_the_same_users_profile_build_it_once() -> N
     threads = [threading.Thread(target=request) for _ in range(3)]
     [t.start() for t in threads]
     [t.join() for t in threads]
-    assert len(client.extract_calls) == len(OVERLAPPING)  # extracted once per document, not once per request
+    assert len(client.extract_calls) == len(
+        OVERLAPPING
+    )  # extracted once per document, not once per request
     assert len({r.built_at for r in results}) == 1  # everyone got the same stored profile
 
 
 # ---- a build is visible: one log line with numbers, and a build time on the stored profile ----
+
 
 def test_a_build_logs_one_line_with_the_numbers_and_never_the_names(caplog) -> None:
     import logging
@@ -283,13 +380,17 @@ def test_a_build_logs_one_line_with_the_numbers_and_never_the_names(caplog) -> N
     assert "Testable" not in line and "Unambiguity" not in line  # counts only
 
 
-def test_the_consolidation_log_counts_the_runs_that_answered_and_the_pairs_they_disagreed_on(caplog) -> None:
+def test_the_consolidation_log_counts_the_runs_that_answered_and_the_pairs_they_disagreed_on(
+    caplog,
+) -> None:
     import logging
 
     with caplog.at_level(logging.INFO, logger="app.kb.profile"):
         build_profile(OVERLAPPING, Consolidating(runs=[MERGED, None, SEPARATE]), model="m1")
     line = next(r.getMessage() for r in caplog.records if "KB profile built" in r.getMessage())
-    assert "runs=2/3" in line and "contested_pairs=1" in line  # Testable/Testability: one run merged them, one did not
+    assert (
+        "runs=2/3" in line and "contested_pairs=1" in line
+    )  # Testable/Testability: one run merged them, one did not
 
 
 def test_the_stored_profile_has_a_build_time_that_is_not_part_of_the_version() -> None:

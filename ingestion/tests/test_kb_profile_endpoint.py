@@ -12,11 +12,15 @@ client = TestClient(app)
 def _wire(kb_docs: dict[str, str]):
     store = InMemoryProfileStore()
     fake = FakeProfileClient()
-    return store, fake, [
-        patch("app.main._kb_profile_store", store),
-        patch("app.main._kb_vector_store", _Kb(kb_docs)),
-        patch("app.main._make_profile_client", lambda model: fake),
-    ]
+    return (
+        store,
+        fake,
+        [
+            patch("app.main._kb_profile_store", store),
+            patch("app.main._kb_vector_store", _Kb(kb_docs)),
+            patch("app.main._make_profile_client", lambda model: fake),
+        ],
+    )
 
 
 def test_building_returns_the_profile_and_a_second_call_does_not_rebuild() -> None:
@@ -28,7 +32,11 @@ def test_building_returns_the_profile_and_a_second_call_does_not_rebuild() -> No
         assert first.status_code == 200, first.text
         body = first.json()
         assert body["docsInKb"] == 3 and body["docsContributing"] == 3 and body["builtWith"] == "m1"
-        assert {c["name"].casefold() for c in body["profile"]["categories"]} == {"clear and unambiguous", "testable", "implementable"}
+        assert {c["name"].casefold() for c in body["profile"]["categories"]} == {
+            "clear and unambiguous",
+            "testable",
+            "implementable",
+        }
 
         calls = len(fake.extract_calls)
         again = client.post("/kb/profile", json={"user_id": "u1", "model": "m1"})

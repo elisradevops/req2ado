@@ -8,7 +8,10 @@ logger = logging.getLogger(__name__)
 
 
 def restore_lost_nodes(
-    expected: list[WorkItemNode], nodes: list[WorkItemNode], warnings: list[IntegrityWarning], stage: str,
+    expected: list[WorkItemNode],
+    nodes: list[WorkItemNode],
+    warnings: list[IntegrityWarning],
+    stage: str,
 ) -> list[str]:
     """Conservation check for the items that come straight from the document's own structure: every one of `expected`
     must still be in `nodes` after a processing stage. A node that went missing is put back (the same object, so its
@@ -19,7 +22,9 @@ def restore_lost_nodes(
     if not lost:
         return []
     for node in lost:
-        if node.parent_local_id is not None and node.parent_local_id not in present | {n.local_id for n in lost}:
+        if node.parent_local_id is not None and node.parent_local_id not in present | {
+            n.local_id for n in lost
+        }:
             node.parent_local_id = None
         nodes.append(node)
     ids = [node.local_id for node in lost]
@@ -30,6 +35,8 @@ def restore_lost_nodes(
     )
     logger.error(message)
     warnings.append(
-        IntegrityWarning.make(WarningKind.ITEMS_LOST, message, node_ids=ids, detail={"stage": stage}),
+        IntegrityWarning.make(
+            WarningKind.ITEMS_LOST, message, node_ids=ids, detail={"stage": stage}
+        ),
     )
     return ids

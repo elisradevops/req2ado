@@ -3,6 +3,7 @@
 Built from EVERY document (never from the top few chunks of one), each judged for relevance to creating the work-item
 hierarchy, merged with provenance, and rebuilt only when the documents or the building model change. These tests use a
 fake model whose answers depend only on the text it is shown, so nothing here needs a real LLM."""
+
 from __future__ import annotations
 
 import json
@@ -31,7 +32,9 @@ class FakeProfileClient:
         self.extract_calls: list[str] = []
         self.flaky_relevance = flaky_relevance
 
-    def judge_kb_document_relevance(self, name: str, excerpt: str, user_id: str | None = None) -> dict:
+    def judge_kb_document_relevance(
+        self, name: str, excerpt: str, user_id: str | None = None
+    ) -> dict:
         self.relevance_calls.append(name)
         if self.flaky_relevance:
             raise RuntimeError("model down")
@@ -39,7 +42,9 @@ class FakeProfileClient:
             return {"relevant": False, "reason": "about the weather"}
         return {"relevant": True, "reason": "writes requirements"}
 
-    def extract_kb_document_profile(self, name: str, window_text: str, user_id: str | None = None) -> dict:
+    def extract_kb_document_profile(
+        self, name: str, window_text: str, user_id: str | None = None
+    ) -> dict:
         self.extract_calls.append(name)
         if "BOOM" in window_text:
             raise RuntimeError("400 status code (no body)")
@@ -57,7 +62,12 @@ class FakeProfileClient:
             elif line.startswith("TERM:"):
                 term, _, text = line[5:].partition("=")
                 glossary.append({"term": term.strip(), "definition": text.strip()})
-        return {"categories": categories, "type_definitions": definitions, "rules": rules, "glossary": glossary}
+        return {
+            "categories": categories,
+            "type_definitions": definitions,
+            "rules": rules,
+            "glossary": glossary,
+        }
 
 
 DOCS = {
@@ -73,7 +83,10 @@ def test_every_document_contributes_and_the_merge_keeps_provenance() -> None:
     assert profile.docs_in_kb == 3 and profile.docs_contributing == 3
     by_name = {c.name.casefold(): c for c in profile.categories}
     assert set(by_name) == {"clear and unambiguous", "testable", "implementable"}
-    assert by_name["clear and unambiguous"].sources == ["HowTo.pptx", "Principles.pptx"]  # spelling variants merge
+    assert by_name["clear and unambiguous"].sources == [
+        "HowTo.pptx",
+        "Principles.pptx",
+    ]  # spelling variants merge
     assert by_name["testable"].sources == ["ALM.pptx", "HowTo.pptx"]
     assert [r.text for r in profile.rules] == ["One requirement per statement"]
     assert profile.rules[0].sources == ["HowTo.pptx", "Principles.pptx"]
@@ -81,12 +94,19 @@ def test_every_document_contributes_and_the_merge_keeps_provenance() -> None:
     assert [g.term for g in profile.glossary] == ["SRS"]
 
 
-def test_two_documents_that_define_the_same_category_differently_are_a_conflict_not_a_silent_choice() -> None:
+def test_two_documents_that_define_the_same_category_differently_are_a_conflict_not_a_silent_choice() -> (
+    None
+):
     profile = build_profile(DOCS, FakeProfileClient(), model="m1")
     conflict = next(c for c in profile.conflicts if c.key == "testable")
     assert conflict.kind == "category"
-    assert {frozenset(v.sources) for v in conflict.variants} == {frozenset({"HowTo.pptx"}), frozenset({"ALM.pptx"})}
-    assert not any(c.key == "clear and unambiguous" for c in profile.conflicts)  # identical wording is not a conflict
+    assert {frozenset(v.sources) for v in conflict.variants} == {
+        frozenset({"HowTo.pptx"}),
+        frozenset({"ALM.pptx"}),
+    }
+    assert not any(
+        c.key == "clear and unambiguous" for c in profile.conflicts
+    )  # identical wording is not a conflict
 
 
 def test_the_profile_does_not_depend_on_the_order_the_documents_arrive_in() -> None:
@@ -94,7 +114,12 @@ def test_the_profile_does_not_depend_on_the_order_the_documents_arrive_in() -> N
     for seed in range(6):
         names = list(DOCS)
         random.Random(seed).shuffle(names)
-        assert build_profile({n: DOCS[n] for n in names}, FakeProfileClient(), model="m1").model_dump_json() == reference
+        assert (
+            build_profile(
+                {n: DOCS[n] for n in names}, FakeProfileClient(), model="m1"
+            ).model_dump_json()
+            == reference
+        )
 
 
 def test_an_unrelated_document_is_recorded_with_its_reason_and_contributes_nothing() -> None:
@@ -109,9 +134,13 @@ def test_an_unrelated_document_is_recorded_with_its_reason_and_contributes_nothi
     assert profile.docs_in_kb == 4 and profile.docs_contributing == 3
 
 
-def test_a_failing_relevance_call_keeps_the_document_a_failing_extraction_never_fails_the_build() -> None:
+def test_a_failing_relevance_call_keeps_the_document_a_failing_extraction_never_fails_the_build() -> (
+    None
+):
     flaky = build_profile(DOCS, FakeProfileClient(flaky_relevance=True), model="m1")
-    assert flaky.docs_contributing == 3  # "relevant unless clearly not": a failed judgement does not drop a document
+    assert (
+        flaky.docs_contributing == 3
+    )  # "relevant unless clearly not": a failed judgement does not drop a document
 
     docs = {**DOCS, "broken.pptx": "BOOM"}
     profile = build_profile(docs, FakeProfileClient(), model="m1")
@@ -121,7 +150,9 @@ def test_a_failing_relevance_call_keeps_the_document_a_failing_extraction_never_
 
 
 def test_a_document_with_nothing_extractable_is_explained_not_silently_ignored() -> None:
-    profile = build_profile({**DOCS, "notes.docx": "just some prose"}, FakeProfileClient(), model="m1")
+    profile = build_profile(
+        {**DOCS, "notes.docx": "just some prose"}, FakeProfileClient(), model="m1"
+    )
     status = next(d for d in profile.docs if d.file == "notes.docx")
     assert status.status == "extracted_nothing"
 
@@ -129,7 +160,11 @@ def test_a_document_with_nothing_extractable_is_explained_not_silently_ignored()
 def test_the_completeness_invariant_accounts_for_every_document() -> None:
     docs = {**DOCS, "weather.pdf": "IRRELEVANT", "broken.pptx": "BOOM", "notes.docx": "prose"}
     profile = build_profile(docs, FakeProfileClient(), model="m1")
-    accounted = sum(1 for d in profile.docs if d.status in ("contributed", "not_relevant", "extracted_nothing", "failed"))
+    accounted = sum(
+        1
+        for d in profile.docs
+        if d.status in ("contributed", "not_relevant", "extracted_nothing", "failed")
+    )
     assert accounted == profile.docs_in_kb == len(docs)
 
 
@@ -151,9 +186,24 @@ def test_the_profile_is_capped_with_a_stable_ranking_and_says_so() -> None:
     shared = "CAT: Category 079 | cond"
     profile = build_profile({"a.pptx": many, "b.pptx": shared}, FakeProfileClient(), model="m1")
     assert profile.truncated is True and len(profile.categories) == MAX_SCORING_CATEGORIES
-    assert "Category 079" in {c.name for c in profile.categories}  # supported by two documents: ranks first
+    assert "Category 079" in {
+        c.name for c in profile.categories
+    }  # supported by two documents: ranks first
     # The merge itself keeps at most 40 before the short list is made.
-    merged = merge_document_profiles({"a.pptx": {"categories": [{"name": f"Category {i:03d}", "pass_condition": None} for i in range(80)], "rules": [], "glossary": [], "type_definitions": []}}, "m1", "v")
+    merged = merge_document_profiles(
+        {
+            "a.pptx": {
+                "categories": [
+                    {"name": f"Category {i:03d}", "pass_condition": None} for i in range(80)
+                ],
+                "rules": [],
+                "glossary": [],
+                "type_definitions": [],
+            }
+        },
+        "m1",
+        "v",
+    )
     assert merged.truncated is True and len(merged.categories) == 40
 
 
@@ -163,7 +213,9 @@ def test_the_version_changes_with_the_documents_the_model_and_how_the_profile_is
     assert base != profile_version({**DOCS, "ALM.pptx": DOCS["ALM.pptx"] + "\nRULE: new"}, "m1")
     assert base != profile_version({k: v for k, v in DOCS.items() if k != "ALM.pptx"}, "m1")
     assert base != profile_version(DOCS, "m2")
-    assert SCHEMA_VERSION in json.dumps([SCHEMA_VERSION])  # the schema version is part of the version input
+    assert SCHEMA_VERSION in json.dumps(
+        [SCHEMA_VERSION]
+    )  # the schema version is part of the version input
 
 
 def test_a_change_in_how_the_profile_is_built_makes_a_stored_profile_stale(monkeypatch) -> None:
@@ -173,8 +225,12 @@ def test_a_change_in_how_the_profile_is_built_makes_a_stored_profile_stale(monke
 
     base = profile_version(DOCS, "m1")
     assert base == profile_version(DOCS, "m1")
-    for name, value in (("EXTRACTION_RUNS", profile_module.EXTRACTION_RUNS + 1), ("WINDOW_CHARS", profile_module.WINDOW_CHARS + 1),
-                        ("CONSOLIDATION_RUNS", profile_module.CONSOLIDATION_RUNS + 1), ("MAX_SCORING_CATEGORIES", profile_module.MAX_SCORING_CATEGORIES + 1)):
+    for name, value in (
+        ("EXTRACTION_RUNS", profile_module.EXTRACTION_RUNS + 1),
+        ("WINDOW_CHARS", profile_module.WINDOW_CHARS + 1),
+        ("CONSOLIDATION_RUNS", profile_module.CONSOLIDATION_RUNS + 1),
+        ("MAX_SCORING_CATEGORIES", profile_module.MAX_SCORING_CATEGORIES + 1),
+    ):
         with monkeypatch.context() as patched:
             patched.setattr(profile_module, name, value)
             assert profile_version(DOCS, "m1") != base, name
@@ -185,8 +241,16 @@ def test_a_change_to_a_prompt_the_build_uses_makes_a_stored_profile_stale(monkey
 
     base = profile_version(DOCS, "m1")
     real = profile_module.load_prompt
-    for changed in ("kb_document_relevance", "extract_kb_document_profile", "consolidate_kb_categories"):
-        monkeypatch.setattr(profile_module, "load_prompt", lambda n, *a, _c=changed, **k: real(n, *a, **k) + (" changed" if n == _c else ""))
+    for changed in (
+        "kb_document_relevance",
+        "extract_kb_document_profile",
+        "consolidate_kb_categories",
+    ):
+        monkeypatch.setattr(
+            profile_module,
+            "load_prompt",
+            lambda n, *a, _c=changed, **k: real(n, *a, **k) + (" changed" if n == _c else ""),
+        )
         assert profile_version(DOCS, "m1") != base, changed
 
 
@@ -213,7 +277,9 @@ def test_ensure_profile_builds_once_and_rebuilds_only_when_the_knowledge_base_ch
 
     kb.docs["new.pptx"] = "CAT: Verifiable | by test"
     rebuilt = ensure_profile("u1", kb, store, client, model="m1")
-    assert rebuilt.version != first.version and "verifiable" in {c.name.casefold() for c in rebuilt.categories}
+    assert rebuilt.version != first.version and "verifiable" in {
+        c.name.casefold() for c in rebuilt.categories
+    }
 
     other_model = ensure_profile("u1", kb, store, client, model="m2")
     assert other_model.version != rebuilt.version and other_model.built_with == "m2"
@@ -232,13 +298,23 @@ def test_a_stored_profile_round_trips() -> None:
 
 
 def test_merge_is_a_pure_function_of_the_per_document_results() -> None:
-    per_doc = {"b.pptx": {"categories": [{"name": "X", "pass_condition": "1"}], "type_definitions": [], "rules": [], "glossary": []}}
+    per_doc = {
+        "b.pptx": {
+            "categories": [{"name": "X", "pass_condition": "1"}],
+            "type_definitions": [],
+            "rules": [],
+            "glossary": [],
+        }
+    }
     assert merge_document_profiles(per_doc, "m1", "v").categories[0].sources == ["b.pptx"]
 
 
 # --- scoring from the profile ---------------------------------------------------------------------------------
 
-def test_the_scoring_inputs_are_one_fixed_category_list_with_its_pass_conditions_and_a_small_constant_context() -> None:
+
+def test_the_scoring_inputs_are_one_fixed_category_list_with_its_pass_conditions_and_a_small_constant_context() -> (
+    None
+):
     from app.kb.profile import scoring_inputs
 
     profile = build_profile(DOCS, FakeProfileClient(), model="m1")
@@ -246,7 +322,9 @@ def test_the_scoring_inputs_are_one_fixed_category_list_with_its_pass_conditions
 
     assert [c.casefold() for c in categories] == [c.name.casefold() for c in profile.categories]
     assert definitions["Clear and unambiguous"] == "One reading only"
-    assert context is not None and "Testable" in context and "Implementable: Can be built" in context
+    assert (
+        context is not None and "Testable" in context and "Implementable: Can be built" in context
+    )
     assert "One requirement per statement" in context  # the mandatory rules judge a requirement too
     assert len(context) < 8_000
 
@@ -262,20 +340,29 @@ def test_scoring_inputs_ignore_a_profile_with_no_categories_so_the_old_behaviour
 def test_the_scoring_context_does_not_grow_with_the_knowledge_base() -> None:
     from app.kb.profile import scoring_inputs
 
-    big = {f"d{i}.pptx": "\n".join(f"CAT: Category {i}-{j} | " + "condition " * 40 for j in range(30)) for i in range(10)}
+    big = {
+        f"d{i}.pptx": "\n".join(f"CAT: Category {i}-{j} | " + "condition " * 40 for j in range(30))
+        for i in range(10)
+    }
     _, _, context = scoring_inputs(build_profile(big, FakeProfileClient(), model="m1"))
     assert len(context) < 8_000
 
 
 # --- the authoring standard in generation prompts ---------------------------------------------------------------
 
-def test_the_authoring_standard_states_definitions_rules_terms_and_the_quality_bar_within_a_budget() -> None:
+
+def test_the_authoring_standard_states_definitions_rules_terms_and_the_quality_bar_within_a_budget() -> (
+    None
+):
     from app.kb.profile import render_authoring_standard
 
     profile = build_profile(DOCS, FakeProfileClient(), model="m1")
     text = render_authoring_standard(profile)
     assert text is not None and len(text) < 6_500
-    assert "Requirement: A verifiable statement of need" in text and "Epic: A large body of work" in text
+    assert (
+        "Requirement: A verifiable statement of need" in text
+        and "Epic: A large body of work" in text
+    )
     assert "One requirement per statement" in text
     assert "SRS: software requirements specification" in text
     assert "Implementable: Can be built" in text
@@ -286,11 +373,21 @@ def test_there_is_no_authoring_standard_without_a_profile_or_without_content() -
     from app.kb.profile import render_authoring_standard
 
     assert render_authoring_standard(None) is None
-    assert render_authoring_standard(build_profile({"n.docx": "prose"}, FakeProfileClient(), model="m1")) is None
+    assert (
+        render_authoring_standard(
+            build_profile({"n.docx": "prose"}, FakeProfileClient(), model="m1")
+        )
+        is None
+    )
 
 
 def test_the_authoring_standard_stays_inside_its_budget_for_a_huge_knowledge_base() -> None:
     from app.kb.profile import render_authoring_standard
 
-    big = {f"d{i}.pptx": "\n".join(f"RULE: rule {i}-{j} " + "words " * 40 for j in range(60)) for i in range(5)}
-    assert len(render_authoring_standard(build_profile(big, FakeProfileClient(), model="m1"))) < 6_500
+    big = {
+        f"d{i}.pptx": "\n".join(f"RULE: rule {i}-{j} " + "words " * 40 for j in range(60))
+        for i in range(5)
+    }
+    assert (
+        len(render_authoring_standard(build_profile(big, FakeProfileClient(), model="m1"))) < 6_500
+    )

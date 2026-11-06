@@ -14,8 +14,12 @@ from app.leveling.stage_units import (
 
 def _p(phase: str, **kwargs) -> LevelingProgress:  # noqa: ANN003
     base = dict(
-        branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
-        kb_grounded=False, kb_citations=[],
+        branch_index=None,
+        branch_count=0,
+        blocks_done=0,
+        blocks_total=0,
+        kb_grounded=False,
+        kb_citations=[],
     )
     base.update(kwargs)
     return LevelingProgress(phase=phase, **base)  # type: ignore[arg-type]
@@ -57,18 +61,26 @@ def test_parse_done_for_a_document_without_figures_is_complete_at_zero() -> None
 def test_pass_narration_counts_nothing_the_stage_counter_owns_those_units(label: str) -> None:
     # draft / improve / summarize are summed across chunks and subtrees by
     # StageCounter; one subtree's start-of-chunk position must not fight it.
-    assert units_from_progress(
-        _p("deterministic_subtree", blocks_done=150, blocks_total=275, subtree_label=label)
-    ) is None
+    assert (
+        units_from_progress(
+            _p("deterministic_subtree", blocks_done=150, blocks_total=275, subtree_label=label)
+        )
+        is None
+    )
 
 
 def test_subtree_kickoff_without_a_pass_has_no_units() -> None:
-    assert units_from_progress(
-        _p(
-            "deterministic_subtree", subtree_index=0, subtree_count=1,
-            subtree_label="Heading hierarchy",
+    assert (
+        units_from_progress(
+            _p(
+                "deterministic_subtree",
+                subtree_index=0,
+                subtree_count=1,
+                subtree_label="Heading hierarchy",
+            )
         )
-    ) is None
+        is None
+    )
 
 
 def test_done_is_clamped_to_the_total() -> None:
@@ -107,11 +119,35 @@ def test_scoring_counts_requirements_and_completes() -> None:
 
 def test_scoring_batch_done_events_report_the_cumulative_count_until_the_last_batch() -> None:
     # A done event follows every batch; only the last one means the pass is finished.
-    first = units_from_progress(_p("score_requirements_done", blocks_done=50, blocks_total=426, chunk_index=0, chunk_count=10))
+    first = units_from_progress(
+        _p(
+            "score_requirements_done",
+            blocks_done=50,
+            blocks_total=426,
+            chunk_index=0,
+            chunk_count=10,
+        )
+    )
     assert (first.done, first.total) == (50, 426)
-    middle = units_from_progress(_p("score_requirements_done", blocks_done=204, blocks_total=426, chunk_index=4, chunk_count=10))
+    middle = units_from_progress(
+        _p(
+            "score_requirements_done",
+            blocks_done=204,
+            blocks_total=426,
+            chunk_index=4,
+            chunk_count=10,
+        )
+    )
     assert middle.done == 204
-    last = units_from_progress(_p("score_requirements_done", blocks_done=426, blocks_total=426, chunk_index=9, chunk_count=10))
+    last = units_from_progress(
+        _p(
+            "score_requirements_done",
+            blocks_done=426,
+            blocks_total=426,
+            chunk_index=9,
+            chunk_count=10,
+        )
+    )
     assert last.done == 426
 
 
@@ -126,8 +162,14 @@ def test_whole_document_passes_count_passes_finished() -> None:
 
 @pytest.mark.parametrize(
     "phase",
-    ["preparing_analysis", "table_detected", "page_alignment", "chunk_warning", "job_failed",
-     "dedup_check"],
+    [
+        "preparing_analysis",
+        "table_detected",
+        "page_alignment",
+        "chunk_warning",
+        "job_failed",
+        "dedup_check",
+    ],
 )
 def test_other_phases_have_no_units(phase: str) -> None:
     assert units_from_progress(_p(phase)) is None

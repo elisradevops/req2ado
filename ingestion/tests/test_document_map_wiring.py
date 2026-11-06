@@ -18,14 +18,19 @@ def _sr(i: int) -> SourceRef:
 
 def _doc() -> CanonicalDoc:
     headings = [
-        (1, "1  Power"), (2, "1.1  Bus voltage"),
-        (3, "1.1.1  The system shall limit ripple."), (3, "1.1.2  The system shall report faults."),
+        (1, "1  Power"),
+        (2, "1.1  Bus voltage"),
+        (3, "1.1.1  The system shall limit ripple."),
+        (3, "1.1.2  The system shall report faults."),
     ]
     return CanonicalDoc(
         document=Document(path="x.docx", format=DocumentFormat.DOCX, sha256="x"),
         blocks=[
             Block(
-                id=f"h{i}", kind=BlockKind.HEADING, heading_level=level, text=text,
+                id=f"h{i}",
+                kind=BlockKind.HEADING,
+                heading_level=level,
+                text=text,
                 source_ref=_sr(i),
             )
             for i, (level, text) in enumerate(headings)
@@ -103,7 +108,9 @@ def test_the_map_route_publishes_the_map_of_a_given_document(monkeypatch) -> Non
     fake = _FakeRedis()
     monkeypatch.setattr(main_module, "_narration_redis", fake)
     monkeypatch.setattr(main_module.settings, "live_progress", True)
-    response = _client().post("/document-map", params={"job_id": "job-9"}, json=_doc().model_dump(mode="json"))
+    response = _client().post(
+        "/document-map", params={"job_id": "job-9"}, json=_doc().model_dump(mode="json")
+    )
     assert response.status_code == 200
     assert response.json() == {"published": True}
     assert [name for name, _, _ in fake.sets] == ["job-events:job-9:map"]
@@ -114,7 +121,9 @@ def test_the_map_route_writes_nothing_when_live_progress_is_off(monkeypatch) -> 
     fake = _FakeRedis()
     monkeypatch.setattr(main_module, "_narration_redis", fake)
     monkeypatch.setattr(main_module.settings, "live_progress", False)
-    response = _client().post("/document-map", params={"job_id": "job-9"}, json=_doc().model_dump(mode="json"))
+    response = _client().post(
+        "/document-map", params={"job_id": "job-9"}, json=_doc().model_dump(mode="json")
+    )
     assert response.status_code == 200
     assert response.json() == {"published": False}
     assert fake.sets == []
@@ -127,7 +136,9 @@ def test_ingest_publishes_the_map_as_soon_as_the_document_exists(monkeypatch) ->
     fake = _FakeRedis()
     monkeypatch.setattr(main_module, "_narration_redis", fake)
     monkeypatch.setattr(main_module.settings, "live_progress", True)
-    _upload("sample.docx", FIXTURES / "sample.docx", mode="survey", skip_vision=True, job_id="job-ing-1")
+    _upload(
+        "sample.docx", FIXTURES / "sample.docx", mode="survey", skip_vision=True, job_id="job-ing-1"
+    )
     assert "job-events:job-ing-1:map" in [name for name, _, _ in fake.sets]
 
 

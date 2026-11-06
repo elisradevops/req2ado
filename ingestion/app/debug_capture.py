@@ -19,6 +19,7 @@ trail. Keyed by job_id (read from the ambient contextvar in
 app.logging_context, not threaded as a parameter) -- capture silently no-ops
 outside any job_id_scope() (e.g. a direct test/curl call with no job
 context), since there is nothing meaningful to key it by."""
+
 from __future__ import annotations
 
 import logging
@@ -60,7 +61,9 @@ class DebugCapture:
         except Exception:  # noqa: BLE001 - debug capture must never fail the job it's capturing for
             logger.warning(
                 "DebugCapture failed to persist a capture for job %s (%s/%s)",
-                job_id, kind, identifier,
+                job_id,
+                kind,
+                identifier,
             )
 
     def list_captures(self, job_id: str) -> list[dict[str, str]]:

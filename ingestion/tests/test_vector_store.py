@@ -110,11 +110,15 @@ def test_upsert_is_idempotent_for_the_same_item_id() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         store = ChromaVectorStore(persist_path=tmp)
         store.upsert("item-1", [1.0, 0.0, 0.0], area_path="Project\\Area1")
-        store.upsert("item-1", [0.0, 1.0, 0.0], area_path="Project\\Area1")  # re-upsert, different vector
+        store.upsert(
+            "item-1", [0.0, 1.0, 0.0], area_path="Project\\Area1"
+        )  # re-upsert, different vector
         result = store.query_nearest([0.0, 1.0, 0.0], area_path="Project\\Area1")
         matched_id, similarity, _ = result
         assert matched_id == "item-1"
-        assert similarity == pytest.approx(1.0, abs=1e-6)  # matches the UPDATED vector, not the original
+        assert similarity == pytest.approx(
+            1.0, abs=1e-6
+        )  # matches the UPDATED vector, not the original
 
 
 # --- optional document round-trip (X7 numeric-literal dedup guard) ----------

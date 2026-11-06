@@ -38,7 +38,10 @@ def load_csv(path: str) -> CanonicalDoc:
         # cell is a bare TableCell with no span/header/color/alignment info,
         # never upgraded by a later phase (unlike PDF, which gets real
         # heuristic extraction in Phase 4).
-        cells=[[TableCell(text=cell) for cell in row] + [TableCell(text="")] * (max_width - len(row)) for row in rows],
+        cells=[
+            [TableCell(text=cell) for cell in row] + [TableCell(text="")] * (max_width - len(row))
+            for row in rows
+        ],
         caption=file_path.stem,
         source_ref=SourceRef(document_path=path, start_offset=0, end_offset=0),
     )

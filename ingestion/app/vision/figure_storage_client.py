@@ -59,10 +59,15 @@ class OrchestratorFigureFileClient:
         (main.py's _describe_figure_with_progress) is the one that decides
         this is best-effort and swallows the exception, same division of
         responsibility as every other Orchestrator*Client in this package."""
-        with httpx.Client(transport=self._transport, timeout=_FIGURE_STORE_REQUEST_TIMEOUT_SECONDS) as client:
+        with httpx.Client(
+            transport=self._transport, timeout=_FIGURE_STORE_REQUEST_TIMEOUT_SECONDS
+        ) as client:
             response = client.post(
                 f"{self._base_url}/jobs/{job_id}/figures/{figure_id}",
-                json={"bytes": base64.b64encode(image_bytes).decode("ascii"), "mimeType": mime_type},
+                json={
+                    "bytes": base64.b64encode(image_bytes).decode("ascii"),
+                    "mimeType": mime_type,
+                },
                 headers={"Authorization": f"Bearer {self._bearer_token}"},
             )
         response.raise_for_status()

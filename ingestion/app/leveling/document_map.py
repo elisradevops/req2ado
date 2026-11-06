@@ -81,8 +81,14 @@ class DocumentMap:
             "truncated": self.truncated,
             "totalItems": self.total_items,
             "groups": [
-                {"ref": g.ref, "title": g.title, "kind": g.kind,
-                 "itemStart": g.item_start, "itemCount": g.item_count, "words": g.words}
+                {
+                    "ref": g.ref,
+                    "title": g.title,
+                    "kind": g.kind,
+                    "itemStart": g.item_start,
+                    "itemCount": g.item_count,
+                    "words": g.words,
+                }
                 for g in self.groups
             ],
             "items": [
@@ -124,7 +130,9 @@ def _row_depth(rows: list[HierarchyRow], index: int) -> int:
 
 
 def _heading_row_words(
-    rows: list[HierarchyRow], heading_block_ids: list[str], blocks: list[Block],
+    rows: list[HierarchyRow],
+    heading_block_ids: list[str],
+    blocks: list[Block],
 ) -> list[int]:
     """Words of each claimed heading plus the body content up to the next
     heading block (claimed or not) -- the same boundary the span-claiming
@@ -162,7 +170,9 @@ def subtree_inputs_for_doc(doc: CanonicalDoc) -> list[SubtreeInput]:
     if heading_rows:
         inputs.append(
             SubtreeInput(
-                "heading", "Heading hierarchy", heading_rows,
+                "heading",
+                "Heading hierarchy",
+                heading_rows,
                 _heading_row_words(heading_rows, heading_block_ids, doc.blocks),
             )
         )
@@ -221,30 +231,42 @@ def build_document_map(stats: DocStats, subtrees: list[SubtreeInput]) -> Documen
                         # ref the live frames carry, so the outline can follow the run.
                         ref=node_local_id(sub_index, row.id_text),
                         title=_clip(row.label) or row.id_text,
-                        words=sub.row_words[row_index], depth=_row_depth(sub.rows, row_index),
+                        words=sub.row_words[row_index],
+                        depth=_row_depth(sub.rows, row_index),
                         type=row.node_type,
                     )
                 )
             groups.append(
                 MapGroup(
-                    ref=f"g{sub_index}.{range_index}", title=_clip(title) or sub.title,
+                    ref=f"g{sub_index}.{range_index}",
+                    title=_clip(title) or sub.title,
                     kind=sub.kind,
                     item_start=group_start,
-                    item_count=len(node_rows), words=group_words,
+                    item_count=len(node_rows),
+                    words=group_words,
                 )
             )
 
     doc_map = DocumentMap(
-        version=MAP_VERSION, unit=unit, stats=_stats_dict(stats), groups=groups, items=items,
-        truncated=truncated, total_items=total_items,
+        version=MAP_VERSION,
+        unit=unit,
+        stats=_stats_dict(stats),
+        groups=groups,
+        items=items,
+        truncated=truncated,
+        total_items=total_items,
     )
     return _enforce_byte_limit(doc_map)
 
 
 def _stats_dict(stats: DocStats) -> dict[str, Any]:
     return {
-        "words": stats.words, "blocks": stats.blocks, "headings": stats.headings,
-        "tables": stats.tables, "tableRows": stats.table_rows, "figures": stats.figures,
+        "words": stats.words,
+        "blocks": stats.blocks,
+        "headings": stats.headings,
+        "tables": stats.tables,
+        "tableRows": stats.table_rows,
+        "figures": stats.figures,
         "pages": stats.pages,
     }
 
@@ -253,8 +275,13 @@ def _enforce_byte_limit(doc_map: DocumentMap) -> DocumentMap:
     if len(json.dumps(doc_map.to_dict(), ensure_ascii=False).encode("utf-8")) <= MAX_MAP_BYTES:
         return doc_map
     return DocumentMap(
-        version=doc_map.version, unit=doc_map.unit, stats=doc_map.stats, groups=doc_map.groups,
-        items=[], truncated=True, total_items=doc_map.total_items,
+        version=doc_map.version,
+        unit=doc_map.unit,
+        stats=doc_map.stats,
+        groups=doc_map.groups,
+        items=[],
+        truncated=True,
+        total_items=doc_map.total_items,
     )
 
 
@@ -287,6 +314,13 @@ def publish_document_map(redis_client: _RedisLike, job_id: str, doc: CanonicalDo
 
 
 __all__ = [
-    "DocumentMap", "MapGroup", "MapItem", "SubtreeInput", "build_document_map",
-    "map_key", "publish_document_map", "subtree_inputs_for_doc", "write_document_map",
+    "DocumentMap",
+    "MapGroup",
+    "MapItem",
+    "SubtreeInput",
+    "build_document_map",
+    "map_key",
+    "publish_document_map",
+    "subtree_inputs_for_doc",
+    "write_document_map",
 ]

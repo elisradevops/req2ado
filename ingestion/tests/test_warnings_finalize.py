@@ -8,7 +8,11 @@ def _reparented(node_id: str, target: str) -> IntegrityWarning:
         f'"Requirement {node_id}" had no parent -- re-parented under Feature "{target} Feature" '
         "to keep the Epic -> Feature -> Requirement chain intact.",
         node_ids=[node_id],
-        detail={"targetFeatureId": target, "targetFeatureTitle": f"{target} Feature", "originalParent": "no parent"},
+        detail={
+            "targetFeatureId": target,
+            "targetFeatureTitle": f"{target} Feature",
+            "originalParent": "no parent",
+        },
     )
 
 
@@ -65,8 +69,12 @@ def test_finalize_warnings_groups_a_none_key_kind_across_the_whole_list() -> Non
     # LOW_GROUNDING has no meaningful sub-key -- every occurrence in the
     # tree collapses into one bucket regardless of which node it came from.
     warnings = [
-        IntegrityWarning.make(WarningKind.LOW_GROUNDING, "Node n0 has low grounding", node_ids=["n0"]),
-        IntegrityWarning.make(WarningKind.LOW_GROUNDING, "Node n1 has low grounding", node_ids=["n1"]),
+        IntegrityWarning.make(
+            WarningKind.LOW_GROUNDING, "Node n0 has low grounding", node_ids=["n0"]
+        ),
+        IntegrityWarning.make(
+            WarningKind.LOW_GROUNDING, "Node n1 has low grounding", node_ids=["n1"]
+        ),
     ]
     result = finalize_warnings(warnings)
     assert len(result) == 1
@@ -83,12 +91,12 @@ def test_finalize_warnings_groups_unsupported_content_note_across_the_whole_list
     warnings = [
         IntegrityWarning.make(
             WarningKind.UNSUPPORTED_CONTENT_NOTE,
-            'The "Intro" section contained a loader diagnostic note (\'[UNSUPPORTED: page 1 ...]\')',
+            "The \"Intro\" section contained a loader diagnostic note ('[UNSUPPORTED: page 1 ...]')",
             detail={"section": "Intro", "text": "[UNSUPPORTED: page 1 appears multi-column]"},
         ),
         IntegrityWarning.make(
             WarningKind.UNSUPPORTED_CONTENT_NOTE,
-            'The "Specs" section contained a loader diagnostic note (\'[UNSUPPORTED: page 9 ...]\')',
+            "The \"Specs\" section contained a loader diagnostic note ('[UNSUPPORTED: page 9 ...]')",
             detail={"section": "Specs", "text": "[UNSUPPORTED: page 9 appears multi-column]"},
         ),
     ]
@@ -159,12 +167,12 @@ def test_finalize_warnings_groups_external_reference_across_the_whole_list() -> 
     warnings = [
         IntegrityWarning.make(
             WarningKind.EXTERNAL_REFERENCE,
-            'The "Intro" section references an external artifact (\'see Appendix A\').',
+            "The \"Intro\" section references an external artifact ('see Appendix A').",
             detail={"section": "Intro", "phrase": "see Appendix A"},
         ),
         IntegrityWarning.make(
             WarningKind.EXTERNAL_REFERENCE,
-            'The "Specs" section references an external artifact (\'see ICD-001\').',
+            "The \"Specs\" section references an external artifact ('see ICD-001').",
             detail={"section": "Specs", "phrase": "see ICD-001"},
         ),
     ]

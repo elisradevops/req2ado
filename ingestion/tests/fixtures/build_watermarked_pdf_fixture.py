@@ -6,6 +6,7 @@ document. This is a simplified simulation (flat gray color, not a real
 semi-transparent diagonal overlay) — good enough to test confidence-based
 filtering behavior, not a faithful real-world watermark reproduction.
 """
+
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -21,7 +22,9 @@ draw = ImageDraw.Draw(img)
 
 try:
     body_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", size=32)
-    watermark_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", size=80)
+    watermark_font = ImageFont.truetype(
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", size=80
+    )
 except OSError:
     body_font = ImageFont.load_default()
     watermark_font = ImageFont.load_default()
@@ -30,7 +33,9 @@ except OSError:
 draw.text((150, 150), "DRAFT", fill=(210, 210, 210), font=watermark_font)
 
 # Solid black body text — the real content we want preserved
-draw.text((40, 40), "The receiver shall support at least 40 channels.", fill=(0, 0, 0), font=body_font)
+draw.text(
+    (40, 40), "The receiver shall support at least 40 channels.", fill=(0, 0, 0), font=body_font
+)
 
 img.save(image_path)
 

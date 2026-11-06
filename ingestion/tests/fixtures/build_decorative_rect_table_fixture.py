@@ -17,6 +17,7 @@ a single both-axes-inset decorative fill, one plain unshaded data row) so
 the fix (`_DECORATIVE_RECT_SNAP_TOLERANCE` in pdf_loader.py) can be proven
 without needing the full real document.
 """
+
 from pathlib import Path
 
 from reportlab.lib.pagesizes import letter
@@ -59,7 +60,9 @@ for row_index, (top, labels) in enumerate(zip(ROW_TOPS, [header_labels, row1_lab
             # Shaded data row: ONE decorative inset fill (inset both axes) --
             # reproduces the real document's ghost-column bug.
             c.setFillColorRGB(*GRAY)
-            c.rect(x + INSET, bottom + INSET, COL_W - 2 * INSET, ROW_H - 2 * INSET, stroke=0, fill=1)
+            c.rect(
+                x + INSET, bottom + INSET, COL_W - 2 * INSET, ROW_H - 2 * INSET, stroke=0, fill=1
+            )
         # row_index == 2 (unshaded): no decorative fill at all.
 
         c.setFillColorRGB(0, 0, 0)

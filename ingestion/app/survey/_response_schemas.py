@@ -45,6 +45,7 @@ unbounded-star grammar regardless. DO NOT add a maxItems-BOUNDED
 top-level array schema without re-verifying the cliff against whatever
 Ollama version is in use at the time.
 """
+
 from __future__ import annotations
 
 from app.config import settings
@@ -227,7 +228,12 @@ def trace_links_schema() -> dict:
                             "target_ref": {"type": "string"},
                             "evidence_quote": {"type": "string"},
                         },
-                        "required": ["source_node_id", "reference_name", "target_ref", "evidence_quote"],
+                        "required": [
+                            "source_node_id",
+                            "reference_name",
+                            "target_ref",
+                            "evidence_quote",
+                        ],
                         "additionalProperties": False,
                     },
                 }
@@ -646,7 +652,10 @@ def kb_document_profile_schema() -> dict:
                     "type": "array",
                     "items": {
                         "type": "object",
-                        "properties": {"name": {"type": "string"}, "pass_condition": {"type": "string"}},
+                        "properties": {
+                            "name": {"type": "string"},
+                            "pass_condition": {"type": "string"},
+                        },
                         "required": ["name", "pass_condition"],
                         "additionalProperties": False,
                     },
@@ -655,7 +664,13 @@ def kb_document_profile_schema() -> dict:
                     "type": "array",
                     "items": {
                         "type": "object",
-                        "properties": {"item_type": {"type": "string", "enum": ["epic", "feature", "requirement"]}, "text": {"type": "string"}},
+                        "properties": {
+                            "item_type": {
+                                "type": "string",
+                                "enum": ["epic", "feature", "requirement"],
+                            },
+                            "text": {"type": "string"},
+                        },
                         "required": ["item_type", "text"],
                         "additionalProperties": False,
                     },
@@ -665,7 +680,10 @@ def kb_document_profile_schema() -> dict:
                     "type": "array",
                     "items": {
                         "type": "object",
-                        "properties": {"term": {"type": "string"}, "definition": {"type": "string"}},
+                        "properties": {
+                            "term": {"type": "string"},
+                            "definition": {"type": "string"},
+                        },
                         "required": ["term", "definition"],
                         "additionalProperties": False,
                     },
@@ -690,7 +708,10 @@ def document_study_schema() -> dict:
                     "type": "array",
                     "items": {
                         "type": "object",
-                        "properties": {"term": {"type": "string"}, "definition": {"type": "string"}},
+                        "properties": {
+                            "term": {"type": "string"},
+                            "definition": {"type": "string"},
+                        },
                         "required": ["term", "definition"],
                         "additionalProperties": False,
                     },
@@ -709,7 +730,11 @@ def document_study_schema() -> dict:
                 },
             },
             "required": [
-                "glossary", "placeholder_tokens", "verification_statements", "standards_cited", "table_roles",
+                "glossary",
+                "placeholder_tokens",
+                "verification_statements",
+                "standards_cited",
+                "table_roles",
             ],
             "additionalProperties": False,
         },
@@ -809,7 +834,10 @@ def score_explanation_schema() -> dict:
                     "type": "array",
                     "items": {
                         "type": "object",
-                        "properties": {"category": {"type": "string"}, "reason": {"type": "string"}},
+                        "properties": {
+                            "category": {"type": "string"},
+                            "reason": {"type": "string"},
+                        },
                         "required": ["category", "reason"],
                         "additionalProperties": False,
                     },

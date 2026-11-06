@@ -15,6 +15,7 @@ not misclassified as tv_style (which would have retyped the top two levels as
 Epic/Epic). The Thermal Management branch is left at 2 levels, unchanged, so
 this fixture still also proves the plain 2-level case.
 """
+
 from pathlib import Path
 
 from docx import Document as DocxDocument

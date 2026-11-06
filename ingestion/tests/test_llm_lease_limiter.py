@@ -101,7 +101,9 @@ def _limiter(redis, g: int = 2, u: int = 2, lease: int = 600) -> LeaseLimiter:
 
 
 def _acquire(limiter, time: _Time, model="m", scope=SCOPE, wait: float = 5.0):
-    return limiter.acquire(model, scope, wait, sleep=time.sleep, clock=time.clock, rng=random.Random(1))
+    return limiter.acquire(
+        model, scope, wait, sleep=time.sleep, clock=time.clock, rng=random.Random(1)
+    )
 
 
 def test_global_cap_across_two_jobs() -> None:
@@ -227,11 +229,15 @@ def _poll_intervals(limiter, time: _Time, holder, free_on_call: int, wait: float
         return original(*args)
 
     limiter._try_once = try_once
-    lease = limiter.acquire("m", OTHER_SCOPE, wait, sleep=time.sleep, clock=time.clock, rng=_NoJitter())
+    lease = limiter.acquire(
+        "m", OTHER_SCOPE, wait, sleep=time.sleep, clock=time.clock, rng=_NoJitter()
+    )
     return lease, [b - a for a, b in zip(polls, polls[1:])], polls
 
 
-def test_the_poll_interval_backs_off_geometrically_up_to_the_cap_and_a_freed_slot_is_taken_at_the_next_poll() -> None:
+def test_the_poll_interval_backs_off_geometrically_up_to_the_cap_and_a_freed_slot_is_taken_at_the_next_poll() -> (
+    None
+):
     limiter = _limiter(_FakeRedis(), g=1, u=1)
     holder = _acquire(limiter, _Time())
     time = _Time()
@@ -338,7 +344,9 @@ class _FlakyRedis(_FakeRedis):
 
 
 def _acquire_at(limiter, time: _Time):
-    return limiter.acquire("m", SCOPE, 5.0, sleep=time.sleep, clock=time.clock, rng=random.Random(1))
+    return limiter.acquire(
+        "m", SCOPE, 5.0, sleep=time.sleep, clock=time.clock, rng=random.Random(1)
+    )
 
 
 def test_limiter_recovers_after_the_cooldown() -> None:
@@ -348,7 +356,9 @@ def test_limiter_recovers_after_the_cooldown() -> None:
     assert _acquire_at(limiter, time) is not None
     attempts = redis.attempts
     time.now = 29
-    assert _acquire_at(limiter, time) is not None and redis.attempts == attempts  # still local, Redis untouched
+    assert (
+        _acquire_at(limiter, time) is not None and redis.attempts == attempts
+    )  # still local, Redis untouched
     redis.broken = False
     time.now = 31
     lease = _acquire_at(limiter, time)
@@ -429,10 +439,14 @@ def test_a_release_that_raises_starts_the_cooldown_and_stops_releasing(caplog) -
     with caplog.at_level(logging.WARNING):
         lease.release()
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-    assert redis.release_calls == 1 and len(redis.data) == 2  # the second key was not tried: both expire by TTL
+    assert (
+        redis.release_calls == 1 and len(redis.data) == 2
+    )  # the second key was not tried: both expire by TTL
     assert len(warnings) == 1 and "ConnectionError" in warnings[0].getMessage()
     taken = len(redis.pxs)
-    assert _acquire_at(limiter, time) is not None and len(redis.pxs) == taken  # the cooldown is running
+    assert (
+        _acquire_at(limiter, time) is not None and len(redis.pxs) == taken
+    )  # the cooldown is running
 
 
 def test_a_slow_probe_does_not_hold_the_limiter_lock() -> None:
@@ -479,7 +493,11 @@ def test_first_acquire_probes_lua_and_goes_local_when_eval_is_unavailable(caplog
         _acquire(limiter, time)
     assert lease is not None and redis.pxs == []  # no slot was ever taken
     errors = [r for r in caplog.records if r.levelno == logging.ERROR]
-    assert len(errors) == 1 and "RuntimeError" in errors[0].getMessage() and "Lua" in errors[0].getMessage()
+    assert (
+        len(errors) == 1
+        and "RuntimeError" in errors[0].getMessage()
+        and "Lua" in errors[0].getMessage()
+    )
 
 
 def test_successful_probe_runs_only_once() -> None:
@@ -500,7 +518,11 @@ def test_main_builds_the_study_store_from_a_dedicated_client_with_timeouts() -> 
     from app import main
 
     kwargs = main._study_redis.connection_pool.connection_kwargs
-    assert kwargs["socket_timeout"] == kwargs["socket_connect_timeout"] == main.settings.survey_study_redis_timeout_seconds
+    assert (
+        kwargs["socket_timeout"]
+        == kwargs["socket_connect_timeout"]
+        == main.settings.survey_study_redis_timeout_seconds
+    )
     assert main._study_redis is not main._narration_redis
     assert main._study_store._redis is main._study_redis
 
@@ -517,7 +539,14 @@ def test_limiter_is_safe_across_threads() -> None:
         nonlocal holders, peak
         try:
             for _ in range(20):
-                lease = limiter.acquire("m", SCOPE, 30, sleep=lambda s: None, clock=_Time().clock, rng=random.Random(seed))
+                lease = limiter.acquire(
+                    "m",
+                    SCOPE,
+                    30,
+                    sleep=lambda s: None,
+                    clock=_Time().clock,
+                    rng=random.Random(seed),
+                )
                 if lease is None:
                     continue
                 with guard:

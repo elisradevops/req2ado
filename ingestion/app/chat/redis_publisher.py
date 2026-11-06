@@ -20,10 +20,14 @@ class RedisChatPublisher:
         return f"chat:{job_id}:{local_id}"
 
     async def publish_chunk(self, job_id: str, local_id: str, delta: str) -> None:
-        await self._redis.publish(self._channel(job_id, local_id), json.dumps({"type": "chunk", "delta": delta}))
+        await self._redis.publish(
+            self._channel(job_id, local_id), json.dumps({"type": "chunk", "delta": delta})
+        )
 
     async def publish_reasoning_chunk(self, job_id: str, local_id: str, delta: str) -> None:
-        await self._redis.publish(self._channel(job_id, local_id), json.dumps({"type": "reasoning_chunk", "delta": delta}))
+        await self._redis.publish(
+            self._channel(job_id, local_id), json.dumps({"type": "reasoning_chunk", "delta": delta})
+        )
 
     async def publish_done(
         self,

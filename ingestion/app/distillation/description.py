@@ -22,5 +22,5 @@ def strip_leading_title(description: str, title: str) -> str:
     prefix = title + "\n"
     if not description.startswith(prefix):
         return description
-    body = description[len(prefix):]
+    body = description[len(prefix) :]
     return body if body.strip() else description

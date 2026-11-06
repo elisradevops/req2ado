@@ -79,7 +79,8 @@ def test_build_survey_tree_warning_carries_job_id_through_run_in_threadpool() ->
         document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
         blocks=[
             Block(
-                id="b0", kind=BlockKind.PARAGRAPH,
+                id="b0",
+                kind=BlockKind.PARAGRAPH,
                 text="The system shall power on within 2 seconds.",
                 source_ref=SourceRef(document_path="x.txt", start_offset=0, end_offset=10),
             ),

@@ -10,6 +10,7 @@ in the heading text itself, unlike mock_icd.docx's own convention. See
 app.leveling.heading_outline's own module docstring for why this shape
 needs a different typing rule than mock_icd.docx's.
 """
+
 from pathlib import Path
 
 from _docx_helpers import add_requirements_table
@@ -24,37 +25,57 @@ doc.add_paragraph("Customer ID: 000")
 
 doc.add_heading("Functional and Performance", level=1)
 doc.add_heading("Synchronization", level=2)
-add_requirements_table(doc, "P-SENSOR", [
-    ("Time sync source", "The system shall synchronize to Standard-XX within N ms."),
-    ("Sync accuracy", "Timing accuracy shall be better than X microseconds."),
-    ("Sync interval", "Re-synchronization shall occur every N seconds."),
-])
+add_requirements_table(
+    doc,
+    "P-SENSOR",
+    [
+        ("Time sync source", "The system shall synchronize to Standard-XX within N ms."),
+        ("Sync accuracy", "Timing accuracy shall be better than X microseconds."),
+        ("Sync interval", "Re-synchronization shall occur every N seconds."),
+    ],
+)
 doc.add_heading("Target Data report", level=2)
-add_requirements_table(doc, "P-TGT", [
-    ("Report rate", "The system shall report target data at a rate of N Hz."),
-    ("Report latency", "Report latency shall not exceed N ms end to end."),
-])
+add_requirements_table(
+    doc,
+    "P-TGT",
+    [
+        ("Report rate", "The system shall report target data at a rate of N Hz."),
+        ("Report latency", "Report latency shall not exceed N ms end to end."),
+    ],
+)
 
 doc.add_heading("Target Handling", level=1)
 doc.add_heading("Target tracking", level=2)
-add_requirements_table(doc, "P-TRK", [
-    ("Target tracking count", "The system shall track up to N simultaneous targets."),
-    ("Track update rate", "Track updates shall occur at a rate of N Hz."),
-])
+add_requirements_table(
+    doc,
+    "P-TRK",
+    [
+        ("Target tracking count", "The system shall track up to N simultaneous targets."),
+        ("Track update rate", "Track updates shall occur at a rate of N Hz."),
+    ],
+)
 
 doc.add_heading("Software", level=1)
 doc.add_heading("SW Safety", level=2)
-add_requirements_table(doc, "P-SAF", [
-    ("Safety standard compliance", "The software shall comply with safety standard XYZ."),
-    ("Watchdog reset time", "The watchdog shall reset the system within N ms of a fault."),
-])
+add_requirements_table(
+    doc,
+    "P-SAF",
+    [
+        ("Safety standard compliance", "The software shall comply with safety standard XYZ."),
+        ("Watchdog reset time", "The watchdog shall reset the system within N ms of a fault."),
+    ],
+)
 
 doc.add_heading("Hardware Interfaces", level=1)
 doc.add_heading("Connectors", level=2)
-add_requirements_table(doc, "P-CON", [
-    ("Power connector type", "The power connector shall be of type XYZ."),
-    ("Main connector pin count", "The main connector shall have N pins."),
-])
+add_requirements_table(
+    doc,
+    "P-CON",
+    [
+        ("Power connector type", "The power connector shall be of type XYZ."),
+        ("Main connector pin count", "The main connector shall have N pins."),
+    ],
+)
 
 out_path = Path(__file__).parent / "mock_prd_sensor.docx"
 doc.save(str(out_path))

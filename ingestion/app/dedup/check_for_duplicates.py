@@ -28,8 +28,12 @@ class DuplicateJudgeClient(Protocol):
     matching pre-existing behavior exactly."""
 
     def judge_duplicate_pair(
-        self, candidate_text: str, matched_text: str, user_id: str | None = None,
+        self,
+        candidate_text: str,
+        matched_text: str,
+        user_id: str | None = None,
     ) -> dict: ...
+
 
 # Matches a numeric literal, optionally followed by a unit/percent symbol
 # directly or with whitespace (e.g. "87%", "500W", "3.3 V") -- used to veto a
@@ -150,7 +154,11 @@ def check_for_duplicates(
 
     matched_item_id, similarity, matched_document = nearest
     is_duplicate = similarity >= threshold
-    if is_duplicate and matched_document is not None and _numeric_tokens(text) != _numeric_tokens(matched_document):
+    if (
+        is_duplicate
+        and matched_document is not None
+        and _numeric_tokens(text) != _numeric_tokens(matched_document)
+    ):
         is_duplicate = False
 
     judge_verdict: str | None = None
@@ -162,7 +170,11 @@ def check_for_duplicates(
             if judge_verdict == "distinct":
                 is_duplicate = False
         except Exception as exc:  # noqa: BLE001 - see this function's own docstring
-            logger.warning("Dedup judge call failed, embedding verdict (is_duplicate=%s) stands unverified: %s", is_duplicate, exc)
+            logger.warning(
+                "Dedup judge call failed, embedding verdict (is_duplicate=%s) stands unverified: %s",
+                is_duplicate,
+                exc,
+            )
             judge_verdict = "judge_failed"
         if timings is not None:
             timings["judge_ms"] = round((time.monotonic() - judge_started) * 1000)
