@@ -46,7 +46,7 @@ _MAX_SLICE_SECONDS = 1.0  # a wait is slept in slices of at most this, so a canc
 class Lease:
     """The slots one call holds (none for a local lease). Release it when the call ends, or use it as a context manager; releasing twice does nothing."""
 
-    def __init__(self, limiter: "LeaseLimiter | None" = None, held: tuple[tuple[str, str], ...] = ()) -> None:
+    def __init__(self, limiter: LeaseLimiter | None = None, held: tuple[tuple[str, str], ...] = ()) -> None:
         self._limiter = limiter
         self._held = held
         self._released = False
@@ -59,7 +59,7 @@ class Lease:
         if self._limiter is not None:
             self._limiter._release(self._held)
 
-    def __enter__(self) -> "Lease":
+    def __enter__(self) -> Lease:
         return self
 
     def __exit__(self, *exc_info) -> None:

@@ -9,7 +9,14 @@ import random
 import threading
 
 from app.kb.profile import (
-    CONSOLIDATION_RUNS, MAX_SCORING_CATEGORIES, SCHEMA_VERSION, Category, InMemoryProfileStore, KbProfile, _key, build_profile,
+    CONSOLIDATION_RUNS,
+    MAX_SCORING_CATEGORIES,
+    SCHEMA_VERSION,
+    Category,
+    InMemoryProfileStore,
+    KbProfile,
+    _key,
+    build_profile,
     ensure_profile,
 )
 from tests.test_kb_profile import FakeProfileClient

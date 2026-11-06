@@ -1,3 +1,6 @@
+import threading
+import time
+
 import pytest
 
 from app.canonical.model import SourceRef
@@ -10,6 +13,7 @@ from app.leveling.acceptance_criteria import (
     unmistakable_markers,
 )
 from app.leveling.document_study import DocumentStudy
+from app.leveling.llm_call_gate import gated
 from app.workitem.model import (
     IntegrityWarning,
     WorkItemMode,
@@ -435,8 +439,8 @@ def test_markers_that_routed_are_not_repeated_in_the_context_of_the_others() -> 
 
 def _reference_context(node, nodes, study, table_text):
     """The context the way it was first written: everything recomputed from scratch for the node."""
-    from app.leveling.description_text import description_for_model
     from app.leveling.acceptance_criteria import contains_token
+    from app.leveling.description_text import description_for_model
     by_id = {n.local_id: n for n in nodes}
     ancestors, parent = [], by_id.get(node.parent_local_id)
     while parent is not None and len(ancestors) < 4:
@@ -644,10 +648,7 @@ def test_a_cited_standard_the_model_was_given_grounds_a_criterion_and_another_do
 # -- the criteria chunks are asked concurrently, under the limiter, and applied in chunk order ------------------------------------------------
 
 
-import threading
-import time
 
-from app.leveling.llm_call_gate import gated
 
 
 def _nodes(count: int) -> list[WorkItemNode]:
@@ -682,8 +683,8 @@ def _described(nodes):
 
 @pytest.mark.parametrize("workers", [1, 2, 3, 4])
 def test_the_result_does_not_depend_on_the_number_of_workers_or_on_completion_order(monkeypatch, workers) -> None:
-    from app.leveling import acceptance_criteria as module
     from app.config import settings
+    from app.leveling import acceptance_criteria as module
     monkeypatch.setattr(module, "CHUNK_SIZE", 2)
     monkeypatch.setattr(settings, "survey_criteria_concurrency", workers)
     monkeypatch.setattr(module, "_POLL_SECONDS", 0.01)
@@ -700,8 +701,8 @@ def test_the_result_does_not_depend_on_the_number_of_workers_or_on_completion_or
 
 
 def test_a_shared_limiter_allows_more_workers_and_every_attempt_holds_one_lease(monkeypatch) -> None:
-    from app.leveling import acceptance_criteria as module
     from app.config import settings
+    from app.leveling import acceptance_criteria as module
     monkeypatch.setattr(module, "CHUNK_SIZE", 1)
     monkeypatch.setattr(settings, "survey_criteria_concurrency", 3)
 

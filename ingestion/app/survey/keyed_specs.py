@@ -3,9 +3,9 @@ that has been migrated to the keyed-result module."""
 from __future__ import annotations
 
 from app.survey._response_schemas import (
-    _TAGS,
     _CONFIDENCE,
     _ISSUES,
+    _TAGS,
     content_authoring_schema,
     epic_feature_scores_schema,
     figure_table_mapping_schema,

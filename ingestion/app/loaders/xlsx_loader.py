@@ -8,8 +8,8 @@ from openpyxl import load_workbook
 from openpyxl.styles.borders import Side
 from openpyxl.styles.colors import Color
 from openpyxl.styles.fills import PatternFill
-from openpyxl.utils.cell import coordinate_to_tuple
 from openpyxl.utils import get_column_letter
+from openpyxl.utils.cell import coordinate_to_tuple
 from openpyxl.worksheet.worksheet import Worksheet
 
 from app.canonical.model import CanonicalDoc, Document, DocumentFormat, SourceRef, Table, TableCell

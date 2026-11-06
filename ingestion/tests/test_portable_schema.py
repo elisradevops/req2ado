@@ -1,8 +1,11 @@
+import inspect
 import json
 from pathlib import Path
 
 import pytest
 
+from app.survey import _response_schemas as response_schemas
+from app.survey import keyed_calls, keyed_specs
 from app.survey.portable_schema import portable_schema_violations
 
 VECTORS = json.loads((Path(__file__).parents[2] / "shared" / "test-vectors" / "portable-schema.json").read_text())["vectors"]
@@ -14,10 +17,7 @@ def test_the_validator_agrees_with_the_shared_vectors(vector: dict) -> None:
 
 
 # --- every response schema the app sends -------------------------------------------------------------------------
-import inspect
 
-from app.survey import _response_schemas as response_schemas
-from app.survey import keyed_calls, keyed_specs
 
 # Schemas that are portable today MUST stay portable. The rest are legacy shapes with a free-form map or open node objects;
 # each is listed with exactly the violations it has now, so fixing one makes this test fail until the entry is removed

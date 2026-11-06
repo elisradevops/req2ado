@@ -4,7 +4,13 @@ import hashlib
 import logging
 import re
 
-from app.workitem.model import IntegrityWarning, WarningKind, WorkItemMode, WorkItemNode, WorkItemType
+from app.workitem.model import (
+    IntegrityWarning,
+    WarningKind,
+    WorkItemMode,
+    WorkItemNode,
+    WorkItemType,
+)
 
 logger = logging.getLogger(__name__)
 

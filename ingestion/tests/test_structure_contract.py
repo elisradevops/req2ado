@@ -191,7 +191,14 @@ def test_the_model_mode_is_still_available_as_the_rollback() -> None:
 
 
 def test_a_document_with_an_epic_a_bare_section_and_a_lone_requirement_gets_one_shape_in_both_modes() -> None:
-    from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, SourceRef
+    from app.canonical.model import (
+        Block,
+        BlockKind,
+        CanonicalDoc,
+        Document,
+        DocumentFormat,
+        SourceRef,
+    )
 
     path = "mixed_roots.docx"
     texts = [

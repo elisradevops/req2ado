@@ -7,7 +7,13 @@ merged entry is the wording most runs gave."""
 import pytest
 
 from app.kb import profile as profile_module
-from app.kb.profile import EXTRACTION_RUNS, InMemoryProfileStore, build_profile, ensure_profile, extraction_version
+from app.kb.profile import (
+    EXTRACTION_RUNS,
+    InMemoryProfileStore,
+    build_profile,
+    ensure_profile,
+    extraction_version,
+)
 from tests.test_kb_profile import FakeProfileClient
 from tests.test_kb_profile_cache import Kb
 

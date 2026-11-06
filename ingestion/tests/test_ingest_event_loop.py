@@ -20,7 +20,6 @@ import pytest
 import app.main as main_module
 from app.main import app
 from app.vision.orchestrator_vision_client import FigureVisionResult
-
 from tests.identity import identity_headers
 
 FIXTURES = Path(__file__).parent / "fixtures"

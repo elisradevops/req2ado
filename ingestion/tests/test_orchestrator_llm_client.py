@@ -1,4 +1,5 @@
 import contextlib
+
 # ingestion/tests/test_orchestrator_llm_client.py
 import json
 import threading
@@ -1882,7 +1883,10 @@ def test_requirement_row_hint_names_every_identified_row_and_its_true_count() ->
 
 
 def test_requirement_row_hint_caps_the_rows_named_but_states_the_true_count() -> None:
-    from app.survey.orchestrator_llm_client import _MAX_REQUIREMENT_ROWS_NAMED, _requirement_row_hint
+    from app.survey.orchestrator_llm_client import (
+        _MAX_REQUIREMENT_ROWS_NAMED,
+        _requirement_row_hint,
+    )
 
     hints = [(f"REQ-{i:03d}", f"Row {i}") for i in range(_MAX_REQUIREMENT_ROWS_NAMED + 10)]
     hint = _requirement_row_hint(hints)
@@ -1926,7 +1930,10 @@ def test_heading_outline_hint_drops_requirement_typed_pairs_before_naming_or_cou
 
 
 def test_heading_outline_hint_caps_features_named_but_never_epics() -> None:
-    from app.survey.orchestrator_llm_client import _MAX_HEADING_FEATURES_NAMED, _heading_outline_hint
+    from app.survey.orchestrator_llm_client import (
+        _MAX_HEADING_FEATURES_NAMED,
+        _heading_outline_hint,
+    )
 
     epics = [(f"Epic {i}", "Epic") for i in range(5)]
     features = [(f"Feature {i}", "Feature") for i in range(_MAX_HEADING_FEATURES_NAMED + 10)]
@@ -2049,7 +2056,10 @@ def test_requirement_row_hint_is_empty_for_no_rows() -> None:
 
 
 def test_whole_document_hint_falls_back_to_qualitative_when_no_topics() -> None:
-    from app.survey.orchestrator_llm_client import _SECTION_ANALYSIS_WHOLE_DOCUMENT_HINT, _whole_document_hint
+    from app.survey.orchestrator_llm_client import (
+        _SECTION_ANALYSIS_WHOLE_DOCUMENT_HINT,
+        _whole_document_hint,
+    )
 
     # A "0 sections" floor would be nonsensical -- a headingless document
     # (topic_count 0 or None) must fall back to the qualitative-only hint,

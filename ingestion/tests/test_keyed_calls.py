@@ -7,7 +7,6 @@ import httpx
 import pytest
 
 import app.survey.keyed_calls as keyed_calls_module
-import app.survey.orchestrator_llm_client as client_module
 from app.leveling.id_tree_builder import _apply_title_tag_pass, build_hierarchy_subtree
 from app.leveling.live_stream import DraftingDisplay
 from app.prompts import load_prompt

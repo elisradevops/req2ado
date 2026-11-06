@@ -1,4 +1,14 @@
-from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, Figure, SourceRef, Table, TableCell, plain_text_rows
+from app.canonical.model import (
+    Block,
+    BlockKind,
+    CanonicalDoc,
+    Document,
+    DocumentFormat,
+    Figure,
+    SourceRef,
+    Table,
+    TableCell,
+)
 from app.leveling.tree_builder import (
     _bound_branch_size,
     _build_flat_list_tree,
@@ -270,7 +280,7 @@ def test_fidelity_hash_is_sha256_of_display_text() -> None:
 
     tree = build_baseline_tree(_tv_style_doc())
     epic_node = tree.nodes[0]
-    assert epic_node.fidelity_hash == hashlib.sha256("Receiver".encode()).hexdigest()
+    assert epic_node.fidelity_hash == hashlib.sha256(b"Receiver").hexdigest()
 
 
 def test_two_byte_identical_requirement_lines_get_distinct_identity_hashes() -> None:

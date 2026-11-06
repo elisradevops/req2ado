@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from pdf2image import convert_from_path
 from pypdf import PdfReader

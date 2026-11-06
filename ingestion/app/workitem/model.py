@@ -1,24 +1,24 @@
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
 from app.canonical.model import SourceRef
 
 
-class WorkItemType(str, Enum):
+class WorkItemType(StrEnum):
     EPIC = "Epic"
     FEATURE = "Feature"
     REQUIREMENT = "Requirement"
 
 
-class WorkItemMode(str, Enum):
+class WorkItemMode(StrEnum):
     BASELINE = "BASELINE"
     SURVEY = "SURVEY"
 
 
-class KbCitationRelevance(str, Enum):
+class KbCitationRelevance(StrEnum):
     """Verdict from an LLM relevance-verification call (see
     app.survey.orchestrator_llm_client.OrchestratorLlmClient.judge_kb_relevance)
     judging whether a retrieved KB snippet was actually relevant to the
@@ -72,7 +72,7 @@ class KbCoverage(BaseModel):
 QualityCategoryScores = dict[str, int]
 
 
-class RequirementQualityIssue(str, Enum):
+class RequirementQualityIssue(StrEnum):
     """Closed vocabulary of quality issues a SURVEY requirement's final
     formalized description can be flagged with, judged against
     EARS/INCOSE/ISO/IEC/IEEE-29148 criteria baked into the scoring prompt,
@@ -102,7 +102,7 @@ class RequirementQualityIssue(str, Enum):
     CONFLICTING_VALUE = "conflicting_value"
 
 
-class QualityConfidence(str, Enum):
+class QualityConfidence(StrEnum):
     """How sure the scoring model is about the quality_score it just gave --
     the abstain channel the scoring prompt previously had none of (SWEEP.md
     section 7). The batched scoring prompt forces an answer for EVERY one of
@@ -128,7 +128,7 @@ class QualityConfidence(str, Enum):
     LOW = "low"
 
 
-class RequirementTag(str, Enum):
+class RequirementTag(StrEnum):
     FUNCTIONAL = "functional"
     NON_FUNCTIONAL = "non_functional"
     INTERFACE = "interface"
@@ -142,12 +142,12 @@ class RequirementTag(str, Enum):
     BEHAVIOR = "behavior"
 
 
-class TraceLinkTargetKind(str, Enum):
+class TraceLinkTargetKind(StrEnum):
     INTRA_JOB = "intraJob"
     CROSS_JOB = "crossJob"
 
 
-class TraceLinkResolutionStatus(str, Enum):
+class TraceLinkResolutionStatus(StrEnum):
     RESOLVED = "resolved"
     UNRESOLVED = "unresolved"
     PENDING = "pending"
@@ -331,7 +331,7 @@ class WorkItemNode(BaseModel):
     needs_synthesis: bool = Field(default=False, exclude=True)
 
 
-class WarningSeverity(str, Enum):
+class WarningSeverity(StrEnum):
     """How a reviewer should treat an IntegrityWarning. auto_fixed:
     deterministic code already resolved it, no action needed. needs_review:
     an AI/heuristic judgment call a human should verify. pipeline_issue:
@@ -343,7 +343,7 @@ class WarningSeverity(str, Enum):
     PIPELINE_ISSUE = "pipeline_issue"
 
 
-class WarningKind(str, Enum):
+class WarningKind(StrEnum):
     """Closed vocabulary of integrity-warning kinds a WorkItemTree can carry.
     Severity is a pure function of kind (see WARNING_SEVERITY below) --
     never set ad hoc at an emission site, so the mapping stays auditable in
@@ -558,7 +558,7 @@ class IntegrityWarning(BaseModel):
         raw: str,
         node_ids: list[str] | None = None,
         detail: dict | None = None,
-    ) -> "IntegrityWarning":
+    ) -> IntegrityWarning:
         return cls(
             kind=kind,
             severity=WARNING_SEVERITY[kind],

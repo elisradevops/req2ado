@@ -10,7 +10,7 @@ import pytest
 
 from app.config import settings
 from app.kb import profile as profile_module
-from app.kb.profile import InMemoryProfileStore, build_profile
+from app.kb.profile import build_profile
 from tests.test_kb_profile import FakeProfileClient
 
 WINDOWS = ["w0", "w1", "w2"]

@@ -6,8 +6,11 @@ import logging
 
 import pytest
 
-from app.chat import chat_service
-from app.chat.chat_client import PROPOSAL_SENTINEL, proposal_failure_reason, split_message_and_proposal
+from app.chat.chat_client import (
+    PROPOSAL_SENTINEL,
+    proposal_failure_reason,
+    split_message_and_proposal,
+)
 from app.chat.chat_service import _build_system_prompt, run_chat_turn
 from tests.chat.test_chat_service import _FakePublisher
 

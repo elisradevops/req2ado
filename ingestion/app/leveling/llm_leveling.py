@@ -6,33 +6,58 @@ import itertools
 import logging
 import re
 import threading
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING, Any, Callable, NamedTuple, Protocol
+from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
 if TYPE_CHECKING:
     from app.debug_capture import DebugCapture
 
+from app.canonical.model import (
+    Block,
+    BlockKind,
+    CanonicalDoc,
+    Figure,
+    SourceRef,
+    Table,
+    plain_text_rows,
+)
 from app.config import settings
-from app.job_cancel import JobCancelled, submit_in_context
-from app.canonical.model import Block, BlockKind, CanonicalDoc, Figure, SourceRef, Table, plain_text_rows
 from app.distillation.description import assemble_description
-from app.distillation.title import extract_baseline_title, title_is_low_quality
 from app.distillation.survey_title import TitleDistillationClient, distill_survey_title
+from app.distillation.title import extract_baseline_title, title_is_low_quality
+from app.job_cancel import JobCancelled, submit_in_context
 from app.kb.kb_vector_store import _MAX_DOCUMENT_CHUNKS as _KB_GET_DOCUMENT_MAX_CHUNKS
 from app.kb.kb_vector_store import KbVectorStore
+from app.kb.profile import KbProfile, scoring_inputs
 from app.kb.retrieval import fetch_always_include_context, retrieve_context
-from app.section_analysis_options import DEFAULT_SECTION_ANALYSIS_OPTIONS, SectionAnalysisOptions
-from app.leveling.acceptance_criteria import AcceptanceCriteriaClient, eligible_nodes, propose_acceptance_criteria
-from app.leveling.document_study import DocumentStudyClient
-from app.leveling.llm_lease_limiter import LeaseLimiter
-from app.leveling.study_runner import StudyHandle
-from app.leveling.study_store import StudyStore
-from app.request_identity import user_scope
+from app.leveling.acceptance_criteria import (
+    AcceptanceCriteriaClient,
+    eligible_nodes,
+    propose_acceptance_criteria,
+)
+from app.leveling.baseline_structure import adopt_baseline_structure
 from app.leveling.conflict_detection import (
     ConflictJudgeClient,
     _detect_conflicting_duplicates,
 )
+from app.leveling.conservation import restore_lost_nodes
 from app.leveling.depth import resolve_block_depth
+from app.leveling.document_study import DocumentStudyClient
+
+# Extracted to grounding.py (Phase 6, NEW-04) so id_tree_builder.py can use
+# the SAME Unicode-aware implementation instead of maintaining a second copy
+# that already drifted (ASCII-only) -- see that module's own docstring for
+# the real bug this closes. Aliased under their original private names so
+# every existing call site in this file (11+) needs no change.
+from app.leveling.grounding import grounding_score as _grounding_score
+from app.leveling.grounding import significant_words as _significant_words
+from app.leveling.heading_outline import (
+    HeadingOutlineEntry,
+    entries_for_blocks,
+    heading_outline_entries,
+)
+from app.leveling.hierarchy_rules import ensure_ladder, scope_with_ancestors, type_headings_by_shape
 from app.leveling.id_hierarchy import (
     rows_from_heading_structure,
     rows_from_id_headings,
@@ -46,15 +71,15 @@ from app.leveling.id_tree_builder import (
     build_hierarchy_subtree,
     recompute_child_types,
 )
-from app.leveling.model_caps import ModelCapsClient, _ModelCaps, _resolve_caps
 from app.leveling.live_context import current_stage_counter
+from app.leveling.llm_lease_limiter import LeaseLimiter
+from app.leveling.model_caps import _resolve_caps
 from app.leveling.narration_publisher import LevelingProgress, Phase, ProgressCallback
-from app.leveling.heading_outline import HeadingOutlineEntry, entries_for_blocks, heading_outline_entries
-from app.leveling.requirement_rows import RequirementRowInfo, qualifying_requirement_rows, repeated_customer_code_in_table
-from app.kb.profile import KbProfile, scoring_inputs
-from app.leveling.baseline_structure import adopt_baseline_structure
-from app.leveling.conservation import restore_lost_nodes
-from app.leveling.hierarchy_rules import ensure_ladder, scope_with_ancestors, type_headings_by_shape
+from app.leveling.requirement_rows import (
+    RequirementRowInfo,
+    qualifying_requirement_rows,
+    repeated_customer_code_in_table,
+)
 from app.leveling.root_regrouping import (
     RootGroupingClient,
     _ensure_root_features_have_epic_parent,
@@ -66,6 +91,8 @@ from app.leveling.scoring import (
     _score_all_requirements,
     _score_epics_and_features,
 )
+from app.leveling.study_runner import StudyHandle
+from app.leveling.study_store import StudyStore
 from app.leveling.table_groups import TableGroupInfo, qualifying_table_groups
 from app.leveling.trace_links import TraceLinkInferenceClient, _infer_trace_links_for_nodes
 from app.leveling.tree_builder import (
@@ -82,17 +109,19 @@ from app.leveling.tree_builder import (
     _split_into_branches,
     _table_to_html,
     _widen_page_end,
+    figures_by_id,
     strip_repeated_titles,
 )
 from app.leveling.tree_builder import figure_id_by_block_id as _build_figure_id_by_block_id
-from app.leveling.tree_builder import figures_by_id
-from app.quality.criteria_retrieval import CriteriaRetriever
 from app.leveling.warnings_finalize import finalize_warnings
+from app.quality.criteria_retrieval import CriteriaRetriever
+from app.request_identity import user_scope
+from app.section_analysis_options import DEFAULT_SECTION_ANALYSIS_OPTIONS, SectionAnalysisOptions
 from app.workitem.model import (
-    KbCoverage,
     IntegrityWarning,
     KbCitation,
     KbCitationRelevance,
+    KbCoverage,
     RequirementTag,
     TraceLink,
     WarningKind,
@@ -182,14 +211,6 @@ def _merge_branches_by_budget(branches: list[list[Block]], budget_tokens: int) -
     merged.append(current)
     return merged
 
-
-# Extracted to grounding.py (Phase 6, NEW-04) so id_tree_builder.py can use
-# the SAME Unicode-aware implementation instead of maintaining a second copy
-# that already drifted (ASCII-only) -- see that module's own docstring for
-# the real bug this closes. Aliased under their original private names so
-# every existing call site in this file (11+) needs no change.
-from app.leveling.grounding import grounding_score as _grounding_score
-from app.leveling.grounding import significant_words as _significant_words
 
 _PREVIEW_LENGTH = 80
 
@@ -681,7 +702,7 @@ def _resolve_kb_citations(
     raw_citations: list[dict],
     kb_relevance_client: KbRelevanceClient | None,
     node_id_prefix: str = "",
-    debug_capture: "DebugCapture | None" = None,
+    debug_capture: DebugCapture | None = None,
     user_id: str | None = None,
 ) -> list[KbCitation]:
     """Builds the final KbCitation list for one branch's retrieved
@@ -1720,7 +1741,7 @@ def _build_survey_tree(
     # see app.debug_capture's own module docstring. None (the default) is
     # byte-identical to before this capability existed; every warning still
     # fires exactly as it did.
-    debug_capture: "DebugCapture | None" = None,
+    debug_capture: DebugCapture | None = None,
     # Optional per-document title/tag enhancement for the DETERMINISTIC
     # hierarchy path (see _detect_deterministic_subtrees) -- entirely
     # separate from analysis_client above (which drives the LLM-analyzed
@@ -2238,7 +2259,6 @@ def _build_survey_tree(
     # when scoring moved out of the per-branch loop.
     branch_scoring_kb_contexts: list[str] = []
     blocks_total = sum(len(b) for b in branches)
-    blocks_done = 0
 
     # §12 fix: multi-branch table placement. Figures never needed a fix here
     # -- every loader already embeds each Figure's caption directly in an
@@ -2440,7 +2460,6 @@ def _build_survey_tree(
             with ThreadPoolExecutor(max_workers=branch_concurrency) as executor:
                 futures = [submit_in_context(executor, _run_branch, i, branch_blocks) for i, branch_blocks in enumerate(branches)]
                 branch_skeletons = [future.result() for future in futures]
-        blocks_done = running_total
         for branch_index in sorted(branch_fallback_citations):
             all_kb_citations.extend(branch_fallback_citations[branch_index])
 
@@ -2730,7 +2749,7 @@ def build_survey_tree(
     kb_relevance_client: KbRelevanceClient | None = None,
     progress_callback: ProgressCallback | None = None,
     model: str | None = None,
-    debug_capture: "DebugCapture | None" = None,
+    debug_capture: DebugCapture | None = None,
     title_tag_client: TitleTagClient | None = None,
     synthesis_client: SynthesisClient | None = None,
     parent_summary_client: ParentSummaryClient | None = None,

@@ -8,8 +8,8 @@ import json
 import httpx
 from fastapi.testclient import TestClient
 
-from app.kb.profile import build_profile
 from app import main
+from app.kb.profile import build_profile
 from app.main import app
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 from tests.test_kb_profile import DOCS, FakeProfileClient

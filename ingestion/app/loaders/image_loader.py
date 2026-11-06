@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
-from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, Figure, SourceRef
+from app.canonical.model import (
+    Block,
+    BlockKind,
+    CanonicalDoc,
+    Document,
+    DocumentFormat,
+    Figure,
+    SourceRef,
+)
 
 
 def load_image(path: str, describe_figure: Callable[[bytes], str | None] | None = None) -> CanonicalDoc:

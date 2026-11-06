@@ -1,4 +1,13 @@
-from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, SourceRef, Table, TableCell
+from app.canonical.model import (
+    Block,
+    BlockKind,
+    CanonicalDoc,
+    Document,
+    DocumentFormat,
+    SourceRef,
+    Table,
+    TableCell,
+)
 from app.kb.chunker import chunk_canonical_doc
 
 REF = SourceRef(document_path="doc.txt", start_offset=0, end_offset=0)

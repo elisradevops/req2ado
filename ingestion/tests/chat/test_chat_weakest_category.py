@@ -1,5 +1,10 @@
-from app.chat.chat_service import _build_system_prompt, weakest_category_note
+import logging
+
+import pytest
+
+from app.chat.chat_service import _build_system_prompt, run_chat_turn, weakest_category_note
 from app.kb.profile import build_profile
+from tests.chat.test_chat_service import _FakeChatClient, _FakePublisher
 from tests.test_kb_profile import DOCS, FakeProfileClient
 
 PROFILE = build_profile(DOCS, FakeProfileClient(), model="m1")
@@ -35,12 +40,8 @@ def test_the_system_prompt_carries_the_note_and_is_unchanged_without_one() -> No
     assert "WEAKEST NOTE." in with_note and with_note.startswith(base.split("Rules for any rewrite")[0])
 
 
-import logging
 
-import pytest
 
-from app.chat.chat_service import run_chat_turn
-from tests.chat.test_chat_service import _FakeChatClient, _FakePublisher
 
 
 @pytest.mark.asyncio

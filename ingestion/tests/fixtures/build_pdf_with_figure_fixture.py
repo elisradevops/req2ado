@@ -9,9 +9,9 @@ from pathlib import Path
 
 from PIL import Image
 from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import Image as RLImage
 from reportlab.platypus import Paragraph, SimpleDocTemplate
-from reportlab.lib.styles import getSampleStyleSheet
 
 out_path = Path(__file__).parent / "pdf_with_figure.pdf"
 styles = getSampleStyleSheet()

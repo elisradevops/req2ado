@@ -6,8 +6,8 @@ import pytest
 
 from app.leveling import live_context
 from app.leveling.live_context import live_emitter_scope, notice
-from app.logging_context import job_id_scope
 from app.leveling.notices import NoticePublisher, notices_log_key
+from app.logging_context import job_id_scope
 
 
 class FakeRedis:

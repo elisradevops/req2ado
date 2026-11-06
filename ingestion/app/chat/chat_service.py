@@ -4,14 +4,25 @@ import logging
 
 from starlette.concurrency import run_in_threadpool
 
-from app.chat.chat_client import PROPOSAL_SENTINEL, ChatLlmClient, proposal_failure_reason, split_message_and_proposal
+from app.chat.chat_client import (
+    PROPOSAL_SENTINEL,
+    ChatLlmClient,
+    proposal_failure_reason,
+    split_message_and_proposal,
+)
 from app.chat.context_pack import render_context_pack
 from app.chat.redis_publisher import RedisChatPublisher
 from app.config import settings
 from app.http_errors import describe_exception, exception_details
-from app.leveling.description_text import description_for_model, markers_as_words, restore_tables, split_tables, table_context
 from app.kb.profile import render_authoring_standard
 from app.kb.retrieval import retrieve_context
+from app.leveling.description_text import (
+    description_for_model,
+    markers_as_words,
+    restore_tables,
+    split_tables,
+    table_context,
+)
 
 logger = logging.getLogger(__name__)
 

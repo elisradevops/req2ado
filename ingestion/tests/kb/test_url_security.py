@@ -76,7 +76,7 @@ class TestVerifySupportedContent:
             verify_supported_content("doc.docx", b"plain")
 
     def test_txt_valid(self):
-        verify_supported_content("notes.txt", "hello".encode())
+        verify_supported_content("notes.txt", b"hello")
 
     def test_unsupported_extension(self):
         with pytest.raises(ValueError):
@@ -90,7 +90,7 @@ class TestVerifySupportedContent:
             verify_supported_content("deck.pptx", b"plain")
 
     def test_csv_valid(self):
-        verify_supported_content("data.csv", "a,b\n1,2".encode())
+        verify_supported_content("data.csv", b"a,b\n1,2")
 
     def test_csv_invalid_non_utf8(self):
         with pytest.raises(ValueError):

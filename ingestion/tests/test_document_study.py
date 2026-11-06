@@ -21,7 +21,6 @@ from app.leveling.document_study import (
     window_findings,
 )
 
-
 _EMPTY_ANSWER = {
     "glossary": [], "placeholder_tokens": [], "verification_statements": [], "standards_cited": [], "table_roles": [],
 }

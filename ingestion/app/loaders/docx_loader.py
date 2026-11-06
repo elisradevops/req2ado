@@ -4,8 +4,9 @@ import hashlib
 import io
 import logging
 import re
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Literal
 
 from docx import Document as DocxDocument
 from docx.opc.constants import RELATIONSHIP_TYPE as RT
@@ -17,9 +18,19 @@ from docx.table import _Cell as DocxCell
 from docx.text.paragraph import Paragraph as DocxParagraph
 from PIL import Image, UnidentifiedImageError
 
-from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, SourceRef, Table, TableCell
-from app.loaders.figure_utils import append_figure, extract_figure_title
+from app.canonical.model import (
+    Block,
+    BlockKind,
+    CanonicalDoc,
+    Document,
+    DocumentFormat,
+    Figure,
+    SourceRef,
+    Table,
+    TableCell,
+)
 from app.leveling.numbering import parse_numbering
+from app.loaders.figure_utils import append_figure, extract_figure_title
 
 logger = logging.getLogger(__name__)
 

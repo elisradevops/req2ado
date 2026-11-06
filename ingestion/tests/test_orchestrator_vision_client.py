@@ -7,12 +7,12 @@ import pytest
 
 from app.config import settings
 from app.vision.orchestrator_vision_client import (
+    _FIGURE_SIGNIFICANCE_SCHEMA,
     _VISION_REQUEST_TIMEOUT_SECONDS,
     PROMPT_VERSION,
     FigureVisionResult,
     OrchestratorVisionClient,
     _build_prompt,
-    _FIGURE_SIGNIFICANCE_SCHEMA,
 )
 
 

@@ -10,13 +10,20 @@ from app.distillation.description import assemble_description, strip_leading_tit
 from app.distillation.title import extract_baseline_title
 from app.leveling.autodetect import classify_numbering_branch, is_heading_style_branch
 from app.leveling.customer_id import extract_customer_requirement_code
-from app.leveling.requirement_rows import atomizable_requirement_rows, row_title_and_description
 from app.leveling.depth import authored_numbering_label, resolve_block_depth
 from app.leveling.hierarchy_rules import ensure_ladder, type_headings_by_shape
 from app.leveling.profiles import heading_style_type_for_depth
+from app.leveling.requirement_rows import atomizable_requirement_rows, row_title_and_description
 from app.leveling.table_color import colgroup_html, resolve_cell_style_colors, table_style_attr
 from app.leveling.warnings_finalize import finalize_warnings
-from app.workitem.model import IntegrityWarning, WarningKind, WorkItemMode, WorkItemNode, WorkItemTree, WorkItemType
+from app.workitem.model import (
+    IntegrityWarning,
+    WarningKind,
+    WorkItemMode,
+    WorkItemNode,
+    WorkItemTree,
+    WorkItemType,
+)
 
 
 def _split_into_branches(doc: CanonicalDoc) -> list[list[Block]]:

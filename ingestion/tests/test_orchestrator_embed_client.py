@@ -3,7 +3,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 
-from app.dedup.orchestrator_embed_client import OrchestratorEmbedClient, _EMBED_REQUEST_TIMEOUT_SECONDS
+from app.dedup.orchestrator_embed_client import (
+    _EMBED_REQUEST_TIMEOUT_SECONDS,
+    OrchestratorEmbedClient,
+)
 
 
 def test_embed_calls_the_orchestrator_embed_endpoint_with_bearer_auth() -> None:

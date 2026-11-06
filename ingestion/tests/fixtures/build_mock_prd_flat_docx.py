@@ -14,9 +14,8 @@ own docstring (S1/S2) for the fix.
 """
 from pathlib import Path
 
-from docx import Document as DocxDocument
-
 from _docx_helpers import add_requirements_table
+from docx import Document as DocxDocument
 
 doc = DocxDocument()
 

@@ -3,7 +3,7 @@ import json
 import httpx
 import pytest
 
-from app.chat.chat_client import ChatLlmClient, PROPOSAL_SENTINEL, split_message_and_proposal
+from app.chat.chat_client import PROPOSAL_SENTINEL, ChatLlmClient, split_message_and_proposal
 
 
 def test_no_sentinel_returns_full_text_as_message() -> None:

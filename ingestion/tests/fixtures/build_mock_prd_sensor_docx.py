@@ -12,9 +12,8 @@ needs a different typing rule than mock_icd.docx's.
 """
 from pathlib import Path
 
-from docx import Document as DocxDocument
-
 from _docx_helpers import add_requirements_table
+from docx import Document as DocxDocument
 
 doc = DocxDocument()
 

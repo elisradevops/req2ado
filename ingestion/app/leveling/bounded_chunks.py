@@ -5,8 +5,6 @@ from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import Generic, NamedTuple, TypeVar
 
-from app.config import settings
-
 T = TypeVar("T")
 R = TypeVar("R")
 

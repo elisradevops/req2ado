@@ -337,9 +337,10 @@ def test_load_pdf_keeps_figure_ids_contiguous_when_a_repeating_image_is_suppress
 
 
 def test_load_pdf_flags_filled_acroform_fields_with_a_note() -> None:
-    from reportlab.pdfgen import canvas as rl_canvas
-    from reportlab.lib.pagesizes import letter
     import tempfile
+
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas as rl_canvas
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         path = Path(tmp_dir) / "form.pdf"
@@ -428,9 +429,8 @@ def _build_span_and_gap_pdf(tmp_path: Path) -> Path:
     both colspan AND rowspan get real fixture coverage, not just colspan."""
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import letter
-    from reportlab.platypus import SimpleDocTemplate
+    from reportlab.platypus import SimpleDocTemplate, TableStyle
     from reportlab.platypus import Table as RLTable
-    from reportlab.platypus import TableStyle
 
     pdf_path = tmp_path / "span_and_gap.pdf"
     data = [
@@ -513,9 +513,8 @@ def test_load_pdf_column_widths_are_fractions_summing_to_one(tmp_path: Path) -> 
 def test_load_pdf_column_widths_reflect_real_ratio_for_unequal_columns(tmp_path: Path) -> None:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import letter
-    from reportlab.platypus import SimpleDocTemplate
+    from reportlab.platypus import SimpleDocTemplate, TableStyle
     from reportlab.platypus import Table as RLTable
-    from reportlab.platypus import TableStyle
 
     pdf_path = tmp_path / "unequal_columns.pdf"
     style = TableStyle([("GRID", (0, 0), (-1, -1), 0.5, colors.black)])
@@ -553,9 +552,8 @@ def _build_alignment_and_style_pdf(tmp_path: Path) -> Path:
     bold (FONTNAME) and text color (TEXTCOLOR) per cell."""
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import letter
-    from reportlab.platypus import SimpleDocTemplate
+    from reportlab.platypus import SimpleDocTemplate, TableStyle
     from reportlab.platypus import Table as RLTable
-    from reportlab.platypus import TableStyle
 
     pdf_path = tmp_path / "alignment_and_style.pdf"
     data = [["L", "C", "R"], ["Bold", "Blue", "Plain"]]
@@ -604,9 +602,8 @@ def test_load_pdf_text_color_extracted_from_first_non_whitespace_char(tmp_path: 
 def test_load_pdf_background_color_from_filled_rect_overlapping_cell(tmp_path: Path) -> None:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import letter
-    from reportlab.platypus import SimpleDocTemplate
+    from reportlab.platypus import SimpleDocTemplate, TableStyle
     from reportlab.platypus import Table as RLTable
-    from reportlab.platypus import TableStyle
 
     pdf_path = tmp_path / "background.pdf"
     style = TableStyle(
@@ -705,9 +702,9 @@ def test_cell_background_color_defensive_degrades_to_none_on_malformed_rect() ->
 
 
 def _build_mixed_text_and_scanned_pdf_with_figure(tmp_path: Path) -> Path:
+    from PIL import Image
     from reportlab.lib.pagesizes import letter
     from reportlab.pdfgen import canvas as rl_canvas
-    from PIL import Image
 
     text_page_path = tmp_path / "text_page.pdf"
     c = rl_canvas.Canvas(str(text_page_path), pagesize=letter)
@@ -724,7 +721,7 @@ def _build_mixed_text_and_scanned_pdf_with_figure(tmp_path: Path) -> Path:
     c2.drawImage(str(scan_image_path), 0, 0, width=letter[0], height=letter[1])
     c2.save()
 
-    from pypdf import PdfWriter, PdfReader
+    from pypdf import PdfReader, PdfWriter
     writer = PdfWriter()
     for p in (text_page_path, scanned_page_path):
         reader = PdfReader(str(p))
@@ -751,10 +748,11 @@ def test_load_pdf_merges_wrapped_lines_into_one_paragraph_block() -> None:
     # Regression: text.split("\n\n") never actually split anything (pdfplumber
     # never emits a blank line), so a multi-line wrapped paragraph and every
     # OTHER paragraph/heading on the page all became ONE giant PARAGRAPH block.
+    import tempfile
+
     from reportlab.lib.pagesizes import letter
     from reportlab.lib.styles import getSampleStyleSheet
     from reportlab.platypus import Paragraph, SimpleDocTemplate
-    import tempfile
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         path = Path(tmp_dir) / "wrapped.pdf"
@@ -783,9 +781,10 @@ def test_load_pdf_merges_wrapped_lines_into_one_paragraph_block() -> None:
 
 
 def test_load_pdf_suppresses_a_running_header_recurring_across_most_pages() -> None:
+    import tempfile
+
     from reportlab.lib.pagesizes import letter
     from reportlab.pdfgen import canvas as rl_canvas
-    import tempfile
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         path = Path(tmp_dir) / "headered.pdf"
@@ -806,9 +805,10 @@ def test_load_pdf_suppresses_a_running_header_recurring_across_most_pages() -> N
 def test_load_pdf_suppresses_a_footer_that_varies_only_by_page_number() -> None:
     # Regression: exact-string matching alone would miss this -- the real
     # footer text differs per page (embedded page number), same template.
+    import tempfile
+
     from reportlab.lib.pagesizes import letter
     from reportlab.pdfgen import canvas as rl_canvas
-    import tempfile
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         path = Path(tmp_dir) / "footered.pdf"
@@ -842,9 +842,10 @@ def test_load_pdf_suppresses_a_footer_that_varies_only_by_page_number() -> None:
 
 
 def test_load_pdf_detects_a_heading_via_font_size_outlier() -> None:
-    from reportlab.pdfgen import canvas as rl_canvas
-    from reportlab.lib.pagesizes import letter
     import tempfile
+
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas as rl_canvas
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         path = Path(tmp_dir) / "heading.pdf"
@@ -864,9 +865,10 @@ def test_load_pdf_detects_a_heading_via_font_size_outlier() -> None:
 
 
 def test_load_pdf_uses_own_numbering_for_heading_depth_when_present() -> None:
-    from reportlab.pdfgen import canvas as rl_canvas
-    from reportlab.lib.pagesizes import letter
     import tempfile
+
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas as rl_canvas
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         path = Path(tmp_dir) / "numbered_heading.pdf"
@@ -885,9 +887,10 @@ def test_load_pdf_uses_own_numbering_for_heading_depth_when_present() -> None:
 
 
 def test_load_pdf_synthesizes_a_number_for_an_unnumbered_heading() -> None:
-    from reportlab.pdfgen import canvas as rl_canvas
-    from reportlab.lib.pagesizes import letter
     import tempfile
+
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas as rl_canvas
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         path = Path(tmp_dir) / "unnumbered_headings.pdf"
@@ -910,9 +913,10 @@ def test_load_pdf_synthesizes_a_number_for_an_unnumbered_heading() -> None:
 def test_load_pdf_watermark_sized_text_is_not_classified_as_heading() -> None:
     # Regression guard: a watermark can be the largest font on a page --
     # must not be promoted to HEADING just because it's an outlier.
-    from reportlab.pdfgen import canvas as rl_canvas
-    from reportlab.lib.pagesizes import letter
     import tempfile
+
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas as rl_canvas
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         path = Path(tmp_dir) / "watermarked.pdf"
@@ -946,9 +950,10 @@ def test_load_pdf_bullet_glyph_line_is_not_classified_as_a_heading() -> None:
     # outline entry then leaked into every branch's global_context.
     # `_can_be_heading_text`'s content gate is what rejects it: zero
     # alphanumeric characters, and not parse_numbering-parseable.
-    from reportlab.pdfgen import canvas as rl_canvas
-    from reportlab.lib.pagesizes import letter
     import tempfile
+
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas as rl_canvas
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         path = Path(tmp_dir) / "bulleted_list.pdf"
@@ -991,9 +996,10 @@ def test_load_pdf_drop_cap_line_is_not_classified_as_a_heading() -> None:
     # line's size, not the single drop cap. (The content gate alone cannot
     # save this case -- the text has plenty of alphanumeric characters --
     # which is why both halves of the fix are needed.)
-    from reportlab.pdfgen import canvas as rl_canvas
-    from reportlab.lib.pagesizes import letter
     import tempfile
+
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas as rl_canvas
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         path = Path(tmp_dir) / "drop_cap.pdf"
@@ -1030,10 +1036,11 @@ def test_load_pdf_detects_a_heading_via_real_outline_bookmark_tier_0() -> None:
     # font-size classification alone. Only a working outline entry can
     # promote it to HEADING, proving the tier-0 override is real, not a
     # coincidental match with the font-size path.
-    from reportlab.pdfgen import canvas as rl_canvas
-    from reportlab.lib.pagesizes import letter
-    from pypdf import PdfWriter
     import tempfile
+
+    from pypdf import PdfWriter
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas as rl_canvas
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         base_path = Path(tmp_dir) / "base.pdf"
@@ -1065,9 +1072,10 @@ def test_load_pdf_with_no_outline_still_classifies_headings_by_font_size() -> No
     # doesn't break or short-circuit the font-size classification path --
     # a document with zero outline entries must still detect headings via
     # font-size outlier exactly as before this task's outline addition.
-    from reportlab.pdfgen import canvas as rl_canvas
-    from reportlab.lib.pagesizes import letter
     import tempfile
+
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas as rl_canvas
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         path = Path(tmp_dir) / "no_outline.pdf"
@@ -1102,10 +1110,12 @@ def test_load_pdf_with_ocr_fallback_preserves_figures_from_text_pages(tmp_path: 
 
 
 def test_load_pdf_merges_a_table_continuing_across_a_page_break() -> None:
-    from reportlab.lib.pagesizes import letter
-    from reportlab.platypus import SimpleDocTemplate, Table as RLTable, TableStyle, Spacer
-    from reportlab.lib import colors
     import tempfile
+
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.platypus import SimpleDocTemplate, TableStyle
+    from reportlab.platypus import Table as RLTable
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         path = Path(tmp_dir) / "cross_page_table.pdf"
@@ -1279,9 +1289,10 @@ def test_load_pdf_table_structural_failure_emits_unsupported_note() -> None:
 
 
 def test_load_pdf_detects_a_borderless_table_via_text_strategy() -> None:
+    import tempfile
+
     from reportlab.lib.pagesizes import letter
     from reportlab.pdfgen import canvas as rl_canvas
-    import tempfile
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         path = Path(tmp_dir) / "borderless_table.pdf"
@@ -1326,9 +1337,10 @@ def test_load_pdf_rejects_a_prose_page_mistaken_for_a_borderless_table() -> None
     # `_table_has_chopped_word`. Without the chopped-word validation layer,
     # this test fails (a fake 2-column table is produced); with it wired up,
     # it correctly passes -- a genuine, not vacuous, regression guard.
-    from reportlab.pdfgen import canvas as rl_canvas
-    from reportlab.lib.pagesizes import letter
     import tempfile
+
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas as rl_canvas
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         path = Path(tmp_dir) / "prose_only.pdf"
@@ -1367,10 +1379,12 @@ def test_load_pdf_two_ruled_tables_with_aligned_columns_do_not_produce_a_bogus_t
     # rows). The fix (`_bboxes_overlap`, a real intersection test) rejects
     # any text-strategy candidate that overlaps ANY lines-strategy bbox at
     # all, not just one it's fully inside.
+    import tempfile
+
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import letter
-    from reportlab.platypus import SimpleDocTemplate, Spacer, Table as RLTable, TableStyle
-    import tempfile
+    from reportlab.platypus import SimpleDocTemplate, Spacer, TableStyle
+    from reportlab.platypus import Table as RLTable
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         path = Path(tmp_dir) / "two_ruled_tables.pdf"
@@ -1389,11 +1403,13 @@ def test_load_pdf_two_ruled_tables_with_aligned_columns_do_not_produce_a_bogus_t
 
 
 def test_load_pdf_attaches_a_table_caption_from_the_preceding_line() -> None:
-    from reportlab.lib.pagesizes import letter
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Table as RLTable, TableStyle
-    from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.lib import colors
     import tempfile
+
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, TableStyle
+    from reportlab.platypus import Table as RLTable
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         path = Path(tmp_dir) / "captioned_table.pdf"
@@ -1413,9 +1429,10 @@ def test_load_pdf_attaches_a_table_caption_from_the_preceding_line() -> None:
 
 
 def test_load_pdf_flags_a_suspected_multi_column_page() -> None:
+    import tempfile
+
     from reportlab.lib.pagesizes import letter
     from reportlab.pdfgen import canvas as rl_canvas
-    import tempfile
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         path = Path(tmp_dir) / "two_col.pdf"
@@ -1447,9 +1464,10 @@ def test_load_pdf_does_not_flag_an_asymmetric_two_column_page() -> None:
     # to run noticeably shorter than the other goes undetected. Deliberately
     # asserting the NEGATIVE here so a future "fix" back to a combined-span
     # check doesn't silently re-break the golden test above.
+    import tempfile
+
     from reportlab.lib.pagesizes import letter
     from reportlab.pdfgen import canvas as rl_canvas
-    import tempfile
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         path = Path(tmp_dir) / "asymmetric_two_col.pdf"
@@ -1469,10 +1487,12 @@ def test_load_pdf_does_not_flag_an_asymmetric_two_column_page() -> None:
 def test_load_pdf_does_not_flag_a_wide_table_column_as_multi_column() -> None:
     # Regression guard for a confirmed real false candidate: a wide table
     # column produces a large x-gap with no real column boundary.
-    from reportlab.lib.pagesizes import letter
-    from reportlab.platypus import SimpleDocTemplate, Table as RLTable, TableStyle
-    from reportlab.lib import colors
     import tempfile
+
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.platypus import SimpleDocTemplate, TableStyle
+    from reportlab.platypus import Table as RLTable
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         path = Path(tmp_dir) / "wide_table.pdf"
@@ -1495,9 +1515,10 @@ def test_load_pdf_text_only_never_flags_multi_column() -> None:
     # test pins BOTH halves against the exact same file: normal mode still
     # flags it, text_only mode never does -- so a future revert can't
     # silently restore the leak while still passing the positive test above.
+    import tempfile
+
     from reportlab.lib.pagesizes import letter
     from reportlab.pdfgen import canvas as rl_canvas
-    import tempfile
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         path = Path(tmp_dir) / "two_col_text_only.pdf"
@@ -1520,9 +1541,10 @@ def test_load_pdf_does_not_flag_a_title_page_label_value_layout() -> None:
     # cover-page label/value pair (e.g. "Prepared for:      ISTP Project")
     # produces a large gap on ONE line, not a real column boundary spanning
     # most of the page.
+    import tempfile
+
     from reportlab.lib.pagesizes import letter
     from reportlab.pdfgen import canvas as rl_canvas
-    import tempfile
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         path = Path(tmp_dir) / "label_value.pdf"

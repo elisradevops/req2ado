@@ -1,17 +1,28 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Literal
 
 from pptx import Presentation
 from pptx.enum.dml import MSO_COLOR_TYPE, MSO_FILL_TYPE
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.enum.text import PP_ALIGN
-from pptx.table import _Cell as PptxCell
 from pptx.table import Table as PptxTable
+from pptx.table import _Cell as PptxCell
 
-from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, SourceRef, Table, TableCell
+from app.canonical.model import (
+    Block,
+    BlockKind,
+    CanonicalDoc,
+    Document,
+    DocumentFormat,
+    Figure,
+    SourceRef,
+    Table,
+    TableCell,
+)
 from app.loaders.figure_utils import append_figure
 
 _PLACEHOLDER_TITLE_IDX = 0  # pptx.enum.shapes placeholder idx for the title placeholder

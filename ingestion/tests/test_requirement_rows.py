@@ -1,5 +1,9 @@
 from app.canonical.model import SourceRef, Table, TableCell
-from app.leveling.requirement_rows import RequirementRowInfo, qualifying_requirement_rows, repeated_customer_code_in_table
+from app.leveling.requirement_rows import (
+    RequirementRowInfo,
+    qualifying_requirement_rows,
+    repeated_customer_code_in_table,
+)
 
 
 def _sr(path: str = "x.docx") -> SourceRef:

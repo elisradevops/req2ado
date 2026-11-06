@@ -88,7 +88,12 @@ def test_a_name_row_loses_no_cell_between_title_and_description() -> None:
 
 def test_deterministic_heading_path_strips_after_span_folding_and_keeps_identity() -> None:
     from app.canonical.model import (
-        Block, BlockKind, CanonicalDoc, Document, DocumentFormat, SourceRef,
+        Block,
+        BlockKind,
+        CanonicalDoc,
+        Document,
+        DocumentFormat,
+        SourceRef,
     )
     from app.leveling.llm_leveling import _detect_deterministic_subtrees
 

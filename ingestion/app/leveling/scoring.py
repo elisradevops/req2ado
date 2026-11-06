@@ -10,9 +10,14 @@ if TYPE_CHECKING:
     from app.debug_capture import DebugCapture
 
 from app.config import settings
-from app.leveling.description_text import description_for_model
 from app.leveling.bounded_chunks import run_chunks_bounded
-from app.leveling.narration_publisher import LevelingProgress, Phase, ProgressCallback, _sample_titles
+from app.leveling.description_text import description_for_model
+from app.leveling.narration_publisher import (
+    LevelingProgress,
+    Phase,
+    ProgressCallback,
+    _sample_titles,
+)
 from app.quality.criteria_retrieval import CriteriaRetriever
 from app.workitem.model import (
     IntegrityWarning,
@@ -486,7 +491,7 @@ def _score_epics_and_features(
     model_name: str | None,
     blocks_total: int,
     branch_count: int,
-    debug_capture: "DebugCapture | None" = None,
+    debug_capture: DebugCapture | None = None,
     # How many of this pass's independent chunks may be in flight at once
     # (see app.config.Settings.survey_chunk_concurrency). 1 (the default)
     # is the byte-identical previous behavior.
@@ -650,7 +655,7 @@ def score_texts_together(
     kb_context: str | None,
     category_checklist: list[str] | None,
     user_id: str | None = None,
-) -> dict[str, tuple[int | None, list[str], "QualityCategoryScores | None", "QualityConfidence | None"] | None]:
+) -> dict[str, tuple[int | None, list[str], QualityCategoryScores | None, QualityConfidence | None] | None]:
     """Scores several texts in ONE model call, so they are judged in the same frame and against the same rubric (`None` for a
     text the model gave no usable entry for). Used for a single rescore (one text) and for before/after of a rewrite (two): the
     scores of the two are then comparable, which two separate calls never were. The criteria context is retrieved for the FIRST
@@ -694,7 +699,7 @@ def score_single_requirement_text(
     kb_context: str | None,
     category_checklist: list[str] | None,
     user_id: str | None = None,
-) -> tuple[int | None, list[str], "QualityCategoryScores | None", "QualityConfidence | None"]:
+) -> tuple[int | None, list[str], QualityCategoryScores | None, QualityConfidence | None]:
     """CR-7d rescore: the single ad-hoc-string counterpart to
     _apply_quality_scores below, for re-judging ONE already-formalized
     requirement's current title+description after a manual/AI-chat edit --
@@ -852,7 +857,7 @@ def _check_scoring_canary(entry: object) -> None:
 
 
 def _match_category_checklist(
-    category_scores: "QualityCategoryScores | None",
+    category_scores: QualityCategoryScores | None,
     category_checklist_definitions: dict[str, str] | None,
 ) -> dict[str, str] | None:
     """Builds this node's quality_category_checklist -- the source for

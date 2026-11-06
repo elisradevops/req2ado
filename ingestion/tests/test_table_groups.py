@@ -1,5 +1,11 @@
 from app.canonical.model import SourceRef, Table, TableCell
-from app.leveling.table_groups import EPIC, FEATURE, REQUIREMENT, TableGroupInfo, qualifying_table_groups
+from app.leveling.table_groups import (
+    EPIC,
+    FEATURE,
+    REQUIREMENT,
+    TableGroupInfo,
+    qualifying_table_groups,
+)
 
 
 def _sr(path: str = "x.docx") -> SourceRef:

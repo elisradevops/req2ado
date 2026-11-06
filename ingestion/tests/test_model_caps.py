@@ -7,9 +7,9 @@ import pytest
 
 import app.leveling.model_caps as caps_module
 from app.leveling.model_caps import (
-    DEFAULT_OUTPUT_TOKEN_BUDGET,
     _LIVE_MAX_OUTPUT,
     _LIVE_MODEL_CAPS_CACHE,
+    DEFAULT_OUTPUT_TOKEN_BUDGET,
     _ModelCaps,
     _resolve_caps,
     family_facts,

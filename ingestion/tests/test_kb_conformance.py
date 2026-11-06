@@ -6,7 +6,13 @@ import json
 
 import pytest
 
-from app.kb.conformance import compare_reports, conformance_report, format_markdown, main, rule_check_for
+from app.kb.conformance import (
+    compare_reports,
+    conformance_report,
+    format_markdown,
+    main,
+    rule_check_for,
+)
 from app.kb.profile import KbProfile, Rule
 
 GOOD = {"localId": "n1", "type": "Requirement", "title": "Lock", "description": "The receiver shall acquire a lock within 5 ms."}

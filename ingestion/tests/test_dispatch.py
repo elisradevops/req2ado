@@ -65,7 +65,14 @@ def test_open_tbd_classification_applies_to_any_loaders_paragraph_blocks() -> No
     # goes through -- native-text PDF, docx, pptx, markdown, rtf all
     # produce plain PARAGRAPH blocks the same way txt does, and none of
     # them had this classification before this fix.
-    from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, SourceRef
+    from app.canonical.model import (
+        Block,
+        BlockKind,
+        CanonicalDoc,
+        Document,
+        DocumentFormat,
+        SourceRef,
+    )
     from app.dispatch import _classify_open_tbd_paragraphs
 
     doc = CanonicalDoc(

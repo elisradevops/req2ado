@@ -9,7 +9,13 @@ import pytest
 
 import app.survey.keyed_calls as keyed_calls_module
 from app.leveling.scoring import _parse_category_scores
-from app.survey.keyed_calls import describe_output, items_schema, mode_for, output_lead, reset_degraded
+from app.survey.keyed_calls import (
+    describe_output,
+    items_schema,
+    mode_for,
+    output_lead,
+    reset_degraded,
+)
 from app.survey.keyed_specs import EPIC_FEATURE_SCORING_SPEC, SCORING_SPEC
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient, _with_category_dict
 

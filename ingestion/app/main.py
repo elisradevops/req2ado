@@ -20,13 +20,12 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from app import job_cancel
-from app.level_stream import NDJSON, ndjson_stream
 from app.canonical.model import CanonicalDoc
 from app.chat.chat_client import ChatLlmClient
 from app.chat.chat_service import run_chat_turn
+from app.chat.context_pack import render_context_pack
 from app.chat.redis_publisher import RedisChatPublisher
 from app.chat.rewrite_check import check_rewrite
-from app.request_identity import PRIMER_HEADER, USER_ID_HEADER, resolve_primer_context, resolve_user_id
 from app.config import settings
 from app.debug_capture import DebugCapture
 from app.dedup.check_for_duplicates import DuplicateCheckResult, check_for_duplicates
@@ -36,20 +35,30 @@ from app.dedup.vector_store import ChromaVectorStore
 from app.dispatch import dispatch_by_extension
 from app.http_errors import describe_exception, exception_details
 from app.kb.browse_service import FolderChildSummary, browse_shared_folder, browse_subfolder
-from app.kb.graph_client import GraphApiError, GraphClient, decode_jwt_expiry_seconds
-from app.kb.ingest_service import FolderIngestResult, IngestResult, ingest_document_from_url, ingest_folder_child, ingest_folder_from_url
-from app.kb.kb_vector_store import KbVectorStore
-from app.chat.context_pack import render_context_pack
 from app.kb.default_rubric import default_profile
 from app.kb.explain import basis_for, choose_categories, describe_categories
-from app.kb.rubric import RubricOverrides, apply_overrides, rubric_view, validate_overrides
-from app.kb.profile import ChromaProfileStore, KbProfile, ensure_profile, render_authoring_standard, scoring_inputs
+from app.kb.graph_client import GraphApiError, GraphClient, decode_jwt_expiry_seconds
+from app.kb.ingest_service import (
+    FolderIngestResult,
+    IngestResult,
+    ingest_document_from_url,
+    ingest_folder_child,
+    ingest_folder_from_url,
+)
+from app.kb.kb_vector_store import KbVectorStore
+from app.kb.profile import (
+    ChromaProfileStore,
+    KbProfile,
+    ensure_profile,
+    render_authoring_standard,
+    scoring_inputs,
+)
 from app.kb.retrieval import retrieve_context
+from app.kb.rubric import RubricOverrides, apply_overrides, rubric_view, validate_overrides
+from app.level_stream import NDJSON, ndjson_stream
 from app.leveling.description_text import description_for_model
 from app.leveling.document_map import publish_document_map
-from app.leveling.live_context import live_emitter_scope, ocr_progress_callback
 from app.leveling.id_hierarchy import rows_from_table
-from app.leveling.llm_leveling import build_survey_tree
 from app.leveling.id_tree_builder import (
     _TITLE_TAG_CHUNK_SIZE,
     _hash_description,
@@ -57,21 +66,36 @@ from app.leveling.id_tree_builder import (
     synthesis_updates,
     title_tag_updates,
 )
+from app.leveling.live_context import live_emitter_scope, ocr_progress_callback
+from app.leveling.llm_lease_limiter import LeaseLimiter
+from app.leveling.llm_leveling import build_survey_tree
 from app.leveling.model_caps import _resolve_caps
 from app.leveling.narration_publisher import LevelingProgress, NarrationPublisher, last_known_phase
 from app.leveling.scoring import score_single_requirement_text, score_texts_together
-from app.leveling.llm_lease_limiter import LeaseLimiter
 from app.leveling.study_store import StudyStore
 from app.leveling.tree_builder import build_baseline_tree, figure_id_by_block_id
 from app.loaders.docx_pagination import annotate_docx_pages
 from app.logging_context import JobIdLogFilter, job_id_scope
 from app.quality.criteria_retrieval import CriteriaRetriever
 from app.redaction.redactor import redact_canonical_doc
+from app.request_identity import (
+    PRIMER_HEADER,
+    USER_ID_HEADER,
+    resolve_primer_context,
+    resolve_user_id,
+)
 from app.survey.llm_cache import LlmResponseCache
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 from app.vision.emf_converter import convert_vector_image_to_png, sniff_vector_image_extension
-from app.vision.orchestrator_vision_client import PROMPT_VERSION, OrchestratorVisionClient, _strip_degenerate_continuation
-from app.vision.figure_storage_client import OrchestratorFigureFileClient, compress_figure_for_storage
+from app.vision.figure_storage_client import (
+    OrchestratorFigureFileClient,
+    compress_figure_for_storage,
+)
+from app.vision.orchestrator_vision_client import (
+    PROMPT_VERSION,
+    OrchestratorVisionClient,
+    _strip_degenerate_continuation,
+)
 from app.workitem.model import IntegrityWarning, WarningKind, WorkItemTree, WorkItemType
 
 logging.basicConfig(
@@ -104,7 +128,9 @@ async def _lifespan(_app: FastAPI):
 
 app = FastAPI(title="req2ado-ingestion", lifespan=_lifespan)
 
-from app.otel import setup_otel  # noqa: E402 -- must instrument after `app` exists, before it serves
+from app.otel import (  # noqa: E402 -- must instrument after `app` exists, before it serves
+    setup_otel,
+)
 
 setup_otel(app)
 
@@ -2090,7 +2116,7 @@ async def rewrite_compare(body: RewriteCompareRequest) -> dict:
         with job_cancel.cancellation_scope() as token:
             try:
                 scored = await asyncio.wait_for(run_in_threadpool(_score), timeout=REWRITE_PREDICTION_SECONDS)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 token.cancel()
                 logger.warning("Rewrite prediction took longer than %ss; answering with the warnings only", REWRITE_PREDICTION_SECONDS)
                 return {"before": nothing, "after": nothing, "delta": None, "categoryDeltas": {}, "warnings": warnings}
@@ -2162,7 +2188,7 @@ async def score_explain(body: ScoreExplainRequest) -> dict:
         with job_cancel.cancellation_scope() as token:
             try:
                 answered = await asyncio.wait_for(run_in_threadpool(_explain), timeout=EXPLAIN_SECONDS)
-            except asyncio.TimeoutError as exc:
+            except TimeoutError as exc:
                 token.cancel()
                 raise HTTPException(status_code=504, detail="the explanation is taking too long; try again") from exc
     except HTTPException:

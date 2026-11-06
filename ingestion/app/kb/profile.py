@@ -23,7 +23,7 @@ import logging
 import re
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Literal, Protocol
 
 from pydantic import BaseModel, Field
@@ -436,7 +436,7 @@ def _representative_key(member: Category, preferred: set[str]):
 
 
 def consolidate_categories(
-    categories: list[Category], client: object, user_id: str | None = None, previous: "KbProfile | None" = None,
+    categories: list[Category], client: object, user_id: str | None = None, previous: KbProfile | None = None,
     stats: dict | None = None,
 ) -> tuple[list[Category], bool]:
     """The merged categories as a canonical list: the model decides which categories judge the same quality, a rule names them.
@@ -659,7 +659,7 @@ def ensure_profile(
             previous=None if refresh else existing,
             cache=make_cache(user_id) if make_cache else None, read_cache=not refresh,
         )
-        profile.built_at = datetime.now(timezone.utc).isoformat()
+        profile.built_at = datetime.now(UTC).isoformat()
         if profile.degraded:
             # Used for the job at hand, never stored as current: the next job rebuilds (the documents that did succeed come from the
             # cache), instead of every later job scoring without the knowledge base's standard until a document changes.

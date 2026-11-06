@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import logging
-import time
 import re
+import time
 from typing import Protocol
 
 from pydantic import BaseModel, Field

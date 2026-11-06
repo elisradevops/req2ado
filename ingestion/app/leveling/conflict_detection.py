@@ -5,11 +5,17 @@ from typing import Protocol
 
 import numpy as np
 
-from app.leveling.description_text import description_for_model
 from app.dedup.embedding_blend import blend_embeddings
+from app.leveling.description_text import description_for_model
 from app.leveling.live_context import current_live_emitter
 from app.leveling.narration_publisher import LevelingProgress, ProgressCallback
-from app.workitem.model import IntegrityWarning, RequirementQualityIssue, WarningKind, WorkItemNode, WorkItemType
+from app.workitem.model import (
+    IntegrityWarning,
+    RequirementQualityIssue,
+    WarningKind,
+    WorkItemNode,
+    WorkItemType,
+)
 
 logger = logging.getLogger(__name__)
 

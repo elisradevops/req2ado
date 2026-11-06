@@ -9,16 +9,26 @@ from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, Docume
 from app.config import settings
 from app.job_cancel import CancelToken, JobCancelled, cancellation_scope
 from app.kb.profile import windows_of
-from app.leveling.document_study import STUDY_WINDOW_CHARS, STUDY_WINDOW_OVERLAP
 from app.leveling import llm_leveling as llm_leveling_module
+from app.leveling.document_study import STUDY_WINDOW_CHARS, STUDY_WINDOW_OVERLAP
 from app.leveling.llm_leveling import _propose_criteria_step, build_survey_tree, render_section
 from app.leveling.study_runner import StudyHandle, StudyOutcome
 from app.leveling.study_store import StudyStore
 from app.request_identity import user_scope
 from app.workitem.model import WarningKind
 from tests.test_llm_leveling import (
-    _EMPTY_STUDY, FakeScoringClient, FakeSectionAnalysisClient, _BrokenStudy, _CriteriaForEveryKey, _CriteriaSpy, _flagged_requirement,
-    _flagged_scoring, _long_doc, _small_doc, _sr, _structural_heading_doc,
+    _EMPTY_STUDY,
+    FakeScoringClient,
+    FakeSectionAnalysisClient,
+    _BrokenStudy,
+    _CriteriaForEveryKey,
+    _CriteriaSpy,
+    _flagged_requirement,
+    _flagged_scoring,
+    _long_doc,
+    _small_doc,
+    _sr,
+    _structural_heading_doc,
 )
 from tests.test_study_runner import _doc, _Limiter, _Redis, _Stub
 

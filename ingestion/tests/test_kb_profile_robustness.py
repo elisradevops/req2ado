@@ -6,11 +6,10 @@ until a document changed: all later jobs scored without the knowledge base's sta
 import pytest
 
 from app.job_cancel import JobCancelled
-from app.kb import profile as profile_module
 from app.kb.profile import Category, InMemoryProfileStore, KbProfile, build_profile, ensure_profile
 from tests.test_kb_profile import FakeProfileClient
-from tests.test_kb_profile_consolidation import OVERLAPPING, SEPARATE, Consolidating
 from tests.test_kb_profile_cache import Kb
+from tests.test_kb_profile_consolidation import OVERLAPPING, SEPARATE, Consolidating
 
 
 class Failing(Consolidating):

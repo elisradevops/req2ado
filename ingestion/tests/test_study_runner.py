@@ -10,7 +10,12 @@ from app.job_cancel import CancelToken, JobCancelled, cancellation_scope, curren
 from app.leveling import document_study as study_document_module
 from app.leveling import study_runner as study_runner_module
 from app.leveling.document_study import WindowFindings, study_document
-from app.leveling.study_runner import LeasedStudyClient, StudyDeadlineExceeded, StudyHandle, StudyOutcome
+from app.leveling.study_runner import (
+    LeasedStudyClient,
+    StudyDeadlineExceeded,
+    StudyHandle,
+    StudyOutcome,
+)
 from app.leveling.study_store import StudyStore
 from app.request_identity import user_scope
 

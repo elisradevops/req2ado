@@ -14,7 +14,15 @@ import json
 import httpx
 from fastapi.testclient import TestClient
 
-from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, Figure, SourceRef
+from app.canonical.model import (
+    Block,
+    BlockKind,
+    CanonicalDoc,
+    Document,
+    DocumentFormat,
+    Figure,
+    SourceRef,
+)
 from app.main import app
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 

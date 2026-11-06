@@ -7,7 +7,13 @@ import numpy as np
 from app.canonical.model import SourceRef
 from app.leveling.conservation import restore_lost_nodes
 from app.leveling.root_regrouping import _regroup_disconnected_roots, deterministic_root_groups
-from app.workitem.model import IntegrityWarning, WarningKind, WorkItemMode, WorkItemNode, WorkItemType
+from app.workitem.model import (
+    IntegrityWarning,
+    WarningKind,
+    WorkItemMode,
+    WorkItemNode,
+    WorkItemType,
+)
 
 
 def _root(local_id: str, title: str, node_type: WorkItemType = WorkItemType.FEATURE) -> WorkItemNode:

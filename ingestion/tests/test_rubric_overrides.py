@@ -10,7 +10,13 @@ from app import main
 from app.kb.default_rubric import default_profile
 from app.kb.kb_vector_store import KbVectorStore
 from app.kb.profile import Category, ChromaProfileStore, InMemoryProfileStore, KbProfile
-from app.kb.rubric import RubricOverrides, RubricPin, apply_overrides, rubric_view, validate_overrides
+from app.kb.rubric import (
+    RubricOverrides,
+    RubricPin,
+    apply_overrides,
+    rubric_view,
+    validate_overrides,
+)
 
 client = TestClient(main.app)
 

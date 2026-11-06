@@ -34,8 +34,8 @@ from __future__ import annotations
 
 import contextvars
 import logging
-import re
 import random
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -44,11 +44,26 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from app.config import settings
-from app.job_cancel import CancelToken, JobCancelled, cancellation_scope, current_token, raise_if_cancelled, submit_in_context
+from app.job_cancel import (
+    CancelToken,
+    JobCancelled,
+    cancellation_scope,
+    current_token,
+    raise_if_cancelled,
+    submit_in_context,
+)
 from app.kb.profile import windows_of
 from app.leveling.document_study import (
-    STUDY_WINDOW_CHARS, STUDY_WINDOW_OVERLAP, DocumentStudy, DocumentStudyClient, StudyReadStats, WindowFindings, WindowRead,
-    _cancellable_sleep, merge_findings, read_window,
+    STUDY_WINDOW_CHARS,
+    STUDY_WINDOW_OVERLAP,
+    DocumentStudy,
+    DocumentStudyClient,
+    StudyReadStats,
+    WindowFindings,
+    WindowRead,
+    _cancellable_sleep,
+    merge_findings,
+    read_window,
 )
 from app.leveling.live_context import notice
 

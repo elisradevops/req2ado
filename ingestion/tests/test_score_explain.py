@@ -7,7 +7,6 @@ Requirement are, and what makes a requirement good)."""
 import json
 
 import httpx
-import pytest
 from fastapi.testclient import TestClient
 
 from app import main

@@ -8,8 +8,6 @@ from __future__ import annotations
 import json
 import random
 
-import pytest
-
 from app.kb.profile import (
     MAX_SCORING_CATEGORIES,
     SCHEMA_VERSION,

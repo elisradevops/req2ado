@@ -27,14 +27,14 @@ own literal content contains.
 from __future__ import annotations
 
 import re
-from functools import lru_cache
+from functools import cache
 from pathlib import Path
 
 _PROMPTS_DIR = Path(__file__).parent
 _VERSION_PATTERN = re.compile(r"^(?P<name>.+)\.v(?P<version>\d+)\.txt$")
 
 
-@lru_cache(maxsize=None)
+@cache
 def _latest_version(name: str) -> int:
     versions = [
         int(m.group("version"))
@@ -46,7 +46,7 @@ def _latest_version(name: str) -> int:
     return max(versions)
 
 
-@lru_cache(maxsize=None)
+@cache
 def _read(name: str, version: int) -> str:
     path = _PROMPTS_DIR / f"{name}.v{version}.txt"
     return path.read_text(encoding="utf-8").rstrip("\n")

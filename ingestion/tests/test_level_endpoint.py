@@ -1,9 +1,8 @@
 import json
 from unittest.mock import patch
 
-import pytest
-
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, SourceRef

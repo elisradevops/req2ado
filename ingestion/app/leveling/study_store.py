@@ -19,11 +19,18 @@ import json
 import logging
 import uuid
 
-from app.leveling.document_study import (
-    _MAX_QUOTE_CHARS, _MAX_TOKEN_CHARS, STUDY_WINDOW_CHARS, STUDY_WINDOW_OVERLAP, WindowFindings,
-    _checked_answer, _is_marker_text, contains_token, window_findings,
-)
 from app.kb.profile import windows_of
+from app.leveling.document_study import (
+    _MAX_QUOTE_CHARS,
+    _MAX_TOKEN_CHARS,
+    STUDY_WINDOW_CHARS,
+    STUDY_WINDOW_OVERLAP,
+    WindowFindings,
+    _checked_answer,
+    _is_marker_text,
+    contains_token,
+    window_findings,
+)
 from app.prompts import load_prompt
 from app.survey._response_schemas import document_study_schema
 
@@ -89,7 +96,7 @@ class StudyStore:
         self._redis = redis_client
         self._ttl_seconds = ttl_seconds
 
-    def run(self, scope: str, model: str | None, document_text: str) -> "StudyRun":
+    def run(self, scope: str, model: str | None, document_text: str) -> StudyRun:
         """One study run over one document; `scope` is the already-hashed user_scope(user_id)."""
         prefix = f"study:{study_version()}:{scope}:{hashlib.sha256(document_text.encode('utf-8')).hexdigest()[:24]}:{model or 'default'}"
         return StudyRun(self._redis, self._ttl_seconds, prefix)

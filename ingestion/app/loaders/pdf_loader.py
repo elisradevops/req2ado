@@ -3,9 +3,10 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Literal
 
 import pdfplumber
 import pytesseract
@@ -14,9 +15,19 @@ from PIL import Image, ImageStat
 from pypdf import PdfReader
 from pytesseract import Output
 
-from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, SourceRef, Table, TableCell
+from app.canonical.model import (
+    Block,
+    BlockKind,
+    CanonicalDoc,
+    Document,
+    DocumentFormat,
+    Figure,
+    SourceRef,
+    Table,
+    TableCell,
+)
+from app.leveling.numbering import numbering_depth, parse_numbering
 from app.loaders.figure_utils import append_figure, extract_figure_title
-from app.leveling.numbering import parse_numbering, numbering_depth
 
 logger = logging.getLogger(__name__)
 
@@ -1696,8 +1707,6 @@ def load_pdf(
                 filtered_lines = filtered_lines[:-1]
 
             paragraphs_with_meta = _lines_to_paragraphs(filtered_lines)
-            paragraphs = [p for p, _, _, _ in paragraphs_with_meta]
-            tops = [t for _, t, _, _ in paragraphs_with_meta]
 
             page_tables: list[Table] = []
             for found_table in found_tables:

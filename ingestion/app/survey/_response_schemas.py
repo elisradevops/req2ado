@@ -48,7 +48,12 @@ Ollama version is in use at the time.
 from __future__ import annotations
 
 from app.config import settings
-from app.workitem.model import QualityConfidence, RequirementQualityIssue, RequirementTag, WorkItemType
+from app.workitem.model import (
+    QualityConfidence,
+    RequirementQualityIssue,
+    RequirementTag,
+    WorkItemType,
+)
 
 _TAGS = [t.value for t in RequirementTag]
 _ISSUES = [t.value for t in RequirementQualityIssue]

@@ -1,6 +1,10 @@
 """Scoring sends a model the plain-text form of a description (tables as CSV), never the HTML the description is stored as."""
 from app.leveling import scoring
-from app.leveling.scoring import _apply_quality_scores, score_single_requirement_text, score_texts_together
+from app.leveling.scoring import (
+    _apply_quality_scores,
+    score_single_requirement_text,
+    score_texts_together,
+)
 from app.workitem.model import WorkItemType
 from tests.test_scoring import _epic_nodes, _requirement_node
 

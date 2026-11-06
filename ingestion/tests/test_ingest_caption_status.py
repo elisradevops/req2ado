@@ -11,7 +11,6 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.vision.orchestrator_vision_client import FigureVisionResult
-
 from tests.identity import identity_headers
 
 client = TestClient(app)

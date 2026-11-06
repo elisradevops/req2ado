@@ -6,7 +6,10 @@ import httpx
 import pytest
 from PIL import Image
 
-from app.vision.figure_storage_client import OrchestratorFigureFileClient, compress_figure_for_storage
+from app.vision.figure_storage_client import (
+    OrchestratorFigureFileClient,
+    compress_figure_for_storage,
+)
 
 
 def _make_png(width: int, height: int) -> bytes:

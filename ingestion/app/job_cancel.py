@@ -119,7 +119,7 @@ async def watch_for_disconnect(request: _Disconnectable, token: CancelToken, pol
                 return
             try:
                 await asyncio.wait_for(stop.wait(), timeout=poll_seconds)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
 
     task = asyncio.create_task(watch())
@@ -129,7 +129,7 @@ async def watch_for_disconnect(request: _Disconnectable, token: CancelToken, pol
         stop.set()
         try:
             await asyncio.wait_for(task, timeout=5)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except (TimeoutError, asyncio.CancelledError):
             task.cancel()
 
 

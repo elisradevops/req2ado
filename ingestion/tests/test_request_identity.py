@@ -1,5 +1,3 @@
-import base64
-import json
 import re
 from unittest.mock import patch
 
@@ -7,7 +5,12 @@ from fastapi.testclient import TestClient
 
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, SourceRef
 from app.main import app
-from app.request_identity import decode_primer_header, encode_primer_header, resolve_primer_context, resolve_user_id
+from app.request_identity import (
+    decode_primer_header,
+    encode_primer_header,
+    resolve_primer_context,
+    resolve_user_id,
+)
 
 client = TestClient(app)
 

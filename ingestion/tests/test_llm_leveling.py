@@ -5,12 +5,20 @@ import time
 
 import pytest
 
+from app.canonical.model import (
+    Block,
+    BlockKind,
+    CanonicalDoc,
+    Document,
+    DocumentFormat,
+    Figure,
+    SourceRef,
+    Table,
+    TableCell,
+)
 from app.job_cancel import JobCancelled
-from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, Figure, SourceRef, Table, TableCell, plain_text_rows
-from app.section_analysis_options import DEFAULT_SECTION_ANALYSIS_OPTIONS, SectionAnalysisOptions
-from app.leveling.conflict_detection import _DUPLICATE_CLUSTER_COSINE_THRESHOLD, _cosine_similarity
-from app.leveling.scoring import _CANARY_NODE_ID
 from app.leveling import llm_leveling as llm_leveling_module
+from app.leveling.conflict_detection import _DUPLICATE_CLUSTER_COSINE_THRESHOLD, _cosine_similarity
 from app.leveling.llm_leveling import (
     SectionAnalysisClient,
     _BranchSkeleton,
@@ -32,10 +40,21 @@ from app.leveling.llm_leveling import (
     render_section,
 )
 from app.leveling.narration_publisher import LevelingProgress
+from app.leveling.scoring import _CANARY_NODE_ID
 from app.leveling.table_groups import TableGroupInfo
 from app.leveling.trace_links import _infer_trace_links_for_nodes
-from app.workitem.model import KbCitationRelevance
-from app.workitem.model import IntegrityWarning, QualityConfidence, RequirementQualityIssue, RequirementTag, WarningKind, WorkItemMode, WorkItemNode, WorkItemType
+from app.section_analysis_options import DEFAULT_SECTION_ANALYSIS_OPTIONS, SectionAnalysisOptions
+from app.workitem.model import (
+    IntegrityWarning,
+    KbCitationRelevance,
+    QualityConfidence,
+    RequirementQualityIssue,
+    RequirementTag,
+    WarningKind,
+    WorkItemMode,
+    WorkItemNode,
+    WorkItemType,
+)
 
 
 def _sr(path: str) -> SourceRef:
@@ -1376,7 +1395,7 @@ def test_find_front_matter_branches_returns_indices_of_matching_branches() -> No
 
 
 def test_combine_global_context_appends_front_matter_guard_only_for_matched_branch_index() -> None:
-    from app.leveling.llm_leveling import _combine_global_context, _FRONT_MATTER_GUARD_TEXT
+    from app.leveling.llm_leveling import _FRONT_MATTER_GUARD_TEXT, _combine_global_context
 
     matched = _combine_global_context("outline", 0, [], None, front_matter_branch_indices={0})
     assert _FRONT_MATTER_GUARD_TEXT in matched
@@ -1443,7 +1462,10 @@ def test_front_matter_guard_for_whole_document_text_does_not_trip_the_external_r
     # "appendix"/"annex"/"attached" as examples, every guarded document would
     # gain a spurious EXTERNAL_REFERENCE warning manufactured out of the
     # instruction text itself. Pins the deliberate wording choice.
-    from app.leveling.llm_leveling import _REFERENCED_ATTACHMENT_PATTERN, _front_matter_guard_for_whole_document
+    from app.leveling.llm_leveling import (
+        _REFERENCED_ATTACHMENT_PATTERN,
+        _front_matter_guard_for_whole_document,
+    )
 
     path = "doc.txt"
     guard = _front_matter_guard_for_whole_document(
@@ -3924,7 +3946,11 @@ def test_resolve_caps_live_lookup_at_frontier_threshold_gets_frontier_shaped_cap
 
 
 def test_resolve_caps_live_lookup_below_frontier_threshold_keeps_conservative_local_defaults() -> None:
-    from app.leveling.model_caps import _resolve_caps, _COVERAGE_BUDGET_TOKENS, _MAX_SURVEY_BRANCH_BLOCK_COUNT
+    from app.leveling.model_caps import (
+        _COVERAGE_BUDGET_TOKENS,
+        _MAX_SURVEY_BRANCH_BLOCK_COUNT,
+        _resolve_caps,
+    )
 
     fake_client = _FakeCapsClient({"context_length": 32_000, "capabilities": ["completion", "tools"]})
     caps = _resolve_caps("some-modest-model-v9", caps_client=fake_client)
@@ -4927,7 +4953,7 @@ def test_build_survey_tree_progress_callback_falls_back_to_a_tables_caption_for_
 def test_build_survey_tree_fires_progress_callback_for_each_real_step_boundary() -> None:
     events = []
 
-    tree = build_survey_tree(
+    build_survey_tree(
         _small_doc(),
         FakeSectionAnalysisClient(),
         progress_callback=lambda p: events.append(p),

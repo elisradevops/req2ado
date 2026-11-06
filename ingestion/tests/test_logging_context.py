@@ -61,7 +61,14 @@ def test_build_survey_tree_warning_carries_job_id_through_run_in_threadpool() ->
 
     from starlette.concurrency import run_in_threadpool
 
-    from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, SourceRef
+    from app.canonical.model import (
+        Block,
+        BlockKind,
+        CanonicalDoc,
+        Document,
+        DocumentFormat,
+        SourceRef,
+    )
     from app.leveling.llm_leveling import build_survey_tree
 
     class _EmptyResultClient:

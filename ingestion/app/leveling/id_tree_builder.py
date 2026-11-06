@@ -29,13 +29,7 @@ from app.canonical.model import SourceRef, Table
 from app.distillation.description import assemble_description
 from app.distillation.title import extract_baseline_title
 from app.leveling.bounded_chunks import run_chunks_bounded
-from app.leveling.live_context import current_stage_counter
 from app.leveling.customer_id import extract_customer_requirement_code
-from app.leveling.id_hierarchy import HierarchyRow
-from app.leveling.narration_publisher import LevelingProgress, ProgressCallback
-from app.leveling.tree_builder import _hash_description, _table_to_html, strip_repeated_titles
-from app.survey.keyed_calls import KeyedEntries, normalize_keyed_result, retry_omitted
-from app.workitem.model import IntegrityWarning, RequirementTag, WarningKind, WorkItemMode, WorkItemNode, WorkItemType
 
 # Previously a second, independent copy of llm_leveling.py's own
 # _significant_words/_grounding_score with an ASCII-only word pattern --
@@ -50,8 +44,19 @@ from app.workitem.model import IntegrityWarning, RequirementTag, WarningKind, Wo
 # create. Aliased under the original private names so every call site below
 # needs no change.
 from app.leveling.grounding import grounding_score as _grounding_score
-from app.leveling.grounding import significant_words as _significant_words
-
+from app.leveling.id_hierarchy import HierarchyRow
+from app.leveling.live_context import current_stage_counter
+from app.leveling.narration_publisher import LevelingProgress, ProgressCallback
+from app.leveling.tree_builder import _hash_description, _table_to_html, strip_repeated_titles
+from app.survey.keyed_calls import KeyedEntries, normalize_keyed_result, retry_omitted
+from app.workitem.model import (
+    IntegrityWarning,
+    RequirementTag,
+    WarningKind,
+    WorkItemMode,
+    WorkItemNode,
+    WorkItemType,
+)
 
 logger = logging.getLogger(__name__)
 

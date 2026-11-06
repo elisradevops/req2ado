@@ -37,7 +37,7 @@ def _words(text: str) -> list[str]:
     return re.findall(r"\w+", text.casefold())
 
 
-def _quote_names_target(quote: str, target_ref: str, target_node: "WorkItemNode | None") -> bool:
+def _quote_names_target(quote: str, target_ref: str, target_node: WorkItemNode | None) -> bool:
     """True when the evidence quote refers to the item it links to: it contains the target's customer id, the target's whole
     title, or a distinctive word of that title (not a word every requirement uses); for a target in another job, the target
     reference itself. A quote that is real but says nothing about the target is no evidence that the source refers to it."""
@@ -123,7 +123,7 @@ def _chunk_nodes(llm_nodes: list[dict]) -> list[list[dict]]:
 
 
 def _infer_chunk_once(
-    client: "TraceLinkInferenceClient", nodes: list[dict], catalog: list[dict], kb_context: str | None,
+    client: TraceLinkInferenceClient, nodes: list[dict], catalog: list[dict], kb_context: str | None,
     user_id: str | None,
 ) -> tuple[list[dict] | None, str | None]:
     """(links, None) on success, (None, short reason) when the call failed or answered with something unusable."""
@@ -145,7 +145,7 @@ def _infer_chunk_once(
 
 
 def _infer_chunk_resilient(
-    client: "TraceLinkInferenceClient", nodes: list[dict], catalog: list[dict], kb_context: str | None,
+    client: TraceLinkInferenceClient, nodes: list[dict], catalog: list[dict], kb_context: str | None,
     user_id: str | None,
 ) -> tuple[list[list[dict]], list[tuple[list[dict], str]]]:
     """(answered link lists, [(skipped nodes, reason)]): one retry as two halves (a smaller request) when the
@@ -173,7 +173,7 @@ def _infer_trace_links_for_nodes(
     progress_callback: ProgressCallback | None,
     blocks_total: int,
     branch_count: int,
-    debug_capture: "DebugCapture | None" = None,
+    debug_capture: DebugCapture | None = None,
     kb_context: str | None = None,
     user_id: str | None = None,
 ) -> list[TraceLink]:

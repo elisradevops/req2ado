@@ -11,7 +11,6 @@ from pptx.util import Inches
 from app.config import settings
 from app.main import _figure_caption_cache_key, _rasterize_for_vision, _sniff_image_mime_type, app
 from app.vision.orchestrator_vision_client import PROMPT_VERSION, FigureVisionResult
-
 from tests.identity import identity_headers
 
 client = TestClient(app)

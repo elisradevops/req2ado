@@ -10,7 +10,13 @@ import pytest
 
 import app.survey.keyed_calls as keyed_calls_module
 from app.prompts import load_prompt
-from app.survey.keyed_calls import describe_output, items_schema, mode_for, reset_degraded, wrap_scalar_entries
+from app.survey.keyed_calls import (
+    describe_output,
+    items_schema,
+    mode_for,
+    reset_degraded,
+    wrap_scalar_entries,
+)
 from app.survey.keyed_specs import (
     AUTHOR_CONTENT_SPEC,
     FIGURE_TABLE_MAPPING_SPEC,

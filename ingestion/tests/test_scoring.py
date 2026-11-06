@@ -1,16 +1,26 @@
 import logging
+import threading
+import time
 
 from app.canonical.model import SourceRef
 from app.leveling.scoring import (
-    _CANARY_MAX_SCORE,
     _CANARY_NODE_ID,
     _CANARY_TEXT,
+    _SCORING_CHUNK_NODE_COUNT,
     _apply_quality_scores,
     _match_category_checklist,
+    _score_all_requirements,
+    _score_epics_and_features,
     score_single_requirement_text,
     score_texts_together,
 )
-from app.workitem.model import IntegrityWarning, QualityConfidence, WorkItemMode, WorkItemNode, WorkItemType
+from app.workitem.model import (
+    IntegrityWarning,
+    QualityConfidence,
+    WorkItemMode,
+    WorkItemNode,
+    WorkItemType,
+)
 
 
 def _requirement_node(local_id: str, description: str) -> WorkItemNode:
@@ -238,16 +248,7 @@ class TestMatchCategoryChecklist:
         assert "completeness_as_requirement" not in result
 
 
-import threading
-import time
 
-from app.canonical.model import SourceRef
-from app.leveling.scoring import (
-    _SCORING_CHUNK_NODE_COUNT,
-    _score_all_requirements,
-    _score_epics_and_features,
-)
-from app.workitem.model import WorkItemMode, WorkItemNode, WorkItemType
 
 
 def _sr(offset: int = 0) -> SourceRef:

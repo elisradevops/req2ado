@@ -12,8 +12,8 @@
 # build_mock_prd_flat_docx.py's own docstring).
 from pathlib import Path
 
-from app.loaders.docx_loader import load_docx
 from app.leveling.heading_outline import heading_outline_entries
+from app.loaders.docx_loader import load_docx
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

@@ -16,11 +16,12 @@ import hashlib
 import json
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Protocol
+from typing import Protocol
 
-from app.leveling.description_text import description_for_model
 from app.kb.profile import KbProfile
+from app.leveling.description_text import description_for_model
 
 _MODAL = re.compile(r"\b(shall|must|should|will)\b", re.IGNORECASE)
 _VAGUE = re.compile(

@@ -1,5 +1,9 @@
 from app.canonical.model import Block, BlockKind, SourceRef, Table, TableCell
-from app.leveling.heading_outline import HeadingOutlineEntry, entries_for_blocks, heading_outline_entries
+from app.leveling.heading_outline import (
+    HeadingOutlineEntry,
+    entries_for_blocks,
+    heading_outline_entries,
+)
 
 _NON_REQ_TEXT = "Some descriptive text about this topic here."  # 7 words, no modal verb
 _SHALL_TEXT = "The system shall handle this case correctly."  # 7 words, has "shall"

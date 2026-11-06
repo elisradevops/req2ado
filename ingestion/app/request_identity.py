@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import re
 
 USER_ID_HEADER = "X-Req2Ado-User-Id"
 PRIMER_HEADER = "X-Req2Ado-Primer-Context"
@@ -46,7 +47,6 @@ def resolve_primer_context(header_value: str | None) -> str | None:
     return decode_primer_header(header_value) if header_value else None
 
 
-import re
 
 # A Windows identity (the user ids this deployment stores look like `System.Security.Principal.WindowsIdentity;S-1-5-21-...`)
 # and Azure DevOps identity URIs. Messages that reach a job's failure record, its narration or an HTTP error body must not

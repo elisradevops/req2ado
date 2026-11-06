@@ -6,39 +6,43 @@ import logging
 import re
 import socket
 import time
-from typing import Any, Callable, Literal
+from collections.abc import Callable
+from typing import Any, Literal
 
 import httpx
 from json_repair import repair_json
 
+from app.config import settings
 from app.job_cancel import current_token, raise_if_cancelled
+from app.leveling.live_context import current_stage_counter, live_emitter_for, notice
+from app.leveling.live_stream import DraftingDisplay
 from app.leveling.llm_call_gate import gated
+from app.leveling.model_caps import output_token_budget
+from app.logging_context import current_job_id
 from app.otel import get_tracer
 from app.prompts import load_prompt
 from app.request_identity import user_scope
 from app.section_analysis_options import DEFAULT_SECTION_ANALYSIS_OPTIONS, SectionAnalysisOptions
-
 from app.survey._response_schemas import (
+    acceptance_criteria_schema,
     checklist_definitions_schema,
     checklist_extraction_schema,
-    acceptance_criteria_schema,
     distill_title_schema,
     document_study_schema,
     duplicate_cluster_verdict_schema,
     duplicate_pair_verdict_schema,
-    leftover_assignment_schema,
-    kb_document_profile_schema,
     kb_category_consolidation_schema,
-    score_explanation_schema,
+    kb_document_profile_schema,
     kb_document_relevance_schema,
+    leftover_assignment_schema,
     root_group_names_schema,
-    rule_conformance_schema,
     root_grouping_schema,
+    rule_conformance_schema,
+    score_explanation_schema,
     section_analysis_schema,
     section_skeleton_schema,
     trace_links_schema,
 )
-from app.config import settings
 from app.survey.keyed_calls import (
     KeyedMode,
     describe_output,
@@ -58,10 +62,6 @@ from app.survey.keyed_specs import (
     SYNTHESIS_SPEC,
     TITLE_TAGS_SPEC,
 )
-from app.leveling.live_context import current_stage_counter, live_emitter_for, notice
-from app.leveling.live_stream import DraftingDisplay
-from app.leveling.model_caps import output_token_budget
-from app.logging_context import current_job_id
 from app.survey.llm_cache import LlmResponseCache, cache_key
 from app.workitem.model import RequirementTag
 

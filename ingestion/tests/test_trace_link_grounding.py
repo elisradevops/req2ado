@@ -41,7 +41,7 @@ NODES = [
 
 def test_a_link_whose_quote_names_the_target_is_kept() -> None:
     links = _infer_trace_links_for_nodes(NODES, _Client([_link("n0", "n1", "meet the Thermal Management limits")]), CATALOG, [], None, 0, 0)
-    assert [(l.source_local_id, l.target_local_id) for l in links] == [("n0", "n1")]
+    assert [(link.source_local_id, link.target_local_id) for link in links] == [("n0", "n1")]
 
 
 def test_a_link_whose_quote_is_in_the_source_but_says_nothing_about_the_target_is_dropped() -> None:
@@ -68,7 +68,7 @@ def test_one_source_cannot_attach_to_dozens_of_targets() -> None:
     source = _node("s", "Source", f"This item mentions {quote}.")
     links = _infer_trace_links_for_nodes([source, *targets], _Client([_link("s", f"t{i}", f"Target number {i}") for i in range(len(targets))]), CATALOG, [], None, 0, 0)
     assert len(links) == MAX_LINKS_PER_SOURCE
-    assert [l.target_local_id for l in links] == [f"t{i}" for i in range(MAX_LINKS_PER_SOURCE)]  # the first ones, deterministically
+    assert [link.target_local_id for link in links] == [f"t{i}" for i in range(MAX_LINKS_PER_SOURCE)]  # the first ones, deterministically
 
 
 def test_words_every_requirement_uses_do_not_ground_a_link() -> None:

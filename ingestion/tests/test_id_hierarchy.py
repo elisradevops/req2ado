@@ -1,7 +1,7 @@
 from app.canonical.model import Block, BlockKind, SourceRef, Table, TableCell
 from app.leveling.id_hierarchy import (
-    is_requirement_shaped,
     classify_by_nesting,
+    is_requirement_shaped,
     qualifying_groups,
     rows_from_heading_structure,
     rows_from_id_headings,

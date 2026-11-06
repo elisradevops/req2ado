@@ -11,7 +11,13 @@ if TYPE_CHECKING:
 
 from app.leveling.narration_publisher import LevelingProgress, ProgressCallback
 from app.leveling.tree_builder import _hash_identity_for_synthesized_node
-from app.workitem.model import IntegrityWarning, WarningKind, WorkItemMode, WorkItemNode, WorkItemType
+from app.workitem.model import (
+    IntegrityWarning,
+    WarningKind,
+    WorkItemMode,
+    WorkItemNode,
+    WorkItemType,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -157,11 +163,11 @@ def _fallback_group_title(member_titles: list[str]) -> str:
 def _deterministic_raw_groups(
     roots: list[WorkItemNode],
     titles_by_id: dict[str, str],
-    grouping_client: "RootGroupingClient",
+    grouping_client: RootGroupingClient,
     embed_client: object,
     cosine_threshold: float,
     node_id_prefix: str,
-    debug_capture: "DebugCapture | None",
+    debug_capture: DebugCapture | None,
     user_id: str | None,
 ) -> list[dict] | None:
     """The groups as the same {'title', 'member_ids'} dicts the model path returns, so one loop builds the nodes for
@@ -205,7 +211,7 @@ def _regroup_disconnected_roots(
     progress_callback: ProgressCallback | None = None,
     blocks_total: int = 0,
     branch_count: int = 0,
-    debug_capture: "DebugCapture | None" = None,
+    debug_capture: DebugCapture | None = None,
     user_id: str | None = None,
     embed_client: object | None = None,
     deterministic: bool = False,
