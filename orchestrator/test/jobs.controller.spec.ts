@@ -703,7 +703,54 @@ describe('JobsController.listModels', () => {
     const result = await controller.listModels(user);
 
     expect(clientFactory.getClientFor).toHaveBeenCalledWith('user-1');
-    expect(result).toEqual({ models: ['qwen2.5:1.5b', 'gemma4:e4b'] });
+    expect(result.models).toEqual(['qwen2.5:1.5b', 'gemma4:e4b']);
+  });
+
+  describe('model details', () => {
+    const user = { userId: 'user-1', displayName: 'User One' } as any;
+    const listed = [
+      { id: 'qwen2.5:1.5b', name: 'Qwen', vision: false },
+      { id: 'gemma4:e4b', name: 'Gemma', vision: true },
+    ];
+    const make = (etaService: any, modelHealth?: any) =>
+      new JobsController(
+        {} as any, {} as any, { getClientFor: jest.fn().mockResolvedValue({ listSelectableModels: jest.fn().mockResolvedValue(listed) }) } as any,
+        {} as any, {} as any, etaService, 500 * 1024 * 1024, modelHealth,
+      );
+
+    it('recommends the admin default when it is among the visible models, and says what the app does with figures', async () => {
+      const stats = new Map([['gemma4:e4b', { runs: 12, speedVsTypical: 0.8, finishedShare: 0.9 }]]);
+      const eta = { getDefaultModel: () => 'gemma4:e4b', modelStats: jest.fn().mockResolvedValue(stats) };
+
+      const result = await make(eta).listModels(user);
+
+      expect(result.recommended).toBe('gemma4:e4b');
+      expect(result.details).toEqual([
+        { id: 'qwen2.5:1.5b', name: 'Qwen', describesFigures: false, runs: 0, speedVsTypical: null, finishedShare: null },
+        { id: 'gemma4:e4b', name: 'Gemma', describesFigures: true, runs: 12, speedVsTypical: 0.8, finishedShare: 0.9 },
+      ]);
+      expect(eta.modelStats).toHaveBeenCalledWith(['qwen2.5:1.5b', 'gemma4:e4b']);
+    });
+
+    it('recommends nothing when the default is not offered (hidden or failing)', async () => {
+      const eta = { getDefaultModel: () => 'gemma4:e4b', modelStats: jest.fn().mockResolvedValue(new Map()) };
+      const modelHealth = { filterVisible: jest.fn(async (_u: string, m: { id: string }[]) => m.filter((x) => x.id !== 'gemma4:e4b')) };
+
+      const result = await make(eta, modelHealth).listModels(user);
+
+      expect(result.models).toEqual(['qwen2.5:1.5b']);
+      expect(result.recommended).toBeNull();
+    });
+
+    it('still returns the plain list with empty stats when the statistics fail', async () => {
+      const eta = { getDefaultModel: () => 'gemma4:e4b', modelStats: jest.fn().mockRejectedValue(new Error('db down')) };
+
+      const result = await make(eta).listModels(user);
+
+      expect(result.models).toEqual(['qwen2.5:1.5b', 'gemma4:e4b']);
+      expect(result.recommended).toBe('gemma4:e4b');
+      expect(result.details.every((d) => d.runs === 0 && d.speedVsTypical === null && d.finishedShare === null)).toBe(true);
+    });
   });
 });
 
@@ -965,7 +1012,7 @@ describe('JobsController hidden models (LLM_MODEL_HIDE_PATTERNS)', () => {
       {} as any, {} as any, { getClientFor: jest.fn().mockResolvedValue({ listSelectableModels }) } as any,
       {} as any, {} as any, {} as any, 500 * 1024 * 1024, modelHealth as any,
     );
-    expect(await controller.listModels(TEST_USER)).toEqual({ models: ['good'] });
+    expect((await controller.listModels(TEST_USER)).models).toEqual(['good']);
   });
 
   it('does not touch the factory when no model is named', async () => {

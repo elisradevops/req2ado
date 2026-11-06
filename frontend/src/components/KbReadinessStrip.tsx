@@ -58,12 +58,18 @@ export function KbReadinessStrip(): React.ReactElement {
   }
 
   const { documents, sharePoint } = state;
+  // A file only grounds a run if it holds vectors. A count of 0 says it has none; a missing count (older ingests, or ones whose
+  // vectors were lost) says nothing either way, so it is not counted as ready -- "6 files" must not include files we cannot vouch for.
   const noVectors = documents.filter((d) => d.chunkCount === 0).length;
-  // Unknown (legacy null) counts are never summed as 0: the chunk total is
-  // shown only when every file's count is known.
-  const allCountsKnown = documents.every((d) => d.chunkCount != null);
-  const chunks = documents.reduce((sum, d) => sum + (d.chunkCount ?? 0), 0);
+  const unverified = documents.filter((d) => d.chunkCount == null).length;
+  const ready = documents.filter((d) => (d.chunkCount ?? 0) > 0);
+  const chunks = ready.reduce((sum, d) => sum + (d.chunkCount ?? 0), 0);
   const sp = sharePoint ? SHAREPOINT_COPY[sharePoint.status] : null;
+  const sharePointBroken = sharePoint?.status === 'invalid' || sharePoint?.status === 'unreachable';
+  // The Knowledge Base page is where all of these are fixed, so the link is offered only when there is something to fix there.
+  const needsFix = documents.length === 0 || noVectors > 0 || unverified > 0 || sharePointBroken;
+  // Said once, on the last file warning, and worded for however many files it covers in total.
+  const reingest = `Re-ingest ${plural(noVectors + unverified, 'it', 'them')} in Knowledge Base (SharePoint folder).`;
 
   return (
     <div className="flex flex-col gap-1.5" aria-live="polite">
@@ -74,8 +80,11 @@ export function KbReadinessStrip(): React.ReactElement {
           </span>
         ) : (
           <Chip bg="var(--color-surface)" color="var(--color-ink-2)" className="border border-hairline-strong text-xs font-normal tabular-nums">
-            {documents.length} {plural(documents.length, 'file', 'files')}
-            {allCountsKnown && ` · ${chunks} ${plural(chunks, 'chunk', 'chunks')}`}
+            {ready.length > 0
+              ? `${ready.length} ${plural(ready.length, 'file', 'files')} · ${chunks} ${plural(chunks, 'chunk', 'chunks')}`
+              : noVectors === 0
+                ? `${unverified} ${plural(unverified, 'file', 'files')} · chunk count unknown` // older ingests: not known to be broken, just not confirmed
+                : '0 files ready'}
           </Chip>
         )}
         {sp && (
@@ -87,15 +96,27 @@ export function KbReadinessStrip(): React.ReactElement {
             {sp.label}
           </Chip>
         )}
-        <Link to="/knowledge-base" className="text-xs text-accent hover:underline">
-          Manage knowledge base
-        </Link>
+        {needsFix && (
+          <>
+            <Link to="/knowledge-base" className="text-xs text-accent hover:underline">
+              Fix in Knowledge Base
+            </Link>
+            <span className="text-xs text-ink-3">Your draft is kept.</span>
+          </>
+        )}
       </div>
       {noVectors > 0 && (
         <p className="text-xs text-warning-ink">
-          {noVectors} {plural(noVectors, 'file has', 'files have')} no vectors and cannot ground this run — re-ingest {plural(noVectors, 'it', 'them')}
+          {noVectors} {plural(noVectors, 'file has', 'files have')} no vectors and cannot ground this run.{unverified === 0 && ` ${reingest}`}
         </p>
       )}
+      {unverified > 0 && (
+        <p className="text-xs text-warning-ink">
+          {unverified} {plural(unverified, 'file has', 'files have')} no stored chunk count, so {plural(unverified, 'it', 'they')} may not ground this run
+          (older ingests, or ones whose vectors were lost). {reingest}
+        </p>
+      )}
+      {sharePointBroken && <p className="text-xs text-warning-ink">Reconnect SharePoint in Knowledge Base before adding or re-ingesting files.</p>}
     </div>
   );
 }

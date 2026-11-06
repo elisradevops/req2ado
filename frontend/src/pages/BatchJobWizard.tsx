@@ -9,7 +9,7 @@ import { StatePicker } from '../components/StatePicker';
 import { ProjectPicker } from '../components/ProjectPicker';
 import { formatDestinationPreview } from '../components/DestinationBar';
 import { submitBatch } from '../api/batches';
-import { listModels } from '../api/jobs';
+import { listModels, type ModelListing } from '../api/jobs';
 import { useOrgUrl } from '../store/authStore';
 import { useToast } from '../components/ToastProvider';
 import { PageHeader } from '../ui/PageHeader';
@@ -40,6 +40,7 @@ export function BatchJobWizard(): React.ReactElement {
   const [iterationPath, setIterationPath] = useState('');
   const [model, setModel] = useState('');
   const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [modelListing, setModelListing] = useState<ModelListing | null>(null);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState(false);
   const isSubmittingRef = useRef(false);
@@ -51,9 +52,13 @@ export function BatchJobWizard(): React.ReactElement {
     setModelsLoading(true);
     setModelsError(false);
     listModels()
-      .then(setAvailableModels)
+      .then((listing) => {
+        setAvailableModels(listing.models);
+        setModelListing(listing);
+      })
       .catch(() => {
         setAvailableModels([]);
+        setModelListing(null);
         setModelsError(true);
       })
       .finally(() => setModelsLoading(false));
@@ -165,6 +170,8 @@ export function BatchJobWizard(): React.ReactElement {
               model={model}
               onModelChange={setModel}
               availableModels={availableModels}
+              modelDetails={modelListing?.details}
+              recommendedModel={modelListing?.recommended}
               modelsLoading={modelsLoading}
               modelsError={modelsError}
             />

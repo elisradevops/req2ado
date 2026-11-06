@@ -28,7 +28,7 @@ import { WorkItemTypeCatalogService, type WorkItemTypeCatalogEntry } from './wor
 import { jobFigureFileUploadSchema } from './job-figure-file.dto';
 import { etaEstimateQuerySchema } from './eta-estimate.dto';
 import { jobsListQuerySchema } from './jobs-list.dto';
-import { EtaService, type EtaEstimate } from './eta.service';
+import { EtaService, type EtaEstimate, type ModelStats } from './eta.service';
 import { buildDocumentMap, type DocumentMapSection } from './document-map';
 import { parseDocumentOverview, type DocumentOverview } from './document-overview.service';
 import { buildPreviewOverview } from './document-preview';
@@ -101,6 +101,19 @@ const MULTER_SAFETY_CEILING_BYTES = 500 * 1024 * 1024;
 // (see docs on _describe_figure_with_progress's caller).
 const MAX_FIGURE_FILE_BYTES = 8 * 1024 * 1024;
 
+export interface ModelDetail extends ModelStats {
+  id: string;
+  name: string;
+  /** Whether the app will describe figures with this model (the flag the pipeline acts on), not a quality claim. */
+  describesFigures: boolean;
+}
+
+export interface ModelListing {
+  models: string[];
+  recommended: string | null;
+  details: ModelDetail[];
+}
+
 @Controller('jobs')
 export class JobsController {
   private readonly logger = new Logger(JobsController.name);
@@ -159,12 +172,38 @@ export class JobsController {
     }
   }
 
+  // Additive to the original {models: string[]}: `recommended` is the admin-configured default when this user is
+  // offered it (no quality claim, it is the model "Default" already means), and `details` carries what the app can
+  // state per model -- whether figures will be described (the same flag the pipeline acts on) and this
+  // deployment's own observed speed and finish rate. Any failure in the extras leaves the plain list intact.
   @Get('models')
-  async listModels(@CurrentUser() user: SessionUser): Promise<{ models: string[] }> {
+  async listModels(@CurrentUser() user: SessionUser): Promise<ModelListing> {
     const client = await this.clientFactory.getClientFor(user.userId);
     const models = await client.listSelectableModels();
     const visible = (await this.modelHealth?.filterVisible(user.userId, models)) ?? models;
-    return { models: visible.map((m) => m.id) };
+    const ids = visible.map((m) => m.id);
+    let stats = new Map<string, ModelStats>();
+    try {
+      stats = await this.etaService.modelStats(ids);
+    } catch (err) {
+      this.logger.warn(`model statistics unavailable: ${err instanceof Error ? err.name : 'error'}`);
+    }
+    let defaultModel: string | undefined;
+    try {
+      defaultModel = this.etaService.getDefaultModel();
+    } catch {
+      defaultModel = undefined;
+    }
+    return {
+      models: ids,
+      recommended: defaultModel && ids.includes(defaultModel) ? defaultModel : null,
+      details: visible.map((m) => ({
+        id: m.id,
+        name: m.name,
+        describesFigures: m.vision,
+        ...(stats.get(m.id) ?? { runs: 0, speedVsTypical: null, finishedShare: null }),
+      })),
+    };
   }
 
   @Post()

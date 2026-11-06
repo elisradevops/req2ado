@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { LayoutGrid, AlignLeft, Image, Layers, Table2, TriangleAlert, Lock, ArrowRight, Activity, Cpu, Info } from 'lucide-react';
 import { cn } from '../lib/cn';
+import { restorableDraft, useNewJobDraftStore } from '../store/newJobDraftStore';
 import { FileTypeIcon } from '../components/FileTypeIcon';
 import { FileDropzone, type FileDropzoneStatus } from '../components/FileDropzone';
 import { ModeCards } from '../components/ModeCards';
@@ -15,6 +16,7 @@ import {
   previewSummary,
   submitJob,
   listModels,
+  type ModelListing,
   getEstimate,
   type EtaEstimate,
   type PreviewResult,
@@ -175,24 +177,31 @@ export function NewJobWizard(): React.ReactElement {
   const navigate = useNavigate();
   const { showToast, showErrorToast } = useToast();
   const orgUrl = useOrgUrl();
-  const [step, setStep] = useState<1 | 2 | 3>(1);
-  const [file, setFile] = useState<File | null>(null);
-  const [preview, setPreview] = useState<PreviewResult | null>(null);
+  // What the user had done before leaving this page and coming back (see newJobDraftStore); empty on a first visit.
+  const [initial] = useState(restorableDraft);
+  const [step, setStep] = useState<1 | 2 | 3>(initial.step);
+  const [file, setFile] = useState<File | null>(initial.file);
+  const [preview, setPreview] = useState<PreviewResult | null>(initial.preview);
   // Dropzone status now lives on step 1 alongside the stat tiles (DESIGN.md
   // Track B, phase B14) -- previously step 1 was JUST the dropzone, and a
   // successful parse immediately navigated to step 2, so the tiles could
   // never actually show a "not parsed yet" state (by the time they render,
   // preview is always already resolved). Real placeholder-to-real-value
   // fill-in requires the tiles to exist on the SAME screen as the dropzone.
-  const [parseStatus, setParseStatus] = useState<FileDropzoneStatus>('idle');
+  const [parseStatus, setParseStatus] = useState<FileDropzoneStatus>(initial.parseStatus);
   const [parseError, setParseError] = useState<string | null>(null);
-  const [mode, setMode] = useState<'baseline' | 'survey'>('baseline');
-  const [project, setProject] = useState('');
-  const [areaPath, setAreaPath] = useState('');
-  const [state, setState] = useState('');
-  const [iterationPath, setIterationPath] = useState('');
-  const [model, setModel] = useState('');
+  const [mode, setMode] = useState<'baseline' | 'survey'>(initial.mode);
+  const [project, setProject] = useState(initial.project);
+  const [areaPath, setAreaPath] = useState(initial.areaPath);
+  const [state, setState] = useState(initial.state);
+  const [iterationPath, setIterationPath] = useState(initial.iterationPath);
+  const [model, setModel] = useState(initial.model);
+  // Mirror the user's work into the draft store so it survives a visit to another page (cleared on submit, replace and logout).
+  useEffect(() => {
+    useNewJobDraftStore.getState().patch({ step, file, preview, parseStatus, mode, model, project, areaPath, state, iterationPath });
+  }, [step, file, preview, parseStatus, mode, model, project, areaPath, state, iterationPath]);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [modelListing, setModelListing] = useState<ModelListing | null>(null);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState(false);
   // The overview comes with the preview (made from the parsed text and structure alone), so it is always the current file's: nothing to fetch.
@@ -209,6 +218,8 @@ export function NewJobWizard(): React.ReactElement {
   // there is none. 'pending' only while the request is in flight; any failure or timeout leaves nothing on screen.
   const [aiSummary, setAiSummary] = useState<{ status: 'idle' | 'pending' | 'ready' | 'none'; text?: string }>({ status: 'idle' });
   const summaryInput = preview?.overview?.profile?.summaryInput;
+  // Bumped by "Write it again": a new value re-runs the effect below, which asks the model once more.
+  const [summaryRun, setSummaryRun] = useState(0);
   useEffect(() => {
     if (step !== 3 || mode !== 'survey' || !summaryInput) {
       setAiSummary({ status: 'idle' });
@@ -230,7 +241,7 @@ export function NewJobWizard(): React.ReactElement {
       window.clearTimeout(giveUp);
       controller.abort();
     };
-  }, [step, mode, summaryInput, model]);
+  }, [step, mode, summaryInput, model, summaryRun]);
   // DESIGN.md §11.2.3.d -- server-computed, both modes shown side by side
   // (ModeCards) so both are fetched regardless of which is selected.
   // undefined while in flight/not-yet-fetched; ModeCards renders '--' for
@@ -264,9 +275,15 @@ export function NewJobWizard(): React.ReactElement {
     setModelsLoading(true);
     setModelsError(false);
     listModels()
-      .then(setAvailableModels)
+      .then((listing) => {
+        setAvailableModels(listing.models);
+        setModelListing(listing);
+        // A model restored from the draft may have gone away while the user was elsewhere: fall back to Default rather than submit it.
+        setModel((current) => (current && !listing.models.includes(current) ? '' : current));
+      })
       .catch(() => {
         setAvailableModels([]);
+        setModelListing(null);
         setModelsError(true);
       })
       .finally(() => setModelsLoading(false));
@@ -277,7 +294,11 @@ export function NewJobWizard(): React.ReactElement {
   // submittable once the project changes -- the two are meant to stay
   // coherent (browsing project X's area paths then writing to project Y
   // would be silently wrong).
+  // Only on a real change: a project restored from the draft must keep its restored area path.
+  const lastProject = useRef(project);
   useEffect(() => {
+    if (lastProject.current === project) return;
+    lastProject.current = project;
     setAreaPath('');
   }, [project]);
 
@@ -362,6 +383,8 @@ export function NewJobWizard(): React.ReactElement {
         // The AI summary goes with the job only if it was ready: the start button never waits for it.
         documentOverview: mode === 'survey' ? (documentOverview && aiSummary.status === 'ready' && aiSummary.text ? { ...documentOverview, aiSummary: aiSummary.text } : documentOverview) : undefined,
       });
+      // The job exists now: the next visit to this page starts from nothing, not from this draft.
+      useNewJobDraftStore.getState().reset();
       navigate(`/jobs/${jobId}`);
     } catch (err) {
       showErrorToast('Failed to start the job. Please try again.', err);
@@ -545,6 +568,26 @@ export function NewJobWizard(): React.ReactElement {
                 <span className="text-xs text-ink-3">Written by a model from the document’s headings and opening text. Check it against the file.</span>
               </div>
             )}
+            {/* aria-disabled, not disabled: a natively disabled button drops keyboard focus, and this one is pressed from the keyboard. */}
+            {aiSummary.status !== 'idle' && (
+              <Button
+                variant="outline"
+                size="sm"
+                className={cn('self-start', aiSummary.status === 'pending' && 'cursor-default opacity-60')}
+                aria-disabled={aiSummary.status === 'pending'}
+                onClick={() => {
+                  if (aiSummary.status !== 'pending') setSummaryRun((n) => n + 1);
+                }}
+              >
+                Write it again
+              </Button>
+            )}
+            {mode === 'survey' && (
+              <div className="flex flex-col gap-1">
+                <span className="text-xs font-semibold text-ink-2">Your knowledge base</span>
+                <KbReadinessStrip />
+              </div>
+            )}
             {documentOverview?.caveat && <Alert severity="warning">{documentOverview.caveat}</Alert>}
           </div>
         </SectionCard>
@@ -698,6 +741,8 @@ export function NewJobWizard(): React.ReactElement {
               model={model}
               onModelChange={setModel}
               availableModels={availableModels}
+              modelDetails={modelListing?.details}
+              recommendedModel={modelListing?.recommended}
               modelsLoading={modelsLoading}
               modelsError={modelsError}
             />

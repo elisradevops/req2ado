@@ -1,13 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Routes, Route, Link } from 'react-router-dom';
 import { NewJobWizard } from './NewJobWizard';
 import { ToastProvider } from '../components/ToastProvider';
 import * as jobsApi from '../api/jobs';
 import * as adoApi from '../api/ado';
 import * as kbApi from '../api/kb';
 import { useAuthStore } from '../store/authStore';
+import { useNewJobDraftStore } from '../store/newJobDraftStore';
 
 vi.mock('../api/jobs');
 vi.mock('../api/ado');
@@ -16,6 +17,7 @@ vi.mock('../api/kb');
 // The SURVEY configure step shows a KB readiness strip; give it a healthy KB
 // by default so unrelated tests never hit the network or an undefined mock.
 beforeEach(() => {
+  useNewJobDraftStore.getState().reset();
   vi.spyOn(kbApi, 'listIngestedDocuments').mockResolvedValue([]);
   vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'valid', expiresInSeconds: 3600 });
 });
@@ -150,7 +152,7 @@ describe('NewJobWizard Step 1', () => {
       blockCount: 20, sectionCount: 3, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
     } as any);
     vi.spyOn(jobsApi, 'submitJob').mockResolvedValue({ jobId: 'job-99' });
-    vi.spyOn(jobsApi, 'listModels').mockResolvedValue(['qwen2.5:1.5b']);
+    vi.spyOn(jobsApi, 'listModels').mockResolvedValue({ models: ['qwen2.5:1.5b'], recommended: null, details: [] });
     vi.spyOn(adoApi, 'getProjects').mockResolvedValue([{ id: '1', name: 'Project' }]);
     vi.spyOn(adoApi, 'getAreaPaths').mockResolvedValue({ path: 'Project', children: [] });
     vi.spyOn(adoApi, 'getIterationPaths').mockResolvedValue({ path: 'Project', children: [] });
@@ -431,6 +433,108 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
     expect(screen.queryByText(/does this look right/i)).not.toBeInTheDocument();
   });
 
+  describe('keeps the draft when the user leaves for another page and comes back', () => {
+    const PREVIEW = { blockCount: 3, sectionCount: 1, figureCount: 0, depth: 1, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [] } as any;
+    function renderWithAwayRoute() {
+      return render(
+        <ToastProvider>
+          <MemoryRouter initialEntries={['/jobs/new']}>
+            <Routes>
+              <Route path="/jobs/new" element={<><NewJobWizard /><Link to="/away">go away</Link></>} />
+              <Route path="/away" element={<Link to="/jobs/new">come back</Link>} />
+            </Routes>
+          </MemoryRouter>
+        </ToastProvider>,
+      );
+    }
+    const goAwayAndBack = async () => {
+      await userEvent.click(screen.getByRole('link', { name: 'go away' }));
+      await userEvent.click(screen.getByRole('link', { name: 'come back' }));
+    };
+
+    it('returns to the same step with the same mode, typed area path and parsed file, without parsing again', async () => {
+      const previewJob = vi.spyOn(jobsApi, 'previewJob').mockResolvedValue(PREVIEW);
+      renderWithAwayRoute();
+      await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'req.docx'));
+      await waitFor(() => expect(screen.getByRole('button', { name: /configure/i })).not.toBeDisabled());
+      await userEvent.click(screen.getByRole('button', { name: /configure/i }));
+      await userEvent.click(screen.getByRole('radio', { name: /^SURVEY/ }));
+
+      await goAwayAndBack();
+
+      expect(screen.getByRole('radio', { name: /^SURVEY/ })).toBeChecked();
+      expect(screen.queryByLabelText(/upload/i)).not.toBeInTheDocument(); // still on the configure step, not back at the dropzone
+      expect(previewJob).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the area path the user typed (the project-change reset must not wipe a restored value)', async () => {
+      vi.spyOn(jobsApi, 'previewJob').mockResolvedValue(PREVIEW);
+      renderWithAwayRoute();
+      await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'req.docx'));
+      await waitFor(() => expect(screen.getByRole('button', { name: /configure/i })).not.toBeDisabled());
+      await userEvent.click(screen.getByRole('button', { name: /configure/i }));
+      await userEvent.type(screen.getByLabelText(/area path/i), 'Project\\Area1');
+
+      await goAwayAndBack();
+
+      expect(screen.getByLabelText(/area path/i)).toHaveValue('Project\\Area1');
+    });
+
+    it('starts fresh after a job was started, so the next visit is not a stale draft', async () => {
+      vi.spyOn(jobsApi, 'previewJob').mockResolvedValue(PREVIEW);
+      vi.spyOn(jobsApi, 'submitJob').mockResolvedValue({ jobId: 'job-1' });
+      renderWithAwayRoute();
+      await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'req.docx'));
+      await waitFor(() => expect(screen.getByRole('button', { name: /configure/i })).not.toBeDisabled());
+      await userEvent.click(screen.getByRole('button', { name: /configure/i }));
+      await userEvent.type(screen.getByLabelText(/area path/i), 'Project\\Area1');
+      await userEvent.click(screen.getByRole('button', { name: /start job/i }));
+      await waitFor(() => expect(jobsApi.submitJob).toHaveBeenCalled());
+
+      await waitFor(() => expect(useNewJobDraftStore.getState().draft.file).toBeNull());
+      expect(useNewJobDraftStore.getState().draft.step).toBe(1);
+    });
+
+    it('falls back to Default when the restored model is no longer offered', async () => {
+      useNewJobDraftStore.getState().patch({ mode: 'survey', model: 'gone-model' });
+      vi.spyOn(jobsApi, 'listModels').mockResolvedValue({ models: ['still-here'], recommended: null, details: [] });
+      renderWithAwayRoute();
+      await waitFor(() => expect(jobsApi.listModels).toHaveBeenCalled());
+      await waitFor(() => expect(useNewJobDraftStore.getState().draft.model).toBe(''));
+    });
+
+    it('keeps a restored model that is still offered', async () => {
+      useNewJobDraftStore.getState().patch({ mode: 'survey', model: 'still-here' });
+      vi.spyOn(jobsApi, 'listModels').mockResolvedValue({ models: ['still-here'], recommended: null, details: [] });
+      renderWithAwayRoute();
+      await waitFor(() => expect(jobsApi.listModels).toHaveBeenCalled());
+      await act(async () => {}); // let the listing resolve and its state updates apply
+      expect(useNewJobDraftStore.getState().draft.model).toBe('still-here');
+    });
+
+    it('drops the file and the parse result when the user replaces the file', async () => {
+      vi.spyOn(jobsApi, 'previewJob').mockResolvedValue(PREVIEW);
+      renderWithAwayRoute();
+      await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'req.docx'));
+      await waitFor(() => expect(screen.getByRole('button', { name: /configure/i })).not.toBeDisabled());
+      await userEvent.click(screen.getByRole('button', { name: /replace/i }));
+
+      expect(useNewJobDraftStore.getState().draft.file).toBeNull();
+      expect(useNewJobDraftStore.getState().draft.preview).toBeNull();
+    });
+
+    it('does not restore a parse that was still running when the user left (its result can no longer arrive)', async () => {
+      vi.spyOn(jobsApi, 'previewJob').mockReturnValue(new Promise(() => {}));
+      renderWithAwayRoute();
+      await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'req.docx'));
+
+      await goAwayAndBack();
+
+      expect(screen.getByLabelText(/upload/i)).toBeInTheDocument(); // back at the dropzone, not stuck on "parsing"
+      expect(screen.queryByText(/parsing/i)).not.toBeInTheDocument();
+    });
+  });
+
   // Step 3 shows the overview the preview already returned: made from the parsed text and structure, so it is there at once and nothing
   // is studied by a model while the user waits.
   const OVERVIEW = {
@@ -440,6 +544,14 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
     structureHint: 'How this document is built (context only): 6 sections.',
     profile: {},
   };
+  describe('the knowledge-base statement on step 3', () => {
+    it('says whether the run will be grounded, before the user starts a SURVEY job', async () => {
+      vi.spyOn(jobsApi, 'previewSummary').mockResolvedValue(null);
+      await openStep3({ ...OVERVIEW, profile: {} });
+      await waitFor(() => expect(screen.getByText(/knowledge base is empty/i)).toBeInTheDocument());
+    });
+  });
+
   describe('the optional AI summary', () => {
     const withInput = { ...OVERVIEW, profile: { summaryInput: 'Sections: 1 Scope' } };
 
@@ -507,6 +619,33 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
       expect(screen.getByText('No AI summary this time. You can continue.')).toBeInTheDocument();
     });
 
+    it('offers to write the summary again once it is ready, and asks the model a second time', async () => {
+      const spy = vi.spyOn(jobsApi, 'previewSummary').mockResolvedValueOnce('First wording.').mockResolvedValueOnce('Second wording.');
+      await openStep3(withInput);
+      await waitFor(() => expect(screen.getByText('First wording.')).toBeInTheDocument());
+
+      await userEvent.click(screen.getByRole('button', { name: /write it again/i }));
+
+      await waitFor(() => expect(screen.getByText('Second wording.')).toBeInTheDocument());
+      expect(screen.queryByText('First wording.')).not.toBeInTheDocument();
+      expect(spy).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps the button on screen and focusable but inert while a summary is being written, so focus is not lost', async () => {
+      vi.spyOn(jobsApi, 'previewSummary').mockReturnValue(new Promise(() => {}));
+      await openStep3(withInput);
+      const button = screen.getByRole('button', { name: /write it again/i });
+      expect(button).toHaveAttribute('aria-disabled', 'true');
+      await userEvent.click(button);
+      expect(jobsApi.previewSummary).toHaveBeenCalledTimes(1); // pressing it while writing asks nothing new
+    });
+
+    it('offers it after a failed attempt', async () => {
+      vi.spyOn(jobsApi, 'previewSummary').mockResolvedValue(null);
+      await openStep3(withInput);
+      await waitFor(() => expect(screen.getByRole('button', { name: /write it again/i })).toBeInTheDocument());
+    });
+
     it('submits a ready summary with the job, so the job page can show it; nothing when there is none', async () => {
       vi.spyOn(jobsApi, 'previewSummary').mockResolvedValue('A backplane ICD covering power and thermal limits.');
       vi.spyOn(jobsApi, 'submitJob').mockResolvedValue({ jobId: 'job-1' });
@@ -533,7 +672,7 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
 
   async function openStep3(overview: unknown = OVERVIEW) {
     vi.spyOn(jobsApi, 'previewJob').mockResolvedValue(previewWith(overview));
-    vi.spyOn(jobsApi, 'listModels').mockResolvedValue([]);
+    vi.spyOn(jobsApi, 'listModels').mockResolvedValue({ models: [], recommended: null, details: [] });
     await uploadAndConfigureAsSurvey();
     await userEvent.type(screen.getByLabelText(/area path/i), 'Project\\Area1');
     await userEvent.click(screen.getByRole('button', { name: /continue/i }));
@@ -633,7 +772,7 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
     vi.spyOn(jobsApi, 'previewJob')
       .mockResolvedValueOnce(previewWith({ ...OVERVIEW, lines: ['Purpose, quoted from §1 Scope: “About document A.”', OVERVIEW.lines[2]] }))
       .mockResolvedValueOnce(previewWith({ ...OVERVIEW, lines: ['Purpose, quoted from §1 Scope: “About document B.”', OVERVIEW.lines[2]] }));
-    vi.spyOn(jobsApi, 'listModels').mockResolvedValue([]);
+    vi.spyOn(jobsApi, 'listModels').mockResolvedValue({ models: [], recommended: null, details: [] });
     vi.spyOn(jobsApi, 'submitJob').mockResolvedValue({ jobId: 'job-1' });
 
     render(

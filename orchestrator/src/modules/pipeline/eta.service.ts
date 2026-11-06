@@ -250,6 +250,19 @@ export function blend(fitted: number, bootstrap: number, n: number): number {
   return w * fitted + (1 - w) * bootstrap;
 }
 
+// Statuses of a job that got as far as a reviewable diff (a rejected diff was still produced), and the one status
+// that says the model run itself did not finish. Cancelled is the user's choice and says nothing about the model.
+const FINISHED_STATUSES = ['diff_ready', 'writing', 'succeeded', 'rejected'];
+const FAILED_STATUS = 'failed';
+const MODEL_STATS_MIN_RUNS = 3;
+
+export interface ModelStats {
+  /** SURVEY jobs of this model that fed the estimator's fit. */
+  runs: number;
+  speedVsTypical: number | null;
+  finishedShare: number | null;
+}
+
 export interface EtaEstimate {
   mode: 'baseline' | 'survey';
   estimateMinutes: number;
@@ -279,6 +292,63 @@ export class EtaService {
     private readonly prisma: PrismaClient,
     private readonly defaultModel: string,
   ) {}
+
+  /** The model the orchestrator resolves "Default" to (the same one the estimate prices an empty selection with). */
+  getDefaultModel(): string {
+    return this.defaultModel;
+  }
+
+  /**
+   * What this deployment has observed per model, for the wizard's model picker. Both figures come from the
+   * deployment's own SURVEY history inside the estimator window and are withheld (null) below
+   * MODEL_STATS_MIN_RUNS so a handful of runs never reads as a verdict. `speedVsTypical` is the same shrunk,
+   * clamped ratio the estimate applies (below 1 = faster than the fitted typical job); `finishedShare` is the
+   * share of terminal jobs that reached a reviewable diff. Cancelled and still-running jobs say nothing about
+   * the model and are left out. Never rejects for an unknown model: it answers with empty stats.
+   */
+  async modelStats(models: string[]): Promise<Map<string, ModelStats>> {
+    const [{ perModel }, outcomes] = await Promise.all([this.loadFit(), this.loadOutcomes()]);
+    const result = new Map<string, ModelStats>();
+    for (const model of models) {
+      const observed = perModel.get(model);
+      const runs = observed?.count ?? 0;
+      const counts = outcomes.get(model);
+      const terminal = counts ? counts.finished + counts.failed : 0;
+      result.set(model, {
+        runs,
+        speedVsTypical:
+          observed && runs >= MODEL_STATS_MIN_RUNS
+            ? clamp(
+                weightedBlend(observed.ratio, 1, observed.count, ETA_MODEL_SHRINKAGE_K),
+                ETA_MODEL_ADJUSTMENT_MIN,
+                ETA_MODEL_ADJUSTMENT_MAX,
+              )
+            : null,
+        finishedShare: counts && terminal >= MODEL_STATS_MIN_RUNS ? counts.finished / terminal : null,
+      });
+    }
+    return result;
+  }
+
+  private async loadOutcomes(): Promise<Map<string, { finished: number; failed: number }>> {
+    const windowStart = new Date(Date.now() - ETA_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+    const groups = await this.prisma.job.groupBy({
+      by: ['model', 'status'],
+      where: { mode: 'survey', createdAt: { gte: windowStart }, status: { in: [...FINISHED_STATUSES, FAILED_STATUS] } },
+      _count: { _all: true },
+    });
+    const outcomes = new Map<string, { finished: number; failed: number }>();
+    for (const group of groups) {
+      const failed = group.status === FAILED_STATUS;
+      if (!failed && !FINISHED_STATUSES.includes(group.status)) continue;
+      const model = group.model ?? this.defaultModel;
+      const entry = outcomes.get(model) ?? { finished: 0, failed: 0 };
+      if (failed) entry.failed += group._count._all;
+      else entry.finished += group._count._all;
+      outcomes.set(model, entry);
+    }
+    return outcomes;
+  }
 
   async estimate(params: {
     mode: 'baseline' | 'survey';

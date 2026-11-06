@@ -159,9 +159,26 @@ export async function submitJob(params: SubmitJobParams): Promise<{ jobId: strin
   return response.data;
 }
 
-export async function listModels(): Promise<string[]> {
-  const response = await httpClient.get<{ models: string[] }>('/jobs/models');
-  return response.data.models;
+// What the app can state about one selectable model; every field is something it did or observed, not a quality rating.
+export interface ModelDetail {
+  id: string;
+  name: string;
+  describesFigures: boolean;
+  runs: number;
+  speedVsTypical: number | null;
+  finishedShare: number | null;
+}
+
+export interface ModelListing {
+  models: string[];
+  recommended: string | null;
+  details: ModelDetail[];
+}
+
+export async function listModels(): Promise<ModelListing> {
+  const response = await httpClient.get<Partial<ModelListing> & { models: string[] }>('/jobs/models');
+  // An older orchestrator sends only the ids: the extras are optional, the list is not.
+  return { models: response.data.models, recommended: response.data.recommended ?? null, details: response.data.details ?? [] };
 }
 
 export async function getJob(id: string): Promise<JobDetail> {
