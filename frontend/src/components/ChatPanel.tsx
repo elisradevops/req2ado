@@ -506,7 +506,7 @@ export function ChatPanel({
             {visibleHistory.map((m) =>
               m.role === 'user' ? (
                 <div key={m.id} className="mb-3 flex justify-end">
-                  <p className="max-w-[85%] rounded-md bg-surface-alt px-3 py-1.5 text-sm text-ink-1">{m.content}</p>
+                  <p dir="auto" className="max-w-[85%] rounded-md bg-surface-alt px-3 py-1.5 text-sm text-ink-1">{m.content}</p>
                 </div>
               ) : (
                 <div key={m.id} className="mb-3 max-w-[85%] border-l-2 border-hairline-strong pl-2.5">

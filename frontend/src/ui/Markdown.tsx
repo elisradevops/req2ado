@@ -9,13 +9,25 @@ import remarkGfm from 'remark-gfm';
 // is safe against arbitrary/untrusted text (e.g. an LLM reply) by
 // construction -- no rehype-raw is used, so raw HTML in the source is
 // escaped, not executed.
+//
+// Every block is dir="auto": the browser picks rtl/ltr per block from its
+// first strong character, so Hebrew paragraphs align and bullet on the right
+// while English ones stay left-to-right. A list is one block: dir="auto" goes
+// on the ul/ol, and its items inherit (an item with its own dir would be
+// skipped when the list resolves its direction, leaving the list ltr).
 const CHAT_MARKDOWN_COMPONENTS: Components = {
-  p: ({ children }) => <p className="mb-1.5 text-sm leading-relaxed text-ink-1 last:mb-0">{children}</p>,
+  p: ({ children }) => <p dir="auto" className="mb-1.5 text-sm leading-relaxed text-ink-1 last:mb-0">{children}</p>,
   strong: ({ children }) => <strong className="font-semibold text-ink-1">{children}</strong>,
   em: ({ children }) => <em className="italic">{children}</em>,
-  ul: ({ children }) => <ul className="mb-1.5 flex list-disc flex-col gap-0.5 pl-4 text-sm text-ink-1 last:mb-0">{children}</ul>,
-  ol: ({ children }) => <ol className="mb-1.5 flex list-decimal flex-col gap-0.5 pl-4 text-sm text-ink-1 last:mb-0">{children}</ol>,
+  ul: ({ children }) => <ul dir="auto" className="mb-1.5 flex list-disc flex-col gap-0.5 ps-4 text-sm text-ink-1 last:mb-0">{children}</ul>,
+  ol: ({ children }) => <ol dir="auto" className="mb-1.5 flex list-decimal flex-col gap-0.5 ps-4 text-sm text-ink-1 last:mb-0">{children}</ol>,
   li: ({ children }) => <li>{children}</li>,
+  // Headings carry no classes here (they keep the inherited styling); only
+  // the per-block text direction is added.
+  h1: ({ children }) => <h1 dir="auto">{children}</h1>,
+  h2: ({ children }) => <h2 dir="auto">{children}</h2>,
+  h3: ({ children }) => <h3 dir="auto">{children}</h3>,
+  h4: ({ children }) => <h4 dir="auto">{children}</h4>,
   a: ({ children, href }) => (
     <a href={href} target="_blank" rel="noreferrer" className="text-accent underline underline-offset-2 hover:text-accent-hover">
       {children}

@@ -98,6 +98,20 @@ describe('ChatPanel', () => {
     expect(screen.queryByRole('button', { name: /split into separate requirements/i })).not.toBeInTheDocument();
   });
 
+  it('lets the browser pick the direction of a user bubble and an assistant reply (Hebrew)', async () => {
+    vi.mocked(chatApi.getChatHistory).mockResolvedValue([
+      { id: '1', role: 'user', content: 'שלום עולם', createdAt: '2026-11-02T00:00:00Z' } as never,
+      { id: '2', role: 'assistant', content: 'תשובה בעברית', createdAt: '2026-11-02T00:00:01Z' } as never,
+    ]);
+    render(
+      <ToastProvider>
+        <ChatPanel jobId="job-1" localId="n0" disabled={false} onAcceptProposal={vi.fn()} />
+      </ToastProvider>,
+    );
+    expect(await screen.findByText('שלום עולם')).toHaveAttribute('dir', 'auto');
+    expect(screen.getByText('תשובה בעברית')).toHaveAttribute('dir', 'auto');
+  });
+
   it('shows no starters at all while the chat is disabled, even for a compound item', () => {
     render(
       <ToastProvider>

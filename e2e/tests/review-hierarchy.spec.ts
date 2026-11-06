@@ -187,6 +187,57 @@ test.describe('details dialog title', () => {
     await expect(page.getByText(/Chat reply failed/)).toHaveCount(0);
   });
 
+  test('Hebrew markdown resolves to rtl and English stays ltr, in the description and the chat', async ({ page }) => {
+    await openDiffReadyJob(page);
+    // Registered after openDiffReadyJob: Playwright runs the most recent matching route first.
+    const origin = new URL(page.url()).origin;
+    await page.route('**/diff/*/chat', (route) =>
+      route.fulfill({
+        json: {
+          messages: [
+            { id: 'm1', role: 'user', content: 'שלום, תקצר בבקשה', proposedTitle: null, proposedDescription: null, model: null, createdAt: '2026-11-06T00:00:00Z' },
+            { id: 'm2', role: 'assistant', content: 'בוודאי (CPU).\n\n- נקודה\n\nEnglish reply.', proposedTitle: null, proposedDescription: null, model: 'gemma4:26b', createdAt: '2026-11-06T00:00:01Z' },
+          ],
+        },
+        headers: { 'access-control-allow-origin': origin, 'access-control-allow-credentials': 'true' },
+      }),
+    );
+    await openDetails(page, HEBREW_TITLE);
+    const direction = (text: string | RegExp, tag: string) =>
+      dialog(page).locator(tag, { hasText: text }).first().evaluate((el) => getComputedStyle(el).direction);
+    // Description
+    expect(await direction('דרישה', 'h2')).toBe('rtl');
+    expect(await direction('המערכת תספק עיבוד', 'p')).toBe('rtl');
+    expect(await direction('פריט ראשון', 'li')).toBe('rtl');
+    expect(await direction('שלב אחד', 'li')).toBe('rtl');
+    expect(await direction('The system shall boot', 'p')).toBe('ltr');
+    // A Hebrew block hugs the right edge of the description pane (not the right edge of a 68ch box), and an English one the left.
+    const edges = (text: string, tag = 'p') =>
+      dialog(page).locator(tag, { hasText: text }).first().evaluate((el) => {
+        const pane = el.parentElement!.parentElement!;
+        const style = getComputedStyle(pane);
+        const content = pane.getBoundingClientRect();
+        const box = el.getBoundingClientRect();
+        return {
+          fromRight: Math.round(content.right - parseFloat(style.paddingRight) - box.right),
+          fromLeft: Math.round(box.left - content.left - parseFloat(style.paddingLeft)),
+        };
+      });
+    expect((await edges('המערכת תספק עיבוד')).fromRight).toBeLessThanOrEqual(2);
+    expect((await edges('פריט ראשון', 'ul')).fromRight).toBeLessThanOrEqual(2);
+    expect((await edges('שלב אחד', 'ol')).fromRight).toBeLessThanOrEqual(2);
+    expect((await edges('The system shall boot')).fromLeft).toBeLessThanOrEqual(2);
+    // Phone widths show Details and Chat as tabs; wide ones show both panes.
+    const chatTab = dialog(page).getByRole('tab', { name: 'Chat' });
+    if (await chatTab.count()) await chatTab.click();
+    // Chat: the user bubble, an assistant paragraph and list item, and an English reply
+    expect(await direction('שלום, תקצר', 'p')).toBe('rtl');
+    expect(await direction('בוודאי', 'p')).toBe('rtl');
+    expect(await direction('נקודה', 'li')).toBe('rtl');
+    expect(await direction('English reply', 'p')).toBe('ltr');
+    expect(await pageOverflow(page)).toBe(0);
+  });
+
   test('Hebrew text direction is reported (a finding, not a gate)', async ({ page }, testInfo) => {
     await openDiffReadyJob(page);
     await openDetails(page, HEBREW_TITLE);

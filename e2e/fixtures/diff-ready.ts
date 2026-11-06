@@ -26,6 +26,10 @@ export const LONG_TITLE =
 export const HEBREW_TITLE = 'המערכת תספק עיבוד, זיכרון ואחסון לכל תצורת מחסנית בטווח הטמפרטורות המלא';
 export const MIXED_TITLE = 'המערכת תתמוך ב-WI-3024 עד לסיום TBD בשלב התכנון';
 
+/** Markdown with a Hebrew heading, paragraph (with a Latin word), bullet and numbered item, then an English paragraph. */
+export const HEBREW_DESCRIPTION =
+  '## דרישה\n\nהמערכת תספק עיבוד (CPU) וזיכרון.\n\n- פריט ראשון\n- פריט שני\n\n1. שלב אחד\n\nThe system shall boot within 5 seconds.';
+
 const base = { description: 'Synthetic description.', action: 'create' as const, customerId: null };
 
 /** Ids the specs look rows up by. Titles are what the user sees; ids stay stable. */
@@ -46,7 +50,7 @@ export const ENTRIES: DiffEntryFixture[] = [
   { ...base, localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Subsystem overview' },
   { ...base, localId: IDS.featureOpen, parentLocalId: 'e1', type: 'Feature', title: 'Core module' },
   { ...base, localId: IDS.long, parentLocalId: IDS.featureOpen, type: 'Requirement', title: LONG_TITLE, customerId: 'CM-001' },
-  { ...base, localId: IDS.hebrew, parentLocalId: IDS.featureOpen, type: 'Requirement', title: HEBREW_TITLE, customerId: 'CM-002' },
+  { ...base, localId: IDS.hebrew, parentLocalId: IDS.featureOpen, type: 'Requirement', title: HEBREW_TITLE, description: HEBREW_DESCRIPTION, customerId: 'CM-002' },
   { ...base, localId: IDS.mixed, parentLocalId: IDS.featureOpen, type: 'Requirement', title: MIXED_TITLE, customerId: 'CM-003' },
   // Needs-review flag only (low confidence), issue count only, and both: the two signals P14 separates.
   { ...base, localId: IDS.flagged, parentLocalId: IDS.featureOpen, type: 'Requirement', title: 'Flagged only', qualityScore: 80, qualityConfidence: 'low' },

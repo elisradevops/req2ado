@@ -567,7 +567,10 @@ export function NodeDetailPanel({
           preview should show a reviewer the same structure that lands in
           ADO, not the raw ** and - characters. Max-width measure preserved
           for readability on a dense multi-sentence requirement. */}
-      <div className="max-w-[68ch] text-sm leading-relaxed text-ink-2">
+      {/* The 68ch measure sits on each block, not the wrapper, so a right-to-left
+          block (:dir(rtl), resolved from dir="auto") can anchor to the pane's
+          right edge instead of the right edge of a 68ch box. */}
+      <div className="w-full text-sm leading-relaxed text-ink-2 [&>*]:max-w-[68ch] [&>*:dir(rtl)]:me-auto">
         <DescriptionMarkdown>{entry.description}</DescriptionMarkdown>
       </div>
       <ProposalCard
