@@ -26,6 +26,8 @@ import type { WorkItemTypeCatalogEntry } from '../api/ado';
 // ChatPanel at a time -- see useIsAboveBreakpoint's own doc comment for why
 // this matters.
 const LG_BREAKPOINT_QUERY = '(min-width: 1024px)';
+// J/K presses closer together than this are a held key or fast stepping: no settle effect between them.
+const SETTLE_REPEAT_MS = 300;
 
 // Real conditional mounting, not just CSS display:none/block -- ChatPanel
 // fetches history and opens a websocket connection unconditionally on
@@ -188,6 +190,7 @@ export function NodeDetailDialog({
   // own entrance covers that) and skipped for reduced-motion users.
   const [detailsScope, animateDetails] = useAnimate<HTMLDivElement>();
   const previousLocalId = useRef<string | undefined>(undefined);
+  const lastSettleAt = useRef(0);
   useEffect(() => {
     const localId = entry?.localId;
     const hadPrevious = previousLocalId.current !== undefined;
@@ -197,7 +200,13 @@ export function NodeDetailDialog({
     // (jsdom, very old browsers) just skips the effect.
     if (typeof detailsScope.current.animate !== 'function') return;
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-    void animateDetails(detailsScope.current, { opacity: [0.4, 1], y: [4, 0] }, { duration: 0.19, ease: 'easeOut' });
+    // A repeated action: opacity only, short, and skipped while the key is held or pressed again within 300ms
+    // (DESIGN.md section 8.3), so stepping through a list never leaves the content shimmering.
+    const now = performance.now();
+    const repeated = now - lastSettleAt.current < SETTLE_REPEAT_MS;
+    lastSettleAt.current = now;
+    if (repeated) return;
+    void animateDetails(detailsScope.current, { opacity: [0.7, 1] }, { duration: 0.11, ease: 'easeOut' });
   }, [entry?.localId, animateDetails, detailsScope]);
 
   // J / K step to the next / previous item, same as the chevrons in the

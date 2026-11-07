@@ -23,6 +23,33 @@ beforeEach(() => {
 });
 
 describe('NewJobWizard Step 1', () => {
+  it('does not fade the first step in on load (the route enter already covers it)', () => {
+    render(
+      <ToastProvider>
+        <MemoryRouter>
+          <NewJobWizard />
+        </MemoryRouter>
+      </ToastProvider>,
+    );
+    expect(screen.getByTestId('wizard-step').className).not.toContain('fadeIn');
+  });
+
+  it('names the step in the page title and heading on load without taking focus', () => {
+    document.title = 'req2ado';
+    const { unmount } = render(
+      <ToastProvider>
+        <MemoryRouter>
+          <NewJobWizard />
+        </MemoryRouter>
+      </ToastProvider>,
+    );
+    expect(document.title).toBe('Step 1 of 3: Upload document - New Job');
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('New Job, step 1 of 3');
+    expect(document.activeElement).toBe(document.body);
+    unmount();
+    expect(document.title).toBe('req2ado');
+  });
+
   it('uploads a file and fills in the stat tiles in place, without leaving step 1', async () => {
     vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({
       blockCount: 42, sectionCount: 5, figureCount: 3, depth: 4, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
@@ -758,6 +785,44 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
     expect(jobsApi.submitJob).toHaveBeenCalledWith(
       expect.objectContaining({ mode: 'survey', documentOverview: { synopsis: OVERVIEW.synopsis, caveat: null, lines: OVERVIEW.lines, structureHint: OVERVIEW.structureHint } }),
     );
+  });
+
+  it('fades the step in when it changes, and keeps the same container so focus is not dropped', async () => {
+    vi.spyOn(jobsApi, 'previewJob').mockResolvedValue(previewWith(OVERVIEW));
+    vi.spyOn(jobsApi, 'listModels').mockResolvedValue({ models: [], recommended: null, details: [] });
+    await uploadAndConfigureAsSurvey();
+    const step2Root = screen.getByTestId('wizard-step');
+
+    await userEvent.type(screen.getByLabelText(/area path/i), 'Project\\Area1');
+    await userEvent.click(screen.getByRole('button', { name: /continue/i }));
+
+    const step3Root = screen.getByTestId('wizard-step');
+    expect(step3Root).toBe(step2Root);
+    expect(step3Root.className).toContain('fadeIn');
+  });
+
+  it('moves focus to the new step heading, which reads the step, and updates the page title', async () => {
+    document.title = 'req2ado';
+    await openStep3();
+    const heading = screen.getByRole('heading', { level: 1 });
+    expect(heading).toHaveTextContent('New Job, step 3 of 3');
+    expect(heading).toHaveFocus();
+    expect(document.title).toBe('Step 3 of 3: Confirm understanding - New Job');
+
+    await userEvent.click(screen.getByRole('button', { name: /back to configure/i }));
+    expect(screen.getByRole('heading', { level: 1 })).toHaveFocus();
+    expect(document.title).toBe('Step 2 of 3: Configure & review - New Job');
+  });
+
+  it('does not replay the fade when the person goes back to a step they have already seen', async () => {
+    await openStep3();
+    const root = screen.getByTestId('wizard-step');
+    const remove = vi.spyOn(root.classList, 'remove');
+
+    await userEvent.click(screen.getByRole('button', { name: /back to configure/i }));
+
+    expect(screen.getByTestId('wizard-step')).toBe(root);
+    expect(remove).not.toHaveBeenCalled();
   });
 
   it('"Back to configure" returns to step 2 without losing the area path', async () => {

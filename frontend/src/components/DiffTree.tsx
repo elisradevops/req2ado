@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FixedSizeList } from 'react-window';
+import { FixedSizeList, type ListChildComponentProps } from 'react-window';
 import {
   DndContext,
   MouseSensor,
@@ -11,7 +11,6 @@ import {
 } from '@dnd-kit/core';
 import type { DragEndEvent, DragMoveEvent, DragStartEvent } from '@dnd-kit/core';
 import {
-  ChevronDown,
   ChevronRight,
   Flag,
   TriangleAlert,
@@ -488,6 +487,16 @@ export function DiffTree({
     return new Set(entries.filter((entry) => entry.type === 'Feature' && entry.localId !== firstOpen).map((entry) => entry.localId));
   });
 
+  const isFiltering = !!filterAction || !!filterText || filterFlaggedOnly || !!focusNodeIds;
+
+  // Unfiltered/uncollapsed rows -- kept separate from `rows` below so the
+  // selectedId-driven effects further down can find a target's real
+  // ancestorIds regardless of current collapse state (that's the whole
+  // point: discovering which ancestors need to be UNcollapsed).
+  const allRows = useMemo(() => buildFlatRows(entries), [entries]);
+
+  // Expand and collapse are instant for the rows; only the chevron turns (DESIGN.md section 8.3). The rows are virtualised
+  // and a disclosure is a frequent action, so no row motion.
   const toggleCollapsed = useCallback((localId: string) => {
     setCollapsedIds((prev) => {
       const next = new Set(prev);
@@ -496,14 +505,6 @@ export function DiffTree({
       return next;
     });
   }, []);
-
-  const isFiltering = !!filterAction || !!filterText || filterFlaggedOnly || !!focusNodeIds;
-
-  // Unfiltered/uncollapsed rows -- kept separate from `rows` below so the
-  // selectedId-driven effects further down can find a target's real
-  // ancestorIds regardless of current collapse state (that's the whole
-  // point: discovering which ancestors need to be UNcollapsed).
-  const allRows = useMemo(() => buildFlatRows(entries), [entries]);
 
   const rows = useMemo(() => {
     const query = filterText.trim().toLowerCase();
@@ -792,38 +793,54 @@ export function DiffTree({
             // -- DESIGN.md §11.5 scopes DnD to short, in-viewport moves, this
             // just buys a bit more of "in-viewport" before that boundary hits.
             overscanCount={dragSourceId ? 8 : 2}
+            // Everything a row needs travels through itemData, so the row renderer below is ONE component type for the
+            // life of the tree. react-window creates its children as a component: a fresh inline render function each
+            // render made every row a new type, remounting all of them on any state change and dropping keyboard focus
+            // from the toggle that was just pressed.
+            itemData={{
+              rows,
+              reasonByLocalId,
+              narrow,
+              selectedId,
+              onSelect,
+              openDetails,
+              onToggleExclude,
+              typeCatalog,
+              realTypeName,
+              orgUrl,
+              project,
+              canMove: !!canMove,
+              isFiltering,
+              collapsedIds,
+              toggleCollapsed,
+              byLocalId,
+              moveValidationReason,
+              hasExcludedAncestor,
+              dragSourceId,
+              dropTarget,
+              justCompletedDragRef,
+            }}
           >
-            {({ index, style }) => (
-              <DiffTreeRow
-                row={rows[index]}
-                reason={reasonByLocalId?.[rows[index].entry.localId]}
-                style={style}
-                narrow={narrow}
-                selectedId={selectedId}
-                onSelect={onSelect}
-                openDetails={openDetails}
-                onToggleExclude={onToggleExclude}
-                typeCatalog={typeCatalog}
-                realTypeName={realTypeName}
-                orgUrl={orgUrl}
-                project={project}
-                canMove={!!canMove}
-                isFiltering={isFiltering}
-                collapsedIds={collapsedIds}
-                toggleCollapsed={toggleCollapsed}
-                byLocalId={byLocalId}
-                moveValidationReason={moveValidationReason}
-                hasExcludedAncestor={hasExcludedAncestor}
-                dragSourceId={dragSourceId}
-                dropTarget={dropTarget}
-                justCompletedDragRef={justCompletedDragRef}
-              />
-            )}
+            {DiffTreeListRow}
           </FixedSizeList>
         </div>
       </DndContext>
     </div>
   );
+}
+
+// The rows' props, as DiffTree hands them to the list through itemData.
+type DiffTreeRowProps = React.ComponentProps<typeof DiffTreeRow>;
+type DiffTreeListData = Omit<DiffTreeRowProps, 'row' | 'reason' | 'style'> & {
+  rows: FlatRow[];
+  reasonByLocalId?: Record<string, DiffTreeRowProps['reason']>;
+};
+
+// Module-level on purpose: a stable component type keeps each row mounted across renders (see itemData above).
+function DiffTreeListRow({ index, style, data }: ListChildComponentProps<DiffTreeListData>): React.ReactElement {
+  const { rows, reasonByLocalId, ...rowProps } = data;
+  const row = rows[index];
+  return <DiffTreeRow {...rowProps} row={row} reason={reasonByLocalId?.[row.entry.localId]} style={style} />;
 }
 
 const REASON_CHIP_COLORS: Record<ReasonTone, { bg: string; color: string; borderClass: string }> = {
@@ -1192,7 +1209,7 @@ function DiffTreeRow({
             }}
             className="-ml-1 flex-none rounded-sm p-0.5 text-ink-3 hover:bg-hairline-strong/40 hover:text-ink-1"
           >
-            {collapsedIds.has(entry.localId) ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+            <ChevronRight className={cn('h-3.5 w-3.5 transition-transform duration-fast ease-out', !collapsedIds.has(entry.localId) && 'rotate-90')} />
           </button>
         )}
         {narrow ? (

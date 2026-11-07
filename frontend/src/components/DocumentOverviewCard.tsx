@@ -1,8 +1,9 @@
 import { useId, useState } from 'react';
-import { ChevronDown, ChevronRight } from 'lucide-react';
+import { ChevronRight } from 'lucide-react';
 import { Alert } from '../ui/Alert';
 import type { DocumentOverview } from '../api/jobs';
 import { LABEL_MICRO } from '../utils/labelMicro';
+import { cn } from '../lib/cn';
 
 const TEASER_CHARS = 150;
 /** Lines shown before "Show all": enough to read what the file is, few enough that what follows (the Start button) stays near. */
@@ -59,7 +60,6 @@ export function OverviewLines({ lines }: { lines: string[] }): React.ReactElemen
 export function DocumentOverviewCard({ overview }: { overview: DocumentOverview }): React.ReactElement {
   const [open, setOpen] = useState(false);
   const regionId = useId();
-  const Chevron = open ? ChevronDown : ChevronRight;
   return (
     <div className="mb-4 rounded-md border border-hairline bg-surface">
       <button
@@ -69,7 +69,7 @@ export function DocumentOverviewCard({ overview }: { overview: DocumentOverview 
         onClick={() => setOpen((value) => !value)}
         className="flex w-full items-center gap-2 px-3 py-2 text-left"
       >
-        <Chevron className="h-3.5 w-3.5 flex-none text-ink-3" aria-hidden="true" />
+        <ChevronRight className={cn('h-3.5 w-3.5 flex-none text-ink-3 transition-transform duration-fast ease-out', open && 'rotate-90')} aria-hidden="true" />
         <span className={`${LABEL_MICRO} flex-none`}>Document overview</span>
         {!open && (
           // the button is named "Document overview"; the teaser is a preview for the eye, so it is not read as part of the name

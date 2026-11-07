@@ -11,6 +11,7 @@ import { getSharePointStatus, type SharePointStatus } from '../api/kb';
 import { getLlmStatus, type LlmStatus } from '../api/llm';
 import { formatSharePointExpiry } from '../utils/sharePointStatus';
 import { Tooltip } from '../ui/Tooltip';
+import { ARRIVE, useReplayOnChange } from '../ui/motion';
 import { DropdownMenu, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel } from '../ui/DropdownMenu';
 
 const DOT_TONE: Record<string, string> = {
@@ -169,6 +170,8 @@ export function AppShell({ children }: { children: ReactNode }): React.ReactElem
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const drawerWasOpen = useRef(false);
   const mainRef = useRef<HTMLElement>(null);
+  // Opacity only, on the one element that persists across routes (DESIGN.md section 8, Entrance).
+  useReplayOnChange(mainRef, location.pathname, ARRIVE.fade);
   // Set when the drawer closes because a link was followed: focus then belongs to the new page, not to the menu button.
   const closedByNavigation = useRef(false);
   const [adoStatus, setAdoStatus] = useState<AdoStatus | null>(null);

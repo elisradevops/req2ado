@@ -18,6 +18,9 @@ import { LiveStatusRegion } from './liveRun/LiveStatusRegion';
 import { useLiveRunStore } from '../store/liveRunStore';
 import { COUNTED_EXPLANATION, describeCountedProgress, describeCountedValueText } from '../utils/liveCopy';
 import { Stepper } from '../ui/Stepper';
+import { LivenessDot } from './LivenessDot';
+import { ARRIVE, useArrivedLate, useSettled } from '../ui/motion';
+import { ActivityFeed, useActivityLog } from './ActivityFeed';
 import type { JobStage, NarrationEvent } from '../api/events';
 
 // Short sub-labels shown next to the currently-active section in the step
@@ -136,6 +139,11 @@ const PHASE_START_WEIGHT: Record<NarrationEvent['phase'], number> = {
   job_failed: 0,
   chunk_warning: 0,
 };
+
+/** No update for this long and the run is called out as waiting: calm and neutral, never a warning, because one large request can take many minutes. */
+const WAITING_AFTER_SECONDS = 60;
+/** Spoken once when the wait starts; deliberately without the ticking time, so it is not read out again every second. */
+const WAITING_ANNOUNCEMENT = 'No update for over a minute. The job is still working.';
 
 function formatDuration(ms: number): string {
   const totalSeconds = Math.max(0, Math.round(ms / 1000));
@@ -327,6 +335,10 @@ export function ProgressBanner({
   const tickingNow = useNow();
   const liveActivityAt = useLiveRunStore((s) => s.activityAt);
   const secondsSinceUpdate = useSecondsSinceLastUpdate(latest, tickingNow, liveActivityAt);
+  const waitingLong = secondsSinceUpdate >= WAITING_AFTER_SECONDS;
+  const activityEvents = useActivityLog(narrations, (event) => PHASE_SUBLABEL[event.phase] ?? event.phase);
+  // Changes whenever the server really reports something, so the live dot beats once per genuine update.
+  const beatKey = `${narrations?.length ?? 0}:${latest?.message ?? ''}:${latest?.blocksDone ?? ''}:${liveActivityAt ?? ''}`;
   // deterministic_subtree runs as several sequential, whole-chunk-blocking LLM calls, and runs TWO
   // distinct passes back to back (synthesis, then title/tag enhancement) that share this phase string
   // but carry different blocksTotal values -- so (phase, blocksTotal) identifies the window. It names
@@ -372,6 +384,10 @@ export function ProgressBanner({
       latest.phase === 'detect_conflicts' ||
       latest.phase === 'regroup_roots' ||
       latest.phase === 'infer_trace_links');
+  // Inside one large request that has reported nothing yet (a whole-section model call, or one deterministic-subtree chunk): the
+  // honest reading is "no result yet", not a bar and a "0%" that look dead for the many minutes the request takes.
+  // Not when the server counts real units itself (countedProgress): a 0% there is a real count, and the panel below shows it.
+  const awaitingFirstResult = !countedProgress && Math.round(shownProgress ?? 0) === 0 && (modelCallInFlight || detSubtreeChunk !== null);
   const modelCallKey = modelCallInFlight
     ? `modelcall:${latest.phase}:${latest.branchIndex ?? 'x'}:${latest.chunkIndex ?? 'x'}`
     : undefined;
@@ -458,6 +474,10 @@ export function ProgressBanner({
   return (
     <div className='rounded-md border border-hairline bg-surface shadow-card'>
       <LiveStatusRegion />
+      {/* Present from the first render so the change is announced. The text is fixed (no ticking time), so it is spoken once. */}
+      <div role='status' aria-live='polite' className='sr-only' data-testid='waiting-status'>
+        {waitingLong ? WAITING_ANNOUNCEMENT : ''}
+      </div>
       {/* DESIGN.md §11.3 -- "the loud element": live pulse dot, the phase
           headline in text-title, one sentence of what that phase is doing
           (the same real, backend-generated narration text the old Activity
@@ -466,17 +486,22 @@ export function ProgressBanner({
           "Running"/"Writing to ADO" chip -- that label duplicated exactly
           what this headline now says, at lower information content. */}
       <div className='flex items-center gap-3 border-b border-hairline px-4 py-3'>
-        <span className='relative flex h-2.5 w-2.5 flex-none'>
-          <span className='absolute inline-flex h-full w-full animate-ping rounded-full bg-live/70' />
-          <span className='relative inline-flex h-2.5 w-2.5 rounded-full bg-live' />
-        </span>
+        <LivenessDot beatKey={beatKey} waiting={waitingLong} />
         <div className='min-w-0 flex-1'>
           <p className='text-title'>{headline}</p>
           {latest?.message && <p className='truncate text-xs text-ink-3' title={latest.message}>{latest.message}</p>}
+          {waitingLong && (
+            <p data-testid='waiting-note' className='mt-1 w-fit rounded-sm bg-surface-alt px-2 py-0.5 text-xs text-ink-2'>
+              No update for {formatDuration(secondsSinceUpdate * 1000)}. The job is still working: one large request can take many minutes. You can close this page; the run continues on the server.
+            </p>
+          )}
         </div>
-        {shownProgress !== undefined && (
-          <span className='flex-none font-mono text-metric tabular-nums text-ink-1'>{Math.round(shownProgress)}%</span>
-        )}
+        {shownProgress !== undefined &&
+          (awaitingFirstResult ? (
+            <span data-testid='no-result-yet' className='flex-none text-sm text-ink-3'>no result yet</span>
+          ) : (
+            <span className='flex-none font-mono text-metric tabular-nums text-ink-1'>{Math.round(shownProgress)}%</span>
+          ))}
         <InfoTip content='BASELINE finishes in seconds. SURVEY reads the whole document, merges near-duplicates, infers missing parents, and scores each requirement -- time scales with document size, figures most of all.' />
       </div>
 
@@ -502,7 +527,7 @@ export function ProgressBanner({
           <>
             <span className='text-ink-3'>·</span>
             <span className='text-ink-3' title='Time since the last progress update from the server'>
-              {modelCallInFlight && secondsSinceUpdate >= 60 ? 'waiting on model · last update ' : 'updated '}
+              {modelCallInFlight && secondsSinceUpdate >= WAITING_AFTER_SECONDS ? 'waiting on model · last update ' : 'updated '}
               {formatDuration(secondsSinceUpdate * 1000)} ago
             </span>
           </>
@@ -530,6 +555,8 @@ export function ProgressBanner({
           </>
         )}
       </div>
+
+      <ActivityFeed events={activityEvents} />
 
       <div className='p-5'>
         {/* Real bug fixed here (found in the "Wizard UX Options" decision
@@ -645,6 +672,8 @@ export function ProgressBanner({
                   {describeCountedProgress(countedProgress)}
                   <InfoTip content={COUNTED_EXPLANATION} label='How the percentage is counted' />
                 </span>
+              ) : clampedProgress !== undefined && awaitingFirstResult ? (
+                'Waiting on one request. Progress shows when it returns.'
               ) : clampedProgress !== undefined ? (
                 `~${Math.round(clampedProgress)}% of this section (est.)`
               ) : isPrimerStep ? (
@@ -657,7 +686,6 @@ export function ProgressBanner({
             </div>
             <ProgressBar
               value={shownProgress}
-              active={modelCallInFlight}
               label='Run progress'
               valueText={
                 countedProgress
@@ -855,6 +883,13 @@ function WriteSubStepper({ latest }: { latest: NarrationEvent }): React.ReactEle
 // reads at a glance in a CI pipeline view, matched to what THIS pipeline
 // actually does per section (infer hierarchy -> generate requirements ->
 // score quality) rather than a generic percentage.
+// A finished step's check. One that appears after the list has settled (a step finishing while the page is open) fades in once;
+// one already there on first paint does not (DESIGN.md section 8.3). No rolling or looping tick.
+function DoneTick({ testId, settled }: { testId: string; settled: boolean }): React.ReactElement {
+  const arrivedLate = useArrivedLate(settled);
+  return <Check data-testid={testId} className={cn('h-4 w-4 flex-none text-ok', arrivedLate && ARRIVE.fade)} />;
+}
+
 function SectionStepList({
   latest,
   narrations,
@@ -873,6 +908,7 @@ function SectionStepList({
   // below. See that Set's own comment for why.
   completedSectionIndices?: number[];
 }): React.ReactElement {
+  const settled = useSettled();
   const sections = Array.from({ length: latest.branchCount }, (_, i) => i);
   // §2c: quality scoring moved to whole-document scope (one pass AFTER
   // every section's own analysis, not per-section) -- its narration events
@@ -1034,10 +1070,7 @@ function SectionStepList({
             aria-selected={isActive}
           >
             {isDone ? (
-              <Check
-                data-testid='section-check-icon'
-                className='h-4 w-4 flex-none text-ok'
-              />
+              <DoneTick testId='section-check-icon' settled={settled.current} />
             ) : isActive ? (
               <Spinner className='text-live' />
             ) : (
@@ -1068,10 +1101,7 @@ function SectionStepList({
       <p className='mt-2 text-meta font-semibold tracking-normal text-ink-3'>Scoring &amp; linking</p>
       <div className={rowClass} aria-selected={scoringActive}>
         {conflictsActive || regroupActive || traceLinksActive ? (
-          <Check
-            data-testid='scoring-check-icon'
-            className='h-4 w-4 flex-none text-ok'
-          />
+          <DoneTick testId='scoring-check-icon' settled={settled.current} />
         ) : scoringActive ? (
           <Spinner className='text-live' />
         ) : (
@@ -1092,10 +1122,7 @@ function SectionStepList({
       </div>
       <div className={rowClass} aria-selected={conflictsActive}>
         {regroupActive || traceLinksActive ? (
-          <Check
-            data-testid='conflicts-check-icon'
-            className='h-4 w-4 flex-none text-ok'
-          />
+          <DoneTick testId='conflicts-check-icon' settled={settled.current} />
         ) : conflictsActive ? (
           <Spinner className='text-live' />
         ) : (
@@ -1107,10 +1134,7 @@ function SectionStepList({
       </div>
       <div className={rowClass} aria-selected={regroupActive}>
         {traceLinksActive ? (
-          <Check
-            data-testid='regroup-check-icon'
-            className='h-4 w-4 flex-none text-ok'
-          />
+          <DoneTick testId='regroup-check-icon' settled={settled.current} />
         ) : regroupActive ? (
           <Spinner className='text-live' />
         ) : (

@@ -1,14 +1,12 @@
+import { useEffect, useRef } from 'react';
+import { cn } from '../lib/cn';
+
 export function ProgressBar({
   value,
-  // A model call is in flight: overlays a slow sheen on the filled part so a
-  // determinate bar that is legitimately not moving for minutes still reads
-  // as alive. Never changes the width -- the number stays honest.
-  active,
   label,
   valueText,
 }: {
   value?: number;
-  active?: boolean;
   // Accessible name (required: a progressbar with no name fails axe) and the
   // optional honest reading of the value ("38 percent of the run, estimated"
   // or "No progress estimate for this step").
@@ -17,6 +15,14 @@ export function ProgressBar({
 }): React.ReactElement {
   const determinate = value !== undefined;
   const clamped = determinate ? Math.min(Math.max(value, 0), 100) : undefined;
+  // A forward jump of a percent or more eases in; a smaller change, or any move backwards, snaps (DESIGN.md section 8.3).
+  const previous = useRef(clamped);
+  const snap = clamped !== undefined && previous.current !== undefined && (clamped < previous.current || clamped - previous.current < 1);
+  useEffect(() => {
+    previous.current = clamped;
+  }, [clamped]);
+  // The fill is full width, scaled from the reading edge, so a tick is a compositor transform and never a layout.
+  const fillStyle = { transform: `scaleX(${(clamped ?? 0) / 100})`, transition: snap ? 'none' : 'transform var(--duration-progress) var(--ease-out)' };
   return (
     <div
       role="progressbar"
@@ -28,23 +34,16 @@ export function ProgressBar({
       className="relative h-1.5 overflow-hidden rounded-full bg-canvas"
     >
       <span
-        className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-accent-active to-accent"
+        className={cn(
+          'absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-accent-active to-accent',
+          determinate && 'w-full origin-left rtl:origin-right',
+        )}
         style={
-          // DESIGN.md §8: 900ms/1.5s here are exactly --duration-progress and
-          // --duration-ambient's own values -- reference the tokens, not the
-          // bare numbers, so a future token change doesn't drift.
-          determinate
-            ? { width: `${clamped}%`, transition: 'width var(--duration-progress) var(--ease-in-out)' }
-            : { width: '34%', animation: 'indeterminate-progress var(--duration-ambient) var(--ease-in-out) infinite' }
+          // DESIGN.md §8: the duration here is exactly --duration-progress, and --duration-ambient is the indeterminate
+          // segment's own value -- reference the tokens, not the bare numbers, so a future token change doesn't drift.
+          determinate ? fillStyle : { width: '34%', animation: 'indeterminate-progress var(--duration-ambient) var(--ease-in-out) infinite' }
         }
       />
-      {active && determinate && (
-        <span
-          data-testid="progress-active"
-          className="pointer-events-none absolute inset-y-0 left-0 rounded-full bg-[linear-gradient(90deg,transparent_25%,var(--color-shimmer-highlight)_37%,transparent_63%)] bg-[length:400%_100%] opacity-60"
-          style={{ width: `${clamped}%`, animation: 'shimmer var(--duration-ambient) var(--ease-linear) infinite' }}
-        />
-      )}
     </div>
   );
 }

@@ -2,8 +2,8 @@ import { BELOW_MD } from '../hooks/useMediaQuery';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, within, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { forwardRef } from 'react';
-import type { CSSProperties, ReactNode } from 'react';
+import { createElement, forwardRef } from 'react';
+import type { ComponentType, CSSProperties, ReactNode } from 'react';
 import { DiffTree } from './DiffTree';
 import type { DryRunDiffEntry } from './DiffTree';
 
@@ -25,7 +25,8 @@ vi.mock('react-window', () => ({
     { scrollToItem: typeof scrollToItem },
     {
       itemCount: number;
-      children: (args: { index: number; style: CSSProperties }) => ReactNode;
+      children: ComponentType<{ index: number; style: CSSProperties; data: unknown }>;
+      itemData?: unknown;
       itemKey?: (index: number) => string;
       itemSize?: number;
     }
@@ -36,7 +37,7 @@ vi.mock('react-window', () => ({
       <div data-item-size={props.itemSize}>
         {Array.from({ length: props.itemCount }, (_, index) => {
           if (props.itemKey) itemKeyCalls.push(props.itemKey(index));
-          return <div key={index}>{props.children({ index, style: {} })}</div>;
+          return <div key={index}>{createElement(props.children, { index, style: {}, data: props.itemData })}</div>;
         })}
       </div>
     );
@@ -1242,5 +1243,37 @@ describe('DiffTree drag-and-drop (reparent/reorder)', () => {
 
     expect(rowFor('Feature 1').querySelector('[title*="Already exists in ADO"]')).toBeNull();
     expect(rowFor('Feature 1').querySelector('[title*="Matched to a probable duplicate"]')).toBeNull();
+  });
+});
+
+describe('DiffTree disclosure motion (DESIGN.md section 8.3)', () => {
+  const base = (localId: string, parentLocalId: string | null, type: string, title: string): DryRunDiffEntry => ({
+    localId, parentLocalId, type, title, description: '', action: 'create', customerId: null,
+  }) as DryRunDiffEntry;
+  const entries = [
+    base('e1', null, 'Epic', 'Epic 1'),
+    base('f1', 'e1', 'Feature', 'Feature 1'),
+    base('r0', 'f1', 'Requirement', 'Opened req'),
+    base('f2', 'e1', 'Feature', 'Feature 2'),
+    base('r1', 'f2', 'Requirement', 'Hidden req'),
+  ];
+  const renderTree = () => render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+
+  it('turns one chevron instead of swapping icons, so the disclosure state is a transform', () => {
+    renderTree();
+    const open = screen.getByRole('button', { name: 'Collapse Feature 1' }).querySelector('svg')!;
+    const closed = screen.getByRole('button', { name: 'Expand Feature 2' }).querySelector('svg')!;
+    expect(open).toHaveClass('rotate-90');
+    expect(closed).not.toHaveClass('rotate-90');
+    expect(open).toHaveClass('transition-transform');
+  });
+
+  it('moves no row when it expands or collapses: rows appear and leave at once', () => {
+    renderTree();
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Feature 2' }));
+    expect(screen.getByText('Hidden req').closest('[role="treeitem"]')!.className).not.toMatch(/animate-|fadeIn/);
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse Feature 1' }));
+    expect(screen.queryByText('Opened req')).not.toBeInTheDocument();
+    expect(document.querySelector('[role="treeitem"][class*="animate-"]')).toBeNull();
   });
 });

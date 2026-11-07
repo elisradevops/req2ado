@@ -1,8 +1,8 @@
 import { usePageLabelStore } from '../store/pageLabelStore';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { Link, MemoryRouter, Route, Routes } from 'react-router-dom';
 import { JobDetail } from './JobDetail';
 import { ToastProvider } from '../components/ToastProvider';
 import * as jobsApi from '../api/jobs';
@@ -1232,9 +1232,10 @@ describe('JobDetail', () => {
       id: 'job-31', status: 'running', mode: 'survey', dryRunDiff: null, createdAt: new Date().toISOString(),
     } as any);
     const sharedMessage = 'Preparing analysis -- splitting sections, retrieving context';
+    const recordedAt = '2026-11-07T09:41:07.000Z';
     vi.spyOn(jobsApi, 'getEventHistory').mockResolvedValue([
       {
-        id: 'evt-1', jobId: 'job-31', phase: 'preparing_analysis', severity: 'info', createdAt: new Date().toISOString(),
+        id: 'evt-1', jobId: 'job-31', phase: 'preparing_analysis', severity: 'info', createdAt: recordedAt,
         message: sharedMessage,
         detail: {
           phase: 'preparing_analysis', branchIndex: null, branchCount: 0, blocksDone: 0, blocksTotal: 0,
@@ -1255,8 +1256,14 @@ describe('JobDetail', () => {
     renderAt('job-31');
 
     await waitFor(() => expect(jobsApi.getEventHistory).toHaveBeenCalledWith('job-31'));
-    await screen.findByText(sharedMessage);
-    expect(screen.getAllByText(sharedMessage).length).toBeLessThanOrEqual(2);
+    await screen.findAllByText(sharedMessage);
+    // The activity log (DESIGN.md section 11.3.2) makes the duplicate check direct: the same event is exactly one line.
+    const log = await screen.findByRole('log', { name: 'Job activity' });
+    expect(within(log).getAllByRole('listitem')).toHaveLength(1);
+    // and the line carries the time the server recorded, not the moment this page loaded
+    expect(log.querySelector('time')).toHaveAttribute('datetime', recordedAt);
+    // and the sentence appears in at most the ticker, the headline and that one line
+    expect(screen.getAllByText(sharedMessage).length).toBeLessThanOrEqual(3);
   });
 
   it('shows "How this run went" from the stored notices of a finished job and keeps them out of the audit list', async () => {
@@ -1983,6 +1990,109 @@ describe('JobDetail', () => {
       await waitFor(() => expect(screen.getByRole('tablist')).toBeInTheDocument());
       const writeStep = screen.getByText('Write').closest('li')?.querySelector('[data-state]');
       expect(writeStep).toHaveAttribute('data-state', 'skipped');
+    });
+  });
+
+  it('says the job is loading to assistive technology from the first moment, while the placeholders are still undrawn', async () => {
+    vi.spyOn(jobsApi, 'getJob').mockReturnValue(new Promise(() => {}) as any);
+    renderAt('job-loading');
+    const status = await screen.findByRole('status');
+    expect(status).toHaveTextContent(/loading job/i);
+    expect(status).toHaveAttribute('aria-busy', 'true');
+  });
+
+  describe('diff ready arrival (DESIGN.md section 8)', () => {
+    const root = { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Root', description: '', action: 'create', customerId: null, tags: [] };
+
+    it('announces the result once, fades the review area in, and leaves focus alone, when a running job finishes', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+      vi.spyOn(jobsApi, 'getJob')
+        .mockResolvedValueOnce({ id: 'job-arrive', status: 'running', mode: 'survey', dryRunDiff: null, createdAt: new Date().toISOString() } as any)
+        .mockResolvedValue({ id: 'job-arrive', status: 'diff_ready', mode: 'survey', dryRunDiff: [root], createdAt: new Date().toISOString() } as any);
+      const events = await import('../api/events');
+      let emitStage: (stage: string) => void = () => {};
+      vi.mocked(events.subscribeToJobEvents).mockImplementation((_id, _base, onStage) => {
+        emitStage = onStage;
+        return () => {};
+      });
+      renderAt('job-arrive');
+      const region = await screen.findByTestId('job-arrival-status');
+      expect(region).toHaveAttribute('role', 'status');
+      expect(region).toBeEmptyDOMElement();
+      const focused = document.activeElement;
+
+      await act(async () => emitStage('diff_ready'));
+
+      await waitFor(() => expect(screen.getByText('Root')).toBeInTheDocument());
+      expect(region).toHaveTextContent(/diff is ready to review/i);
+      expect(document.getElementById('proposed-tree')!.className).toContain('fadeIn');
+      expect(document.activeElement).toBe(focused);
+    });
+
+    it('announces once and stops fading: a later edit does not re-announce, and the fade does not replay', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+      vi.spyOn(jobsApi, 'getJob')
+        .mockResolvedValueOnce({ id: 'job-once', status: 'running', mode: 'survey', dryRunDiff: null, createdAt: new Date().toISOString() } as any)
+        .mockResolvedValue({ id: 'job-once', status: 'diff_ready', mode: 'survey', dryRunDiff: [root], createdAt: new Date().toISOString() } as any);
+      const events = await import('../api/events');
+      let emitStage: (stage: string) => void = () => {};
+      vi.mocked(events.subscribeToJobEvents).mockImplementation((_id, _base, onStage) => {
+        emitStage = onStage;
+        return () => {};
+      });
+      renderAt('job-once');
+      const region = await screen.findByTestId('job-arrival-status');
+      await act(async () => emitStage('diff_ready'));
+      await waitFor(() => expect(region).toHaveTextContent('The diff is ready to review: 1 item.'));
+
+      await waitFor(() => expect(document.getElementById('proposed-tree')!.className).not.toContain('fadeIn'));
+      expect(region).toHaveTextContent('The diff is ready to review: 1 item.');
+    });
+
+    it('does not carry one job\'s arrival over to the next job opened in the same page', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+      let aCalls = 0;
+      vi.spyOn(jobsApi, 'getJob').mockImplementation(async (id: string) => {
+        if (id === 'job-a') {
+          aCalls += 1;
+          return (aCalls === 1
+            ? { id, status: 'running', mode: 'survey', dryRunDiff: null, createdAt: new Date().toISOString() }
+            : { id, status: 'diff_ready', mode: 'survey', dryRunDiff: [root], createdAt: new Date().toISOString() }) as any;
+        }
+        return { id, status: 'diff_ready', mode: 'survey', dryRunDiff: [root, { ...root, localId: 'e2', title: 'Second' }], createdAt: new Date().toISOString() } as any;
+      });
+      const events = await import('../api/events');
+      let emitStage: (stage: string) => void = () => {};
+      vi.mocked(events.subscribeToJobEvents).mockImplementation((_id, _base, onStage) => {
+        emitStage = onStage;
+        return () => {};
+      });
+      render(
+        <ToastProvider>
+          <MemoryRouter initialEntries={['/jobs/job-a']}>
+            <Link to="/jobs/job-b">open b</Link>
+            <Routes>
+              <Route path="/jobs/:id" element={<JobDetail />} />
+            </Routes>
+          </MemoryRouter>
+        </ToastProvider>,
+      );
+      await screen.findByTestId('job-arrival-status');
+      await act(async () => emitStage('diff_ready'));
+      await waitFor(() => expect(screen.getByTestId('job-arrival-status')).toHaveTextContent(/ready to review/)); // A finished while watched
+
+      await userEvent.click(screen.getByRole('link', { name: 'open b' }));
+      await waitFor(() => expect(screen.getByText('Second')).toBeInTheDocument());
+      expect(screen.getByTestId('job-arrival-status')).toBeEmptyDOMElement();
+      expect(document.getElementById('proposed-tree')!.className).not.toContain('fadeIn');
+    });
+
+    it('stays silent and still when a job is opened already finished', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-done', status: 'diff_ready', mode: 'survey', dryRunDiff: [root], createdAt: new Date().toISOString() } as any);
+      renderAt('job-done');
+      await waitFor(() => expect(screen.getByText('Root')).toBeInTheDocument());
+      expect(screen.getByTestId('job-arrival-status')).toBeEmptyDOMElement();
+      expect(document.getElementById('proposed-tree')!.className).not.toContain('fadeIn');
     });
   });
 });

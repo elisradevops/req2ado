@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import { act } from 'react';
 import { ProgressBanner } from './ProgressBanner';
 import type { NarrationEvent } from '../api/events';
@@ -569,7 +569,8 @@ describe('ProgressBanner', () => {
         ]}
       />,
     );
-    expect(screen.getByText('Mapping figures and tables to their sections')).toBeInTheDocument();
+    // the phase label is the headline and also the one activity line
+    expect(screen.getAllByText('Mapping figures and tables to their sections').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('Finishing up…')).toBeInTheDocument();
     expect(screen.queryByText(/~0s left/i)).not.toBeInTheDocument();
     expect(screen.getByRole('progressbar')).not.toHaveAttribute('aria-valuenow');
@@ -826,13 +827,10 @@ describe('ProgressBanner', () => {
     expect(screen.getByText(/you can close this page/i)).toBeInTheDocument();
   });
 
-  it('shows the phase headline and the latest narration as one sentence in the header, with no raw activity log', () => {
-    // DESIGN.md §11.3's own audit note: the raw scrolling activity log this
-    // used to render (every narration message in a collapsible list) is
-    // explicitly superseded -- "do not build it." The header now carries a
-    // plain-language phase headline (text-title) plus the latest
-    // narration as a single sentence; SectionStepList (asserted elsewhere)
-    // is what answers "what is left."
+  it('shows the phase headline and the latest narration as one sentence in the header, and keeps earlier narration in the compact activity log, not in the header', () => {
+    // DESIGN.md section 11.3.2: the header carries a plain-language phase headline (text-title) plus the latest narration as a
+    // single sentence; earlier narration lives in the compact, labelled activity log (not the raw scrolling log section 11.3.1
+    // replaced); SectionStepList (asserted elsewhere) is what answers "what is left."
     render(
       <ProgressBanner
         stage="infer_hierarchy_start"
@@ -844,9 +842,12 @@ describe('ProgressBanner', () => {
         ]}
       />,
     );
-    expect(screen.getByText('Scoring quality')).toBeInTheDocument();
-    expect(screen.getByText('Second message')).toBeInTheDocument();
-    expect(screen.queryByText('First message')).not.toBeInTheDocument();
+    expect(screen.getAllByText('Scoring quality').length).toBeGreaterThanOrEqual(1);
+    const log = screen.getByRole('log', { name: 'Job activity' });
+    // the header holds only the latest sentence; the earlier one is in the log
+    expect(screen.getAllByText('Second message').some((el) => !log.contains(el))).toBe(true);
+    expect(screen.getByText('First message')).toBeInTheDocument();
+    expect(log).toContainElement(screen.getByText('First message'));
     expect(screen.queryByText(/activity log/i)).not.toBeInTheDocument();
   });
 
@@ -1124,6 +1125,28 @@ describe('ProgressBanner', () => {
     expect(screen.getByTitle(/time since the last progress update/i)).toHaveTextContent(/waiting on model · last update 6m 12s ago/);
   });
 
+  it('keeps the ticking clocks as plain text: no live region and no motion class, so a screen reader is not read a new time every second (WCAG 2.2.2)', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-09T10:30:00Z'));
+    const { container } = render(
+      <ProgressBanner
+        stage="infer_hierarchy_start"
+        startedAt="2026-07-09T10:00:00Z"
+        mode="survey"
+        narrations={[
+          { phase: 'analyze_section', branchIndex: 1, branchCount: 4, sectionLabel: '3.2 Receiver', blocksDone: 10, blocksTotal: 100, kbGrounded: false, kbCitations: [], message: 'x' } as NarrationEvent,
+        ]}
+      />,
+    );
+    const clock = screen.getByTestId('model-call-clock');
+    expect(clock.closest('[aria-live]')).toBeNull();
+    expect(clock.closest('[role="status"],[role="alert"],[role="log"]')).toBeNull();
+    expect(clock.className).not.toMatch(/animate-|transition/);
+    // the banner's own sr-only status region announces milestones; the ticking clock is not part of it
+    expect(screen.getByTestId('live-status-region')).not.toContainElement(clock);
+    expect(container).toContainElement(clock);
+  });
+
   it('shows no model-call clock once the phase is not an in-flight model call', () => {
     render(
       <ProgressBanner
@@ -1346,7 +1369,7 @@ describe('ProgressBanner live run view', () => {
 
   it('has the one polite status region from the first render, even with no live events', () => {
     render(<ProgressBanner stage="parse" startedAt="2026-07-09T10:00:00Z" mode="survey" jobId="job-1" />);
-    expect(screen.getByRole('status')).toHaveAttribute('aria-live', 'polite');
+    expect(screen.getByTestId('live-status-region')).toHaveAttribute('aria-live', 'polite');
   });
 
   it('drops the "bar moves when the call returns" note once the run counts items live', () => {
@@ -1392,5 +1415,95 @@ describe('ProgressBanner live run view', () => {
     expect(screen.queryByTestId('live-run-panel')).not.toBeInTheDocument();
     send({});
     expect(screen.getByTestId('live-run-panel')).toBeInTheDocument();
+  });
+
+  describe('liveness cues (DESIGN.md section 8.3)', () => {
+    const deterministic = { phase: 'deterministic_subtree', branchIndex: null, branchCount: 1, blocksDone: 0, blocksTotal: 275, kbGrounded: false, kbCitations: [], message: 'Extracting a hierarchy subtree (chunk 1 of 2)', subtreeLabel: 'Heading hierarchy -- synthesizing requirement text for 150 node(s) (chunk 1 of 2)' } as unknown as NarrationEvent;
+    const banner = (narrations: NarrationEvent[] = [deterministic]) => (
+      <ProgressBanner stage="infer_hierarchy_start" startedAt="2026-07-09T10:00:00Z" mode="survey" narrations={narrations} />
+    );
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-07-09T10:10:00Z'));
+    });
+
+    it('fades a section check in once when it finishes while the page is open, and not the ones that were already there', () => {
+      const analyze = { phase: 'analyze_section', branchIndex: 3, branchCount: 5, blocksDone: 3, blocksTotal: 50, kbGrounded: false, kbCitations: [], message: 'Working' } as unknown as NarrationEvent;
+      const props = { stage: 'infer_hierarchy_start' as const, startedAt: '2026-07-09T10:00:00Z', mode: 'survey' as const, narrations: [analyze] };
+      const { rerender } = render(<ProgressBanner {...props} completedSectionIndices={[0, 1]} />);
+      const before = screen.getAllByTestId('section-check-icon');
+      expect(before.every((icon) => !(icon.getAttribute('class') ?? '').includes('fadeIn'))).toBe(true);
+
+      rerender(<ProgressBanner {...props} completedSectionIndices={[0, 1, 2]} />);
+      const after = screen.getAllByTestId('section-check-icon');
+      expect(after.length).toBeGreaterThan(before.length);
+      const classes = after.map((icon) => icon.getAttribute('class') ?? '');
+      expect(classes.filter((c) => c.includes('fadeIn'))).toHaveLength(after.length - before.length);
+    });
+
+    it('draws a live dot that beats once per event instead of pinging forever', () => {
+      const { container } = render(banner());
+      const dot = container.querySelector('[data-liveness]');
+      expect(dot).toHaveAttribute('data-liveness', 'live');
+      expect(container.innerHTML).not.toContain('animate-ping');
+    });
+
+    it('hollows the dot and says so in plain, neutral words once nothing has arrived for a minute', () => {
+      const { container } = render(banner());
+      expect(screen.queryByText(/no update for/i)).not.toBeInTheDocument();
+      act(() => {
+        vi.advanceTimersByTime(75_000);
+      });
+      expect(container.querySelector('[data-liveness]')).toHaveAttribute('data-liveness', 'waiting');
+      const note = screen.getByTestId('waiting-note');
+      expect(note).toHaveTextContent(/no update for 1m 15s/i);
+      expect(note).toHaveTextContent(/still working/i);
+      expect(note).toHaveTextContent(/close this page/i);
+      // not warning- or error-styled: a long wait is normal for one whole-document request
+      expect(note.className).not.toMatch(/danger|warning/);
+    });
+
+    it('announces the wait once through a polite status region that exists from the start, never the ticking time', () => {
+      render(banner());
+      const region = screen.getByTestId('waiting-status');
+      expect(region).toHaveAttribute('role', 'status');
+      expect(region).toBeEmptyDOMElement();
+      act(() => {
+        vi.advanceTimersByTime(75_000);
+      });
+      expect(region).toHaveTextContent('No update for over a minute. The job is still working.');
+      act(() => {
+        vi.advanceTimersByTime(30_000);
+      });
+      expect(region).toHaveTextContent('No update for over a minute. The job is still working.'); // same text: not re-announced
+    });
+
+    it('shows a labelled activity log of what the run has reported', () => {
+      render(banner([deterministic]));
+      const log = screen.getByRole('log', { name: 'Job activity' });
+      expect(within(log).getAllByRole('listitem')).toHaveLength(1);
+    });
+
+    it('does not show 0% while it is inside one request that has reported nothing yet', () => {
+      render(banner());
+      expect(screen.queryByText('0%')).not.toBeInTheDocument();
+      expect(screen.getByTestId('no-result-yet')).toHaveTextContent(/no result yet/i);
+    });
+
+    it('keeps a real counted percentage when the server counts items, even inside a request', () => {
+      useLiveRunStore.getState().reset();
+      useLiveRunStore.getState().begin('job-1');
+      render(banner());
+      send({ pct: 0, done: 0, total: 40 });
+      expect(screen.getByText('0%')).toBeInTheDocument();
+      expect(screen.queryByTestId('no-result-yet')).not.toBeInTheDocument();
+    });
+
+    it('says plainly that progress shows when the request returns, instead of "~0% of this section (est.)"', () => {
+      render(banner());
+      expect(screen.queryByText(/~0% of this section/i)).not.toBeInTheDocument();
+      expect(screen.getByText(/progress shows when it returns/i)).toBeInTheDocument();
+    });
   });
 });

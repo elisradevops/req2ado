@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { forwardRef } from 'react';
-import type { CSSProperties, ReactNode } from 'react';
+import { createElement, forwardRef } from 'react';
+import type { ComponentType, CSSProperties } from 'react';
 import { JobDetail } from './JobDetail';
 import { ToastProvider } from '../components/ToastProvider';
 import * as jobsApi from '../api/jobs';
@@ -23,14 +23,14 @@ import * as jobsApi from '../api/jobs';
 vi.mock('react-window', () => ({
   FixedSizeList: forwardRef<
     unknown,
-    { itemCount: number; children: (args: { index: number; style: CSSProperties }) => ReactNode }
+    { itemCount: number; itemData?: unknown; children: ComponentType<{ index: number; style: CSSProperties; data: unknown }> }
   >((props, ref) => {
     if (typeof ref === 'function') ref({ scrollToItem: () => {} });
     else if (ref) (ref as { current: unknown }).current = { scrollToItem: () => {} };
     return (
       <div>
         {Array.from({ length: props.itemCount }, (_, index) => (
-          <div key={index}>{props.children({ index, style: {} })}</div>
+          <div key={index}>{createElement(props.children, { index, style: {}, data: props.itemData })}</div>
         ))}
       </div>
     );

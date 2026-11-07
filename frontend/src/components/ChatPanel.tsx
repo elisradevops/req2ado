@@ -556,9 +556,9 @@ export function ChatPanel({
                     Assistant
                     {!streaming && !reasoning && (
                       <span className="inline-flex items-center gap-0.5" aria-label="typing">
-                        <span className="h-1 w-1 animate-[typedot_1.1s_ease-in-out_infinite] rounded-full bg-live" style={{ animationDelay: '0ms' }} />
-                        <span className="h-1 w-1 animate-[typedot_1.1s_ease-in-out_infinite] rounded-full bg-live" style={{ animationDelay: '160ms' }} />
-                        <span className="h-1 w-1 animate-[typedot_1.1s_ease-in-out_infinite] rounded-full bg-live" style={{ animationDelay: '320ms' }} />
+                        <span className="h-1 w-1 animate-[typedot_var(--duration-typedot)_var(--ease-in-out)_infinite] rounded-full bg-live" style={{ animationDelay: '0ms' }} />
+                        <span className="h-1 w-1 animate-[typedot_var(--duration-typedot)_var(--ease-in-out)_infinite] rounded-full bg-live" style={{ animationDelay: '160ms' }} />
+                        <span className="h-1 w-1 animate-[typedot_var(--duration-typedot)_var(--ease-in-out)_infinite] rounded-full bg-live" style={{ animationDelay: '320ms' }} />
                       </span>
                     )}
                   </p>

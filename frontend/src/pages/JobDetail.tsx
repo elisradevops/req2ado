@@ -56,6 +56,7 @@ import { NodeDetailDialog } from '../components/NodeDetailDialog';
 import { AddChildCard } from '../components/AddChildCard';
 import { applyMoveOptimistically } from '../lib/applyMove';
 import { cn } from '../lib/cn';
+import { ARRIVE, MOTION, scrollBehavior } from '../ui/motion';
 import { describeJobKbCoverage, type KbCoverage } from '../utils/kbCoverage';
 import { getServerMessage } from '../lib/errorDetails';
 import { isFlaggedDiffEntry } from '../utils/diffFlagging';
@@ -113,6 +114,29 @@ export function JobDetail(): React.ReactElement {
   const orgUrl = useOrgUrl();
   const { showToast, showErrorToast } = useToast();
   const [status, setStatus] = useState<string | null>(null);
+  // Set once, when a job that was running on this page finishes into diff_ready (DESIGN.md section 8, "result ready"). The message
+  // is captured at that moment, so a later edit that changes the item count never re-announces it; `fading` ends after the entrance.
+  // A job opened already finished never sets it, and it is cleared when the page moves to another job.
+  const [arrival, setArrival] = useState<{ message: string; fading: boolean } | null>(null);
+  const previousStatus = useRef<string | null>(null);
+  useEffect(() => {
+    previousStatus.current = null;
+    setArrival(null);
+  }, [id]);
+  useEffect(() => {
+    const was = previousStatus.current;
+    previousStatus.current = status;
+    if (status === 'diff_ready' && (was === 'pending' || was === 'running')) {
+      setArrival({ message: `The diff is ready to review: ${diff.length.toLocaleString()} ${diff.length === 1 ? 'item' : 'items'}.`, fading: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only a status change is an arrival; diff is read as it is at that moment
+  }, [status]);
+  const fading = arrival?.fading ?? false;
+  useEffect(() => {
+    if (!fading) return undefined;
+    const timer = setTimeout(() => setArrival((current) => (current ? { ...current, fading: false } : current)), MOTION.durationMs.medium);
+    return () => clearTimeout(timer);
+  }, [fading]);
   const [mode, setMode] = useState<string | null>(null);
   const [documentOverview, setDocumentOverview] = useState<DocumentOverview | null>(null);
   const [kbCitations, setKbCitations] = useState<KbCitation[]>([]);
@@ -495,7 +519,7 @@ export function JobDetail(): React.ReactElement {
             // Cap accumulated narrations -- a long-running SURVEY job with
             // many branches could otherwise grow this list unboundedly for
             // the duration of the whole job.
-            setNarrations((current) => appendNarration(current, narration));
+            setNarrations((current) => appendNarration(current, { ...narration, at: new Date().toISOString() }));
           }
           // figureCaptionStatus (non-null) means the model judged this
           // figure insignificant/failed -- figureCaption is STILL truthy in
@@ -580,13 +604,33 @@ export function JobDetail(): React.ReactElement {
   // both cover the same recent window) is dropped rather than shown twice.
   const mergedNarrations = useMemo<NarrationEvent[]>(() => {
     const seen = new Set(narrations.map((n) => `${n.phase}|${n.message}`));
+    // Recorded times per event content, in order, so two identical events each get their own time.
+    const recordedAt = new Map<string, string[]>();
+    for (const event of eventHistory) {
+      if (!isValidNarrationEvent(event.detail)) continue;
+      const key = `${event.detail.phase}|${event.detail.message}`;
+      const times = recordedAt.get(key);
+      if (times) times.push(event.createdAt);
+      else recordedAt.set(key, [event.createdAt]);
+    }
     const historical: NarrationEvent[] = [];
     for (const event of eventHistory) {
       if (isValidNarrationEvent(event.detail) && !seen.has(`${event.detail.phase}|${event.detail.message}`)) {
-        historical.push(event.detail);
+        historical.push({ ...event.detail, at: event.createdAt });
       }
     }
-    return [...historical, ...narrations];
+    // A live event also in the history keeps its place, with the time the server recorded it (the more accurate of the two).
+    const used = new Map<string, number>();
+    const live = narrations.map((n) => {
+      const key = `${n.phase}|${n.message}`;
+      const times = recordedAt.get(key);
+      if (!times) return n;
+      const nth = used.get(key) ?? 0;
+      used.set(key, nth + 1);
+      const recorded = times[Math.min(nth, times.length - 1)];
+      return { ...n, at: recorded };
+    });
+    return [...historical, ...live];
   }, [eventHistory, narrations]);
 
   // Backfills figureCaptionsByIndex from durable history too -- the live
@@ -1454,7 +1498,9 @@ export function JobDetail(): React.ReactElement {
 
   if (!loaded) {
     return (
-      <div className="flex flex-col gap-3 p-4">
+      <div role="status" aria-busy="true" className="flex flex-col gap-3 p-4">
+        {/* The placeholders below are not drawn for the first second (ui/Skeleton), so assistive technology is told at once. */}
+        <span className="sr-only">Loading job…</span>
         <Skeleton className="h-6 w-1/3" />
         <Skeleton className="h-4 w-1/2" />
         <div className="grid grid-cols-3 gap-2.5">
@@ -1520,6 +1566,10 @@ export function JobDetail(): React.ReactElement {
     // own mx-2, and the Tabs block had none at all -- content visibly
     // didn't line up down the page).
     <div className="flex flex-col gap-3 px-2">
+      {/* Present from the start so the later text is announced; focus is never moved. */}
+      <div role="status" aria-live="polite" className="sr-only" data-testid="job-arrival-status">
+        {arrival?.message ?? ''}
+      </div>
       <div className="flex flex-col gap-1 border-b border-hairline pb-2 pt-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex min-w-0 flex-wrap items-baseline gap-2">
@@ -1780,7 +1830,7 @@ export function JobDetail(): React.ReactElement {
             setFilterFlaggedOnly(false);
             setTab('tree');
             requestAnimationFrame(() =>
-              document.getElementById('proposed-tree')?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+              document.getElementById('proposed-tree')?.scrollIntoView({ behavior: scrollBehavior(), block: 'start' }),
             );
           }}
           onJumpToNode={(localId) => {
@@ -1838,7 +1888,7 @@ export function JobDetail(): React.ReactElement {
           ]}
         >
           {tab === 'tree' ? (
-            <div id="proposed-tree" className="pt-3">
+            <div id="proposed-tree" className={cn('pt-3', fading && ARRIVE.fadeMedium)}>
               <Card>
                 {/* DESIGN.md §11.5 -- the artifact's persistent "+ New item"
                     toolbar button, previously missing entirely: creation

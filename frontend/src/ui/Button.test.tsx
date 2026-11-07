@@ -27,4 +27,11 @@ describe('Button', () => {
     render(<Button>Save</Button>);
     expect(screen.getByRole('button', { name: 'Save' }).className).toContain('active:scale-[0.98]');
   });
+
+  it('answers a press in 90 ms: feedback on a frequent action is fast (DESIGN.md section 8.3)', () => {
+    render(<Button>Save</Button>);
+    const cls = screen.getByRole('button', { name: 'Save' }).className;
+    expect(cls).toMatch(/(^| )duration-instant( |$)/);
+    expect(cls).not.toMatch(/(^| )duration-fast( |$)/);
+  });
 });

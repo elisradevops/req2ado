@@ -18,11 +18,20 @@ import { useEffect, useRef } from 'react';
 // counter too: the live run view's progress and live frames arrive between
 // narration events, and "updated 40s ago" while items are finishing would be
 // false. Omitted, behaviour is exactly as before.
+// When the event carries the time it happened (`at`: the server's own record for history, the receipt time for a live
+// event) the count starts there, so a page opened in the middle of a long silence knows how long it has already lasted
+// instead of starting again from zero. Without `at` it counts from the moment the page saw the event, as before. A time in
+// the future (the server's clock ahead of this one) counts as now.
+function startOf(latestNarration: unknown): number {
+  const recorded = Date.parse((latestNarration as { at?: string } | null)?.at ?? '');
+  return Number.isFinite(recorded) ? Math.min(recorded, Date.now()) : Date.now();
+}
+
 export function useSecondsSinceLastUpdate(latestNarration: unknown, now: number, activityStamp?: unknown): number {
-  const lastUpdateAtRef = useRef<number>(Date.now());
+  const lastUpdateAtRef = useRef<number>(startOf(latestNarration));
 
   useEffect(() => {
-    lastUpdateAtRef.current = Date.now();
+    lastUpdateAtRef.current = startOf(latestNarration);
     // Deliberately re-runs only when a NEW narration (or activity stamp)
     // actually arrives, not on every parent re-render.
   }, [latestNarration, activityStamp]);

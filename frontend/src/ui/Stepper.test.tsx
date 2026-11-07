@@ -42,15 +42,77 @@ describe('Stepper states prop', () => {
     expect(screen.getByText('B').className).not.toContain('line-through');
   });
 
-  it('colors the connector segment ok when its step is done, hairline otherwise', () => {
+  it('fills the connector segment when its step is done, and leaves it empty otherwise', () => {
     render(<Stepper steps={['A', 'B', 'C']} states={['done', 'current', 'pending']} />);
-    const [segA1, segA2] = Array.from(screen.getByText('A').closest('li')!.querySelectorAll('span.h-px'));
-    const [segB1, segB2] = Array.from(screen.getByText('B').closest('li')!.querySelectorAll('span.h-px'));
+    const segs = (label: string) => Array.from(screen.getByText(label).closest('li')!.querySelectorAll('[data-segment]'));
+    const [segA1, segA2] = segs('A');
+    const [segB1, segB2] = segs('B');
 
-    expect(segA1.className).toContain('bg-transparent'); // leading edge, nothing before step A
-    expect(segA2.className).toContain('bg-ok'); // A is done -> segment into B is ok
-    expect(segB1.className).toContain('bg-ok'); // same segment, B's side -- must agree with segA2
-    expect(segB2.className).toContain('bg-hairline-strong'); // B is not done -> segment into C is not ok
+    expect(segA1).toHaveAttribute('data-filled', 'false'); // leading edge, nothing before step A
+    expect(segA2).toHaveAttribute('data-filled', 'true'); // A is done -> segment into B is filled
+    expect(segB1).toHaveAttribute('data-filled', 'true'); // same segment, B's side -- must agree with segA2
+    expect(segB2).toHaveAttribute('data-filled', 'false'); // B is not done -> segment into C is empty
+  });
+
+  it('sweeps the line in one 240 ms pass: the first half runs linear, the second picks up where it stops and eases out', () => {
+    render(<Stepper steps={['A', 'B']} states={['done', 'pending']} />);
+    const first = screen.getByText('A').closest('li')!.querySelectorAll('[data-segment]')[1].firstElementChild as HTMLElement;
+    const second = screen.getByText('B').closest('li')!.querySelectorAll('[data-segment]')[0].firstElementChild as HTMLElement;
+    for (const half of [first, second]) {
+      expect(half.className).toContain('scale-x-100');
+      expect(half.className).toContain('origin-left');
+      expect(half.className).toContain('rtl:origin-right');
+      expect(half.style.transitionDuration).toBe('calc(var(--duration-medium) / 2)');
+    }
+    expect(first.style.transitionTimingFunction).toBe('linear');
+    expect(first.style.transitionDelay).toBe('');
+    expect(second.style.transitionTimingFunction).toBe('var(--ease-out)');
+    expect(second.style.transitionDelay).toBe('calc(var(--duration-medium) / 2)');
+  });
+
+  it('empties a segment at once rather than after a delay', () => {
+    render(<Stepper steps={['A', 'B']} states={['pending', 'pending']} />);
+    const left = screen.getByText('B').closest('li')!.querySelectorAll('[data-segment]')[0].firstElementChild as HTMLElement;
+    expect(left.className).toContain('scale-x-0');
+    expect(left.style.transitionDelay).toBe('');
+    expect(left.style.transitionDuration).toBe('0s');
+  });
+
+  it('draws no pulsing ring on the current step: the spinner already says work is in flight, and a ring that replays on a remount reads as a restart', () => {
+    render(<Stepper steps={['A']} states={['current']} />);
+    const circle = circleFor('A') as HTMLElement;
+    expect(circle.className).not.toContain('pulse-ring');
+    expect(circle.className).not.toContain('infinite');
+  });
+
+  it('spins the current-step icon once a second, linear, for four turns and then rests: the status text and clock carry liveness', () => {
+    render(<Stepper steps={['A']} states={['current']} />);
+    const icon = circleFor('A')!.querySelector('svg') as unknown as HTMLElement;
+    expect(icon.style.animation).toBe('spin var(--duration-spin) linear 4');
+  });
+
+  it('hands over to a still "in progress" glyph when the turns end, so a stopped refresh arrow never reads as a retry button', () => {
+    render(<Stepper steps={['A']} states={['current']} />);
+    const circle = circleFor('A') as HTMLElement;
+    const spinner = circle.querySelector('svg.lucide-refresh-cw') as unknown as HTMLElement;
+    const rest = circle.querySelector('svg.lucide-ellipsis') as unknown as HTMLElement;
+    expect(rest).not.toBeNull();
+    // the arrow fades out and the dots fade in exactly when the fourth turn ends
+    expect(spinner.parentElement!.style.animation).toContain('fadeOut');
+    expect(spinner.parentElement!.style.animation).toContain('calc(var(--duration-spin) * 4)');
+    expect(rest.parentElement!.style.animation).toContain('fadeIn');
+    expect(rest.parentElement!.style.animation).toContain('calc(var(--duration-spin) * 4)');
+    expect(rest.parentElement!.style.animation).toContain('both');
+  });
+
+  it('fades in a step that is added after first paint, but not the steps already there', () => {
+    const { rerender } = render(<Stepper steps={['A', 'B']} states={['done', 'current']} />);
+    expect(screen.getByText('A').closest('li')!.className).not.toContain('fadeIn');
+
+    rerender(<Stepper steps={['A', 'Review', 'B']} states={['done', 'awaiting', 'pending']} />);
+    expect(screen.getByText('Review').closest('li')!.className).toContain('fadeIn');
+    expect(screen.getByText('A').closest('li')!.className).not.toContain('fadeIn');
+    expect(screen.getByText('B').closest('li')!.className).not.toContain('fadeIn');
   });
 });
 

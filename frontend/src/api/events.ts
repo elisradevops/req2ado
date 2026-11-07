@@ -30,6 +30,9 @@ export type JobStage =
   | 'cancelled';
 
 export interface NarrationEvent {
+  // Client-side annotation, not part of the server payload: when the server recorded the event (from the stored history) or
+  // when this page received it live. Lets the activity feed show real times (DESIGN.md section 11.3.2).
+  at?: string;
   // 'analyze_section' replaced the 'infer_hierarchy'/'generate_requirements'
   // pair when the backend's SURVEY pipeline moved to one holistic call per
   // section (see req2ado docs) -- the old two are kept here only so a

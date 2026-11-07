@@ -29,7 +29,7 @@ export const Button = forwardRef<
       disabled={disabled || loading}
       aria-busy={loading || undefined}
       className={cn(
-        'inline-flex items-center justify-center rounded-sm font-semibold whitespace-nowrap transition-[color,background-color,border-color,box-shadow,transform] duration-fast ease-out active:scale-[0.98]',
+        'inline-flex items-center justify-center rounded-sm font-semibold whitespace-nowrap transition-[color,background-color,border-color,box-shadow,transform,scale] duration-instant ease-out active:scale-[0.98]',
         VARIANT_CLASSES[variant],
         SIZE_CLASSES[size],
         // Native <button> defaults to cursor:default per the UA stylesheet

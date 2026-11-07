@@ -323,13 +323,17 @@ right.
 ### §1.7 — Duration & easing
 
 ```css
-  --duration-instant: 90ms;      /* colour-only: chip/row/menu-item tint */
-  --duration-fast: 140ms;        /* default: button colour, press, .liftable */
-  --duration-base: 190ms;        /* entrance: dialog, popover, list row */
+  --duration-micro: 50ms;        /* high-frequency hover: row tint */
+  --duration-instant: 90ms;      /* colour-only tint, and a button press */
+  --duration-fast: 140ms;        /* default: frequent entrances (route, step, table), .liftable */
+  --duration-base: 190ms;        /* entrance: dialog, popover */
   --duration-exit: 120ms;        /* ALL exits. Exits are always faster. */
+  --duration-medium: 240ms;      /* panels, a rare arrival (a finished result), the stepper sweep */
   --duration-slow: 320ms;        /* layout: rail collapse, height, tab travel */
-  --duration-progress: 900ms;    /* determinate progress width settle */
-  --duration-ambient: 1500ms;    /* shimmer, indeterminate loop */
+  --duration-progress: 400ms;    /* determinate progress fill, ease-out */
+  --duration-spin: 1000ms;       /* one turn of a spinner icon */
+  --duration-typedot: 1100ms;    /* chat typing dots */
+  --duration-ambient: 1500ms;    /* skeleton shimmer, indeterminate loop */
   --duration-breathe: 2600ms;    /* confirm-CTA attention cycle */
 
   --ease-out:     cubic-bezier(0.22, 0.61, 0.36, 1);   /* entrances, presses */
@@ -823,15 +827,15 @@ Five named roles. Every animation in the app is exactly one of them. A new
 
 | Role | Meaning | Duration | Easing | Permitted properties | Banned |
 |---|---|---|---|---|---|
-| **Entrance** | An element that did not exist now exists | `--duration-base` (190ms). List stagger +24ms/item, capped at 8 items, remainder at delay 0. | `--ease-out` | `opacity`, `translateY(≤4px)`, `scale(0.97→1)` | On anything already on screen. On whole-page route change. On virtualised rows during scroll-recycle (first mount only). More than one nesting level animating at once. |
+| **Entrance** | An element that did not exist now exists | `--duration-fast` (140ms) for frequent arrivals: a route change fades `<main>`, a wizard step fades its container, a table's `<tbody>` fades once on first arrival. `--duration-base` (190ms) for dialogs and popovers, `--duration-medium` (240ms) for a rare arrival (a finished result). No per-row stagger. | `--ease-out` | `opacity`, `translateY(≤4px)`, `scale(0.97→1)`; a route, step or table fade is opacity only | On anything already on screen. On a whole-page route change, anything but opacity (no slide, no scale). On virtualised rows. On a step the person has already seen, on sort, filter or refresh. More than one nesting level animating at once. |
 | **Exit** | An element ceases to exist | `--duration-exit` (120ms) — always shorter than its entrance | `--ease-in` | `opacity`, `scale(1→0.97)`, `translateY(≤4px)` | On unmount without user intent (an SSE data replacement is not an exit). On list items removed by a filter change — those disappear instantly. |
-| **State-change** | The same element becomes different | `--duration-instant` (colour-only) / `--duration-fast` (colour + shadow + press + `.liftable` + `.hoverable-row`) / `--duration-slow` (layout) / `--duration-progress` (determinate bar width) | `--ease-out` (pointer-driven) / `--ease-in-out` (layout) | `color`, `background-color`, `border-color`, `box-shadow`, `opacity`, `translateY(≤2px)`, `scaleY` on the row rail, `scale(0.97–1.09)`, `width` / `height` / `grid-template-rows` for disclosure | On a virtual-scrolled row's background. On any unenumerated property. Via bare `transition`. Never `filter` / `backdrop-filter`. |
-| **Ambient / live** | Something is genuinely happening on a server right now | `--duration-ambient` (shimmer, indeterminate), `2600ms` (`pulse-ring`), `1.1s` (typedot), `0.7s` (spin) | `--ease-linear` (spin, shimmer) / `--ease-in-out` (typedot, indeterminate, `pulse-ring`) | `translateX`, `rotate` (Spinner only), `scale`, `opacity`, `background-position`, `box-shadow` (`pulse-ring` only) | **Whenever nothing is actually in flight** — an outliving spinner or shimmer is a correctness bug. No ambient decoration: no idle pulsing, no breathing outside Attention. |
-| **Attention** | The app is blocked on an irreversible human decision | `--duration-breathe` (2600ms), infinite | `--ease-in-out` | `box-shadow` only — `--shadow-cta` ↔ `--shadow-cta-attention` | Everywhere except the confirm-to-ADO CTA post-acknowledgement. Never more than one element at a time. Never on reversible-destructive actions (delete, cancel). Never on a toast. |
+| **State-change** | The same element becomes different | `--duration-micro` (`.hoverable-row` tint) / `--duration-instant` (colour-only, and a button press) / `--duration-fast` (colour + shadow + `.liftable` + a disclosure chevron) / `--duration-medium` (the stepper sweep) / `--duration-slow` (layout) / `--duration-progress` (determinate bar fill, `transform: scaleX`) | `--ease-out` (pointer-driven) / `--ease-in-out` (layout) | `color`, `background-color`, `border-color`, `box-shadow`, `opacity`, `translateY(≤2px)`, `scaleY` on the row rail, `scaleX` on the progress fill and the stepper connector, `rotate(90deg)` on a disclosure chevron, `scale(0.97–1.09)`, `width` / `height` / `grid-template-rows` for disclosure | On a virtual-scrolled row's background. On any unenumerated property. Via bare `transition`. Never `filter` / `backdrop-filter`. |
+| **Ambient / live** | Something is genuinely happening on a server right now | `--duration-ambient` (skeleton shimmer, indeterminate), `--duration-typedot` (typedot), `--duration-spin` (spin) | `--ease-linear` (spin, shimmer) / `--ease-in-out` (typedot, indeterminate) | `translateX`, `rotate` (Spinner only), `scale`, `opacity`, `background-position`, `box-shadow` (`pulse-ring` only) | **Whenever nothing is actually in flight** — an outliving spinner or shimmer is a correctness bug. No ambient decoration: no idle pulsing, no breathing outside Attention. |
+| **Attention** | The app is blocked on an irreversible human decision | `--duration-breathe` (2600ms), once, settling on the attention state | `--ease-in-out` | `box-shadow` only — `--shadow-cta` ↔ `--shadow-cta-attention` | Everywhere except the confirm-to-ADO CTA post-acknowledgement. Never more than one element at a time. Never on reversible-destructive actions (delete, cancel). Never on a toast. |
 
-Existing keyframes, mapped: `fadeIn` / `dialogIn` / `listItemIn` / `popIn` →
+Existing keyframes, mapped: `fadeIn` / `dialogIn` / `popIn` →
 Entrance. `fadeOut` / `dialogOut` / `popOut` → Exit. `shimmer` / `spin` /
-`typedot` / `indeterminate-progress` / `pulse-ring` → Ambient. `ctaBreathe` →
+`typedot` / `indeterminate-progress` → Ambient. `ctaBreathe` →
 Attention. `animate-pulse` (Tailwind's builtin) is removed — it double-animates
 alongside the inline `shimmer`.
 
@@ -839,21 +843,21 @@ alongside the inline `shimmer`.
 Radix-anchored popovers, which carry their own `translate()` from Radix's popper
 positioning; reusing the dialog keyframes would fight that transform.
 
-**`pulse-ring` needs room.** The current-lifecycle-step ring animates *outside*
-its own box. Its container must not clip it — `overflow: visible` on the card
-that holds it, and enough padding on the row that the expanded ring does not
-collide with a neighbour. A flattened ring reads as a rendering bug.
-
 ### §8.1 — Reduced motion
 
 The `@layer base` kill-switch (`0.001ms !important` on `animation-duration` and
-`transition-duration`, `animation-iteration-count: 1`) is retained and
+`transition-duration`, `0s !important` on `animation-delay` and
+`transition-delay`, `animation-iteration-count: 1`) is retained and
 normative, plus three clauses:
 
 1. **`transition-duration` is clamped, `transition-property` is not** — a
    `-translate-y-px` hover would still apply instantly. All lift routes through
    `.liftable`, whose reduced-motion block (§6.1) zeroes the transform outright,
    so "no motion" means no displacement rather than instant displacement.
+   The same holds for a pointer press: `button:active` and `[role='button']:active`
+   drop `scale` and `translate` (Button's `active:scale-[0.98]`), and
+   `design/motionContract.test.ts` fails if a new `active:` or `hover:` scale or
+   translate utility appears without its neutraliser.
 2. **Attention has a non-motion fallback.** Freezing `ctaBreathe` at an
    arbitrary point in its cycle would leave the confirm-to-ADO CTA looking like
    its rest state as often as its attention state. Under reduced motion it
@@ -876,7 +880,7 @@ the Web Animations API is missing (so the content just appears).
 |---|---|---|---|
 | **Count roll** | State-change | The digits of a count roll to the new value. Only counts the reviewer is driving down: the warnings card's gate line, the focus chip's "left of N", a row's "reviewed" count. | `ui/AnimatedNumber.tsx` (`@number-flow/react`) |
 | **Done pop** | Entrance | A *Done* chip scales 0.6 → 1 on a spring when a kind completes. Exceeds Entrance's `scale(0.97→1)` allowance on purpose: it is a completion confirmation. | `ui/DoneChip.tsx` |
-| **Item settle** | State-change | The details dialog's content fades 0.4 → 1 and rises 4px when J/K/R moves to another item. Not on first open (the dialog's own entrance covers that). | `NodeDetailDialog.tsx` |
+| **Item settle** | State-change | The details dialog's content fades 0.7 → 1 over 110ms, with no movement, when J/K/R moves to another item. Not on first open (the dialog's own entrance covers that), and not on a repeat within 300ms (§8.3). | `NodeDetailDialog.tsx` |
 
 The Done pop and Item settle use `motion/react-mini` (the Web Animations API,
 about 3 KB). The full `motion/react` components were evaluated and rejected: they
@@ -888,6 +892,84 @@ virtualised row may animate.
 purpose only. In tests `@number-flow/react` is mocked to a bare text node
 (`src/test/setup.ts`), because it renders its digits into a shadow root and would
 otherwise split a sentence like "28 of 80 reviewed" across elements.
+
+### §8.3 — One motion language (P16)
+
+Components ask `ui/motion.ts` how to move: the duration and easing tokens, the
+`ARRIVE` entrance classes, `useReplayOnChange` and `scrollBehavior()`. A
+component never writes a bare duration or curve. The primitive's tokens are
+asserted against `index.css`, and `design/motionContract.test.ts` fails if a
+`@keyframes` is not named in §8.
+
+The values below follow primary sources (fetched 2026-11-07): Carbon motion and
+choreography, Atlassian motion, GitHub Primer motion tokens and loading pattern,
+Salesforce Lightning kinetics, Fluent 2 and Windows motion, Material 3 tokens and
+transition patterns, NN/g (animation duration 2020, usability 2014, skeleton
+screens 2023, progress indicators 2014), Apple HIG motion, and WCAG 2.2 SC 2.2.2
+and 2.3.3. Duration scales with the size of what moves and falls as the action
+repeats: 50ms hover, 90ms press, 140ms frequent fades and chevrons, 240ms panels
+and a rare arrival.
+
+| Where | What moves | Rule |
+|---|---|---|
+| Route change | `<main>` fades in, `--duration-fast` | Opacity only, on the element that persists; replayed per path, never on first load, tab or query change. |
+| Wizard step change | The step container fades in, `--duration-fast`; focus moves to the step heading | The steps share one container. Only a step not yet seen fades; going back is an instant swap. The heading reads "New Job, step n of 3" and takes focus because the control that had it is gone; the page title reads "Step n of 3: <name> - New Job" and is restored on leaving. Nothing moves focus on first load. |
+| Tables on first paint | The `<tbody>` fades once, `--duration-fast` | Jobs list and batch files. One block, opacity only, no per-row stagger: every row behaves the same at 5 rows or 500, and nothing replays on sort, filter or refresh. The Knowledge Base list does not animate (it re-renders on every search keystroke). |
+| Stepper | The line sweeps to the next step in one `--duration-medium` pass; a step added late fades in | The half ending at the finished step runs linear, the half arriving at the next runs ease-out after it, so the line never stalls at a node. Emptying is instant. Steps present on first paint do not animate. |
+| Current-step marker | The refresh icon spins once a second, linear, for four turns, then rests | No pulsing ring: two motions saying "working" read as noise, and a ring that replays on a remount reads as a restart. It stops under five seconds (WCAG 2.2.2) and hands over to a still "in progress" glyph (three dots), so it never rests as a refresh arrow that reads like a retry button; under reduced motion the dots are there from the start. The status text and the ticking elapsed clock carry "still working". |
+| Progress bar | Fill (`scaleX`), `--duration-progress` (400ms), ease-out | A forward jump of a percent or more eases; a smaller change or any move backwards snaps. No shimmer: it would loop beside live content for more than 5s (WCAG 2.2.2). The ticking elapsed text carries "still alive". |
+| Tree expand and collapse | The chevron turns, `--duration-fast` | Rows appear and leave at once. The tree is virtualised and a disclosure is a frequent action; the rows below jump either way, so fading only the new ones looked clunky. |
+| Overview card | The chevron turns | The text appears and leaves at once. |
+| Stat tiles | None | The number is there in the first frame. A count-up shows the wrong number for most of a second on every visit. Tiles do not lift on hover unless they are clickable. |
+| "Diff ready" | The review area fades in once, `--duration-medium`; a polite status line announces it | Only when a job that was running on the page finishes; a job opened already finished stays still and silent. Focus is never moved. |
+| Skeleton placeholder | Drawn only after `SKELETON_DELAY_MS` (1000ms) | It is laid out at once (no jump) but `invisible` until the delay, so a load under a second shows nothing instead of a flash (Primer loading pattern, NN/g). One constant in `ui/Skeleton.tsx` covers every skeleton. Where the placeholder is the only content (job page, wiki), a `role="status" aria-busy` region with visually hidden "Loading…" text exists from the first moment, so assistive technology is not left in silence. |
+| Confirm-to-ADO attention | The shadow eases from rest to the attention shadow once, 2600ms, and stays | The rule itself holds the attention shadow and the animation uses a `backwards` fill, so the end state is the resting state and the button's own hover and press shadows still apply. The reduced-motion fallback shows the same state, so both modes end alike. Not a loop (WCAG 2.2.2). |
+| Running job: live dot | A halo around the dot fades out once per real server update (`BEAT`, `--duration-slow`), at most one per 2 seconds | Opacity only, never a loop. A hollow ring with a neutral plain-text note after 60 seconds of silence (§11.3.2). Replaces an endless ping. |
+| Running job: activity feed | A line fades in once, `--duration-fast`, when it arrives after first paint | Lines already there on first paint do not animate. A labelled `role="log"`, `aria-live="off"`. |
+| Running job: finished step | The step's check fades in once when it appears after first paint | Not a rolling or looping tick. |
+| Button press, row hover | `--duration-instant` (90ms) press; `--duration-micro` (50ms) row tint | Feedback on the most frequent actions is the fastest motion in the app. |
+| Item settle (J/K) | Opacity 0.7 to 1, 110ms, no movement | Skipped when the previous step was under 300ms ago, so a held key stays still. |
+
+Ticking clocks (the model-call "so far" line, the elapsed meta line) are plain
+text with no motion class and sit outside every live region.
+
+**Reduced motion and JavaScript.** CSS smooth scrolling is cleared by the
+kill-switch; JavaScript motion is gated separately: `scrollBehavior()` returns
+`auto` under the media query, and the J/K settle and the Done pop check it
+themselves.
+
+**Considered and not done, with the evidence.** A slide or scale on route change
+(Fluent: "use a quick fade transition instead of moving or sliding"; NN/g: more
+frequent means more subtle and shorter). Animating `height` for tree or card
+disclosure (Atlassian and web.dev: layout work every frame; `motion` reports
+clipping and a snap on `height: auto`). Any per-row stagger (no source supports
+animating the first N rows and not the rest; Carbon caps a stagger at 500ms
+total and Fluent drops it for large groups). A first-paint count-up (no source
+supports it in a professional tool; Atlassian: "if motion makes the interface
+feel slower without helping users understand context, shorten it or remove it").
+A shimmer or pulse on live content (WCAG 2.2.2 and Lightning: "avoid repeated
+pulsing motions"). WCAG 2.2.2 is not documented as satisfied by honouring `prefers-reduced-motion`,
+so a loop beside usable content is bounded under five seconds instead (the
+current-step spinner, the confirm-button attention).
+
+**Loops that remain, and why.** A skeleton shimmer is a loading placeholder, the
+indeterminate progress segment appears only when a step has no estimate, the chat
+typing dots live only while a reply is pending, and a spinner inside a button
+marks the control that is busy. Each is a wait indicator, not decoration, and
+WCAG 2.2.2 counts a loading animation as essential when the person cannot
+interact during it. The indeterminate segment and the typing dots sit beside
+usable content during long waits, so they are the next candidates if a pause
+control or a bounded loop is wanted; they were not changed.
+
+**The utilities.** `duration-<token>` classes are real utilities, defined once in
+`index.css` with `@utility`. Tailwind does not generate them from `--duration-*`,
+and until they were defined those classes ran at the 150ms default.
+`design/motionContract.test.ts` fails if source uses one that is not defined.
+
+**Not done.** A persistent completion banner already exists on the job page
+("Diff ready for your review"). Changing the document title on completion has no
+primary source and was not built. `.hoverable-row::before` and the StatTile accent
+bar use `left-0`, which is wrong in right-to-left layouts (pre-existing).
 
 ---
 
@@ -1910,8 +1992,8 @@ that shared container.
   do not "fix" this by showing the growing figure anyway.
 
 **The loud element** (`ProgressBanner.tsx`, rendered only while the status is a
-run status) is one card containing, in order: a live pulse dot in
-`--color-live`, animated only while a stream is genuinely open (§8 Ambient); the
+run status) is one card containing, in order: a live dot in
+`--color-live` that beats once per real server update and turns amber when none has come for a minute (§11.3.2); the
 phase headline in `text-title` in plain language — "Checking for duplicates,"
 never `dedup_check`; one sentence of what that phase is doing, identifiers in
 `font-mono`; and the percentage in `text-metric font-mono tabular-nums` pinned
@@ -1977,6 +2059,52 @@ log never actually gave.
   `latest`.
 
 The `writing` phase has its own `WriteSubStepper` on the same principles.
+
+#### §11.3.2 — Liveness cues on a running job
+
+One whole-document model request can run for ten minutes or more and reports
+nothing until it returns, so for long stretches the only true event is "still
+waiting". The page says that with state, not with decoration:
+
+- **Live dot** (`LivenessDot`): a halo around the dot fades out once each time
+  the server really reports progress (`BEAT`, opacity only, `--duration-slow`),
+  at most one per 2 seconds so beats never chain into a long motion (WCAG 2.2.2).
+  It replaces an endless ping. The dot is solid in the live colour while updates
+  arrive.
+- **Waiting state:** after 60 seconds with no update the dot becomes a hollow
+  ring (same colour, different shape) and a neutral note says "No update for
+  1m 15s. The job is still working: one large request can take many minutes. You
+  can close this page; the run continues on the server." It is never amber or
+  red: minutes of silence are normal in the model phases, and a warning colour
+  for the normal case would cry wolf. One polite status region, present from the
+  first render, announces it once with fixed text (never the ticking time). The
+  60 seconds is a design choice, not a cited number.
+- **Times:** each event's time is the server's record for history and this page's
+  receipt time for a live event, and "No update for…" counts from it, so a page
+  opened in the middle of a silence knows how long it has lasted. The server and
+  browser clocks are assumed close: a browser more than a minute off would show
+  a false wait or a wrong time column. A server time offset would remove that;
+  the API does not expose one today.
+- **Counted progress wins:** when the server counts real units itself, its
+  percentage (including a real 0%) is shown and "no result yet" is not.
+- **No result yet:** inside one request that has reported nothing, the right-hand
+  "0%" reads "no result yet" and the panel says "Waiting on one request.
+  Progress shows when it returns." A bar and a 0% that sit still for ten minutes
+  look dead and over-claim.
+- **Activity feed** (`ActivityFeed`): a compact, capped record of what the run
+  has reported, so a long wait shows what already happened and when. This is not
+  the raw scrolling log §11.3.1 replaced, which stays unbuilt: it shows the last 6
+  lines, "Show all n" opens up to the 50 the page holds, and `SectionStepList`
+  remains the answer to "what is left". Narration events carry no timestamp, so a
+  line is stamped with the time this page first saw it, and history that was
+  already there when the page opened reads "earlier". It is a `role="log"` with an
+  accessible name, oldest first and newest last, `aria-live="off"` so routine
+  lines are never read out; milestones go through the status region above. Its
+  heading is a level two, the toggle's name says what it does ("Show all n" /
+  "Show fewer"), and the opened list is a named, keyboard-reachable scroll
+  region. A line
+  that arrives after first paint fades in once (`--duration-fast`).
+- **Counters** swap their number with no count-up and use tabular numerals.
 
 #### §11.3.2 — The three result disclosures
 

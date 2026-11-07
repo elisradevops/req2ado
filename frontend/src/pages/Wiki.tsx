@@ -68,7 +68,9 @@ export function Wiki(): JSX.Element {
           </Alert>
         ) : content === null ? (
           <Card>
-            <div className="flex flex-col gap-2.5 p-4">
+            <div role="status" aria-busy="true" className="flex flex-col gap-2.5 p-4">
+              {/* The placeholders below are not drawn for the first second (ui/Skeleton), so assistive technology is told at once. */}
+              <span className="sr-only">Loading the user guide…</span>
               <Skeleton className="h-6 w-1/2" />
               <Skeleton className="h-4 w-full" />
               <Skeleton className="h-4 w-full" />

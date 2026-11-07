@@ -99,4 +99,20 @@ describe('DocumentOverviewCard', () => {
     await userEvent.click(screen.getByRole('button', { name: /show all 12 lines/i }));
     expect(screen.getAllByText(/^Line \d+\.$/)).toHaveLength(12);
   });
+
+  it('turns its chevron when it opens and moves nothing else: the text appears and leaves at once', async () => {
+    render(<DocumentOverviewCard overview={OVERVIEW} />);
+    const button = screen.getByRole('button', { name: /show/i });
+    expect(button.querySelector('svg')).not.toHaveClass('rotate-90');
+    expect(button.querySelector('svg')).toHaveClass('transition-transform');
+
+    await userEvent.click(button);
+    const hide = screen.getByRole('button', { name: /hide/i });
+    expect(hide.querySelector('svg')).toHaveClass('rotate-90');
+    const region = document.getElementById(hide.getAttribute('aria-controls')!)!;
+    expect(region.className).not.toMatch(/animate-|fadeIn/);
+
+    await userEvent.click(hide);
+    expect(screen.queryByText('Unresolved values: TBD ×5.')).not.toBeInTheDocument();
+  });
 });

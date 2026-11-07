@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { Link, MemoryRouter } from 'react-router-dom';
 import * as React from 'react';
 import { AppShell } from './AppShell';
 import * as authApi from '../api/auth';
@@ -515,5 +515,30 @@ describe('AppShell below the md breakpoint', () => {
     expect(within(group).getByText('SharePoint')).toBeInTheDocument();
     expect(within(group).getByText('LLM Backend')).toBeInTheDocument();
     await waitFor(() => expect(adoApi.getAdoStatus).toHaveBeenCalled());
+  });
+});
+
+describe('AppShell route enter', () => {
+  beforeEach(() => {
+    useAuthStore.getState().login('https://ado.example', 'Jane', 'user-descriptor-1');
+    vi.spyOn(adoApi, 'getAdoStatus').mockResolvedValue({ status: 'valid' });
+    vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'valid', expiresInSeconds: 2820 });
+    vi.spyOn(llmApi, 'getLlmStatus').mockResolvedValue({ status: 'reachable', latencyMs: 42 });
+  });
+
+  it('fades the page in after a route change, but not on the first load (DESIGN.md section 8)', async () => {
+    render(
+      <MemoryRouter initialEntries={['/jobs']}>
+        <AppShell>
+          <Link to="/help">go to help</Link>
+        </AppShell>
+      </MemoryRouter>,
+    );
+
+    const main = screen.getByRole('main');
+    expect(main.className).not.toContain('fadeIn');
+
+    await userEvent.click(screen.getByRole('link', { name: 'go to help' }));
+    expect(main.className).toContain('fadeIn');
   });
 });

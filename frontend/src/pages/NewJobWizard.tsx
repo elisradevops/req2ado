@@ -36,6 +36,7 @@ import { Spinner } from '../ui/Spinner';
 import { Alert } from '../ui/Alert';
 import { Chip } from '../ui/Chip';
 import { StatTile } from '../ui/StatTile';
+import { ARRIVE, useReplayOnChange } from '../ui/motion';
 import { Stepper, type StepState } from '../ui/Stepper';
 import { InfoTip } from '../ui/Tooltip';
 
@@ -180,6 +181,43 @@ export function NewJobWizard(): React.ReactElement {
   // What the user had done before leaving this page and coming back (see newJobDraftStore); empty on a first visit.
   const [initial] = useState(restorableDraft);
   const [step, setStep] = useState<1 | 2 | 3>(initial.step);
+  // The three steps share one container, so a step change replays a fade on it rather than remounting (focus survives; DESIGN.md section 8).
+  const stepRootRef = useRef<HTMLDivElement>(null);
+  // Only a step the person has not seen yet fades in; going back to one they have seen is an instant swap.
+  const seenSteps = useRef(new Set<number>([step]));
+  const fadeKey = useRef(String(step));
+  if (!seenSteps.current.has(step)) {
+    seenSteps.current.add(step);
+    fadeKey.current = String(step);
+  }
+  useReplayOnChange(stepRootRef, fadeKey.current, ARRIVE.fade);
+  // A step change replaces the control that had focus, so focus goes to the new step's heading, which reads the step
+  // (W3C multi-page forms, Lightning focus guidance); never on first load. The page title carries the progress too, and
+  // is put back when the wizard unmounts.
+  const firstStepRender = useRef(true);
+  useEffect(() => {
+    if (firstStepRender.current) {
+      firstStepRender.current = false;
+      return;
+    }
+    const heading = stepRootRef.current?.querySelector('h1');
+    if (heading) {
+      heading.tabIndex = -1;
+      heading.focus();
+    }
+  }, [step]);
+  useEffect(() => {
+    const previousTitle = document.title;
+    document.title = `Step ${step} of ${WIZARD_STEPS.length}: ${WIZARD_STEPS[step - 1]} - New Job`;
+    return () => {
+      document.title = previousTitle;
+    };
+  }, [step]);
+  const stepTitle = (
+    <>
+      New Job<span className="sr-only">, step {step} of {WIZARD_STEPS.length}</span>
+    </>
+  );
   const [file, setFile] = useState<File | null>(initial.file);
   const [preview, setPreview] = useState<PreviewResult | null>(initial.preview);
   // Dropzone status now lives on step 1 alongside the stat tiles (DESIGN.md
@@ -414,8 +452,8 @@ export function NewJobWizard(): React.ReactElement {
 
   if (step === 1) {
     return (
-      <div className="flex flex-col gap-4">
-        <PageHeader title="New Job" description="Upload a requirements document to get started" />
+      <div ref={stepRootRef} data-testid="wizard-step" className="flex flex-col gap-4">
+        <PageHeader title={stepTitle} description="Upload a requirements document to get started" />
         <Stepper steps={WIZARD_STEPS} states={wizardStepStates(0)} subLabels={wizardSubLabels(mode)} />
         {/* DESIGN.md §11.1 -- "a two-pane split that owns the viewport by
             construction" -- previously a single narrow column stretched
@@ -540,8 +578,8 @@ export function NewJobWizard(): React.ReactElement {
 
   if (step === 3) {
     return (
-      <div className="flex flex-col gap-4">
-        <PageHeader title="New Job" description="Check what was read from the file before it runs" />
+      <div ref={stepRootRef} data-testid="wizard-step" className="flex flex-col gap-4">
+        <PageHeader title={stepTitle} description="Check what was read from the file before it runs" />
         <Stepper steps={WIZARD_STEPS} states={wizardStepStates(2)} />
         <SectionCard title="Does this look right?">
           <div className="flex flex-col gap-3">
@@ -615,8 +653,8 @@ export function NewJobWizard(): React.ReactElement {
   const selectedEstimate = mode === 'baseline' ? baselineEstimate : surveyEstimate;
 
   return (
-    <div className="flex flex-col gap-4">
-      <PageHeader title="New Job" description="Review the parsed document and set where it writes to" />
+    <div ref={stepRootRef} data-testid="wizard-step" className="flex flex-col gap-4">
+      <PageHeader title={stepTitle} description="Review the parsed document and set where it writes to" />
       <Stepper steps={WIZARD_STEPS} states={wizardStepStates(1)} subLabels={wizardSubLabels(mode)} />
       {/* Two-column split (prototype's `.split`, ~1.6:1) -- left column is
           document identity + destination, right column is how-to-read +
