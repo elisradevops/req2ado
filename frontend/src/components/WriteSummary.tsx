@@ -39,16 +39,35 @@ export function WriteSummary({
   teamProject,
   areaPath,
   warnings,
-  onBackToTree,
+  onReviewUnreviewed,
+  onShowWarnings,
+  onShowExcluded,
 }: {
   state: WriteSummaryState;
   teamProject: string | null;
   areaPath: string | null;
   warnings: WarningCounts;
-  onBackToTree: () => void;
+  // Shortcuts that take the reviewer to the thing to deal with first; each shows only when it applies and its callback is given.
+  onReviewUnreviewed?: () => void;
+  onShowWarnings?: () => void;
+  onShowExcluded?: () => void;
 }): React.ReactElement {
   const destination = areaPath ?? teamProject;
   const warningText = warningSentence(warnings);
+  const unreviewed = state.status === 'ready' ? state.review.notReviewed : 0;
+  const excluded = state.status === 'ready' ? state.preview.excluded.direct + state.preview.excluded.viaAncestor : 0;
+  const fixCount = warnings.open.fix;
+  const actions = [
+    unreviewed > 0 && onReviewUnreviewed
+      ? { id: 'review', label: `Review ${unreviewed.toLocaleString()} unreviewed ${unreviewed === 1 ? 'item' : 'items'}`, run: onReviewUnreviewed }
+      : null,
+    fixCount > 0 && onShowWarnings
+      ? { id: 'warnings', label: `Go to ${fixCount.toLocaleString()} ${fixCount === 1 ? 'warning' : 'warnings'} to fix`, run: onShowWarnings }
+      : null,
+    excluded > 0 && onShowExcluded
+      ? { id: 'excluded', label: `Show the ${excluded.toLocaleString()} excluded ${excluded === 1 ? 'item' : 'items'}`, run: onShowExcluded }
+      : null,
+  ].filter((action): action is { id: string; label: string; run: () => void } => action !== null);
   return (
     <div className="flex flex-col gap-2 text-sm">
       {destination && (
@@ -74,11 +93,18 @@ export function WriteSummary({
         </ul>
       )}
       {warningText && <p className="text-warning-ink">{warningText}</p>}
-      <div>
-        <Button size="sm" variant="ghost" className="max-md:min-h-11" onClick={onBackToTree}>
-          Back to the tree
-        </Button>
-      </div>
+      {actions.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          <p className="text-ink-2">Before you write:</p>
+          <div className="flex flex-wrap gap-2">
+            {actions.map((action) => (
+              <Button key={action.id} size="sm" variant="outline" className="max-md:min-h-11" onClick={action.run}>
+                {action.label}
+              </Button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -62,6 +63,14 @@ describe('ConfirmDialog confirmDisabled', () => {
   it('describes why the confirm button is disabled', () => {
     render(<ConfirmDialog open onOpenChange={() => {}} title="t" confirmLabel="Go" onConfirm={() => {}} confirmDisabled confirmDisabledReason="Nothing to write." />);
     expect(confirmButton()).toHaveAccessibleDescription('Nothing to write.');
+  });
+
+  it('points aria-describedby at an element whose text is the reason, with an id that is not fixed', () => {
+    render(<ConfirmDialog open onOpenChange={() => {}} title="t" confirmLabel="Go" onConfirm={() => {}} confirmDisabled confirmDisabledReason="Nothing to write." />);
+    const id = confirmButton().getAttribute('aria-describedby');
+    expect(id).toBeTruthy();
+    expect(id).not.toBe('confirm-disabled-reason');
+    expect(document.getElementById(id as string)).toHaveTextContent('Nothing to write.');
   });
 
   it('keeps the confirm button disabled when the caller says the action would do nothing', () => {
@@ -162,5 +171,69 @@ describe('ConfirmDialog variants', () => {
     render(<ConfirmDialog open onOpenChange={() => {}} title="t" confirmLabel="Go" onConfirm={() => {}} isConfirming />);
     expect(confirmButton()).toBeDisabled();
     expect(confirmButton()).toHaveAttribute('aria-busy', 'true');
+  });
+});
+
+describe('ConfirmDialog cancel style, hint and focus hand-over', () => {
+  it('draws Cancel as an outlined button when asked, and ghost by default', () => {
+    const { rerender } = render(<ConfirmDialog open onOpenChange={() => {}} title="t" confirmLabel="Go" onConfirm={() => {}} />);
+    // class pin: jsdom has no layout
+    expect(hasClass(screen.getByRole('button', { name: 'Cancel' }), 'border-field-border')).toBe(false);
+    expect(hasClass(screen.getByRole('button', { name: 'Cancel' }), 'bg-transparent')).toBe(true);
+    rerender(<ConfirmDialog open onOpenChange={() => {}} title="t" confirmLabel="Go" onConfirm={() => {}} cancelVariant="outline" />);
+    // class pin: jsdom has no layout
+    expect(hasClass(screen.getByRole('button', { name: 'Cancel' }), 'border-field-border')).toBe(true);
+  });
+
+  it('says why the write button is off until the box is ticked, and stops saying it after', async () => {
+    const user = userEvent.setup();
+    render(<ConfirmDialog open onOpenChange={() => {}} title="t" confirmLabel="Go" onConfirm={() => {}} variant="irreversible" />);
+    expect(screen.getByText('Tick the box above to enable this button.')).toBeVisible();
+    expect(confirmButton()).toHaveAccessibleDescription(/tick the box above to enable this button/i);
+    await user.click(screen.getByRole('checkbox'));
+    expect(screen.queryByText('Tick the box above to enable this button.')).toBeNull();
+  });
+
+  it('does not show the tick hint when the button is off for another reason', () => {
+    render(<ConfirmDialog open onOpenChange={() => {}} title="t" confirmLabel="Go" onConfirm={() => {}} variant="irreversible" confirmDisabled confirmDisabledReason="Nothing to write." />);
+    expect(screen.queryByText('Tick the box above to enable this button.')).toBeNull();
+    expect(confirmButton()).toHaveAccessibleDescription('Nothing to write.');
+  });
+
+  it('does not show the tick hint for a neutral dialog', () => {
+    render(<ConfirmDialog open onOpenChange={() => {}} title="t" confirmLabel="Go" onConfirm={() => {}} />);
+    expect(screen.queryByText('Tick the box above to enable this button.')).toBeNull();
+  });
+
+  it('restoreFocus={false} leaves focus alone on close, and the default returns it to the opener', async () => {
+    function Harness({ restoreFocus }: { restoreFocus?: boolean }) {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <button onClick={() => setOpen(true)}>Open it</button>
+          <ConfirmDialog open={open} onOpenChange={setOpen} title="t" confirmLabel="Go" onConfirm={() => {}} restoreFocus={restoreFocus} />
+        </>
+      );
+    }
+    const user = userEvent.setup();
+    const first = render(<Harness restoreFocus={false} />);
+    let opener = screen.getByRole('button', { name: 'Open it' });
+    let spy = vi.spyOn(opener, 'focus');
+    await user.click(opener);
+    await screen.findByRole('dialog');
+    spy.mockClear();
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(spy).not.toHaveBeenCalled();
+    first.unmount();
+
+    render(<Harness />);
+    opener = screen.getByRole('button', { name: 'Open it' });
+    spy = vi.spyOn(opener, 'focus');
+    await user.click(opener);
+    await screen.findByRole('dialog');
+    spy.mockClear();
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(spy).toHaveBeenCalled());
   });
 });

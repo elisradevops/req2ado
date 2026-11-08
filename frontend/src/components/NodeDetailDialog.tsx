@@ -83,12 +83,13 @@ function matchesShortcutLetter(event: KeyboardEvent, letter: string): boolean {
   const key = event.key.toLowerCase();
   if (key === letter) return true;
   const latin = /^[a-z]$/.test(key);
-  return !latin && event.code === `Key${letter.toUpperCase()}`;
+  // Only a real typed character may fall back to the physical key: 'Dead', 'Unidentified' and 'Process' (IME) are not letters.
+  return !latin && event.key.length === 1 && event.code === `Key${letter.toUpperCase()}`;
 }
 
 function KeyHints({ hints }: { hints: Array<[string, string]> }): React.ReactElement {
   return (
-    <span data-testid="key-hints" className="ms-2 text-xs opacity-80">
+    <span data-testid="key-hints" aria-hidden="true" className="ms-2 text-xs opacity-80">
       {hints.map(([key, label], index) => (
         <Fragment key={key}>
           {/* The break point is this space, outside the nowrap pair: the line breaks between hints, never inside one. */}
@@ -279,7 +280,8 @@ export function NodeDetailDialog({
     function handleKeyDown(event: KeyboardEvent): void {
       if (event.defaultPrevented || event.shiftKey || event.isComposing || event.keyCode === 229) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
-      const target = event.target as HTMLElement | null;
+      // composedPath()[0] is the real origin even inside a shadow root, where event.target is retargeted to the host.
+      const target = (event.composedPath?.()[0] ?? event.target) as HTMLElement | null;
       if (target && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))) return;
       // A letter typed to pick an option or menu entry is not a review shortcut.
       if (target?.closest?.(WIDGET_ROLE_SELECTOR)) return;

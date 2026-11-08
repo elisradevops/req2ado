@@ -52,6 +52,11 @@ describe('categoryLabel', () => {
 
 // What to do when the ingestion file cannot be found: run the guard, skip it locally, or fail in CI
 // (a silently vanished guard is worse than a red build).
+// A CI value counts only when non-empty and not an explicit off ('0' / 'false').
+export function isCiValue(value: string | undefined): boolean {
+  return !!value && value !== '0' && value !== 'false';
+}
+
 export function mirrorGuardMode(fileFound: boolean, ci: boolean): 'run' | 'skip' | 'fail' {
   if (fileFound) return 'run';
   return ci ? 'fail' : 'skip';
@@ -68,6 +73,17 @@ describe('mirrorGuardMode', () => {
   it('fails a missing file in CI', () => {
     expect(mirrorGuardMode(false, true)).toBe('fail');
   });
+  it.each([
+    [undefined, false],
+    ['', false],
+    ['0', false],
+    ['false', false],
+    ['true', true],
+    ['1', true],
+  ])('reads CI=%j as ci=%s', (value, expected) => {
+    expect(isCiValue(value)).toBe(expected);
+    expect(mirrorGuardMode(false, isCiValue(value))).toBe(expected ? 'fail' : 'skip');
+  });
 });
 
 // The chat's weak-category bar is stated twice: here, and in ingestion's chat prompt. Nothing else ties
@@ -78,7 +94,7 @@ describe('WEAK_CATEGORY_SCORE', () => {
     ['../ingestion', 'ingestion']
       .map((dir) => resolve(process.cwd(), dir, 'app/chat/chat_service.py'))
       .find((candidate) => existsSync(candidate)) ?? '';
-  const mode = mirrorGuardMode(ingestionFile !== '', !!process.env.CI);
+  const mode = mirrorGuardMode(ingestionFile !== '', isCiValue(process.env.CI));
 
   it.skipIf(mode === 'skip')("equals ingestion's _WEAK_CATEGORY_SCORE", () => {
     if (mode === 'fail') {

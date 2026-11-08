@@ -409,6 +409,26 @@ describe('JobDetail', () => {
         expect(screen.queryByRole('button', { name: 'Mark all reviewed' })).not.toBeInTheDocument();
       });
 
+      it('a second "Mark all reviewed" in the same tick, before React re-renders, sees the first and is not sent again', async () => {
+        mockJobWithWarnings();
+        vi.mocked(jobsApi.setDiffEntriesReviewed).mockClear();
+        vi.mocked(jobsApi.setDiffEntriesReviewed).mockResolvedValue({ dryRunDiff: [] });
+        renderAt('job-60');
+        await waitFor(() => expect(screen.getByText('Untouched')).toBeInTheDocument());
+        const { default: userEvent } = await import('@testing-library/user-event');
+        await userEvent.click(screen.getByRole('button', { name: 'Review in tree' }));
+        const markAll = screen.getByRole('button', { name: 'Mark all reviewed' });
+
+        act(() => {
+          fireEvent.click(markAll);
+          fireEvent.click(markAll);
+        });
+
+        await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledTimes(1));
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledTimes(1);
+      });
+
       it('puts the items back and says so when the server refuses the mark', async () => {
         mockJobWithWarnings();
         vi.mocked(jobsApi.setDiffEntriesReviewed).mockRejectedValue(new Error('409'));
@@ -1817,6 +1837,53 @@ describe('JobDetail', () => {
     };
     const writeDialog = () => screen.queryByRole('dialog', { name: /write these items to azure devops/i });
 
+    const headerWriteButton = () => screen.getByRole('button', { name: /^write to azure devops$/i, hidden: true });
+
+    it('Cancel returns focus to the header write button', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue(jobOf('job-ws20'));
+      vi.spyOn(jobsApi, 'getWritePreview').mockResolvedValue(previewOf());
+      const user = await openWriteDialog('job-ws20');
+      await screen.findByText('2 new work items: 2 Requirements.');
+      await user.click(screen.getByRole('button', { name: 'Cancel' }));
+      await waitFor(() => expect(writeDialog()).toBeNull());
+      await waitFor(() => expect(document.activeElement).toBe(headerWriteButton()));
+    });
+
+    it('"Review N unreviewed items" closes the confirmation without refocusing the header button and opens the review queue', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue(jobOf('job-ws21', { dryRunDiff: [entry('a'), entry('b')] }));
+      vi.spyOn(jobsApi, 'getWritePreview').mockResolvedValue(previewOf());
+      const user = await openWriteDialog('job-ws21');
+      const headerButton = headerWriteButton();
+      await user.click(await screen.findByRole('button', { name: 'Review 2 unreviewed items' }));
+      await waitFor(() => expect(writeDialog()).toBeNull());
+      expect(await screen.findByRole('dialog')).toBeInTheDocument();
+      expect(document.activeElement).not.toBe(headerButton);
+    });
+
+    it('"Go to N warnings to fix" closes the confirmation, shows the tree tab and leaves focus off the header button', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue(
+        jobOf('job-ws22', {
+          dryRunDiff: [entry('a', { reviewed: true })],
+          warnings: [{ kind: 'missing_source_reference', severity: 'needs_review', nodeIds: ['a'], detail: {}, raw: 'x' }],
+        }),
+      );
+      vi.spyOn(jobsApi, 'getWritePreview').mockResolvedValue(previewOf());
+      const user = await openWriteDialog('job-ws22');
+      await user.click(await screen.findByRole('button', { name: 'Go to 1 warning to fix' }));
+      await waitFor(() => expect(writeDialog()).toBeNull());
+      expect(screen.getByRole('tab', { name: /^diff/i })).toHaveAttribute('aria-selected', 'true');
+      await waitFor(() => expect(document.activeElement).toBe(document.getElementById('integrity-warnings')));
+      expect(document.activeElement).not.toBe(headerWriteButton());
+    });
+
+    it('does not offer a button for excluded items, because the tree has no filter for them', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue(jobOf('job-ws23'));
+      vi.spyOn(jobsApi, 'getWritePreview').mockResolvedValue(previewOf({ excluded: { direct: 2, viaAncestor: 1 } }));
+      await openWriteDialog('job-ws23');
+      await screen.findByText(/3 items left out/i);
+      expect(screen.queryByRole('button', { name: /excluded item/i })).toBeNull();
+    });
+
     it('disables the write while the check is running and says so', async () => {
       vi.spyOn(jobsApi, 'getJob').mockResolvedValue(jobOf('job-ws4'));
       vi.spyOn(jobsApi, 'getWritePreview').mockReturnValue(new Promise(() => {}));
@@ -1904,12 +1971,17 @@ describe('JobDetail', () => {
       await waitFor(() => expect(spy).toHaveBeenCalledTimes(2));
     });
 
-    it('closes when the job leaves diff_ready while the dialog is open', async () => {
+    it.each([
+      ['cancelled', 'The job changed, so the write was cancelled. Nothing was written.'],
+      ['failed', 'The job changed, so the write was cancelled. Nothing was written.'],
+      ['writing', 'This job is already being written or was already written, so this write was cancelled.'],
+      ['succeeded', 'This job is already being written or was already written, so this write was cancelled.'],
+    ])('closes when the job leaves diff_ready for %s while the dialog is open, saying %j', async (newStatus, message) => {
       vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
       useAuthStore.getState().login('https://ado.example', 'Jane', 'user-descriptor-1');
       // Nothing else moves a diff_ready job's status under an open dialog; navigating to another job re-runs the job load.
       vi.spyOn(jobsApi, 'getJob').mockImplementation(async (jobId: string) =>
-        jobOf(jobId, jobId === 'job-ws10b' ? { status: 'cancelled' } : {}),
+        jobOf(jobId, jobId === 'job-ws10b' ? { status: newStatus } : {}),
       );
       vi.spyOn(jobsApi, 'getWritePreview').mockResolvedValue(previewOf());
       render(
@@ -1930,7 +2002,11 @@ describe('JobDetail', () => {
       await act(async () => fireEvent.click(screen.getByText('open b')));
 
       await waitFor(() => expect(writeDialog()).not.toBeInTheDocument());
-      expect(await screen.findByText('The job changed, so the write was cancelled. Nothing was written.')).toBeInTheDocument();
+      expect(await screen.findByText(message)).toBeInTheDocument();
+      const other = message.startsWith('The job changed')
+        ? 'This job is already being written or was already written, so this write was cancelled.'
+        : 'The job changed, so the write was cancelled. Nothing was written.';
+      expect(screen.queryByText(other)).not.toBeInTheDocument();
     });
 
     it('closes for its own write without treating that as a status change', async () => {
@@ -1946,7 +2022,8 @@ describe('JobDetail', () => {
       await waitFor(() => expect(writeDialog()).not.toBeInTheDocument());
       expect(jobsApi.confirmJob).toHaveBeenCalledTimes(1);
       expect(screen.queryByText(/confirm failed/i)).not.toBeInTheDocument();
-      expect(screen.queryByText(/the write was cancelled/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/write was cancelled/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/so this write was cancelled/i)).not.toBeInTheDocument();
     });
 
     it('counts items marked reviewed with Mark all reviewed as marked from a warning list', async () => {
@@ -2947,9 +3024,10 @@ describe('JobDetail', () => {
         await act(async () => first.reject(new Error('network')));
         await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledTimes(3));
         expect(jobsApi.setDiffEntriesReviewed).toHaveBeenNthCalledWith(3, 'job-70', ['blocked'], true);
-        await screen.findAllByText(/failed to update review state/i);
+        // The failed call was superseded by newer writes on its item, so it has nothing to put back and says nothing.
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(screen.queryByText(/failed to update review state/i)).not.toBeInTheDocument();
 
-        // An error toast has focus by now, so Escape would go to it; the close button is used instead.
         await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Close' }));
         await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
         expect(await queueButtonCount(2)).toBeInTheDocument();
@@ -3063,6 +3141,118 @@ describe('JobDetail', () => {
         await userEvent.keyboard('u');
 
         await waitFor(() => expect(jobsApi.setDiffEntryExcluded).toHaveBeenCalledWith('job-70', 'blocked', false));
+      });
+    });
+
+    describe('review-state hardening (G3b)', () => {
+      const rowsWith = (extra: unknown[] = []) => [
+        req('clean', 'Clean item', { qualityScore: 95, groundingScore: 0.9 }),
+        req('low', 'Low item', { qualityScore: 30 }),
+        req('blocked', 'Blocked item', { qualityScore: 99 }), // a server snapshot that does not have the mark yet
+        ...extra,
+      ];
+
+      // Marks 'blocked' with its save left pending, then closes the dialog so the tree is reachable.
+      async function markBlockedPending() {
+        const userEvent = await startQueue();
+        await screen.findByRole('dialog');
+        const first = deferred<{ dryRunDiff: never[] }>();
+        vi.mocked(jobsApi.setDiffEntriesReviewed).mockImplementationOnce(() => first.promise as never);
+        await userEvent.keyboard('a');
+        await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledTimes(1));
+        await userEvent.keyboard('{Escape}');
+        await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+        expect(await screen.findByRole('button', { name: /review in risk order · 2/i })).toBeInTheDocument();
+        return { userEvent, first };
+      }
+
+      it('an added item whose reply predates a pending mark does not un-review it, and a later failure rolls it back to the confirmed state', async () => {
+        const { userEvent, first } = await markBlockedPending();
+        vi.mocked(jobsApi.addDiffEntry).mockResolvedValue({
+          dryRunDiff: rowsWith([req('added', 'Added item', { reviewed: true })]),
+        } as never);
+
+        await userEvent.click(screen.getByRole('button', { name: /^new item$/i }));
+        await userEvent.type(screen.getByLabelText(/title/i), 'Added item');
+        await userEvent.type(screen.getByLabelText(/description/i), 'd');
+        await userEvent.click(screen.getByRole('button', { name: /^add$/i }));
+        await screen.findByText('Added item');
+
+        // 'blocked' is still marked on screen: the queue did not get it back.
+        expect(screen.getByRole('button', { name: /review in risk order · 2/i })).toBeInTheDocument();
+
+        await act(async () => first.reject(new Error('network')));
+        await screen.findAllByText(/failed to update review state/i);
+        // The save failed, so the server never had the mark: back to what it confirmed (not reviewed).
+        expect(await screen.findByRole('button', { name: /review in risk order · 3/i })).toBeInTheDocument();
+      });
+
+      it('a bulk exclude whose replies predate a pending mark does not un-review it', async () => {
+        const { userEvent } = await markBlockedPending();
+        vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockImplementation((async () => ({ dryRunDiff: rowsWith() })) as never);
+
+        await userEvent.click(screen.getByRole('button', { name: /^exclude all$/i }));
+        await waitFor(() => expect(jobsApi.setDiffEntryExcluded).toHaveBeenCalledTimes(3));
+        await screen.findByText(/excluded 3 items/i);
+
+        expect(screen.getByRole('button', { name: /review in risk order · 2/i })).toBeInTheDocument();
+      });
+
+      it('a failed call that a newer write on the same item superseded neither says so nor sends the reviewer back to that item', async () => {
+        const userEvent = await startQueue();
+        await screen.findByRole('dialog');
+        const first = deferred<{ dryRunDiff: never[] }>();
+        vi.mocked(jobsApi.setDiffEntriesReviewed).mockImplementationOnce(() => first.promise as never);
+
+        await userEvent.keyboard('a'); // 'blocked', pending
+        await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledTimes(1));
+        await userEvent.keyboard('u'); // takes it back: a newer write on the same item
+        await waitFor(() => expect(within(screen.getByRole('dialog')).getAllByText('Low item').length).toBeGreaterThan(0));
+        await userEvent.keyboard('k');
+        await waitFor(() => expect(within(screen.getByRole('dialog')).getAllByText('Blocked item').length).toBeGreaterThan(0));
+        await userEvent.keyboard('a'); // and marks it again
+        await waitFor(() => expect(within(screen.getByRole('dialog')).queryAllByText('Blocked item')).toHaveLength(0));
+
+        await act(async () => first.reject(new Error('network')));
+        await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledTimes(3));
+        await new Promise((resolve) => setTimeout(resolve, 50));
+
+        expect(screen.queryByText(/failed to update review state/i)).not.toBeInTheDocument();
+        expect(screen.getByTestId('review-queue-status')).not.toHaveTextContent(/couldn't mark/i);
+        expect(within(screen.getByRole('dialog')).queryAllByText('Blocked item')).toHaveLength(0);
+      });
+
+      it('a save that finishes after the page is gone shows no toast and logs no error', async () => {
+        mockQueueJob();
+        vi.mocked(jobsApi.setDiffEntriesReviewed).mockClear();
+        const save = deferred<{ dryRunDiff: never[] }>();
+        vi.mocked(jobsApi.setDiffEntriesReviewed).mockImplementationOnce(() => save.promise as never);
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const { default: userEvent } = await import('@testing-library/user-event');
+        render(
+          <ToastProvider>
+            <MemoryRouter initialEntries={['/jobs/job-70']}>
+              <Link to="/elsewhere">leave</Link>
+              <Routes>
+                <Route path="/jobs/:id" element={<JobDetail />} />
+                <Route path="/elsewhere" element={<p>elsewhere page</p>} />
+              </Routes>
+            </MemoryRouter>
+          </ToastProvider>,
+        );
+        await userEvent.click(await screen.findByRole('button', { name: /review in risk order/i }));
+        await userEvent.keyboard('a');
+        await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledTimes(1));
+        await userEvent.keyboard('{Escape}');
+        await userEvent.click(await screen.findByRole('link', { name: 'leave' }));
+        await screen.findByText('elsewhere page');
+
+        await act(async () => save.resolve({ dryRunDiff: [] }));
+        await new Promise((resolve) => setTimeout(resolve, 50));
+
+        expect(screen.queryByText(/marked reviewed/i)).not.toBeInTheDocument();
+        expect(consoleError).not.toHaveBeenCalled();
+        consoleError.mockRestore();
       });
     });
   });
@@ -3387,6 +3577,21 @@ describe('JobDetail', () => {
         expect(
           await screen.findByText('Review: 3 approved in bulk after you looked at them, 2 approved in bulk without being looked at, 2 not reviewed.'),
         ).toBeInTheDocument();
+      });
+
+      it('counts the items the reviewer looked at as looked at from the moment of the approval, before its save is back', async () => {
+        stubWritePreview();
+        const userEvent = await render80();
+        const save = deferred<{ dryRunDiff: never[] }>();
+        vi.mocked(jobsApi.setDiffEntriesReviewed).mockReturnValue(save.promise as never);
+        await approveAll(userEvent);
+
+        await userEvent.click(await screen.findByRole('button', { name: /^write to azure devops$/i }));
+
+        expect(
+          await screen.findByText('Review: 3 approved in bulk after you looked at them, 2 approved in bulk without being looked at, 2 not reviewed.'),
+        ).toBeInTheDocument();
+        await act(async () => save.resolve({ dryRunDiff: [] }));
       });
 
       it('Undo of a bulk approval leaves alone an item that was excluded since', async () => {

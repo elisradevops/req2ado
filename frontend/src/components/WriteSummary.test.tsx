@@ -20,7 +20,6 @@ const props = {
   teamProject: 'Compliance',
   areaPath: 'Compliance\\Auth',
   warnings: { open: { fix: 0, review: 0, info: 0 }, handled: 0 },
-  onBackToTree: () => {},
 };
 
 describe('WriteSummary', () => {
@@ -73,10 +72,66 @@ describe('WriteSummary', () => {
     expect(screen.getByText(/3 marked handled/)).toBeInTheDocument();
   });
 
-  it('offers a way back to the tree', async () => {
-    const onBackToTree = vi.fn();
-    render(<WriteSummary {...props} onBackToTree={onBackToTree} state={{ status: 'ready', preview, review }} />);
-    await userEvent.click(screen.getByRole('button', { name: 'Back to the tree' }));
-    expect(onBackToTree).toHaveBeenCalled();
+  describe('shortcut actions', () => {
+    const ready = { status: 'ready' as const, preview: { ...preview, excluded: { direct: 0, viaAncestor: 0 } }, review };
+    const warn = (fix: number) => ({ open: { fix, review: 0, info: 0 }, handled: 0 });
+
+    it('shows no actions section when nothing applies', () => {
+      render(<WriteSummary {...props} state={ready} onReviewUnreviewed={() => {}} onShowWarnings={() => {}} onShowExcluded={() => {}} />);
+      expect(screen.queryByText('Before you write:')).toBeNull();
+    });
+
+    it('shows no button without its callback, even when the count is above zero', () => {
+      render(<WriteSummary {...props} warnings={warn(2)} state={{ ...ready, review: { ...review, notReviewed: 2 } }} />);
+      expect(screen.queryByText('Before you write:')).toBeNull();
+    });
+
+    it('offers to review unreviewed items, singular and plural, and calls back', async () => {
+      const onReviewUnreviewed = vi.fn();
+      const { rerender } = render(<WriteSummary {...props} onReviewUnreviewed={onReviewUnreviewed} state={{ ...ready, review: { ...review, notReviewed: 1 } }} />);
+      expect(screen.getByText('Before you write:')).toBeInTheDocument();
+      await userEvent.click(screen.getByRole('button', { name: 'Review 1 unreviewed item' }));
+      expect(onReviewUnreviewed).toHaveBeenCalledTimes(1);
+      rerender(<WriteSummary {...props} onReviewUnreviewed={onReviewUnreviewed} state={{ ...ready, review: { ...review, notReviewed: 4 } }} />);
+      expect(screen.getByRole('button', { name: 'Review 4 unreviewed items' })).toBeInTheDocument();
+    });
+
+    it('does not offer the review button while loading', () => {
+      render(<WriteSummary {...props} onReviewUnreviewed={() => {}} state={{ status: 'loading' }} />);
+      expect(screen.queryByRole('button', { name: /unreviewed/i })).toBeNull();
+    });
+
+    it('offers to go to warnings to fix, singular and plural, and calls back', async () => {
+      const onShowWarnings = vi.fn();
+      const { rerender } = render(<WriteSummary {...props} warnings={warn(1)} onShowWarnings={onShowWarnings} state={ready} />);
+      await userEvent.click(screen.getByRole('button', { name: 'Go to 1 warning to fix' }));
+      expect(onShowWarnings).toHaveBeenCalledTimes(1);
+      rerender(<WriteSummary {...props} warnings={warn(3)} onShowWarnings={onShowWarnings} state={ready} />);
+      expect(screen.getByRole('button', { name: 'Go to 3 warnings to fix' })).toBeInTheDocument();
+    });
+
+    it('offers to show excluded items (direct plus under an excluded parent), and calls back', async () => {
+      const onShowExcluded = vi.fn();
+      const state = { ...ready, preview: { ...preview, excluded: { direct: 1, viaAncestor: 2 } } };
+      render(<WriteSummary {...props} onShowExcluded={onShowExcluded} state={state} />);
+      await userEvent.click(screen.getByRole('button', { name: 'Show the 3 excluded items' }));
+      expect(onShowExcluded).toHaveBeenCalledTimes(1);
+    });
+
+    it('says "Show the 1 excluded item" for one', () => {
+      render(<WriteSummary {...props} onShowExcluded={() => {}} state={{ ...ready, preview: { ...preview, excluded: { direct: 1, viaAncestor: 0 } } }} />);
+      expect(screen.getByRole('button', { name: 'Show the 1 excluded item' })).toBeInTheDocument();
+    });
+
+    it('draws the actions as outlined buttons', () => {
+      render(<WriteSummary {...props} warnings={warn(1)} onShowWarnings={() => {}} state={ready} />);
+      // class pin: jsdom has no layout
+      expect(screen.getByRole('button', { name: /warning to fix/i }).className).toContain('border-field-border');
+    });
+  });
+
+  it('no longer has a back-to-the-tree link', () => {
+    render(<WriteSummary {...props} state={{ status: 'ready', preview, review }} />);
+    expect(screen.queryByRole('button', { name: 'Back to the tree' })).toBeNull();
   });
 });

@@ -329,19 +329,59 @@ describe('NodeDetailDialog', () => {
         expect(status).toHaveAttribute('aria-live', 'polite');
       });
 
-      it('ignores a held key: A, R and X act once per press, not once per key repeat', () => {
+      it('ignores a held key: A, R, X, U and E act once per press, not once per key repeat', () => {
         const onMark = vi.fn();
         const onReject = vi.fn();
-        renderDialog({ onNavigate: vi.fn(), reason, review: { reviewed: false, onMark, onUnmark: vi.fn(), onReject } });
+        const onUndo = vi.fn();
+        renderDialog({ onNavigate: vi.fn(), reason, review: { reviewed: false, onMark, onUnmark: vi.fn(), onReject, onUndo } });
 
-        fireEvent.keyDown(window, { key: 'a', repeat: true });
-        fireEvent.keyDown(window, { key: 'r', repeat: true });
-        fireEvent.keyDown(window, { key: 'x', repeat: true });
+        for (const key of ['a', 'r', 'x', 'u', 'e']) fireEvent.keyDown(window, { key, repeat: true });
+        fireEvent.keyDown(window, { key: 'ש', code: 'KeyA', repeat: true });
         expect(onMark).not.toHaveBeenCalled();
         expect(onReject).not.toHaveBeenCalled();
+        expect(onUndo).not.toHaveBeenCalled();
+        expect(screen.queryByRole('textbox', { name: /title/i })).not.toBeInTheDocument();
 
         fireEvent.keyDown(window, { key: 'a' });
         expect(onMark).toHaveBeenCalledTimes(1);
+        fireEvent.keyDown(window, { key: 'u' });
+        expect(onUndo).toHaveBeenCalledTimes(1);
+        fireEvent.keyDown(window, { key: 'ש', code: 'KeyA' });
+        expect(onMark).toHaveBeenCalledTimes(2);
+      });
+
+      it('does not treat a dead, IME or unidentified key as a shortcut through the physical code', () => {
+        const onMark = vi.fn();
+        const onReject = vi.fn();
+        renderDialog({ onNavigate: vi.fn(), reason, review: { reviewed: false, onMark, onUnmark: vi.fn(), onReject } });
+        for (const key of ['Dead', 'Unidentified', 'Process']) {
+          fireEvent.keyDown(window, { key, code: 'KeyA' });
+          fireEvent.keyDown(window, { key, code: 'KeyX' });
+        }
+        expect(onMark).not.toHaveBeenCalled();
+        expect(onReject).not.toHaveBeenCalled();
+      });
+
+      it('ignores a key whose real origin (composedPath, e.g. inside a shadow root) is a text field', () => {
+        const onMark = vi.fn();
+        renderDialog({ onNavigate: vi.fn(), reason, review: { reviewed: false, onMark, onUnmark: vi.fn() } });
+        const textarea = document.createElement('textarea');
+        const event = new KeyboardEvent('keydown', { key: 'a', bubbles: true, cancelable: true });
+        Object.defineProperty(event, 'composedPath', { value: () => [textarea, window] });
+        window.dispatchEvent(event);
+        expect(onMark).not.toHaveBeenCalled();
+      });
+
+      it('hides the key hints from screen readers (aria-keyshortcuts carries the keys) in both placements', () => {
+        const { unmount } = renderDialog({
+          onNavigate: vi.fn(),
+          reason,
+          review: { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn() },
+        });
+        expect(screen.getByTestId('key-hints')).toHaveAttribute('aria-hidden', 'true');
+        unmount();
+        renderDialog({ onNavigate: vi.fn(), review: { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn() } });
+        expect(screen.getByTestId('key-hints')).toHaveAttribute('aria-hidden', 'true');
       });
 
       // class pin: jsdom has no layout
@@ -544,36 +584,44 @@ describe('NodeDetailDialog', () => {
       it('marks the mode buttons busy without disabling them, and ignores clicks and keys while busy', async () => {
         const onMark = vi.fn();
         const onReject = vi.fn();
+        const onBusyAttempt = vi.fn();
         renderDialog({
           onNavigate: vi.fn(),
           reason,
-          review: { reviewed: false, busy: true, onMark, onUnmark: vi.fn(), onReject },
+          review: { reviewed: false, busy: true, onMark, onUnmark: vi.fn(), onReject, onBusyAttempt },
         });
         const { default: userEvent } = await import('@testing-library/user-event');
+        let attempts = 0;
         for (const name of ['Mark reviewed and next', 'Exclude and next']) {
           const button = screen.getByRole('button', { name });
           expect(button).toHaveAttribute('aria-busy', 'true');
           expect(button).toHaveAttribute('aria-disabled', 'true');
           expect(button).not.toBeDisabled();
           await userEvent.click(button);
+          expect(onBusyAttempt).toHaveBeenCalledTimes(++attempts);
         }
-        await userEvent.keyboard('ax');
+        for (const key of ['a', 'r', 'x']) {
+          await userEvent.keyboard(key);
+          expect(onBusyAttempt).toHaveBeenCalledTimes(++attempts);
+        }
         expect(onMark).not.toHaveBeenCalled();
         expect(onReject).not.toHaveBeenCalled();
       });
 
       it('marks "Mark not reviewed" busy too, and acts normally when not busy', async () => {
         const onUnmark = vi.fn();
+        const onBusyAttempt = vi.fn();
         const { unmount } = renderDialog({
           onNavigate: vi.fn(),
           reason,
-          review: { reviewed: true, busy: true, onMark: vi.fn(), onUnmark },
+          review: { reviewed: true, busy: true, onMark: vi.fn(), onUnmark, onBusyAttempt },
         });
         const { default: userEvent } = await import('@testing-library/user-event');
         const busyButton = screen.getByRole('button', { name: 'Mark not reviewed' });
         expect(busyButton).toHaveAttribute('aria-busy', 'true');
         await userEvent.click(busyButton);
         expect(onUnmark).not.toHaveBeenCalled();
+        expect(onBusyAttempt).toHaveBeenCalledTimes(1);
         unmount();
 
         const onMark = vi.fn();
