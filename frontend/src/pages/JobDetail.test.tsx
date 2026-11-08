@@ -2417,6 +2417,25 @@ describe('JobDetail', () => {
       expect(vi.mocked(jobsApi.setDiffEntriesReviewed).mock.calls.length).toBe(calls);
     });
 
+    it('says so, and keeps the undo for another try, when U fails to undo', async () => {
+      const userEvent = await startQueue();
+      await screen.findByRole('dialog');
+      const setExcluded = vi
+        .spyOn(jobsApi, 'setDiffEntryExcluded')
+        .mockImplementationOnce(async (_id, localId) => excludedDiff(localId) as any)
+        .mockRejectedValueOnce(new Error('network'));
+      await userEvent.keyboard('x');
+      await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Excluded. 2 left.'));
+
+      await userEvent.keyboard('u');
+
+      await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Couldn\'t undo "Blocked item". Try again.'));
+      expect(within(screen.getByRole('dialog')).getByRole('note')).toHaveTextContent(/U\s*undo/);
+      setExcluded.mockImplementation(async (_id, localId, excluded) => excludedDiff(excluded ? localId : '') as any);
+      await userEvent.keyboard('u');
+      await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Undone: "Blocked item".'));
+    });
+
     it('does not undo a second time with U after the toast Undo already did', async () => {
       const userEvent = await startQueue();
       await screen.findByRole('dialog');

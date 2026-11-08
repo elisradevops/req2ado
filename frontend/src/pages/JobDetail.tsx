@@ -1123,8 +1123,6 @@ export function JobDetail(): React.ReactElement {
     const markedId = selectedId;
     const markedTitle = diff.find((entry) => entry.localId === markedId)?.title ?? 'item';
     const rest = reviewQueue.filter((entry) => entry.localId !== markedId);
-    // Cleared first so an identical failure message is a change in the live region, and is spoken again.
-    setQueueAnnouncement('');
     let undo: QueueUndo | undefined;
     const saved = handleSetReviewed([markedId], true, { onToastUndo: () => clearLastUndoIf(undo) });
     advanceReviewQueue(rest, 'Marked reviewed');
@@ -1185,8 +1183,12 @@ export function JobDetail(): React.ReactElement {
     setLastUndo(null);
     setQueueAnnouncement('');
     void undo.run().then((done) => {
-      if (done) setQueueAnnouncement(`Undone: "${undo.label}".`);
-      else setLastUndo(undo);
+      if (done) {
+        setQueueAnnouncement(`Undone: "${undo.label}".`);
+      } else {
+        setLastUndo(undo);
+        announceAgain(`Couldn't undo "${undo.label}". Try again.`);
+      }
     });
   }
 
