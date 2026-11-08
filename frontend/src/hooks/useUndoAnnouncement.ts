@@ -22,12 +22,11 @@ export function useUndoAnnouncement() {
     if (undo && lastUndoRef.current === undo) setLastUndo(null);
   }
   const [announcement, setAnnouncement] = useState('');
-  // A live region only speaks when its text changes, so an identical message (a second "Still
-  // saving") alternates an invisible trailing character. Spoken text is unchanged.
-  const announceFlipRef = useRef(false);
+  // A live region only speaks when its text changes, so repeating the text now showing appends an
+  // invisible U+200B (zero-width space); the next repeat drops it again. Spoken text is unchanged.
+  // Decided from the current text, so it also holds after a direct setAnnouncement of the same message.
   function announceAgain(message: string): void {
-    announceFlipRef.current = !announceFlipRef.current;
-    setAnnouncement(announceFlipRef.current ? `${message}​` : message);
+    setAnnouncement((previous) => (previous === message ? `${message}\u200b` : message));
   }
   return { lastUndoRef, hasUndo, setLastUndo, clearLastUndoIf, announcement, setAnnouncement, announceAgain };
 }

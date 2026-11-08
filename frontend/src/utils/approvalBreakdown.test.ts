@@ -12,7 +12,7 @@ describe('approvalBreakdown', () => {
       spotCheckedIds: new Set(['c']),
       editedIds: new Set(),
     });
-    expect(result).toEqual({ edited: 0, single: 1, bulk: 1, bulkSpotChecked: 1, earlier: 0, notReviewed: 1 });
+    expect(result).toEqual({ edited: 0, single: 1, bulk: 1, bulkSpotChecked: 1, group: 0, earlier: 0, notReviewed: 1 });
   });
 
   it('counts an item edited in this session as edited, whichever way it was then approved', () => {
@@ -56,6 +56,17 @@ describe('approvalBreakdown', () => {
       spotCheckedIds: new Set(),
       editedIds: new Set(['x']),
     });
-    expect(result).toEqual({ edited: 0, single: 1, bulk: 0, bulkSpotChecked: 0, earlier: 0, notReviewed: 0 });
+    expect(result).toEqual({ edited: 0, single: 1, bulk: 0, bulkSpotChecked: 0, group: 0, earlier: 0, notReviewed: 0 });
+  });
+
+  it('counts items marked reviewed from a warning list as group, even if spot-checked, but edited still wins', () => {
+    const result = approvalBreakdown({
+      createdLocalIds: ['a', 'b', 'c'],
+      reviewedIds: reviewed('a', 'b', 'c'),
+      methods: new Map([['a', 'group'], ['b', 'group'], ['c', 'group']]),
+      spotCheckedIds: new Set(['b']),
+      editedIds: new Set(['c']),
+    });
+    expect(result).toEqual({ edited: 1, single: 0, bulk: 0, bulkSpotChecked: 0, group: 2, earlier: 0, notReviewed: 0 });
   });
 });

@@ -11,9 +11,10 @@ const preview = (overrides: Partial<WritePreview> = {}): WritePreview => ({
   existingGettingChildren: 0,
   existingWithoutNewParentLink: 0,
   traceLinks: { planned: 0, skipped: 0 },
+  alreadyWritten: 0,
   ...overrides,
 });
-const noBreakdown = { edited: 0, single: 0, bulk: 0, bulkSpotChecked: 0, earlier: 0, notReviewed: 0 };
+const noBreakdown = { edited: 0, single: 0, bulk: 0, bulkSpotChecked: 0, group: 0, earlier: 0, notReviewed: 0 };
 
 describe('writeSummaryLines', () => {
   it('lists new items by type in tree order with the parent links', () => {
@@ -49,7 +50,7 @@ describe('writeSummaryLines', () => {
   });
 
   it('describes how the items were reviewed in this session', () => {
-    const lines = writeSummaryLines(preview(), { edited: 1, single: 2, bulk: 1, bulkSpotChecked: 3, earlier: 0, notReviewed: 4 });
+    const lines = writeSummaryLines(preview(), { edited: 1, single: 2, bulk: 1, bulkSpotChecked: 3, group: 0, earlier: 0, notReviewed: 4 });
     expect(lines.find((l) => l.id === 'review')?.text).toBe(
       'Review: 1 edited, 2 approved one by one, 3 approved in bulk after you looked at them, 1 approved in bulk without being looked at, 4 not reviewed.',
     );
@@ -58,6 +59,39 @@ describe('writeSummaryLines', () => {
 
   it('shows no review line when every item is reviewed earlier or there is nothing to say', () => {
     expect(writeSummaryLines(preview({ createdTotal: 0, createdLocalIds: [], createdByType: {} }), noBreakdown).some((l) => l.id === 'review')).toBe(false);
+  });
+
+  it('words the group method as marked reviewed from a warning list, between single and bulk', () => {
+    const lines = writeSummaryLines(preview(), { ...noBreakdown, single: 1, group: 2, bulk: 1 });
+    expect(lines.find((l) => l.id === 'review')?.text).toBe(
+      'Review: 1 approved one by one, 2 marked reviewed from a warning list, 1 approved in bulk without being looked at.',
+    );
+    const groupOnly = writeSummaryLines(preview(), { ...noBreakdown, group: 2 }).find((l) => l.id === 'review');
+    expect(groupOnly?.tone).toBe('plain');
+  });
+
+  describe('a retry with nothing new to create', () => {
+    const retry = (overrides: Partial<WritePreview> = {}) =>
+      preview({ createdTotal: 0, createdLocalIds: [], createdByType: {}, parentLinks: 2, alreadyWritten: 5, ...overrides });
+
+    it('says what remains and how many items are already written', () => {
+      const line = writeSummaryLines(retry(), noBreakdown)[0];
+      expect(line).toMatchObject({ id: 'create', text: 'Nothing new to create; 2 parent links remain. 5 items are already written.', tone: 'plain' });
+    });
+
+    it('mentions planned trace links in the same sentence', () => {
+      const line = writeSummaryLines(retry({ traceLinks: { planned: 1, skipped: 0 } }), noBreakdown)[0];
+      expect(line.text).toBe('Nothing new to create; 2 parent links and 1 trace link remain. 5 items are already written.');
+    });
+
+    it('uses singular forms and omits the already-written sentence when none', () => {
+      expect(writeSummaryLines(retry({ parentLinks: 1, alreadyWritten: 1 }), noBreakdown)[0].text).toBe(
+        'Nothing new to create; 1 parent link remains. 1 item is already written.',
+      );
+      expect(writeSummaryLines(retry({ parentLinks: 0, alreadyWritten: 0, traceLinks: { planned: 1, skipped: 0 } }), noBreakdown)[0].text).toBe(
+        'Nothing new to create; 1 trace link remains.',
+      );
+    });
   });
 
   it('says a write of zero items creates nothing', () => {

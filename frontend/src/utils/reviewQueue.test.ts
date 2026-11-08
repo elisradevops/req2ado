@@ -184,9 +184,18 @@ describe('reviewQueueModeReducer', () => {
     expect(reviewQueueModeReducer(OFF, 'close')).toBe(OFF);
   });
 
-  it('finishing ends the queue and marks it done, from any mode', () => {
+  it('finishing ends a running queue and marks it done, but does nothing from any other mode (finish-from-off is no longer blessed; markDone covers it)', () => {
     expect(reviewQueueModeReducer(QUEUE, 'finish')).toEqual(DONE);
-    expect(reviewQueueModeReducer(OFF, 'finish')).toEqual(DONE);
+    expect(reviewQueueModeReducer(OFF, 'finish')).toBe(OFF);
+    expect(reviewQueueModeReducer({ kind: 'spotCheck' }, 'finish')).toEqual({ kind: 'spotCheck' });
+  });
+
+  it('markDone shows the "done" row from off or done, and leaves a running queue or spot-check alone', () => {
+    expect(reviewQueueModeReducer(OFF, 'markDone')).toEqual(DONE);
+    expect(reviewQueueModeReducer(DONE, 'markDone')).toBe(DONE);
+    expect(reviewQueueModeReducer(QUEUE, 'markDone')).toBe(QUEUE);
+    const spot: ReviewQueueMode = { kind: 'spotCheck' };
+    expect(reviewQueueModeReducer(spot, 'markDone')).toBe(spot);
   });
 
   it('clearing the "done" row leaves a running queue alone', () => {
@@ -212,6 +221,35 @@ describe('reviewQueueModeReducer: spot-check', () => {
     expect(reviewQueueModeReducer({ kind: 'queue' }, 'endSpotCheck')).toEqual({ kind: 'queue' });
     expect(reviewQueueModeReducer(SPOT, 'close')).toBe(SPOT);
     expect(reviewQueueModeReducer(SPOT, 'clearDone')).toBe(SPOT);
+  });
+});
+
+describe('reviewQueueModeReducer: every action from every mode', () => {
+  const MODES: Record<'off' | 'queue' | 'spotCheck' | 'done', ReviewQueueMode> = {
+    off: { kind: 'off' },
+    queue: { kind: 'queue' },
+    spotCheck: { kind: 'spotCheck' },
+    done: { kind: 'done' },
+  };
+  type Kind = keyof typeof MODES;
+  const TABLE: Record<ReviewQueueModeAction, Record<Kind, Kind>> = {
+    open: { off: 'queue', queue: 'queue', spotCheck: 'queue', done: 'queue' },
+    close: { off: 'off', queue: 'off', spotCheck: 'spotCheck', done: 'done' },
+    finish: { off: 'off', queue: 'done', spotCheck: 'spotCheck', done: 'done' },
+    markDone: { off: 'done', queue: 'queue', spotCheck: 'spotCheck', done: 'done' },
+    clearDone: { off: 'off', queue: 'queue', spotCheck: 'spotCheck', done: 'off' },
+    startSpotCheck: { off: 'spotCheck', queue: 'spotCheck', spotCheck: 'spotCheck', done: 'spotCheck' },
+    endSpotCheck: { off: 'off', queue: 'queue', spotCheck: 'off', done: 'done' },
+  };
+  const cases = (Object.keys(TABLE) as ReviewQueueModeAction[]).flatMap((action) =>
+    (Object.keys(MODES) as Kind[]).map((from) => [action, from, TABLE[action][from]] as const),
+  );
+
+  it.each(cases)('%s from %s ends in %s', (action, from, expected) => {
+    const result = reviewQueueModeReducer(MODES[from], action);
+    expect(result.kind).toBe(expected);
+    // A no-op returns the same object, so the dispatch does not re-render.
+    if (expected === from) expect(result).toBe(MODES[from]);
   });
 });
 
@@ -298,5 +336,29 @@ describe('spotCheckSample', () => {
       expect(ids(spotCheckSample(items(count)))).toEqual(first);
       expect(new Set(first).size).toBe(first.length);
     }
+  });
+
+  it.each([
+    [1, 1],
+    [3, 3],
+    [10, 3],
+    [11, 3],
+    [30, 3],
+    [31, 4],
+    [100, 10],
+  ])('a list of %i clean items gets a sample of %i', (total, size) => {
+    expect(spotCheckSample(items(total))).toHaveLength(size);
+  });
+
+  it('is recomputed from what is left after an item is removed, and stays deterministic', () => {
+    const all = items(31);
+    expect(spotCheckSample(all)).toHaveLength(4);
+    // One clean item is excluded: 30 are left, so the sample shrinks to 3 and is the one for the smaller list.
+    const fewer = all.filter((item) => item.localId !== 'i7');
+    const sample = ids(spotCheckSample(fewer));
+    expect(sample).toHaveLength(3);
+    expect(sample).toEqual(ids([0, 15, 29].map((index) => fewer[index])));
+    expect(sample).not.toContain('i7');
+    expect(ids(spotCheckSample(fewer))).toEqual(sample);
   });
 });

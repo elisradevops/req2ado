@@ -24,6 +24,7 @@ describe('ConfirmDialog footer', () => {
   it('wraps, with the acknowledgement on its own row, so a long confirm label cannot squeeze it or overflow the dialog', () => {
     render(<ConfirmDialog open onOpenChange={() => {}} title="t" confirmLabel="Write 164 items to a-long-project-name" onConfirm={() => {}} variant="irreversible" />);
     const footer = confirmButton2().parentElement as HTMLElement;
+    // class pin: jsdom has no layout
     expect(hasClass(footer, 'flex-wrap')).toBe(true);
     expect(hasClass(screen.getByRole('checkbox').closest('label') as HTMLElement, 'w-full')).toBe(true);
   });
@@ -42,6 +43,7 @@ describe('ConfirmDialog irreversible focus and long labels', () => {
   it('keeps the full label as the accessible name while letting it truncate visually', () => {
     render(<ConfirmDialog open onOpenChange={() => {}} title="t" confirmLabel="Write 164 items to a-very-long-project-name" onConfirm={() => {}} />);
     const button = screen.getByRole('button', { name: 'Write 164 items to a-very-long-project-name' });
+    // class pin: jsdom has no layout
     expect(hasClass(button, 'max-w-full')).toBe(true);
     expect(hasClass(button.querySelector('span') as HTMLElement, 'truncate')).toBe(true);
   });
@@ -50,6 +52,7 @@ describe('ConfirmDialog irreversible focus and long labels', () => {
 describe('ConfirmDialog on a short screen', () => {
   it('limits its height to the screen so the body scrolls and the buttons stay reachable', () => {
     render(<ConfirmDialog open onOpenChange={() => {}} title="t" confirmLabel="Go" onConfirm={() => {}} description="d"><p>body</p></ConfirmDialog>);
+    // class pin: jsdom has no layout
     expect(screen.getByRole('dialog').className).toContain('max-h-[calc(100dvh-2rem)]');
     expect(hasClass(screen.getByText('body').parentElement as HTMLElement, 'overflow-y-auto')).toBe(true);
   });
@@ -75,8 +78,14 @@ describe('ConfirmDialog variants', () => {
     // to specify a variant must NOT silently fall through to it (the real
     // bug this rebuild fixes: three "Resubmit" dialogs used to do exactly
     // this).
+    // class pin: jsdom has no layout (no computed colours)
     expect(confirmButton().className).not.toContain('bg-signal');
     expect(confirmButton().className).toContain('bg-action');
+  });
+
+  it('links a neutral dialog description to the dialog', () => {
+    render(<ConfirmDialog open onOpenChange={() => {}} title="t" confirmLabel="Go" onConfirm={() => {}} description="Plain description." />);
+    expect(screen.getByRole('dialog')).toHaveAccessibleDescription('Plain description.');
   });
 
   it('neutral never shows the acknowledgement checkbox or breathing state', () => {
@@ -97,6 +106,7 @@ describe('ConfirmDialog variants', () => {
         variant="destructive"
       />,
     );
+    // class pin: jsdom has no layout (no computed colours)
     expect(confirmButton().className).toContain('bg-surface');
     expect(confirmButton().className).toContain('text-danger');
     const description = screen.getByText('This permanently removes the job.');
@@ -122,6 +132,7 @@ describe('ConfirmDialog variants', () => {
     await userEvent.click(screen.getByRole('checkbox'));
 
     expect(confirmButton()).not.toBeDisabled();
+    // class pin: jsdom has no layout (no computed colours or animation)
     expect(confirmButton().className).toContain('bg-signal');
     expect(hasClass(confirmButton(), 'cta-attention')).toBe(true);
   });

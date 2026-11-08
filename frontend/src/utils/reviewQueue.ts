@@ -12,7 +12,7 @@ import type { WarningGroup, WarningKindGroup } from './warningKinds';
 // `spotCheck` is the mandatory sample look before "approve clean items" (P17c): the dialog steps
 // through the sample instead of the queue, and the bulk confirmation comes back when it ends.
 export type ReviewQueueMode = { kind: 'off' } | { kind: 'queue' } | { kind: 'done' } | { kind: 'spotCheck' };
-export type ReviewQueueModeAction = 'open' | 'close' | 'finish' | 'clearDone' | 'startSpotCheck' | 'endSpotCheck';
+export type ReviewQueueModeAction = 'open' | 'close' | 'finish' | 'markDone' | 'clearDone' | 'startSpotCheck' | 'endSpotCheck';
 
 // Returns the same object when nothing changes, so a dispatch that does nothing does not re-render.
 export function reviewQueueModeReducer(mode: ReviewQueueMode, action: ReviewQueueModeAction): ReviewQueueMode {
@@ -22,8 +22,13 @@ export function reviewQueueModeReducer(mode: ReviewQueueMode, action: ReviewQueu
     // Leaving the dialog ends a running queue, but not a finished one: its "done" row stays.
     case 'close':
       return mode.kind === 'queue' ? { kind: 'off' } : mode;
+    // The running queue was worked through to its end. Only a running queue can finish.
     case 'finish':
-      return mode.kind === 'done' ? mode : { kind: 'done' };
+      return mode.kind === 'queue' ? { kind: 'done' } : mode;
+    // Shows the "done" row without a running queue (a bulk approve emptied a queue that was never
+    // opened). A running queue or spot-check is left alone: those end through their own actions.
+    case 'markDone':
+      return mode.kind === 'off' ? { kind: 'done' } : mode;
     case 'clearDone':
       return mode.kind === 'done' ? { kind: 'off' } : mode;
     case 'startSpotCheck':

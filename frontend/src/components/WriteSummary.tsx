@@ -1,7 +1,7 @@
 import { Button } from '../ui/Button';
 import type { WritePreview } from '../api/jobs';
 import type { ApprovalBreakdown } from '../utils/approvalBreakdown';
-import { writeSummaryLines, type WarningCounts } from '../utils/writeSummary';
+import { remainingLinksPhrase, writeSummaryLines, type WarningCounts } from '../utils/writeSummary';
 
 export type WriteSummaryState =
   | { status: 'loading' }
@@ -25,6 +25,8 @@ function statusText(state: WriteSummaryState): string {
   if (state.status === 'loading') return 'Checking what will be written…';
   if (state.status === 'error') return '';
   const total = state.preview.createdTotal;
+  const remaining = total === 0 ? remainingLinksPhrase(state.preview) : null;
+  if (remaining) return `Ready: nothing new to create; ${remaining}.`;
   return total === 0
     ? 'Ready: nothing will be created, so there is nothing to write.'
     : `Ready: ${total.toLocaleString()} ${total === 1 ? 'item' : 'items'} will be created.`;

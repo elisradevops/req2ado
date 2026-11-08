@@ -68,6 +68,40 @@ function useIsAboveBreakpoint(query: string): boolean {
 // with the same `open=true`) -- prev/next chevrons in the header step
 // through the same filtered row list the caller's arrow-key navigation
 // already uses.
+const WIDGET_ROLE_SELECTOR =
+  '[role=listbox],[role=option],[role=combobox],[role=menu],[role=menuitem],[role=menuitemcheckbox],[role=menuitemradio]';
+
+// 24px hit area (WCAG 2.5.8), a visible focus ring, and 16px icons.
+const CHEVRON_BUTTON_CLASS =
+  'inline-flex min-h-6 min-w-6 items-center justify-center rounded-sm text-ink-3 hover:text-ink-1 disabled:opacity-30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus';
+
+const BUSY_BUTTON_CLASS = 'cursor-not-allowed opacity-60';
+
+// A shortcut letter matches the typed character, or -- on a layout whose character is not a Latin letter (Hebrew,
+// Cyrillic) -- the physical key. A Latin character always wins, so AZERTY's A stays A.
+function matchesShortcutLetter(event: KeyboardEvent, letter: string): boolean {
+  const key = event.key.toLowerCase();
+  if (key === letter) return true;
+  const latin = /^[a-z]$/.test(key);
+  return !latin && event.code === `Key${letter.toUpperCase()}`;
+}
+
+function KeyHints({ hints }: { hints: Array<[string, string]> }): React.ReactElement {
+  return (
+    <span data-testid="key-hints" className="ms-2 text-xs opacity-80">
+      {hints.map(([key, label], index) => (
+        <Fragment key={key}>
+          {/* The break point is this space, outside the nowrap pair: the line breaks between hints, never inside one. */}
+          {index > 0 && ' '}
+          <span className="whitespace-nowrap">
+            <kbd className="rounded-sm border border-current/30 px-1 font-mono text-micro">{key}</kbd> {label}
+          </span>
+        </Fragment>
+      ))}
+    </span>
+  );
+}
+
 export function NodeDetailDialog({
   open,
   onOpenChange,
@@ -183,6 +217,10 @@ export function NodeDetailDialog({
     // Wording for the mark when it is not "mark reviewed" (the spot-check's "Looks right and next").
     markLabel?: string;
     markHint?: string;
+    // A review save is in flight: the mode buttons and keys do nothing (aria-disabled, never `disabled`, so focus stays put).
+    busy?: boolean;
+    // Called instead of the action when it is pressed while busy (the page says "Still saving").
+    onBusyAttempt?: () => void;
   } | null;
   // The single-key shortcuts (J K R A X). Off turns every one of them off
   // (WCAG 2.1.4); the buttons keep working.
@@ -239,28 +277,33 @@ export function NodeDetailDialog({
   useEffect(() => {
     if (!open || !onNavigate || !shortcutsEnabled) return;
     function handleKeyDown(event: KeyboardEvent): void {
+      if (event.defaultPrevented || event.shiftKey || event.isComposing || event.keyCode === 229) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       const target = event.target as HTMLElement | null;
       if (target && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))) return;
-      const key = event.key.toLowerCase();
+      // A letter typed to pick an option or menu entry is not a review shortcut.
+      if (target?.closest?.(WIDGET_ROLE_SELECTOR)) return;
+      const is = (letter: string): boolean => matchesShortcutLetter(event, letter);
       // A held A, R or X must not mark or exclude the whole queue at key-repeat speed.
-      if (event.repeat && (key === 'r' || key === 'a' || key === 'x' || key === 'u' || key === 'e')) return;
-      if (key === 'j' && hasNext) {
+      if (event.repeat && (is('r') || is('a') || is('x') || is('u') || is('e'))) return;
+      if (is('j') && hasNext) {
         event.preventDefault();
         onNavigate?.('next');
-      } else if (key === 'k' && hasPrev) {
+      } else if (is('k') && hasPrev) {
         event.preventDefault();
         onNavigate?.('prev');
-      } else if ((key === 'r' || key === 'a') && review && !review.reviewed) {
+      } else if ((is('r') || is('a')) && review && !review.reviewed) {
         event.preventDefault();
-        review.onMark();
-      } else if (key === 'x' && review?.onReject && !review.reviewed) {
+        if (review.busy) review.onBusyAttempt?.();
+        else review.onMark();
+      } else if (is('x') && review?.onReject && !review.reviewed) {
         event.preventDefault();
-        review.onReject();
-      } else if (key === 'u' && review?.onUndo) {
+        if (review.busy) review.onBusyAttempt?.();
+        else review.onReject();
+      } else if (is('u') && review?.onUndo) {
         event.preventDefault();
         review.onUndo();
-      } else if (key === 'e' && entryEditable) {
+      } else if (is('e') && entryEditable) {
         event.preventDefault();
         setEditRequest((count) => count + 1);
       }
@@ -305,7 +348,7 @@ export function NodeDetailDialog({
   const keyHints: Array<[string, string]> = [
     ['J', 'next'],
     ['K', 'previous'],
-    ...(review && !review.reviewed ? ([['A', review.markHint ?? 'mark reviewed']] as Array<[string, string]>) : []),
+    ...(review && !review.reviewed ? ([['A/R', review.markHint ?? 'mark reviewed']] as Array<[string, string]>) : []),
     ...(review && !review.reviewed && review.onReject ? ([['X', 'exclude']] as Array<[string, string]>) : []),
     ...(review?.onUndo ? ([['U', 'undo']] as Array<[string, string]>) : []),
     ...(entryEditable ? ([['E', 'edit']] as Array<[string, string]>) : []),
@@ -372,18 +415,20 @@ export function NodeDetailDialog({
                 aria-label="Previous item"
                 disabled={!hasPrev}
                 onClick={() => onNavigate('prev')}
-                className="text-ink-3 hover:text-ink-1 disabled:opacity-30"
+                aria-keyshortcuts={shortcutsEnabled ? 'K' : undefined}
+                className={CHEVRON_BUTTON_CLASS}
               >
-                <ChevronUp className="h-3.5 w-3.5" />
+                <ChevronUp className="h-4 w-4" />
               </button>
               <button
                 type="button"
                 aria-label="Next item"
                 disabled={!hasNext}
                 onClick={() => onNavigate('next')}
-                className="text-ink-3 hover:text-ink-1 disabled:opacity-30"
+                aria-keyshortcuts={shortcutsEnabled ? 'J' : undefined}
+                className={CHEVRON_BUTTON_CLASS}
               >
-                <ChevronDown className="h-3.5 w-3.5" />
+                <ChevronDown className="h-4 w-4" />
               </button>
             </span>
           )}
@@ -417,38 +462,63 @@ export function NodeDetailDialog({
             {/* basis-56: below that width the buttons wrap onto their own line instead of squeezing the text. */}
             <span className="min-w-0 flex-1 basis-56">
               <span className="font-semibold">{reason.title}.</span> {reason.todo}
-              {onNavigate && shortcutsEnabled && (
-                <span className="ms-2 text-xs opacity-80">
-                  {keyHints.map(([key, label], index) => (
-                    <Fragment key={key}>
-                      {/* The break point is this space, outside the nowrap pair: the line breaks between hints, never inside one. */}
-                      {index > 0 && ' '}
-                      <span className="whitespace-nowrap">
-                        <kbd className="rounded-sm border border-current/30 px-1 font-mono text-micro">{key}</kbd> {label}
-                      </span>
-                    </Fragment>
-                  ))}
-                </span>
-              )}
+              {onNavigate && shortcutsEnabled && <KeyHints hints={keyHints} />}
             </span>
             {review &&
               (review.reviewed ? (
-                <Button size="sm" variant="outline" className="flex-none" onClick={review.onUnmark}>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className={cn('flex-none', review.busy && BUSY_BUTTON_CLASS)}
+                  aria-busy={review.busy || undefined}
+                  aria-disabled={review.busy || undefined}
+                  onClick={() => {
+                    if (review.busy) review.onBusyAttempt?.();
+                    else review.onUnmark();
+                  }}
+                >
                   Mark not reviewed
                 </Button>
               ) : (
                 <div className="flex flex-none items-center gap-2">
                   {review.onReject && (
-                    <Button size="sm" variant="outline" onClick={review.onReject}>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className={cn(review.busy && BUSY_BUTTON_CLASS)}
+                      aria-busy={review.busy || undefined}
+                      aria-disabled={review.busy || undefined}
+                      aria-keyshortcuts={onNavigate && shortcutsEnabled ? 'X' : undefined}
+                      onClick={() => {
+                        if (review.busy) review.onBusyAttempt?.();
+                        else review.onReject?.();
+                      }}
+                    >
                       Exclude and next
                     </Button>
                   )}
-                  <Button size="sm" variant="primary" onClick={review.onMark}>
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    className={cn(review.busy && BUSY_BUTTON_CLASS)}
+                    aria-busy={review.busy || undefined}
+                    aria-disabled={review.busy || undefined}
+                    aria-keyshortcuts={onNavigate && shortcutsEnabled ? 'A R' : undefined}
+                    onClick={() => {
+                      if (review.busy) review.onBusyAttempt?.();
+                      else review.onMark();
+                    }}
+                  >
                     {review.markLabel ?? 'Mark reviewed and next'}
                   </Button>
                 </div>
               ))}
           </div>
+        </div>
+      )}
+      {!reason && onNavigate && shortcutsEnabled && (
+        <div className="flex-none border-b border-hairline bg-surface-sunken px-5 py-1 text-ink-2">
+          <KeyHints hints={keyHints} />
         </div>
       )}
       {isDesktop ? (

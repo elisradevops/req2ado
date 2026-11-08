@@ -153,6 +153,18 @@ describe('NodeDetailDialog', () => {
     expect(screen.getByRole('button', { name: /^add direct child wi$/i })).toBeInTheDocument();
   });
 
+  // class pin: jsdom has no layout
+  it('gives the header chevrons a visible focus ring, 16px icons and a 24px hit area', () => {
+    renderDialog({ onNavigate: vi.fn(), hasPrev: true, hasNext: true });
+    for (const name of [/previous item/i, /next item/i]) {
+      const button = screen.getByRole('button', { name });
+      expect(button.className).toContain('focus-visible:outline-2');
+      expect(button.className).toContain('focus-visible:outline-focus');
+      expect(button).toHaveClass('min-h-6', 'min-w-6');
+      expect(button.querySelector('svg')).toHaveClass('h-4', 'w-4');
+    }
+  });
+
   it('calls onNavigate("next")/("prev") when the header chevrons are clicked, gated by hasNext/hasPrev', async () => {
     const onNavigate = vi.fn();
     renderDialog({ onNavigate, hasPrev: false, hasNext: true });
@@ -237,7 +249,7 @@ describe('NodeDetailDialog', () => {
       const { default: userEvent } = await import('@testing-library/user-event');
 
       expect(screen.queryByRole('button', { name: 'Mark reviewed and next' })).not.toBeInTheDocument();
-      expect(screen.getByRole('note')).toHaveTextContent(/A\s*looks right/);
+      expect(screen.getByRole('note')).toHaveTextContent(/A\/R\s*looks right/);
       await userEvent.click(screen.getByRole('button', { name: 'Looks right and next' }));
       await userEvent.keyboard('a');
       expect(onMark).toHaveBeenCalledTimes(2);
@@ -332,6 +344,7 @@ describe('NodeDetailDialog', () => {
         expect(onMark).toHaveBeenCalledTimes(1);
       });
 
+      // class pin: jsdom has no layout
       it('lets the key hints wrap onto the next line, keeping each key with its label', () => {
         renderDialog({
           onNavigate: vi.fn(),
@@ -339,7 +352,7 @@ describe('NodeDetailDialog', () => {
           review: { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn(), onReject: vi.fn(), onUndo: vi.fn() },
         });
         const keys = Array.from(screen.getByRole('note').querySelectorAll('kbd'));
-        expect(keys.map((k) => k.textContent)).toEqual(['J', 'K', 'A', 'X', 'U', 'E']);
+        expect(keys.map((k) => k.textContent)).toEqual(['J', 'K', 'A/R', 'X', 'U', 'E']);
         for (const key of keys) {
           // One wrapper per key, so a break can only fall between pairs.
           expect(key.parentElement).toHaveClass('whitespace-nowrap');
@@ -357,7 +370,7 @@ describe('NodeDetailDialog', () => {
       it('names the actions the way the buttons do', () => {
         renderDialog({ onNavigate: vi.fn(), reason, review: { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn(), onReject: vi.fn() } });
         const note = screen.getByRole('note');
-        expect(note).toHaveTextContent(/A\s*mark reviewed/);
+        expect(note).toHaveTextContent(/A\/R\s*mark reviewed/);
         expect(note).toHaveTextContent(/X\s*exclude/);
       });
 
@@ -427,6 +440,150 @@ describe('NodeDetailDialog', () => {
         await userEvent.keyboard('e');
         expect(screen.queryByDisplayValue('Req Title')).not.toBeInTheDocument();
         input.remove();
+      });
+
+      it('ignores letters typed inside a listbox, option, menu, menuitem or combobox in the dialog', () => {
+        const onMark = vi.fn();
+        const onReject = vi.fn();
+        renderDialog({ onNavigate: vi.fn(), reason, review: { reviewed: false, onMark, onUnmark: vi.fn(), onReject } });
+        const dialog = screen.getByRole('dialog');
+        for (const role of ['option', 'menuitem', 'combobox', 'listbox']) {
+          const el = document.createElement('div');
+          el.setAttribute('role', role);
+          el.tabIndex = 0;
+          dialog.appendChild(el);
+          fireEvent.keyDown(el, { key: 'a' });
+          fireEvent.keyDown(el, { key: 'x' });
+        }
+        expect(onMark).not.toHaveBeenCalled();
+        expect(onReject).not.toHaveBeenCalled();
+      });
+
+      it('ignores Shift+letter, IME composition and keyCode 229', () => {
+        const onMark = vi.fn();
+        const onReject = vi.fn();
+        renderDialog({ onNavigate: vi.fn(), reason, review: { reviewed: false, onMark, onUnmark: vi.fn(), onReject } });
+        fireEvent.keyDown(window, { key: 'A', shiftKey: true });
+        fireEvent.keyDown(window, { key: 'X', shiftKey: true });
+        fireEvent.keyDown(window, { key: 'a', isComposing: true });
+        fireEvent.keyDown(window, { key: 'a', keyCode: 229 });
+        expect(onMark).not.toHaveBeenCalled();
+        expect(onReject).not.toHaveBeenCalled();
+      });
+
+      it('works on a Hebrew layout through the physical key, and a Latin key still wins over the code', () => {
+        const onMark = vi.fn();
+        const onReject = vi.fn();
+        const onNavigate = vi.fn();
+        renderDialog({
+          onNavigate,
+          hasNext: true,
+          hasPrev: true,
+          reason,
+          review: { reviewed: false, onMark, onUnmark: vi.fn(), onReject },
+        });
+        fireEvent.keyDown(window, { key: '\u05E9', code: 'KeyA' });
+        expect(onMark).toHaveBeenCalledTimes(1);
+        fireEvent.keyDown(window, { key: '\u05E1', code: 'KeyX' });
+        expect(onReject).toHaveBeenCalledTimes(1);
+        fireEvent.keyDown(window, { key: '\u05D7', code: 'KeyJ' });
+        expect(onNavigate).toHaveBeenLastCalledWith('next');
+        fireEvent.keyDown(window, { key: '\u05DC', code: 'KeyK' });
+        expect(onNavigate).toHaveBeenLastCalledWith('prev');
+        // AZERTY: the Latin key 'a' is on the physical Q position and still marks.
+        fireEvent.keyDown(window, { key: 'a', code: 'KeyQ' });
+        expect(onMark).toHaveBeenCalledTimes(2);
+        // A Latin 'q' on the physical A position is not a shortcut.
+        fireEvent.keyDown(window, { key: 'q', code: 'KeyA' });
+        expect(onMark).toHaveBeenCalledTimes(2);
+      });
+
+      it('shows the key hints in a thin row when there is no reason, with A/R for the mark', () => {
+        renderDialog({
+          onNavigate: vi.fn(),
+          review: { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn(), onReject: vi.fn() },
+        });
+        expect(screen.queryByRole('note')).not.toBeInTheDocument();
+        const hints = screen.getByTestId('key-hints');
+        expect(Array.from(hints.querySelectorAll('kbd')).map((k) => k.textContent)).toEqual(['J', 'K', 'A/R', 'X', 'E']);
+      });
+
+      it('shows the hints with no reason for a spot-check, with the keys that mode supports', () => {
+        renderDialog({
+          onNavigate: vi.fn(),
+          review: {
+            reviewed: false, onMark: vi.fn(), onUnmark: vi.fn(), onReject: vi.fn(),
+            markLabel: 'Looks right and next', markHint: 'looks right',
+          },
+        });
+        const hints = screen.getByTestId('key-hints');
+        expect(hints).toHaveTextContent(/A\/R\s*looks right/);
+        expect(Array.from(hints.querySelectorAll('kbd')).map((k) => k.textContent)).toEqual(['J', 'K', 'A/R', 'X', 'E']);
+      });
+
+      it('declares aria-keyshortcuts on the buttons only while shortcuts are on', () => {
+        const props = {
+          onNavigate: vi.fn(),
+          hasNext: true,
+          hasPrev: true,
+          reason,
+          review: { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn(), onReject: vi.fn() },
+        };
+        const { unmount } = renderDialog(props);
+        expect(screen.getByRole('button', { name: 'Mark reviewed and next' })).toHaveAttribute('aria-keyshortcuts', 'A R');
+        expect(screen.getByRole('button', { name: 'Exclude and next' })).toHaveAttribute('aria-keyshortcuts', 'X');
+        expect(screen.getByRole('button', { name: /previous item/i })).toHaveAttribute('aria-keyshortcuts', 'K');
+        expect(screen.getByRole('button', { name: /next item/i })).toHaveAttribute('aria-keyshortcuts', 'J');
+        unmount();
+        renderDialog({ ...props, shortcutsEnabled: false });
+        for (const name of ['Mark reviewed and next', 'Exclude and next', /previous item/i, /next item/i]) {
+          expect(screen.getByRole('button', { name })).not.toHaveAttribute('aria-keyshortcuts');
+        }
+      });
+
+      it('marks the mode buttons busy without disabling them, and ignores clicks and keys while busy', async () => {
+        const onMark = vi.fn();
+        const onReject = vi.fn();
+        renderDialog({
+          onNavigate: vi.fn(),
+          reason,
+          review: { reviewed: false, busy: true, onMark, onUnmark: vi.fn(), onReject },
+        });
+        const { default: userEvent } = await import('@testing-library/user-event');
+        for (const name of ['Mark reviewed and next', 'Exclude and next']) {
+          const button = screen.getByRole('button', { name });
+          expect(button).toHaveAttribute('aria-busy', 'true');
+          expect(button).toHaveAttribute('aria-disabled', 'true');
+          expect(button).not.toBeDisabled();
+          await userEvent.click(button);
+        }
+        await userEvent.keyboard('ax');
+        expect(onMark).not.toHaveBeenCalled();
+        expect(onReject).not.toHaveBeenCalled();
+      });
+
+      it('marks "Mark not reviewed" busy too, and acts normally when not busy', async () => {
+        const onUnmark = vi.fn();
+        const { unmount } = renderDialog({
+          onNavigate: vi.fn(),
+          reason,
+          review: { reviewed: true, busy: true, onMark: vi.fn(), onUnmark },
+        });
+        const { default: userEvent } = await import('@testing-library/user-event');
+        const busyButton = screen.getByRole('button', { name: 'Mark not reviewed' });
+        expect(busyButton).toHaveAttribute('aria-busy', 'true');
+        await userEvent.click(busyButton);
+        expect(onUnmark).not.toHaveBeenCalled();
+        unmount();
+
+        const onMark = vi.fn();
+        renderDialog({ onNavigate: vi.fn(), reason, review: { reviewed: false, busy: false, onMark, onUnmark } });
+        const button = screen.getByRole('button', { name: 'Mark reviewed and next' });
+        expect(button).not.toHaveAttribute('aria-busy', 'true');
+        expect(button).not.toHaveAttribute('aria-disabled', 'true');
+        await userEvent.click(button);
+        await userEvent.keyboard('a');
+        expect(onMark).toHaveBeenCalledTimes(2);
       });
 
       it('turns every single-key shortcut off, J and K included, and hides the key hints', async () => {

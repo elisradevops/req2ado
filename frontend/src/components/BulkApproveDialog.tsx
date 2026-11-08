@@ -28,6 +28,8 @@ export function BulkApproveDialog({
   onStartSpotCheck,
   onShowList,
   onApprove,
+  returnFocusRef,
+  restoreFocus,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -41,6 +43,8 @@ export function BulkApproveDialog({
   onStartSpotCheck: () => void;
   onShowList: () => void;
   onApprove: () => void;
+  returnFocusRef?: React.RefObject<HTMLElement | null>;
+  restoreFocus?: boolean;
 }): React.ReactElement {
   const checkedAll = checkedCount >= sampleSize;
   const cleanItems = `${count.toLocaleString()} clean ${count === 1 ? 'item' : 'items'}`;
@@ -61,6 +65,8 @@ export function BulkApproveDialog({
     <Dialog
       open={open}
       onOpenChange={onOpenChange}
+      returnFocusRef={returnFocusRef}
+      restoreFocus={restoreFocus}
       title={`Approve ${cleanItems}?`}
       description={
         <>
@@ -91,7 +97,7 @@ export function BulkApproveDialog({
         </p>
       )}
       <div className="flex flex-wrap items-center gap-2 rounded-md border border-hairline bg-surface-alt p-2.5 text-sm">
-        <span id="bulk-approve-progress" className="mr-auto text-ink-2">
+        <span id="bulk-approve-progress" className="me-auto text-ink-2">
           Spot-check: {Math.min(checkedCount, sampleSize).toLocaleString()} of {sampleSize.toLocaleString()} checked
         </span>
         {!checkedAll && (

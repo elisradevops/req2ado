@@ -48,6 +48,13 @@ export function Dialog({
   // (content-sized, centered) is unaffected when omitted.
   unpadded = false,
   maxHeightClassName,
+  // Where focus goes on close instead of the remembered opener, when that
+  // element is connected. For a caller that hands over between dialogs, where
+  // the remembered opener may be inside a dialog that is about to unmount.
+  returnFocusRef,
+  // false: closing moves no focus (a hand-over where another dialog or
+  // control takes focus itself and a closing dialog must not steal it back).
+  restoreFocus = true,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -58,6 +65,8 @@ export function Dialog({
   maxWidthClassName?: string;
   unpadded?: boolean;
   maxHeightClassName?: string;
+  returnFocusRef?: React.RefObject<HTMLElement | null>;
+  restoreFocus?: boolean;
 }): React.ReactElement {
   const contentRef = useRef<HTMLDivElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
@@ -96,6 +105,12 @@ export function Dialog({
             event.preventDefault();
             const opener = openerRef.current;
             openerRef.current = null;
+            if (!restoreFocus) return;
+            const preferred = returnFocusRef?.current;
+            if (preferred && preferred.isConnected) {
+              preferred.focus();
+              return;
+            }
             // A removed opener (its row went away while the dialog was open)
             // is left alone; the caller decides where focus goes then.
             if (opener && opener !== document.body && opener.isConnected) opener.focus();
@@ -125,7 +140,7 @@ export function Dialog({
             )}
           </div>
           {children && (
-            <div className={unpadded ? 'flex min-h-0 flex-1 flex-col' : 'flex min-h-0 flex-col gap-3 overflow-y-auto px-5 pb-1'}>{children}</div>
+            <div className={unpadded ? 'flex min-h-0 flex-1 flex-col' : 'flex min-h-0 flex-col gap-3 overflow-y-auto px-5 pt-1 pb-1'}>{children}</div>
           )}
           {footer && <div className="mt-3.5 flex flex-none items-center gap-2.5 border-t border-hairline bg-canvas px-5 py-3.5">{footer}</div>}
         </RadixDialog.Content>

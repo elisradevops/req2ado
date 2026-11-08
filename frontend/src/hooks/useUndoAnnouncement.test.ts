@@ -67,8 +67,23 @@ describe('useUndoAnnouncement', () => {
       expect(second).not.toBe(third);
       expect(third).toBe(first);
       for (const text of [first, second, third]) {
-        expect(text.replace('​', '')).toBe('Still saving. Try again.');
+        expect(text.replace('\u200b', '')).toBe('Still saving. Try again.');
       }
+    });
+
+    it('announceAgain after a direct setAnnouncement of the same text still changes it, by a trailing U+200B', () => {
+      const { result } = renderHook(() => useUndoAnnouncement());
+      const message = 'Still saving. Try again.';
+      // An earlier announceAgain must not leave a hidden flip state behind that a later direct set can collide with.
+      act(() => result.current.announceAgain(message));
+      act(() => result.current.setAnnouncement(message));
+      act(() => result.current.announceAgain(message));
+      expect(result.current.announcement).not.toBe(message);
+      expect(result.current.announcement).toBe(`${message}\u200b`);
+      expect(result.current.announcement.charCodeAt(message.length)).toBe(0x200b);
+      // A second repeat comes back to the plain text.
+      act(() => result.current.announceAgain(message));
+      expect(result.current.announcement).toBe(message);
     });
   });
 });

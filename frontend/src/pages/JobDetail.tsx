@@ -65,7 +65,7 @@ import { buildReviewQueue, cleanApproval, reviewQueueModeReducer, riskReason, sp
 import { BulkApproveDialog } from '../components/BulkApproveDialog';
 import { WriteSummary, type WriteSummaryState } from '../components/WriteSummary';
 import { approvalBreakdown, type ApprovalMethod } from '../utils/approvalBreakdown';
-import { countWarningsForWrite } from '../utils/writeSummary';
+import { countWarningsForWrite, writeHasWork } from '../utils/writeSummary';
 import { orderLikeTree } from '../utils/diffTreeOrder';
 import { useKeyboardShortcuts } from '../store/uiPreferencesStore';
 import { useUndoAnnouncement, type QueueUndo } from '../hooks/useUndoAnnouncement';
@@ -111,6 +111,8 @@ import { DocumentOverviewCard } from '../components/DocumentOverviewCard';
 // convention as SourceProvenance/other single-line previews elsewhere in
 // this app.
 const VALIDATION_MISMATCH_PREVIEW_LENGTH = 80;
+// How long the final write summary waits for the server's preview before showing "couldn't check".
+const WRITE_PREVIEW_TIMEOUT_MS = 15000;
 function truncateForDisplay(text: string): string {
   const collapsed = text.replace(/\s+/g, ' ').trim();
   if (collapsed.length <= VALIDATION_MISMATCH_PREVIEW_LENGTH) return collapsed;
@@ -179,8 +181,21 @@ export function JobDetail(): React.ReactElement {
   // so a live warning doesn't disappear then reappear once the job
   // actually completes and the persisted list supersedes it.
   const [liveWarnings, setLiveWarnings] = useState<string[]>([]);
-  const [diff, setDiff] = useState<DryRunDiffEntry[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [diff, setDiffState] = useState<DryRunDiffEntry[]>([]);
+  const [selectedId, setSelectedIdState] = useState<string | null>(null);
+  // Write-through mirrors of review state that handlers started in an older render (an Undo, a save that
+  // finishes later) must read current: updated synchronously inside the one setter per state, so they cannot drift.
+  const diffRef = useRef<DryRunDiffEntry[]>([]);
+  const selectedIdRef = useRef<string | null>(null);
+  function setDiff(next: DryRunDiffEntry[] | ((prev: DryRunDiffEntry[]) => DryRunDiffEntry[])): void {
+    const value = typeof next === 'function' ? next(diffRef.current) : next;
+    diffRef.current = value;
+    setDiffState(value);
+  }
+  function setSelectedId(next: string | null): void {
+    selectedIdRef.current = next;
+    setSelectedIdState(next);
+  }
   const [dialogOpen, setDialogOpen] = useState(false);
   // The risk-ordered review queue (P17a): while on, the details dialog steps through
   // `reviewQueue` instead of the tree, and A / X act on the open item. `done` is the queue worked
@@ -196,8 +211,33 @@ export function JobDetail(): React.ReactElement {
   const [spotChecked, setSpotChecked] = useState<ReadonlySet<string>>(new Set());
   // How each reviewed item was approved in THIS page session, for the final write summary (P17d). Never saved or sent: a reload
   // starts every approved item as "reviewed earlier".
-  const [approvalMethods, setApprovalMethods] = useState<ReadonlyMap<string, ApprovalMethod>>(new Map());
-  const [bulkCheckedIds, setBulkCheckedIds] = useState<ReadonlySet<string>>(new Set());
+  const [approvalMethods, setApprovalMethodsState] = useState<ReadonlyMap<string, ApprovalMethod>>(new Map());
+  const [bulkCheckedIds, setBulkCheckedIdsState] = useState<ReadonlySet<string>>(new Set());
+  const approvalMethodsRef = useRef<ReadonlyMap<string, ApprovalMethod>>(new Map());
+  const bulkCheckedIdsRef = useRef<ReadonlySet<string>>(new Set());
+  function setApprovalMethods(update: (prev: ReadonlyMap<string, ApprovalMethod>) => ReadonlyMap<string, ApprovalMethod>): void {
+    const next = update(approvalMethodsRef.current);
+    approvalMethodsRef.current = next;
+    setApprovalMethodsState(next);
+  }
+  function setBulkCheckedIds(update: (prev: ReadonlySet<string>) => ReadonlySet<string>): void {
+    const next = update(bulkCheckedIdsRef.current);
+    bulkCheckedIdsRef.current = next;
+    setBulkCheckedIdsState(next);
+  }
+  // A second click on "Approve N clean items" in the same tick would otherwise save twice (state is too slow).
+  const approveCleanInFlightRef = useRef(false);
+  // Review-flag saves go out one at a time, in the order they were made, so an Undo can never reach the server before the mark it undoes.
+  // Each link settles whether its save worked or not, so a failed one never blocks the next.
+  const reviewWriteChainRef = useRef<Promise<void>>(Promise.resolve());
+  // Per item: the newest review write made for it, how many of its writes are unsaved, and the state the server last confirmed.
+  // A failed save only rolls back items whose newest write it still is, and to the confirmed state (not to a guess).
+  const reviewSeqRef = useRef(new Map<string, number>());
+  const reviewPendingRef = useRef(new Map<string, number>());
+  const reviewConfirmedRef = useRef(new Map<string, { reviewed: boolean; method?: ApprovalMethod; bulk: boolean }>());
+  // The route's job id as of the latest render, for saves that finish after the page moved to another job.
+  const currentJobIdRef = useRef(id);
+  currentJobIdRef.current = id;
   const [editedIds, setEditedIds] = useState<ReadonlySet<string>>(new Set());
   const [bulkNotice, setBulkNotice] = useState('');
   // The announcement is read out by the polite live region next to the tree ("Accepted. 2 left.").
@@ -212,6 +252,11 @@ export function JobDetail(): React.ReactElement {
   } = useUndoAnnouncement();
   const queueDoneRef = useRef<HTMLDivElement>(null);
   const queueButtonRef = useRef<HTMLButtonElement>(null);
+  // Where the bulk confirmation returns focus when it closes: its opener can sit inside the details dialog
+  // (the spot-check hands back to it), which is gone by then.
+  const approveCleanButtonRef = useRef<HTMLButtonElement>(null);
+  // True only for the close that starts the spot-check: the details dialog takes focus, so the closing confirmation must not.
+  const [bulkHandOver, setBulkHandOver] = useState(false);
   // Set while the dialog was opened by the queue, so closing it can hand focus back.
   const queueOpenedRef = useRef(false);
   // Kept in step with `dialogOpen` by updateDialogOpen, so async code (a failed save) reads the
@@ -841,24 +886,41 @@ export function JobDetail(): React.ReactElement {
     setWriteSummaryState({ status: 'loading' });
     if (!confirmDialogOpen || !id) return;
     let cancelled = false;
+    // A check that never answers must not leave the button disabled forever: after this long it is shown as "couldn't check".
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), WRITE_PREVIEW_TIMEOUT_MS);
+    });
     void (async () => {
       try {
-        const preview = await getWritePreview(id);
+        const preview = await Promise.race([getWritePreview(id), timeout]);
         if (cancelled) return;
         // The summary is advisory and must never block the write: anything but a real preview is shown as "couldn't check".
         if (!preview || typeof preview.createdTotal !== 'number') {
           setWriteSummaryState({ status: 'error' });
           return;
         }
-        setWriteSummaryState({ status: 'ready', preview, review: { edited: 0, single: 0, bulk: 0, bulkSpotChecked: 0, earlier: 0, notReviewed: 0 } });
+        setWriteSummaryState({ status: 'ready', preview, review: { edited: 0, single: 0, bulk: 0, bulkSpotChecked: 0, group: 0, earlier: 0, notReviewed: 0 } });
       } catch {
         if (!cancelled) setWriteSummaryState({ status: 'error' });
+      } finally {
+        clearTimeout(timer);
       }
     })();
     return () => {
       cancelled = true;
+      clearTimeout(timer);
     };
   }, [confirmDialogOpen, id]);
+
+  // The dialog describes a diff that can still be written. If the job leaves 'diff_ready' while it is open (cancelled or failed
+  // elsewhere), close it. Our own write closes it first (handleConfirm) and only then sets 'writing', and isMutatingRef covers the gap.
+  useEffect(() => {
+    if (confirmDialogOpen && status !== 'diff_ready' && !isMutatingRef.current) {
+      setConfirmDialogOpen(false);
+      showToast('The job changed, so the write was cancelled. Nothing was written.', 'error');
+    }
+  }, [confirmDialogOpen, status, showToast]);
 
   // How the items that will be written were reviewed, from the server's list of them and what this page session recorded.
   const writeSummary = useMemo<WriteSummaryState>(() => {
@@ -877,6 +939,11 @@ export function JobDetail(): React.ReactElement {
   }, [writeSummaryState, diff, approvalMethods, bulkCheckedIds, editedIds]);
   const writeWarningCounts = useMemo(() => countWarningsForWrite(mergedWarnings), [mergedWarnings]);
   const previewedTotal = writeSummaryState.status === 'ready' ? writeSummaryState.preview.createdTotal : null;
+  const writePreviewed = writeSummaryState.status === 'ready' ? writeSummaryState.preview : null;
+  const nothingToWrite = writePreviewed !== null && !writeHasWork(writePreviewed);
+  const writeLoading = writeSummaryState.status === 'loading';
+  // Only links are left (a retry after a failed write): nothing new is created, but the write still has work to finish.
+  const finishingLinks = writePreviewed !== null && writePreviewed.createdTotal === 0 && !nothingToWrite;
 
   async function handleConfirm(): Promise<void> {
     if (!id || !orgUrl || isMutatingRef.current) return;
@@ -1083,6 +1150,16 @@ export function JobDetail(): React.ReactElement {
     }
   }
 
+  // The ids among `ids` that are still reviewed, not excluded and were approved with `method`: what an Undo of that
+  // approval may take back. Items excluded, or approved another way, since are left alone.
+  function idsStillApproved(ids: string[], method: ApprovalMethod): string[] {
+    const current = new Map(diffRef.current.map((entry) => [entry.localId, entry]));
+    return ids.filter((localId) => {
+      const entry = current.get(localId);
+      return !!entry && !!entry.reviewed && !entry.excluded && approvalMethodsRef.current.get(localId) === method;
+    });
+  }
+
   // Marks items reviewed (or not), optimistically: the flag flips at once so
   // stepping through dozens of items stays instant. The server's reply is
   // deliberately NOT applied back -- with several marks in flight, an older
@@ -1102,10 +1179,43 @@ export function JobDetail(): React.ReactElement {
       : diff.filter((entry) => wanted.has(entry.localId) && !!entry.reviewed !== reviewed).map((entry) => entry.localId);
     if (changed.length === 0) return true;
     const changedSet = new Set(changed);
+    const jobId = id;
+    const targetMethod = reviewed ? (options?.method ?? 'single') : undefined;
+    // With no unsaved write for an item, what the page shows is what the server has: remember it as the state to roll back to.
+    const reviewedNow = new Map(diffRef.current.map((entry) => [entry.localId, !!entry.reviewed]));
+    const mySeq = new Map<string, number>();
+    for (const localId of changed) {
+      const seq = (reviewSeqRef.current.get(localId) ?? 0) + 1;
+      reviewSeqRef.current.set(localId, seq);
+      mySeq.set(localId, seq);
+      const pending = reviewPendingRef.current.get(localId) ?? 0;
+      if (pending === 0) {
+        reviewConfirmedRef.current.set(localId, {
+          reviewed: reviewedNow.get(localId) ?? false,
+          method: approvalMethodsRef.current.get(localId),
+          bulk: bulkCheckedIdsRef.current.has(localId),
+        });
+      }
+      reviewPendingRef.current.set(localId, pending + 1);
+    }
     setDiff((prev) => prev.map((entry) => (changedSet.has(entry.localId) ? { ...entry, reviewed } : entry)));
     recordApprovalMethod(changed, reviewed ? (options?.method ?? 'single') : null);
     try {
-      await setDiffEntriesReviewed(id, changed, reviewed);
+      const save = reviewWriteChainRef.current.then(() => setDiffEntriesReviewed(id, changed, reviewed));
+      reviewWriteChainRef.current = save.then(
+        () => undefined,
+        () => undefined,
+      );
+      await save;
+      for (const localId of changed) {
+        reviewConfirmedRef.current.set(localId, {
+          reviewed,
+          method: targetMethod,
+          bulk: !!targetMethod && bulkCheckedIdsRef.current.has(localId),
+        });
+      }
+      // The page has moved to another job: its state is not this save's to touch.
+      if (currentJobIdRef.current !== jobId) return true;
       showToast(
         `${changed.length === 1 ? '1 item' : `${changed.length.toLocaleString()} items`} marked ${reviewed ? 'reviewed' : 'not reviewed'}.`,
         'success',
@@ -1113,16 +1223,53 @@ export function JobDetail(): React.ReactElement {
           label: 'Undo',
           onAction: () => {
             options?.onToastUndo?.();
-            void handleSetReviewed(changed, !reviewed, { force: true });
+            // Taking a mark back only touches what is still approved that way; putting one back is not filtered.
+            const undoIds = reviewed ? idsStillApproved(changed, options?.method ?? 'single') : changed;
+            if (undoIds.length === 0) {
+              announceAgain('Nothing left to undo.');
+              return;
+            }
+            void handleSetReviewed(undoIds, !reviewed, { force: true });
           },
         },
       );
       return true;
     } catch (err) {
-      setDiff((prev) => prev.map((entry) => (changedSet.has(entry.localId) ? { ...entry, reviewed: !reviewed } : entry)));
-      recordApprovalMethod(changed, null);
+      if (currentJobIdRef.current !== jobId) return false;
+      // Only items this call is still the newest write for; the rest belong to a later call, which settles them.
+      const rollBack = changed.filter((localId) => reviewSeqRef.current.get(localId) === mySeq.get(localId));
+      const rollBackSet = new Set(rollBack);
+      const confirmed = reviewConfirmedRef.current;
+      setDiff((prev) =>
+        prev.map((entry) =>
+          rollBackSet.has(entry.localId) ? { ...entry, reviewed: confirmed.get(entry.localId)?.reviewed ?? !reviewed } : entry,
+        ),
+      );
+      setApprovalMethods((prev) => {
+        const next = new Map(prev);
+        for (const localId of rollBack) {
+          const method = confirmed.get(localId)?.method;
+          if (method) next.set(localId, method);
+          else next.delete(localId);
+        }
+        return next;
+      });
+      setBulkCheckedIds((prev) => {
+        const next = new Set(prev);
+        for (const localId of rollBack) {
+          if (confirmed.get(localId)?.bulk) next.add(localId);
+          else next.delete(localId);
+        }
+        return next;
+      });
       showErrorToast('Failed to update review state — please try again.', err);
       return false;
+    } finally {
+      for (const localId of changed) {
+        const pending = (reviewPendingRef.current.get(localId) ?? 1) - 1;
+        if (pending <= 0) reviewPendingRef.current.delete(localId);
+        else reviewPendingRef.current.set(localId, pending);
+      }
     }
   }
 
@@ -1145,7 +1292,9 @@ export function JobDetail(): React.ReactElement {
   // open item is gone. Ends queue mode, and closes the dialog, when nothing is.
   function advanceReviewQueue(rest: DryRunDiffEntry[], verb: string): void {
     if (rest.length === 0) {
+      // 'finish' ends a running queue; markDone covers a dialog the reviewer closed while the save ran.
       dispatchQueueState('finish');
+      dispatchQueueState('markDone');
       updateDialogOpen(false);
       setQueueAnnouncement(`${verb}. Review queue done.`);
       return;
@@ -1191,13 +1340,16 @@ export function JobDetail(): React.ReactElement {
     const markedId = selectedId;
     const markedTitle = diff.find((entry) => entry.localId === markedId)?.title ?? 'item';
     const rest = reviewQueue.filter((entry) => entry.localId !== markedId);
-    let undo: QueueUndo | undefined;
+    // Recorded before the save, so accepts that finish out of order cannot make U undo an older one.
+    const undo: QueueUndo = {
+      label: markedTitle,
+      run: () => handleSetReviewed(idsStillApproved([markedId], 'single'), false, { force: true }),
+    };
+    setLastUndo(undo);
     const saved = handleSetReviewed([markedId], true, { onToastUndo: () => clearLastUndoIf(undo) });
     advanceReviewQueue(rest, 'Marked reviewed');
-    if (await saved) {
-      undo = { label: markedTitle, run: () => handleSetReviewed([markedId], false, { force: true }) };
-      setLastUndo(undo);
-    } else {
+    if (!(await saved)) {
+      clearLastUndoIf(undo);
       returnToQueueItem(markedId, `Couldn't mark "${markedTitle}" reviewed. Try again.`);
     }
   }
@@ -1218,7 +1370,9 @@ export function JobDetail(): React.ReactElement {
       warningKindGroups,
     );
     if (!(await excludeWithUndo(excludedId))) return;
-    advanceReviewQueue(rest, 'Excluded');
+    // Step on only if the reviewer is still on the excluded item; one who moved on (J/K) keeps their place.
+    if (selectedIdRef.current === excludedId) advanceReviewQueue(rest, 'Excluded');
+    else setQueueAnnouncement(`Excluded. ${rest.length} left.`);
   }
 
   // Excludes the item and offers Undo (toast and the U key); says so when the save fails.
@@ -1231,17 +1385,26 @@ export function JobDetail(): React.ReactElement {
     const below = descendantCountsByLocalId[excludedId];
     const belowCount = below ? below.epics + below.features + below.requirements : 0;
     const undo: QueueUndo = { label: excludedEntry?.title ?? 'item', run: () => excludeEntry(excludedId, false) };
-    showToast(
-      `Excluded "${excludedEntry?.title ?? 'item'}"${belowCount > 0 ? ` and ${belowCount.toLocaleString()} below it` : ''}.`,
-      'success',
-      {
-        label: 'Undo',
-        onAction: () => {
-          clearLastUndoIf(undo);
-          void excludeEntry(excludedId, false);
+    // While another save is in flight the Undo cannot run: say so and put the same toast back, keeping U set.
+    function showExcludedToast(): void {
+      showToast(
+        `Excluded "${excludedEntry?.title ?? 'item'}"${belowCount > 0 ? ` and ${belowCount.toLocaleString()} below it` : ''}.`,
+        'success',
+        {
+          label: 'Undo',
+          onAction: () => {
+            if (isDiffMutatingRef.current) {
+              announceAgain('Still saving. Try again.');
+              showExcludedToast();
+              return;
+            }
+            clearLastUndoIf(undo);
+            void excludeEntry(excludedId, false);
+          },
         },
-      },
-    );
+      );
+    }
+    showExcludedToast();
     setLastUndo(undo);
     return true;
   }
@@ -1251,6 +1414,7 @@ export function JobDetail(): React.ReactElement {
   function handleOpenBulkApprove(): void {
     setSpotChecked(new Set());
     setBulkNotice('');
+    setBulkHandOver(false);
     setBulkOpen(true);
   }
 
@@ -1259,6 +1423,7 @@ export function JobDetail(): React.ReactElement {
     if (!next) return;
     setQueueAnnouncement('');
     setSelectedId(next.localId);
+    setBulkHandOver(true);
     setBulkOpen(false);
     dispatchQueueState('startSpotCheck');
     updateDialogOpen(true);
@@ -1288,7 +1453,17 @@ export function JobDetail(): React.ReactElement {
       return;
     }
     setQueueAnnouncement('');
-    if (await excludeWithUndo(selectedId)) setQueueAnnouncement('Excluded. The sample is worked out again.');
+    const excludedId = selectedId;
+    if (await excludeWithUndo(excludedId)) {
+      // Restored by Undo later, it is a fresh item: it has to be looked at again.
+      setSpotChecked((prev) => {
+        if (!prev.has(excludedId)) return prev;
+        const next = new Set(prev);
+        next.delete(excludedId);
+        return next;
+      });
+      setQueueAnnouncement('Excluded. The sample is worked out again.');
+    }
   }
 
   // Shows the clean items in the tree (the same filter a warning chip uses), so the reviewer can read them.
@@ -1302,6 +1477,16 @@ export function JobDetail(): React.ReactElement {
   // set: nothing reaches Azure DevOps until the write is confirmed. The list is the one this render
   // shows in the confirmation, so what is approved is what the reviewer was looking at.
   async function handleApproveClean(): Promise<void> {
+    if (approveCleanInFlightRef.current) return;
+    approveCleanInFlightRef.current = true;
+    try {
+      await approveCleanItems();
+    } finally {
+      approveCleanInFlightRef.current = false;
+    }
+  }
+
+  async function approveCleanItems(): Promise<void> {
     const ids = bulk.items.map((entry) => entry.localId);
     if (ids.length === 0 || spotCheckCheckedCount < spotCheckSampleItems.length) return;
     if (isDiffMutatingRef.current) {
@@ -1322,13 +1507,13 @@ export function JobDetail(): React.ReactElement {
       return;
     }
     setBulkCheckedIds((prev) => new Set([...prev, ...sampledIds.filter((localId) => spotChecked.has(localId))]));
-    undo = { label, run: () => handleSetReviewed(ids, false, { force: true }) };
+    undo = { label, run: () => handleSetReviewed(idsStillApproved(ids, 'bulk'), false, { force: true }) };
     setLastUndo(undo);
     setQueueAnnouncement(`Approved ${label}. Undo available.`);
     // The list filter was a snapshot of the clean items; they are reviewed now, so it has nothing left to say.
     setFocusWarning((current) => (current?.kind === 'clean_items' ? null : current));
     // The action and its dialog are gone: focus goes to what is left to review, or to the "done" row.
-    if (reviewQueue.length === ids.length) dispatchQueueState('finish');
+    if (reviewQueue.length === ids.length) dispatchQueueState('markDone');
     setRefocusQueueButton(true);
   }
 
@@ -1844,6 +2029,7 @@ export function JobDetail(): React.ReactElement {
     dispatchQueueState('close');
     if (spotCheckMode) {
       dispatchQueueState('endSpotCheck');
+      setBulkHandOver(false);
       setBulkOpen(true);
     }
   }, [dialogOpen, spotCheckMode]);
@@ -1994,6 +2180,8 @@ export function JobDetail(): React.ReactElement {
     queueMode && selectedId && status === 'diff_ready'
       ? {
           reviewed: reviewedIds.has(selectedId),
+          busy: isDiffMutating,
+          onBusyAttempt: () => announceAgain('Still saving. Try again.'),
           onMark: () => void handleQueueAccept(),
           onUnmark: () => void handleSetReviewed([selectedId], false),
           onReject: () => void handleQueueReject(),
@@ -2003,6 +2191,8 @@ export function JobDetail(): React.ReactElement {
       ? {
           // Nothing is marked reviewed here: "looks right" only counts toward the sample.
           reviewed: false,
+          busy: isDiffMutating,
+          onBusyAttempt: () => announceAgain('Still saving. Try again.'),
           onMark: handleSpotCheckLooksRight,
           onUnmark: () => undefined,
           onReject: () => void handleSpotCheckExclude(),
@@ -2012,6 +2202,8 @@ export function JobDetail(): React.ReactElement {
       : focusReviewable && focusWarning && selectedId && focusWarning.nodeIds.has(selectedId) && status === 'diff_ready'
       ? {
           reviewed: reviewedIds.has(selectedId),
+          busy: isDiffMutating,
+          onBusyAttempt: () => announceAgain('Still saving. Try again.'),
           onMark: handleMarkSelectedReviewedAndNext,
           onUnmark: () => void handleSetReviewed([selectedId], false),
         }
@@ -2102,14 +2294,18 @@ export function JobDetail(): React.ReactElement {
         title="Write these items to Azure DevOps?"
         description={
           <>
-            This creates{previewedTotal !== null ? ` ${previewedTotal.toLocaleString()} new work item${previewedTotal === 1 ? '' : 's'}` : summary ? ` ${summary.created} new work item${summary.created === 1 ? '' : 's'}` : ' the reviewed work items'} under{' '}
+            {finishingLinks ? (
+              <>This finishes writing the remaining links under{' '}</>
+            ) : (
+              <>This creates{previewedTotal !== null ? ` ${previewedTotal.toLocaleString()} new work item${previewedTotal === 1 ? '' : 's'}` : summary ? ` ${summary.created} new work item${summary.created === 1 ? '' : 's'}` : ' the reviewed work items'} under{' '}</>
+            )}
             <strong><bdi className="[overflow-wrap:anywhere]">{areaPath ?? 'the configured area path'}</bdi></strong>. This cannot be undone from req2ado — items must be deleted directly in
             Azure DevOps afterward.
           </>
         }
-        confirmLabel={previewedTotal !== null && teamProject ? `Write ${previewedTotal.toLocaleString()} ${previewedTotal === 1 ? 'item' : 'items'} to ${teamProject}` : 'Confirm and write'}
-        confirmDisabled={previewedTotal === 0}
-        confirmDisabledReason="Nothing will be created, so there is nothing to write."
+        confirmLabel={finishingLinks && teamProject ? `Finish writing to ${teamProject}` : previewedTotal !== null && teamProject ? `Write ${previewedTotal.toLocaleString()} ${previewedTotal === 1 ? 'item' : 'items'} to ${teamProject}` : 'Confirm and write'}
+        confirmDisabled={writeLoading || nothingToWrite}
+        confirmDisabledReason={writeLoading ? 'Checking what will be written.' : 'Nothing will be created, so there is nothing to write.'}
         onConfirm={handleConfirm}
         isConfirming={isMutating}
         variant="irreversible"
@@ -2139,6 +2335,8 @@ export function JobDetail(): React.ReactElement {
         onStartSpotCheck={handleStartSpotCheck}
         onShowList={handleShowCleanList}
         onApprove={() => void handleApproveClean()}
+        returnFocusRef={approveCleanButtonRef}
+        restoreFocus={!bulkHandOver}
       />
       <ConfirmDialog
         open={rejectDialogOpen}
@@ -2415,7 +2613,7 @@ export function JobDetail(): React.ReactElement {
                       Review in risk order · {reviewQueue.length.toLocaleString()}
                     </Button>
                     {bulk.items.length > 0 && (
-                      <Button size="sm" variant="outline" onClick={handleOpenBulkApprove}>
+                      <Button ref={approveCleanButtonRef} size="sm" variant="outline" onClick={handleOpenBulkApprove}>
                         Approve {bulkLabel}
                       </Button>
                     )}
@@ -2485,7 +2683,7 @@ export function JobDetail(): React.ReactElement {
                       <Button
                         size="sm"
                         variant="outline"
-                        onClick={() => void handleSetReviewed([...focusWarning.nodeIds], true)}
+                        onClick={() => void handleSetReviewed([...focusWarning.nodeIds], true, { method: 'group' })}
                       >
                         Mark all reviewed
                       </Button>

@@ -13,8 +13,9 @@ const preview: WritePreview = {
   existingGettingChildren: 0,
   existingWithoutNewParentLink: 0,
   traceLinks: { planned: 0, skipped: 0 },
+  alreadyWritten: 0,
 };
-const review = { edited: 0, single: 3, bulk: 0, bulkSpotChecked: 0, earlier: 0, notReviewed: 0 };
+const review = { edited: 0, single: 3, bulk: 0, bulkSpotChecked: 0, group: 0, earlier: 0, notReviewed: 0 };
 const props = {
   teamProject: 'Compliance',
   areaPath: 'Compliance\\Auth',
@@ -42,8 +43,14 @@ describe('WriteSummary', () => {
   });
 
   it('announces a write of zero items as nothing to write', () => {
-    render(<WriteSummary {...props} state={{ status: 'ready', preview: { ...preview, createdTotal: 0, createdLocalIds: [], createdByType: {} }, review }} />);
+    render(<WriteSummary {...props} state={{ status: 'ready', preview: { ...preview, createdTotal: 0, createdLocalIds: [], createdByType: {}, parentLinks: 0 }, review }} />);
     expect(screen.getByRole('status')).toHaveTextContent('Ready: nothing will be created, so there is nothing to write.');
+  });
+
+  it('announces a retry with only links left as work to finish', () => {
+    const retry = { ...preview, createdTotal: 0, createdLocalIds: [], createdByType: {}, parentLinks: 3, alreadyWritten: 4 };
+    render(<WriteSummary {...props} state={{ status: 'ready', preview: retry, review }} />);
+    expect(screen.getByRole('status')).toHaveTextContent('Ready: nothing new to create; 3 parent links remain.');
   });
 
   it('says only what it can stand behind when the check fails', () => {

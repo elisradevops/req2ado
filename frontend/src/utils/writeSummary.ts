@@ -17,9 +17,29 @@ function plural(count: number, one: string, many = `${one}s`): string {
   return `${count.toLocaleString()} ${count === 1 ? one : many}`;
 }
 
+// Whether the write has anything left to do: new items, or links still to add (a retry after a failed write can have only links left).
+export function writeHasWork(preview: WritePreview): boolean {
+  return preview.createdTotal > 0 || preview.parentLinks > 0 || preview.traceLinks.planned > 0;
+}
+
+// "2 parent links and 1 trace link remain" (without the full stop), or null when no link remains.
+export function remainingLinksPhrase(preview: WritePreview): string | null {
+  const parts = [
+    preview.parentLinks > 0 ? plural(preview.parentLinks, 'parent link') : null,
+    preview.traceLinks.planned > 0 ? plural(preview.traceLinks.planned, 'trace link') : null,
+  ].filter((part): part is string => part !== null);
+  if (parts.length === 0) return null;
+  const count = preview.parentLinks + preview.traceLinks.planned;
+  return `${parts.join(' and ')} ${parts.length === 1 && count === 1 ? 'remains' : 'remain'}`;
+}
+
 export function writeSummaryLines(preview: WritePreview, review: ApprovalBreakdown): SummaryLine[] {
   const lines: SummaryLine[] = [];
-  if (preview.createdTotal === 0) {
+  const remaining = preview.createdTotal === 0 ? remainingLinksPhrase(preview) : null;
+  if (remaining) {
+    const written = preview.alreadyWritten > 0 ? ` ${plural(preview.alreadyWritten, 'item')} ${preview.alreadyWritten === 1 ? 'is' : 'are'} already written.` : '';
+    lines.push({ id: 'create', text: `Nothing new to create; ${remaining}.${written}`, tone: 'plain' });
+  } else if (preview.createdTotal === 0) {
     lines.push({ id: 'create', text: 'Nothing will be created.', tone: 'notice' });
   } else {
     const types = Object.keys(preview.createdByType).sort((a, b) => {
@@ -76,6 +96,7 @@ export function writeSummaryLines(preview: WritePreview, review: ApprovalBreakdo
     const parts = [
       review.edited > 0 ? `${review.edited.toLocaleString()} edited` : null,
       review.single > 0 ? `${review.single.toLocaleString()} approved one by one` : null,
+      review.group > 0 ? `${review.group.toLocaleString()} marked reviewed from a warning list` : null,
       review.bulkSpotChecked > 0 ? `${review.bulkSpotChecked.toLocaleString()} approved in bulk after you looked at them` : null,
       review.bulk > 0 ? `${review.bulk.toLocaleString()} approved in bulk without being looked at` : null,
       review.earlier > 0 ? `${review.earlier.toLocaleString()} reviewed earlier` : null,
