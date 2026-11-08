@@ -84,7 +84,7 @@ describe('EvidenceStrip', () => {
   it('renders no empty "Source" label or file row for citations or the scoring note without a sourceRef', () => {
     const { container } = render(
       <EvidenceStrip
-        entry={BASE}
+        entry={{ ...BASE, qualityScore: 80 }}
         jobMode="survey"
         kbCitations={[{ sourceFile: 'style-guide.pdf', similarity: 0.4, relevance: 'relevant' }]}
       />,
@@ -95,42 +95,42 @@ describe('EvidenceStrip', () => {
     expect(screen.getByText(/scored on wording only/i)).toBeInTheDocument();
   });
 
-  describe('scoring note (SURVEY create Requirement only, independent of scoring state)', () => {
+  describe('scoring note (SURVEY create Requirement with a fresh score only)', () => {
     const NOTE = /scored on wording only/i;
 
-    it('shows the note and still the no-location line for a SURVEY create Requirement with no source and no citations', () => {
-      render(<EvidenceStrip entry={BASE} jobMode="survey" />);
+    it('shows the note and still the no-location line for a SURVEY create Requirement with a score, no source and no citations', () => {
+      render(<EvidenceStrip entry={{ ...BASE, qualityScore: 80 }} jobMode="survey" />);
       expect(screen.getByText(NOTE)).toBeInTheDocument();
       expect(screen.getByText(/no source location recorded/i)).toBeInTheDocument();
     });
 
-    it('shows the note for stale scores with a source location, and stays silent about the weakest area', () => {
-      render(<EvidenceStrip entry={{ ...BASE, sourceRef: REF, qualityStale: true, qualityCategoryScores: { clarity: 10 } }} jobMode="survey" />);
-      expect(screen.getByText(NOTE)).toBeInTheDocument();
+    it('shows no note for stale scores, and stays silent about the weakest area', () => {
+      render(<EvidenceStrip entry={{ ...BASE, sourceRef: REF, qualityScore: 80, qualityStale: true, qualityCategoryScores: { clarity: 10 } }} jobMode="survey" />);
+      expect(screen.queryByText(NOTE)).not.toBeInTheDocument();
       expect(screen.queryByText(/Weakest area/)).not.toBeInTheDocument();
     });
 
-    it('shows the note for an unscored SURVEY Requirement with a source location', () => {
+    it('shows no note for an unscored SURVEY Requirement with a source location', () => {
       render(<EvidenceStrip entry={{ ...BASE, sourceRef: REF }} jobMode="survey" />);
-      expect(screen.getByText(NOTE)).toBeInTheDocument();
+      expect(screen.queryByText(NOTE)).not.toBeInTheDocument();
       expect(screen.queryByText(/Weakest area/)).not.toBeInTheDocument();
     });
 
     it('shows no note for BASELINE or unknown mode', () => {
-      const { unmount } = render(<EvidenceStrip entry={{ ...BASE, sourceRef: REF }} jobMode="baseline" />);
+      const { unmount } = render(<EvidenceStrip entry={{ ...BASE, qualityScore: 80, sourceRef: REF }} jobMode="baseline" />);
       expect(screen.queryByText(NOTE)).not.toBeInTheDocument();
       unmount();
-      render(<EvidenceStrip entry={{ ...BASE, sourceRef: REF }} jobMode={null} />);
+      render(<EvidenceStrip entry={{ ...BASE, qualityScore: 80, sourceRef: REF }} jobMode={null} />);
       expect(screen.queryByText(NOTE)).not.toBeInTheDocument();
     });
 
     it.each(['Epic', 'Feature'])('shows no note for a SURVEY %s', (type) => {
-      render(<EvidenceStrip entry={{ ...BASE, type, sourceRef: REF }} jobMode="survey" />);
+      render(<EvidenceStrip entry={{ ...BASE, type, qualityScore: 80, sourceRef: REF }} jobMode="survey" />);
       expect(screen.queryByText(NOTE)).not.toBeInTheDocument();
     });
 
     it('shows no note for a SURVEY Requirement with action reuse', () => {
-      render(<EvidenceStrip entry={{ ...BASE, action: 'reuse', sourceRef: REF }} jobMode="survey" />);
+      render(<EvidenceStrip entry={{ ...BASE, action: 'reuse', qualityScore: 80, sourceRef: REF }} jobMode="survey" />);
       expect(screen.queryByText(NOTE)).not.toBeInTheDocument();
     });
   });
