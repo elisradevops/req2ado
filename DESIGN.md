@@ -3089,7 +3089,7 @@ in either `palette.test.ts`'s hex baseline or `tokens.test.ts`'s pattern
 baseline, so any new raw hex, arbitrary size/radius/duration, or bare
 `transition` in this work is a first offender, not an increment.
 
-### §11.6 — The review queue, the evidence strip and bulk approval (P17a, P17b, P17c)
+### §11.6 — The review queue, the evidence strip, bulk approval and the write summary (P17a-P17d)
 
 **Files:** `utils/reviewQueue.ts` (`buildReviewQueue`, `riskTier`, `riskReason`),
 `utils/diffTreeOrder.ts` (the one definition of drawn order, shared with
@@ -3097,7 +3097,12 @@ baseline, so any new raw hex, arbitrary size/radius/duration, or bare
 `utils/qualityCategories.ts` (`weakestCategory`, `WEAK_CATEGORY_SCORE`,
 `categoryLabel`), `components/NodeDetailDialog.tsx`, `pages/JobDetail.tsx`,
 `store/uiPreferencesStore.ts` (the shortcuts switch), `components/BulkApproveDialog.tsx`
-(P17c), `utils/warningKinds.ts` (`clean_items`).
+(P17c), `utils/warningKinds.ts` (`clean_items`), `utils/reviewQueue.ts`
+(`cleanApproval`, `spotCheckSample`, `reviewQueueModeReducer`: modes `off`, `queue`,
+`spotCheck`, `done`), `hooks/useUndoAnnouncement.ts`, `components/WriteSummary.tsx`,
+`utils/writeSummary.ts`, `utils/approvalBreakdown.ts` (P17d); server side
+`orchestrator/src/modules/pipeline/write-plan.ts` (the write's rules, shared by
+`confirm()` and the preview).
 
 **What the queue is.** A "Review in risk order · N" button above the tree opens
 the details dialog on the riskiest item still to review and steps through
@@ -3121,6 +3126,24 @@ exclude waits for the server (the tree is replaced by its reply) and offers
 Undo. A failed save returns the reviewer to that item. When the last item is
 done, a "Review queue done." row takes focus, because the button it was opened
 from is gone. `ui/Dialog.tsx` returns focus to the opener for every dialog.
+
+**What the keys do in each mode.** The hint row is always shown while shortcuts are
+on (under the reason banner when there is one, in a thin row of its own when not).
+`queue` and the warning-focus review offer J, K, A or R (mark reviewed and next), X,
+U and E; `spotCheck` offers "Looks right and next" and exclude, not a plain mark.
+Letters match by the typed key, and by the physical key when the typed key is not a
+Latin letter, so they work on a Hebrew layout. They never fire from a menu, select,
+combobox or option (typeahead), with Shift, or during IME composition. While a save
+is in flight the mode buttons are `aria-busy` and `aria-disabled` (never `disabled`,
+which would drop focus), presses do nothing, and "Still saving. Try again." is
+announced. Buttons carry `aria-keyshortcuts` while shortcuts are on.
+
+**Saves are ordered.** Review-flag saves go out one at a time, so an Undo never
+overtakes the mark it undoes. Each item has a write sequence; a failed save rolls an
+item back only while it is still that item's newest write, and to the last state the
+server confirmed. Undo takes back only items still reviewed with the same recorded
+method and not excluded; with nothing left it says "Nothing left to undo." A save that
+settles after the page moved to another job changes nothing.
 
 **Shortcuts are switchable.** The browser-only "Keyboard Shortcuts" switch in
 Settings (on by default) turns off every single-key shortcut and its hint line
@@ -3186,23 +3209,58 @@ confirmation that cannot be skipped through: a spot-check comes first.
   `clean_items` (group `info`). It must stay in `KIND_META`: an unknown kind
   falls back to group `review`, which would offer "Mark all reviewed" and
   bypass the spot-check. The filter is cleared after approving.
-- **Not persisted.** How an item was approved (single, bulk, spot-checked) is not
-  stored; the map was deliberately not built, nothing reads it until P17d.
+- **Double submit.** Approve is guarded synchronously, so two clicks in one tick send
+  one request. Undo of a bulk approval takes back only items that are still reviewed
+  with method `bulk` and not excluded. Excluding a sampled item removes it from the
+  checked set, so if Undo brings it back it must be looked at again.
 
-**Not built yet.** The final write summary (P17d), the Discussion-write mode and
-any link-append behaviour.
+**The write summary (P17d).** The confirmation for "Write to Azure DevOps" says where
+the items go and what the write will do, from the server's own rules.
+- **Source of the numbers.** `GET` or `POST /jobs/:id/write-preview` runs the same
+  functions `confirm()` uses (`selectEntriesToCreate`, `selectEntriesToLink`,
+  `selectTraceLinks`) on a simulated id map, honouring an optional row selection and
+  what an earlier failed attempt already wrote. The UI only phrases the result.
+- **What it shows.** New items by type, items left out (excluded, or under an excluded
+  parent), parent links, existing items that get children but no new parent link,
+  trace links planned and not planned, how the items were reviewed, open warnings
+  ("N warnings to fix and N to check ... You can still write."), the destination, and
+  a "Back to the tree" button. The button names the count and project, "Write N items
+  to <project>".
+- **Rules.** The write is disabled while the check runs and when there is nothing to do
+  at all (no new items, no parent links, no trace links); the reason is described to
+  assistive technology. A retry after a failed write with only links left is enabled and
+  reads "Finish writing to <project>". A check that fails or takes over 15 s shows
+  "Couldn't check what will be written. You can still write." and never blocks the
+  write. If the job leaves `diff_ready` while the dialog is open it closes with a message.
+- **How items were reviewed** (page session only, never stored or sent): edited, one
+  by one, bulk after the spot-check, bulk without it, marked reviewed from a warning
+  list (`group`), reviewed earlier (before this page load), not reviewed.
+- **Footer and size.** The footer wraps with the acknowledgement on its own row; an
+  irreversible dialog opens on Cancel; dialogs cap to the screen height and the body
+  scrolls so the buttons stay in view; a long project name truncates in the button
+  while the accessible name stays whole.
 
-**Verified, and not.** Queue and strip: live at 1440 and 390 with reduced motion
-on a BASELINE job. Bulk approval: live in the built frontend with the job
-response stubbed (10 clean items and 4 decoys): button only for clean items,
-sample of items 1, 6 and 10, no request during the spot-check, one request with
-all ids, Undo, and 390 px with reduced motion. Not checked: bulk approval with
-real SURVEY scores (three real runs produced no clean item because the source
-had no parseable requirement IDs), exclude inside the spot-check, Hebrew content
-in either dialog, screen-reader speech, dark-mode contrast of muted text (light
-mode is 5.17:1 for `ink-3` on `surface-alt`), the two-dialog handover under real
-latency. Recorded Lows: header buttons are 24-26 px tall at 390 px, and
-`BulkApproveDialog` uses physical `ml-auto`/`mr-auto`.
+**Focus between dialogs.** `Dialog` accepts `returnFocusRef` and `restoreFocus`. Closing
+the bulk confirmation returns focus to the "Approve N clean items" button; the hand-over
+to the spot-check does not let the closing dialog take focus back.
+
+**Evidence strip scoring note.** For a SURVEY Requirement that is new (`create`), the
+strip shows the scoring note whether or not there is a source location and whatever
+the scoring state; the weakest-area row still appears for fresh scores only.
+
+**Not built yet.** The Discussion-write mode and any link-append behaviour. A selection
+the UI cannot make (`selectedLocalIds`) is supported by the API and the preview; the
+UI never sends one.
+
+**Verified, and not.** Queue, strip, bulk approval and the write summary: live at 1440 and
+390 with reduced motion (the write dialog also at 390 x 500), the preview endpoints
+against the running service (GET, POST with an empty selection, a malformed selection
+returning 400). Bulk approval with real SURVEY scores was never seen (three real runs
+produced no clean item). Not checked: Hebrew content and a Hebrew keyboard in a browser,
+screen-reader speech, dark-mode contrast of muted text (light mode is 5.17:1 for `ink-3`
+on `surface-alt`), the exit-animation order of the two-dialog hand-over in a real
+browser, and the write against a real Azure DevOps server. Recorded Lows are in the
+backlog (items 31 to 33).
 
 ---
 
