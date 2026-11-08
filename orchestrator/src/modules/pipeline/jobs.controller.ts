@@ -33,6 +33,7 @@ import { buildDocumentMap, type DocumentMapSection } from './document-map';
 import { parseDocumentOverview, type DocumentOverview } from './document-overview.service';
 import { buildPreviewOverview } from './document-preview';
 import { generateSummary, MAX_SUMMARY_INPUT_CHARS } from './document-summary';
+import type { WritePreview } from './write-plan';
 import type { DocumentProfile } from './document-profile';
 import { createHash } from 'crypto';
 import { OpenWebUiClientFactory } from '../llm/openwebui-client.factory';
@@ -899,6 +900,16 @@ export class JobsController {
   ): Promise<{ id: string; localId: string; similarity: number; existingAdoId: number; createdAt: Date }[]> {
     await this.ownedJob(id, user);
     return this.jobsService.getDedupSkips(id);
+  }
+
+  @Get(':id/write-preview')
+  async getWritePreview(@Param('id') id: string, @CurrentUser() user: SessionUser): Promise<WritePreview> {
+    await this.ownedJob(id, user);
+    const preview = await this.jobsService.getWritePreview(id);
+    if (!preview) {
+      throw new NotFoundException(`Job ${id} not found`);
+    }
+    return preview;
   }
 
   @Get(':id/summary')

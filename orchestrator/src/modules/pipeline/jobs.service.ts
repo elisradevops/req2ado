@@ -19,7 +19,8 @@ import { buildChatContext } from '../chat/chat-context';
 import type { IdempotencyService } from '../writeback/idempotency.service';
 import type { DryRunDiffEntry, WarningRecord } from '../writeback/dry-run.service';
 import { mapWithConcurrency, type SettledResult } from './map-with-concurrency';
-import { filterExcludedDiffEntries, summarizeDiffEntries } from './diff-summary';
+import { buildExclusionChecker, filterExcludedDiffEntries, summarizeDiffEntries } from './diff-summary';
+import { buildWritePreview, selectEntriesToCreate, selectEntriesToLink, selectTraceLinks, type WritePlanEntry, type WritePreview } from './write-plan';
 import { DEFAULT_CUSTOMER_ID_FIELD_CANDIDATES } from '../../config/customer-id-fields';
 import {
   DEFAULT_REQUIREMENT_TYPE_FIELD_CANDIDATES,
@@ -1602,6 +1603,19 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  // What confirm() would do for this job right now, computed by the same rules confirm() uses (write-plan.ts). Read-only. Items and links a
+  // failed earlier attempt already wrote are counted as done, as a retry would treat them.
+  async getWritePreview(id: string): Promise<WritePreview | null> {
+    const job = await this.prisma.job.findUnique({ where: { id } });
+    if (!job) return null;
+    const diff = ((job.dryRunDiff as unknown as WritePlanEntry[] | null) ?? []);
+    const mappings = await this.prisma.createdItemMapping.findMany({ where: { jobId: id } });
+    return buildWritePreview(diff, {
+      resumedAdoIdByLocalId: new Map(mappings.map((m) => [m.localId, m.adoWorkItemId] as const)),
+      alreadyLinkedLocalIds: new Set(mappings.filter((m) => m.linked).map((m) => m.localId)),
+    });
+  }
+
   // Post-write validation: reads back every work item this job actually
   // created (via CreatedItemMapping, the same P4b resume state confirm()
   // itself writes) and compares its real ADO fields/parent link against
@@ -2064,20 +2078,9 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       uncaptionedFigureIds?: string[];
     }[];
 
-    // Excluding an entry excludes its whole subtree too, even if a descendant
-    // itself isn't marked excluded — walk parentLocalId ancestry to find out.
-    const diffById = new Map(diff.map((entry) => [entry.localId, entry] as const));
-    function isExcluded(entry: (typeof diff)[number]): boolean {
-      let current: typeof entry | undefined = entry;
-      const visited = new Set<string>();
-      while (current) {
-        if (current.excluded) return true;
-        if (visited.has(current.localId)) return false;
-        visited.add(current.localId);
-        current = current.parentLocalId ? diffById.get(current.parentLocalId) : undefined;
-      }
-      return false;
-    }
+    // Excluding an entry excludes its whole subtree too, even if a descendant itself isn't marked excluded. One walker (diff-summary.ts), shared
+    // with the pre-confirm summary and the write preview, so none of them can disagree with this write.
+    const isExcluded = buildExclusionChecker(diff);
 
     // Resume support (P4b, previously "not yet built" -- see this method's
     // old catch-block comment): a durable local-id -> ADO-id mapping,
@@ -2160,33 +2163,9 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       // Split into 'already resolved' (reuse/dedup_skip, cheap+sync) vs
       // 'needs a real create' -- the two are handled by completely
       // different phases below.
-      const toCreate: typeof diff = [];
-      for (const entry of diff) {
-        if (isExcluded(entry)) continue;
-        // 'dedup_skip' is skipped the same as 'reuse': both already have a
-        // real ADO id to point at, just with different certainty (exact-hash
-        // fact vs embedding-similarity judgment) — see DryRunDiffEntry's doc
-        // comment. Neither should trigger a create.
-        if ((entry.action === 'reuse' || entry.action === 'dedup_skip') && entry.existingAdoId !== null) {
-          adoIdByLocalId.set(entry.localId, entry.existingAdoId);
-          continue;
-        }
-        // Deselected 'create' rows are dropped entirely here: not created,
-        // and (since adoIdByLocalId never gets an entry for them) any child
-        // whose parentLocalId points at a deselected node simply won't be
-        // linked below -- the same "only link when both ends resolved"
-        // guard the dedup_skip-as-child case already relies on.
-        if (selectedLocalIds !== undefined && !selectedLocalIds.includes(entry.localId)) {
-          continue;
-        }
-        // Resume: this localId was already created in a prior attempt at
-        // this same job (adoIdByLocalId was seeded from resumedAdoIdByLocalId
-        // above) -- do not create it again.
-        if (resumedAdoIdByLocalId.has(entry.localId)) {
-          continue;
-        }
-        toCreate.push(entry);
-      }
+      // The rules live in write-plan.ts so the pre-write preview uses the same ones.
+      const { toCreate, resolvedAdoIdByLocalId } = selectEntriesToCreate(diff, isExcluded, { resumedAdoIdByLocalId, selectedLocalIds });
+      for (const [localId, adoId] of resolvedAdoIdByLocalId) adoIdByLocalId.set(localId, adoId);
 
       // Confirmed real bug: entry.type ("Epic"/"Feature"/"Requirement", ingestion's
       // own internal category vocabulary) was previously sent AS-IS to ADO as the
@@ -2492,31 +2471,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       // one child work item's parent relation) -- safe to run with the same
       // bounded concurrency as the create phase, once ALL creates above
       // have finished (adoIdByLocalId is fully populated by this point).
-      const toLink = diff.filter((entry) => {
-        if (entry.parentLocalId === null) return false;
-        if (isExcluded(entry)) return false;
-        // Never re-parent an existing ADO item based on a probabilistic
-        // dedup match — that would silently mutate real ADO hierarchy off a
-        // similarity guess, not a certainty. A NEW child linking UP to a
-        // dedup_skip parent is fine (parentAdoId lookup still resolves); only
-        // the skip-node-as-a-CHILD case is suppressed here.
-        if (entry.action === 'dedup_skip') return false;
-        // A 'reuse' match (exact-hash, certain) is an item that already
-        // exists in ADO from whenever it was originally created -- it
-        // already has its own Parent (Hierarchy-Reverse) relation from that
-        // original write. Confirmed live: re-adding that same relation on a
-        // later job (e.g. a resubmit of the same document) 400s with
-        // TF401349 -- ADO enforces at most one Parent relation per work
-        // item and gives this generic error for a second `add`, not a
-        // friendly "already linked" one. Same suppression as dedup_skip
-        // above, for the same reason: a reuse-matched item's existing
-        // position in the hierarchy is not this job's to re-assert.
-        if (entry.action === 'reuse') return false;
-        // Resume: this localId's link already succeeded in a prior attempt
-        // at this same job -- do not PATCH the relation again.
-        if (alreadyLinkedLocalIds.has(entry.localId)) return false;
-        return adoIdByLocalId.has(entry.localId) && adoIdByLocalId.has(entry.parentLocalId as string);
-      });
+      const toLink = selectEntriesToLink(diff, isExcluded, adoIdByLocalId, alreadyLinkedLocalIds);
       // Unconditional kick-off, even when toLink is empty -- previously
       // nothing published at all for an empty toLink, leaving the ticker
       // frozen on the last 'create' narration for the rest of this phase
@@ -2595,29 +2550,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       // targets); transport-layer 409 retry (retryWithBackoff) absorbs the
       // rest; Tasks 2-4 make anything that still fails visible and
       // recoverable.
-      const toTraceLinkBySource = new Map<number, { targetAdoId: number; referenceName: string; sourceLocalId: string }[]>();
-      for (const entry of diff) {
-        if (isExcluded(entry)) continue;
-        for (const link of entry.traceLinks ?? []) {
-          const sourceAdoId = adoIdByLocalId.get(link.sourceLocalId);
-          if (sourceAdoId === undefined) continue;
-          let targetAdoId: number | undefined;
-          if (link.targetKind === 'intraJob' && link.targetLocalId) {
-            targetAdoId = adoIdByLocalId.get(link.targetLocalId);
-          } else if (link.targetKind === 'crossJob' && link.resolutionStatus === 'resolved') {
-            targetAdoId = link.resolvedAdoId;
-          }
-          if (targetAdoId === undefined) continue;
-          const list = toTraceLinkBySource.get(sourceAdoId) ?? [];
-          // sourceLocalId is carried alongside the ADO ids so a later write
-          // failure (see the catch below) can record JobTraceLinkFailure
-          // with the local id the UI's diff view actually renders -- reused
-          // from the same link.sourceLocalId already resolved into
-          // sourceAdoId above, not re-derived.
-          list.push({ targetAdoId, referenceName: link.referenceName, sourceLocalId: link.sourceLocalId });
-          toTraceLinkBySource.set(sourceAdoId, list);
-        }
-      }
+      const toTraceLinkBySource = selectTraceLinks(diff, isExcluded, adoIdByLocalId);
       // Compute total link count once up front for the narration -- the
       // ticker's contract is per-link, not per-group. Unconditional kick-off,
       // even when empty, for same rationale as the create/link_parents

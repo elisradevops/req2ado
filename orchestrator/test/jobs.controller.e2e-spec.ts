@@ -43,6 +43,7 @@ describe('JobsController (e2e)', () => {
     getAuditTrail: jest.fn(),
     getDebugCaptures: jest.fn(),
     getSummary: jest.fn(),
+    getWritePreview: jest.fn(),
     getDedupSkips: jest.fn(),
     validateCreatedTree: jest.fn(),
   };
@@ -314,6 +315,23 @@ describe('JobsController (e2e)', () => {
   it('GET /jobs/:id/summary returns 404 for an unknown job', async () => {
     fakeJobsService.getSummary.mockResolvedValue(null);
     const res = await authedRequest(app.getHttpServer()).get('/jobs/unknown/summary');
+    expect(res.status).toBe(404);
+  });
+
+  it('GET /jobs/:id/write-preview returns what a write would do', async () => {
+    const preview = {
+      createdTotal: 3, createdLocalIds: ['a', 'b', 'c'], createdByType: { Requirement: 3 }, excluded: { direct: 0, viaAncestor: 0 }, parentLinks: 2,
+      existingGettingChildren: 0, existingWithoutNewParentLink: 0, traceLinks: { planned: 0, skipped: 0 },
+    };
+    fakeJobsService.getWritePreview.mockResolvedValue(preview);
+    const res = await authedRequest(app.getHttpServer()).get('/jobs/job-1/write-preview');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(preview);
+  });
+
+  it('GET /jobs/:id/write-preview returns 404 for an unknown job', async () => {
+    fakeJobsService.getWritePreview.mockResolvedValue(null);
+    const res = await authedRequest(app.getHttpServer()).get('/jobs/unknown/write-preview');
     expect(res.status).toBe(404);
   });
 

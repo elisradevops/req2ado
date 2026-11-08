@@ -39,15 +39,9 @@ export interface DiffEntryForExclusion {
   excluded?: boolean;
 }
 
-// Same ancestry-walk exclusion rule as JobsService.confirm()'s own local
-// isExcluded() (jobs.service.ts) -- excluding a parent excludes its whole
-// subtree too, even when a descendant isn't itself marked excluded. Kept
-// as a separate, pure copy rather than refactoring confirm() (a large,
-// heavily-tested method with 4 existing call sites) to use it -- if
-// confirm()'s own exclusion semantics ever change, this copy needs the
-// same update. Generic over T so both getSummary()'s narrower diff shape
-// and BatchService's per-job diff shape can use it without widening
-// either to match the other.
+// The one ancestry-walk exclusion rule: excluding a parent excludes its whole subtree too, even when a descendant isn't itself marked
+// excluded. JobsService.confirm(), the pre-confirm summary and the write preview (write-plan.ts) all use it, so they cannot disagree about
+// what a write drops. Generic over T so both getSummary()'s narrower diff shape and BatchService's per-job diff shape can use it.
 export function buildExclusionChecker<T extends DiffEntryForExclusion>(diff: T[]): (entry: T) => boolean {
   const diffById = new Map(diff.map((entry) => [entry.localId, entry] as const));
   return function isExcluded(entry: T): boolean {

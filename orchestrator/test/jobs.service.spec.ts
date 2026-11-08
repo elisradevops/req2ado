@@ -5866,3 +5866,48 @@ describe('JobsService.editDiffEntry — accepted proposal (P9d)', () => {
     expect((await makeService().editDiffEntry('job-1', 'n0', { description: 'Old' }))[0].proposalAccepted).toBe(true);
   });
 });
+
+describe('JobsService.getWritePreview', () => {
+  function makeService(job: unknown, mappings: unknown[] = []): JobsService {
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue(job) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue(mappings) },
+      auditEntry: { create: jest.fn() },
+    };
+    return new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+  }
+
+  const entry = (localId: string, extra: Record<string, unknown> = {}) => ({
+    localId, parentLocalId: null, type: 'Requirement', action: 'create', existingAdoId: null, ...extra,
+  });
+
+  it('returns null for an unknown job', async () => {
+    expect(await makeService(null).getWritePreview('missing')).toBeNull();
+  });
+
+  it('previews what a write would create and link, honouring exclusions', async () => {
+    const service = makeService({
+      id: 'job-1',
+      dryRunDiff: [
+        entry('e', { type: 'Epic' }),
+        entry('r1', { parentLocalId: 'e' }),
+        entry('r2', { parentLocalId: 'e', excluded: true }),
+      ],
+    });
+    const preview = await service.getWritePreview('job-1');
+    expect(preview).toMatchObject({ createdTotal: 2, createdByType: { Epic: 1, Requirement: 1 }, parentLinks: 1, excluded: { direct: 1, viaAncestor: 0 } });
+  });
+
+  it('counts items and links a failed earlier attempt already wrote as done, not as new', async () => {
+    const service = makeService(
+      { id: 'job-1', dryRunDiff: [entry('a'), entry('b', { parentLocalId: 'a' })] },
+      [{ localId: 'a', adoWorkItemId: 5, linked: false }],
+    );
+    const preview = await service.getWritePreview('job-1');
+    expect(preview).toMatchObject({ createdTotal: 1, parentLinks: 1 });
+  });
+
+  it('treats a job with no stored diff as an empty write', async () => {
+    expect(await makeService({ id: 'job-1', dryRunDiff: null }).getWritePreview('job-1')).toMatchObject({ createdTotal: 0 });
+  });
+});
