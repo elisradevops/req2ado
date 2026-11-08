@@ -3089,14 +3089,15 @@ in either `palette.test.ts`'s hex baseline or `tokens.test.ts`'s pattern
 baseline, so any new raw hex, arbitrary size/radius/duration, or bare
 `transition` in this work is a first offender, not an increment.
 
-### §11.6 — The review queue and the evidence strip (P17a, P17b)
+### §11.6 — The review queue, the evidence strip and bulk approval (P17a, P17b, P17c)
 
 **Files:** `utils/reviewQueue.ts` (`buildReviewQueue`, `riskTier`, `riskReason`),
 `utils/diffTreeOrder.ts` (the one definition of drawn order, shared with
 `DiffTree`, the dialog's previous/next and the queue), `components/EvidenceStrip.tsx`,
 `utils/qualityCategories.ts` (`weakestCategory`, `WEAK_CATEGORY_SCORE`,
 `categoryLabel`), `components/NodeDetailDialog.tsx`, `pages/JobDetail.tsx`,
-`store/uiPreferencesStore.ts` (the shortcuts switch).
+`store/uiPreferencesStore.ts` (the shortcuts switch), `components/BulkApproveDialog.tsx`
+(P17c), `utils/warningKinds.ts` (`clean_items`).
 
 **What the queue is.** A "Review in risk order · N" button above the tree opens
 the details dialog on the riskiest item still to review and steps through
@@ -3163,15 +3164,45 @@ matched. Rules:
 - **Screen readers.** The weakest-area row carries visually hidden punctuation so
   it reads "Weakest area: Testability, 35 of 100", not loose words and a number.
 
-**Not built yet.** Approve all clean (P17c), the final write summary (P17d), the
-Discussion-write mode and any link-append behaviour. Behaviour of the page behind
-the queue (the boolean cluster `queueMode`, `queueFinished`, `refocusQueueButton`)
-is expected to become one typed mode value when P17c adds a fourth mode.
+**Approve all clean (P17c).** A button "Approve N clean items" opens a
+confirmation that cannot be skipped through: a spot-check comes first.
 
-**Verified, and not.** Checked live at 1440 and 390 with reduced motion on a
-BASELINE job. Not checked: Hebrew content in the dialog, screen-reader speech,
-the strip and queue with real SURVEY scores, dark-mode contrast of the strip's
-secondary text (light mode is 5.17:1 for `ink-3` on `surface-alt`).
+- **Clean means** the queue's clean tier AND scored AND not `qualityStale`
+  (`cleanApproval` in `utils/reviewQueue.ts`). Info warnings do not disqualify.
+  There is no new threshold; it is the existing flag rule. Flagged, unscored
+  and stale items are left out and counted in the dialog.
+- **Spot-check is mandatory.** `spotCheckSample` picks max(3, ceil(N/10)) items,
+  evenly spaced from the lowest score, the same every time. The reviewer steps
+  through them in the details dialog (queue mode `spotCheck`) and answers each
+  with "Looks right and next" or excludes it. Approve stays disabled until every
+  sampled item is checked, and the progress text describes the disabled button.
+  Nothing is sent during the spot-check.
+- **Approve** sends one request with all ids, is optimistic (the dialog closes
+  at once and reopens with the reason, as a `role="alert"` notice, if it fails),
+  and a toast offers one-step Undo. Cancel has initial focus; after the last
+  "Looks right" focus returns to Cancel; after approving it moves to the queue
+  button and "N items approved" is announced.
+- **Tree filter.** "Show these items in the tree" uses the pseudo-kind
+  `clean_items` (group `info`). It must stay in `KIND_META`: an unknown kind
+  falls back to group `review`, which would offer "Mark all reviewed" and
+  bypass the spot-check. The filter is cleared after approving.
+- **Not persisted.** How an item was approved (single, bulk, spot-checked) is not
+  stored; the map was deliberately not built, nothing reads it until P17d.
+
+**Not built yet.** The final write summary (P17d), the Discussion-write mode and
+any link-append behaviour.
+
+**Verified, and not.** Queue and strip: live at 1440 and 390 with reduced motion
+on a BASELINE job. Bulk approval: live in the built frontend with the job
+response stubbed (10 clean items and 4 decoys): button only for clean items,
+sample of items 1, 6 and 10, no request during the spot-check, one request with
+all ids, Undo, and 390 px with reduced motion. Not checked: bulk approval with
+real SURVEY scores (three real runs produced no clean item because the source
+had no parseable requirement IDs), exclude inside the spot-check, Hebrew content
+in either dialog, screen-reader speech, dark-mode contrast of muted text (light
+mode is 5.17:1 for `ink-3` on `surface-alt`), the two-dialog handover under real
+latency. Recorded Lows: header buttons are 24-26 px tall at 390 px, and
+`BulkApproveDialog` uses physical `ml-auto`/`mr-auto`.
 
 ---
 
