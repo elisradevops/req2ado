@@ -270,6 +270,18 @@ export const KIND_META: Record<string, KindMeta> = {
     chip: 'Original wording',
     unit: ['item', 'items'],
   },
+  // Not a warning the pipeline emits: the label the tree filter wears when "Approve clean items" shows its
+  // list. "info", so the filter offers no mark-all-reviewed of its own (that would skip the spot-check).
+  // Never put a pipeline warning under this kind: it would take this entry's wording.
+  clean_items: {
+    title: 'Clean items',
+    group: 'info',
+    short: 'Items that were not flagged.',
+    means: 'Not flagged: no score or warning asks for a closer look. That does not replace reading the item.',
+    todo: 'Nothing required.',
+    chip: 'Not flagged',
+    unit: ['item', 'items'],
+  },
   document_study_incomplete: {
     title: 'Document study incomplete',
     group: 'info',

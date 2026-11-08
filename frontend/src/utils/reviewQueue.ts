@@ -9,8 +9,10 @@ import type { WarningGroup, WarningKindGroup } from './warningKinds';
 
 // Where the review queue stands. `done` is the queue worked through to its end: the page shows a
 // "Review queue done." row until the queue refills, since the button it was opened from is gone.
-export type ReviewQueueMode = { kind: 'off' } | { kind: 'queue' } | { kind: 'done' };
-export type ReviewQueueModeAction = 'open' | 'close' | 'finish' | 'clearDone';
+// `spotCheck` is the mandatory sample look before "approve clean items" (P17c): the dialog steps
+// through the sample instead of the queue, and the bulk confirmation comes back when it ends.
+export type ReviewQueueMode = { kind: 'off' } | { kind: 'queue' } | { kind: 'done' } | { kind: 'spotCheck' };
+export type ReviewQueueModeAction = 'open' | 'close' | 'finish' | 'clearDone' | 'startSpotCheck' | 'endSpotCheck';
 
 // Returns the same object when nothing changes, so a dispatch that does nothing does not re-render.
 export function reviewQueueModeReducer(mode: ReviewQueueMode, action: ReviewQueueModeAction): ReviewQueueMode {
@@ -24,6 +26,10 @@ export function reviewQueueModeReducer(mode: ReviewQueueMode, action: ReviewQueu
       return mode.kind === 'done' ? mode : { kind: 'done' };
     case 'clearDone':
       return mode.kind === 'done' ? { kind: 'off' } : mode;
+    case 'startSpotCheck':
+      return mode.kind === 'spotCheck' ? mode : { kind: 'spotCheck' };
+    case 'endSpotCheck':
+      return mode.kind === 'spotCheck' ? { kind: 'off' } : mode;
   }
 }
 
@@ -95,6 +101,57 @@ export function buildReviewQueue<T extends ReviewQueueEntry>(entries: T[], kindG
       return a.index - b.index;
     })
     .map(({ entry }) => entry);
+}
+
+export interface CleanApproval<T> {
+  // Lowest quality score first, so the sample always starts with the weakest of them.
+  items: T[];
+  // Still up for review but left out: blocking, low-score, flagged or warned items.
+  flagged: number;
+  unscored: number;
+  stale: number;
+  lowestScore: number | null;
+  highestScore: number | null;
+}
+
+// What "approve clean items" would mark reviewed. "Clean" means "not flagged", never "verified":
+// the queue's clean tier (no flag, no fix/review warning; info warnings do not count) restricted
+// to items that carry a current score, since the queue's clean tier also holds unscored ones.
+// There is deliberately no score threshold of its own.
+export function cleanApproval<T extends ReviewQueueEntry & { qualityStale?: boolean }>(
+  entries: T[],
+  kindGroups: WarningKindGroup[],
+): CleanApproval<T> {
+  const items: T[] = [];
+  let flagged = 0;
+  let unscored = 0;
+  let stale = 0;
+  for (const entry of buildReviewQueue(entries, kindGroups)) {
+    if (riskTier(entry, kindGroups) !== 'clean') flagged += 1;
+    else if (entry.qualityScore == null) unscored += 1;
+    else if (entry.qualityStale) stale += 1;
+    else items.push(entry);
+  }
+  const scores = items.map((item) => item.qualityScore as number);
+  return {
+    items,
+    flagged,
+    unscored,
+    stale,
+    lowestScore: scores.length > 0 ? scores[0] : null,
+    highestScore: scores.length > 0 ? scores[scores.length - 1] : null,
+  };
+}
+
+// The items the reviewer must look at before approving the rest: max(3, ceil(N / 10)) of them,
+// capped at N. Input is lowest score first (as cleanApproval returns it); the sample starts at the
+// lowest and is evenly spaced up to the highest. No randomness, so it is the same every time.
+export function spotCheckSample<T>(items: T[]): T[] {
+  const total = items.length;
+  const size = Math.min(total, Math.max(3, Math.ceil(total / 10)));
+  if (size <= 1) return items.slice(0, size);
+  const step = (total - 1) / (size - 1);
+  return Array.from({ length: size }, (_, index) => items[Math.round(index * step)]);
 }
 
 // Why the item is where it is in the queue -- the dialog's note above the item, in the same

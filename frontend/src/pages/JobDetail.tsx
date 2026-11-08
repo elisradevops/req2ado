@@ -60,7 +60,8 @@ import { ARRIVE, MOTION, scrollBehavior } from '../ui/motion';
 import { describeJobKbCoverage, type KbCoverage } from '../utils/kbCoverage';
 import { getServerMessage } from '../lib/errorDetails';
 import { isFlaggedDiffEntry } from '../utils/diffFlagging';
-import { buildReviewQueue, reviewQueueModeReducer, riskReason } from '../utils/reviewQueue';
+import { buildReviewQueue, cleanApproval, reviewQueueModeReducer, riskReason, spotCheckSample } from '../utils/reviewQueue';
+import { BulkApproveDialog } from '../components/BulkApproveDialog';
 import { orderLikeTree } from '../utils/diffTreeOrder';
 import { useKeyboardShortcuts } from '../store/uiPreferencesStore';
 import { useUndoAnnouncement, type QueueUndo } from '../hooks/useUndoAnnouncement';
@@ -184,6 +185,12 @@ export function JobDetail(): React.ReactElement {
   const [queueState, dispatchQueueState] = useReducer(reviewQueueModeReducer, { kind: 'off' });
   const queueMode = queueState.kind === 'queue';
   const queueFinished = queueState.kind === 'done';
+  const spotCheckMode = queueState.kind === 'spotCheck';
+  // "Approve clean items" (P17c): the confirmation, the sample items the reviewer has said look right
+  // (UI session only, never saved or sent), a note for the confirmation, and the save in flight.
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [spotChecked, setSpotChecked] = useState<ReadonlySet<string>>(new Set());
+  const [bulkNotice, setBulkNotice] = useState('');
   // The announcement is read out by the polite live region next to the tree ("Accepted. 2 left.").
   const {
     lastUndoRef,
@@ -1129,15 +1136,21 @@ export function JobDetail(): React.ReactElement {
       return;
     }
     const excludedId = selectedId;
-    const excludedEntry = diff.find((entry) => entry.localId === excludedId);
     setQueueAnnouncement('');
     const rest = buildReviewQueue(
       diff.map((entry) => (entry.localId === excludedId ? { ...entry, excluded: true } : entry)),
       warningKindGroups,
     );
+    if (!(await excludeWithUndo(excludedId))) return;
+    advanceReviewQueue(rest, 'Excluded');
+  }
+
+  // Excludes the item and offers Undo (toast and the U key); says so when the save fails.
+  async function excludeWithUndo(excludedId: string): Promise<boolean> {
+    const excludedEntry = diff.find((entry) => entry.localId === excludedId);
     if (!(await excludeEntry(excludedId, true))) {
       setQueueAnnouncement(`Couldn't exclude "${excludedEntry?.title ?? 'item'}". Try again.`);
-      return;
+      return false;
     }
     const below = descendantCountsByLocalId[excludedId];
     const belowCount = below ? below.epics + below.features + below.requirements : 0;
@@ -1154,7 +1167,91 @@ export function JobDetail(): React.ReactElement {
       },
     );
     setLastUndo(undo);
-    advanceReviewQueue(rest, 'Excluded');
+    return true;
+  }
+
+  // The mandatory look before "approve clean items": a sample of the clean items, stepped through
+  // in the details dialog. The confirmation comes back when the dialog closes (see the effect below).
+  function handleOpenBulkApprove(): void {
+    setSpotChecked(new Set());
+    setBulkNotice('');
+    setBulkOpen(true);
+  }
+
+  function handleStartSpotCheck(): void {
+    const next = spotCheckSampleItems.find((entry) => !spotChecked.has(entry.localId));
+    if (!next) return;
+    setQueueAnnouncement('');
+    setSelectedId(next.localId);
+    setBulkOpen(false);
+    dispatchQueueState('startSpotCheck');
+    updateDialogOpen(true);
+  }
+
+  function handleSpotCheckLooksRight(): void {
+    if (!selectedId) return;
+    const checked = new Set(spotChecked).add(selectedId);
+    setSpotChecked(checked);
+    const checkedCount = spotCheckSampleItems.filter((entry) => checked.has(entry.localId)).length;
+    const next = spotCheckSampleItems.find((entry) => !checked.has(entry.localId));
+    setQueueAnnouncement(
+      next
+        ? `Looks right. ${checkedCount} of ${spotCheckSampleItems.length} checked.`
+        : `Spot-check done. ${checkedCount} of ${spotCheckSampleItems.length} checked.`,
+    );
+    if (next) setSelectedId(next.localId);
+    else updateDialogOpen(false);
+  }
+
+  // Exclude from inside the spot-check: the sample is worked out again from what is left, and the
+  // effect below moves on to the next unchecked item (or ends the spot-check).
+  async function handleSpotCheckExclude(): Promise<void> {
+    if (!selectedId) return;
+    if (isDiffMutatingRef.current) {
+      announceAgain('Still saving. Try again.');
+      return;
+    }
+    setQueueAnnouncement('');
+    if (await excludeWithUndo(selectedId)) setQueueAnnouncement('Excluded. The sample is worked out again.');
+  }
+
+  // Shows the clean items in the tree (the same filter a warning chip uses), so the reviewer can read them.
+  function handleShowCleanList(): void {
+    setFocusWarning({ kind: 'clean_items', label: 'Clean items', nodeIds: new Set(bulk.items.map((entry) => entry.localId)) });
+    setBulkOpen(false);
+    setQueueAnnouncement(`Showing ${bulkLabel} in the tree.`);
+  }
+
+  // ONE version-guarded call for every clean item, undoable as one step. Only the reviewed mark is
+  // set: nothing reaches Azure DevOps until the write is confirmed. The list is the one this render
+  // shows in the confirmation, so what is approved is what the reviewer was looking at.
+  async function handleApproveClean(): Promise<void> {
+    const ids = bulk.items.map((entry) => entry.localId);
+    if (ids.length === 0 || spotCheckCheckedCount < spotCheckSampleItems.length) return;
+    if (isDiffMutatingRef.current) {
+      setBulkNotice('Still saving. Try again.');
+      return;
+    }
+    const label = `${ids.length.toLocaleString()} clean ${ids.length === 1 ? 'item' : 'items'}`;
+    let undo: QueueUndo | undefined;
+    // Marking is optimistic, so the confirmation closes at once and comes back only if the save fails.
+    setBulkNotice('');
+    setBulkOpen(false);
+    const saved = await handleSetReviewed(ids, true, { onToastUndo: () => clearLastUndoIf(undo) });
+    if (!saved) {
+      setBulkNotice(`Couldn't approve ${label}. Try again.`);
+      setQueueAnnouncement(`Couldn't approve ${label}. Try again.`);
+      setBulkOpen(true);
+      return;
+    }
+    undo = { label, run: () => handleSetReviewed(ids, false, { force: true }) };
+    setLastUndo(undo);
+    setQueueAnnouncement(`Approved ${label}. Undo available.`);
+    // The list filter was a snapshot of the clean items; they are reviewed now, so it has nothing left to say.
+    setFocusWarning((current) => (current?.kind === 'clean_items' ? null : current));
+    // The action and its dialog are gone: focus goes to what is left to review, or to the "done" row.
+    if (reviewQueue.length === ids.length) dispatchQueueState('finish');
+    setRefocusQueueButton(true);
   }
 
   // U: the toast's Undo is out of reach while the modal dialog is open, so the key runs the same step.
@@ -1629,26 +1726,64 @@ export function JobDetail(): React.ReactElement {
     return result;
   }, [focusWarning, focusReviewable, reviewedIds]);
 
+  // The clean items "Approve clean items" would mark reviewed, and the sample to look at first. Only for SURVEY:
+  // BASELINE carries no scores, and its text is verbatim.
+  const bulk = useMemo(
+    () => cleanApproval(mode === 'survey' && status === 'diff_ready' ? diff : [], warningKindGroups),
+    [mode, status, diff, warningKindGroups],
+  );
+  const spotCheckSampleItems = useMemo(() => spotCheckSample(bulk.items), [bulk]);
+  // Only sample items that are still clean count: one that was excluded since drops out, and a new member must be checked.
+  const spotCheckCheckedCount = spotCheckSampleItems.filter((entry) => spotChecked.has(entry.localId)).length;
+  const bulkLabel = `${bulk.items.length.toLocaleString()} clean ${bulk.items.length === 1 ? 'item' : 'items'}`;
   // Banner for the details dialog: only while the open item is one of the
   // focused warning's own items (a reviewer who stepped outside the set, or
   // opened an unrelated row, shouldn't see a stale reason).
   const dialogReason = useMemo(() => {
     const queueEntry = queueMode && selectedId ? diff.find((entry) => entry.localId === selectedId) : undefined;
     if (queueEntry) return riskReason(queueEntry, warningKindGroups);
+    if (spotCheckMode && selectedId && spotCheckSampleItems.some((entry) => entry.localId === selectedId)) {
+      return {
+        title: `Spot-check: ${spotCheckCheckedCount.toLocaleString()} of ${spotCheckSampleItems.length.toLocaleString()} checked`,
+        todo: 'Read it against its source. If it looks right, say so; if not, exclude it or edit it. Nothing is approved until you confirm.',
+        group: 'info' as const,
+      };
+    }
     if (!focusWarning || !selectedId || !focusWarning.nodeIds.has(selectedId)) return null;
     const meta = kindMeta(focusWarning.kind);
     return { title: meta.title, todo: meta.todo, group: meta.group };
-  }, [queueMode, diff, warningKindGroups, focusWarning, selectedId]);
+  }, [queueMode, spotCheckMode, spotCheckSampleItems, spotCheckCheckedCount, diff, warningKindGroups, focusWarning, selectedId]);
 
   // What is still to review, riskiest first. Only built for a job still awaiting review.
   const reviewQueue = useMemo(
     () => (status === 'diff_ready' ? buildReviewQueue(diff, warningKindGroups) : []),
     [status, diff, warningKindGroups],
   );
-  // Leaving the dialog (Escape, the close button) ends queue mode.
+  // Leaving the dialog (Escape, the close button) ends queue mode. A spot-check ends too, and hands back to its confirmation.
   useEffect(() => {
-    if (!dialogOpen) dispatchQueueState('close');
-  }, [dialogOpen]);
+    if (dialogOpen) return;
+    dispatchQueueState('close');
+    if (spotCheckMode) {
+      dispatchQueueState('endSpotCheck');
+      setBulkOpen(true);
+    }
+  }, [dialogOpen, spotCheckMode]);
+  // The spot-check follows the sample the same way: an open item that has dropped out (excluded, or the sample moved)
+  // hands over to the first unchecked one, and with none left the dialog closes, which returns to the confirmation.
+  useEffect(() => {
+    if (!spotCheckMode || isDiffMutating) return;
+    if (status !== 'diff_ready' || spotCheckSampleItems.length === 0) {
+      updateDialogOpen(false);
+    } else if (!selectedId || !spotCheckSampleItems.some((entry) => entry.localId === selectedId)) {
+      const next = spotCheckSampleItems.find((entry) => !spotChecked.has(entry.localId));
+      if (next) setSelectedId(next.localId);
+      else updateDialogOpen(false);
+    }
+  }, [spotCheckMode, isDiffMutating, status, spotCheckSampleItems, spotChecked, selectedId]);
+  // Nothing left to approve (all reviewed, excluded or flagged since): the confirmation has nothing to say.
+  useEffect(() => {
+    if (bulkOpen && bulk.items.length === 0) setBulkOpen(false);
+  }, [bulkOpen, bulk.items.length]);
   // The app's dialogs have no Radix trigger to hand focus back to, so on close it falls to the
   // page body. After the queue's dialog closes, focus goes to the "done" row when the queue is
   // finished, otherwise back to the queue button. After a tick, so it lands once the dialog is gone.
@@ -1666,8 +1801,9 @@ export function JobDetail(): React.ReactElement {
   }, [queueMode, isDiffMutating, status, reviewQueue, selectedId]);
   // After a failed save with the dialog already closed: wait for the refilled queue to render its button.
   useEffect(() => {
-    if (!refocusQueueButton || !queueButtonRef.current) return;
-    queueButtonRef.current.focus();
+    const target = queueDoneRef.current ?? queueButtonRef.current;
+    if (!refocusQueueButton || !target) return;
+    target.focus();
     setRefocusQueueButton(false);
   }, [refocusQueueButton, reviewQueue.length]);
   // A "done" row is only true until the queue refills.
@@ -1698,7 +1834,7 @@ export function JobDetail(): React.ReactElement {
   }, [diff, filterAction, filterText, focusVisibleIds]);
 
   // Prev / next follow the risk order in queue mode, the filtered tree order otherwise.
-  const navList = queueMode ? reviewQueue : filteredForNav;
+  const navList = queueMode ? reviewQueue : spotCheckMode ? spotCheckSampleItems : filteredForNav;
 
   function handleNavigateDialog(direction: 'prev' | 'next'): void {
     const currentIndex = navList.findIndex((entry) => entry.localId === selectedId);
@@ -1783,6 +1919,16 @@ export function JobDetail(): React.ReactElement {
           onUnmark: () => void handleSetReviewed([selectedId], false),
           onReject: () => void handleQueueReject(),
           onUndo: hasUndo ? handleQueueUndo : undefined,
+        }
+      : spotCheckMode && selectedId && status === 'diff_ready'
+      ? {
+          // Nothing is marked reviewed here: "looks right" only counts toward the sample.
+          reviewed: false,
+          onMark: handleSpotCheckLooksRight,
+          onUnmark: () => undefined,
+          onReject: () => void handleSpotCheckExclude(),
+          markLabel: 'Looks right and next',
+          markHint: 'looks right',
         }
       : focusReviewable && focusWarning && selectedId && focusWarning.nodeIds.has(selectedId) && status === 'diff_ready'
       ? {
@@ -1886,6 +2032,20 @@ export function JobDetail(): React.ReactElement {
         onConfirm={handleConfirm}
         isConfirming={isMutating}
         variant="irreversible"
+      />
+      <BulkApproveDialog
+        open={bulkOpen}
+        onOpenChange={setBulkOpen}
+        count={bulk.items.length}
+        lowestScore={bulk.lowestScore}
+        highestScore={bulk.highestScore}
+        leftOut={{ flagged: bulk.flagged, unscored: bulk.unscored, stale: bulk.stale }}
+        sampleSize={spotCheckSampleItems.length}
+        checkedCount={spotCheckCheckedCount}
+        notice={bulkNotice}
+        onStartSpotCheck={handleStartSpotCheck}
+        onShowList={handleShowCleanList}
+        onApprove={() => void handleApproveClean()}
       />
       <ConfirmDialog
         open={rejectDialogOpen}
@@ -2157,10 +2317,15 @@ export function JobDetail(): React.ReactElement {
                 )}
                 {/* Stays mounted in queue mode: it is where focus returns when the dialog closes. */}
                 {status === 'diff_ready' && reviewQueue.length > 0 && (
-                  <div className="flex border-b border-hairline p-3">
+                  <div className="flex flex-wrap gap-2 border-b border-hairline p-3">
                     <Button ref={queueButtonRef} size="sm" variant="outline" onClick={handleStartReviewQueue}>
                       Review in risk order · {reviewQueue.length.toLocaleString()}
                     </Button>
+                    {bulk.items.length > 0 && (
+                      <Button size="sm" variant="outline" onClick={handleOpenBulkApprove}>
+                        Approve {bulkLabel}
+                      </Button>
+                    )}
                   </div>
                 )}
                 {(showFilterBar || focusWarning) && (

@@ -227,6 +227,22 @@ describe('NodeDetailDialog', () => {
       expect(onMark).toHaveBeenCalledTimes(2);
     });
 
+    it('words the mark as "Looks right and next" for a spot-check, on the button, the key hint and A or R', async () => {
+      const onMark = vi.fn();
+      renderDialog({
+        onNavigate: vi.fn(),
+        reason: { title: 'No flags', todo: 'Read it.', group: 'info' },
+        review: { reviewed: false, onMark, onUnmark: vi.fn(), markLabel: 'Looks right and next', markHint: 'looks right' },
+      });
+      const { default: userEvent } = await import('@testing-library/user-event');
+
+      expect(screen.queryByRole('button', { name: 'Mark reviewed and next' })).not.toBeInTheDocument();
+      expect(screen.getByRole('note')).toHaveTextContent(/A\s*looks right/);
+      await userEvent.click(screen.getByRole('button', { name: 'Looks right and next' }));
+      await userEvent.keyboard('a');
+      expect(onMark).toHaveBeenCalledTimes(2);
+    });
+
     it('swaps to Mark not reviewed for a reviewed item, and R no longer marks', async () => {
       const onMark = vi.fn();
       const onUnmark = vi.fn();

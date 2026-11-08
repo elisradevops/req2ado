@@ -174,7 +174,16 @@ export function NodeDetailDialog({
   // queue, on a job still awaiting review. `reviewed` swaps the primary
   // action for an undo. `onReject` (X) excludes the item and steps on; only
   // the queue offers it.
-  review?: { reviewed: boolean; onMark: () => void; onUnmark: () => void; onReject?: () => void; onUndo?: () => void } | null;
+  review?: {
+    reviewed: boolean;
+    onMark: () => void;
+    onUnmark: () => void;
+    onReject?: () => void;
+    onUndo?: () => void;
+    // Wording for the mark when it is not "mark reviewed" (the spot-check's "Looks right and next").
+    markLabel?: string;
+    markHint?: string;
+  } | null;
   // The single-key shortcuts (J K R A X). Off turns every one of them off
   // (WCAG 2.1.4); the buttons keep working.
   shortcutsEnabled?: boolean;
@@ -296,7 +305,7 @@ export function NodeDetailDialog({
   const keyHints: Array<[string, string]> = [
     ['J', 'next'],
     ['K', 'previous'],
-    ...(review && !review.reviewed ? ([['A', 'mark reviewed']] as Array<[string, string]>) : []),
+    ...(review && !review.reviewed ? ([['A', review.markHint ?? 'mark reviewed']] as Array<[string, string]>) : []),
     ...(review && !review.reviewed && review.onReject ? ([['X', 'exclude']] as Array<[string, string]>) : []),
     ...(review?.onUndo ? ([['U', 'undo']] as Array<[string, string]>) : []),
     ...(entryEditable ? ([['E', 'edit']] as Array<[string, string]>) : []),
@@ -435,7 +444,7 @@ export function NodeDetailDialog({
                     </Button>
                   )}
                   <Button size="sm" variant="primary" onClick={review.onMark}>
-                    Mark reviewed and next
+                    {review.markLabel ?? 'Mark reviewed and next'}
                   </Button>
                 </div>
               ))}

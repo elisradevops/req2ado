@@ -3,9 +3,11 @@ import type { WarningRecord } from './warnings';
 import { buildKindGroups, kindMeta } from './warningKinds';
 import {
   buildReviewQueue,
+  cleanApproval,
   reviewQueueModeReducer,
   riskReason,
   riskTier,
+  spotCheckSample,
   type ReviewQueueEntry,
   type ReviewQueueMode,
 } from './reviewQueue';
@@ -191,5 +193,110 @@ describe('reviewQueueModeReducer', () => {
     expect(reviewQueueModeReducer(DONE, 'clearDone')).toEqual(OFF);
     expect(reviewQueueModeReducer(QUEUE, 'clearDone')).toBe(QUEUE);
     expect(reviewQueueModeReducer(OFF, 'clearDone')).toBe(OFF);
+  });
+});
+
+describe('reviewQueueModeReducer: spot-check', () => {
+  const OFF: ReviewQueueMode = { kind: 'off' };
+  const SPOT: ReviewQueueMode = { kind: 'spotCheck' };
+
+  it('starts a spot-check from any mode and ends it back to off', () => {
+    expect(reviewQueueModeReducer(OFF, 'startSpotCheck')).toEqual(SPOT);
+    expect(reviewQueueModeReducer({ kind: 'done' }, 'startSpotCheck')).toEqual(SPOT);
+    expect(reviewQueueModeReducer(SPOT, 'startSpotCheck')).toBe(SPOT);
+    expect(reviewQueueModeReducer(SPOT, 'endSpotCheck')).toEqual(OFF);
+    expect(reviewQueueModeReducer(OFF, 'endSpotCheck')).toBe(OFF);
+  });
+
+  it('leaves the other modes alone when a spot-check ends, and a spot-check alone when the queue closes', () => {
+    expect(reviewQueueModeReducer({ kind: 'queue' }, 'endSpotCheck')).toEqual({ kind: 'queue' });
+    expect(reviewQueueModeReducer(SPOT, 'close')).toBe(SPOT);
+    expect(reviewQueueModeReducer(SPOT, 'clearDone')).toBe(SPOT);
+  });
+});
+
+describe('cleanApproval', () => {
+  const CLEAN = { qualityScore: 80, groundingScore: 0.9 };
+
+  it('lists the scored, unflagged, unreviewed new items, lowest score first', () => {
+    const result = cleanApproval(
+      [entry('hi', { ...CLEAN, qualityScore: 95 }), entry('lo', { ...CLEAN, qualityScore: 60 }), entry('mid', { ...CLEAN, qualityScore: 80 })],
+      NO_WARNINGS,
+    );
+    expect(result.items.map((item) => item.localId)).toEqual(['lo', 'mid', 'hi']);
+    expect(result.lowestScore).toBe(60);
+    expect(result.highestScore).toBe(95);
+  });
+
+  it('leaves an item out for each reason, and counts why', () => {
+    const groups = buildKindGroups([
+      warning('missing_source_reference', 'needs_review', ['blocked']),
+      warning('low_grounding', 'needs_review', ['warned']),
+    ]);
+    const result = cleanApproval(
+      [
+        entry('ok', CLEAN),
+        entry('reviewed', { ...CLEAN, reviewed: true }),
+        entry('excluded', { ...CLEAN, excluded: true }),
+        entry('under', { ...CLEAN, parentLocalId: 'excluded' }),
+        entry('reuse', { ...CLEAN, action: 'reuse' }),
+        entry('dup', { ...CLEAN, action: 'dedup_skip' }),
+        entry('lowscore', { qualityScore: 40 }),
+        entry('lowground', { ...CLEAN, groundingScore: 0.05 }),
+        entry('lowconf', { ...CLEAN, qualityConfidence: 'low' }),
+        entry('blocked', CLEAN),
+        entry('warned', CLEAN),
+        entry('unscored', {}),
+        entry('stale', { ...CLEAN, qualityStale: true } as Partial<ReviewQueueEntry>),
+      ],
+      groups,
+    );
+    expect(result.items.map((item) => item.localId)).toEqual(['ok']);
+    // Reviewed, excluded and not-written items are not "left out": they were never up for review.
+    expect(result).toMatchObject({ flagged: 5, unscored: 1, stale: 1 });
+  });
+
+  it('does not let an info-level warning disqualify an item', () => {
+    const groups = buildKindGroups([warning('enhancement_call_failed', 'pipeline_issue', ['a'])]);
+    expect(cleanApproval([entry('a', CLEAN)], groups).items).toHaveLength(1);
+  });
+
+  it('says nothing about scores when there is nothing to approve', () => {
+    expect(cleanApproval([entry('u', {})], NO_WARNINGS)).toMatchObject({
+      items: [],
+      unscored: 1,
+      lowestScore: null,
+      highestScore: null,
+    });
+  });
+});
+
+describe('spotCheckSample', () => {
+  const items = (count: number) => Array.from({ length: count }, (_, index) => ({ localId: `i${index}`, qualityScore: 50 + index }));
+  const ids = (list: Array<{ localId: string }>) => list.map((item) => item.localId);
+
+  it('takes everything when there are three or fewer', () => {
+    expect(ids(spotCheckSample(items(2)))).toEqual(['i0', 'i1']);
+    expect(ids(spotCheckSample(items(3)))).toEqual(['i0', 'i1', 'i2']);
+    expect(spotCheckSample([])).toEqual([]);
+  });
+
+  it('takes max(3, ceil(N/10)) items, the lowest score first and then evenly spaced up to the highest', () => {
+    expect(ids(spotCheckSample(items(10)))).toEqual(['i0', 'i5', 'i9']);
+    expect(spotCheckSample(items(25))).toHaveLength(3);
+    expect(spotCheckSample(items(31))).toHaveLength(4);
+    const sample = ids(spotCheckSample(items(100)));
+    expect(sample).toHaveLength(10);
+    expect(sample[0]).toBe('i0');
+    expect(sample[9]).toBe('i99');
+    expect(new Set(sample).size).toBe(10);
+  });
+
+  it('is deterministic and never repeats an item', () => {
+    for (const count of [4, 5, 7, 11, 29, 30, 64]) {
+      const first = ids(spotCheckSample(items(count)));
+      expect(ids(spotCheckSample(items(count)))).toEqual(first);
+      expect(new Set(first).size).toBe(first.length);
+    }
   });
 });

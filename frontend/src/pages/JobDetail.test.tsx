@@ -2562,4 +2562,205 @@ describe('JobDetail', () => {
       expect(await screen.findByRole('button', { name: /review in risk order · 3/i })).toBeInTheDocument();
     });
   });
+
+  describe('approve clean items (P17c)', () => {
+    function item(localId: string, title: string, extra: Record<string, unknown> = {}) {
+      return {
+        localId, parentLocalId: null, type: 'Requirement', title, description: '', action: 'create', customerId: null, tags: [],
+        qualityScore: 80, groundingScore: 0.9, ...extra,
+      };
+    }
+    const CLEAN_IDS = ['c1', 'c2', 'c3', 'c4', 'c5'];
+    function diffRows(excludedId?: string) {
+      return [
+        item('c1', 'Clean one', { qualityScore: 60, excluded: excludedId === 'c1' }),
+        item('c2', 'Clean two', { qualityScore: 70 }),
+        item('c3', 'Clean three', { qualityScore: 80 }),
+        item('c4', 'Clean four', { qualityScore: 90 }),
+        item('c5', 'Clean five', { qualityScore: 95 }),
+        item('low', 'Low item', { qualityScore: 30 }),
+        item('unscored', 'Unscored item', { qualityScore: null, groundingScore: null }),
+      ];
+    }
+    function mockJob(overrides: Record<string, unknown> = {}) {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+        id: 'job-80', status: 'diff_ready', mode: 'survey', dryRunDiff: diffRows(), warnings: [], ...overrides,
+      } as any);
+    }
+    async function render80(overrides: Record<string, unknown> = {}) {
+      mockJob(overrides);
+      vi.mocked(jobsApi.setDiffEntriesReviewed).mockClear();
+      vi.mocked(jobsApi.setDiffEntriesReviewed).mockResolvedValue({ dryRunDiff: [] });
+      renderAt('job-80');
+      const { default: userEvent } = await import('@testing-library/user-event');
+      return userEvent;
+    }
+    async function openConfirmation(userEvent: Awaited<ReturnType<typeof render80>>) {
+      await userEvent.click(await screen.findByRole('button', { name: 'Approve 5 clean items' }));
+      return screen.findByRole('dialog', { name: 'Approve 5 clean items?' });
+    }
+    // The sample of five is the lowest, the middle and the highest.
+    async function spotCheckAll(userEvent: Awaited<ReturnType<typeof render80>>) {
+      await userEvent.click(screen.getByRole('button', { name: 'Start spot-check' }));
+      for (const title of ['Clean one', 'Clean three', 'Clean five']) {
+        const dialog = await screen.findByRole('dialog');
+        await waitFor(() => expect(within(dialog).getAllByText(title).length).toBeGreaterThan(0));
+        await userEvent.click(within(dialog).getByRole('button', { name: 'Looks right and next' }));
+      }
+      return screen.findByRole('dialog', { name: 'Approve 5 clean items?' });
+    }
+
+    it('offers the action only for a SURVEY job awaiting review that has clean items', async () => {
+      await render80();
+      expect(await screen.findByRole('button', { name: 'Approve 5 clean items' })).toBeInTheDocument();
+    });
+
+    it('offers nothing for a BASELINE job, a job past review, or when nothing is clean', async () => {
+      mockJob({ mode: 'baseline' });
+      const first = renderAt('job-80');
+      await waitFor(() => expect(screen.getByText('Clean one')).toBeInTheDocument());
+      expect(screen.queryByRole('button', { name: /clean items?$/i })).not.toBeInTheDocument();
+      first.unmount();
+
+      mockJob({ status: 'confirmed' });
+      const second = renderAt('job-80');
+      await waitFor(() => expect(screen.getByText('Clean one')).toBeInTheDocument());
+      expect(screen.queryByRole('button', { name: /clean items?$/i })).not.toBeInTheDocument();
+      second.unmount();
+
+      mockJob({ dryRunDiff: [item('only', 'Only flagged', { qualityScore: 20 })] });
+      renderAt('job-80');
+      await waitFor(() => expect(screen.getByText('Only flagged')).toBeInTheDocument());
+      expect(screen.queryByRole('button', { name: /clean items?$/i })).not.toBeInTheDocument();
+    });
+
+    it('opens a confirmation with the count and what is left out, focus on Cancel, and writes nothing', async () => {
+      const userEvent = await render80();
+      const dialog = await openConfirmation(userEvent);
+      expect(dialog).toHaveTextContent('60 to 95');
+      expect(dialog).toHaveTextContent('2 items left out: 1 flagged or with warnings, 1 not scored');
+      expect(within(dialog).getByRole('button', { name: 'Cancel' })).toHaveFocus();
+      expect(within(dialog).getByRole('button', { name: 'Approve 5 clean items' })).toBeDisabled();
+      expect(jobsApi.setDiffEntriesReviewed).not.toHaveBeenCalled();
+    });
+
+    it('steps through the sample, lowest score first, and only then enables the approval', async () => {
+      const userEvent = await render80();
+      await openConfirmation(userEvent);
+      await userEvent.click(screen.getByRole('button', { name: 'Start spot-check' }));
+      const first = await screen.findByRole('dialog');
+      await waitFor(() => expect(within(first).getAllByText('Clean one').length).toBeGreaterThan(0));
+      expect(within(first).getByRole('button', { name: 'Looks right and next' })).toBeInTheDocument();
+
+      await userEvent.click(within(first).getByRole('button', { name: 'Looks right and next' }));
+      await waitFor(() => expect(within(screen.getByRole('dialog')).getAllByText('Clean three').length).toBeGreaterThan(0));
+      expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Looks right. 1 of 3 checked.');
+      await userEvent.keyboard('a');
+      await waitFor(() => expect(within(screen.getByRole('dialog')).getAllByText('Clean five').length).toBeGreaterThan(0));
+      await userEvent.keyboard('a');
+
+      const confirmation = await screen.findByRole('dialog', { name: 'Approve 5 clean items?' });
+      expect(confirmation).toHaveTextContent('3 of 3 checked');
+      expect(within(confirmation).getByRole('button', { name: 'Approve 5 clean items' })).toBeEnabled();
+      expect(jobsApi.setDiffEntriesReviewed).not.toHaveBeenCalled();
+    });
+
+    it('returns to the confirmation, keeping the progress, when the reviewer leaves the spot-check with Escape', async () => {
+      const userEvent = await render80();
+      await openConfirmation(userEvent);
+      await userEvent.click(screen.getByRole('button', { name: 'Start spot-check' }));
+      await screen.findByRole('dialog');
+      await userEvent.keyboard('a');
+      await userEvent.keyboard('{Escape}');
+
+      const confirmation = await screen.findByRole('dialog', { name: 'Approve 5 clean items?' });
+      expect(confirmation).toHaveTextContent('1 of 3 checked');
+      expect(within(confirmation).getByRole('button', { name: 'Continue spot-check' })).toBeInTheDocument();
+      expect(within(confirmation).getByRole('button', { name: 'Approve 5 clean items' })).toBeDisabled();
+    });
+
+    it('marks all of them reviewed in ONE call, with a toast Undo and an announcement', async () => {
+      const userEvent = await render80();
+      await openConfirmation(userEvent);
+      const confirmation = await spotCheckAll(userEvent);
+
+      await userEvent.click(within(confirmation).getByRole('button', { name: 'Approve 5 clean items' }));
+
+      await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledTimes(1));
+      expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledWith('job-80', CLEAN_IDS, true);
+      await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Approved 5 clean items. Undo available.'));
+      await waitFor(() => expect(screen.queryByRole('button', { name: /^Approve \d+ clean items?$/ })).not.toBeInTheDocument());
+
+      await userEvent.click(await screen.findByRole('button', { name: 'Undo' }));
+      await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenLastCalledWith('job-80', CLEAN_IDS, false));
+      expect(await screen.findByRole('button', { name: 'Approve 5 clean items' })).toBeInTheDocument();
+    });
+
+    it('puts the approval back, announces the failure and keeps the button when the save fails', async () => {
+      const userEvent = await render80();
+      await openConfirmation(userEvent);
+      const confirmation = await spotCheckAll(userEvent);
+      vi.mocked(jobsApi.setDiffEntriesReviewed).mockRejectedValueOnce(new Error('network'));
+
+      await userEvent.click(within(confirmation).getByRole('button', { name: 'Approve 5 clean items' }));
+
+      await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Couldn\'t approve 5 clean items. Try again.'));
+      // Nothing stays marked, and the confirmation is back with the reason and the progress kept.
+      const back = await screen.findByRole('dialog', { name: 'Approve 5 clean items?' });
+      expect(back).toHaveTextContent('Couldn\'t approve 5 clean items. Try again.');
+      expect(back).toHaveTextContent('3 of 3 checked');
+      expect(within(back).getByRole('button', { name: 'Approve 5 clean items' })).toBeEnabled();
+    });
+
+    it('works out the sample again after an exclude, and approves only what is still clean', async () => {
+      const userEvent = await render80();
+      vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockResolvedValue({ dryRunDiff: diffRows('c1') } as any);
+      await openConfirmation(userEvent);
+      await userEvent.click(screen.getByRole('button', { name: 'Start spot-check' }));
+      await screen.findByRole('dialog');
+
+      await userEvent.keyboard('x');
+      await waitFor(() => expect(jobsApi.setDiffEntryExcluded).toHaveBeenCalledWith('job-80', 'c1', true));
+
+      // Four are left, so the sample is c2, c3 (rounded), c5 -- and the excluded one is not in it.
+      await waitFor(() => expect(within(screen.getByRole('dialog')).getAllByText('Clean two').length).toBeGreaterThan(0));
+      for (const title of ['Clean two', 'Clean four', 'Clean five']) {
+        await waitFor(() => expect(within(screen.getByRole('dialog')).getAllByText(title).length).toBeGreaterThan(0));
+        await userEvent.keyboard('a');
+      }
+      const confirmation = await screen.findByRole('dialog', { name: 'Approve 4 clean items?' });
+      await userEvent.click(within(confirmation).getByRole('button', { name: 'Approve 4 clean items' }));
+      await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledWith('job-80', ['c2', 'c3', 'c4', 'c5'], true));
+    });
+
+    it('filters the tree to the clean items from the confirmation, without a way to mark them all reviewed', async () => {
+      const userEvent = await render80();
+      await openConfirmation(userEvent);
+
+      await userEvent.click(screen.getByRole('button', { name: 'Show these items in the tree' }));
+
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      await waitFor(() => expect(screen.queryByText('Low item')).not.toBeInTheDocument());
+      expect(screen.getByText('Clean one')).toBeInTheDocument();
+      expect(screen.getByText(/clean items: 5 items/i)).toBeInTheDocument();
+      expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Showing 5 clean items in the tree.');
+      expect(screen.queryByRole('button', { name: 'Mark all reviewed' })).not.toBeInTheDocument();
+      expect(screen.queryByLabelText('Hide reviewed')).not.toBeInTheDocument();
+    });
+
+    it('drops the clean-items tree filter once they are approved, so no row keeps a stale "Not flagged" chip', async () => {
+      const userEvent = await render80();
+      await openConfirmation(userEvent);
+      await userEvent.click(screen.getByRole('button', { name: 'Show these items in the tree' }));
+      await waitFor(() => expect(screen.getByText(/clean items: 5 items/i)).toBeInTheDocument());
+
+      await userEvent.click(screen.getByRole('button', { name: 'Approve 5 clean items' }));
+      const confirmation = await spotCheckAll(userEvent);
+      await userEvent.click(within(confirmation).getByRole('button', { name: 'Approve 5 clean items' }));
+
+      await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledWith('job-80', CLEAN_IDS, true));
+      await waitFor(() => expect(screen.queryByText(/clean items: \d+ items/i)).not.toBeInTheDocument());
+      expect(screen.getByText('Low item')).toBeInTheDocument();
+    });
+  });
 });
