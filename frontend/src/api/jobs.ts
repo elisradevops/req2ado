@@ -356,6 +356,23 @@ export async function getSummary(id: string): Promise<JobSummaryReport> {
   return response.data;
 }
 
+// What a write would do for this job right now, computed by the server with the rules the write itself uses (GET /jobs/:id/write-preview).
+export interface WritePreview {
+  createdTotal: number;
+  createdLocalIds: string[];
+  createdByType: Record<string, number>;
+  excluded: { direct: number; viaAncestor: number };
+  parentLinks: number;
+  existingGettingChildren: number;
+  existingWithoutNewParentLink: number;
+  traceLinks: { planned: number; skipped: number };
+}
+
+export async function getWritePreview(id: string): Promise<WritePreview> {
+  const response = await httpClient.get<WritePreview>(`/jobs/${id}/write-preview`);
+  return response.data;
+}
+
 // WID 300578: post-write validation, diffing the real ADO state of every
 // created/resumed work item against what the confirmed dryRunDiff expected
 // -- catches ADO-side field-length truncation/picklist coercion silently

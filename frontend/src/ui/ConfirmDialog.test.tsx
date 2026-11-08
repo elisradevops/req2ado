@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ConfirmDialog } from './ConfirmDialog';
 
@@ -12,9 +12,60 @@ function confirmButton(): HTMLElement {
 // class, so a naive `.className.includes('cta-attention')` false-positives
 // on every `cta` button regardless of whether the breathing class was
 // actually applied.
+function confirmButton2(): HTMLElement {
+  return screen.getByRole('button', { name: /^write 164 items/i });
+}
+
 function hasClass(el: HTMLElement, token: string): boolean {
   return el.className.split(/\s+/).includes(token);
 }
+
+describe('ConfirmDialog footer', () => {
+  it('wraps, with the acknowledgement on its own row, so a long confirm label cannot squeeze it or overflow the dialog', () => {
+    render(<ConfirmDialog open onOpenChange={() => {}} title="t" confirmLabel="Write 164 items to a-long-project-name" onConfirm={() => {}} variant="irreversible" />);
+    const footer = confirmButton2().parentElement as HTMLElement;
+    expect(hasClass(footer, 'flex-wrap')).toBe(true);
+    expect(hasClass(screen.getByRole('checkbox').closest('label') as HTMLElement, 'w-full')).toBe(true);
+  });
+});
+
+describe('ConfirmDialog irreversible focus and long labels', () => {
+  it('puts initial focus on Cancel, not on content inside the dialog', async () => {
+    render(
+      <ConfirmDialog open onOpenChange={() => {}} title="t" confirmLabel="Go" onConfirm={() => {}} variant="irreversible">
+        <button type="button">Back</button>
+      </ConfirmDialog>,
+    );
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus());
+  });
+
+  it('keeps the full label as the accessible name while letting it truncate visually', () => {
+    render(<ConfirmDialog open onOpenChange={() => {}} title="t" confirmLabel="Write 164 items to a-very-long-project-name" onConfirm={() => {}} />);
+    const button = screen.getByRole('button', { name: 'Write 164 items to a-very-long-project-name' });
+    expect(hasClass(button, 'max-w-full')).toBe(true);
+    expect(hasClass(button.querySelector('span') as HTMLElement, 'truncate')).toBe(true);
+  });
+});
+
+describe('ConfirmDialog on a short screen', () => {
+  it('limits its height to the screen so the body scrolls and the buttons stay reachable', () => {
+    render(<ConfirmDialog open onOpenChange={() => {}} title="t" confirmLabel="Go" onConfirm={() => {}} description="d"><p>body</p></ConfirmDialog>);
+    expect(screen.getByRole('dialog').className).toContain('max-h-[calc(100dvh-2rem)]');
+    expect(hasClass(screen.getByText('body').parentElement as HTMLElement, 'overflow-y-auto')).toBe(true);
+  });
+});
+
+describe('ConfirmDialog confirmDisabled', () => {
+  it('describes why the confirm button is disabled', () => {
+    render(<ConfirmDialog open onOpenChange={() => {}} title="t" confirmLabel="Go" onConfirm={() => {}} confirmDisabled confirmDisabledReason="Nothing to write." />);
+    expect(confirmButton()).toHaveAccessibleDescription('Nothing to write.');
+  });
+
+  it('keeps the confirm button disabled when the caller says the action would do nothing', () => {
+    render(<ConfirmDialog open onOpenChange={() => {}} title="t" confirmLabel="Go" onConfirm={() => {}} confirmDisabled />);
+    expect(confirmButton()).toBeDisabled();
+  });
+});
 
 describe('ConfirmDialog variants', () => {
   it('defaults to neutral (primary, ink-black) when no variant is given', () => {

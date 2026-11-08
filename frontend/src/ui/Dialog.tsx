@@ -125,7 +125,7 @@ export function Dialog({
             )}
           </div>
           {children && (
-            <div className={unpadded ? 'flex min-h-0 flex-1 flex-col' : 'flex flex-col gap-3 px-5 pb-1'}>{children}</div>
+            <div className={unpadded ? 'flex min-h-0 flex-1 flex-col' : 'flex min-h-0 flex-col gap-3 overflow-y-auto px-5 pb-1'}>{children}</div>
           )}
           {footer && <div className="mt-3.5 flex flex-none items-center gap-2.5 border-t border-hairline bg-canvas px-5 py-3.5">{footer}</div>}
         </RadixDialog.Content>

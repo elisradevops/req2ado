@@ -20,6 +20,7 @@ import {
   deleteJob,
   resubmitJob,
   getSummary,
+  getWritePreview,
   attachFigureToAdo,
   retryTraceLinkWrite,
   validateCreatedTree,
@@ -62,6 +63,9 @@ import { getServerMessage } from '../lib/errorDetails';
 import { isFlaggedDiffEntry } from '../utils/diffFlagging';
 import { buildReviewQueue, cleanApproval, reviewQueueModeReducer, riskReason, spotCheckSample } from '../utils/reviewQueue';
 import { BulkApproveDialog } from '../components/BulkApproveDialog';
+import { WriteSummary, type WriteSummaryState } from '../components/WriteSummary';
+import { approvalBreakdown, type ApprovalMethod } from '../utils/approvalBreakdown';
+import { countWarningsForWrite } from '../utils/writeSummary';
 import { orderLikeTree } from '../utils/diffTreeOrder';
 import { useKeyboardShortcuts } from '../store/uiPreferencesStore';
 import { useUndoAnnouncement, type QueueUndo } from '../hooks/useUndoAnnouncement';
@@ -190,6 +194,11 @@ export function JobDetail(): React.ReactElement {
   // (UI session only, never saved or sent), a note for the confirmation, and the save in flight.
   const [bulkOpen, setBulkOpen] = useState(false);
   const [spotChecked, setSpotChecked] = useState<ReadonlySet<string>>(new Set());
+  // How each reviewed item was approved in THIS page session, for the final write summary (P17d). Never saved or sent: a reload
+  // starts every approved item as "reviewed earlier".
+  const [approvalMethods, setApprovalMethods] = useState<ReadonlyMap<string, ApprovalMethod>>(new Map());
+  const [bulkCheckedIds, setBulkCheckedIds] = useState<ReadonlySet<string>>(new Set());
+  const [editedIds, setEditedIds] = useState<ReadonlySet<string>>(new Set());
   const [bulkNotice, setBulkNotice] = useState('');
   // The announcement is read out by the polite live region next to the tree ("Accepted. 2 left.").
   const {
@@ -268,6 +277,7 @@ export function JobDetail(): React.ReactElement {
   const [workItemState, setWorkItemState] = useState<string | null>(null);
   const [sourceFilename, setSourceFilename] = useState<string | null>(null);
   const [confirmDialogOpen, setConfirmDialogOpen] = useState(false);
+  const [writeSummaryState, setWriteSummaryState] = useState<WriteSummaryState>({ status: 'loading' });
   const [rejectDialogOpen, setRejectDialogOpen] = useState(false);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -824,6 +834,50 @@ export function JobDetail(): React.ReactElement {
     return parts.length > 0 ? `${parts.join(' and ')} excluded as decorative` : null;
   }, [excludedFigureIds, excludedTableIds]);
 
+  // The final write summary (P17d): what the write would do, asked of the server each time the confirmation opens, so it is never older
+  // than the dialog. A reply for an earlier opening is dropped.
+  useEffect(() => {
+    // Back to 'loading' on close too, so the next opening never flashes the previous result (or a disabled button).
+    setWriteSummaryState({ status: 'loading' });
+    if (!confirmDialogOpen || !id) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const preview = await getWritePreview(id);
+        if (cancelled) return;
+        // The summary is advisory and must never block the write: anything but a real preview is shown as "couldn't check".
+        if (!preview || typeof preview.createdTotal !== 'number') {
+          setWriteSummaryState({ status: 'error' });
+          return;
+        }
+        setWriteSummaryState({ status: 'ready', preview, review: { edited: 0, single: 0, bulk: 0, bulkSpotChecked: 0, earlier: 0, notReviewed: 0 } });
+      } catch {
+        if (!cancelled) setWriteSummaryState({ status: 'error' });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [confirmDialogOpen, id]);
+
+  // How the items that will be written were reviewed, from the server's list of them and what this page session recorded.
+  const writeSummary = useMemo<WriteSummaryState>(() => {
+    if (writeSummaryState.status !== 'ready') return writeSummaryState;
+    return {
+      status: 'ready',
+      preview: writeSummaryState.preview,
+      review: approvalBreakdown({
+        createdLocalIds: writeSummaryState.preview.createdLocalIds,
+        reviewedIds: new Set(diff.filter((entry) => entry.reviewed).map((entry) => entry.localId)),
+        methods: approvalMethods as Map<string, ApprovalMethod>,
+        spotCheckedIds: bulkCheckedIds as Set<string>,
+        editedIds: editedIds as Set<string>,
+      }),
+    };
+  }, [writeSummaryState, diff, approvalMethods, bulkCheckedIds, editedIds]);
+  const writeWarningCounts = useMemo(() => countWarningsForWrite(mergedWarnings), [mergedWarnings]);
+  const previewedTotal = writeSummaryState.status === 'ready' ? writeSummaryState.preview.createdTotal : null;
+
   async function handleConfirm(): Promise<void> {
     if (!id || !orgUrl || isMutatingRef.current) return;
     isMutatingRef.current = true;
@@ -1009,6 +1063,26 @@ export function JobDetail(): React.ReactElement {
     await excludeEntry(localId, excluded);
   }
 
+  // Remembers how an item was approved, for the write summary (P17d). A null method forgets it: not reviewed, or a failed save rolled back.
+  function recordApprovalMethod(localIds: string[], method: ApprovalMethod | null): void {
+    setApprovalMethods((prev) => {
+      const next = new Map(prev);
+      for (const localId of localIds) {
+        if (method) next.set(localId, method);
+        else next.delete(localId);
+      }
+      return next;
+    });
+    if (method !== 'bulk') {
+      setBulkCheckedIds((prev) => {
+        if (!localIds.some((localId) => prev.has(localId))) return prev;
+        const next = new Set(prev);
+        for (const localId of localIds) next.delete(localId);
+        return next;
+      });
+    }
+  }
+
   // Marks items reviewed (or not), optimistically: the flag flips at once so
   // stepping through dozens of items stays instant. The server's reply is
   // deliberately NOT applied back -- with several marks in flight, an older
@@ -1019,7 +1093,7 @@ export function JobDetail(): React.ReactElement {
   async function handleSetReviewed(
     localIds: string[],
     reviewed: boolean,
-    options?: { force?: boolean; onToastUndo?: () => void },
+    options?: { force?: boolean; onToastUndo?: () => void; method?: ApprovalMethod },
   ): Promise<boolean> {
     if (!id) return false;
     const wanted = new Set(localIds);
@@ -1029,6 +1103,7 @@ export function JobDetail(): React.ReactElement {
     if (changed.length === 0) return true;
     const changedSet = new Set(changed);
     setDiff((prev) => prev.map((entry) => (changedSet.has(entry.localId) ? { ...entry, reviewed } : entry)));
+    recordApprovalMethod(changed, reviewed ? (options?.method ?? 'single') : null);
     try {
       await setDiffEntriesReviewed(id, changed, reviewed);
       showToast(
@@ -1045,6 +1120,7 @@ export function JobDetail(): React.ReactElement {
       return true;
     } catch (err) {
       setDiff((prev) => prev.map((entry) => (changedSet.has(entry.localId) ? { ...entry, reviewed: !reviewed } : entry)));
+      recordApprovalMethod(changed, null);
       showErrorToast('Failed to update review state — please try again.', err);
       return false;
     }
@@ -1237,13 +1313,15 @@ export function JobDetail(): React.ReactElement {
     // Marking is optimistic, so the confirmation closes at once and comes back only if the save fails.
     setBulkNotice('');
     setBulkOpen(false);
-    const saved = await handleSetReviewed(ids, true, { onToastUndo: () => clearLastUndoIf(undo) });
+    const sampledIds = spotCheckSampleItems.map((entry) => entry.localId);
+    const saved = await handleSetReviewed(ids, true, { onToastUndo: () => clearLastUndoIf(undo), method: 'bulk' });
     if (!saved) {
       setBulkNotice(`Couldn't approve ${label}. Try again.`);
       setQueueAnnouncement(`Couldn't approve ${label}. Try again.`);
       setBulkOpen(true);
       return;
     }
+    setBulkCheckedIds((prev) => new Set([...prev, ...sampledIds.filter((localId) => spotChecked.has(localId))]));
     undo = { label, run: () => handleSetReviewed(ids, false, { force: true }) };
     setLastUndo(undo);
     setQueueAnnouncement(`Approved ${label}. Undo available.`);
@@ -1451,6 +1529,7 @@ export function JobDetail(): React.ReactElement {
     try {
       const result = await editDiffEntry(id, localId, patch);
       setDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []);
+      setEditedIds((prev) => new Set(prev).add(localId));
       showToast('Changes saved.', 'success');
     } catch (err) {
       showErrorToast('Failed to save changes — please try again.', err);
@@ -2023,16 +2102,30 @@ export function JobDetail(): React.ReactElement {
         title="Write these items to Azure DevOps?"
         description={
           <>
-            This creates{summary ? ` ${summary.created} new work item${summary.created === 1 ? '' : 's'}` : ' the reviewed work items'} under{' '}
-            <strong>{areaPath ?? 'the configured area path'}</strong>. This cannot be undone from req2ado — items must be deleted directly in
+            This creates{previewedTotal !== null ? ` ${previewedTotal.toLocaleString()} new work item${previewedTotal === 1 ? '' : 's'}` : summary ? ` ${summary.created} new work item${summary.created === 1 ? '' : 's'}` : ' the reviewed work items'} under{' '}
+            <strong><bdi className="[overflow-wrap:anywhere]">{areaPath ?? 'the configured area path'}</bdi></strong>. This cannot be undone from req2ado — items must be deleted directly in
             Azure DevOps afterward.
           </>
         }
-        confirmLabel="Confirm and write"
+        confirmLabel={previewedTotal !== null && teamProject ? `Write ${previewedTotal.toLocaleString()} ${previewedTotal === 1 ? 'item' : 'items'} to ${teamProject}` : 'Confirm and write'}
+        confirmDisabled={previewedTotal === 0}
+        confirmDisabledReason="Nothing will be created, so there is nothing to write."
         onConfirm={handleConfirm}
         isConfirming={isMutating}
         variant="irreversible"
-      />
+      >
+        <WriteSummary
+          state={writeSummary}
+          teamProject={teamProject}
+          areaPath={areaPath}
+          warnings={writeWarningCounts}
+          onBackToTree={() => {
+            setConfirmDialogOpen(false);
+            setTab('tree');
+            requestAnimationFrame(() => document.getElementById('proposed-tree')?.scrollIntoView({ behavior: scrollBehavior(), block: 'start' }));
+          }}
+        />
+      </ConfirmDialog>
       <BulkApproveDialog
         open={bulkOpen}
         onOpenChange={setBulkOpen}

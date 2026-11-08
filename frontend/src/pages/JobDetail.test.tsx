@@ -1709,6 +1709,73 @@ describe('JobDetail', () => {
     await waitFor(() => expect(screen.getByText(/confirmed — 3 work item\(s\) written/i)).toBeInTheDocument());
   });
 
+  describe('final write summary', () => {
+    const entry = (localId: string, extra: Record<string, unknown> = {}) => ({
+      localId, parentLocalId: null, type: 'Requirement', title: localId, description: '', action: 'create', customerId: null, tags: [], ...extra,
+    });
+    const previewOf = (overrides: Record<string, unknown> = {}) => ({
+      createdTotal: 2,
+      createdLocalIds: ['a', 'b'],
+      createdByType: { Requirement: 2 },
+      excluded: { direct: 1, viaAncestor: 0 },
+      parentLinks: 0,
+      existingGettingChildren: 0,
+      existingWithoutNewParentLink: 0,
+      traceLinks: { planned: 0, skipped: 0 },
+      ...overrides,
+    });
+
+    async function openWriteDialog(jobId: string) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+      useAuthStore.getState().login('https://ado.example', 'Jane', 'user-descriptor-1');
+      renderAt(jobId);
+      await waitFor(() => expect(screen.getByRole('button', { name: /^write to azure devops$/i })).toBeInTheDocument());
+      const { default: userEvent } = await import('@testing-library/user-event');
+      await userEvent.click(screen.getByRole('button', { name: /^write to azure devops$/i }));
+      return userEvent;
+    }
+
+    it('shows what the server says will be written, the destination, and a button with the count and project', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+        id: 'job-ws1', status: 'diff_ready', areaPath: 'Compliance\\Auth', adoProject: 'Compliance',
+        dryRunDiff: [entry('a', { reviewed: true }), entry('b'), entry('x', { excluded: true })],
+      } as any);
+      vi.spyOn(jobsApi, 'getWritePreview').mockResolvedValue(previewOf());
+      await openWriteDialog('job-ws1');
+
+      expect(await screen.findByText('2 new work items: 2 Requirements.')).toBeInTheDocument();
+      expect(screen.getByText('1 item left out: 1 excluded by you.')).toBeInTheDocument();
+      expect(screen.getByText('Review: 1 reviewed earlier, 1 not reviewed.')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Write 2 items to Compliance' })).toBeInTheDocument();
+    });
+
+    it('disables the write when nothing would be created', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+        id: 'job-ws2', status: 'diff_ready', areaPath: 'Compliance\\Auth', adoProject: 'Compliance', dryRunDiff: [entry('a', { excluded: true })],
+      } as any);
+      vi.spyOn(jobsApi, 'getWritePreview').mockResolvedValue(
+        previewOf({ createdTotal: 0, createdLocalIds: [], createdByType: {}, excluded: { direct: 1, viaAncestor: 0 } }),
+      );
+      const user = await openWriteDialog('job-ws2');
+
+      expect(await screen.findByText('Nothing will be created.')).toBeInTheDocument();
+      await user.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
+      expect(screen.getByRole('button', { name: /^write 0 items to compliance$/i })).toBeDisabled();
+    });
+
+    it('says it could not check, and still lets the reviewer write', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+        id: 'job-ws3', status: 'diff_ready', areaPath: 'Compliance\\Auth', dryRunDiff: [entry('a')],
+      } as any);
+      vi.spyOn(jobsApi, 'getWritePreview').mockRejectedValue(new Error('down'));
+      const user = await openWriteDialog('job-ws3');
+
+      expect(await screen.findByText(/couldn't check what will be written/i)).toBeInTheDocument();
+      await user.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
+      expect(screen.getByRole('button', { name: /confirm and write/i })).toBeEnabled();
+    });
+  });
+
   it('shows a success toast after Reject succeeds', async () => {
     vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-11', status: 'diff_ready', dryRunDiff: [] } as any);
     vi.spyOn(jobsApi, 'rejectJob').mockResolvedValue({ status: 'rejected' });
@@ -2609,6 +2676,31 @@ describe('JobDetail', () => {
       }
       return screen.findByRole('dialog', { name: 'Approve 5 clean items?' });
     }
+
+    it('reports in the write summary how bulk-approved items were reviewed: looked at in the spot-check, or not', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+      useAuthStore.getState().login('https://ado.example', 'Jane', 'user-descriptor-1');
+      vi.spyOn(jobsApi, 'getWritePreview').mockResolvedValue({
+        createdTotal: 7,
+        createdLocalIds: [...CLEAN_IDS, 'low', 'unscored'],
+        createdByType: { Requirement: 7 },
+        excluded: { direct: 0, viaAncestor: 0 },
+        parentLinks: 0,
+        existingGettingChildren: 0,
+        existingWithoutNewParentLink: 0,
+        traceLinks: { planned: 0, skipped: 0 },
+      });
+      const userEvent = await render80({ areaPath: 'Compliance\\Auth', adoProject: 'Compliance' });
+      await openConfirmation(userEvent);
+      const dialog = await spotCheckAll(userEvent);
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Approve 5 clean items' }));
+      await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledWith('job-80', CLEAN_IDS, true));
+
+      await userEvent.click(screen.getByRole('button', { name: /^write to azure devops$/i }));
+      expect(
+        await screen.findByText('Review: 3 approved in bulk after you looked at them, 2 approved in bulk without being looked at, 2 not reviewed.'),
+      ).toBeInTheDocument();
+    });
 
     it('offers the action only for a SURVEY job awaiting review that has clean items', async () => {
       await render80();
