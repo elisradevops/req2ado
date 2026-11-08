@@ -6,7 +6,9 @@ import type { KbCitation } from './KbCitationChips';
 // What a reviewer needs to judge an item without leaving the dialog: where it came from, which
 // KB documents informed its score, and where it scored worst. Shown for every item, clean ones
 // included. Whether an item is scored, or its scores are stale, is the details pane's to say, so
-// the strip stays silent about both. The source TEXT is not part of it: only offsets are stored
+// the strip stays silent about both in its own text. The one exception to "only when scored" is the
+// wording-only scoring note: it applies to every SURVEY "create" Requirement, with or without a
+// source location, and whether or not its scores are fresh. The source TEXT is not part of it: only offsets are stored
 // with an item, so the strip says so instead of implying an excerpt. Every free-text block carries dir="auto" and inline
 // names sit in <bdi>, so Hebrew content does not reorder the surrounding English.
 export function EvidenceStrip({
@@ -20,17 +22,13 @@ export function EvidenceStrip({
 }): React.ReactElement {
   const weakest = entry.qualityStale ? null : weakestCategory(entry.qualityCategoryScores, entry.qualityCategoryChecklist);
   const hasCitations = !!kbCitations && kbCitations.length > 0;
+  const noteApplies = jobMode === 'survey' && entry.type === 'Requirement' && entry.action === 'create';
   return (
     <section aria-label="Evidence" className="flex flex-col gap-2 border-b border-hairline bg-surface-alt px-5 py-3 text-sm">
-      {entry.sourceRef || hasCitations ? (
-        <SourceProvenance
-          sourceRef={entry.sourceRef}
-          showScoringNote={entry.type === 'Requirement' && jobMode === 'survey' && weakest !== null}
-          kbCitations={kbCitations}
-        />
-      ) : (
-        <p className="text-xs text-ink-3">No source location recorded.</p>
+      {(entry.sourceRef || hasCitations || noteApplies) && (
+        <SourceProvenance sourceRef={entry.sourceRef} showScoringNote={noteApplies} kbCitations={kbCitations} />
       )}
+      {!entry.sourceRef && <p className="text-xs text-ink-3">No source location recorded.</p>}
       {weakest && (
         <div className="flex flex-col gap-0.5">
           <p className="flex flex-wrap items-baseline gap-x-2 text-xs text-ink-2">

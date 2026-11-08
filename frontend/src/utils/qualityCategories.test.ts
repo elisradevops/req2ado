@@ -50,16 +50,40 @@ describe('categoryLabel', () => {
   });
 });
 
+// What to do when the ingestion file cannot be found: run the guard, skip it locally, or fail in CI
+// (a silently vanished guard is worse than a red build).
+export function mirrorGuardMode(fileFound: boolean, ci: boolean): 'run' | 'skip' | 'fail' {
+  if (fileFound) return 'run';
+  return ci ? 'fail' : 'skip';
+}
+
+describe('mirrorGuardMode', () => {
+  it('runs when the file is found, whatever the environment', () => {
+    expect(mirrorGuardMode(true, false)).toBe('run');
+    expect(mirrorGuardMode(true, true)).toBe('run');
+  });
+  it('skips a missing file locally', () => {
+    expect(mirrorGuardMode(false, false)).toBe('skip');
+  });
+  it('fails a missing file in CI', () => {
+    expect(mirrorGuardMode(false, true)).toBe('fail');
+  });
+});
+
 // The chat's weak-category bar is stated twice: here, and in ingestion's chat prompt. Nothing else ties
 // them together, so this fails the moment one moves without the other.
 describe('WEAK_CATEGORY_SCORE', () => {
-  // Run from frontend/ (pnpm test) or from the repo root; skipped only where ingestion is not checked out.
+  // Run from frontend/ (pnpm test) or from the repo root; skipped only locally where ingestion is not checked out.
   const ingestionFile =
     ['../ingestion', 'ingestion']
       .map((dir) => resolve(process.cwd(), dir, 'app/chat/chat_service.py'))
       .find((candidate) => existsSync(candidate)) ?? '';
+  const mode = mirrorGuardMode(ingestionFile !== '', !!process.env.CI);
 
-  it.skipIf(ingestionFile === '')("equals ingestion's _WEAK_CATEGORY_SCORE", () => {
+  it.skipIf(mode === 'skip')("equals ingestion's _WEAK_CATEGORY_SCORE", () => {
+    if (mode === 'fail') {
+      throw new Error('ingestion/app/chat/chat_service.py not found: the weak-category mirror guard cannot run in CI');
+    }
     const match = /^_WEAK_CATEGORY_SCORE\s*=\s*(\d+)\s*$/m.exec(readFileSync(ingestionFile, 'utf8'));
     expect(match).not.toBeNull();
     expect(WEAK_CATEGORY_SCORE).toBe(Number(match?.[1]));
