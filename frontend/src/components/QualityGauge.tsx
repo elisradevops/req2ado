@@ -3,7 +3,7 @@ import { ChevronDown, ChevronRight } from 'lucide-react';
 import { InfoTip } from '../ui/Tooltip';
 import { cn } from '../lib/cn';
 import { qualityIssueLabel } from '../utils/labels';
-import { categoryForIssueCode } from '../utils/qualityCategories';
+import { categoryForIssueCode, categoryLabel } from '../utils/qualityCategories';
 
 // These three bands are req2ado's own display thresholds over the overall
 // quality_score, not an ADO- or LLM-defined scale, so they're labeled as our
@@ -108,18 +108,6 @@ function categoryDescription(key: string, matchedChecklistText?: string): string
     KNOWN_CATEGORY_DESCRIPTIONS[key.toLowerCase()] ??
     "From your organization's own ingested quality-checklist standard."
   );
-}
-
-// A KB-derived category key can be snake_case verbatim from the org's own
-// ingested checklist document (e.g. "completeness_as_requirement") --
-// capitalizing only the first character left the rest as a literal,
-// underscore-joined string ("Completeness_as_requirement"). Splits on
-// '_'/'-' and capitalizes every word instead.
-function categoryLabel(key: string): string {
-  return key
-    .split(/[_-]/)
-    .map((word) => (word ? word.charAt(0).toUpperCase() + word.slice(1) : word))
-    .join(' ');
 }
 
 function categoryColor(value: number): string {

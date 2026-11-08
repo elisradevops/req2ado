@@ -73,7 +73,9 @@ export function KbCitationChips({ citations }: { citations: KbCitation[] | undef
           >
             <Chip bg={presentation.bg} color={presentation.color} className="border" style={{ borderColor: presentation.border }}>
               {Icon && <Icon className="h-3 w-3" />}
-              {presentation.chipLabel} · {citation.sourceFile}
+              <bdi>
+                {presentation.chipLabel} · {citation.sourceFile}
+              </bdi>
             </Chip>
           </Tooltip>
         );

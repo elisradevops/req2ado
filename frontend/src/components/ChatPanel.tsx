@@ -15,6 +15,7 @@ import { InfoTip } from '../ui/Tooltip';
 import { DescriptionMarkdown, Markdown } from '../ui/Markdown';
 import { cn } from '../lib/cn';
 import { LABEL_MICRO } from '../utils/labelMicro';
+import { WEAK_CATEGORY_SCORE, weakestCategory } from '../utils/qualityCategories';
 
 interface Proposal {
   proposedTitle: string | null;
@@ -106,16 +107,6 @@ const SPLIT_STARTER = {
   prompt:
     'This item combines more than one requirement. Keep only the first requirement in this item, and list each remaining requirement as its own complete statement. Ignore any "Proposed acceptance criteria" or "Needs author input" section: those are generated notes, not requirements.',
 };
-
-// Same rule as ingestion's chat prompt (chat_service._weakest_categories): the lowest score, and only when it is below the bar.
-const WEAK_CATEGORY_SCORE = 70;
-
-function weakestCategory(scores: Record<string, number> | null | undefined): { name: string; score: number } | null {
-  const usable = Object.entries(scores ?? {}).filter(([, value]) => typeof value === 'number' && Number.isFinite(value));
-  usable.sort((a, b) => a[1] - b[1] || (a[0] < b[0] ? -1 : 1));
-  const [weakest] = usable;
-  return weakest && weakest[1] < WEAK_CATEGORY_SCORE ? { name: weakest[0], score: weakest[1] } : null;
-}
 
 export function ChatPanel({
   jobId,
@@ -292,7 +283,7 @@ export function ChatPanel({
   // Only the state that belongs to the proposal on screen counts (the render before the effect runs would otherwise see the last one's).
   const check = checkState && checkState.proposal === proposal ? checkState : null;
   const checking = checkedKind && !!proposal?.proposedDescription;
-  const targetCategory = weakestCategory(categoryScores);
+  const targetCategory = weakestCategory(categoryScores, null, WEAK_CATEGORY_SCORE);
   const loading = checking && (!check || check.warnings.status === 'loading' || check.prediction.status === 'loading');
   const warningItems = check?.warnings.status === 'ready' ? check.warnings.items : [];
   const comparison = check?.prediction.status === 'ready' ? check.prediction.data : null;
@@ -575,7 +566,7 @@ export function ChatPanel({
           <p className="text-xs">Proposed change</p>
           {targetCategory && proposal.proposedDescription && (
             <p className="text-xs text-ink-3">
-              Aimed at: {targetCategory.name} ({targetCategory.score})
+              Aimed at: {targetCategory.key} ({targetCategory.score})
             </p>
           )}
           {proposal.proposedTitle && (

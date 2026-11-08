@@ -78,6 +78,7 @@ export function NodeDetailPanel({
   traceLinkFailures,
   parentEntry,
   addChildSlot,
+  hideSources,
   moveSlot,
   captionByFigureId,
   nameByFigureId,
@@ -125,6 +126,9 @@ export function NodeDetailPanel({
   // bottom of the pane, after Sources -- disconnected from the title and
   // easy to miss below a long description/quality/trace-link stack.
   addChildSlot?: React.ReactNode;
+  // The caller shows this entry's provenance itself (NodeDetailDialog's EvidenceStrip owns it there), so the Sources block is left out.
+  // A caller that renders this panel without an EvidenceStrip must not set it.
+  hideSources?: boolean;
   // DESIGN.md §11.5 -- the keyboard-accessible "Move to..." control, owned/
   // wired by the caller (NodeDetailDialog builds the actual
   // MoveEntryControl) for the same reason addChildSlot is: this component
@@ -757,7 +761,8 @@ export function NodeDetailPanel({
           />
         </div>
       )}
-      {(entry.sourceRef ||
+      {!hideSources &&
+        (entry.sourceRef ||
         (jobMode === 'survey' && entry.action === 'create' && (entry.type === 'Requirement' || (kbCitations && kbCitations.length > 0)))) && (
         <div className="mt-1">
           <span className="text-xs font-semibold text-ink-2">Sources</span>

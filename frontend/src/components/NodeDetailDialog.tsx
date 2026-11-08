@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useAnimate } from 'motion/react-mini';
 import { ChevronUp, ChevronDown } from 'lucide-react';
 import { Dialog } from '../ui/Dialog';
@@ -7,6 +7,7 @@ import { Button } from '../ui/Button';
 import { WorkItemTypeBadge } from './WorkItemTypeBadge';
 import { ActionBadge } from './ActionBadge';
 import { NodeDetailPanel, canEditEntry } from './NodeDetailPanel';
+import { EvidenceStrip } from './EvidenceStrip';
 import { AddChildCard } from './AddChildCard';
 import { ChatPanel } from './ChatPanel';
 import { MoveToPicker } from './MoveToPicker';
@@ -290,6 +291,17 @@ export function NodeDetailDialog({
       <MoveEntryControl entry={entry} allEntries={Object.values(diffByLocalId ?? {})} categoryLabels={categoryLabels} typeCatalog={typeCatalog} onMove={onMove} />
     ) : undefined;
 
+  const evidenceStrip = <EvidenceStrip entry={entry} jobMode={jobMode} kbCitations={kbCitations} />;
+
+  const keyHints: Array<[string, string]> = [
+    ['J', 'next'],
+    ['K', 'previous'],
+    ...(review && !review.reviewed ? ([['A', 'mark reviewed']] as Array<[string, string]>) : []),
+    ...(review && !review.reviewed && review.onReject ? ([['X', 'exclude']] as Array<[string, string]>) : []),
+    ...(review?.onUndo ? ([['U', 'undo']] as Array<[string, string]>) : []),
+    ...(entryEditable ? ([['E', 'edit']] as Array<[string, string]>) : []),
+  ];
+
   const detailsContent = (
     <NodeDetailPanel
       jobId={jobId}
@@ -302,6 +314,7 @@ export function NodeDetailDialog({
       traceLinkFailures={traceLinkFailures}
       parentEntry={entry.parentLocalId != null ? diffByLocalId?.[entry.parentLocalId] : undefined}
       addChildSlot={addChildSlot}
+      hideSources
       moveSlot={moveSlot}
       captionByFigureId={captionByFigureId}
       nameByFigureId={nameByFigureId}
@@ -396,33 +409,16 @@ export function NodeDetailDialog({
             <span className="min-w-0 flex-1 basis-56">
               <span className="font-semibold">{reason.title}.</span> {reason.todo}
               {onNavigate && shortcutsEnabled && (
-                <span className="ml-2 whitespace-nowrap text-xs opacity-80">
-                  <kbd className="rounded-sm border border-current/30 px-1 font-mono text-micro">J</kbd> next{' '}
-                  <kbd className="rounded-sm border border-current/30 px-1 font-mono text-micro">K</kbd> previous
-                  {review && !review.reviewed && (
-                    <>
-                      {' '}
-                      <kbd className="rounded-sm border border-current/30 px-1 font-mono text-micro">A</kbd> mark reviewed
-                      {review.onReject && (
-                        <>
-                          {' '}
-                          <kbd className="rounded-sm border border-current/30 px-1 font-mono text-micro">X</kbd> exclude
-                        </>
-                      )}
-                    </>
-                  )}
-                  {review?.onUndo && (
-                    <>
-                      {' '}
-                      <kbd className="rounded-sm border border-current/30 px-1 font-mono text-micro">U</kbd> undo
-                    </>
-                  )}
-                  {entryEditable && (
-                    <>
-                      {' '}
-                      <kbd className="rounded-sm border border-current/30 px-1 font-mono text-micro">E</kbd> edit
-                    </>
-                  )}
+                <span className="ml-2 text-xs opacity-80">
+                  {keyHints.map(([key, label], index) => (
+                    <Fragment key={key}>
+                      {/* The break point is this space, outside the nowrap pair: the line breaks between hints, never inside one. */}
+                      {index > 0 && ' '}
+                      <span className="whitespace-nowrap">
+                        <kbd className="rounded-sm border border-current/30 px-1 font-mono text-micro">{key}</kbd> {label}
+                      </span>
+                    </Fragment>
+                  ))}
                 </span>
               )}
             </span>
@@ -450,7 +446,7 @@ export function NodeDetailDialog({
         // `lg` and up: real two-pane layout, details left / chat right.
         <div className="flex min-h-0 flex-1">
           <div className="min-h-0 flex-1 overflow-y-auto">
-            <div ref={detailsScope}>{detailsContent}</div>
+            <div ref={detailsScope}>{evidenceStrip}{detailsContent}</div>
           </div>
           <div className="min-h-0 w-[400px] flex-none border-l border-hairline">{chatContent}</div>
         </div>
@@ -468,7 +464,7 @@ export function NodeDetailDialog({
             />
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto">
-            {mobileTab === 'details' ? <div ref={detailsScope}>{detailsContent}</div> : chatContent}
+            {mobileTab === 'details' ? <div ref={detailsScope}>{evidenceStrip}{detailsContent}</div> : chatContent}
           </div>
         </div>
       )}

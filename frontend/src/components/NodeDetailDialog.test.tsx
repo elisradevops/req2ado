@@ -46,6 +46,13 @@ describe('NodeDetailDialog', () => {
     vi.mocked(jobsApi.getFigureFile).mockResolvedValue(null);
   });
 
+  it('shows the evidence strip once, and not a second Sources block in the details', () => {
+    renderDialog({ entry: { ...ENTRY, sourceRef: { documentPath: 'spec.docx', startOffset: 0, endOffset: 5, page: 2 } } });
+    expect(screen.getByRole('region', { name: 'Evidence' })).toBeInTheDocument();
+    expect(screen.getAllByText('spec.docx')).toHaveLength(1);
+    expect(screen.queryByText('Sources')).not.toBeInTheDocument();
+  });
+
   it('renders nothing when entry is null', () => {
     const { container } = renderDialog({ entry: null });
     expect(container.querySelector('[role="dialog"]')).toBeNull();
@@ -307,6 +314,25 @@ describe('NodeDetailDialog', () => {
 
         fireEvent.keyDown(window, { key: 'a' });
         expect(onMark).toHaveBeenCalledTimes(1);
+      });
+
+      it('lets the key hints wrap onto the next line, keeping each key with its label', () => {
+        renderDialog({
+          onNavigate: vi.fn(),
+          reason,
+          review: { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn(), onReject: vi.fn(), onUndo: vi.fn() },
+        });
+        const keys = Array.from(screen.getByRole('note').querySelectorAll('kbd'));
+        expect(keys.map((k) => k.textContent)).toEqual(['J', 'K', 'A', 'X', 'U', 'E']);
+        for (const key of keys) {
+          // One wrapper per key, so a break can only fall between pairs.
+          expect(key.parentElement).toHaveClass('whitespace-nowrap');
+          expect(key.parentElement?.querySelectorAll('kbd')).toHaveLength(1);
+          // The space that lets the line break sits outside the pair: inside a nowrap span it cannot break.
+          expect(key.parentElement?.textContent).toMatch(/^\S/);
+          // A line that cannot wrap runs past the dialog edge on a phone.
+          expect(key.parentElement?.parentElement).not.toHaveClass('whitespace-nowrap');
+        }
       });
 
       it('names the actions the way the buttons do', () => {

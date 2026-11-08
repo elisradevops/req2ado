@@ -27,7 +27,7 @@ export function SourceProvenance({
       {sourceRef && (
         <div className="flex items-center gap-2">
           <FileText className="h-4 w-4 flex-none text-ink-3" />
-          <span className="min-w-0 break-words text-sm font-semibold text-ink-1">{basenameOf(sourceRef.documentPath)}</span>
+          <span className="min-w-0 break-words text-sm font-semibold text-ink-1"><bdi>{basenameOf(sourceRef.documentPath)}</bdi></span>
         </div>
       )}
       {rows.length > 0 && (
@@ -35,7 +35,7 @@ export function SourceProvenance({
           {rows.map((row) => (
             <div key={row.label} className="flex items-baseline gap-2">
               <dt className="w-14 flex-none text-xs text-ink-3">{row.label}</dt>
-              <dd className="min-w-0 text-xs text-ink-2">{row.value}</dd>
+              <dd className="min-w-0 text-xs text-ink-2"><bdi>{row.value}</bdi></dd>
             </div>
           ))}
         </dl>
