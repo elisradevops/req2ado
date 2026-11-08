@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  HttpCode,
   Controller,
   Delete,
   Get,
@@ -113,6 +114,13 @@ export interface ModelListing {
   models: string[];
   recommended: string | null;
   details: ModelDetail[];
+}
+
+// A row selection from the request body: absent means "everything", anything but an array of strings is rejected.
+function parseSelectedLocalIds(value: unknown): string[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (Array.isArray(value) && value.every((v) => typeof v === 'string')) return value as string[];
+  throw new BadRequestException('selectedLocalIds must be an array of strings');
 }
 
 @Controller('jobs')
@@ -745,9 +753,10 @@ export class JobsController {
   async confirm(
     @Param('id') id: string,
     @CurrentUser() user: SessionUser,
-    @Body('selectedLocalIds') selectedLocalIds: string[] | undefined,
+    @Body() body: { selectedLocalIds?: unknown } | undefined,
   ): Promise<{ status: string; createdCount: number }> {
     await this.ownedJob(id, user);
+    const selectedLocalIds = parseSelectedLocalIds(body?.selectedLocalIds);
     const credential = await this.adoCredentialResolver.resolve(user.userId);
     return this.jobsService.confirm(id, credential, selectedLocalIds);
   }
@@ -906,6 +915,23 @@ export class JobsController {
   async getWritePreview(@Param('id') id: string, @CurrentUser() user: SessionUser): Promise<WritePreview> {
     await this.ownedJob(id, user);
     const preview = await this.jobsService.getWritePreview(id);
+    if (!preview) {
+      throw new NotFoundException(`Job ${id} not found`);
+    }
+    return preview;
+  }
+
+  // Same preview, for the subset of rows the reviewer selected (what confirm() would write with that selectedLocalIds).
+  @Post(':id/write-preview')
+  @HttpCode(200)
+  async postWritePreview(
+    @Param('id') id: string,
+    @CurrentUser() user: SessionUser,
+    @Body() body: { selectedLocalIds?: unknown } | undefined,
+  ): Promise<WritePreview> {
+    await this.ownedJob(id, user);
+    const selectedLocalIds = parseSelectedLocalIds(body?.selectedLocalIds);
+    const preview = await this.jobsService.getWritePreview(id, selectedLocalIds);
     if (!preview) {
       throw new NotFoundException(`Job ${id} not found`);
     }

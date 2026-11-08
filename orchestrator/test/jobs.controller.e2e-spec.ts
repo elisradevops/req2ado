@@ -329,6 +329,55 @@ describe('JobsController (e2e)', () => {
     expect(res.body).toEqual(preview);
   });
 
+  it('POST /jobs/:id/write-preview applies the selection from the body', async () => {
+    fakeJobsService.getWritePreview.mockResolvedValue({ createdTotal: 1 });
+    const res = await authedRequest(app.getHttpServer()).post('/jobs/job-1/write-preview').send({ selectedLocalIds: ['a'] });
+    expect(res.status).toBe(200);
+    expect(fakeJobsService.getWritePreview).toHaveBeenCalledWith('job-1', ['a']);
+  });
+
+  it('POST /jobs/:id/write-preview without a body selection previews everything', async () => {
+    fakeJobsService.getWritePreview.mockResolvedValue({ createdTotal: 1 });
+    const res = await authedRequest(app.getHttpServer()).post('/jobs/job-1/write-preview');
+    expect(res.status).toBe(200);
+    expect(fakeJobsService.getWritePreview).toHaveBeenCalledWith('job-1', undefined);
+  });
+
+  it('POST /jobs/:id/write-preview forwards an empty selection as an empty array, not undefined', async () => {
+    fakeJobsService.getWritePreview.mockResolvedValue({ createdTotal: 0 });
+    const res = await authedRequest(app.getHttpServer()).post('/jobs/job-1/write-preview').send({ selectedLocalIds: [] });
+    expect(res.status).toBe(200);
+    expect(fakeJobsService.getWritePreview).toHaveBeenCalledWith('job-1', []);
+  });
+
+  it('POST /jobs/:id/confirm forwards an empty selection as an empty array, not undefined', async () => {
+    fakeJobsService.confirm.mockResolvedValue({ status: 'succeeded', createdCount: 0 });
+    const res = await authedRequest(app.getHttpServer()).post('/jobs/job-1/confirm').send({ selectedLocalIds: [] });
+    expect(res.status).toBe(201);
+    expect(fakeJobsService.confirm).toHaveBeenCalledWith('job-1', undefined, []);
+  });
+
+  it('POST /jobs/:id/write-preview returns 404 for an unknown job', async () => {
+    fakeJobsService.getWritePreview.mockResolvedValue(null);
+    const res = await authedRequest(app.getHttpServer()).post('/jobs/unknown/write-preview').send({});
+    expect(res.status).toBe(404);
+  });
+
+  it.each([
+    ['a string', 'a'],
+    ['an array with a non-string', ['a', 1]],
+    ['an object', { a: 1 }],
+  ])('rejects a selectedLocalIds that is %s with 400 on write-preview and confirm', async (_name, bad) => {
+    fakeJobsService.getWritePreview.mockClear();
+    fakeJobsService.confirm.mockClear();
+    const preview = await authedRequest(app.getHttpServer()).post('/jobs/job-1/write-preview').send({ selectedLocalIds: bad });
+    expect(preview.status).toBe(400);
+    const confirm = await authedRequest(app.getHttpServer()).post('/jobs/job-1/confirm').send({ selectedLocalIds: bad });
+    expect(confirm.status).toBe(400);
+    expect(fakeJobsService.getWritePreview).not.toHaveBeenCalled();
+    expect(fakeJobsService.confirm).not.toHaveBeenCalled();
+  });
+
   it('GET /jobs/:id/write-preview returns 404 for an unknown job', async () => {
     fakeJobsService.getWritePreview.mockResolvedValue(null);
     const res = await authedRequest(app.getHttpServer()).get('/jobs/unknown/write-preview');

@@ -5907,6 +5907,20 @@ describe('JobsService.getWritePreview', () => {
     expect(preview).toMatchObject({ createdTotal: 1, parentLinks: 1 });
   });
 
+  it('plans no parent link for an entry whose mapping is already linked', async () => {
+    const service = makeService(
+      { id: 'job-1', dryRunDiff: [entry('a'), entry('b', { parentLocalId: 'a' })] },
+      [{ localId: 'a', adoWorkItemId: 5, linked: true }, { localId: 'b', adoWorkItemId: 6, linked: true }],
+    );
+    expect(await service.getWritePreview('job-1')).toMatchObject({ createdTotal: 0, parentLinks: 0 });
+  });
+
+  it('applies a selection passed to getWritePreview', async () => {
+    const service = makeService({ id: 'job-1', dryRunDiff: [entry('a'), entry('b'), entry('c', { parentLocalId: 'b' })] });
+    const preview = await service.getWritePreview('job-1', ['a']);
+    expect(preview).toMatchObject({ createdTotal: 1, createdLocalIds: ['a'], parentLinks: 0 });
+  });
+
   it('treats a job with no stored diff as an empty write', async () => {
     expect(await makeService({ id: 'job-1', dryRunDiff: null }).getWritePreview('job-1')).toMatchObject({ createdTotal: 0 });
   });

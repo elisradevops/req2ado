@@ -366,6 +366,7 @@ export interface WritePreview {
   existingGettingChildren: number;
   existingWithoutNewParentLink: number;
   traceLinks: { planned: number; skipped: number };
+  alreadyWritten: number;
 }
 
 export async function getWritePreview(id: string): Promise<WritePreview> {

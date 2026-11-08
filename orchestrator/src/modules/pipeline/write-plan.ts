@@ -35,6 +35,8 @@ export function selectEntriesToCreate<T extends WritePlanEntry>(
 ): { toCreate: T[]; resolvedAdoIdByLocalId: Map<string, number> } {
   const toCreate: T[] = [];
   const resolvedAdoIdByLocalId = new Map<string, number>();
+  // One Set for the whole pass, so a large selection is not rescanned per entry. `undefined` means no selection (everything); `[]` means nothing.
+  const selected = options.selectedLocalIds === undefined ? undefined : new Set(options.selectedLocalIds);
   for (const entry of diff) {
     if (isExcluded(entry)) continue;
     // 'dedup_skip' is skipped the same as 'reuse': both already have a real ADO id to point at, just with different certainty (exact-hash
@@ -44,7 +46,7 @@ export function selectEntriesToCreate<T extends WritePlanEntry>(
       continue;
     }
     // A deselected 'create' row is dropped here. It never gets an id, so a child of it is not linked.
-    if (options.selectedLocalIds !== undefined && !options.selectedLocalIds.includes(entry.localId)) continue;
+    if (selected !== undefined && !selected.has(entry.localId)) continue;
     // Resume: created by a prior attempt at this same job.
     if (options.resumedAdoIdByLocalId.has(entry.localId)) continue;
     toCreate.push(entry);
@@ -113,6 +115,9 @@ export interface WritePreview {
   existingWithoutNewParentLink: number;
   // Trace links: written, and declared but not written (target excluded, not created, or unresolved).
   traceLinks: { planned: number; skipped: number };
+  // Non-excluded items of this job already in Azure DevOps from an earlier attempt. Deliberately NOT limited to the current selection: a resumed
+  // item the selection leaves out still counts here (and never counts in createdTotal); a resumed item that is excluded does not count.
+  alreadyWritten: number;
 }
 
 export interface WritePreviewResume {
@@ -124,9 +129,13 @@ export interface WritePreviewResume {
 export function buildWritePreview<T extends WritePlanEntry>(
   diff: T[],
   resume: WritePreviewResume = { resumedAdoIdByLocalId: new Map(), alreadyLinkedLocalIds: new Set() },
+  selectedLocalIds?: string[],
 ): WritePreview {
   const isExcluded = buildExclusionChecker(diff);
-  const { toCreate, resolvedAdoIdByLocalId } = selectEntriesToCreate(diff, isExcluded, { resumedAdoIdByLocalId: resume.resumedAdoIdByLocalId });
+  const { toCreate, resolvedAdoIdByLocalId } = selectEntriesToCreate(diff, isExcluded, {
+    resumedAdoIdByLocalId: resume.resumedAdoIdByLocalId,
+    selectedLocalIds,
+  });
 
   const adoIdByLocalId = new Map<string, number>(resume.resumedAdoIdByLocalId);
   for (const [localId, adoId] of resolvedAdoIdByLocalId) adoIdByLocalId.set(localId, adoId);
@@ -144,17 +153,17 @@ export function buildWritePreview<T extends WritePlanEntry>(
 
   const links = selectEntriesToLink(diff, isExcluded, adoIdByLocalId, resume.alreadyLinkedLocalIds);
 
+  // An entry is "existing" only if it resolved to a real ADO id, so a reuse/dedup_skip without one is an ordinary create.
   const existingParents = new Set<string>();
+  for (const entry of links) {
+    if (resolvedAdoIdByLocalId.has(entry.parentLocalId as string)) existingParents.add(entry.parentLocalId as string);
+  }
   let existingWithoutNewParentLink = 0;
-  const diffById = new Map(diff.map((entry) => [entry.localId, entry] as const));
+  let alreadyWritten = 0;
   for (const entry of diff) {
     if (isExcluded(entry)) continue;
-    const isExisting = entry.action === 'reuse' || entry.action === 'dedup_skip';
-    if (isExisting && entry.parentLocalId !== null) existingWithoutNewParentLink += 1;
-    if (!isExisting && entry.parentLocalId !== null) {
-      const parent = diffById.get(entry.parentLocalId);
-      if (parent && (parent.action === 'reuse' || parent.action === 'dedup_skip')) existingParents.add(parent.localId);
-    }
+    if (resolvedAdoIdByLocalId.has(entry.localId) && entry.parentLocalId !== null) existingWithoutNewParentLink += 1;
+    if (resume.resumedAdoIdByLocalId.has(entry.localId)) alreadyWritten += 1;
   }
 
   let declared = 0;
@@ -174,5 +183,6 @@ export function buildWritePreview<T extends WritePlanEntry>(
     existingGettingChildren: existingParents.size,
     existingWithoutNewParentLink,
     traceLinks: { planned, skipped: declared - planned },
+    alreadyWritten,
   };
 }

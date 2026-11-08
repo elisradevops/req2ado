@@ -47,6 +47,47 @@ describe('selectEntriesToCreate', () => {
     const result = selectEntriesToCreate(diff, buildExclusionChecker(diff), { resumedAdoIdByLocalId: new Map() });
     expect(result.toCreate.map((e) => e.localId)).toEqual(['a']);
   });
+
+  it('an empty selection creates nothing, while an undefined selection creates everything', () => {
+    const diff = [entry({ localId: 'a' }), entry({ localId: 'b' })];
+    const none = selectEntriesToCreate(diff, buildExclusionChecker(diff), { resumedAdoIdByLocalId: new Map(), selectedLocalIds: [] });
+    expect(none.toCreate).toEqual([]);
+    const all = selectEntriesToCreate(diff, buildExclusionChecker(diff), { resumedAdoIdByLocalId: new Map() });
+    expect(all.toCreate.map((e) => e.localId)).toEqual(['a', 'b']);
+    expect(buildWritePreview(diff, undefined, []).createdTotal).toBe(0);
+  });
+
+  it('ignores unknown ids and duplicates in a selection', () => {
+    const diff = [entry({ localId: 'a' }), entry({ localId: 'b' }), entry({ localId: 'c' })];
+    const run = (selectedLocalIds: string[]) =>
+      selectEntriesToCreate(diff, buildExclusionChecker(diff), { resumedAdoIdByLocalId: new Map(), selectedLocalIds }).toCreate.map((e) => e.localId);
+    expect(run(['c', 'a', 'a', 'zzz', 'c', 'nope'])).toEqual(run(['a', 'c']));
+    expect(run(['a', 'c'])).toEqual(['a', 'c']);
+  });
+
+  it('resolves a reuse entry with an existing id even when it is not in the selection', () => {
+    const diff = [
+      entry({ localId: 'r', action: 'reuse', existingAdoId: 7 }),
+      entry({ localId: 'd', action: 'dedup_skip', existingAdoId: 8 }),
+      entry({ localId: 'a' }),
+    ];
+    const result = selectEntriesToCreate(diff, buildExclusionChecker(diff), { resumedAdoIdByLocalId: new Map(), selectedLocalIds: [] });
+    expect(result.toCreate).toEqual([]);
+    expect([...result.resolvedAdoIdByLocalId]).toEqual([['r', 7], ['d', 8]]);
+  });
+
+  it('handles a 100000-id selection against a 100000-entry diff without a quadratic scan', () => {
+    const size = 100000;
+    const diff = Array.from({ length: size }, (_, i) => entry({ localId: `n${i}` }));
+    // Reverse order so a linear `includes` scan walks most of the array for every entry.
+    const selectedLocalIds = diff.map((e) => e.localId).reverse();
+    const isExcluded = () => false;
+    const started = Date.now();
+    const result = selectEntriesToCreate(diff, isExcluded, { resumedAdoIdByLocalId: new Map(), selectedLocalIds });
+    const elapsed = Date.now() - started;
+    expect(result.toCreate).toHaveLength(size);
+    expect(elapsed).toBeLessThan(1000);
+  });
 });
 
 describe('selectEntriesToLink', () => {
@@ -172,8 +213,184 @@ describe('buildWritePreview', () => {
     expect(preview.parentLinks).toBe(1);
   });
 
+  it('alreadyWritten counts resumed items regardless of the selection, but not resumed items that are excluded', () => {
+    const diff = [
+      entry({ localId: 'a' }), // resumed, deselected
+      entry({ localId: 'b' }), // resumed, selected
+      entry({ localId: 'x', excluded: true }), // resumed, excluded
+      entry({ localId: 'c' }), // new, selected
+    ];
+    const resume = {
+      resumedAdoIdByLocalId: new Map([['a', 1], ['b', 2], ['x', 3]]),
+      alreadyLinkedLocalIds: new Set<string>(),
+    };
+    const preview = buildWritePreview(diff, resume, ['b', 'c']);
+    expect(preview.alreadyWritten).toBe(2);
+    expect(preview.createdTotal).toBe(1);
+    expect(preview.createdLocalIds).toEqual(['c']);
+  });
+
   it('reports a write of zero items', () => {
     expect(buildWritePreview([]).createdTotal).toBe(0);
     expect(buildWritePreview([entry({ localId: 'a', excluded: true })]).createdTotal).toBe(0);
+  });
+});
+
+describe('buildWritePreview selection, existing parents and parity', () => {
+  const noResume = () => ({ resumedAdoIdByLocalId: new Map<string, number>(), alreadyLinkedLocalIds: new Set<string>() });
+
+  it('honours a selection like selectEntriesToCreate: unselected entries are not created and their children get no link', () => {
+    const diff = [entry({ localId: 'a' }), entry({ localId: 'b', parentLocalId: 'a' }), entry({ localId: 'c' })];
+    const preview = buildWritePreview(diff, noResume(), ['a', 'c']);
+    expect(preview.createdLocalIds).toEqual(['a', 'c']);
+    expect(preview.parentLinks).toBe(0);
+    const deselectParent = buildWritePreview(diff, noResume(), ['b']);
+    expect(deselectParent.createdLocalIds).toEqual(['b']);
+    expect(deselectParent.parentLinks).toBe(0);
+  });
+
+  it('creates a reuse entry without an existing id and does not count it as existing', () => {
+    const diff = [
+      entry({ localId: 'p', action: 'reuse', existingAdoId: null }),
+      entry({ localId: 'c', parentLocalId: 'p' }),
+    ];
+    const preview = buildWritePreview(diff);
+    expect(preview.createdTotal).toBe(2);
+    expect(preview.existingGettingChildren).toBe(0);
+    expect(preview.existingWithoutNewParentLink).toBe(0);
+    expect(preview.parentLinks).toBe(1);
+  });
+
+  it('counts only distinct existing parents whose child actually gets a new link', () => {
+    const diff = [
+      entry({ localId: 'p1', action: 'reuse', existingAdoId: 1 }),
+      entry({ localId: 'p2', action: 'reuse', existingAdoId: 2 }),
+      entry({ localId: 'p3', action: 'reuse', existingAdoId: 3 }),
+      entry({ localId: 'p4', action: 'reuse', existingAdoId: 4 }),
+      entry({ localId: 'c1', parentLocalId: 'p1' }),
+      entry({ localId: 'c1b', parentLocalId: 'p1' }),
+      entry({ localId: 'c2', parentLocalId: 'p2' }), // already linked by a prior attempt
+      entry({ localId: 'c3', parentLocalId: 'p3' }), // deselected
+      entry({ localId: 'c4', parentLocalId: 'p4' }),
+    ];
+    const resume = {
+      resumedAdoIdByLocalId: new Map([['c2', 22]]),
+      alreadyLinkedLocalIds: new Set(['c2']),
+    };
+    const preview = buildWritePreview(diff, resume, ['c1', 'c1b', 'c2', 'c4']);
+    expect(preview.existingGettingChildren).toBe(2); // p1 and p4
+    expect(preview.existingWithoutNewParentLink).toBe(0);
+  });
+
+  it('links a new child of a dedup_skip parent and counts the parent as getting children', () => {
+    const diff = [
+      entry({ localId: 'p', action: 'dedup_skip', existingAdoId: 7 }),
+      entry({ localId: 'c', parentLocalId: 'p' }),
+    ];
+    const preview = buildWritePreview(diff);
+    expect(preview.parentLinks).toBe(1);
+    expect(preview.existingGettingChildren).toBe(1);
+  });
+
+  it('counts an included child of an excluded parent as excluded via ancestor, not created', () => {
+    const diff = [entry({ localId: 'p', excluded: true }), entry({ localId: 'c', parentLocalId: 'p' })];
+    const preview = buildWritePreview(diff);
+    expect(preview.excluded).toEqual({ direct: 1, viaAncestor: 1 });
+    expect(preview.createdTotal).toBe(0);
+  });
+
+  it('skips trace links whose intra-job target is excluded and cross-job links that are unresolved or pending', () => {
+    const link = (extra: Partial<NonNullable<WritePlanEntry['traceLinks']>[number]>) => ({
+      sourceLocalId: 'a', referenceName: 'R', targetKind: 'intraJob' as const, resolutionStatus: 'resolved' as const, ...extra,
+    });
+    const diff = [
+      entry({
+        localId: 'a',
+        traceLinks: [
+          link({ targetLocalId: 'x' }),
+          link({ targetKind: 'crossJob', resolutionStatus: 'unresolved' }),
+          link({ targetKind: 'crossJob', resolutionStatus: 'pending', resolvedAdoId: 5 }),
+          link({ targetKind: 'crossJob', resolutionStatus: 'resolved', resolvedAdoId: 6 }),
+        ],
+      }),
+      entry({ localId: 'x', excluded: true }),
+    ];
+    expect(buildWritePreview(diff).traceLinks).toEqual({ planned: 1, skipped: 3 });
+  });
+
+  it('plans no parent link for an already-linked entry but still plans its trace links', () => {
+    const diff = [
+      entry({ localId: 'p' }),
+      entry({
+        localId: 'c',
+        parentLocalId: 'p',
+        traceLinks: [{ sourceLocalId: 'c', referenceName: 'R', targetKind: 'intraJob', targetLocalId: 'p', resolutionStatus: 'resolved' }],
+      }),
+    ];
+    const preview = buildWritePreview(diff, {
+      resumedAdoIdByLocalId: new Map([['p', 1], ['c', 2]]),
+      alreadyLinkedLocalIds: new Set(['c']),
+    });
+    expect(preview.parentLinks).toBe(0);
+    expect(preview.traceLinks).toEqual({ planned: 1, skipped: 0 });
+  });
+
+  it('counts resumed, non-excluded entries as alreadyWritten', () => {
+    const diff = [entry({ localId: 'a' }), entry({ localId: 'b' }), entry({ localId: 'c', excluded: true }), entry({ localId: 'd' })];
+    const preview = buildWritePreview(diff, {
+      resumedAdoIdByLocalId: new Map([['a', 1], ['c', 3]]),
+      alreadyLinkedLocalIds: new Set(),
+    });
+    expect(preview.alreadyWritten).toBe(1);
+    expect(preview.createdTotal).toBe(2);
+  });
+
+  describe('parity with the select* functions confirm() uses', () => {
+    const fixtures: { name: string; diff: WritePlanEntry[]; resume: ReturnType<typeof noResume>; selection?: string[] }[] = [
+      {
+        name: 'mixed tree with selection and resume',
+        diff: [
+          entry({ localId: 'e', type: 'Epic' }),
+          entry({ localId: 'f', parentLocalId: 'e', type: 'Feature' }),
+          entry({ localId: 'r1', parentLocalId: 'f' }),
+          entry({ localId: 'r2', parentLocalId: 'f', excluded: true }),
+          entry({ localId: 'r3', parentLocalId: 'r2' }),
+          entry({ localId: 'x', action: 'reuse', existingAdoId: 9 }),
+          entry({ localId: 'r4', parentLocalId: 'x' }),
+          entry({ localId: 'y', action: 'dedup_skip', existingAdoId: 10, parentLocalId: 'x' }),
+          entry({ localId: 'z', action: 'reuse', existingAdoId: null }),
+          entry({
+            localId: 'r5',
+            parentLocalId: 'z',
+            traceLinks: [
+              { sourceLocalId: 'r5', referenceName: 'T', targetKind: 'intraJob', targetLocalId: 'r1', resolutionStatus: 'resolved' },
+              { sourceLocalId: 'r5', referenceName: 'T', targetKind: 'crossJob', resolutionStatus: 'resolved', resolvedAdoId: 44 },
+              { sourceLocalId: 'r5', referenceName: 'T', targetKind: 'intraJob', targetLocalId: 'r3', resolutionStatus: 'resolved' },
+            ],
+          }),
+        ],
+        resume: { resumedAdoIdByLocalId: new Map([['f', 20]]), alreadyLinkedLocalIds: new Set(['f']) },
+        selection: ['e', 'f', 'r1', 'r5', 'z'],
+      },
+      { name: 'no selection, no resume', diff: [entry({ localId: 'a' }), entry({ localId: 'b', parentLocalId: 'a' })], resume: noResume() },
+      { name: 'empty', diff: [], resume: noResume() },
+    ];
+
+    it.each(fixtures)('$name', ({ diff, resume, selection }) => {
+      const preview = buildWritePreview(diff, resume, selection);
+      const isExcluded = buildExclusionChecker(diff);
+      const { toCreate, resolvedAdoIdByLocalId } = selectEntriesToCreate(diff, isExcluded, {
+        resumedAdoIdByLocalId: resume.resumedAdoIdByLocalId,
+        selectedLocalIds: selection,
+      });
+      const ids = new Map<string, number>(resume.resumedAdoIdByLocalId);
+      for (const [k, v] of resolvedAdoIdByLocalId) ids.set(k, v);
+      for (const e of toCreate) ids.set(e.localId, 0);
+      expect(preview.createdTotal).toBe(toCreate.length);
+      expect(preview.parentLinks).toBe(selectEntriesToLink(diff, isExcluded, ids, resume.alreadyLinkedLocalIds).length);
+      let planned = 0;
+      for (const list of selectTraceLinks(diff, isExcluded, ids).values()) planned += list.length;
+      expect(preview.traceLinks.planned).toBe(planned);
+    });
   });
 });

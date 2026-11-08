@@ -1605,7 +1605,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
 
   // What confirm() would do for this job right now, computed by the same rules confirm() uses (write-plan.ts). Read-only. Items and links a
   // failed earlier attempt already wrote are counted as done, as a retry would treat them.
-  async getWritePreview(id: string): Promise<WritePreview | null> {
+  async getWritePreview(id: string, selectedLocalIds?: string[]): Promise<WritePreview | null> {
     const job = await this.prisma.job.findUnique({ where: { id } });
     if (!job) return null;
     const diff = ((job.dryRunDiff as unknown as WritePlanEntry[] | null) ?? []);
@@ -1613,7 +1613,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     return buildWritePreview(diff, {
       resumedAdoIdByLocalId: new Map(mappings.map((m) => [m.localId, m.adoWorkItemId] as const)),
       alreadyLinkedLocalIds: new Set(mappings.filter((m) => m.linked).map((m) => m.localId)),
-    });
+    }, selectedLocalIds);
   }
 
   // Post-write validation: reads back every work item this job actually
