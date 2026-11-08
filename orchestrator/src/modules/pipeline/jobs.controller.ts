@@ -117,8 +117,9 @@ export interface ModelListing {
 }
 
 // A row selection from the request body: absent means "everything", anything but an array of strings is rejected.
-function parseSelectedLocalIds(value: unknown): string[] | undefined {
-  if (value === undefined || value === null) return undefined;
+// null is rejected unless allowNull (the read-only preview): on the irreversible confirm, null must never mean "write everything".
+function parseSelectedLocalIds(value: unknown, options: { allowNull?: boolean } = {}): string[] | undefined {
+  if (value === undefined || (value === null && options.allowNull)) return undefined;
   if (Array.isArray(value) && value.every((v) => typeof v === 'string')) return value as string[];
   throw new BadRequestException('selectedLocalIds must be an array of strings');
 }
@@ -930,7 +931,7 @@ export class JobsController {
     @Body() body: { selectedLocalIds?: unknown } | undefined,
   ): Promise<WritePreview> {
     await this.ownedJob(id, user);
-    const selectedLocalIds = parseSelectedLocalIds(body?.selectedLocalIds);
+    const selectedLocalIds = parseSelectedLocalIds(body?.selectedLocalIds, { allowNull: true });
     const preview = await this.jobsService.getWritePreview(id, selectedLocalIds);
     if (!preview) {
       throw new NotFoundException(`Job ${id} not found`);

@@ -345,6 +345,31 @@ describe('buildWritePreview selection, existing parents and parity', () => {
     expect(preview.createdTotal).toBe(2);
   });
 
+  it('does not count a root reuse entry in existingWithoutNewParentLink (only existing entries with a parent)', () => {
+    const diff = [entry({ localId: 'a', action: 'reuse', existingAdoId: 5 })];
+    const preview = buildWritePreview(diff);
+    expect(preview.existingWithoutNewParentLink).toBe(0);
+    expect(preview.existingGettingChildren).toBe(0);
+    expect(preview.createdTotal).toBe(0);
+  });
+
+  it('does not crash on duplicate localIds and counts both entries in createdTotal', () => {
+    const diff = [entry({ localId: 'a' }), entry({ localId: 'a' })];
+    expect(() => buildWritePreview(diff)).not.toThrow();
+    expect(buildWritePreview(diff).createdTotal).toBe(2);
+  });
+
+  it('does not count an entry excluded through a reuse ancestor as existing', () => {
+    const diff = [
+      entry({ localId: 'a', action: 'reuse', existingAdoId: 5, excluded: true }),
+      entry({ localId: 'b', action: 'reuse', existingAdoId: 6, parentLocalId: 'a' }),
+    ];
+    const preview = buildWritePreview(diff);
+    expect(preview.excluded).toEqual({ direct: 1, viaAncestor: 1 });
+    expect(preview.existingWithoutNewParentLink).toBe(0);
+    expect(preview.existingGettingChildren).toBe(0);
+  });
+
   describe('parity with the select* functions confirm() uses', () => {
     const fixtures: { name: string; diff: WritePlanEntry[]; resume: ReturnType<typeof noResume>; selection?: string[] }[] = [
       {

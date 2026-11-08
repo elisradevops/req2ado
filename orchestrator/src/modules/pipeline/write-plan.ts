@@ -111,7 +111,10 @@ export interface WritePreview {
   // New parent links that will be written.
   parentLinks: number;
   // Existing items (reuse or near-duplicate) that will receive new children, and existing items that get no new parent link.
+  // Distinct existing parents (resolved to an ADO id by this job's reuse/dedup_skip) of entries that get a new parent link. A resumed-only
+  // parent is not in resolvedAdoIdByLocalId, so it is not counted.
   existingGettingChildren: number;
+  // Non-excluded entries that resolved to an existing ADO id AND have a parent. A root existing entry is not counted.
   existingWithoutNewParentLink: number;
   // Trace links: written, and declared but not written (target excluded, not created, or unresolved).
   traceLinks: { planned: number; skipped: number };
