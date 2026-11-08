@@ -3127,13 +3127,19 @@ Undo. A failed save returns the reviewer to that item. When the last item is
 done, a "Review queue done." row takes focus, because the button it was opened
 from is gone. `ui/Dialog.tsx` returns focus to the opener for every dialog.
 
-**What the keys do in each mode.** The hint row is always shown while shortcuts are
-on (under the reason banner when there is one, in a thin row of its own when not).
-`queue` and the warning-focus review offer J, K, A or R (mark reviewed and next), X,
-U and E; `spotCheck` offers "Looks right and next" and exclude, not a plain mark.
-Letters match by the typed key, and by the physical key when the typed key is not a
-Latin letter, so they work on a Hebrew layout. They never fire from a menu, select,
-combobox or option (typeahead), with Shift, or during IME composition. While a save
+**What the keys do in each mode.** The hint row is shown while shortcuts are
+on and the dialog can step (it has `onNavigate`), under the reason banner when there is
+one, in a thin row of its own when not. Each hint appears only when its action is
+available: A or R only while the item is not yet reviewed, X only when the dialog can
+exclude and the item is not reviewed, U only when there is something to undo with, E
+only when the entry is editable; J and K are always listed. `spotCheck` offers "Looks
+right and next" and exclude, not a plain mark. The row is drawn but hidden from screen
+readers (`aria-hidden`), because the buttons carry `aria-keyshortcuts`. Letters match
+by the typed key, or by the physical key only when the typed key is not a Latin letter
+and is a single character, so they work on a Hebrew layout. A dead key, IME
+composition, Shift, Ctrl, Meta or Alt, a held (repeating) mark, exclude, undo or edit
+key, and a key typed in a menu, select, combobox, option or text field (including one
+inside a shadow root) never trigger a shortcut. While a save
 is in flight the mode buttons are `aria-busy` and `aria-disabled` (never `disabled`,
 which would drop focus), presses do nothing, and "Still saving. Try again." is
 announced. Buttons carry `aria-keyshortcuts` while shortcuts are on.
@@ -3168,16 +3174,17 @@ matched. Rules:
   adds "The source text is not stored with this item, only where it came from";
   without one it says "No source location recorded." If a source excerpt is
   ever stored, it belongs here, beside the proposed text.
-- **Silent about scoring state.** Whether an item is scored, or its scores are
-  stale, is the details pane's to say (the gauge box and its re-check action).
-  The strip shows the weakest area only for fresh scores and otherwise shows
-  nothing about it.
+- **Scoring state is the details pane's to say.** Whether an item is scored, or its
+  scores are stale, is said by the gauge box and its re-check action. The strip
+  mentions scoring only for a fresh score: the scoring note and the weakest-area row
+  both need one, and with no fresh score the strip says nothing about scoring.
 - **One weakest-category rule.** `weakestCategory` is the single owner: lowest
   score, a real 0 counts, non-finite scores are skipped, ties go to the
   alphabetically first key. The chat passes `below = WEAK_CATEGORY_SCORE` (70) to
   aim a rewrite only at a weak category; the strip names the lowest for every
   scored item. The bar is mirrored in ingestion's chat prompt and a frontend
-  test fails if the two differ.
+  test fails if the two differ (in CI it also fails when the ingestion file is missing,
+  rather than skipping as it does locally).
 - **The panel does not repeat it.** The dialog passes `hideSources` to
   `NodeDetailPanel`, so provenance appears once. A caller that renders the
   panel without an `EvidenceStrip` must not set it; a panel test pins the
@@ -3194,7 +3201,7 @@ confirmation that cannot be skipped through: a spot-check comes first.
   (`cleanApproval` in `utils/reviewQueue.ts`). Info warnings do not disqualify.
   There is no new threshold; it is the existing flag rule. Flagged, unscored
   and stale items are left out and counted in the dialog.
-- **Spot-check is mandatory.** `spotCheckSample` picks max(3, ceil(N/10)) items,
+- **Spot-check is mandatory.** `spotCheckSample` picks min(N, max(3, ceil(N/10))) items (all of them when N < 3),
   evenly spaced from the lowest score, the same every time. The reviewer steps
   through them in the details dialog (queue mode `spotCheck`) and answers each
   with "Looks right and next" or excludes it. Approve stays disabled until every
@@ -3219,19 +3226,25 @@ the items go and what the write will do, from the server's own rules.
 - **Source of the numbers.** `GET` or `POST /jobs/:id/write-preview` runs the same
   functions `confirm()` uses (`selectEntriesToCreate`, `selectEntriesToLink`,
   `selectTraceLinks`) on a simulated id map, honouring an optional row selection and
-  what an earlier failed attempt already wrote. The UI only phrases the result.
+  what an earlier failed attempt already wrote. The UI only phrases the result. The write
+  and the preview validate a selection the same way: one that is not an array of strings
+  is a 400 on both; `null` is a 400 on the write (only a missing field means everything)
+  and is treated as missing on the preview.
 - **What it shows.** New items by type, items left out (excluded, or under an excluded
   parent), parent links, existing items that get children but no new parent link,
   trace links planned and not planned, how the items were reviewed, open warnings
   ("N warnings to fix and N to check ... You can still write."), the destination, and
-  a "Back to the tree" button. The button names the count and project, "Write N items
-  to <project>".
+  a "Back to the tree" button. The button reads "Write N items
+  to <project>" ("Write 1 item to <project>" for one), and "Confirm and write" when the
+  project name is not known or the check failed.
 - **Rules.** The write is disabled while the check runs and when there is nothing to do
   at all (no new items, no parent links, no trace links); the reason is described to
   assistive technology. A retry after a failed write with only links left is enabled and
   reads "Finish writing to <project>". A check that fails or takes over 15 s shows
   "Couldn't check what will be written. You can still write." and never blocks the
-  write. If the job leaves `diff_ready` while the dialog is open it closes with a message.
+  write. If the job leaves `diff_ready` while the dialog is open it closes with a message that
+  depends on the status: for `writing` or `succeeded`, "already being written or already
+  written"; for any other status, "the job changed ... nothing was written".
 - **How items were reviewed** (page session only, never stored or sent): edited, one
   by one, bulk after the spot-check, bulk without it, marked reviewed from a warning
   list (`group`), reviewed earlier (before this page load), not reviewed.
@@ -3239,14 +3252,28 @@ the items go and what the write will do, from the server's own rules.
   irreversible dialog opens on Cancel; dialogs cap to the screen height and the body
   scrolls so the buttons stay in view; a long project name truncates in the button
   while the accessible name stays whole.
+- **Actions must look like buttons.** In this dialog Cancel is an `outline` button, not
+  `ghost` (other confirmations keep a ghost Cancel). While the write button is off only
+  because the acknowledgement box is unticked, a muted line next to it says "Tick the box
+  above to enable this button." and the button's description carries it.
+- **"Before you write:" shortcuts.** Outlined buttons, each shown only when it applies:
+  "Review N unreviewed items" (closes the dialog and opens the risk-ordered queue),
+  "Go to N warnings to fix" (closes the dialog, shows the tree tab and puts focus on the
+  integrity warnings section), and "Show the N excluded items" (built in `WriteSummary`
+  but not wired: the tree has no filter for excluded items yet, so it never renders). A
+  shortcut closes the dialog without handing focus back to the header button, because the
+  browser scrolls a focused button into view and the page would jump to the top and undo
+  the move; plain Cancel still returns focus there. Touch targets are 44 px on a phone.
 
 **Focus between dialogs.** `Dialog` accepts `returnFocusRef` and `restoreFocus`. Closing
 the bulk confirmation returns focus to the "Approve N clean items" button; the hand-over
 to the spot-check does not let the closing dialog take focus back.
 
 **Evidence strip scoring note.** For a SURVEY Requirement that is new (`create`), the
-strip shows the scoring note whether or not there is a source location and whatever
-the scoring state; the weakest-area row still appears for fresh scores only.
+strip shows the scoring note ("Scored on wording only, not engineering content.") only
+when it has a fresh score (a `qualityScore` that is not stale), whether or not there is
+a source location. The weakest-area row also needs fresh category scores. With no fresh
+score the strip says nothing about scoring.
 
 **Not built yet.** The Discussion-write mode and any link-append behaviour. A selection
 the UI cannot make (`selectedLocalIds`) is supported by the API and the preview; the
