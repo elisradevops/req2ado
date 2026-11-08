@@ -18,6 +18,18 @@ function TriggerButton({ message, severity }: { message: string; severity: 'erro
 // severity rendered visually identical except for the small icon color --
 // this locks in the left accent bar distinguishing them.
 describe('ToastProvider', () => {
+  it('lets a long unbroken item title wrap instead of widening the toast', async () => {
+    const user = userEvent.setup();
+    render(
+      <ToastProvider>
+        <TriggerButton message={'x'.repeat(200)} severity="info" />
+      </ToastProvider>,
+    );
+    await user.click(screen.getByRole('button', { name: 'Trigger' }));
+    const description = await screen.findByText('x'.repeat(200));
+    expect(description).toHaveClass('min-w-0', 'break-words');
+  });
+
   it('gives each severity its own left accent bar color, not just the icon', async () => {
     const user = userEvent.setup();
     render(

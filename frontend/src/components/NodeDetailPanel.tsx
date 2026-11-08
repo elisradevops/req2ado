@@ -89,6 +89,7 @@ export function NodeDetailPanel({
   onRetryTraceLink,
   descendantCounts,
   requirementClassificationField,
+  editRequest = 0,
 }: {
   // Needed only by the Figures section below (FigureImage's fetch route is
   // job-scoped) -- optional so every existing caller/test that has no
@@ -185,6 +186,10 @@ export function NodeDetailPanel({
   // one entry at a time. Absent (not zeroed) for a Requirement, which
   // never renders this group at all.
   descendantCounts?: { epics: number; features: number; requirements: number };
+  // Bumped by the parent (the dialog's E key) to ask for the edit form. A counter, not a
+  // boolean: the form's state lives here, and every press has to count. Only a change
+  // after mount is a request, and only an editable entry honors it.
+  editRequest?: number;
 }): React.ReactElement {
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState('');
@@ -258,6 +263,14 @@ export function NodeDetailPanel({
     retryingFailureIdsRef.current = new Set();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entry?.localId]);
+
+  const handledEditRequestRef = useRef(editRequest);
+  useEffect(() => {
+    if (editRequest === handledEditRequestRef.current) return;
+    handledEditRequestRef.current = editRequest;
+    if (entry && canEditEntry(entry, jobStatus) && !editing) startEditing();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editRequest]);
 
   if (!entry) {
     return (

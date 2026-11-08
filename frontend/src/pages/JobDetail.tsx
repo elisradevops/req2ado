@@ -188,7 +188,38 @@ export function JobDetail(): React.ReactElement {
   const queueButtonRef = useRef<HTMLButtonElement>(null);
   // Set while the dialog was opened by the queue, so closing it can hand focus back.
   const queueOpenedRef = useRef(false);
+  // Kept in step with `dialogOpen` by updateDialogOpen, so async code (a failed save) reads the
+  // current value rather than the one from the last commit.
   const dialogOpenRef = useRef(false);
+  function updateDialogOpen(open: boolean): void {
+    dialogOpenRef.current = open;
+    setDialogOpen(open);
+  }
+  // Runs the reviewer's last queue action backwards (U). Null once used, or before any.
+  interface QueueUndo {
+    label: string;
+    run: () => Promise<boolean>;
+  }
+  const lastUndoRef = useRef<QueueUndo | null>(null);
+  // Mirrors "there is something to undo", so the U hint only shows when it would do something.
+  const [hasUndo, setHasUndo] = useState(false);
+  function setLastUndo(undo: QueueUndo | null): void {
+    lastUndoRef.current = undo;
+    setHasUndo(undo !== null);
+  }
+  // The toast's own Undo ran this step already, so U must not run it again.
+  function clearLastUndoIf(undo: QueueUndo | undefined): void {
+    if (undo && lastUndoRef.current === undo) setLastUndo(null);
+  }
+  // A live region only speaks when its text changes, so an identical message (a second "Still
+  // saving") alternates an invisible trailing character. Spoken text is unchanged.
+  const announceFlipRef = useRef(false);
+  function announceAgain(message: string): void {
+    announceFlipRef.current = !announceFlipRef.current;
+    setQueueAnnouncement(announceFlipRef.current ? `${message}\u200B` : message);
+  }
+  // Set when a failed save leaves the dialog closed: focus goes to the queue button once it renders.
+  const [refocusQueueButton, setRefocusQueueButton] = useState(false);
   const keyboardShortcuts = useKeyboardShortcuts();
   const [stage, setStage] = useState<JobStage | null>(null);
   const [narrations, setNarrations] = useState<NarrationEvent[]>([]);
@@ -991,7 +1022,11 @@ export function JobDetail(): React.ReactElement {
   // this call changed are put back. `force` skips the "already in that
   // state" filter, which Undo needs: its closure holds the diff from the
   // render that created it, not the current one.
-  async function handleSetReviewed(localIds: string[], reviewed: boolean, options?: { force?: boolean }): Promise<boolean> {
+  async function handleSetReviewed(
+    localIds: string[],
+    reviewed: boolean,
+    options?: { force?: boolean; onToastUndo?: () => void },
+  ): Promise<boolean> {
     if (!id) return false;
     const wanted = new Set(localIds);
     const changed = options?.force
@@ -1005,7 +1040,13 @@ export function JobDetail(): React.ReactElement {
       showToast(
         `${changed.length === 1 ? '1 item' : `${changed.length.toLocaleString()} items`} marked ${reviewed ? 'reviewed' : 'not reviewed'}.`,
         'success',
-        { label: 'Undo', onAction: () => void handleSetReviewed(changed, !reviewed, { force: true }) },
+        {
+          label: 'Undo',
+          onAction: () => {
+            options?.onToastUndo?.();
+            void handleSetReviewed(changed, !reviewed, { force: true });
+          },
+        },
       );
       return true;
     } catch (err) {
@@ -1026,7 +1067,7 @@ export function JobDetail(): React.ReactElement {
     if (next) {
       setSelectedId(next.localId);
     } else {
-      setDialogOpen(false);
+      updateDialogOpen(false);
     }
   }
 
@@ -1036,7 +1077,7 @@ export function JobDetail(): React.ReactElement {
     if (rest.length === 0) {
       setQueueMode(false);
       setQueueFinished(true);
-      setDialogOpen(false);
+      updateDialogOpen(false);
       setQueueAnnouncement(`${verb}. Review queue done.`);
       return;
     }
@@ -1047,11 +1088,12 @@ export function JobDetail(): React.ReactElement {
   function handleStartReviewQueue(): void {
     if (reviewQueue.length === 0) return;
     setQueueAnnouncement('');
+    setLastUndo(null);
     setQueueFinished(false);
     setSelectedId(reviewQueue[0].localId);
     setQueueMode(true);
     queueOpenedRef.current = true;
-    setDialogOpen(true);
+    updateDialogOpen(true);
   }
 
   // Back to an item whose save failed: the queue steps on at once (marking is optimistic), so a
@@ -1066,24 +1108,30 @@ export function JobDetail(): React.ReactElement {
     if (dialogOpenRef.current) {
       setQueueMode(true);
       queueOpenedRef.current = true;
-      setDialogOpen(true);
+      updateDialogOpen(true);
     } else {
-      setTimeout(() => queueButtonRef.current?.focus(), 0);
+      setRefocusQueueButton(true);
     }
   }
 
   async function handleQueueAccept(): Promise<void> {
     if (!selectedId) return;
     if (isDiffMutatingRef.current) {
-      setQueueAnnouncement('Still saving. Try again.');
+      announceAgain('Still saving. Try again.');
       return;
     }
     const markedId = selectedId;
     const markedTitle = diff.find((entry) => entry.localId === markedId)?.title ?? 'item';
     const rest = reviewQueue.filter((entry) => entry.localId !== markedId);
-    const saved = handleSetReviewed([markedId], true);
+    // Cleared first so an identical failure message is a change in the live region, and is spoken again.
+    setQueueAnnouncement('');
+    let undo: QueueUndo | undefined;
+    const saved = handleSetReviewed([markedId], true, { onToastUndo: () => clearLastUndoIf(undo) });
     advanceReviewQueue(rest, 'Marked reviewed');
-    if (!(await saved)) {
+    if (await saved) {
+      undo = { label: markedTitle, run: () => handleSetReviewed([markedId], false, { force: true }) };
+      setLastUndo(undo);
+    } else {
       returnToQueueItem(markedId, `Couldn't mark "${markedTitle}" reviewed. Try again.`);
     }
   }
@@ -1094,11 +1142,12 @@ export function JobDetail(): React.ReactElement {
   async function handleQueueReject(): Promise<void> {
     if (!selectedId) return;
     if (isDiffMutatingRef.current) {
-      setQueueAnnouncement('Still saving. Try again.');
+      announceAgain('Still saving. Try again.');
       return;
     }
     const excludedId = selectedId;
     const excludedEntry = diff.find((entry) => entry.localId === excludedId);
+    setQueueAnnouncement('');
     const rest = buildReviewQueue(
       diff.map((entry) => (entry.localId === excludedId ? { ...entry, excluded: true } : entry)),
       warningKindGroups,
@@ -1109,12 +1158,36 @@ export function JobDetail(): React.ReactElement {
     }
     const below = descendantCountsByLocalId[excludedId];
     const belowCount = below ? below.epics + below.features + below.requirements : 0;
+    const undo: QueueUndo = { label: excludedEntry?.title ?? 'item', run: () => excludeEntry(excludedId, false) };
     showToast(
       `Excluded "${excludedEntry?.title ?? 'item'}"${belowCount > 0 ? ` and ${belowCount.toLocaleString()} below it` : ''}.`,
       'success',
-      { label: 'Undo', onAction: () => void excludeEntry(excludedId, false) },
+      {
+        label: 'Undo',
+        onAction: () => {
+          clearLastUndoIf(undo);
+          void excludeEntry(excludedId, false);
+        },
+      },
     );
+    setLastUndo(undo);
     advanceReviewQueue(rest, 'Excluded');
+  }
+
+  // U: the toast's Undo is out of reach while the modal dialog is open, so the key runs the same step.
+  function handleQueueUndo(): void {
+    const undo = lastUndoRef.current;
+    if (!undo) return;
+    if (isDiffMutatingRef.current) {
+      announceAgain('Still saving. Try again.');
+      return;
+    }
+    setLastUndo(null);
+    setQueueAnnouncement('');
+    void undo.run().then((done) => {
+      if (done) setQueueAnnouncement(`Undone: "${undo.label}".`);
+      else setLastUndo(undo);
+    });
   }
 
   // Re-runs a failed enhancement pass for the items its warning lists, a
@@ -1596,9 +1669,6 @@ export function JobDetail(): React.ReactElement {
   // Queue mode follows the queue: it ends when the job leaves review or nothing is left, and
   // an open item that has dropped out of the queue (a refresh, an undo) hands over to the first.
   useEffect(() => {
-    dialogOpenRef.current = dialogOpen;
-  }, [dialogOpen]);
-  useEffect(() => {
     // Not while an exclude is saving: its reply empties the queue a render before the queue steps on.
     if (!queueMode || isDiffMutating) return;
     if (status !== 'diff_ready' || reviewQueue.length === 0) {
@@ -1607,6 +1677,12 @@ export function JobDetail(): React.ReactElement {
       setSelectedId(reviewQueue[0].localId);
     }
   }, [queueMode, isDiffMutating, status, reviewQueue, selectedId]);
+  // After a failed save with the dialog already closed: wait for the refilled queue to render its button.
+  useEffect(() => {
+    if (!refocusQueueButton || !queueButtonRef.current) return;
+    queueButtonRef.current.focus();
+    setRefocusQueueButton(false);
+  }, [refocusQueueButton, reviewQueue.length]);
   // A "done" row is only true until the queue refills.
   useEffect(() => {
     if (queueFinished && reviewQueue.length > 0) setQueueFinished(false);
@@ -1719,6 +1795,7 @@ export function JobDetail(): React.ReactElement {
           onMark: () => void handleQueueAccept(),
           onUnmark: () => void handleSetReviewed([selectedId], false),
           onReject: () => void handleQueueReject(),
+          onUndo: hasUndo ? handleQueueUndo : undefined,
         }
       : focusReviewable && focusWarning && selectedId && focusWarning.nodeIds.has(selectedId) && status === 'diff_ready'
       ? {
@@ -2011,7 +2088,7 @@ export function JobDetail(): React.ReactElement {
             // looked like it did nothing on any list of real size.
             setTab('tree');
             setSelectedId(localId);
-            setDialogOpen(true);
+            updateDialogOpen(true);
           }}
           adoIdByLocalId={adoIdByLocalId}
           titleByLocalId={titleByLocalId}
@@ -2194,7 +2271,7 @@ export function JobDetail(): React.ReactElement {
                     onSelect={setSelectedId}
                     onOpenDetails={(localId) => {
                       setSelectedId(localId);
-                      setDialogOpen(true);
+                      updateDialogOpen(true);
                     }}
                     filterAction={filterAction}
                     filterText={filterText}
@@ -2213,7 +2290,7 @@ export function JobDetail(): React.ReactElement {
               </Card>
               <NodeDetailDialog
                 open={dialogOpen}
-                onOpenChange={setDialogOpen}
+                onOpenChange={updateDialogOpen}
                 jobId={id!}
                 entry={selectedEntry}
                 jobMode={mode as 'baseline' | 'survey' | null}

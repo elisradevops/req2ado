@@ -146,4 +146,14 @@ describe('riskReason', () => {
   it('says a clean item has no flags and still needs a look', () => {
     expect(riskReason(entry('a', { qualityScore: 95 }), NO_WARNINGS)).toMatchObject({ group: 'info', title: 'No flags' });
   });
+
+  it('does not claim an unscored item was checked for flags', () => {
+    expect(riskReason(entry('a'), NO_WARNINGS)).toEqual({
+      title: 'Not scored',
+      todo: 'No score for this item. Read it against its source before you mark it reviewed.',
+      group: 'info',
+    });
+    // A grounding score alone still counts as scored.
+    expect(riskReason(entry('a', { groundingScore: 0.9 }), NO_WARNINGS).title).toBe('No flags');
+  });
 });

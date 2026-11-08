@@ -173,7 +173,7 @@ export function NodeDetailDialog({
   // queue, on a job still awaiting review. `reviewed` swaps the primary
   // action for an undo. `onReject` (X) excludes the item and steps on; only
   // the queue offers it.
-  review?: { reviewed: boolean; onMark: () => void; onUnmark: () => void; onReject?: () => void } | null;
+  review?: { reviewed: boolean; onMark: () => void; onUnmark: () => void; onReject?: () => void; onUndo?: () => void } | null;
   // The single-key shortcuts (J K R A X). Off turns every one of them off
   // (WCAG 2.1.4); the buttons keep working.
   shortcutsEnabled?: boolean;
@@ -219,6 +219,10 @@ export function NodeDetailDialog({
     void animateDetails(detailsScope.current, { opacity: [0.7, 1] }, { duration: 0.11, ease: 'easeOut' });
   }, [entry?.localId, animateDetails, detailsScope]);
 
+  // E asks the panel to open its edit form (the form's state lives there); a counter so every press counts.
+  const [editRequest, setEditRequest] = useState(0);
+  const entryEditable = !!entry && canEditEntry(entry, jobStatus);
+
   // J / K step to the next / previous item, same as the chevrons in the
   // title. Ignored while typing (edit fields, chat) and with any modifier
   // held, so it never swallows a real character or a browser shortcut.
@@ -230,7 +234,7 @@ export function NodeDetailDialog({
       if (target && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))) return;
       const key = event.key.toLowerCase();
       // A held A, R or X must not mark or exclude the whole queue at key-repeat speed.
-      if (event.repeat && (key === 'r' || key === 'a' || key === 'x')) return;
+      if (event.repeat && (key === 'r' || key === 'a' || key === 'x' || key === 'u' || key === 'e')) return;
       if (key === 'j' && hasNext) {
         event.preventDefault();
         onNavigate?.('next');
@@ -243,11 +247,17 @@ export function NodeDetailDialog({
       } else if (key === 'x' && review?.onReject && !review.reviewed) {
         event.preventDefault();
         review.onReject();
+      } else if (key === 'u' && review?.onUndo) {
+        event.preventDefault();
+        review.onUndo();
+      } else if (key === 'e' && entryEditable) {
+        event.preventDefault();
+        setEditRequest((count) => count + 1);
       }
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [open, onNavigate, hasNext, hasPrev, review, shortcutsEnabled]);
+  }, [open, onNavigate, hasNext, hasPrev, review, shortcutsEnabled, entryEditable]);
 
   if (!entry) return null;
 
@@ -286,6 +296,7 @@ export function NodeDetailDialog({
       entry={entry}
       jobMode={jobMode}
       jobStatus={jobStatus}
+      editRequest={editRequest}
       kbCitations={kbCitations}
       traceTargetTitles={traceTargetTitles}
       traceLinkFailures={traceLinkFailures}
@@ -398,6 +409,18 @@ export function NodeDetailDialog({
                           <kbd className="rounded-sm border border-current/30 px-1 font-mono text-micro">X</kbd> exclude
                         </>
                       )}
+                    </>
+                  )}
+                  {review?.onUndo && (
+                    <>
+                      {' '}
+                      <kbd className="rounded-sm border border-current/30 px-1 font-mono text-micro">U</kbd> undo
+                    </>
+                  )}
+                  {entryEditable && (
+                    <>
+                      {' '}
+                      <kbd className="rounded-sm border border-current/30 px-1 font-mono text-micro">E</kbd> edit
                     </>
                   )}
                 </span>

@@ -330,6 +330,60 @@ describe('NodeDetailDialog', () => {
         input.remove();
       });
 
+      it('U runs the last undo, hint and key both gated by the shortcuts switch', async () => {
+        const onUndo = vi.fn();
+        const review = { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn(), onUndo };
+        const { unmount } = renderDialog({ onNavigate: vi.fn(), reason, review });
+        const { default: userEvent } = await import('@testing-library/user-event');
+
+        expect(screen.getByRole('note')).toHaveTextContent(/U\s*undo/);
+        await userEvent.keyboard('u');
+        expect(onUndo).toHaveBeenCalledTimes(1);
+        unmount();
+
+        const off = vi.fn();
+        renderDialog({ onNavigate: vi.fn(), reason, shortcutsEnabled: false, review: { ...review, onUndo: off } });
+        await userEvent.keyboard('u');
+        expect(off).not.toHaveBeenCalled();
+      });
+
+      it('shows no undo hint and ignores U when the page offers no undo', async () => {
+        renderDialog({ onNavigate: vi.fn(), reason, review: { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn() } });
+        const { default: userEvent } = await import('@testing-library/user-event');
+        expect(screen.getByRole('note')).not.toHaveTextContent(/undo/i);
+        await userEvent.keyboard('u');
+      });
+
+      it('E opens the edit form of an editable item and shows the hint only then', async () => {
+        const { default: userEvent } = await import('@testing-library/user-event');
+        const { unmount } = renderDialog({ onNavigate: vi.fn(), reason, jobStatus: 'diff_ready' });
+        expect(screen.getByRole('note')).toHaveTextContent(/E\s*edit/);
+        await userEvent.keyboard('e');
+        expect(await screen.findByDisplayValue('Req Title')).toBeInTheDocument();
+        unmount();
+
+        renderDialog({ onNavigate: vi.fn(), reason, jobStatus: 'succeeded' });
+        expect(screen.getByRole('note')).not.toHaveTextContent(/E\s*edit/);
+        await userEvent.keyboard('e');
+        expect(screen.queryByDisplayValue('Req Title')).not.toBeInTheDocument();
+      });
+
+      it('E does nothing with shortcuts off and is not a request while typing', async () => {
+        const { default: userEvent } = await import('@testing-library/user-event');
+        const { unmount } = renderDialog({ onNavigate: vi.fn(), reason, shortcutsEnabled: false });
+        await userEvent.keyboard('e');
+        expect(screen.queryByDisplayValue('Req Title')).not.toBeInTheDocument();
+        unmount();
+
+        renderDialog({ onNavigate: vi.fn(), reason });
+        const input = document.createElement('input');
+        screen.getByRole('dialog').appendChild(input);
+        input.focus();
+        await userEvent.keyboard('e');
+        expect(screen.queryByDisplayValue('Req Title')).not.toBeInTheDocument();
+        input.remove();
+      });
+
       it('turns every single-key shortcut off, J and K included, and hides the key hints', async () => {
         const onMark = vi.fn();
         const onReject = vi.fn();

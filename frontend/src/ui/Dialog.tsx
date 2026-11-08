@@ -60,6 +60,16 @@ export function Dialog({
   maxHeightClassName?: string;
 }): React.ReactElement {
   const contentRef = useRef<HTMLDivElement>(null);
+  const openerRef = useRef<HTMLElement | null>(null);
+
+  // Radix only returns focus to a Dialog.Trigger, and every caller here
+  // flips its own `open` boolean instead of rendering one, so on close Radix
+  // focuses a null trigger and focus falls to <body>. Remember what had
+  // focus at the moment of opening (layout effect: before Radix moves focus
+  // into the content) and hand it back in onCloseAutoFocus.
+  useLayoutEffect(() => {
+    if (open) openerRef.current = document.activeElement as HTMLElement | null;
+  }, [open]);
 
   // Must be a layout effect (runs synchronously before paint), not a plain
   // effect -- the very first animation frame needs `transform-origin`
@@ -82,6 +92,14 @@ export function Dialog({
         <RadixDialog.Overlay className="fixed inset-0 z-40 bg-scrim data-[state=open]:animate-[fadeIn_var(--duration-base)_var(--ease-out)] data-[state=closed]:animate-[fadeOut_var(--duration-exit)_var(--ease-in)]" />
         <RadixDialog.Content
           ref={contentRef}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            const opener = openerRef.current;
+            openerRef.current = null;
+            // A removed opener (its row went away while the dialog was open)
+            // is left alone; the caller decides where focus goes then.
+            if (opener && opener !== document.body && opener.isConnected) opener.focus();
+          }}
           // Falls back to 50%/50% (the box's own center) whenever no real
           // click anchored this open -- keyboard-triggered opens, or the
           // very first render before any pointerdown has ever fired.

@@ -415,6 +415,30 @@ describe('NodeDetailPanel', () => {
     expect(screen.getByDisplayValue('Req body')).toBeInTheDocument();
   });
 
+  it('opens the edit form when editRequest changes, only for an editable entry, not on mount', () => {
+    const entry: DryRunDiffEntry = { localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] };
+    const { rerender } = renderPanel(<NodeDetailPanel entry={entry} onSave={vi.fn()} editRequest={3} />);
+    // A non-zero counter present at mount is not a request.
+    expect(screen.queryByDisplayValue('Req Title')).not.toBeInTheDocument();
+    rerender(
+      <ToastProvider>
+        <NodeDetailPanel entry={entry} onSave={vi.fn()} editRequest={4} />
+      </ToastProvider>,
+    );
+    expect(screen.getByDisplayValue('Req Title')).toBeInTheDocument();
+  });
+
+  it('ignores an edit request for an entry that cannot be edited', () => {
+    const entry: DryRunDiffEntry = { localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'reuse', customerId: null, tags: [] };
+    const { rerender } = renderPanel(<NodeDetailPanel entry={entry} onSave={vi.fn()} editRequest={0} />);
+    rerender(
+      <ToastProvider>
+        <NodeDetailPanel entry={entry} onSave={vi.fn()} editRequest={1} />
+      </ToastProvider>,
+    );
+    expect(screen.queryByDisplayValue('Req Title')).not.toBeInTheDocument();
+  });
+
   it('calls onSave with the edited title/description', async () => {
     const { default: userEvent } = await import('@testing-library/user-event');
     const user = userEvent.setup();

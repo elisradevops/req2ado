@@ -107,6 +107,15 @@ export function riskReason(
       };
     }
     default:
+      // Epics, Features and BASELINE items carry no score at all; "nothing was
+      // flagged" would imply they were scored and passed.
+      if (entry.qualityScore == null && entry.groundingScore == null) {
+        return {
+          title: 'Not scored',
+          todo: 'No score for this item. Read it against its source before you mark it reviewed.',
+          group: 'info',
+        };
+      }
       return { title: 'No flags', todo: 'Nothing was flagged. Still read it before you mark it reviewed.', group: 'info' };
   }
 }

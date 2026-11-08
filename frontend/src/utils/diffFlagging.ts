@@ -40,7 +40,7 @@ export function isFlaggedDiffEntry(entry: {
     : LOW_GROUNDING_THRESHOLD;
   return (
     (entry.groundingScore != null && entry.groundingScore < groundingThreshold) ||
-    (entry.qualityScore != null && entry.qualityScore < LOW_QUALITY_THRESHOLD) ||
+    isLowQualityEntry(entry) ||
     entry.qualityConfidence === LOW_CONFIDENCE
   );
 }

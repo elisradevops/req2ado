@@ -2370,6 +2370,122 @@ describe('JobDetail', () => {
       expect(await screen.findByRole('button', { name: /review in risk order · 1/i, hidden: true })).toBeInTheDocument();
     });
 
+    it('U undoes the last accept, announces it, and offers the hint', async () => {
+      const userEvent = await startQueue();
+      const dialog = await screen.findByRole('dialog');
+      expect(within(dialog).getByRole('note')).not.toHaveTextContent(/U\s*undo/);
+
+      await userEvent.keyboard('a');
+      await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Marked reviewed. 2 left.'));
+      await waitFor(() => expect(within(screen.getByRole('dialog')).getByRole('note')).toHaveTextContent(/U\s*undo/));
+      await userEvent.keyboard('u');
+
+      await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenLastCalledWith('job-70', ['blocked'], false));
+      await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Undone: "Blocked item".'));
+      // Nothing left to undo: a second U does not repeat it.
+      const calls = vi.mocked(jobsApi.setDiffEntriesReviewed).mock.calls.length;
+      await userEvent.keyboard('u');
+      expect(vi.mocked(jobsApi.setDiffEntriesReviewed).mock.calls.length).toBe(calls);
+    });
+
+    it('U undoes the last exclude', async () => {
+      const userEvent = await startQueue();
+      await screen.findByRole('dialog');
+      const setExcluded = vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockImplementation(async (_id, localId, excluded) => excludedDiff(excluded ? localId : '') as any);
+
+      await userEvent.keyboard('x');
+      await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Excluded. 2 left.'));
+      await userEvent.keyboard('u');
+
+      await waitFor(() => expect(setExcluded).toHaveBeenLastCalledWith('job-70', 'blocked', false));
+      await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Undone: "Blocked item".'));
+    });
+
+    it('says so, and keeps the undo, when U is pressed while another save is running', async () => {
+      const userEvent = await startQueue();
+      await screen.findByRole('dialog');
+      await userEvent.keyboard('a');
+      await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Marked reviewed. 2 left.'));
+      // The next item's exclude never answers, so a save is running.
+      vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockReturnValue(new Promise(() => {}));
+      await userEvent.keyboard('x');
+      const calls = vi.mocked(jobsApi.setDiffEntriesReviewed).mock.calls.length;
+
+      await userEvent.keyboard('u');
+
+      await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Still saving. Try again.'));
+      expect(vi.mocked(jobsApi.setDiffEntriesReviewed).mock.calls.length).toBe(calls);
+    });
+
+    it('does not undo a second time with U after the toast Undo already did', async () => {
+      const userEvent = await startQueue();
+      await screen.findByRole('dialog');
+      const setExcluded = vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockImplementation(async (_id, localId, excluded) => excludedDiff(excluded ? localId : '') as any);
+      await userEvent.keyboard('x');
+      await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Excluded. 2 left.'));
+
+      await userEvent.click(screen.getByRole('button', { name: 'Undo', hidden: true }));
+      await waitFor(() => expect(setExcluded).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(within(screen.getByRole('dialog')).getByRole('note')).not.toHaveTextContent(/U\s*undo/));
+      await userEvent.keyboard('u');
+
+      expect(setExcluded).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not undo a second time with U after the toast Undo of an accept already did', async () => {
+      const userEvent = await startQueue();
+      await screen.findByRole('dialog');
+      await userEvent.keyboard('a');
+      await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Marked reviewed. 2 left.'));
+
+      await userEvent.click(screen.getByRole('button', { name: 'Undo', hidden: true }));
+      await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenLastCalledWith('job-70', ['blocked'], false));
+      const calls = vi.mocked(jobsApi.setDiffEntriesReviewed).mock.calls.length;
+      await waitFor(() => expect(within(screen.getByRole('dialog')).getByRole('note')).not.toHaveTextContent(/U\s*undo/));
+      await userEvent.keyboard('u');
+
+      expect(vi.mocked(jobsApi.setDiffEntriesReviewed).mock.calls.length).toBe(calls);
+    });
+
+    it('speaks a repeated "Still saving" again, since the text is identical', async () => {
+      const userEvent = await startQueue();
+      await screen.findByRole('dialog');
+      await userEvent.keyboard('a');
+      await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Marked reviewed. 2 left.'));
+      vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockReturnValue(new Promise(() => {}));
+      await userEvent.keyboard('x');
+      const region = screen.getByTestId('review-queue-status');
+      const written: string[] = [];
+      const observer = new MutationObserver(() => written.push(region.textContent ?? ''));
+      observer.observe(region, { childList: true, characterData: true, subtree: true });
+      try {
+        await userEvent.keyboard('u');
+        await userEvent.keyboard('u');
+        await waitFor(() => expect(written.filter((text) => text.startsWith('Still saving. Try again.')).length).toBe(2));
+      } finally {
+        observer.disconnect();
+      }
+    });
+
+    it('speaks a repeated identical failure again, by clearing the message when a new attempt starts', async () => {
+      const userEvent = await startQueue();
+      await screen.findByRole('dialog');
+      vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockRejectedValue(new Error('network'));
+      const region = screen.getByTestId('review-queue-status');
+      const message = 'Couldn\'t exclude "Blocked item". Try again.';
+      const written: string[] = [];
+      const observer = new MutationObserver(() => written.push(region.textContent ?? ''));
+      observer.observe(region, { childList: true, characterData: true, subtree: true });
+      try {
+        await userEvent.keyboard('x');
+        await waitFor(() => expect(region).toHaveTextContent(message));
+        await userEvent.keyboard('x');
+        await waitFor(() => expect(written.filter((text) => text === message).length).toBe(2));
+      } finally {
+        observer.disconnect();
+      }
+    });
+
     it('puts focus back on the queue button when the dialog is closed mid-queue', async () => {
       const userEvent = await startQueue();
       await screen.findByRole('dialog');
