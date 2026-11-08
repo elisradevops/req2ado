@@ -63,6 +63,7 @@ import { isFlaggedDiffEntry } from '../utils/diffFlagging';
 import { buildReviewQueue, riskReason } from '../utils/reviewQueue';
 import { orderLikeTree } from '../utils/diffTreeOrder';
 import { useKeyboardShortcuts } from '../store/uiPreferencesStore';
+import { useUndoAnnouncement, type QueueUndo } from '../hooks/useUndoAnnouncement';
 import { useToast } from '../components/ToastProvider';
 import type { KbCitation } from '../components/KbCitationChips';
 import type { TraceLinkFailure } from '../store/jobsStore';
@@ -179,8 +180,16 @@ export function JobDetail(): React.ReactElement {
   // The risk-ordered review queue (P17a): while on, the details dialog steps through
   // `reviewQueue` instead of the tree, and A / X act on the open item.
   const [queueMode, setQueueMode] = useState(false);
-  // Read out by the polite live region next to the tree ("Accepted. 2 left.").
-  const [queueAnnouncement, setQueueAnnouncement] = useState('');
+  // The announcement is read out by the polite live region next to the tree ("Accepted. 2 left.").
+  const {
+    lastUndoRef,
+    hasUndo,
+    setLastUndo,
+    clearLastUndoIf,
+    announcement: queueAnnouncement,
+    setAnnouncement: setQueueAnnouncement,
+    announceAgain,
+  } = useUndoAnnouncement();
   // True once the last item has been worked through. The queue button it was opened from is
   // gone by then, so a "done" row takes focus when the dialog closes (focus is never dropped).
   const [queueFinished, setQueueFinished] = useState(false);
@@ -194,29 +203,6 @@ export function JobDetail(): React.ReactElement {
   function updateDialogOpen(open: boolean): void {
     dialogOpenRef.current = open;
     setDialogOpen(open);
-  }
-  // Runs the reviewer's last queue action backwards (U). Null once used, or before any.
-  interface QueueUndo {
-    label: string;
-    run: () => Promise<boolean>;
-  }
-  const lastUndoRef = useRef<QueueUndo | null>(null);
-  // Mirrors "there is something to undo", so the U hint only shows when it would do something.
-  const [hasUndo, setHasUndo] = useState(false);
-  function setLastUndo(undo: QueueUndo | null): void {
-    lastUndoRef.current = undo;
-    setHasUndo(undo !== null);
-  }
-  // The toast's own Undo ran this step already, so U must not run it again.
-  function clearLastUndoIf(undo: QueueUndo | undefined): void {
-    if (undo && lastUndoRef.current === undo) setLastUndo(null);
-  }
-  // A live region only speaks when its text changes, so an identical message (a second "Still
-  // saving") alternates an invisible trailing character. Spoken text is unchanged.
-  const announceFlipRef = useRef(false);
-  function announceAgain(message: string): void {
-    announceFlipRef.current = !announceFlipRef.current;
-    setQueueAnnouncement(announceFlipRef.current ? `${message}\u200B` : message);
   }
   // Set when a failed save leaves the dialog closed: focus goes to the queue button once it renders.
   const [refocusQueueButton, setRefocusQueueButton] = useState(false);
