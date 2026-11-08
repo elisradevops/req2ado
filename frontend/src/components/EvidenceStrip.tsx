@@ -35,9 +35,13 @@ export function EvidenceStrip({
         <div className="flex flex-col gap-0.5">
           <p className="flex flex-wrap items-baseline gap-x-2 text-xs text-ink-2">
             <span className="font-semibold">Weakest area</span>
+            {/* The punctuation is for screen readers only: without it the row is read as loose words and a number. */}
+            <span className="sr-only">: </span>
             <span dir="auto" className="font-medium text-ink-1">{categoryLabel(weakest.key)}</span>
-            <span className="tabular-nums text-ink-1">{weakest.score}</span>
-            <span className="text-ink-3">of 100</span>
+            <span className="sr-only">, </span>
+            <span className="tabular-nums text-ink-1">
+              {weakest.score} <span className="text-ink-3">of 100</span>
+            </span>
           </p>
           {weakest.checklistText && (
             <p dir="auto" className="max-w-[68ch] text-xs text-ink-2">

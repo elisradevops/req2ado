@@ -42,6 +42,16 @@ describe('EvidenceStrip', () => {
     expect(screen.getByText(/Each requirement has a pass\/fail test\./)).toBeInTheDocument();
   });
 
+  it('reads the weakest area as a sentence for a screen reader, not as loose words and a number', () => {
+    const { container } = render(
+      <EvidenceStrip entry={{ ...BASE, qualityCategoryScores: { testability: 35, clarity: 80 } }} jobMode="survey" />,
+    );
+    const row = screen.getByText('Weakest area').parentElement as HTMLElement;
+    expect(row.textContent).toBe('Weakest area: Testability, 35 of 100');
+    // The punctuation is for assistive tech only: it must not show.
+    expect(Array.from(container.querySelectorAll('.sr-only')).map((e) => e.textContent)).toEqual([': ', ', ']);
+  });
+
   it('shows a weakest category of 0 rather than treating it as missing', () => {
     render(<EvidenceStrip entry={{ ...BASE, qualityCategoryScores: { style: 0, clarity: 90 } }} jobMode="survey" />);
     expect(screen.getByText('Style')).toBeInTheDocument();

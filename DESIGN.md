@@ -2319,7 +2319,8 @@ and is not stored.
 `components/ChatPanel.tsx` (the chat pane), `components/QualityGauge.tsx`,
 `components/IssueChips.tsx`, `components/TagChips.tsx`, `utils/labels.ts`
 (`QUALITY_ISSUE_LABELS`, the app's only fix-oriented quality prose),
-`components/AddChildCard.tsx`, `ui/Dialog.tsx`, `ui/Tabs.tsx`.
+`components/AddChildCard.tsx`, `components/EvidenceStrip.tsx` (§11.6),
+`ui/Dialog.tsx`, `ui/Tabs.tsx`.
 New files this section calls for: `utils/qualityCategories.ts` (§11.4.3),
 `components/QualityDelta.tsx` and `api/jobs.ts`'s `rescoreDiffEntry()`
 (§11.4.4). All tracked in §18.1.
@@ -3088,6 +3089,90 @@ in either `palette.test.ts`'s hex baseline or `tokens.test.ts`'s pattern
 baseline, so any new raw hex, arbitrary size/radius/duration, or bare
 `transition` in this work is a first offender, not an increment.
 
+### §11.6 — The review queue and the evidence strip (P17a, P17b)
+
+**Files:** `utils/reviewQueue.ts` (`buildReviewQueue`, `riskTier`, `riskReason`),
+`utils/diffTreeOrder.ts` (the one definition of drawn order, shared with
+`DiffTree`, the dialog's previous/next and the queue), `components/EvidenceStrip.tsx`,
+`utils/qualityCategories.ts` (`weakestCategory`, `WEAK_CATEGORY_SCORE`,
+`categoryLabel`), `components/NodeDetailDialog.tsx`, `pages/JobDetail.tsx`,
+`store/uiPreferencesStore.ts` (the shortcuts switch).
+
+**What the queue is.** A "Review in risk order · N" button above the tree opens
+the details dialog on the riskiest item still to review and steps through
+the rest. It is the existing reviewer flow, not a second one: *accept* is the
+existing "reviewed" mark and *reject* is the existing "exclude". Nothing new is
+persisted, nothing is written to Azure DevOps, and the confirm and
+acknowledgement gate is unchanged. BASELINE and SURVEY keep their distinction:
+a BASELINE item has no scores, so it ranks as "clean".
+
+**Order.** Blocking (named by a "fix before confirming" warning) first, then low
+score, then flagged (a "review" warning counts here), then clean. Within a tier
+the lowest quality score comes first, unscored last, and ties keep the order the
+tree is drawn in. "Flagged" and "low score" reuse `diffFlagging`'s definitions;
+there is no second threshold. Left out: items already reviewed, excluded or
+under an excluded ancestor (confirm drops those too), and items that are not
+written (reuse and near-duplicate).
+
+**Keys, in the open dialog.** A or R marks reviewed, X excludes, J and K step,
+U undoes the last queue action, E edits. Marking is optimistic and undoable;
+exclude waits for the server (the tree is replaced by its reply) and offers
+Undo. A failed save returns the reviewer to that item. When the last item is
+done, a "Review queue done." row takes focus, because the button it was opened
+from is gone. `ui/Dialog.tsx` returns focus to the opener for every dialog.
+
+**Shortcuts are switchable.** The browser-only "Keyboard Shortcuts" switch in
+Settings (on by default) turns off every single-key shortcut and its hint line
+(WCAG 2.1.4). The hint line wraps between hints, never inside one, and uses a
+logical margin, so it neither runs past the dialog at 390 px nor loses its gap
+in a right-to-left layout.
+
+**Announcements.** Results are spoken from a polite status region inside the
+open dialog, because the page behind a modal is hidden from screen readers; a
+second region on the page carries the same text when the dialog is closed.
+Repeating a message alternates an invisible trailing character so the region
+speaks again.
+
+**The evidence strip.** One band above the details, for every item including
+clean ones: the source file, section and page (`SourceProvenance`), the KB
+documents that informed the score (`KbCitationChips`), and the weakest rubric
+category with its score and the organisation's own checklist text when one was
+matched. Rules:
+
+- **No excerpt, and it says so.** Only offsets are stored with an item, not the
+  source text, so the strip never implies a quote. With a source location it
+  adds "The source text is not stored with this item, only where it came from";
+  without one it says "No source location recorded." If a source excerpt is
+  ever stored, it belongs here, beside the proposed text.
+- **Silent about scoring state.** Whether an item is scored, or its scores are
+  stale, is the details pane's to say (the gauge box and its re-check action).
+  The strip shows the weakest area only for fresh scores and otherwise shows
+  nothing about it.
+- **One weakest-category rule.** `weakestCategory` is the single owner: lowest
+  score, a real 0 counts, non-finite scores are skipped, ties go to the
+  alphabetically first key. The chat passes `below = WEAK_CATEGORY_SCORE` (70) to
+  aim a rewrite only at a weak category; the strip names the lowest for every
+  scored item. The bar is mirrored in ingestion's chat prompt and a frontend
+  test fails if the two differ.
+- **The panel does not repeat it.** The dialog passes `hideSources` to
+  `NodeDetailPanel`, so provenance appears once. A caller that renders the
+  panel without an `EvidenceStrip` must not set it; a panel test pins the
+  default.
+- **Right-to-left.** Free-text blocks carry `dir="auto"` and inline names
+  (file, section, citation labels) sit in `<bdi>`.
+- **Screen readers.** The weakest-area row carries visually hidden punctuation so
+  it reads "Weakest area: Testability, 35 of 100", not loose words and a number.
+
+**Not built yet.** Approve all clean (P17c), the final write summary (P17d), the
+Discussion-write mode and any link-append behaviour. Behaviour of the page behind
+the queue (the boolean cluster `queueMode`, `queueFinished`, `refocusQueueButton`)
+is expected to become one typed mode value when P17c adds a fourth mode.
+
+**Verified, and not.** Checked live at 1440 and 390 with reduced motion on a
+BASELINE job. Not checked: Hebrew content in the dialog, screen-reader speech,
+the strip and queue with real SURVEY scores, dark-mode contrast of the strip's
+secondary text (light mode is 5.17:1 for `ink-3` on `surface-alt`).
+
 ---
 
 ## §12 — Content and voice
@@ -3162,6 +3247,10 @@ baseline, so any new raw hex, arbitrary size/radius/duration, or bare
   the title of the first warning notice of each kind (never its detail). It
   never announces items, excerpts, counts or percentages. A lost connection uses
   `role="alert"`. The progress bar is named and carries `aria-valuetext` (§11.3.4).
+- **Single-key shortcuts can be turned off.** Every one-key shortcut in the
+  details dialog (A, R, X, J, K, U, E) is gated by the "Keyboard Shortcuts"
+  setting, and its hint line disappears with it (WCAG 2.1.4). Results of those keys
+  are announced from a status region inside the open dialog (§11.6).
 - **Colour is never the sole carrier of state.** Selected rows and cards set
   real `aria-selected` / `aria-checked` / `aria-pressed`; status carries a chip
   label and usually an icon in addition to colour; the proposed-versus-written

@@ -100,6 +100,7 @@ _SHAPE_OTHER = (
 )
 
 
+# Mirrored in frontend/src/utils/qualityCategories.ts (WEAK_CATEGORY_SCORE); a frontend test fails if the two differ.
 _WEAK_CATEGORY_SCORE = 70
 _WEAKEST_SHOWN = 2
 

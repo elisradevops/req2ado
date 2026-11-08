@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { categoryLabel, weakestCategory, WEAK_CATEGORY_SCORE } from './qualityCategories';
 
@@ -45,5 +47,21 @@ describe('categoryLabel', () => {
     expect(categoryLabel('completeness_as_requirement')).toBe('Completeness As Requirement');
     expect(categoryLabel('well-formed')).toBe('Well Formed');
     expect(categoryLabel('clarity')).toBe('Clarity');
+  });
+});
+
+// The chat's weak-category bar is stated twice: here, and in ingestion's chat prompt. Nothing else ties
+// them together, so this fails the moment one moves without the other.
+describe('WEAK_CATEGORY_SCORE', () => {
+  // Run from frontend/ (pnpm test) or from the repo root; skipped only where ingestion is not checked out.
+  const ingestionFile =
+    ['../ingestion', 'ingestion']
+      .map((dir) => resolve(process.cwd(), dir, 'app/chat/chat_service.py'))
+      .find((candidate) => existsSync(candidate)) ?? '';
+
+  it.skipIf(ingestionFile === '')("equals ingestion's _WEAK_CATEGORY_SCORE", () => {
+    const match = /^_WEAK_CATEGORY_SCORE\s*=\s*(\d+)\s*$/m.exec(readFileSync(ingestionFile, 'utf8'));
+    expect(match).not.toBeNull();
+    expect(WEAK_CATEGORY_SCORE).toBe(Number(match?.[1]));
   });
 });

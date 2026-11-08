@@ -874,6 +874,20 @@ describe('NodeDetailPanel', () => {
     expect(screen.getByText('Unverified · doc-b.pdf')).toBeInTheDocument();
   });
 
+  it('keeps its Sources block unless the caller says it shows provenance itself (hideSources)', () => {
+    const entry = {
+      localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'T', description: 'B', action: 'create' as const, customerId: null, tags: [],
+      sourceRef: { documentPath: 'spec.docx', startOffset: 0, endOffset: 5, page: 2 },
+    };
+    const { unmount } = renderPanel(<NodeDetailPanel jobMode="survey" entry={entry} />);
+    expect(screen.getByText('Sources')).toBeInTheDocument();
+    expect(screen.getByText('spec.docx')).toBeInTheDocument();
+    unmount();
+    renderPanel(<NodeDetailPanel jobMode="survey" entry={entry} hideSources />);
+    expect(screen.queryByText('Sources')).not.toBeInTheDocument();
+    expect(screen.queryByText('spec.docx')).not.toBeInTheDocument();
+  });
+
   it('shows the scoring note but no KB references when kbCitations is empty', () => {
     renderPanel(
       <NodeDetailPanel

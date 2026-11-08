@@ -330,6 +330,9 @@ describe('NodeDetailDialog', () => {
           expect(key.parentElement?.querySelectorAll('kbd')).toHaveLength(1);
           // The space that lets the line break sits outside the pair: inside a nowrap span it cannot break.
           expect(key.parentElement?.textContent).toMatch(/^\S/);
+          // A logical margin, so the hints keep their gap from the text in a right-to-left layout too.
+          expect(key.parentElement?.parentElement).toHaveClass('ms-2');
+          expect(key.parentElement?.parentElement).not.toHaveClass('ml-2');
           // A line that cannot wrap runs past the dialog edge on a phone.
           expect(key.parentElement?.parentElement).not.toHaveClass('whitespace-nowrap');
         }

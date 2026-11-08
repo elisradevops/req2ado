@@ -409,7 +409,7 @@ export function NodeDetailDialog({
             <span className="min-w-0 flex-1 basis-56">
               <span className="font-semibold">{reason.title}.</span> {reason.todo}
               {onNavigate && shortcutsEnabled && (
-                <span className="ml-2 text-xs opacity-80">
+                <span className="ms-2 text-xs opacity-80">
                   {keyHints.map(([key, label], index) => (
                     <Fragment key={key}>
                       {/* The break point is this space, outside the nowrap pair: the line breaks between hints, never inside one. */}
