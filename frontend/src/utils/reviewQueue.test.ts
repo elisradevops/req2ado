@@ -1,7 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import type { WarningRecord } from './warnings';
 import { buildKindGroups, kindMeta } from './warningKinds';
-import { buildReviewQueue, riskReason, riskTier, type ReviewQueueEntry } from './reviewQueue';
+import {
+  buildReviewQueue,
+  reviewQueueModeReducer,
+  riskReason,
+  riskTier,
+  type ReviewQueueEntry,
+  type ReviewQueueMode,
+} from './reviewQueue';
 
 function entry(localId: string, overrides: Partial<ReviewQueueEntry> = {}): ReviewQueueEntry {
   return { localId, parentLocalId: null, type: 'Requirement', action: 'create', ...overrides };
@@ -155,5 +162,34 @@ describe('riskReason', () => {
     });
     // A grounding score alone still counts as scored.
     expect(riskReason(entry('a', { groundingScore: 0.9 }), NO_WARNINGS).title).toBe('No flags');
+  });
+});
+
+describe('reviewQueueModeReducer', () => {
+  const OFF: ReviewQueueMode = { kind: 'off' };
+  const QUEUE: ReviewQueueMode = { kind: 'queue' };
+  const DONE: ReviewQueueMode = { kind: 'done' };
+
+  it('opens the queue from any mode, replacing a "done" row', () => {
+    expect(reviewQueueModeReducer(OFF, 'open')).toEqual(QUEUE);
+    expect(reviewQueueModeReducer(DONE, 'open')).toEqual(QUEUE);
+    expect(reviewQueueModeReducer(QUEUE, 'open')).toBe(QUEUE);
+  });
+
+  it('closing ends a running queue but keeps a finished one, so its "done" row survives the dialog closing', () => {
+    expect(reviewQueueModeReducer(QUEUE, 'close')).toEqual(OFF);
+    expect(reviewQueueModeReducer(DONE, 'close')).toBe(DONE);
+    expect(reviewQueueModeReducer(OFF, 'close')).toBe(OFF);
+  });
+
+  it('finishing ends the queue and marks it done, from any mode', () => {
+    expect(reviewQueueModeReducer(QUEUE, 'finish')).toEqual(DONE);
+    expect(reviewQueueModeReducer(OFF, 'finish')).toEqual(DONE);
+  });
+
+  it('clearing the "done" row leaves a running queue alone', () => {
+    expect(reviewQueueModeReducer(DONE, 'clearDone')).toEqual(OFF);
+    expect(reviewQueueModeReducer(QUEUE, 'clearDone')).toBe(QUEUE);
+    expect(reviewQueueModeReducer(OFF, 'clearDone')).toBe(OFF);
   });
 });

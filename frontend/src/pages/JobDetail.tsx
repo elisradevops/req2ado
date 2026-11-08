@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   getJob,
@@ -60,7 +60,7 @@ import { ARRIVE, MOTION, scrollBehavior } from '../ui/motion';
 import { describeJobKbCoverage, type KbCoverage } from '../utils/kbCoverage';
 import { getServerMessage } from '../lib/errorDetails';
 import { isFlaggedDiffEntry } from '../utils/diffFlagging';
-import { buildReviewQueue, riskReason } from '../utils/reviewQueue';
+import { buildReviewQueue, reviewQueueModeReducer, riskReason } from '../utils/reviewQueue';
 import { orderLikeTree } from '../utils/diffTreeOrder';
 import { useKeyboardShortcuts } from '../store/uiPreferencesStore';
 import { useUndoAnnouncement, type QueueUndo } from '../hooks/useUndoAnnouncement';
@@ -178,8 +178,12 @@ export function JobDetail(): React.ReactElement {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   // The risk-ordered review queue (P17a): while on, the details dialog steps through
-  // `reviewQueue` instead of the tree, and A / X act on the open item.
-  const [queueMode, setQueueMode] = useState(false);
+  // `reviewQueue` instead of the tree, and A / X act on the open item. `done` is the queue worked
+  // through to its end: the queue button it was opened from is gone by then, so a "done" row takes
+  // focus when the dialog closes (focus is never dropped).
+  const [queueState, dispatchQueueState] = useReducer(reviewQueueModeReducer, { kind: 'off' });
+  const queueMode = queueState.kind === 'queue';
+  const queueFinished = queueState.kind === 'done';
   // The announcement is read out by the polite live region next to the tree ("Accepted. 2 left.").
   const {
     lastUndoRef,
@@ -190,9 +194,6 @@ export function JobDetail(): React.ReactElement {
     setAnnouncement: setQueueAnnouncement,
     announceAgain,
   } = useUndoAnnouncement();
-  // True once the last item has been worked through. The queue button it was opened from is
-  // gone by then, so a "done" row takes focus when the dialog closes (focus is never dropped).
-  const [queueFinished, setQueueFinished] = useState(false);
   const queueDoneRef = useRef<HTMLDivElement>(null);
   const queueButtonRef = useRef<HTMLButtonElement>(null);
   // Set while the dialog was opened by the queue, so closing it can hand focus back.
@@ -1061,8 +1062,7 @@ export function JobDetail(): React.ReactElement {
   // open item is gone. Ends queue mode, and closes the dialog, when nothing is.
   function advanceReviewQueue(rest: DryRunDiffEntry[], verb: string): void {
     if (rest.length === 0) {
-      setQueueMode(false);
-      setQueueFinished(true);
+      dispatchQueueState('finish');
       updateDialogOpen(false);
       setQueueAnnouncement(`${verb}. Review queue done.`);
       return;
@@ -1075,9 +1075,8 @@ export function JobDetail(): React.ReactElement {
     if (reviewQueue.length === 0) return;
     setQueueAnnouncement('');
     setLastUndo(null);
-    setQueueFinished(false);
     setSelectedId(reviewQueue[0].localId);
-    setQueueMode(true);
+    dispatchQueueState('open');
     queueOpenedRef.current = true;
     updateDialogOpen(true);
   }
@@ -1088,14 +1087,14 @@ export function JobDetail(): React.ReactElement {
   // the queue button, the error toast and the announcement carry the failure, and focus moves
   // to that button, since the "done" row it was on is gone.
   function returnToQueueItem(localId: string, message: string): void {
-    setQueueFinished(false);
     setSelectedId(localId);
     setQueueAnnouncement(message);
     if (dialogOpenRef.current) {
-      setQueueMode(true);
+      dispatchQueueState('open');
       queueOpenedRef.current = true;
       updateDialogOpen(true);
     } else {
+      dispatchQueueState('clearDone');
       setRefocusQueueButton(true);
     }
   }
@@ -1648,7 +1647,7 @@ export function JobDetail(): React.ReactElement {
   );
   // Leaving the dialog (Escape, the close button) ends queue mode.
   useEffect(() => {
-    if (!dialogOpen) setQueueMode(false);
+    if (!dialogOpen) dispatchQueueState('close');
   }, [dialogOpen]);
   // The app's dialogs have no Radix trigger to hand focus back to, so on close it falls to the
   // page body. After the queue's dialog closes, focus goes to the "done" row when the queue is
@@ -1660,7 +1659,7 @@ export function JobDetail(): React.ReactElement {
     // Not while an exclude is saving: its reply empties the queue a render before the queue steps on.
     if (!queueMode || isDiffMutating) return;
     if (status !== 'diff_ready' || reviewQueue.length === 0) {
-      setQueueMode(false);
+      dispatchQueueState('close');
     } else if (!selectedId || !reviewQueue.some((entry) => entry.localId === selectedId)) {
       setSelectedId(reviewQueue[0].localId);
     }
@@ -1673,7 +1672,7 @@ export function JobDetail(): React.ReactElement {
   }, [refocusQueueButton, reviewQueue.length]);
   // A "done" row is only true until the queue refills.
   useEffect(() => {
-    if (queueFinished && reviewQueue.length > 0) setQueueFinished(false);
+    if (queueFinished && reviewQueue.length > 0) dispatchQueueState('clearDone');
   }, [queueFinished, reviewQueue.length]);
   useEffect(() => {
     if (dialogOpen || !queueOpenedRef.current) return undefined;

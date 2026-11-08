@@ -2348,6 +2348,29 @@ describe('JobDetail', () => {
       expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Still saving. Try again.');
     });
 
+    it('ends the queue as done, with focus on the done row, when the exclude reply that empties it arrives while the exclude is still saving', async () => {
+      const userEvent = await startQueue();
+      await screen.findByRole('dialog');
+      let reply: (value: unknown) => void = () => {};
+      vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockImplementation(() => new Promise((resolve) => { reply = resolve; }));
+
+      await userEvent.keyboard('a'); // 'blocked' reviewed
+      await userEvent.keyboard('a'); // 'low' reviewed, now on 'clean'
+      await userEvent.keyboard('x'); // exclude the last item, pending
+      // The queue is empty the moment the reply lands, a render before the queue steps on.
+      reply({
+        dryRunDiff: [
+          req('clean', 'Clean item', { qualityScore: 95, groundingScore: 0.9, excluded: true }),
+          req('low', 'Low item', { qualityScore: 30 }),
+          req('blocked', 'Blocked item', { qualityScore: 99 }),
+        ],
+      });
+
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Excluded. Review queue done.');
+      await waitFor(() => expect(screen.getByText('Review queue done.')).toHaveFocus());
+    });
+
     it('does not let an exclude reply flip an item that was just marked reviewed back to unreviewed', async () => {
       const userEvent = await startQueue();
       await screen.findByRole('dialog');

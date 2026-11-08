@@ -7,6 +7,26 @@ import type { WarningGroup, WarningKindGroup } from './warningKinds';
 // score" reuse diffFlagging's own definitions -- there is deliberately no
 // second threshold here.
 
+// Where the review queue stands. `done` is the queue worked through to its end: the page shows a
+// "Review queue done." row until the queue refills, since the button it was opened from is gone.
+export type ReviewQueueMode = { kind: 'off' } | { kind: 'queue' } | { kind: 'done' };
+export type ReviewQueueModeAction = 'open' | 'close' | 'finish' | 'clearDone';
+
+// Returns the same object when nothing changes, so a dispatch that does nothing does not re-render.
+export function reviewQueueModeReducer(mode: ReviewQueueMode, action: ReviewQueueModeAction): ReviewQueueMode {
+  switch (action) {
+    case 'open':
+      return mode.kind === 'queue' ? mode : { kind: 'queue' };
+    // Leaving the dialog ends a running queue, but not a finished one: its "done" row stays.
+    case 'close':
+      return mode.kind === 'queue' ? { kind: 'off' } : mode;
+    case 'finish':
+      return mode.kind === 'done' ? mode : { kind: 'done' };
+    case 'clearDone':
+      return mode.kind === 'done' ? { kind: 'off' } : mode;
+  }
+}
+
 export type RiskTier = 'blocking' | 'low_score' | 'flagged' | 'clean';
 
 const TIER_RANK: Record<RiskTier, number> = { blocking: 0, low_score: 1, flagged: 2, clean: 3 };
