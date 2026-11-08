@@ -2095,4 +2095,313 @@ describe('JobDetail', () => {
       expect(document.getElementById('proposed-tree')!.className).not.toContain('fadeIn');
     });
   });
+  describe('risk-ordered review queue (P17a)', () => {
+    function req(localId: string, title: string, extra: Record<string, unknown> = {}) {
+      return { localId, parentLocalId: null, type: 'Epic', title, description: '', action: 'create', customerId: null, tags: [], ...extra };
+    }
+
+    function mockQueueJob(status = 'diff_ready') {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+        id: 'job-70',
+        status,
+        mode: 'survey',
+        dryRunDiff: [
+          req('clean', 'Clean item', { qualityScore: 95, groundingScore: 0.9 }),
+          req('low', 'Low item', { qualityScore: 30 }),
+          req('blocked', 'Blocked item', { qualityScore: 99 }),
+        ],
+        warnings: [{ kind: 'missing_source_reference', severity: 'needs_review', nodeIds: ['blocked'], detail: {}, raw: 'x' }],
+      } as any);
+    }
+
+    async function startQueue() {
+      mockQueueJob();
+      vi.mocked(jobsApi.setDiffEntriesReviewed).mockClear();
+      vi.mocked(jobsApi.setDiffEntriesReviewed).mockResolvedValue({ dryRunDiff: [] });
+      renderAt('job-70');
+      const { default: userEvent } = await import('@testing-library/user-event');
+      await userEvent.click(await screen.findByRole('button', { name: /review in risk order/i }));
+      return userEvent;
+    }
+
+    it('offers the queue with the count of items still to review, only while the job awaits review', async () => {
+      mockQueueJob();
+      renderAt('job-70');
+      expect(await screen.findByRole('button', { name: /review in risk order · 3/i })).toBeInTheDocument();
+    });
+
+    it('offers no queue once the job is past review', async () => {
+      mockQueueJob('confirmed');
+      renderAt('job-70');
+      await waitFor(() => expect(screen.getByText('Clean item')).toBeInTheDocument());
+      expect(screen.queryByRole('button', { name: /review in risk order/i })).not.toBeInTheDocument();
+    });
+
+    it('opens on the riskiest item with the reason it is first', async () => {
+      await startQueue();
+      const dialog = await screen.findByRole('dialog');
+      expect(within(dialog).getAllByText('Blocked item').length).toBeGreaterThan(0);
+      expect(within(dialog).getByRole('note')).toHaveTextContent(/blocking warning/i);
+    });
+
+    it('A accepts the item, steps to the next riskiest and announces what is left', async () => {
+      const userEvent = await startQueue();
+      await screen.findByRole('dialog');
+
+      await userEvent.keyboard('a');
+
+      expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledWith('job-70', ['blocked'], true);
+      const dialog = await screen.findByRole('dialog');
+      await waitFor(() => expect(within(dialog).getAllByText('Low item').length).toBeGreaterThan(0));
+      expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Marked reviewed. 2 left.');
+    });
+
+    it('X excludes the item, steps on and announces it', async () => {
+      const userEvent = await startQueue();
+      await screen.findByRole('dialog');
+      vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockImplementation(async (_id, localId) => ({
+        dryRunDiff: [
+          req('clean', 'Clean item', { qualityScore: 95, groundingScore: 0.9 }),
+          req('low', 'Low item', { qualityScore: 30 }),
+          req('blocked', 'Blocked item', { qualityScore: 99, excluded: localId === 'blocked' }),
+        ],
+      }) as any);
+
+      await userEvent.keyboard('x');
+
+      await waitFor(() => expect(jobsApi.setDiffEntryExcluded).toHaveBeenCalledWith('job-70', 'blocked', true));
+      const dialog = await screen.findByRole('dialog');
+      await waitFor(() => expect(within(dialog).getAllByText('Low item').length).toBeGreaterThan(0));
+      expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Excluded. 2 left.');
+    });
+
+    it('outside the queue, J and K follow the order the tree is drawn in, even when the diff lists a parent last', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+        id: 'job-71',
+        status: 'diff_ready',
+        mode: 'survey',
+        // A wrapper Epic is listed after its child, but drawn first.
+        dryRunDiff: [
+          req('child', 'Child feature', { type: 'Feature', parentLocalId: 'wrapper' }),
+          req('wrapper', 'Wrapper epic'),
+        ],
+        warnings: [],
+      } as any);
+      renderAt('job-71');
+      const { default: userEvent } = await import('@testing-library/user-event');
+      await waitFor(() => expect(screen.getByText('Wrapper epic')).toBeInTheDocument());
+      await openNodeDetails(userEvent, 'Wrapper epic');
+
+      await userEvent.keyboard('j');
+
+      const dialog = await screen.findByRole('dialog');
+      await waitFor(() => expect(within(dialog).getAllByText('Child feature').length).toBeGreaterThan(0));
+    });
+
+    it('J and K follow the risk order, not the tree order', async () => {
+      const userEvent = await startQueue();
+      await screen.findByRole('dialog');
+
+      await userEvent.keyboard('j');
+      let dialog = await screen.findByRole('dialog');
+      await waitFor(() => expect(within(dialog).getAllByText('Low item').length).toBeGreaterThan(0));
+      await userEvent.keyboard('j');
+      dialog = await screen.findByRole('dialog');
+      await waitFor(() => expect(within(dialog).getAllByText('Clean item').length).toBeGreaterThan(0));
+      await userEvent.keyboard('k');
+      dialog = await screen.findByRole('dialog');
+      await waitFor(() => expect(within(dialog).getAllByText('Low item').length).toBeGreaterThan(0));
+    });
+
+    it('closes the dialog and announces the end after the last item', async () => {
+      const userEvent = await startQueue();
+      await screen.findByRole('dialog');
+
+      await userEvent.keyboard('a');
+      await userEvent.keyboard('a');
+      await userEvent.keyboard('a');
+
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      expect(jobsApi.setDiffEntriesReviewed).toHaveBeenLastCalledWith('job-70', ['clean'], true);
+      expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Marked reviewed. Review queue done.');
+    });
+
+    it('moves focus to a "Review queue done." row after the last item, since the queue button it came from is gone', async () => {
+      const userEvent = await startQueue();
+      await screen.findByRole('dialog');
+
+      await userEvent.keyboard('a');
+      await userEvent.keyboard('a');
+      await userEvent.keyboard('a');
+
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      await waitFor(() => expect(screen.getByText('Review queue done.')).toHaveFocus());
+      expect(screen.queryByRole('button', { name: /review in risk order/i })).not.toBeInTheDocument();
+    });
+
+    it('brings the queue button back, and drops the done row, when an accept is undone', async () => {
+      const userEvent = await startQueue();
+      await screen.findByRole('dialog');
+      await userEvent.keyboard('a');
+      await userEvent.keyboard('a');
+      await userEvent.keyboard('a');
+      await waitFor(() => expect(screen.getByText('Review queue done.')).toBeInTheDocument());
+
+      await userEvent.click((await screen.findAllByRole('button', { name: 'Undo' })).at(-1)!);
+
+      expect(await screen.findByRole('button', { name: /review in risk order · 1/i })).toBeInTheDocument();
+      expect(screen.queryByText('Review queue done.')).not.toBeInTheDocument();
+    });
+
+    function excludedDiff(excludedId: string) {
+      return {
+        dryRunDiff: [
+          req('clean', 'Clean item', { qualityScore: 95, groundingScore: 0.9 }),
+          req('low', 'Low item', { qualityScore: 30 }),
+          req('blocked', 'Blocked item', { qualityScore: 99, excluded: excludedId === 'blocked' }),
+        ],
+      } as any;
+    }
+
+    it('keeps the item open and says so when an exclude fails, instead of announcing it as done', async () => {
+      const userEvent = await startQueue();
+      await screen.findByRole('dialog');
+      vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockRejectedValue(new Error('network'));
+
+      await userEvent.keyboard('x');
+
+      await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Couldn\'t exclude "Blocked item". Try again.'));
+      const dialog = screen.getByRole('dialog');
+      expect(within(dialog).getAllByText('Blocked item').length).toBeGreaterThan(0);
+      expect(screen.getByTestId('review-queue-status')).not.toHaveTextContent(/excluded\./i);
+    });
+
+    it('does not reopen a closed dialog, or say the queue is done, when the last reviewed mark fails', async () => {
+      const userEvent = await startQueue();
+      await screen.findByRole('dialog');
+      vi.mocked(jobsApi.setDiffEntriesReviewed)
+        .mockResolvedValueOnce({ dryRunDiff: [] })
+        .mockResolvedValueOnce({ dryRunDiff: [] })
+        .mockRejectedValueOnce(new Error('network'));
+
+      await userEvent.keyboard('a');
+      await userEvent.keyboard('a');
+      await userEvent.keyboard('a');
+
+      await waitFor(() =>
+        expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Couldn\'t mark "Clean item" reviewed. Try again.'),
+      );
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(screen.queryByText('Review queue done.')).not.toBeInTheDocument();
+      // The queue button is back with the item that is still to review, and holds focus.
+      const button = await screen.findByRole('button', { name: /review in risk order · 1/i });
+      await waitFor(() => expect(button).toHaveFocus());
+    });
+
+    it('brings the reviewer back to the item, by name, when a mark fails while the dialog is still open', async () => {
+      const userEvent = await startQueue();
+      await screen.findByRole('dialog');
+      vi.mocked(jobsApi.setDiffEntriesReviewed).mockRejectedValueOnce(new Error('network'));
+
+      await userEvent.keyboard('a');
+
+      await waitFor(() =>
+        expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Couldn\'t mark "Blocked item" reviewed. Try again.'),
+      );
+      const dialog = await screen.findByRole('dialog');
+      await waitFor(() => expect(within(dialog).getAllByText('Blocked item').length).toBeGreaterThan(0));
+    });
+
+    it('repeats the announcement inside the open dialog, where a screen reader can hear it', async () => {
+      const userEvent = await startQueue();
+      const dialog = await screen.findByRole('dialog');
+
+      await userEvent.keyboard('a');
+
+      await waitFor(() => expect(within(dialog).getByRole('status')).toHaveTextContent('Marked reviewed. 2 left.'));
+    });
+
+    it('offers Undo after X, naming what was excluded, and Undo includes it again', async () => {
+      const userEvent = await startQueue();
+      await screen.findByRole('dialog');
+      const excludeSpy = vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockImplementation(async (_id, localId, excluded) =>
+        excludedDiff(excluded ? localId : ''),
+      );
+
+      await userEvent.keyboard('x');
+
+      expect(await screen.findByText('Excluded "Blocked item".')).toBeInTheDocument();
+      // The dialog is still open (modal), which hides the toast from role queries.
+      await userEvent.click(screen.getByRole('button', { name: 'Undo', hidden: true }));
+      await waitFor(() => expect(excludeSpy).toHaveBeenLastCalledWith('job-70', 'blocked', false));
+    });
+
+    it('says it is still saving, and acts once, when X is pressed again before the exclude comes back', async () => {
+      const userEvent = await startQueue();
+      await screen.findByRole('dialog');
+      const excludeSpy = vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockImplementation(() => new Promise(() => {}));
+
+      await userEvent.keyboard('x');
+      await userEvent.keyboard('x');
+
+      expect(excludeSpy).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Still saving. Try again.');
+    });
+
+    it('does not let an exclude reply flip an item that was just marked reviewed back to unreviewed', async () => {
+      const userEvent = await startQueue();
+      await screen.findByRole('dialog');
+      // The reply is a snapshot taken before the accept of 'low' reached the server.
+      let reply: (value: unknown) => void = () => {};
+      vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockImplementation(() => new Promise((resolve) => { reply = resolve; }));
+
+      await userEvent.keyboard('a'); // 'blocked' reviewed, now on 'low'
+      await userEvent.keyboard('x'); // exclude 'low', pending
+      reply({
+        dryRunDiff: [
+          req('clean', 'Clean item', { qualityScore: 95, groundingScore: 0.9 }),
+          req('low', 'Low item', { qualityScore: 30, excluded: true }),
+          req('blocked', 'Blocked item', { qualityScore: 99 }), // server snapshot: not yet reviewed
+        ],
+      });
+
+      await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Excluded. 1 left.'));
+      // Only 'clean' is left: the reviewed 'blocked' did not come back into the queue.
+      expect(await screen.findByRole('button', { name: /review in risk order · 1/i, hidden: true })).toBeInTheDocument();
+    });
+
+    it('puts focus back on the queue button when the dialog is closed mid-queue', async () => {
+      const userEvent = await startQueue();
+      await screen.findByRole('dialog');
+      await userEvent.keyboard('{Escape}');
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+
+      // The app's dialogs have no Radix trigger to hand focus back to, so the page does it.
+      await waitFor(() => expect(screen.getByRole('button', { name: /review in risk order/i })).toHaveFocus());
+    });
+
+    it('does nothing on a key when shortcuts are switched off in Settings', async () => {
+      const { useUiPreferencesStore } = await import('../store/uiPreferencesStore');
+      useUiPreferencesStore.getState().setKeyboardShortcuts(false);
+      try {
+        const userEvent = await startQueue();
+        await screen.findByRole('dialog');
+        await userEvent.keyboard('a');
+        expect(jobsApi.setDiffEntriesReviewed).not.toHaveBeenCalled();
+        await userEvent.click(screen.getByRole('button', { name: 'Mark reviewed and next' }));
+        expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledWith('job-70', ['blocked'], true);
+      } finally {
+        useUiPreferencesStore.getState().setKeyboardShortcuts(true);
+      }
+    });
+
+    it('leaves queue mode when the dialog is closed, so a tree click opens in tree order again', async () => {
+      const userEvent = await startQueue();
+      await screen.findByRole('dialog');
+      await userEvent.keyboard('{Escape}');
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+
+      expect(await screen.findByRole('button', { name: /review in risk order · 3/i })).toBeInTheDocument();
+    });
+  });
 });

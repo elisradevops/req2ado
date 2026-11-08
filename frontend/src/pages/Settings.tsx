@@ -5,7 +5,7 @@ import { getAppSettings, updateAppSettings } from '../api/settings';
 import { getLlmConnection, getLlmConnectionModels, setLlmConnection, type LlmConnectionStatus, type LlmSelectableModel } from '../api/llmConnection';
 import { useLlmConnectionStore } from '../store/llmConnectionStore';
 import { useAuthStore, useDisplayName, useOrgUrl, useUserId } from '../store/authStore';
-import { useDenseView, useAutoSyncLedgers, useUiPreferencesStore } from '../store/uiPreferencesStore';
+import { useDenseView, useAutoSyncLedgers, useKeyboardShortcuts, useUiPreferencesStore } from '../store/uiPreferencesStore';
 import { useToast } from '../components/ToastProvider';
 import { formatSharePointExpiry } from '../utils/sharePointStatus';
 import { PageHeader } from '../ui/PageHeader';
@@ -169,6 +169,7 @@ export function Settings(): React.ReactElement {
   const { showToast } = useToast();
   const denseView = useDenseView();
   const autoSyncLedgers = useAutoSyncLedgers();
+  const keyboardShortcuts = useKeyboardShortcuts();
   const [reconnectOpen, setReconnectOpen] = useState(false);
   const [newOrgUrl, setNewOrgUrl] = useState(orgUrl ?? '');
   const [newPat, setNewPat] = useState('');
@@ -454,6 +455,12 @@ export function Settings(): React.ReactElement {
                 description="Periodically fetch updates from ADO"
                 checked={autoSyncLedgers}
                 onCheckedChange={(value) => useUiPreferencesStore.getState().setAutoSyncLedgers(value)}
+              />
+              <DisplayPreferenceRow
+                label="Keyboard Shortcuts"
+                description="Single-key shortcuts while reviewing: J, K, A, R and X"
+                checked={keyboardShortcuts}
+                onCheckedChange={(value) => useUiPreferencesStore.getState().setKeyboardShortcuts(value)}
               />
             </div>
           </SectionCard>

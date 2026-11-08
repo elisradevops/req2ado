@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { NodeDetailDialog } from './NodeDetailDialog';
 import { ToastProvider } from './ToastProvider';
 import type { DryRunDiffEntry } from './DiffTree';
@@ -241,6 +241,118 @@ describe('NodeDetailDialog', () => {
     it('shows no reason banner by default', () => {
       renderDialog();
       expect(screen.queryByRole('note')).not.toBeInTheDocument();
+    });
+
+    describe('accept / exclude keys (risk-ordered queue)', () => {
+      const reason = { title: 'Review queue', todo: 'Riskiest first.', group: 'review' as const };
+
+      it('A accepts the item, same as R', async () => {
+        const onMark = vi.fn();
+        renderDialog({ onNavigate: vi.fn(), reason, review: { reviewed: false, onMark, onUnmark: vi.fn() } });
+        const { default: userEvent } = await import('@testing-library/user-event');
+
+        await userEvent.keyboard('a');
+        expect(onMark).toHaveBeenCalledTimes(1);
+        await userEvent.keyboard('r');
+        expect(onMark).toHaveBeenCalledTimes(2);
+      });
+
+      it('X excludes the item and the button does the same, only when the page offers it', async () => {
+        const onReject = vi.fn();
+        renderDialog({ onNavigate: vi.fn(), reason, review: { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn(), onReject } });
+        const { default: userEvent } = await import('@testing-library/user-event');
+
+        await userEvent.keyboard('x');
+        expect(onReject).toHaveBeenCalledTimes(1);
+        await userEvent.click(screen.getByRole('button', { name: 'Exclude and next' }));
+        expect(onReject).toHaveBeenCalledTimes(2);
+      });
+
+      it('offers no exclude control and ignores X when there is no onReject (the warning-focus review)', async () => {
+        renderDialog({ onNavigate: vi.fn(), reason, review: { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn() } });
+        const { default: userEvent } = await import('@testing-library/user-event');
+
+        await userEvent.keyboard('x');
+        expect(screen.queryByRole('button', { name: 'Exclude and next' })).not.toBeInTheDocument();
+      });
+
+      it('ignores A and X on a reviewed item', async () => {
+        const onMark = vi.fn();
+        const onReject = vi.fn();
+        renderDialog({ onNavigate: vi.fn(), reason, review: { reviewed: true, onMark, onUnmark: vi.fn(), onReject } });
+        const { default: userEvent } = await import('@testing-library/user-event');
+
+        await userEvent.keyboard('ax');
+        expect(onMark).not.toHaveBeenCalled();
+        expect(onReject).not.toHaveBeenCalled();
+      });
+
+      it('speaks its announcement from inside the dialog, since the page behind a modal is hidden from screen readers', () => {
+        renderDialog({ onNavigate: vi.fn(), reason, announcement: 'Marked reviewed. 2 left.' });
+        const status = within(screen.getByRole('dialog')).getByRole('status');
+        expect(status).toHaveTextContent('Marked reviewed. 2 left.');
+        expect(status).toHaveAttribute('aria-live', 'polite');
+      });
+
+      it('ignores a held key: A, R and X act once per press, not once per key repeat', () => {
+        const onMark = vi.fn();
+        const onReject = vi.fn();
+        renderDialog({ onNavigate: vi.fn(), reason, review: { reviewed: false, onMark, onUnmark: vi.fn(), onReject } });
+
+        fireEvent.keyDown(window, { key: 'a', repeat: true });
+        fireEvent.keyDown(window, { key: 'r', repeat: true });
+        fireEvent.keyDown(window, { key: 'x', repeat: true });
+        expect(onMark).not.toHaveBeenCalled();
+        expect(onReject).not.toHaveBeenCalled();
+
+        fireEvent.keyDown(window, { key: 'a' });
+        expect(onMark).toHaveBeenCalledTimes(1);
+      });
+
+      it('names the actions the way the buttons do', () => {
+        renderDialog({ onNavigate: vi.fn(), reason, review: { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn(), onReject: vi.fn() } });
+        const note = screen.getByRole('note');
+        expect(note).toHaveTextContent(/A\s*mark reviewed/);
+        expect(note).toHaveTextContent(/X\s*exclude/);
+      });
+
+      it('does not act while typing in a field', async () => {
+        const onMark = vi.fn();
+        renderDialog({ onNavigate: vi.fn(), reason, review: { reviewed: false, onMark, onUnmark: vi.fn() } });
+        const { default: userEvent } = await import('@testing-library/user-event');
+        // Inside the dialog: Radix's focus trap would pull an outside field's focus back in.
+        const input = document.createElement('input');
+        screen.getByRole('dialog').appendChild(input);
+        input.focus();
+
+        await userEvent.keyboard('a');
+        expect(onMark).not.toHaveBeenCalled();
+        input.remove();
+      });
+
+      it('turns every single-key shortcut off, J and K included, and hides the key hints', async () => {
+        const onMark = vi.fn();
+        const onReject = vi.fn();
+        const onNavigate = vi.fn();
+        renderDialog({
+          onNavigate,
+          hasNext: true,
+          hasPrev: true,
+          shortcutsEnabled: false,
+          reason,
+          review: { reviewed: false, onMark, onUnmark: vi.fn(), onReject },
+        });
+        const { default: userEvent } = await import('@testing-library/user-event');
+
+        await userEvent.keyboard('jkrax');
+        expect(onMark).not.toHaveBeenCalled();
+        expect(onReject).not.toHaveBeenCalled();
+        expect(onNavigate).not.toHaveBeenCalled();
+        expect(screen.getByRole('note').querySelector('kbd')).toBeNull();
+        // The buttons still work with the mouse or Enter.
+        await userEvent.click(screen.getByRole('button', { name: 'Exclude and next' }));
+        expect(onReject).toHaveBeenCalledTimes(1);
+      });
     });
   });
 

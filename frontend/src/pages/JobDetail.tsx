@@ -60,6 +60,9 @@ import { ARRIVE, MOTION, scrollBehavior } from '../ui/motion';
 import { describeJobKbCoverage, type KbCoverage } from '../utils/kbCoverage';
 import { getServerMessage } from '../lib/errorDetails';
 import { isFlaggedDiffEntry } from '../utils/diffFlagging';
+import { buildReviewQueue, riskReason } from '../utils/reviewQueue';
+import { orderLikeTree } from '../utils/diffTreeOrder';
+import { useKeyboardShortcuts } from '../store/uiPreferencesStore';
 import { useToast } from '../components/ToastProvider';
 import type { KbCitation } from '../components/KbCitationChips';
 import type { TraceLinkFailure } from '../store/jobsStore';
@@ -173,6 +176,20 @@ export function JobDetail(): React.ReactElement {
   const [diff, setDiff] = useState<DryRunDiffEntry[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
+  // The risk-ordered review queue (P17a): while on, the details dialog steps through
+  // `reviewQueue` instead of the tree, and A / X act on the open item.
+  const [queueMode, setQueueMode] = useState(false);
+  // Read out by the polite live region next to the tree ("Accepted. 2 left.").
+  const [queueAnnouncement, setQueueAnnouncement] = useState('');
+  // True once the last item has been worked through. The queue button it was opened from is
+  // gone by then, so a "done" row takes focus when the dialog closes (focus is never dropped).
+  const [queueFinished, setQueueFinished] = useState(false);
+  const queueDoneRef = useRef<HTMLDivElement>(null);
+  const queueButtonRef = useRef<HTMLButtonElement>(null);
+  // Set while the dialog was opened by the queue, so closing it can hand focus back.
+  const queueOpenedRef = useRef(false);
+  const dialogOpenRef = useRef(false);
+  const keyboardShortcuts = useKeyboardShortcuts();
   const [stage, setStage] = useState<JobStage | null>(null);
   const [narrations, setNarrations] = useState<NarrationEvent[]>([]);
   // Populated directly from the SSE callback (not derived from the
@@ -931,13 +948,20 @@ export function JobDetail(): React.ReactElement {
     }
   }
 
-  async function handleToggleExclude(localId: string, excluded: boolean): Promise<void> {
-    if (!id || isDiffMutatingRef.current) return;
+  // Resolves true once the server has accepted the change (the review queue steps on only then).
+  async function excludeEntry(localId: string, excluded: boolean): Promise<boolean> {
+    if (!id || isDiffMutatingRef.current) return false;
     isDiffMutatingRef.current = true;
     setIsDiffMutating(true);
     try {
       const result = await setDiffEntryExcluded(id, localId, excluded);
-      setDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []);
+      const fresh = (result.dryRunDiff as DryRunDiffEntry[] | null) ?? [];
+      // A reply can predate a reviewed mark that is still in flight, so this page's own flag
+      // wins (the same rule handleRetryEnhancement follows).
+      setDiff((prev) => {
+        const mine = new Map(prev.map((entry) => [entry.localId, entry.reviewed]));
+        return fresh.map((entry) => ({ ...entry, reviewed: mine.get(entry.localId) ?? entry.reviewed }));
+      });
       try {
         setSummary(await getSummary(id));
       } catch {
@@ -946,12 +970,18 @@ export function JobDetail(): React.ReactElement {
         // until the next successful refetch, rather than blocking the
         // exclusion toggle (which already succeeded) on this.
       }
+      return true;
     } catch (err) {
       showErrorToast('Failed to update — please try again.', err);
+      return false;
     } finally {
       isDiffMutatingRef.current = false;
       setIsDiffMutating(false);
     }
+  }
+
+  async function handleToggleExclude(localId: string, excluded: boolean): Promise<void> {
+    await excludeEntry(localId, excluded);
   }
 
   // Marks items reviewed (or not), optimistically: the flag flips at once so
@@ -961,13 +991,13 @@ export function JobDetail(): React.ReactElement {
   // this call changed are put back. `force` skips the "already in that
   // state" filter, which Undo needs: its closure holds the diff from the
   // render that created it, not the current one.
-  async function handleSetReviewed(localIds: string[], reviewed: boolean, options?: { force?: boolean }): Promise<void> {
-    if (!id) return;
+  async function handleSetReviewed(localIds: string[], reviewed: boolean, options?: { force?: boolean }): Promise<boolean> {
+    if (!id) return false;
     const wanted = new Set(localIds);
     const changed = options?.force
       ? localIds
       : diff.filter((entry) => wanted.has(entry.localId) && !!entry.reviewed !== reviewed).map((entry) => entry.localId);
-    if (changed.length === 0) return;
+    if (changed.length === 0) return true;
     const changedSet = new Set(changed);
     setDiff((prev) => prev.map((entry) => (changedSet.has(entry.localId) ? { ...entry, reviewed } : entry)));
     try {
@@ -977,9 +1007,11 @@ export function JobDetail(): React.ReactElement {
         'success',
         { label: 'Undo', onAction: () => void handleSetReviewed(changed, !reviewed, { force: true }) },
       );
+      return true;
     } catch (err) {
       setDiff((prev) => prev.map((entry) => (changedSet.has(entry.localId) ? { ...entry, reviewed: !reviewed } : entry)));
       showErrorToast('Failed to update review state — please try again.', err);
+      return false;
     }
   }
 
@@ -996,6 +1028,93 @@ export function JobDetail(): React.ReactElement {
     } else {
       setDialogOpen(false);
     }
+  }
+
+  // Steps the queue on after an accept or exclude: `rest` is what is left once the
+  // open item is gone. Ends queue mode, and closes the dialog, when nothing is.
+  function advanceReviewQueue(rest: DryRunDiffEntry[], verb: string): void {
+    if (rest.length === 0) {
+      setQueueMode(false);
+      setQueueFinished(true);
+      setDialogOpen(false);
+      setQueueAnnouncement(`${verb}. Review queue done.`);
+      return;
+    }
+    setSelectedId(rest[0].localId);
+    setQueueAnnouncement(`${verb}. ${rest.length} left.`);
+  }
+
+  function handleStartReviewQueue(): void {
+    if (reviewQueue.length === 0) return;
+    setQueueAnnouncement('');
+    setQueueFinished(false);
+    setSelectedId(reviewQueue[0].localId);
+    setQueueMode(true);
+    queueOpenedRef.current = true;
+    setDialogOpen(true);
+  }
+
+  // Back to an item whose save failed: the queue steps on at once (marking is optimistic), so a
+  // failure has to bring the reviewer back, not leave them past it with "done" already said.
+  // A dialog the reviewer has already left (or the queue closed at its end) is not reopened:
+  // the queue button, the error toast and the announcement carry the failure, and focus moves
+  // to that button, since the "done" row it was on is gone.
+  function returnToQueueItem(localId: string, message: string): void {
+    setQueueFinished(false);
+    setSelectedId(localId);
+    setQueueAnnouncement(message);
+    if (dialogOpenRef.current) {
+      setQueueMode(true);
+      queueOpenedRef.current = true;
+      setDialogOpen(true);
+    } else {
+      setTimeout(() => queueButtonRef.current?.focus(), 0);
+    }
+  }
+
+  async function handleQueueAccept(): Promise<void> {
+    if (!selectedId) return;
+    if (isDiffMutatingRef.current) {
+      setQueueAnnouncement('Still saving. Try again.');
+      return;
+    }
+    const markedId = selectedId;
+    const markedTitle = diff.find((entry) => entry.localId === markedId)?.title ?? 'item';
+    const rest = reviewQueue.filter((entry) => entry.localId !== markedId);
+    const saved = handleSetReviewed([markedId], true);
+    advanceReviewQueue(rest, 'Marked reviewed');
+    if (!(await saved)) {
+      returnToQueueItem(markedId, `Couldn't mark "${markedTitle}" reviewed. Try again.`);
+    }
+  }
+
+  // Exclude is the reject: it takes the item's whole subtree out of the write, so what
+  // is left is worked out as if it were already excluded, not just minus this item. Unlike
+  // marking it waits for the server (the tree is replaced by its reply) and offers Undo.
+  async function handleQueueReject(): Promise<void> {
+    if (!selectedId) return;
+    if (isDiffMutatingRef.current) {
+      setQueueAnnouncement('Still saving. Try again.');
+      return;
+    }
+    const excludedId = selectedId;
+    const excludedEntry = diff.find((entry) => entry.localId === excludedId);
+    const rest = buildReviewQueue(
+      diff.map((entry) => (entry.localId === excludedId ? { ...entry, excluded: true } : entry)),
+      warningKindGroups,
+    );
+    if (!(await excludeEntry(excludedId, true))) {
+      setQueueAnnouncement(`Couldn't exclude "${excludedEntry?.title ?? 'item'}". Try again.`);
+      return;
+    }
+    const below = descendantCountsByLocalId[excludedId];
+    const belowCount = below ? below.epics + below.features + below.requirements : 0;
+    showToast(
+      `Excluded "${excludedEntry?.title ?? 'item'}"${belowCount > 0 ? ` and ${belowCount.toLocaleString()} below it` : ''}.`,
+      'success',
+      { label: 'Undo', onAction: () => void excludeEntry(excludedId, false) },
+    );
+    advanceReviewQueue(rest, 'Excluded');
   }
 
   // Re-runs a failed enhancement pass for the items its warning lists, a
@@ -1454,10 +1573,50 @@ export function JobDetail(): React.ReactElement {
   // focused warning's own items (a reviewer who stepped outside the set, or
   // opened an unrelated row, shouldn't see a stale reason).
   const dialogReason = useMemo(() => {
+    const queueEntry = queueMode && selectedId ? diff.find((entry) => entry.localId === selectedId) : undefined;
+    if (queueEntry) return riskReason(queueEntry, warningKindGroups);
     if (!focusWarning || !selectedId || !focusWarning.nodeIds.has(selectedId)) return null;
     const meta = kindMeta(focusWarning.kind);
     return { title: meta.title, todo: meta.todo, group: meta.group };
-  }, [focusWarning, selectedId]);
+  }, [queueMode, diff, warningKindGroups, focusWarning, selectedId]);
+
+  // What is still to review, riskiest first. Only built for a job still awaiting review.
+  const reviewQueue = useMemo(
+    () => (status === 'diff_ready' ? buildReviewQueue(diff, warningKindGroups) : []),
+    [status, diff, warningKindGroups],
+  );
+  // Leaving the dialog (Escape, the close button) ends queue mode.
+  useEffect(() => {
+    if (!dialogOpen) setQueueMode(false);
+  }, [dialogOpen]);
+  // The app's dialogs have no Radix trigger to hand focus back to, so on close it falls to the
+  // page body. After the queue's dialog closes, focus goes to the "done" row when the queue is
+  // finished, otherwise back to the queue button. After a tick, so it lands once the dialog is gone.
+  const showQueueDone = queueFinished && !dialogOpen && status === 'diff_ready' && reviewQueue.length === 0;
+  // Queue mode follows the queue: it ends when the job leaves review or nothing is left, and
+  // an open item that has dropped out of the queue (a refresh, an undo) hands over to the first.
+  useEffect(() => {
+    dialogOpenRef.current = dialogOpen;
+  }, [dialogOpen]);
+  useEffect(() => {
+    // Not while an exclude is saving: its reply empties the queue a render before the queue steps on.
+    if (!queueMode || isDiffMutating) return;
+    if (status !== 'diff_ready' || reviewQueue.length === 0) {
+      setQueueMode(false);
+    } else if (!selectedId || !reviewQueue.some((entry) => entry.localId === selectedId)) {
+      setSelectedId(reviewQueue[0].localId);
+    }
+  }, [queueMode, isDiffMutating, status, reviewQueue, selectedId]);
+  // A "done" row is only true until the queue refills.
+  useEffect(() => {
+    if (queueFinished && reviewQueue.length > 0) setQueueFinished(false);
+  }, [queueFinished, reviewQueue.length]);
+  useEffect(() => {
+    if (dialogOpen || !queueOpenedRef.current) return undefined;
+    queueOpenedRef.current = false;
+    const timer = setTimeout(() => (queueDoneRef.current ?? queueButtonRef.current)?.focus(), 0);
+    return () => clearTimeout(timer);
+  }, [dialogOpen]);
 
   // Backs the toolbar's "Needs review" chip -- see isFlaggedDiffEntry.
   const flaggedCount = useMemo(() => diff.filter((entry) => isFlaggedDiffEntry(entry)).length, [diff]);
@@ -1469,21 +1628,25 @@ export function JobDetail(): React.ReactElement {
   // prev/next is an acceptable simplification, not a correctness bug.
   const filteredForNav = useMemo(() => {
     const query = filterText.trim().toLowerCase();
-    return diff.filter(
+    // In the order the tree draws them: the diff lists a wrapper Epic after its children.
+    return orderLikeTree(diff).filter(
       (entry) => matchesDiffFilter(entry, filterAction, query) && (!focusVisibleIds || focusVisibleIds.has(entry.localId)),
     );
   }, [diff, filterAction, filterText, focusVisibleIds]);
 
+  // Prev / next follow the risk order in queue mode, the filtered tree order otherwise.
+  const navList = queueMode ? reviewQueue : filteredForNav;
+
   function handleNavigateDialog(direction: 'prev' | 'next'): void {
-    const currentIndex = filteredForNav.findIndex((entry) => entry.localId === selectedId);
+    const currentIndex = navList.findIndex((entry) => entry.localId === selectedId);
     if (currentIndex === -1) return;
-    const nextIndex = direction === 'next' ? Math.min(filteredForNav.length - 1, currentIndex + 1) : Math.max(0, currentIndex - 1);
-    setSelectedId(filteredForNav[nextIndex].localId);
+    const nextIndex = direction === 'next' ? Math.min(navList.length - 1, currentIndex + 1) : Math.max(0, currentIndex - 1);
+    setSelectedId(navList[nextIndex].localId);
   }
 
-  const navIndex = filteredForNav.findIndex((entry) => entry.localId === selectedId);
+  const navIndex = navList.findIndex((entry) => entry.localId === selectedId);
   const hasPrevEntry = navIndex > 0;
-  const hasNextEntry = navIndex !== -1 && navIndex < filteredForNav.length - 1;
+  const hasNextEntry = navIndex !== -1 && navIndex < navList.length - 1;
 
   if (loadError) {
     return (
@@ -1550,7 +1713,14 @@ export function JobDetail(): React.ReactElement {
   // Review controls for the open item: only while a fix/review warning is
   // focused, the item belongs to it, and the job still accepts marking.
   const dialogReview =
-    focusReviewable && focusWarning && selectedId && focusWarning.nodeIds.has(selectedId) && status === 'diff_ready'
+    queueMode && selectedId && status === 'diff_ready'
+      ? {
+          reviewed: reviewedIds.has(selectedId),
+          onMark: () => void handleQueueAccept(),
+          onUnmark: () => void handleSetReviewed([selectedId], false),
+          onReject: () => void handleQueueReject(),
+        }
+      : focusReviewable && focusWarning && selectedId && focusWarning.nodeIds.has(selectedId) && status === 'diff_ready'
       ? {
           reviewed: reviewedIds.has(selectedId),
           onMark: handleMarkSelectedReviewedAndNext,
@@ -1910,6 +2080,25 @@ export function JobDetail(): React.ReactElement {
                     />
                   </div>
                 )}
+                {/* Always mounted so the live region exists before its text changes. */}
+                <div role="status" aria-live="polite" className="sr-only" data-testid="review-queue-status">
+                  {queueAnnouncement}
+                </div>
+                {showQueueDone && (
+                  <div className="flex border-b border-hairline p-3">
+                    <div ref={queueDoneRef} tabIndex={-1} className="text-sm font-medium text-ink-2 outline-none">
+                      Review queue done.
+                    </div>
+                  </div>
+                )}
+                {/* Stays mounted in queue mode: it is where focus returns when the dialog closes. */}
+                {status === 'diff_ready' && reviewQueue.length > 0 && (
+                  <div className="flex border-b border-hairline p-3">
+                    <Button ref={queueButtonRef} size="sm" variant="outline" onClick={handleStartReviewQueue}>
+                      Review in risk order · {reviewQueue.length.toLocaleString()}
+                    </Button>
+                  </div>
+                )}
                 {(showFilterBar || focusWarning) && (
                   <div className="flex flex-wrap gap-2 border-b border-hairline p-3">
                     <TextField
@@ -2049,6 +2238,8 @@ export function JobDetail(): React.ReactElement {
                 hasNext={hasNextEntry}
                 reason={dialogReason}
                 review={dialogReview}
+                shortcutsEnabled={keyboardShortcuts}
+                announcement={queueAnnouncement}
                 typeCatalog={typeCatalog ?? undefined}
                 categoryLabels={categoryLabels ?? undefined}
                 requirementClassificationField={requirementClassificationField}

@@ -94,6 +94,8 @@ export function NodeDetailDialog({
   hasNext,
   reason,
   review,
+  shortcutsEnabled = true,
+  announcement = '',
   typeCatalog,
   categoryLabels,
   requirementClassificationField,
@@ -166,10 +168,18 @@ export function NodeDetailDialog({
   // focused integrity warning -- shown as a banner above the item so the
   // reviewer doesn't have to remember what they're checking for.
   reason?: { title: string; todo: string; group: WarningGroup } | null;
-  // Marks this item as checked and steps on (R). Present only when the
-  // item was opened from a fix/review warning on a job still awaiting
-  // review. `reviewed` swaps the primary action for an undo.
-  review?: { reviewed: boolean; onMark: () => void; onUnmark: () => void } | null;
+  // Marks this item as reviewed and steps on (A or R). Present only when the
+  // item was opened from a fix/review warning, or from the risk-ordered
+  // queue, on a job still awaiting review. `reviewed` swaps the primary
+  // action for an undo. `onReject` (X) excludes the item and steps on; only
+  // the queue offers it.
+  review?: { reviewed: boolean; onMark: () => void; onUnmark: () => void; onReject?: () => void } | null;
+  // The single-key shortcuts (J K R A X). Off turns every one of them off
+  // (WCAG 2.1.4); the buttons keep working.
+  shortcutsEnabled?: boolean;
+  // What the review queue just did ("Marked reviewed. 2 left."). Spoken from inside the dialog:
+  // the page behind a modal dialog is hidden from screen readers, so the page's own region is not.
+  announcement?: string;
   typeCatalog?: Record<string, WorkItemTypeCatalogEntry>;
   // Category -> this project's real ADO type name, for AddChildForm's type
   // Select LABELS only -- see AddChildForm.tsx's own doc comment.
@@ -213,26 +223,31 @@ export function NodeDetailDialog({
   // title. Ignored while typing (edit fields, chat) and with any modifier
   // held, so it never swallows a real character or a browser shortcut.
   useEffect(() => {
-    if (!open || !onNavigate) return;
+    if (!open || !onNavigate || !shortcutsEnabled) return;
     function handleKeyDown(event: KeyboardEvent): void {
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       const target = event.target as HTMLElement | null;
       if (target && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))) return;
       const key = event.key.toLowerCase();
+      // A held A, R or X must not mark or exclude the whole queue at key-repeat speed.
+      if (event.repeat && (key === 'r' || key === 'a' || key === 'x')) return;
       if (key === 'j' && hasNext) {
         event.preventDefault();
         onNavigate?.('next');
       } else if (key === 'k' && hasPrev) {
         event.preventDefault();
         onNavigate?.('prev');
-      } else if (key === 'r' && review && !review.reviewed) {
+      } else if ((key === 'r' || key === 'a') && review && !review.reviewed) {
         event.preventDefault();
         review.onMark();
+      } else if (key === 'x' && review?.onReject && !review.reviewed) {
+        event.preventDefault();
+        review.onReject();
       }
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [open, onNavigate, hasNext, hasPrev, review]);
+  }, [open, onNavigate, hasNext, hasPrev, review, shortcutsEnabled]);
 
   if (!entry) return null;
 
@@ -352,6 +367,9 @@ export function NodeDetailDialog({
         entry.excluded ? <span className="text-xs text-ink-3">Excluded from this run</span> : undefined
       }
     >
+      <div role="status" aria-live="polite" className="sr-only">
+        {announcement}
+      </div>
       {reason && (
         <div
           role="note"
@@ -363,16 +381,23 @@ export function NodeDetailDialog({
           )}
         >
           <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5">
-            <span className="min-w-0 flex-1">
+            {/* basis-56: below that width the buttons wrap onto their own line instead of squeezing the text. */}
+            <span className="min-w-0 flex-1 basis-56">
               <span className="font-semibold">{reason.title}.</span> {reason.todo}
-              {onNavigate && (
+              {onNavigate && shortcutsEnabled && (
                 <span className="ml-2 whitespace-nowrap text-xs opacity-80">
                   <kbd className="rounded-sm border border-current/30 px-1 font-mono text-micro">J</kbd> next{' '}
                   <kbd className="rounded-sm border border-current/30 px-1 font-mono text-micro">K</kbd> previous
                   {review && !review.reviewed && (
                     <>
                       {' '}
-                      <kbd className="rounded-sm border border-current/30 px-1 font-mono text-micro">R</kbd> mark reviewed
+                      <kbd className="rounded-sm border border-current/30 px-1 font-mono text-micro">A</kbd> mark reviewed
+                      {review.onReject && (
+                        <>
+                          {' '}
+                          <kbd className="rounded-sm border border-current/30 px-1 font-mono text-micro">X</kbd> exclude
+                        </>
+                      )}
                     </>
                   )}
                 </span>
@@ -384,9 +409,16 @@ export function NodeDetailDialog({
                   Mark not reviewed
                 </Button>
               ) : (
-                <Button size="sm" variant="primary" className="flex-none" onClick={review.onMark}>
-                  Mark reviewed and next
-                </Button>
+                <div className="flex flex-none items-center gap-2">
+                  {review.onReject && (
+                    <Button size="sm" variant="outline" onClick={review.onReject}>
+                      Exclude and next
+                    </Button>
+                  )}
+                  <Button size="sm" variant="primary" onClick={review.onMark}>
+                    Mark reviewed and next
+                  </Button>
+                </div>
               ))}
           </div>
         </div>

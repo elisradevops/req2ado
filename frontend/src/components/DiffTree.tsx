@@ -27,6 +27,7 @@ import { cn } from '../lib/cn';
 import { moveValidationReason as sharedMoveValidationReason } from '../lib/moveValidation';
 import { actionLabel } from '../utils/labels';
 import { matchesDiffFilter } from '../utils/diffFilterMatch';
+import { groupByParent } from '../utils/diffTreeOrder';
 import { flaggedDiffEntryReason, isFlaggedDiffEntry } from '../utils/diffFlagging';
 import { LABEL_MICRO } from '../utils/labelMicro';
 import { ActionBadge } from './ActionBadge';
@@ -232,14 +233,7 @@ interface FlatRow {
 }
 
 function buildFlatRows(entries: DryRunDiffEntry[]): FlatRow[] {
-  const byParent = new Map<string | null, DryRunDiffEntry[]>();
-  const idSet = new Set(entries.map((entry) => entry.localId));
-  for (const entry of entries) {
-    const parentKey = entry.parentLocalId && idSet.has(entry.parentLocalId) ? entry.parentLocalId : null;
-    const siblings = byParent.get(parentKey) ?? [];
-    siblings.push(entry);
-    byParent.set(parentKey, siblings);
-  }
+  const byParent = groupByParent(entries);
   const rows: FlatRow[] = [];
   function visit(parentKey: string | null, depth: number, ancestorIds: string[], parentIndex: string): void {
     const siblings = byParent.get(parentKey) ?? [];
