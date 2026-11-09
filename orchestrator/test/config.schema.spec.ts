@@ -169,3 +169,39 @@ describe('configSchema ingestion limits', () => {
     expect(result.LEVEL_MAX_DURATION_MS).toBe(7_200_000);
   });
 });
+
+describe('configSchema embedding batching fields', () => {
+  it('leaves the limits unset and defaults the OpenAI path', () => {
+    const r = configSchema.parse(BASE_ENV);
+    expect(r.EMBED_MAX_INPUTS_PER_REQUEST).toBeUndefined();
+    expect(r.EMBED_MAX_TOKENS_PER_REQUEST).toBeUndefined();
+    expect(r.EMBED_OPENAI_PATH).toBe('/openai/embeddings');
+  });
+
+  it('accepts valid positive integers (coerced from strings)', () => {
+    const r = configSchema.parse({ ...BASE_ENV, EMBED_MAX_INPUTS_PER_REQUEST: '64', EMBED_MAX_TOKENS_PER_REQUEST: '32000', EMBED_OPENAI_PATH: '/api/v1/embeddings' });
+    expect(r.EMBED_MAX_INPUTS_PER_REQUEST).toBe(64);
+    expect(r.EMBED_MAX_TOKENS_PER_REQUEST).toBe(32000);
+    expect(r.EMBED_OPENAI_PATH).toBe('/api/v1/embeddings');
+  });
+
+  it.each(['0', '-5', '1.5', 'abc'])('rejects %s', (v) => {
+    expect(() => configSchema.parse({ ...BASE_ENV, EMBED_MAX_INPUTS_PER_REQUEST: v })).toThrow();
+    expect(() => configSchema.parse({ ...BASE_ENV, EMBED_MAX_TOKENS_PER_REQUEST: v })).toThrow();
+  });
+
+  it('parses EMBED_OPENAI_FALLBACK_ROUTES into a string array, defaulting to the documented routes', () => {
+    expect(configSchema.parse(BASE_ENV).EMBED_OPENAI_FALLBACK_ROUTES).toEqual(['/api/v1/embeddings', '/api/embeddings']);
+    expect(configSchema.parse({ ...BASE_ENV, EMBED_OPENAI_FALLBACK_ROUTES: ' /a/embeddings , /b/embeddings,, ' }).EMBED_OPENAI_FALLBACK_ROUTES).toEqual(['/a/embeddings', '/b/embeddings']);
+  });
+
+  it('normalises EMBED_OPENAI_PATH and fallback routes to a leading slash and dedupes the fallbacks', () => {
+    const r = configSchema.parse({ ...BASE_ENV, EMBED_OPENAI_PATH: ' openai/embeddings ', EMBED_OPENAI_FALLBACK_ROUTES: 'api/v1/embeddings, /api/v1/embeddings,/api/embeddings,api/embeddings' });
+    expect(r.EMBED_OPENAI_PATH).toBe('/openai/embeddings');
+    expect(r.EMBED_OPENAI_FALLBACK_ROUTES).toEqual(['/api/v1/embeddings', '/api/embeddings']);
+  });
+
+  it('an empty EMBED_OPENAI_FALLBACK_ROUTES disables the fallback', () => {
+    expect(configSchema.parse({ ...BASE_ENV, EMBED_OPENAI_FALLBACK_ROUTES: '' }).EMBED_OPENAI_FALLBACK_ROUTES).toEqual([]);
+  });
+});

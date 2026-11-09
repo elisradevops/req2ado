@@ -9,19 +9,19 @@
  * (429/5xx + Retry-After honored, exponential backoff + jitter), adapted for
  * fetch's Response shape instead of axios's thrown-error shape.
  */
+import { retryAfterMsFromHeaders } from './openwebui-api';
+
 const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
 
+/** No single wait between attempts exceeds this, whatever the upstream asks for. */
+export const RATE_LIMIT_MAX_WAIT_MS = 20_000;
+
+// Azure/OpenAI 429s carry `retry-after-ms` (preferred, finer) and/or `retry-after`.
 function retryAfterMs(response: Response): number | null {
-  const value = response.headers.get('retry-after');
-  if (!value) {
-    return null;
-  }
-  const seconds = Number(value);
-  if (Number.isFinite(seconds)) {
-    return seconds * 1000;
-  }
-  const dateMs = Date.parse(value);
-  return Number.isNaN(dateMs) ? null : Math.max(0, dateMs - Date.now());
+  return retryAfterMsFromHeaders({
+    'retry-after-ms': response.headers.get('retry-after-ms'),
+    'retry-after': response.headers.get('retry-after'),
+  });
 }
 
 function delayWithJitter(attempt: number, baseDelayMs: number): number {
@@ -44,7 +44,7 @@ export async function fetchWithRetry(
       if (response.ok || !RETRYABLE_STATUSES.has(response.status) || attempt === maxRetries) {
         return response;
       }
-      const delay = retryAfterMs(response) ?? delayWithJitter(attempt, baseDelayMs);
+      const delay = Math.min(retryAfterMs(response) ?? delayWithJitter(attempt, baseDelayMs), RATE_LIMIT_MAX_WAIT_MS);
       await new Promise((resolve) => setTimeout(resolve, delay));
     } catch (error) {
       // A genuine network failure (fetch itself rejects, no Response at all)
@@ -55,7 +55,7 @@ export async function fetchWithRetry(
       if (attempt === maxRetries) {
         throw error;
       }
-      await new Promise((resolve) => setTimeout(resolve, delayWithJitter(attempt, baseDelayMs)));
+      await new Promise((resolve) => setTimeout(resolve, Math.min(delayWithJitter(attempt, baseDelayMs), RATE_LIMIT_MAX_WAIT_MS)));
     }
   }
   throw lastError;

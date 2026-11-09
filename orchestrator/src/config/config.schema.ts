@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+const withLeadingSlash = (route: string): string => (route.startsWith('/') ? route : `/${route}`);
+
 /**
  * Validated shape of process.env for the orchestrator. Fields mirror
  * `config.yaml` / `.env.template` at the repo root — see docs/architecture.md
@@ -115,6 +117,20 @@ export const configSchema = z.object({
   EMBED_BASE_URL: z.string().optional(),
   EMBED_MODEL: z.string().min(1),
   EMBED_PATH: z.string().default('/api/embed'),
+  // Embedding request-size limits (modules/llm/embed-batching.ts). Unset: the limits come from the model-family table, then
+  // from what the upstream's rejections taught the client. Set only to pin a deployment whose limits differ from its family.
+  EMBED_MAX_INPUTS_PER_REQUEST: z.coerce.number().int().positive().optional(),
+  EMBED_MAX_TOKENS_PER_REQUEST: z.coerce.number().int().positive().optional(),
+  // Path of the OpenAI-style embeddings route behind Open WebUI when EMBED_TRANSPORT=openai. Open WebUI 0.8.x serves this
+  // legacy passthrough; from 0.9.0 it needs ENABLE_OPENAI_API_PASSTHROUGH. The client falls back to the documented routes
+  // when this one is not served.
+  EMBED_OPENAI_PATH: z.string().default('/openai/embeddings').transform((v) => withLeadingSlash(v.trim())),
+  // Routes tried, in order, after EMBED_OPENAI_PATH when Open WebUI refuses it (passthrough disabled, not found, or an HTML
+  // catch-all). Comma separated; an empty string disables the fallback.
+  EMBED_OPENAI_FALLBACK_ROUTES: z
+    .string()
+    .default('/api/v1/embeddings,/api/embeddings')
+    .transform((v) => [...new Set(v.split(',').map((r) => r.trim()).filter((r) => r.length > 0).map(withLeadingSlash))]),
   // Same "raw Ollama vs Open WebUI proxy" path distinction EMBED_PATH
   // already exists for -- Open WebUI does not expose a bare /api/show at
   // all (405 Method Not Allowed, confirmed live), only /ollama/api/show

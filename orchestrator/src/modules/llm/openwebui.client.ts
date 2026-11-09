@@ -9,6 +9,7 @@ import { seedConstraints } from './model-capabilities';
 import { modelFactsFromEntry } from './openwebui-model-entry';
 import type { OpenWebUiCompletionRequest } from './openwebui-api';
 import { fetchWithRetry } from './retryWithBackoff';
+import { EmbedLimitMemory, type EmbedLimits, halveLimits, isEmbedSizeRejection, isEmbedContextRejection, MAX_HALVINGS, planBatches, resolveEmbedLimits } from './embed-batching';
 import {
   assertCompletion,
   effectiveMaxTokens,
@@ -137,10 +138,31 @@ export interface OpenWebUiClientConfig {
   EMBED_BASE_URL?: string;
   EMBED_MODEL: string;
   EMBED_PATH: string;
+  /** Embeddings route behind Open WebUI for EMBED_TRANSPORT=openai; default '/openai/embeddings'. */
+  EMBED_OPENAI_PATH?: string;
+  /** Routes tried after EMBED_OPENAI_PATH when Open WebUI refuses it. Unset or empty: no fallback. */
+  EMBED_OPENAI_FALLBACK_ROUTES?: string[];
+  /** Pins for the embedding request size (see embed-batching.ts); unset: model-family table, then what the upstream teaches. */
+  EMBED_MAX_INPUTS_PER_REQUEST?: number;
+  EMBED_MAX_TOKENS_PER_REQUEST?: number;
   SHOW_PATH: string;
   FILES_UPLOAD_PATH: string;
   FILES_STATUS_PATH: string;
   LLM_REQUEST_TIMEOUT_MS: number;
+}
+
+// One embeddings request's outcome: the vectors with their response `index`, or the upstream's refusal.
+type EmbedSendResult =
+  | { ok: true; entries: { index: number; embedding: number[] }[]; path: string }
+  | { ok: false; status: number; bodyText: string; path: string };
+
+// Counts one embed() call accumulates, for its single info line (never content).
+interface EmbedStats {
+  attempts: number;
+  route: string;
+  batches: number;
+  halvings: number;
+  tokens?: number;
 }
 
 @Injectable()
@@ -525,125 +547,334 @@ export class OpenWebUiClient implements LlmClient {
   }
 
   async embed(texts: string[], opts?: { model?: string }): Promise<number[][]> {
-    if (this.config.EMBED_TRANSPORT === 'openai') {
-      return this.embedViaOpenAiProxy(texts, opts);
-    }
-    if (this.config.EMBED_TRANSPORT !== 'ollama') {
+    const transport = this.config.EMBED_TRANSPORT;
+    if (transport !== 'openai' && transport !== 'ollama') {
       throw new Error(
-        `OpenWebUiClient.embed() not implemented for EMBED_TRANSPORT=${this.config.EMBED_TRANSPORT} — only 'ollama' and 'openai' are implemented`,
+        `OpenWebUiClient.embed() not implemented for EMBED_TRANSPORT=${transport} — only 'ollama' and 'openai' are implemented`,
       );
     }
+    const model = opts?.model ?? this.config.EMBED_MODEL;
     const outboundTexts = this.config.LLM_TRUSTED_LOCAL ? texts : texts.map(redactText);
-    const baseUrl = (this.config.EMBED_BASE_URL ?? this.config.LLM_BASE_URL).replace(/\/v1\/?$/, '');
-    // Retried (unlike chat()/vision()) -- a pure read with no side effects,
-    // safe to re-run on a transient 429/5xx/network failure. See
-    // retryWithBackoff.ts's own doc comment for why this is the opposite
-    // call of the OpenAI client's maxRetries:0 above. maxRetries:3 (not the
-    // helper's own default of 5) -- this call sits synchronously in an
-    // already-slow SURVEY pipeline path; 3 attempts with exponential
-    // backoff is enough margin for a transient blip without piling on
-    // multiple extra seconds of dead time on a persistent failure.
-    const response = await fetchWithRetry(
-      () =>
-        fetch(`${baseUrl}${this.config.EMBED_PATH}`, {
-          method: 'POST',
-          headers: this.nativeOllamaHeaders(),
-          body: JSON.stringify({ model: opts?.model ?? this.config.EMBED_MODEL, input: outboundTexts }),
-        }),
-      { maxRetries: 3 },
-    );
-    if (!response.ok) {
-      let bodyText = '';
-      try { bodyText = await response.text(); } catch { /* ignore read failure */ }
-      // eslint-disable-next-line no-console
-      console.error(`[OpenWebUiClient] Ollama embed ${response.status}: ${bodyText.slice(0, 500)}`);
-      throw new UpstreamHttpError(
-        response.status,
-        `Ollama embed request failed: ${response.status}${bodyText ? ` — ${bodyText.slice(0, 200)}` : ''}`,
-      );
-    }
-    const body = (await response.json()) as { embeddings: number[][] };
-    return body.embeddings;
-  }
-
-  // Ollama (and Open WebUI's own /api/embeddings passthrough of it) is
-  // permanently unavailable on this deployment's production target --
-  // confirmed with the user, not just disabled today. This is the fallback
-  // transport: Open WebUI's deprecated-but-working `/openai/embeddings`
-  // proxy (labeled "Deprecated: proxy all requests to OpenAI API" in Open
-  // WebUI's own source), which -- unlike the documented, provider-agnostic
-  // `/api/embeddings` route -- does NOT check the model against the
-  // chat-model registry first (a known, currently-unfixed upstream bug,
-  // open-webui/open-webui#17584, that makes `/api/embeddings` 500 "Model
-  // not found" for an embedding-only connection). Confirmed live: this
-  // route returns real 1536-dim vectors for
-  // `model: "OpenAI/text-embedding-3-small"`, and production's own
-  // existing file-attach RAG already depends on this identical
-  // openai-proxy connection type (RAG_EMBEDDING_ENGINE: openai).
-  //
-  // `body.data` is NOT guaranteed to come back in request order (the
-  // OpenAI embeddings API spec only promises each entry's own `.index`
-  // matches its position in the input) -- sorting before mapping is
-  // required, not defensive/optional, or a request with >1 text could
-  // silently pair the wrong text with the wrong vector.
-  private async embedViaOpenAiProxy(texts: string[], opts?: { model?: string }): Promise<number[][]> {
-    const outboundTexts = this.config.LLM_TRUSTED_LOCAL ? texts : texts.map(redactText);
-    // Split any text that exceeds the model's per-input token limit before
-    // submitting. chunkMap[i] = [start, end) in the flat chunks array for
-    // original text i, so we can reconstruct one vector per original text by
-    // averaging its chunks (a no-op for texts that fit within the limit).
+    const stats: EmbedStats = { attempts: 0, route: transport === 'openai' ? '' : this.config.EMBED_PATH, batches: 0, halvings: 0 };
+    // Ollama: one vector per text, no splitting (as before). OpenAI: split any text above the per-input token limit
+    // first. chunkMap[i] = [start, end) in the flat chunks array for original text i, so we can reconstruct one vector per
+    // original text by averaging its chunks (a no-op for texts that fit within the limit).
     const flatChunks: string[] = [];
+    // Token counts the splitter already computed (a text that fits is one chunk whose count is the text's own); a chunk cut
+    // from a longer text is re-counted, since decode-then-encode need not give back the slice length.
+    const knownCounts: Array<number | undefined> = [];
     const chunkMap: [number, number][] = [];
     for (const text of outboundTexts) {
-      const chunks = this.splitTextForEmbed(text);
+      const split = transport === 'openai' ? this.splitTextForEmbed(text) : { chunks: [text], wholeTokenCount: undefined };
+      const { chunks } = split;
       chunkMap.push([flatChunks.length, flatChunks.length + chunks.length]);
       flatChunks.push(...chunks);
+      for (let k = 0; k < chunks.length; k++) knownCounts.push(chunks.length === 1 ? split.wholeTokenCount : undefined);
     }
-    // Same retry policy as the 'ollama' branch above -- a pure read with no
-    // side effects, safe to re-run on a transient 429/5xx/network failure.
-    let attempts = 0;
     const embedStartedAt = Date.now();
+    const send = transport === 'openai'
+      ? (input: string[]) => this.postOpenAiEmbeddings(model, input, stats)
+      : (input: string[]) => this.postOllamaEmbeddings(model, input, stats);
+    const flatVectors = await this.embedInBatches(flatChunks, model, send, stats, knownCounts);
+    const embedMs = Date.now() - embedStartedAt;
+    if (transport === 'openai' && (stats.attempts > 1 || embedMs > 1000)) {
+      // A 429 backoff inside the retry is otherwise invisible: say when the upstream was slow or needed more than one attempt (counts only).
+      // eslint-disable-next-line no-console
+      console.info(`embed upstream ms=${embedMs} texts=${texts.length} attempts=${stats.attempts}`);
+    }
+    // eslint-disable-next-line no-console
+    console.info(
+      `embed batches=${stats.batches} inputs=${flatChunks.length} tokens=${stats.tokens ?? 0} attempts=${stats.attempts} halvings=${stats.halvings} route=${stats.route} ms=${embedMs}`,
+    );
+    // Reconstruct one vector per original text by averaging the vectors of its constituent chunks (a no-op when it fit).
+    return chunkMap.map(([start, end]) => this.averageVectors(flatVectors.slice(start, end)));
+  }
+
+  // What embed() learned about one model's request size limits from upstream rejections, for this client's lifetime
+  // (same reasoning as modelConstraints above).
+  private readonly embedLimitMemory = new EmbedLimitMemory();
+  // The embeddings route that last answered with a valid response (openai transport), and the order candidates are tried in.
+  private embedRoute: string | undefined;
+  private embedOrderPromise: Promise<string[]> | undefined;
+
+  private embedTokenCount(text: string): number {
+    try {
+      return getEmbedEncoder().encode(text).length;
+    } catch {
+      return Math.ceil(text.length / OpenWebUiClient.CHARS_PER_TOKEN);
+    }
+  }
+
+  // Sends the flat chunk list in sequential batches that respect the model's limits. A size rejection halves the limits,
+  // remembers them for the model, and re-plans only the failed range; a range of one that still fails is a real error.
+  // Vectors land at `batchStart + response index`, so chunks of one text that span batches still average correctly.
+  // baseModel / maxInputTokensFromInfo are not passed: ModelInfo carries neither (contextLength is a context window, not a
+  // per-input embedding cap), and resolving them would cost a network call.
+  private async embedInBatches(
+    flat: string[],
+    model: string,
+    send: (input: string[]) => Promise<EmbedSendResult>,
+    stats: EmbedStats,
+    knownCounts: Array<number | undefined> = [],
+  ): Promise<number[][]> {
+    const tokenCounts = flat.map((t, i) => knownCounts[i] ?? this.embedTokenCount(t));
+    stats.tokens = tokenCounts.reduce((a, b) => a + b, 0);
+    // The limits every batch still to be sent is planned under; only a size rejection of a range that already fits them
+    // lowers it. A range planned under older, larger limits that gets rejected is merely re-planned, never halved again.
+    let currentLimits = resolveEmbedLimits(model, {
+      env: { maxInputs: this.config.EMBED_MAX_INPUTS_PER_REQUEST, maxTokens: this.config.EMBED_MAX_TOKENS_PER_REQUEST },
+      learned: this.embedLimitMemory.get(model),
+    });
+    const replan = (start: number, end: number, planLimits: EmbedLimits): Array<[number, number]> =>
+      planBatches(tokenCounts.slice(start, end), planLimits).map(([x, y]): [number, number] => [x + start, y + start]);
+    const rangeTokens = (start: number, end: number): number => tokenCounts.slice(start, end).reduce((x, y) => x + y, 0);
+    let queue = planBatches(tokenCounts, currentLimits);
+    const vectors: number[][] = new Array<number[]>(flat.length);
+    let pendingLearned: { inputs: number; tokensPerRequest: number } | undefined;
+    while (queue.length > 0) {
+      const [start, end] = queue.shift()!;
+      const result = await send(flat.slice(start, end));
+      if (result.ok) {
+        this.placeBatchVectors(vectors, start, end - start, result.entries);
+        stats.batches += 1;
+        // A halved range worked: only now is the smaller limit a fact about the upstream, and the rest of the queue
+        // (planned under the old limits) is re-planned under it.
+        if (pendingLearned) {
+          this.embedLimitMemory.remember(model, pendingLearned);
+          pendingLearned = undefined;
+          if (queue.length > 0) queue = replan(queue[0][0], flat.length, currentLimits);
+        }
+        continue;
+      }
+      if (end - start > 1 && (isEmbedSizeRejection(result.status, result.bodyText) || isEmbedContextRejection(result.status, result.bodyText))) {
+        const tokens = rangeTokens(start, end);
+        if (end - start > currentLimits.inputs || tokens > currentLimits.tokensPerRequest) {
+          // Planned under stale (larger) limits that a later rejection has since lowered: not new information.
+          queue.unshift(...replan(start, end, currentLimits));
+          continue;
+        }
+        if (stats.halvings < MAX_HALVINGS) {
+          if (isEmbedContextRejection(result.status, result.bodyText)) {
+            // One input is too long: narrow this range to find it, but this says nothing about the request limits, so
+            // keep the limits and learn nothing.
+            queue.unshift(...replan(start, end, { ...currentLimits, inputs: Math.max(1, Math.floor(Math.min(currentLimits.inputs, end - start) / 2)) }));
+          } else {
+            currentLimits = halveLimits({ ...currentLimits, inputs: Math.min(currentLimits.inputs, end - start), tokensPerRequest: Math.min(currentLimits.tokensPerRequest, tokens) });
+            pendingLearned = { inputs: currentLimits.inputs, tokensPerRequest: currentLimits.tokensPerRequest };
+            queue.unshift(...replan(start, end, currentLimits));
+          }
+          stats.halvings += 1;
+          continue;
+        }
+      }
+      throw this.embedHttpError(result);
+    }
+    return vectors;
+  }
+
+  // The OpenAI embeddings API only promises each entry's own `.index` matches its position in the batch's input: writing
+  // by index is required, not defensive, or a request with >1 text could pair the wrong text with the wrong vector.
+  private placeBatchVectors(vectors: number[][], batchStart: number, batchLength: number, entries: { index: number; embedding: number[] }[]): void {
+    if (entries.length !== batchLength) {
+      throw new Error(`Embeddings response had ${entries.length} vectors for ${batchLength} inputs`);
+    }
+    const seen = new Set<number>();
+    for (const { index, embedding } of entries) {
+      if (!Number.isInteger(index) || index < 0 || index >= batchLength || seen.has(index)) {
+        throw new Error(`Embeddings response has an out-of-range or duplicate index ${index} for a batch of ${batchLength} inputs`);
+      }
+      seen.add(index);
+      vectors[batchStart + index] = embedding;
+    }
+  }
+
+  private embedHttpError(result: Extract<EmbedSendResult, { ok: false }>): UpstreamHttpError {
+    if (this.config.EMBED_TRANSPORT === 'ollama') {
+      // eslint-disable-next-line no-console
+      console.error(`[OpenWebUiClient] Ollama embed ${result.status}: ${result.bodyText.slice(0, 500)}`);
+      return new UpstreamHttpError(
+        result.status,
+        `Ollama embed request failed: ${result.status}${result.bodyText ? ` — ${result.bodyText.slice(0, 200)}` : ''}`,
+      );
+    }
+    let detail = result.bodyText;
+    try {
+      const parsed = JSON.parse(result.bodyText) as Record<string, unknown>;
+      const msg = typeof parsed.message === 'string' ? parsed.message : '';
+      const det = typeof parsed.detail === 'string' ? parsed.detail : '';
+      detail = msg || det || result.bodyText;
+    } catch { /* non-JSON body — use raw text */ }
+    // eslint-disable-next-line no-console
+    console.error(`[OpenWebUiClient] ${result.path} ${result.status}: ${detail.slice(0, 500)}`);
+    return new UpstreamHttpError(
+      result.status,
+      `Open WebUI ${result.path} request failed: ${result.status}${detail ? ` — ${detail.slice(0, 200)}` : ''}`,
+    );
+  }
+
+  private async readBodyText(response: Response): Promise<string> {
+    try { return await response.text(); } catch { return ''; /* ignore read failure */ }
+  }
+
+  // Retried (unlike chat()/vision()) -- a pure read with no side effects, safe to re-run on a transient 429/5xx/network
+  // failure. See retryWithBackoff.ts's own doc comment for why this is the opposite call of the OpenAI client's
+  // maxRetries:0 above. maxRetries:3 (not the helper's own default of 5) -- this call sits synchronously in an
+  // already-slow SURVEY pipeline path; 3 attempts with exponential backoff is enough margin for a transient blip without
+  // piling on multiple extra seconds of dead time on a persistent failure.
+  private async postOllamaEmbeddings(model: string, input: string[], stats: EmbedStats): Promise<EmbedSendResult> {
+    const baseUrl = (this.config.EMBED_BASE_URL ?? this.config.LLM_BASE_URL).replace(/\/v1\/?$/, '');
     const response = await fetchWithRetry(
       () => {
-        attempts += 1;
-        return fetch(`${this.openWebUiAppRoot()}/openai/embeddings`, {
+        stats.attempts += 1;
+        return fetch(`${baseUrl}${this.config.EMBED_PATH}`, {
           method: 'POST',
           headers: this.nativeOllamaHeaders(),
-          body: JSON.stringify({ model: opts?.model ?? this.config.EMBED_MODEL, input: flatChunks }),
+          body: JSON.stringify({ model, input }),
         });
       },
       { maxRetries: 3 },
     );
-    // A 429 backoff inside the retry is otherwise invisible: say when the upstream was slow or needed more than one attempt (counts only).
-    const embedMs = Date.now() - embedStartedAt;
-    if (attempts > 1 || embedMs > 1000) {
-      // eslint-disable-next-line no-console
-      console.info(`embed upstream ms=${embedMs} texts=${texts.length} attempts=${attempts}`);
-    }
     if (!response.ok) {
-      let bodyText = '';
-      try { bodyText = await response.text(); } catch { /* ignore read failure */ }
-      let detail = bodyText;
-      try {
-        const parsed = JSON.parse(bodyText) as Record<string, unknown>;
-        const msg = typeof parsed.message === 'string' ? parsed.message : '';
-        const det = typeof parsed.detail === 'string' ? parsed.detail : '';
-        detail = msg || det || bodyText;
-      } catch { /* non-JSON body — use raw text */ }
-      // eslint-disable-next-line no-console
-      console.error(`[OpenWebUiClient] /openai/embeddings ${response.status}: ${detail.slice(0, 500)}`);
-      throw new UpstreamHttpError(
-        response.status,
-        `Open WebUI /openai/embeddings request failed: ${response.status}${detail ? ` — ${detail.slice(0, 200)}` : ''}`,
-      );
+      return { ok: false, status: response.status, bodyText: await this.readBodyText(response), path: this.config.EMBED_PATH };
     }
-    const body = (await response.json()) as { data: { embedding: number[]; index: number }[] };
-    // OpenAI embeddings spec only guarantees each entry's own `.index` matches
-    // its position in the input -- sort before indexing into the flat array.
-    const flatVectors = [...body.data].sort((a, b) => a.index - b.index).map((entry) => entry.embedding);
-    // Reconstruct one vector per original text by averaging the vectors of its
-    // constituent chunks (a no-op when the text fit within the limit).
-    return chunkMap.map(([start, end]) => this.averageVectors(flatVectors.slice(start, end)));
+    return { ok: true, entries: this.parseEmbeddingsBody(await response.json()), path: this.config.EMBED_PATH };
+  }
+
+  // Ollama (and Open WebUI's own /api/embeddings passthrough of it) is permanently unavailable on this deployment's
+  // production target -- confirmed with the user, not just disabled today. This is the fallback transport: Open WebUI's
+  // deprecated-but-working `/openai/embeddings` proxy (0.8.x), which -- unlike the documented, provider-agnostic
+  // `/api/embeddings` route -- does NOT check the model against the chat-model registry first (open-webui/open-webui#17584
+  // makes `/api/embeddings` fail "Model not found" for an embedding-only connection). Confirmed live: this route returns
+  // real 1536-dim vectors for `model: "OpenAI/text-embedding-3-small"`. From Open WebUI 0.9.0 the passthrough answers 403
+  // unless ENABLE_OPENAI_API_PASSTHROUGH=True, so a refused route moves on to the documented ones (which may in turn refuse
+  // a model hidden from this account). The route that answers is remembered; a remembered route that later refuses is
+  // dropped and the list is walked again.
+  private async postOpenAiEmbeddings(model: string, input: string[], stats: EmbedStats): Promise<EmbedSendResult> {
+    const order = await this.embedRouteOrder();
+    let routes = this.embedRoute ? [this.embedRoute] : order;
+    const tried: string[] = [];
+    const primary = this.config.EMBED_OPENAI_PATH ?? '/openai/embeddings';
+    let first: { status: number; bodyText: string; path: string } | undefined;
+    let sawPassthrough403 = false;
+    let last: { status: number; bodyText: string; path: string } | undefined;
+    for (let i = 0; i < routes.length; i++) {
+      const path = routes[i];
+      tried.push(path);
+      const response = await fetchWithRetry(
+        () => {
+          stats.attempts += 1;
+          return fetch(`${this.openWebUiAppRoot()}${path}`, {
+            method: 'POST',
+            headers: this.nativeOllamaHeaders(),
+            body: JSON.stringify({ model, input }),
+          });
+        },
+        { maxRetries: 3 },
+      );
+      if (response.ok) {
+        let body: unknown;
+        try { body = await response.json(); } catch { body = undefined; }
+        // Not JSON: a SPA catch-all answering 200 with its HTML shell for a route it does not serve. JSON that is not an
+        // embeddings shape (an error envelope) is the same kind of refusal. Remember the route only after a valid parse.
+        let entries: { index: number; embedding: number[] }[] | undefined;
+        if (body !== undefined) {
+          try { entries = this.parseEmbeddingsBody(body); } catch { entries = undefined; }
+        }
+        if (entries) {
+          this.embedRoute = path;
+          stats.route = path;
+          return { ok: true, entries, path };
+        }
+        last = { status: 502, bodyText: body === undefined ? 'response is not JSON' : 'response is not an embeddings body (no data or embeddings array)', path };
+        first ??= last;
+      } else {
+        const bodyText = await this.readBodyText(response);
+        const hasMore = i < routes.length - 1 || this.embedRoute === path;
+        if (!OpenWebUiClient.isEmbedRouteRefusal(response.status, bodyText, path === primary, hasMore)) {
+          stats.route = path;
+          return { ok: false, status: response.status, bodyText, path };
+        }
+        if (response.status === 403 && OpenWebUiClient.PASSTHROUGH_403.test(bodyText)) sawPassthrough403 = true;
+        last = { status: response.status, bodyText, path };
+        first ??= last;
+      }
+      if (this.embedRoute === path) {
+        this.embedRoute = undefined;
+        routes = order.filter((r) => r !== path);
+        i = -1;
+      }
+    }
+    stats.route = last!.path;
+    if (order.length === 1) return { ok: false, ...last! };
+    const firstExcerpt = (first ?? last!).bodyText.replace(/\s+/g, ' ').trim().slice(0, 120);
+    const remedy = sawPassthrough403
+      ? ' Set ENABLE_OPENAI_API_PASSTHROUGH=True on Open WebUI, or make the embedding model visible to this account so /api/v1/embeddings accepts it.'
+      : ' Check that the embedding model name exists and is visible to this account, and that the embeddings route is served.';
+    const message = `Open WebUI refused every embeddings route (${tried.join(', ')}); the first, ${(first ?? last!).path}, answered ${(first ?? last!).status}${firstExcerpt ? `: ${firstExcerpt}` : ''}.${remedy}`;
+    // eslint-disable-next-line no-console
+    console.error(`[OpenWebUiClient] ${message}`);
+    throw new UpstreamHttpError(last!.status, message);
+  }
+
+  // 403 "passthrough disabled" (Open WebUI >= 0.9.0), 404/405 (route not served), or an HTML body (handled by the caller)
+  // mean "try another route"; every other error is the answer. Two refinements: a 404 from the configured primary route that
+  // names a model or deployment (Azure DeploymentNotFound, a wrong model name) is the upstream's real answer, not a missing
+  // route; and while candidates remain, a documented route's "Model not found" (400/404/500: the model is hidden from this
+  // account) moves on, because the legacy route does not check the account's model list.
+  private static readonly PASSTHROUGH_403 = /passthrough.*disabled|disabled.*passthrough|direct api passthrough/i;
+  private static isEmbedRouteRefusal(status: number, bodyText: string, isPrimary: boolean, hasMore: boolean): boolean {
+    if (status === 403) {
+      if (OpenWebUiClient.PASSTHROUGH_403.test(bodyText)) return true;
+      // A documented route refusing a model this account cannot see; the legacy route does not check the account's models.
+      return !isPrimary && hasMore && /model not found|not have access|access denied|forbidden/i.test(bodyText);
+    }
+    if (!isPrimary && hasMore && [400, 404, 500].includes(status) && /model not found/i.test(bodyText)) return true;
+    if (status === 404) return !(isPrimary && /model|deployment/i.test(bodyText));
+    return status === 405;
+  }
+
+  // Both response shapes in one place: OpenAI `{data:[{embedding,index}]}` and Ollama `{embeddings:[[...]]}`.
+  private parseEmbeddingsBody(body: unknown): { index: number; embedding: number[] }[] {
+    const b = body as { data?: { embedding: number[]; index?: number }[]; embeddings?: number[][] } | null;
+    if (b && Array.isArray(b.data)) return b.data.map((entry, position) => ({ index: typeof entry.index === 'number' ? entry.index : position, embedding: entry.embedding }));
+    if (b && Array.isArray(b.embeddings)) return b.embeddings.map((embedding, index) => ({ index, embedding }));
+    throw new Error('Embeddings response has neither a data nor an embeddings array');
+  }
+
+  // Candidate routes in the order they are tried: EMBED_OPENAI_PATH then the fallbacks -- unless Open WebUI is 0.9.0 or
+  // newer, where the legacy passthrough is off by default and the documented routes go first. The version is asked once per
+  // client, only when there is a fallback to order, and never blocks: any failure leaves the default order.
+  private embedRouteOrder(): Promise<string[]> {
+    this.embedOrderPromise ??= (async () => {
+      const primary = this.config.EMBED_OPENAI_PATH ?? '/openai/embeddings';
+      const fallbacks = (this.config.EMBED_OPENAI_FALLBACK_ROUTES ?? []).filter((r) => r !== primary);
+      if (fallbacks.length === 0) return [primary];
+      const version = await this.openWebUiVersion();
+      const match = version ? /^(\d+)\.(\d+)/.exec(version) : null;
+      const documentedFirst = match !== null && (Number(match[1]) > 0 || Number(match[2]) >= 9);
+      const order = documentedFirst ? [...fallbacks, primary] : [primary, ...fallbacks];
+      // eslint-disable-next-line no-console
+      console.info(`[OpenWebUiClient] open webui version=${version ?? 'unknown'} embed route order=${order.join(',')}`);
+      return order;
+    })();
+    return this.embedOrderPromise;
+  }
+
+  // Overridable by tests; the version lookup must never hold up the first embed for longer than this.
+  private static VERSION_TIMEOUT_MS = 5_000;
+
+  private async openWebUiVersion(): Promise<string | null> {
+    try {
+      const response = await fetch(`${this.openWebUiAppRoot()}/api/version`, { headers: this.nativeOllamaHeaders(), signal: AbortSignal.timeout(OpenWebUiClient.VERSION_TIMEOUT_MS) });
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        return null;
+      }
+      const version = ((await response.json()) as { version?: unknown }).version;
+      return typeof version === 'string' && /^\d+\.\d+\.\d+/.test(version) ? version : null;
+    } catch {
+      return null;
+    }
   }
 
   // Splits a text into chunks that each fit within EMBED_MAX_TOKENS, using
@@ -668,21 +899,21 @@ export class OpenWebUiClient implements LlmClient {
   // failure (e.g. a corrupted install in a constrained container) rather
   // than crashing the embed call -- same fail-open philosophy as
   // JobEventPersistenceService elsewhere in this module.
-  private splitTextForEmbed(text: string): string[] {
+  private splitTextForEmbed(text: string): { chunks: string[]; wholeTokenCount: number | undefined } {
     try {
       const encoder = getEmbedEncoder();
       const tokens = encoder.encode(text);
-      if (tokens.length <= OpenWebUiClient.EMBED_MAX_TOKENS) return [text];
+      if (tokens.length <= OpenWebUiClient.EMBED_MAX_TOKENS) return { chunks: [text], wholeTokenCount: tokens.length };
       const chunks: string[] = [];
       for (let start = 0; start < tokens.length; start += OpenWebUiClient.EMBED_MAX_TOKENS) {
         const slice = tokens.slice(start, start + OpenWebUiClient.EMBED_MAX_TOKENS);
         chunks.push(encoder.decode(slice));
       }
-      return chunks;
+      return { chunks, wholeTokenCount: undefined };
     } catch (err) {
       // eslint-disable-next-line no-console -- no structured logger in this module yet
       console.error('[OpenWebUiClient] cl100k_base tokenizer failed, falling back to chars-based chunk estimate:', err);
-      return this.splitTextForEmbedByChars(text);
+      return { chunks: this.splitTextForEmbedByChars(text), wholeTokenCount: undefined };
     }
   }
 
