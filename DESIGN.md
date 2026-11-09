@@ -3275,6 +3275,41 @@ when it has a fresh score (a `qualityScore` that is not stale), whether or not t
 a source location. The weakest-area row also needs fresh category scores. With no fresh
 score the strip says nothing about scoring.
 
+**Write dialog variants (2026-11-09).** The title and the confirm button depend on what
+the preview says will happen:
+
+| Case | Title | Description starts | Confirm button |
+|---|---|---|---|
+| Create only | Write these items to Azure DevOps? | This creates N new work items under <area path>. | Write N items to <project> |
+| Create and links | same | same (the summary lists the parent links) | Write N items to <project> |
+| Links only (nothing new to create) | same | This finishes writing the remaining links under <area path>. | Finish writing to <project> |
+| Figures only (`figuresOnly`) | Attach figures to Azure DevOps items? | This attaches the figures to their items under <area path>. | Attach N figures to <project> |
+| Links and figures | Write these items to Azure DevOps? | This adds the remaining links and attaches the figures under <area path>. | Finish writing to <project> |
+
+Every variant ends with the irreversible warning; the figures-only one says "Attachments
+must be removed directly in Azure DevOps afterward." Before the preview resolves the
+button reads "Confirm and write". When the preview has
+`figuresToAttach`, the dialog shows the advisory "Figures are attached by position.
+Check each one next to its item before you write." When `figuresUnavailable` is above
+zero a notice says those figures can no longer be attached (their image data was
+removed, see the retention note in backlog item 37). `hasWork` false disables the
+confirm button. If the preview takes too long the dialog says "The check took too long.
+You can still write, or close this and try again." The summary's left-out line has a
+"Left out of the write" shortcut that closes the dialog and turns on a matching filter
+chip in the diff tree, so the reviewer sees exactly the excluded items.
+
+**Figure cards in the item dialog (2026-11-09).** Each entry with figures shows a
+"Figures" heading and one card per figure: a thumbnail (alt text "Figure n of m for this
+item"), the description or a "No description" label, and the hint about position shown
+once per item, not per card. "Move to..." opens a picker that lists only items that will
+be created, each with "(in <parent>)". "Don't attach" is reversible: the card dims and
+is labelled "Not attached", offers "Attach again", and the action shows an Undo toast.
+For an item that is already written the controls are replaced by a locked note (the
+server refuses the change). A failed manual upload says "Upload failed. Try again."
+After a move, detach or attach, focus goes to the Figures heading, or to the panel root
+if the heading is gone. Attach choices are stored as `detachedFigureIds` and the
+per-entry `attachFigureIds` is computed by the server, never stored.
+
 **Not built yet.** The Discussion-write mode and any link-append behaviour. A selection
 the UI cannot make (`selectedLocalIds`) is supported by the API and the preview; the
 UI never sends one.
