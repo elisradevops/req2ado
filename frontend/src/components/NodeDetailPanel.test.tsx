@@ -1380,6 +1380,24 @@ describe('NodeDetailPanel figure move', () => {
     await waitFor(() => expect(screen.getByText('Figures')).toHaveFocus());
   });
 
+  it('a detached card explains that it will not be written and shows no upload line', () => {
+    renderPanel(<NodeDetailPanel entry={figEntry({ detachedFigureIds: ['f5'], attachFigureIds: ['f0'] })} jobId="job-1" jobStatus="diff_ready" onAttachFigure={vi.fn()} onMoveFigure={vi.fn()} figureMoveTargets={targets} />);
+    expect(screen.getByText('This figure will not be written to Azure DevOps unless you attach it again or move it to another item.')).toBeInTheDocument();
+    expect(screen.getAllByText(/You can upload this figure after the item is written/)).toHaveLength(1);
+  });
+
+  it('focus moves to the panel when the last figure leaves the item', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const onMoveFigure = vi.fn().mockResolvedValue(undefined);
+    const one = figEntry({ figureIds: ['f0'], uncaptionedFigureIds: [], attachFigureIds: ['f0'] });
+    const view = renderPanel(<NodeDetailPanel entry={one} jobId="job-1" jobStatus="diff_ready" onMoveFigure={onMoveFigure} figureMoveTargets={targets} />);
+    await userEvent.click(screen.getByRole('button', { name: "Don't attach, figure 1 of 1" }));
+    view.rerender(<ToastProvider><NodeDetailPanel entry={{ ...one, figureIds: [], attachFigureIds: [] }} jobId="job-1" jobStatus="diff_ready" onMoveFigure={onMoveFigure} figureMoveTargets={targets} /></ToastProvider>);
+    await waitFor(() => expect(screen.queryByText('Figures')).not.toBeInTheDocument());
+    await waitFor(() => expect(document.activeElement).not.toBe(document.body));
+    expect(document.activeElement).toHaveAttribute('data-node-detail-panel');
+  });
+
   it('the error text differs for detach and move', async () => {
     const { default: userEvent } = await import('@testing-library/user-event');
     const onMoveFigure = vi.fn().mockRejectedValue(new Error('Nope'));

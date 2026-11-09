@@ -268,6 +268,8 @@ export function NodeDetailPanel({
   const [traceLinkRetryStatus, setTraceLinkRetryStatus] = useState<Record<string, 'retrying' | 'done'>>({});
   const retryingFailureIdsRef = useRef<Set<string>>(new Set());
   const figuresHeadingRef = useRef<HTMLSpanElement>(null);
+  const panelRootRef = useRef<HTMLDivElement>(null);
+  const refocusAfterFigureChangeRef = useRef(false);
   // Per-figureId move/detach state, same synchronous-guard-ref pattern as the upload status above.
   const [figureMoveStatus, setFigureMoveStatus] = useState<Record<string, { pending: boolean; error: string | null }>>({});
   const movingFigureIdsRef = useRef<Set<string>>(new Set());
@@ -303,6 +305,13 @@ export function NodeDetailPanel({
     if (entry && canEditEntry(entry, jobStatus, written) && !editing) startEditing();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editRequest]);
+
+  // After a figure move the diff updates; if the Figures section is gone, keep focus inside the panel.
+  useEffect(() => {
+    if (!refocusAfterFigureChangeRef.current) return;
+    refocusAfterFigureChangeRef.current = false;
+    if (!figuresHeadingRef.current) panelRootRef.current?.focus();
+  }, [entry]);
 
   if (!entry) {
     return (
@@ -430,7 +439,9 @@ export function NodeDetailPanel({
     try {
       await onMoveFigure(figureId, targetLocalId);
       // Keep keyboard and screen reader users in the Figures section; the toast announces the result.
-      figuresHeadingRef.current?.focus();
+      // When the last figure leaves, the heading unmounts; the effect below then falls back to the panel root.
+      (figuresHeadingRef.current ?? panelRootRef.current)?.focus();
+      refocusAfterFigureChangeRef.current = true;
       // The diff update removes this card; nothing to keep.
       setFigureMoveStatus((prev) => {
         const next = { ...prev };
@@ -513,7 +524,12 @@ export function NodeDetailPanel({
               {undescribedFigureCount === 1 && <p className="text-xs text-ink-3">{noDescriptionHint}</p>}
             </>
           )}
-          {onAttachFigure &&
+          {detached ? (
+            <p className="text-xs text-ink-3">
+              This figure will not be written to Azure DevOps unless you attach it again or move it to another item.
+            </p>
+          ) : (
+            onAttachFigure &&
             (canAttach ? (
               <Button
                 variant="outline"
@@ -530,7 +546,8 @@ export function NodeDetailPanel({
               <p className="text-xs text-ink-3">
                 You can upload this figure after the item is written to Azure DevOps.
               </p>
-            ))}
+            ))
+          )}
           {status === 'failed' && (
             <p role="alert" className="text-xs text-danger-ink">
               Upload failed. Try again.
@@ -713,7 +730,7 @@ export function NodeDetailPanel({
   }
 
   return (
-    <div className="flex flex-col gap-3 p-5">
+    <div ref={panelRootRef} tabIndex={-1} data-node-detail-panel className="flex flex-col gap-3 p-5 outline-none">
       {/* Edit sits right next to the title it edits -- it used to be a lone
           button at the very bottom of the pane, past description/quality/
           trace-links/sources, disconnected from what it acts on. */}
