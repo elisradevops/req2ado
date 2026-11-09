@@ -1,5 +1,6 @@
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
 import cookieParser from 'cookie-parser';
 import { WsAdapter } from '@nestjs/platform-ws';
@@ -18,11 +19,12 @@ const TEST_SESSION_COOKIE = 'req2ado_session=test-token';
 // SessionService is stubbed -- see beforeAll).
 function authedRequest(
   server: Parameters<typeof request>[0],
-): { get: (url: string) => request.Test; post: (url: string) => request.Test; delete: (url: string) => request.Test } {
+): { get: (url: string) => request.Test; post: (url: string) => request.Test; patch: (url: string) => request.Test; delete: (url: string) => request.Test } {
   const agent = request(server);
   return {
     get: (url: string) => agent.get(url).set('Cookie', TEST_SESSION_COOKIE),
     post: (url: string) => agent.post(url).set('Cookie', TEST_SESSION_COOKIE),
+    patch: (url: string) => agent.patch(url).set('Cookie', TEST_SESSION_COOKIE),
     delete: (url: string) => agent.delete(url).set('Cookie', TEST_SESSION_COOKIE),
   };
 }
@@ -34,6 +36,7 @@ describe('JobsController (e2e)', () => {
     list: jest.fn(),
     getById: jest.fn(),
     confirm: jest.fn(),
+    reindexDedup: jest.fn(),
     reject: jest.fn(),
     cancel: jest.fn(),
     delete: jest.fn(),
@@ -46,6 +49,7 @@ describe('JobsController (e2e)', () => {
     getWritePreview: jest.fn(),
     getDedupSkips: jest.fn(),
     validateCreatedTree: jest.fn(),
+    moveFigure: jest.fn(),
   };
   const fakeAdoCredentialResolver = { resolve: jest.fn().mockResolvedValue(undefined) };
 
@@ -77,7 +81,10 @@ describe('JobsController (e2e)', () => {
       .overrideProvider(AdoCredentialResolver)
       .useValue(fakeAdoCredentialResolver)
       .compile();
-    app = moduleRef.createNestApplication();
+    const expressApp = moduleRef.createNestApplication<NestExpressApplication>();
+    app = expressApp;
+    // As main.ts: the default 100kb body limit would answer 413 before the selectedLocalIds cap is reached.
+    expressApp.useBodyParser('json', { limit: '10mb' });
     app.use(cookieParser());
     app.useWebSocketAdapter(new WsAdapter(app));
     await app.init();
@@ -211,6 +218,54 @@ describe('JobsController (e2e)', () => {
     fakeJobsService.getById.mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [], userId: 'someone-elses-descriptor' });
     const res = await authedRequest(app.getHttpServer()).get('/jobs/job-1');
     expect(res.status).toBe(404);
+  });
+
+  it('POST /jobs/:id/dedup/reindex returns the service result', async () => {
+    fakeJobsService.reindexDedup.mockResolvedValue({ indexed: 3 });
+    const res = await authedRequest(app.getHttpServer()).post('/jobs/job-1/dedup/reindex');
+    expect(res.status).toBe(201);
+    expect(res.body).toEqual({ indexed: 3 });
+    expect(fakeJobsService.reindexDedup).toHaveBeenCalledWith('job-1');
+  });
+
+  it('POST /jobs/:id/dedup/reindex enforces ownership (404 for another user\'s job, service not called)', async () => {
+    fakeJobsService.getById.mockResolvedValue({ id: 'job-1', userId: 'someone-elses-descriptor' });
+    const res = await authedRequest(app.getHttpServer()).post('/jobs/job-1/dedup/reindex');
+    expect(res.status).toBe(404);
+    expect(fakeJobsService.reindexDedup).not.toHaveBeenCalled();
+  });
+
+  it('PATCH figures route returns the decorated diff and enforces ownership', async () => {
+    fakeJobsService.getById.mockResolvedValue({ userId: TEST_USER_ID, writtenLocalIds: [] });
+    fakeJobsService.moveFigure.mockResolvedValue([
+      { localId: 'a', action: 'create', figureIds: [] },
+      { localId: 'b', action: 'create', figureIds: ['f0'] },
+    ]);
+    const res = await authedRequest(app.getHttpServer()).patch('/jobs/job-1/diff/a/figures/f0').send({ targetLocalId: 'b' });
+    expect(res.status).toBe(200);
+    expect(res.body.dryRunDiff).toEqual([
+      { localId: 'a', action: 'create', figureIds: [], attachFigureIds: [] },
+      { localId: 'b', action: 'create', figureIds: ['f0'], attachFigureIds: ['f0'] },
+    ]);
+    expect(fakeJobsService.moveFigure).toHaveBeenCalledWith('job-1', 'a', 'f0', 'b');
+
+    const detach = await authedRequest(app.getHttpServer()).patch('/jobs/job-1/diff/a/figures/f0').send({ targetLocalId: null });
+    expect(detach.status).toBe(200);
+    expect(fakeJobsService.moveFigure).toHaveBeenLastCalledWith('job-1', 'a', 'f0', null);
+
+    fakeJobsService.moveFigure.mockClear();
+    fakeJobsService.getById.mockResolvedValue({ userId: 'someone-elses-descriptor' });
+    const other = await authedRequest(app.getHttpServer()).patch('/jobs/job-1/diff/a/figures/f0').send({ targetLocalId: 'b' });
+    expect(other.status).toBe(404);
+    expect(fakeJobsService.moveFigure).not.toHaveBeenCalled();
+  });
+
+  it('PATCH figures route rejects a non-string non-null targetLocalId', async () => {
+    for (const body of [{}, { targetLocalId: 5 }, { targetLocalId: true }, { targetLocalId: ['b'] }]) {
+      const res = await authedRequest(app.getHttpServer()).patch('/jobs/job-1/diff/a/figures/f0').send(body);
+      expect(res.status).toBe(400);
+    }
+    expect(fakeJobsService.moveFigure).not.toHaveBeenCalled();
   });
 
   it('POST /jobs/:id/confirm triggers the write and returns the result', async () => {
@@ -391,6 +446,27 @@ describe('JobsController (e2e)', () => {
     expect(confirm.status).toBe(400);
     expect(fakeJobsService.getWritePreview).not.toHaveBeenCalled();
     expect(fakeJobsService.confirm).not.toHaveBeenCalled();
+  });
+
+  it('rejects selectedLocalIds longer than the cap with 400', async () => {
+    fakeJobsService.getWritePreview.mockClear();
+    fakeJobsService.confirm.mockClear();
+    const tooMany = Array.from({ length: 50_001 }, (_, i) => `n${i}`);
+    const preview = await authedRequest(app.getHttpServer()).post('/jobs/job-1/write-preview').send({ selectedLocalIds: tooMany });
+    const confirm = await authedRequest(app.getHttpServer()).post('/jobs/job-1/confirm').send({ selectedLocalIds: tooMany });
+    expect(preview.status).toBe(400);
+    expect(confirm.status).toBe(400);
+    expect(fakeJobsService.getWritePreview).not.toHaveBeenCalled();
+    expect(fakeJobsService.confirm).not.toHaveBeenCalled();
+  });
+
+  it('GET and POST write-preview 404 through one helper', async () => {
+    fakeJobsService.getWritePreview.mockResolvedValue(null);
+    const get = await authedRequest(app.getHttpServer()).get('/jobs/unknown/write-preview');
+    const post = await authedRequest(app.getHttpServer()).post('/jobs/unknown/write-preview').send({});
+    expect(get.status).toBe(404);
+    expect(post.status).toBe(404);
+    expect(post.body.message).toBe(get.body.message);
   });
 
   it('GET /jobs/:id/write-preview returns 404 for an unknown job', async () => {

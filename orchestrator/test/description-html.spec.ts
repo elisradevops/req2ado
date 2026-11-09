@@ -1,4 +1,4 @@
-import { composeAdoDescriptionHtml, normalizeAdoStoredHtml, splitProposal, toAdoDescriptionHtml } from '../src/modules/pipeline/description-html';
+import { canonicalizeForCompare, composeAdoDescriptionHtml, normalizeAdoStoredHtml, splitProposal, toAdoDescriptionHtml } from '../src/modules/pipeline/description-html';
 
 describe('toAdoDescriptionHtml', () => {
   it('wraps plain prose in a paragraph', () => {
@@ -141,6 +141,78 @@ describe('normalizeAdoStoredHtml', () => {
   it('is a no-op on HTML that already matches our own generator output exactly', () => {
     const html = '<p>Nothing to normalize here.</p>\n';
     expect(normalizeAdoStoredHtml(html)).toBe(html);
+  });
+});
+
+describe('canonicalizeForCompare', () => {
+  it('an ampersand in an href compares equal to its escaped form', () => {
+    expect(canonicalizeForCompare('<a href="http://x/?a=1&b=2">l</a>')).toBe(canonicalizeForCompare('<a href="http://x/?a=1&amp;b=2">l</a>'));
+    expect(canonicalizeForCompare('<a href="x?a=1&lt;2&gt;">l</a>')).toBe(canonicalizeForCompare('<a href="x?a=1&#60;2&#62;">l</a>'));
+    expect(canonicalizeForCompare('<a href="x?a=1&amp;amp;b">l</a>')).not.toBe(canonicalizeForCompare('<a href="x?a=1&amp;b">l</a>'));
+  });
+
+  const same = (stored: string, expected: string) =>
+    expect(canonicalizeForCompare(normalizeAdoStoredHtml(stored))).toBe(canonicalizeForCompare(expected));
+  const differs = (stored: string, expected: string) =>
+    expect(canonicalizeForCompare(normalizeAdoStoredHtml(stored))).not.toBe(canonicalizeForCompare(expected));
+
+  it('treats ADO-encoded apostrophes and a trailing space before a closing tag as equal', () => {
+    same('<p>The SRUs&#39; locations are listed: </p>', "<p>The SRUs' locations are listed:</p>");
+    same('<p>It&apos;s &#x27;ok&#x27; &quot;q&quot;</p>', `<p>It's 'ok' "q"</p>`);
+  });
+
+  it('treats &nbsp; and U+00A0 as a space', () => {
+    same('<p>a&nbsp;b</p>', '<p>a b</p>');
+    same('<p>a\u00a0b</p>', '<p>a b</p>');
+  });
+
+  it('treats a trailing semicolon and spaces in style values as equal, on table and col', () => {
+    same('<table style="width:100%;border-collapse:collapse;">', '<table style="width:100%; border-collapse:collapse">');
+    same('<col style="width:48.872%;">', '<col style="width:48.872%">');
+  });
+
+  it('quotes bare attribute values and collapses whitespace between tags', () => {
+    same('<td colspan=3>x</td>\n <td>y</td>', '<td colspan="3">x</td><td>y</td>');
+  });
+
+  it('decodes entities in a single pass (no double decoding of &amp;lt;)', () => {
+    same('<p>a &amp; b &lt; c</p>', '<p>a & b < c</p>');
+    differs('<p>&amp;lt;</p>', '<p><</p>');
+  });
+
+  it('still reports a changed word, number or punctuation', () => {
+    differs('<p>The SRUs&#39; locations </p>', "<p>The SRU's locations</p>");
+    differs('<p>Power 28 V </p>', '<p>Power 24 V</p>');
+    differs('<p>locations: </p>', '<p>locations.</p>');
+    differs('<p>a b</p>', '<p>ab</p>');
+  });
+
+  it('escaped markup text does not equal a real tag', () => {
+    differs('<p>&lt;b&gt;x&lt;/b&gt;</p>', '<p><b>x</b></p>');
+    same('<p>&lt;b&gt;x&lt;/b&gt;</p>', '<p>&lt;b&gt;x&lt;/b&gt;</p>');
+  });
+
+  it('a quote entity inside an attribute value does not break the comparison', () => {
+    same('<p title="a &quot;q&quot; b" style="color:red;">x</p>', `<p title='a "q" b' style="color:red">x</p>`);
+    differs('<p title="a &quot;q&quot; b">x</p>', '<p title="a q b">x</p>');
+  });
+
+  it('whitespace inside pre is significant, outside it is not', () => {
+    same('<div>  a  <pre>x  y</pre>  b </div>', '<div>a<pre>x  y</pre>b</div>');
+    differs('<pre>x  y</pre>', '<pre>x y</pre>');
+    differs('<pre>x\ny</pre>', '<pre>x y</pre>');
+  });
+
+  it('tag and attribute case and single quotes compare equal', () => {
+    same("<P CLASS='a'>x</P>", '<p class="a">x</p>');
+    same("<TD ColSpan=3>x</TD>", '<td colspan="3">x</td>');
+  });
+
+  it('a description with 200k characters of < and no > canonicalises in under 500 ms', () => {
+    const start = Date.now();
+    canonicalizeForCompare('<'.repeat(200000));
+    canonicalizeForCompare('<p ' + '<'.repeat(200000));
+    expect(Date.now() - start).toBeLessThan(500);
   });
 });
 

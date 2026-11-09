@@ -451,7 +451,7 @@ describe('JobsController.moveDiffEntry', () => {
       anchorLocalId: 'n2',
       placement: 'before',
     });
-    expect(result).toEqual({ dryRunDiff: [{ localId: 'n0', parentLocalId: 'n1' }] });
+    expect(result).toEqual({ dryRunDiff: [{ localId: 'n0', parentLocalId: 'n1', attachFigureIds: [] }] });
   });
 
   it('accepts an explicit null parentLocalId (root placement)', async () => {
@@ -513,7 +513,7 @@ describe('JobsController.setDiffEntriesReviewed', () => {
     const result = await make(jobsService).setDiffEntriesReviewed('job-1', TEST_USER, ['n0', 'n1'], true);
 
     expect(jobsService.setDiffEntriesReviewed).toHaveBeenCalledWith('job-1', ['n0', 'n1'], true);
-    expect(result).toEqual({ dryRunDiff: [{ localId: 'n0', reviewed: true }] });
+    expect(result).toEqual({ dryRunDiff: [{ localId: 'n0', reviewed: true, attachFigureIds: [] }] });
   });
 
   it.each([
@@ -651,7 +651,7 @@ describe('JobsController.addDiffEntry', () => {
     const result = await controller.addDiffEntry('job-1', TEST_USER, 'n0', 'Requirement', 'Title', 'Desc');
 
     expect(jobsService.addDiffEntry).toHaveBeenCalledWith('job-1', { parentLocalId: 'n0', type: 'Requirement', title: 'Title', description: 'Desc' });
-    expect(result).toEqual({ dryRunDiff: [{ localId: 'n1' }] });
+    expect(result).toEqual({ dryRunDiff: [{ localId: 'n1', attachFigureIds: [] }] });
   });
 
   // CR: reparent -- explicit null (root placement) must be accepted, not
@@ -1065,7 +1065,7 @@ describe('JobsController.setProposalAccepted (P9d)', () => {
     const result = await make(jobsService).setProposalAccepted('job-1', 'n0', TEST_USER, true);
 
     expect(jobsService.setProposalAccepted).toHaveBeenCalledWith('job-1', 'n0', true);
-    expect(result).toEqual({ dryRunDiff: [{ localId: 'n0', proposalAccepted: true }] });
+    expect(result).toEqual({ dryRunDiff: [{ localId: 'n0', proposalAccepted: true, attachFigureIds: [] }] });
   });
 
   it('rejects a non-boolean accepted before touching the job', async () => {
@@ -1139,5 +1139,52 @@ describe('POST /jobs/preview/summary limits', () => {
     const handler = JobsController.prototype.previewSummary;
     expect(Reflect.getMetadata('THROTTLER:LIMITdefault', handler)).toBeLessThanOrEqual(20);
     expect(Reflect.getMetadata('THROTTLER:TTLdefault', handler)).toBe(60_000);
+  });
+});
+
+describe('JobsController diff-mutating routes return decorated entries', () => {
+  const TEST_USER = { userId: 'user-descriptor-1', displayName: 'Jane Doe' } as any;
+  const TEST_JOB = { id: 'job-1', userId: 'user-descriptor-1', status: 'diff_ready', writtenLocalIds: [] };
+  const created = { localId: 'n0', parentLocalId: null, type: 'Requirement', action: 'create', existingAdoId: null, figureIds: ['f1'] };
+  const reused = { localId: 'n1', parentLocalId: null, type: 'Requirement', action: 'reuse', existingAdoId: 4, figureIds: ['f2'] };
+  const expected = [{ ...created, attachFigureIds: ['f1'] }, { ...reused, attachFigureIds: [] }];
+  const build = (methods: Record<string, jest.Mock>) => {
+    const jobsService = { getById: jest.fn().mockResolvedValue(TEST_JOB), modelOf: jest.fn().mockResolvedValue(null), ...methods };
+    return new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+  };
+  const diff = () => jest.fn().mockResolvedValue([created, reused]);
+
+  it('setDiffEntriesReviewed', async () => {
+    expect(await build({ setDiffEntriesReviewed: diff() }).setDiffEntriesReviewed('job-1', TEST_USER, ['n0'], true)).toEqual({ dryRunDiff: expected });
+  });
+  it('editDiffEntry', async () => {
+    expect(await build({ editDiffEntry: diff() }).editDiffEntry('job-1', 'n0', TEST_USER, 'T', undefined, undefined, undefined, undefined)).toEqual({ dryRunDiff: expected });
+  });
+  it('setDiffEntryExcluded', async () => {
+    expect(await build({ setDiffEntryExcluded: diff() }).setDiffEntryExcluded('job-1', 'n0', TEST_USER, false)).toEqual({ dryRunDiff: expected });
+  });
+  it('setProposalAccepted', async () => {
+    expect(await build({ setProposalAccepted: diff() }).setProposalAccepted('job-1', 'n0', TEST_USER, true)).toEqual({ dryRunDiff: expected });
+  });
+  it('moveDiffEntry', async () => {
+    expect(await build({ moveDiffEntry: diff() }).moveDiffEntry('job-1', 'n0', TEST_USER, null, undefined, undefined)).toEqual({ dryRunDiff: expected });
+  });
+  it('addDiffEntry', async () => {
+    expect(await build({ addDiffEntry: diff() }).addDiffEntry('job-1', TEST_USER, null, 'Requirement', 't', 'd')).toEqual({ dryRunDiff: expected });
+  });
+  it('rescoreDiffEntry', async () => {
+    expect(await build({ rescoreDiffEntry: diff() }).rescoreDiffEntry('job-1', 'n0', TEST_USER)).toEqual({ dryRunDiff: expected });
+  });
+  it('retryEnhancement decorates the dryRunDiff it returns and keeps the other fields', async () => {
+    const retryEnhancement = jest.fn().mockResolvedValue({ dryRunDiff: [created, reused], warnings: [], enhanced: ['n0'], failed: [], skipped: [] });
+    const result: any = await build({ retryEnhancement }).retryEnhancement('job-1', TEST_USER, 'enhancement_call_failed', 'title_tag', ['n0']);
+    expect(result.dryRunDiff).toEqual(expected);
+    expect(result.enhanced).toEqual(['n0']);
+  });
+  it('an entry the job already wrote is decorated even when it was a reuse', async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue({ ...TEST_JOB, writtenLocalIds: ['n1'] }), setDiffEntryExcluded: diff() };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const result: any = await controller.setDiffEntryExcluded('job-1', 'n0', TEST_USER, false);
+    expect(result.dryRunDiff[1].attachFigureIds).toEqual(['f2']);
   });
 });

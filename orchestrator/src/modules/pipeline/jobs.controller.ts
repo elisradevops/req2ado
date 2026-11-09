@@ -23,7 +23,7 @@ import { Throttle } from '@nestjs/throttler';
 import { Body } from '@nestjs/common';
 import type { Response } from 'express';
 import type { CanonicalDoc } from '@req2ado/shared-ts';
-import { JobsService, JobSummary, type JobDetail } from './jobs.service';
+import { decorateStoredDiff, JobsService, JobSummary, type JobDetail } from './jobs.service';
 import { IngestionHttpClient, type RewriteComparison, type ScoreExplanation } from './ingestion-http.client';
 import { WorkItemTypeCatalogService, type WorkItemTypeCatalogEntry } from './work-item-type-catalog.service';
 import { jobFigureFileUploadSchema } from './job-figure-file.dto';
@@ -118,8 +118,12 @@ export interface ModelListing {
 
 // A row selection from the request body: absent means "everything", anything but an array of strings is rejected.
 // null is rejected unless allowNull (the read-only preview): on the irreversible confirm, null must never mean "write everything".
+const MAX_SELECTED_LOCAL_IDS = 50_000;
 function parseSelectedLocalIds(value: unknown, options: { allowNull?: boolean } = {}): string[] | undefined {
   if (value === undefined || (value === null && options.allowNull)) return undefined;
+  if (Array.isArray(value) && value.length > MAX_SELECTED_LOCAL_IDS) {
+    throw new BadRequestException(`selectedLocalIds must not hold more than ${MAX_SELECTED_LOCAL_IDS} ids`);
+  }
   if (Array.isArray(value) && value.every((v) => typeof v === 'string')) return value as string[];
   throw new BadRequestException('selectedLocalIds must be an array of strings');
 }
@@ -524,9 +528,10 @@ export class JobsController {
     ) {
       throw new BadRequestException(`localIds must be a non-empty array of at most ${maxItems} strings`);
     }
-    await this.ownedJob(id, user);
+    const { writtenLocalIds } = await this.ownedJob(id, user);
     await this.assertModelAllowed(await this.jobsService.modelOf(id));
-    return this.jobsService.retryEnhancement(id, { kind, pass, localIds: [...new Set(localIds as string[])] });
+    const result = await this.jobsService.retryEnhancement(id, { kind, pass, localIds: [...new Set(localIds as string[])] });
+    return { ...result, dryRunDiff: decorateStoredDiff(result.dryRunDiff, writtenLocalIds) };
   }
 
   // Declared BEFORE ':id/diff/:localId' on purpose -- 'reviewed' is a static
@@ -545,9 +550,9 @@ export class JobsController {
     if (!Array.isArray(localIds) || localIds.length === 0 || !localIds.every((v) => typeof v === 'string' && v.length > 0)) {
       throw new BadRequestException('localIds must be a non-empty array of strings');
     }
-    await this.ownedJob(id, user);
+    const { writtenLocalIds } = await this.ownedJob(id, user);
     const dryRunDiff = await this.jobsService.setDiffEntriesReviewed(id, localIds as string[], reviewed);
-    return { dryRunDiff };
+    return { dryRunDiff: decorateStoredDiff(dryRunDiff, writtenLocalIds) };
   }
 
   @Patch(':id/warnings/acknowledged')
@@ -587,7 +592,7 @@ export class JobsController {
     @Body('tags') tags: string[] | undefined,
     @Body('seCoverageRef') seCoverageRef: string | null | undefined,
   ): Promise<{ dryRunDiff: unknown }> {
-    await this.ownedJob(id, user);
+    const { writtenLocalIds } = await this.ownedJob(id, user);
     // Same trim-then-null-if-blank convention the wizard's own (now-removed)
     // job-level Customer ID field used -- undefined (field omitted) leaves
     // the entry's customerId untouched; a real service-layer type gate
@@ -634,7 +639,7 @@ export class JobsController {
       tags,
       seCoverageRef: trimmedSeCoverageRef,
     });
-    return { dryRunDiff };
+    return { dryRunDiff: decorateStoredDiff(dryRunDiff, writtenLocalIds) };
   }
 
   @Patch(':id/diff/:localId/exclude')
@@ -647,9 +652,9 @@ export class JobsController {
     if (typeof excluded !== 'boolean') {
       throw new BadRequestException('excluded must be a boolean');
     }
-    await this.ownedJob(id, user);
+    const { writtenLocalIds } = await this.ownedJob(id, user);
     const dryRunDiff = await this.jobsService.setDiffEntryExcluded(id, localId, excluded);
-    return { dryRunDiff };
+    return { dryRunDiff: decorateStoredDiff(dryRunDiff, writtenLocalIds) };
   }
 
   @Patch(':id/diff/:localId/proposal')
@@ -662,9 +667,9 @@ export class JobsController {
     if (typeof accepted !== 'boolean') {
       throw new BadRequestException('accepted must be a boolean');
     }
-    await this.ownedJob(id, user);
+    const { writtenLocalIds } = await this.ownedJob(id, user);
     const dryRunDiff = await this.jobsService.setProposalAccepted(id, localId, accepted);
-    return { dryRunDiff };
+    return { dryRunDiff: decorateStoredDiff(dryRunDiff, writtenLocalIds) };
   }
 
   @Patch(':id/diff/:localId/move')
@@ -682,9 +687,27 @@ export class JobsController {
     if (placement !== undefined && placement !== 'before' && placement !== 'after') {
       throw new BadRequestException("placement must be 'before' or 'after'");
     }
-    await this.ownedJob(id, user);
+    const { writtenLocalIds } = await this.ownedJob(id, user);
     const dryRunDiff = await this.jobsService.moveDiffEntry(id, localId, { parentLocalId, anchorLocalId, placement });
-    return { dryRunDiff };
+    return { dryRunDiff: decorateStoredDiff(dryRunDiff, writtenLocalIds) };
+  }
+
+  // Reviewer correction of figure placement BEFORE the write: move a figure to another entry, or detach it (targetLocalId null). The route has
+  // five segments, so it cannot shadow or be shadowed by the shorter 'diff/:localId/...' PATCH routes above.
+  @Patch(':id/diff/:localId/figures/:figureId')
+  async moveFigure(
+    @Param('id') id: string,
+    @Param('localId') localId: string,
+    @Param('figureId') figureId: string,
+    @CurrentUser() user: SessionUser,
+    @Body('targetLocalId') targetLocalId: string | null | undefined,
+  ): Promise<{ dryRunDiff: unknown }> {
+    if (targetLocalId !== null && (typeof targetLocalId !== 'string' || targetLocalId.length === 0)) {
+      throw new BadRequestException('targetLocalId must be an entry id, or null to not attach the figure');
+    }
+    const { writtenLocalIds } = await this.ownedJob(id, user);
+    const dryRunDiff = await this.jobsService.moveFigure(id, localId, figureId, targetLocalId);
+    return { dryRunDiff: decorateStoredDiff(dryRunDiff, writtenLocalIds) };
   }
 
   @Post(':id/diff')
@@ -702,9 +725,9 @@ export class JobsController {
     if (parentLocalId === undefined || !type || !title || !description) {
       throw new BadRequestException('parentLocalId (or null for the top level), type, title, and description are all required');
     }
-    await this.ownedJob(id, user);
+    const { writtenLocalIds } = await this.ownedJob(id, user);
     const dryRunDiff = await this.jobsService.addDiffEntry(id, { parentLocalId, type, title, description });
-    return { dryRunDiff };
+    return { dryRunDiff: decorateStoredDiff(dryRunDiff, writtenLocalIds) };
   }
 
   @Post(':id/diff/:localId/rescore')
@@ -713,9 +736,9 @@ export class JobsController {
     @Param('localId') localId: string,
     @CurrentUser() user: SessionUser,
   ): Promise<{ dryRunDiff: unknown }> {
-    await this.ownedJob(id, user);
+    const { writtenLocalIds } = await this.ownedJob(id, user);
     const dryRunDiff = await this.jobsService.rescoreDiffEntry(id, localId);
-    return { dryRunDiff };
+    return { dryRunDiff: decorateStoredDiff(dryRunDiff, writtenLocalIds) };
   }
 
   /**
@@ -760,6 +783,12 @@ export class JobsController {
     const selectedLocalIds = parseSelectedLocalIds(body?.selectedLocalIds);
     const credential = await this.adoCredentialResolver.resolve(user.userId);
     return this.jobsService.confirm(id, credential, selectedLocalIds);
+  }
+
+  @Post(':id/dedup/reindex')
+  async reindexDedup(@Param('id') id: string, @CurrentUser() user: SessionUser): Promise<{ indexed: number }> {
+    await this.ownedJob(id, user);
+    return this.jobsService.reindexDedup(id);
   }
 
   @Post(':id/reject')
@@ -915,7 +944,11 @@ export class JobsController {
   @Get(':id/write-preview')
   async getWritePreview(@Param('id') id: string, @CurrentUser() user: SessionUser): Promise<WritePreview> {
     await this.ownedJob(id, user);
-    const preview = await this.jobsService.getWritePreview(id);
+    return this.previewOr404(id);
+  }
+
+  private async previewOr404(id: string, selectedLocalIds?: string[]): Promise<WritePreview> {
+    const preview = await this.jobsService.getWritePreview(id, selectedLocalIds);
     if (!preview) {
       throw new NotFoundException(`Job ${id} not found`);
     }
@@ -932,11 +965,7 @@ export class JobsController {
   ): Promise<WritePreview> {
     await this.ownedJob(id, user);
     const selectedLocalIds = parseSelectedLocalIds(body?.selectedLocalIds, { allowNull: true });
-    const preview = await this.jobsService.getWritePreview(id, selectedLocalIds);
-    if (!preview) {
-      throw new NotFoundException(`Job ${id} not found`);
-    }
-    return preview;
+    return this.previewOr404(id, selectedLocalIds);
   }
 
   @Get(':id/summary')

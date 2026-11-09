@@ -1,10 +1,19 @@
 import { buildExclusionChecker } from '../src/modules/pipeline/diff-summary';
 import {
   buildWritePreview,
+  countExclusions,
+  existingParentsGettingChildren,
+  existingWithoutNewParentLink,
+  findOrphanedSelections,
+  findUnknownSelections,
+  planHasWork,
   selectEntriesToCreate,
   selectEntriesToLink,
+  selectFiguresToAttach,
   selectTraceLinks,
+  traceLinkTally,
   type WritePlanEntry,
+  type WritePreview,
 } from '../src/modules/pipeline/write-plan';
 
 function entry(partial: Partial<WritePlanEntry> & { localId: string }): WritePlanEntry {
@@ -401,6 +410,11 @@ describe('buildWritePreview selection, existing parents and parity', () => {
       { name: 'empty', diff: [], resume: noResume() },
     ];
 
+    it.each(fixtures)('preview hasWork matches planHasWork for every parity fixture: $name', ({ diff, resume, selection }) => {
+      const preview = buildWritePreview(diff, resume, selection);
+      expect(preview.hasWork).toBe(planHasWork(preview));
+    });
+
     it.each(fixtures)('$name', ({ diff, resume, selection }) => {
       const preview = buildWritePreview(diff, resume, selection);
       const isExcluded = buildExclusionChecker(diff);
@@ -417,5 +431,447 @@ describe('buildWritePreview selection, existing parents and parity', () => {
       for (const list of selectTraceLinks(diff, isExcluded, ids).values()) planned += list.length;
       expect(preview.traceLinks.planned).toBe(planned);
     });
+  });
+});
+
+const tlink = (sourceLocalId: string, extra: Partial<NonNullable<WritePlanEntry['traceLinks']>[number]> = {}) => ({
+  sourceLocalId, referenceName: 'T', targetKind: 'intraJob' as const, resolutionStatus: 'resolved' as const, ...extra,
+});
+
+describe('write-plan helpers', () => {
+  it('countExclusions separates direct exclusions from entries dropped by an excluded ancestor', () => {
+    const diff = [
+      entry({ localId: 'a', excluded: true }),
+      entry({ localId: 'b', parentLocalId: 'a' }),
+      entry({ localId: 'c', parentLocalId: 'b' }),
+      entry({ localId: 'd', excluded: true }),
+      entry({ localId: 'e' }),
+    ];
+    expect(countExclusions(diff, buildExclusionChecker(diff))).toEqual({ direct: 2, viaAncestor: 2 });
+    expect(countExclusions([], () => false)).toEqual({ direct: 0, viaAncestor: 0 });
+  });
+
+  it('existingParentsGettingChildren counts distinct resolved parents of linked entries only', () => {
+    const diff = [entry({ localId: 'p' }), entry({ localId: 'c1', parentLocalId: 'p' }), entry({ localId: 'c2', parentLocalId: 'p' }), entry({ localId: 'q' }), entry({ localId: 'd', parentLocalId: 'q' })];
+    const links = [diff[1], diff[2], diff[4]];
+    expect(existingParentsGettingChildren(links, new Map([['p', 1]]))).toBe(1);
+    expect(existingParentsGettingChildren(links, new Map([['p', 1], ['q', 2]]))).toBe(2);
+    expect(existingParentsGettingChildren(links, new Map())).toBe(0);
+  });
+
+  it('existingWithoutNewParentLink counts non-excluded resolved entries that have a parent', () => {
+    const diff = [
+      entry({ localId: 'root', action: 'reuse', existingAdoId: 1 }),
+      entry({ localId: 'a', action: 'reuse', existingAdoId: 2, parentLocalId: 'root' }),
+      entry({ localId: 'b', action: 'reuse', existingAdoId: 3, parentLocalId: 'root', excluded: true }),
+      entry({ localId: 'c', parentLocalId: 'root' }),
+    ];
+    const resolved = new Map([['root', 1], ['a', 2], ['b', 3]]);
+    expect(existingWithoutNewParentLink(diff, buildExclusionChecker(diff), resolved)).toBe(1);
+  });
+
+  it('traceLinkTally returns the planned grouping, the planned count and the declared count (excluded sources not declared)', () => {
+    const diff = [
+      entry({ localId: 's', traceLinks: [tlink('s', { targetLocalId: 't' }), tlink('s', { targetLocalId: 'nope' }), tlink('s', { targetKind: 'crossJob', resolutionStatus: 'unresolved' })] }),
+      entry({ localId: 't' }),
+      entry({ localId: 'x', excluded: true, traceLinks: [tlink('x', { targetLocalId: 't' })] }),
+    ];
+    const ids = new Map([['s', 1], ['t', 2], ['x', 3]]);
+    const tally = traceLinkTally(diff, buildExclusionChecker(diff), ids);
+    expect(tally.declared).toBe(3);
+    expect(tally.planned).toBe(1);
+    expect(tally.bySource).toEqual(selectTraceLinks(diff, buildExclusionChecker(diff), ids));
+    expect(tally.bySource.get(1)).toEqual([{ targetAdoId: 2, referenceName: 'T', sourceLocalId: 's' }]);
+  });
+
+  it('selectFiguresToAttach groups the still-stored figures of non-excluded eligible entries, deduplicated per work item', () => {
+    const diff = [
+      entry({ localId: 'a', figureIds: ['f1', 'f2', 'gone'] }),
+      entry({ localId: 'b', figureIds: ['f3'] }),
+      entry({ localId: 'b2', figureIds: ['f3', 'f4'] }),
+      entry({ localId: 'ex', excluded: true, figureIds: ['f5'] }),
+      entry({ localId: 'noid', figureIds: ['f6'] }),
+    ];
+    const ids = new Map([['a', 1], ['b', 9], ['b2', 9], ['ex', 2]]);
+    const stored = new Set(['f1', 'f2', 'f3', 'f4', 'f5', 'f6']);
+    const result = selectFiguresToAttach(diff, buildExclusionChecker(diff), ids, stored);
+    expect(Object.fromEntries([...result].map(([k, v]) => [k, [...v]]))).toEqual({ 1: ['f1', 'f2'], 9: ['f3', 'f4'] });
+  });
+
+  const attached = (diff: WritePlanEntry[], ids: Map<string, number>, stored: string[]) =>
+    Object.fromEntries(
+      [...selectFiguresToAttach(diff, buildExclusionChecker(diff), ids, new Set(stored))].map(([k, v]) => [k, [...v]]),
+    );
+
+  it('selectFiguresToAttach includes uncaptioned figures that are not insignificant', () => {
+    const diff = [entry({ localId: 'a', figureIds: ['f1'], uncaptionedFigureIds: ['u1', 'u2'], insignificantFigureIds: ['u2'] })];
+    expect(attached(diff, new Map([['a', 1]]), ['f1', 'u1', 'u2'])).toEqual({ 1: ['f1', 'u1'] });
+  });
+
+  it('selectFiguresToAttach skips detached ids', () => {
+    const diff = [entry({ localId: 'a', figureIds: ['f1', 'f2'], uncaptionedFigureIds: ['u1'], detachedFigureIds: ['f2', 'u1'] })];
+    expect(attached(diff, new Map([['a', 1]]), ['f1', 'f2', 'u1'])).toEqual({ 1: ['f1'] });
+  });
+
+  it('preview and selectFiguresToAttach agree on a diff with detached figures', () => {
+    const diff = [
+      entry({ localId: 'a', figureIds: ['f1', 'f2'], detachedFigureIds: ['f2'] }),
+      entry({ localId: 'b', figureIds: ['f3'], uncaptionedFigureIds: ['u1'], detachedFigureIds: ['f3'] }),
+    ];
+    const stored = ['f1', 'f2', 'f3', 'u1'];
+    const ids = new Map([['a', -1], ['b', -2]]);
+    const total = Object.values(attached(diff, ids, stored)).reduce((sum, list) => sum + list.length, 0);
+    const preview = buildWritePreview(diff, { resumedAdoIdByLocalId: new Map(), alreadyLinkedLocalIds: new Set(), pendingFigureIds: new Set(stored) });
+    expect(total).toBe(2);
+    expect(preview.figuresToAttach).toBe(total);
+    expect(preview.figuresUnavailable).toBe(0);
+  });
+
+  it('a detached figure is not counted in figuresToAttach or figuresUnavailable', () => {
+    const diff = [entry({ localId: 'a', figureIds: ['f1', 'f2'], detachedFigureIds: ['f2'] })];
+    const preview = buildWritePreview(diff, { resumedAdoIdByLocalId: new Map(), alreadyLinkedLocalIds: new Set(), pendingFigureIds: new Set(['f1']) });
+    expect(preview.figuresToAttach).toBe(1);
+    expect(preview.figuresUnavailable).toBe(0);
+  });
+
+  it('skips an uncaptioned figure with no stored file', () => {
+    const diff = [entry({ localId: 'a', uncaptionedFigureIds: ['u1', 'u2'] })];
+    expect(attached(diff, new Map([['a', 1]]), ['u1'])).toEqual({ 1: ['u1'] });
+  });
+
+  it('skips insignificant figures', () => {
+    const diff = [entry({ localId: 'a', uncaptionedFigureIds: ['u1'], insignificantFigureIds: ['u1'] })];
+    expect(attached(diff, new Map([['a', 1]]), ['u1'])).toEqual({});
+  });
+
+  it('an excluded entry attaches no uncaptioned figure', () => {
+    const diff = [entry({ localId: 'a', excluded: true, uncaptionedFigureIds: ['u1'] })];
+    expect(attached(diff, new Map([['a', 1]]), ['u1'])).toEqual({});
+  });
+
+  it('a figure listed in both lists is attached once', () => {
+    const diff = [entry({ localId: 'a', figureIds: ['f1'], uncaptionedFigureIds: ['f1'] })];
+    expect(attached(diff, new Map([['a', 1]]), ['f1'])).toEqual({ 1: ['f1'] });
+  });
+});
+
+describe('buildWritePreview figuresToAttach and planHasWork', () => {
+  const resume = (resumed: [string, number][] = [], linked: string[] = [], figures?: string[]) => ({
+    resumedAdoIdByLocalId: new Map(resumed),
+    alreadyLinkedLocalIds: new Set(linked),
+    ...(figures ? { pendingFigureIds: new Set(figures) } : {}),
+  });
+
+  it('is 0 when no stored figures are supplied', () => {
+    expect(buildWritePreview([entry({ localId: 'a', figureIds: ['f1'] })]).figuresToAttach).toBe(0);
+  });
+
+  it('counts figures of created and resumed entries, but not reuse, excluded, unselected or already-attached ones', () => {
+    const diff = [
+      entry({ localId: 'new', figureIds: ['f1', 'f2'] }),
+      entry({ localId: 'ru', action: 'reuse', existingAdoId: 5, figureIds: ['f3'] }),
+      entry({ localId: 'res', figureIds: ['f4'] }),
+      entry({ localId: 'ex', excluded: true, figureIds: ['f5'] }),
+      entry({ localId: 'unsel', figureIds: ['f6'] }),
+      entry({ localId: 'done', figureIds: ['f7'] }), // its figure row was deleted after upload
+    ];
+    const preview = buildWritePreview(diff, resume([['res', 50]], [], ['f1', 'f2', 'f3', 'f4', 'f5', 'f6']), ['new']);
+    expect(preview.figuresToAttach).toBe(3); // f1, f2, f4 (not the reuse entry's f3)
+  });
+
+  it('reuse and dedup_skip entries get no automatic figure attachments', () => {
+    const diff = [
+      entry({ localId: 'ru', action: 'reuse', existingAdoId: 5, figureIds: ['f1'] }),
+      entry({ localId: 'ds', action: 'dedup_skip', existingAdoId: 6, figureIds: ['f2'], uncaptionedFigureIds: ['u1'] }),
+    ];
+    const preview = buildWritePreview(diff, resume([], [], ['f1', 'f2', 'u1']));
+    expect(preview.figuresToAttach).toBe(0);
+    expect(planHasWork(preview)).toBe(false);
+  });
+
+  it('created entries still get figure attachments', () => {
+    const diff = [entry({ localId: 'a', figureIds: ['f1', 'f2'] })];
+    expect(buildWritePreview(diff, resume([], [], ['f1', 'f2'])).figuresToAttach).toBe(2);
+  });
+
+  it('resumed entries still get figure attachments', () => {
+    const diff = [entry({ localId: 'a', figureIds: ['f1'] })];
+    expect(buildWritePreview(diff, resume([['a', 5]], [], ['f1'])).figuresToAttach).toBe(1);
+  });
+
+  it('buildWritePreview counts uncaptioned figures in figuresToAttach', () => {
+    const diff = [entry({ localId: 'a', figureIds: ['f1'], uncaptionedFigureIds: ['u1', 'u2'], insignificantFigureIds: ['u2'] })];
+    expect(buildWritePreview(diff, resume([], [], ['f1', 'u1', 'u2'])).figuresToAttach).toBe(2);
+  });
+
+  it('planHasWork is true when only uncaptioned figures remain', () => {
+    const diff = [entry({ localId: 'a', uncaptionedFigureIds: ['u1'] })];
+    const preview = buildWritePreview(diff, resume([['a', 5]], [], ['u1']));
+    expect(preview.createdTotal).toBe(0);
+    expect(planHasWork(preview)).toBe(true);
+  });
+
+  it('does not merge figures of two different new items', () => {
+    const diff = [entry({ localId: 'a', figureIds: ['f1'] }), entry({ localId: 'b', figureIds: ['f2'] })];
+    expect(buildWritePreview(diff, resume([], [], ['f1', 'f2'])).figuresToAttach).toBe(2);
+  });
+
+  it('counts figuresUnavailable for create entries whose figure is not stored', () => {
+    const diff = [entry({ localId: 'a', figureIds: ['f1', 'f2'], uncaptionedFigureIds: ['u1'] })];
+    expect(buildWritePreview(diff, resume([], [], ['f1'])).figuresUnavailable).toBe(2); // f2, u1
+  });
+
+  it('does not count resumed entries already-uploaded figures', () => {
+    const diff = [entry({ localId: 'res', figureIds: ['f1'] })];
+    expect(buildWritePreview(diff, resume([['res', 5]], [], [])).figuresUnavailable).toBe(0);
+  });
+
+  it('excluded, reuse, dedup_skip and unselected entries never count', () => {
+    const diff = [
+      entry({ localId: 'ex', excluded: true, figureIds: ['f1'] }),
+      entry({ localId: 'ru', action: 'reuse', existingAdoId: 5, figureIds: ['f2'] }),
+      entry({ localId: 'ds', action: 'dedup_skip', existingAdoId: 6, figureIds: ['f3'] }),
+      entry({ localId: 'unsel', figureIds: ['f4'] }),
+      entry({ localId: 'new', figureIds: ['f5'] }),
+    ];
+    expect(buildWritePreview(diff, resume([], [], []), ['new']).figuresUnavailable).toBe(1);
+  });
+
+  it('insignificant figures never count', () => {
+    const diff = [entry({ localId: 'a', uncaptionedFigureIds: ['u1', 'u2'], insignificantFigureIds: ['u2'] })];
+    expect(buildWritePreview(diff, resume([], [], [])).figuresUnavailable).toBe(1);
+  });
+
+  it('figuresUnavailable is 0 when pendingFigureIds is omitted', () => {
+    expect(buildWritePreview([entry({ localId: 'a', figureIds: ['f1'] })]).figuresUnavailable).toBe(0);
+  });
+
+  it('planHasWork is true when any of created, parent links, planned trace links or figures is positive', () => {
+    const base: Omit<WritePreview, 'hasWork' | 'figuresOnly'> = {
+      createdTotal: 0, createdLocalIds: [], createdByType: {}, excluded: { direct: 0, viaAncestor: 0 }, parentLinks: 0,
+      existingGettingChildren: 0, existingWithoutNewParentLink: 0, traceLinks: { planned: 0, skipped: 0 }, alreadyWritten: 0, figuresToAttach: 0, figuresUnavailable: 0,
+    };
+    expect(planHasWork(base)).toBe(false);
+    expect(planHasWork({ ...base, createdTotal: 1 })).toBe(true);
+    expect(planHasWork({ ...base, parentLinks: 1 })).toBe(true);
+    expect(planHasWork({ ...base, traceLinks: { planned: 1, skipped: 0 } })).toBe(true);
+    expect(planHasWork({ ...base, figuresToAttach: 1 })).toBe(true);
+    expect(planHasWork({ ...base, traceLinks: { planned: 0, skipped: 5 }, alreadyWritten: 3 })).toBe(false);
+  });
+
+  it('a resumed job with only figures left still has work', () => {
+    const diff = [entry({ localId: 'a', figureIds: ['f1'] })];
+    const preview = buildWritePreview(diff, resume([['a', 5]], [], ['f1']));
+    expect(preview.createdTotal).toBe(0);
+    expect(planHasWork(preview)).toBe(true);
+  });
+});
+
+describe('buildWritePreview full parity with confirm()', () => {
+  type Fx = { name: string; diff: WritePlanEntry[]; resumed?: [string, number][]; linked?: string[]; selection?: string[]; figures?: string[] };
+  const fixtures: Fx[] = [
+    {
+      name: 'plain tree',
+      diff: [
+        entry({ localId: 'e', type: 'Epic' }),
+        entry({ localId: 'f', type: 'Feature', parentLocalId: 'e' }),
+        entry({ localId: 'r', parentLocalId: 'f', figureIds: ['f1'] }),
+      ],
+      figures: ['f1'],
+    },
+    {
+      name: 'uncaptioned and insignificant figures',
+      diff: [
+        entry({ localId: 'e', type: 'Epic', uncaptionedFigureIds: ['u1', 'u2'], insignificantFigureIds: ['u2'] }),
+      ],
+      figures: ['u1', 'u2'],
+    },
+    {
+      name: 'excluded subtree',
+      diff: [
+        entry({ localId: 'a', excluded: true }),
+        entry({ localId: 'b', parentLocalId: 'a', traceLinks: [tlink('b', { targetLocalId: 'c' })] }),
+        entry({ localId: 'c', parentLocalId: 'b' }),
+        entry({ localId: 'd', traceLinks: [tlink('d', { targetLocalId: 'c' })] }),
+      ],
+    },
+    {
+      name: 'reuse and dedup_skip parents getting new children',
+      diff: [
+        entry({ localId: 'p', action: 'reuse', existingAdoId: 1, figureIds: ['f1'] }),
+        entry({ localId: 'q', action: 'dedup_skip', existingAdoId: 2, parentLocalId: 'p' }),
+        entry({ localId: 'c1', parentLocalId: 'p' }),
+        entry({ localId: 'c2', parentLocalId: 'q' }),
+        entry({ localId: 'c3', parentLocalId: 'q' }),
+        entry({ localId: 'noid', action: 'reuse', existingAdoId: null, parentLocalId: 'p' }),
+      ],
+      figures: ['f1'],
+    },
+    {
+      name: 'resumed mappings with partial links',
+      diff: [
+        entry({ localId: 'a' }),
+        entry({ localId: 'b', parentLocalId: 'a' }),
+        entry({ localId: 'c', parentLocalId: 'a', figureIds: ['f1', 'f2'] }),
+        entry({ localId: 'd', parentLocalId: 'b' }),
+      ],
+      resumed: [['a', 10], ['b', 11], ['c', 12]],
+      linked: ['b'],
+      figures: ['f2'],
+    },
+    {
+      name: 'unresolved and cross-job trace links',
+      diff: [
+        entry({
+          localId: 's',
+          traceLinks: [
+            tlink('s', { targetLocalId: 't' }),
+            tlink('s', { targetKind: 'crossJob', resolvedAdoId: 77 }),
+            tlink('s', { targetKind: 'crossJob', resolutionStatus: 'unresolved' }),
+            tlink('s', { targetKind: 'crossJob', resolutionStatus: 'pending', resolvedAdoId: 5 }),
+            tlink('s', { targetLocalId: 'missing' }),
+          ],
+        }),
+        entry({ localId: 't' }),
+      ],
+    },
+    {
+      name: 'created, resumed and reuse entries mixed with figures',
+      diff: [
+        entry({ localId: 'n', figureIds: ['f1'] }),
+        entry({ localId: 'res', figureIds: ['f2'] }),
+        entry({ localId: 'ru', action: 'reuse', existingAdoId: 5, figureIds: ['f3'] }),
+        entry({ localId: 'ds', action: 'dedup_skip', existingAdoId: 6, figureIds: ['f4'] }),
+      ],
+      resumed: [['res', 50]],
+      figures: ['f1', 'f2', 'f3', 'f4'],
+    },
+    {
+      name: 'selectedLocalIds subset',
+      diff: [
+        entry({ localId: 'a' }),
+        entry({ localId: 'b', parentLocalId: 'a', figureIds: ['f1'] }),
+        entry({ localId: 'c', parentLocalId: 'b', traceLinks: [tlink('c', { targetLocalId: 'a' })] }),
+        entry({ localId: 'r', action: 'reuse', existingAdoId: 3, parentLocalId: 'a' }),
+      ],
+      selection: ['a', 'c'],
+      figures: ['f1'],
+    },
+  ];
+
+  it.each(fixtures)('$name: every field equals what the select* functions return (preview figuresToAttach matches confirm)', ({ diff, resumed = [], linked = [], selection, figures }) => {
+    const resumedAdoIdByLocalId = new Map(resumed);
+    const alreadyLinkedLocalIds = new Set(linked);
+    const pendingFigureIds = new Set(figures ?? []);
+    const preview = buildWritePreview(diff, { resumedAdoIdByLocalId, alreadyLinkedLocalIds, pendingFigureIds }, selection);
+
+    // Replay confirm()'s own order.
+    const isExcluded = buildExclusionChecker(diff);
+    const { toCreate, resolvedAdoIdByLocalId } = selectEntriesToCreate(diff, isExcluded, { resumedAdoIdByLocalId, selectedLocalIds: selection });
+    const ids = new Map<string, number>(resumedAdoIdByLocalId);
+    for (const [k, v] of resolvedAdoIdByLocalId) ids.set(k, v);
+    toCreate.forEach((e, i) => ids.set(e.localId, -(i + 1)));
+    const toLink = selectEntriesToLink(diff, isExcluded, ids, alreadyLinkedLocalIds);
+    const bySource = selectTraceLinks(diff, isExcluded, ids);
+    let planned = 0;
+    for (const list of bySource.values()) planned += list.length;
+    let declared = 0;
+    for (const e of diff) if (!isExcluded(e)) declared += (e.traceLinks ?? []).length;
+    let figureCount = 0;
+    const eligible = new Map<string, number>(resumedAdoIdByLocalId);
+    toCreate.forEach((e, i) => eligible.set(e.localId, -(i + 1)));
+    for (const set of selectFiguresToAttach(diff, isExcluded, eligible, pendingFigureIds).values()) figureCount += set.size;
+    let unavailableCount = 0;
+    if (figures) {
+      for (const e of toCreate) {
+        const insignificant = new Set(e.insignificantFigureIds ?? []);
+        const ids = new Set([...(e.figureIds ?? []), ...(e.uncaptionedFigureIds ?? []).filter((f) => !insignificant.has(f))]);
+        for (const f of ids) if (!pendingFigureIds.has(f)) unavailableCount += 1;
+      }
+    }
+    const createdByType: Record<string, number> = {};
+    for (const e of toCreate) createdByType[e.type] = (createdByType[e.type] ?? 0) + 1;
+
+    expect(preview).toEqual({
+      createdTotal: toCreate.length,
+      createdLocalIds: toCreate.map((e) => e.localId),
+      createdByType,
+      excluded: countExclusions(diff, isExcluded),
+      parentLinks: toLink.length,
+      existingGettingChildren: existingParentsGettingChildren(toLink, resolvedAdoIdByLocalId),
+      existingWithoutNewParentLink: existingWithoutNewParentLink(diff, isExcluded, resolvedAdoIdByLocalId),
+      traceLinks: { planned, skipped: declared - planned },
+      alreadyWritten: diff.filter((e) => !isExcluded(e) && resumedAdoIdByLocalId.has(e.localId)).length,
+      figuresToAttach: figureCount,
+      figuresUnavailable: unavailableCount,
+      hasWork: toCreate.length > 0 || toLink.length > 0 || planned > 0 || figureCount > 0,
+      figuresOnly: toCreate.length === 0 && toLink.length === 0 && planned === 0 && figureCount > 0,
+    });
+  });
+});
+
+describe('findOrphanedSelections / findUnknownSelections', () => {
+  const orphans = (diff: WritePlanEntry[], selected: string[], resumed: [string, number][] = []) =>
+    findOrphanedSelections(diff, buildExclusionChecker(diff), { resumedAdoIdByLocalId: new Map(resumed), selectedLocalIds: selected });
+
+  it('names a selected create entry whose parent is a deselected, unmapped create entry', () => {
+    const diff = [entry({ localId: 'p' }), entry({ localId: 'c', parentLocalId: 'p' })];
+    expect(orphans(diff, ['c'])).toEqual(['c']);
+    expect(orphans(diff, ['p', 'c'])).toEqual([]);
+    expect(orphans(diff, ['p'])).toEqual([]);
+  });
+
+  it('is not an orphan when the parent is reuse, dedup_skip, already mapped or excluded', () => {
+    const diff = [
+      entry({ localId: 'r', action: 'reuse', existingAdoId: 5 }),
+      entry({ localId: 'd', action: 'dedup_skip', existingAdoId: 6 }),
+      entry({ localId: 'm' }),
+      entry({ localId: 'x', excluded: true }),
+      entry({ localId: 'c1', parentLocalId: 'r' }),
+      entry({ localId: 'c2', parentLocalId: 'd' }),
+      entry({ localId: 'c3', parentLocalId: 'm' }),
+      entry({ localId: 'c4', parentLocalId: 'x' }),
+    ];
+    expect(orphans(diff, ['c1', 'c2', 'c3', 'c4'], [['m', 9]])).toEqual([]);
+  });
+
+  it('finds ids missing from the diff', () => {
+    const diff = [entry({ localId: 'a' })];
+    expect(findUnknownSelections(diff, ['a', 'zz', 'yy'])).toEqual(['zz', 'yy']);
+  });
+});
+
+describe('buildWritePreview figuresOnly', () => {
+  const figureResume = (figures: string[]) => ({
+    resumedAdoIdByLocalId: new Map<string, number>([['res', 50]]),
+    alreadyLinkedLocalIds: new Set<string>(['res']),
+    pendingFigureIds: new Set(figures),
+  });
+
+  it('figuresOnly is true only when nothing else is left', () => {
+    // Only a resumed, already-linked item with a stored figure remains: figures are all that is left.
+    const onlyFigures = buildWritePreview([entry({ localId: 'res', figureIds: ['f1'] })], figureResume(['f1']), []);
+    expect(onlyFigures.figuresOnly).toBe(true);
+    expect(onlyFigures.hasWork).toBe(true);
+
+    // Something to create as well: not figures-only.
+    const withCreate = buildWritePreview(
+      [entry({ localId: 'res', figureIds: ['f1'] }), entry({ localId: 'new' })],
+      figureResume(['f1']),
+    );
+    expect(withCreate.figuresOnly).toBe(false);
+
+    // Nothing left at all: not figures-only (and no work).
+    const nothing = buildWritePreview([entry({ localId: 'res' })], figureResume([]), []);
+    expect(nothing.figuresOnly).toBe(false);
+    expect(nothing.hasWork).toBe(false);
+
+    // A link still to add alongside the figures: not figures-only.
+    const withLink = buildWritePreview(
+      [entry({ localId: 'res', figureIds: ['f1'] }), entry({ localId: 'kid', parentLocalId: 'res', action: 'reuse', existingAdoId: 9 })],
+      { ...figureResume(['f1']), alreadyLinkedLocalIds: new Set<string>() },
+      [],
+    );
+    expect(withLink.figuresOnly).toBe(withLink.createdTotal === 0 && withLink.parentLinks === 0 && withLink.traceLinks.planned === 0 && withLink.figuresToAttach > 0);
   });
 });

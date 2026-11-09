@@ -239,6 +239,7 @@ import { BatchPumpService } from '../batch/batch-pump.service';
           prisma,
           config.get<number>('JOB_RETENTION_CHECK_INTERVAL_MS')!,
           config.get<number>('JOB_RETENTION_MAX_AGE_MS')!,
+          config.get<number>('JOB_FIGURE_RETENTION_MAX_AGE_MS')!,
         ),
     },
     {

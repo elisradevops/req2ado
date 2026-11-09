@@ -121,3 +121,104 @@ export function normalizeAdoStoredHtml(storedHtml: string): string {
     .replace(/style="([^"]*);"/g, 'style="$1"') // undo #2: strip the trailing `;` ADO always appends -- our own generator never emits one
     .replace(/ (<\/(?:td|th|p)>)/g, '$1'); // undo #3: drop ADO's added trailing space immediately before these closing tags (only td/th/p confirmed via the spike; extend if another leaf tag is ever caught by this same behavior)
 }
+
+const NAMED_ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
+
+// One pass, so `&amp;lt;` becomes the text `&lt;` and is never decoded twice. Unknown entities stay as written.
+function decodeEntities(text: string): string {
+  return text
+    .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (whole, body: string) => {
+      if (body[0] === '#') {
+        const code = body[1] === 'x' || body[1] === 'X' ? parseInt(body.slice(2), 16) : parseInt(body.slice(1), 10);
+        if (!Number.isFinite(code) || code < 0 || code > 0x10ffff) return whole;
+        return String.fromCodePoint(code);
+      }
+      return NAMED_ENTITIES[body.toLowerCase()] ?? whole;
+    })
+    .replace(/ /g, ' ');
+}
+
+// Decoded text re-escaped, so literal text can never be mistaken for a tag.
+function canonicalText(text: string): string {
+  return decodeEntities(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// Entities are decoded once (re-escaped by escapeAttrValue, `& < > "`, the same way on both sides), so `&`, `&amp;` and `&#38;` in an href compare equal
+// (ADO stores `?a=1&b=2` as `&amp;`), `&#39;` and `&apos;` match a literal apostrophe, and `&quot;` is how a double quote survives double-quoting.
+function canonicalAttrValue(raw: string): string {
+  return decodeEntities(raw).replace(/\s+/g, ' ').trim();
+}
+
+function escapeAttrValue(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+const ATTRIBUTE_PATTERN = /([^\s"'=<>/]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+)))?/g;
+
+function canonicalTag(tag: string): { text: string; name: string | null; closing: boolean; selfClosing: boolean } {
+  const inner = tag.slice(1, -1);
+  const head = /^(\/?)([a-zA-Z][^\s/>]*)/.exec(inner);
+  if (!head) return { text: `<${inner.replace(/\s+/g, ' ').trim()}>`, name: null, closing: false, selfClosing: false };
+  const name = head[2].toLowerCase();
+  const rest = inner.slice(head[0].length);
+  const selfClosing = /\/\s*$/.test(rest);
+  let attrs = '';
+  for (const m of rest.matchAll(ATTRIBUTE_PATTERN)) {
+    const attrName = m[1].toLowerCase();
+    const rawValue = m[2] ?? m[3] ?? m[4];
+    if (rawValue === undefined) {
+      attrs += ` ${attrName}`;
+      continue;
+    }
+    let value = canonicalAttrValue(rawValue);
+    if (attrName === 'style') {
+      value = value
+        .split(';')
+        .map((part) => part.trim().replace(/\s*:\s*/, ':'))
+        .filter((part) => part !== '')
+        .join(';');
+    }
+    attrs += ` ${attrName}="${escapeAttrValue(value)}"`;
+  }
+  return { text: `<${head[1]}${name}${attrs}${selfClosing ? '/' : ''}>`, name, closing: head[1] === '/', selfClosing };
+}
+
+/**
+ * Comparison-only canonical form, applied to BOTH the expected and the ADO-stored
+ * description. ADO re-serialises HTML on write beyond what normalizeAdoStoredHtml
+ * reverses: it encodes apostrophes (`&#39;`), may emit `&nbsp;`, reflows whitespace
+ * and rewrites style values. This erases only those cosmetic differences; words,
+ * numbers and punctuation stay significant. Never use the result as stored HTML.
+ *
+ * Single tokenising pass: tags (`<[^<>]*>`, linear) and text are handled separately, so
+ * escaped text (`&lt;b&gt;`) can never equal a real tag. Whitespace inside `<pre>` is kept.
+ */
+export function canonicalizeForCompare(html: string): string {
+  const parts = html.split(/(<[^<>]*>)/);
+  const tokens: { tag: boolean; text: string; pre: boolean }[] = [];
+  let preDepth = 0;
+  parts.forEach((part, index) => {
+    if (index % 2 === 1) {
+      const tag = canonicalTag(part);
+      if (tag.name === 'pre' && !tag.selfClosing) {
+        if (tag.closing) preDepth = Math.max(0, preDepth - 1);
+        else preDepth += 1;
+      }
+      tokens.push({ tag: true, text: tag.text, pre: false });
+    } else if (part !== '') {
+      tokens.push({ tag: false, text: canonicalText(part), pre: preDepth > 0 });
+    }
+  });
+  let out = '';
+  tokens.forEach((token, index) => {
+    if (token.tag || token.pre) {
+      out += token.text;
+      return;
+    }
+    let text = token.text.replace(/\s+/g, ' ');
+    if (index === 0 || tokens[index - 1].tag) text = text.replace(/^ /, '');
+    if (index === tokens.length - 1 || tokens[index + 1].tag) text = text.replace(/ $/, '');
+    out += text;
+  });
+  return out.trim();
+}

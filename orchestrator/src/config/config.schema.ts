@@ -180,6 +180,10 @@ export const configSchema = z.object({
   // the same content get recreated as a duplicate later.
   JOB_RETENTION_CHECK_INTERVAL_MS: z.coerce.number().default(6 * 60 * 60_000),
   JOB_RETENTION_MAX_AGE_MS: z.coerce.number().default(2 * 24 * 60 * 60_000),
+  // diff_ready jobs older than this lose only their figure images
+  // (JobFigureFile bytes); the job row is kept. 30 days matches the
+  // result-cache lifetime in result-cache.ts.
+  JOB_FIGURE_RETENTION_MAX_AGE_MS: z.coerce.number().default(2_592_000_000),
   // How many BullMQ pipeline jobs pipeline-worker.main.ts processes
   // concurrently -- previously unset (bullmq's own implicit default is 1),
   // a real horizontal-scaling throughput blocker even before considering

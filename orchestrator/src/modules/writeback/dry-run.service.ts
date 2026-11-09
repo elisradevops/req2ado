@@ -208,6 +208,8 @@ export interface DryRunDiffEntry {
   tableIds?: string[];
   uncaptionedFigureIds?: string[];
   insignificantFigureIds?: string[];
+  // Figures the reviewer chose not to attach (still listed above, so the choice is undoable).
+  detachedFigureIds?: string[];
   excluded?: boolean;
   // Section ingestion generated for this node (proposed acceptance criteria, or a "Needs author input" note), held apart from
   // `description` so it reaches ADO only when the reviewer accepts it (JobsService.setProposalAccepted; confirm() writes it via

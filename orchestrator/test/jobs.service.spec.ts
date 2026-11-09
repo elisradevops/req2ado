@@ -1,7 +1,7 @@
 import { BadGatewayException, BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { Queue } from 'bullmq';
-import { JobsService, buildFigureAttachmentFilename } from '../src/modules/pipeline/jobs.service';
+import { JobsService, buildFigureAttachmentFilename, decorateDiffForRead } from '../src/modules/pipeline/jobs.service';
 import { isFlaggedDiffEntry } from '../src/modules/pipeline/diff-summary';
 import { toAdoDescriptionHtml } from '../src/modules/pipeline/description-html';
 import { IngestionHttpError } from '../src/modules/pipeline/ingestion-http.client';
@@ -1199,7 +1199,7 @@ describe('JobsService.confirm', () => {
     expect(result).toEqual({ status: 'succeeded', createdCount: 1 });
     // ...but the failure is visible on the job's audit trail, not only in a console line.
     const messages = prisma.auditEntry.create.mock.calls.map((call: any[]) => call[0].data.message as string);
-    expect(messages.some((m) => m.includes('Dedup index not updated for 1 newly-created item(s)') && m.includes('ingestion unreachable'))).toBe(true);
+    expect(messages.some((m) => m.includes('Dedup index may be only partly updated for 1 newly-created item(s)') && m.includes('ingestion unreachable'))).toBe(true);
   });
 
   it('reverts to diff_ready (not stuck in writing) when createWorkItem fails before anything was created', async () => {
@@ -1276,6 +1276,102 @@ describe('JobsService.confirm', () => {
     await expect(service.confirm('job-1')).rejects.toThrow('ADO unreachable');
 
     expect(prisma.job.update).toHaveBeenCalledWith({ where: { id: 'job-1' }, data: { status: 'diff_ready' } });
+  });
+});
+
+describe('JobsService.confirm post-claim mapping re-check', () => {
+  const diff = [
+    { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'A', description: 'dA', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
+    { localId: 'n1', parentLocalId: null, type: 'Feature', title: 'B', description: 'dB', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null, sourceRef: null, tags: [] },
+  ];
+  const build = (findMany: jest.Mock) => {
+    const createWorkItem = jest.fn().mockResolvedValue({ id: 100 });
+    const publish = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project', dryRunDiff: diff,
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      jobFigureFile: { findMany: jest.fn().mockResolvedValue([]) },
+      createdItemMapping: { findMany, upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn().mockResolvedValue(undefined) } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+      undefined, undefined, undefined, undefined,
+      { publish, publishNarration: jest.fn().mockResolvedValue(undefined) } as any,
+    );
+    return { service, prisma, createWorkItem, publish };
+  };
+  const revert = { where: { id: 'job-1', status: 'writing' }, data: { status: 'diff_ready' } };
+
+  it('confirm 409s and returns the job to diff_ready when mappings changed between validation and claim', async () => {
+    const findMany = jest.fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ localId: 'n0', adoWorkItemId: 100, linked: false }]);
+    const { service, prisma, createWorkItem, publish } = build(findMany);
+
+    await expect(service.confirm('job-1')).rejects.toThrow(ConflictException);
+
+    expect(prisma.job.updateMany).toHaveBeenCalledWith(revert);
+    expect(createWorkItem).not.toHaveBeenCalled();
+    expect(prisma.auditEntry.create).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalledWith('job-1', 'writing');
+  });
+
+  it('confirm proceeds when the post-claim mapping read equals the validated snapshot', async () => {
+    const rows = [{ localId: 'n0', adoWorkItemId: 100, linked: true }];
+    const findMany = jest.fn().mockResolvedValue(rows);
+    const { service, prisma, createWorkItem } = build(findMany);
+
+    const result = await service.confirm('job-1');
+
+    expect(result.status).toBe('succeeded');
+    expect(createWorkItem).toHaveBeenCalledTimes(1);
+    expect(prisma.job.updateMany).not.toHaveBeenCalledWith(revert);
+  });
+
+  it('confirm reverts to diff_ready when the post-claim mapping read throws', async () => {
+    const findMany = jest.fn().mockResolvedValueOnce([]).mockRejectedValueOnce(new Error('db blip'));
+    const { service, prisma, createWorkItem } = build(findMany);
+
+    await expect(service.confirm('job-1')).rejects.toThrow('db blip');
+
+    expect(prisma.job.updateMany).toHaveBeenCalledWith(revert);
+    expect(createWorkItem).not.toHaveBeenCalled();
+  });
+
+  it('confirm returns the job to diff_ready when publishing the writing event throws', async () => {
+    const { service, prisma, createWorkItem, publish } = build(jest.fn().mockResolvedValue([]));
+    publish.mockImplementation(async (_id: string, status: string) => {
+      if (status === 'writing') throw new Error('redis down');
+    });
+
+    await expect(service.confirm('job-1')).rejects.toThrow('redis down');
+
+    expect(prisma.job.updateMany).toHaveBeenCalledWith(revert);
+    expect(createWorkItem).not.toHaveBeenCalled();
+    expect(prisma.auditEntry.create).not.toHaveBeenCalled();
+  });
+
+  it('confirm returns the job to diff_ready when the job cannot be re-read after the claim', async () => {
+    const { service, prisma, createWorkItem } = build(jest.fn().mockResolvedValue([]));
+    const first = await prisma.job.findUnique();
+    prisma.job.findUnique.mockReset();
+    prisma.job.findUnique.mockResolvedValueOnce(first).mockResolvedValueOnce(null);
+
+    await expect(service.confirm('job-1')).rejects.toThrow();
+
+    expect(prisma.job.updateMany).toHaveBeenCalledWith(revert);
+    expect(createWorkItem).not.toHaveBeenCalled();
+    expect(prisma.auditEntry.create).not.toHaveBeenCalled();
   });
 });
 
@@ -1465,7 +1561,7 @@ describe('JobsService.confirm — row deselect', () => {
     expect(createWorkItem).toHaveBeenCalledWith('Requirement', expect.objectContaining({ 'System.Title': 'A' }), 'Project', undefined);
   });
 
-  it('does not link a child to a parent that was deselected (parent never gets an ADO id)', async () => {
+  it('rejects a selection that keeps a child but deselects its new parent, writing and linking nothing', async () => {
     const createWorkItem = jest.fn().mockResolvedValue({ id: 501 });
     const linkParentChild = jest.fn().mockResolvedValue(undefined);
     const prisma = {
@@ -1492,10 +1588,11 @@ describe('JobsService.confirm — row deselect', () => {
       'redis://unused',
     );
 
-    const result = await service.confirm('job-1', undefined, ['n1']);
+    await expect(service.confirm('job-1', undefined, ['n1'])).rejects.toBeInstanceOf(BadRequestException);
 
-    expect(result).toEqual({ status: 'succeeded', createdCount: 1 });
+    expect(createWorkItem).not.toHaveBeenCalled();
     expect(linkParentChild).not.toHaveBeenCalled();
+    expect(prisma.job.updateMany).not.toHaveBeenCalled();
   });
 
   it('selects every create entry when selectedLocalIds is omitted (backward-compatible default)', async () => {
@@ -1836,6 +1933,28 @@ describe('JobsService.validateCreatedTree', () => {
     expect(result).toEqual({ valid: true, checkedCount: 1, mismatches: [] });
   });
 
+  it('does not false-positive on ADO entity/space/style re-serialization, but still flags a changed word', async () => {
+    const getWorkItemsBatch = jest.fn().mockResolvedValue([
+      { id: 100, type: 'Requirement', fields: { 'System.Title': 'T', 'System.Description': "<p>The SRUs' locations&nbsp;are: </p>\n<table style=\"width:100%;border-collapse:collapse;\"><tr><td>x </td></tr></table>" }, parentId: null },
+      { id: 101, type: 'Requirement', fields: { 'System.Title': 'U', 'System.Description': '<p>changed word </p>' }, parentId: null },
+    ]);
+    const service = makeService(
+      {
+        id: 'job-1',
+        dryRunDiff: [
+          { localId: 'n0', parentLocalId: null, title: 'T', description: "The SRUs' locations are:\n\n<table style=\"width:100%; border-collapse:collapse\"><tr><td>x</td></tr></table>" },
+          { localId: 'n1', parentLocalId: null, title: 'U', description: 'original word' },
+        ],
+      },
+      [{ localId: 'n0', adoWorkItemId: 100 }, { localId: 'n1', adoWorkItemId: 101 }],
+      getWorkItemsBatch,
+    );
+
+    const result = await service.validateCreatedTree('job-1');
+
+    expect(result?.mismatches.map((m) => [m.localId, m.field, m.actual])).toEqual([['n1', 'System.Description', '<p>changed word </p>']]);
+  });
+
   it('reports a mismatch when the real ADO title differs from the dry-run diff', async () => {
     const getWorkItemsBatch = jest.fn().mockResolvedValue([
       { id: 100, type: 'Requirement', fields: { 'System.Title': 'Truncated Ti', 'System.Description': toAdoDescriptionHtml('d0') }, parentId: null },
@@ -2059,9 +2178,9 @@ describe('JobsService.retryEnhancement', () => {
   const root = { localId: 'p0', parentLocalId: null, type: 'Epic', title: 'Power', description: '', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, tags: [] };
   const warn = (kind: string, pass: string, nodeIds: string[]) => ({ kind, severity: 'pipeline_issue', nodeIds, detail: { pass }, raw: 'old raw' });
 
-  const makeService = (diff: object[], warnings: object[], enhanceItems: jest.Mock, updateMany = jest.fn().mockResolvedValue({ count: 1 })) => {
+  const makeService = (diff: object[], warnings: object[], enhanceItems: jest.Mock, updateMany = jest.fn().mockResolvedValue({ count: 1 }), mappingFindMany = jest.fn().mockResolvedValue([])) => {
     const job = { id: 'job-1', status: 'diff_ready', diffVersion: 7, userId: 'u1', model: 'm1', dryRunDiff: diff, warnings };
-    const prisma = { job: { updateMany, findUnique: jest.fn().mockResolvedValue(job) } };
+    const prisma = { job: { updateMany, findUnique: jest.fn().mockResolvedValue(job) }, createdItemMapping: { findMany: mappingFindMany } };
     const service = new JobsService(prisma as any, {} as any, {} as any, { enhanceItems } as any, 'redis://unused');
     return { service, updateMany, prisma };
   };
@@ -2177,7 +2296,7 @@ describe('JobsService.retryEnhancement', () => {
       .mockResolvedValueOnce({ id: 'job-1', status: 'diff_ready', diffVersion: 2, dryRunDiff: [entry('a', { description: 'edited by hand' })], warnings: [warn('enhancement_call_failed', 'synthesis', ['a'])] });
     const updateMany = jest.fn().mockResolvedValue({ count: 1 });
     const enhanceItems = jest.fn().mockResolvedValue({ results: { a: { description: 'Model text.' } }, omitted: [] });
-    const service = new JobsService({ job: { findUnique, updateMany } } as any, {} as any, {} as any, { enhanceItems } as any, 'redis://unused');
+    const service = new JobsService({ job: { findUnique, updateMany }, createdItemMapping: { findMany: jest.fn().mockResolvedValue([]) } } as any, {} as any, {} as any, { enhanceItems } as any, 'redis://unused');
 
     const result = await service.retryEnhancement('job-1', { kind: 'enhancement_call_failed', pass: 'synthesis', localIds: ['a'] });
 
@@ -2207,6 +2326,33 @@ describe('JobsService.retryEnhancement', () => {
     expect(updateMany).not.toHaveBeenCalled();
   });
 
+  it('400s when a target entry is already written', async () => {
+    const enhanceItems = jest.fn();
+    const updateMany = jest.fn();
+    const findMany = jest.fn().mockResolvedValue([{ localId: 'b' }]);
+    const { service } = makeService([entry('a'), entry('b')], [warn('enhancement_call_failed', 'synthesis', ['a', 'b'])], enhanceItems, updateMany, findMany);
+
+    const call = service.retryEnhancement('job-1', { kind: 'enhancement_call_failed', pass: 'synthesis', localIds: ['a', 'b'] });
+    await expect(call).rejects.toThrow(BadRequestException);
+    await expect(
+      service.retryEnhancement('job-1', { kind: 'enhancement_call_failed', pass: 'synthesis', localIds: ['a', 'b'] }),
+    ).rejects.toThrow(/Diff entry b was already written to Azure DevOps/);
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { jobId: 'job-1', localId: { in: ['a', 'b'] } } }));
+    expect(enhanceItems).not.toHaveBeenCalled();
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
+  it('still retries unwritten entries', async () => {
+    const enhanceItems = jest.fn().mockResolvedValue({ results: { a: { title: 'New A' } }, omitted: [] });
+    const findMany = jest.fn().mockResolvedValue([]);
+    const { service } = makeService([entry('a'), entry('b')], [warn('enhancement_call_failed', 'title_tag', ['a', 'b'])], enhanceItems, undefined, findMany);
+
+    const result = await service.retryEnhancement('job-1', { kind: 'enhancement_call_failed', pass: 'title_tag', localIds: ['a'] });
+
+    expect(result.enhanced).toEqual(['a']);
+    expect(findMany).toHaveBeenCalled();
+  });
+
   it('refuses ids that are not part of the warning, a missing warning, and a job past diff_ready', async () => {
     const enhanceItems = jest.fn();
     const { service } = makeService([entry('a'), entry('z')], [warn('enhancement_call_failed', 'title_tag', ['a'])], enhanceItems);
@@ -2225,6 +2371,7 @@ describe('JobsService.setDiffEntryExcluded', () => {
   it('flips excluded on the matching entry and persists the whole array', async () => {
     const updateMany = jest.fn().mockResolvedValue({ count: 1 });
     const prisma = {
+      createdItemMapping: { findUnique: jest.fn().mockResolvedValue(null) },
       job: {
         updateMany,
         findUnique: jest.fn().mockResolvedValue({
@@ -2248,9 +2395,38 @@ describe('JobsService.setDiffEntryExcluded', () => {
     });
   });
 
+  it('400s for an entry with a CreatedItemMapping row and leaves the diff untouched', async () => {
+    const updateMany = jest.fn();
+    const findUnique = jest.fn();
+    const mappingFind = jest.fn().mockResolvedValue({ jobId: 'job-1', localId: 'n0', adoWorkItemId: 5 });
+    const service = new JobsService({ job: { findUnique, updateMany }, createdItemMapping: { findUnique: mappingFind } } as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    await expect(service.setDiffEntryExcluded('job-1', 'n0', true)).rejects.toThrow(BadRequestException);
+    await expect(service.setDiffEntryExcluded('job-1', 'n0', true)).rejects.toThrow('already written to Azure DevOps');
+    expect(mappingFind).toHaveBeenCalledWith({ where: { jobId_localId: { jobId: 'job-1', localId: 'n0' } } });
+    expect(updateMany).not.toHaveBeenCalled();
+    expect(findUnique).not.toHaveBeenCalled();
+  });
+
+  it('still excludes an unwritten entry on a job that has other mappings', async () => {
+    const entry = { localId: 'n1', parentLocalId: null, type: 'Feature', title: 'B', description: 'd1', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null };
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const findUnique = jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', diffVersion: 0, dryRunDiff: [{ ...entry }] });
+    const mappingFind = jest.fn().mockImplementation(({ where }) =>
+      Promise.resolve(where.jobId_localId.localId === 'n0' ? { localId: 'n0', adoWorkItemId: 5 } : null),
+    );
+    const service = new JobsService({ job: { findUnique, updateMany }, createdItemMapping: { findUnique: mappingFind } } as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    const result = await service.setDiffEntryExcluded('job-1', 'n1', true);
+
+    expect(result[0].excluded).toBe(true);
+    expect(updateMany).toHaveBeenCalledTimes(1);
+  });
+
   it('throws a conflict when the job is not diff_ready', async () => {
     const prisma = {
       job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'writing', dryRunDiff: [] }) },
+      createdItemMapping: { findUnique: jest.fn().mockResolvedValue(null) },
     };
     const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
 
@@ -2260,6 +2436,7 @@ describe('JobsService.setDiffEntryExcluded', () => {
   it('throws not found when the entry localId does not exist', async () => {
     const prisma = {
       job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [] }) },
+      createdItemMapping: { findUnique: jest.fn().mockResolvedValue(null) },
     };
     const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
 
@@ -2292,7 +2469,7 @@ describe('JobsService.setDiffEntryExcluded', () => {
       // every query (the same hazard moveDiffEntry's own makeService
       // fixture-cloning comment already documents in this file).
       .mockResolvedValueOnce({ id: 'job-1', status: 'diff_ready', diffVersion: 1, dryRunDiff: [{ ...n0 }, { ...n1, excluded: true }] });
-    const service = new JobsService({ job: { findUnique, updateMany } } as any, {} as any, {} as any, {} as any, 'redis://unused');
+    const service = new JobsService({ job: { findUnique, updateMany }, createdItemMapping: { findUnique: jest.fn().mockResolvedValue(null) } } as any, {} as any, {} as any, {} as any, 'redis://unused');
 
     const result = await service.setDiffEntryExcluded('job-1', 'n0', true);
 
@@ -2329,7 +2506,7 @@ describe('JobsService.setDiffEntryExcluded', () => {
       // confirm() claimed the job in between.
       .mockResolvedValueOnce({ id: 'job-1', status: 'writing', diffVersion: 0, dryRunDiff: [{ ...entry }] });
     const updateMany = jest.fn().mockResolvedValueOnce({ count: 0 });
-    const service = new JobsService({ job: { findUnique, updateMany } } as any, {} as any, {} as any, {} as any, 'redis://unused');
+    const service = new JobsService({ job: { findUnique, updateMany }, createdItemMapping: { findUnique: jest.fn().mockResolvedValue(null) } } as any, {} as any, {} as any, {} as any, 'redis://unused');
 
     await expect(service.setDiffEntryExcluded('job-1', 'n0', true)).rejects.toThrow('not in a diff-editable state');
     // Attempt 1's write guarded on the status it read; attempt 2 never wrote
@@ -2350,7 +2527,7 @@ describe('JobsService.setDiffEntryExcluded', () => {
     const findUnique = jest.fn().mockImplementation(() =>
       Promise.resolve({ id: 'job-1', status: 'diff_ready', diffVersion: 0, dryRunDiff: [{ ...entry }] }),
     );
-    const service = new JobsService({ job: { findUnique, updateMany } } as any, {} as any, {} as any, {} as any, 'redis://unused');
+    const service = new JobsService({ job: { findUnique, updateMany }, createdItemMapping: { findUnique: jest.fn().mockResolvedValue(null) } } as any, {} as any, {} as any, {} as any, 'redis://unused');
 
     await expect(service.setDiffEntryExcluded('job-1', 'n0', true)).rejects.toThrow(ConflictException);
     expect(updateMany).toHaveBeenCalledTimes(3);
@@ -2363,6 +2540,7 @@ describe('JobsService.editDiffEntry', () => {
   it('updates title and description on a create entry', async () => {
     const update = jest.fn().mockResolvedValue(undefined);
     const prisma = {
+      createdItemMapping: { findUnique: jest.fn().mockResolvedValue(null) },
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [baseEntry] }),
@@ -2380,6 +2558,7 @@ describe('JobsService.editDiffEntry', () => {
   it('updates customerId on a Requirement entry', async () => {
     const update = jest.fn().mockResolvedValue(undefined);
     const prisma = {
+      createdItemMapping: { findUnique: jest.fn().mockResolvedValue(null) },
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [baseEntry] }),
@@ -2397,6 +2576,7 @@ describe('JobsService.editDiffEntry', () => {
     const update = jest.fn().mockResolvedValue(undefined);
     const withCustomerId = { ...baseEntry, customerId: '1.1.2.2' };
     const prisma = {
+      createdItemMapping: { findUnique: jest.fn().mockResolvedValue(null) },
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [withCustomerId] }),
@@ -2414,6 +2594,7 @@ describe('JobsService.editDiffEntry', () => {
     const updateMany = jest.fn();
     const epicEntry = { ...baseEntry, type: 'Epic' };
     const prisma = {
+      createdItemMapping: { findUnique: jest.fn().mockResolvedValue(null) },
       job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [epicEntry] }), updateMany },
     };
     const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
@@ -2428,6 +2609,7 @@ describe('JobsService.editDiffEntry', () => {
     const update = jest.fn().mockResolvedValue(undefined);
     const withCustomerId = { ...baseEntry, customerId: '1.1.2.2' };
     const prisma = {
+      createdItemMapping: { findUnique: jest.fn().mockResolvedValue(null) },
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [withCustomerId] }),
@@ -2445,6 +2627,7 @@ describe('JobsService.editDiffEntry', () => {
     const reuseEntry = { ...baseEntry, action: 'reuse', existingAdoId: 42 };
     const updateMany = jest.fn();
     const prisma = {
+      createdItemMapping: { findUnique: jest.fn().mockResolvedValue(null) },
       job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [reuseEntry] }), updateMany },
     };
     const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
@@ -2456,6 +2639,7 @@ describe('JobsService.editDiffEntry', () => {
   it('preserves description when only title is supplied in the patch', async () => {
     const update = jest.fn().mockResolvedValue(undefined);
     const prisma = {
+      createdItemMapping: { findUnique: jest.fn().mockResolvedValue(null) },
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [baseEntry] }),
@@ -2479,6 +2663,7 @@ describe('JobsService.editDiffEntry', () => {
   it('does not clobber description with an explicit undefined value from the controller', async () => {
     const update = jest.fn().mockResolvedValue(undefined);
     const prisma = {
+      createdItemMapping: { findUnique: jest.fn().mockResolvedValue(null) },
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [baseEntry] }),
@@ -2499,6 +2684,7 @@ describe('JobsService.editDiffEntry', () => {
     const scoredEntry = { ...baseEntry, qualityScore: 60, qualityCategoryScores: { clarity: 60 } };
     const update = jest.fn().mockResolvedValue(undefined);
     const prisma = {
+      createdItemMapping: { findUnique: jest.fn().mockResolvedValue(null) },
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', diffVersion: 0, dryRunDiff: [scoredEntry] }),
@@ -2517,6 +2703,7 @@ describe('JobsService.editDiffEntry', () => {
     const scoredEntry = { ...baseEntry, qualityScore: 60, qualityCategoryScores: { clarity: 60 } };
     const update = jest.fn().mockResolvedValue(undefined);
     const prisma = {
+      createdItemMapping: { findUnique: jest.fn().mockResolvedValue(null) },
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', diffVersion: 0, dryRunDiff: [scoredEntry] }),
@@ -2533,6 +2720,7 @@ describe('JobsService.editDiffEntry', () => {
   it('does not mark qualityStale on a description change when the entry was never scored', async () => {
     const update = jest.fn().mockResolvedValue(undefined);
     const prisma = {
+      createdItemMapping: { findUnique: jest.fn().mockResolvedValue(null) },
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', diffVersion: 0, dryRunDiff: [baseEntry] }),
@@ -2550,6 +2738,7 @@ describe('JobsService.editDiffEntry', () => {
     const scoredEntry = { ...baseEntry, qualityScore: 60 };
     const update = jest.fn().mockResolvedValue(undefined);
     const prisma = {
+      createdItemMapping: { findUnique: jest.fn().mockResolvedValue(null) },
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', diffVersion: 0, dryRunDiff: [scoredEntry] }),
@@ -2577,7 +2766,7 @@ describe('JobsService.editDiffEntry', () => {
       .fn()
       .mockResolvedValueOnce({ id: 'job-1', status: 'diff_ready', diffVersion: 0, dryRunDiff: [{ ...n0 }, { ...n1 }] })
       .mockResolvedValueOnce({ id: 'job-1', status: 'diff_ready', diffVersion: 1, dryRunDiff: [{ ...n0 }, { ...n1, excluded: true }] });
-    const service = new JobsService({ job: { findUnique, updateMany } } as any, {} as any, {} as any, {} as any, 'redis://unused');
+    const service = new JobsService({ job: { findUnique, updateMany }, createdItemMapping: { findUnique: jest.fn().mockResolvedValue(null) } } as any, {} as any, {} as any, {} as any, 'redis://unused');
 
     const result = await service.editDiffEntry('job-1', 'n0', { title: 'New title' });
 
@@ -2604,12 +2793,65 @@ describe('JobsService.editDiffEntry', () => {
       .fn()
       .mockResolvedValueOnce({ id: 'job-1', status: 'diff_ready', diffVersion: 0, dryRunDiff: [{ ...scored }] })
       .mockResolvedValueOnce({ id: 'job-1', status: 'diff_ready', diffVersion: 1, dryRunDiff: [{ ...scored, description: 'new desc' }] });
-    const service = new JobsService({ job: { findUnique, updateMany } } as any, {} as any, {} as any, {} as any, 'redis://unused');
+    const service = new JobsService({ job: { findUnique, updateMany }, createdItemMapping: { findUnique: jest.fn().mockResolvedValue(null) } } as any, {} as any, {} as any, {} as any, 'redis://unused');
 
     const result = await service.editDiffEntry('job-1', 'n0', { description: 'new desc' });
 
     expect(result[0].description).toBe('new desc');
     expect(result[0].qualityStale).toBeUndefined();
+  });
+});
+
+describe('JobsService.editDiffEntry / setProposalAccepted -- already-written entries (WG group C)', () => {
+  const create = (localId: string, extra: object = {}) => ({
+    localId, parentLocalId: null, type: 'Requirement', title: localId, description: 'd', action: 'create',
+    existingAdoId: null, sourceHash: `h-${localId}`, customerId: null, ...extra,
+  });
+  const withProposal = (localId: string) =>
+    create(localId, { proposal: { kind: 'criteria', text: 'AC' }, proposalAccepted: false });
+  const makeService = (diff: object[], writtenLocalIds: string[]) => {
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const findUnique = jest.fn().mockImplementation(({ where }: any) =>
+      Promise.resolve(writtenLocalIds.includes(where.jobId_localId.localId) ? { jobId: 'job-1', localId: where.jobId_localId.localId, adoWorkItemId: 9, linked: false } : null));
+    const prisma = {
+      job: { updateMany, findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', diffVersion: 3, dryRunDiff: diff }) },
+      createdItemMapping: { findUnique },
+    };
+    return { service: new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused'), prisma, updateMany, findUnique };
+  };
+
+  it('setProposalAccepted 400s for an entry with a CreatedItemMapping row', async () => {
+    const { service, findUnique } = makeService([withProposal('n0')], ['n0']);
+
+    await expect(service.setProposalAccepted('job-1', 'n0', true)).rejects.toThrow(BadRequestException);
+    await expect(service.setProposalAccepted('job-1', 'n0', true)).rejects.toThrow(/already written to Azure DevOps/);
+    expect(findUnique).toHaveBeenCalledWith({ where: { jobId_localId: { jobId: 'job-1', localId: 'n0' } } });
+  });
+
+  it('editDiffEntry 400s for an entry with a CreatedItemMapping row', async () => {
+    const { service } = makeService([create('n0')], ['n0']);
+
+    await expect(service.editDiffEntry('job-1', 'n0', { title: 'New' })).rejects.toThrow(BadRequestException);
+    await expect(service.editDiffEntry('job-1', 'n0', { title: 'New' })).rejects.toThrow(/already written to Azure DevOps/);
+  });
+
+  it('both still succeed for an unwritten create entry on a job that already has other mappings', async () => {
+    const { service } = makeService([withProposal('n0'), withProposal('n1')], ['n0']);
+
+    const accepted = await service.setProposalAccepted('job-1', 'n1', true);
+    expect(accepted.find((e) => e.localId === 'n1')?.proposalAccepted).toBe(true);
+    const edited = await service.editDiffEntry('job-1', 'n1', { title: 'New' });
+    expect(edited.find((e) => e.localId === 'n1')?.title).toBe('New');
+  });
+
+  it('a 400 here leaves dryRunDiff and diffVersion untouched', async () => {
+    const { service, updateMany, prisma } = makeService([withProposal('n0')], ['n0']);
+
+    await expect(service.setProposalAccepted('job-1', 'n0', true)).rejects.toThrow(BadRequestException);
+    await expect(service.editDiffEntry('job-1', 'n0', { title: 'New' })).rejects.toThrow(BadRequestException);
+
+    expect(updateMany).not.toHaveBeenCalled();
+    expect(prisma.job.findUnique).not.toHaveBeenCalled();
   });
 });
 
@@ -3395,7 +3637,7 @@ describe('JobsService.moveDiffEntry', () => {
 
 describe('JobsService.confirm — exclusion', () => {
   it('skips an excluded entry and any child of it, even if the child itself is not excluded', async () => {
-    const createWorkItem = jest.fn();
+    const createWorkItem = jest.fn().mockResolvedValue({ id: 700 });
     const prisma = {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -3404,6 +3646,8 @@ describe('JobsService.confirm — exclusion', () => {
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, excluded: true },
             { localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'Child', description: 'd1', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null, excluded: false },
+            // Not under the excluded subtree: keeps this a real write, so the exclusion (not an empty plan) is what is under test.
+            { localId: 'n2', parentLocalId: null, type: 'Requirement', title: 'Sibling', description: 'd2', action: 'create', existingAdoId: null, sourceHash: 'h2', customerId: null, excluded: false },
           ],
         }),
         update: jest.fn().mockResolvedValue(undefined),
@@ -3421,8 +3665,9 @@ describe('JobsService.confirm — exclusion', () => {
 
     const result = await service.confirm('job-1');
 
-    expect(result).toEqual({ status: 'succeeded', createdCount: 0 });
-    expect(createWorkItem).not.toHaveBeenCalled();
+    expect(result).toEqual({ status: 'succeeded', createdCount: 1 });
+    expect(createWorkItem).toHaveBeenCalledTimes(1);
+    expect(createWorkItem).toHaveBeenCalledWith('Requirement', expect.objectContaining({ 'System.Title': 'Sibling' }), 'Project', undefined);
   });
 });
 
@@ -3877,7 +4122,7 @@ describe('JobsService.confirm — figure attachments', () => {
       createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
       jobFigureFile: {
         findMany: jest.fn().mockResolvedValue([{ id: 'jff-1', jobId: 'job-1', figureId: 'f0', bytes: Buffer.from('png bytes'), mimeType: 'image/png' }]),
-        delete: figureFileDelete,
+        deleteMany: figureFileDelete,
       },
     };
     const service = new JobsService(
@@ -3918,7 +4163,7 @@ describe('JobsService.confirm — figure attachments', () => {
       createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
       jobFigureFile: {
         findMany: jest.fn().mockResolvedValue([{ id: 'jff-11', jobId: 'job-1', figureId: 'f11', bytes: Buffer.from('jpeg bytes'), mimeType: 'image/jpeg' }]),
-        delete: figureFileDelete,
+        deleteMany: figureFileDelete,
       },
     };
     const service = new JobsService(
@@ -3965,7 +4210,7 @@ describe('JobsService.confirm — figure attachments', () => {
       createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
       jobFigureFile: {
         findMany: jest.fn().mockResolvedValue([{ id: 'jff-1', jobId: 'job-1', figureId: 'f9', bytes: Buffer.from('unreferenced'), mimeType: 'image/png' }]),
-        delete: figureFileDelete,
+        deleteMany: figureFileDelete,
       },
     };
     const service = new JobsService(
@@ -3999,7 +4244,7 @@ describe('JobsService.confirm — figure attachments', () => {
       },
       auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
       createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
-      jobFigureFile: { findMany: figureFileFindMany, delete: jest.fn() },
+      jobFigureFile: { findMany: figureFileFindMany, deleteMany: jest.fn() },
     };
     const service = new JobsService(
       prisma as any,
@@ -4035,7 +4280,7 @@ describe('JobsService.confirm — figure attachments', () => {
       createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
       jobFigureFile: {
         findMany: jest.fn().mockResolvedValue([{ id: 'jff-1', jobId: 'job-1', figureId: 'f0', bytes: Buffer.from('png bytes'), mimeType: 'image/png' }]),
-        delete: figureFileDelete,
+        deleteMany: figureFileDelete,
       },
     };
     const service = new JobsService(
@@ -4050,6 +4295,129 @@ describe('JobsService.confirm — figure attachments', () => {
 
     expect(figureFileDelete).not.toHaveBeenCalled();
     expect(result).toEqual({ status: 'succeeded', createdCount: 1 });
+  });
+
+  it('confirm records an audit entry naming the figures whose attachment failed and still succeeds', async () => {
+    const createWorkItem = jest.fn().mockResolvedValueOnce({ id: 1234 });
+    const linkParentChild = jest.fn().mockResolvedValue(undefined);
+    const uploadAttachment = jest.fn().mockImplementation(async (_adoId: number, filename: string) => { if (filename.startsWith('f1')) throw new Error('too large'); });
+    const prisma = {
+      job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, figureIds: ['f0', 'f1'] },
+          ],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+      jobFigureFile: {
+        findMany: jest.fn().mockResolvedValue([{ id: 'jff-f0', jobId: 'job-1', figureId: 'f0', bytes: Buffer.from('b'), mimeType: 'image/png' }, { id: 'jff-f1', jobId: 'job-1', figureId: 'f1', bytes: Buffer.from('b'), mimeType: 'image/png' }]),
+        deleteMany: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild, uploadAttachment, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+    );
+
+    const result = await service.confirm('job-1');
+
+    expect(result).toEqual({ status: 'succeeded', createdCount: 1 });
+    const messages = prisma.auditEntry.create.mock.calls.map((c: any[]) => c[0].data.message as string);
+    const figureMessages = messages.filter((m) => m.includes('figure attachment'));
+    expect(figureMessages).toHaveLength(1);
+    expect(figureMessages[0]).toContain('1 figure attachment(s) failed');
+    expect(figureMessages[0]).toContain('f1 on #1234');
+    expect(figureMessages[0]).toContain('Azure DevOps Server default is 4 MB');
+    expect(figureMessages[0]).toContain('first error: too large');
+    expect(figureMessages[0]).not.toContain('f0 on');
+    expect(prisma.jobFigureFile.deleteMany).toHaveBeenCalledTimes(1);
+    expect(prisma.jobFigureFile.deleteMany).toHaveBeenCalledWith({ where: { id: 'jff-f0' } });
+  });
+
+  it('a figure whose row delete fails after a successful upload is not reported as failed', async () => {
+    const createWorkItem = jest.fn().mockResolvedValueOnce({ id: 1234 });
+    const uploadAttachment = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, figureIds: ['f0'] },
+          ],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+      jobFigureFile: {
+        findMany: jest.fn().mockResolvedValue([{ id: 'jff-f0', jobId: 'job-1', figureId: 'f0', bytes: Buffer.from('b'), mimeType: 'image/png' }]),
+        deleteMany: jest.fn().mockRejectedValue(new Error('db gone')),
+      },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild: jest.fn().mockResolvedValue(undefined), uploadAttachment, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+    );
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const result = await service.confirm('job-1');
+      expect(result).toEqual({ status: 'succeeded', createdCount: 1 });
+    } finally {
+      errorSpy.mockRestore();
+    }
+    expect(uploadAttachment).toHaveBeenCalledTimes(1);
+    expect(prisma.jobFigureFile.deleteMany).toHaveBeenCalledWith({ where: { id: 'jff-f0' } });
+    const messages = prisma.auditEntry.create.mock.calls.map((c: any[]) => c[0].data.message as string);
+    expect(messages.filter((m) => m.includes('figure attachment'))).toHaveLength(0);
+  });
+
+  it('confirm writes no figure audit entry when all attachments succeed', async () => {
+    const createWorkItem = jest.fn().mockResolvedValueOnce({ id: 1234 });
+    const linkParentChild = jest.fn().mockResolvedValue(undefined);
+    const uploadAttachment = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, figureIds: ['f0'] },
+          ],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+      jobFigureFile: {
+        findMany: jest.fn().mockResolvedValue([{ id: 'jff-f0', jobId: 'job-1', figureId: 'f0', bytes: Buffer.from('b'), mimeType: 'image/png' }]),
+        deleteMany: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild, uploadAttachment, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+    );
+
+    const result = await service.confirm('job-1');
+
+    expect(result).toEqual({ status: 'succeeded', createdCount: 1 });
+    const messages = prisma.auditEntry.create.mock.calls.map((c: any[]) => c[0].data.message as string);
+    expect(messages.filter((m) => m.includes('figure attachment'))).toHaveLength(0);
   });
 
   it('does not abort or revert confirm when the whole figure-attachment phase throws (e.g. JobFigureFile query fails)', async () => {
@@ -4107,7 +4475,7 @@ describe('JobsService.confirm — figure attachments', () => {
           { id: 'jff-0', jobId: 'job-1', figureId: 'f0', bytes: Buffer.from('excluded'), mimeType: 'image/png' },
           { id: 'jff-1', jobId: 'job-1', figureId: 'f1', bytes: Buffer.from('included'), mimeType: 'image/png' },
         ]),
-        delete: jest.fn().mockResolvedValue(undefined),
+        deleteMany: jest.fn().mockResolvedValue(undefined),
       },
     };
     const service = new JobsService(
@@ -4165,7 +4533,7 @@ describe('JobsService.confirm — figure attachments', () => {
           { id: 'jff-1', jobId: 'job-1', figureId: 'f1', bytes: Buffer.from('b'), mimeType: 'image/png' },
           { id: 'jff-2', jobId: 'job-1', figureId: 'f2', bytes: Buffer.from('c'), mimeType: 'image/png' },
         ]),
-        delete: figureFileDelete,
+        deleteMany: figureFileDelete,
       },
     };
     const service = new JobsService(
@@ -4712,7 +5080,7 @@ describe('JobsService.attachFigureToAdo', () => {
           id: 'job-1',
           adoProject: 'Project',
           dryRunDiff: [
-            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'reuse', existingAdoId: 555, sourceHash: 'h0', customerId: null },
+            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'reuse', existingAdoId: 555, sourceHash: 'h0', customerId: null, figureIds: ['f0'] },
           ],
         }),
       },
@@ -4740,7 +5108,7 @@ describe('JobsService.attachFigureToAdo', () => {
           id: 'job-1',
           adoProject: 'Project',
           dryRunDiff: [
-            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'reuse', existingAdoId: 555, sourceHash: 'h0', customerId: null },
+            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'reuse', existingAdoId: 555, sourceHash: 'h0', customerId: null, figureIds: ['f0'] },
           ],
           figureDescriptions: [{ figureIndex: 1, figureId: 'f0', name: 'Panel Layout Diagram', caption: null }],
         }),
@@ -4773,7 +5141,7 @@ describe('JobsService.attachFigureToAdo', () => {
           id: 'job-1',
           adoProject: 'Project',
           dryRunDiff: [
-            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'dedup_skip', existingAdoId: 777, sourceHash: 'h0', customerId: null },
+            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'dedup_skip', existingAdoId: 777, sourceHash: 'h0', customerId: null, figureIds: ['f0'] },
           ],
         }),
       },
@@ -4799,7 +5167,7 @@ describe('JobsService.attachFigureToAdo', () => {
           id: 'job-1',
           adoProject: 'Project',
           dryRunDiff: [
-            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null },
+            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, figureIds: ['f0'] },
           ],
         }),
       },
@@ -4825,7 +5193,7 @@ describe('JobsService.attachFigureToAdo', () => {
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1',
           dryRunDiff: [
-            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null },
+            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, figureIds: ['f0'] },
           ],
         }),
       },
@@ -4857,7 +5225,7 @@ describe('JobsService.attachFigureToAdo', () => {
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1',
           dryRunDiff: [
-            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'reuse', existingAdoId: 555, sourceHash: 'h0', customerId: null },
+            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'reuse', existingAdoId: 555, sourceHash: 'h0', customerId: null, figureIds: ['f0'] },
           ],
         }),
       },
@@ -4877,7 +5245,7 @@ describe('JobsService.attachFigureToAdo', () => {
           id: 'job-1',
           adoProject: null,
           dryRunDiff: [
-            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'reuse', existingAdoId: 555, sourceHash: 'h0', customerId: null },
+            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'reuse', existingAdoId: 555, sourceHash: 'h0', customerId: null, figureIds: ['f0'] },
           ],
         }),
       },
@@ -5337,7 +5705,7 @@ describe('JobsService.getById', () => {
       id: 'job-1',
       status: 'diff_ready',
       mode: 'survey',
-      dryRunDiff: [{ localId: 'n0' }],
+      dryRunDiff: [{ localId: 'n0', attachFigureIds: [] }],
       warnings: [],
       kbCitations: ['doc-a.docx'],
       // A historical job predates the kbCoverage column -- null (unknown),
@@ -5361,7 +5729,37 @@ describe('JobsService.getById', () => {
       traceLinkFailures: [],
       // No prior confirm() attempt -- zero durable CreatedItemMapping rows.
       createdItemCount: 0,
+      writtenLocalIds: [],
     });
+  });
+
+  it('getById returns writtenLocalIds', async () => {
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1',
+          status: 'diff_ready',
+          mode: 'baseline',
+          dryRunDiff: [],
+          warnings: null,
+          kbCitations: [],
+          figureDescriptions: [],
+          _count: { createdItemMappings: 2 },
+          createdItemMappings: [{ localId: 'n0' }, { localId: 'n3' }],
+        }),
+      },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    const result = await service.getById('job-1');
+
+    expect(result?.writtenLocalIds).toEqual(['n0', 'n3']);
+    expect(result?.createdItemCount).toBe(2);
+    expect(prisma.job.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        include: expect.objectContaining({ createdItemMappings: { select: { localId: true } } }),
+      }),
+    );
   });
 
   it('returns traceLinkFailures shaped for the frontend (id/sourceLocalId/sourceAdoId/targetAdoId/referenceName only, no error/createdAt/jobId)', async () => {
@@ -5401,7 +5799,11 @@ describe('JobsService.getById', () => {
     ]);
     expect(prisma.job.findUnique).toHaveBeenCalledWith({
       where: { id: 'job-1' },
-      include: { traceLinkFailures: true, _count: { select: { createdItemMappings: true } } },
+      include: {
+        traceLinkFailures: true,
+        _count: { select: { createdItemMappings: true } },
+        createdItemMappings: { select: { localId: true } },
+      },
     });
   });
 
@@ -5553,6 +5955,55 @@ describe('JobsService.onModuleInit', () => {
       select: { id: true, status: true },
     });
   });
+
+  const orphanHarness = (status: string) => {
+    const prisma = {
+      job: { findMany: jest.fn().mockResolvedValue([{ id: 'job-1', status }]), update: jest.fn().mockResolvedValue({}), updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      auditEntry: { create: jest.fn().mockResolvedValue({}) },
+    };
+    const publisher = { publish: jest.fn().mockResolvedValue(undefined) };
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused', undefined, undefined, undefined, undefined, publisher as any);
+    (service as any).queue = { getJob: jest.fn().mockResolvedValue(undefined) };
+    return { prisma, publisher, service };
+  };
+
+  it.each(['pending', 'running'])('orphaned %s jobs still fail', async (status) => {
+    const { prisma, publisher, service } = orphanHarness(status);
+
+    await service.onModuleInit();
+
+    expect(prisma.job.update).toHaveBeenCalledWith({ where: { id: 'job-1' }, data: { status: 'failed' } });
+    expect(prisma.auditEntry.create).toHaveBeenCalledWith({
+      data: { jobId: 'job-1', message: expect.stringContaining('Job marked failed on startup') },
+    });
+    expect(publisher.publish).toHaveBeenCalledWith('job-1', 'failed');
+  });
+
+  it('an orphaned writing job returns to diff_ready with a retry audit entry and event', async () => {
+    const { prisma, publisher, service } = orphanHarness('writing');
+
+    await service.onModuleInit();
+
+    expect(prisma.job.updateMany).toHaveBeenCalledWith({ where: { id: 'job-1', status: 'writing' }, data: { status: 'diff_ready' } });
+    expect(prisma.auditEntry.create).toHaveBeenCalledWith({
+      data: {
+        jobId: 'job-1',
+        message: 'Write interrupted by a restart; retry skips the items already written (an item that was being created at that moment may need a check in Azure DevOps)',
+      },
+    });
+    expect(publisher.publish).toHaveBeenCalledWith('job-1', 'diff_ready');
+    expect(publisher.publish).not.toHaveBeenCalledWith('job-1', 'failed');
+  });
+
+  it('a writing job that already moved on is left alone', async () => {
+    const { prisma, publisher, service } = orphanHarness('writing');
+    prisma.job.updateMany.mockResolvedValue({ count: 0 });
+
+    await service.onModuleInit();
+
+    expect(prisma.auditEntry.create).not.toHaveBeenCalled();
+    expect(publisher.publish).not.toHaveBeenCalled();
+  });
 });
 
 
@@ -5575,7 +6026,7 @@ describe('JobsService.retryEnhancement (parent_summary)', () => {
   const makeService = (diff: object[], warnings: object[], enhanceItems: jest.Mock) => {
     const job = { id: 'job-1', status: 'diff_ready', diffVersion: 3, userId: 'u1', model: 'm1', dryRunDiff: diff, warnings };
     const updateMany = jest.fn().mockResolvedValue({ count: 1 });
-    const prisma = { job: { updateMany, findUnique: jest.fn().mockResolvedValue(job) } };
+    const prisma = { job: { updateMany, findUnique: jest.fn().mockResolvedValue(job) }, createdItemMapping: { findMany: jest.fn().mockResolvedValue([]) } };
     return new JobsService(prisma as any, {} as any, {} as any, { enhanceItems } as any, 'redis://unused');
   };
   const input = (localIds: string[]) => ({ kind: 'enhancement_call_failed', pass: 'parent_summary' as const, localIds });
@@ -5658,7 +6109,7 @@ describe('JobsService.retryEnhancement (parent_summary)', () => {
     const freshTitle = { value: 'title f' };
     const job = { id: 'job-1', status: 'diff_ready', diffVersion: 3, userId: 'u1', model: 'm1', warnings: [warn(['f'])] };
     const findUnique = jest.fn().mockImplementation(async () => ({ ...job, dryRunDiff: tree({ f: { title: freshTitle.value } }) }));
-    const prisma = { job: { updateMany: jest.fn().mockResolvedValue({ count: 1 }), findUnique } };
+    const prisma = { job: { updateMany: jest.fn().mockResolvedValue({ count: 1 }), findUnique }, createdItemMapping: { findMany: jest.fn().mockResolvedValue([]) } };
     const service = new JobsService(prisma as any, {} as any, {} as any, { enhanceItems } as any, 'redis://unused');
 
     const result = await service.retryEnhancement('job-1', input(['f']));
@@ -5739,6 +6190,7 @@ describe('JobsService.setProposalAccepted (P9d review gate)', () => {
 
   function makeService(dryRunDiff: unknown[], status = 'diff_ready') {
     const prisma = {
+      createdItemMapping: { findUnique: jest.fn().mockResolvedValue(null) },
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status, dryRunDiff }),
@@ -5846,6 +6298,7 @@ describe('JobsService.editDiffEntry — accepted proposal (P9d)', () => {
 
   function makeService() {
     const prisma = {
+      createdItemMapping: { findUnique: jest.fn().mockResolvedValue(null) },
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [base] }),
@@ -5868,10 +6321,11 @@ describe('JobsService.editDiffEntry — accepted proposal (P9d)', () => {
 });
 
 describe('JobsService.getWritePreview', () => {
-  function makeService(job: unknown, mappings: unknown[] = []): JobsService {
+  function makeService(job: unknown, mappings: unknown[] = [], storedFigures: { figureId: string }[] = []): JobsService {
     const prisma = {
       job: { findUnique: jest.fn().mockResolvedValue(job) },
       createdItemMapping: { findMany: jest.fn().mockResolvedValue(mappings) },
+      jobFigureFile: { findMany: jest.fn().mockResolvedValue(storedFigures) },
       auditEntry: { create: jest.fn() },
     };
     return new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
@@ -5879,6 +6333,16 @@ describe('JobsService.getWritePreview', () => {
 
   const entry = (localId: string, extra: Record<string, unknown> = {}) => ({
     localId, parentLocalId: null, type: 'Requirement', action: 'create', existingAdoId: null, ...extra,
+  });
+
+  it('counts a stored figure of a resumed entry as work to attach, none for a reuse entry, and none when no figure file is stored', async () => {
+    const job = { id: 'job-1', dryRunDiff: [entry('n0', { figureIds: ['f0'] })] };
+    const withFile = await makeService(job, [{ localId: 'n0', adoWorkItemId: 7, linked: true }], [{ figureId: 'f0' }]).getWritePreview('job-1');
+    expect(withFile?.createdTotal).toBe(0);
+    expect(withFile?.figuresToAttach).toBe(1);
+    expect((await makeService(job, [{ localId: 'n0', adoWorkItemId: 7, linked: true }]).getWritePreview('job-1'))?.figuresToAttach).toBe(0);
+    const reuseJob = { id: 'job-1', dryRunDiff: [entry('n0', { action: 'reuse', existingAdoId: 7, figureIds: ['f0'] })] };
+    expect((await makeService(reuseJob, [], [{ figureId: 'f0' }]).getWritePreview('job-1'))?.figuresToAttach).toBe(0);
   });
 
   it('returns null for an unknown job', async () => {
@@ -5923,5 +6387,684 @@ describe('JobsService.getWritePreview', () => {
 
   it('treats a job with no stored diff as an empty write', async () => {
     expect(await makeService({ id: 'job-1', dryRunDiff: null }).getWritePreview('job-1')).toMatchObject({ createdTotal: 0 });
+  });
+});
+
+describe('JobsService.confirm — pre-claim validation', () => {
+  const e = (localId: string, extra: Record<string, unknown> = {}) => ({
+    localId, parentLocalId: null, type: 'Requirement', title: `T-${localId}`, description: 'd', action: 'create', existingAdoId: null,
+    sourceHash: `h-${localId}`, customerId: null, sourceRef: null, tags: [], ...extra,
+  });
+
+  function setup(diff: unknown[], opts: { mappings?: unknown[]; storedFigures?: { figureId: string }[]; claimCount?: number } = {}) {
+    let nextId = 100;
+    const createWorkItem = jest.fn().mockImplementation(async () => ({ id: nextId++ }));
+    const linkParentChild = jest.fn().mockResolvedValue(undefined);
+    const linkWorkItems = jest.fn().mockResolvedValue(undefined);
+    const publish = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        updateMany: jest.fn().mockResolvedValue({ count: opts.claimCount ?? 1 }),
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', diffVersion: 7, state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project', dryRunDiff: diff,
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: {
+        findMany: jest.fn().mockResolvedValue(opts.mappings ?? []), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined),
+      },
+      jobFigureFile: { findMany: jest.fn().mockResolvedValue(opts.storedFigures ?? []), deleteMany: jest.fn().mockResolvedValue(undefined) },
+    };
+    const mcp = {
+      createWorkItem, linkParentChild, linkWorkItems, uploadAttachment: jest.fn().mockResolvedValue(undefined),
+      discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }),
+    };
+    const service = new JobsService(
+      prisma as any, mcp as any, { record: jest.fn() } as any, { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused', undefined, undefined, undefined, undefined, { publish, publishNarration: jest.fn().mockResolvedValue(undefined) } as any,
+    );
+    return { service, prisma, mcp, createWorkItem, linkParentChild, linkWorkItems, publish };
+  }
+
+  it('confirm 400s when nothing would be created, no link or figure remains and nothing was written before, leaves status diff_ready, publishes no writing event and writes no audit entry', async () => {
+    const { service, prisma, publish, createWorkItem } = setup([e('r', { action: 'reuse', existingAdoId: 5 })]);
+    await expect(service.confirm('job-1')).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.job.updateMany).not.toHaveBeenCalled();
+    expect(prisma.job.update).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+    expect(prisma.auditEntry.create).not.toHaveBeenCalled();
+    expect(createWorkItem).not.toHaveBeenCalled();
+  });
+
+  it('confirm 400s for an empty selection on a diff that would otherwise create', async () => {
+    const { service, prisma } = setup([e('a')]);
+    await expect(service.confirm('job-1', undefined, [])).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.job.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('confirm proceeds on a resume with 0 new items when parent links remain', async () => {
+    const { service, linkParentChild } = setup(
+      [e('a'), e('b', { parentLocalId: 'a' })],
+      { mappings: [{ localId: 'a', adoWorkItemId: 5, linked: true }, { localId: 'b', adoWorkItemId: 6, linked: false }] },
+    );
+    await expect(service.confirm('job-1')).resolves.toEqual({ status: 'succeeded', createdCount: 0 });
+    expect(linkParentChild).toHaveBeenCalledWith(6, 5, undefined);
+  });
+
+  it('confirm proceeds on a resume with 0 new items when trace links remain', async () => {
+    const link = { sourceLocalId: 'a', referenceName: 'System.LinkTypes.Related', targetKind: 'intraJob', targetLocalId: 'b', resolutionStatus: 'resolved' };
+    const { service, linkWorkItems } = setup(
+      [e('a', { traceLinks: [link] }), e('b')],
+      { mappings: [{ localId: 'a', adoWorkItemId: 5, linked: true }, { localId: 'b', adoWorkItemId: 6, linked: true }] },
+    );
+    await expect(service.confirm('job-1')).resolves.toEqual({ status: 'succeeded', createdCount: 0 });
+    expect(linkWorkItems).toHaveBeenCalledTimes(1);
+  });
+
+  it('confirm proceeds with 0 new items when only a stored figure remains to attach', async () => {
+    const { service, prisma } = setup([e('r', { figureIds: ['f0'] })], {
+      mappings: [{ localId: 'r', adoWorkItemId: 5, linked: true }],
+      storedFigures: [{ figureId: 'f0' }],
+    });
+    prisma.jobFigureFile.findMany.mockResolvedValue([{ id: 'jff', jobId: 'job-1', figureId: 'f0', bytes: Buffer.from('x'), mimeType: 'image/png' }]);
+    await expect(service.confirm('job-1')).resolves.toEqual({ status: 'succeeded', createdCount: 0 });
+    expect(prisma.job.updateMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('confirm proceeds when everything is already written (alreadyWritten > 0) and finishes succeeded', async () => {
+    const { service, createWorkItem } = setup(
+      [e('a'), e('b', { parentLocalId: 'a' })],
+      { mappings: [{ localId: 'a', adoWorkItemId: 5, linked: true }, { localId: 'b', adoWorkItemId: 6, linked: true }] },
+    );
+    await expect(service.confirm('job-1')).resolves.toEqual({ status: 'succeeded', createdCount: 0 });
+    expect(createWorkItem).not.toHaveBeenCalled();
+  });
+
+  it("confirm 400s when a selected create entry's parent is a deselected create entry (names up to 5 ids)", async () => {
+    const diff = [e('p'), ...Array.from({ length: 7 }, (_, i) => e(`c${i}`, { parentLocalId: 'p' }))];
+    const { service, prisma } = setup(diff);
+    const err = await service.confirm('job-1', undefined, diff.slice(1).map((d) => d.localId)).catch((x) => x);
+    expect(err).toBeInstanceOf(BadRequestException);
+    expect(err.message).toContain('c0, c1, c2, c3, c4');
+    expect(err.message).not.toContain('c5');
+    expect(prisma.job.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('confirm accepts a selection whose deselected parent was already written (mapped)', async () => {
+    const { service, createWorkItem, linkParentChild } = setup(
+      [e('p'), e('c', { parentLocalId: 'p' })],
+      { mappings: [{ localId: 'p', adoWorkItemId: 5, linked: true }] },
+    );
+    await expect(service.confirm('job-1', undefined, ['c'])).resolves.toEqual({ status: 'succeeded', createdCount: 1 });
+    expect(createWorkItem).toHaveBeenCalledTimes(1);
+    expect(linkParentChild).toHaveBeenCalledWith(100, 5, undefined);
+  });
+
+  it('confirm 400s for an unknown selected id', async () => {
+    const { service, prisma } = setup([e('a')]);
+    const err = await service.confirm('job-1', undefined, ['a', 'ghost']).catch((x) => x);
+    expect(err).toBeInstanceOf(BadRequestException);
+    expect(err.message).toContain('ghost');
+    expect(prisma.job.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('confirm 409s when the diff version changed between validation and claim', async () => {
+    const { service, prisma, publish } = setup([e('a')], { claimCount: 0 });
+    await expect(service.confirm('job-1')).rejects.toBeInstanceOf(ConflictException);
+    expect(prisma.job.updateMany).toHaveBeenCalledWith({ where: { id: 'job-1', status: 'diff_ready', diffVersion: 7 }, data: { status: 'writing' } });
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it('not confirmable state is a 409', async () => {
+    const { service, prisma } = setup([e('a')]);
+    prisma.job.findUnique.mockResolvedValue({ id: 'job-1', status: 'writing', diffVersion: 7, dryRunDiff: [e('a')] });
+    const err = await service.confirm('job-1').catch((x) => x);
+    expect(err).toBeInstanceOf(ConflictException);
+    expect(err.message).toBe('Job job-1 is not in a confirmable state');
+    expect(prisma.job.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('confirm with a valid selection writes exactly what POST write-preview reported', async () => {
+    const diff = [e('p', { type: 'Feature' }), e('c1', { parentLocalId: 'p' }), e('c2', { parentLocalId: 'p' }), e('r', { action: 'reuse', existingAdoId: 9 }), e('c3', { parentLocalId: 'r' })];
+    const selected = ['p', 'c1', 'c3'];
+    const { service, createWorkItem, linkParentChild } = setup(diff);
+    const preview = await service.getWritePreview('job-1', selected);
+    const result = await service.confirm('job-1', undefined, selected);
+    expect(createWorkItem).toHaveBeenCalledTimes(preview!.createdTotal);
+    expect(linkParentChild).toHaveBeenCalledTimes(preview!.parentLinks);
+    expect(result.createdCount).toBe(preview!.createdTotal);
+  });
+
+  it('POST write-preview returns the same 400 for an orphaning selection, and for an unknown id', async () => {
+    const { service } = setup([e('p'), e('c', { parentLocalId: 'p' })]);
+    await expect(service.getWritePreview('job-1', ['c'])).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.getWritePreview('job-1', ['ghost'])).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.getWritePreview('job-1', ['p', 'c'])).resolves.toMatchObject({ createdTotal: 2 });
+  });
+
+  it('write-preview does not 400 for nothing to write', async () => {
+    const { service } = setup([e('r', { action: 'reuse', existingAdoId: 5 })]);
+    await expect(service.getWritePreview('job-1')).resolves.toMatchObject({ createdTotal: 0 });
+  });
+});
+
+describe('JobsService.confirm round-2 review fixes', () => {
+  const row = (figureId: string) => ({ id: `jff-${figureId}`, jobId: 'job-1', figureId, bytes: Buffer.from('b'), mimeType: 'image/png' });
+  const node = (localId: string, extra: Record<string, unknown> = {}) => ({
+    localId, parentLocalId: null, type: 'Requirement', title: localId, description: 'd', action: 'create', existingAdoId: null, sourceHash: `h-${localId}`, customerId: null, ...extra,
+  });
+  const build = (opts: {
+    diff: unknown[];
+    mappings?: unknown[];
+    figures?: string[];
+    upload?: jest.Mock;
+    mappingFindMany?: jest.Mock;
+    updateMany?: jest.Mock;
+    publish?: jest.Mock;
+  }) => {
+    const createWorkItem = jest.fn().mockResolvedValue({ id: 1234 });
+    const uploadAttachment = opts.upload ?? jest.fn().mockResolvedValue(undefined);
+    const publish = opts.publish ?? jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        updateMany: opts.updateMany ?? jest.fn().mockResolvedValue({ count: 1 }),
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project', dryRunDiff: opts.diff,
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: {
+        findMany: opts.mappingFindMany ?? jest.fn().mockResolvedValue(opts.mappings ?? []),
+        upsert: jest.fn().mockResolvedValue(undefined),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      jobFigureFile: { findMany: jest.fn().mockResolvedValue((opts.figures ?? []).map(row)), deleteMany: jest.fn().mockResolvedValue(undefined) },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild: jest.fn(), uploadAttachment, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+      undefined, undefined, undefined, undefined,
+      { publish, publishNarration: jest.fn().mockResolvedValue(undefined) } as any,
+    );
+    return { service, prisma, uploadAttachment, publish };
+  };
+  const figureMessage = (prisma: { auditEntry: { create: jest.Mock } }) =>
+    prisma.auditEntry.create.mock.calls.map((c: any[]) => c[0].data.message as string).find((m) => m.includes('figure attachment')) as string;
+
+  it('reuse and dedup_skip entries get no automatic figure attachments', async () => {
+    const { service, uploadAttachment } = build({
+      diff: [
+        node('n0', { action: 'reuse', existingAdoId: 7, figureIds: ['f0'] }),
+        node('n1', { action: 'dedup_skip', existingAdoId: 8, figureIds: ['f1'] }),
+        node('n2', { figureIds: ['f2'] }),
+      ],
+      figures: ['f0', 'f1', 'f2'],
+    });
+    await service.confirm('job-1');
+    expect(uploadAttachment).toHaveBeenCalledTimes(1);
+    expect(uploadAttachment.mock.calls[0][0]).toBe(1234);
+  });
+
+  it('resumed entries still get figure attachments', async () => {
+    const { service, uploadAttachment } = build({
+      diff: [node('n0', { figureIds: ['f0'] }), node('r', { action: 'reuse', existingAdoId: 7, figureIds: ['f1'] })],
+      mappings: [{ localId: 'n0', adoWorkItemId: 555, linked: true }],
+      figures: ['f0', 'f1'],
+    });
+    await service.confirm('job-1');
+    expect(uploadAttachment).toHaveBeenCalledTimes(1);
+    expect(uploadAttachment.mock.calls[0][0]).toBe(555);
+  });
+
+  it('audit text redacts urls and credentials', async () => {
+    const pat = 'abcPATsecret123';
+    const upload = jest.fn().mockRejectedValue(
+      new Error(`HTTP 500 at https://ado.example.com/tfs/_apis/x?y=1 Bearer tok.en-1 Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ== ${pat} ${'A'.repeat(50)}`),
+    );
+    const { service, prisma } = build({ diff: [node('n0', { figureIds: ['f0'] })], figures: ['f0'], upload });
+    await service.confirm('job-1', { orgUrl: 'https://ado.example.com/tfs', pat });
+    const message = figureMessage(prisma);
+    expect(message).toContain('first error: HTTP 500');
+    expect(message).toContain('[url]');
+    expect(message).not.toContain('ado.example.com');
+    expect(message).not.toContain('tok.en-1');
+    expect(message).not.toContain('QWxhZGRpbjpvcGVuIHNlc2FtZQ');
+    expect(message).not.toContain(pat);
+    expect(message).not.toContain('A'.repeat(40));
+    expect(message).toContain('***');
+  });
+
+  it('size hint only for size errors', async () => {
+    const sized = build({ diff: [node('n0', { figureIds: ['f0'] })], figures: ['f0'], upload: jest.fn().mockRejectedValue(new Error('HTTP 413 Request Entity')) });
+    await sized.service.confirm('job-1');
+    expect(figureMessage(sized.prisma)).toContain('Azure DevOps Server default is 4 MB');
+
+    const other = build({ diff: [node('n0', { figureIds: ['f0'] })], figures: ['f0'], upload: jest.fn().mockRejectedValue(new Error('HTTP 401 unauthorized')) });
+    await other.service.confirm('job-1');
+    const message = figureMessage(other.prisma);
+    expect(message).not.toContain('4 MB');
+    expect(message).toContain('first error: HTTP 401 unauthorized');
+  });
+
+  it('the original error is rethrown when the revert fails', async () => {
+    const updateMany = jest.fn().mockResolvedValueOnce({ count: 1 }).mockRejectedValue(new Error('revert db down'));
+    const mappingFindMany = jest.fn().mockResolvedValueOnce([]).mockRejectedValueOnce(new Error('original blip'));
+    const { service } = build({ diff: [node('n0')], mappingFindMany, updateMany });
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    await expect(service.confirm('job-1')).rejects.toThrow('original blip');
+    expect(updateMany).toHaveBeenCalledTimes(2);
+    errorSpy.mockRestore();
+  });
+
+  it('a diff_ready event is published after reverting a claim that had published writing', async () => {
+    const publish = jest.fn().mockResolvedValue(undefined);
+    const built = build({ diff: [node('n0')], publish });
+    // The claim and re-read succeed (so publish('writing') happens); the exclusion walk then fails on a malformed diff.
+    built.prisma.job.findUnique.mockReset();
+    built.prisma.job.findUnique
+      .mockResolvedValueOnce({ id: 'job-1', status: 'diff_ready', diffVersion: 1, dryRunDiff: [node('n0')] })
+      .mockResolvedValueOnce({ id: 'job-1', status: 'writing', dryRunDiff: 'malformed' });
+    await expect(built.service.confirm('job-1')).rejects.toThrow();
+    const events = publish.mock.calls.map((c: any[]) => c[1]);
+    expect(events).toEqual(['writing', 'diff_ready']);
+  });
+});
+
+describe('JobsService.reindexDedup', () => {
+  function setup(opts: { count?: number; upsert?: jest.Mock } = {}) {
+    const count = opts.count ?? 2;
+    const diff = Array.from({ length: count }, (_, i) => ({ localId: `n${i}`, type: 'Requirement', title: `Title ${i}`, description: `Desc ${i}` }));
+    const mappings = diff.map((d, i) => ({ localId: d.localId, adoWorkItemId: 1000 + i, linked: true }));
+    const upsert = opts.upsert ?? jest.fn().mockResolvedValue(undefined);
+    const auditCreate = jest.fn().mockResolvedValue({});
+    const mcp = new Proxy({}, { get: () => { throw new Error('MCP must not be called'); } });
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', userId: 'u1', areaPath: 'P\\A', dryRunDiff: diff }) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue(mappings) },
+      auditEntry: { create: auditCreate },
+    };
+    const service = new JobsService(prisma as any, mcp as any, {} as any, { upsertDedupEntriesBatch: upsert } as any, 'redis://unused');
+    return { service, upsert, auditCreate };
+  }
+
+  it('reindexDedup upserts every mapped item with title, description and area path from the diff', async () => {
+    const { service, upsert } = setup();
+    await expect(service.reindexDedup('job-1')).resolves.toEqual({ indexed: 2 });
+    expect(upsert).toHaveBeenCalledWith(
+      [
+        { itemId: '1000', text: 'Desc 0', title: 'Title 0', areaPath: 'P\\A' },
+        { itemId: '1001', text: 'Desc 1', title: 'Title 1', areaPath: 'P\\A' },
+      ],
+      'u1',
+    );
+  });
+
+  it('chunks large jobs (450 items -> 3 calls)', async () => {
+    const { service, upsert } = setup({ count: 450 });
+    await expect(service.reindexDedup('job-1')).resolves.toEqual({ indexed: 450 });
+    expect(upsert.mock.calls.map((c) => c[0].length)).toEqual([200, 200, 50]);
+  });
+
+  it('is a no-op for a job with no mappings', async () => {
+    const { service, upsert, auditCreate } = setup({ count: 0 });
+    await expect(service.reindexDedup('job-1')).resolves.toEqual({ indexed: 0 });
+    expect(upsert).not.toHaveBeenCalled();
+    expect(auditCreate).not.toHaveBeenCalled();
+  });
+
+  it('records an audit entry on success', async () => {
+    const { service, auditCreate } = setup();
+    await service.reindexDedup('job-1');
+    expect(auditCreate).toHaveBeenCalledWith({ data: { jobId: 'job-1', message: 'Duplicate index rebuilt for 2 item(s)' } });
+  });
+
+  it('records a failure audit and throws a bad gateway', async () => {
+    const upsert = jest.fn().mockRejectedValue(new Error('embed failed at https://llm.example.com/v1/embeddings with 401'));
+    const { service, auditCreate } = setup({ upsert });
+    await expect(service.reindexDedup('job-1')).rejects.toBeInstanceOf(BadGatewayException);
+    const message: string = auditCreate.mock.calls[0][0].data.message;
+    expect(message).toMatch(/^Duplicate index rebuild failed: /);
+    expect(message).not.toContain('https://');
+    expect(message.length).toBeLessThanOrEqual('Duplicate index rebuild failed: '.length + 120);
+  });
+
+  it('a failing audit write does not replace the bad gateway', async () => {
+    const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const upsert = jest.fn().mockRejectedValue(new Error('embed failed'));
+      const { service, auditCreate } = setup({ upsert });
+      auditCreate.mockRejectedValue(new Error('db down'));
+      await expect(service.reindexDedup('job-1')).rejects.toBeInstanceOf(BadGatewayException);
+      expect(consoleError).toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it('a failing success audit still returns indexed', async () => {
+    const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const { service, auditCreate } = setup();
+      auditCreate.mockRejectedValue(new Error('db down'));
+      await expect(service.reindexDedup('job-1')).resolves.toEqual({ indexed: 2 });
+      expect(consoleError).toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it('never calls the MCP client', async () => {
+    const { service } = setup(); // the MCP stand-in throws on any property access
+    await expect(service.reindexDedup('job-1')).resolves.toEqual({ indexed: 2 });
+  });
+});
+
+describe('attachFigureIds (server-computed, read-only)', () => {
+  const diffEntry = (localId: string, extra: object = {}) => ({
+    localId, parentLocalId: null, type: 'Requirement', title: localId, description: 'd', action: 'create',
+    existingAdoId: null, sourceHash: `h-${localId}`, customerId: null, ...extra,
+  });
+  const jobRow = (dryRunDiff: unknown, mappings: string[] = []) => ({
+    id: 'job-1', status: 'diff_ready', mode: 'survey', dryRunDiff, warnings: null, kbCitations: [], figureDescriptions: [],
+    _count: { createdItemMappings: mappings.length }, createdItemMappings: mappings.map((localId) => ({ localId })),
+  });
+  const serviceFor = (row: unknown) => {
+    const prisma = { job: { findUnique: jest.fn().mockResolvedValue(row) } };
+    return new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+  };
+
+  it('getById decorates entries with attachFigureIds', async () => {
+    const service = serviceFor(jobRow([diffEntry('n0', { figureIds: ['f1'] })]));
+
+    const result = await service.getById('job-1');
+
+    expect((result?.dryRunDiff as any[])[0].attachFigureIds).toEqual(['f1']);
+  });
+
+  it('detached figure is not in attachFigureIds', async () => {
+    const service = serviceFor(jobRow([diffEntry('n0', { figureIds: ['f1', 'f2'], detachedFigureIds: ['f2'] })]));
+
+    const result = await service.getById('job-1');
+
+    expect((result?.dryRunDiff as any[])[0].attachFigureIds).toEqual(['f1']);
+  });
+
+  it('getById leaves a missing diff as it is', async () => {
+    const service = serviceFor(jobRow(null));
+
+    expect((await service.getById('job-1'))?.dryRunDiff).toBeNull();
+  });
+
+  it('reuse and dedup_skip and excluded entries get an empty attachFigureIds', () => {
+    const diff = [
+      diffEntry('ru', { action: 'reuse', existingAdoId: 5, figureIds: ['f1'] }),
+      diffEntry('ds', { action: 'dedup_skip', existingAdoId: 6, figureIds: ['f2'] }),
+      diffEntry('ex', { excluded: true, figureIds: ['f3'] }),
+      diffEntry('kid', { parentLocalId: 'ex', figureIds: ['f4'] }),
+    ];
+
+    expect(decorateDiffForRead(diff, []).map((e) => e.attachFigureIds)).toEqual([[], [], [], []]);
+  });
+
+  it('a created entry gets captioned and uncaptioned-not-insignificant ids', () => {
+    const [created] = decorateDiffForRead(
+      [diffEntry('n0', { figureIds: ['c1', 'c2'], uncaptionedFigureIds: ['u1', 'u2', 'c1'], insignificantFigureIds: ['u2'] })],
+      [],
+    );
+
+    expect(created.attachFigureIds).toEqual(['c1', 'c2', 'u1']);
+  });
+
+  it('an entry with a CreatedItemMapping is decorated even when its action is not create', () => {
+    const [written] = decorateDiffForRead([diffEntry('w', { action: 'reuse', existingAdoId: 3, figureIds: ['f1'] })], ['w']);
+
+    expect(written.attachFigureIds).toEqual(['f1']);
+  });
+
+  it('keeps every other field of the entry and returns a new object', () => {
+    const original = diffEntry('n0', { figureIds: ['f1'] });
+
+    const [decorated] = decorateDiffForRead([original], []);
+
+    expect(decorated).toEqual({ ...original, attachFigureIds: ['f1'] });
+    expect(original).not.toHaveProperty('attachFigureIds');
+  });
+
+  it('attachFigureIds is not persisted', async () => {
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const prisma = { job: { updateMany, findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', diffVersion: 3, dryRunDiff: [diffEntry('n0', { figureIds: ['f1'] })] }) } };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    await service.setDiffEntriesReviewed('job-1', ['n0'], true);
+
+    expect(JSON.stringify(updateMany.mock.calls[0][0])).not.toContain('attachFigureIds');
+  });
+});
+
+describe('JobsService.moveFigure', () => {
+  const e = (localId: string, extra: Record<string, unknown> = {}) => ({
+    localId, parentLocalId: null, type: 'Requirement', title: `T-${localId}`, description: `d-${localId}`, action: 'create', existingAdoId: null,
+    sourceHash: `h-${localId}`, customerId: null, figureIds: [], uncaptionedFigureIds: [], insignificantFigureIds: [], ...extra,
+  });
+
+  function setup(diff: unknown[], opts: { status?: string; mappings?: string[]; storedFigures?: { figureId: string }[] } = {}) {
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const figureDelete = jest.fn();
+    const figureDeleteMany = jest.fn();
+    const prisma = {
+      createdItemMapping: {
+        findUnique: jest.fn().mockImplementation(({ where }) =>
+          Promise.resolve(opts.mappings?.includes(where.jobId_localId.localId) ? { localId: where.jobId_localId.localId, adoWorkItemId: 5 } : null),
+        ),
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+      jobFigureFile: { findMany: jest.fn().mockResolvedValue(opts.storedFigures ?? []), delete: figureDelete, deleteMany: figureDeleteMany },
+      job: {
+        updateMany,
+        findUnique: jest.fn().mockImplementation(() => Promise.resolve({ id: 'job-1', status: opts.status ?? 'diff_ready', diffVersion: 3, dryRunDiff: structuredClone(diff) })),
+      },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+    return { service, updateMany, figureDelete, figureDeleteMany };
+  }
+
+  it('moves a captioned figure and keeps its list kind', async () => {
+    const { service } = setup([e('a', { figureIds: ['f0', 'f1'] }), e('b', { figureIds: ['f2'], uncaptionedFigureIds: ['f9'] })]);
+
+    const result = await service.moveFigure('job-1', 'a', 'f1', 'b');
+
+    expect(result[0]).toMatchObject({ figureIds: ['f0'], uncaptionedFigureIds: [] });
+    expect(result[1]).toMatchObject({ figureIds: ['f2', 'f1'], uncaptionedFigureIds: ['f9'] });
+    expect(result[0].description).toBe('d-a');
+    expect(result[1].description).toBe('d-b');
+  });
+
+  it('moves an uncaptioned figure and its insignificant marker', async () => {
+    const { service } = setup([
+      e('a', { uncaptionedFigureIds: ['f0', 'f1'], insignificantFigureIds: ['f1'] }),
+      e('b', { uncaptionedFigureIds: [] }),
+    ]);
+
+    const result = await service.moveFigure('job-1', 'a', 'f1', 'b');
+
+    expect(result[0]).toMatchObject({ uncaptionedFigureIds: ['f0'], insignificantFigureIds: [], figureIds: [] });
+    expect(result[1]).toMatchObject({ uncaptionedFigureIds: ['f1'], insignificantFigureIds: ['f1'], figureIds: [] });
+  });
+
+  it('null marks the figure detached, leaves the lists alone and keeps the stored bytes', async () => {
+    const { service, figureDelete, figureDeleteMany } = setup([
+      e('a', { figureIds: ['f0'], uncaptionedFigureIds: ['f0', 'f1'], insignificantFigureIds: ['f1'] }),
+      e('b'),
+    ]);
+
+    const result = await service.moveFigure('job-1', 'a', 'f1', null);
+    expect(result[0]).toMatchObject({ figureIds: ['f0'], uncaptionedFigureIds: ['f0', 'f1'], insignificantFigureIds: ['f1'], detachedFigureIds: ['f1'] });
+    expect(result[1]).toMatchObject({ figureIds: [], uncaptionedFigureIds: [], insignificantFigureIds: [] });
+    expect(figureDelete).not.toHaveBeenCalled();
+    expect(figureDeleteMany).not.toHaveBeenCalled();
+
+    const { service: second } = setup([e('a', { figureIds: ['f0'], detachedFigureIds: ['f0'] }), e('b')]);
+    const again = await second.moveFigure('job-1', 'a', 'f0', null);
+    expect(again[0].detachedFigureIds).toEqual(['f0']);
+  });
+
+  it('attaching again clears the detached marker', async () => {
+    const { service } = setup([e('a', { figureIds: ['f0', 'f1'], detachedFigureIds: ['f0', 'f1'] })]);
+
+    const result = await service.moveFigure('job-1', 'a', 'f0', 'a');
+
+    expect(result[0]).toMatchObject({ figureIds: ['f0', 'f1'], detachedFigureIds: ['f1'] });
+  });
+
+  it('the identical-target 400 still applies to a figure that is not detached', async () => {
+    const { service, updateMany } = setup([e('a', { figureIds: ['f0', 'f1'], detachedFigureIds: ['f1'] })]);
+
+    await expect(service.moveFigure('job-1', 'a', 'f0', 'a')).rejects.toThrow('the figure is already on this entry');
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
+  it('moving a detached figure to another entry attaches it there and clears the marker', async () => {
+    const { service } = setup([e('a', { figureIds: ['f0'], detachedFigureIds: ['f0'] }), e('b')]);
+
+    const result = await service.moveFigure('job-1', 'a', 'f0', 'b');
+
+    expect(result[0]).toMatchObject({ figureIds: [], detachedFigureIds: [] });
+    expect(result[1]).toMatchObject({ figureIds: ['f0'] });
+    expect(result[1].detachedFigureIds ?? []).toEqual([]);
+    const decorated = decorateDiffForRead(result as any[], []);
+    expect(decorated[1].attachFigureIds).toEqual(['f0']);
+  });
+
+  it('detached figure is not counted in figuresToAttach or figuresUnavailable', async () => {
+    const { service } = setup([e('a', { figureIds: ['f0'] })], { storedFigures: [{ figureId: 'f0' }] });
+    const detached = await service.moveFigure('job-1', 'a', 'f0', null);
+    const { service: after } = setup(detached, { storedFigures: [] });
+
+    const preview = await after.getWritePreview('job-1');
+
+    expect(preview?.figuresToAttach).toBe(0);
+    expect(preview?.figuresUnavailable).toBe(0);
+  });
+
+  it('rejects a reuse or dedup_skip target', async () => {
+    const { service, updateMany } = setup([
+      e('a', { figureIds: ['f0'] }),
+      e('r', { action: 'reuse', existingAdoId: 9 }),
+      e('d', { action: 'dedup_skip', existingAdoId: 8 }),
+    ]);
+
+    await expect(service.moveFigure('job-1', 'a', 'f0', 'r')).rejects.toThrow('Figures are not attached automatically to items that already exist');
+    await expect(service.moveFigure('job-1', 'a', 'f0', 'd')).rejects.toThrow(BadRequestException);
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
+  it('rejects a figure that is not on the source entry', async () => {
+    const { service, updateMany } = setup([e('a', { figureIds: ['f0'] }), e('b', { figureIds: ['f1'] })]);
+
+    await expect(service.moveFigure('job-1', 'a', 'f1', 'b')).rejects.toThrow(BadRequestException);
+    await expect(service.moveFigure('job-1', 'a', 'f1', 'b')).rejects.toThrow('figure not on this entry');
+    await expect(service.moveFigure('job-1', 'missing', 'f0', 'b')).rejects.toThrow(NotFoundException);
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
+  it('rejects a written source or target entry', async () => {
+    const diff = [e('a', { figureIds: ['f0'] }), e('b')];
+    const { service, updateMany } = setup(diff, { mappings: ['a'] });
+    await expect(service.moveFigure('job-1', 'a', 'f0', 'b')).rejects.toThrow('already written to Azure DevOps');
+    await expect(service.moveFigure('job-1', 'a', 'f0', null)).rejects.toThrow(BadRequestException);
+
+    const { service: targetWritten, updateMany: updateMany2 } = setup(diff, { mappings: ['b'] });
+    await expect(targetWritten.moveFigure('job-1', 'a', 'f0', 'b')).rejects.toThrow('already written to Azure DevOps');
+    expect(updateMany).not.toHaveBeenCalled();
+    expect(updateMany2).not.toHaveBeenCalled();
+  });
+
+  it('rejects an excluded or identical target', async () => {
+    const { service, updateMany } = setup([
+      e('a', { figureIds: ['f0'] }),
+      e('b', { excluded: true }),
+      e('c', { parentLocalId: 'b' }),
+    ]);
+
+    await expect(service.moveFigure('job-1', 'a', 'f0', 'a')).rejects.toThrow(BadRequestException);
+    await expect(service.moveFigure('job-1', 'a', 'f0', 'b')).rejects.toThrow(BadRequestException);
+    await expect(service.moveFigure('job-1', 'a', 'f0', 'c')).rejects.toThrow(BadRequestException);
+    await expect(service.moveFigure('job-1', 'a', 'f0', 'nope')).rejects.toThrow(NotFoundException);
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-diff_ready job', async () => {
+    const { service, updateMany } = setup([e('a', { figureIds: ['f0'] }), e('b')], { status: 'writing' });
+
+    await expect(service.moveFigure('job-1', 'a', 'f0', 'b')).rejects.toThrow('not in a diff-editable state');
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
+  it('bumps diffVersion', async () => {
+    const { service, updateMany } = setup([e('a', { figureIds: ['f0'] }), e('b')]);
+
+    await service.moveFigure('job-1', 'a', 'f0', 'b');
+
+    expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'job-1', status: 'diff_ready', diffVersion: 3 },
+      data: expect.objectContaining({ diffVersion: { increment: 1 } }),
+    }));
+  });
+
+  it('moving to an entry that already has the figure does not duplicate it', async () => {
+    const { service } = setup([
+      e('a', { figureIds: ['f0'], uncaptionedFigureIds: ['f1'], insignificantFigureIds: ['f1'] }),
+      e('b', { figureIds: ['f0'], uncaptionedFigureIds: ['f1'], insignificantFigureIds: ['f1'] }),
+    ]);
+
+    const captioned = await service.moveFigure('job-1', 'a', 'f0', 'b');
+    expect(captioned[1].figureIds).toEqual(['f0']);
+    const uncaptioned = await service.moveFigure('job-1', 'a', 'f1', 'b');
+    expect(uncaptioned[1].uncaptionedFigureIds).toEqual(['f1']);
+    expect(uncaptioned[1].insignificantFigureIds).toEqual(['f1']);
+  });
+
+  it('the preview follows the move', async () => {
+    const diff = [e('a', { figureIds: ['f0'] }), e('b'), e('r', { action: 'reuse', existingAdoId: 9 })];
+    const { service } = setup(diff, { storedFigures: [{ figureId: 'f0' }] });
+
+    expect((await service.getWritePreview('job-1'))?.figuresToAttach).toBe(1);
+
+    const toCreated = await service.moveFigure('job-1', 'a', 'f0', 'b');
+    const { service: afterCreated } = setup(toCreated, { storedFigures: [{ figureId: 'f0' }] });
+    expect((await afterCreated.getWritePreview('job-1'))?.figuresToAttach).toBe(1);
+
+    const detached = await service.moveFigure('job-1', 'a', 'f0', null);
+    const { service: afterDetach } = setup(detached, { storedFigures: [{ figureId: 'f0' }] });
+    expect((await afterDetach.getWritePreview('job-1'))?.figuresToAttach).toBe(0);
+  });
+});
+
+describe('JobsService.attachFigureToAdo -- membership', () => {
+  it('rejects a figure that is not on the entry before touching ADO or the stored file', async () => {
+    const uploadAttachment = jest.fn();
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1',
+          adoProject: 'Project',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'reuse', existingAdoId: 555, sourceHash: 'h0', customerId: null, figureIds: ['f1'] },
+          ],
+        }),
+      },
+      jobFigureFile: { findUnique: jest.fn(), delete: jest.fn() },
+    };
+    const service = new JobsService(prisma as any, { uploadAttachment } as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    await expect(service.attachFigureToAdo('job-1', 'n0', 'f0')).rejects.toThrow(BadRequestException);
+    await expect(service.attachFigureToAdo('job-1', 'n0', 'f0')).rejects.toThrow('figure not on this entry');
+    expect(prisma.jobFigureFile.findUnique).not.toHaveBeenCalled();
+    expect(uploadAttachment).not.toHaveBeenCalled();
   });
 });
