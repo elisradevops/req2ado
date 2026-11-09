@@ -487,6 +487,10 @@ class WarningKind(StrEnum):
     # heading title collides, both nodes keep the same title and a human
     # should rename one.
     PARENT_TITLE_COLLISION = "parent_title_collision"
+    # The acceptance-criteria grounding filter left out proposed criteria (or the whole proposal, for an unsupported assumption) that stated a value
+    # the document does not contain. No model call failed; `detail["pass"]` is "acceptance_criteria", `dropped` counts criteria, `assumptionOnly` counts
+    # items affected only by an assumption.
+    CRITERIA_VALUE_UNGROUNDED = "criteria_value_ungrounded"
 
 
 WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
@@ -533,6 +537,7 @@ WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
     WarningKind.SURVEY_TITLE_DISTILLED: WarningSeverity.AUTO_FIXED,
     WarningKind.DUPLICATE_CUSTOMER_ID: WarningSeverity.NEEDS_REVIEW,
     WarningKind.PARENT_TITLE_COLLISION: WarningSeverity.NEEDS_REVIEW,
+    WarningKind.CRITERIA_VALUE_UNGROUNDED: WarningSeverity.NEEDS_REVIEW,
 }
 
 
@@ -558,10 +563,12 @@ class IntegrityWarning(BaseModel):
         raw: str,
         node_ids: list[str] | None = None,
         detail: dict | None = None,
+        severity: WarningSeverity | None = None,
     ) -> IntegrityWarning:
+        """`severity` overrides the kind's default only when an instance is resolved differently (PARENT_TITLE_COLLISION)."""
         return cls(
             kind=kind,
-            severity=WARNING_SEVERITY[kind],
+            severity=severity or WARNING_SEVERITY[kind],
             node_ids=node_ids or [],
             detail=detail or {},
             raw=raw,

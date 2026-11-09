@@ -41,6 +41,7 @@ def load_pdf_with_ocr_fallback(
     path: str,
     languages: str = "eng",
     describe_figure: Callable[[bytes], str | None] | None = None,
+    on_figure_bytes: Callable[[bytes], None] | None = None,
     on_ocr_page: Callable[[int, int, int, int, str], None] | None = None,
 ) -> CanonicalDoc:
     """`on_ocr_page(done, total, page_number, page_count, text)` is optional
@@ -48,18 +49,21 @@ def load_pdf_with_ocr_fallback(
     recognised, with how many scanned pages are done of how many there are, the
     PDF page just read, the PDF's page count and the recognised text. It never
     changes the result, and an error inside it is ignored."""
+    # Forwarded only when set, so a caller without the hook sees load_pdf
+    # called exactly as before.
+    byte_hook = {"on_figure_bytes": on_figure_bytes} if on_figure_bytes is not None else {}
     reader = PdfReader(path)
     num_pages = len(reader.pages)
 
     any_scanned = any(not page_has_extractable_text(path, i) for i in range(num_pages))
     if not any_scanned:
-        return load_pdf(path, describe_figure=describe_figure, languages=languages)
+        return load_pdf(path, describe_figure=describe_figure, languages=languages, **byte_hook)
 
     file_path = Path(path)
     sha256 = hashlib.sha256(file_path.read_bytes()).hexdigest()
     document = Document(path=path, format=DocumentFormat.PDF_SCANNED, sha256=sha256)
 
-    text_doc = load_pdf(path, describe_figure=describe_figure, languages=languages)
+    text_doc = load_pdf(path, describe_figure=describe_figure, languages=languages, **byte_hook)
     blocks: list[Block] = list(text_doc.blocks)
 
     scanned_total = (

@@ -10,7 +10,7 @@ from app.leveling.id_tree_builder import (
 from app.leveling.llm_leveling import _repair_requirement_hierarchy
 from app.leveling.narration_publisher import LevelingProgress
 from app.leveling.tree_builder import _table_to_html
-from app.workitem.model import WarningKind, WorkItemType
+from app.workitem.model import WarningKind, WarningSeverity, WorkItemType
 
 
 def _sr(offset: int = 0) -> SourceRef:
@@ -367,6 +367,7 @@ def test_parent_summary_title_equal_to_its_only_requirements_title_keeps_the_hea
     assert warnings[0].node_ids == [feature.local_id]
     assert warnings[0].detail["rejectedTitle"] == requirement.title
     assert warnings[0].detail["headingAlsoCollides"] is False
+    assert warnings[0].severity == WarningSeverity.AUTO_FIXED
 
 
 def test_parent_summary_title_collision_ignores_case_whitespace_and_punctuation() -> None:
@@ -400,6 +401,7 @@ def test_parent_summary_flags_when_even_the_heading_title_collides() -> None:
 
     assert feature.title == requirement.title
     assert warnings[0].detail["headingAlsoCollides"] is True
+    assert warnings[0].severity == WarningSeverity.NEEDS_REVIEW
 
 
 def test_parent_summary_distinct_title_is_applied_without_a_warning() -> None:

@@ -16,6 +16,8 @@ from app.leveling.document_study import DocumentStudy
 from app.leveling.llm_call_gate import gated
 from app.workitem.model import (
     IntegrityWarning,
+    WarningKind,
+    WarningSeverity,
     WorkItemMode,
     WorkItemNode,
     WorkItemType,
@@ -850,6 +852,46 @@ def test_a_criterion_with_a_value_the_input_does_not_state_is_dropped_and_counte
 
     assert "Check the unit reports a status." in node.description and "7 ms" not in node.description
     assert [w.detail.get("dropped") for w in warnings] == [1] and warnings[0].node_ids == ["a"]
+
+
+def test_the_grounding_filter_warning_is_its_own_kind_and_counts_items_and_criteria_separately() -> (
+    None
+):
+    a = _node("a", description="The unit shall be fast.")
+    b = _node("b", description="The unit shall be fast.")
+    c = _node("c", description="The unit shall be fast.")
+    client = _Client(
+        {
+            "a": _answer("Measure below 7 ms.", "Measure at 12 Hz."),
+            "b": _answer("Check the unit reports a status.", assumptions=["Assume 5 V supply."]),
+            "c": _answer("Measure below 9 ms.", "Check the unit reports a status."),
+        }
+    )
+    warnings: list[IntegrityWarning] = []
+
+    propose_acceptance_criteria([a, b, c], _study(), client, warnings, table_text=lambda _id: None)
+
+    assert [w.kind for w in warnings] == [WarningKind.CRITERIA_VALUE_UNGROUNDED]
+    assert warnings[0].severity == WarningSeverity.NEEDS_REVIEW
+    assert warnings[0].node_ids == ["a", "b", "c"]
+    assert warnings[0].detail == {"pass": "acceptance_criteria", "dropped": 3, "assumptionOnly": 1}
+    assert warnings[0].raw == (
+        "3 item(s) had acceptance criteria left out because they stated values the document does "
+        "not contain (3 criterion(s) dropped; 1 item(s) only because of an assumption the document does not support)."
+    )
+
+
+def test_ungrounded_message_omits_zero_clauses() -> None:
+    from app.leveling.acceptance_criteria import _ungrounded_message
+
+    assert _ungrounded_message(2, 3, 0) == (
+        "2 item(s) had acceptance criteria left out because they stated values the document does "
+        "not contain (3 criterion(s) dropped)."
+    )
+    assert _ungrounded_message(1, 0, 1) == (
+        "1 item(s) had acceptance criteria left out because they stated values the document does "
+        "not contain (1 item(s) only because of an assumption the document does not support)."
+    )
 
 
 def test_a_requirement_left_with_no_grounded_criterion_needs_author_input() -> None:

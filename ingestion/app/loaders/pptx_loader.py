@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
@@ -24,6 +25,8 @@ from app.canonical.model import (
     TableCell,
 )
 from app.loaders.figure_utils import append_figure
+
+logger = logging.getLogger(__name__)
 
 _PLACEHOLDER_TITLE_IDX = 0  # pptx.enum.shapes placeholder idx for the title placeholder
 
@@ -272,7 +275,9 @@ def _extract_pptx_table_cells(pptx_table: PptxTable) -> list[list[TableCell | No
 
 
 def load_pptx(
-    path: str, describe_figure: Callable[[bytes], str | None] | None = None
+    path: str,
+    describe_figure: Callable[[bytes], str | None] | None = None,
+    on_figure_bytes: Callable[[bytes], None] | None = None,
 ) -> CanonicalDoc:
     """One slide -> one HEADING block (its title placeholder, if present) +
     one PARAGRAPH block per other text-frame paragraph (bullets), in slide
@@ -329,6 +334,11 @@ def load_pptx(
                     # Gap C -- see seen_figure_hashes' own comment above.
                     return
                 caption = None
+                if on_figure_bytes is not None:
+                    try:
+                        on_figure_bytes(image_bytes)
+                    except Exception:  # noqa: BLE001 -- byte capture must not abort the whole deck
+                        logger.warning("on_figure_bytes failed", exc_info=True)
                 if describe_figure is not None:
                     try:
                         caption = describe_figure(image_bytes)

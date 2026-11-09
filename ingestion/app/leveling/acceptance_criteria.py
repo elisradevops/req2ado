@@ -303,6 +303,21 @@ def _ask_all(
         )  # never waits for a call under way: it ends by itself, and holds no lease once it does
 
 
+def _ungrounded_message(affected: int, dropped: int, assumption_only: int) -> str:
+    clauses = []
+    if dropped:
+        clauses.append(f"{dropped} criterion(s) dropped")
+    if assumption_only:
+        clauses.append(
+            f"{assumption_only} item(s) only because of an assumption the document does not support"
+        )
+    message = (
+        f"{affected} item(s) had acceptance criteria left out because they stated values the document "
+        "does not contain"
+    )
+    return f"{message} ({'; '.join(clauses)})." if clauses else f"{message}."
+
+
 def propose_acceptance_criteria(
     nodes: list[WorkItemNode],
     study: DocumentStudy | None,
@@ -414,6 +429,9 @@ def propose_acceptance_criteria(
     unanswered: list[str] = []
     late: list[str] = []
     dropped_nodes: list[str] = []
+    assumption_only = (
+        0  # nodes whose criteria all held up but an assumption stated an unsupported value
+    )
     dropped = failed = 0
     for pairs, (kind, value) in zip(chunks, outcomes):
         chunk = [n for n, _ in pairs]
@@ -458,8 +476,9 @@ def propose_acceptance_criteria(
                 dropped_nodes.append(node.local_id)
             if not kept or invented_assumption:
                 # Nothing the input supports is left, or an assumption states a value it does not: say so, never invent one.
-                if invented_assumption and kept:
+                if invented_assumption and len(kept) == len(criteria):
                     dropped_nodes.append(node.local_id)
+                    assumption_only += 1
                 _append(node, _needs_input_section([]))
                 needs_input += 1
                 continue
@@ -486,12 +505,18 @@ def propose_acceptance_criteria(
             )
         )
     if dropped_nodes:
+        affected = list(dict.fromkeys(dropped_nodes))
+        message = _ungrounded_message(len(affected), dropped, assumption_only)
         warnings.append(
             IntegrityWarning.make(
-                WarningKind.ENHANCEMENT_CALL_FAILED,
-                f"Proposed criteria for {len(set(dropped_nodes))} item(s) stated a value the document does not state; {dropped} criterion(s) were left out.",
-                node_ids=list(dict.fromkeys(dropped_nodes)),
-                detail={"pass": "acceptance_criteria", "dropped": dropped},
+                WarningKind.CRITERIA_VALUE_UNGROUNDED,
+                message,
+                node_ids=affected,
+                detail={
+                    "pass": "acceptance_criteria",
+                    "dropped": dropped,
+                    "assumptionOnly": assumption_only,
+                },
             )
         )
     logger.info(

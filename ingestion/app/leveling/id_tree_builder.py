@@ -54,6 +54,7 @@ from app.workitem.model import (
     IntegrityWarning,
     RequirementTag,
     WarningKind,
+    WarningSeverity,
     WorkItemMode,
     WorkItemNode,
     WorkItemType,
@@ -621,6 +622,8 @@ def parent_collision_warning(node_id: str, collision: dict) -> IntegrityWarning:
         message,
         node_ids=[node_id],
         detail={"pass": "parent_summary", **collision},
+        # The original heading was kept, so nothing is left for a reviewer unless it collides too.
+        severity=None if collision["headingAlsoCollides"] else WarningSeverity.AUTO_FIXED,
     )
 
 

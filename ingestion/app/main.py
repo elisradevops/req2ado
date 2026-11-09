@@ -7,7 +7,7 @@ import logging
 import tempfile
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal, NamedTuple, cast
@@ -730,6 +730,12 @@ class _VisionBreaker:
                 self._consecutive_failures = 0
 
 
+# Baseline (no-vision) figure storage runs inside the ingest request: a small
+# pool plus an overall budget keep a figure-heavy document from stalling it.
+BASELINE_STORE_CONCURRENCY = 4
+BASELINE_STORE_BUDGET_SECONDS = 240
+
+
 class FigureCaptionOutcome(NamedTuple):
     """One figure's complete captioning result, as plain data returned to
     the calling thread.
@@ -758,6 +764,36 @@ class FigureCaptionOutcome(NamedTuple):
     reason: str | None = None
 
 
+def _store_figure_bytes(
+    job_id: str, figure_id: str, data: bytes, rasterized_bytes: bytes | None = None
+) -> bool:
+    """Best-effort: rasterize (EMF/WMF -> PNG, skipped when `rasterized_bytes`
+    already carries that copy), compress and store one figure's bytes against
+    the job. True only when stored; False on any failure -- including bytes that
+    can't be opened/compressed (compress_figure_for_storage returns None only
+    for failure), which the caller reports via failed_figure_storage_ids.
+    Never raises."""
+    try:
+        if rasterized_bytes is None:
+            rasterized_bytes, _ = _rasterize_for_vision(data)
+        compressed = compress_figure_for_storage(rasterized_bytes)
+        if compressed is None:
+            logger.warning(
+                "Figure %s could not be opened or converted for storage -- it will not be attachable in ADO",
+                figure_id,
+            )
+            return False
+        _figure_file_client.store(job_id, figure_id, compressed[0], compressed[1])
+        return True
+    except Exception:
+        logger.warning(
+            "Figure-file storage failed for %s -- it will not be attachable in ADO",
+            figure_id,
+            exc_info=True,
+        )
+        return False
+
+
 def _store_figure_only(
     figure_id: str, image_bytes: bytes, job_id: str | None
 ) -> FigureCaptionOutcome:
@@ -766,18 +802,7 @@ def _store_figure_only(
     viewable/attachable in the review UI."""
     storage_failed = False
     if job_id is not None:
-        try:
-            rasterized_bytes, _ = _rasterize_for_vision(image_bytes)
-            compressed = compress_figure_for_storage(rasterized_bytes)
-            if compressed is not None:
-                _figure_file_client.store(job_id, figure_id, compressed[0], compressed[1])
-        except Exception:
-            logger.warning(
-                "Figure-file storage failed for %s -- it will not be attachable in ADO",
-                figure_id,
-                exc_info=True,
-            )
-            storage_failed = True
+        storage_failed = not _store_figure_bytes(job_id, figure_id, image_bytes)
     return FigureCaptionOutcome(
         figure_id=figure_id,
         caption=None,
@@ -874,22 +899,13 @@ def _caption_and_store_one_figure(
     # back to rasterizing its own copy in that case.
     storage_failed = False
     if job_id is not None:
-        try:
-            cached_rasterized = caption_status_out.get("rasterized_bytes")
-            if isinstance(cached_rasterized, bytes):
-                rasterized_bytes = cached_rasterized
-            else:
-                rasterized_bytes, _ = _rasterize_for_vision(image_bytes)
-            compressed = compress_figure_for_storage(rasterized_bytes)
-            if compressed is not None:
-                _figure_file_client.store(job_id, figure_id, compressed[0], compressed[1])
-        except Exception:
-            logger.warning(
-                "Figure-file storage failed for %s -- it will not be attachable in ADO",
-                figure_id,
-                exc_info=True,
-            )
-            storage_failed = True
+        cached_rasterized = caption_status_out.get("rasterized_bytes")
+        storage_failed = not _store_figure_bytes(
+            job_id,
+            figure_id,
+            image_bytes,
+            cached_rasterized if isinstance(cached_rasterized, bytes) else None,
+        )
     logger.info(
         "Figure %s: %s in %.0fs",
         figure_id,
@@ -1477,6 +1493,15 @@ async def ingest(
 
         describe_figure_fn = _collect_figure_bytes
 
+    # BASELINE (no vision) with a job: the same bytes are collected through
+    # the loaders' on_figure_bytes hook instead of describe_figure -- passing
+    # describe_figure would flip the loaders' "vision wired up" branches and
+    # change BASELINE's verbatim block text. Same call order, so the Nth byte
+    # string is figure f{N-1}, exactly as in the vision pass.
+    on_figure_bytes_fn = None
+    if not vision_active and job_id:
+        on_figure_bytes_fn = collected_figure_bytes.append
+
     try:
         # run_in_threadpool: dispatch_by_extension can now make a real
         # network call per figure (vision description) when
@@ -1493,6 +1518,7 @@ async def ingest(
                 tmp_path,
                 languages=languages,
                 describe_figure=describe_figure_fn,
+                on_figure_bytes=on_figure_bytes_fn,
                 **dispatch_extra,
             )
         # Real page numbers for a docx's own blocks/tables/figures -- a docx
@@ -1713,7 +1739,65 @@ async def ingest(
                     _merge_one(future.result())
         _reassign_figure_captions(doc, figure_outcomes)
 
-    if collected_figure_bytes:
+    def _run_baseline_store_pass() -> None:
+        # Store-only: no vision, no caption_status, no narration -- the figure
+        # bytes just need to be attachable to the work items later.
+        # Bounded: a small pool, an overall time budget, and the cancellation
+        # check on this (calling) thread before each submit.
+        assert job_id is not None
+        started_at = time.monotonic()
+        failed_positions: list[int] = []
+        pending: dict[Future[bool], int] = {}
+
+        def _collect(done: set[Future[bool]]) -> None:
+            for future in done:
+                position = pending.pop(future)
+                if not future.result():
+                    failed_positions.append(position)
+
+        executor = ThreadPoolExecutor(max_workers=BASELINE_STORE_CONCURRENCY)
+        try:
+            for figure_position, image_bytes in enumerate(collected_figure_bytes):
+                job_cancel.raise_if_cancelled()
+                while len(pending) >= BASELINE_STORE_CONCURRENCY:
+                    _collect(wait(pending, return_when=FIRST_COMPLETED).done)
+                    job_cancel.raise_if_cancelled()
+                if time.monotonic() - started_at >= BASELINE_STORE_BUDGET_SECONDS:
+                    unstarted = range(figure_position, len(collected_figure_bytes))
+                    failed_positions.extend(unstarted)
+                    logger.warning(
+                        "Baseline figure storage exceeded its %.0fs budget -- %d figure(s) not stored",
+                        BASELINE_STORE_BUDGET_SECONDS,
+                        len(unstarted),
+                    )
+                    break
+                future = executor.submit(
+                    _store_figure_bytes, job_id, f"f{figure_position}", image_bytes
+                )
+                pending[future] = figure_position
+            if pending:
+                _collect(wait(pending).done)
+        except BaseException:
+            executor.shutdown(wait=True, cancel_futures=True)
+            raise
+        executor.shutdown(wait=True)
+        failed_figure_ids.extend(f"f{position}" for position in sorted(failed_positions))
+
+    if collected_figure_bytes and not vision_active:
+        with job_cancel.cancellation_scope() as cancel_token:
+            async with job_cancel.watch_for_disconnect(request, cancel_token):
+                try:
+                    await run_in_threadpool(_run_baseline_store_pass)
+                except job_cancel.JobCancelled:
+                    raise HTTPException(
+                        status_code=499, detail="the caller disconnected; the run was cancelled"
+                    ) from None
+            if cancel_token.cancelled:
+                raise HTTPException(
+                    status_code=499, detail="the caller disconnected; the run was cancelled"
+                )
+
+    if collected_figure_bytes and vision_active:
         # The caller (the orchestrator's request) going away cancels the figures not yet captioned and the call in flight:
         # a cancelled job must not keep a one-request-at-a-time backend busy describing figures nobody will read.
         with job_cancel.cancellation_scope() as cancel_token:
@@ -2790,8 +2874,25 @@ def _with_embedding_retry(call):
     raise HTTPException(status_code=502, detail="the embedding service is unreachable") from last
 
 
+# Most inputs sent to the embedding service in one call. One huge `input` array (2N texts for a large confirmed write) killed the
+# Ollama runner, answered 400 and lost the whole dedup index update; the same texts embedded a few at a time work.
+DEDUP_EMBED_BATCH_SIZE = 64
+
+
 def _embed_for_dedup(texts: list[str], user_id: str | None) -> list[list[float]]:
-    return _with_embedding_retry(lambda: _embed_client.embed(texts, user_id=user_id))
+    embeddings: list[list[float]] = []
+    for start in range(0, len(texts), DEDUP_EMBED_BATCH_SIZE):
+        chunk = texts[start : start + DEDUP_EMBED_BATCH_SIZE]
+        chunk_embeddings = _with_embedding_retry(
+            lambda chunk=chunk: _embed_client.embed(chunk, user_id=user_id)
+        )
+        if len(chunk_embeddings) != len(chunk):
+            raise HTTPException(
+                status_code=502,
+                detail=f"the embedding service returned {len(chunk_embeddings)} vectors for {len(chunk)} inputs",
+            )
+        embeddings.extend(chunk_embeddings)
+    return embeddings
 
 
 @app.post("/dedup/upsert-batch")
@@ -2799,37 +2900,63 @@ def dedup_upsert_batch(body: DedupUpsertBatchRequest) -> dict[str, bool]:
     # Previously every confirmed work item triggered its own single-item
     # /dedup/upsert call (one embed() round-trip per item) from
     # JobsService.confirm()'s per-node loop, despite embed() already
-    # accepting a list. Batches all items' titles AND texts into ONE
-    # embed() call (2N texts, not N) -- still one round trip.
+    # accepting a list. Items are processed in chunks (each chunk's titles
+    # AND texts, at most DEDUP_EMBED_BATCH_SIZE inputs, in one embed() call)
+    # and each chunk is indexed before the next is embedded, so a failing
+    # chunk keeps the earlier chunks indexed.
     if not body.items:
         return {"ok": True}
     n = len(body.items)
-    embeddings = _embed_for_dedup(
-        [item.title for item in body.items] + [item.text for item in body.items], body.user_id
-    )
-    title_embeddings, description_embeddings = embeddings[:n], embeddings[n:]
-    blended_embeddings = [
-        blend_embeddings(title_embedding, description_embedding)
-        for title_embedding, description_embedding in zip(title_embeddings, description_embeddings)
-    ]
-
-    # Group by area_path before calling vector_store.upsert_many -- one
-    # Chroma round trip per distinct area path instead of one per item
-    # (previously: N individual upsert() calls, undercutting this
-    # endpoint's own batching intent, which only batched the embed() call).
-    # Each DedupUpsertRequest item carries its own area_path, so this must
-    # not assume every item in the batch shares one -- in practice every
-    # item in one confirm() call shares the submitting job's single
-    # areaPath (see JobsService's dedupUpsertItems), but the grouping here
-    # stays correct even if that ever stops holding.
-    items_by_area_path: dict[str, list[tuple[str, list[float], str]]] = {}
-    for item, embedding in zip(body.items, blended_embeddings):
-        items_by_area_path.setdefault(item.area_path, []).append(
-            (item.item_id, embedding, item.text)
+    chunk_size = max(1, DEDUP_EMBED_BATCH_SIZE // 2)
+    for start in range(0, n, chunk_size):
+        chunk_items = body.items[start : start + chunk_size]
+        try:
+            embeddings = _embed_for_dedup(
+                [item.title for item in chunk_items] + [item.text for item in chunk_items],
+                body.user_id,
+            )
+        except HTTPException as exc:
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail=f"{str(exc.detail)} (indexed {start} of {n} items before the failure)",
+            ) from exc
+        title_embeddings, description_embeddings = (
+            embeddings[: len(chunk_items)],
+            embeddings[len(chunk_items) :],
         )
+        blended_embeddings = [
+            blend_embeddings(title_embedding, description_embedding)
+            for title_embedding, description_embedding in zip(
+                title_embeddings, description_embeddings
+            )
+        ]
 
-    for area_path, items in items_by_area_path.items():
-        _vector_store.upsert_many(items, area_path)
+        # Group by area_path before calling vector_store.upsert_many -- one
+        # Chroma round trip per distinct area path instead of one per item
+        # (previously: N individual upsert() calls, undercutting this
+        # endpoint's own batching intent, which only batched the embed() call).
+        # Each DedupUpsertRequest item carries its own area_path, so this must
+        # not assume every item in the batch shares one -- in practice every
+        # item in one confirm() call shares the submitting job's single
+        # areaPath (see JobsService's dedupUpsertItems), but the grouping here
+        # stays correct even if that ever stops holding.
+        items_by_area_path: dict[str, list[tuple[str, list[float], str]]] = {}
+        for item, embedding in zip(chunk_items, blended_embeddings):
+            items_by_area_path.setdefault(item.area_path, []).append(
+                (item.item_id, embedding, item.text)
+            )
+
+        try:
+            for area_path, items in items_by_area_path.items():
+                _vector_store.upsert_many(items, area_path)
+        except Exception as exc:
+            logger.exception(
+                "dedup upsert-batch: vector store write failed after %d of %d items", start, n
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=f"{exc} (indexed {start} of {n} items before the failure)",
+            ) from exc
     return {"ok": True}
 
 

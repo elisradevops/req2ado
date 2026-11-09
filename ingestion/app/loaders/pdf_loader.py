@@ -1546,8 +1546,14 @@ def load_pdf(
     describe_figure: Callable[[bytes], str | None] | None = None,
     text_only: bool = False,
     languages: str = "eng",
+    on_figure_bytes: Callable[[bytes], None] | None = None,
 ) -> CanonicalDoc:
-    """`describe_figure`, when provided, is called with each embedded
+    """`on_figure_bytes`, when provided, receives each emitted figure's raw
+    bytes (same point/order as describe_figure, after the dedupe gates) and
+    changes nothing else -- unlike describe_figure it does NOT switch the
+    caption-less block text off its author-caption fallback.
+
+    `describe_figure`, when provided, is called with each embedded
     image's raw bytes and must return a short text description -- used to
     replace the `[FIGURE: none]` placeholder with real content (see
     app/vision/orchestrator_vision_client.py). None (the default) preserves
@@ -2201,6 +2207,11 @@ def load_pdf(
                     end = start + 1
                     offset = end
                     caption = None
+                    if on_figure_bytes is not None:
+                        try:
+                            on_figure_bytes(pypdf_image.data)
+                        except Exception:  # noqa: BLE001 -- byte capture must not abort the whole document
+                            logger.warning("on_figure_bytes failed", exc_info=True)
                     if describe_figure is not None:
                         try:
                             caption = describe_figure(pypdf_image.data)

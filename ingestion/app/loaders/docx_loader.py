@@ -697,11 +697,24 @@ def _is_degenerate_image_bytes(image_bytes: bytes) -> bool:
     )
 
 
-def _describe_one_figure(rel, describe_figure: Callable[[bytes], str | None] | None) -> str | None:
+def _describe_one_figure(
+    rel,
+    describe_figure: Callable[[bytes], str | None] | None,
+    on_figure_bytes: Callable[[bytes], None] | None = None,
+) -> str | None:
     """Shared per-image describe_figure call + failure handling, used by
     both the inline (real document-order) and fallback (floating/unmatched
     rel) figure paths below -- a vision failure for one image must not
-    abort the whole document, same guarantee either path relies on."""
+    abort the whole document, same guarantee either path relies on.
+    `on_figure_bytes` (BASELINE byte capture) fires first, independent of
+    describe_figure, and never changes the returned caption."""
+    if on_figure_bytes is not None:
+        try:
+            on_figure_bytes(rel.target_part.blob)
+        except Exception:  # noqa: BLE001 -- byte capture must not abort the whole document
+            logger.warning(
+                "on_figure_bytes failed for rel target %s", rel.target_ref, exc_info=True
+            )
     if describe_figure is None:
         return None
     try:
@@ -791,7 +804,9 @@ def _heading_level_for_paragraph(paragraph: DocxParagraph) -> int | None:
 
 
 def load_docx(
-    path: str, describe_figure: Callable[[bytes], str | None] | None = None
+    path: str,
+    describe_figure: Callable[[bytes], str | None] | None = None,
+    on_figure_bytes: Callable[[bytes], None] | None = None,
 ) -> CanonicalDoc:
     """`describe_figure`, when provided, is called with each embedded
     image's raw bytes and must return a short text description -- used to
@@ -1019,7 +1034,7 @@ def load_docx(
             if image_hash in seen_figure_hashes:
                 # Gap C -- see seen_figure_hashes' own comment above.
                 continue
-            caption = _describe_one_figure(rel, describe_figure)
+            caption = _describe_one_figure(rel, describe_figure, on_figure_bytes)
             start = offset
             end = start + 1
             offset = end
@@ -1117,7 +1132,7 @@ def load_docx(
             # admission: a logo repeated across every page's header rel
             # collapses to one figure instead of one per page.
             continue
-        caption = _describe_one_figure(rel, describe_figure)
+        caption = _describe_one_figure(rel, describe_figure, on_figure_bytes)
         append_figure(
             figures,
             blocks,

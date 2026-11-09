@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from collections.abc import Callable
 from pathlib import Path
 
@@ -14,9 +15,13 @@ from app.canonical.model import (
     SourceRef,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def load_image(
-    path: str, describe_figure: Callable[[bytes], str | None] | None = None
+    path: str,
+    describe_figure: Callable[[bytes], str | None] | None = None,
+    on_figure_bytes: Callable[[bytes], None] | None = None,
 ) -> CanonicalDoc:
     """A standalone image file (not embedded in a docx/pptx) is treated as
     ONE Figure + ONE FIGURE-kind Block spanning the whole document -- there
@@ -37,6 +42,11 @@ def load_image(
     document = Document(path=path, format=DocumentFormat.IMAGE, sha256=sha256)
 
     caption = None
+    if on_figure_bytes is not None:
+        try:
+            on_figure_bytes(content)
+        except Exception:  # noqa: BLE001 -- byte capture must not abort ingestion
+            logger.warning("on_figure_bytes failed", exc_info=True)
     if describe_figure is not None:
         try:
             caption = describe_figure(content)

@@ -293,6 +293,20 @@ def test_parent_title_collision_warning_matches_work_item_tree_schema(schema) ->
     jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
 
 
+def test_criteria_value_ungrounded_warning_matches_work_item_tree_schema(schema) -> None:
+    tree = build_baseline_tree(_baseline_doc())
+    tree.warnings = [
+        IntegrityWarning.make(
+            WarningKind.CRITERIA_VALUE_UNGROUNDED,
+            "2 item(s) had acceptance criteria left out because they stated values the document "
+            "does not contain (3 criterion(s) dropped).",
+            node_ids=["n0", "n1"],
+            detail={"pass": "acceptance_criteria", "dropped": 3, "assumptionOnly": 0},
+        )
+    ]
+    jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
+
+
 def test_missing_requirement_row_coverage_warning_matches_work_item_tree_schema(schema) -> None:
     tree = build_baseline_tree(_baseline_doc())
     tree.warnings = [

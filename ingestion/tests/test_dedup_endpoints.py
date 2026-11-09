@@ -707,3 +707,125 @@ def test_a_fast_dedup_check_is_silent(tmp_path, monkeypatch, caplog) -> None:
     with caplog.at_level(logging.INFO, logger="app.main"):
         client.post("/dedup/check", json=body)
     assert not [r for r in caplog.records if r.getMessage().startswith("dedup_check timing")]
+
+
+def _indexed_embed_handler(calls: list[int], fail_on_call: int | None = None):
+    # Vector derived from the text: [item number, 1 for a title / 2 for a description, 1].
+    def _handler(request: httpx.Request) -> httpx.Response:
+        texts = json.loads(request.content)["texts"]
+        calls.append(len(texts))
+        if fail_on_call is not None and len(calls) == fail_on_call:
+            return httpx.Response(400, json={"error": "runner died"})
+        embeddings = [
+            [float(text.split("-")[1]), 1.0 if text.startswith("title") else 2.0, 1.0]
+            for text in texts
+        ]
+        return httpx.Response(200, json={"embeddings": embeddings})
+
+    return _handler
+
+
+def _batch_items(count: int) -> list[dict]:
+    return [
+        {
+            "item_id": f"item-{i}",
+            "text": f"text-{i}",
+            "title": f"title-{i}",
+            "area_path": "Project\\Area1",
+        }
+        for i in range(count)
+    ]
+
+
+def test_dedup_upsert_batch_embeds_in_chunks_keeping_order_and_alignment(
+    tmp_path, monkeypatch
+) -> None:
+    from unittest.mock import patch
+
+    monkeypatch.setattr(main, "_vector_store", ChromaVectorStore(str(tmp_path)))
+    calls: list[int] = []
+    main._embed_client._transport = httpx.MockTransport(_indexed_embed_handler(calls))
+
+    with patch.object(
+        main._vector_store, "upsert_many", wraps=main._vector_store.upsert_many
+    ) as spy:
+        response = client.post("/dedup/upsert-batch", json={"items": _batch_items(300)})
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    assert calls and max(calls) <= main.DEDUP_EMBED_BATCH_SIZE
+    assert sum(calls) == 600
+    stored = [entry for call in spy.call_args_list for entry in call[0][0]]
+    assert [entry[0] for entry in stored] == [f"item-{i}" for i in range(300)]
+    for i, (item_id, embedding, text) in enumerate(stored):
+        assert text == f"text-{i}"
+        assert embedding == main.blend_embeddings([float(i), 1.0, 1.0], [float(i), 2.0, 1.0])
+
+
+def test_dedup_upsert_batch_failing_chunk_keeps_earlier_chunks_indexed(
+    tmp_path, monkeypatch
+) -> None:
+    from unittest.mock import patch
+
+    monkeypatch.setattr(main, "_vector_store", ChromaVectorStore(str(tmp_path)))
+    calls: list[int] = []
+    main._embed_client._transport = httpx.MockTransport(
+        _indexed_embed_handler(calls, fail_on_call=3)
+    )
+
+    with patch.object(
+        main._vector_store, "upsert_many", wraps=main._vector_store.upsert_many
+    ) as spy:
+        response = client.post("/dedup/upsert-batch", json={"items": _batch_items(300)})
+
+    chunk_items = main.DEDUP_EMBED_BATCH_SIZE // 2
+    assert response.status_code == 502
+    assert "answered 400" in response.json()["detail"]
+    assert response.json()["detail"].endswith(
+        f"(indexed {2 * chunk_items} of 300 items before the failure)"
+    )
+    assert spy.call_count == 2
+
+
+def test_dedup_upsert_batch_vector_store_failure_in_later_chunk_keeps_earlier_chunks(
+    tmp_path, monkeypatch
+) -> None:
+    from unittest.mock import patch
+
+    monkeypatch.setattr(main, "_vector_store", ChromaVectorStore(str(tmp_path)))
+    calls: list[int] = []
+    main._embed_client._transport = httpx.MockTransport(_indexed_embed_handler(calls))
+    real = main._vector_store.upsert_many
+    state = {"n": 0}
+
+    def flaky(items, area_path):
+        state["n"] += 1
+        if state["n"] == 2:
+            raise RuntimeError("chroma down")
+        return real(items, area_path)
+
+    with patch.object(main._vector_store, "upsert_many", side_effect=flaky):
+        response = client.post("/dedup/upsert-batch", json={"items": _batch_items(300)})
+
+    chunk_items = main.DEDUP_EMBED_BATCH_SIZE // 2
+    assert response.status_code == 502
+    assert "chroma down" in response.json()["detail"]
+    assert response.json()["detail"].endswith(
+        f"(indexed {chunk_items} of 300 items before the failure)"
+    )
+    assert state["n"] == 2
+
+
+def test_dedup_upsert_batch_small_batch_makes_one_embed_call(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "_vector_store", ChromaVectorStore(str(tmp_path)))
+    calls: list[int] = []
+    main._embed_client._transport = httpx.MockTransport(_indexed_embed_handler(calls))
+
+    response = client.post("/dedup/upsert-batch", json={"items": _batch_items(5)})
+
+    assert response.status_code == 200
+    assert calls == [10]
+
+
+def test_embed_for_dedup_with_an_empty_list_returns_an_empty_list() -> None:
+    assert main._embed_for_dedup([], "user-1") == []
