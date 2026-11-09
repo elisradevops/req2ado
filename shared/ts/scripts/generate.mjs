@@ -20,6 +20,7 @@ const SCHEMAS = [
   { file: 'canonical-doc.schema.json', bannerComment: canonicalDocBanner() },
   { file: 'job-live.schema.json', bannerComment: sharedBanner('job-live.schema.json') },
   { file: 'document-overview.schema.json', bannerComment: sharedBanner('document-overview.schema.json') },
+  { file: 'write-preview.schema.json', bannerComment: sharedBanner('write-preview.schema.json') },
 ];
 
 function sharedBanner(schemaFile) {

@@ -16,3 +16,4 @@ export type {
   CompareSide,
 } from './generated/JobLive.js';
 export type { DocumentOverview } from './generated/DocumentOverview.js';
+export type { WritePreview } from './generated/WritePreview.js';

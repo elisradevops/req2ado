@@ -184,7 +184,8 @@ export interface IntegrityWarning {
     | 'survey_title_distilled'
     | 'missing_requirement_row_coverage'
     | 'duplicate_customer_id'
-    | 'parent_title_collision';
+    | 'parent_title_collision'
+    | 'criteria_value_ungrounded';
   /**
    * auto_fixed: deterministic code already resolved it, no action needed. needs_review: an AI/heuristic judgment call a human should verify. pipeline_issue: something broke or was incomplete for this run.
    */
