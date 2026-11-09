@@ -4,6 +4,7 @@ import {
   getJob,
   confirmJob,
   getAudit,
+  reindexDedup,
   getEventHistory,
   getDebugCaptures,
   editDiffEntry,
@@ -22,6 +23,7 @@ import {
   getSummary,
   getWritePreview,
   attachFigureToAdo,
+  moveFigure,
   retryTraceLinkWrite,
   validateCreatedTree,
   type AuditEntry,
@@ -61,11 +63,11 @@ import { ARRIVE, MOTION, scrollBehavior } from '../ui/motion';
 import { describeJobKbCoverage, type KbCoverage } from '../utils/kbCoverage';
 import { getServerMessage } from '../lib/errorDetails';
 import { isFlaggedDiffEntry } from '../utils/diffFlagging';
-import { buildReviewQueue, cleanApproval, reviewQueueModeReducer, riskReason, spotCheckSample } from '../utils/reviewQueue';
+import { buildReviewQueue, cleanApproval, isExcludedWithAncestors, reviewQueueModeReducer, riskReason, spotCheckSample } from '../utils/reviewQueue';
 import { BulkApproveDialog } from '../components/BulkApproveDialog';
 import { WriteSummary, type WriteSummaryState } from '../components/WriteSummary';
 import { approvalBreakdown, type ApprovalMethod } from '../utils/approvalBreakdown';
-import { countWarningsForWrite, writeHasWork } from '../utils/writeSummary';
+import { countWarningsForWrite, isFiguresOnlyWrite, writeHasWork } from '../utils/writeSummary';
 import { orderLikeTree } from '../utils/diffTreeOrder';
 import { useKeyboardShortcuts } from '../store/uiPreferencesStore';
 import { useUndoAnnouncement, type QueueUndo } from '../hooks/useUndoAnnouncement';
@@ -157,6 +159,8 @@ export function JobDetail(): React.ReactElement {
   // known once the tree exists, so seeded at mount and refreshed once the
   // job reaches a terminal narration stage).
   const [excludedFigureIds, setExcludedFigureIds] = useState<string[]>([]);
+  // Items an earlier failed write already created in Azure DevOps (the server refuses changes to them): locks them in the details dialog.
+  const [writtenLocalIds, setWrittenLocalIds] = useState<string[]>([]);
   const [excludedTableIds, setExcludedTableIds] = useState<string[]>([]);
   const [warnings, setWarnings] = useState<(WarningRecord | string)[]>([]);
   // Task 4: JobTraceLinkFailure rows -- see NodeDetailPanel's own doc
@@ -337,6 +341,8 @@ export function JobDetail(): React.ReactElement {
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [resubmitDialogOpen, setResubmitDialogOpen] = useState(false);
+  const [reindexDialogOpen, setReindexDialogOpen] = useState(false);
+  const [isReindexing, setIsReindexing] = useState(false);
   const [filterAction, setFilterAction] = useState<string | null>(null);
   const [filterText, setFilterText] = useState('');
   const [filterFlaggedOnly, setFilterFlaggedOnly] = useState(false);
@@ -403,6 +409,7 @@ export function JobDetail(): React.ReactElement {
         setKbCoverage(job.kbCoverage ?? null);
         setExcludedFigureIds(job.excludedFigureIds ?? []);
         setExcludedTableIds(job.excludedTableIds ?? []);
+        setWrittenLocalIds(job.writtenLocalIds ?? []);
         setWarnings(job.warnings ?? []);
         setTraceLinkFailures(job.traceLinkFailures ?? []);
         setCreatedItemCount(job.createdItemCount ?? 0);
@@ -595,6 +602,7 @@ export function JobDetail(): React.ReactElement {
               setKbCoverage(job.kbCoverage ?? null);
               setExcludedFigureIds(job.excludedFigureIds ?? []);
               setExcludedTableIds(job.excludedTableIds ?? []);
+              setWrittenLocalIds(job.writtenLocalIds ?? []);
               // No live-narration counterpart (tables are never narrated
               // during a run, see tableDescriptions' own useState doc
               // comment) -- this refetch is the only point after the
@@ -898,15 +906,32 @@ export function JobDetail(): React.ReactElement {
     let cancelled = false;
     // A check that never answers must not leave the button disabled forever: after this long it is shown as "couldn't check".
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<null>((resolve) => {
-      timer = setTimeout(() => resolve(null), WRITE_PREVIEW_TIMEOUT_MS);
+    const timedOut = Symbol('timeout');
+    const timeout = new Promise<typeof timedOut>((resolve) => {
+      timer = setTimeout(() => resolve(timedOut), WRITE_PREVIEW_TIMEOUT_MS);
     });
     void (async () => {
       try {
         const preview = await Promise.race([getWritePreview(id), timeout]);
         if (cancelled) return;
         // The summary is advisory and must never block the write: anything but a real preview is shown as "couldn't check".
-        if (!preview || typeof preview.createdTotal !== 'number') {
+        if (preview === timedOut) {
+          setWriteSummaryState({ status: 'error', reason: 'timeout' });
+          return;
+        }
+        if (
+          !preview ||
+          typeof preview.createdTotal !== 'number' ||
+          !Array.isArray(preview.createdLocalIds) ||
+          typeof preview.parentLinks !== 'number' ||
+          typeof preview.figuresToAttach !== 'number' ||
+          typeof preview.figuresUnavailable !== 'number' ||
+          typeof preview.hasWork !== 'boolean' ||
+          typeof preview.figuresOnly !== 'boolean' ||
+          !preview.traceLinks ||
+          typeof preview.traceLinks !== 'object' ||
+          typeof preview.traceLinks.planned !== 'number'
+        ) {
           setWriteSummaryState({ status: 'error' });
           return;
         }
@@ -959,7 +984,9 @@ export function JobDetail(): React.ReactElement {
   const nothingToWrite = writePreviewed !== null && !writeHasWork(writePreviewed);
   const writeLoading = writeSummaryState.status === 'loading';
   // Only links are left (a retry after a failed write): nothing new is created, but the write still has work to finish.
-  const finishingLinks = writePreviewed !== null && writePreviewed.createdTotal === 0 && !nothingToWrite;
+  const figuresOnlyWrite = writePreviewed !== null && isFiguresOnlyWrite(writePreviewed);
+  const finishingLinks = writePreviewed !== null && writePreviewed.createdTotal === 0 && !nothingToWrite && !figuresOnlyWrite;
+  const figuresToAttach = writePreviewed?.figuresToAttach ?? 0;
 
   async function handleConfirm(): Promise<void> {
     if (!id || !orgUrl || isMutatingRef.current) return;
@@ -978,6 +1005,7 @@ export function JobDetail(): React.ReactElement {
       const job = await getJob(id);
       setStatus(job.status);
       setCreatedItemCount(job.createdItemCount ?? 0);
+      setWrittenLocalIds(job.writtenLocalIds ?? []);
       showToast(`Confirmed — ${result.createdCount} work item(s) written to Azure DevOps.`, 'success');
     } catch {
       setMutationError('Confirm failed — the job may be safe to retry. Check the Audit tab for details.');
@@ -989,6 +1017,7 @@ export function JobDetail(): React.ReactElement {
       if (job) {
         setStatus(job.status);
         setCreatedItemCount(job.createdItemCount ?? 0);
+        setWrittenLocalIds(job.writtenLocalIds ?? []);
       }
     } finally {
       isMutatingRef.current = false;
@@ -1142,7 +1171,7 @@ export function JobDetail(): React.ReactElement {
       }
       return true;
     } catch (err) {
-      showErrorToast('Failed to update — please try again.', err);
+      showErrorToast(getServerMessage(err) ?? 'Failed to update — please try again.', err);
       return false;
     } finally {
       isDiffMutatingRef.current = false;
@@ -1362,6 +1391,18 @@ export function JobDetail(): React.ReactElement {
     setConfirmDialogOpen(false);
     setTab('tree');
     goAndFocus('integrity-warnings');
+  }
+
+  // Entries left out of the write, directly or through an excluded ancestor: the preview's "excluded" count.
+  function handleWriteShowExcluded(): void {
+    const byId = new Map(diff.map((entry) => [entry.localId, entry]));
+    const cache = new Map<string, boolean>();
+    const nodeIds = new Set(diff.filter((entry) => isExcludedWithAncestors(entry, byId, cache)).map((entry) => entry.localId));
+    setWriteHandOver(true);
+    setConfirmDialogOpen(false);
+    setTab('tree');
+    setFocusWarning({ kind: 'excluded_items', label: 'Left out of the write', nodeIds });
+    goAndFocus('proposed-tree');
   }
 
   function handleStartReviewQueue(): void {
@@ -1714,7 +1755,10 @@ export function JobDetail(): React.ReactElement {
       }
       showToast(`${excluded ? 'Excluded' : 'Included'} ${succeeded} item${succeeded === 1 ? '' : 's'}.`, 'success');
     } catch (err) {
-      showErrorToast(`Stopped after updating ${succeeded} of ${targets.length} item(s) — please retry.`, err);
+      showErrorToast(
+        `Stopped after updating ${succeeded} of ${targets.length} item(s) — ${getServerMessage(err) ?? 'please retry.'}`,
+        err,
+      );
     } finally {
       isDiffMutatingRef.current = false;
       setIsDiffMutating(false);
@@ -1850,6 +1894,38 @@ export function JobDetail(): React.ReactElement {
     }
   }
 
+  // Moves one of an entry's figures to another item, or detaches it (target null). Re-throws on failure so the figure
+  // card shows the server's reason inline and keeps the figure where it is. The write preview is fetched each time the
+  // write dialog opens, so no cached preview needs refreshing here.
+  async function handleMoveFigure(sourceLocalId: string, figureId: string, targetLocalId: string | null): Promise<void> {
+    if (!id) return;
+    if (isDiffMutatingRef.current) throw new Error('Another change is still saving. Try again in a moment.');
+    isDiffMutatingRef.current = true;
+    setIsDiffMutating(true);
+    try {
+      const result = await moveFigure(id, sourceLocalId, figureId, targetLocalId);
+      // Same label the picker showed, including the parent, so same-named items stay apart.
+      const targetTitle = targetLocalId != null ? figureMoveTargets.find((target) => target.localId === targetLocalId)?.title : undefined;
+      setDiff(mergeServerDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []));
+      if (targetLocalId == null) {
+        showToast('Figure will not be attached', 'success', {
+          label: 'Undo',
+          onAction: () => {
+            // Attaching again is a move to the item's own id.
+            void handleMoveFigure(sourceLocalId, figureId, sourceLocalId).catch((err) => showErrorToast(getServerMessage(err) ?? 'Could not undo. Please try again.', err));
+          },
+        });
+      } else if (targetLocalId === sourceLocalId) {
+        showToast('Figure will be attached again', 'success');
+      } else {
+        showToast(`Figure moved to ${targetTitle ?? 'the other item'}`, 'success');
+      }
+    } finally {
+      isDiffMutatingRef.current = false;
+      setIsDiffMutating(false);
+    }
+  }
+
   // Manual retry for a trace link that failed to write during confirm() --
   // Refetches the job on success (see the comment inside the function) so
   // traceLinkFailures and warnings both resync from the server's own
@@ -1905,6 +1981,39 @@ export function JobDetail(): React.ReactElement {
     }
   }
 
+  // The confirm-time duplicate-index update is best-effort and records a failure in the audit trail; offer the repair until a later rebuild
+  // entry shows it was done.
+  const needsDedupRebuild = useMemo(() => {
+    let lastFailure = -Infinity;
+    let lastRebuild = -Infinity;
+    for (const entry of audit) {
+      const at = Date.parse(entry.createdAt);
+      if (entry.message.startsWith('Dedup index may be only partly updated')) lastFailure = Math.max(lastFailure, at);
+      else if (entry.message.startsWith('Duplicate index rebuilt')) lastRebuild = Math.max(lastRebuild, at);
+    }
+    return lastFailure > -Infinity && lastRebuild < lastFailure;
+  }, [audit]);
+
+  async function handleReindexDedup(): Promise<void> {
+    if (!id) return;
+    setIsReindexing(true);
+    try {
+      const result = await reindexDedup(id);
+      setReindexDialogOpen(false);
+      showToast(`Duplicate index rebuilt for ${result.indexed} items`, 'success');
+    } catch (err) {
+      setReindexDialogOpen(false);
+      showErrorToast(getServerMessage(err) ?? 'Failed to rebuild the duplicate index. Please try again.', err);
+    } finally {
+      setIsReindexing(false);
+    }
+    try {
+      setAudit(await getAudit(id));
+    } catch {
+      // The list refresh is a courtesy; the toast already carries the outcome.
+    }
+  }
+
   async function handleShowAudit(): Promise<void> {
     if (!id) return;
     setTab('audit');
@@ -1936,6 +2045,23 @@ export function JobDetail(): React.ReactElement {
   // so it can tell the reviewer "this will be linked under an existing
   // parent" instead of leaving that only implicit in the parent row's own
   // badge, several rows away in the tree.
+  const writtenLocalIdSet = useMemo(() => new Set(writtenLocalIds), [writtenLocalIds]);
+  // Items a figure can be moved to: only items that can receive an automatic attachment (created by this job, not excluded, not
+  // already written). The parent's title tells same-named items apart.
+  const figureMoveTargets = useMemo(() => {
+    const byId = new Map(diff.map((entry) => [entry.localId, entry]));
+    return diff
+      .filter((entry) => entry.action === 'create' && !entry.excluded && !writtenLocalIdSet.has(entry.localId))
+      .map((entry) => {
+        const parent = entry.parentLocalId != null ? byId.get(entry.parentLocalId) : undefined;
+        return {
+          localId: entry.localId,
+          type: entry.type,
+          title: parent ? `${entry.title} (in ${parent.title})` : entry.title,
+          customerId: entry.customerId ?? null,
+        };
+      });
+  }, [diff, writtenLocalIdSet]);
   const diffByLocalId = useMemo(() => Object.fromEntries(diff.map((e) => [e.localId, e])), [diff]);
 
   // DESIGN.md §11.4.1 -- an Epic/Feature has no quality rubric, so its
@@ -2029,7 +2155,11 @@ export function JobDetail(): React.ReactElement {
 
   // Whether the focused warning is one the reviewer works through (fix or
   // review) rather than an informational one with nothing to mark.
-  const focusReviewable = !!focusWarning && kindMeta(focusWarning.kind).group !== 'info';
+  // Grouped the way the banner groups it, so a kind whose records are all auto_fixed counts as info.
+  const focusGroup = focusWarning
+    ? (warningKindGroups.find((entry) => entry.kind === focusWarning.kind)?.group ?? kindMeta(focusWarning.kind).group)
+    : null;
+  const focusReviewable = !!focusWarning && focusGroup !== 'info';
 
   // The focused warning's items still to be shown: its own set, minus the
   // ones already reviewed while "hide reviewed" is on. Drives the tree, the
@@ -2357,19 +2487,23 @@ export function JobDetail(): React.ReactElement {
       <ConfirmDialog
         open={confirmDialogOpen}
         onOpenChange={setConfirmDialogOpen}
-        title="Write these items to Azure DevOps?"
+        title={figuresOnlyWrite ? 'Attach figures to Azure DevOps items?' : 'Write these items to Azure DevOps?'}
         description={
           <>
-            {finishingLinks ? (
-              <>This finishes writing the remaining links under{' '}</>
+            {figuresOnlyWrite ? (
+              <>This attaches the figures to their items under{' '}</>
+            ) : finishingLinks ? (
+              figuresToAttach > 0 ? <>This adds the remaining links and attaches the figures under{' '}</> : <>This finishes writing the remaining links under{' '}</>
             ) : (
               <>This creates{previewedTotal !== null ? ` ${previewedTotal.toLocaleString()} new work item${previewedTotal === 1 ? '' : 's'}` : summary ? ` ${summary.created} new work item${summary.created === 1 ? '' : 's'}` : ' the reviewed work items'} under{' '}</>
             )}
-            <strong><bdi className="[overflow-wrap:anywhere]">{areaPath ?? 'the configured area path'}</bdi></strong>. This cannot be undone from req2ado — items must be deleted directly in
-            Azure DevOps afterward.
+            <strong><bdi className="[overflow-wrap:anywhere]">{areaPath ?? 'the configured area path'}</bdi></strong>.{' '}
+            {figuresOnlyWrite
+              ? 'This cannot be undone from req2ado. Attachments must be removed directly in Azure DevOps afterward.'
+              : 'This cannot be undone from req2ado — items must be deleted directly in Azure DevOps afterward.'}
           </>
         }
-        confirmLabel={finishingLinks && teamProject ? `Finish writing to ${teamProject}` : previewedTotal !== null && teamProject ? `Write ${previewedTotal.toLocaleString()} ${previewedTotal === 1 ? 'item' : 'items'} to ${teamProject}` : 'Confirm and write'}
+        confirmLabel={figuresOnlyWrite && teamProject ? `Attach ${figuresToAttach.toLocaleString()} ${figuresToAttach === 1 ? 'figure' : 'figures'} to ${teamProject}` : finishingLinks && teamProject ? `Finish writing to ${teamProject}` : previewedTotal !== null && teamProject ? `Write ${previewedTotal.toLocaleString()} ${previewedTotal === 1 ? 'item' : 'items'} to ${teamProject}` : 'Confirm and write'}
         confirmDisabled={writeLoading || nothingToWrite}
         confirmDisabledReason={writeLoading ? 'Checking what will be written.' : 'Nothing will be created, so there is nothing to write.'}
         onConfirm={handleConfirm}
@@ -2385,7 +2519,7 @@ export function JobDetail(): React.ReactElement {
           warnings={writeWarningCounts}
           onReviewUnreviewed={handleWriteReviewUnreviewed}
           onShowWarnings={handleWriteShowWarnings}
-          // The tree has no filter for excluded items, so there is no "Show the excluded items" shortcut.
+          onShowExcluded={handleWriteShowExcluded}
         />
       </ConfirmDialog>
       <BulkApproveDialog
@@ -2432,6 +2566,15 @@ export function JobDetail(): React.ReactElement {
         confirmLabel="Resubmit"
         onConfirm={handleResubmit}
         isConfirming={isMutating}
+      />
+      <ConfirmDialog
+        open={reindexDialogOpen}
+        onOpenChange={setReindexDialogOpen}
+        title="Rebuild the duplicate index?"
+        description="Only do this if these items still exist in Azure DevOps. If any were deleted there, they will still be treated as duplicates until you remove them from the index."
+        confirmLabel="Rebuild index"
+        onConfirm={handleReindexDedup}
+        isConfirming={isReindexing}
       />
       <ConfirmDialog
         open={deleteDialogOpen}
@@ -2560,7 +2703,8 @@ export function JobDetail(): React.ReactElement {
       <div id="integrity-warnings" tabIndex={-1} className="outline-none">
         <CollapsibleWarnings
           warnings={mergedWarnings}
-          gateCount={actionableWarningCount}
+          gateCount={status === 'diff_ready' ? actionableWarningCount : undefined}
+          fixGroupTitle={status !== null && ['succeeded', 'failed', 'rejected', 'cancelled'].includes(status) ? 'Flagged before writing' : undefined}
           focusedKind={focusWarning?.kind ?? null}
           reviewedIds={reviewedIds}
           // Marking is advisory review state on a still-editable job; once
@@ -2802,6 +2946,7 @@ export function JobDetail(): React.ReactElement {
                 onOpenChange={updateDialogOpen}
                 jobId={id!}
                 entry={selectedEntry}
+                written={!!selectedEntry && writtenLocalIdSet.has(selectedEntry.localId)}
                 jobMode={mode as 'baseline' | 'survey' | null}
                 jobStatus={status}
                 kbCitations={kbCitations}
@@ -2816,6 +2961,10 @@ export function JobDetail(): React.ReactElement {
                 onRescore={handleRescore}
                 onSetProposalAccepted={handleSetProposalAccepted}
                 onAttachFigure={handleAttachFigure}
+                onMoveFigure={
+                  selectedEntry ? (figureId, targetLocalId) => handleMoveFigure(selectedEntry.localId, figureId, targetLocalId) : undefined
+                }
+                figureMoveTargets={figureMoveTargets}
                 onRetryTraceLink={handleRetryTraceLink}
                 onAddChild={handleAddChild}
                 onMove={handleMoveEntry}
@@ -2833,6 +2982,13 @@ export function JobDetail(): React.ReactElement {
             </div>
           ) : (
             <div className="flex flex-col gap-3 p-4">
+              {needsDedupRebuild && (
+                <div>
+                  <Button variant="outline" size="sm" onClick={() => setReindexDialogOpen(true)}>
+                    Rebuild duplicate index
+                  </Button>
+                </div>
+              )}
               <AuditEntryList entries={audit} />
               {debugCaptures.length > 0 && (
                 <div className="flex flex-col gap-2 border-t border-hairline pt-3">

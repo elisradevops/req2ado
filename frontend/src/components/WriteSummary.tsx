@@ -1,11 +1,11 @@
 import { Button } from '../ui/Button';
 import type { WritePreview } from '../api/jobs';
 import type { ApprovalBreakdown } from '../utils/approvalBreakdown';
-import { remainingLinksPhrase, writeSummaryLines, type WarningCounts } from '../utils/writeSummary';
+import { isFiguresOnlyWrite, remainingLinksPhrase, writeSummaryLines, type WarningCounts } from '../utils/writeSummary';
 
 export type WriteSummaryState =
   | { status: 'loading' }
-  | { status: 'error' }
+  | { status: 'error'; reason?: 'timeout' }
   | { status: 'ready'; preview: WritePreview; review: ApprovalBreakdown };
 
 function warningSentence(counts: WarningCounts): string | null {
@@ -27,6 +27,10 @@ function statusText(state: WriteSummaryState): string {
   const total = state.preview.createdTotal;
   const remaining = total === 0 ? remainingLinksPhrase(state.preview) : null;
   if (remaining) return `Ready: nothing new to create; ${remaining}.`;
+  if (isFiguresOnlyWrite(state.preview)) {
+    const figures = state.preview.figuresToAttach;
+    return `No new items will be created. ${figures.toLocaleString()} ${figures === 1 ? 'figure' : 'figures'} will be attached to their items in Azure DevOps.`;
+  }
   return total === 0
     ? 'Ready: nothing will be created, so there is nothing to write.'
     : `Ready: ${total.toLocaleString()} ${total === 1 ? 'item' : 'items'} will be created.`;
@@ -80,7 +84,9 @@ export function WriteSummary({
       </p>
       {state.status === 'error' && (
         <p role="alert" className="text-warning-ink">
-          Couldn&apos;t check what will be written. You can still write.
+          {state.reason === 'timeout'
+            ? 'The check took too long. You can still write, or close this and try again.'
+            : "Couldn't check what will be written. You can still write."}
         </p>
       )}
       {state.status === 'ready' && (

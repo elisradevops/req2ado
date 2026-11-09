@@ -10,7 +10,7 @@ import { NodeDetailPanel, canEditEntry } from './NodeDetailPanel';
 import { EvidenceStrip } from './EvidenceStrip';
 import { AddChildCard } from './AddChildCard';
 import { ChatPanel } from './ChatPanel';
-import { MoveToPicker } from './MoveToPicker';
+import { MoveToPicker, type MoveToPickerCandidate } from './MoveToPicker';
 import { cn } from '../lib/cn';
 import { canBeRoot } from '../lib/canNest';
 import type { WarningGroup } from '../utils/warningKinds';
@@ -110,6 +110,7 @@ export function NodeDetailDialog({
   entry,
   jobMode,
   jobStatus,
+  written,
   kbCitations,
   traceTargetTitles,
   traceLinkFailures,
@@ -122,6 +123,8 @@ export function NodeDetailDialog({
   onRescore,
   onSetProposalAccepted,
   onAttachFigure,
+  onMoveFigure,
+  figureMoveTargets,
   onRetryTraceLink,
   onAddChild,
   onMove,
@@ -142,6 +145,8 @@ export function NodeDetailDialog({
   entry: DryRunDiffEntry | null;
   jobMode?: 'baseline' | 'survey' | null;
   jobStatus?: string | null;
+  // Already written to Azure DevOps by an earlier attempt (locks editing like the other read-only reasons).
+  written?: boolean;
   kbCitations?: KbCitation[];
   traceTargetTitles?: Record<string, string>;
   // Task 4: see NodeDetailPanel's own doc comment -- passed straight through
@@ -180,6 +185,9 @@ export function NodeDetailDialog({
   // own doc comment for why this exists alongside confirm()'s automatic
   // attachment.
   onAttachFigure?: (localId: string, figureId: string) => Promise<void>;
+  // Pass-through to NodeDetailPanel: move one of this entry's figures to another item, or detach it (null).
+  onMoveFigure?: (figureId: string, targetLocalId: string | null) => Promise<void>;
+  figureMoveTargets?: MoveToPickerCandidate[];
   // Task 4: manual retry for a trace link that failed to write to Azure
   // DevOps -- see NodeDetailPanel's own doc comment.
   onRetryTraceLink?: (failureId: string) => Promise<void>;
@@ -270,7 +278,7 @@ export function NodeDetailDialog({
 
   // E asks the panel to open its edit form (the form's state lives there); a counter so every press counts.
   const [editRequest, setEditRequest] = useState(0);
-  const entryEditable = !!entry && canEditEntry(entry, jobStatus);
+  const entryEditable = !!entry && canEditEntry(entry, jobStatus, written);
 
   // J / K step to the next / previous item, same as the chevrons in the
   // title. Ignored while typing (edit fields, chat) and with any modifier
@@ -316,7 +324,7 @@ export function NodeDetailDialog({
 
   if (!entry) return null;
 
-  const canEdit = canEditEntry(entry, jobStatus);
+  const canEdit = canEditEntry(entry, jobStatus, written);
   const chatDisabledReason =
     jobStatus != null && jobStatus !== 'diff_ready'
       ? "This job's review is closed -- chat is only available while it's awaiting review."
@@ -362,6 +370,7 @@ export function NodeDetailDialog({
       entry={entry}
       jobMode={jobMode}
       jobStatus={jobStatus}
+      written={written}
       editRequest={editRequest}
       kbCitations={kbCitations}
       traceTargetTitles={traceTargetTitles}
@@ -377,6 +386,8 @@ export function NodeDetailDialog({
       onRescore={onRescore}
       onSetProposalAccepted={onSetProposalAccepted}
       onAttachFigure={onAttachFigure}
+      onMoveFigure={onMoveFigure}
+      figureMoveTargets={figureMoveTargets}
       onRetryTraceLink={onRetryTraceLink}
       descendantCounts={descendantCountsByLocalId?.[entry.localId]}
       requirementClassificationField={requirementClassificationField}

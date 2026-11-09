@@ -71,6 +71,22 @@ function tierOf(entry: ReviewQueueEntry, blockingIds: ReadonlySet<string>, revie
   return 'clean';
 }
 
+// Whether an entry is excluded itself or sits under an excluded ancestor (confirm drops those too). `cache` lets a caller share results across many entries.
+export function isExcludedWithAncestors(
+  entry: ReviewQueueEntry,
+  byId: Map<string, ReviewQueueEntry>,
+  cache: Map<string, boolean> = new Map(),
+): boolean {
+  const cached = cache.get(entry.localId);
+  if (cached !== undefined) return cached;
+  // Set before recursing so a malformed parent cycle terminates.
+  cache.set(entry.localId, false);
+  const parent = entry.parentLocalId ? byId.get(entry.parentLocalId) : undefined;
+  const result = !!entry.excluded || (parent ? isExcludedWithAncestors(parent, byId, cache) : false);
+  cache.set(entry.localId, result);
+  return result;
+}
+
 // Items still to review, riskiest first. Within a tier the lowest quality score
 // comes first (unscored last) and ties keep the order the tree is drawn in. Left out: items already
 // reviewed, excluded (or under an excluded ancestor, which confirm drops too) and
@@ -81,16 +97,7 @@ export function buildReviewQueue<T extends ReviewQueueEntry>(entries: T[], kindG
   const byId = new Map(entries.map((entry) => [entry.localId, entry]));
 
   const excludedByAncestor = new Map<string, boolean>();
-  function isExcluded(entry: ReviewQueueEntry): boolean {
-    const cached = excludedByAncestor.get(entry.localId);
-    if (cached !== undefined) return cached;
-    // Set before recursing so a malformed parent cycle terminates.
-    excludedByAncestor.set(entry.localId, false);
-    const parent = entry.parentLocalId ? byId.get(entry.parentLocalId) : undefined;
-    const result = !!entry.excluded || (parent ? isExcluded(parent) : false);
-    excludedByAncestor.set(entry.localId, result);
-    return result;
-  }
+  const isExcluded = (entry: ReviewQueueEntry): boolean => isExcludedWithAncestors(entry, byId, excludedByAncestor);
 
   const displayPosition = new Map(orderLikeTree(entries).map((entry, position) => [entry.localId, position]));
 

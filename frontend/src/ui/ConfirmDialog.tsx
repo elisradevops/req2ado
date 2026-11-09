@@ -52,6 +52,7 @@ export function ConfirmDialog({
   const [acknowledged, setAcknowledged] = useState(false);
   const reasonId = useId();
   const hintId = useId();
+  const consequenceId = useId();
 
   // Reset the acknowledgement each time the dialog opens -- Radix keeps the
   // Dialog mounted through its close animation rather than unmounting it,
@@ -69,7 +70,7 @@ export function ConfirmDialog({
   const buttonVariant = variant === 'destructive' ? 'danger' : variant === 'irreversible' ? 'cta' : 'primary';
   const consequenceCallout =
     variant === 'destructive' && description ? (
-      <div className="flex items-start gap-2 rounded-md border border-danger-border bg-danger-soft p-2.5 text-sm text-danger-ink">
+      <div id={consequenceId} className="flex items-start gap-2 rounded-md border border-danger-border bg-danger-soft p-2.5 text-sm text-danger-ink">
         <TriangleAlert className="mt-0.5 h-4 w-4 flex-none" />
         <div>{description}</div>
       </div>
@@ -95,6 +96,7 @@ export function ConfirmDialog({
       // On a short screen the body scrolls and the buttons stay in view.
       maxHeightClassName="max-h-[calc(100dvh-2rem)]"
       title={title}
+      describedById={consequenceCallout ? consequenceId : undefined}
       // destructive's description moves into its own tinted consequence
       // callout below (rendered in `children`'s slot) instead of the
       // Dialog's plain muted-gray description paragraph -- a permanent

@@ -21,6 +21,8 @@ export interface JobSummary {
 
 export interface JobDetail {
   id: string;
+  // localIds already written to Azure DevOps by an earlier failed attempt; the server refuses changes to their proposal acceptance or text.
+  writtenLocalIds?: string[];
   status: string;
   mode: string;
   dryRunDiff: unknown;

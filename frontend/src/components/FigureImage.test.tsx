@@ -31,6 +31,8 @@ describe('FigureImage', () => {
 
     const img = await screen.findByAltText('Figure 1');
     expect(img).toHaveAttribute('src', 'blob:mock-url');
+    expect(img).toHaveAttribute('loading', 'lazy');
+    expect(img).toHaveAttribute('decoding', 'async');
     expect(jobsApi.getFigureFile).toHaveBeenCalledWith('job-1', 'f0');
   });
 

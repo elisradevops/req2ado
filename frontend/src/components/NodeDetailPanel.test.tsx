@@ -4,6 +4,10 @@ import { NodeDetailPanel, canEditEntry, editabilityOf } from './NodeDetailPanel'
 import { ToastProvider } from './ToastProvider';
 import type { DryRunDiffEntry } from './DiffTree';
 
+vi.mock('./FigureImage', () => ({
+  FigureImage: ({ alt, figureId }: { alt: string; figureId: string }) => <img alt={alt} data-figure-id={figureId} />,
+}));
+
 // NodeDetailPanel is item-details ONLY -- chat lives in NodeDetailDialog's
 // own right pane (ChatPanel, a sibling not a child) since the dialog
 // redesign put details and chat in separate panes side by side. Chat's own
@@ -688,7 +692,7 @@ describe('NodeDetailPanel', () => {
       // vision_failed case (or vision-off-for-the-whole-run, covered
       // separately by the tree-level vision_captioning_disabled warning).
       renderPanel(<NodeDetailPanel entry={tableEntry({ uncaptionedFigureIds: ['f5'] })} />);
-      const chip = screen.getByText('Figure f5 · no description');
+      const chip = screen.getByText('Figure f5: no description');
       expect(chip).toBeInTheDocument();
       // Same warning-band token QualityGauge's "Needs review" chip uses --
       // not a one-off color, so "amber" reads consistently everywhere.
@@ -703,9 +707,117 @@ describe('NodeDetailPanel', () => {
       // a cause this chip alone can't actually know.
       await waitFor(() =>
         expect(
-          screen.getByText(/description call failed, or vision captioning was off/i),
+          screen.getByText(/It will be attached to this item when you write/i),
         ).toBeInTheDocument(),
       );
+    });
+
+    it('renders an image card for an uncaptioned figure that is not insignificant', () => {
+      renderPanel(
+        <NodeDetailPanel entry={tableEntry({ uncaptionedFigureIds: ['f5'], title: 'Req Title' })} jobId="job-1" />,
+      );
+      expect(screen.getByAltText('Figure 1 of 1 for this item')).toBeInTheDocument();
+      expect(screen.getByText('No description')).toBeInTheDocument();
+      expect(screen.queryByText('Figure f5: no description')).not.toBeInTheDocument();
+    });
+
+    it('alt text is Figure n of m', () => {
+      renderPanel(
+        <NodeDetailPanel
+          entry={tableEntry({ figureIds: ['f0'], uncaptionedFigureIds: ['f5', 'f6'], title: 'Req Title' })}
+          jobId="job-1"
+          nameByFigureId={{ f0: 'Block diagram' }}
+        />,
+      );
+      expect(screen.getByAltText('Block diagram')).toBeInTheDocument();
+      expect(screen.getByAltText('Figure 2 of 3 for this item')).toBeInTheDocument();
+      expect(screen.getByAltText('Figure 3 of 3 for this item')).toBeInTheDocument();
+      expect(screen.queryByAltText(/Req Title/)).not.toBeInTheDocument();
+    });
+
+    it('shows the visible hint for an uncaptioned figure', () => {
+      renderPanel(<NodeDetailPanel entry={tableEntry({ uncaptionedFigureIds: ['f5'] })} jobId="job-1" />);
+      expect(
+        screen.getByText(
+          'No description. It will be attached to this item when you write. If it belongs to another item, upload it there after writing.',
+        ),
+      ).toBeInTheDocument();
+    });
+
+    it('shows the hint once for several uncaptioned figures, with a chip on each card', () => {
+      renderPanel(<NodeDetailPanel entry={tableEntry({ uncaptionedFigureIds: ['f5', 'f6'] })} jobId="job-1" />);
+      expect(
+        screen.getAllByText(
+          'No description. It will be attached to this item when you write. If it belongs to another item, upload it there after writing.',
+        ),
+      ).toHaveLength(1);
+      expect(screen.getAllByText('No description')).toHaveLength(2);
+    });
+
+    it.each(['reuse', 'dedup_skip'])('says figures are not attached automatically for a %s item', (action) => {
+      renderPanel(<NodeDetailPanel entry={tableEntry({ uncaptionedFigureIds: ['f5', 'f6'], action } as any)} jobId="job-1" />);
+      expect(
+        screen.getAllByText(
+          'No description. Figures are not attached automatically to items that already exist. You can upload it to this item yourself.',
+        ),
+      ).toHaveLength(1);
+      expect(screen.queryByText(/It will be attached to this item when you write/)).not.toBeInTheDocument();
+    });
+
+    it('shows an upload failed line', async () => {
+      const { default: userEvent } = await import('@testing-library/user-event');
+      const onAttachFigure = vi.fn().mockRejectedValue(new Error('x'));
+      renderPanel(
+        <NodeDetailPanel
+          entry={tableEntry({ figureIds: ['f0'], action: 'reuse', existingAdoId: 42 })}
+          jobId="job-1"
+          onAttachFigure={onAttachFigure}
+        />,
+      );
+      await userEvent.click(screen.getByRole('button', { name: /Upload to ADO \(WI-42\)/ }));
+      expect(await screen.findByText('Upload failed. Try again.')).toBeInTheDocument();
+      onAttachFigure.mockResolvedValue(undefined);
+      await userEvent.click(screen.getByRole('button', { name: /Upload to ADO \(WI-42\)/ }));
+      await waitFor(() => expect(screen.queryByText('Upload failed. Try again.')).not.toBeInTheDocument());
+    });
+
+    it('fallback text before the item is written', () => {
+      renderPanel(
+        <NodeDetailPanel entry={tableEntry({ figureIds: ['f0'] })} jobId="job-1" onAttachFigure={vi.fn()} />,
+      );
+      expect(screen.getByText('You can upload this figure after the item is written to Azure DevOps.')).toBeInTheDocument();
+      expect(screen.queryByText(/resolved ADO work item id/)).not.toBeInTheDocument();
+    });
+
+    it('still renders only the chip when there is no job id', () => {
+      renderPanel(<NodeDetailPanel entry={tableEntry({ uncaptionedFigureIds: ['f5'] })} />);
+      expect(screen.getByText('Figure f5: no description')).toBeInTheDocument();
+      expect(screen.queryByRole('img')).not.toBeInTheDocument();
+    });
+
+    it('insignificant figures are not rendered', () => {
+      renderPanel(
+        <NodeDetailPanel
+          entry={tableEntry({ uncaptionedFigureIds: ['f5', 'f6'], insignificantFigureIds: ['f6'] })}
+          jobId="job-1"
+        />,
+      );
+      expect(screen.getAllByRole('img')).toHaveLength(1);
+      expect(screen.getByRole('img')).toHaveAttribute('data-figure-id', 'f5');
+    });
+
+    it('the upload button on an uncaptioned figure calls onAttachFigure with its id when the item has an ADO id', async () => {
+      const { default: userEvent } = await import('@testing-library/user-event');
+      const onAttachFigure = vi.fn().mockResolvedValue(undefined);
+      renderPanel(
+        <NodeDetailPanel
+          entry={tableEntry({ uncaptionedFigureIds: ['f5'], action: 'reuse', existingAdoId: 42 })}
+          jobId="job-1"
+          onAttachFigure={onAttachFigure}
+        />,
+      );
+      await userEvent.click(screen.getByRole('button', { name: /Upload to ADO \(WI-42\)/ }));
+      expect(onAttachFigure).toHaveBeenCalledWith('e1', 'f5');
     });
 
     it('renders no chip at all for an insignificant uncaptioned figure -- hidden from the item view entirely', () => {
@@ -726,7 +838,7 @@ describe('NodeDetailPanel', () => {
           entry={tableEntry({ uncaptionedFigureIds: ['f5', 'f6'], insignificantFigureIds: ['f6'] })}
         />,
       );
-      expect(screen.getByText('Figure f5 · no description')).toBeInTheDocument();
+      expect(screen.getByText('Figure f5: no description')).toBeInTheDocument();
       expect(screen.queryByText(/not significant/)).not.toBeInTheDocument();
     });
 
@@ -1171,5 +1283,118 @@ describe('NodeDetailPanel', () => {
     renderPanel(<NodeDetailPanel entry={requirementEntry} />);
     expect(screen.getByText('Closely')).toBeInTheDocument();
     expect(screen.queryByText(/worth checking/i)).not.toBeInTheDocument();
+  });
+});
+
+describe('NodeDetailPanel figure move', () => {
+  const figEntry = (patch: Partial<DryRunDiffEntry> = {}): DryRunDiffEntry => ({
+    localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body',
+    action: 'create', customerId: null, tags: [], figureIds: ['f0'], uncaptionedFigureIds: ['f5'], attachFigureIds: ['f0', 'f5'],
+    ...patch,
+  });
+  const targets = [
+    { localId: 'e1', type: 'Requirement', title: 'Req Title', customerId: null },
+    { localId: 'e2', type: 'Requirement', title: 'Other item', customerId: null },
+  ];
+
+  it('shows Move to and Do not attach on an editable entry figure card', () => {
+    renderPanel(<NodeDetailPanel entry={figEntry()} jobId="job-1" jobStatus="diff_ready" onMoveFigure={vi.fn()} figureMoveTargets={targets} />);
+    expect(screen.getAllByRole('button', { name: /^Move to…, figure \d of \d$/ })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: /^Don't attach, figure \d of \d$/ })).toHaveLength(2);
+  });
+
+  it('hides them for a written entry and for a finished job', () => {
+    const { unmount } = renderPanel(<NodeDetailPanel entry={figEntry()} jobId="job-1" jobStatus="diff_ready" written onMoveFigure={vi.fn()} figureMoveTargets={targets} />);
+    expect(screen.queryByRole('button', { name: /^Move to…, figure \d of \d$/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Don't attach, figure \d of \d$/ })).not.toBeInTheDocument();
+    unmount();
+    renderPanel(<NodeDetailPanel entry={figEntry()} jobId="job-1" jobStatus="succeeded" onMoveFigure={vi.fn()} figureMoveTargets={targets} />);
+    expect(screen.queryByRole('button', { name: /^Move to…, figure \d of \d$/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Don't attach, figure \d of \d$/ })).not.toBeInTheDocument();
+  });
+
+  it('Do not attach calls onMoveFigure with null', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const onMoveFigure = vi.fn().mockResolvedValue(undefined);
+    renderPanel(<NodeDetailPanel entry={figEntry()} jobId="job-1" jobStatus="diff_ready" onMoveFigure={onMoveFigure} figureMoveTargets={targets} />);
+    await userEvent.click(screen.getAllByRole('button', { name: /^Don't attach, figure \d of \d$/ })[0]);
+    expect(onMoveFigure).toHaveBeenCalledWith('f0', null);
+  });
+
+  it('choosing a target calls onMoveFigure with its localId', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const onMoveFigure = vi.fn().mockResolvedValue(undefined);
+    renderPanel(<NodeDetailPanel entry={figEntry()} jobId="job-1" jobStatus="diff_ready" onMoveFigure={onMoveFigure} figureMoveTargets={targets} />);
+    await userEvent.click(screen.getAllByRole('button', { name: /^Move to…, figure \d of \d$/ })[0]);
+    expect(screen.queryByRole('button', { name: /Req Title/ })).not.toBeInTheDocument();
+    await userEvent.click(await screen.findByRole('button', { name: /Other item/ }));
+    expect(onMoveFigure).toHaveBeenCalledWith('f0', 'e2');
+  });
+
+  it('shows the server message when the move fails and keeps the card', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const onMoveFigure = vi.fn().mockRejectedValue(new Error('Target is already written'));
+    renderPanel(<NodeDetailPanel entry={figEntry()} jobId="job-1" jobStatus="diff_ready" onMoveFigure={onMoveFigure} figureMoveTargets={targets} />);
+    await userEvent.click(screen.getAllByRole('button', { name: /^Don't attach, figure \d of \d$/ })[0]);
+    expect(await screen.findByText('Could not change the figure: Target is already written')).toBeInTheDocument();
+    expect(screen.getAllByRole('img')).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: /^Don't attach, figure \d of \d$/ })[0]).toBeEnabled();
+  });
+
+  it('a detached figure shows Not attached and Attach again', () => {
+    renderPanel(<NodeDetailPanel entry={figEntry({ detachedFigureIds: ['f5'], attachFigureIds: ['f0'] })} jobId="job-1" jobStatus="diff_ready" onMoveFigure={vi.fn()} figureMoveTargets={targets} />);
+    expect(screen.getByText('Not attached')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Attach again, figure 2 of 2$/ })).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: /^Don't attach, figure/ })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: /^Move to…, figure/ })).toHaveLength(2);
+    expect(screen.queryByText(/No description/)).not.toBeInTheDocument();
+  });
+
+  it('Attach again calls onMoveFigure with the entry own localId', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const onMoveFigure = vi.fn().mockResolvedValue(undefined);
+    renderPanel(<NodeDetailPanel entry={figEntry({ detachedFigureIds: ['f5'], attachFigureIds: ['f0'] })} jobId="job-1" jobStatus="diff_ready" onMoveFigure={onMoveFigure} figureMoveTargets={targets} />);
+    await userEvent.click(screen.getByRole('button', { name: /^Attach again, figure 2 of 2$/ }));
+    expect(onMoveFigure).toHaveBeenCalledWith('f5', 'e1');
+  });
+
+  it('reuse entries show only Move to', () => {
+    renderPanel(<NodeDetailPanel entry={figEntry({ action: 'reuse', attachFigureIds: [] })} jobId="job-1" jobStatus="diff_ready" onMoveFigure={vi.fn()} figureMoveTargets={targets} />);
+    expect(screen.getAllByRole('button', { name: /^Move to…, figure/ }).length).toBeGreaterThan(0);
+    expect(screen.queryByRole('button', { name: /^Don't attach/ })).not.toBeInTheDocument();
+  });
+
+  it('aria names include the visible text and the figure position', () => {
+    renderPanel(<NodeDetailPanel entry={figEntry()} jobId="job-1" jobStatus="diff_ready" onMoveFigure={vi.fn()} figureMoveTargets={targets} />);
+    expect(screen.getByRole('button', { name: 'Move to…, figure 1 of 2' })).toHaveTextContent('Move to…');
+    expect(screen.getByRole('button', { name: 'Move to…, figure 2 of 2' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: "Don't attach, figure 1 of 2" })).toHaveTextContent("Don't attach");
+    expect(screen.getByRole('button', { name: "Don't attach, figure 2 of 2" })).toBeInTheDocument();
+  });
+
+  it('focus moves to the Figures heading after a move', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const onMoveFigure = vi.fn().mockResolvedValue(undefined);
+    renderPanel(<NodeDetailPanel entry={figEntry()} jobId="job-1" jobStatus="diff_ready" onMoveFigure={onMoveFigure} figureMoveTargets={targets} />);
+    await userEvent.click(screen.getByRole('button', { name: "Don't attach, figure 1 of 2" }));
+    await waitFor(() => expect(screen.getByText('Figures')).toHaveFocus());
+  });
+
+  it('the error text differs for detach and move', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const onMoveFigure = vi.fn().mockRejectedValue(new Error('Nope'));
+    renderPanel(<NodeDetailPanel entry={figEntry()} jobId="job-1" jobStatus="diff_ready" onMoveFigure={onMoveFigure} figureMoveTargets={targets} />);
+    await userEvent.click(screen.getByRole('button', { name: "Don't attach, figure 1 of 2" }));
+    expect(await screen.findByText('Could not change the figure: Nope')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Move to…, figure 2 of 2' }));
+    await userEvent.click(await screen.findByRole('button', { name: /Other item/ }));
+    expect(await screen.findByText('Could not move the figure: Nope')).toBeInTheDocument();
+  });
+
+  it('uses a plain fallback when the failure has no message', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    renderPanel(<NodeDetailPanel entry={figEntry()} jobId="job-1" jobStatus="diff_ready" onMoveFigure={vi.fn().mockRejectedValue({})} figureMoveTargets={targets} />);
+    await userEvent.click(screen.getByRole('button', { name: "Don't attach, figure 1 of 2" }));
+    expect(await screen.findByText('Could not change the figure. Please try again.')).toBeInTheDocument();
   });
 });

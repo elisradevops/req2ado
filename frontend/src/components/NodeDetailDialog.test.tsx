@@ -734,7 +734,7 @@ describe('NodeDetailDialog', () => {
     it('does not offer the upload action for a "create" entry -- no resolved ADO id is available in this view', () => {
       renderDialog({ entry: { ...ENTRY, action: 'create', existingAdoId: null, figureIds: ['f0'] }, onAttachFigure: vi.fn() });
       expect(screen.queryByRole('button', { name: /upload to ado/i })).not.toBeInTheDocument();
-      expect(screen.getByText(/not available until this job has confirmed/i)).toBeInTheDocument();
+      expect(screen.getByText(/after the item is written to Azure DevOps/i)).toBeInTheDocument();
     });
 
     it('reverts to a clickable button (not stuck) when onAttachFigure rejects', async () => {

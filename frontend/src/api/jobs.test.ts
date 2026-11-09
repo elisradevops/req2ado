@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import axios from 'axios';
 import { httpClient } from './httpClient';
-import { explainScore, listJobs, submitJob, confirmJob, editDiffEntry, setDiffEntryExcluded, setProposalAccepted, setDiffEntriesReviewed, setWarningsAcknowledged, retryEnhancement, addDiffEntry, rescoreDiffEntry, getFigureFile, attachFigureToAdo, retryTraceLinkWrite, validateCreatedTree, previewSummary } from './jobs';
+import { explainScore, listJobs, submitJob, confirmJob, editDiffEntry, setDiffEntryExcluded, setProposalAccepted, setDiffEntriesReviewed, setWarningsAcknowledged, retryEnhancement, addDiffEntry, rescoreDiffEntry, getFigureFile, attachFigureToAdo, moveFigure, retryTraceLinkWrite, validateCreatedTree, previewSummary } from './jobs';
 
 vi.mock('./httpClient');
 vi.mock('./config', () => ({ loadRuntimeConfig: vi.fn().mockResolvedValue({ apiBaseUrl: '/api' }) }));
@@ -33,6 +33,14 @@ describe('jobs api', () => {
     (httpClient.patch as any).mockResolvedValue({ data: { dryRunDiff: [] } });
     await editDiffEntry('job-1', 'n0', { title: 'New', description: 'New desc' });
     expect(httpClient.patch).toHaveBeenCalledWith('/jobs/job-1/diff/n0', { title: 'New', description: 'New desc' });
+  });
+
+  it('moveFigure PATCHes the figure sub-route with the target, or null to detach', async () => {
+    (httpClient.patch as any).mockResolvedValue({ data: { dryRunDiff: [] } });
+    await moveFigure('job-1', 'n0', 'f1', 'n2');
+    expect(httpClient.patch).toHaveBeenCalledWith('/jobs/job-1/diff/n0/figures/f1', { targetLocalId: 'n2' });
+    await moveFigure('job-1', 'n0', 'f1', null);
+    expect(httpClient.patch).toHaveBeenLastCalledWith('/jobs/job-1/diff/n0/figures/f1', { targetLocalId: null });
   });
 
   it('setDiffEntryExcluded PATCHes the exclude sub-route', async () => {

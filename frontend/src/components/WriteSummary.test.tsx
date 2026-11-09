@@ -14,6 +14,10 @@ const preview: WritePreview = {
   existingWithoutNewParentLink: 0,
   traceLinks: { planned: 0, skipped: 0 },
   alreadyWritten: 0,
+  figuresToAttach: 0,
+  figuresUnavailable: 0,
+  hasWork: true,
+  figuresOnly: false,
 };
 const review = { edited: 0, single: 3, bulk: 0, bulkSpotChecked: 0, group: 0, earlier: 0, notReviewed: 0 };
 const props = {
@@ -33,6 +37,11 @@ describe('WriteSummary', () => {
     expect(screen.getByRole('alert')).toHaveTextContent("Couldn't check what will be written");
   });
 
+  it('timeout state says the check timed out and still allows writing', () => {
+    render(<WriteSummary {...props} state={{ status: 'error', reason: 'timeout' }} />);
+    expect(screen.getByRole('alert')).toHaveTextContent('The check took too long. You can still write, or close this and try again.');
+  });
+
   it('announces the outcome from the same status region once the preview is ready', () => {
     const { rerender } = render(<WriteSummary {...props} state={{ status: 'loading' }} />);
     const region = screen.getByRole('status');
@@ -44,6 +53,15 @@ describe('WriteSummary', () => {
   it('announces a write of zero items as nothing to write', () => {
     render(<WriteSummary {...props} state={{ status: 'ready', preview: { ...preview, createdTotal: 0, createdLocalIds: [], createdByType: {}, parentLinks: 0 }, review }} />);
     expect(screen.getByRole('status')).toHaveTextContent('Ready: nothing will be created, so there is nothing to write.');
+  });
+
+  it('announces a figures-only write as attaching figures, not as nothing to write', () => {
+    const figs = { ...preview, createdTotal: 0, createdLocalIds: [], createdByType: {}, parentLinks: 0, figuresToAttach: 36, figuresOnly: true };
+    const { rerender } = render(<WriteSummary {...props} state={{ status: 'ready', preview: figs, review }} />);
+    expect(screen.getByRole('status')).toHaveTextContent('No new items will be created. 36 figures will be attached to their items in Azure DevOps.');
+    expect(screen.getByRole('status')).not.toHaveTextContent(/nothing to write/);
+    rerender(<WriteSummary {...props} state={{ status: 'ready', preview: { ...figs, figuresToAttach: 1 }, review }} />);
+    expect(screen.getByRole('status')).toHaveTextContent('No new items will be created. 1 figure will be attached to their items in Azure DevOps.');
   });
 
   it('announces a retry with only links left as work to finish', () => {
@@ -64,6 +82,21 @@ describe('WriteSummary', () => {
     expect(screen.getByText('3 new work items: 1 Feature, 2 Requirements.')).toBeInTheDocument();
     expect(screen.getByText('1 item left out: 1 excluded by you.')).toBeInTheDocument();
     expect(screen.getByText('Review: 3 approved one by one.')).toBeInTheDocument();
+  });
+
+  it('shows N figures will be attached', () => {
+    render(<WriteSummary {...props} state={{ status: 'ready', preview: { ...preview, figuresToAttach: 4 }, review }} />);
+    expect(screen.getByText('4 figures will be attached.')).toBeInTheDocument();
+  });
+
+  it('says 1 figure will be attached in the singular', () => {
+    render(<WriteSummary {...props} state={{ status: 'ready', preview: { ...preview, figuresToAttach: 1 }, review }} />);
+    expect(screen.getByText('1 figure will be attached.')).toBeInTheDocument();
+  });
+
+  it('shows no figures line when there are none', () => {
+    render(<WriteSummary {...props} state={{ status: 'ready', preview, review }} />);
+    expect(screen.queryByText(/will be attached/)).not.toBeInTheDocument();
   });
 
   it('warns when blocking or review warnings are still open', () => {

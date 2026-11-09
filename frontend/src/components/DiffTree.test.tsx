@@ -881,6 +881,17 @@ describe('DiffTree signal counts', () => {
     expect(badge).toBeInTheDocument();
   });
 
+  it('DiffTree badge uses attachFigureIds', () => {
+    const entries: DryRunDiffEntry[] = [
+      { ...baseEntry, figureIds: ['f0'], uncaptionedFigureIds: ['f1', 'f2'], attachFigureIds: ['f0', 'f1'] },
+    ];
+
+    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+
+    // The server list wins: f2 is not marked insignificant, but the server did not list it.
+    expect(screen.getByTitle('2 figure(s), 1 without a description')).toBeInTheDocument();
+  });
+
   it('hides the figure-count badge entirely when every uncaptioned figure is insignificant and none are captioned', () => {
     const entries: DryRunDiffEntry[] = [
       { ...baseEntry, uncaptionedFigureIds: ['f1', 'f2'], insignificantFigureIds: ['f1', 'f2'] },

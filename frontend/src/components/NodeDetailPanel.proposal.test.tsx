@@ -134,3 +134,25 @@ describe('NodeDetailPanel proposal card', () => {
     expect(criterion.closest('ul')).not.toBe(assumption.closest('ul'));
   });
 });
+
+describe('NodeDetailPanel written entry', () => {
+  const accepted: DryRunDiffEntry = { ...base, proposal: { kind: 'criteria', html: CRITERIA_HTML }, proposalAccepted: true };
+
+  it('shows the written lock note instead of Accepted will be written for a written entry', () => {
+    renderPanel(accepted, { written: true, onSetProposalAccepted: vi.fn(), onSave: vi.fn() });
+    expect(screen.getByText('Already written to Azure DevOps by an earlier attempt, so this can no longer change.')).toBeInTheDocument();
+    expect(screen.queryByText(/will be written to azure devops with this item/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /undo|accept criteria/i })).not.toBeInTheDocument();
+  });
+
+  it('hides Edit for a written entry', () => {
+    renderPanel(base, { written: true, onSave: vi.fn() });
+    expect(screen.queryByRole('button', { name: /^edit/i })).not.toBeInTheDocument();
+  });
+
+  it('unwritten entries behave as before', () => {
+    renderPanel(accepted, { written: false, onSetProposalAccepted: vi.fn(), onSave: vi.fn() });
+    expect(screen.getByText(/accepted — will be written to azure devops with this item/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /undo/i })).toBeInTheDocument();
+  });
+});

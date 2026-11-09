@@ -30,6 +30,7 @@ function renderWarnings(
     orgUrl?: string | null;
     project?: string | null;
     gateCount?: number;
+    fixGroupTitle?: string;
   },
 ) {
   return render(
@@ -49,6 +50,7 @@ function renderWarnings(
         orgUrl={opts?.orgUrl}
         project={opts?.project}
         gateCount={opts?.gateCount}
+        fixGroupTitle={opts?.fixGroupTitle}
       />
     </MemoryRouter>,
   );
@@ -117,6 +119,17 @@ describe('CollapsibleWarnings', () => {
       await userEvent.click(screen.getByRole('button', { name: /fix before confirming/i }));
       expect(screen.queryByText('Requirement has no Customer ID')).not.toBeInTheDocument();
     });
+  });
+
+  it('relabels only the fix group when a fix title is given (a finished job), keeping the default otherwise', () => {
+    const warnings = [warning({ kind: 'missing_source_reference', severity: 'needs_review', raw: '14 requirements have no source reference.' })];
+    const { unmount } = renderWarnings(warnings);
+    expect(screen.getByText('Fix before confirming (1)')).toBeInTheDocument();
+    unmount();
+
+    renderWarnings(warnings, { fixGroupTitle: 'Flagged before writing' });
+    expect(screen.getByText('Flagged before writing (1)')).toBeInTheDocument();
+    expect(screen.queryByText(/fix before confirming/i)).not.toBeInTheDocument();
   });
 
   it('derives the defaults from the warnings it has now, so warnings that arrive after mount do not leave the info group open', () => {

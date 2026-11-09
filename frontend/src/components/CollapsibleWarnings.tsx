@@ -65,6 +65,7 @@ export function CollapsibleWarnings({
   orgUrl,
   project,
   gateCount,
+  fixGroupTitle,
 }: {
   warnings: WarningRecord[];
   // Filters the proposed tree to a kind's affected items. Omitted: rows
@@ -97,6 +98,8 @@ export function CollapsibleWarnings({
   // How many warning types still need the reviewer before approving. Shown as the card's own first line, so the gate is said once, here,
   // rather than in a banner above a card that says it again.
   gateCount?: number;
+  // Replaces the fix group's heading when nothing is left to fix before confirming (a finished job).
+  fixGroupTitle?: string;
 }): React.ReactElement | null {
   const kindGroups = useMemo(() => buildKindGroups(warnings), [warnings]);
   const hasActionable = kindGroups.some((entry) => entry.group !== 'info');
@@ -135,7 +138,8 @@ export function CollapsibleWarnings({
         {GROUP_ORDER.map((group) => {
           const entries = kindGroups.filter((entry) => entry.group === group);
           if (entries.length === 0) return null;
-          const { title, line } = GROUP_META[group];
+          const { line } = GROUP_META[group];
+          const title = group === 'fix' && fixGroupTitle ? fixGroupTitle : GROUP_META[group].title;
           const collapsible = group === 'info' || narrow;
           const open = !collapsible || isGroupOpen(group);
           return (

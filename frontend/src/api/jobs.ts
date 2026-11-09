@@ -191,6 +191,12 @@ export async function confirmJob(id: string): Promise<{ status: string; createdC
   return response.data;
 }
 
+// Rebuilds this job's duplicate index from its own records (no Azure DevOps call); a repair for a confirm whose index update failed.
+export async function reindexDedup(id: string): Promise<{ indexed: number }> {
+  const response = await httpClient.post<{ indexed: number }>(`/jobs/${id}/dedup/reindex`);
+  return response.data;
+}
+
 export async function getAudit(id: string): Promise<AuditEntry[]> {
   const response = await httpClient.get<AuditEntry[]>(`/jobs/${id}/audit`);
   return response.data;
@@ -317,6 +323,19 @@ export async function moveDiffEntry(jobId: string, localId: string, input: MoveD
   return response.data;
 }
 
+// Moves one figure of an entry to another entry before the write (same list kind), or detaches it when targetLocalId is null
+// (the image stays stored but is no longer attached). Returns the updated diff; the server refuses written, excluded or
+// identical targets and a figure that is not on the source. See JobsService for the rules.
+export async function moveFigure(
+  jobId: string,
+  sourceLocalId: string,
+  figureId: string,
+  targetLocalId: string | null,
+): Promise<{ dryRunDiff: unknown }> {
+  const response = await httpClient.patch(`/jobs/${jobId}/diff/${sourceLocalId}/figures/${figureId}`, { targetLocalId });
+  return response.data;
+}
+
 export async function rejectJob(id: string): Promise<{ status: string }> {
   const response = await httpClient.post(`/jobs/${id}/reject`);
   return response.data;
@@ -367,6 +386,13 @@ export interface WritePreview {
   existingWithoutNewParentLink: number;
   traceLinks: { planned: number; skipped: number };
   alreadyWritten: number;
+  // Figure attachments still to upload; counts as work.
+  figuresToAttach: number;
+  // Figures that have no stored file and will not be attached; does not count as work.
+  figuresUnavailable: number;
+  // Set by the server: the write has anything left to do, and only figures are left.
+  hasWork: boolean;
+  figuresOnly: boolean;
 }
 
 export async function getWritePreview(id: string): Promise<WritePreview> {

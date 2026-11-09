@@ -6,7 +6,7 @@ import type { WarningRecord } from './warnings';
 // The words of the final write summary (P17d). The numbers come from the server's preview; this file only phrases them, so it holds no
 // write rules. A line's tone is 'notice' when the reviewer should look twice before writing.
 export interface SummaryLine {
-  id: 'create' | 'excluded' | 'parent-links' | 'existing' | 'trace-links' | 'review';
+  id: 'create' | 'excluded' | 'parent-links' | 'figures' | 'figures-advisory' | 'figures-unavailable' | 'existing' | 'trace-links' | 'review';
   text: string;
   tone: 'plain' | 'notice';
 }
@@ -17,9 +17,14 @@ function plural(count: number, one: string, many = `${one}s`): string {
   return `${count.toLocaleString()} ${count === 1 ? one : many}`;
 }
 
-// Whether the write has anything left to do: new items, or links still to add (a retry after a failed write can have only links left).
+// Whether the write has anything left to do (the server decides; a retry after a failed write can have only links or figures left).
 export function writeHasWork(preview: WritePreview): boolean {
-  return preview.createdTotal > 0 || preview.parentLinks > 0 || preview.traceLinks.planned > 0;
+  return preview.hasWork;
+}
+
+// Only figures are left (the server decides): nothing is created and no link is added, but figures are still attached.
+export function isFiguresOnlyWrite(preview: WritePreview): boolean {
+  return preview.figuresOnly;
 }
 
 // "2 parent links and 1 trace link remain" (without the full stop), or null when no link remains.
@@ -35,10 +40,13 @@ export function remainingLinksPhrase(preview: WritePreview): string | null {
 
 export function writeSummaryLines(preview: WritePreview, review: ApprovalBreakdown): SummaryLine[] {
   const lines: SummaryLine[] = [];
+  const figuresOnly = isFiguresOnlyWrite(preview);
   const remaining = preview.createdTotal === 0 ? remainingLinksPhrase(preview) : null;
   if (remaining) {
     const written = preview.alreadyWritten > 0 ? ` ${plural(preview.alreadyWritten, 'item')} ${preview.alreadyWritten === 1 ? 'is' : 'are'} already written.` : '';
     lines.push({ id: 'create', text: `Nothing new to create; ${remaining}.${written}`, tone: 'plain' });
+  } else if (figuresOnly) {
+    lines.push({ id: 'create', text: 'No new items will be created.', tone: 'plain' });
   } else if (preview.createdTotal === 0) {
     lines.push({ id: 'create', text: 'Nothing will be created.', tone: 'notice' });
   } else {
@@ -64,6 +72,26 @@ export function writeSummaryLines(preview: WritePreview, review: ApprovalBreakdo
       id: 'parent-links',
       text: `${plural(preview.parentLinks, 'parent link')} will be added.`,
       tone: 'plain',
+    });
+  }
+
+  if (preview.figuresToAttach > 0) {
+    const text = figuresOnly
+      ? `${plural(preview.figuresToAttach, 'figure')} ${preview.figuresToAttach === 1 ? 'will be attached to its item' : 'will be attached to their items'} in Azure DevOps.`
+      : `${plural(preview.figuresToAttach, 'figure')} will be attached.`;
+    lines.push({ id: 'figures', text, tone: 'plain' });
+    lines.push({
+      id: 'figures-advisory',
+      text: 'Figures are attached by position. Check each one next to its item before you write.',
+      tone: 'plain',
+    });
+  }
+
+  if (preview.figuresUnavailable > 0) {
+    lines.push({
+      id: 'figures-unavailable',
+      text: `${plural(preview.figuresUnavailable, 'figure')} could not be loaded and will not be attached.`,
+      tone: 'notice',
     });
   }
 

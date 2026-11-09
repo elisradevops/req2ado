@@ -86,6 +86,12 @@ function renderAt(id: string) {
   );
 }
 
+type PreviewCounts = { createdTotal: number; parentLinks: number; figuresToAttach: number; traceLinks: { planned: number } };
+function withServerFlags<T extends PreviewCounts>(preview: T): T & { hasWork: boolean; figuresOnly: boolean } {
+  const noOtherWork = preview.createdTotal === 0 && preview.parentLinks === 0 && preview.traceLinks.planned === 0;
+  return { ...preview, hasWork: !noOtherWork || preview.figuresToAttach > 0, figuresOnly: noOtherWork && preview.figuresToAttach > 0 };
+}
+
 describe('JobDetail', () => {
   beforeEach(() => {
     vi.spyOn(jobsApi, 'getSummary').mockResolvedValue({
@@ -168,6 +174,65 @@ describe('JobDetail', () => {
       await userEvent.click(await screen.findByRole('button', { name: /accept criteria/i }));
       await waitFor(() => expect(screen.getByText(/failed to update the proposal/i)).toBeInTheDocument());
       expect(screen.getByRole('button', { name: /accept criteria/i })).toBeInTheDocument();
+    });
+  });
+
+  describe('moving a figure', () => {
+    const entries = [
+      { localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req One', description: 'd', action: 'create', customerId: null, tags: [], figureIds: ['f0'], attachFigureIds: ['f0'] },
+      { localId: 'e2', parentLocalId: null, type: 'Requirement', title: 'Req Two', description: 'd', action: 'create', customerId: null, tags: [], attachFigureIds: [] },
+    ];
+    async function openFigureEntry(jobId: string) {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: jobId, status: 'diff_ready', dryRunDiff: entries } as any);
+      const chatApi = await import('../api/chat');
+      vi.mocked(chatApi.getChatHistory).mockResolvedValue([]);
+      vi.mocked(chatApi.listModels).mockResolvedValue([]);
+      renderAt(jobId);
+      await waitFor(() => expect(screen.getByText('Req One')).toBeInTheDocument());
+      const { default: userEvent } = await import('@testing-library/user-event');
+      await openNodeDetails(userEvent, 'Req One');
+      return userEvent;
+    }
+
+    it('moving a figure updates the diff and shows a toast', async () => {
+      const move = vi.spyOn(jobsApi, 'moveFigure').mockResolvedValue({
+        dryRunDiff: [{ ...entries[0], figureIds: [], attachFigureIds: [] }, { ...entries[1], figureIds: ['f0'], attachFigureIds: ['f0'] }],
+      } as any);
+      const userEvent = await openFigureEntry('job-fig-1');
+      await userEvent.click(await screen.findByRole('button', { name: /^Move to…, figure 1 of 1$/ }));
+      await userEvent.click(await screen.findByRole('button', { name: /Req Two/ }));
+      await waitFor(() => expect(move).toHaveBeenCalledWith('job-fig-1', 'e1', 'f0', 'e2'));
+      expect(await screen.findByText('Figure moved to Req Two')).toBeInTheDocument();
+      await waitFor(() => expect(screen.queryByRole('button', { name: /^Don't attach, figure 1 of 1$/ })).not.toBeInTheDocument());
+    });
+
+    it('figureMoveTargets exclude reuse and dedup_skip entries', async () => {
+      const mixed = [
+        entries[0],
+        entries[1],
+        { localId: 'e3', parentLocalId: null, type: 'Requirement', title: 'Req Reused', description: 'd', action: 'reuse', customerId: null, tags: [] },
+        { localId: 'e4', parentLocalId: null, type: 'Requirement', title: 'Req Skipped', description: 'd', action: 'dedup_skip', customerId: null, tags: [] },
+      ];
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-fig-3', status: 'diff_ready', dryRunDiff: mixed } as any);
+      const chatApi = await import('../api/chat');
+      vi.mocked(chatApi.getChatHistory).mockResolvedValue([]);
+      vi.mocked(chatApi.listModels).mockResolvedValue([]);
+      renderAt('job-fig-3');
+      await waitFor(() => expect(screen.getByText('Req One')).toBeInTheDocument());
+      const { default: userEvent } = await import('@testing-library/user-event');
+      await openNodeDetails(userEvent, 'Req One');
+      await userEvent.click(await screen.findByRole('button', { name: /^Move to…, figure 1 of 1$/ }));
+      expect(await screen.findByRole('button', { name: /Req Two/ })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Req Reused/ })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Req Skipped/ })).not.toBeInTheDocument();
+    });
+
+    it('a refused move shows the server message', async () => {
+      vi.spyOn(jobsApi, 'moveFigure').mockRejectedValue(new Error('That item is already written'));
+      const userEvent = await openFigureEntry('job-fig-2');
+      await userEvent.click(await screen.findByRole('button', { name: /^Don't attach, figure 1 of 1$/ }));
+      expect(await screen.findByText('Could not change the figure: That item is already written')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /^Don't attach, figure 1 of 1$/ })).toBeInTheDocument();
     });
   });
 
@@ -297,6 +362,51 @@ describe('JobDetail', () => {
       await waitFor(() => expect(screen.getByText(/1 warning needs your attention/i)).toBeInTheDocument());
     });
 
+    it('a succeeded job with fix-group warnings shows no approval gate', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+        id: 'job-61',
+        status: 'succeeded',
+        mode: 'survey',
+        dryRunDiff: [epic('e1', 'Affected one')],
+        warnings: [{ kind: 'missing_source_reference', severity: 'needs_review', nodeIds: ['e1'], detail: {}, raw: '1 requirement has no source reference.' }],
+      } as any);
+      renderAt('job-61');
+
+      await screen.findByRole('region', { name: /integrity warnings/i });
+      expect(screen.queryByTestId('approval-gate')).not.toBeInTheDocument();
+      expect(screen.queryByText(/before you approve/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/fix before confirming/i)).not.toBeInTheDocument();
+      expect(screen.getByText('Flagged before writing (1)')).toBeInTheDocument();
+    });
+
+    it('running job keeps the default fix group title', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+        id: 'job-61r',
+        status: 'running',
+        mode: 'survey',
+        dryRunDiff: [epic('e1', 'Affected one')],
+        warnings: [{ kind: 'missing_source_reference', severity: 'needs_review', nodeIds: ['e1'], detail: {}, raw: '1 requirement has no source reference.' }],
+      } as any);
+      renderAt('job-61r');
+
+      await screen.findByRole('region', { name: /integrity warnings/i });
+      expect(screen.queryByText('Flagged before writing (1)')).not.toBeInTheDocument();
+    });
+
+    it('a diff_ready job still shows the approval gate', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+        id: 'job-62',
+        status: 'diff_ready',
+        mode: 'survey',
+        dryRunDiff: [epic('e1', 'Affected one')],
+        warnings: [{ kind: 'missing_source_reference', severity: 'needs_review', nodeIds: ['e1'], detail: {}, raw: '1 requirement has no source reference.' }],
+      } as any);
+      renderAt('job-62');
+
+      expect(await screen.findByTestId('approval-gate')).toHaveTextContent(/1 warning needs your attention before you approve/i);
+      expect(screen.getByText('Fix before confirming (1)')).toBeInTheDocument();
+    });
+
     it('says "before you approve" once, inside the Integrity warnings card, with no separate banner or jump button', async () => {
       mockJobWithWarnings();
       renderAt('job-60');
@@ -343,6 +453,25 @@ describe('JobDetail', () => {
 
       const note = await screen.findByRole('note');
       expect(note).toHaveTextContent('Low grounding: possible fabrication.');
+    });
+
+    it('no mark-all-reviewed for an auto_fixed focus', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+        id: 'job-62',
+        status: 'diff_ready',
+        mode: 'survey',
+        dryRunDiff: [epic('e1', 'Affected one'), epic('e2', 'Affected two')],
+        warnings: [{ kind: 'parent_title_collision', severity: 'auto_fixed', nodeIds: ['e1', 'e2'], detail: {}, raw: 'Fixed.' }],
+      } as any);
+      renderAt('job-62');
+      const { default: userEvent } = await import('@testing-library/user-event');
+      await screen.findByRole('region', { name: /integrity warnings/i });
+      // The informational group is the only one, so it is open already.
+      await userEvent.click(await screen.findByRole('button', { name: 'Show in tree' }));
+      await screen.findByText('Affected one');
+      expect(screen.queryByRole('button', { name: 'Mark all reviewed' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('checkbox', { name: 'Hide reviewed' })).not.toBeInTheDocument();
+      expect(screen.queryByText(/\d+ left/)).not.toBeInTheDocument();
     });
 
     describe('busy presses in the warning-focus review', () => {
@@ -708,6 +837,62 @@ describe('JobDetail', () => {
 
     await waitFor(() => expect(screen.getByText(/raw model responses behind flagged warnings/i)).toBeInTheDocument());
     expect(screen.getByText(/infer_trace_links — document/i)).toBeInTheDocument();
+  });
+
+  describe('rebuild duplicate index', () => {
+    const FAILED = { id: 'a1', message: 'Dedup index may be only partly updated for 3 newly-created item(s) -- boom', createdAt: '2026-07-09T00:00:00Z' };
+    const REBUILT = { id: 'a2', message: 'Duplicate index rebuilt for 3 item(s)', createdAt: '2026-07-09T01:00:00Z' };
+
+    async function openAudit(entries: any[]) {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-dd', status: 'succeeded', createdItemCount: 1, dryRunDiff: [{ localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Root', description: '', action: 'create', customerId: null, tags: [] }] } as any);
+      vi.spyOn(jobsApi, 'getAudit').mockResolvedValue(entries);
+      vi.spyOn(jobsApi, 'getDebugCaptures').mockResolvedValue([]);
+      renderAt('job-dd');
+      const { default: userEvent } = await import('@testing-library/user-event');
+      await waitFor(() => expect(screen.getByRole('tab', { name: /audit/i })).toBeInTheDocument());
+      await userEvent.click(screen.getByRole('tab', { name: /audit/i }));
+      await waitFor(() => expect(screen.getByText(entries[0].message)).toBeInTheDocument());
+      return userEvent;
+    }
+
+    it('shows the rebuild button only after a recorded dedup failure', async () => {
+      await openAudit([FAILED]);
+      expect(screen.getByRole('button', { name: 'Rebuild duplicate index' })).toBeInTheDocument();
+    });
+
+    it('does not show it when no dedup failure is recorded', async () => {
+      await openAudit([{ id: 'a0', message: 'Job submitted: x.docx', createdAt: '2026-07-09T00:00:00Z' }]);
+      expect(screen.queryByRole('button', { name: 'Rebuild duplicate index' })).not.toBeInTheDocument();
+    });
+
+    it('keys off the exact audit prefixes the server writes', async () => {
+      await openAudit([{ id: 'p1', message: 'Dedup index may be only partly updated', createdAt: '2026-07-09T00:00:00Z' }]);
+      expect(screen.getByRole('button', { name: 'Rebuild duplicate index' })).toBeInTheDocument();
+    });
+
+    it('hides it again after the rebuilt prefix', async () => {
+      await openAudit([
+        { id: 'p1', message: 'Dedup index may be only partly updated', createdAt: '2026-07-09T00:00:00Z' },
+        { id: 'p2', message: 'Duplicate index rebuilt', createdAt: '2026-07-09T01:00:00Z' },
+      ]);
+      expect(screen.queryByRole('button', { name: 'Rebuild duplicate index' })).not.toBeInTheDocument();
+    });
+
+    it('hides it after a rebuild entry', async () => {
+      await openAudit([FAILED, REBUILT]);
+      expect(screen.queryByRole('button', { name: 'Rebuild duplicate index' })).not.toBeInTheDocument();
+    });
+
+    it('confirms and calls the API, then shows the toast', async () => {
+      const reindex = vi.spyOn(jobsApi, 'reindexDedup').mockResolvedValue({ indexed: 3 });
+      const userEvent = await openAudit([FAILED]);
+      await userEvent.click(screen.getByRole('button', { name: 'Rebuild duplicate index' }));
+      expect(screen.getByText(/If any were deleted there, they will still be treated as duplicates until you remove them from the index\./)).toBeInTheDocument();
+      expect(reindex).not.toHaveBeenCalled();
+      await userEvent.click(screen.getByRole('button', { name: 'Rebuild index' }));
+      await waitFor(() => expect(reindex).toHaveBeenCalledWith('job-dd'));
+      await waitFor(() => expect(screen.getByText('Duplicate index rebuilt for 3 items')).toBeInTheDocument());
+    });
   });
 
   it('shows a resume-safe banner for a diff_ready job with a nonzero createdItemCount (300577)', async () => {
@@ -1504,6 +1689,33 @@ describe('JobDetail', () => {
     expect(excludeSpy).not.toHaveBeenCalledWith('job-41', 'c', true);
   });
 
+  it('shows the server message when excluding a written entry is refused', async () => {
+    const { AxiosError } = await import('axios');
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-9w',
+      status: 'diff_ready',
+      dryRunDiff: [
+        { localId: 'a', parentLocalId: null, type: 'Requirement', title: 'Row one', description: '', action: 'create', customerId: null, tags: [] },
+      ],
+    } as any);
+    const message = 'Diff entry a was already written to Azure DevOps by an earlier attempt, so it can no longer change';
+    vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockRejectedValue(
+      new AxiosError('Request failed with status code 400', 'ERR_BAD_REQUEST', undefined, undefined, {
+        status: 400,
+        data: { statusCode: 400, message },
+      } as any),
+    );
+
+    renderAt('job-9w');
+    await waitFor(() => expect(screen.getByText('Row one')).toBeInTheDocument());
+
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await clickUntilCalled(userEvent, () => screen.getByRole('checkbox', { name: /exclude row one/i }), jobsApi.setDiffEntryExcluded as never);
+
+    await screen.findByText(message, {}, { timeout: 8000 });
+    expect(screen.getByRole('checkbox', { name: /exclude row one/i })).not.toBeChecked();
+  });
+
   it('shows an error toast when toggling exclude fails, instead of failing silently', async () => {
     vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
       id: 'job-9',
@@ -1765,12 +1977,15 @@ describe('JobDetail', () => {
     const entry = (localId: string, extra: Record<string, unknown> = {}) => ({
       localId, parentLocalId: null, type: 'Requirement', title: localId, description: '', action: 'create', customerId: null, tags: [], ...extra,
     });
-    const previewOf = (overrides: Record<string, unknown> = {}) => ({
+    // hasWork and figuresOnly are what the server sends; the fixture keeps them in step with the counts.
+    const previewOf = (overrides: Record<string, unknown> = {}) => withServerFlags({
       createdTotal: 2,
       createdLocalIds: ['a', 'b'],
       createdByType: { Requirement: 2 },
       excluded: { direct: 1, viaAncestor: 0 },
       parentLinks: 0,
+      figuresToAttach: 0,
+      figuresUnavailable: 0,
       existingGettingChildren: 0,
       existingWithoutNewParentLink: 0,
       traceLinks: { planned: 0, skipped: 0 },
@@ -1876,12 +2091,75 @@ describe('JobDetail', () => {
       expect(document.activeElement).not.toBe(headerWriteButton());
     });
 
-    it('does not offer a button for excluded items, because the tree has no filter for them', async () => {
-      vi.spyOn(jobsApi, 'getJob').mockResolvedValue(jobOf('job-ws23'));
-      vi.spyOn(jobsApi, 'getWritePreview').mockResolvedValue(previewOf({ excluded: { direct: 2, viaAncestor: 1 } }));
-      await openWriteDialog('job-ws23');
-      await screen.findByText(/3 items left out/i);
-      expect(screen.queryByRole('button', { name: /excluded item/i })).toBeNull();
+    it('"Show the N excluded items" closes the write dialog and filters the tree to excluded items', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue(
+        jobOf('job-ws23', {
+          dryRunDiff: [
+            entry('a', { title: 'Kept item' }),
+            entry('x', { title: 'Excluded item', excluded: true }),
+            entry('y', { title: 'Under excluded', parentLocalId: 'x' }),
+          ],
+        }),
+      );
+      vi.spyOn(jobsApi, 'getWritePreview').mockResolvedValue(previewOf({ excluded: { direct: 1, viaAncestor: 1 } }));
+      const user = await openWriteDialog('job-ws23');
+      await user.click(await screen.findByRole('button', { name: 'Show the 2 excluded items' }));
+
+      await waitFor(() => expect(writeDialog()).not.toBeInTheDocument());
+      await waitFor(() => expect(screen.queryByText('Kept item')).not.toBeInTheDocument());
+      expect(screen.getByText('Excluded item')).toBeInTheDocument();
+      expect(screen.getByText('Under excluded')).toBeInTheDocument();
+      expect(screen.getByText(/left out of the write: 2 items/i)).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Mark all reviewed' })).not.toBeInTheDocument();
+    });
+
+    it('a preview timeout shows the timed-out message and Confirm stays enabled', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue(jobOf('job-ws24'));
+      vi.spyOn(jobsApi, 'getWritePreview').mockReturnValue(new Promise(() => {}));
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      let user!: Awaited<ReturnType<typeof openWriteDialog>>;
+      try {
+        user = await openWriteDialog('job-ws24');
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(15000);
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(await screen.findByText(/the check took too long/i)).toBeInTheDocument();
+      await user.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
+      expect(screen.getByRole('button', { name: /confirm and write/i })).toBeEnabled();
+    });
+
+    it('a failed (non-timeout) preview keeps the generic message', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue(jobOf('job-ws25'));
+      vi.spyOn(jobsApi, 'getWritePreview').mockRejectedValue(new Error('down'));
+      await openWriteDialog('job-ws25');
+      expect(await screen.findByText(/couldn't check what will be written/i)).toBeInTheDocument();
+      expect(screen.queryByText(/the check took too long/i)).not.toBeInTheDocument();
+    });
+
+    it('a malformed preview is treated as a failed check', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue(jobOf('job-ws26'));
+      vi.spyOn(jobsApi, 'getWritePreview').mockResolvedValue({ createdTotal: 2, createdLocalIds: null, excluded: { direct: 0, viaAncestor: 0 } } as any);
+      const user = await openWriteDialog('job-ws26');
+      expect(await screen.findByText(/couldn't check what will be written/i)).toBeInTheDocument();
+      await user.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
+      expect(screen.getByRole('button', { name: /confirm and write/i })).toBeEnabled();
+    });
+
+    it('entries the server reports as written get the written lock in the details dialog', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue(
+        jobOf('job-ws27', { dryRunDiff: [entry('a', { title: 'Written item' })], writtenLocalIds: ['a'] }),
+      );
+      const { default: userEvent } = await import('@testing-library/user-event');
+      renderAt('job-ws27');
+      await userEvent.click(await screen.findByText('Written item'));
+      const dialog = await screen.findByRole('dialog');
+      expect(
+        await within(dialog).findByText('Already written to Azure DevOps by an earlier attempt, so this can no longer change.'),
+      ).toBeInTheDocument();
     });
 
     it('disables the write while the check is running and says so', async () => {
@@ -1906,6 +2184,27 @@ describe('JobDetail', () => {
       expect(screen.queryByText(/creates 0 new work items/i)).not.toBeInTheDocument();
       await user.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
       expect(screen.getByRole('button', { name: 'Finish writing to Compliance' })).toBeEnabled();
+    });
+
+    it('figures-only write dialog shows the attach copy and button label', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue(jobOf('job-ws5f'));
+      vi.spyOn(jobsApi, 'getWritePreview').mockResolvedValue(
+        previewOf({ createdTotal: 0, createdLocalIds: [], createdByType: {}, parentLinks: 0, figuresToAttach: 36 }),
+      );
+      const user = await openWriteDialog('job-ws5f');
+
+      expect(await screen.findByText('36 figures will be attached to their items in Azure DevOps.')).toBeInTheDocument();
+      expect(screen.getByText('No new items will be created.')).toBeInTheDocument();
+      expect(screen.queryByText('Nothing will be created.')).not.toBeInTheDocument();
+      expect(screen.getByText(/Figures are attached by position/)).toBeInTheDocument();
+      expect(screen.getByText(/This attaches the figures to their items under/)).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'Attach figures to Azure DevOps items?' })).toBeInTheDocument();
+      expect(screen.queryByText(/No new items are created\./)).not.toBeInTheDocument();
+      expect(screen.getByText(/Attachments must be removed directly in Azure DevOps afterward/)).toBeInTheDocument();
+      expect(screen.queryByText(/must be deleted directly/)).not.toBeInTheDocument();
+      expect(screen.queryByText('Write these items to Azure DevOps?')).not.toBeInTheDocument();
+      await user.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
+      expect(screen.getByRole('button', { name: 'Attach 36 figures to Compliance' })).toBeEnabled();
     });
 
     it('keeps the write disabled, with the reason, when there is nothing at all to do', async () => {
@@ -1936,7 +2235,7 @@ describe('JobDetail', () => {
         vi.useRealTimers();
       }
 
-      expect(await screen.findByText(/couldn't check what will be written/i)).toBeInTheDocument();
+      expect(await screen.findByText(/the check took too long/i)).toBeInTheDocument();
       await user.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
       expect(screen.getByRole('button', { name: /confirm and write/i })).toBeEnabled();
     });
@@ -3313,9 +3612,13 @@ describe('JobDetail', () => {
         createdByType: { Requirement: 7 },
         excluded: { direct: 0, viaAncestor: 0 },
         parentLinks: 0,
+        figuresToAttach: 0,
+        figuresUnavailable: 0,
         existingGettingChildren: 0,
         existingWithoutNewParentLink: 0,
         traceLinks: { planned: 0, skipped: 0 },
+        hasWork: true,
+        figuresOnly: false,
       });
       const userEvent = await render80({ areaPath: 'Compliance\\Auth', adoProject: 'Compliance' });
       await openConfirmation(userEvent);
@@ -3530,9 +3833,13 @@ describe('JobDetail', () => {
           createdByType: { Requirement: 7 },
           excluded: { direct: 0, viaAncestor: 0 },
           parentLinks: 0,
+          figuresToAttach: 0,
+          figuresUnavailable: 0,
           existingGettingChildren: 0,
           existingWithoutNewParentLink: 0,
           traceLinks: { planned: 0, skipped: 0 },
+          hasWork: true,
+          figuresOnly: false,
         });
       }
       async function approveAll(userEvent: Awaited<ReturnType<typeof render80>>) {

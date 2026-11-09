@@ -36,6 +36,7 @@ import { BELOW_MD, useMediaQuery } from '../hooks/useMediaQuery';
 import { Checkbox } from '../ui/Checkbox';
 import { Chip } from '../ui/Chip';
 import { InfoTip, Tooltip } from '../ui/Tooltip';
+import { attachFigureIdsOf } from '../utils/figures';
 import type { ReasonTone } from '../utils/warningKinds';
 import type { WorkItemTypeCatalogEntry } from '../api/ado';
 
@@ -208,6 +209,10 @@ export interface DryRunDiffEntry {
   // comment). NodeDetailPanel uses this to split the uncaptioned-figure chip
   // rendering into two distinct treatments.
   insignificantFigureIds?: string[];
+  // Figures the server will attach automatically (see attachFigureIdsOf). Absent on responses that predate it.
+  attachFigureIds?: string[];
+  // Figures the reviewer chose not to attach. They stay in their normal lists but are not in attachFigureIds.
+  detachedFigureIds?: string[];
 }
 
 interface FlatRow {
@@ -945,9 +950,9 @@ function DiffTreeRow({
   // them here would show a flag number higher than what a reviewer can
   // actually find by opening the item, exactly the "8 figures shown, only 4
   // real" bug report this excludes.
-  const insignificantFigureCount = entry.insignificantFigureIds?.length ?? 0;
-  const uncaptionedFigureCount = (entry.uncaptionedFigureIds?.length ?? 0) - insignificantFigureCount;
-  const figureCount = (entry.figureIds?.length ?? 0) + uncaptionedFigureCount;
+  const attachFigureIds = attachFigureIdsOf(entry);
+  const figureCount = attachFigureIds.length;
+  const uncaptionedFigureCount = attachFigureIds.filter((figureId) => entry.uncaptionedFigureIds?.includes(figureId)).length;
   // DESIGN.md §11.5 -- drop feedback. `inside` = valid reparent target;
   // `before`/`after` = valid reorder anchor; a rejected target (tier
   // violation, cycle, self) tints red instead of showing the accent

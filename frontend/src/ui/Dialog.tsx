@@ -55,6 +55,7 @@ export function Dialog({
   // false: closing moves no focus (a hand-over where another dialog or
   // control takes focus itself and a closing dialog must not steal it back).
   restoreFocus = true,
+  describedById,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -67,6 +68,8 @@ export function Dialog({
   maxHeightClassName?: string;
   returnFocusRef?: React.RefObject<HTMLElement | null>;
   restoreFocus?: boolean;
+  // Id of an element in the body that describes the dialog, for a caller that has no `description` of its own.
+  describedById?: string;
 }): React.ReactElement {
   const contentRef = useRef<HTMLDivElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
@@ -101,6 +104,8 @@ export function Dialog({
         <RadixDialog.Overlay className="fixed inset-0 z-40 bg-scrim data-[state=open]:animate-[fadeIn_var(--duration-base)_var(--ease-out)] data-[state=closed]:animate-[fadeOut_var(--duration-exit)_var(--ease-in)]" />
         <RadixDialog.Content
           ref={contentRef}
+          // Spread only when given: an explicit undefined would override Radix's own link to the description.
+          {...(describedById ? { 'aria-describedby': describedById } : {})}
           onCloseAutoFocus={(event) => {
             event.preventDefault();
             const opener = openerRef.current;

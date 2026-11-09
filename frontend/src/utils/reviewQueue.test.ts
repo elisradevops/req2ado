@@ -3,6 +3,7 @@ import type { WarningRecord } from './warnings';
 import { buildKindGroups, kindMeta } from './warningKinds';
 import {
   buildReviewQueue,
+  isExcludedWithAncestors,
   cleanApproval,
   reviewQueueModeReducer,
   riskReason,
@@ -360,5 +361,22 @@ describe('spotCheckSample', () => {
     expect(sample).toEqual(ids([0, 15, 29].map((index) => fewer[index])));
     expect(sample).not.toContain('i7');
     expect(ids(spotCheckSample(fewer))).toEqual(sample);
+  });
+});
+
+describe('isExcludedWithAncestors', () => {
+  it('is true for an excluded entry or one under an excluded ancestor, false otherwise, and survives a parent cycle', () => {
+    const entries = [
+      entry('root', { excluded: true }),
+      entry('child', { parentLocalId: 'root' }),
+      entry('free'),
+      entry('loopA', { parentLocalId: 'loopB' }),
+      entry('loopB', { parentLocalId: 'loopA' }),
+    ];
+    const byId = new Map(entries.map((e) => [e.localId, e]));
+    expect(isExcludedWithAncestors(byId.get('root')!, byId)).toBe(true);
+    expect(isExcludedWithAncestors(byId.get('child')!, byId)).toBe(true);
+    expect(isExcludedWithAncestors(byId.get('free')!, byId)).toBe(false);
+    expect(isExcludedWithAncestors(byId.get('loopA')!, byId)).toBe(false);
   });
 });

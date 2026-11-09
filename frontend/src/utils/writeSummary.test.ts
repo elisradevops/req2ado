@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { WritePreview } from '../api/jobs';
-import { countWarningsForWrite, writeSummaryLines } from './writeSummary';
+import { countWarningsForWrite, isFiguresOnlyWrite, writeHasWork, writeSummaryLines } from './writeSummary';
 
 const preview = (overrides: Partial<WritePreview> = {}): WritePreview => ({
   createdTotal: 4,
@@ -12,6 +12,10 @@ const preview = (overrides: Partial<WritePreview> = {}): WritePreview => ({
   existingWithoutNewParentLink: 0,
   traceLinks: { planned: 0, skipped: 0 },
   alreadyWritten: 0,
+  figuresToAttach: 0,
+  figuresUnavailable: 0,
+  hasWork: true,
+  figuresOnly: false,
   ...overrides,
 });
 const noBreakdown = { edited: 0, single: 0, bulk: 0, bulkSpotChecked: 0, group: 0, earlier: 0, notReviewed: 0 };
@@ -100,6 +104,44 @@ describe('writeSummaryLines', () => {
   });
 });
 
+describe('writeSummaryLines with figures', () => {
+  const figuresOnly = (n: number) =>
+    preview({ createdTotal: 0, createdLocalIds: [], createdByType: {}, parentLinks: 0, figuresToAttach: n, figuresOnly: true });
+
+  it('figures-only summary uses plain create line, figures line and advisory', () => {
+    const lines = writeSummaryLines(figuresOnly(36), noBreakdown);
+    expect(lines.find((l) => l.id === 'create')).toMatchObject({ text: 'No new items will be created.', tone: 'plain' });
+    expect(lines.find((l) => l.id === 'figures')).toMatchObject({
+      text: '36 figures will be attached to their items in Azure DevOps.',
+      tone: 'plain',
+    });
+    expect(lines.map((l) => l.id)).toEqual(['create', 'figures', 'figures-advisory']);
+    expect(lines.find((l) => l.id === 'figures-advisory')).toMatchObject({
+      text: 'Figures are attached by position. Check each one next to its item before you write.',
+      tone: 'plain',
+    });
+    expect(lines.some((l) => /Nothing will be created/.test(l.text))).toBe(false);
+    expect(writeSummaryLines(figuresOnly(1), noBreakdown).find((l) => l.id === 'figures')?.text).toBe(
+      '1 figure will be attached to its item in Azure DevOps.',
+    );
+  });
+
+  it('links and figures summary', () => {
+    const lines = writeSummaryLines(figuresOnly(3), noBreakdown);
+    const both = writeSummaryLines(preview({ ...figuresOnly(3), parentLinks: 2, figuresOnly: false }), noBreakdown);
+    expect(lines.length).toBe(3);
+    expect(both.find((l) => l.id === 'create')?.text).toBe('Nothing new to create; 2 parent links remain.');
+    expect(both.find((l) => l.id === 'figures')?.text).toBe('3 figures will be attached.');
+    expect(both.some((l) => l.id === 'figures-advisory')).toBe(true);
+  });
+
+  it('links-only summary unchanged', () => {
+    const lines = writeSummaryLines(preview({ createdTotal: 0, createdLocalIds: [], createdByType: {}, parentLinks: 2 }), noBreakdown);
+    expect(lines.map((l) => l.id)).toEqual(['create', 'parent-links']);
+    expect(lines[0].text).toBe('Nothing new to create; 2 parent links remain.');
+  });
+});
+
 describe('countWarningsForWrite', () => {
   it('counts open fix and review warnings and the ones marked handled', () => {
     const result = countWarningsForWrite([
@@ -108,5 +150,48 @@ describe('countWarningsForWrite', () => {
     ]);
     expect(result.handled).toBe(1);
     expect(result.open.fix + result.open.review + result.open.info).toBe(1);
+  });
+});
+
+describe('writeHasWork', () => {
+  it('writeHasWork reads the server flag', () => {
+    // Counts say there is work, the flag says there is not: the flag wins.
+    expect(writeHasWork(preview({ figuresToAttach: 2, hasWork: false }))).toBe(false);
+    expect(writeHasWork(preview({ createdTotal: 0, parentLinks: 0, hasWork: true }))).toBe(true);
+  });
+
+  it('isFiguresOnlyWrite reads the server flag', () => {
+    expect(isFiguresOnlyWrite(preview({ figuresOnly: true }))).toBe(true);
+    expect(isFiguresOnlyWrite(preview({ createdTotal: 0, parentLinks: 0, figuresToAttach: 2, figuresOnly: false }))).toBe(false);
+  });
+
+  it('the summary lines follow the figures-only flag', () => {
+    const only = preview({ createdTotal: 0, createdLocalIds: [], createdByType: {}, parentLinks: 0, figuresToAttach: 2, figuresOnly: true });
+    expect(writeSummaryLines(only, noBreakdown).find((l) => l.id === 'create')?.text).toBe('No new items will be created.');
+  });
+});
+
+describe('writeSummaryLines with unavailable figures', () => {
+  it('shows the unavailable line with notice tone (plural and singular)', () => {
+    const plural = writeSummaryLines(preview({ figuresToAttach: 2, figuresUnavailable: 3 }), noBreakdown);
+    expect(plural.find((l) => l.id === 'figures-unavailable')).toEqual({
+      id: 'figures-unavailable',
+      text: '3 figures could not be loaded and will not be attached.',
+      tone: 'notice',
+    });
+    const ids = plural.map((l) => l.id);
+    expect(ids.indexOf('figures-unavailable')).toBe(ids.indexOf('figures-advisory') + 1);
+    expect(writeSummaryLines(preview({ figuresUnavailable: 1 }), noBreakdown).find((l) => l.id === 'figures-unavailable')?.text).toBe(
+      '1 figure could not be loaded and will not be attached.',
+    );
+  });
+
+  it('omits it at 0', () => {
+    expect(writeSummaryLines(preview(), noBreakdown).some((l) => l.id === 'figures-unavailable')).toBe(false);
+  });
+
+  it('does not change hasWork', () => {
+    const none = preview({ createdTotal: 0, createdLocalIds: [], createdByType: {}, parentLinks: 0, figuresUnavailable: 5, hasWork: false });
+    expect(writeHasWork(none)).toBe(false);
   });
 });

@@ -21,6 +21,13 @@ function hasClass(el: HTMLElement, token: string): boolean {
   return el.className.split(/\s+/).includes(token);
 }
 
+describe('ConfirmDialog description link', () => {
+  it('destructive description is the dialog accessible description', () => {
+    render(<ConfirmDialog open onOpenChange={() => {}} title="t" description="This deletes everything." confirmLabel="Go" onConfirm={() => {}} variant="destructive" />);
+    expect(screen.getByRole('dialog')).toHaveAccessibleDescription('This deletes everything.');
+  });
+});
+
 describe('ConfirmDialog footer', () => {
   it('wraps, with the acknowledgement on its own row, so a long confirm label cannot squeeze it or overflow the dialog', () => {
     render(<ConfirmDialog open onOpenChange={() => {}} title="t" confirmLabel="Write 164 items to a-long-project-name" onConfirm={() => {}} variant="irreversible" />);
