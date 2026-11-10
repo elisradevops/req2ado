@@ -827,7 +827,7 @@ export function NodeDetailPanel({
           <p className="text-xs text-ink-3">Posted to this item's Discussion in Azure DevOps when it is created; the text above is unchanged.</p>
           {entry.discussion.map((d) => (
             <div key={d.id} className="flex items-start gap-2 border-t border-hairline pt-1.5 text-sm text-ink-2">
-              <div className="min-w-0 flex-1">
+              <div className="min-w-0 flex-1 wrap-anywhere">
                 {d.proposedTitle && (
                   <p>
                     <strong>Title:</strong> {d.proposedTitle}
