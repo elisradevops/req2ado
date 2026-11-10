@@ -5,6 +5,7 @@ from typing import Protocol
 
 import numpy as np
 
+from app.leveling.description_text import description_for_model
 from app.dedup.embedding_blend import blend_embeddings
 from app.leveling.live_context import current_live_emitter
 from app.leveling.narration_publisher import LevelingProgress, ProgressCallback
@@ -48,7 +49,7 @@ def _judge_once(
 ) -> tuple[dict | None, str | None]:
     """(verdict, None) on success, (None, short reason) when the call failed or answered with something unusable."""
     try:
-        entry = conflict_client.judge_duplicate_cluster({n.local_id: n.description for n in nodes}, user_id=user_id)
+        entry = conflict_client.judge_duplicate_cluster({n.local_id: description_for_model(n.description) for n in nodes}, user_id=user_id)
     except Exception as exc:  # noqa: BLE001 -- a failed judgment must never fail the job
         reason = " ".join(str(exc).split())[:200] or type(exc).__name__
         logger.warning("Duplicate-cluster conflict judgment failed for %d node(s): %s", len(nodes), reason)
@@ -167,8 +168,8 @@ def _detect_conflicting_duplicates(
     node_count = len(requirement_nodes)
     try:
         raw_embeddings = embed_client.embed(
-            [n.title or n.description for n in requirement_nodes]
-            + [n.description for n in requirement_nodes],
+            [n.title or description_for_model(n.description) for n in requirement_nodes]
+            + [description_for_model(n.description) for n in requirement_nodes],
             user_id=user_id,
         )
     except Exception as exc:

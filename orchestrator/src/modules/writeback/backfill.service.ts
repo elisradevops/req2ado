@@ -90,7 +90,25 @@ function isEmbeddingRefusal(error: unknown): boolean {
 // with this SAME function before running its own dedup-similarity check --
 // see that call site's own comment for the asymmetry this closes.
 export function stripHtmlTags(html: string): string {
-  return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  return decodeHtmlEntities(html.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
+}
+
+// The entities a requirements document carries in ADO's HTML (a pasted "3.3&nbsp;V" is the usual one). Without decoding, the embedding saw
+// the literal text "&nbsp;" in place of a space. Decoded in ONE pass, after the tags are gone: an escaped entity ("&amp;lt;") stays what the
+// author wrote, and a decoded "<b>" is text, not a tag. An entity not listed here is left as it is.
+const NAMED_HTML_ENTITIES: Record<string, string> = {
+  nbsp: ' ', amp: '&', lt: '<', gt: '>', quot: '"', apos: "'",
+  deg: '\u00b0', plusmn: '\u00b1', micro: '\u00b5', times: '\u00d7', divide: '\u00f7', le: '\u2264', ge: '\u2265', ne: '\u2260',
+  ndash: '\u2013', mdash: '\u2014', hellip: '\u2026', lsquo: '\u2018', rsquo: '\u2019', ldquo: '\u201c', rdquo: '\u201d',
+  copy: '\u00a9', reg: '\u00ae', trade: '\u2122', ohm: '\u03a9', minus: '\u2212',
+};
+
+function decodeHtmlEntities(text: string): string {
+  return text.replace(/&(?:#(\d{1,7})|#[xX]([0-9a-fA-F]{1,6})|([a-zA-Z][a-zA-Z0-9]{1,9}));/g, (whole, dec?: string, hex?: string, name?: string) => {
+    if (name !== undefined) return NAMED_HTML_ENTITIES[name] ?? NAMED_HTML_ENTITIES[name.toLowerCase()] ?? whole;
+    const code = dec !== undefined ? Number(dec) : parseInt(hex as string, 16);
+    return code > 0 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff) ? String.fromCodePoint(code) : whole;
+  });
 }
 
 // One item's outcome from the concurrent per-item worker below -- kept as

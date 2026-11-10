@@ -477,6 +477,22 @@ export class IngestionHttpClient {
     return (await response.json()) as ScoreExplanation;
   }
 
+  // A job served from the result cache skips /ingest and /level, which is where ingestion writes the run map: this asks it to publish
+  // the map from the cached document. Display only: false (never an error) when it could not.
+  async publishDocumentMap(doc: CanonicalDoc, jobId: string): Promise<boolean> {
+    try {
+      const response = await fetch(`${this.baseUrl}/document-map?job_id=${encodeURIComponent(jobId)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(doc),
+      });
+      if (!response.ok) return false;
+      return ((await response.json()) as { published?: unknown }).published === true;
+    } catch {
+      return false;
+    }
+  }
+
   // What a stored job result depends on besides the file: this ingestion build and the version of the profile the user's jobs are
   // scored with (null without one). null when it cannot be read: the caller then caches nothing rather than guess.
   async cacheScope(userId: string): Promise<{ ingestion: string; profile: string | null } | null> {

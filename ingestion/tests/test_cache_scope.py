@@ -17,7 +17,7 @@ client = TestClient(app)
 def test_the_scope_names_the_ingestion_build_and_the_stored_profile(monkeypatch) -> None:
     profile = KbProfile(version="v-stored", built_with="m", categories=[Category(name="A", sources=["d"], merged_from=["A"])])
     monkeypatch.setattr("app.main._stored_profile_or_none", lambda user_id: profile)
-    body = client.get("/cache-scope", params={"user_id": "u1"}).json()
+    body = client.get("/cache-scope", headers={"X-Req2Ado-User-Id": "u1"}).json()
     assert body == {"ingestion": metadata.version("req2ado-ingestion"), "profile": "v-stored"}
 
 

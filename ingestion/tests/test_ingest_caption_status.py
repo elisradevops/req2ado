@@ -12,6 +12,8 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.vision.orchestrator_vision_client import FigureVisionResult
 
+from tests.identity import identity_headers
+
 client = TestClient(app)
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -23,7 +25,8 @@ def _upload(filename: str, path: Path, **extra_params: object) -> dict:
             # user_id defaults on: vision only runs for a request carrying the
             # submitting user's identity. Pass user_id=None-equivalent by
             # overriding with "" to exercise the no-user case.
-            params={"redact": False, "user_id": "test-user", **extra_params},
+            params=(params := {"redact": False, "user_id": "test-user", **extra_params}),
+            headers=identity_headers(params),
             files={"file": (filename, f, "application/octet-stream")},
         )
     assert response.status_code == 200

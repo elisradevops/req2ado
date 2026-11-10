@@ -108,19 +108,19 @@ def test_level_flags_a_degraded_rubric(env, monkeypatch) -> None:
 def test_a_pin_list_that_would_leave_no_category_is_refused(env) -> None:
     response = client.put("/kb/rubric", json={"user_id": "u1", "pinned": [], "removed": ["Testable", "Clarity"]})
     assert response.status_code == 400 and "at least one category" in response.json()["detail"]
-    assert client.get("/kb/rubric", params={"user_id": "u1"}).json()["version"] == "v-base"  # nothing stored
+    assert client.get("/kb/rubric", headers={"X-Req2Ado-User-Id": "u1"}).json()["version"] == "v-base"  # nothing stored
 
 
 def test_removing_all_but_the_last_is_fine_and_the_view_matches_what_jobs_use(env, monkeypatch) -> None:
     assert client.put("/kb/rubric", json={"user_id": "u1", "pinned": [], "removed": ["Clarity"]}).status_code == 200
-    view = client.get("/kb/rubric", params={"user_id": "u1"}).json()
+    view = client.get("/kb/rubric", headers={"X-Req2Ado-User-Id": "u1"}).json()
     assert [c["name"] for c in view["categories"]] == ["Testable"]
     assert view["version"] == main._stored_profile_or_none("u1").version
 
 
 def test_a_stored_removal_that_would_now_empty_the_rubric_shows_what_jobs_really_use(env) -> None:
     env.put_overrides("u1", RubricOverrides(removed=["Testable", "Clarity"]))  # stored when the base was different
-    view = client.get("/kb/rubric", params={"user_id": "u1"}).json()
+    view = client.get("/kb/rubric", headers={"X-Req2Ado-User-Id": "u1"}).json()
     effective = main._stored_profile_or_none("u1")
     assert view["version"] == effective.version == DEFAULT_RUBRIC_VERSION and len(view["categories"]) == len(effective.categories)
 
@@ -129,7 +129,7 @@ def test_a_stored_removal_that_would_now_empty_the_rubric_shows_what_jobs_really
 def test_the_rubric_and_the_cache_scope_read_the_user_from_the_header(env) -> None:
     assert client.get("/kb/rubric", headers={USER_ID_HEADER: "u1"}).json()["source"] == "kb"
     assert client.get("/cache-scope", headers={USER_ID_HEADER: "u1"}).json()["profile"] == "v-base"
-    assert client.get("/kb/rubric", params={"user_id": "u1"}).json()["source"] == "kb"  # the old form still works for one release
+    assert client.get("/kb/rubric", headers={"X-Req2Ado-User-Id": "u1"}).json()["source"] == "kb"  # the old form still works for one release
     assert client.get("/kb/rubric").status_code == 400  # but no user at all is refused, not guessed
 
 

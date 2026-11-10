@@ -2005,7 +2005,13 @@ class OrchestratorLlmClient:
         not {category, reason} strings are dropped; an answer without an explanation list raises ValueError."""
         system_prompt = load_prompt("explain_category_scores", basis=basis)
         parsed = self._chat_json(
-            system_prompt, json.dumps({"item": item, "context": context_text, "categories": categories}, ensure_ascii=False),
+            system_prompt, json.dumps(
+                {
+                    "item": item, "context": context_text, "categories": categories,
+                    "reasons_language": "the language the item's description is written in",
+                },
+                ensure_ascii=False,
+            ),
             schema=score_explanation_schema(), max_tokens=1500, user_id=user_id,
         )
         if not isinstance(parsed, dict) or not isinstance(parsed.get("explanations"), list):

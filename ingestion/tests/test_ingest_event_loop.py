@@ -21,6 +21,8 @@ import app.main as main_module
 from app.main import app
 from app.vision.orchestrator_vision_client import FigureVisionResult
 
+from tests.identity import identity_headers
+
 FIXTURES = Path(__file__).parent / "fixtures"
 MAX_HEALTH_LATENCY_SECONDS = 0.15
 BLOCK_SECONDS = 0.4
@@ -66,7 +68,8 @@ async def test_health_stays_responsive_during_the_figure_captioning_pass(monkeyp
             upload = asyncio.ensure_future(
                 client.post(
                     "/ingest",
-                    params={"mode": "survey", "user_id": "test-user", "primer_context": f"event-loop-{uuid.uuid4()}"},
+                    params={"mode": "survey"},
+                    headers=identity_headers({"user_id": "test-user", "primer_context": f"event-loop-{uuid.uuid4()}"}),
                     files={"file": ("multi_figure.docx", f.read(), "application/octet-stream")},
                 )
             )

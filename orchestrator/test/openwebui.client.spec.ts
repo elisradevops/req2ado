@@ -1220,6 +1220,36 @@ describe('OpenWebUiClient.embed (openai transport)', () => {
     );
   });
 
+  describe('upstream embed timing (a slow or retried embed leaves one counts-only line)', () => {
+    let info: jest.SpyInstance;
+    beforeEach(() => { info = jest.spyOn(console, 'info').mockImplementation(() => undefined); });
+    afterEach(() => { info.mockRestore(); jest.restoreAllMocks(); });
+    const ok = { ok: true, json: async () => ({ data: [{ index: 0, embedding: [0.1] }] }) };
+    const embedLines = () => info.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith('embed upstream'));
+
+    it('is silent for a fast call that needed one attempt', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue(ok);
+      await new OpenWebUiClient(config).embed(['x']);
+      expect(embedLines()).toEqual([]);
+    });
+
+    it('says how many attempts a retried call needed', async () => {
+      const two = { ok: true, json: async () => ({ data: [{ index: 0, embedding: [0.1] }, { index: 1, embedding: [0.2] }] }) };
+      (global.fetch as jest.Mock).mockResolvedValueOnce({ ok: false, status: 503, headers: new Headers(), text: async () => '' }).mockResolvedValue(two);
+      await new OpenWebUiClient(config).embed(['x', 'y']);
+      expect(embedLines()).toHaveLength(1);
+      expect(embedLines()[0]).toMatch(/^embed upstream ms=\d+ texts=2 attempts=2$/);
+    });
+
+    it('says how long a slow call took', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue(ok);
+      const now = jest.spyOn(Date, 'now');
+      now.mockReturnValueOnce(10_000).mockReturnValueOnce(11_800).mockReturnValue(11_800);
+      await new OpenWebUiClient(config).embed(['x']);
+      expect(embedLines()).toEqual(['embed upstream ms=1800 texts=1 attempts=1']);
+    });
+  });
+
   it('sorts embeddings by the response\'s own .index before mapping -- an out-of-order data[] must still return vectors in INPUT order', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({
       ok: true,

@@ -3,6 +3,7 @@ import { JobResultCache, hashCatalog, isDegradedResult, kbVersionFor, type Cache
 import crypto from 'crypto';
 import type { PrismaClient } from '@prisma/client';
 import type { IngestionHttpClient } from './ingestion-http.client';
+import type { CanonicalDoc } from '@req2ado/shared-ts';
 import type { OpenWebUiClientFactory } from '../llm/openwebui-client.factory';
 import { resolveCrossJobTraceLinks, verifyExistingAdoIdsStillExist, type WarningRecord } from '../writeback/dry-run.service';
 import type { DryRunService, DryRunTreeNode } from '../writeback/dry-run.service';
@@ -413,14 +414,19 @@ interface LeveledWarning {
 // between submit and run) -- a real SURVEY job from a currently-logged-in
 // user always has both, per the first-login configuration gate.
 async function resolveDefaultChatModel(job: PipelineJobInput, deps: PipelineWorkerDeps): Promise<string> {
+  let reason: 'no_user' | 'no_factory' | 'resolve_failed' = job.userId ? 'no_factory' : 'no_user';
   if (job.userId && deps.openWebUiClientFactory) {
     try {
       const client = await deps.openWebUiClientFactory.getClientFor(job.userId);
       return client.chatModel;
     } catch {
       // Falls through to deps.defaultLlmModel below.
+      reason = 'resolve_failed';
     }
   }
+  // A job running on the chart's default (a dev-time value the proxy may not serve) is otherwise silent: say why it did.
+  // eslint-disable-next-line no-console -- worker process logging
+  console.info(`Job ${job.id}: no model chosen, using the default chat model ${deps.defaultLlmModel} (reason ${reason})`);
   return deps.defaultLlmModel;
 }
 
@@ -656,6 +662,40 @@ export async function runPipelineJob(
     // cost serially on top of /ingest's own wall-clock time.
     // BASELINE never captions, so it keeps the exact pre-vision call shape.
     const visionPlan = job.mode === 'survey' ? await resolveVisionPlan(job, model, deps) : null;
+    // The link-type catalog is read before the cache lookup: a stored result was built for one catalog (its trace links, and the figures its
+    // source job kept), so a different catalog is a full miss.
+    // Discovered once per job (not per node/link) — mirrors
+    // resolveCustomerIdField's per-confirm-call caching shape in
+    // jobs.service.ts. Real ADO backends fall back to a seed catalog on
+    // failure (mcp-ado-server's discoverLinkTypes); this call itself never
+    // throws in practice, but if it somehow did, an empty catalog is the
+    // correct degraded behavior — infer_trace_links just gets nothing to
+    // choose from and every node's trace_links stays empty, never blocking
+    // the rest of the job.
+    //
+    // credential already resolved above (before ingest/backfill).
+    let linkTypeCatalog: { referenceName: string; name: string; semanticHint?: string }[] = [];
+    try {
+      linkTypeCatalog = await deps.mcpClient.discoverLinkTypes(job.adoProject ?? undefined, credential);
+    } catch {
+      linkTypeCatalog = [];
+    }
+    // Hierarchy-Forward/Reverse ("Child"/"Parent") are real ADO work-item
+    // relation types, so they pass discoverLinkTypes' own
+    // isWorkItemRelationType filter -- but trace-link inference exists to
+    // find relationships the hierarchy DOESN'T already express (coverage,
+    // testing, affects), not to re-discover parent-child structure that's
+    // already fully captured via each node's parent_local_id. Without this
+    // filter the model was redundantly proposing "Parent -> br0_n1" (etc.)
+    // for nearly every node, cluttering the diff view with noise that
+    // states nothing new. This is the ONLY consumer of this specific
+    // catalog (confirmed: discoverLinkTypes has no other caller), so
+    // filtering here is safe -- Hierarchy-Forward/Reverse remain legitimate
+    // elsewhere (e.g. the actual ADO parent/child writeback).
+    linkTypeCatalog = linkTypeCatalog.filter(
+      (t) => t.referenceName !== 'System.LinkTypes.Hierarchy-Forward' && t.referenceName !== 'System.LinkTypes.Hierarchy-Reverse',
+    );
+
     // An identical earlier SURVEY job (same file, user, model, knowledge base, release) already has its document and tree
     // stored: reuse them instead of asking the models again, so the result is identical. Any problem reading it is a miss.
     let cacheKey: string | null = null;
@@ -686,10 +726,17 @@ export async function runPipelineJob(
       cacheKey = keyFor(cacheScope?.profile ?? null);
       if (cacheKey !== null) {
         cached = await deps.resultCache.lookup(cacheKey);
+        if (cached && cached.catalogHash !== hashCatalog(linkTypeCatalog)) {
+          cached = undefined;
+          missLogged = true;
+          // eslint-disable-next-line no-console -- worker process logging
+          console.info(`Job ${job.id}: the stored result was built for another link-type catalog, running in full`);
+        }
         // The images are not in the cache: they live per job in JobFigureFile. A hit gives this job its own copy of the figures the source job
         // kept for its tree; when the entry does not say which, or the source no longer has all of them (confirm() deletes a row once it is
         // attached to ADO, retention deletes the rest), the hit is a miss, not a result with missing images.
         if (cached && ((cached.doc as { figures?: unknown[] } | null)?.figures ?? []).length > 0) {
+          const copyStartedAt = Date.now();
           const copied = await copyFigureRows(deps.prisma, cached.sourceJobId, cached.figureIds, job.id);
           if (copied === null) {
             cached = undefined;
@@ -698,11 +745,22 @@ export async function runPipelineJob(
             console.info(`Job ${job.id}: the figure rows the stored result needs are no longer available, running in full`);
           } else if (copied > 0) {
             // eslint-disable-next-line no-console -- worker process logging
-            console.info(`Job ${job.id}: copied ${copied} figure rows from job ${cached.sourceJobId}`);
+            console.info(`Job ${job.id}: copied ${copied} figure rows from job ${cached.sourceJobId} in ${Date.now() - copyStartedAt} ms`);
           }
         }
         // eslint-disable-next-line no-console -- worker process logging
-        if (cached) console.info(`Job ${job.id}: reusing the stored result of an identical earlier job`);
+        if (cached) {
+          console.info(`Job ${job.id}: reusing the stored result of an identical earlier job`);
+          // Ingestion writes the run map during /ingest, which this job skips: have it published from the cached document.
+          if (deps.progressService) {
+            try {
+              await deps.ingestionClient.publishDocumentMap?.(cached.doc as CanonicalDoc, job.id);
+            } catch (error) {
+              // eslint-disable-next-line no-console -- worker process logging
+              console.error(`Run map for job ${job.id} could not be published (the job proceeds without it):`, error);
+            }
+          }
+        }
         // eslint-disable-next-line no-console -- worker process logging
         else if (!missLogged) console.info(`Job ${job.id}: no stored result for these inputs, running in full`);
       } else {
@@ -822,37 +880,6 @@ export async function runPipelineJob(
     // parse -> infer_hierarchy_start -> generate_requirements_done ->
     // diff_ready, not the finer 4-point sequence the JobStage union's other
     // members would imply.
-    // Discovered once per job (not per node/link) — mirrors
-    // resolveCustomerIdField's per-confirm-call caching shape in
-    // jobs.service.ts. Real ADO backends fall back to a seed catalog on
-    // failure (mcp-ado-server's discoverLinkTypes); this call itself never
-    // throws in practice, but if it somehow did, an empty catalog is the
-    // correct degraded behavior — infer_trace_links just gets nothing to
-    // choose from and every node's trace_links stays empty, never blocking
-    // the rest of the job.
-    //
-    // credential already resolved above (before ingest/backfill).
-    let linkTypeCatalog: { referenceName: string; name: string; semanticHint?: string }[] = [];
-    try {
-      linkTypeCatalog = await deps.mcpClient.discoverLinkTypes(job.adoProject ?? undefined, credential);
-    } catch {
-      linkTypeCatalog = [];
-    }
-    // Hierarchy-Forward/Reverse ("Child"/"Parent") are real ADO work-item
-    // relation types, so they pass discoverLinkTypes' own
-    // isWorkItemRelationType filter -- but trace-link inference exists to
-    // find relationships the hierarchy DOESN'T already express (coverage,
-    // testing, affects), not to re-discover parent-child structure that's
-    // already fully captured via each node's parent_local_id. Without this
-    // filter the model was redundantly proposing "Parent -> br0_n1" (etc.)
-    // for nearly every node, cluttering the diff view with noise that
-    // states nothing new. This is the ONLY consumer of this specific
-    // catalog (confirmed: discoverLinkTypes has no other caller), so
-    // filtering here is safe -- Hierarchy-Forward/Reverse remain legitimate
-    // elsewhere (e.g. the actual ADO parent/child writeback).
-    linkTypeCatalog = linkTypeCatalog.filter(
-      (t) => t.referenceName !== 'System.LinkTypes.Hierarchy-Forward' && t.referenceName !== 'System.LinkTypes.Hierarchy-Reverse',
-    );
 
     await deps.jobEventsPublisher.publish(job.id, 'infer_hierarchy_start');
     // job.userId (KB scope), NOT job.areaPath (ADO write-back destination --
@@ -869,7 +896,7 @@ export async function runPipelineJob(
     let levelResult: unknown;
     const catalogHash = hashCatalog(linkTypeCatalog);
     try {
-      if (cached && cached.catalogHash === catalogHash) {
+      if (cached) {
         levelResult = cached.tree;
       } else {
         // Only when the result cache is in use is the rubric the job was scored with needed (the out parameter): every other call keeps its shape.
@@ -1112,11 +1139,21 @@ export async function runPipelineJob(
     // Job transparency (B9b): passed only when live progress is configured, so
     // every existing call keeps exactly its previous arguments.
     const liveJobIdArg: [string] | [] = deps.progressService ? [job.id] : [];
+    // Timed per call: the duplicate check is one embed (and sometimes one judge call) per node, and a slow rerun cannot be explained without
+    // knowing how long each took. One counts-only summary line below.
+    const dedupDurations: number[] = [];
+    const dedupStartedAt = Date.now();
     const diff = await deps.dryRunService.diff(
       diffInputs,
       deps.idempotencyService,
-      (text, title, areaPath) =>
-        deps.ingestionClient.checkDuplicate(text, title, areaPath, dedupThreshold, job.userId ?? undefined, ...liveJobIdArg),
+      async (text, title, areaPath) => {
+        const startedAt = Date.now();
+        try {
+          return await deps.ingestionClient.checkDuplicate(text, title, areaPath, dedupThreshold, job.userId ?? undefined, ...liveJobIdArg);
+        } finally {
+          dedupDurations.push(Date.now() - startedAt);
+        }
+      },
       (completed, total, currentTitle) => {
         void deps.progressService?.record(job.id, { stage: 'dedup', unit: 'items', done: completed, total });
         void deps.jobEventsPublisher.publishNarration(job.id, {
@@ -1128,6 +1165,18 @@ export async function runPipelineJob(
         });
       },
     );
+
+    if (dedupDurations.length > 0) {
+      const sorted = [...dedupDurations].sort((a, b) => a - b);
+      const at = (fraction: number): number => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * fraction))];
+      const actions: Record<string, number> = {};
+      for (const entry of diff as { action: string }[]) actions[entry.action] = (actions[entry.action] ?? 0) + 1;
+      const actionText = Object.keys(actions).sort().map((k) => `${k}=${actions[k]}`).join(' ');
+      // eslint-disable-next-line no-console -- worker process logging
+      console.info(
+        `Job ${job.id}: dedup check n=${sorted.length} p50=${at(0.5)} p90=${at(0.9)} max=${sorted[sorted.length - 1]} ms, total=${Date.now() - dedupStartedAt} ms, actions ${actionText}`,
+      );
+    }
 
     // Real gap this closes (confirmed live): a reuse/dedup_skip match is
     // recorded once and trusted forever after, even once the ADO item it
@@ -1353,7 +1402,8 @@ async function copyFigureRows(
   if (!figureIds) return null;
   if (figureIds.length === 0) return 0;
   if (!sourceJobId) return null;
-  const rows = (await prisma.jobFigureFile.findMany({ where: { jobId: sourceJobId } })).filter((r) => figureIds.includes(r.figureId));
+  // Only the rows the result needs: each carries its image bytes.
+  const rows = await prisma.jobFigureFile.findMany({ where: { jobId: sourceJobId, figureId: { in: figureIds } } });
   if (new Set(rows.map((r) => r.figureId)).size < figureIds.length) return null;
   for (let i = 0; i < rows.length; i += FIGURE_COPY_CHUNK) {
     await prisma.jobFigureFile.createMany({

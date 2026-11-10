@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { BackfillService } from '../src/modules/writeback/backfill.service';
+import { BackfillService, stripHtmlTags } from '../src/modules/writeback/backfill.service';
 import { IngestionHttpError } from '../src/modules/pipeline/ingestion-http.client';
 
 function sourceHashFor(text: string): string {
@@ -563,5 +563,28 @@ describe('BackfillService.backfillAreaPath', () => {
     expect(upsertDedupEntriesBatch).toHaveBeenCalledWith([
       { itemId: '651', text: 'D1', title: 'D1', areaPath: 'Project\\Parent' },
     ]);
+  });
+});
+
+
+describe('stripHtmlTags', () => {
+  it('removes tags and collapses whitespace', () => {
+    expect(stripHtmlTags('<p>The unit  <b>shall</b>\nlock.</p>')).toBe('The unit shall lock.');
+  });
+
+  it('turns a non-breaking space into an ordinary space instead of leaving the entity in the text', () => {
+    expect(stripHtmlTags('<td>3.3&nbsp;V</td><td>&#160;5&#xA0;ms</td>')).toBe('3.3 V 5 ms');
+  });
+
+  it('decodes the entities a requirements document actually carries', () => {
+    expect(stripHtmlTags('a &amp; b &lt; c &gt; d &quot;e&quot; f&#39;s &deg;C &plusmn;5 &le; 10 &ge; 2')).toBe('a & b < c > d "e" f\'s \u00b0C \u00b15 \u2264 10 \u2265 2');
+  });
+
+  it('decodes once: an escaped entity stays what the author wrote, and decoded angle brackets are not tags', () => {
+    expect(stripHtmlTags('&amp;lt;tag&amp;gt; and &lt;b&gt;bold&lt;/b&gt;')).toBe('&lt;tag&gt; and <b>bold</b>');
+  });
+
+  it('leaves an unknown entity and a stray ampersand as they are', () => {
+    expect(stripHtmlTags('R&D &unknownthing; AT&T')).toBe('R&D &unknownthing; AT&T');
   });
 });

@@ -12,7 +12,7 @@ import { Card } from '../ui/Card';
 import { Chip } from '../ui/Chip';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { InfoTip } from '../ui/Tooltip';
-import { Markdown } from '../ui/Markdown';
+import { DescriptionMarkdown, Markdown } from '../ui/Markdown';
 import { cn } from '../lib/cn';
 import { LABEL_MICRO } from '../utils/labelMicro';
 
@@ -568,7 +568,7 @@ export function ChatPanel({
       {proposal && (
         <Card className="mb-2 p-2">
           <p className="text-xs">Proposed change</p>
-          {targetCategory && (
+          {targetCategory && proposal.proposedDescription && (
             <p className="text-xs text-ink-3">
               Aimed at: {targetCategory.name} ({targetCategory.score})
             </p>
@@ -579,9 +579,11 @@ export function ChatPanel({
             </p>
           )}
           {proposal.proposedDescription && (
-            <p className="text-sm">
-              <strong>Description:</strong> {proposal.proposedDescription}
-            </p>
+            <div className="text-sm">
+              <strong>Description:</strong>
+              {/* Rendered as the detail window renders it, so a table the proposal keeps shows as a table with its styling. */}
+              <DescriptionMarkdown>{proposal.proposedDescription}</DescriptionMarkdown>
+            </div>
           )}
           {notChecked && <p className="mt-1 text-xs text-ink-3">This rewrite could not be checked.</p>}
           {warningItems.length > 0 && (

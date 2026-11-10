@@ -2,8 +2,9 @@
 
 The orchestrator used to send `user_id` and the whole-document overview (`primer_context`, a model-written summary of
 the customer's document) as query parameters of `/ingest` and `/level`. The server's access log records the full URL, so
-both ended up in the pod log on every job. They now travel in headers; the query form is still accepted for one release
-so an older orchestrator keeps working. The overview can contain any language, so it is base64 of its UTF-8 bytes."""
+both ended up in the pod log on every job. They travel in headers only (the query form was removed one release after the
+orchestrator stopped sending it; an orchestrator older than 0.3.12 no longer works). The overview can contain any language,
+so it is base64 of its UTF-8 bytes."""
 from __future__ import annotations
 
 import base64
@@ -13,9 +14,9 @@ USER_ID_HEADER = "X-Req2Ado-User-Id"
 PRIMER_HEADER = "X-Req2Ado-Primer-Context"
 
 
-def resolve_user_id(query_value: str | None, header_value: str | None) -> str | None:
-    """The header wins; an empty header counts as absent."""
-    return header_value or query_value or None
+def resolve_user_id(header_value: str | None) -> str | None:
+    """The user of the call, from its header; an empty header counts as absent."""
+    return header_value or None
 
 
 def encode_primer_header(text: str) -> str:
@@ -30,12 +31,9 @@ def decode_primer_header(value: str) -> str | None:
         return None
 
 
-def resolve_primer_context(query_value: str | None, header_value: str | None) -> str | None:
-    if header_value:
-        decoded = decode_primer_header(header_value)
-        if decoded is not None:
-            return decoded
-    return query_value or None
+def resolve_primer_context(header_value: str | None) -> str | None:
+    """The document overview, decoded from its header; None when absent or not valid base64 of UTF-8."""
+    return decode_primer_header(header_value) if header_value else None
 
 
 import re

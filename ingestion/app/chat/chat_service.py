@@ -9,6 +9,7 @@ from app.chat.context_pack import render_context_pack
 from app.chat.redis_publisher import RedisChatPublisher
 from app.config import settings
 from app.http_errors import describe_exception, exception_details
+from app.leveling.description_text import description_for_model, markers_as_words, restore_tables, split_tables, table_context
 from app.kb.profile import render_authoring_standard
 from app.kb.retrieval import retrieve_context
 
@@ -60,6 +61,7 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "You are refining ONE requirement item in a document review tool. The user "
     "may ask a question or ask you to rewrite the item. Item type: {item_type}. "
     "Item title: {title}. Item description: {description}. {quality_note}"
+    "{table_note}"
     "{rewrite_rules}"
     "Reply conversationally first. If — and only if — the user asked for a "
     "rewrite of the title and/or description, end your reply with a new line "
@@ -119,8 +121,17 @@ def weakest_category_note(scores: dict | None, profile) -> str | None:
     )
 
 
+_TABLE_NOTE = (
+    "The description contains tables. Each is shown as a marker such as [[TABLE 1]] at its place, and its content is listed below as read-only "
+    "CSV so you can understand the item; the tables are NOT part of your rewrite. In any proposedDescription keep every marker exactly once, "
+    "unchanged, where its table belongs; never write, copy, quote, summarize or change table content or markup; a table is put back by the "
+    "tool. If the user asks to change what a table says, tell them that tables cannot be changed here and leave its marker. "
+)
+
+
 def _build_system_prompt(
     item: dict, kb_context: str | None, weakest_note: str | None = None, context: dict | None = None, standard: str | None = None,
+    tables: list[str] | None = None,
 ) -> str:
     """The organization's standard first (what an Epic, Feature and Requirement are, its rules, terms and every category's pass
     condition), then reference chunks from the knowledge base, then where the item sits in the document, then the item."""
@@ -137,10 +148,13 @@ def _build_system_prompt(
         title=item["title"],
         description=item["description"],
         quality_note=quality_note,
+        table_note=_TABLE_NOTE if tables else "",
     )
     sections: list[str] = []
     if standard:
         sections.append(f"The organization's own standard for requirements (authoritative; follow it):\n\n{standard}")
+    if tables:
+        sections.append(f"The tables of the item's description (read-only, for understanding only):\n\n{table_context(tables)}")
     if kb_context:
         sections.append(
             "Reference material from the knowledge base (may be incomplete or irrelevant — use only what's genuinely "
@@ -172,6 +186,13 @@ async def run_chat_turn(
     failure is caught and published as an error event so the WS relay
     (orchestrator) always gets a terminal event for this turn."""
     try:
+        # The model reads each table as read-only CSV behind a marker and never writes one; the stored tables are put back below.
+        tables: list[str] = []
+        retrieval_description = description_for_model(item.get("description"))
+        if settings.chat_table_placeholders_enabled:
+            marked_description, tables = split_tables(item.get("description"))
+            if tables:
+                item = {**item, "description": marked_description}
         kb_context = None
         if user_id is not None and embed_client is not None and vector_store is not None:
             # retrieve_context is a synchronous, blocking call (embed client +
@@ -179,7 +200,7 @@ async def run_chat_turn(
             # single-worker event loop, matching /level and /kb/ingest-* in
             # main.py.
             # Retrieved by what the item says (and what was asked): "improve this" alone retrieves near-random chunks.
-            retrieval_query = "\n".join(part for part in (item.get("title"), item.get("description"), user_message) if part)
+            retrieval_query = "\n".join(part for part in (item.get("title"), retrieval_description, user_message) if part)
             kb_context, _ = await run_in_threadpool(
                 retrieve_context, user_id, retrieval_query, embed_client, vector_store
             )
@@ -192,7 +213,7 @@ async def run_chat_turn(
         )
         system_prompt = _build_system_prompt(
             item, kb_context, weakest_category_note(item.get("qualityCategoryScores"), profile),
-            context=item.get("context"), standard=render_authoring_standard(profile),
+            context=item.get("context"), standard=render_authoring_standard(profile), tables=tables,
         )
         capped_history = history[-_MAX_HISTORY_TURNS:]
         messages = (
@@ -226,6 +247,15 @@ async def run_chat_turn(
             await publisher.publish_chunk(job_id, local_id, trailing)
 
         message, proposed_title, proposed_description = split_message_and_proposal(full_text)
+        if tables:
+            message = markers_as_words(message)
+            if proposed_description is not None:
+                proposed_description, table_counts = restore_tables(proposed_description, tables)
+                logger.info(
+                    "chat tables: job=%s node=%s tables=%d restored=%d reattached=%d dropped_extra=%d csv_rows_removed=%d",
+                    job_id, local_id, len(tables), table_counts["restored"], table_counts["reattached"],
+                    table_counts["dropped_extra"], table_counts["csv_rows_removed"],
+                )
         # Why a turn has no proposal, with no text: a reply that announces a rewrite ("...rewrite:") and delivers none looks the same to the
         # user whether the model wrote no marker or an unreadable one.
         reason = proposal_failure_reason(full_text)

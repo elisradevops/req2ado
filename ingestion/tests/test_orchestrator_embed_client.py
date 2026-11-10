@@ -150,3 +150,75 @@ def test_shared_singleton_client_sends_the_correct_distinct_user_id_header_for_e
         future_b.result(timeout=5)
 
     assert captured_by_marker == {"user-a": "user-a", "user-b": "user-b"}
+
+
+# -- one pooled HTTP client instead of a new connection per call ------------------------------------------------------------------------
+# A job makes one /llm/embed call per node (hundreds, several at a time); each used to open and close its own client.
+import pytest  # noqa: E402
+
+
+def _echo_length(request: httpx.Request) -> httpx.Response:
+    import json
+
+    texts = json.loads(request.content)["texts"]
+    return httpx.Response(200, json={"embeddings": [[float(len(t)), 1.0] for t in texts]})
+
+
+@pytest.fixture
+def clients_built(monkeypatch) -> list:
+    built: list = []
+    real = httpx.Client
+
+    def counting(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        client = real(*args, **kwargs)
+        built.append(client)
+        return client
+
+    monkeypatch.setattr(httpx, "Client", counting)
+    return built
+
+
+def _pooled_client() -> OrchestratorEmbedClient:
+    client = OrchestratorEmbedClient("http://orchestrator", "bearer")
+    client._transport = httpx.MockTransport(_echo_length)
+    return client
+
+
+def test_many_calls_share_one_http_client(clients_built) -> None:
+    client = _pooled_client()
+    for text in ("a", "bb", "ccc"):
+        assert client.embed([text], user_id="u1") == [[float(len(text)), 1.0]]
+    assert len(clients_built) == 1
+
+
+def test_concurrent_first_calls_still_build_exactly_one_client(clients_built) -> None:
+    client = _pooled_client()
+    barrier = threading.Barrier(8)
+
+    def call() -> None:
+        barrier.wait()
+        client.embed(["x"], user_id="u1")
+
+    threads = [threading.Thread(target=call) for _ in range(8)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert len(clients_built) == 1
+
+
+def test_a_transport_swapped_after_the_first_call_is_honoured(clients_built) -> None:
+    # Only tests swap the transport of the module-level client after it was built.
+    client = _pooled_client()
+    client.embed(["x"], user_id="u1")
+    client._transport = httpx.MockTransport(lambda request: httpx.Response(200, json={"embeddings": [[9.0]]}))
+    assert client.embed(["x"], user_id="u1") == [[9.0]]
+    assert len(clients_built) == 2
+    assert clients_built[0].is_closed
+
+
+def test_close_releases_the_client_and_the_next_call_builds_a_new_one(clients_built) -> None:
+    client = _pooled_client()
+    client.embed(["x"], user_id="u1")
+    client.close()
+    assert clients_built[0].is_closed
+    client.embed(["x"], user_id="u1")
+    assert len(clients_built) == 2

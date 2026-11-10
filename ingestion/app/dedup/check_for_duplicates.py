@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 import re
 from typing import Protocol
 
@@ -75,6 +76,9 @@ def check_for_duplicates(
     threshold: float = 0.90,
     judge_client: DuplicateJudgeClient | None = None,
     user_id: str | None = None,
+    # Out-parameter, filled with embed_ms / query_ms / judge_ms (milliseconds; judge_ms only when the judge ran): lets the caller say
+    # where the time of a slow check went. Observation only.
+    timings: dict[str, int] | None = None,
 ) -> DuplicateCheckResult:
     """Embeds `title`+`text` (blended, see below) and checks the blend
     against the Area-Path-scoped vector store for a near-duplicate.
@@ -133,9 +137,14 @@ def check_for_duplicates(
     from None, which means the judge never ran at all) so this is at least
     visible downstream, and the failure is logged -- every other optional
     client in this module already does both."""
+    started = time.monotonic()
     title_embedding, description_embedding = embed_client.embed([title, text], user_id=user_id)
+    embedded = time.monotonic()
     embedding = blend_embeddings(title_embedding, description_embedding)
     nearest = vector_store.query_nearest(embedding, area_path=area_path)
+    if timings is not None:
+        timings["embed_ms"] = round((embedded - started) * 1000)
+        timings["query_ms"] = round((time.monotonic() - embedded) * 1000)
     if nearest is None:
         return DuplicateCheckResult(is_duplicate=False)
 
@@ -146,6 +155,7 @@ def check_for_duplicates(
 
     judge_verdict: str | None = None
     if is_duplicate and judge_client is not None and matched_document is not None:
+        judge_started = time.monotonic()
         try:
             result = judge_client.judge_duplicate_pair(text, matched_document, user_id=user_id)
             judge_verdict = result.get("verdict")
@@ -154,6 +164,8 @@ def check_for_duplicates(
         except Exception as exc:  # noqa: BLE001 - see this function's own docstring
             logger.warning("Dedup judge call failed, embedding verdict (is_duplicate=%s) stands unverified: %s", is_duplicate, exc)
             judge_verdict = "judge_failed"
+        if timings is not None:
+            timings["judge_ms"] = round((time.monotonic() - judge_started) * 1000)
 
     return DuplicateCheckResult(
         is_duplicate=is_duplicate,
