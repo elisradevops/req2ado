@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import axios from 'axios';
 import { httpClient } from './httpClient';
-import { explainScore, listJobs, submitJob, confirmJob, editDiffEntry, setDiffEntryExcluded, setProposalAccepted, setDiffEntriesReviewed, setWarningsAcknowledged, retryEnhancement, addDiffEntry, rescoreDiffEntry, getFigureFile, attachFigureToAdo, moveFigure, retryTraceLinkWrite, validateCreatedTree, previewSummary } from './jobs';
+import { explainScore, listJobs, submitJob, confirmJob, editDiffEntry, addDiscussionEntry, removeDiscussionEntry, setDiffEntryExcluded, setProposalAccepted, setDiffEntriesReviewed, setWarningsAcknowledged, retryEnhancement, addDiffEntry, rescoreDiffEntry, getFigureFile, attachFigureToAdo, moveFigure, retryTraceLinkWrite, validateCreatedTree, previewSummary } from './jobs';
 
 vi.mock('./httpClient');
 vi.mock('./config', () => ({ loadRuntimeConfig: vi.fn().mockResolvedValue({ apiBaseUrl: '/api' }) }));
@@ -33,6 +33,18 @@ describe('jobs api', () => {
     (httpClient.patch as any).mockResolvedValue({ data: { dryRunDiff: [] } });
     await editDiffEntry('job-1', 'n0', { title: 'New', description: 'New desc' });
     expect(httpClient.patch).toHaveBeenCalledWith('/jobs/job-1/diff/n0', { title: 'New', description: 'New desc' });
+  });
+
+  it('addDiscussionEntry POSTs the proposed text to the discussion sub-route', async () => {
+    (httpClient.post as any).mockResolvedValue({ data: { dryRunDiff: [] } });
+    await addDiscussionEntry('job-1', 'n0', { proposedTitle: 'P', proposedDescription: 'PD' });
+    expect(httpClient.post).toHaveBeenCalledWith('/jobs/job-1/diff/n0/discussion', { proposedTitle: 'P', proposedDescription: 'PD' });
+  });
+
+  it('removeDiscussionEntry DELETEs the entry by id', async () => {
+    (httpClient.delete as any).mockResolvedValue({ data: { dryRunDiff: [] } });
+    await removeDiscussionEntry('job-1', 'n0', 'e1');
+    expect(httpClient.delete).toHaveBeenCalledWith('/jobs/job-1/diff/n0/discussion/e1');
   });
 
   it('moveFigure PATCHes the figure sub-route with the target, or null to detach', async () => {

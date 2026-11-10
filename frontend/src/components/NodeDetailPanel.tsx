@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Pencil, Link2, RefreshCw, Upload, Check, Flag } from 'lucide-react';
+import { Pencil, Link2, RefreshCw, Upload, Check, Flag, X } from 'lucide-react';
 import { MoveToPicker, type MoveToPickerCandidate } from './MoveToPicker';
 import { getServerMessage } from '../lib/errorDetails';
 import { TagChips } from './TagChips';
@@ -99,6 +99,7 @@ export function NodeDetailPanel({
   onSave,
   onRescore,
   onSetProposalAccepted,
+  onRemoveDiscussion,
   onAttachFigure,
   onMoveFigure,
   figureMoveTargets,
@@ -171,6 +172,8 @@ export function NodeDetailPanel({
   // failure, it just reflects whatever the server actually persisted.
   // P9d review gate: accepts or withdraws the generated acceptance-criteria proposal. Owned by the caller (JobDetail.tsx), which persists it.
   onSetProposalAccepted?: (localId: string, accepted: boolean) => Promise<void> | void;
+  // Removes one "To be discussed" item; owned by the caller (JobDetail.tsx), which persists it. Absent = the list is read-only.
+  onRemoveDiscussion?: (localId: string, entryId: string) => Promise<void> | void;
   onRescore?: (localId: string) => Promise<void>;
   // figureId -> vision-model caption, same figureId scheme entry.figureIds
   // references (computed by the caller, JobDetail.tsx, from the SAME
@@ -818,6 +821,30 @@ export function NodeDetailPanel({
         }
         onSetAccepted={onSetProposalAccepted}
       />
+      {entry.discussion && entry.discussion.length > 0 && (
+        <div className="flex flex-col gap-1.5 rounded-sm border border-hairline bg-surface-alt p-2.5">
+          <span className={LABEL_MICRO}>To be discussed</span>
+          <p className="text-xs text-ink-3">Posted to this item's Discussion in Azure DevOps when it is created; the text above is unchanged.</p>
+          {entry.discussion.map((d) => (
+            <div key={d.id} className="flex items-start gap-2 border-t border-hairline pt-1.5 text-sm text-ink-2">
+              <div className="min-w-0 flex-1">
+                {d.proposedTitle && (
+                  <p>
+                    <strong>Title:</strong> {d.proposedTitle}
+                  </p>
+                )}
+                {d.proposedDescription && <DescriptionMarkdown>{d.proposedDescription}</DescriptionMarkdown>}
+                <p className="text-xs text-ink-3">{new Date(d.createdAt).toLocaleString()}</p>
+              </div>
+              {canEdit && onRemoveDiscussion && (
+                <Button size="sm" variant="ghost" aria-label="Remove from discussion" onClick={() => void onRemoveDiscussion(entry.localId, d.id)}>
+                  <X className="h-3.5 w-3.5" />
+                </Button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
       {/* Real bug fixed here (confirmed against the agreed mockup, which has
           no "Active Flags" block at all): this used to pair Classification
           with a second "Active Flags" chip cloud showing the SAME issue

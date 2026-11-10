@@ -155,6 +155,16 @@ export interface WarningRecord {
   acknowledged?: boolean;
 }
 
+// A proposed rewrite a reviewer parked as "To be discussed": written to the work item's ADO Discussion (System.History) at confirm(),
+// never merged into title/description (BASELINE keeps those verbatim).
+// A type alias, not an interface: it is stored in the Job.dryRunDiff JSON column, and only an alias is assignable to Prisma's JSON input type.
+export type DiscussionEntry = {
+  id: string;
+  proposedTitle?: string;
+  proposedDescription?: string;
+  createdAt: string;
+};
+
 export interface DryRunDiffEntry {
   localId: string;
   parentLocalId: string | null;
@@ -216,6 +226,8 @@ export interface DryRunDiffEntry {
   // composeAdoDescriptionHtml). Set by the worker after the diff, so diffOneNode's return branches do not carry it. Absent = no proposal.
   proposal?: DiffProposal | null;
   proposalAccepted?: boolean;
+  // Reviewer-parked rewrites (JobsService.addDiscussionEntry); written to ADO Discussion by confirm(), baseline text untouched.
+  discussion?: DiscussionEntry[];
   // Reviewer has checked this item (see JobsService.setDiffEntriesReviewed).
   // Advisory progress state for working through integrity warnings --
   // confirm() never reads it, so it never changes what is written to ADO.

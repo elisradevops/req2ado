@@ -274,6 +274,59 @@ describe('ChatPanel', () => {
     expect(onAcceptProposal).toHaveBeenCalledWith({ title: 'New title', description: undefined });
   });
 
+  it('"To be discussed" calls onDiscuss with the proposal, not onAcceptProposal, and clears the card', async () => {
+    let capturedOnEvent: ((event: import('../hooks/useChatSocket').StreamEvent) => void) | undefined;
+    vi.mocked(useChatSocket).mockImplementation((_jobId, _localId, onEvent) => {
+      capturedOnEvent = onEvent;
+    });
+    const onAcceptProposal = vi.fn();
+    const onDiscuss = vi.fn();
+    render(
+      <ToastProvider>
+        <ChatPanel jobId="job-1" localId="n0" disabled={false} onAcceptProposal={onAcceptProposal} onDiscuss={onDiscuss} />
+      </ToastProvider>,
+    );
+    await screen.findByPlaceholderText(/ask the assistant/i);
+
+    capturedOnEvent?.({ type: 'done', message: 'Here you go', proposedTitle: 'New title', proposedDescription: null, model: 'llama3.1' });
+
+    const user = userEvent.setup();
+    await screen.findByText('New title');
+    await user.click(screen.getByRole('button', { name: /to be discussed/i }));
+
+    expect(onDiscuss).toHaveBeenCalledWith({ title: 'New title', description: undefined });
+    expect(onAcceptProposal).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: /to be discussed/i })).not.toBeInTheDocument();
+  });
+
+  it('disables Accept, "To be discussed" and Reject while a discuss request is in flight', async () => {
+    let capturedOnEvent: ((event: import('../hooks/useChatSocket').StreamEvent) => void) | undefined;
+    vi.mocked(useChatSocket).mockImplementation((_jobId, _localId, onEvent) => {
+      capturedOnEvent = onEvent;
+    });
+    let finish: () => void = () => {};
+    const onDiscuss = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    render(
+      <ToastProvider>
+        <ChatPanel jobId="job-1" localId="n0" disabled={false} onAcceptProposal={vi.fn()} onDiscuss={onDiscuss} />
+      </ToastProvider>,
+    );
+    await screen.findByPlaceholderText(/ask the assistant/i);
+
+    capturedOnEvent?.({ type: 'done', message: 'Here you go', proposedTitle: 'New title', proposedDescription: null, model: 'llama3.1' });
+
+    const user = userEvent.setup();
+    await screen.findByText('New title');
+    await user.click(screen.getByRole('button', { name: /to be discussed/i }));
+
+    expect(screen.getByRole('button', { name: /^accept$/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /to be discussed/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /^reject$/i })).toBeDisabled();
+
+    await act(async () => { finish(); });
+    expect(screen.queryByRole('button', { name: /to be discussed/i })).not.toBeInTheDocument();
+  });
+
   it('shows a proposed description with a table as a real table, like the detail window does, not as markup text', async () => {
     let capturedOnEvent: ((event: import('../hooks/useChatSocket').StreamEvent) => void) | undefined;
     vi.mocked(useChatSocket).mockImplementation((_jobId, _localId, onEvent) => {

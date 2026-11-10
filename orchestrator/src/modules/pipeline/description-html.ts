@@ -1,4 +1,5 @@
 import { marked } from 'marked';
+import type { DiscussionEntry } from '../writeback/dry-run.service';
 
 // CommonMark's raw-HTML-passthrough rule treats any `<` immediately
 // followed by a letter as the start of a real HTML tag -- a literal "<TBD>"
@@ -92,6 +93,25 @@ export function composeAdoDescriptionHtml(entry: { description: string; proposal
   const body = toAdoDescriptionHtml(text);
   const accepted = entry.proposalAccepted === true && entry.proposal?.kind === 'criteria';
   return accepted ? `${body}${entry.proposal!.html}` : body;
+}
+
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+/**
+ * The System.History (ADO Discussion) comment for an entry's "To be discussed" rewrites. Text is escaped, not rendered as markdown:
+ * it is a reviewer's note beside the verbatim description, not the description itself.
+ */
+export function composeAdoDiscussionHtml(entries: DiscussionEntry[]): string {
+  return entries
+    .map((e) => {
+      const parts = ['<p><b>To be discussed</b></p>'];
+      if (e.proposedTitle) parts.push(`<p><b>Proposed title:</b> ${escapeHtml(e.proposedTitle)}</p>`);
+      if (e.proposedDescription) parts.push(`<p><b>Proposed description:</b></p><p>${escapeHtml(e.proposedDescription).replace(/\r?\n/g, '<br>')}</p>`);
+      return `<div>${parts.join('')}</div>`;
+    })
+    .join('');
 }
 
 /**

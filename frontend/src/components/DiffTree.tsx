@@ -94,6 +94,14 @@ function useContainerHeight(): [React.RefObject<HTMLDivElement | null>, number] 
   return [ref, height];
 }
 
+// Mirrors the orchestrator's DiscussionEntry (writeback/dry-run.service.ts): a rewrite parked as "To be discussed".
+export interface DiscussionEntry {
+  id: string;
+  proposedTitle?: string;
+  proposedDescription?: string;
+  createdAt: string;
+}
+
 export interface DryRunDiffEntry {
   localId: string;
   parentLocalId: string | null;
@@ -113,6 +121,8 @@ export interface DryRunDiffEntry {
   // written to ADO only while `proposalAccepted` is true, and only a criteria proposal can be accepted. See ProposalCard.
   proposal?: { kind: 'criteria' | 'needs-input'; html: string } | null;
   proposalAccepted?: boolean;
+  // Rewrites the reviewer parked as "To be discussed": written to the ADO Discussion on Confirm; title/description stay as extracted.
+  discussion?: DiscussionEntry[];
   qualityScore?: number | null;
   // Computed server-side alongside qualityScore (vocabulary-overlap check
   // against the node's own source text) -- see DiffTree's own review-chip

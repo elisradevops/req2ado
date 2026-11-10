@@ -122,6 +122,8 @@ export function NodeDetailDialog({
   onSave,
   onRescore,
   onSetProposalAccepted,
+  onAddDiscussion,
+  onRemoveDiscussion,
   onAttachFigure,
   onMoveFigure,
   figureMoveTargets,
@@ -180,6 +182,9 @@ export function NodeDetailDialog({
   requirementClassificationField?: { referenceName: string; allowedValues: string[] } | null;
   onRescore?: (localId: string) => Promise<void>;
   onSetProposalAccepted?: (localId: string, accepted: boolean) => Promise<void> | void;
+  // "To be discussed": park a chat proposal in the item's ADO Discussion instead of applying it; remove one later from the item's list.
+  onAddDiscussion?: (localId: string, entry: { proposedTitle?: string; proposedDescription?: string }) => Promise<void> | void;
+  onRemoveDiscussion?: (localId: string, entryId: string) => Promise<void> | void;
   // Manual "Upload to ADO" action for one of this entry's figures -- see
   // NodeDetailPanel's Figures section and JobsService.attachFigureToAdo's
   // own doc comment for why this exists alongside confirm()'s automatic
@@ -385,6 +390,7 @@ export function NodeDetailDialog({
       onSave={onSave}
       onRescore={onRescore}
       onSetProposalAccepted={onSetProposalAccepted}
+      onRemoveDiscussion={onRemoveDiscussion}
       onAttachFigure={onAttachFigure}
       onMoveFigure={onMoveFigure}
       figureMoveTargets={figureMoveTargets}
@@ -408,6 +414,11 @@ export function NodeDetailDialog({
           title: patch.title ?? entry.title,
           description: patch.description ?? entry.description,
         })
+      }
+      onDiscuss={
+        onAddDiscussion
+          ? (patch) => onAddDiscussion(entry.localId, { proposedTitle: patch.title, proposedDescription: patch.description })
+          : undefined
       }
     />
   );

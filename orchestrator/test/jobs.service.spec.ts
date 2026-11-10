@@ -7068,3 +7068,108 @@ describe('JobsService.attachFigureToAdo -- membership', () => {
     expect(uploadAttachment).not.toHaveBeenCalled();
   });
 });
+
+describe('JobsService.addDiscussionEntry / removeDiscussionEntry', () => {
+  const base = { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null };
+
+  function makeService(dryRunDiff: unknown[], written = false) {
+    const prisma = {
+      createdItemMapping: { findUnique: jest.fn().mockResolvedValue(written ? { jobId: 'job-1', localId: 'n0' } : null) },
+      job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', diffVersion: 1, dryRunDiff }),
+      },
+    };
+    return { service: new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused'), prisma };
+  }
+
+  it('appends an entry with an id and timestamp and leaves title/description untouched', async () => {
+    const { service, prisma } = makeService([base]);
+    const result = await service.addDiscussionEntry('job-1', 'n0', { proposedTitle: 'P', proposedDescription: 'PD' });
+    expect(result[0].title).toBe('T');
+    expect(result[0].description).toBe('D');
+    expect(result[0].discussion).toHaveLength(1);
+    expect(result[0].discussion![0]).toMatchObject({ proposedTitle: 'P', proposedDescription: 'PD' });
+    expect(typeof result[0].discussion![0].id).toBe('string');
+    expect(result[0].discussion![0].id.length).toBeGreaterThan(0);
+    expect(typeof result[0].discussion![0].createdAt).toBe('string');
+    expect(prisma.job.updateMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not set quality-stale or touch the proposal', async () => {
+    const { service } = makeService([{ ...base, qualityScore: 80, proposal: { kind: 'criteria', html: 'x' }, proposalAccepted: false }]);
+    const result = await service.addDiscussionEntry('job-1', 'n0', { proposedDescription: 'PD' });
+    expect(result[0].qualityStale).toBeUndefined();
+    expect(result[0].proposalAccepted).toBe(false);
+  });
+
+  it('404s for an unknown entry', async () => {
+    const { service } = makeService([base]);
+    await expect(service.addDiscussionEntry('job-1', 'nope', { proposedTitle: 'P' })).rejects.toThrow('not found');
+  });
+
+  it('400s for a non-create entry', async () => {
+    const { service } = makeService([{ ...base, action: 'reuse', existingAdoId: 5 }]);
+    await expect(service.addDiscussionEntry('job-1', 'n0', { proposedTitle: 'P' })).rejects.toThrow(BadRequestException);
+  });
+
+  it('400s for an entry already written to ADO', async () => {
+    const { service } = makeService([base], true);
+    await expect(service.addDiscussionEntry('job-1', 'n0', { proposedTitle: 'P' })).rejects.toThrow(/already written to Azure DevOps/);
+    await expect(service.removeDiscussionEntry('job-1', 'n0', 'x')).rejects.toThrow(/already written to Azure DevOps/);
+  });
+
+  it('400s once the per-node cap is reached', async () => {
+    const full = Array.from({ length: 20 }, (_, i) => ({ id: `d${i}`, proposedTitle: 'p', createdAt: 'now' }));
+    const { service } = makeService([{ ...base, discussion: full }]);
+    await expect(service.addDiscussionEntry('job-1', 'n0', { proposedTitle: 'P' })).rejects.toThrow(BadRequestException);
+  });
+
+  it('removes one entry by id and 404s for an unknown entry id', async () => {
+    const disc = [{ id: 'd1', proposedTitle: 'a', createdAt: 'now' }, { id: 'd2', proposedTitle: 'b', createdAt: 'now' }];
+    const { service } = makeService([{ ...base, discussion: disc }]);
+    const result = await service.removeDiscussionEntry('job-1', 'n0', 'd1');
+    expect(result[0].discussion!.map((d) => d.id)).toEqual(['d2']);
+    await expect(service.removeDiscussionEntry('job-1', 'n0', 'zzz')).rejects.toThrow('not found');
+  });
+});
+
+describe('JobsService.confirm — discussion (System.History)', () => {
+  async function fieldsWritten(entry: Record<string, unknown>): Promise<Record<string, string>> {
+    const createWorkItem = jest.fn().mockResolvedValue({ id: 200 });
+    const prisma = {
+      job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
+          dryRunDiff: [{ localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [], ...entry }],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+    );
+    await service.confirm('job-1');
+    return createWorkItem.mock.calls[0][1];
+  }
+
+  it('sets System.History from the discussion entries and keeps the description verbatim', async () => {
+    const fields = await fieldsWritten({ discussion: [{ id: 'a', proposedTitle: 'PT', proposedDescription: 'PD', createdAt: 'now' }] });
+    expect(fields['System.History']).toContain('To be discussed');
+    expect(fields['System.History']).toContain('PT');
+    expect(fields['System.Description']).toBe(toAdoDescriptionHtml('D'));
+    expect(fields['System.Title']).toBe('T');
+  });
+
+  it('omits System.History when there is no discussion', async () => {
+    expect('System.History' in (await fieldsWritten({}))).toBe(false);
+    expect('System.History' in (await fieldsWritten({ discussion: [] }))).toBe(false);
+  });
+});

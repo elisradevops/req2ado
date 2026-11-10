@@ -204,6 +204,19 @@ describe('RealAdoBackend.createWorkItem', () => {
     expect(postSpy.mock.calls[0][2]?.headers?.['Content-Type']).toBe('application/json-patch+json');
   });
 
+  it('passes System.History through as a JSON-Patch field on create', async () => {
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    vi.spyOn(httpClient, 'get').mockResolvedValueOnce({ status: 200, data: {} });
+    const postSpy = vi.spyOn(httpClient, 'post').mockResolvedValueOnce({ status: 200, data: { id: 7, fields: {} } });
+    // @ts-expect-error -- injecting the spied client for the test
+    backend.httpClient = httpClient;
+
+    await backend.createWorkItem({ type: 'Requirement', fields: { 'System.Title': 'T', 'System.History': '<p>d</p>' } });
+
+    expect(postSpy.mock.calls[0][1]).toContainEqual({ op: 'add', path: '/fields/System.History', value: '<p>d</p>' });
+  });
+
   it('sets parentId to null on a newly created item with no parent field', async () => {
     const backend = new RealAdoBackend(testConfig, credential);
     const httpClient = axios.create();

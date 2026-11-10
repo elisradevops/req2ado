@@ -8,6 +8,8 @@ import {
   getEventHistory,
   getDebugCaptures,
   editDiffEntry,
+  addDiscussionEntry,
+  removeDiscussionEntry,
   setDiffEntryExcluded,
   setProposalAccepted,
   setDiffEntriesReviewed,
@@ -1856,6 +1858,48 @@ export function JobDetail(): React.ReactElement {
     }
   }
 
+  // "To be discussed": park a chat proposal in the item's ADO Discussion; the item's own text is untouched. Serialized with the other diff
+  // mutations; re-throws on failure so the chat keeps the proposal card.
+  async function handleAddDiscussion(localId: string, entry: { proposedTitle?: string; proposedDescription?: string }): Promise<void> {
+    if (!id) return;
+    if (isDiffMutatingRef.current) {
+      showToast('Try again — another change is still saving.', 'error');
+      throw new Error('another change is still saving');
+    }
+    isDiffMutatingRef.current = true;
+    setIsDiffMutating(true);
+    try {
+      const result = await addDiscussionEntry(id, localId, entry);
+      setDiff(mergeServerDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []));
+      showToast('Added to the discussion; it will be posted to Azure DevOps on Confirm.', 'success');
+    } catch (err) {
+      showErrorToast('Failed to add to the discussion — please try again.', err);
+      throw err;
+    } finally {
+      isDiffMutatingRef.current = false;
+      setIsDiffMutating(false);
+    }
+  }
+
+  async function handleRemoveDiscussion(localId: string, entryId: string): Promise<void> {
+    if (!id) return;
+    if (isDiffMutatingRef.current) {
+      showToast('Try again — another change is still saving.', 'error');
+      return;
+    }
+    isDiffMutatingRef.current = true;
+    setIsDiffMutating(true);
+    try {
+      const result = await removeDiscussionEntry(id, localId, entryId);
+      setDiff(mergeServerDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []));
+    } catch (err) {
+      showErrorToast('Failed to remove the discussion item — please try again.', err);
+    } finally {
+      isDiffMutatingRef.current = false;
+      setIsDiffMutating(false);
+    }
+  }
+
   // CR-7d rescore: re-throws on failure so NodeDetailPanel's own
   // try/catch/finally (its loading-button guard) knows the call failed --
   // this function's job is persisting a success and surfacing a toast
@@ -2960,6 +3004,8 @@ export function JobDetail(): React.ReactElement {
                 onSave={handleSaveEdit}
                 onRescore={handleRescore}
                 onSetProposalAccepted={handleSetProposalAccepted}
+                onAddDiscussion={handleAddDiscussion}
+                onRemoveDiscussion={handleRemoveDiscussion}
                 onAttachFigure={handleAttachFigure}
                 onMoveFigure={
                   selectedEntry ? (figureId, targetLocalId) => handleMoveFigure(selectedEntry.localId, figureId, targetLocalId) : undefined

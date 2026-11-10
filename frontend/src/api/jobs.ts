@@ -232,6 +232,21 @@ export async function editDiffEntry(
   return response.data;
 }
 
+// "To be discussed": park a proposed rewrite in the ADO Discussion at write time without touching the baseline text. See JobsService.addDiscussionEntry.
+export async function addDiscussionEntry(
+  jobId: string,
+  localId: string,
+  entry: { proposedTitle?: string; proposedDescription?: string },
+): Promise<{ dryRunDiff: unknown }> {
+  const response = await httpClient.post(`/jobs/${jobId}/diff/${localId}/discussion`, entry);
+  return response.data;
+}
+
+export async function removeDiscussionEntry(jobId: string, localId: string, entryId: string): Promise<{ dryRunDiff: unknown }> {
+  const response = await httpClient.delete(`/jobs/${jobId}/diff/${localId}/discussion/${entryId}`);
+  return response.data;
+}
+
 export async function setDiffEntryExcluded(jobId: string, localId: string, excluded: boolean): Promise<{ dryRunDiff: unknown }> {
   const response = await httpClient.patch(`/jobs/${jobId}/diff/${localId}/exclude`, { excluded });
   return response.data;

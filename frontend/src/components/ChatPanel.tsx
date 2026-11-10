@@ -117,6 +117,7 @@ export function ChatPanel({
   categoryScores,
   isCompound,
   onAcceptProposal,
+  onDiscuss,
 }: {
   jobId: string;
   localId: string;
@@ -133,6 +134,9 @@ export function ChatPanel({
   // The scorer flagged this item as combining several requirements: adds the split starter.
   isCompound?: boolean;
   onAcceptProposal: (patch: { title?: string; description?: string }) => void;
+  // "To be discussed": park the proposal in the item's ADO Discussion, leaving its text as is. Absent = the button is not offered.
+  // A rejection keeps the proposal card (the caller already told the user why).
+  onDiscuss?: (patch: { title?: string; description?: string }) => Promise<void> | void;
 }): React.ReactElement {
   const { showToast, showErrorToast } = useToast();
   const [history, setHistory] = useState<ChatMessage[]>([]);
@@ -176,6 +180,8 @@ export function ChatPanel({
   // stronger than a static "can take a couple of minutes" sentence.
   const [streamStartedAt, setStreamStartedAt] = useState<string | null>(null);
   const [proposal, setProposal] = useState<Proposal | null>(null);
+  // A discuss request is in flight: the three proposal actions are locked so none can race it.
+  const [discussing, setDiscussing] = useState(false);
   const [checkState, setCheckState] = useState<ProposalCheck | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const checkRequestRef = useRef(0);
@@ -434,6 +440,22 @@ export function ChatPanel({
     setProposal(null);
   }
 
+  async function discussProposal(): Promise<void> {
+    if (!proposal || !onDiscuss) return;
+    setDiscussing(true);
+    try {
+      await onDiscuss({
+        title: proposal.proposedTitle ?? undefined,
+        description: proposal.proposedDescription ?? undefined,
+      });
+    } catch {
+      return; // the caller has already surfaced the failure; keep the card so the proposal is not lost
+    } finally {
+      setDiscussing(false);
+    }
+    setProposal(null);
+  }
+
   if (disabled) {
     return (
       <div className="flex h-full flex-col p-4">
@@ -601,10 +623,15 @@ export function ChatPanel({
             <p className="mt-1 text-xs text-ink-2">{predictedLine(comparison)}</p>
           )}
           <div className="mt-1.5 flex gap-2">
-            <Button size="sm" onClick={onAcceptClick} disabled={loading}>
+            <Button size="sm" onClick={onAcceptClick} disabled={loading || discussing}>
               Accept
             </Button>
-            <Button size="sm" variant="ghost" onClick={() => setProposal(null)}>
+            {onDiscuss && (
+              <Button size="sm" variant="outline" onClick={() => void discussProposal()} disabled={loading || discussing}>
+                To be discussed
+              </Button>
+            )}
+            <Button size="sm" variant="ghost" onClick={() => setProposal(null)} disabled={discussing}>
               Reject
             </Button>
           </div>

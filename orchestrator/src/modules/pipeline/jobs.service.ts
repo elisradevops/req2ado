@@ -12,12 +12,12 @@ import { Prisma, type Job, type PrismaClient } from '@prisma/client';
 import { Queue } from 'bullmq';
 import type { DocumentOverview } from './document-overview.service';
 import { closeWhenReady, logQueueErrors } from '../../common/queue-errors';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import type { McpClient } from './mcp.client';
 import { IngestionHttpError, type IngestionHttpClient, type RewriteComparison, type ScoreExplanation } from './ingestion-http.client';
 import { buildChatContext } from '../chat/chat-context';
 import type { IdempotencyService } from '../writeback/idempotency.service';
-import type { DryRunDiffEntry, WarningRecord } from '../writeback/dry-run.service';
+import type { DiscussionEntry, DryRunDiffEntry, WarningRecord } from '../writeback/dry-run.service';
 import { mapWithConcurrency, type SettledResult } from './map-with-concurrency';
 import { buildExclusionChecker, filterExcludedDiffEntries, summarizeDiffEntries } from './diff-summary';
 import { attachableFigureIds, buildWritePreview, findOrphanedSelections, findUnknownSelections, planHasWork, selectEntriesToCreate, selectEntriesToLink, selectTraceLinks, type WritePlanEntry, type WritePreview } from './write-plan';
@@ -28,7 +28,7 @@ import {
   REQUIREMENT_TAG_TO_ADO_VALUE,
 } from '../../config/requirement-type-fields';
 import { DEFAULT_SE_COVERAGE_REF_FIELD_CANDIDATES } from '../../config/se-coverage-ref-fields';
-import { canonicalizeForCompare, composeAdoDescriptionHtml, normalizeAdoStoredHtml } from './description-html';
+import { canonicalizeForCompare, composeAdoDescriptionHtml, composeAdoDiscussionHtml, normalizeAdoStoredHtml } from './description-html';
 import type { JobEventsPublisher } from './job-events.publisher';
 import { canNest, canBeRoot } from './canNest';
 import { attachFigures, buildFigureAttachmentFilename, sanitizeFigureError } from './figure-attach';
@@ -42,6 +42,8 @@ export { buildFigureAttachmentFilename };
 // write loop, an automation storm), where a 409 telling the caller to back
 // off is more honest than spinning.
 const DIFF_WRITE_MAX_ATTEMPTS = 3;
+// "To be discussed" entries one diff entry may carry (each becomes part of the work item's ADO Discussion comment).
+const MAX_DISCUSSION_ENTRIES_PER_NODE = 20;
 
 export interface SubmitJobInput {
   areaPath: string;
@@ -875,6 +877,42 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       if (entry.proposal.kind !== 'criteria') throw new BadRequestException('only a criteria proposal can be accepted');
       if (entry.action !== 'create') throw new BadRequestException('only a create entry is written, so only it can accept a proposal');
       diff[index] = { ...entry, proposalAccepted: accepted };
+      return diff;
+    });
+  }
+
+  // "To be discussed": parks a proposed rewrite for the work item's ADO Discussion (written by confirm() as System.History). The entry's
+  // own title/description stay as extracted, so no quality-stale/proposal side effects. Create entries only -- only they are written.
+  async addDiscussionEntry(
+    id: string,
+    localId: string,
+    entry: { proposedTitle?: string; proposedDescription?: string },
+  ): Promise<DryRunDiffEntry[]> {
+    await this.assertNotWritten(id, localId);
+    return this.mutateDiffVersioned(id, (diff) => {
+      const index = diff.findIndex((e) => e.localId === localId);
+      if (index === -1) throw new NotFoundException(`Diff entry ${localId} not found`);
+      if (diff[index].action !== 'create') throw new BadRequestException('only create entries can carry a discussion');
+      const existing = diff[index].discussion ?? [];
+      if (existing.length >= MAX_DISCUSSION_ENTRIES_PER_NODE) {
+        throw new BadRequestException(`an entry can carry at most ${MAX_DISCUSSION_ENTRIES_PER_NODE} discussion items`);
+      }
+      const added: DiscussionEntry = { id: randomUUID(), createdAt: new Date().toISOString() };
+      if (entry.proposedTitle !== undefined) added.proposedTitle = entry.proposedTitle;
+      if (entry.proposedDescription !== undefined) added.proposedDescription = entry.proposedDescription;
+      diff[index] = { ...diff[index], discussion: [...existing, added] };
+      return diff;
+    });
+  }
+
+  async removeDiscussionEntry(id: string, localId: string, entryId: string): Promise<DryRunDiffEntry[]> {
+    await this.assertNotWritten(id, localId);
+    return this.mutateDiffVersioned(id, (diff) => {
+      const index = diff.findIndex((e) => e.localId === localId);
+      if (index === -1) throw new NotFoundException(`Diff entry ${localId} not found`);
+      const existing = diff[index].discussion ?? [];
+      if (!existing.some((d) => d.id === entryId)) throw new NotFoundException(`Discussion entry ${entryId} not found`);
+      diff[index] = { ...diff[index], discussion: existing.filter((d) => d.id !== entryId) };
       return diff;
     });
   }
@@ -2313,6 +2351,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       // hit, see DryRunDiffEntry.figureIds' own doc comment).
       tableIds?: string[];
       uncaptionedFigureIds?: string[];
+      discussion?: DiscussionEntry[];
     }[];
 
     // Excluding an entry excludes its whole subtree too, even if a descendant itself isn't marked excluded. One walker (diff-summary.ts), shared
@@ -2514,6 +2553,10 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         };
         if (job.iterationPath) {
           fields['System.IterationPath'] = job.iterationPath;
+        }
+        // Reviewer-parked rewrites go to the ADO Discussion, never into System.Description (BASELINE keeps the description verbatim).
+        if (entry.discussion?.length) {
+          fields['System.History'] = composeAdoDiscussionHtml(entry.discussion);
         }
         // Requirement-only, per the gate above -- Epic/Feature never reach
         // here even when entry.customerId happens to be non-null (belt-and-

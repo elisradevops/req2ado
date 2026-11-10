@@ -18,6 +18,14 @@ describe('MockAdoBackend', () => {
     expect(item.parentId).toBeNull();
   });
 
+  it('passes System.History through unchanged on create', async () => {
+    const item = await backend.createWorkItem({
+      type: 'Requirement',
+      fields: { 'System.Title': 'T', 'System.History': '<p>To be discussed</p>' },
+    });
+    expect((await backend.getWorkItem(item.id))?.fields['System.History']).toBe('<p>To be discussed</p>');
+  });
+
   it('links a child to a parent via Hierarchy-Reverse', async () => {
     const parent = await backend.createWorkItem({ type: 'Epic', fields: { 'System.Title': 'Receiver' } });
     const child = await backend.createWorkItem({ type: 'Feature', fields: { 'System.Title': 'Broadcast & Inputs' } });

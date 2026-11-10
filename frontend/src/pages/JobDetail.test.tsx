@@ -19,6 +19,11 @@ vi.mock('../api/events', async () => {
   const actual = await vi.importActual<typeof import('../api/events')>('../api/events');
   return { ...actual, subscribeToJobEvents: vi.fn(() => () => {}) };
 });
+// A running job calls loadRuntimeConfig(), whose relative fetch('/config.json') cannot resolve in Node and
+// surfaced as an unhandled rejection that made the whole run exit 1.
+vi.mock('../api/config', () => ({
+  loadRuntimeConfig: vi.fn().mockResolvedValue({ apiBaseUrl: 'http://localhost' }),
+}));
 vi.mock('../hooks/useChatSocket', async () => {
   const actual = await vi.importActual<typeof import('../hooks/useChatSocket')>('../hooks/useChatSocket');
   return { ...actual, useChatSocket: vi.fn() };

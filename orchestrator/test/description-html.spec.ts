@@ -1,4 +1,4 @@
-import { canonicalizeForCompare, composeAdoDescriptionHtml, normalizeAdoStoredHtml, splitProposal, toAdoDescriptionHtml } from '../src/modules/pipeline/description-html';
+import { canonicalizeForCompare, composeAdoDescriptionHtml, composeAdoDiscussionHtml, normalizeAdoStoredHtml, splitProposal, toAdoDescriptionHtml } from '../src/modules/pipeline/description-html';
 
 describe('toAdoDescriptionHtml', () => {
   it('wraps plain prose in a paragraph', () => {
@@ -298,5 +298,30 @@ describe('composeAdoDescriptionHtml — text that only looks like a generated se
 
   it('keeps it for a manually added entry', () => {
     expect(composeAdoDescriptionHtml({ description: lookalike, isManual: true })).toBe(toAdoDescriptionHtml(lookalike));
+  });
+});
+
+describe('composeAdoDiscussionHtml', () => {
+  it('renders each entry as a "To be discussed" block with the proposed title and description', () => {
+    const html = composeAdoDiscussionHtml([
+      { id: 'a', proposedTitle: 'New title', proposedDescription: 'New desc', createdAt: '2026-01-01T00:00:00.000Z' },
+      { id: 'b', proposedDescription: 'Only desc', createdAt: '2026-01-02T00:00:00.000Z' },
+    ]);
+    expect(html.match(/To be discussed/g)).toHaveLength(2);
+    expect(html).toContain('Proposed title');
+    expect(html).toContain('New title');
+    expect(html).toContain('Proposed description');
+    expect(html).toContain('Only desc');
+    expect(html.match(/Proposed title/g)).toHaveLength(1);
+  });
+
+  it('HTML-escapes the proposed text', () => {
+    const html = composeAdoDiscussionHtml([
+      { id: 'a', proposedTitle: '<script>alert(1)</script> & "q"', proposedDescription: '<b>x</b>', createdAt: 'now' },
+    ]);
+    expect(html).not.toContain('<script>');
+    expect(html).not.toContain('<b>x</b>');
+    expect(html).toContain('&lt;script&gt;');
+    expect(html).toContain('&amp;');
   });
 });

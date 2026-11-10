@@ -1188,3 +1188,45 @@ describe('JobsController diff-mutating routes return decorated entries', () => {
     expect(result.dryRunDiff[1].attachFigureIds).toEqual(['f2']);
   });
 });
+
+describe('JobsController discussion routes', () => {
+  const TEST_USER = { userId: 'user-descriptor-1', displayName: 'Jane Doe' } as any;
+  const TEST_JOB = { id: 'job-1', userId: 'user-descriptor-1', status: 'diff_ready' };
+  const make = (jobsService: any) =>
+    new JobsController(jobsService, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+  const svc = () => ({
+    getById: jest.fn().mockResolvedValue(TEST_JOB),
+    addDiscussionEntry: jest.fn().mockResolvedValue([{ localId: 'n0' }]),
+    removeDiscussionEntry: jest.fn().mockResolvedValue([{ localId: 'n0' }]),
+  });
+
+  it('adds an entry, trimming nothing the caller did not blank', async () => {
+    const jobsService = svc();
+    const result = await make(jobsService).addDiscussionEntry('job-1', 'n0', TEST_USER, 'P', undefined);
+    expect(jobsService.addDiscussionEntry).toHaveBeenCalledWith('job-1', 'n0', { proposedTitle: 'P', proposedDescription: undefined });
+    expect(result).toEqual({ dryRunDiff: [{ localId: 'n0', attachFigureIds: [] }] });
+  });
+
+  it('rejects non-strings, all-blank bodies and over-long text', async () => {
+    const jobsService = svc();
+    const c = make(jobsService);
+    await expect(c.addDiscussionEntry('job-1', 'n0', TEST_USER, 5 as any, undefined)).rejects.toThrow(BadRequestException);
+    await expect(c.addDiscussionEntry('job-1', 'n0', TEST_USER, '  ', '')).rejects.toThrow(BadRequestException);
+    await expect(c.addDiscussionEntry('job-1', 'n0', TEST_USER, undefined, undefined)).rejects.toThrow(BadRequestException);
+    await expect(c.addDiscussionEntry('job-1', 'n0', TEST_USER, 'x'.repeat(1000), undefined)).rejects.toThrow(/limit/);
+    await expect(c.addDiscussionEntry('job-1', 'n0', TEST_USER, undefined, 'x'.repeat(100000))).rejects.toThrow(/limit/);
+    expect(jobsService.addDiscussionEntry).not.toHaveBeenCalled();
+  });
+
+  it('is not reachable on another user\'s job', async () => {
+    const jobsService = { ...svc(), getById: jest.fn().mockResolvedValue({ ...TEST_JOB, userId: 'someone-else' }) };
+    await expect(make(jobsService).addDiscussionEntry('job-1', 'n0', TEST_USER, 'P', undefined)).rejects.toThrow('not found');
+    await expect(make(jobsService).removeDiscussionEntry('job-1', 'n0', 'e1', TEST_USER)).rejects.toThrow('not found');
+  });
+
+  it('removes an entry', async () => {
+    const jobsService = svc();
+    await make(jobsService).removeDiscussionEntry('job-1', 'n0', 'e1', TEST_USER);
+    expect(jobsService.removeDiscussionEntry).toHaveBeenCalledWith('job-1', 'n0', 'e1');
+  });
+});

@@ -80,6 +80,11 @@ const MAX_RETRY_PARENT_SUMMARY_ITEMS = 25;
 // what this field actually is.
 export const MAX_SE_COVERAGE_REF_LENGTH = 128;
 
+// "To be discussed" proposed text. Title ceiling matches ADO's own 255-character System.Title limit; the description ceiling is generous
+// (a proposed rewrite can carry a table) but bounds what one entry adds to the Job.dryRunDiff JSON.
+export const MAX_DISCUSSION_TITLE_LENGTH = 255;
+export const MAX_DISCUSSION_DESCRIPTION_LENGTH = 20000;
+
 // Requirement classification tags, unlike Customer ID, ARE validated against
 // a closed vocabulary -- see VALID_REQUIREMENT_TAGS's own doc comment for
 // why that list (not one org's live ADO allowedValues) is the right thing
@@ -669,6 +674,49 @@ export class JobsController {
     }
     const { writtenLocalIds } = await this.ownedJob(id, user);
     const dryRunDiff = await this.jobsService.setProposalAccepted(id, localId, accepted);
+    return { dryRunDiff: decorateStoredDiff(dryRunDiff, writtenLocalIds) };
+  }
+
+  // "To be discussed": parks a proposed rewrite for the ADO Discussion without touching the entry's own text.
+  @Post(':id/diff/:localId/discussion')
+  async addDiscussionEntry(
+    @Param('id') id: string,
+    @Param('localId') localId: string,
+    @CurrentUser() user: SessionUser,
+    @Body('proposedTitle') proposedTitle: string | undefined,
+    @Body('proposedDescription') proposedDescription: string | undefined,
+  ): Promise<{ dryRunDiff: unknown }> {
+    if (proposedTitle !== undefined && typeof proposedTitle !== 'string') {
+      throw new BadRequestException('proposedTitle must be a string');
+    }
+    if (proposedDescription !== undefined && typeof proposedDescription !== 'string') {
+      throw new BadRequestException('proposedDescription must be a string');
+    }
+    const title = proposedTitle?.trim() ? proposedTitle : undefined;
+    const description = proposedDescription?.trim() ? proposedDescription : undefined;
+    if (title === undefined && description === undefined) {
+      throw new BadRequestException('proposedTitle or proposedDescription is required');
+    }
+    if (title !== undefined && title.length > MAX_DISCUSSION_TITLE_LENGTH) {
+      throw new BadRequestException(`proposedTitle exceeds the ${MAX_DISCUSSION_TITLE_LENGTH}-character limit`);
+    }
+    if (description !== undefined && description.length > MAX_DISCUSSION_DESCRIPTION_LENGTH) {
+      throw new BadRequestException(`proposedDescription exceeds the ${MAX_DISCUSSION_DESCRIPTION_LENGTH}-character limit`);
+    }
+    const { writtenLocalIds } = await this.ownedJob(id, user);
+    const dryRunDiff = await this.jobsService.addDiscussionEntry(id, localId, { proposedTitle: title, proposedDescription: description });
+    return { dryRunDiff: decorateStoredDiff(dryRunDiff, writtenLocalIds) };
+  }
+
+  @Delete(':id/diff/:localId/discussion/:entryId')
+  async removeDiscussionEntry(
+    @Param('id') id: string,
+    @Param('localId') localId: string,
+    @Param('entryId') entryId: string,
+    @CurrentUser() user: SessionUser,
+  ): Promise<{ dryRunDiff: unknown }> {
+    const { writtenLocalIds } = await this.ownedJob(id, user);
+    const dryRunDiff = await this.jobsService.removeDiscussionEntry(id, localId, entryId);
     return { dryRunDiff: decorateStoredDiff(dryRunDiff, writtenLocalIds) };
   }
 
