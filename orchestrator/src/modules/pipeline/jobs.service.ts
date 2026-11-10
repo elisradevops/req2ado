@@ -2625,7 +2625,21 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
             }
           }
         }
-        const created = await this.mcpClient.createWorkItem(realType(entry.type), fields, project, credential);
+        let created: { id: number };
+        try {
+          created = await this.mcpClient.createWorkItem(realType(entry.type), fields, project, credential);
+        } catch (error) {
+          // An org can reject System.History on create. ADO's text alone does not say which item failed or that the "To be discussed" entries
+          // caused it, so name both. The same error object is rethrown (message extended in place) so its type, and so the caller's handling, is kept.
+          const discussionCount = entry.discussion?.length ?? 0;
+          if (discussionCount > 0 && error instanceof Error) {
+            error.message =
+              `${error.message} (while creating "${entry.title}": it carries ${discussionCount} "To be discussed" ` +
+              `${discussionCount === 1 ? 'entry' : 'entries'}, sent as its Discussion; if Azure DevOps rejected that field, remove ` +
+              `${discussionCount === 1 ? 'it' : 'them'} and retry)`;
+          }
+          throw error;
+        }
         // Durable resume state (P4b): written immediately, not batched at
         // the end of the create loop, so a LATER item in this same
         // mapWithConcurrency batch failing doesn't lose the fact that THIS

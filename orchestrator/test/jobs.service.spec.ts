@@ -7172,4 +7172,96 @@ describe('JobsService.confirm — discussion (System.History)', () => {
     expect('System.History' in (await fieldsWritten({}))).toBe(false);
     expect('System.History' in (await fieldsWritten({ discussion: [] }))).toBe(false);
   });
+
+  // An ADO org that rejects System.History on create (the REST call answers 400 for that field). Simulated at the MCP client, which is where
+  // the real backend's error surfaces: any create whose fields carry System.History fails with ADO's own message.
+  describe('when ADO rejects System.History on create', () => {
+    const ADO_REJECTION = 'TF401320: Rule Error for field History. Error code: InvalidNotEmpty, ReadOnly';
+    const discussion = [{ id: 'd1', proposedTitle: 'PT', proposedDescription: 'PD', createdAt: 'now' }];
+    const node = (localId: string, parentLocalId: string | null, type: string, extra: Record<string, unknown> = {}) => ({
+      localId, parentLocalId, type, title: `T-${localId}`, description: `D-${localId}`, action: 'create', existingAdoId: null,
+      sourceHash: `h-${localId}`, customerId: null, sourceRef: null, tags: [], ...extra,
+    });
+
+    function setup(
+      dryRunDiff: Record<string, unknown>[],
+      alreadyMapped: { localId: string; adoWorkItemId: number }[] = [],
+      rejects: (fields: Record<string, string>) => string | null = (fields) => ('System.History' in fields ? ADO_REJECTION : null),
+    ) {
+      let nextId = 100;
+      const createWorkItem = jest.fn(async (_type: string, fields: Record<string, string>) => {
+        const rejection = rejects(fields);
+        if (rejection !== null) throw new Error(rejection);
+        return { id: nextId++ };
+      });
+      const prisma = {
+        job: {
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+          findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project', dryRunDiff }),
+          update: jest.fn().mockResolvedValue(undefined),
+        },
+        auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+        createdItemMapping: {
+          findMany: jest.fn().mockResolvedValue(alreadyMapped.map((m) => ({ jobId: 'job-1', ...m }))),
+          upsert: jest.fn().mockResolvedValue(undefined),
+          update: jest.fn().mockResolvedValue(undefined),
+        },
+      };
+      const service = new JobsService(
+        prisma as any,
+        { createWorkItem, linkParentChild: jest.fn(), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+        { record: jest.fn() } as any,
+        { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+        'redis://unused',
+      );
+      return { service, prisma, createWorkItem };
+    }
+
+    it('fails the confirm with ADO\'s message, returns the job to review, and keeps the item and its later siblings un-created', async () => {
+      const diff = [
+        node('epic', null, 'Epic'),
+        node('r1', 'epic', 'Requirement', { discussion }),
+        node('r2', 'epic', 'Requirement'),
+      ];
+      const { service, prisma, createWorkItem } = setup(diff);
+      const failure = await service.confirm('job-1').then(() => null, (error: Error) => error);
+      expect(failure).toBeInstanceOf(Error);
+
+      // The message keeps ADO's own text and names the item and the cause, so the reviewer knows which entry to remove.
+      const message = failure!.message;
+      expect(message).toContain(ADO_REJECTION);
+      expect(message).toContain('"T-r1"');
+      expect(message).toMatch(/1 "To be discussed" entry/);
+      expect(message).toMatch(/remove it and retry/);
+
+      // The job is not stranded: back to diff_ready, with the same reason on its audit trail.
+      expect(prisma.job.update).toHaveBeenCalledWith({ where: { id: 'job-1' }, data: { status: 'diff_ready' } });
+      expect(prisma.auditEntry.create).toHaveBeenCalledWith({ data: { jobId: 'job-1', message: `Confirm failed (safe to retry): ${message}` } });
+
+      // The parent was created; the rejected item was attempted once; its later sibling was not attempted (ordering rule).
+      const attempted = createWorkItem.mock.calls.map((c) => c[1]['System.Title']);
+      expect(attempted).toEqual(['T-epic', 'T-r1']);
+      const mapped = prisma.createdItemMapping.upsert.mock.calls.map((c) => (c[0] as any).where.jobId_localId.localId);
+      expect(mapped).toEqual(['epic']);
+    });
+
+    it('leaves the message of a failure on an item without discussion entries exactly as ADO sent it', async () => {
+      const diff = [node('epic', null, 'Epic'), node('r1', 'epic', 'Requirement')];
+      const { service } = setup(diff, [], (fields) => (fields['System.Title'] === 'T-r1' ? 'TF401347: Invalid tree name given for work item.' : null));
+      const failure = await service.confirm('job-1').then(() => null, (error: Error) => error);
+      expect(failure!.message).toBe('TF401347: Invalid tree name given for work item.');
+    });
+
+    it('is recoverable: removing the discussion entry and retrying creates the remaining items without double-creating the parent', async () => {
+      // Retry state: the parent is already mapped from the failed attempt; the reviewer removed the entry from r1.
+      const diff = [node('epic', null, 'Epic'), node('r1', 'epic', 'Requirement'), node('r2', 'epic', 'Requirement')];
+      const { service, createWorkItem, prisma } = setup(diff, [{ localId: 'epic', adoWorkItemId: 99 }]);
+      await service.confirm('job-1');
+
+      const created = createWorkItem.mock.calls.map((c) => c[1]['System.Title']);
+      expect(created).toEqual(['T-r1', 'T-r2']);
+      expect(createWorkItem.mock.calls.every((c) => !('System.History' in c[1]))).toBe(true);
+      expect(prisma.auditEntry.create).not.toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ message: expect.stringContaining('Confirm failed') }) }));
+    });
+  });
 });
