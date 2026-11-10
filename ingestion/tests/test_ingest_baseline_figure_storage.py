@@ -49,7 +49,8 @@ def test_baseline_ingest_stores_every_figure_without_any_vision_call(monkeypatch
 
     result = _upload("multi.docx", MULTI_FIGURE, mode="baseline", job_id="job-baseline-store")
 
-    assert [(job, fig, mime) for job, fig, _, mime in recorder.stored] == [
+    # The store pass runs on a small thread pool, so the order the stores land in is not defined; the figure ids are.
+    assert sorted((job, fig, mime) for job, fig, _, mime in recorder.stored) == [
         ("job-baseline-store", "f0", "image/png"),
         ("job-baseline-store", "f1", "image/png"),
     ]
