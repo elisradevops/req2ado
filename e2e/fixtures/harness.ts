@@ -1,10 +1,11 @@
 import type { Page, Route } from '@playwright/test';
 import type { DocFixture, SseEvent } from './documents';
 import { narrationEvent, stageEvent } from './documents';
+import { ENTRIES, warningsFor, type WarningVariant } from './diff-ready';
 
 export const JOB_ID = 'job-e2e-1';
 const API = 'http://localhost:3001';
-const APP_ORIGIN = 'http://localhost:4173';
+const APP_ORIGIN = `http://localhost:${process.env.E2E_PORT ?? 4173}`;
 const CLOCK_START = new Date('2026-10-05T10:01:00Z');
 
 export interface Harness {
@@ -212,4 +213,50 @@ async function installPageHooks(page: Page, replay: SseEvent[]): Promise<void> {
       new MutationObserver(record).observe(document.documentElement, { subtree: true, childList: true, characterData: true });
     });
   }, replay);
+}
+
+/**
+ * Opens a finished (diff_ready) job page against a mocked API: the tree and
+ * warnings come from fixtures/diff-ready.ts. Real clock (nothing here is timed).
+ * Resolves once the tree is on screen.
+ */
+export async function openDiffReadyJob(page: Page, variant: WarningVariant = 'many'): Promise<{ pageErrors: string[] }> {
+  const pageErrors: string[] = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  await page.route(`${API}/**`, async (route) => {
+    const request = route.request();
+    const { pathname } = new URL(request.url());
+    if (request.method() === 'OPTIONS') {
+      return route.fulfill({
+        status: 204,
+        headers: {
+          'access-control-allow-origin': APP_ORIGIN,
+          'access-control-allow-credentials': 'true',
+          'access-control-allow-headers': '*',
+          'access-control-allow-methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
+        },
+      });
+    }
+    if (pathname === `/jobs/${JOB_ID}`) {
+      return json(route, {
+        id: JOB_ID, status: 'diff_ready', mode: 'survey', dryRunDiff: ENTRIES,
+        createdAt: new Date(CLOCK_START.getTime() - 3_600_000).toISOString(),
+        areaPath: 'Project\\Verify', adoProject: 'Project', originalFilename: 'review-fixture.docx', state: 'Proposed',
+        warnings: warningsFor(variant), kbCitations: [], figureDescriptions: [], tableDescriptions: [],
+      });
+    }
+    if (pathname === '/llm/connection') return json(route, { configured: true, chatModel: 'gemma4:26b' });
+    if (pathname.endsWith('/event-history') || pathname === '/jobs') return json(route, []);
+    // The details dialog's chat pane reads these two; an empty object would crash it.
+    if (pathname === '/chat/models') return json(route, { models: ['gemma4:26b'] });
+    if (/\/diff\/[^/]+\/chat$/.test(pathname)) return json(route, { messages: [] });
+    if (pathname.endsWith('/run-map') || pathname.endsWith('/run-done')) return json(route, { message: 'none' }, 404);
+    return json(route, request.method() === 'GET' ? {} : { ok: true });
+  });
+  // The chat pane opens a WebSocket to /chat; without a server it closes at once and the pane toasts "Chat reply failed".
+  await page.routeWebSocket(/\/chat\?/, () => {});
+  await installPageHooks(page, []);
+  await page.goto(`/jobs/${JOB_ID}`);
+  await page.getByRole('button', { name: 'Collapse Core module' }).waitFor();
+  return { pageErrors };
 }

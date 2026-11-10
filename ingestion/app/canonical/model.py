@@ -1,13 +1,13 @@
 # ingestion/app/canonical/model.py
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
 
-class DocumentFormat(str, Enum):
+class DocumentFormat(StrEnum):
     TXT = "txt"
     MD = "md"
     DOCX = "docx"
@@ -20,7 +20,7 @@ class DocumentFormat(str, Enum):
     IMAGE = "image"
 
 
-class BlockKind(str, Enum):
+class BlockKind(StrEnum):
     HEADING = "heading"
     PARAGRAPH = "paragraph"
     LIST_ITEM = "list_item"
@@ -182,7 +182,7 @@ class Table(BaseModel):
     source_ref: SourceRef
 
     @model_validator(mode="after")
-    def _validate_rectangular_grid(self) -> "Table":
+    def _validate_rectangular_grid(self) -> Table:
         if self.cells and len({len(row) for row in self.cells}) > 1:
             raise ValueError(
                 f"Table {self.id!r} has ragged rows (lengths "
@@ -241,6 +241,9 @@ class Figure(BaseModel):
     # signature is shared with every loader and KB-ingestion caller, so it
     # can't grow a new required return shape without touching all of them).
     caption_status: str | None = None
+    # The vision model's own one-line reason when it judged this figure not significant ("A company logo."), so the job page can say
+    # why a figure has no description after a reload, not only while it ran. Set beside caption_status; None otherwise.
+    caption_reason: str | None = None
 
 
 class CanonicalDoc(BaseModel):

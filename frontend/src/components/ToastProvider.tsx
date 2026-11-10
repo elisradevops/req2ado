@@ -109,7 +109,7 @@ export function ToastProvider({ children }: { children: ReactNode }): React.Reac
               )}
             >
               <Icon className={cn('mt-0.5 h-4 w-4 flex-none', SEVERITY_ICON_CLASS[toast.severity])} />
-              <RadixToast.Description className="flex-1">{toast.message}</RadixToast.Description>
+              <RadixToast.Description className="min-w-0 flex-1 break-words">{toast.message}</RadixToast.Description>
               {toast.action && (
                 <RadixToast.Action
                   altText={`${toast.action.label}: ${toast.message}`}

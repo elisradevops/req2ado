@@ -26,6 +26,25 @@ describe('JobsList', () => {
     expect(screen.getByText('12')).toBeInTheDocument();
   });
 
+  it('fades the table body in once and gives no row its own animation (DESIGN.md section 8.3)', async () => {
+    const jobs = Array.from({ length: 12 }, (_, i) => ({
+      id: `j${i}`, mode: 'baseline', status: 'succeeded', areaPath: `Proj\\A${i}`, originalFilename: `f${i}.docx`, itemCount: 1, createdItemCount: 1, createdAt: '2026-07-09T00:00:00Z',
+    }));
+    vi.spyOn(jobsApi, 'listJobs').mockResolvedValue(jobs as never);
+    render(<ToastProvider><MemoryRouter><JobsList /></MemoryRouter></ToastProvider>);
+    await waitFor(() => expect(screen.getByText('f0.docx')).toBeInTheDocument());
+
+    const rows = screen.getAllByRole('link', { name: /View job/i });
+    expect(rows).toHaveLength(12);
+    expect(rows[0].closest('tbody')!.className).toContain('fadeIn');
+    for (const row of rows) {
+      expect(row.className).not.toContain('animate-');
+      expect(row.style.animationDelay).toBe('');
+      // row hover is the most frequent feedback in the app: 50 ms
+      expect(row.className).toMatch(/(^| )duration-micro( |$)/);
+    }
+  });
+
   it('renders an empty-state CTA when there are no jobs', async () => {
     vi.spyOn(jobsApi, 'listJobs').mockResolvedValue([]);
     render(<ToastProvider><MemoryRouter><JobsList /></MemoryRouter></ToastProvider>);
@@ -162,19 +181,17 @@ describe('JobsList', () => {
     expect(screen.getByText('a.docx')).toBeInTheDocument();
   });
 
-  it('gives every stat tile the hover-lift treatment (a "breathing" dashboard, not a static one)', async () => {
+  it('does not lift stat tiles on hover: they are not clickable, so a lift would promise an action that is not there', async () => {
     vi.spyOn(jobsApi, 'listJobs').mockResolvedValue([
       { id: 'j1', mode: 'survey', status: 'diff_ready', areaPath: 'Proj\\A', originalFilename: 'a.docx', itemCount: 5, createdItemCount: 0, createdAt: '2026-07-09T00:00:00Z' },
     ]);
     render(<ToastProvider><MemoryRouter><JobsList /></MemoryRouter></ToastProvider>);
     await waitFor(() => expect(screen.getByText('a.docx')).toBeInTheDocument());
     for (const label of ['Running', 'Items written', 'Rejected']) {
-      // "Running"/"Rejected" also match the segmented status filter's own
-      // buttons -- at least one match (the StatTile label) must sit inside
-      // a `.liftable` ancestor (DESIGN.md §6 -- the consolidated hover/lift
-      // class; StatTile no longer spells out `lift` plus six utilities).
+      // "Running"/"Rejected" also match the segmented status filter's own buttons; none of the matches may sit
+      // inside a `.liftable` ancestor (DESIGN.md section 8.3, hover feedback only on clickable cards).
       const matches = screen.getAllByText(label);
-      expect(matches.some((el) => el.closest('.liftable') !== null)).toBe(true);
+      expect(matches.every((el) => el.closest('.liftable') === null)).toBe(true);
     }
   });
 

@@ -8,6 +8,7 @@ import { AuthModule } from '../auth/auth.module';
 import { CredentialVaultService } from '../auth/credential-vault.service';
 import { LlmConfigResolver } from '../auth/llm-config.resolver';
 import { Queue } from 'bullmq';
+import { logQueueErrors } from '../../common/queue-errors';
 import { KB_PROFILE_QUEUE, KbProfileScheduler } from './kb-profile.scheduler';
 
 @Module({
@@ -28,7 +29,7 @@ import { KB_PROFILE_QUEUE, KbProfileScheduler } from './kb-profile.scheduler';
       useFactory: (config: ConfigService, ingestion: IngestionHttpClient, resolver: LlmConfigResolver) => {
         const redisUrl = config.get<string>('REDIS_URL')!;
         return new KbProfileScheduler({
-          queue: new Queue(KB_PROFILE_QUEUE, { connection: { url: redisUrl } as never }),
+          queue: logQueueErrors(new Queue(KB_PROFILE_QUEUE, { connection: { url: redisUrl } as never }), KB_PROFILE_QUEUE),
           ingestion,
           resolver,
           profileModel: config.get<string>('KB_PROFILE_MODEL') ?? '',

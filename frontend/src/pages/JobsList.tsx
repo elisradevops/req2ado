@@ -22,6 +22,7 @@ import { useToast } from '../components/ToastProvider';
 import { formatRelativeTime } from '../utils/relativeTime';
 import { useDenseView, useAutoSyncLedgers } from '../store/uiPreferencesStore';
 import { cn } from '../lib/cn';
+import { ARRIVE } from '../ui/motion';
 
 // Curated buckets, not the raw seven-value backend enum -- "review" and
 // "run" each cover more than one Job.status (JOB_STATUS_LABELS,
@@ -177,11 +178,10 @@ export function JobsList(): React.ReactElement {
               </span>
             }
             accent
-            interactive
           />
-          <StatTile value={tileCounts.running} label="Running" interactive />
-          <StatTile value={itemsWritten} label="Items written" tone="ok" interactive />
-          <StatTile value={tileCounts.rejected} label="Rejected" tone="dim" interactive />
+          <StatTile value={tileCounts.running} label="Running" />
+          <StatTile value={itemsWritten} label="Items written" tone="ok" />
+          <StatTile value={tileCounts.rejected} label="Rejected" tone="dim" />
         </div>
       )}
       {loadError && (
@@ -280,8 +280,9 @@ export function JobsList(): React.ReactElement {
                       </TableHeaderCell>
                     </tr>
                   </thead>
-                  <tbody>
-                    {filteredJobs.map((job, index) => (
+                  {/* One fade for the whole block, once, when the table first appears (DESIGN.md section 8.3): no per-row stagger, so every row behaves the same and nothing replays on sort, filter or refresh. */}
+                  <tbody className={ARRIVE.fade}>
+                    {filteredJobs.map((job) => (
                       <tr
                         key={job.id}
                         onClick={() => navigate(`/jobs/${job.id}`)}
@@ -309,8 +310,7 @@ export function JobsList(): React.ReactElement {
                         // <td> below (toggled via `group`), which is a
                         // normal box-model property, not a positioned box,
                         // so it cannot confuse column layout the same way.
-                        className="group border-t border-hairline transition-colors duration-fast hover:bg-surface-alt cursor-pointer animate-[listItemIn_var(--duration-base)_var(--ease-out)_backwards]"
-                        style={{ animationDelay: `${Math.min(index, 8) * 30}ms` }}
+                        className={cn('group border-t border-hairline transition-colors duration-micro hover:bg-surface-alt cursor-pointer')}
                       >
                         <td className={cn('border-l-2 border-transparent px-3.5 transition-colors duration-fast group-hover:border-accent', cellPaddingY)}>
                           <span className="flex min-w-0 items-center gap-1.5">

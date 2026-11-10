@@ -1,12 +1,12 @@
 """Run once to (re)generate sample.pdf: `python build_pdf_fixture.py`."""
+
 from pathlib import Path
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.platypus import Paragraph, SimpleDocTemplate
+from reportlab.platypus import Paragraph, SimpleDocTemplate, TableStyle
 from reportlab.platypus import Table as RLTable
-from reportlab.platypus import TableStyle
 
 out_path = Path(__file__).parent / "sample.pdf"
 styles = getSampleStyleSheet()

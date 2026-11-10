@@ -30,9 +30,13 @@ export function Tabs({
           </RadixTabs.Trigger>
         ))}
       </RadixTabs.List>
-      <div key={value} className="animate-[fadeIn_var(--duration-base)_var(--ease-out)]">
+      {/* The selected trigger's aria-controls must resolve to a mounted
+          panel; Radix only provides one if its Content is rendered. tabIndex -1:
+          Radix's default 0 would add a tab stop (and a ring round the whole
+          tree) in front of the content's own focusable controls. */}
+      <RadixTabs.Content key={value} value={value} tabIndex={-1} className="animate-[fadeIn_var(--duration-base)_var(--ease-out)]">
         {children}
-      </div>
+      </RadixTabs.Content>
     </RadixTabs.Root>
   );
 }

@@ -4,6 +4,10 @@ import { NodeDetailPanel, canEditEntry, editabilityOf } from './NodeDetailPanel'
 import { ToastProvider } from './ToastProvider';
 import type { DryRunDiffEntry } from './DiffTree';
 
+vi.mock('./FigureImage', () => ({
+  FigureImage: ({ alt, figureId }: { alt: string; figureId: string }) => <img alt={alt} data-figure-id={figureId} />,
+}));
+
 // NodeDetailPanel is item-details ONLY -- chat lives in NodeDetailDialog's
 // own right pane (ChatPanel, a sibling not a child) since the dialog
 // redesign put details and chat in separate panes side by side. Chat's own
@@ -63,13 +67,13 @@ describe('NodeDetailPanel', () => {
     expect(screen.getByText(/select a node/i)).toBeInTheDocument();
   });
 
-  it('renders the entry title, description, type, and tags when selected', () => {
+  it('renders the entry description and tags when selected (title and type live in the dialog header)', () => {
     renderPanel(
       <NodeDetailPanel
         entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: ['functional'] }}
       />,
     );
-    expect(screen.getByText('Req Title')).toBeInTheDocument();
+    expect(screen.queryByText('Req Title')).not.toBeInTheDocument();
     expect(screen.getByText('Req body')).toBeInTheDocument();
     expect(screen.getByText('Functional')).toBeInTheDocument();
   });
@@ -125,7 +129,7 @@ describe('NodeDetailPanel', () => {
 
     // Add Child renders after everything else in document order, not near
     // the title (where it used to sit, disconnected from what it acts on).
-    const panel = screen.getByText('Req Title').closest('div.flex.flex-col.gap-3');
+    const panel = screen.getByText('Classification').closest('div.flex.flex-col.gap-3');
     const addChildSlot = screen.getByTestId('add-child-slot');
     expect(panel?.lastElementChild).toBe(addChildSlot);
   });
@@ -415,6 +419,30 @@ describe('NodeDetailPanel', () => {
     expect(screen.getByDisplayValue('Req body')).toBeInTheDocument();
   });
 
+  it('opens the edit form when editRequest changes, only for an editable entry, not on mount', () => {
+    const entry: DryRunDiffEntry = { localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] };
+    const { rerender } = renderPanel(<NodeDetailPanel entry={entry} onSave={vi.fn()} editRequest={3} />);
+    // A non-zero counter present at mount is not a request.
+    expect(screen.queryByDisplayValue('Req Title')).not.toBeInTheDocument();
+    rerender(
+      <ToastProvider>
+        <NodeDetailPanel entry={entry} onSave={vi.fn()} editRequest={4} />
+      </ToastProvider>,
+    );
+    expect(screen.getByDisplayValue('Req Title')).toBeInTheDocument();
+  });
+
+  it('ignores an edit request for an entry that cannot be edited', () => {
+    const entry: DryRunDiffEntry = { localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'reuse', customerId: null, tags: [] };
+    const { rerender } = renderPanel(<NodeDetailPanel entry={entry} onSave={vi.fn()} editRequest={0} />);
+    rerender(
+      <ToastProvider>
+        <NodeDetailPanel entry={entry} onSave={vi.fn()} editRequest={1} />
+      </ToastProvider>,
+    );
+    expect(screen.queryByDisplayValue('Req Title')).not.toBeInTheDocument();
+  });
+
   it('calls onSave with the edited title/description', async () => {
     const { default: userEvent } = await import('@testing-library/user-event');
     const user = userEvent.setup();
@@ -594,7 +622,6 @@ describe('NodeDetailPanel', () => {
     // Edit mode must be exited: no leftover draft textfield for A's stale text,
     // and node B's data is shown read-only with a fresh Edit button available.
     expect(screen.queryByDisplayValue('Stale unsaved draft')).not.toBeInTheDocument();
-    expect(screen.getByText('Node B Title')).toBeInTheDocument();
     expect(screen.getByText('Node B body')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /edit/i })).toBeInTheDocument();
   });
@@ -665,7 +692,7 @@ describe('NodeDetailPanel', () => {
       // vision_failed case (or vision-off-for-the-whole-run, covered
       // separately by the tree-level vision_captioning_disabled warning).
       renderPanel(<NodeDetailPanel entry={tableEntry({ uncaptionedFigureIds: ['f5'] })} />);
-      const chip = screen.getByText('Figure f5 · no description');
+      const chip = screen.getByText('Figure f5: no description');
       expect(chip).toBeInTheDocument();
       // Same warning-band token QualityGauge's "Needs review" chip uses --
       // not a one-off color, so "amber" reads consistently everywhere.
@@ -680,9 +707,117 @@ describe('NodeDetailPanel', () => {
       // a cause this chip alone can't actually know.
       await waitFor(() =>
         expect(
-          screen.getByText(/description call failed, or vision captioning was off/i),
+          screen.getByText(/It will be attached to this item when you write/i),
         ).toBeInTheDocument(),
       );
+    });
+
+    it('renders an image card for an uncaptioned figure that is not insignificant', () => {
+      renderPanel(
+        <NodeDetailPanel entry={tableEntry({ uncaptionedFigureIds: ['f5'], title: 'Req Title' })} jobId="job-1" />,
+      );
+      expect(screen.getByAltText('Figure 1 of 1 for this item')).toBeInTheDocument();
+      expect(screen.getByText('No description')).toBeInTheDocument();
+      expect(screen.queryByText('Figure f5: no description')).not.toBeInTheDocument();
+    });
+
+    it('alt text is Figure n of m', () => {
+      renderPanel(
+        <NodeDetailPanel
+          entry={tableEntry({ figureIds: ['f0'], uncaptionedFigureIds: ['f5', 'f6'], title: 'Req Title' })}
+          jobId="job-1"
+          nameByFigureId={{ f0: 'Block diagram' }}
+        />,
+      );
+      expect(screen.getByAltText('Block diagram')).toBeInTheDocument();
+      expect(screen.getByAltText('Figure 2 of 3 for this item')).toBeInTheDocument();
+      expect(screen.getByAltText('Figure 3 of 3 for this item')).toBeInTheDocument();
+      expect(screen.queryByAltText(/Req Title/)).not.toBeInTheDocument();
+    });
+
+    it('shows the visible hint for an uncaptioned figure', () => {
+      renderPanel(<NodeDetailPanel entry={tableEntry({ uncaptionedFigureIds: ['f5'] })} jobId="job-1" />);
+      expect(
+        screen.getByText(
+          'No description. It will be attached to this item when you write. If it belongs to another item, upload it there after writing.',
+        ),
+      ).toBeInTheDocument();
+    });
+
+    it('shows the hint once for several uncaptioned figures, with a chip on each card', () => {
+      renderPanel(<NodeDetailPanel entry={tableEntry({ uncaptionedFigureIds: ['f5', 'f6'] })} jobId="job-1" />);
+      expect(
+        screen.getAllByText(
+          'No description. It will be attached to this item when you write. If it belongs to another item, upload it there after writing.',
+        ),
+      ).toHaveLength(1);
+      expect(screen.getAllByText('No description')).toHaveLength(2);
+    });
+
+    it.each(['reuse', 'dedup_skip'])('says figures are not attached automatically for a %s item', (action) => {
+      renderPanel(<NodeDetailPanel entry={tableEntry({ uncaptionedFigureIds: ['f5', 'f6'], action } as any)} jobId="job-1" />);
+      expect(
+        screen.getAllByText(
+          'No description. Figures are not attached automatically to items that already exist. You can upload it to this item yourself.',
+        ),
+      ).toHaveLength(1);
+      expect(screen.queryByText(/It will be attached to this item when you write/)).not.toBeInTheDocument();
+    });
+
+    it('shows an upload failed line', async () => {
+      const { default: userEvent } = await import('@testing-library/user-event');
+      const onAttachFigure = vi.fn().mockRejectedValue(new Error('x'));
+      renderPanel(
+        <NodeDetailPanel
+          entry={tableEntry({ figureIds: ['f0'], action: 'reuse', existingAdoId: 42 })}
+          jobId="job-1"
+          onAttachFigure={onAttachFigure}
+        />,
+      );
+      await userEvent.click(screen.getByRole('button', { name: /Upload to ADO \(WI-42\)/ }));
+      expect(await screen.findByText('Upload failed. Try again.')).toBeInTheDocument();
+      onAttachFigure.mockResolvedValue(undefined);
+      await userEvent.click(screen.getByRole('button', { name: /Upload to ADO \(WI-42\)/ }));
+      await waitFor(() => expect(screen.queryByText('Upload failed. Try again.')).not.toBeInTheDocument());
+    });
+
+    it('fallback text before the item is written', () => {
+      renderPanel(
+        <NodeDetailPanel entry={tableEntry({ figureIds: ['f0'] })} jobId="job-1" onAttachFigure={vi.fn()} />,
+      );
+      expect(screen.getByText('You can upload this figure after the item is written to Azure DevOps.')).toBeInTheDocument();
+      expect(screen.queryByText(/resolved ADO work item id/)).not.toBeInTheDocument();
+    });
+
+    it('still renders only the chip when there is no job id', () => {
+      renderPanel(<NodeDetailPanel entry={tableEntry({ uncaptionedFigureIds: ['f5'] })} />);
+      expect(screen.getByText('Figure f5: no description')).toBeInTheDocument();
+      expect(screen.queryByRole('img')).not.toBeInTheDocument();
+    });
+
+    it('insignificant figures are not rendered', () => {
+      renderPanel(
+        <NodeDetailPanel
+          entry={tableEntry({ uncaptionedFigureIds: ['f5', 'f6'], insignificantFigureIds: ['f6'] })}
+          jobId="job-1"
+        />,
+      );
+      expect(screen.getAllByRole('img')).toHaveLength(1);
+      expect(screen.getByRole('img')).toHaveAttribute('data-figure-id', 'f5');
+    });
+
+    it('the upload button on an uncaptioned figure calls onAttachFigure with its id when the item has an ADO id', async () => {
+      const { default: userEvent } = await import('@testing-library/user-event');
+      const onAttachFigure = vi.fn().mockResolvedValue(undefined);
+      renderPanel(
+        <NodeDetailPanel
+          entry={tableEntry({ uncaptionedFigureIds: ['f5'], action: 'reuse', existingAdoId: 42 })}
+          jobId="job-1"
+          onAttachFigure={onAttachFigure}
+        />,
+      );
+      await userEvent.click(screen.getByRole('button', { name: /Upload to ADO \(WI-42\)/ }));
+      expect(onAttachFigure).toHaveBeenCalledWith('e1', 'f5');
     });
 
     it('renders no chip at all for an insignificant uncaptioned figure -- hidden from the item view entirely', () => {
@@ -703,7 +838,7 @@ describe('NodeDetailPanel', () => {
           entry={tableEntry({ uncaptionedFigureIds: ['f5', 'f6'], insignificantFigureIds: ['f6'] })}
         />,
       );
-      expect(screen.getByText('Figure f5 · no description')).toBeInTheDocument();
+      expect(screen.getByText('Figure f5: no description')).toBeInTheDocument();
       expect(screen.queryByText(/not significant/)).not.toBeInTheDocument();
     });
 
@@ -849,6 +984,20 @@ describe('NodeDetailPanel', () => {
     expect(screen.getByText('Scored on wording only, not engineering content.')).toBeInTheDocument();
     expect(screen.getByText('Relevant · doc-a.docx')).toBeInTheDocument();
     expect(screen.getByText('Unverified · doc-b.pdf')).toBeInTheDocument();
+  });
+
+  it('keeps its Sources block unless the caller says it shows provenance itself (hideSources)', () => {
+    const entry = {
+      localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'T', description: 'B', action: 'create' as const, customerId: null, tags: [],
+      sourceRef: { documentPath: 'spec.docx', startOffset: 0, endOffset: 5, page: 2 },
+    };
+    const { unmount } = renderPanel(<NodeDetailPanel jobMode="survey" entry={entry} />);
+    expect(screen.getByText('Sources')).toBeInTheDocument();
+    expect(screen.getByText('spec.docx')).toBeInTheDocument();
+    unmount();
+    renderPanel(<NodeDetailPanel jobMode="survey" entry={entry} hideSources />);
+    expect(screen.queryByText('Sources')).not.toBeInTheDocument();
+    expect(screen.queryByText('spec.docx')).not.toBeInTheDocument();
   });
 
   it('shows the scoring note but no KB references when kbCitations is empty', () => {
@@ -1108,6 +1257,18 @@ describe('NodeDetailPanel', () => {
     expect(screen.queryByText(/worth checking/i)).not.toBeInTheDocument();
   });
 
+  it('states why an item needs review as visible text, not only a tooltip', () => {
+    const flagged: DryRunDiffEntry = {
+      localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body',
+      action: 'create', customerId: null, groundingScore: 0.9, qualityScore: 95, qualityConfidence: 'low',
+    };
+    const { unmount } = renderPanel(<NodeDetailPanel entry={flagged} />);
+    expect(screen.getByTestId('review-reason')).toHaveTextContent('Needs review: Model was unsure about this score');
+    unmount();
+    renderPanel(<NodeDetailPanel entry={{ ...flagged, qualityConfidence: 'high' }} />);
+    expect(screen.queryByTestId('review-reason')).not.toBeInTheDocument();
+  });
+
   it('does not mark the Grounding metric low just because qualityConfidence is low', () => {
     // NodeDetailPanel:285 intentionally nulls qualityScore when reusing
     // isFlaggedDiffEntry to compute isLowGrounding -- it wants ONLY the
@@ -1122,5 +1283,136 @@ describe('NodeDetailPanel', () => {
     renderPanel(<NodeDetailPanel entry={requirementEntry} />);
     expect(screen.getByText('Closely')).toBeInTheDocument();
     expect(screen.queryByText(/worth checking/i)).not.toBeInTheDocument();
+  });
+});
+
+describe('NodeDetailPanel figure move', () => {
+  const figEntry = (patch: Partial<DryRunDiffEntry> = {}): DryRunDiffEntry => ({
+    localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body',
+    action: 'create', customerId: null, tags: [], figureIds: ['f0'], uncaptionedFigureIds: ['f5'], attachFigureIds: ['f0', 'f5'],
+    ...patch,
+  });
+  const targets = [
+    { localId: 'e1', type: 'Requirement', title: 'Req Title', customerId: null },
+    { localId: 'e2', type: 'Requirement', title: 'Other item', customerId: null },
+  ];
+
+  it('shows Move to and Do not attach on an editable entry figure card', () => {
+    renderPanel(<NodeDetailPanel entry={figEntry()} jobId="job-1" jobStatus="diff_ready" onMoveFigure={vi.fn()} figureMoveTargets={targets} />);
+    expect(screen.getAllByRole('button', { name: /^Move to…, figure \d of \d$/ })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: /^Don't attach, figure \d of \d$/ })).toHaveLength(2);
+  });
+
+  it('hides them for a written entry and for a finished job', () => {
+    const { unmount } = renderPanel(<NodeDetailPanel entry={figEntry()} jobId="job-1" jobStatus="diff_ready" written onMoveFigure={vi.fn()} figureMoveTargets={targets} />);
+    expect(screen.queryByRole('button', { name: /^Move to…, figure \d of \d$/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Don't attach, figure \d of \d$/ })).not.toBeInTheDocument();
+    unmount();
+    renderPanel(<NodeDetailPanel entry={figEntry()} jobId="job-1" jobStatus="succeeded" onMoveFigure={vi.fn()} figureMoveTargets={targets} />);
+    expect(screen.queryByRole('button', { name: /^Move to…, figure \d of \d$/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Don't attach, figure \d of \d$/ })).not.toBeInTheDocument();
+  });
+
+  it('Do not attach calls onMoveFigure with null', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const onMoveFigure = vi.fn().mockResolvedValue(undefined);
+    renderPanel(<NodeDetailPanel entry={figEntry()} jobId="job-1" jobStatus="diff_ready" onMoveFigure={onMoveFigure} figureMoveTargets={targets} />);
+    await userEvent.click(screen.getAllByRole('button', { name: /^Don't attach, figure \d of \d$/ })[0]);
+    expect(onMoveFigure).toHaveBeenCalledWith('f0', null);
+  });
+
+  it('choosing a target calls onMoveFigure with its localId', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const onMoveFigure = vi.fn().mockResolvedValue(undefined);
+    renderPanel(<NodeDetailPanel entry={figEntry()} jobId="job-1" jobStatus="diff_ready" onMoveFigure={onMoveFigure} figureMoveTargets={targets} />);
+    await userEvent.click(screen.getAllByRole('button', { name: /^Move to…, figure \d of \d$/ })[0]);
+    expect(screen.queryByRole('button', { name: /Req Title/ })).not.toBeInTheDocument();
+    await userEvent.click(await screen.findByRole('button', { name: /Other item/ }));
+    expect(onMoveFigure).toHaveBeenCalledWith('f0', 'e2');
+  });
+
+  it('shows the server message when the move fails and keeps the card', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const onMoveFigure = vi.fn().mockRejectedValue(new Error('Target is already written'));
+    renderPanel(<NodeDetailPanel entry={figEntry()} jobId="job-1" jobStatus="diff_ready" onMoveFigure={onMoveFigure} figureMoveTargets={targets} />);
+    await userEvent.click(screen.getAllByRole('button', { name: /^Don't attach, figure \d of \d$/ })[0]);
+    expect(await screen.findByText('Could not change the figure: Target is already written')).toBeInTheDocument();
+    expect(screen.getAllByRole('img')).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: /^Don't attach, figure \d of \d$/ })[0]).toBeEnabled();
+  });
+
+  it('a detached figure shows Not attached and Attach again', () => {
+    renderPanel(<NodeDetailPanel entry={figEntry({ detachedFigureIds: ['f5'], attachFigureIds: ['f0'] })} jobId="job-1" jobStatus="diff_ready" onMoveFigure={vi.fn()} figureMoveTargets={targets} />);
+    expect(screen.getByText('Not attached')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Attach again, figure 2 of 2$/ })).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: /^Don't attach, figure/ })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: /^Move to…, figure/ })).toHaveLength(2);
+    expect(screen.queryByText(/No description/)).not.toBeInTheDocument();
+  });
+
+  it('Attach again calls onMoveFigure with the entry own localId', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const onMoveFigure = vi.fn().mockResolvedValue(undefined);
+    renderPanel(<NodeDetailPanel entry={figEntry({ detachedFigureIds: ['f5'], attachFigureIds: ['f0'] })} jobId="job-1" jobStatus="diff_ready" onMoveFigure={onMoveFigure} figureMoveTargets={targets} />);
+    await userEvent.click(screen.getByRole('button', { name: /^Attach again, figure 2 of 2$/ }));
+    expect(onMoveFigure).toHaveBeenCalledWith('f5', 'e1');
+  });
+
+  it('reuse entries show only Move to', () => {
+    renderPanel(<NodeDetailPanel entry={figEntry({ action: 'reuse', attachFigureIds: [] })} jobId="job-1" jobStatus="diff_ready" onMoveFigure={vi.fn()} figureMoveTargets={targets} />);
+    expect(screen.getAllByRole('button', { name: /^Move to…, figure/ }).length).toBeGreaterThan(0);
+    expect(screen.queryByRole('button', { name: /^Don't attach/ })).not.toBeInTheDocument();
+  });
+
+  it('aria names include the visible text and the figure position', () => {
+    renderPanel(<NodeDetailPanel entry={figEntry()} jobId="job-1" jobStatus="diff_ready" onMoveFigure={vi.fn()} figureMoveTargets={targets} />);
+    expect(screen.getByRole('button', { name: 'Move to…, figure 1 of 2' })).toHaveTextContent('Move to…');
+    expect(screen.getByRole('button', { name: 'Move to…, figure 2 of 2' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: "Don't attach, figure 1 of 2" })).toHaveTextContent("Don't attach");
+    expect(screen.getByRole('button', { name: "Don't attach, figure 2 of 2" })).toBeInTheDocument();
+  });
+
+  it('focus moves to the Figures heading after a move', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const onMoveFigure = vi.fn().mockResolvedValue(undefined);
+    renderPanel(<NodeDetailPanel entry={figEntry()} jobId="job-1" jobStatus="diff_ready" onMoveFigure={onMoveFigure} figureMoveTargets={targets} />);
+    await userEvent.click(screen.getByRole('button', { name: "Don't attach, figure 1 of 2" }));
+    await waitFor(() => expect(screen.getByText('Figures')).toHaveFocus());
+  });
+
+  it('a detached card explains that it will not be written and shows no upload line', () => {
+    renderPanel(<NodeDetailPanel entry={figEntry({ detachedFigureIds: ['f5'], attachFigureIds: ['f0'] })} jobId="job-1" jobStatus="diff_ready" onAttachFigure={vi.fn()} onMoveFigure={vi.fn()} figureMoveTargets={targets} />);
+    expect(screen.getByText('This figure will not be written to Azure DevOps unless you attach it again or move it to another item.')).toBeInTheDocument();
+    expect(screen.getAllByText(/You can upload this figure after the item is written/)).toHaveLength(1);
+  });
+
+  it('focus moves to the panel when the last figure leaves the item', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const onMoveFigure = vi.fn().mockResolvedValue(undefined);
+    const one = figEntry({ figureIds: ['f0'], uncaptionedFigureIds: [], attachFigureIds: ['f0'] });
+    const view = renderPanel(<NodeDetailPanel entry={one} jobId="job-1" jobStatus="diff_ready" onMoveFigure={onMoveFigure} figureMoveTargets={targets} />);
+    await userEvent.click(screen.getByRole('button', { name: "Don't attach, figure 1 of 1" }));
+    view.rerender(<ToastProvider><NodeDetailPanel entry={{ ...one, figureIds: [], attachFigureIds: [] }} jobId="job-1" jobStatus="diff_ready" onMoveFigure={onMoveFigure} figureMoveTargets={targets} /></ToastProvider>);
+    await waitFor(() => expect(screen.queryByText('Figures')).not.toBeInTheDocument());
+    await waitFor(() => expect(document.activeElement).not.toBe(document.body));
+    expect(document.activeElement).toHaveAttribute('data-node-detail-panel');
+  });
+
+  it('the error text differs for detach and move', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const onMoveFigure = vi.fn().mockRejectedValue(new Error('Nope'));
+    renderPanel(<NodeDetailPanel entry={figEntry()} jobId="job-1" jobStatus="diff_ready" onMoveFigure={onMoveFigure} figureMoveTargets={targets} />);
+    await userEvent.click(screen.getByRole('button', { name: "Don't attach, figure 1 of 2" }));
+    expect(await screen.findByText('Could not change the figure: Nope')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Move to…, figure 2 of 2' }));
+    await userEvent.click(await screen.findByRole('button', { name: /Other item/ }));
+    expect(await screen.findByText('Could not move the figure: Nope')).toBeInTheDocument();
+  });
+
+  it('uses a plain fallback when the failure has no message', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    renderPanel(<NodeDetailPanel entry={figEntry()} jobId="job-1" jobStatus="diff_ready" onMoveFigure={vi.fn().mockRejectedValue({})} figureMoveTargets={targets} />);
+    await userEvent.click(screen.getByRole('button', { name: "Don't attach, figure 1 of 2" }));
+    expect(await screen.findByText('Could not change the figure. Please try again.')).toBeInTheDocument();
   });
 });

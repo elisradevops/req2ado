@@ -178,7 +178,7 @@ export interface Heartbeat {
 export interface Notice {
   type: 'notice';
   id: string;
-  kind: 'output_limit_reached' | 'server_retry' | 'context_assumed' | 'stream_fallback';
+  kind: 'output_limit_reached' | 'server_retry' | 'context_assumed' | 'stream_fallback' | 'document_study';
   severity: 'info' | 'warning';
   count: number;
   facts: {

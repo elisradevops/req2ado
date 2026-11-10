@@ -39,11 +39,16 @@ class FakeSectionAnalysisClient:
         self.calls: list[dict] = []
 
     def analyze_section_skeleton(
-        self, section_text: str, kb_context: str | None = None, *,
+        self,
+        section_text: str,
+        kb_context: str | None = None,
+        *,
         options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
         user_id: str | None = None,
     ) -> tuple[list[dict], bool]:
-        self.calls.append({"section_text": section_text, "kb_context": kb_context, "options": options})
+        self.calls.append(
+            {"section_text": section_text, "kb_context": kb_context, "options": options}
+        )
         # STAGE 1 sees structure only -- see llm_leveling's
         # _build_survey_skeleton_for_branch.
         return [
@@ -52,7 +57,10 @@ class FakeSectionAnalysisClient:
         ], False
 
     def author_content(
-        self, section_text: str, skeleton_nodes: dict[str, dict], kb_context: str | None = None,
+        self,
+        section_text: str,
+        skeleton_nodes: dict[str, dict],
+        kb_context: str | None = None,
         user_id: str | None = None,
     ) -> tuple[dict[str, dict], bool]:
         by_title = {node["title"]: node for node in self._nodes}
@@ -65,7 +73,9 @@ class FakeSectionAnalysisClient:
             if info["title"] in by_title
         }, False
 
-    def analyze_section_skeleton_agentic(self, section_text: str, retrieve_fn, **kwargs) -> tuple[list[dict], list[dict], bool]:
+    def analyze_section_skeleton_agentic(
+        self, section_text: str, retrieve_fn, **kwargs
+    ) -> tuple[list[dict], list[dict], bool]:
         raise AssertionError("not exercised by this test -- default model is not tool-capable")
 
 
@@ -124,10 +134,14 @@ def test_pdf_survey_golden_produces_stable_branch_and_heading_structure(tmp_path
     # --- pdf_loader.py output (Tasks 2-3) -----------------------------
     headings = [b for b in doc.blocks if b.kind == BlockKind.HEADING]
     assert [h.number_label for h in headings] == ["1", "2"]  # pinned, not just non-empty
-    assert not any("REV" in b.text for b in doc.blocks if b.kind == BlockKind.PARAGRAPH)  # header suppressed
+    assert not any(
+        "REV" in b.text for b in doc.blocks if b.kind == BlockKind.PARAGRAPH
+    )  # header suppressed
     assert len(doc.blocks) == 4  # 2 HEADING + 2 PARAGRAPH (wrapped body merged to ONE block each)
     assert doc.blocks[1].kind == BlockKind.PARAGRAPH
-    assert doc.blocks[1].text.count("This is a long sentence") == 3  # wrapped paragraph merged intact, not split
+    assert (
+        doc.blocks[1].text.count("This is a long sentence") == 3
+    )  # wrapped paragraph merged intact, not split
 
     # --- build_survey_tree (SURVEY branch/token-estimate stability) ---
     # Node text/title deliberately echoes the fixture's own body text so
@@ -136,12 +150,20 @@ def test_pdf_survey_golden_produces_stable_branch_and_heading_structure(tmp_path
     # integrity-warning noise unrelated to Tasks 2-3.
     nodes = [
         {
-            "temp_id": "n0", "type": "Feature", "parent_temp_id": None,
-            "title": "Overview", "text": _WRAPPED_BODY_TEXT.strip(), "tags": [],
+            "temp_id": "n0",
+            "type": "Feature",
+            "parent_temp_id": None,
+            "title": "Overview",
+            "text": _WRAPPED_BODY_TEXT.strip(),
+            "tags": [],
         },
         {
-            "temp_id": "n1", "type": "Feature", "parent_temp_id": None,
-            "title": "Scope", "text": _SCOPE_BODY_TEXT, "tags": [],
+            "temp_id": "n1",
+            "type": "Feature",
+            "parent_temp_id": None,
+            "title": "Scope",
+            "text": _SCOPE_BODY_TEXT,
+            "tags": [],
         },
     ]
     fake = FakeSectionAnalysisClient(nodes)
@@ -150,7 +172,9 @@ def test_pdf_survey_golden_produces_stable_branch_and_heading_structure(tmp_path
     assert len(tree.nodes) == 2
     assert [n.type for n in tree.nodes] == [WorkItemType.FEATURE, WorkItemType.FEATURE]
     assert [n.title for n in tree.nodes] == ["Overview", "Scope"]
-    assert tree.warnings == []  # no dropped-block/low-grounding regressions from segmentation changes
+    assert (
+        tree.warnings == []
+    )  # no dropped-block/low-grounding regressions from segmentation changes
 
     # A single whole-document call, not a branch split -- this tiny
     # document's real token count comfortably fits the coverage budget.
@@ -164,4 +188,6 @@ def test_pdf_survey_golden_produces_stable_branch_and_heading_structure(tmp_path
     # actually feeding build_survey_tree's coverage hint, not just
     # producing HEADING blocks nobody downstream reads.
     assert fake.calls[0]["options"].topic_count == 2
-    assert "REV" not in fake.calls[0]["section_text"]  # suppressed header never reaches the LLM prompt either
+    assert (
+        "REV" not in fake.calls[0]["section_text"]
+    )  # suppressed header never reaches the LLM prompt either

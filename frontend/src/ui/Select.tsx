@@ -114,7 +114,9 @@ export const Select = forwardRef<
           <RadixSelect.Content
             position="popper"
             sideOffset={4}
-            className="z-50 max-h-72 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-sm border border-hairline-strong bg-surface shadow-popover"
+            // As wide as the trigger (a floor of 14rem keeps the compact pickers' list readable) and no wider: a list sized to its longest option
+            // used to spill over the next field's label. Long options wrap.
+            className="z-50 max-h-72 w-[max(var(--radix-select-trigger-width),14rem)] max-w-[var(--radix-select-content-available-width)] overflow-hidden rounded-sm border border-hairline-strong bg-surface shadow-popover"
           >
             <RadixSelect.Viewport className="p-1">
               {options.map((option) => {
@@ -126,7 +128,11 @@ export const Select = forwardRef<
                     disabled={option.props.disabled}
                     className="relative flex cursor-pointer select-none items-center justify-between gap-2 rounded-sm py-1.5 pl-2.5 pr-7 text-sm text-ink-1 outline-none data-[disabled]:cursor-not-allowed data-[disabled]:text-ink-3 data-[highlighted]:bg-accent-soft data-[highlighted]:text-accent-ink"
                   >
-                    <RadixSelect.ItemText>{option.props.children}</RadixSelect.ItemText>
+                    {/* The list is no wider than the trigger, so a long option wraps onto a second line (nothing hidden, for mouse or keyboard).
+                        ItemText strips className (like Value), so the wrapping lives on this wrapper. */}
+                    <span className="min-w-0 break-words">
+                      <RadixSelect.ItemText>{option.props.children}</RadixSelect.ItemText>
+                    </span>
                     <RadixSelect.ItemIndicator className="absolute right-2 inline-flex items-center">
                       <Check className="h-3.5 w-3.5" />
                     </RadixSelect.ItemIndicator>

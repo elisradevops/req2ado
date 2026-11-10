@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useAnimate } from 'motion/react-mini';
 import { ChevronUp, ChevronDown } from 'lucide-react';
 import { Dialog } from '../ui/Dialog';
@@ -7,9 +7,10 @@ import { Button } from '../ui/Button';
 import { WorkItemTypeBadge } from './WorkItemTypeBadge';
 import { ActionBadge } from './ActionBadge';
 import { NodeDetailPanel, canEditEntry } from './NodeDetailPanel';
+import { EvidenceStrip } from './EvidenceStrip';
 import { AddChildCard } from './AddChildCard';
 import { ChatPanel } from './ChatPanel';
-import { MoveToPicker } from './MoveToPicker';
+import { MoveToPicker, type MoveToPickerCandidate } from './MoveToPicker';
 import { cn } from '../lib/cn';
 import { canBeRoot } from '../lib/canNest';
 import type { WarningGroup } from '../utils/warningKinds';
@@ -26,6 +27,8 @@ import type { WorkItemTypeCatalogEntry } from '../api/ado';
 // ChatPanel at a time -- see useIsAboveBreakpoint's own doc comment for why
 // this matters.
 const LG_BREAKPOINT_QUERY = '(min-width: 1024px)';
+// J/K presses closer together than this are a held key or fast stepping: no settle effect between them.
+const SETTLE_REPEAT_MS = 300;
 
 // Real conditional mounting, not just CSS display:none/block -- ChatPanel
 // fetches history and opens a websocket connection unconditionally on
@@ -65,6 +68,41 @@ function useIsAboveBreakpoint(query: string): boolean {
 // with the same `open=true`) -- prev/next chevrons in the header step
 // through the same filtered row list the caller's arrow-key navigation
 // already uses.
+const WIDGET_ROLE_SELECTOR =
+  '[role=listbox],[role=option],[role=combobox],[role=menu],[role=menuitem],[role=menuitemcheckbox],[role=menuitemradio]';
+
+// 24px hit area (WCAG 2.5.8), a visible focus ring, and 16px icons.
+const CHEVRON_BUTTON_CLASS =
+  'inline-flex min-h-6 min-w-6 items-center justify-center rounded-sm text-ink-3 hover:text-ink-1 disabled:opacity-30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus';
+
+const BUSY_BUTTON_CLASS = 'cursor-not-allowed opacity-60';
+
+// A shortcut letter matches the typed character, or -- on a layout whose character is not a Latin letter (Hebrew,
+// Cyrillic) -- the physical key. A Latin character always wins, so AZERTY's A stays A.
+function matchesShortcutLetter(event: KeyboardEvent, letter: string): boolean {
+  const key = event.key.toLowerCase();
+  if (key === letter) return true;
+  const latin = /^[a-z]$/.test(key);
+  // Only a real typed character may fall back to the physical key: 'Dead', 'Unidentified' and 'Process' (IME) are not letters.
+  return !latin && event.key.length === 1 && event.code === `Key${letter.toUpperCase()}`;
+}
+
+function KeyHints({ hints }: { hints: Array<[string, string]> }): React.ReactElement {
+  return (
+    <span data-testid="key-hints" aria-hidden="true" className="ms-2 text-xs opacity-80">
+      {hints.map(([key, label], index) => (
+        <Fragment key={key}>
+          {/* The break point is this space, outside the nowrap pair: the line breaks between hints, never inside one. */}
+          {index > 0 && ' '}
+          <span className="whitespace-nowrap">
+            <kbd className="rounded-sm border border-current/30 px-1 font-mono text-micro">{key}</kbd> {label}
+          </span>
+        </Fragment>
+      ))}
+    </span>
+  );
+}
+
 export function NodeDetailDialog({
   open,
   onOpenChange,
@@ -72,6 +110,7 @@ export function NodeDetailDialog({
   entry,
   jobMode,
   jobStatus,
+  written,
   kbCitations,
   traceTargetTitles,
   traceLinkFailures,
@@ -82,7 +121,12 @@ export function NodeDetailDialog({
   captionByTableId,
   onSave,
   onRescore,
+  onSetProposalAccepted,
+  onAddDiscussion,
+  onRemoveDiscussion,
   onAttachFigure,
+  onMoveFigure,
+  figureMoveTargets,
   onRetryTraceLink,
   onAddChild,
   onMove,
@@ -91,6 +135,8 @@ export function NodeDetailDialog({
   hasNext,
   reason,
   review,
+  shortcutsEnabled = true,
+  announcement = '',
   typeCatalog,
   categoryLabels,
   requirementClassificationField,
@@ -101,6 +147,8 @@ export function NodeDetailDialog({
   entry: DryRunDiffEntry | null;
   jobMode?: 'baseline' | 'survey' | null;
   jobStatus?: string | null;
+  // Already written to Azure DevOps by an earlier attempt (locks editing like the other read-only reasons).
+  written?: boolean;
   kbCitations?: KbCitation[];
   traceTargetTitles?: Record<string, string>;
   // Task 4: see NodeDetailPanel's own doc comment -- passed straight through
@@ -133,11 +181,18 @@ export function NodeDetailDialog({
   // classification to -- see NodeDetailPanel's own doc comment.
   requirementClassificationField?: { referenceName: string; allowedValues: string[] } | null;
   onRescore?: (localId: string) => Promise<void>;
+  onSetProposalAccepted?: (localId: string, accepted: boolean) => Promise<void> | void;
+  // "To be discussed": park a chat proposal in the item's ADO Discussion instead of applying it; remove one later from the item's list.
+  onAddDiscussion?: (localId: string, entry: { proposedTitle?: string; proposedDescription?: string }) => Promise<void> | void;
+  onRemoveDiscussion?: (localId: string, entryId: string) => Promise<void> | void;
   // Manual "Upload to ADO" action for one of this entry's figures -- see
   // NodeDetailPanel's Figures section and JobsService.attachFigureToAdo's
   // own doc comment for why this exists alongside confirm()'s automatic
   // attachment.
   onAttachFigure?: (localId: string, figureId: string) => Promise<void>;
+  // Pass-through to NodeDetailPanel: move one of this entry's figures to another item, or detach it (null).
+  onMoveFigure?: (figureId: string, targetLocalId: string | null) => Promise<void>;
+  figureMoveTargets?: MoveToPickerCandidate[];
   // Task 4: manual retry for a trace link that failed to write to Azure
   // DevOps -- see NodeDetailPanel's own doc comment.
   onRetryTraceLink?: (failureId: string) => Promise<void>;
@@ -162,10 +217,31 @@ export function NodeDetailDialog({
   // focused integrity warning -- shown as a banner above the item so the
   // reviewer doesn't have to remember what they're checking for.
   reason?: { title: string; todo: string; group: WarningGroup } | null;
-  // Marks this item as checked and steps on (R). Present only when the
-  // item was opened from a fix/review warning on a job still awaiting
-  // review. `reviewed` swaps the primary action for an undo.
-  review?: { reviewed: boolean; onMark: () => void; onUnmark: () => void } | null;
+  // Marks this item as reviewed and steps on (A or R). Present only when the
+  // item was opened from a fix/review warning, or from the risk-ordered
+  // queue, on a job still awaiting review. `reviewed` swaps the primary
+  // action for an undo. `onReject` (X) excludes the item and steps on; only
+  // the queue offers it.
+  review?: {
+    reviewed: boolean;
+    onMark: () => void;
+    onUnmark: () => void;
+    onReject?: () => void;
+    onUndo?: () => void;
+    // Wording for the mark when it is not "mark reviewed" (the spot-check's "Looks right and next").
+    markLabel?: string;
+    markHint?: string;
+    // A review save is in flight: the mode buttons and keys do nothing (aria-disabled, never `disabled`, so focus stays put).
+    busy?: boolean;
+    // Called instead of the action when it is pressed while busy (the page says "Still saving").
+    onBusyAttempt?: () => void;
+  } | null;
+  // The single-key shortcuts (J K R A X). Off turns every one of them off
+  // (WCAG 2.1.4); the buttons keep working.
+  shortcutsEnabled?: boolean;
+  // What the review queue just did ("Marked reviewed. 2 left."). Spoken from inside the dialog:
+  // the page behind a modal dialog is hidden from screen readers, so the page's own region is not.
+  announcement?: string;
   typeCatalog?: Record<string, WorkItemTypeCatalogEntry>;
   // Category -> this project's real ADO type name, for AddChildForm's type
   // Select LABELS only -- see AddChildForm.tsx's own doc comment.
@@ -186,6 +262,7 @@ export function NodeDetailDialog({
   // own entrance covers that) and skipped for reduced-motion users.
   const [detailsScope, animateDetails] = useAnimate<HTMLDivElement>();
   const previousLocalId = useRef<string | undefined>(undefined);
+  const lastSettleAt = useRef(0);
   useEffect(() => {
     const localId = entry?.localId;
     const hadPrevious = previousLocalId.current !== undefined;
@@ -195,37 +272,64 @@ export function NodeDetailDialog({
     // (jsdom, very old browsers) just skips the effect.
     if (typeof detailsScope.current.animate !== 'function') return;
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-    void animateDetails(detailsScope.current, { opacity: [0.4, 1], y: [4, 0] }, { duration: 0.19, ease: 'easeOut' });
+    // A repeated action: opacity only, short, and skipped while the key is held or pressed again within 300ms
+    // (DESIGN.md section 8.3), so stepping through a list never leaves the content shimmering.
+    const now = performance.now();
+    const repeated = now - lastSettleAt.current < SETTLE_REPEAT_MS;
+    lastSettleAt.current = now;
+    if (repeated) return;
+    void animateDetails(detailsScope.current, { opacity: [0.7, 1] }, { duration: 0.11, ease: 'easeOut' });
   }, [entry?.localId, animateDetails, detailsScope]);
+
+  // E asks the panel to open its edit form (the form's state lives there); a counter so every press counts.
+  const [editRequest, setEditRequest] = useState(0);
+  const entryEditable = !!entry && canEditEntry(entry, jobStatus, written);
 
   // J / K step to the next / previous item, same as the chevrons in the
   // title. Ignored while typing (edit fields, chat) and with any modifier
   // held, so it never swallows a real character or a browser shortcut.
   useEffect(() => {
-    if (!open || !onNavigate) return;
+    if (!open || !onNavigate || !shortcutsEnabled) return;
     function handleKeyDown(event: KeyboardEvent): void {
+      if (event.defaultPrevented || event.shiftKey || event.isComposing || event.keyCode === 229) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
-      const target = event.target as HTMLElement | null;
+      // composedPath()[0] is the real origin even inside a shadow root, where event.target is retargeted to the host.
+      const target = (event.composedPath?.()[0] ?? event.target) as HTMLElement | null;
       if (target && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))) return;
-      const key = event.key.toLowerCase();
-      if (key === 'j' && hasNext) {
+      // A letter typed to pick an option or menu entry is not a review shortcut.
+      if (target?.closest?.(WIDGET_ROLE_SELECTOR)) return;
+      const is = (letter: string): boolean => matchesShortcutLetter(event, letter);
+      // A held A, R or X must not mark or exclude the whole queue at key-repeat speed.
+      if (event.repeat && (is('r') || is('a') || is('x') || is('u') || is('e'))) return;
+      if (is('j') && hasNext) {
         event.preventDefault();
         onNavigate?.('next');
-      } else if (key === 'k' && hasPrev) {
+      } else if (is('k') && hasPrev) {
         event.preventDefault();
         onNavigate?.('prev');
-      } else if (key === 'r' && review && !review.reviewed) {
+      } else if ((is('r') || is('a')) && review && !review.reviewed) {
         event.preventDefault();
-        review.onMark();
+        if (review.busy) review.onBusyAttempt?.();
+        else review.onMark();
+      } else if (is('x') && review?.onReject && !review.reviewed) {
+        event.preventDefault();
+        if (review.busy) review.onBusyAttempt?.();
+        else review.onReject();
+      } else if (is('u') && review?.onUndo) {
+        event.preventDefault();
+        review.onUndo();
+      } else if (is('e') && entryEditable) {
+        event.preventDefault();
+        setEditRequest((count) => count + 1);
       }
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [open, onNavigate, hasNext, hasPrev, review]);
+  }, [open, onNavigate, hasNext, hasPrev, review, shortcutsEnabled, entryEditable]);
 
   if (!entry) return null;
 
-  const canEdit = canEditEntry(entry, jobStatus);
+  const canEdit = canEditEntry(entry, jobStatus, written);
   const chatDisabledReason =
     jobStatus != null && jobStatus !== 'diff_ready'
       ? "This job's review is closed -- chat is only available while it's awaiting review."
@@ -254,24 +358,42 @@ export function NodeDetailDialog({
       <MoveEntryControl entry={entry} allEntries={Object.values(diffByLocalId ?? {})} categoryLabels={categoryLabels} typeCatalog={typeCatalog} onMove={onMove} />
     ) : undefined;
 
+  const evidenceStrip = <EvidenceStrip entry={entry} jobMode={jobMode} kbCitations={kbCitations} />;
+
+  const keyHints: Array<[string, string]> = [
+    ['J', 'next'],
+    ['K', 'previous'],
+    ...(review && !review.reviewed ? ([['A/R', review.markHint ?? 'mark reviewed']] as Array<[string, string]>) : []),
+    ...(review && !review.reviewed && review.onReject ? ([['X', 'exclude']] as Array<[string, string]>) : []),
+    ...(review?.onUndo ? ([['U', 'undo']] as Array<[string, string]>) : []),
+    ...(entryEditable ? ([['E', 'edit']] as Array<[string, string]>) : []),
+  ];
+
   const detailsContent = (
     <NodeDetailPanel
       jobId={jobId}
       entry={entry}
       jobMode={jobMode}
       jobStatus={jobStatus}
+      written={written}
+      editRequest={editRequest}
       kbCitations={kbCitations}
       traceTargetTitles={traceTargetTitles}
       traceLinkFailures={traceLinkFailures}
       parentEntry={entry.parentLocalId != null ? diffByLocalId?.[entry.parentLocalId] : undefined}
       addChildSlot={addChildSlot}
+      hideSources
       moveSlot={moveSlot}
       captionByFigureId={captionByFigureId}
       nameByFigureId={nameByFigureId}
       captionByTableId={captionByTableId}
       onSave={onSave}
       onRescore={onRescore}
+      onSetProposalAccepted={onSetProposalAccepted}
+      onRemoveDiscussion={onRemoveDiscussion}
       onAttachFigure={onAttachFigure}
+      onMoveFigure={onMoveFigure}
+      figureMoveTargets={figureMoveTargets}
       onRetryTraceLink={onRetryTraceLink}
       descendantCounts={descendantCountsByLocalId?.[entry.localId]}
       requirementClassificationField={requirementClassificationField}
@@ -286,11 +408,17 @@ export function NodeDetailDialog({
       disabled={!canEdit}
       disabledReason={chatDisabledReason}
       categoryScores={entry.qualityStale ? null : entry.qualityCategoryScores}
+      isCompound={entry.type === 'Requirement' && !entry.qualityStale && (entry.qualityIssues ?? []).includes('compound')}
       onAcceptProposal={(patch) =>
         onSave?.(entry.localId, {
           title: patch.title ?? entry.title,
           description: patch.description ?? entry.description,
         })
+      }
+      onDiscuss={
+        onAddDiscussion
+          ? (patch) => onAddDiscussion(entry.localId, { proposedTitle: patch.title, proposedDescription: patch.description })
+          : undefined
       }
     />
   );
@@ -303,7 +431,7 @@ export function NodeDetailDialog({
       maxWidthClassName="max-w-[1180px]"
       maxHeightClassName="h-[min(760px,calc(100vh-96px))]"
       title={
-        <div className="flex min-w-0 items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
           {onNavigate && (
             <span className="flex flex-none flex-col">
               <button
@@ -311,23 +439,25 @@ export function NodeDetailDialog({
                 aria-label="Previous item"
                 disabled={!hasPrev}
                 onClick={() => onNavigate('prev')}
-                className="text-ink-3 hover:text-ink-1 disabled:opacity-30"
+                aria-keyshortcuts={shortcutsEnabled ? 'K' : undefined}
+                className={CHEVRON_BUTTON_CLASS}
               >
-                <ChevronUp className="h-3.5 w-3.5" />
+                <ChevronUp className="h-4 w-4" />
               </button>
               <button
                 type="button"
                 aria-label="Next item"
                 disabled={!hasNext}
                 onClick={() => onNavigate('next')}
-                className="text-ink-3 hover:text-ink-1 disabled:opacity-30"
+                aria-keyshortcuts={shortcutsEnabled ? 'J' : undefined}
+                className={CHEVRON_BUTTON_CLASS}
               >
-                <ChevronDown className="h-3.5 w-3.5" />
+                <ChevronDown className="h-4 w-4" />
               </button>
             </span>
           )}
           <WorkItemTypeBadge type={entry.type} catalogEntry={typeCatalog?.[entry.type]} />
-          <span className="truncate">{entry.title}</span>
+          <span dir="auto" className="min-w-[12rem] flex-1 break-words" title={entry.title}>{entry.title}</span>
           {entry.customerId && <span className="flex-none font-mono text-xs tracking-tight text-ink-3">{entry.customerId}</span>}
           <ActionBadge action={entry.action} existingAdoId={entry.existingAdoId} />
         </div>
@@ -339,6 +469,9 @@ export function NodeDetailDialog({
         entry.excluded ? <span className="text-xs text-ink-3">Excluded from this run</span> : undefined
       }
     >
+      <div role="status" aria-live="polite" className="sr-only">
+        {announcement}
+      </div>
       {reason && (
         <div
           role="note"
@@ -350,39 +483,73 @@ export function NodeDetailDialog({
           )}
         >
           <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5">
-            <span className="min-w-0 flex-1">
+            {/* basis-56: below that width the buttons wrap onto their own line instead of squeezing the text. */}
+            <span className="min-w-0 flex-1 basis-56">
               <span className="font-semibold">{reason.title}.</span> {reason.todo}
-              {onNavigate && (
-                <span className="ml-2 whitespace-nowrap text-xs opacity-80">
-                  <kbd className="rounded-sm border border-current/30 px-1 font-mono text-micro">J</kbd> next{' '}
-                  <kbd className="rounded-sm border border-current/30 px-1 font-mono text-micro">K</kbd> previous
-                  {review && !review.reviewed && (
-                    <>
-                      {' '}
-                      <kbd className="rounded-sm border border-current/30 px-1 font-mono text-micro">R</kbd> mark reviewed
-                    </>
-                  )}
-                </span>
-              )}
+              {onNavigate && shortcutsEnabled && <KeyHints hints={keyHints} />}
             </span>
             {review &&
               (review.reviewed ? (
-                <Button size="sm" variant="outline" className="flex-none" onClick={review.onUnmark}>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className={cn('flex-none', review.busy && BUSY_BUTTON_CLASS)}
+                  aria-busy={review.busy || undefined}
+                  aria-disabled={review.busy || undefined}
+                  onClick={() => {
+                    if (review.busy) review.onBusyAttempt?.();
+                    else review.onUnmark();
+                  }}
+                >
                   Mark not reviewed
                 </Button>
               ) : (
-                <Button size="sm" variant="primary" className="flex-none" onClick={review.onMark}>
-                  Mark reviewed and next
-                </Button>
+                <div className="flex flex-none items-center gap-2">
+                  {review.onReject && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className={cn(review.busy && BUSY_BUTTON_CLASS)}
+                      aria-busy={review.busy || undefined}
+                      aria-disabled={review.busy || undefined}
+                      aria-keyshortcuts={onNavigate && shortcutsEnabled ? 'X' : undefined}
+                      onClick={() => {
+                        if (review.busy) review.onBusyAttempt?.();
+                        else review.onReject?.();
+                      }}
+                    >
+                      Exclude and next
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    className={cn(review.busy && BUSY_BUTTON_CLASS)}
+                    aria-busy={review.busy || undefined}
+                    aria-disabled={review.busy || undefined}
+                    aria-keyshortcuts={onNavigate && shortcutsEnabled ? 'A R' : undefined}
+                    onClick={() => {
+                      if (review.busy) review.onBusyAttempt?.();
+                      else review.onMark();
+                    }}
+                  >
+                    {review.markLabel ?? 'Mark reviewed and next'}
+                  </Button>
+                </div>
               ))}
           </div>
+        </div>
+      )}
+      {!reason && onNavigate && shortcutsEnabled && (
+        <div className="flex-none border-b border-hairline bg-surface-sunken px-5 py-1 text-ink-2">
+          <KeyHints hints={keyHints} />
         </div>
       )}
       {isDesktop ? (
         // `lg` and up: real two-pane layout, details left / chat right.
         <div className="flex min-h-0 flex-1">
           <div className="min-h-0 flex-1 overflow-y-auto">
-            <div ref={detailsScope}>{detailsContent}</div>
+            <div ref={detailsScope}>{evidenceStrip}{detailsContent}</div>
           </div>
           <div className="min-h-0 w-[400px] flex-none border-l border-hairline">{chatContent}</div>
         </div>
@@ -400,7 +567,7 @@ export function NodeDetailDialog({
             />
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto">
-            {mobileTab === 'details' ? <div ref={detailsScope}>{detailsContent}</div> : chatContent}
+            {mobileTab === 'details' ? <div ref={detailsScope}>{evidenceStrip}{detailsContent}</div> : chatContent}
           </div>
         </div>
       )}

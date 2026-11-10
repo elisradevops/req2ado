@@ -29,7 +29,7 @@ export function StatTile({
   return (
     <div
       className={cn(
-        'relative overflow-hidden rounded-md border border-hairline bg-surface p-3 shadow-card',
+        'relative min-w-0 overflow-hidden rounded-md border border-hairline bg-surface p-3 shadow-card max-md:p-2.5',
         accent && 'pl-4',
         interactive && 'liftable',
       )}
@@ -47,7 +47,7 @@ export function StatTile({
       >
         {value}
       </p>
-      <p className={cn('flex items-center gap-1', LABEL_MICRO)}>
+      <p className={cn('flex items-center gap-1 max-md:text-xs max-md:tracking-normal', LABEL_MICRO)}>
         {Icon && <Icon className="h-3.5 w-3.5 flex-none" />}
         {label}
         {hint && <InfoTip content={hint} label={`About ${typeof label === 'string' ? label : 'this number'}`} />}

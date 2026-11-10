@@ -10,6 +10,7 @@ describe('KbService', () => {
       mimeType: 'application/pdf',
       sizeBytes: 1024,
       chunksStored: 3,
+      chunksInStore: 3,
       skippedUnchanged: false,
     };
     const ingestionClient = { ingestUrl: jest.fn().mockResolvedValue(ingestResult) };
@@ -21,8 +22,8 @@ describe('KbService', () => {
     expect(ingestionClient.ingestUrl).toHaveBeenCalledWith('https://contoso.sharepoint.com/x', 'Project\\Area1', 'SRD', null, null);
     expect(prisma.ingestedDocument.upsert).toHaveBeenCalledWith({
       where: { userId_driveItemId: { userId: 'Project\\Area1', driveItemId: 'drive-1' } },
-      create: { userId: 'Project\\Area1', driveItemId: 'drive-1', name: 'doc.pdf', sizeBytes: 1024, mimeType: 'application/pdf', docType: 'SRD', retrievalMode: null },
-      update: { name: 'doc.pdf', sizeBytes: 1024, mimeType: 'application/pdf', docType: 'SRD', retrievalMode: null, ingestedAt: expect.any(Date) },
+      create: { userId: 'Project\\Area1', driveItemId: 'drive-1', name: 'doc.pdf', sizeBytes: 1024, mimeType: 'application/pdf', docType: 'SRD', retrievalMode: null, chunkCount: 3 },
+      update: { name: 'doc.pdf', sizeBytes: 1024, mimeType: 'application/pdf', docType: 'SRD', retrievalMode: null, chunkCount: 3, ingestedAt: expect.any(Date) },
     });
     expect(result).toEqual(ingestResult);
   });
@@ -49,6 +50,81 @@ describe('KbService', () => {
         update: expect.objectContaining({ retrievalMode: 'always_include' }),
       }),
     );
+  });
+
+  it('ingestUrl() records the real stored chunk count on a skip-unchanged re-ingest (not the 0 newly stored)', async () => {
+    const ingestResult = { documentName: 'doc.pdf', driveitemId: 'drive-1', mimeType: null, sizeBytes: 10, chunksStored: 0, chunksInStore: 32, skippedUnchanged: true };
+    const ingestionClient = { ingestUrl: jest.fn().mockResolvedValue(ingestResult) };
+    const prisma = { ingestedDocument: { upsert: jest.fn().mockResolvedValue(undefined) } };
+    const service = new KbService(prisma as any, ingestionClient as any, fakeCredentialVault as any);
+
+    await service.ingestUrl('https://contoso.sharepoint.com/x', 'u', null);
+
+    expect(prisma.ingestedDocument.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ chunkCount: 32 }),
+        update: expect.objectContaining({ chunkCount: 32 }),
+      }),
+    );
+  });
+
+  it('ingestItem() persists chunkCount from the ingestion result', async () => {
+    const ingestResult = { documentName: 'a.pdf', driveitemId: 'drive-9', mimeType: 'application/pdf', sizeBytes: 5, chunksStored: 0, chunksInStore: 0, skippedUnchanged: true };
+    const ingestionClient = { ingestItem: jest.fn().mockResolvedValue(ingestResult) };
+    const prisma = { ingestedDocument: { upsert: jest.fn().mockResolvedValue({ id: 'row-1' }) } };
+    const service = new KbService(prisma as any, ingestionClient as any, fakeCredentialVault as any);
+
+    const result = await service.ingestItem('a.pdf', 'drive-9', 'https://dl', 'Sub/a.pdf', 'u', null);
+
+    expect(prisma.ingestedDocument.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ chunkCount: 0 }),
+        update: expect.objectContaining({ chunkCount: 0 }),
+      }),
+    );
+    expect(result.ingestedDocumentId).toBe('row-1');
+  });
+
+  it('ingestFolderUrl() persists each file\'s chunkCount', async () => {
+    const folderResult = {
+      files: [
+        { file: 'a.docx', status: 'ingested', chunksStored: 2, chunksInStore: 2, driveitemId: 'drive-a', mimeType: null, sizeBytes: 1, reason: null },
+        { file: 'b.docx', status: 'skipped_unchanged', chunksStored: 0, chunksInStore: 7, driveitemId: 'drive-b', mimeType: null, sizeBytes: 1, reason: null },
+      ],
+    };
+    const ingestionClient = { ingestFolderUrl: jest.fn().mockResolvedValue(folderResult) };
+    const prisma = { ingestedDocument: { upsert: jest.fn().mockResolvedValue(undefined) } };
+    const service = new KbService(prisma as any, ingestionClient as any, fakeCredentialVault as any);
+
+    await service.ingestFolderUrl('https://contoso.sharepoint.com/folder', 'u', null);
+
+    expect(prisma.ingestedDocument.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { userId_driveItemId: { userId: 'u', driveItemId: 'drive-b' } }, update: expect.objectContaining({ chunkCount: 7 }) }),
+    );
+    expect(prisma.ingestedDocument.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { userId_driveItemId: { userId: 'u', driveItemId: 'drive-a' } }, create: expect.objectContaining({ chunkCount: 2 }) }),
+    );
+  });
+
+  it('an unknown count (older ingestion) is stored as null on create and overwrites a possibly stale count on update', async () => {
+    const unknown = { documentName: 'd.pdf', driveitemId: 'drive-1', mimeType: null, sizeBytes: 1, chunksStored: 0, chunksInStore: null, skippedUnchanged: true };
+    const ingestionClient = {
+      ingestUrl: jest.fn().mockResolvedValue(unknown),
+      ingestItem: jest.fn().mockResolvedValue(unknown),
+      ingestFolderUrl: jest.fn().mockResolvedValue({ files: [{ file: 'd.pdf', status: 'skipped_unchanged', chunksStored: 0, chunksInStore: null, driveitemId: 'drive-1', mimeType: null, sizeBytes: 1, reason: null }] }),
+    };
+    const prisma = { ingestedDocument: { upsert: jest.fn().mockResolvedValue({ id: 'row' }) } };
+    const service = new KbService(prisma as any, ingestionClient as any, fakeCredentialVault as any);
+
+    await service.ingestUrl('https://x/d.pdf', 'u', null);
+    await service.ingestItem('d.pdf', 'drive-1', 'https://dl', 'd.pdf', 'u', null);
+    await service.ingestFolderUrl('https://x/folder', 'u', null);
+
+    expect(prisma.ingestedDocument.upsert).toHaveBeenCalledTimes(3);
+    for (const [args] of prisma.ingestedDocument.upsert.mock.calls) {
+      expect(args.create.chunkCount).toBeNull();
+      expect(args.update.chunkCount).toBeNull();
+    }
   });
 
   it('listDocuments() filters by userId when provided', async () => {
@@ -217,6 +293,29 @@ describe('KbService', () => {
       expect(result).toEqual([
         expect.objectContaining({ id: 'drive-1', name: 'new.docx', alreadyIngested: true, ingestedDocumentId: 'doc-1' }),
       ]);
+    });
+
+    it('returns the matched row\'s chunkCount (null when unknown or not ingested)', async () => {
+      const prisma = {
+        ingestedDocument: {
+          findMany: jest.fn().mockResolvedValue([
+            { id: 'doc-1', driveItemId: 'drive-1', chunkCount: 0, retrievalMode: 'always_include' },
+            { id: 'doc-2', driveItemId: 'drive-2', chunkCount: 32, retrievalMode: null },
+            { id: 'doc-3', driveItemId: 'drive-3', chunkCount: null },
+          ]),
+        },
+      };
+      const ingestionClient = {
+        browseFolder: jest.fn().mockResolvedValue([
+          child({ id: 'drive-1' }), child({ id: 'drive-2' }), child({ id: 'drive-3' }), child({ id: 'drive-4' }),
+        ]),
+      };
+      const service = new KbService(prisma as any, ingestionClient as any, fakeCredentialVault as any);
+
+      const result = await service.browseFolder('https://contoso.sharepoint.com/x', 'Project\\Area1', '');
+
+      expect(result.map((r) => r.chunkCount)).toEqual([0, 32, null, null]);
+      expect(result.map((r) => r.retrievalMode)).toEqual(['always_include', null, null, null]);
     });
 
     it('does not match a file whose driveItemId is not in this user\'s KB', async () => {

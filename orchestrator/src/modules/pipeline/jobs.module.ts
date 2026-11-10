@@ -3,7 +3,6 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { PrismaClient } from '@prisma/client';
 import Redis from 'ioredis';
 import { JobsController } from './jobs.controller';
-import { DocumentOverviewService } from './document-overview.service';
 import { AdoController } from './ado.controller';
 import {
   JobEventsController,
@@ -34,7 +33,6 @@ import { BatchPumpService } from '../batch/batch-pump.service';
   controllers: [JobsController, AdoController, JobEventsController, BackfillController, BatchController],
   providers: [
     { provide: PrismaClient, useValue: new PrismaClient() },
-    DocumentOverviewService,
     {
       // Same erased-runtime-type / explicit-factory reasoning this module
       // already documents for IdempotencyService et al -- needed here only
@@ -133,6 +131,11 @@ import { BatchPumpService } from '../batch/batch-pump.service';
             .map((s) => s.trim())
             .filter(Boolean),
         ),
+    },
+    {
+      provide: 'SUMMARY_MAX_TOKENS',
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => config.get<number>('DOCUMENT_OVERVIEW_MAX_TOKENS') ?? 4000,
     },
     {
       provide: 'MAX_UPLOAD_SIZE_BYTES',
@@ -236,6 +239,7 @@ import { BatchPumpService } from '../batch/batch-pump.service';
           prisma,
           config.get<number>('JOB_RETENTION_CHECK_INTERVAL_MS')!,
           config.get<number>('JOB_RETENTION_MAX_AGE_MS')!,
+          config.get<number>('JOB_FIGURE_RETENTION_MAX_AGE_MS')!,
         ),
     },
     {

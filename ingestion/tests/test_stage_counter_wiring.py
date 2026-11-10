@@ -1,5 +1,6 @@
 """The deterministic passes report exact item counts through the job's
 StageCounter, only when live progress is on."""
+
 import json
 
 import pytest
@@ -51,14 +52,21 @@ class Parents:
 
 def _doc() -> CanonicalDoc:
     headings = [
-        (1, "1  Power"), (2, "1.1  Bus voltage"),
-        (3, "1.1.1  The system shall limit ripple."), (3, "1.1.2  The system shall report faults."),
+        (1, "1  Power"),
+        (2, "1.1  Bus voltage"),
+        (3, "1.1.1  The system shall limit ripple."),
+        (3, "1.1.2  The system shall report faults."),
     ]
     return CanonicalDoc(
         document=Document(path="x.docx", format=DocumentFormat.DOCX, sha256="x"),
         blocks=[
-            Block(id=f"h{i}", kind=BlockKind.HEADING, heading_level=level, text=text,
-                  source_ref=SourceRef(document_path="x.docx", start_offset=i, end_offset=i + 1))
+            Block(
+                id=f"h{i}",
+                kind=BlockKind.HEADING,
+                heading_level=level,
+                text=text,
+                source_ref=SourceRef(document_path="x.docx", start_offset=i, end_offset=i + 1),
+            )
             for i, (level, text) in enumerate(headings)
         ],
     )
@@ -69,7 +77,10 @@ def _run(monkeypatch, *, live: bool, parents: bool = True):  # noqa: ANN001, ANN
     redis = FakeRedis()
     with job_id_scope(JOB), live_emitter_scope(JOB, redis):
         _detect_deterministic_subtrees(
-            _doc(), TitleTags(), Synthesis(), Parents() if parents else None,
+            _doc(),
+            TitleTags(),
+            Synthesis(),
+            Parents() if parents else None,
         )
     return redis
 
@@ -126,7 +137,10 @@ def test_the_built_nodes_do_not_depend_on_the_counter(monkeypatch, live) -> None
     redis = FakeRedis()
     with job_id_scope(JOB), live_emitter_scope(JOB, redis):
         nodes, _w, _doc2 = _detect_deterministic_subtrees(
-            _doc(), TitleTags(), Synthesis(), Parents(),
+            _doc(),
+            TitleTags(),
+            Synthesis(),
+            Parents(),
         )
     assert [(n.local_id, n.title) for n in nodes] == [
         (n.local_id, n.title)
@@ -138,8 +152,12 @@ def _plain_doc() -> CanonicalDoc:
     return CanonicalDoc(
         document=Document(path="x.pdf", format=DocumentFormat.PDF, sha256="x"),
         blocks=[
-            Block(id="p0", kind=BlockKind.PARAGRAPH, text="The platform shall run on 28 V.",
-                  source_ref=SourceRef(document_path="x.pdf", start_offset=0, end_offset=1)),
+            Block(
+                id="p0",
+                kind=BlockKind.PARAGRAPH,
+                text="The platform shall run on 28 V.",
+                source_ref=SourceRef(document_path="x.pdf", start_offset=0, end_offset=1),
+            ),
         ],
     )
 

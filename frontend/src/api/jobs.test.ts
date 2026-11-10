@@ -1,9 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import axios from 'axios';
 import { httpClient } from './httpClient';
-import { explainScore, listJobs, submitJob, confirmJob, editDiffEntry, setDiffEntryExcluded, setDiffEntriesReviewed, setWarningsAcknowledged, retryEnhancement, addDiffEntry, rescoreDiffEntry, getFigureFile, attachFigureToAdo, retryTraceLinkWrite, validateCreatedTree, previewExposition } from './jobs';
+import { explainScore, listJobs, submitJob, confirmJob, editDiffEntry, addDiscussionEntry, removeDiscussionEntry, setDiffEntryExcluded, setProposalAccepted, setDiffEntriesReviewed, setWarningsAcknowledged, retryEnhancement, addDiffEntry, rescoreDiffEntry, getFigureFile, attachFigureToAdo, moveFigure, retryTraceLinkWrite, validateCreatedTree, previewSummary } from './jobs';
 
 vi.mock('./httpClient');
+vi.mock('./config', () => ({ loadRuntimeConfig: vi.fn().mockResolvedValue({ apiBaseUrl: '/api' }) }));
 
 describe('jobs api', () => {
   it('listJobs calls GET /jobs', async () => {
@@ -34,10 +35,36 @@ describe('jobs api', () => {
     expect(httpClient.patch).toHaveBeenCalledWith('/jobs/job-1/diff/n0', { title: 'New', description: 'New desc' });
   });
 
+  it('addDiscussionEntry POSTs the proposed text to the discussion sub-route', async () => {
+    (httpClient.post as any).mockResolvedValue({ data: { dryRunDiff: [] } });
+    await addDiscussionEntry('job-1', 'n0', { proposedTitle: 'P', proposedDescription: 'PD' });
+    expect(httpClient.post).toHaveBeenCalledWith('/jobs/job-1/diff/n0/discussion', { proposedTitle: 'P', proposedDescription: 'PD' });
+  });
+
+  it('removeDiscussionEntry DELETEs the entry by id', async () => {
+    (httpClient.delete as any).mockResolvedValue({ data: { dryRunDiff: [] } });
+    await removeDiscussionEntry('job-1', 'n0', 'e1');
+    expect(httpClient.delete).toHaveBeenCalledWith('/jobs/job-1/diff/n0/discussion/e1');
+  });
+
+  it('moveFigure PATCHes the figure sub-route with the target, or null to detach', async () => {
+    (httpClient.patch as any).mockResolvedValue({ data: { dryRunDiff: [] } });
+    await moveFigure('job-1', 'n0', 'f1', 'n2');
+    expect(httpClient.patch).toHaveBeenCalledWith('/jobs/job-1/diff/n0/figures/f1', { targetLocalId: 'n2' });
+    await moveFigure('job-1', 'n0', 'f1', null);
+    expect(httpClient.patch).toHaveBeenLastCalledWith('/jobs/job-1/diff/n0/figures/f1', { targetLocalId: null });
+  });
+
   it('setDiffEntryExcluded PATCHes the exclude sub-route', async () => {
     (httpClient.patch as any).mockResolvedValue({ data: { dryRunDiff: [] } });
     await setDiffEntryExcluded('job-1', 'n0', true);
     expect(httpClient.patch).toHaveBeenCalledWith('/jobs/job-1/diff/n0/exclude', { excluded: true });
+  });
+
+  it('setProposalAccepted PATCHes the proposal sub-route with the accepted flag', async () => {
+    (httpClient.patch as any).mockResolvedValue({ data: { dryRunDiff: [] } });
+    await setProposalAccepted('job-1', 'n0', true);
+    expect(httpClient.patch).toHaveBeenCalledWith('/jobs/job-1/diff/n0/proposal', { accepted: true });
   });
 
   it('setDiffEntriesReviewed PATCHes the bulk reviewed route with every id in one body', async () => {
@@ -126,22 +153,20 @@ describe('jobs api', () => {
     expect(result).toEqual(validationResult);
   });
 
-  describe('previewExposition', () => {
-    beforeEach(() => {
-      vi.clearAllMocks();
+  // The overview the wizard made from the parsed document is submitted with the job (SURVEY only).
+  describe('previewSummary', () => {
+    it('posts the prepared input (and the chosen model) and returns the summary text', async () => {
+      (httpClient.post as any).mockResolvedValue({ data: { summary: 'A summary.' } });
+      const controller = new AbortController();
+      expect(await previewSummary({ summaryInput: 'INPUT', model: 'm1' }, controller.signal)).toBe('A summary.');
+      expect(httpClient.post).toHaveBeenCalledWith('/jobs/preview/summary', { summaryInput: 'INPUT', model: 'm1' }, { signal: controller.signal });
     });
 
-    it('posts the heading outline and returns the overview', async () => {
-      vi.mocked(httpClient.post).mockResolvedValue({ data: { synopsis: 'About a backplane.', caveat: null } } as any);
-
-      const result = await previewExposition({ documentMap: [{ number: null, title: 'Intro', blockCount: 5, figureCount: 0 }], sectionCount: 1, depth: 2 });
-
-      expect(result).toEqual({ synopsis: 'About a backplane.', caveat: null });
-      expect(httpClient.post).toHaveBeenCalledWith('/jobs/preview/exposition', {
-        documentMap: [{ number: null, title: 'Intro', blockCount: 5, figureCount: 0 }],
-        sectionCount: 1,
-        depth: 2,
-      });
+    it('is null when the server has no summary, and also when the call fails: the summary is optional', async () => {
+      (httpClient.post as any).mockResolvedValue({ data: { summary: null } });
+      expect(await previewSummary({ summaryInput: 'INPUT' })).toBeNull();
+      (httpClient.post as any).mockRejectedValue(new Error('timeout'));
+      expect(await previewSummary({ summaryInput: 'INPUT' })).toBeNull();
     });
   });
 

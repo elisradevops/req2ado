@@ -3,6 +3,7 @@
 Built from what the job already holds for the item (its parents, its siblings, its trace links, its figures and tables); nothing
 here reads the source document, which is not kept after a job. Every part is capped, so the pack stays small whatever the document
 looks like, and the tail (figures, tables) is what gives way first."""
+
 from __future__ import annotations
 
 from app.leveling.description_text import description_for_model
@@ -38,9 +39,15 @@ def render_context_pack(context: dict | None) -> str | None:
         if not title:
             continue
         kind = _clip(parent.get("type"), 20) or "Parent"
-        description = _clip(description_for_model(parent.get("description")), _PARENT_DESCRIPTION_CHARS)
+        description = _clip(
+            description_for_model(parent.get("description")), _PARENT_DESCRIPTION_CHARS
+        )
         lines.append(f"{kind}: {title}" + (f" -- {description}" if description else ""))
-    siblings = [t for t in (_clip(s.get("title"), _TITLE_CHARS) for s in _dicts(context.get("siblings"))) if t][:_MAX_SIBLINGS]
+    siblings = [
+        t
+        for t in (_clip(s.get("title"), _TITLE_CHARS) for s in _dicts(context.get("siblings")))
+        if t
+    ][:_MAX_SIBLINGS]
     if siblings:
         lines.append("Neighbouring items under the same parent: " + "; ".join(siblings))
     linked = [
@@ -51,16 +58,24 @@ def render_context_pack(context: dict | None) -> str | None:
     if linked:
         lines.append("Linked items: " + "; ".join(linked))
     figures = [
-        _clip(f.get("name"), _TITLE_CHARS) + (f" ({caption})" if (caption := _clip(f.get("caption"), _CAPTION_CHARS)) else "")
+        _clip(f.get("name"), _TITLE_CHARS)
+        + (f" ({caption})" if (caption := _clip(f.get("caption"), _CAPTION_CHARS)) else "")
         for f in _dicts(context.get("figures"))
         if _clip(f.get("name"), _TITLE_CHARS) or _clip(f.get("caption"), _CAPTION_CHARS)
     ][:_MAX_CAPTIONED]
     if figures:
         lines.append("Figures of this item: " + "; ".join(figures))
-    tables = [t for t in (_clip(x.get("caption"), _CAPTION_CHARS) for x in _dicts(context.get("tables"))) if t][:_MAX_CAPTIONED]
+    tables = [
+        t
+        for t in (_clip(x.get("caption"), _CAPTION_CHARS) for x in _dicts(context.get("tables")))
+        if t
+    ][:_MAX_CAPTIONED]
     if tables:
         lines.append("Tables of this item: " + "; ".join(tables))
     if not lines:
         return None
-    text = "Where this item sits in the document (keep the item consistent with its surroundings):\n" + "\n".join(lines)
+    text = (
+        "Where this item sits in the document (keep the item consistent with its surroundings):\n"
+        + "\n".join(lines)
+    )
     return text if len(text) <= MAX_CONTEXT_CHARS else text[: MAX_CONTEXT_CHARS - 1].rstrip() + "…"

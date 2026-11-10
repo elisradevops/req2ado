@@ -4,6 +4,7 @@ The real builder and the real client run against a fake orchestrator that answer
 enough for the chunks to overlap. With streaming off and on the finished tree must be
 identical; with it on, each concurrent call has a lane of its own, sequence numbers never
 repeat or go backwards, and every finished item is delivered exactly once."""
+
 import json
 import threading
 import time
@@ -69,14 +70,16 @@ class Server:
                 {k: {"title": f"T {v[:14]}", "tags": ["safety"]} for k, v in given.items()}
             )
         if name == "synthesized_requirements_by_row":
-            return json.dumps({
-                k: {
-                    "title": f"S {v['text'][:10]}",
-                    "text": f"The system shall {v['text']}.",
-                    "tags": [],
+            return json.dumps(
+                {
+                    k: {
+                        "title": f"S {v['text'][:10]}",
+                        "text": f"The system shall {v['text']}.",
+                        "tags": [],
+                    }
+                    for k, v in given.items()
                 }
-                for k, v in given.items()
-            })
+            )
         raise AssertionError(name)
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
@@ -91,9 +94,7 @@ class Server:
                 self.in_flight -= 1
         if request.url.path == "/llm/chat":
             return httpx.Response(200, json={"content": content})
-        lines = [
-            json.dumps({"delta": content[i : i + 40]}) for i in range(0, len(content), 40)
-        ]
+        lines = [json.dumps({"delta": content[i : i + 40]}) for i in range(0, len(content), 40)]
         lines.append(json.dumps({"done": True, "finishReason": "stop"}))
         return httpx.Response(200, content=("\n".join(lines) + "\n").encode())
 
@@ -104,11 +105,15 @@ def _rows() -> list[HierarchyRow]:
 
     def row(label, node_type, parent, id_text, synth=False):  # noqa: ANN001, ANN202
         return HierarchyRow(
-            label=label, has_shall=node_type == "Requirement",
+            label=label,
+            has_shall=node_type == "Requirement",
             source_ref=sr(hash(id_text) % 10_000),
-            node_type=node_type, parent_index=parent, id_text=id_text,
+            node_type=node_type,
+            parent_index=parent,
+            id_text=id_text,
             id_disambiguator_needed=False,
-            needs_synthesis=synth, id_text_is_authored=True,
+            needs_synthesis=synth,
+            id_text_is_authored=True,
         )
 
     rows = [row("Power", "Epic", None, "1"), row("Input", "Feature", 0, "1.1")]
@@ -127,7 +132,12 @@ def _build(monkeypatch, *, stream: bool):  # noqa: ANN001, ANN202
     client._transport = httpx.MockTransport(server)
     with job_id_scope(JOB), live_emitter_scope(JOB, redis):
         nodes, warnings = build_hierarchy_subtree(
-            _rows(), "det0_", client, synthesis_client=client, user_id="u1", chunk_concurrency=3,
+            _rows(),
+            "det0_",
+            client,
+            synthesis_client=client,
+            user_id="u1",
+            chunk_concurrency=3,
         )
     tree = (
         [n.model_dump(mode="json") for n in nodes],

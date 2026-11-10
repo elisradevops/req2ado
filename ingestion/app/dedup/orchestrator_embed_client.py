@@ -37,10 +37,16 @@ class OrchestratorEmbedClient:
 
     def _client(self) -> httpx.Client:
         with self._http_lock:
-            if self._http is None or self._http.is_closed or self._http_transport is not self._transport:
+            if (
+                self._http is None
+                or self._http.is_closed
+                or self._http_transport is not self._transport
+            ):
                 if self._http is not None and not self._http.is_closed:
                     self._http.close()
-                self._http = httpx.Client(transport=self._transport, timeout=_EMBED_REQUEST_TIMEOUT_SECONDS)
+                self._http = httpx.Client(
+                    transport=self._transport, timeout=_EMBED_REQUEST_TIMEOUT_SECONDS
+                )
                 self._http_transport = self._transport
             return self._http
 

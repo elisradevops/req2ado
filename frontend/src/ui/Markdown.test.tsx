@@ -34,6 +34,30 @@ describe('Markdown', () => {
   });
 });
 
+describe('Markdown text direction', () => {
+  // dir="auto" lets the browser pick rtl/ltr per block from its first strong
+  // character, so Hebrew blocks align and bullet right while English ones
+  // stay ltr. jsdom does not resolve "auto", so assert the attribute here;
+  // the resolved direction is checked in the browser (e2e).
+  const source = '# כותרת\n\nפסקה בעברית (CPU)\n\n- פריט\n\n1. אחד\n\n## Title';
+
+  it('marks paragraphs, headings and lists dir="auto" in chat markdown', () => {
+    const { container } = render(<Markdown>{source}</Markdown>);
+    for (const sel of ['h1', 'h2', 'p', 'ul', 'ol']) {
+      const els = container.querySelectorAll(sel);
+      expect(els.length, sel).toBeGreaterThan(0);
+      els.forEach((el) => expect(el, sel).toHaveAttribute('dir', 'auto'));
+    }
+  });
+
+  it('marks every block dir="auto" in DescriptionMarkdown too', () => {
+    const { container } = render(<DescriptionMarkdown>{source}</DescriptionMarkdown>);
+    for (const sel of ['h1', 'h2', 'p', 'ul', 'ol']) {
+      container.querySelectorAll(sel).forEach((el) => expect(el, sel).toHaveAttribute('dir', 'auto'));
+    }
+  });
+});
+
 describe('DescriptionMarkdown', () => {
   // Regression guard: today's pre-rewrite ingestion shape (bare <table>, no
   // thead/th, no attributes) must keep working under the new DOMParser-based

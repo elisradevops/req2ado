@@ -61,7 +61,7 @@ export function FileDropzone({
         handleFiles(event.dataTransfer.files);
       }}
       className={cn(
-        'flex cursor-pointer flex-col items-center gap-1.5 rounded-md border-[1.5px] border-dashed bg-surface p-8 text-center transition-colors duration-fast ease-out',
+        'flex flex-1 cursor-pointer flex-col items-center justify-center gap-1.5 rounded-md border-[1.5px] border-dashed bg-surface p-8 text-center transition-colors duration-fast ease-out',
         isDragging && 'border-accent bg-accent-soft',
         // `.liftable` (§6/§7, Surface category -- this component is named
         // explicitly in its table) supplies the shared hover lift/shadow;

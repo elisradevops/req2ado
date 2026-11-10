@@ -84,4 +84,16 @@ describe('AddChildCard (no parentEntry -- toolbar "New item")', () => {
 
     expect(onAdd).toHaveBeenCalledWith({ parentLocalId: null, type: 'Epic', title: 'New Epic', description: '' });
   });
+
+  it('compact trigger (the tree toolbar) is a quiet button, not a full-width primary-looking one', () => {
+    render(<AddChildCard compact jobMode="survey" allEntries={[]} onAdd={vi.fn()} />);
+    const trigger = screen.getByRole('button', { name: /^new item$/i });
+    expect(trigger).not.toHaveClass('w-full');
+    expect(trigger).not.toHaveClass('border-field-border');
+  });
+
+  it('the default trigger stays full width', () => {
+    render(<AddChildCard parentEntry={PARENT} jobMode="baseline" allEntries={[PARENT]} onAdd={vi.fn()} />);
+    expect(screen.getByRole('button', { name: /^add direct child wi$/i })).toHaveClass('w-full');
+  });
 });

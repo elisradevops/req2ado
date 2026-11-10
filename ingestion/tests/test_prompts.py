@@ -8,6 +8,7 @@ prompt content, which is a real risk with marker/format-based substitution
 (confirmed live during this extraction: an early automated pass mis-handled
 a couple of the `', '.join(...)`-shaped f-strings before being caught and
 redone by hand)."""
+
 from app.prompts import load_prompt
 from app.workitem.model import RequirementTag
 
@@ -26,8 +27,8 @@ def test_generate_requirements_prompt() -> None:
 
 
 def test_infer_trace_links_prompt() -> None:
-    result = load_prompt("infer_trace_links", catalog_lines="- Some.Ref (\"Some Name\")")
-    assert "- Some.Ref (\"Some Name\")" in result
+    result = load_prompt("infer_trace_links", catalog_lines='- Some.Ref ("Some Name")')
+    assert '- Some.Ref ("Some Name")' in result
     assert result.startswith("You infer trace/coverage links between work items")
     assert result.endswith("the response body must be valid JSON on its own.")
 
@@ -35,7 +36,7 @@ def test_infer_trace_links_prompt() -> None:
 def test_infer_trace_links_v2_prompt_includes_native_type_preference_instruction() -> None:
     # Task 5: v2 includes an explicit instruction to prefer native ADO link
     # types when they fit the relationship. Verify the key phrases are present.
-    result = load_prompt("infer_trace_links", catalog_lines="- Some.Ref (\"Some Name\")")
+    result = load_prompt("infer_trace_links", catalog_lines='- Some.Ref ("Some Name")')
     assert "Native Azure DevOps link types" in result
     assert "System." in result or "Microsoft.VSTS." in result
     assert "standard, well-established meanings" in result
@@ -51,7 +52,7 @@ def test_infer_trace_links_v3_prompt_requires_object_wrapper_and_evidence_quote(
     # field (see _response_schemas.trace_links_schema and
     # trace_links.py's evidence-quote validation). v3 must actually ask
     # for what the code now requires.
-    result = load_prompt("infer_trace_links", catalog_lines="- Some.Ref (\"Some Name\")")
+    result = load_prompt("infer_trace_links", catalog_lines='- Some.Ref ("Some Name")')
     assert "'links' array" in result
     assert "'evidence_quote'" in result
     assert "exact, verbatim, character-for-character" in result
@@ -59,7 +60,9 @@ def test_infer_trace_links_v3_prompt_requires_object_wrapper_and_evidence_quote(
 
 
 def test_score_requirements_for_document_prompt() -> None:
-    result = load_prompt("score_requirements_for_document", category_instruction="X-CATEGORY-Y ", node_count="7")
+    result = load_prompt(
+        "score_requirements_for_document", category_instruction="X-CATEGORY-Y ", node_count="7"
+    )
     assert "X-CATEGORY-Y " in result
     assert "The input contains exactly 7 node_id(s)." in result
     assert "Return exactly 7 entries in your response" in result
@@ -117,14 +120,18 @@ def test_synthesize_leaf_requirements_prompt() -> None:
     from app.survey.keyed_specs import SYNTHESIS_SPEC
 
     result = load_prompt(
-        "synthesize_leaf_requirements", row_count="3", output_format=describe_output(SYNTHESIS_SPEC, "none"),
+        "synthesize_leaf_requirements",
+        row_count="3",
+        output_format=describe_output(SYNTHESIS_SPEC, "none"),
     )
     assert _TAG_VOCABULARY in result
     assert "The input contains exactly 3 row(s)." in result
 
 
 def test_judge_duplicate_pair_prompt_loads() -> None:
-    assert load_prompt("judge_duplicate_pair").startswith("You are given two requirement statements")
+    assert load_prompt("judge_duplicate_pair").startswith(
+        "You are given two requirement statements"
+    )
 
 
 def test_judge_duplicate_cluster_prompt_loads() -> None:
@@ -179,7 +186,9 @@ def test_extract_quality_checklist_prompt_loads() -> None:
 
 
 def test_extract_quality_checklist_definitions_prompt() -> None:
-    result = load_prompt("extract_quality_checklist_definitions", category_names='["Necessary", "Unambiguous"]')
+    result = load_prompt(
+        "extract_quality_checklist_definitions", category_names='["Necessary", "Unambiguous"]'
+    )
     assert '["Necessary", "Unambiguous"]' in result
 
 
@@ -208,8 +217,13 @@ def test_map_figures_tables_prompt_splits_decorative_from_doesnt_fit_this_branch
     # covers it"), letting a real, named, technical item get silently
     # dropped as null instead of escalated. See map_figures_tables.v1.txt.
     result = load_prompt("map_figures_tables", item_count="1")
-    assert "saying \"none\" is the right answer whenever no candidate genuinely covers it" not in result
-    assert "a judgment about the item's own content, never about whether any candidate here happens to cover it" in result
+    assert (
+        'saying "none" is the right answer whenever no candidate genuinely covers it' not in result
+    )
+    assert (
+        "a judgment about the item's own content, never about whether any candidate here happens to cover it"
+        in result
+    )
     assert "a real, named table whose subject just isn't among THIS branch's candidates" in result
 
 

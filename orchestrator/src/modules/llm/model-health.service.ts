@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { Injectable, Logger, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
 import { isListed, needsProbe, parseVerdict, probeModel, type ModelVerdict, type ProbeClient } from './model-health';
+import { closeWhenReady } from '../../common/queue-errors';
 
 const logger = new Logger('ModelHealth');
 
@@ -67,8 +68,8 @@ export class ModelHealthService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleDestroy(): Promise<void> {
-    await this.worker?.close();
-    await this.deps.queue.close?.();
+    await closeWhenReady(this.worker);
+    await closeWhenReady(this.deps.queue);
     await this.deps.store.quit?.();
   }
 
@@ -123,6 +124,12 @@ export class ModelHealthService implements OnModuleInit, OnModuleDestroy {
       client = await this.deps.clients.getClientFor(data.userId);
     } catch (err) {
       logger.warn(`health probe for ${data.model} skipped: ${(err as Error).message}`);
+      return undefined;
+    }
+    // A backend that serves one request at a time (a single local Ollama, a rate-limited proxy) must not spend a slot on a health check while a study
+    // window or a figure is being answered: the probe is left for the next catalog listing, and the model keeps whatever verdict it had.
+    if ((client.activeWorkCalls?.() ?? 0) > 0) {
+      logger.log(`health probe for ${data.model} deferred: real work is running on this backend`);
       return undefined;
     }
     const previous = (await this.verdicts([data.model])).get(data.model);

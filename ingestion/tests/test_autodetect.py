@@ -12,7 +12,9 @@ def _p(block_id: str, text: str) -> Block:
 
 
 def _h(block_id: str, level: int, text: str) -> Block:
-    return Block(id=block_id, kind=BlockKind.HEADING, heading_level=level, text=text, source_ref=_sr())
+    return Block(
+        id=block_id, kind=BlockKind.HEADING, heading_level=level, text=text, source_ref=_sr()
+    )
 
 
 # --- is_heading_style_branch -------------------------------------------------
@@ -111,7 +113,9 @@ def test_lettered_child_is_excluded_from_parents_own_promotion_decision() -> Non
     assert result["b1"][0] == WorkItemType.REQUIREMENT
     assert result["b2"][0] == WorkItemType.REQUIREMENT
     assert result["b3"][0] == WorkItemType.REQUIREMENT
-    assert result["b0"][0] == WorkItemType.FEATURE  # b1 is its only (non-override) child, Requirement -> Feature
+    assert (
+        result["b0"][0] == WorkItemType.FEATURE
+    )  # b1 is its only (non-override) child, Requirement -> Feature
 
 
 # --- SUB- marker override -----------------------------------------------------
@@ -127,8 +131,12 @@ def test_sub_marker_is_an_override_inheriting_parent_type_and_strips_from_title(
     result = classify_numbering_branch(branch)
     assert result["b0"][0] == WorkItemType.FEATURE  # b2 excluded from b0's promotion decision
     assert result["b2"][0] == WorkItemType.FEATURE  # inherits b0's type
-    assert result["b2"][2] == "Picture Modes"  # SUB- prefix (and its dash) stripped from the title text
-    assert result["b3"][0] == WorkItemType.REQUIREMENT  # b2's own subtree still classifies independently
+    assert (
+        result["b2"][2] == "Picture Modes"
+    )  # SUB- prefix (and its dash) stripped from the title text
+    assert (
+        result["b3"][0] == WorkItemType.REQUIREMENT
+    )  # b2's own subtree still classifies independently
 
 
 def test_sub_marker_node_with_further_nested_children_is_not_short_circuited() -> None:
@@ -166,7 +174,9 @@ def test_mixed_requirement_and_feature_children_promotes_parent_to_epic() -> Non
     ]
     result = classify_numbering_branch(branch)
     assert result["b3"][0] == WorkItemType.FEATURE  # promotes since its own child is a leaf
-    assert result["b0"][0] == WorkItemType.EPIC  # mixed children (b1, b2 = Requirement; b3 = Feature)
+    assert (
+        result["b0"][0] == WorkItemType.EPIC
+    )  # mixed children (b1, b2 = Requirement; b3 = Feature)
 
 
 # --- child_type ---------------------------------------------------------------

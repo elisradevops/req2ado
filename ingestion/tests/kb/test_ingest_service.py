@@ -32,7 +32,10 @@ def test_ingests_a_new_document_end_to_end(mock_dispatch, tmp_path) -> None:
     mock_dispatch.return_value = _fake_doc("Some paragraph text")
     graph_client = MagicMock()
     graph_client.get_drive_item.return_value = GraphDriveItem(
-        id="item-1", name="doc.docx", mime_type="application/vnd.openxmlformats", size=len(DOCX_CONTENT)
+        id="item-1",
+        name="doc.docx",
+        mime_type="application/vnd.openxmlformats",
+        size=len(DOCX_CONTENT),
     )
     graph_client.fetch_content.return_value = DOCX_CONTENT
 
@@ -54,11 +57,16 @@ def test_ingests_a_new_document_end_to_end(mock_dispatch, tmp_path) -> None:
 
 
 @patch("app.kb.ingest_service.dispatch_by_extension")
-def test_ingest_document_forwards_retrieval_mode_to_the_vector_store(mock_dispatch, tmp_path) -> None:
+def test_ingest_document_forwards_retrieval_mode_to_the_vector_store(
+    mock_dispatch, tmp_path
+) -> None:
     mock_dispatch.return_value = _fake_doc("Some paragraph text")
     graph_client = MagicMock()
     graph_client.get_drive_item.return_value = GraphDriveItem(
-        id="item-1", name="standards.docx", mime_type="application/vnd.openxmlformats", size=len(DOCX_CONTENT)
+        id="item-1",
+        name="standards.docx",
+        mime_type="application/vnd.openxmlformats",
+        size=len(DOCX_CONTENT),
     )
     graph_client.fetch_content.return_value = DOCX_CONTENT
 
@@ -81,7 +89,10 @@ def test_ingest_document_omits_retrieval_mode_by_default(mock_dispatch, tmp_path
     mock_dispatch.return_value = _fake_doc("Some paragraph text")
     graph_client = MagicMock()
     graph_client.get_drive_item.return_value = GraphDriveItem(
-        id="item-1", name="doc.docx", mime_type="application/vnd.openxmlformats", size=len(DOCX_CONTENT)
+        id="item-1",
+        name="doc.docx",
+        mime_type="application/vnd.openxmlformats",
+        size=len(DOCX_CONTENT),
     )
     graph_client.fetch_content.return_value = DOCX_CONTENT
 
@@ -103,13 +114,17 @@ class FakeChecklistClient:
         self.checklist = checklist
         self.calls: list[str] = []
 
-    def extract_quality_checklist(self, document_text: str, user_id: str | None = None) -> list[str]:
+    def extract_quality_checklist(
+        self, document_text: str, user_id: str | None = None
+    ) -> list[str]:
         self.calls.append(document_text)
         return self.checklist
 
 
 class RaisingChecklistClient:
-    def extract_quality_checklist(self, document_text: str, user_id: str | None = None) -> list[str]:
+    def extract_quality_checklist(
+        self, document_text: str, user_id: str | None = None
+    ) -> list[str]:
         raise ValueError("boom")
 
 
@@ -126,13 +141,17 @@ class FakeChecklistClientWithDefinitions(FakeChecklistClient):
         self.definitions = definitions
         self.definition_calls: list[tuple[str, list[str]]] = []
 
-    def extract_quality_checklist_definitions(self, document_text: str, category_names: list[str], user_id: str | None = None) -> dict[str, str]:
+    def extract_quality_checklist_definitions(
+        self, document_text: str, category_names: list[str], user_id: str | None = None
+    ) -> dict[str, str]:
         self.definition_calls.append((document_text, category_names))
         return self.definitions
 
 
 class RaisingDefinitionsChecklistClient(FakeChecklistClient):
-    def extract_quality_checklist_definitions(self, document_text: str, category_names: list[str], user_id: str | None = None) -> dict[str, str]:
+    def extract_quality_checklist_definitions(
+        self, document_text: str, category_names: list[str], user_id: str | None = None
+    ) -> dict[str, str]:
         raise ValueError("boom")
 
 
@@ -144,7 +163,10 @@ def test_ingest_stores_the_extracted_checklist_on_every_chunk(mock_dispatch, tmp
     mock_dispatch.return_value = _fake_doc("Some paragraph text")
     graph_client = MagicMock()
     graph_client.get_drive_item.return_value = GraphDriveItem(
-        id="item-1", name="doc.docx", mime_type="application/vnd.openxmlformats", size=len(DOCX_CONTENT)
+        id="item-1",
+        name="doc.docx",
+        mime_type="application/vnd.openxmlformats",
+        size=len(DOCX_CONTENT),
     )
     graph_client.fetch_content.return_value = DOCX_CONTENT
 
@@ -162,7 +184,9 @@ def test_ingest_stores_the_extracted_checklist_on_every_chunk(mock_dispatch, tmp
 
     assert len(checklist_client.calls) == 1  # extracted exactly once, not per chunk
     assert vector_store.get_quality_checklist("Project\\Area1", "doc.docx") == [
-        "Necessary", "Unambiguous", "Verifiable",
+        "Necessary",
+        "Unambiguous",
+        "Verifiable",
     ]
 
 
@@ -173,7 +197,10 @@ def test_ingest_stores_none_when_no_checklist_client_is_supplied(mock_dispatch, 
     mock_dispatch.return_value = _fake_doc("Some paragraph text")
     graph_client = MagicMock()
     graph_client.get_drive_item.return_value = GraphDriveItem(
-        id="item-1", name="doc.docx", mime_type="application/vnd.openxmlformats", size=len(DOCX_CONTENT)
+        id="item-1",
+        name="doc.docx",
+        mime_type="application/vnd.openxmlformats",
+        size=len(DOCX_CONTENT),
     )
     graph_client.fetch_content.return_value = DOCX_CONTENT
 
@@ -198,7 +225,10 @@ def test_ingest_does_not_fail_when_checklist_extraction_raises(mock_dispatch, tm
     mock_dispatch.return_value = _fake_doc("Some paragraph text")
     graph_client = MagicMock()
     graph_client.get_drive_item.return_value = GraphDriveItem(
-        id="item-1", name="doc.docx", mime_type="application/vnd.openxmlformats", size=len(DOCX_CONTENT)
+        id="item-1",
+        name="doc.docx",
+        mime_type="application/vnd.openxmlformats",
+        size=len(DOCX_CONTENT),
     )
     graph_client.fetch_content.return_value = DOCX_CONTENT
 
@@ -218,17 +248,23 @@ def test_ingest_does_not_fail_when_checklist_extraction_raises(mock_dispatch, tm
 
 
 @patch("app.kb.ingest_service.dispatch_by_extension")
-def test_ingest_stores_the_extracted_checklist_definitions_alongside_the_names(mock_dispatch, tmp_path) -> None:
+def test_ingest_stores_the_extracted_checklist_definitions_alongside_the_names(
+    mock_dispatch, tmp_path
+) -> None:
     mock_dispatch.return_value = _fake_doc("Some paragraph text")
     graph_client = MagicMock()
     graph_client.get_drive_item.return_value = GraphDriveItem(
-        id="item-1", name="doc.docx", mime_type="application/vnd.openxmlformats", size=len(DOCX_CONTENT)
+        id="item-1",
+        name="doc.docx",
+        mime_type="application/vnd.openxmlformats",
+        size=len(DOCX_CONTENT),
     )
     graph_client.fetch_content.return_value = DOCX_CONTENT
 
     vector_store = KbVectorStore(persist_path=str(tmp_path))
     checklist_client = FakeChecklistClientWithDefinitions(
-        ["Necessary", "Unambiguous"], {"Necessary": "States something not already satisfied."},
+        ["Necessary", "Unambiguous"],
+        {"Necessary": "States something not already satisfied."},
     )
     ingest_document_from_url(
         url=VALID_URL,
@@ -251,7 +287,9 @@ def test_ingest_stores_the_extracted_checklist_definitions_alongside_the_names(m
 
 
 @patch("app.kb.ingest_service.dispatch_by_extension")
-def test_ingest_skips_the_definitions_pass_when_the_checklist_client_does_not_implement_it(mock_dispatch, tmp_path) -> None:
+def test_ingest_skips_the_definitions_pass_when_the_checklist_client_does_not_implement_it(
+    mock_dispatch, tmp_path
+) -> None:
     # Backward-compat: a checklist_client test double (or, currently, the
     # real one too until this ships) that only implements
     # extract_quality_checklist must keep working unchanged -- the
@@ -259,7 +297,10 @@ def test_ingest_skips_the_definitions_pass_when_the_checklist_client_does_not_im
     mock_dispatch.return_value = _fake_doc("Some paragraph text")
     graph_client = MagicMock()
     graph_client.get_drive_item.return_value = GraphDriveItem(
-        id="item-1", name="doc.docx", mime_type="application/vnd.openxmlformats", size=len(DOCX_CONTENT)
+        id="item-1",
+        name="doc.docx",
+        mime_type="application/vnd.openxmlformats",
+        size=len(DOCX_CONTENT),
     )
     graph_client.fetch_content.return_value = DOCX_CONTENT
 
@@ -278,13 +319,18 @@ def test_ingest_skips_the_definitions_pass_when_the_checklist_client_does_not_im
 
 
 @patch("app.kb.ingest_service.dispatch_by_extension")
-def test_ingest_skips_the_definitions_pass_when_the_names_pass_found_no_checklist(mock_dispatch, tmp_path) -> None:
+def test_ingest_skips_the_definitions_pass_when_the_names_pass_found_no_checklist(
+    mock_dispatch, tmp_path
+) -> None:
     # No category names extracted -> nothing to ask the second pass for --
     # never called at all, not called with an empty list.
     mock_dispatch.return_value = _fake_doc("Some paragraph text")
     graph_client = MagicMock()
     graph_client.get_drive_item.return_value = GraphDriveItem(
-        id="item-1", name="doc.docx", mime_type="application/vnd.openxmlformats", size=len(DOCX_CONTENT)
+        id="item-1",
+        name="doc.docx",
+        mime_type="application/vnd.openxmlformats",
+        size=len(DOCX_CONTENT),
     )
     graph_client.fetch_content.return_value = DOCX_CONTENT
 
@@ -305,7 +351,9 @@ def test_ingest_skips_the_definitions_pass_when_the_names_pass_found_no_checklis
 
 
 @patch("app.kb.ingest_service.dispatch_by_extension")
-def test_ingest_does_not_fail_when_checklist_definitions_extraction_raises(mock_dispatch, tmp_path) -> None:
+def test_ingest_does_not_fail_when_checklist_definitions_extraction_raises(
+    mock_dispatch, tmp_path
+) -> None:
     # Best-effort enhancement, same tolerant philosophy as the names pass
     # itself -- a failure here must never fail the whole ingest, and must
     # not clobber the names list that the (successful) first pass already
@@ -313,7 +361,10 @@ def test_ingest_does_not_fail_when_checklist_definitions_extraction_raises(mock_
     mock_dispatch.return_value = _fake_doc("Some paragraph text")
     graph_client = MagicMock()
     graph_client.get_drive_item.return_value = GraphDriveItem(
-        id="item-1", name="doc.docx", mime_type="application/vnd.openxmlformats", size=len(DOCX_CONTENT)
+        id="item-1",
+        name="doc.docx",
+        mime_type="application/vnd.openxmlformats",
+        size=len(DOCX_CONTENT),
     )
     graph_client.fetch_content.return_value = DOCX_CONTENT
 
@@ -329,7 +380,10 @@ def test_ingest_does_not_fail_when_checklist_definitions_extraction_raises(mock_
     )
 
     assert result.chunks_stored == 1  # ingest itself still succeeded
-    assert vector_store.get_quality_checklist("Project\\Area1", "doc.docx") == ["Necessary", "Unambiguous"]
+    assert vector_store.get_quality_checklist("Project\\Area1", "doc.docx") == [
+        "Necessary",
+        "Unambiguous",
+    ]
     assert vector_store.get_quality_checklist_definitions("Project\\Area1", "doc.docx") is None
 
 
@@ -338,7 +392,10 @@ def test_skips_a_document_whose_hash_is_unchanged(mock_dispatch, tmp_path) -> No
     mock_dispatch.return_value = _fake_doc("Some paragraph text")
     graph_client = MagicMock()
     graph_client.get_drive_item.return_value = GraphDriveItem(
-        id="item-1", name="doc.docx", mime_type="application/vnd.openxmlformats", size=len(DOCX_CONTENT)
+        id="item-1",
+        name="doc.docx",
+        mime_type="application/vnd.openxmlformats",
+        size=len(DOCX_CONTENT),
     )
     graph_client.fetch_content.return_value = DOCX_CONTENT
 
@@ -352,15 +409,21 @@ def test_skips_a_document_whose_hash_is_unchanged(mock_dispatch, tmp_path) -> No
         vector_store=vector_store,
     )
 
-    ingest_document_from_url(**kwargs)  # first ingest
+    first = ingest_document_from_url(**kwargs)  # first ingest
+    assert first.chunks_in_store == first.chunks_stored > 0
     result = ingest_document_from_url(**kwargs)  # second ingest: unchanged content
 
     assert result.skipped_unchanged is True
     assert result.chunks_stored == 0
+    # K8: the skip branch still reports how many chunks the store really holds
+    # for the file, so the caller can record a truthful count (not 0).
+    assert result.chunks_in_store == first.chunks_in_store > 0
 
 
 @patch("app.kb.ingest_service.dispatch_by_extension")
-def test_pure_rename_is_skipped_unchanged_and_updates_the_stored_name(mock_dispatch, tmp_path) -> None:
+def test_pure_rename_is_skipped_unchanged_and_updates_the_stored_name(
+    mock_dispatch, tmp_path
+) -> None:
     # Regression for the confirmed SharePoint rename bug: same Graph
     # drive-item id (source_id), new filename, identical content -- must be
     # recognized as the same file (skip re-embed) AND leave the KB's
@@ -371,7 +434,10 @@ def test_pure_rename_is_skipped_unchanged_and_updates_the_stored_name(mock_dispa
 
     vector_store = KbVectorStore(persist_path=str(tmp_path))
     graph_client.get_drive_item.return_value = GraphDriveItem(
-        id="item-1", name="old.docx", mime_type="application/vnd.openxmlformats", size=len(DOCX_CONTENT)
+        id="item-1",
+        name="old.docx",
+        mime_type="application/vnd.openxmlformats",
+        size=len(DOCX_CONTENT),
     )
     ingest_document_from_url(
         url=VALID_URL,
@@ -383,7 +449,10 @@ def test_pure_rename_is_skipped_unchanged_and_updates_the_stored_name(mock_dispa
     )
 
     graph_client.get_drive_item.return_value = GraphDriveItem(
-        id="item-1", name="new.docx", mime_type="application/vnd.openxmlformats", size=len(DOCX_CONTENT)
+        id="item-1",
+        name="new.docx",
+        mime_type="application/vnd.openxmlformats",
+        size=len(DOCX_CONTENT),
     )
     result = ingest_document_from_url(
         url=VALID_URL,
@@ -401,7 +470,9 @@ def test_pure_rename_is_skipped_unchanged_and_updates_the_stored_name(mock_dispa
 
 
 @patch("app.kb.ingest_service.dispatch_by_extension")
-def test_rename_file_failure_does_not_turn_skip_unchanged_into_a_failure(mock_dispatch, tmp_path) -> None:
+def test_rename_file_failure_does_not_turn_skip_unchanged_into_a_failure(
+    mock_dispatch, tmp_path
+) -> None:
     # Regression for a confirmed real bug: skip-unchanged used to be a
     # guaranteed-success, read-only branch. rename_file()'s Chroma write
     # must be best-effort -- a failure there must not turn this safest
@@ -410,7 +481,10 @@ def test_rename_file_failure_does_not_turn_skip_unchanged_into_a_failure(mock_di
     graph_client = MagicMock()
     graph_client.fetch_content.return_value = DOCX_CONTENT
     graph_client.get_drive_item.return_value = GraphDriveItem(
-        id="item-1", name="old.docx", mime_type="application/vnd.openxmlformats", size=len(DOCX_CONTENT)
+        id="item-1",
+        name="old.docx",
+        mime_type="application/vnd.openxmlformats",
+        size=len(DOCX_CONTENT),
     )
 
     vector_store = KbVectorStore(persist_path=str(tmp_path))
@@ -424,7 +498,10 @@ def test_rename_file_failure_does_not_turn_skip_unchanged_into_a_failure(mock_di
     )
 
     graph_client.get_drive_item.return_value = GraphDriveItem(
-        id="item-1", name="new.docx", mime_type="application/vnd.openxmlformats", size=len(DOCX_CONTENT)
+        id="item-1",
+        name="new.docx",
+        mime_type="application/vnd.openxmlformats",
+        size=len(DOCX_CONTENT),
     )
     with patch.object(vector_store, "rename_file", side_effect=RuntimeError("Chroma unreachable")):
         result = ingest_document_from_url(
@@ -443,7 +520,10 @@ def test_rename_file_failure_does_not_turn_skip_unchanged_into_a_failure(mock_di
 def test_rejects_oversize_files_before_downloading_content(tmp_path) -> None:
     graph_client = MagicMock()
     graph_client.get_drive_item.return_value = GraphDriveItem(
-        id="item-1", name="doc.docx", mime_type="application/vnd.openxmlformats", size=MAX_FILE_SIZE_BYTES + 1
+        id="item-1",
+        name="doc.docx",
+        mime_type="application/vnd.openxmlformats",
+        size=MAX_FILE_SIZE_BYTES + 1,
     )
 
     vector_store = KbVectorStore(persist_path=str(tmp_path))
@@ -504,9 +584,25 @@ def test_ingest_folder_stores_each_file_and_skips_subfolders(mock_dispatch, tmp_
     mock_dispatch.return_value = _fake_doc("Some paragraph text")
     graph_client = MagicMock()
     graph_client.list_folder_children.return_value = [
-        GraphFolderChild(id="item-1", name="a.docx", mime_type=None, size=len(DOCX_CONTENT), is_folder=False, download_url="https://dl/a"),
-        GraphFolderChild(id="item-2", name="Subfolder", mime_type=None, size=0, is_folder=True, download_url=None),
-        GraphFolderChild(id="item-3", name="b.txt", mime_type=None, size=len(TXT_CONTENT), is_folder=False, download_url="https://dl/b"),
+        GraphFolderChild(
+            id="item-1",
+            name="a.docx",
+            mime_type=None,
+            size=len(DOCX_CONTENT),
+            is_folder=False,
+            download_url="https://dl/a",
+        ),
+        GraphFolderChild(
+            id="item-2", name="Subfolder", mime_type=None, size=0, is_folder=True, download_url=None
+        ),
+        GraphFolderChild(
+            id="item-3",
+            name="b.txt",
+            mime_type=None,
+            size=len(TXT_CONTENT),
+            is_folder=False,
+            download_url="https://dl/b",
+        ),
     ]
     graph_client.fetch_child_content.side_effect = [DOCX_CONTENT, TXT_CONTENT]
 
@@ -531,8 +627,22 @@ def test_ingest_folder_isolates_one_files_failure_from_the_rest(mock_dispatch, t
     mock_dispatch.side_effect = [ValueError("corrupt"), _fake_doc("Good text")]
     graph_client = MagicMock()
     graph_client.list_folder_children.return_value = [
-        GraphFolderChild(id="item-1", name="bad.docx", mime_type=None, size=len(DOCX_CONTENT), is_folder=False, download_url="https://dl/bad"),
-        GraphFolderChild(id="item-2", name="good.docx", mime_type=None, size=len(DOCX_CONTENT), is_folder=False, download_url="https://dl/good"),
+        GraphFolderChild(
+            id="item-1",
+            name="bad.docx",
+            mime_type=None,
+            size=len(DOCX_CONTENT),
+            is_folder=False,
+            download_url="https://dl/bad",
+        ),
+        GraphFolderChild(
+            id="item-2",
+            name="good.docx",
+            mime_type=None,
+            size=len(DOCX_CONTENT),
+            is_folder=False,
+            download_url="https://dl/good",
+        ),
     ]
     graph_client.fetch_child_content.return_value = DOCX_CONTENT
 
@@ -554,15 +664,39 @@ def test_ingest_folder_isolates_one_files_failure_from_the_rest(mock_dispatch, t
 
 
 @patch("app.kb.ingest_service.dispatch_by_extension")
-def test_ingest_folder_recursive_descends_into_subfolders_with_relative_path(mock_dispatch, tmp_path) -> None:
+def test_ingest_folder_recursive_descends_into_subfolders_with_relative_path(
+    mock_dispatch, tmp_path
+) -> None:
     mock_dispatch.return_value = _fake_doc("Some paragraph text")
     graph_client = MagicMock()
     graph_client.list_folder_children.return_value = [
-        GraphFolderChild(id="item-1", name="a.docx", mime_type=None, size=len(DOCX_CONTENT), is_folder=False, download_url="https://dl/a"),
-        GraphFolderChild(id="item-2", name="Subfolder", mime_type=None, size=0, is_folder=True, download_url=None, drive_id="drive-1"),
+        GraphFolderChild(
+            id="item-1",
+            name="a.docx",
+            mime_type=None,
+            size=len(DOCX_CONTENT),
+            is_folder=False,
+            download_url="https://dl/a",
+        ),
+        GraphFolderChild(
+            id="item-2",
+            name="Subfolder",
+            mime_type=None,
+            size=0,
+            is_folder=True,
+            download_url=None,
+            drive_id="drive-1",
+        ),
     ]
     graph_client.list_children_by_id.return_value = [
-        GraphFolderChild(id="item-3", name="nested.docx", mime_type=None, size=len(DOCX_CONTENT), is_folder=False, download_url="https://dl/nested"),
+        GraphFolderChild(
+            id="item-3",
+            name="nested.docx",
+            mime_type=None,
+            size=len(DOCX_CONTENT),
+            is_folder=False,
+            download_url="https://dl/nested",
+        ),
     ]
     graph_client.fetch_child_content.side_effect = [DOCX_CONTENT, DOCX_CONTENT]
 
@@ -590,7 +724,15 @@ def test_ingest_folder_non_recursive_still_skips_subfolders(mock_dispatch, tmp_p
     mock_dispatch.return_value = _fake_doc("Some paragraph text")
     graph_client = MagicMock()
     graph_client.list_folder_children.return_value = [
-        GraphFolderChild(id="item-2", name="Subfolder", mime_type=None, size=0, is_folder=True, download_url=None, drive_id="drive-1"),
+        GraphFolderChild(
+            id="item-2",
+            name="Subfolder",
+            mime_type=None,
+            size=0,
+            is_folder=True,
+            download_url=None,
+            drive_id="drive-1",
+        ),
     ]
 
     vector_store = KbVectorStore(persist_path=str(tmp_path))
@@ -616,7 +758,15 @@ def test_ingest_folder_recursive_stops_at_max_depth(mock_dispatch, tmp_path) -> 
     graph_client = MagicMock()
 
     def make_subfolder(n: int) -> GraphFolderChild:
-        return GraphFolderChild(id=f"item-{n}", name=f"L{n}", mime_type=None, size=0, is_folder=True, download_url=None, drive_id="drive-1")
+        return GraphFolderChild(
+            id=f"item-{n}",
+            name=f"L{n}",
+            mime_type=None,
+            size=0,
+            is_folder=True,
+            download_url=None,
+            drive_id="drive-1",
+        )
 
     graph_client.list_folder_children.return_value = [make_subfolder(1)]
     graph_client.list_children_by_id.side_effect = [
@@ -642,12 +792,29 @@ def test_ingest_folder_recursive_stops_at_max_depth(mock_dispatch, tmp_path) -> 
 
 
 @patch("app.kb.ingest_service.dispatch_by_extension")
-def test_ingest_folder_recursive_isolates_a_subfolder_listing_failure(mock_dispatch, tmp_path) -> None:
+def test_ingest_folder_recursive_isolates_a_subfolder_listing_failure(
+    mock_dispatch, tmp_path
+) -> None:
     mock_dispatch.return_value = _fake_doc("Some paragraph text")
     graph_client = MagicMock()
     graph_client.list_folder_children.return_value = [
-        GraphFolderChild(id="item-1", name="a.docx", mime_type=None, size=len(DOCX_CONTENT), is_folder=False, download_url="https://dl/a"),
-        GraphFolderChild(id="item-2", name="BrokenSubfolder", mime_type=None, size=0, is_folder=True, download_url=None, drive_id="drive-1"),
+        GraphFolderChild(
+            id="item-1",
+            name="a.docx",
+            mime_type=None,
+            size=len(DOCX_CONTENT),
+            is_folder=False,
+            download_url="https://dl/a",
+        ),
+        GraphFolderChild(
+            id="item-2",
+            name="BrokenSubfolder",
+            mime_type=None,
+            size=0,
+            is_folder=True,
+            download_url=None,
+            drive_id="drive-1",
+        ),
     ]
     graph_client.list_children_by_id.side_effect = RuntimeError("transient Graph error")
     graph_client.fetch_child_content.return_value = DOCX_CONTENT
@@ -678,7 +845,10 @@ def test_ingest_document_forwards_describe_figure_to_dispatch(mock_dispatch, tmp
     mock_dispatch.return_value = _fake_doc("Some paragraph text")
     graph_client = MagicMock()
     graph_client.get_drive_item.return_value = GraphDriveItem(
-        id="item-1", name="doc.docx", mime_type="application/vnd.openxmlformats", size=len(DOCX_CONTENT)
+        id="item-1",
+        name="doc.docx",
+        mime_type="application/vnd.openxmlformats",
+        size=len(DOCX_CONTENT),
     )
     graph_client.fetch_content.return_value = DOCX_CONTENT
 
@@ -704,7 +874,10 @@ def test_ingest_document_omits_describe_figure_by_default(mock_dispatch, tmp_pat
     mock_dispatch.return_value = _fake_doc("Some paragraph text")
     graph_client = MagicMock()
     graph_client.get_drive_item.return_value = GraphDriveItem(
-        id="item-1", name="doc.docx", mime_type="application/vnd.openxmlformats", size=len(DOCX_CONTENT)
+        id="item-1",
+        name="doc.docx",
+        mime_type="application/vnd.openxmlformats",
+        size=len(DOCX_CONTENT),
     )
     graph_client.fetch_content.return_value = DOCX_CONTENT
 
@@ -726,7 +899,14 @@ def test_ingest_folder_forwards_describe_figure_to_every_file(mock_dispatch, tmp
     mock_dispatch.return_value = _fake_doc("Some paragraph text")
     graph_client = MagicMock()
     graph_client.list_folder_children.return_value = [
-        GraphFolderChild(id="item-1", name="a.docx", mime_type=None, size=len(DOCX_CONTENT), is_folder=False, download_url="https://dl/a"),
+        GraphFolderChild(
+            id="item-1",
+            name="a.docx",
+            mime_type=None,
+            size=len(DOCX_CONTENT),
+            is_folder=False,
+            download_url="https://dl/a",
+        ),
     ]
     graph_client.fetch_child_content.return_value = DOCX_CONTENT
 
@@ -748,14 +928,31 @@ def test_ingest_folder_forwards_describe_figure_to_every_file(mock_dispatch, tmp
 
 
 @patch("app.kb.ingest_service.dispatch_by_extension")
-def test_ingest_folder_recursive_forwards_describe_figure_into_subfolders(mock_dispatch, tmp_path) -> None:
+def test_ingest_folder_recursive_forwards_describe_figure_into_subfolders(
+    mock_dispatch, tmp_path
+) -> None:
     mock_dispatch.return_value = _fake_doc("Some paragraph text")
     graph_client = MagicMock()
     graph_client.list_folder_children.return_value = [
-        GraphFolderChild(id="item-2", name="Subfolder", mime_type=None, size=0, is_folder=True, download_url=None, drive_id="drive-1"),
+        GraphFolderChild(
+            id="item-2",
+            name="Subfolder",
+            mime_type=None,
+            size=0,
+            is_folder=True,
+            download_url=None,
+            drive_id="drive-1",
+        ),
     ]
     graph_client.list_children_by_id.return_value = [
-        GraphFolderChild(id="item-3", name="nested.docx", mime_type=None, size=len(DOCX_CONTENT), is_folder=False, download_url="https://dl/nested"),
+        GraphFolderChild(
+            id="item-3",
+            name="nested.docx",
+            mime_type=None,
+            size=len(DOCX_CONTENT),
+            is_folder=False,
+            download_url="https://dl/nested",
+        ),
     ]
     graph_client.fetch_child_content.return_value = DOCX_CONTENT
 
@@ -792,3 +989,37 @@ def test_ingest_folder_rejects_ssrf_url_before_listing_children(tmp_path) -> Non
         )
 
     graph_client.list_folder_children.assert_not_called()
+
+
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_skip_branch_reports_unknown_count_when_the_count_read_fails(
+    mock_dispatch, tmp_path
+) -> None:
+    mock_dispatch.return_value = _fake_doc("Some paragraph text")
+    graph_client = MagicMock()
+    graph_client.get_drive_item.return_value = GraphDriveItem(
+        id="item-1",
+        name="doc.docx",
+        mime_type="application/vnd.openxmlformats",
+        size=len(DOCX_CONTENT),
+    )
+    graph_client.fetch_content.return_value = DOCX_CONTENT
+    vector_store = KbVectorStore(persist_path=str(tmp_path))
+    kwargs = dict(
+        url=VALID_URL,
+        user_id="Project\\Area1",
+        doc_type="requirements",
+        graph_client=graph_client,
+        embed_client=FakeEmbedClient(),
+        vector_store=vector_store,
+    )
+    ingest_document_from_url(**kwargs)
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("chroma hiccup")
+
+    vector_store.count_file_chunks = boom  # type: ignore[method-assign]
+    result = ingest_document_from_url(**kwargs)
+
+    assert result.skipped_unchanged is True
+    assert result.chunks_in_store is None

@@ -10,9 +10,14 @@ if TYPE_CHECKING:
     from app.debug_capture import DebugCapture
 
 from app.config import settings
-from app.leveling.description_text import description_for_model
 from app.leveling.bounded_chunks import run_chunks_bounded
-from app.leveling.narration_publisher import LevelingProgress, Phase, ProgressCallback, _sample_titles
+from app.leveling.description_text import description_for_model
+from app.leveling.narration_publisher import (
+    LevelingProgress,
+    Phase,
+    ProgressCallback,
+    _sample_titles,
+)
 from app.quality.criteria_retrieval import CriteriaRetriever
 from app.workitem.model import (
     IntegrityWarning,
@@ -64,13 +69,17 @@ class BatchedScoringClient(Protocol):
     ) -> dict[str, dict]: ...
 
 
-def _build_criteria_context(criteria_retriever: CriteriaRetriever, nodes: list[WorkItemNode]) -> str:
+def _build_criteria_context(
+    criteria_retriever: CriteriaRetriever, nodes: list[WorkItemNode]
+) -> str:
     """Retrieves the top-k criteria most relevant to this BRANCH's nodes as a
     whole (one retrieve() call on the concatenated descriptions, not one per
     node -- see CriteriaRetriever's docstring for why), formatted as plain
     reference text the scoring prompt can cite. Empty string if the branch's
     nodes have no description text at all (nothing to retrieve against)."""
-    combined_text = " ".join(description_for_model(node.description) for node in nodes if node.description)
+    combined_text = " ".join(
+        description_for_model(node.description) for node in nodes if node.description
+    )
     if not combined_text.strip():
         return ""
     criteria = criteria_retriever.retrieve(combined_text)
@@ -98,7 +107,11 @@ def scoring_chunk_node_limit(category_count: int | None) -> int:
     """How many requirements one scoring call may carry, given how many categories each is judged against."""
     if not category_count or category_count <= 0:
         return _SCORING_CHUNK_NODE_COUNT
-    return max(_SCORING_CHUNK_NODE_FLOOR, min(_SCORING_CHUNK_NODE_COUNT, _SCORING_OUTPUT_BUDGET // category_count))
+    return max(
+        _SCORING_CHUNK_NODE_FLOOR,
+        min(_SCORING_CHUNK_NODE_COUNT, _SCORING_OUTPUT_BUDGET // category_count),
+    )
+
 
 # A chunk also closes once its description text would exceed this many
 # characters (a lone oversized item still gets its own chunk): a few huge
@@ -115,7 +128,9 @@ _T = TypeVar("_T")
 
 
 def _chunk_by_count_and_chars(
-    items: Sequence[_T], size_of: Callable[[_T], int], node_limit: int = _SCORING_CHUNK_NODE_COUNT,
+    items: Sequence[_T],
+    size_of: Callable[[_T], int],
+    node_limit: int = _SCORING_CHUNK_NODE_COUNT,
 ) -> list[list[_T]]:
     """Splits `items` (document order preserved) into chunks of at most
     _SCORING_CHUNK_NODE_COUNT items AND at most _SCORING_CHUNK_CHAR_BUDGET
@@ -142,6 +157,7 @@ def _chunk_by_count_and_chars(
 def _split_in_half(items: list[_T]) -> tuple[list[_T], list[_T]]:
     middle = (len(items) + 1) // 2
     return items[:middle], items[middle:]
+
 
 # §7 canary/drift probe: one fixed, known-bad sentinel requirement injected
 # into every batched scoring call, asserted server-side, and stripped before
@@ -185,7 +201,10 @@ _CANARY_MAX_SCORE = 50
 
 
 def _scoring_failed_warning(
-    nodes: list[WorkItemNode], error: BaseException, scope: str, message: str,
+    nodes: list[WorkItemNode],
+    error: BaseException,
+    scope: str,
+    message: str,
 ) -> IntegrityWarning:
     """One SCORING_FAILED warning with enough context to diagnose WHY (the
     job that prompted this had only "timed out" to go on): exception type,
@@ -284,7 +303,9 @@ def _score_all_requirements(
     unchanged."""
     if not nodes:
         return
-    warnings_before = len(warnings)  # this pass's own warnings: an earlier stage's must not hide a drift found here
+    warnings_before = len(
+        warnings
+    )  # this pass's own warnings: an earlier stage's must not hide a drift found here
     criteria_context = (
         _build_criteria_context(criteria_retriever, nodes)
         if criteria_retriever is not None
@@ -303,8 +324,11 @@ def _score_all_requirements(
     # and nodes_done/nodes_total below are real progress, not a guess.
     total_nodes = len(representative_nodes)
     chunks = _chunk_by_count_and_chars(
-        representative_nodes, lambda node: len(node.description),
-        node_limit=scoring_chunk_node_limit(len(category_checklist) if category_checklist else None),
+        representative_nodes,
+        lambda node: len(node.description),
+        node_limit=scoring_chunk_node_limit(
+            len(category_checklist) if category_checklist else None
+        ),
     )
     total_chunks = len(chunks)
     # Chunks are no longer a fixed node count, so cumulative progress is the
@@ -312,7 +336,11 @@ def _score_all_requirements(
     chunk_start_offsets = [sum(len(c) for c in chunks[:i]) for i in range(len(chunks))]
 
     def _fire(
-        phase: Phase, chunk: list[WorkItemNode], nodes_done: int, chunk_index: int, issues_found: int | None = None,
+        phase: Phase,
+        chunk: list[WorkItemNode],
+        nodes_done: int,
+        chunk_index: int,
+        issues_found: int | None = None,
     ) -> None:
         if progress_callback is None:
             return
@@ -323,20 +351,27 @@ def _score_all_requirements(
                 # derives its section-count display from the latest event's
                 # own branchCount, so hardcoding 1 here would visibly shrink
                 # the section list to 1 for the duration of scoring.
-                phase=phase, branch_index=None, branch_count=branch_count,
+                phase=phase,
+                branch_index=None,
+                branch_count=branch_count,
                 # Real cumulative node-scoring progress -- previously always
                 # blocks_done=blocks_total (fabricated 100%), confirmed live
                 # as actively misleading (the UI showed a "done" chip while
                 # scoring was still running). nodes_done/total_nodes IS a
                 # real, known-upfront count now.
-                blocks_done=nodes_done, blocks_total=total_nodes,
-                kb_grounded=bool(kb_context), kb_citations=kb_citations_raw,
-                model=model_name, draft_count=len(chunk), issues_found=issues_found,
+                blocks_done=nodes_done,
+                blocks_total=total_nodes,
+                kb_grounded=bool(kb_context),
+                kb_citations=kb_citations_raw,
+                model=model_name,
+                draft_count=len(chunk),
+                issues_found=issues_found,
                 # Real titles for (a prefix of) this chunk -- previously only
                 # a bare count ("150 drafted requirement(s)") with no way to
                 # tell which actual items were being scored.
                 sample_titles=_sample_titles([n.title for n in chunk]),
-                chunk_index=chunk_index, chunk_count=total_chunks,
+                chunk_index=chunk_index,
+                chunk_count=total_chunks,
             )
         )
 
@@ -371,15 +406,24 @@ def _score_all_requirements(
     # description) and must therefore stay in the merge loop -- moving it
     # into the worker would make concurrent chunks write overlapping node
     # sets.
-    def _score_one_chunk(chunk: list[WorkItemNode]) -> tuple[list[IntegrityWarning], list[LevelingProgress]]:
+    def _score_one_chunk(
+        chunk: list[WorkItemNode],
+    ) -> tuple[list[IntegrityWarning], list[LevelingProgress]]:
         chunk_warnings: list[IntegrityWarning] = []
         chunk_events: list[LevelingProgress] = []
 
         def _score(nodes_to_score: list[WorkItemNode]) -> None:
             _apply_quality_scores(
-                nodes_to_score, scoring_client, chunk_warnings, "", criteria_context, kb_context,
-                category_checklist, category_checklist_definitions,
-                progress_callback=chunk_events.append, user_id=user_id,
+                nodes_to_score,
+                scoring_client,
+                chunk_warnings,
+                "",
+                criteria_context,
+                kb_context,
+                category_checklist,
+                category_checklist_definitions,
+                progress_callback=chunk_events.append,
+                user_id=user_id,
             )
 
         try:
@@ -394,15 +438,21 @@ def _score_all_requirements(
             # confined to this chunk's own nodes. The first call raised
             # before parsing any response, so no node was partly written.
             logger.warning(
-                "Requirement scoring chunk of %d failed (%s) -- retrying as two halves", len(chunk), error,
+                "Requirement scoring chunk of %d failed (%s) -- retrying as two halves",
+                len(chunk),
+                error,
             )
             for half in _split_in_half(chunk):
                 try:
                     _score(half)
                 except Exception as half_error:  # noqa: BLE001 -- same fail-soft contract as a whole-chunk failure
-                    message = f"Requirement quality scoring failed for {len(half)} node(s): {half_error}"
+                    message = (
+                        f"Requirement quality scoring failed for {len(half)} node(s): {half_error}"
+                    )
                     logger.warning(message)
-                    chunk_warnings.append(_scoring_failed_warning(half, half_error, "requirement", message))
+                    chunk_warnings.append(
+                        _scoring_failed_warning(half, half_error, "requirement", message)
+                    )
         return chunk_warnings, chunk_events
 
     outcomes = run_chunks_bounded(chunks, _score_one_chunk, chunk_concurrency)
@@ -412,8 +462,10 @@ def _score_all_requirements(
         # Narrate immediately BEFORE pulling this chunk's outcome -- see
         # PHASE 1 for why this is not hoisted above the dispatch.
         _fire(
-            "score_requirements", chunks[kickoff_index],
-            nodes_done=chunk_start_offsets[kickoff_index], chunk_index=kickoff_index,
+            "score_requirements",
+            chunks[kickoff_index],
+            nodes_done=chunk_start_offsets[kickoff_index],
+            chunk_index=kickoff_index,
         )
         outcome = next(outcomes)
         chunk = chunks[outcome.chunk_index]
@@ -427,14 +479,21 @@ def _score_all_requirements(
             # tree, never a dependency of its correctness -- same "must never
             # fail a SURVEY job" philosophy _score_epics_and_features (below)
             # already uses for the identical kind of call.
-            message = f"Requirement quality scoring failed for {len(chunk)} node(s): {outcome.error}"
+            message = (
+                f"Requirement quality scoring failed for {len(chunk)} node(s): {outcome.error}"
+            )
             logger.warning(message)
             warnings.append(_scoring_failed_warning(chunk, outcome.error, "requirement", message))
             if progress_callback is not None:
                 progress_callback(
                     LevelingProgress(
-                        phase="chunk_warning", branch_index=None, branch_count=branch_count,
-                        blocks_done=0, blocks_total=blocks_total, kb_grounded=False, kb_citations=[],
+                        phase="chunk_warning",
+                        branch_index=None,
+                        branch_count=branch_count,
+                        blocks_done=0,
+                        blocks_total=blocks_total,
+                        kb_grounded=False,
+                        kb_citations=[],
                         warning_message=message,
                     )
                 )
@@ -457,14 +516,21 @@ def _score_all_requirements(
         issues_found = sum(len(node.quality_issues) for node in chunk)
         nodes_done = chunk_start_offsets[chunk_index] + len(chunk)
         _fire(
-            "score_requirements_done", chunk, nodes_done=nodes_done,
-            chunk_index=chunk_index, issues_found=issues_found,
+            "score_requirements_done",
+            chunk,
+            nodes_done=nodes_done,
+            chunk_index=chunk_index,
+            issues_found=issues_found,
         )
 
     # Across the whole job: each chunk can be consistent while the chunks differ from one another (names derived live per call).
     # Nothing compared them before. Skipped when a chunk's own warning already reports the difference.
-    job_key_sets = {frozenset(node.quality_category_scores) for node in nodes if node.quality_category_scores}
-    if len(job_key_sets) > 1 and not any(w.kind == WarningKind.SCORING_INCONSISTENT_CATEGORIES for w in warnings[warnings_before:]):
+    job_key_sets = {
+        frozenset(node.quality_category_scores) for node in nodes if node.quality_category_scores
+    }
+    if len(job_key_sets) > 1 and not any(
+        w.kind == WarningKind.SCORING_INCONSISTENT_CATEGORIES for w in warnings[warnings_before:]
+    ):
         message = (
             f"Quality scoring used {len(job_key_sets)} different sets of category names across the document -- the chunks did "
             "not agree, so quality breakdowns may not line up for comparison."
@@ -472,7 +538,8 @@ def _score_all_requirements(
         logger.warning(message)
         warnings.append(
             IntegrityWarning.make(
-                WarningKind.SCORING_INCONSISTENT_CATEGORIES, message,
+                WarningKind.SCORING_INCONSISTENT_CATEGORIES,
+                message,
                 detail={"scope": "job", "distinctKeySetCount": len(job_key_sets)},
             )
         )
@@ -486,7 +553,7 @@ def _score_epics_and_features(
     model_name: str | None,
     blocks_total: int,
     branch_count: int,
-    debug_capture: "DebugCapture | None" = None,
+    debug_capture: DebugCapture | None = None,
     # How many of this pass's independent chunks may be in flight at once
     # (see app.config.Settings.survey_chunk_concurrency). 1 (the default)
     # is the byte-identical previous behavior.
@@ -560,12 +627,18 @@ def _score_epics_and_features(
             return
         progress_callback(
             LevelingProgress(
-                phase=phase, branch_index=None, branch_count=branch_count,
-                blocks_done=nodes_done, blocks_total=total_epic_feature_nodes,
-                kb_grounded=False, kb_citations=[],
-                model=model_name, draft_count=len(chunk),
+                phase=phase,
+                branch_index=None,
+                branch_count=branch_count,
+                blocks_done=nodes_done,
+                blocks_total=total_epic_feature_nodes,
+                kb_grounded=False,
+                kb_citations=[],
+                model=model_name,
+                draft_count=len(chunk),
                 sample_titles=_sample_titles([n.title for n in chunk]),
-                chunk_index=chunk_index, chunk_count=total_chunks,
+                chunk_index=chunk_index,
+                chunk_count=total_chunks,
             )
         )
 
@@ -574,7 +647,14 @@ def _score_epics_and_features(
     # PRE-dispatch narration event fires from the merge loop below, not
     # here -- same reasoning, spelled out there.
     payloads: list[dict[str, dict]] = [
-        {node.local_id: {"type": node.type.value, "text": description_for_model(node.description)} for node in chunk} for chunk in chunks
+        {
+            node.local_id: {
+                "type": node.type.value,
+                "text": description_for_model(node.description),
+            }
+            for node in chunk
+        }
+        for chunk in chunks
     ]
 
     # PHASE 2 -- only the client call leaves the calling thread.
@@ -589,7 +669,11 @@ def _score_epics_and_features(
             # failed half fails the whole chunk (the response is a plain
             # dict, so there is no per-half warning channel here) -- still
             # no worse than before.
-            logger.warning("Epic/Feature scoring chunk of %d failed (%s) -- retrying as two halves", len(nodes_by_id), error)
+            logger.warning(
+                "Epic/Feature scoring chunk of %d failed (%s) -- retrying as two halves",
+                len(nodes_by_id),
+                error,
+            )
             keys = list(nodes_by_id)
             first, second = _split_in_half(keys)
             merged: dict[str, dict] = {}
@@ -604,8 +688,10 @@ def _score_epics_and_features(
         # Narrate immediately BEFORE pulling this chunk's outcome -- see
         # _score_all_requirements' PHASE 1 comment.
         _fire(
-            "score_requirements", chunks[kickoff_index],
-            nodes_done=chunk_start_offsets[kickoff_index], chunk_index=kickoff_index,
+            "score_requirements",
+            chunks[kickoff_index],
+            nodes_done=chunk_start_offsets[kickoff_index],
+            chunk_index=kickoff_index,
         )
         outcome = next(outcomes)
         chunk = chunks[outcome.chunk_index]
@@ -623,8 +709,13 @@ def _score_epics_and_features(
             if progress_callback is not None:
                 progress_callback(
                     LevelingProgress(
-                        phase="chunk_warning", branch_index=None, branch_count=branch_count,
-                        blocks_done=0, blocks_total=total_epic_feature_nodes, kb_grounded=False, kb_citations=[],
+                        phase="chunk_warning",
+                        branch_index=None,
+                        branch_count=branch_count,
+                        blocks_done=0,
+                        blocks_total=total_epic_feature_nodes,
+                        kb_grounded=False,
+                        kb_citations=[],
                         warning_message=message,
                     )
                 )
@@ -650,7 +741,9 @@ def score_texts_together(
     kb_context: str | None,
     category_checklist: list[str] | None,
     user_id: str | None = None,
-) -> dict[str, tuple[int | None, list[str], "QualityCategoryScores | None", "QualityConfidence | None"] | None]:
+) -> dict[
+    str, tuple[int | None, list[str], QualityCategoryScores | None, QualityConfidence | None] | None
+]:
     """Scores several texts in ONE model call, so they are judged in the same frame and against the same rubric (`None` for a
     text the model gave no usable entry for). Used for a single rescore (one text) and for before/after of a rewrite (two): the
     scores of the two are then comparable, which two separate calls never were. The criteria context is retrieved for the FIRST
@@ -661,7 +754,11 @@ def score_texts_together(
         criteria = criteria_retriever.retrieve(first)
         criteria_context = "\n".join(f"- {c.issue.value}: {c.text}" for c in criteria)
     scores_by_id = scoring_client.score_requirements_for_document(
-        {text_id: description_for_model(text) for text_id, text in texts.items()}, criteria_context, kb_context, category_checklist, user_id=user_id,
+        {text_id: description_for_model(text) for text_id, text in texts.items()},
+        criteria_context,
+        kb_context,
+        category_checklist,
+        user_id=user_id,
     )
     valid_issue_values = {i.value for i in RequirementQualityIssue}
     out: dict = {}
@@ -673,14 +770,23 @@ def score_texts_together(
         raw_score = entry.get("score")
         score = (
             raw_score
-            if isinstance(raw_score, int) and not isinstance(raw_score, bool) and 0 <= raw_score <= 100
+            if isinstance(raw_score, int)
+            and not isinstance(raw_score, bool)
+            and 0 <= raw_score <= 100
             else None
         )
         issues = sorted({issue for issue in entry.get("issues", []) if issue in valid_issue_values})
         category_scores = _parse_category_scores(entry.get("categoryScores"))
         if category_checklist:
-            category_scores, _left_out = _conform_category_scores(category_scores, category_checklist)
-        out[text_id] = (score, issues, category_scores, _parse_confidence(entry.get("confidence")))
+            category_scores, _left_out = _conform_category_scores(
+                category_scores, category_checklist
+            )
+        out[text_id] = (
+            score,
+            issues,
+            category_scores,
+            _reconcile_confidence(_parse_confidence(entry.get("confidence")), issues),
+        )
     return out
 
 
@@ -691,7 +797,7 @@ def score_single_requirement_text(
     kb_context: str | None,
     category_checklist: list[str] | None,
     user_id: str | None = None,
-) -> tuple[int | None, list[str], "QualityCategoryScores | None", "QualityConfidence | None"]:
+) -> tuple[int | None, list[str], QualityCategoryScores | None, QualityConfidence | None]:
     """CR-7d rescore: the single ad-hoc-string counterpart to
     _apply_quality_scores below, for re-judging ONE already-formalized
     requirement's current title+description after a manual/AI-chat edit --
@@ -712,7 +818,12 @@ def score_single_requirement_text(
     app.workitem.model), parsed with the same tolerance as everything else
     here: a missing/malformed value is None, never a crash."""
     scored = score_texts_together(
-        {"adhoc": description}, scoring_client, criteria_retriever, kb_context, category_checklist, user_id=user_id,
+        {"adhoc": description},
+        scoring_client,
+        criteria_retriever,
+        kb_context,
+        category_checklist,
+        user_id=user_id,
     )["adhoc"]
     if scored is None:
         return None, [], None, None
@@ -748,7 +859,9 @@ def _parse_category_scores(raw: object) -> QualityCategoryScores | None:
 _COMPLETENESS_KEY = "completeness_as_requirement"
 
 
-def _conform_category_scores(scores: dict[str, int] | None, category_checklist: list[str]) -> tuple[dict[str, int] | None, list[str]]:
+def _conform_category_scores(
+    scores: dict[str, int] | None, category_checklist: list[str]
+) -> tuple[dict[str, int] | None, list[str]]:
     """Holds one node's category scores to the fixed list. Names are matched without regard to case or surrounding spaces and
     returned in the list's own spelling and order; names outside the list (the built-in completeness check apart) are dropped;
     a category the model left out is reported, never invented. `(None, [])` when nothing was scored."""
@@ -765,6 +878,29 @@ def _conform_category_scores(scores: dict[str, int] | None, category_checklist: 
             kept[canonical] = value
     ordered = {name: kept[name] for name in required if name in kept}
     return ordered, [name for name in required if name not in kept]
+
+
+# Flags that say the candidate is not a well-formed requirement. A model that
+# raises one of these cannot also be "high" confident in the item as a
+# requirement, so the pair would contradict itself on screen.
+_STRUCTURAL_ISSUES = frozenset(
+    {
+        RequirementQualityIssue.FRAGMENT.value,
+        RequirementQualityIssue.PLACEHOLDER.value,
+        RequirementQualityIssue.NOT_A_REQUIREMENT.value,
+    }
+)
+
+
+def _reconcile_confidence(
+    confidence: QualityConfidence | None,
+    issues: Sequence[str],
+) -> QualityConfidence | None:
+    """Caps HIGH at MEDIUM when a structural flag is present. Only ever
+    lowers; None (no usable answer) stays None, LOW and MEDIUM are kept."""
+    if confidence is QualityConfidence.HIGH and _STRUCTURAL_ISSUES.intersection(issues):
+        return QualityConfidence.MEDIUM
+    return confidence
 
 
 def _parse_confidence(raw: object) -> QualityConfidence | None:
@@ -822,12 +958,13 @@ def _check_scoring_canary(entry: object) -> None:
             "Scoring drift probe FAILED: a deliberately known-bad requirement scored %d (expected <= %d). "
             "The scoring model or its configuration has likely drifted -- every quality score in this "
             "batch should be treated as suspect until this is investigated.",
-            raw_score, _CANARY_MAX_SCORE,
+            raw_score,
+            _CANARY_MAX_SCORE,
         )
 
 
 def _match_category_checklist(
-    category_scores: "QualityCategoryScores | None",
+    category_scores: QualityCategoryScores | None,
     category_checklist_definitions: dict[str, str] | None,
 ) -> dict[str, str] | None:
     """Builds this node's quality_category_checklist -- the source for
@@ -867,7 +1004,10 @@ def _match_category_checklist(
     wholesale like quality_category_scores' own all-or-nothing parsing."""
     if not category_scores or not category_checklist_definitions:
         return None
-    normalized = {name.strip().lower(): definition for name, definition in category_checklist_definitions.items()}
+    normalized = {
+        name.strip().lower(): definition
+        for name, definition in category_checklist_definitions.items()
+    }
     matched = {
         key: normalized[key.strip().lower()]
         for key in category_scores
@@ -901,25 +1041,48 @@ def _repair_missing_categories(
         groups.setdefault(tuple(missing), []).append(node_id)
     still_missing = dict(missing_by_node)
     # The groups that cover the most items first; ties by their names, so the choice never depends on dict order.
-    for missing, node_ids in sorted(groups.items(), key=lambda g: (-len(g[1]), g[0]))[:_MAX_REPAIR_CALLS]:
+    for missing, node_ids in sorted(groups.items(), key=lambda g: (-len(g[1]), g[0]))[
+        :_MAX_REPAIR_CALLS
+    ]:
         wanted = {name.strip().casefold(): name for name in missing}
         try:
             answer = scoring_client.score_requirements_for_document(
-                {node_id: description_for_model(by_id[node_id].description) for node_id in node_ids}, criteria_context, kb_context, list(missing), user_id=user_id,
+                {
+                    node_id: description_for_model(by_id[node_id].description)
+                    for node_id in node_ids
+                },
+                criteria_context,
+                kb_context,
+                list(missing),
+                user_id=user_id,
             )
         except Exception as exc:  # noqa: BLE001 -- a repair only completes a breakdown; the scores already stand
-            logger.warning("Completing %d item(s) with a missing category failed: %s", len(node_ids), exc)
+            logger.warning(
+                "Completing %d item(s) with a missing category failed: %s", len(node_ids), exc
+            )
             continue
         for node_id in node_ids:
             entry = answer.get(node_id) if isinstance(answer, dict) else None
-            parsed = _parse_category_scores(entry.get("categoryScores")) if isinstance(entry, dict) else None
+            parsed = (
+                _parse_category_scores(entry.get("categoryScores"))
+                if isinstance(entry, dict)
+                else None
+            )
             if not parsed:
                 continue
-            found = {wanted[k.strip().casefold()]: v for k, v in parsed.items() if k.strip().casefold() in wanted}
+            found = {
+                wanted[k.strip().casefold()]: v
+                for k, v in parsed.items()
+                if k.strip().casefold() in wanted
+            }
             node = by_id[node_id]
             merged = {**(node.quality_category_scores or {}), **found}
-            node.quality_category_scores = {name: merged[name] for name in required if name in merged}
-            still_missing[node_id] = [name for name in missing_by_node[node_id] if name not in found]
+            node.quality_category_scores = {
+                name: merged[name] for name in required if name in merged
+            }
+            still_missing[node_id] = [
+                name for name in missing_by_node[node_id] if name not in found
+            ]
     return {node_id: names for node_id, names in still_missing.items() if names}
 
 
@@ -974,7 +1137,9 @@ def _apply_quality_scores(
     behavior) -- see that setting's own comment in config.py for why an
     operator kill switch exists."""
     # What the model reads is the text form of a description (tables as CSV), not the HTML it is stored as.
-    descriptions_by_node_id = {node.local_id: description_for_model(node.description) for node in nodes}
+    descriptions_by_node_id = {
+        node.local_id: description_for_model(node.description) for node in nodes
+    }
     # §7 canary: injected here (the one place the real batch is built) and
     # popped on the very next line after the call, so nothing else in this
     # function -- and no caller -- can observe it. Skipped when the
@@ -992,7 +1157,11 @@ def _apply_quality_scores(
             _CANARY_NODE_ID,
         )
     scores_by_node_id = scoring_client.score_requirements_for_document(
-        descriptions_by_node_id, criteria_context, kb_context, category_checklist, user_id=user_id,
+        descriptions_by_node_id,
+        criteria_context,
+        kb_context,
+        category_checklist,
+        user_id=user_id,
     )
     if inject_canary:
         _check_scoring_canary(scores_by_node_id.pop(_CANARY_NODE_ID, None))
@@ -1017,13 +1186,19 @@ def _apply_quality_scores(
         node.quality_category_scores = _parse_category_scores(entry.get("categoryScores"))
         if category_checklist:
             # A fixed list is enforced in code: the prompt asks for it and the schema only checks the shape.
-            node.quality_category_scores, left_out = _conform_category_scores(node.quality_category_scores, category_checklist)
+            node.quality_category_scores, left_out = _conform_category_scores(
+                node.quality_category_scores, category_checklist
+            )
             if left_out:
                 nodes_missing_categories[node.local_id] = left_out
         node.quality_category_checklist = _match_category_checklist(
-            node.quality_category_scores, category_checklist_definitions,
+            node.quality_category_scores,
+            category_checklist_definitions,
         )
-        node.quality_confidence = _parse_confidence(entry.get("confidence"))
+        node.quality_confidence = _reconcile_confidence(
+            _parse_confidence(entry.get("confidence")),
+            [i.value for i in node.quality_issues],
+        )
 
     missing_nodes = [node for node in nodes if node.quality_score is None]
     missing_or_invalid = [node.local_id for node in missing_nodes]
@@ -1051,18 +1226,31 @@ def _apply_quality_scores(
         if progress_callback is not None:
             progress_callback(
                 LevelingProgress(
-                    phase="chunk_warning", branch_index=None, branch_count=0,
-                    blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[],
+                    phase="chunk_warning",
+                    branch_index=None,
+                    branch_count=0,
+                    blocks_done=0,
+                    blocks_total=0,
+                    kb_grounded=False,
+                    kb_citations=[],
                     warning_message=message,
                 )
             )
 
     if nodes_missing_categories and category_checklist:
         nodes_missing_categories = _repair_missing_categories(
-            nodes, nodes_missing_categories, scoring_client, criteria_context, kb_context, category_checklist, user_id,
+            nodes,
+            nodes_missing_categories,
+            scoring_client,
+            criteria_context,
+            kb_context,
+            category_checklist,
+            user_id,
         )
     if nodes_missing_categories:
-        left_out_names = sorted({name for names in nodes_missing_categories.values() for name in names})
+        left_out_names = sorted(
+            {name for names in nodes_missing_categories.values() for name in names}
+        )
         # Counts only: the names are the company's own material and stay in the warning's detail, not in the log or the narration.
         message = (
             f"Quality scoring left out {len(left_out_names)} required category(ies) for "
@@ -1080,8 +1268,13 @@ def _apply_quality_scores(
         if progress_callback is not None:
             progress_callback(
                 LevelingProgress(
-                    phase="chunk_warning", branch_index=None, branch_count=0,
-                    blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[],
+                    phase="chunk_warning",
+                    branch_index=None,
+                    branch_count=0,
+                    blocks_done=0,
+                    blocks_total=0,
+                    kb_grounded=False,
+                    kb_citations=[],
                     warning_message=message,
                 )
             )
@@ -1112,14 +1305,22 @@ def _apply_quality_scores(
             IntegrityWarning.make(
                 WarningKind.SCORING_INCONSISTENT_CATEGORIES,
                 message,
-                detail={"branch": node_id_prefix or "(root)", "distinctKeySetCount": len(scored_key_sets)},
+                detail={
+                    "branch": node_id_prefix or "(root)",
+                    "distinctKeySetCount": len(scored_key_sets),
+                },
             )
         )
         if progress_callback is not None:
             progress_callback(
                 LevelingProgress(
-                    phase="chunk_warning", branch_index=None, branch_count=0,
-                    blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[],
+                    phase="chunk_warning",
+                    branch_index=None,
+                    branch_count=0,
+                    blocks_done=0,
+                    blocks_total=0,
+                    kb_grounded=False,
+                    kb_citations=[],
                     warning_message=message,
                 )
             )

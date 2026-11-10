@@ -32,12 +32,60 @@ describe('ActionBadge', () => {
   it('never links a create badge -- there is no ADO item yet to open', () => {
     render(<ActionBadge action="create" orgUrl="https://dev.azure.com/example-org" />);
     expect(screen.getByText('New')).toBeInTheDocument();
+    // --color-ok on its tint is 4.49:1 (axe color-contrast); the -ink token is the readable text colour.
+    expect(screen.getByText('New')).toHaveStyle({ color: 'var(--color-ok-ink)' });
     expect(screen.queryByRole('link')).not.toBeInTheDocument();
+  });
+
+  it('can hide the routine "New" pill but keeps the word for screen readers', () => {
+    const { container } = render(<ActionBadge action="create" hideNew />);
+    expect(screen.getByText('New')).toHaveClass('sr-only');
+    expect(container.querySelector('[class*="rounded-full"]')).toBeNull();
+  });
+
+  it('hideNew leaves a reuse or near-duplicate pill alone', () => {
+    render(<ActionBadge action="reuse" existingAdoId={604} hideNew />);
+    expect(screen.getByText('Links to WI-604')).not.toHaveClass('sr-only');
   });
 
   it('includes the project segment in the link when project is provided -- avoids ADO resolving the id against the wrong project context', () => {
     render(<ActionBadge action="dedup_skip" existingAdoId={532} orgUrl="https://dev.azure.com/example-org" project="elisradevops-project" />);
     const link = screen.getByRole('link', { name: /near-duplicate of wi-532/i });
     expect(link).toHaveAttribute('href', 'https://dev.azure.com/example-org/elisradevops-project/_workitems/edit/532');
+  });
+
+  describe('quiet (phone rows)', () => {
+    it('renders the same wording as plain text, with no pill', () => {
+      render(<ActionBadge action="create" quiet />);
+      expect(screen.getByText('New')).not.toHaveClass('rounded-full');
+      expect(screen.getByText('New')).toHaveClass('text-ink-3');
+    });
+
+    it('keeps a reuse link a real, accent-coloured, underlined link', () => {
+      render(<ActionBadge action="reuse" existingAdoId={3025} orgUrl="https://ado.example" project="P" quiet />);
+      const link = screen.getByRole('link');
+      expect(link).toHaveAttribute('href', expect.stringContaining('3025'));
+      expect(screen.getByText('Links to WI-3025')).toHaveClass('text-accent', 'underline');
+      // a 24px-tall hit area (WCAG 2.5.8), not the 16px of the text
+      expect(link).toHaveClass('h-6');
+    });
+
+    it('mutes a near-duplicate even when it is a link, and a link-less reuse', () => {
+      const { unmount } = render(<ActionBadge action="dedup_skip" existingAdoId={3033} orgUrl="https://ado.example" project="P" quiet />);
+      expect(screen.getByText('Dup of WI-3033')).toHaveClass('text-ink-3');
+      expect(screen.getByText('Dup of WI-3033')).toHaveAttribute('title', 'Near-duplicate of WI-3033');
+      // the visible text is inside the accessible name, with a suffix saying what it means
+      expect(screen.getByRole('link', { name: /^Dup of WI-3033\s*, a skipped near-duplicate$/ })).toBeInTheDocument();
+      unmount();
+      const { unmount: unmount2 } = render(<ActionBadge action="reuse" existingAdoId={3025} quiet />);
+      expect(screen.queryByRole('link')).toBeNull();
+      expect(screen.getByText('Links to WI-3025')).toHaveClass('text-ink-3');
+      unmount2();
+    });
+
+    it('says just "Dup" when the matched item has no id', () => {
+      render(<ActionBadge action="dedup_skip" quiet />);
+      expect(screen.getByText('Dup')).toHaveAttribute('title', 'Near-duplicate');
+    });
   });
 });

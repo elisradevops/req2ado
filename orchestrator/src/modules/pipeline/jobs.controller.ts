@@ -1,9 +1,11 @@
 import {
   BadRequestException,
+  HttpCode,
   Controller,
   Delete,
   Get,
   Inject,
+  Logger,
   NotFoundException,
   Param,
   Patch,
@@ -17,17 +19,23 @@ import {
   Optional,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { Throttle } from '@nestjs/throttler';
 import { Body } from '@nestjs/common';
 import type { Response } from 'express';
-import { JobsService, JobSummary, type JobDetail } from './jobs.service';
+import type { CanonicalDoc } from '@req2ado/shared-ts';
+import { decorateStoredDiff, JobsService, JobSummary, type JobDetail } from './jobs.service';
 import { IngestionHttpClient, type RewriteComparison, type ScoreExplanation } from './ingestion-http.client';
 import { WorkItemTypeCatalogService, type WorkItemTypeCatalogEntry } from './work-item-type-catalog.service';
 import { jobFigureFileUploadSchema } from './job-figure-file.dto';
 import { etaEstimateQuerySchema } from './eta-estimate.dto';
 import { jobsListQuerySchema } from './jobs-list.dto';
-import { EtaService, type EtaEstimate } from './eta.service';
+import { EtaService, type EtaEstimate, type ModelStats } from './eta.service';
 import { buildDocumentMap, type DocumentMapSection } from './document-map';
-import { DocumentOverviewService } from './document-overview.service';
+import { parseDocumentOverview, type DocumentOverview } from './document-overview.service';
+import { buildPreviewOverview } from './document-preview';
+import { generateSummary, MAX_SUMMARY_INPUT_CHARS } from './document-summary';
+import type { WritePreview } from './write-plan';
+import type { DocumentProfile } from './document-profile';
 import { createHash } from 'crypto';
 import { OpenWebUiClientFactory } from '../llm/openwebui-client.factory';
 import { ModelHealthService } from '../llm/model-health.service';
@@ -72,6 +80,11 @@ const MAX_RETRY_PARENT_SUMMARY_ITEMS = 25;
 // what this field actually is.
 export const MAX_SE_COVERAGE_REF_LENGTH = 128;
 
+// "To be discussed" proposed text. Title ceiling matches ADO's own 255-character System.Title limit; the description ceiling is generous
+// (a proposed rewrite can carry a table) but bounds what one entry adds to the Job.dryRunDiff JSON.
+export const MAX_DISCUSSION_TITLE_LENGTH = 255;
+export const MAX_DISCUSSION_DESCRIPTION_LENGTH = 20000;
+
 // Requirement classification tags, unlike Customer ID, ARE validated against
 // a closed vocabulary -- see VALID_REQUIREMENT_TAGS's own doc comment for
 // why that list (not one org's live ADO allowedValues) is the right thing
@@ -95,8 +108,35 @@ const MULTER_SAFETY_CEILING_BYTES = 500 * 1024 * 1024;
 // (see docs on _describe_figure_with_progress's caller).
 const MAX_FIGURE_FILE_BYTES = 8 * 1024 * 1024;
 
+export interface ModelDetail extends ModelStats {
+  id: string;
+  name: string;
+  /** Whether the app will describe figures with this model (the flag the pipeline acts on), not a quality claim. */
+  describesFigures: boolean;
+}
+
+export interface ModelListing {
+  models: string[];
+  recommended: string | null;
+  details: ModelDetail[];
+}
+
+// A row selection from the request body: absent means "everything", anything but an array of strings is rejected.
+// null is rejected unless allowNull (the read-only preview): on the irreversible confirm, null must never mean "write everything".
+const MAX_SELECTED_LOCAL_IDS = 50_000;
+function parseSelectedLocalIds(value: unknown, options: { allowNull?: boolean } = {}): string[] | undefined {
+  if (value === undefined || (value === null && options.allowNull)) return undefined;
+  if (Array.isArray(value) && value.length > MAX_SELECTED_LOCAL_IDS) {
+    throw new BadRequestException(`selectedLocalIds must not hold more than ${MAX_SELECTED_LOCAL_IDS} ids`);
+  }
+  if (Array.isArray(value) && value.every((v) => typeof v === 'string')) return value as string[];
+  throw new BadRequestException('selectedLocalIds must be an array of strings');
+}
+
 @Controller('jobs')
 export class JobsController {
+  private readonly logger = new Logger(JobsController.name);
+
   constructor(
     private readonly jobsService: JobsService,
     private readonly ingestionClient: IngestionHttpClient,
@@ -105,8 +145,9 @@ export class JobsController {
     private readonly workItemTypeCatalogService: WorkItemTypeCatalogService,
     private readonly etaService: EtaService,
     @Inject('MAX_UPLOAD_SIZE_BYTES') private readonly maxUploadSizeBytes: number,
-    private readonly documentOverviewService: DocumentOverviewService,
     @Optional() private readonly modelHealth?: ModelHealthService,
+    // The output budget of the AI summary call (config DOCUMENT_OVERVIEW_MAX_TOKENS); a reasoning model can spend a small one thinking.
+    @Optional() @Inject('SUMMARY_MAX_TOKENS') private readonly summaryMaxTokens: number = 4000,
   ) {}
 
   @Get()
@@ -150,12 +191,38 @@ export class JobsController {
     }
   }
 
+  // Additive to the original {models: string[]}: `recommended` is the admin-configured default when this user is
+  // offered it (no quality claim, it is the model "Default" already means), and `details` carries what the app can
+  // state per model -- whether figures will be described (the same flag the pipeline acts on) and this
+  // deployment's own observed speed and finish rate. Any failure in the extras leaves the plain list intact.
   @Get('models')
-  async listModels(@CurrentUser() user: SessionUser): Promise<{ models: string[] }> {
+  async listModels(@CurrentUser() user: SessionUser): Promise<ModelListing> {
     const client = await this.clientFactory.getClientFor(user.userId);
     const models = await client.listSelectableModels();
     const visible = (await this.modelHealth?.filterVisible(user.userId, models)) ?? models;
-    return { models: visible.map((m) => m.id) };
+    const ids = visible.map((m) => m.id);
+    let stats = new Map<string, ModelStats>();
+    try {
+      stats = await this.etaService.modelStats(ids);
+    } catch (err) {
+      this.logger.warn(`model statistics unavailable: ${err instanceof Error ? err.name : 'error'}`);
+    }
+    let defaultModel: string | undefined;
+    try {
+      defaultModel = this.etaService.getDefaultModel();
+    } catch {
+      defaultModel = undefined;
+    }
+    return {
+      models: ids,
+      recommended: defaultModel && ids.includes(defaultModel) ? defaultModel : null,
+      details: visible.map((m) => ({
+        id: m.id,
+        name: m.name,
+        describesFigures: m.vision,
+        ...(stats.get(m.id) ?? { runs: 0, speedVsTypical: null, finishedShare: null }),
+      })),
+    };
   }
 
   @Post()
@@ -206,20 +273,8 @@ export class JobsController {
       throw new BadRequestException(`mode must be 'baseline' or 'survey', got: ${mode}`);
     }
     const sourceHash = createHash('sha256').update(file.buffer).digest('hex');
-    // Parsed defensively -- a malformed/unexpected shape must never fail
-    // job creation, same fail-open contract DocumentOverviewService itself
-    // already follows.
-    let documentOverview: { synopsis: string; caveat: string | null } | null = null;
-    if (documentOverviewRaw) {
-      try {
-        const parsed = JSON.parse(documentOverviewRaw);
-        if (parsed && typeof parsed.synopsis === 'string') {
-          documentOverview = { synopsis: parsed.synopsis, caveat: typeof parsed.caveat === 'string' ? parsed.caveat : null };
-        }
-      } catch {
-        documentOverview = null;
-      }
-    }
+    // Parsed defensively: a malformed overview is no overview, and never fails job creation.
+    const documentOverview = parseDocumentOverview(documentOverviewRaw);
     return this.jobsService.submit({
       areaPath,
       adoProject: adoProject ?? null,
@@ -269,6 +324,8 @@ export class JobsController {
     tableCount: number;
     openTbdCount: number;
     documentMap: DocumentMapSection[];
+    // The step-3 overview and the document profile, from the parsed document alone.
+    overview: DocumentOverview & { profile: DocumentProfile };
   }> {
     await this.assertModelAllowed(model);
     if (!file) {
@@ -313,11 +370,14 @@ export class JobsController {
       tableCount,
       cellCount,
     });
+    const documentMap = buildDocumentMap(doc.blocks);
+    const sectionCount = doc.blocks.filter((b) => b.kind === 'heading').length;
+    const depth = headingLevels.reduce((most, level) => Math.max(most, level), 0); // reduce, not spread: a huge document has too many headings to spread
     return {
       blockCount,
-      sectionCount: doc.blocks.filter((b) => b.kind === 'heading').length,
+      sectionCount,
       figureCount,
-      depth: headingLevels.length > 0 ? Math.max(...headingLevels) : 0,
+      depth,
       fileType,
       estimate,
       tableCount,
@@ -325,26 +385,35 @@ export class JobsController {
       // pre-existing content gap worth flagging before the reviewer commits
       // to a mode, not something SURVEY/BASELINE processing introduces.
       openTbdCount: doc.blocks.filter((b) => b.kind === 'open_tbd').length,
-      documentMap: buildDocumentMap(doc.blocks),
+      documentMap,
+      // What the wizard's "does this look right?" step shows: made from the parsed text and structure alone, at once, with no model.
+      overview: await buildPreviewOverview(doc, (...args) => this.ingestionClient.level(...args), { sectionCount, depth, documentMap }, this.logger),
     };
   }
 
-  // No file upload here -- consumes the heading/document-map data the
-  // wizard's step-1 preview() call already returned, so this never
-  // re-parses the document. SURVEY-only from the caller's side (the
-  // wizard only calls this once SURVEY is selected); this endpoint itself
-  // has no mode check since it does nothing mode-specific.
-  @Post('preview/exposition')
-  async previewExposition(
+  // The optional AI summary of the document shown beside the overview (SURVEY wizard, step 3): written by one bounded model call from the small
+  // deterministic input the preview returned, checked against it, and answered as null on any failure. The wizard never waits on it.
+  // A model call on the user's own connection with text the caller chose, so it is limited well below the global 200 per minute: the wizard
+  // asks once per document (and once more if the model is changed).
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post('preview/summary')
+  async previewSummary(
     @CurrentUser() user: SessionUser,
-    @Body('documentMap') documentMap: DocumentMapSection[] | undefined,
-    @Body('sectionCount') sectionCount: number | undefined,
-    @Body('depth') depth: number | undefined,
-  ): Promise<{ synopsis: string; caveat: string | null } | null> {
-    if (!documentMap || !Array.isArray(documentMap) || typeof sectionCount !== 'number' || typeof depth !== 'number') {
-      return null;
+    @Body() body: { summaryInput?: unknown; model?: unknown },
+    @Res({ passthrough: true }) res?: Response,
+  ): Promise<{ summary: string | null }> {
+    const input = body?.summaryInput;
+    if (typeof input !== 'string' || !input.trim() || input.length > MAX_SUMMARY_INPUT_CHARS) {
+      throw new BadRequestException(`summaryInput must be text of at most ${MAX_SUMMARY_INPUT_CHARS} characters`);
     }
-    return this.documentOverviewService.generate({ documentMap, sectionCount, depth }, user.userId);
+    const model = typeof body.model === 'string' && body.model ? body.model : undefined;
+    await this.assertModelAllowed(model);
+    const abort = new AbortController();
+    res?.on('close', () => {
+      if (!res.writableEnded) abort.abort(); // the browser left: stop the model call too
+    });
+    const client = await this.clientFactory.getClientFor(user.userId);
+    return { summary: await generateSummary(client, input, { maxTokens: this.summaryMaxTokens, ...(model ? { model } : {}), signal: abort.signal, log: this.logger }) };
   }
 
   // Re-pricing without re-uploading: the reviewer changing mode/model on
@@ -418,9 +487,16 @@ export class JobsController {
           // best-effort read (caught below), never the write path, so a
           // fallback here is correct where a hard-fail would be wrong.
           const project = job.adoProject ?? job.areaPath.split('\\')[0];
-          workItemTypeCatalog = await this.workItemTypeCatalogService.resolve(project, credential);
-          workItemTypeCategoryLabels = await this.workItemTypeCatalogService.resolveCategoryLabels(project, credential);
-          requirementClassificationField = await this.workItemTypeCatalogService.resolveRequirementClassificationField(project, credential);
+          // Started together, each on its own: they used to run one after another and the job fetch waited on their sum. One failing
+          // keeps its fallback without discarding the others (resolveCategoryLabels and the classification field already fail open).
+          const [catalog, labels, field] = await Promise.all([
+            this.workItemTypeCatalogService.resolve(project, credential).catch(() => workItemTypeCatalog),
+            this.workItemTypeCatalogService.resolveCategoryLabels(project, credential),
+            this.workItemTypeCatalogService.resolveRequirementClassificationField(project, credential),
+          ]);
+          workItemTypeCatalog = catalog;
+          workItemTypeCategoryLabels = labels;
+          requirementClassificationField = field;
         }
       } catch {
         // Best-effort enrichment -- never fail the whole job fetch over it.
@@ -457,9 +533,10 @@ export class JobsController {
     ) {
       throw new BadRequestException(`localIds must be a non-empty array of at most ${maxItems} strings`);
     }
-    await this.ownedJob(id, user);
+    const { writtenLocalIds } = await this.ownedJob(id, user);
     await this.assertModelAllowed(await this.jobsService.modelOf(id));
-    return this.jobsService.retryEnhancement(id, { kind, pass, localIds: [...new Set(localIds as string[])] });
+    const result = await this.jobsService.retryEnhancement(id, { kind, pass, localIds: [...new Set(localIds as string[])] });
+    return { ...result, dryRunDiff: decorateStoredDiff(result.dryRunDiff, writtenLocalIds) };
   }
 
   // Declared BEFORE ':id/diff/:localId' on purpose -- 'reviewed' is a static
@@ -478,9 +555,9 @@ export class JobsController {
     if (!Array.isArray(localIds) || localIds.length === 0 || !localIds.every((v) => typeof v === 'string' && v.length > 0)) {
       throw new BadRequestException('localIds must be a non-empty array of strings');
     }
-    await this.ownedJob(id, user);
+    const { writtenLocalIds } = await this.ownedJob(id, user);
     const dryRunDiff = await this.jobsService.setDiffEntriesReviewed(id, localIds as string[], reviewed);
-    return { dryRunDiff };
+    return { dryRunDiff: decorateStoredDiff(dryRunDiff, writtenLocalIds) };
   }
 
   @Patch(':id/warnings/acknowledged')
@@ -516,17 +593,20 @@ export class JobsController {
     @CurrentUser() user: SessionUser,
     @Body('title') title: string | undefined,
     @Body('description') description: string | undefined,
-    @Body('customerId') customerId: string | undefined,
+    @Body('customerId') customerId: string | null | undefined,
     @Body('tags') tags: string[] | undefined,
-    @Body('seCoverageRef') seCoverageRef: string | undefined,
+    @Body('seCoverageRef') seCoverageRef: string | null | undefined,
   ): Promise<{ dryRunDiff: unknown }> {
-    await this.ownedJob(id, user);
+    const { writtenLocalIds } = await this.ownedJob(id, user);
     // Same trim-then-null-if-blank convention the wizard's own (now-removed)
     // job-level Customer ID field used -- undefined (field omitted) leaves
     // the entry's customerId untouched; a real service-layer type gate
     // (Requirement-only) is enforced in JobsService.editDiffEntry itself.
     let trimmedCustomerId: string | null | undefined;
-    if (customerId !== undefined) {
+    if (customerId === null) {
+      trimmedCustomerId = null; // the review UI sends null for a field left blank: that clears it
+    } else if (customerId !== undefined) {
+      if (typeof customerId !== 'string') throw new BadRequestException('customerId must be a string');
       const trimmed = customerId.trim();
       if (trimmed.length > MAX_CUSTOMER_ID_LENGTH) {
         throw new BadRequestException(`customerId exceeds the ${MAX_CUSTOMER_ID_LENGTH}-character limit`);
@@ -547,7 +627,10 @@ export class JobsController {
     }
     // Same trim-then-null-if-blank convention as customerId above.
     let trimmedSeCoverageRef: string | null | undefined;
-    if (seCoverageRef !== undefined) {
+    if (seCoverageRef === null) {
+      trimmedSeCoverageRef = null;
+    } else if (seCoverageRef !== undefined) {
+      if (typeof seCoverageRef !== 'string') throw new BadRequestException('seCoverageRef must be a string');
       const trimmed = seCoverageRef.trim();
       if (trimmed.length > MAX_SE_COVERAGE_REF_LENGTH) {
         throw new BadRequestException(`seCoverageRef exceeds the ${MAX_SE_COVERAGE_REF_LENGTH}-character limit`);
@@ -561,7 +644,7 @@ export class JobsController {
       tags,
       seCoverageRef: trimmedSeCoverageRef,
     });
-    return { dryRunDiff };
+    return { dryRunDiff: decorateStoredDiff(dryRunDiff, writtenLocalIds) };
   }
 
   @Patch(':id/diff/:localId/exclude')
@@ -574,9 +657,67 @@ export class JobsController {
     if (typeof excluded !== 'boolean') {
       throw new BadRequestException('excluded must be a boolean');
     }
-    await this.ownedJob(id, user);
+    const { writtenLocalIds } = await this.ownedJob(id, user);
     const dryRunDiff = await this.jobsService.setDiffEntryExcluded(id, localId, excluded);
-    return { dryRunDiff };
+    return { dryRunDiff: decorateStoredDiff(dryRunDiff, writtenLocalIds) };
+  }
+
+  @Patch(':id/diff/:localId/proposal')
+  async setProposalAccepted(
+    @Param('id') id: string,
+    @Param('localId') localId: string,
+    @CurrentUser() user: SessionUser,
+    @Body('accepted') accepted: boolean | undefined,
+  ): Promise<{ dryRunDiff: unknown }> {
+    if (typeof accepted !== 'boolean') {
+      throw new BadRequestException('accepted must be a boolean');
+    }
+    const { writtenLocalIds } = await this.ownedJob(id, user);
+    const dryRunDiff = await this.jobsService.setProposalAccepted(id, localId, accepted);
+    return { dryRunDiff: decorateStoredDiff(dryRunDiff, writtenLocalIds) };
+  }
+
+  // "To be discussed": parks a proposed rewrite for the ADO Discussion without touching the entry's own text.
+  @Post(':id/diff/:localId/discussion')
+  async addDiscussionEntry(
+    @Param('id') id: string,
+    @Param('localId') localId: string,
+    @CurrentUser() user: SessionUser,
+    @Body('proposedTitle') proposedTitle: string | undefined,
+    @Body('proposedDescription') proposedDescription: string | undefined,
+  ): Promise<{ dryRunDiff: unknown }> {
+    if (proposedTitle !== undefined && typeof proposedTitle !== 'string') {
+      throw new BadRequestException('proposedTitle must be a string');
+    }
+    if (proposedDescription !== undefined && typeof proposedDescription !== 'string') {
+      throw new BadRequestException('proposedDescription must be a string');
+    }
+    const title = proposedTitle?.trim() ? proposedTitle : undefined;
+    const description = proposedDescription?.trim() ? proposedDescription : undefined;
+    if (title === undefined && description === undefined) {
+      throw new BadRequestException('proposedTitle or proposedDescription is required');
+    }
+    if (title !== undefined && title.length > MAX_DISCUSSION_TITLE_LENGTH) {
+      throw new BadRequestException(`proposedTitle exceeds the ${MAX_DISCUSSION_TITLE_LENGTH}-character limit`);
+    }
+    if (description !== undefined && description.length > MAX_DISCUSSION_DESCRIPTION_LENGTH) {
+      throw new BadRequestException(`proposedDescription exceeds the ${MAX_DISCUSSION_DESCRIPTION_LENGTH}-character limit`);
+    }
+    const { writtenLocalIds } = await this.ownedJob(id, user);
+    const dryRunDiff = await this.jobsService.addDiscussionEntry(id, localId, { proposedTitle: title, proposedDescription: description });
+    return { dryRunDiff: decorateStoredDiff(dryRunDiff, writtenLocalIds) };
+  }
+
+  @Delete(':id/diff/:localId/discussion/:entryId')
+  async removeDiscussionEntry(
+    @Param('id') id: string,
+    @Param('localId') localId: string,
+    @Param('entryId') entryId: string,
+    @CurrentUser() user: SessionUser,
+  ): Promise<{ dryRunDiff: unknown }> {
+    const { writtenLocalIds } = await this.ownedJob(id, user);
+    const dryRunDiff = await this.jobsService.removeDiscussionEntry(id, localId, entryId);
+    return { dryRunDiff: decorateStoredDiff(dryRunDiff, writtenLocalIds) };
   }
 
   @Patch(':id/diff/:localId/move')
@@ -594,9 +735,27 @@ export class JobsController {
     if (placement !== undefined && placement !== 'before' && placement !== 'after') {
       throw new BadRequestException("placement must be 'before' or 'after'");
     }
-    await this.ownedJob(id, user);
+    const { writtenLocalIds } = await this.ownedJob(id, user);
     const dryRunDiff = await this.jobsService.moveDiffEntry(id, localId, { parentLocalId, anchorLocalId, placement });
-    return { dryRunDiff };
+    return { dryRunDiff: decorateStoredDiff(dryRunDiff, writtenLocalIds) };
+  }
+
+  // Reviewer correction of figure placement BEFORE the write: move a figure to another entry, or detach it (targetLocalId null). The route has
+  // five segments, so it cannot shadow or be shadowed by the shorter 'diff/:localId/...' PATCH routes above.
+  @Patch(':id/diff/:localId/figures/:figureId')
+  async moveFigure(
+    @Param('id') id: string,
+    @Param('localId') localId: string,
+    @Param('figureId') figureId: string,
+    @CurrentUser() user: SessionUser,
+    @Body('targetLocalId') targetLocalId: string | null | undefined,
+  ): Promise<{ dryRunDiff: unknown }> {
+    if (targetLocalId !== null && (typeof targetLocalId !== 'string' || targetLocalId.length === 0)) {
+      throw new BadRequestException('targetLocalId must be an entry id, or null to not attach the figure');
+    }
+    const { writtenLocalIds } = await this.ownedJob(id, user);
+    const dryRunDiff = await this.jobsService.moveFigure(id, localId, figureId, targetLocalId);
+    return { dryRunDiff: decorateStoredDiff(dryRunDiff, writtenLocalIds) };
   }
 
   @Post(':id/diff')
@@ -614,9 +773,9 @@ export class JobsController {
     if (parentLocalId === undefined || !type || !title || !description) {
       throw new BadRequestException('parentLocalId (or null for the top level), type, title, and description are all required');
     }
-    await this.ownedJob(id, user);
+    const { writtenLocalIds } = await this.ownedJob(id, user);
     const dryRunDiff = await this.jobsService.addDiffEntry(id, { parentLocalId, type, title, description });
-    return { dryRunDiff };
+    return { dryRunDiff: decorateStoredDiff(dryRunDiff, writtenLocalIds) };
   }
 
   @Post(':id/diff/:localId/rescore')
@@ -625,9 +784,9 @@ export class JobsController {
     @Param('localId') localId: string,
     @CurrentUser() user: SessionUser,
   ): Promise<{ dryRunDiff: unknown }> {
-    await this.ownedJob(id, user);
+    const { writtenLocalIds } = await this.ownedJob(id, user);
     const dryRunDiff = await this.jobsService.rescoreDiffEntry(id, localId);
-    return { dryRunDiff };
+    return { dryRunDiff: decorateStoredDiff(dryRunDiff, writtenLocalIds) };
   }
 
   /**
@@ -666,11 +825,18 @@ export class JobsController {
   async confirm(
     @Param('id') id: string,
     @CurrentUser() user: SessionUser,
-    @Body('selectedLocalIds') selectedLocalIds: string[] | undefined,
+    @Body() body: { selectedLocalIds?: unknown } | undefined,
   ): Promise<{ status: string; createdCount: number }> {
     await this.ownedJob(id, user);
+    const selectedLocalIds = parseSelectedLocalIds(body?.selectedLocalIds);
     const credential = await this.adoCredentialResolver.resolve(user.userId);
     return this.jobsService.confirm(id, credential, selectedLocalIds);
+  }
+
+  @Post(':id/dedup/reindex')
+  async reindexDedup(@Param('id') id: string, @CurrentUser() user: SessionUser): Promise<{ indexed: number }> {
+    await this.ownedJob(id, user);
+    return this.jobsService.reindexDedup(id);
   }
 
   @Post(':id/reject')
@@ -821,6 +987,33 @@ export class JobsController {
   ): Promise<{ id: string; localId: string; similarity: number; existingAdoId: number; createdAt: Date }[]> {
     await this.ownedJob(id, user);
     return this.jobsService.getDedupSkips(id);
+  }
+
+  @Get(':id/write-preview')
+  async getWritePreview(@Param('id') id: string, @CurrentUser() user: SessionUser): Promise<WritePreview> {
+    await this.ownedJob(id, user);
+    return this.previewOr404(id);
+  }
+
+  private async previewOr404(id: string, selectedLocalIds?: string[]): Promise<WritePreview> {
+    const preview = await this.jobsService.getWritePreview(id, selectedLocalIds);
+    if (!preview) {
+      throw new NotFoundException(`Job ${id} not found`);
+    }
+    return preview;
+  }
+
+  // Same preview, for the subset of rows the reviewer selected (what confirm() would write with that selectedLocalIds).
+  @Post(':id/write-preview')
+  @HttpCode(200)
+  async postWritePreview(
+    @Param('id') id: string,
+    @CurrentUser() user: SessionUser,
+    @Body() body: { selectedLocalIds?: unknown } | undefined,
+  ): Promise<WritePreview> {
+    await this.ownedJob(id, user);
+    const selectedLocalIds = parseSelectedLocalIds(body?.selectedLocalIds, { allowNull: true });
+    return this.previewOr404(id, selectedLocalIds);
   }
 
   @Get(':id/summary')

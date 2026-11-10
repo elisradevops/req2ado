@@ -115,7 +115,7 @@ export const JOB_STATUS_LABELS: Record<string, { label: string; description: str
     // DESIGN.md §12: sentence case everywhere -- same fix as
     // StatusChip.tsx's own STATUS_CONFIG map for this identical status.
     label: 'Diff ready',
-    description: 'Analysis is done -- review the proposed work items below, then Confirm to write them to Azure DevOps or Reject to discard.',
+    description: 'Analysis is done -- review the proposed work items below, then Write to Azure DevOps or Reject to discard.',
   },
   writing: {
     label: 'Writing',

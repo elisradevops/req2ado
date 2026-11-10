@@ -96,3 +96,52 @@ describe('JobEventsPublisher', () => {
     expect(redis.expire).toHaveBeenCalledWith('job-events:job-1:narration-log', 3600);
   });
 });
+
+describe('JobEventsPublisher: overview (primer) heartbeat lines', () => {
+  const listRedis = () => {
+    const list: string[] = [];
+    return {
+      list,
+      redis: {
+        rpush: jest.fn(async (_k: string, v: string) => list.push(v)),
+        ltrim: jest.fn(async () => 'OK'),
+        expire: jest.fn(async () => 1),
+        publish: jest.fn(async () => 1),
+        lindex: jest.fn(async (_k: string, i: number) => list.at(i) ?? null),
+        lset: jest.fn(async (_k: string, i: number, v: string) => {
+          list[list.length + i] = v;
+          return 'OK';
+        }),
+      },
+    };
+  };
+  const primer = (primerStep: string, elapsedSeconds: number) => ({
+    phase: 'primer' as const, blocksDone: 0, blocksTotal: 0, message: `${primerStep} ${elapsedSeconds}`, primerStep: primerStep as any, elapsedSeconds,
+  });
+
+  it('keeps one entry per overview step in the replay list, the newest timer replacing the older one', async () => {
+    const { list, redis } = listRedis();
+    const publisher = new JobEventsPublisher(redis as any);
+    for (const seconds of [0, 10, 20, 30]) await publisher.publishNarration('job-1', primer('reading', seconds));
+    expect(list).toHaveLength(1);
+    expect(JSON.parse(list[0]).elapsedSeconds).toBe(30);
+  });
+
+  it('still sends every line live, so the screen keeps ticking', async () => {
+    const { redis } = listRedis();
+    const publisher = new JobEventsPublisher(redis as any);
+    for (const seconds of [0, 10, 20]) await publisher.publishNarration('job-1', primer('reading', seconds));
+    expect(redis.publish).toHaveBeenCalledTimes(3);
+  });
+
+  it('adds a new entry when the step changes, and never merges anything but overview lines', async () => {
+    const { list, redis } = listRedis();
+    const publisher = new JobEventsPublisher(redis as any);
+    await publisher.publishNarration('job-1', primer('uploading', 1));
+    await publisher.publishNarration('job-1', primer('processing', 5));
+    await publisher.publishNarration('job-1', primer('reading', 9));
+    await publisher.publishNarration('job-1', { phase: 'dedup_check', blocksDone: 1, blocksTotal: 3, message: 'a' });
+    await publisher.publishNarration('job-1', { phase: 'dedup_check', blocksDone: 2, blocksTotal: 3, message: 'b' });
+    expect(list.map((l) => JSON.parse(l).phase)).toEqual(['primer', 'primer', 'primer', 'dedup_check', 'dedup_check']);
+  });
+});

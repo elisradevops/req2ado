@@ -19,7 +19,7 @@ describe('AreaPathPicker', () => {
         <AreaPathPicker value="" onChange={onChange} credential={{ orgUrl: 'https://ado.example', pat: 'x' }} />
       </ToastProvider>,
     );
-    const input = await screen.findByRole('combobox');
+    const input = await screen.findByRole('combobox', { name: 'Area Path' });
     await userEvent.click(input);
     await waitFor(() => expect(screen.getByText('Project\\Frontend')).toBeInTheDocument());
   });

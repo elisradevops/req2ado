@@ -12,6 +12,7 @@ import { StatTile } from '../ui/StatTile';
 import { Tooltip } from '../ui/Tooltip';
 import { useToast } from '../components/ToastProvider';
 import { cn } from '../lib/cn';
+import { ARRIVE } from '../ui/motion';
 import { TableHeaderCell } from '../ui/TableHeaderCell';
 import { formatFileSize } from '../utils/fileSize';
 
@@ -129,10 +130,10 @@ export function BatchStatus(): React.ReactElement {
     <div className="flex flex-col gap-4">
       <PageHeader title="Batch" description={batch.areaPath} />
       <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-        <StatTile value={summary.filesTotal} label="Files" icon={Layers} interactive />
-        <StatTile value={summary.filesAwaitingReview} label="Awaiting review" tone="default" accent interactive />
-        <StatTile value={summary.filesSucceeded} label="Succeeded" tone="ok" icon={CircleCheck} interactive />
-        <StatTile value={summary.filesFailed} label="Failed" tone={summary.filesFailed > 0 ? 'warning' : 'dim'} icon={TriangleAlert} interactive />
+        <StatTile value={summary.filesTotal} label="Files" icon={Layers} />
+        <StatTile value={summary.filesAwaitingReview} label="Awaiting review" tone="default" accent />
+        <StatTile value={summary.filesSucceeded} label="Succeeded" tone="ok" icon={CircleCheck} />
+        <StatTile value={summary.filesFailed} label="Failed" tone={summary.filesFailed > 0 ? 'warning' : 'dim'} icon={TriangleAlert} />
       </div>
 
       {notes.map((note) => (
@@ -162,7 +163,7 @@ export function BatchStatus(): React.ReactElement {
                 <TableHeaderCell className="py-2.5">Detail</TableHeaderCell>
               </tr>
             </thead>
-            <tbody>
+            <tbody className={ARRIVE.fade}>
               {files.map((file) => (
                 <tr key={file.id} className={cn('border-t border-hairline', file.ordinal % 2 === 1 && 'bg-surface-alt/40')}>
                   <td className="px-3.5 py-2.5">

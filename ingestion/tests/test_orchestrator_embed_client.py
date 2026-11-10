@@ -3,7 +3,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 
-from app.dedup.orchestrator_embed_client import OrchestratorEmbedClient, _EMBED_REQUEST_TIMEOUT_SECONDS
+from app.dedup.orchestrator_embed_client import (
+    _EMBED_REQUEST_TIMEOUT_SECONDS,
+    OrchestratorEmbedClient,
+)
 
 
 def test_embed_calls_the_orchestrator_embed_endpoint_with_bearer_auth() -> None:
@@ -12,7 +15,9 @@ def test_embed_calls_the_orchestrator_embed_endpoint_with_bearer_auth() -> None:
         assert request.url.path == "/llm/embed"
         return httpx.Response(200, json={"embeddings": [[0.1, 0.2, 0.3]]})
 
-    client = OrchestratorEmbedClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorEmbedClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     result = client.embed(["The unit shall survive a drop."])
@@ -28,7 +33,9 @@ def test_embed_sends_all_texts_in_one_request() -> None:
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"embeddings": [[0.1], [0.2]]})
 
-    client = OrchestratorEmbedClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorEmbedClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.embed(["text one", "text two"])
@@ -56,20 +63,26 @@ def test_embed_uses_a_real_timeout_not_httpxs_5_second_default(monkeypatch) -> N
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"embeddings": [[0.1]]})
 
-    client = OrchestratorEmbedClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorEmbedClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.embed(["text"])
 
     assert captured_kwargs.get("timeout") == _EMBED_REQUEST_TIMEOUT_SECONDS
-    assert _EMBED_REQUEST_TIMEOUT_SECONDS > 5  # must be meaningfully larger than httpx's own default
+    assert (
+        _EMBED_REQUEST_TIMEOUT_SECONDS > 5
+    )  # must be meaningfully larger than httpx's own default
 
 
 def test_embed_raises_on_non_200_response() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(401, json={"message": "unauthorized"})
 
-    client = OrchestratorEmbedClient(base_url="http://orchestrator.internal", bearer_token="wrong-token")
+    client = OrchestratorEmbedClient(
+        base_url="http://orchestrator.internal", bearer_token="wrong-token"
+    )
     client._transport = httpx.MockTransport(handler)
 
     import pytest
@@ -90,7 +103,9 @@ def test_embed_sends_x_req2ado_user_id_header_when_supplied() -> None:
         captured["user_id_header"] = request.headers.get("x-req2ado-user-id")
         return httpx.Response(200, json={"embeddings": [[0.1]]})
 
-    client = OrchestratorEmbedClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorEmbedClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.embed(["text"], user_id="user-1")
@@ -105,7 +120,9 @@ def test_embed_omits_the_user_id_header_entirely_when_not_supplied() -> None:
         captured["has_header"] = "x-req2ado-user-id" in request.headers
         return httpx.Response(200, json={"embeddings": [[0.1]]})
 
-    client = OrchestratorEmbedClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorEmbedClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
 
     client.embed(["text"])
@@ -113,7 +130,9 @@ def test_embed_omits_the_user_id_header_entirely_when_not_supplied() -> None:
     assert captured["has_header"] is False
 
 
-def test_shared_singleton_client_sends_the_correct_distinct_user_id_header_for_each_concurrent_call() -> None:
+def test_shared_singleton_client_sends_the_correct_distinct_user_id_header_for_each_concurrent_call() -> (
+    None
+):
     """Mirrors test_orchestrator_llm_client.py's own concurrency regression
     test for the identical hazard: OrchestratorEmbedClient is constructed as
     a module-level singleton in main.py (`_embed_client`), shared across
@@ -137,7 +156,9 @@ def test_shared_singleton_client_sends_the_correct_distinct_user_id_header_for_e
             captured_by_marker[marker] = request.headers.get("x-req2ado-user-id")
         return httpx.Response(200, json={"embeddings": [[0.1]]})
 
-    shared_client = OrchestratorEmbedClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    shared_client = OrchestratorEmbedClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     shared_client._transport = httpx.MockTransport(handler)
 
     def call_as(user_id: str) -> None:
@@ -209,7 +230,9 @@ def test_a_transport_swapped_after_the_first_call_is_honoured(clients_built) -> 
     # Only tests swap the transport of the module-level client after it was built.
     client = _pooled_client()
     client.embed(["x"], user_id="u1")
-    client._transport = httpx.MockTransport(lambda request: httpx.Response(200, json={"embeddings": [[9.0]]}))
+    client._transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, json={"embeddings": [[9.0]]})
+    )
     assert client.embed(["x"], user_id="u1") == [[9.0]]
     assert len(clients_built) == 2
     assert clients_built[0].is_closed

@@ -9,7 +9,8 @@ import { StatePicker } from '../components/StatePicker';
 import { ProjectPicker } from '../components/ProjectPicker';
 import { formatDestinationPreview } from '../components/DestinationBar';
 import { submitBatch } from '../api/batches';
-import { listModels } from '../api/jobs';
+import { useBatchJobDraftStore } from '../store/batchJobDraftStore';
+import { listModels, type ModelListing } from '../api/jobs';
 import { useOrgUrl } from '../store/authStore';
 import { useToast } from '../components/ToastProvider';
 import { PageHeader } from '../ui/PageHeader';
@@ -32,14 +33,21 @@ export function BatchJobWizard(): React.ReactElement {
   const navigate = useNavigate();
   const { showToast, showErrorToast } = useToast();
   const orgUrl = useOrgUrl();
-  const [files, setFiles] = useState<File[]>([]);
-  const [mode, setMode] = useState<'baseline' | 'survey'>('baseline');
-  const [project, setProject] = useState('');
-  const [areaPath, setAreaPath] = useState('');
-  const [state, setState] = useState('');
-  const [iterationPath, setIterationPath] = useState('');
-  const [model, setModel] = useState('');
+  // What the user had done before leaving this page and coming back (see batchJobDraftStore); empty on a first visit.
+  const [initial] = useState(() => useBatchJobDraftStore.getState().draft);
+  const [files, setFiles] = useState<File[]>(initial.files);
+  const [mode, setMode] = useState<'baseline' | 'survey'>(initial.mode);
+  const [project, setProject] = useState(initial.project);
+  const [areaPath, setAreaPath] = useState(initial.areaPath);
+  const [state, setState] = useState(initial.state);
+  const [iterationPath, setIterationPath] = useState(initial.iterationPath);
+  const [model, setModel] = useState(initial.model);
+  // Mirror the user's work into the draft store so it survives a visit to another page (cleared on submit and logout).
+  useEffect(() => {
+    useBatchJobDraftStore.getState().patch({ files, mode, model, project, areaPath, state, iterationPath });
+  }, [files, mode, model, project, areaPath, state, iterationPath]);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [modelListing, setModelListing] = useState<ModelListing | null>(null);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState(false);
   const isSubmittingRef = useRef(false);
@@ -51,20 +59,32 @@ export function BatchJobWizard(): React.ReactElement {
     setModelsLoading(true);
     setModelsError(false);
     listModels()
-      .then(setAvailableModels)
+      .then((listing) => {
+        setAvailableModels(listing.models);
+        setModelListing(listing);
+        // A model restored from the draft may have gone away while the user was elsewhere: fall back to Default rather than submit it.
+        setModel((current) => (current && !listing.models.includes(current) ? '' : current));
+      })
       .catch(() => {
         setAvailableModels([]);
+        setModelListing(null);
         setModelsError(true);
       })
       .finally(() => setModelsLoading(false));
   }, [mode, availableModels.length]);
 
+  // Only on a real change: a project restored from the draft must keep its restored area path.
+  const lastProject = useRef(project);
   useEffect(() => {
+    if (lastProject.current === project) return;
+    lastProject.current = project;
     setAreaPath('');
   }, [project]);
 
   function handleFilesAdded(added: File[]): void {
-    setFiles((prev) => [...prev, ...added]);
+    // The same file chosen again (it is easy to after coming back to a restored draft) is one file, not two submitted jobs.
+    const same = (a: File, b: File): boolean => a.name === b.name && a.size === b.size && a.lastModified === b.lastModified;
+    setFiles((prev) => [...prev, ...added.filter((file, i) => !prev.some((p) => same(p, file)) && !added.slice(0, i).some((p) => same(p, file)))]);
   }
 
   function handleFileRemoved(index: number): void {
@@ -85,6 +105,8 @@ export function BatchJobWizard(): React.ReactElement {
         iterationPath: iterationPath || undefined,
         model: mode === 'survey' ? model || undefined : undefined,
       });
+      // The batch exists now: the next visit starts from nothing, not from this draft.
+      useBatchJobDraftStore.getState().reset();
       navigate(`/jobs/batch/${batchId}`);
     } catch (err) {
       showErrorToast('Failed to start the batch. Please try again.', err);
@@ -165,6 +187,8 @@ export function BatchJobWizard(): React.ReactElement {
               model={model}
               onModelChange={setModel}
               availableModels={availableModels}
+              modelDetails={modelListing?.details}
+              recommendedModel={modelListing?.recommended}
               modelsLoading={modelsLoading}
               modelsError={modelsError}
             />

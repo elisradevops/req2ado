@@ -4,36 +4,45 @@ from __future__ import annotations
 import json
 import logging
 import re
+import socket
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any, Literal
 
 import httpx
 from json_repair import repair_json
 
-from app.job_cancel import raise_if_cancelled
+from app.config import settings
+from app.job_cancel import current_token, raise_if_cancelled
+from app.leveling.live_context import current_stage_counter, live_emitter_for, notice
+from app.leveling.live_stream import DraftingDisplay
+from app.leveling.llm_call_gate import gated
+from app.leveling.model_caps import output_token_budget
+from app.logging_context import current_job_id
 from app.otel import get_tracer
 from app.prompts import load_prompt
+from app.request_identity import user_scope
 from app.section_analysis_options import DEFAULT_SECTION_ANALYSIS_OPTIONS, SectionAnalysisOptions
-
 from app.survey._response_schemas import (
+    acceptance_criteria_schema,
     checklist_definitions_schema,
     checklist_extraction_schema,
     distill_title_schema,
+    document_study_schema,
     duplicate_cluster_verdict_schema,
     duplicate_pair_verdict_schema,
-    leftover_assignment_schema,
-    kb_document_profile_schema,
     kb_category_consolidation_schema,
-    score_explanation_schema,
+    kb_document_profile_schema,
     kb_document_relevance_schema,
+    leftover_assignment_schema,
     root_group_names_schema,
-    rule_conformance_schema,
     root_grouping_schema,
+    rule_conformance_schema,
+    score_explanation_schema,
     section_analysis_schema,
     section_skeleton_schema,
     trace_links_schema,
 )
-from app.config import settings
 from app.survey.keyed_calls import (
     KeyedMode,
     describe_output,
@@ -53,10 +62,6 @@ from app.survey.keyed_specs import (
     SYNTHESIS_SPEC,
     TITLE_TAGS_SPEC,
 )
-from app.leveling.live_context import current_stage_counter, live_emitter_for, notice
-from app.leveling.live_stream import DraftingDisplay
-from app.leveling.model_caps import output_token_budget
-from app.logging_context import current_job_id
 from app.survey.llm_cache import LlmResponseCache, cache_key
 from app.workitem.model import RequirementTag
 
@@ -159,6 +164,8 @@ _CHECKLIST_MAX_ITEM_CHARS = 60
 # -- most transient blips should never even reach those nets now.
 _RETRYABLE_CHAT_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 _MAX_CHAT_RETRY_ATTEMPTS = 3
+# How long the orchestrator may spend on one document-study window, its output-limit raises included (ms): inside the study's own budgets.
+_STUDY_CALL_DEADLINE_MS = 600_000
 _CHAT_RETRY_BACKOFF_SECONDS = (2.0, 8.0)
 # A retryable status that arrives only AFTER the call has already run this
 # long is not a transient blip: it is a call that hung (an upstream that
@@ -197,7 +204,7 @@ def _strip_json_fence(content: str) -> str:
     if stripped[:1] not in ("[", "{"):
         bracket_positions = [i for i in (stripped.find("["), stripped.find("{")) if i != -1]
         if bracket_positions:
-            return stripped[min(bracket_positions):].strip()
+            return stripped[min(bracket_positions) :].strip()
     return stripped
 
 
@@ -292,7 +299,9 @@ QUERY_KB_TOOL = {
         ),
         "parameters": {
             "type": "object",
-            "properties": {"query": {"type": "string", "description": "A short natural-language search query"}},
+            "properties": {
+                "query": {"type": "string", "description": "A short natural-language search query"}
+            },
             "required": ["query"],
         },
     },
@@ -324,12 +333,17 @@ READ_KB_DOCUMENT_TOOL = {
         "description": (
             "Read the FULL text of one previously-ingested knowledge base document "
             "by name (see list_kb_documents) -- use this when a section references "
-            "a whole external document (e.g. \"see the attached ICD\") and a "
+            'a whole external document (e.g. "see the attached ICD") and a '
             "similarity-searched snippet (query_kb) wouldn't give enough context."
         ),
         "parameters": {
             "type": "object",
-            "properties": {"source_file": {"type": "string", "description": "The exact document name, from list_kb_documents"}},
+            "properties": {
+                "source_file": {
+                    "type": "string",
+                    "description": "The exact document name, from list_kb_documents",
+                }
+            },
             "required": ["source_file"],
         },
     },
@@ -348,11 +362,16 @@ READ_OTHER_SECTION_TOOL = {
             "Read the FULL text of another section of THIS SAME document, by its "
             "number from the document outline above -- use this for a specific "
             "cross-reference the outline alone doesn't resolve (e.g. \"per "
-            "section 3\"). Not for the knowledge base -- see read_kb_document for that."
+            'section 3"). Not for the knowledge base -- see read_kb_document for that.'
         ),
         "parameters": {
             "type": "object",
-            "properties": {"section_id": {"type": "string", "description": "The section number, from the document outline"}},
+            "properties": {
+                "section_id": {
+                    "type": "string",
+                    "description": "The section number, from the document outline",
+                }
+            },
             "required": ["section_id"],
         },
     },
@@ -444,8 +463,8 @@ _SECTION_ANALYSIS_TOOL_HINT = (
 )
 
 _SECTION_ANALYSIS_FULL_DOCUMENT_TOOL_HINT = (
-    "\n\nIf a section references a whole external document by name (e.g. \"see "
-    "the attached ICD\") rather than needing a short similarity-searched "
+    '\n\nIf a section references a whole external document by name (e.g. "see '
+    'the attached ICD") rather than needing a short similarity-searched '
     "snippet, you may also call list_kb_documents to see what's available, then "
     "read_kb_document to read one in full."
 )
@@ -611,7 +630,9 @@ def _table_group_hint(table_group_hints: list[tuple[str, str]] | None) -> str:
             "table_group_hint: %d Feature-typed group(s) dropped from the "
             "named hint past the %d cap (still counted in the numeric "
             "floor, not individually named): %s",
-            len(dropped), _MAX_FEATURE_TABLE_GROUPS_NAMED, dropped,
+            len(dropped),
+            _MAX_FEATURE_TABLE_GROUPS_NAMED,
+            dropped,
         )
     labels_text = ", ".join(f"'{label}' ({suggested_type})" for label, suggested_type in displayed)
     if dropped:
@@ -703,7 +724,11 @@ def _heading_outline_hint(heading_type_hints: list[tuple[str, str]] | None) -> s
     The model still sees every heading's own text rendered in its section,
     so an unnamed heading is not hidden from it, only left to its own
     judgment, same as before this hint existed."""
-    named = [(title, suggested_type) for title, suggested_type in (heading_type_hints or []) if suggested_type != "Requirement"]
+    named = [
+        (title, suggested_type)
+        for title, suggested_type in (heading_type_hints or [])
+        if suggested_type != "Requirement"
+    ]
     if not named:
         return ""
     # Type-priority filtering, same policy as _table_group_hint: Epic-typed
@@ -723,7 +748,9 @@ def _heading_outline_hint(heading_type_hints: list[tuple[str, str]] | None) -> s
         logger.warning(
             "heading_outline_hint: %d Feature title(s) dropped from the named hint "
             "past the %d cap (still counted in the numeric floor, not individually named): %s",
-            len(dropped), _MAX_HEADING_FEATURES_NAMED, dropped,
+            len(dropped),
+            _MAX_HEADING_FEATURES_NAMED,
+            dropped,
         )
     labels_text = ", ".join(f"'{title}' ({suggested_type})" for title, suggested_type in displayed)
     if dropped:
@@ -906,7 +933,9 @@ def _with_category_dict(entry: object) -> object:
 _COMPLETENESS_KEY = "completeness_as_requirement"
 
 
-def _array_category_instruction(category_checklist: list[str] | None, kb_context: str | None) -> str:
+def _array_category_instruction(
+    category_checklist: list[str] | None, kb_context: str | None
+) -> str:
     """The `categoryScores` paragraph for the array wire format -- the same three sources of category
     names as the map form (a stored checklist, names derived from KB material, the five generic
     dimensions), phrased for a list of {"name", "score"} entries instead of an object keyed by name."""
@@ -966,6 +995,21 @@ def _array_category_instruction(category_checklist: list[str] | None, kb_context
         "regardless of how clear or short it is. Always include this "
         "category in categoryScores, in addition to the categories above.\n"
     )
+
+
+def _abort_in_flight(client: httpx.Client) -> None:
+    """Ends a request another thread is blocked on. `Client.close()` alone does not: closing a socket does not wake a thread already
+    reading from it, so the call would sit until the model answered. Shutting the socket down does, and the orchestrator then sees its
+    caller go. Reaches into the transport's pool (httpx has no public way to do this); anything unexpected there falls back to close()."""
+    try:
+        for connection in list(client._transport._pool.connections):  # type: ignore[attr-defined]
+            stream = getattr(getattr(connection, "_connection", None), "_network_stream", None)
+            sock = stream.get_extra_info("socket") if stream is not None else None
+            if sock is not None:
+                sock.shutdown(socket.SHUT_RDWR)
+    except Exception:  # noqa: BLE001 -- a connection that already ended, or a transport without a pool (a test double)
+        pass
+    client.close()
 
 
 class OrchestratorLlmClient:
@@ -1092,26 +1136,50 @@ class OrchestratorLlmClient:
             headers["X-Req2Ado-User-Id"] = user_id
         for attempt in range(_MAX_CHAT_RETRY_ATTEMPTS):
             raise_if_cancelled()  # a job whose caller is gone makes no further model calls
-            started = time.monotonic()
-            with httpx.Client(transport=self._transport, timeout=self.request_timeout_seconds or _LLM_REQUEST_TIMEOUT_SECONDS) as client:
-                response = client.post(
-                    f"{self._base_url}/llm/chat",
-                    json=payload,
-                    headers=headers,
-                )
+            with gated():  # a lease (when a gate is set) covers this one attempt, not the back-off sleep below; the wait for it is not "elapsed"
+                started = time.monotonic()
+                with httpx.Client(
+                    transport=self._transport,
+                    timeout=self.request_timeout_seconds or _LLM_REQUEST_TIMEOUT_SECONDS,
+                ) as client:
+                    # A cancelled run closes this connection, so the orchestrator sees its caller go and stops the upstream request: a window
+                    # already sent no longer keeps the model (and its lease) busy for minutes after the job was cancelled.
+                    token = current_token()
+                    unregister = (
+                        token.on_cancel(lambda: _abort_in_flight(client))
+                        if token is not None
+                        else (lambda: None)
+                    )
+                    try:
+                        response = client.post(
+                            f"{self._base_url}/llm/chat",
+                            json=payload,
+                            headers=headers,
+                        )
+                    except Exception:
+                        raise_if_cancelled()  # the closed connection surfaces as a transport error: report it as the cancel it is
+                        raise
+                    finally:
+                        unregister()
             if response.status_code not in _RETRYABLE_CHAT_STATUS_CODES:
                 return response
+            if payload.get("budgetKind") == "study" and response.status_code == 504:
+                return response  # the study reads a 504 as an overloaded backend and leaves that window unread; another identical request only adds to the load
             elapsed = time.monotonic() - started
             if elapsed >= _SLOW_FAILURE_SECONDS:
                 logger.warning(
                     "/llm/chat returned %d after %.0fs -- not re-sending an identical request that already ran "
-                    "that long (the caller can split it into smaller calls)", response.status_code, elapsed,
+                    "that long (the caller can split it into smaller calls)",
+                    response.status_code,
+                    elapsed,
                 )
                 return response
             if attempt < _MAX_CHAT_RETRY_ATTEMPTS - 1:
                 logger.warning(
                     "/llm/chat returned %d (attempt %d/%d) -- retrying after %.0fs",
-                    response.status_code, attempt + 1, _MAX_CHAT_RETRY_ATTEMPTS,
+                    response.status_code,
+                    attempt + 1,
+                    _MAX_CHAT_RETRY_ATTEMPTS,
                     _CHAT_RETRY_BACKOFF_SECONDS[attempt],
                 )
                 notice("server_retry", status=response.status_code)
@@ -1120,7 +1188,10 @@ class OrchestratorLlmClient:
         return response
 
     def _chat_json_streaming(
-        self, payload: dict, user_id: str | None, display: DraftingDisplay,
+        self,
+        payload: dict,
+        user_id: str | None,
+        display: DraftingDisplay,
     ) -> Any:
         """Same call as `_chat_json`'s plain path, read as a stream so the screen
         can show what the model is writing (job transparency, B7). The text it
@@ -1145,8 +1216,10 @@ class OrchestratorLlmClient:
             timeout = self.request_timeout_seconds or _LLM_REQUEST_TIMEOUT_SECONDS
             with httpx.Client(transport=self._transport, timeout=timeout) as client:
                 with client.stream(
-                    "POST", f"{self._base_url}/llm/chat/stream",
-                    json={**payload, "includeDone": True}, headers=headers,
+                    "POST",
+                    f"{self._base_url}/llm/chat/stream",
+                    json={**payload, "includeDone": True},
+                    headers=headers,
                 ) as response:
                     if response.is_error:
                         notice("stream_fallback", reason="refused")
@@ -1160,8 +1233,15 @@ class OrchestratorLlmClient:
                             finished = True
                             finish_reason = message.get("finishReason")
                             if message.get("finishReason") == "length":
-                                logger.warning("Streamed structured LLM call ended with finishReason=length -- the answer may be incomplete")
-                                notice("output_limit_reached", "warning", with_last_item=True, step="drafting")
+                                logger.warning(
+                                    "Streamed structured LLM call ended with finishReason=length -- the answer may be incomplete"
+                                )
+                                notice(
+                                    "output_limit_reached",
+                                    "warning",
+                                    with_last_item=True,
+                                    step="drafting",
+                                )
                             continue
                         delta = message.get("delta")
                         if delta:
@@ -1191,6 +1271,7 @@ class OrchestratorLlmClient:
         user_id: str | None = None,
         stream_inputs: dict[str, str | None] | None = None,
         stream_stage: str | None = None,
+        budget_kind: Literal["study"] | None = None,
     ) -> Any:
         """Shared payload-envelope + response-parsing shape for this class's
         simple, single-shot structured-extraction calls (schema in, JSON
@@ -1217,6 +1298,11 @@ class OrchestratorLlmClient:
             **({"responseSchema": schema} if schema is not None else {}),
             "think": False,
             "maxTokens": self._max_output_tokens if max_tokens is None else max_tokens,
+            **(
+                {"budgetKind": budget_kind, "deadlineMs": _STUDY_CALL_DEADLINE_MS}
+                if budget_kind
+                else {}
+            ),
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
             **({"topK": self._top_k} if self._top_k else {}),
             **({"minP": self._min_p} if self._min_p else {}),
@@ -1229,7 +1315,10 @@ class OrchestratorLlmClient:
         )
         if emitter is not None:
             display = DraftingDisplay(
-                emitter, stream_inputs or {}, stage=stream_stage, counter=current_stage_counter(),
+                emitter,
+                stream_inputs or {},
+                stage=stream_stage,
+                counter=current_stage_counter(),
             )
             try:
                 display.start()
@@ -1246,7 +1335,15 @@ class OrchestratorLlmClient:
             # A normal answer ends "stop". Anything else (typically "length")
             # means the output may be incomplete -- logged so an empty or
             # partial keyed answer is no longer unexplained.
-            logger.warning("Structured LLM call ended with finishReason=%s -- the answer may be incomplete", finish_reason)
+            logger.warning(
+                "Structured LLM call ended with finishReason=%s -- the answer may be incomplete",
+                finish_reason,
+            )
+        if budget_kind == "study" and finish_reason == "length":
+            # Never read a cut-off study answer as a studied window: the caller splits it (partial) or skips it (empty).
+            from app.leveling.document_study import StudyLengthCutoff
+
+            raise StudyLengthCutoff(empty=not (body.get("content") or "").strip())
         content = _strip_json_fence(body["content"])
         parsed = _parse_json_object(content)
         return drop_possibly_cut_last_entry(parsed) if finish_reason == "length" else parsed
@@ -1258,9 +1355,12 @@ class OrchestratorLlmClient:
         kb_context: str | None = None,
         user_id: str | None = None,
     ) -> list[dict]:
-        sorted_catalog = sorted(link_type_catalog, key=lambda entry: not _is_native_ado_link_type(entry["reference_name"]))
+        sorted_catalog = sorted(
+            link_type_catalog,
+            key=lambda entry: not _is_native_ado_link_type(entry["reference_name"]),
+        )
         catalog_lines = "\n".join(
-            f"- {entry['reference_name']} (\"{entry['name']}\")"
+            f'- {entry["reference_name"]} ("{entry["name"]}")'
             + (f": {entry['semantic_hint']}" if entry.get("semantic_hint") else "")
             for entry in sorted_catalog
         )
@@ -1283,12 +1383,16 @@ class OrchestratorLlmClient:
         # confirmed-live finding (3-10x wall-clock cost, no accuracy
         # benefit) as analyze_section/analyze_section_agentic and
         # score_requirements_for_document.
-        result = self._chat_json(system_prompt, nodes_json, schema=trace_links_schema(), user_id=user_id)
+        result = self._chat_json(
+            system_prompt, nodes_json, schema=trace_links_schema(), user_id=user_id
+        )
         return result.get("links", []) if isinstance(result, dict) else []
 
     @staticmethod
     def _scoring_category_instruction(
-        mode: KeyedMode, category_checklist: list[str] | None, kb_context: str | None,
+        mode: KeyedMode,
+        category_checklist: list[str] | None,
+        kb_context: str | None,
     ) -> str:
         """The `categoryScores` paragraph of the requirement-scoring prompt. In array mode the
         categories are a list of {"name", "score"} entries (an open map is not valid strict JSON
@@ -1399,8 +1503,16 @@ class OrchestratorLlmClient:
         key = None
         if self._cache is not None:
             key = cache_key(
-                "score_requirements_for_document", self._model, self._num_ctx, self._top_k, self._min_p, self._seed,
-                descriptions_by_node_id, criteria_context, kb_context, category_checklist,
+                "score_requirements_for_document",
+                self._model,
+                self._num_ctx,
+                self._top_k,
+                self._min_p,
+                self._seed,
+                descriptions_by_node_id,
+                criteria_context,
+                kb_context,
+                category_checklist,
             )
             cached = self._cache.get(key)
             if cached is not None:
@@ -1409,7 +1521,9 @@ class OrchestratorLlmClient:
         spec = SCORING_SPEC
 
         def send(descriptions: dict, mode: KeyedMode) -> object:
-            category_instruction = self._scoring_category_instruction(mode, category_checklist, kb_context)
+            category_instruction = self._scoring_category_instruction(
+                mode, category_checklist, kb_context
+            )
             # Concrete, countable completeness instruction -- same confirmed-live
             # pattern as _whole_document_hint/_branch_topic_hint ("a concrete,
             # countable floor beats a qualitative reminder"). Addresses a real,
@@ -1485,7 +1599,9 @@ class OrchestratorLlmClient:
                 elapsed_seconds = time.monotonic() - started_at
                 logger.info(
                     "score_requirements_for_document: %d node(s), %d request char(s), %.1fs wall time",
-                    len(descriptions), request_chars, elapsed_seconds,
+                    len(descriptions),
+                    request_chars,
+                    elapsed_seconds,
                 )
                 response.raise_for_status()
                 body = response.json()
@@ -1502,7 +1618,9 @@ class OrchestratorLlmClient:
             self._cache.set(key, result)
         return result
 
-    def extract_quality_checklist(self, document_text: str, user_id: str | None = None) -> list[str]:
+    def extract_quality_checklist(
+        self, document_text: str, user_id: str | None = None
+    ) -> list[str]:
         """Runs ONCE per document, at KB ingestion time (see
         app.kb.ingest_service), never per scoring call -- the real fix for a
         confirmed real determinism gap (user-reported): asking the scoring
@@ -1523,8 +1641,11 @@ class OrchestratorLlmClient:
         extraction, not whole-document comprehension."""
         system_prompt = load_prompt("extract_quality_checklist")
         parsed = self._chat_json(
-            system_prompt, document_text[:_CHECKLIST_EXTRACTION_MAX_CHARS],
-            schema=checklist_extraction_schema(), max_tokens=2000, user_id=user_id,
+            system_prompt,
+            document_text[:_CHECKLIST_EXTRACTION_MAX_CHARS],
+            schema=checklist_extraction_schema(),
+            max_tokens=2000,
+            user_id=user_id,
         )
         # The schema asks for {"categories": [...]}; a model that still answers with the bare array is accepted.
         if isinstance(parsed, dict) and isinstance(parsed.get("categories"), list):
@@ -1549,7 +1670,9 @@ class OrchestratorLlmClient:
         seen_lower: set[str] = set()
         cleaned: list[str] = []
         for raw_item in raw_items:
-            item = " ".join(raw_item.split())  # strips whitespace, collapses/rejects embedded newlines
+            item = " ".join(
+                raw_item.split()
+            )  # strips whitespace, collapses/rejects embedded newlines
             if not (_CHECKLIST_MIN_ITEM_CHARS <= len(item) <= _CHECKLIST_MAX_ITEM_CHARS):
                 continue
             item_lower = item.lower()
@@ -1562,14 +1685,20 @@ class OrchestratorLlmClient:
                 "extract_quality_checklist produced %d usable item(s) after sanitization "
                 "(raw count %d) -- outside the sane [%d, %d] range, treating as "
                 "'no checklist found': %r",
-                len(cleaned), len(raw_items), _CHECKLIST_MIN_ITEMS, _CHECKLIST_MAX_ITEMS,
+                len(cleaned),
+                len(raw_items),
+                _CHECKLIST_MIN_ITEMS,
+                _CHECKLIST_MAX_ITEMS,
                 cleaned[:3],
             )
             return []
         return cleaned
 
     def extract_quality_checklist_definitions(
-        self, document_text: str, category_names: list[str], user_id: str | None = None,
+        self,
+        document_text: str,
+        category_names: list[str],
+        user_id: str | None = None,
     ) -> dict[str, str]:
         """Best-effort SECOND extraction pass, run once at KB ingestion time
         immediately AFTER extract_quality_checklist (see
@@ -1598,17 +1727,23 @@ class OrchestratorLlmClient:
         if not category_names:
             return {}
         system_prompt = load_prompt(
-            "extract_quality_checklist_definitions", category_names=json.dumps(category_names),
+            "extract_quality_checklist_definitions",
+            category_names=json.dumps(category_names),
         )
         parsed = self._chat_json(
-            system_prompt, document_text[:_CHECKLIST_EXTRACTION_MAX_CHARS],
-            schema=checklist_definitions_schema(), max_tokens=2000, user_id=user_id,
+            system_prompt,
+            document_text[:_CHECKLIST_EXTRACTION_MAX_CHARS],
+            schema=checklist_definitions_schema(),
+            max_tokens=2000,
+            user_id=user_id,
         )
         if not isinstance(parsed, dict):
             raise ValueError(f"malformed JSON in LLM response content: {parsed!r}")
         return self._sanitize_checklist_definitions(parsed, category_names)
 
-    def _sanitize_checklist_definitions(self, raw: dict, category_names: list[str]) -> dict[str, str]:
+    def _sanitize_checklist_definitions(
+        self, raw: dict, category_names: list[str]
+    ) -> dict[str, str]:
         """Tolerant of a model returning extra/misspelled keys (dropped,
         never trusted -- see extract_quality_checklist_definitions's own
         docstring for why matching against the FIXED category_names,
@@ -1636,7 +1771,9 @@ class OrchestratorLlmClient:
         return result
 
     def score_epics_and_features_for_document(
-        self, nodes_by_id: dict[str, dict], user_id: str | None = None,
+        self,
+        nodes_by_id: dict[str, dict],
+        user_id: str | None = None,
     ) -> dict[str, dict]:
         """Batched Epic/Feature quality review -- the counterpart to
         score_requirements_for_document, deliberately kept as a SEPARATE
@@ -1658,7 +1795,12 @@ class OrchestratorLlmClient:
         key = None
         if self._cache is not None:
             key = cache_key(
-                "score_epics_and_features_for_document", self._model, self._num_ctx, self._top_k, self._min_p, self._seed,
+                "score_epics_and_features_for_document",
+                self._model,
+                self._num_ctx,
+                self._top_k,
+                self._min_p,
+                self._seed,
                 nodes_by_id,
             )
             cached = self._cache.get(key)
@@ -1672,9 +1814,10 @@ class OrchestratorLlmClient:
                 "score_epics_and_features_for_document",
                 output_lead=output_lead(spec, mode),
                 category_scores_form=(
-                    "'categoryScores' (an array of {\"name\": <category name>, \"score\": <integer 0-100>} objects, "
+                    '\'categoryScores\' (an array of {"name": <category name>, "score": <integer 0-100>} objects, '
                     "one for each category listed below)"
-                    if mode == "array" else "'categoryScores'"
+                    if mode == "array"
+                    else "'categoryScores'"
                 ),
                 node_count=str(len(nodes)),
             )
@@ -1703,7 +1846,9 @@ class OrchestratorLlmClient:
             logger.info(
                 "score_epics_and_features_for_document: %d node(s), %d request char(s), "
                 "%.1fs wall time",
-                len(nodes), request_chars, elapsed_seconds,
+                len(nodes),
+                request_chars,
+                elapsed_seconds,
             )
             response.raise_for_status()
             body = response.json()
@@ -1719,7 +1864,9 @@ class OrchestratorLlmClient:
         return result
 
     def title_and_tags_for_rows(
-        self, texts_by_row_id: dict[str, str], user_id: str | None = None,
+        self,
+        texts_by_row_id: dict[str, str],
+        user_id: str | None = None,
     ) -> dict[str, dict]:
         """Backs the TitleTagClient protocol (id_tree_builder.py) -- the
         deterministic-hierarchy path's optional per-document title/tag
@@ -1753,14 +1900,20 @@ class OrchestratorLlmClient:
                 self.authoring_standard,
             )
             return self._chat_json(
-                system_prompt, json.dumps(payload), schema=schema_for(spec, mode), user_id=user_id,
-                stream_inputs=dict(payload), stream_stage="improve",
+                system_prompt,
+                json.dumps(payload),
+                schema=schema_for(spec, mode),
+                user_id=user_id,
+                stream_inputs=dict(payload),
+                stream_stage="improve",
             )
 
         return run_keyed(send, texts_by_row_id, spec, model=self._model)
 
     def summarize_parent_nodes(
-        self, nodes_by_id: dict[str, dict], user_id: str | None = None,
+        self,
+        nodes_by_id: dict[str, dict],
+        user_id: str | None = None,
     ) -> dict[str, dict]:
         """Backs the ParentSummaryClient protocol (id_tree_builder.py) --
         the deterministic-hierarchy path's Epic/Feature title+description
@@ -1793,19 +1946,30 @@ class OrchestratorLlmClient:
 
         def send(payload: dict, mode: KeyedMode) -> object:
             system_prompt = _with_authoring_standard(
-                load_prompt("summarize_parent_nodes", node_count=str(len(payload)), output_format=describe_output(spec, mode)),
+                load_prompt(
+                    "summarize_parent_nodes",
+                    node_count=str(len(payload)),
+                    output_format=describe_output(spec, mode),
+                ),
                 self.authoring_standard,
             )
             return self._chat_json(
-                system_prompt, json.dumps(payload), schema=schema_for(spec, mode), user_id=user_id,
-                stream_inputs={k: v.get("title") if isinstance(v, dict) else None for k, v in payload.items()},
+                system_prompt,
+                json.dumps(payload),
+                schema=schema_for(spec, mode),
+                user_id=user_id,
+                stream_inputs={
+                    k: v.get("title") if isinstance(v, dict) else None for k, v in payload.items()
+                },
                 stream_stage="summarize",
             )
 
         return run_keyed(send, nodes_by_id, spec, model=self._model)
 
     def synthesize_leaf_requirements(
-        self, items_by_id: dict[str, dict], user_id: str | None = None,
+        self,
+        items_by_id: dict[str, dict],
+        user_id: str | None = None,
     ) -> dict[str, dict]:
         """Backs the SynthesisClient protocol (id_tree_builder.py) -- the
         actual quality fix for the deterministic-hierarchy path's
@@ -1834,16 +1998,97 @@ class OrchestratorLlmClient:
             # The tag vocabulary is part of the generated output-format sentence (it comes from the same
             # field list as the schema), so it is not passed as a separate marker.
             system_prompt = _with_authoring_standard(
-                load_prompt("synthesize_leaf_requirements", row_count=str(len(payload)), output_format=describe_output(spec, mode)),
+                load_prompt(
+                    "synthesize_leaf_requirements",
+                    row_count=str(len(payload)),
+                    output_format=describe_output(spec, mode),
+                ),
                 self.authoring_standard,
             )
             return self._chat_json(
-                system_prompt, json.dumps(payload), schema=schema_for(spec, mode), user_id=user_id,
-                stream_inputs={k: v.get("text") if isinstance(v, dict) else None for k, v in payload.items()},
+                system_prompt,
+                json.dumps(payload),
+                schema=schema_for(spec, mode),
+                user_id=user_id,
+                stream_inputs={
+                    k: v.get("text") if isinstance(v, dict) else None for k, v in payload.items()
+                },
                 stream_stage="draft",
             )
 
         return run_keyed(send, items_by_id, spec, model=self._model)
+
+    def study_document_window(self, window_text: str, user_id: str | None = None) -> dict:
+        """Backs the job-document study (app.leveling.document_study): what one window states about its glossary, unresolved-value
+        markers, verification wording, cited standards, table roles and list lead-ins. Returns the raw object; the caller drops every
+        entry the window text does not contain. Not cached here: the per-user app.leveling.study_store keeps what a run studied."""
+        system_prompt = load_prompt("study_document")
+        parsed = self._chat_json(
+            system_prompt,
+            json.dumps({"text": window_text}, ensure_ascii=False),
+            schema=document_study_schema(),
+            max_tokens=3000,
+            user_id=user_id,
+            budget_kind="study",
+        )
+        if not isinstance(parsed, dict):
+            raise ValueError(f"malformed JSON in LLM response content: {parsed!r}")
+        return parsed
+
+    def propose_acceptance_criteria(
+        self,
+        items_by_id: dict[str, dict],
+        user_id: str | None = None,
+        background: str | None = None,
+    ) -> dict[str, dict]:
+        """Backs app.leveling.acceptance_criteria: proposed criteria (with assumptions, or "needs author input") for requirements the
+        scorer flagged as lacking them. Returns {node_id: entry}; entries for ids that were not asked about are dropped, a missing id
+        is simply absent (the caller leaves that description alone). `background` is the job's context primer: appended to the prompt as
+        context only, never a source of values."""
+        system_prompt = "\n".join(
+            line
+            for line in load_prompt("propose_acceptance_criteria").splitlines()
+            if not line.startswith("#")
+        )
+        if background:
+            system_prompt += f"\n\nBackground (context about the whole document; never a source of numbers, units or standards):\n{background}"
+        key = None
+        if self._cache is not None and user_id:  # a call without a user id shares no cached answer
+            key = cache_key(
+                "propose_acceptance_criteria",
+                self._model,
+                self._num_ctx,
+                self._top_k,
+                self._min_p,
+                self._seed,
+                system_prompt,
+                acceptance_criteria_schema(),
+                items_by_id,
+                user_scope(user_id),
+            )
+            cached = self._cache.get(key)
+            if cached is not None:
+                return cached
+        parsed = self._chat_json(
+            system_prompt,
+            json.dumps(items_by_id, ensure_ascii=False),
+            schema=acceptance_criteria_schema(),
+            max_tokens=4000,
+            user_id=user_id,
+        )
+        entries = parsed.get("items") if isinstance(parsed, dict) else None
+        if not isinstance(entries, list):
+            raise ValueError(f"malformed JSON in LLM response content: {parsed!r}")
+        result = {
+            entry["id"]: entry
+            for entry in entries
+            if isinstance(entry, dict)
+            and isinstance(entry.get("id"), str)
+            and entry["id"] in items_by_id
+        }
+        if key is not None and len(result) == len(items_by_id):
+            self._cache.set(key, result)
+        return result
 
     def distill_title(self, text: str, max_length: int, user_id: str | None = None) -> str:
         """Backs the TitleDistillationClient protocol
@@ -1855,13 +2100,18 @@ class OrchestratorLlmClient:
         own docstring documents."""
         system_prompt = load_prompt("distill_survey_title")
         parsed = self._chat_json(
-            system_prompt, json.dumps({"text": text, "maxLength": max_length}), schema=distill_title_schema(),
+            system_prompt,
+            json.dumps({"text": text, "maxLength": max_length}),
+            schema=distill_title_schema(),
             user_id=user_id,
         )
         return parsed["title"]
 
     def judge_duplicate_pair(
-        self, candidate_text: str, matched_text: str, user_id: str | None = None,
+        self,
+        candidate_text: str,
+        matched_text: str,
+        user_id: str | None = None,
     ) -> dict:
         """Backs the DuplicateJudgeClient protocol
         (check_for_duplicates.py) -- verifies a >=threshold embedding
@@ -1880,11 +2130,15 @@ class OrchestratorLlmClient:
         "does this already exist," not conflict semantics)."""
         system_prompt = load_prompt("judge_duplicate_pair")
         return self._chat_json(
-            system_prompt, json.dumps({"candidate": candidate_text, "existing": matched_text}),
-            schema=duplicate_pair_verdict_schema(), user_id=user_id,
+            system_prompt,
+            json.dumps({"candidate": candidate_text, "existing": matched_text}),
+            schema=duplicate_pair_verdict_schema(),
+            user_id=user_id,
         )
 
-    def judge_duplicate_cluster(self, texts_by_id: dict[str, str], user_id: str | None = None) -> dict:
+    def judge_duplicate_cluster(
+        self, texts_by_id: dict[str, str], user_id: str | None = None
+    ) -> dict:
         """Backs the ConflictJudgeClient protocol (llm_leveling.py) --
         real capability gap closed here: this codebase had NO
         conflict/contradiction detection anywhere. The existing dedup
@@ -1907,7 +2161,10 @@ class OrchestratorLlmClient:
         was a false positive (genuinely different requirements)."""
         system_prompt = load_prompt("judge_duplicate_cluster")
         return self._chat_json(
-            system_prompt, json.dumps(texts_by_id), schema=duplicate_cluster_verdict_schema(), user_id=user_id,
+            system_prompt,
+            json.dumps(texts_by_id),
+            schema=duplicate_cluster_verdict_schema(),
+            user_id=user_id,
         )
 
     def group_root_topics(self, titles_by_id: dict[str, str], user_id: str | None = None) -> dict:
@@ -1933,28 +2190,41 @@ class OrchestratorLlmClient:
         for."""
         system_prompt = load_prompt("group_root_topics")
         return self._chat_json(
-            system_prompt, json.dumps(titles_by_id), schema=root_grouping_schema(), user_id=user_id,
+            system_prompt,
+            json.dumps(titles_by_id),
+            schema=root_grouping_schema(),
+            user_id=user_id,
         )
 
-    def judge_kb_document_relevance(self, name: str, excerpt: str, user_id: str | None = None) -> dict:
+    def judge_kb_document_relevance(
+        self, name: str, excerpt: str, user_id: str | None = None
+    ) -> dict:
         """Backs the KB profile's relevance step (app.kb.profile): does this document help create work-item hierarchies?
         Returns {"relevant": bool, "reason": str}; raises ValueError on an answer without a boolean verdict."""
         system_prompt = load_prompt("kb_document_relevance")
         parsed = self._chat_json(
-            system_prompt, json.dumps({"file_name": name, "excerpt": excerpt}, ensure_ascii=False),
-            schema=kb_document_relevance_schema(), max_tokens=400, user_id=user_id,
+            system_prompt,
+            json.dumps({"file_name": name, "excerpt": excerpt}, ensure_ascii=False),
+            schema=kb_document_relevance_schema(),
+            max_tokens=400,
+            user_id=user_id,
         )
         if not isinstance(parsed, dict) or not isinstance(parsed.get("relevant"), bool):
             raise ValueError(f"malformed JSON in LLM response content: {parsed!r}")
         return {"relevant": parsed["relevant"], "reason": str(parsed.get("reason") or "")}
 
-    def extract_kb_document_profile(self, name: str, window_text: str, user_id: str | None = None) -> dict:
+    def extract_kb_document_profile(
+        self, name: str, window_text: str, user_id: str | None = None
+    ) -> dict:
         """Backs the KB profile's map step: what one window of a KB document states about quality categories, type
         definitions, writing rules and glossary terms. Malformed entries are dropped, never trusted."""
         system_prompt = load_prompt("extract_kb_document_profile")
         parsed = self._chat_json(
-            system_prompt, json.dumps({"file_name": name, "text": window_text}, ensure_ascii=False),
-            schema=kb_document_profile_schema(), max_tokens=4000, user_id=user_id,
+            system_prompt,
+            json.dumps({"file_name": name, "text": window_text}, ensure_ascii=False),
+            schema=kb_document_profile_schema(),
+            max_tokens=4000,
+            user_id=user_id,
         )
         if not isinstance(parsed, dict):
             raise ValueError(f"malformed JSON in LLM response content: {parsed!r}")
@@ -1967,84 +2237,138 @@ class OrchestratorLlmClient:
             ]
 
         return {
-            "categories": [c for c in objects("categories", "name", "pass_condition") if c["name"].strip()],
-            "type_definitions": [d for d in objects("type_definitions", "item_type", "text") if d["item_type"] in ("epic", "feature", "requirement") and d["text"].strip()],
+            "categories": [
+                c for c in objects("categories", "name", "pass_condition") if c["name"].strip()
+            ],
+            "type_definitions": [
+                d
+                for d in objects("type_definitions", "item_type", "text")
+                if d["item_type"] in ("epic", "feature", "requirement") and d["text"].strip()
+            ],
             "rules": [r for r in (parsed.get("rules") or []) if isinstance(r, str) and r.strip()],
             "glossary": [g for g in objects("glossary", "term", "definition") if g["term"].strip()],
         }
 
     def consolidate_kb_categories(
-        self, categories: list[dict], max_categories: int, user_id: str | None = None, preferred_names: list[str] | None = None,
+        self,
+        categories: list[dict],
+        max_categories: int,
+        user_id: str | None = None,
+        preferred_names: list[str] | None = None,
     ) -> list[dict]:
         """Backs the KB profile's category merge (app.kb.profile): the same quality named differently by several documents
         (Testable / Testability) becomes one entry. Returns [{name, pass_condition, merged_from}]; malformed entries are
         dropped, an answer without a category list raises ValueError."""
         system_prompt = load_prompt("consolidate_kb_categories")
         parsed = self._chat_json(
-            system_prompt, json.dumps(
-                {"max_categories": max_categories, "categories": categories, **({"preferred_names": preferred_names} if preferred_names else {})},
+            system_prompt,
+            json.dumps(
+                {
+                    "max_categories": max_categories,
+                    "categories": categories,
+                    **({"preferred_names": preferred_names} if preferred_names else {}),
+                },
                 ensure_ascii=False,
             ),
-            schema=kb_category_consolidation_schema(), max_tokens=3000, user_id=user_id,
+            schema=kb_category_consolidation_schema(),
+            max_tokens=3000,
+            user_id=user_id,
         )
         if not isinstance(parsed, dict) or not isinstance(parsed.get("categories"), list):
             raise ValueError(f"malformed JSON in LLM response content: {parsed!r}")
         groups = []
         for item in parsed["categories"]:
-            if not isinstance(item, dict) or not isinstance(item.get("name"), str) or not item["name"].strip():
+            if (
+                not isinstance(item, dict)
+                or not isinstance(item.get("name"), str)
+                or not item["name"].strip()
+            ):
                 continue
-            members = [m for m in (item.get("merged_from") or []) if isinstance(m, str) and m.strip()]
+            members = [
+                m for m in (item.get("merged_from") or []) if isinstance(m, str) and m.strip()
+            ]
             if members:
-                groups.append({"name": " ".join(item["name"].split()), "pass_condition": " ".join(str(item.get("pass_condition") or "").split()), "merged_from": members})
+                groups.append(
+                    {
+                        "name": " ".join(item["name"].split()),
+                        "pass_condition": " ".join(str(item.get("pass_condition") or "").split()),
+                        "merged_from": members,
+                    }
+                )
         return groups
 
     def explain_category_scores(
-        self, item: dict, context_text: str | None, categories: list[dict], basis: str, user_id: str | None = None,
+        self,
+        item: dict,
+        context_text: str | None,
+        categories: list[dict],
+        basis: str,
+        user_id: str | None = None,
     ) -> list[dict]:
         """Why an item got the scores it did, one short reason per category asked about (see app.kb.explain for the basis). Entries that are
         not {category, reason} strings are dropped; an answer without an explanation list raises ValueError."""
         system_prompt = load_prompt("explain_category_scores", basis=basis)
         parsed = self._chat_json(
-            system_prompt, json.dumps(
+            system_prompt,
+            json.dumps(
                 {
-                    "item": item, "context": context_text, "categories": categories,
+                    "item": item,
+                    "context": context_text,
+                    "categories": categories,
                     "reasons_language": "the language the item's description is written in",
                 },
                 ensure_ascii=False,
             ),
-            schema=score_explanation_schema(), max_tokens=1500, user_id=user_id,
+            schema=score_explanation_schema(),
+            max_tokens=1500,
+            user_id=user_id,
         )
         if not isinstance(parsed, dict) or not isinstance(parsed.get("explanations"), list):
             raise ValueError(f"malformed JSON in LLM response content: {parsed!r}")
         return [
             {"category": e["category"], "reason": e["reason"]}
             for e in parsed["explanations"]
-            if isinstance(e, dict) and isinstance(e.get("category"), str) and isinstance(e.get("reason"), str)
+            if isinstance(e, dict)
+            and isinstance(e.get("category"), str)
+            and isinstance(e.get("reason"), str)
         ]
 
-    def judge_rule_conformance(self, rule: str, items: dict[str, str], user_id: str | None = None) -> dict[str, bool]:
+    def judge_rule_conformance(
+        self, rule: str, items: dict[str, str], user_id: str | None = None
+    ) -> dict[str, bool]:
         """Backs the KB conformance report (app.kb.conformance): does each item follow one stated writing rule? Returns
         {item id: bool} for the ids the model answered about; ids it skipped are absent, malformed entries dropped."""
         system_prompt = load_prompt("judge_rule_conformance")
         parsed = self._chat_json(
-            system_prompt, json.dumps({"rule": rule, "items": items}, ensure_ascii=False),
-            schema=rule_conformance_schema(), max_tokens=2000, user_id=user_id,
+            system_prompt,
+            json.dumps({"rule": rule, "items": items}, ensure_ascii=False),
+            schema=rule_conformance_schema(),
+            max_tokens=2000,
+            user_id=user_id,
         )
         verdicts = parsed.get("verdicts") if isinstance(parsed, dict) else None
         if not isinstance(verdicts, list):
             raise ValueError(f"malformed JSON in LLM response content: {parsed!r}")
         return {
-            str(v["id"]): v["conforms"] for v in verdicts
-            if isinstance(v, dict) and str(v.get("id")) in items and isinstance(v.get("conforms"), bool)
+            str(v["id"]): v["conforms"]
+            for v in verdicts
+            if isinstance(v, dict)
+            and str(v.get("id")) in items
+            and isinstance(v.get("conforms"), bool)
         }
 
-    def name_root_groups(self, titles_by_group_id: dict[str, list[str]], user_id: str | None = None) -> dict[str, str]:
+    def name_root_groups(
+        self, titles_by_group_id: dict[str, list[str]], user_id: str | None = None
+    ) -> dict[str, str]:
         """Names groups that were already decided by a fixed rule (root_regrouping.deterministic_root_groups). The
         model only chooses wording: it cannot move, add or remove a member, so it cannot change any count. Returns
         {group_id: title}; a group the model skipped is simply absent (the caller supplies a fallback title)."""
         system_prompt = load_prompt("name_root_groups")
         result = self._chat_json(
-            system_prompt, json.dumps(titles_by_group_id), schema=root_group_names_schema(), user_id=user_id,
+            system_prompt,
+            json.dumps(titles_by_group_id),
+            schema=root_group_names_schema(),
+            user_id=user_id,
         )
         names = result.get("names") if isinstance(result, dict) else None
         if not isinstance(names, list):
@@ -2052,7 +2376,10 @@ class OrchestratorLlmClient:
         return {
             str(entry["group_id"]): " ".join(str(entry["title"]).split())
             for entry in names
-            if isinstance(entry, dict) and "group_id" in entry and isinstance(entry.get("title"), str) and entry["title"].strip()
+            if isinstance(entry, dict)
+            and "group_id" in entry
+            and isinstance(entry.get("title"), str)
+            and entry["title"].strip()
         }
 
     def assign_leftover_roots(
@@ -2084,8 +2411,10 @@ class OrchestratorLlmClient:
         real source content."""
         system_prompt = load_prompt("assign_leftover_roots")
         result = self._chat_json(
-            system_prompt, json.dumps({"leftovers": leftover_titles_by_id, "groups": group_titles_by_id}),
-            schema=leftover_assignment_schema(), user_id=user_id,
+            system_prompt,
+            json.dumps({"leftovers": leftover_titles_by_id, "groups": group_titles_by_id}),
+            schema=leftover_assignment_schema(),
+            user_id=user_id,
         )
         # The schema asks for [{id, group_id}] (a strict-compatible shape); callers read {leftover_id: group_id}.
         # A model that still answers with the older map is accepted as is.
@@ -2122,7 +2451,10 @@ class OrchestratorLlmClient:
         headers = {"Authorization": f"Bearer {self._bearer_token}"}
         if user_id:
             headers["X-Req2Ado-User-Id"] = user_id
-        with httpx.Client(transport=self._transport, timeout=self.request_timeout_seconds or _LLM_REQUEST_TIMEOUT_SECONDS) as client:
+        with httpx.Client(
+            transport=self._transport,
+            timeout=self.request_timeout_seconds or _LLM_REQUEST_TIMEOUT_SECONDS,
+        ) as client:
             response = client.post(
                 f"{self._base_url}/llm/show",
                 json={"model": model},
@@ -2139,7 +2471,10 @@ class OrchestratorLlmClient:
         }
 
     def judge_kb_relevance(
-        self, branch_content: str, snippets: list[dict], user_id: str | None = None,
+        self,
+        branch_content: str,
+        snippets: list[dict],
+        user_id: str | None = None,
     ) -> dict[str, str]:
         """Verifies whether each KB snippet OFFERED to a branch's grounded
         calls was actually relevant to that branch's real content -- being
@@ -2154,9 +2489,11 @@ class OrchestratorLlmClient:
         as unknown, not a hard failure -- KB relevance judgment is an
         enhancement, never a hard dependency for a SURVEY job."""
         snippets_by_index = {
-            str(i): {"source_file": s["source_file"], "text": s["text"]} for i, s in enumerate(snippets)
+            str(i): {"source_file": s["source_file"], "text": s["text"]}
+            for i, s in enumerate(snippets)
         }
         spec = KB_RELEVANCE_SPEC
+
         # Confirmed missing before this used _chat_json: this was the ONE
         # call in this module with no output cap at all -- the exact
         # unbounded-hidden-reasoning exposure _MAX_OUTPUT_TOKENS's own doc
@@ -2251,9 +2588,18 @@ class OrchestratorLlmClient:
                 # four fields this method honors appear here -- adding the
                 # two skeleton-only ones would change the key for no
                 # behavioral reason.
-                "analyze_section", self._model, self._num_ctx, self._top_k, self._min_p, self._seed,
-                section_text, kb_context, options.whole_document, options.topic_count,
-                options.table_group_hints, options.expected_root_count,
+                "analyze_section",
+                self._model,
+                self._num_ctx,
+                self._top_k,
+                self._min_p,
+                self._seed,
+                section_text,
+                kb_context,
+                options.whole_document,
+                options.topic_count,
+                options.table_group_hints,
+                options.expected_root_count,
             )
             cached = self._cache.get(key)
             if cached is not None:
@@ -2310,7 +2656,10 @@ class OrchestratorLlmClient:
             notice("output_limit_reached", "warning", with_last_item=True, step="analyze")
         logger.warning(
             "analyze_section result: node_count=%d finishReason=%r truncated=%s topic_count=%r",
-            len(nodes), body.get("finishReason"), truncated, options.topic_count,
+            len(nodes),
+            body.get("finishReason"),
+            truncated,
+            options.topic_count,
         )
         # Never cache a truncated result -- it's a degraded/incomplete
         # response (the LLM backend hit its own output-token cap), and
@@ -2366,7 +2715,9 @@ class OrchestratorLlmClient:
         client with no outline built) offers no read_other_section tool.
 
         `whole_document`/`topic_count` -- see analyze_section's own docstring."""
-        tools, tool_hint = _agentic_tools_and_hint(list_documents_fn, read_document_fn, read_other_section_fn)
+        tools, tool_hint = _agentic_tools_and_hint(
+            list_documents_fn, read_document_fn, read_other_section_fn
+        )
         system_prompt = _section_analysis_system_prompt(options.expected_root_count) + tool_hint
         if options.whole_document:
             system_prompt += _whole_document_hint(options.topic_count)
@@ -2375,15 +2726,26 @@ class OrchestratorLlmClient:
         system_prompt += _table_group_hint(options.table_group_hints)
         citations: list[dict] = []
         content, truncated, rounds_exhausted = self._run_agentic_rounds(
-            system_prompt, section_text, section_analysis_schema(), tools,
-            retrieve_fn, list_documents_fn, read_document_fn, read_other_section_fn,
-            citations, "analyze_section_agentic", user_id,
+            system_prompt,
+            section_text,
+            section_analysis_schema(),
+            tools,
+            retrieve_fn,
+            list_documents_fn,
+            read_document_fn,
+            read_other_section_fn,
+            citations,
+            "analyze_section_agentic",
+            user_id,
         )
         if content:
             nodes = _nodes_from_parsed(_parse_json_object(content))
             logger.warning(
                 "analyze_section_agentic result: node_count=%d truncated=%s query_kb_calls=%d topic_count=%r",
-                len(nodes), truncated, len(citations), options.topic_count,
+                len(nodes),
+                truncated,
+                len(citations),
+                options.topic_count,
             )
             return nodes, citations, truncated
         if rounds_exhausted:
@@ -2393,7 +2755,10 @@ class OrchestratorLlmClient:
             # length-cap truncation (no final answer was ever reached to check
             # finishReason on) -- reported as truncated=False, a distinct
             # failure mode from analyze_section's own truncation signal.
-            logger.warning("analyze_section_agentic: exceeded _MAX_TOOL_ROUNDS=%d without a final answer -- 0 nodes", _MAX_TOOL_ROUNDS)
+            logger.warning(
+                "analyze_section_agentic: exceeded _MAX_TOOL_ROUNDS=%d without a final answer -- 0 nodes",
+                _MAX_TOOL_ROUNDS,
+            )
             return [], citations, False
         # A round contradicted toolChoice:'none' (or returned neither
         # tool_calls nor content) -- extremely unlikely per the API contract,
@@ -2415,7 +2780,8 @@ class OrchestratorLlmClient:
             section_text,
             kb_context=None,
             options=SectionAnalysisOptions(
-                whole_document=options.whole_document, topic_count=options.topic_count,
+                whole_document=options.whole_document,
+                topic_count=options.topic_count,
             ),
             user_id=user_id,
         )
@@ -2478,10 +2844,20 @@ class OrchestratorLlmClient:
                 # dataclass would stringify the instance's repr and change
                 # EVERY key -- invalidating a live production cache for no
                 # reason. Field order here is load-bearing.
-                "analyze_section_skeleton.v4", self._model, self._num_ctx, self._top_k, self._min_p, self._seed,
-                section_text, kb_context, options.whole_document, options.topic_count,
-                options.table_group_hints, options.expected_root_count,
-                options.requirement_row_hints, options.heading_type_hints,
+                "analyze_section_skeleton.v4",
+                self._model,
+                self._num_ctx,
+                self._top_k,
+                self._min_p,
+                self._seed,
+                section_text,
+                kb_context,
+                options.whole_document,
+                options.topic_count,
+                options.table_group_hints,
+                options.expected_root_count,
+                options.requirement_row_hints,
+                options.heading_type_hints,
             )
             cached = self._cache.get(key)
             if cached is not None:
@@ -2529,7 +2905,10 @@ class OrchestratorLlmClient:
             notice("output_limit_reached", "warning", with_last_item=True, step="skeleton")
         logger.warning(
             "analyze_section_skeleton result: node_count=%d finishReason=%r truncated=%s topic_count=%r",
-            len(nodes), body.get("finishReason"), truncated, options.topic_count,
+            len(nodes),
+            body.get("finishReason"),
+            truncated,
+            options.topic_count,
         )
         # Never cache a truncated result -- same reasoning as analyze_section's
         # own identical guard.
@@ -2565,7 +2944,9 @@ class OrchestratorLlmClient:
         Returns (nodes, citations, truncated) -- skeleton nodes, every
         query_kb hit actually retrieved across all rounds, and the same
         final-round length-cap signal analyze_section_agentic reports."""
-        tools, tool_hint = _agentic_tools_and_hint(list_documents_fn, read_document_fn, read_other_section_fn)
+        tools, tool_hint = _agentic_tools_and_hint(
+            list_documents_fn, read_document_fn, read_other_section_fn
+        )
         system_prompt = _section_skeleton_system_prompt(options.expected_root_count) + tool_hint
         if options.whole_document:
             system_prompt += _whole_document_hint(options.topic_count)
@@ -2576,15 +2957,26 @@ class OrchestratorLlmClient:
         system_prompt += _heading_outline_hint(options.heading_type_hints)
         citations: list[dict] = []
         content, truncated, rounds_exhausted = self._run_agentic_rounds(
-            system_prompt, section_text, section_skeleton_schema(), tools,
-            retrieve_fn, list_documents_fn, read_document_fn, read_other_section_fn,
-            citations, "analyze_section_skeleton_agentic", user_id,
+            system_prompt,
+            section_text,
+            section_skeleton_schema(),
+            tools,
+            retrieve_fn,
+            list_documents_fn,
+            read_document_fn,
+            read_other_section_fn,
+            citations,
+            "analyze_section_skeleton_agentic",
+            user_id,
         )
         if content:
             nodes = _nodes_from_parsed(_parse_json_object(content))
             logger.warning(
                 "analyze_section_skeleton_agentic result: node_count=%d truncated=%s query_kb_calls=%d topic_count=%r",
-                len(nodes), truncated, len(citations), options.topic_count,
+                len(nodes),
+                truncated,
+                len(citations),
+                options.topic_count,
             )
             return nodes, citations, truncated
         if rounds_exhausted:
@@ -2601,7 +2993,10 @@ class OrchestratorLlmClient:
         # only two of its four hints -- a pre-existing asymmetry this
         # refactor deliberately preserves rather than silently changing).
         fallback_nodes, fallback_truncated = self.analyze_section_skeleton(
-            section_text, kb_context=None, options=options, user_id=user_id,
+            section_text,
+            kb_context=None,
+            options=options,
+            user_id=user_id,
         )
         return fallback_nodes, citations, fallback_truncated
 
@@ -2648,8 +3043,15 @@ class OrchestratorLlmClient:
         key = None
         if self._cache is not None:
             key = cache_key(
-                "author_content", self._model, self._num_ctx, self._top_k, self._min_p, self._seed,
-                section_text, skeleton_nodes, kb_context,
+                "author_content",
+                self._model,
+                self._num_ctx,
+                self._top_k,
+                self._min_p,
+                self._seed,
+                section_text,
+                skeleton_nodes,
+                kb_context,
             )
             cached = self._cache.get(key)
             if cached is not None:
@@ -2702,7 +3104,9 @@ class OrchestratorLlmClient:
                 body = response.json()
                 content = _strip_json_fence(body["content"])
                 parsed = _parse_json_object(content)
-                span.set_attribute("gen_ai.response.node_count", len(parsed) if isinstance(parsed, dict) else 0)
+                span.set_attribute(
+                    "gen_ai.response.node_count", len(parsed) if isinstance(parsed, dict) else 0
+                )
             if body.get("finishReason") == "length":
                 truncated = True
                 # The entry the token limit cut off may have been repaired into something that parses but is
@@ -2718,7 +3122,9 @@ class OrchestratorLlmClient:
             notice("output_limit_reached", "warning", with_last_item=True, step="write")
         logger.warning(
             "author_content result: requested=%d returned=%d truncated=%s",
-            len(skeleton_nodes), len(result), truncated,
+            len(skeleton_nodes),
+            len(result),
+            truncated,
         )
         # Never cache a truncated result -- same reasoning as analyze_section's
         # own identical guard.
@@ -2727,7 +3133,10 @@ class OrchestratorLlmClient:
         return dict(result), truncated
 
     def map_figures_tables(
-        self, candidates: dict[str, dict], items: dict[str, dict], user_id: str | None = None,
+        self,
+        candidates: dict[str, dict],
+        items: dict[str, dict],
+        user_id: str | None = None,
     ) -> dict[str, dict]:
         """STAGE 2 of the two-stage SURVEY generation split: which EXACT node
         each of this document's figures/tables belongs to. Runs BETWEEN
@@ -2775,8 +3184,14 @@ class OrchestratorLlmClient:
         key = None
         if self._cache is not None:
             key = cache_key(
-                "map_figures_tables", self._model, self._num_ctx, self._top_k, self._min_p, self._seed,
-                candidates, items,
+                "map_figures_tables",
+                self._model,
+                self._num_ctx,
+                self._top_k,
+                self._min_p,
+                self._seed,
+                candidates,
+                items,
             )
             cached = self._cache.get(key)
             if cached is not None:
@@ -2788,7 +3203,9 @@ class OrchestratorLlmClient:
         def send(subset: dict, mode: KeyedMode) -> object:
             nonlocal cut_off
             system_prompt = load_prompt(
-                "map_figures_tables", item_count=str(len(subset)), output_format=describe_output(spec, mode),
+                "map_figures_tables",
+                item_count=str(len(subset)),
+                output_format=describe_output(spec, mode),
             )
             schema = schema_for(spec, mode)
             payload = {
@@ -2821,7 +3238,9 @@ class OrchestratorLlmClient:
                 body = response.json()
                 content = _strip_json_fence(body["content"])
                 parsed = _parse_json_object(content)
-                span.set_attribute("gen_ai.response.item_count", len(parsed) if isinstance(parsed, dict) else 0)
+                span.set_attribute(
+                    "gen_ai.response.item_count", len(parsed) if isinstance(parsed, dict) else 0
+                )
             if body.get("finishReason") == "length":
                 cut_off = True
                 parsed = drop_possibly_cut_last_entry(parsed)
@@ -2843,7 +3262,10 @@ class OrchestratorLlmClient:
             notice("output_limit_reached", "warning", with_last_item=True, step="figures")
         logger.warning(
             "map_figures_tables result: candidates=%d requested=%d returned=%d incomplete=%s",
-            len(candidates), len(items), len(result), incomplete,
+            len(candidates),
+            len(items),
+            len(result),
+            incomplete,
         )
         if key is not None and not incomplete:
             self._cache.set(key, result)
@@ -2942,9 +3364,17 @@ class OrchestratorLlmClient:
                     args = args if isinstance(args, dict) else {}
                     name = call.get("function", {}).get("name")
                     tool_result = self._execute_agentic_tool_call(
-                        name, args, retrieve_fn, list_documents_fn, read_document_fn, read_other_section_fn, citations
+                        name,
+                        args,
+                        retrieve_fn,
+                        list_documents_fn,
+                        read_document_fn,
+                        read_other_section_fn,
+                        citations,
                     )
-                    messages.append({"role": "tool", "tool_call_id": call["id"], "content": tool_result})
+                    messages.append(
+                        {"role": "tool", "tool_call_id": call["id"], "content": tool_result}
+                    )
                 continue
             content = _strip_json_fence(body.get("content", ""))
             if content:
@@ -2956,7 +3386,8 @@ class OrchestratorLlmClient:
             # text rather than silently returning 0 nodes for this branch.
             logger.warning(
                 "%s: round %d produced neither tool_calls nor content -- falling back to the non-agentic call",
-                label, round_index,
+                label,
+                round_index,
             )
             return None, False, False
         # Exceeded _MAX_TOOL_ROUNDS without a final answer -- the caller
@@ -3005,4 +3436,3 @@ class OrchestratorLlmClient:
             content = read_other_section_fn(section_id)
             return content or f"(section {section_id!r} not found in the document outline)"
         return f"(unsupported tool: {name!r})"
-

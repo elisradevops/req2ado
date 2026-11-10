@@ -25,8 +25,12 @@ class DraftingDisplay:
     we show that row."""
 
     def __init__(
-        self, emitter: LiveEmitter, inputs: Mapping[str, str | None], *,
-        stage: str | None = None, counter: StageCounter | None = None,
+        self,
+        emitter: LiveEmitter,
+        inputs: Mapping[str, str | None],
+        *,
+        stage: str | None = None,
+        counter: StageCounter | None = None,
     ) -> None:
         # With a stage and a counter, each item the model finishes also moves the
         # exact count for that pass while the call is still running.

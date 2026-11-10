@@ -6,6 +6,7 @@ import { LlmConnectionController } from './llm-connection.controller';
 import { LlmProxyBearerGuard } from './llm-proxy-bearer.guard';
 import Redis from 'ioredis';
 import { Queue } from 'bullmq';
+import { logQueueErrors } from '../../common/queue-errors';
 import { OpenWebUiClientFactory, type OpenWebUiGlobalConfig } from './openwebui-client.factory';
 import { MODEL_HEALTH_QUEUE, ModelHealthService } from './model-health.service';
 import { LlmConfigResolver } from '../auth/llm-config.resolver';
@@ -39,6 +40,10 @@ import { AuthModule } from '../auth/auth.module';
           EMBED_BASE_URL: config.get<string>('EMBED_BASE_URL'),
           EMBED_MODEL: config.get<string>('EMBED_MODEL')!,
           EMBED_PATH: config.get<string>('EMBED_PATH')!,
+          EMBED_OPENAI_PATH: config.get<string>('EMBED_OPENAI_PATH'),
+          EMBED_OPENAI_FALLBACK_ROUTES: config.get<string[]>('EMBED_OPENAI_FALLBACK_ROUTES'),
+          EMBED_MAX_INPUTS_PER_REQUEST: config.get<number | undefined>('EMBED_MAX_INPUTS_PER_REQUEST'),
+          EMBED_MAX_TOKENS_PER_REQUEST: config.get<number | undefined>('EMBED_MAX_TOKENS_PER_REQUEST'),
           SHOW_PATH: config.get<string>('SHOW_PATH')!,
           FILES_UPLOAD_PATH: config.get<string>('FILES_UPLOAD_PATH')!,
           FILES_STATUS_PATH: config.get<string>('FILES_STATUS_PATH')!,
@@ -69,7 +74,7 @@ import { AuthModule } from '../auth/auth.module';
         return new ModelHealthService({
           enabled,
           store,
-          queue: new Queue(MODEL_HEALTH_QUEUE, { connection: { url: redisUrl } as never }),
+          queue: logQueueErrors(new Queue(MODEL_HEALTH_QUEUE, { connection: { url: redisUrl } as never }), MODEL_HEALTH_QUEUE),
           clients: factory,
           redisUrl,
         });
@@ -81,7 +86,7 @@ import { AuthModule } from '../auth/auth.module';
   // upload endpoint (see JobsController) rather than inventing a second
   // bearer-token convention for the same "caller is ingestion" need.
   // OpenWebUiClientFactory exported so other modules (ChatModule,
-  // JobsModule, DocumentOverviewService's consumers) can resolve a
+  // JobsModule, the AI summary) can resolve a
   // per-user client without a circular import back through this module's
   // own controllers.
   exports: [OpenWebUiClientFactory, LlmProxyBearerGuard, ModelHealthService],

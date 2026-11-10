@@ -3,7 +3,8 @@ import { cn } from '../lib/cn';
 import { LABEL_MICRO } from '../utils/labelMicro';
 import { formatEtaRange } from '../utils/eta';
 import { Select } from '../ui/Select';
-import type { EtaEstimate } from '../api/jobs';
+import { describeEstimateBasis, describeModelFacts } from '../utils/modelFacts';
+import type { EtaEstimate, ModelDetail } from '../api/jobs';
 
 // Exported so ModeBadge.tsx (the persistent chip shown in job list/detail
 // headers, after creation) can reuse the exact same description as this
@@ -59,11 +60,17 @@ function EstimateLine({ estimate }: { estimate: EtaEstimate | undefined }): Reac
     return <span className="font-mono text-meta text-ink-3">--</span>;
   }
   const { lower, upper } = formatEtaRange(estimate.lowerMinutes, estimate.upperMinutes);
+  const basis = describeEstimateBasis(estimate);
   // DESIGN.md §12: "an estimate is a range with 'typically', never a
   // false-precision point value" -- except when lower===upper (BASELINE's
   // flat, non-probabilistic 1 minute has no range to project), where the
   // "typically" framing would falsely imply uncertainty that isn't there.
-  return <span className="font-mono text-meta text-ink-3">{lower === upper ? lower : `${lower} – ${upper}, typically`}</span>;
+  return (
+    <>
+      <span className="font-mono text-meta text-ink-3">{lower === upper ? lower : `${lower} – ${upper}, typically`}</span>
+      {basis && <span className="basis-full text-meta text-ink-3">{basis}</span>}
+    </>
+  );
 }
 
 function SamplePreview({ sample }: { sample: (typeof MODE_COPY)['baseline' | 'survey']['sample'] }): React.ReactElement {
@@ -95,6 +102,8 @@ export function ModeCards({
   model,
   onModelChange,
   availableModels,
+  modelDetails,
+  recommendedModel,
   modelsLoading,
   modelsError,
 }: {
@@ -116,9 +125,16 @@ export function ModeCards({
   model?: string;
   onModelChange?: (model: string) => void;
   availableModels?: string[];
+  /** What the server can state per model; absent from an older orchestrator, and the list then stays plain. */
+  modelDetails?: ModelDetail[];
+  /** The model the admin configured as the default, when this user is offered it. */
+  recommendedModel?: string | null;
   modelsLoading?: boolean;
   modelsError?: boolean;
 }): React.ReactElement {
+  // "Default" means the recommended model (the one the orchestrator resolves it to), so its facts are the ones to show.
+  const shownModelId = model || recommendedModel || '';
+  const shownDetail = shownModelId ? modelDetails?.find((d) => d.id === shownModelId) : undefined;
   return (
     // Stacked (not side-by-side) -- matches the prototype's `.modes` grid
     // (single column, no grid-template-columns) rather than the previous
@@ -201,20 +217,19 @@ export function ModeCards({
                   Model
                 </span>
                 <Select value={model ?? ''} onChange={(event) => onModelChange(event.target.value)} aria-label="LLM Model" loading={modelsLoading}>
-                  <option value="">Default</option>
+                  <option value="">{recommendedModel ? `Default (${recommendedModel})` : 'Default'}</option>
                   {(availableModels ?? []).map((m) => (
                     <option key={m} value={m}>
-                      {m}
+                      {m === recommendedModel ? `${m} · Recommended` : m}
                     </option>
                   ))}
                 </Select>
                 {modelsError && (
                   <span className="basis-full text-micro text-danger">Couldn't load models — Default will be used.</span>
                 )}
-                <span className="basis-full text-micro text-ink-3">
-                  Fetched live from the backend. Feeds the estimate below — leave it on Default and the estimate falls back to a
-                  neutral 1.0×, because the frontend cannot know which model the orchestrator resolves to.
-                </span>
+                {shownDetail && (
+                  <span className="basis-full text-meta text-ink-3">{describeModelFacts(shownDetail).join(' · ')}</span>
+                )}
               </span>
             )}
           </div>

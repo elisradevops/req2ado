@@ -19,6 +19,7 @@ near-identical lines. Kinds that already batch themselves at the emission
 site (one record per cluster/branch/chunk -- e.g. NEAR_DUPLICATE_CONFLICT,
 DROPPED_BLOCKS) are not listed in _GROUP_KEY_FIELD and pass through
 unchanged."""
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -86,7 +87,7 @@ def _reparented_to_feature(members: list[IntegrityWarning], node_ids: list[str])
 def _group_reparented(members: list[IntegrityWarning], node_ids: list[str]) -> str:
     target = members[0].detail.get("targetParentTitle") or members[0].detail.get("targetParentId")
     return (
-        f'{len(node_ids)} item(s) matching a source table group were attached under the wrong '
+        f"{len(node_ids)} item(s) matching a source table group were attached under the wrong "
         f'ancestor -- re-parented under "{target}" to match their known correct parent from the '
         "table's own ID hierarchy."
     )
@@ -131,7 +132,9 @@ def _invalid_node_type(members: list[IntegrityWarning], node_ids: list[str]) -> 
 
 
 def _dangling_parent(members: list[IntegrityWarning], node_ids: list[str]) -> str:
-    return f"{len(node_ids)} node(s) referenced an unknown parent -- attached as their section's root."
+    return (
+        f"{len(node_ids)} node(s) referenced an unknown parent -- attached as their section's root."
+    )
 
 
 def _low_grounding(members: list[IntegrityWarning], node_ids: list[str]) -> str:

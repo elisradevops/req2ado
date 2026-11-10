@@ -13,11 +13,38 @@ def _golden_doc() -> CanonicalDoc:
     return CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="golden-hash"),
         blocks=[
-            Block(id="b0", kind=BlockKind.HEADING, text="1 Power Subsystem", heading_level=1, source_ref=_sr(path, 0, 18)),
-            Block(id="b1", kind=BlockKind.HEADING, text="1.1 3.3V Rail Requirements", heading_level=2, source_ref=_sr(path, 19, 46)),
-            Block(id="b2", kind=BlockKind.OPEN_TBD, text="OPEN: confirm connector part number before release.", source_ref=_sr(path, 47, 100)),
-            Block(id="b3", kind=BlockKind.PARAGRAPH, text="TBD: verify against thermal derating curve.", source_ref=_sr(path, 101, 146)),
-            Block(id="b4", kind=BlockKind.FIGURE, text="[FIGURE: rail schematic]", source_ref=_sr(path, 147, 172)),
+            Block(
+                id="b0",
+                kind=BlockKind.HEADING,
+                text="1 Power Subsystem",
+                heading_level=1,
+                source_ref=_sr(path, 0, 18),
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.HEADING,
+                text="1.1 3.3V Rail Requirements",
+                heading_level=2,
+                source_ref=_sr(path, 19, 46),
+            ),
+            Block(
+                id="b2",
+                kind=BlockKind.OPEN_TBD,
+                text="OPEN: confirm connector part number before release.",
+                source_ref=_sr(path, 47, 100),
+            ),
+            Block(
+                id="b3",
+                kind=BlockKind.PARAGRAPH,
+                text="TBD: verify against thermal derating curve.",
+                source_ref=_sr(path, 101, 146),
+            ),
+            Block(
+                id="b4",
+                kind=BlockKind.FIGURE,
+                text="[FIGURE: rail schematic]",
+                source_ref=_sr(path, 147, 172),
+            ),
         ],
     )
 
@@ -28,11 +55,12 @@ def test_description_is_byte_for_byte_verbatim_join_of_folded_blocks() -> None:
     # A FIGURE block's caption is tracked via figure_ids only -- never
     # folded into description text at all (removed per explicit user
     # request; see tree_builder.py's BASELINE fold path).
+    # The heading is the title, so the description starts at the first folded block (R5).
     expected = (
-        "1.1 3.3V Rail Requirements"
-        "\nOPEN: confirm connector part number before release."
+        "OPEN: confirm connector part number before release."
         "\nTBD: verify against thermal derating curve."
     )
+    assert requirement_node.title == "1.1 3.3V Rail Requirements"
     assert requirement_node.description == expected
 
 

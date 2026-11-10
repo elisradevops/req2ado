@@ -27,6 +27,16 @@ export interface ProxyBehavior {
   rejectsParams?: string[];
   /** The text of a successful answer. */
   answer?: string;
+  /** Every call takes this long to answer (ms): a slow model or a queued backend. */
+  latencyMs?: number;
+  /** A reasoning model: it "thinks" for this many tokens first, so a call whose output limit is at or below this comes back
+   *  with empty content and finish_reason 'length' (what a thinking model does to a small max_tokens). */
+  reasoningTokens?: number;
+  /** A model whose answer needs this many output tokens: with a smaller limit it is cut off mid-JSON and answers
+   *  `finish_reason: 'length'` with that partial text (a non-empty truncated reply, not an empty one). */
+  truncatedBelow?: number;
+  /** What the empty reasoning answer carries as content (default ''): a thinking model sometimes emits only whitespace. */
+  emptyContent?: string;
 }
 
 export interface RecordedRequest {
@@ -39,6 +49,8 @@ export interface FakeProxy {
   /** `http://127.0.0.1:<port>`; the OpenAI-compatible base URL is `${url}/v1`. */
   url: string;
   requests: RecordedRequest[];
+  /** Models of the calls whose connection was closed by the caller before an answer was sent (an aborted request). */
+  aborted: string[];
   close(): Promise<void>;
 }
 
@@ -113,6 +125,7 @@ function readBody(request: IncomingMessage): Promise<Record<string, any>> {
 
 export async function startFakeProxy(models: Record<string, ProxyBehavior>): Promise<FakeProxy> {
   const requests: RecordedRequest[] = [];
+  const aborted: string[] = [];
   const calls: Record<string, number> = {};
   const server: Server = createServer(async (request: IncomingMessage, response: ServerResponse) => {
     const body = await readBody(request);
@@ -138,7 +151,33 @@ export async function startFakeProxy(models: Record<string, ProxyBehavior>): Pro
         response.writeHead(refused.status, refused.text ? { 'Content-Type': 'application/json' } : {});
         return response.end(refused.text ? JSON.stringify({ error: { message: refused.text, type: 'invalid_request_error' } }) : '');
       }
+      if (behavior.latencyMs) {
+        let closed = false;
+        response.on('close', () => {
+          if (!response.writableEnded) {
+            closed = true;
+            aborted.push(model);
+          }
+        });
+        await new Promise<void>((resolve) => setTimeout(resolve, behavior.latencyMs));
+        if (closed) return;
+      }
+      const limit = body.max_tokens ?? body.max_completion_tokens;
+      if (behavior.reasoningTokens && typeof limit === 'number' && limit <= behavior.reasoningTokens) {
+        return json(201, {
+          id: 'chatcmpl-fake', object: 'chat.completion', created: 1, model,
+          choices: [{ index: 0, message: { role: 'assistant', content: behavior.emptyContent ?? '' }, finish_reason: 'length' }],
+          usage: { prompt_tokens: 10, completion_tokens: limit, total_tokens: 10 + limit },
+        });
+      }
       const content = behavior.answer ?? 'OK';
+      if (behavior.truncatedBelow && typeof limit === 'number' && limit < behavior.truncatedBelow) {
+        return json(201, {
+          id: 'chatcmpl-fake', object: 'chat.completion', created: 1, model,
+          choices: [{ index: 0, message: { role: 'assistant', content: content.slice(0, Math.max(1, Math.floor(content.length / 2))) }, finish_reason: 'length' }],
+          usage: { prompt_tokens: 10, completion_tokens: limit, total_tokens: 10 + limit },
+        });
+      }
       if (body.stream === true) {
         response.writeHead(201, { 'Content-Type': 'text/event-stream' });
         response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content } }] })}\n\n`);
@@ -159,6 +198,7 @@ export async function startFakeProxy(models: Record<string, ProxyBehavior>): Pro
   return {
     url: `http://127.0.0.1:${port}`,
     requests,
+    aborted,
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   };
 }

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import json
+import socket
+import ssl
 import time
 
 import httpx
@@ -54,9 +56,54 @@ class GraphFolderChild(BaseModel):
 
 
 class GraphApiError(Exception):
-    def __init__(self, status: int, message: str) -> None:
+    """`kind` says why the call failed: "http" (Graph answered with an error
+    status), or, for a failure before any answer, "tls" (certificate not
+    trusted), "dns" (host name did not resolve), "timeout", or "network"
+    (anything else at transport level)."""
+
+    def __init__(self, status: int, message: str, kind: str = "http") -> None:
         super().__init__(message)
         self.status = status
+        self.kind = kind
+
+
+def _cause_chain(exc: BaseException):
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        implicit = None if current.__suppress_context__ else current.__context__
+        current = current.__cause__ or implicit
+
+
+def _transport_error(exc: httpx.HTTPError) -> GraphApiError:
+    """Turns a transport-level httpx failure into a 502-class GraphApiError
+    that names the cause. The message carries at most the request host and
+    the TLS verifier's own reason -- never the URL (a pre-signed download
+    URL embeds a credential in its query) and never any header."""
+    chain = list(_cause_chain(exc))
+    host = ""
+    try:
+        host = exc.request.url.host if isinstance(exc, httpx.RequestError) else ""
+    except RuntimeError:
+        pass  # httpx raises when the exception carries no request
+    where = f" ({host})" if host else ""
+    for err in chain:
+        if isinstance(err, ssl.SSLCertVerificationError):
+            reason = getattr(err, "verify_message", None) or "certificate not trusted"
+            return GraphApiError(
+                502,
+                f"TLS certificate verification failed reaching Microsoft Graph{where}: {reason}. "
+                "If this network inspects HTTPS traffic, add its CA certificate "
+                "to the ingestion image.",
+                "tls",
+            )
+    if any(isinstance(err, socket.gaierror) for err in chain):
+        return GraphApiError(502, f"could not resolve the Microsoft Graph host name{where}", "dns")
+    if isinstance(exc, httpx.TimeoutException):
+        return GraphApiError(502, f"request to Microsoft Graph timed out{where}", "timeout")
+    return GraphApiError(502, f"could not reach Microsoft Graph{where}", "network")
 
 
 def encode_share_id(url: str) -> str:
@@ -96,7 +143,7 @@ class GraphClient:
             with httpx.Client(timeout=60.0, follow_redirects=True) as client:
                 return client.get(request_url, headers=self._headers())
         except httpx.HTTPError as exc:
-            raise GraphApiError(502, "could not reach Microsoft Graph") from exc
+            raise _transport_error(exc) from exc
 
     def get_drive_item(self, url: str) -> GraphDriveItem:
         share_id = encode_share_id(url)
@@ -200,7 +247,7 @@ class GraphClient:
             with httpx.Client(timeout=60.0, follow_redirects=True) as client:
                 response = client.get(download_url)
         except httpx.HTTPError as exc:
-            raise GraphApiError(502, "could not reach Microsoft Graph") from exc
+            raise _transport_error(exc) from exc
         if response.status_code != 200:
             raise _error_for_status(response.status_code)
         return response.content

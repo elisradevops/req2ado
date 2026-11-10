@@ -165,7 +165,8 @@ async def test_run_chat_turn_publishes_chunks_then_done_with_no_proposal() -> No
     publisher = _FakePublisher()
 
     await run_chat_turn(
-        "job-1", "n0",
+        "job-1",
+        "n0",
         {
             "type": "Requirement",
             "title": "T",
@@ -173,8 +174,14 @@ async def test_run_chat_turn_publishes_chunks_then_done_with_no_proposal() -> No
             "childType": None,
             "qualityIssues": [],
         },
-        [], "why is this ambiguous?", "llama3.1", None, None, None,
-        chat_client, publisher,
+        [],
+        "why is this ambiguous?",
+        "llama3.1",
+        None,
+        None,
+        None,
+        chat_client,
+        publisher,
     )
 
     assert "".join(publisher.chunks) == "Sure, here's why."
@@ -198,7 +205,8 @@ async def test_run_chat_turn_extracts_proposal_and_hides_json_from_chunks() -> N
     publisher = _FakePublisher()
 
     await run_chat_turn(
-        "job-1", "n0",
+        "job-1",
+        "n0",
         {
             "type": "Requirement",
             "title": "T",
@@ -206,8 +214,14 @@ async def test_run_chat_turn_extracts_proposal_and_hides_json_from_chunks() -> N
             "childType": None,
             "qualityIssues": [],
         },
-        [], "make this testable", None, None, None, None,
-        chat_client, publisher,
+        [],
+        "make this testable",
+        None,
+        None,
+        None,
+        None,
+        chat_client,
+        publisher,
     )
 
     assert "".join(publisher.chunks) == "Tighter version."
@@ -221,16 +235,21 @@ async def test_run_chat_turn_extracts_proposal_and_hides_json_from_chunks() -> N
 
 
 @pytest.mark.asyncio
-async def test_run_chat_turn_publishes_reasoning_chunks_separately_and_never_persists_them() -> None:
+async def test_run_chat_turn_publishes_reasoning_chunks_separately_and_never_persists_them() -> (
+    None
+):
     # A reasoning model's chain-of-thought bypasses the sentinel window
     # entirely (it's never scanned for PROPOSAL_SENTINEL or folded into
     # publish_done's persisted message) -- confirmed by asserting it lands
     # only on publish_reasoning_chunk, never in publisher.chunks or done.
-    chat_client = _FakeChatClient(["Sure, ", "here's why."], reasoning_deltas=["Hmm, ", "let me think."])
+    chat_client = _FakeChatClient(
+        ["Sure, ", "here's why."], reasoning_deltas=["Hmm, ", "let me think."]
+    )
     publisher = _FakePublisher()
 
     await run_chat_turn(
-        "job-1", "n0",
+        "job-1",
+        "n0",
         {
             "type": "Requirement",
             "title": "T",
@@ -238,8 +257,14 @@ async def test_run_chat_turn_publishes_reasoning_chunks_separately_and_never_per
             "childType": None,
             "qualityIssues": [],
         },
-        [], "why is this ambiguous?", "llama3.1", None, None, None,
-        chat_client, publisher,
+        [],
+        "why is this ambiguous?",
+        "llama3.1",
+        None,
+        None,
+        None,
+        chat_client,
+        publisher,
     )
 
     assert "".join(publisher.reasoning_chunks) == "Hmm, let me think."
@@ -253,7 +278,8 @@ async def test_run_chat_turn_stops_and_publishes_error_when_aborted() -> None:
     publisher = _FakePublisher(aborted=True)
 
     await run_chat_turn(
-        "job-1", "n0",
+        "job-1",
+        "n0",
         {
             "type": "Requirement",
             "title": "T",
@@ -261,8 +287,14 @@ async def test_run_chat_turn_stops_and_publishes_error_when_aborted() -> None:
             "childType": None,
             "qualityIssues": [],
         },
-        [], "hello", None, None, None, None,
-        chat_client, publisher,
+        [],
+        "hello",
+        None,
+        None,
+        None,
+        None,
+        chat_client,
+        publisher,
     )
 
     assert publisher.done is None
@@ -270,14 +302,19 @@ async def test_run_chat_turn_stops_and_publishes_error_when_aborted() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_chat_turn_grounds_system_prompt_with_kb_context_when_area_path_supplied(monkeypatch) -> None:
+async def test_run_chat_turn_grounds_system_prompt_with_kb_context_when_area_path_supplied(
+    monkeypatch,
+) -> None:
     # Regression guard for a caller of retrieve_context() the P3c plan initially
     # missed (retrieval.py/llm_leveling.py's test suites cover the other
     # caller) — locks that run_chat_turn correctly unpacks the (context,
     # citations) tuple and threads context into the system prompt.
     monkeypatch.setattr(
         "app.chat.chat_service.retrieve_context",
-        lambda area_path, query_text, embed_client, vector_store, **_: ("The receiver shall decode HDR10 metadata.", ["spec.docx"]),
+        lambda area_path, query_text, embed_client, vector_store, **_: (
+            "The receiver shall decode HDR10 metadata.",
+            ["spec.docx"],
+        ),
     )
 
     captured: dict[str, list[dict]] = {}
@@ -290,7 +327,8 @@ async def test_run_chat_turn_grounds_system_prompt_with_kb_context_when_area_pat
     publisher = _FakePublisher()
 
     await run_chat_turn(
-        "job-1", "n0",
+        "job-1",
+        "n0",
         {
             "type": "Requirement",
             "title": "T",
@@ -298,8 +336,14 @@ async def test_run_chat_turn_grounds_system_prompt_with_kb_context_when_area_pat
             "childType": None,
             "qualityIssues": [],
         },
-        [], "make this testable", "llama3.1", "Project\\Area1", object(), object(),
-        _CapturingChatClient(), publisher,
+        [],
+        "make this testable",
+        "llama3.1",
+        "Project\\Area1",
+        object(),
+        object(),
+        _CapturingChatClient(),
+        publisher,
     )
 
     system_prompt = captured["messages"][0]["content"]
@@ -317,7 +361,8 @@ async def test_run_chat_turn_publishes_error_on_llm_failure_never_raises() -> No
     publisher = _FakePublisher()
 
     await run_chat_turn(
-        "job-1", "n0",
+        "job-1",
+        "n0",
         {
             "type": "Requirement",
             "title": "T",
@@ -325,8 +370,14 @@ async def test_run_chat_turn_publishes_error_on_llm_failure_never_raises() -> No
             "childType": None,
             "qualityIssues": [],
         },
-        [], "hello", None, None, None, None,
-        _FailingChatClient(), publisher,
+        [],
+        "hello",
+        None,
+        None,
+        None,
+        None,
+        _FailingChatClient(),
+        publisher,
     )
 
     assert publisher.done is None
@@ -334,7 +385,9 @@ async def test_run_chat_turn_publishes_error_on_llm_failure_never_raises() -> No
 
 
 @pytest.mark.asyncio
-async def test_run_chat_turn_aims_the_rewrite_at_the_weakest_category_using_the_stored_profile() -> None:
+async def test_run_chat_turn_aims_the_rewrite_at_the_weakest_category_using_the_stored_profile() -> (
+    None
+):
     from app.kb.profile import build_profile
     from tests.test_kb_profile import DOCS, FakeProfileClient
 
@@ -345,16 +398,50 @@ async def test_run_chat_turn_aims_the_rewrite_at_the_weakest_category_using_the_
             seen.append(messages)
             yield "ok", ""
 
-    item = {"type": "Requirement", "title": "T", "description": "D", "childType": None, "qualityIssues": [],
-            "qualityCategoryScores": {"Clear and unambiguous": 40, "Testable": 90}}
+    item = {
+        "type": "Requirement",
+        "title": "T",
+        "description": "D",
+        "childType": None,
+        "qualityIssues": [],
+        "qualityCategoryScores": {"Clear and unambiguous": 40, "Testable": 90},
+    }
     profile = build_profile(DOCS, FakeProfileClient(), model="m1")
-    await run_chat_turn("job-1", "n0", item, [], "rewrite it", "llama3.1", None, None, None, RecordingClient([]), _FakePublisher(), profile=profile)
+    await run_chat_turn(
+        "job-1",
+        "n0",
+        item,
+        [],
+        "rewrite it",
+        "llama3.1",
+        None,
+        None,
+        None,
+        RecordingClient([]),
+        _FakePublisher(),
+        profile=profile,
+    )
 
     system = seen[0][0]["content"]
     # The note names only what is weak, with its score; the standard in the prompt lists every category.
     assert "Clear and unambiguous (40)" in system and "One reading only" in system
-    assert "Testable (90)" not in system and "weakest quality categories are Clear and unambiguous (40)" in system
+    assert (
+        "Testable (90)" not in system
+        and "weakest quality categories are Clear and unambiguous (40)" in system
+    )
 
     seen.clear()
-    await run_chat_turn("job-1", "n0", {**item, "qualityCategoryScores": None}, [], "why?", "llama3.1", None, None, None, RecordingClient([]), _FakePublisher())
+    await run_chat_turn(
+        "job-1",
+        "n0",
+        {**item, "qualityCategoryScores": None},
+        [],
+        "why?",
+        "llama3.1",
+        None,
+        None,
+        None,
+        RecordingClient([]),
+        _FakePublisher(),
+    )
     assert "weakest" not in seen[0][0]["content"]

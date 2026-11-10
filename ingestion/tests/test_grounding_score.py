@@ -3,7 +3,9 @@ from app.leveling.grounding import significant_words as _significant_words
 
 
 def test_identical_text_scores_1() -> None:
-    assert _grounding_score("The display shall support HDR.", "The display shall support HDR.") == 1.0
+    assert (
+        _grounding_score("The display shall support HDR.", "The display shall support HDR.") == 1.0
+    )
 
 
 def test_paraphrase_reusing_source_vocabulary_scores_highly() -> None:
@@ -49,7 +51,13 @@ def test_significant_words_matches_hebrew_text_not_just_ascii() -> None:
     # [a-z0-9]+ (ASCII-only), which silently returned an empty set for any
     # non-Latin script -- both this check and _grounding_score treat an
     # empty word set as "nothing to judge," making them inert on Hebrew.
-    assert _significant_words("המערכת תציג נתונים בזמן אמת") == {"המערכת", "תציג", "נתונים", "בזמן", "אמת"}
+    assert _significant_words("המערכת תציג נתונים בזמן אמת") == {
+        "המערכת",
+        "תציג",
+        "נתונים",
+        "בזמן",
+        "אמת",
+    }
 
 
 def test_grounding_score_is_not_trivially_1_for_unrelated_hebrew_text() -> None:

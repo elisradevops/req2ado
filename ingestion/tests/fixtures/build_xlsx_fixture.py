@@ -1,4 +1,5 @@
 """Run once to (re)generate sample.xlsx: `python build_xlsx_fixture.py`."""
+
 from pathlib import Path
 
 from openpyxl import Workbook

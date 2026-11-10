@@ -34,11 +34,14 @@ immediately before their own digits, or (for the single-letter cases) have
 no adjacent core to extend, so none of them qualify (verified directly
 against exactly these strings, all of which appear in this codebase's own
 real ingestion test fixtures)."""
+
 from __future__ import annotations
 
 import re
 
-_CUSTOMER_CODE_PATTERN = re.compile(r"\b(?:[A-Z][-_])?[A-Z]{2,8}(?:[-_][A-Z0-9]{1,8})*[-_]?\d{2,8}(?:#|\b)")
+_CUSTOMER_CODE_PATTERN = re.compile(
+    r"\b(?:[A-Z][-_])?[A-Z]{2,8}(?:[-_][A-Z0-9]{1,8})*[-_]?\d{2,8}(?:#|\b)"
+)
 
 
 def extract_customer_requirement_code(text: str) -> str | None:

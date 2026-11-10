@@ -1,17 +1,55 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Routes, Route, Link } from 'react-router-dom';
 import { NewJobWizard } from './NewJobWizard';
 import { ToastProvider } from '../components/ToastProvider';
 import * as jobsApi from '../api/jobs';
 import * as adoApi from '../api/ado';
+import * as kbApi from '../api/kb';
 import { useAuthStore } from '../store/authStore';
+import { useNewJobDraftStore } from '../store/newJobDraftStore';
 
 vi.mock('../api/jobs');
 vi.mock('../api/ado');
+vi.mock('../api/kb');
+
+// The SURVEY configure step shows a KB readiness strip; give it a healthy KB
+// by default so unrelated tests never hit the network or an undefined mock.
+beforeEach(() => {
+  useNewJobDraftStore.getState().reset();
+  vi.spyOn(kbApi, 'listIngestedDocuments').mockResolvedValue([]);
+  vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'valid', expiresInSeconds: 3600 });
+});
 
 describe('NewJobWizard Step 1', () => {
+  it('does not fade the first step in on load (the route enter already covers it)', () => {
+    render(
+      <ToastProvider>
+        <MemoryRouter>
+          <NewJobWizard />
+        </MemoryRouter>
+      </ToastProvider>,
+    );
+    expect(screen.getByTestId('wizard-step').className).not.toContain('fadeIn');
+  });
+
+  it('names the step in the page title and heading on load without taking focus', () => {
+    document.title = 'req2ado';
+    const { unmount } = render(
+      <ToastProvider>
+        <MemoryRouter>
+          <NewJobWizard />
+        </MemoryRouter>
+      </ToastProvider>,
+    );
+    expect(document.title).toBe('Step 1 of 3: Upload document - New Job');
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('New Job, step 1 of 3');
+    expect(document.activeElement).toBe(document.body);
+    unmount();
+    expect(document.title).toBe('req2ado');
+  });
+
   it('uploads a file and fills in the stat tiles in place, without leaving step 1', async () => {
     vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({
       blockCount: 42, sectionCount: 5, figureCount: 3, depth: 4, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
@@ -56,7 +94,8 @@ describe('NewJobWizard Step 1', () => {
     expect(screen.getByText('Figures')).toBeInTheDocument();
     expect(screen.getByText('Depth')).toBeInTheDocument();
     expect(screen.getByText('7')).toBeInTheDocument();
-    expect(screen.getByText('3')).toBeInTheDocument();
+    // the stepper's third circle also reads "3"; the stat tile value is the paragraph
+    expect(screen.getByText('3', { selector: 'p' })).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole('button', { name: /replace/i }));
     expect(screen.getByLabelText(/upload/i)).toBeInTheDocument();
@@ -140,8 +179,7 @@ describe('NewJobWizard Step 1', () => {
       blockCount: 20, sectionCount: 3, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
     } as any);
     vi.spyOn(jobsApi, 'submitJob').mockResolvedValue({ jobId: 'job-99' });
-    vi.spyOn(jobsApi, 'listModels').mockResolvedValue(['qwen2.5:1.5b']);
-    vi.spyOn(jobsApi, 'previewExposition').mockResolvedValue({ synopsis: 'A synopsis.', caveat: null });
+    vi.spyOn(jobsApi, 'listModels').mockResolvedValue({ models: ['qwen2.5:1.5b'], recommended: null, details: [] });
     vi.spyOn(adoApi, 'getProjects').mockResolvedValue([{ id: '1', name: 'Project' }]);
     vi.spyOn(adoApi, 'getAreaPaths').mockResolvedValue({ path: 'Project', children: [] });
     vi.spyOn(adoApi, 'getIterationPaths').mockResolvedValue({ path: 'Project', children: [] });
@@ -161,7 +199,8 @@ describe('NewJobWizard Step 1', () => {
     // B phase B14) -- the stat tiles fill in on the SAME screen, and moving
     // to step 2 is now an explicit click.
     await userEvent.click(screen.getByRole('button', { name: /configure/i }));
-    await userEvent.click(screen.getByText(/survey/i));
+    // exact text: the stepper's "SURVEY only" chip also matches /survey/i
+    await userEvent.click(screen.getByText('SURVEY'));
     // Team Project is a Radix combobox+listbox now -- open then click the
     // option, same reasoning as ProjectPicker.test.tsx. Area path is still
     // a datalist-backed text input, so typing into it is correct.
@@ -385,6 +424,17 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
     await userEvent.click(screen.getByRole('radio', { name: /survey/i }));
   }
 
+  it('SURVEY configure step shows the knowledge-base readiness strip; BASELINE does not', async () => {
+    vi.spyOn(kbApi, 'listIngestedDocuments').mockResolvedValue([
+      { id: 'a', userId: 'u', driveItemId: 'a', name: 'a.pdf', sizeBytes: 1, mimeType: null, docType: null, retrievalMode: null, ingestedAt: '2026-11-02T00:00:00Z', chunkCount: 32 },
+    ]);
+    await uploadAndConfigureAsSurvey();
+    expect(await screen.findByText('1 file · 32 chunks')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('radio', { name: /baseline/i }));
+    expect(screen.queryByText('1 file · 32 chunks')).toBeNull();
+  });
+
   it('BASELINE never shows step 3 -- Start job submits directly from step 2', async () => {
     vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({
       blockCount: 1, sectionCount: 1, figureCount: 0, depth: 1, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
@@ -410,79 +460,384 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
     expect(screen.queryByText(/does this look right/i)).not.toBeInTheDocument();
   });
 
-  it('SURVEY selection advances to step 3 and shows the generated synopsis', async () => {
-    vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({
-      blockCount: 1, sectionCount: 6, figureCount: 0, depth: 2, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
-    } as any);
-    vi.spyOn(jobsApi, 'listModels').mockResolvedValue([]);
-    vi.spyOn(jobsApi, 'previewExposition').mockResolvedValue({ synopsis: 'About a backplane.', caveat: null });
-    await uploadAndConfigureAsSurvey();
-    // Continue is gated the same way BASELINE's direct Start-job submit
-    // always was (an area path is still required before advancing) --
-    // matches the other scenarios in this block.
-    await userEvent.type(screen.getByLabelText(/area path/i), 'Project\\Area1');
+  describe('keeps the draft when the user leaves for another page and comes back', () => {
+    const PREVIEW = { blockCount: 3, sectionCount: 1, figureCount: 0, depth: 1, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [] } as any;
+    function renderWithAwayRoute() {
+      return render(
+        <ToastProvider>
+          <MemoryRouter initialEntries={['/jobs/new']}>
+            <Routes>
+              <Route path="/jobs/new" element={<><NewJobWizard /><Link to="/away">go away</Link></>} />
+              <Route path="/away" element={<Link to="/jobs/new">come back</Link>} />
+            </Routes>
+          </MemoryRouter>
+        </ToastProvider>,
+      );
+    }
+    const goAwayAndBack = async () => {
+      await userEvent.click(screen.getByRole('link', { name: 'go away' }));
+      await userEvent.click(screen.getByRole('link', { name: 'come back' }));
+    };
 
-    await userEvent.click(screen.getByRole('button', { name: /continue/i }));
+    it('returns to the same step with the same mode, typed area path and parsed file, without parsing again', async () => {
+      const previewJob = vi.spyOn(jobsApi, 'previewJob').mockResolvedValue(PREVIEW);
+      renderWithAwayRoute();
+      await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'req.docx'));
+      await waitFor(() => expect(screen.getByRole('button', { name: /configure/i })).not.toBeDisabled());
+      await userEvent.click(screen.getByRole('button', { name: /configure/i }));
+      await userEvent.click(screen.getByRole('radio', { name: /^SURVEY/ }));
 
-    await waitFor(() => expect(screen.getByText('About a backplane.')).toBeInTheDocument());
-    expect(screen.getByRole('button', { name: /looks right/i })).toBeInTheDocument();
+      await goAwayAndBack();
+
+      expect(screen.getByRole('radio', { name: /^SURVEY/ })).toBeChecked();
+      expect(screen.queryByLabelText(/upload/i)).not.toBeInTheDocument(); // still on the configure step, not back at the dropzone
+      expect(previewJob).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the area path the user typed (the project-change reset must not wipe a restored value)', async () => {
+      vi.spyOn(jobsApi, 'previewJob').mockResolvedValue(PREVIEW);
+      renderWithAwayRoute();
+      await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'req.docx'));
+      await waitFor(() => expect(screen.getByRole('button', { name: /configure/i })).not.toBeDisabled());
+      await userEvent.click(screen.getByRole('button', { name: /configure/i }));
+      await userEvent.type(screen.getByLabelText(/area path/i), 'Project\\Area1');
+
+      await goAwayAndBack();
+
+      expect(screen.getByLabelText(/area path/i)).toHaveValue('Project\\Area1');
+    });
+
+    it('starts fresh after a job was started, so the next visit is not a stale draft', async () => {
+      vi.spyOn(jobsApi, 'previewJob').mockResolvedValue(PREVIEW);
+      vi.spyOn(jobsApi, 'submitJob').mockResolvedValue({ jobId: 'job-1' });
+      renderWithAwayRoute();
+      await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'req.docx'));
+      await waitFor(() => expect(screen.getByRole('button', { name: /configure/i })).not.toBeDisabled());
+      await userEvent.click(screen.getByRole('button', { name: /configure/i }));
+      await userEvent.type(screen.getByLabelText(/area path/i), 'Project\\Area1');
+      await userEvent.click(screen.getByRole('button', { name: /start job/i }));
+      await waitFor(() => expect(jobsApi.submitJob).toHaveBeenCalled());
+
+      await waitFor(() => expect(useNewJobDraftStore.getState().draft.file).toBeNull());
+      expect(useNewJobDraftStore.getState().draft.step).toBe(1);
+    });
+
+    it('falls back to Default when the restored model is no longer offered', async () => {
+      useNewJobDraftStore.getState().patch({ mode: 'survey', model: 'gone-model' });
+      vi.spyOn(jobsApi, 'listModels').mockResolvedValue({ models: ['still-here'], recommended: null, details: [] });
+      renderWithAwayRoute();
+      await waitFor(() => expect(jobsApi.listModels).toHaveBeenCalled());
+      await waitFor(() => expect(useNewJobDraftStore.getState().draft.model).toBe(''));
+    });
+
+    it('keeps a restored model that is still offered', async () => {
+      useNewJobDraftStore.getState().patch({ mode: 'survey', model: 'still-here' });
+      vi.spyOn(jobsApi, 'listModels').mockResolvedValue({ models: ['still-here'], recommended: null, details: [] });
+      renderWithAwayRoute();
+      await waitFor(() => expect(jobsApi.listModels).toHaveBeenCalled());
+      await act(async () => {}); // let the listing resolve and its state updates apply
+      expect(useNewJobDraftStore.getState().draft.model).toBe('still-here');
+    });
+
+    it('drops the file and the parse result when the user replaces the file', async () => {
+      vi.spyOn(jobsApi, 'previewJob').mockResolvedValue(PREVIEW);
+      renderWithAwayRoute();
+      await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'req.docx'));
+      await waitFor(() => expect(screen.getByRole('button', { name: /configure/i })).not.toBeDisabled());
+      await userEvent.click(screen.getByRole('button', { name: /replace/i }));
+
+      expect(useNewJobDraftStore.getState().draft.file).toBeNull();
+      expect(useNewJobDraftStore.getState().draft.preview).toBeNull();
+    });
+
+    it('does not restore a parse that was still running when the user left (its result can no longer arrive)', async () => {
+      vi.spyOn(jobsApi, 'previewJob').mockReturnValue(new Promise(() => {}));
+      renderWithAwayRoute();
+      await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'req.docx'));
+
+      await goAwayAndBack();
+
+      expect(screen.getByLabelText(/upload/i)).toBeInTheDocument(); // back at the dropzone, not stuck on "parsing"
+      expect(screen.queryByText(/parsing/i)).not.toBeInTheDocument();
+    });
   });
 
-  it('"Looks right -- start job" submits with the generated documentOverview', async () => {
-    vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({
-      blockCount: 1, sectionCount: 6, figureCount: 0, depth: 2, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
-    } as any);
-    vi.spyOn(jobsApi, 'listModels').mockResolvedValue([]);
-    vi.spyOn(jobsApi, 'previewExposition').mockResolvedValue({ synopsis: 'About a backplane.', caveat: null });
-    vi.spyOn(jobsApi, 'submitJob').mockResolvedValue({ jobId: 'job-1' });
+  // Step 3 shows the overview the preview already returned: made from the parsed text and structure, so it is there at once and nothing
+  // is studied by a model while the user waits.
+  const OVERVIEW = {
+    synopsis: 'Purpose, quoted from §1.1 Scope: “About a backplane.” All of the above is taken from the document’s text and structure; no AI was used.',
+    caveat: null,
+    lines: ['Purpose, quoted from §1.1 Scope: “About a backplane.”', 'Unresolved values: TBD ×2 (3 Power).', 'All of the above is taken from the document’s text and structure; no AI was used.'],
+    structureHint: 'How this document is built (context only): 6 sections.',
+    profile: {},
+  };
+  describe('the knowledge-base statement on step 3', () => {
+    it('says whether the run will be grounded, before the user starts a SURVEY job', async () => {
+      vi.spyOn(jobsApi, 'previewSummary').mockResolvedValue(null);
+      await openStep3({ ...OVERVIEW, profile: {} });
+      await waitFor(() => expect(screen.getByText(/knowledge base is empty/i)).toBeInTheDocument());
+    });
+  });
+
+  describe('the optional AI summary', () => {
+    const withInput = { ...OVERVIEW, profile: { summaryInput: 'Sections: 1 Scope' } };
+
+    it('shows the summary, labelled as written by a model from the headings and opening text, once it is ready, without blocking Start', async () => {
+      let resolve!: (value: string | null) => void;
+      vi.spyOn(jobsApi, 'previewSummary').mockReturnValue(new Promise((r) => { resolve = r; }));
+      await openStep3(withInput);
+
+      expect(screen.getByRole('button', { name: /looks right/i })).not.toBeDisabled(); // not waiting on it
+      expect(screen.getByRole('status')).toHaveTextContent(/writing an ai summary/i);
+      resolve('A backplane ICD covering power and thermal limits.');
+
+      await waitFor(() => expect(screen.getByText('A backplane ICD covering power and thermal limits.')).toBeInTheDocument());
+      expect(screen.getByText(/ai summary/i)).toBeInTheDocument();
+      expect(screen.getByText(/check it against the file/i)).toBeInTheDocument();
+      expect(screen.queryByRole('status')).not.toBeInTheDocument();
+      expect(jobsApi.previewSummary).toHaveBeenCalledWith({ summaryInput: 'Sections: 1 Scope', model: undefined }, expect.any(AbortSignal));
+    });
+
+    it('takes the waiting note away when there is no summary and says so in one line, instead of just vanishing', async () => {
+      vi.spyOn(jobsApi, 'previewSummary').mockResolvedValue(null);
+      await openStep3(withInput);
+      await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument());
+      expect(screen.getByText('No AI summary this time. You can continue.')).toBeInTheDocument();
+      expect(screen.queryByText(/written by a model/i)).not.toBeInTheDocument();
+      expect(screen.getByText(/About a backplane/)).toBeInTheDocument();
+    });
+
+    it('says how long the wait can be and what starting now means, while it waits', async () => {
+      vi.spyOn(jobsApi, 'previewSummary').mockReturnValue(new Promise(() => {}));
+      await openStep3(withInput);
+      expect(screen.getByRole('status')).toHaveTextContent(/up to about 90 seconds/i);
+      expect(screen.getByRole('status')).toHaveTextContent(/start now.*without/i);
+    });
+
+    it('asks for no summary when the preview carries no input for one', async () => {
+      const spy = vi.spyOn(jobsApi, 'previewSummary');
+      await openStep3();
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('cancels the request when the user leaves step 3', async () => {
+      let signal: AbortSignal | undefined;
+      vi.spyOn(jobsApi, 'previewSummary').mockImplementation((_params, s) => { signal = s; return new Promise(() => {}); });
+      await openStep3(withInput);
+      await userEvent.click(screen.getByRole('button', { name: /back to configure/i }));
+      expect(signal?.aborted).toBe(true);
+    });
+
+    it('gives up after 90 seconds and takes the waiting note away, instead of leaving it on screen for ever', async () => {
+      // like the real client, a cancelled request resolves null
+      vi.spyOn(jobsApi, 'previewSummary').mockImplementation((_params, signal) => new Promise((resolve) => signal?.addEventListener('abort', () => resolve(null))));
+      // the fake clock must exist before the wizard sets its give-up timer; it also runs in real time so the page stays usable
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        await openStep3(withInput);
+        expect(screen.getByRole('status')).toBeInTheDocument();
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(91_000);
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+      await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument());
+      expect(screen.getByText('No AI summary this time. You can continue.')).toBeInTheDocument();
+    });
+
+    it('offers to write the summary again once it is ready, and asks the model a second time', async () => {
+      const spy = vi.spyOn(jobsApi, 'previewSummary').mockResolvedValueOnce('First wording.').mockResolvedValueOnce('Second wording.');
+      await openStep3(withInput);
+      await waitFor(() => expect(screen.getByText('First wording.')).toBeInTheDocument());
+
+      await userEvent.click(screen.getByRole('button', { name: /write it again/i }));
+
+      await waitFor(() => expect(screen.getByText('Second wording.')).toBeInTheDocument());
+      expect(screen.queryByText('First wording.')).not.toBeInTheDocument();
+      expect(spy).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps the button on screen and focusable but inert while a summary is being written, so focus is not lost', async () => {
+      vi.spyOn(jobsApi, 'previewSummary').mockReturnValue(new Promise(() => {}));
+      await openStep3(withInput);
+      const button = screen.getByRole('button', { name: /write it again/i });
+      expect(button).toHaveAttribute('aria-disabled', 'true');
+      await userEvent.click(button);
+      expect(jobsApi.previewSummary).toHaveBeenCalledTimes(1); // pressing it while writing asks nothing new
+    });
+
+    it('offers it after a failed attempt', async () => {
+      vi.spyOn(jobsApi, 'previewSummary').mockResolvedValue(null);
+      await openStep3(withInput);
+      await waitFor(() => expect(screen.getByRole('button', { name: /write it again/i })).toBeInTheDocument());
+    });
+
+    it('submits a ready summary with the job, so the job page can show it; nothing when there is none', async () => {
+      vi.spyOn(jobsApi, 'previewSummary').mockResolvedValue('A backplane ICD covering power and thermal limits.');
+      vi.spyOn(jobsApi, 'submitJob').mockResolvedValue({ jobId: 'job-1' });
+      await openStep3(withInput);
+      await waitFor(() => expect(screen.getByText(/covering power and thermal/)).toBeInTheDocument());
+      await userEvent.click(screen.getByRole('button', { name: /looks right/i }));
+      expect(jobsApi.submitJob).toHaveBeenCalledWith(
+        expect.objectContaining({ documentOverview: expect.objectContaining({ aiSummary: 'A backplane ICD covering power and thermal limits.' }) }),
+      );
+    });
+
+    it('starts the job without a summary when it is not ready yet, and never waits for it', async () => {
+      vi.spyOn(jobsApi, 'previewSummary').mockReturnValue(new Promise(() => {}));
+      vi.spyOn(jobsApi, 'submitJob').mockResolvedValue({ jobId: 'job-1' });
+      await openStep3(withInput);
+      await userEvent.click(screen.getByRole('button', { name: /looks right/i }));
+      const sent = (jobsApi.submitJob as any).mock.calls[0][0].documentOverview;
+      expect(sent).not.toHaveProperty('aiSummary');
+    });
+  });
+
+  const previewWith = (overview: unknown) =>
+    ({ blockCount: 1, sectionCount: 6, figureCount: 0, depth: 2, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [], ...(overview === null ? {} : { overview }) }) as any;
+
+  async function openStep3(overview: unknown = OVERVIEW) {
+    vi.spyOn(jobsApi, 'previewJob').mockResolvedValue(previewWith(overview));
+    vi.spyOn(jobsApi, 'listModels').mockResolvedValue({ models: [], recommended: null, details: [] });
     await uploadAndConfigureAsSurvey();
     await userEvent.type(screen.getByLabelText(/area path/i), 'Project\\Area1');
     await userEvent.click(screen.getByRole('button', { name: /continue/i }));
-    await waitFor(() => expect(screen.getByText('About a backplane.')).toBeInTheDocument());
+  }
+
+  it('SURVEY selection advances to step 3 and shows the overview lines at once, with no study of the document', async () => {
+    await openStep3();
+
+    expect(screen.getByText(/About a backplane/)).toBeInTheDocument();
+    expect(screen.getByText(/Unresolved values: TBD ×2/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /looks right/i })).not.toBeDisabled();
+    expect(screen.queryByRole('status')).not.toBeInTheDocument(); // no spinner: nothing is being waited for
+    expect((jobsApi as Record<string, unknown>).previewExposition).toBeUndefined();
+  });
+
+  it('says that what is shown was read from the file, not that an AI understood it, and labels the list as such', async () => {
+    await openStep3();
+    expect(screen.getByText(/check what was read from the file before it runs/i)).toBeInTheDocument();
+    expect(screen.queryByText(/confirm the ai understood/i)).not.toBeInTheDocument();
+    expect(screen.getByText('From the file’s text and structure')).toBeInTheDocument();
+  });
+
+  it('shows the first 8 overview lines and the rest on request, so Start stays near, and lines that repeat do not collide', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const lines = [...Array.from({ length: 11 }, (_v, i) => `Line ${i + 1}.`), 'Line 1.'];
+    await openStep3({ ...OVERVIEW, lines });
+    expect(screen.getAllByText(/^Line \d+\.$/)).toHaveLength(8);
+    await userEvent.click(screen.getByRole('button', { name: /show all 12 lines/i }));
+    expect(screen.getAllByText(/^Line \d+\.$/)).toHaveLength(12);
+    expect(error.mock.calls.filter((call) => String(call[0]).includes('same key'))).toEqual([]);
+    error.mockRestore();
+  });
+
+  it('says on step 3, beside the Start button, that starting writes nothing', async () => {
+    await openStep3();
+    expect(screen.getByRole('button', { name: /looks right/i }).parentElement).toHaveTextContent(/starting a job writes nothing/i);
+  });
+
+  it('shows the same three steps in BASELINE and SURVEY, with step 3 tagged SURVEY only in BASELINE', async () => {
+    vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({
+      blockCount: 1, sectionCount: 1, figureCount: 0, depth: 1, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
+    } as any);
+    render(
+      <ToastProvider>
+        <MemoryRouter>
+          <NewJobWizard />
+        </MemoryRouter>
+      </ToastProvider>,
+    );
+    await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'req.docx'));
+    await waitFor(() => expect(screen.getByRole('button', { name: /configure/i })).not.toBeDisabled());
+    const states = () => Array.from(document.querySelectorAll('ol [data-state]')).map((node) => node.getAttribute('data-state'));
+    expect(states()).toEqual(['awaiting', 'pending', 'pending']);
+    expect(screen.getByText('SURVEY only')).toBeInTheDocument();
+    // the chip of a step not yet reached is muted, not the accent chip
+    expect(screen.getByText('SURVEY only')).toHaveClass('text-ink-3');
+
+    await userEvent.click(screen.getByRole('button', { name: /configure/i }));
+    expect(states()).toEqual(['done', 'awaiting', 'pending']);
+    expect(screen.getByText('SURVEY only')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('radio', { name: /survey/i }));
+    expect(states()).toEqual(['done', 'awaiting', 'pending']);
+    expect(screen.queryByText('SURVEY only')).toBeNull();
+  });
+
+  it('keeps the Start button in view: the action bar is sticky', async () => {
+    await openStep3();
+    expect(screen.getByRole('button', { name: /looks right/i }).parentElement?.className).toMatch(/sticky/);
+  });
+
+  it('shows the structure caveat as a warning', async () => {
+    await openStep3({ ...OVERVIEW, caveat: 'The heading structure is unusually deep.' });
+    expect(screen.getByText(/unusually deep/)).toBeInTheDocument();
+  });
+
+  it('"Looks right -- start job" submits the overview and the structure hint for the AI stage (without the bulky profile)', async () => {
+    vi.spyOn(jobsApi, 'submitJob').mockResolvedValue({ jobId: 'job-1' });
+    await openStep3();
 
     await userEvent.click(screen.getByRole('button', { name: /looks right/i }));
 
     expect(jobsApi.submitJob).toHaveBeenCalledWith(
-      expect.objectContaining({ mode: 'survey', documentOverview: { synopsis: 'About a backplane.', caveat: null } }),
+      expect.objectContaining({ mode: 'survey', documentOverview: { synopsis: OVERVIEW.synopsis, caveat: null, lines: OVERVIEW.lines, structureHint: OVERVIEW.structureHint } }),
     );
   });
 
-  it('"Back to configure" returns to step 2 without losing the area path', async () => {
-    vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({
-      blockCount: 1, sectionCount: 6, figureCount: 0, depth: 2, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
-    } as any);
-    vi.spyOn(jobsApi, 'listModels').mockResolvedValue([]);
-    vi.spyOn(jobsApi, 'previewExposition').mockResolvedValue({ synopsis: 'About a backplane.', caveat: null });
+  it('fades the step in when it changes, and keeps the same container so focus is not dropped', async () => {
+    vi.spyOn(jobsApi, 'previewJob').mockResolvedValue(previewWith(OVERVIEW));
+    vi.spyOn(jobsApi, 'listModels').mockResolvedValue({ models: [], recommended: null, details: [] });
     await uploadAndConfigureAsSurvey();
+    const step2Root = screen.getByTestId('wizard-step');
+
     await userEvent.type(screen.getByLabelText(/area path/i), 'Project\\Area1');
     await userEvent.click(screen.getByRole('button', { name: /continue/i }));
-    await waitFor(() => expect(screen.getByText('About a backplane.')).toBeInTheDocument());
+
+    const step3Root = screen.getByTestId('wizard-step');
+    expect(step3Root).toBe(step2Root);
+    expect(step3Root.className).toContain('fadeIn');
+  });
+
+  it('moves focus to the new step heading, which reads the step, and updates the page title', async () => {
+    document.title = 'req2ado';
+    await openStep3();
+    const heading = screen.getByRole('heading', { level: 1 });
+    expect(heading).toHaveTextContent('New Job, step 3 of 3');
+    expect(heading).toHaveFocus();
+    expect(document.title).toBe('Step 3 of 3: Confirm understanding - New Job');
+
+    await userEvent.click(screen.getByRole('button', { name: /back to configure/i }));
+    expect(screen.getByRole('heading', { level: 1 })).toHaveFocus();
+    expect(document.title).toBe('Step 2 of 3: Configure & review - New Job');
+  });
+
+  it('does not replay the fade when the person goes back to a step they have already seen', async () => {
+    await openStep3();
+    const root = screen.getByTestId('wizard-step');
+    const remove = vi.spyOn(root.classList, 'remove');
+
+    await userEvent.click(screen.getByRole('button', { name: /back to configure/i }));
+
+    expect(screen.getByTestId('wizard-step')).toBe(root);
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('"Back to configure" returns to step 2 without losing the area path', async () => {
+    await openStep3();
 
     await userEvent.click(screen.getByRole('button', { name: /back to configure/i }));
 
     expect(screen.getByLabelText(/area path/i)).toHaveValue('Project\\Area1');
   });
 
-  it('re-fetches the exposition for a replaced file instead of submitting the previous file\'s stale synopsis (regression)', async () => {
-    // Reachable sequence: reach step 3 with document A (synopsis generated,
-    // expositionStatus becomes 'ready') -> Back to configure -> Back ->
-    // Replace -> upload document B -> Configure -> Survey -> Continue.
-    // Before the fix, handleReplace() left documentOverview/expositionStatus
-    // untouched, so step 3's effect guard (`expositionStatus !== 'idle'`) saw
-    // 'ready' from document A and never re-called previewExposition for
-    // document B -- document A's stale synopsis rendered and got submitted
-    // with document B's real job.
+  it('a replaced file shows its own overview, never the previous file\'s (regression)', async () => {
     vi.spyOn(jobsApi, 'previewJob')
-      .mockResolvedValueOnce({
-        blockCount: 10, sectionCount: 2, figureCount: 0, depth: 1, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
-      } as any)
-      .mockResolvedValueOnce({
-        blockCount: 20, sectionCount: 4, figureCount: 0, depth: 1, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
-      } as any);
-    vi.spyOn(jobsApi, 'listModels').mockResolvedValue([]);
-    vi.spyOn(jobsApi, 'previewExposition')
-      .mockResolvedValueOnce({ synopsis: 'About document A.', caveat: null })
-      .mockResolvedValueOnce({ synopsis: 'About document B.', caveat: null });
+      .mockResolvedValueOnce(previewWith({ ...OVERVIEW, lines: ['Purpose, quoted from §1 Scope: “About document A.”', OVERVIEW.lines[2]] }))
+      .mockResolvedValueOnce(previewWith({ ...OVERVIEW, lines: ['Purpose, quoted from §1 Scope: “About document B.”', OVERVIEW.lines[2]] }));
+    vi.spyOn(jobsApi, 'listModels').mockResolvedValue({ models: [], recommended: null, details: [] });
     vi.spyOn(jobsApi, 'submitJob').mockResolvedValue({ jobId: 'job-1' });
 
     render(
@@ -493,17 +848,14 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
       </ToastProvider>,
     );
 
-    // Upload document A, configure as SURVEY, advance to step 3.
     await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'doc-a.docx'));
     await waitFor(() => expect(screen.getByRole('button', { name: /configure/i })).not.toBeDisabled());
     await userEvent.click(screen.getByRole('button', { name: /configure/i }));
     await userEvent.click(screen.getByRole('radio', { name: /survey/i }));
     await userEvent.type(screen.getByLabelText(/area path/i), 'Project\\Area1');
     await userEvent.click(screen.getByRole('button', { name: /continue/i }));
-    await waitFor(() => expect(screen.getByText('About document A.')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/About document A/)).toBeInTheDocument());
 
-    // Navigate back to step 1 (Back to configure -> Back), replace the
-    // file, and upload document B.
     await userEvent.click(screen.getByRole('button', { name: /back to configure/i }));
     await userEvent.click(screen.getByRole('button', { name: 'Back' }));
     await userEvent.click(screen.getByRole('button', { name: /replace/i }));
@@ -512,52 +864,20 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
     await userEvent.click(screen.getByRole('button', { name: /configure/i }));
     await userEvent.click(screen.getByRole('button', { name: /continue/i }));
 
-    await waitFor(() => expect(screen.getByText('About document B.')).toBeInTheDocument());
-    expect(screen.queryByText('About document A.')).not.toBeInTheDocument();
-    expect(jobsApi.previewExposition).toHaveBeenCalledTimes(2);
-
+    await waitFor(() => expect(screen.getByText(/About document B/)).toBeInTheDocument());
+    expect(screen.queryByText(/About document A/)).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: /looks right/i }));
     expect(jobsApi.submitJob).toHaveBeenCalledWith(
-      expect.objectContaining({ documentOverview: { synopsis: 'About document B.', caveat: null } }),
+      expect.objectContaining({ documentOverview: expect.objectContaining({ lines: [expect.stringContaining('About document B'), OVERVIEW.lines[2]] }) }),
     );
   });
 
-  it('exposition failure still allows the job to be created', async () => {
-    vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({
-      blockCount: 1, sectionCount: 6, figureCount: 0, depth: 2, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
-    } as any);
-    vi.spyOn(jobsApi, 'listModels').mockResolvedValue([]);
-    vi.spyOn(jobsApi, 'previewExposition').mockRejectedValue(new Error('LLM unreachable'));
+  it('a server that returns no overview still lets the job be created, and says there is none', async () => {
     vi.spyOn(jobsApi, 'submitJob').mockResolvedValue({ jobId: 'job-1' });
-    await uploadAndConfigureAsSurvey();
-    await userEvent.type(screen.getByLabelText(/area path/i), 'Project\\Area1');
-    await userEvent.click(screen.getByRole('button', { name: /continue/i }));
+    await openStep3(null); // no overview in the preview
 
-    await waitFor(() => expect(screen.getByRole('button', { name: /start job|looks right/i })).not.toBeDisabled());
+    expect(screen.getByText(/no overview available/i)).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: /start job|looks right/i }));
-
-    expect(jobsApi.submitJob).toHaveBeenCalledWith(expect.objectContaining({ documentOverview: null }));
-  });
-
-  it('renders the fail-open error copy (not an empty card) when previewExposition resolves to null', async () => {
-    vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({
-      blockCount: 1, sectionCount: 6, figureCount: 0, depth: 2, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
-    } as any);
-    vi.spyOn(jobsApi, 'listModels').mockResolvedValue([]);
-    // The server's own documented fail-open path: DocumentOverviewService.generate
-    // returning null, which NestJS serializes to an empty body -- axios resolves
-    // rather than rejects for this case, so previewExposition resolves to null here.
-    vi.spyOn(jobsApi, 'previewExposition').mockResolvedValue(null);
-    vi.spyOn(jobsApi, 'submitJob').mockResolvedValue({ jobId: 'job-1' });
-    await uploadAndConfigureAsSurvey();
-    await userEvent.type(screen.getByLabelText(/area path/i), 'Project\\Area1');
-    await userEvent.click(screen.getByRole('button', { name: /continue/i }));
-
-    await waitFor(() => expect(screen.getByText(/couldn't generate a summary/i)).toBeInTheDocument());
-
-    const startButton = screen.getByRole('button', { name: /start job|looks right/i });
-    await waitFor(() => expect(startButton).not.toBeDisabled());
-    await userEvent.click(startButton);
 
     expect(jobsApi.submitJob).toHaveBeenCalledWith(expect.objectContaining({ documentOverview: null }));
   });

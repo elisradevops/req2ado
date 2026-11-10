@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+const withLeadingSlash = (route: string): string => (route.startsWith('/') ? route : `/${route}`);
+
 /**
  * Validated shape of process.env for the orchestrator. Fields mirror
  * `config.yaml` / `.env.template` at the repo root — see docs/architecture.md
@@ -57,8 +59,8 @@ export const configSchema = z.object({
   // it; set to 1 to skip the retry overhead when the target vision model is
   // known to require it.
   LLM_VISION_TEMPERATURE: z.coerce.number().optional(),
-  // maxTokens for DocumentOverviewService's pre-job document-summary call
-  // (NewJobWizard step 3, "Confirm understanding"). Default raised from the
+  // maxTokens for the optional AI summary of a document (NewJobWizard step 3,
+  // "Confirm understanding"; shown only when it is ready in time). Default raised from the
   // original 300 after live confirmation (finishReason=length in production
   // logs) that a reasoning-capable model can exhaust a small budget on
   // hidden chain-of-thought before emitting any real content -- this
@@ -102,10 +104,33 @@ export const configSchema = z.object({
   // orchestrator's IngestionHttpClient LONG_RUNNING_AGENT (1h), so the
   // innermost hop always fails first with real margin to spare.
   LLM_REQUEST_TIMEOUT_MS: z.coerce.number().default(600_000),
+  // The whole-document primer (the first long step of a SURVEY job) may take this long in total (upload, processing, reading)
+  // before the job carries on without it. 0 = no limit (the behaviour before this existed). Kept well under
+  // LLM_REQUEST_TIMEOUT_MS and below the ~300 s cut production puts on an upstream call.
+  PRIMER_BUDGET_SECONDS: z.coerce.number().min(0).default(180),
+  // How often the step publishes a progress line with the elapsed time while a part of it runs.
+  PRIMER_HEARTBEAT_SECONDS: z.coerce.number().min(1).default(10),
+  // After a primer timeout the same document and model skip the step for this long, so a re-run does not wait the whole budget
+  // again. 0 = never remembered.
+  PRIMER_SKIP_MEMORY_SECONDS: z.coerce.number().min(0).default(3600),
   EMBED_TRANSPORT: z.enum(['ollama', 'openai']).default('ollama'),
   EMBED_BASE_URL: z.string().optional(),
   EMBED_MODEL: z.string().min(1),
   EMBED_PATH: z.string().default('/api/embed'),
+  // Embedding request-size limits (modules/llm/embed-batching.ts). Unset: the limits come from the model-family table, then
+  // from what the upstream's rejections taught the client. Set only to pin a deployment whose limits differ from its family.
+  EMBED_MAX_INPUTS_PER_REQUEST: z.coerce.number().int().positive().optional(),
+  EMBED_MAX_TOKENS_PER_REQUEST: z.coerce.number().int().positive().optional(),
+  // Path of the OpenAI-style embeddings route behind Open WebUI when EMBED_TRANSPORT=openai. Open WebUI 0.8.x serves this
+  // legacy passthrough; from 0.9.0 it needs ENABLE_OPENAI_API_PASSTHROUGH. The client falls back to the documented routes
+  // when this one is not served.
+  EMBED_OPENAI_PATH: z.string().default('/openai/embeddings').transform((v) => withLeadingSlash(v.trim())),
+  // Routes tried, in order, after EMBED_OPENAI_PATH when Open WebUI refuses it (passthrough disabled, not found, or an HTML
+  // catch-all). Comma separated; an empty string disables the fallback.
+  EMBED_OPENAI_FALLBACK_ROUTES: z
+    .string()
+    .default('/api/v1/embeddings,/api/embeddings')
+    .transform((v) => [...new Set(v.split(',').map((r) => r.trim()).filter((r) => r.length > 0).map(withLeadingSlash))]),
   // Same "raw Ollama vs Open WebUI proxy" path distinction EMBED_PATH
   // already exists for -- Open WebUI does not expose a bare /api/show at
   // all (405 Method Not Allowed, confirmed live), only /ollama/api/show
@@ -171,6 +196,10 @@ export const configSchema = z.object({
   // the same content get recreated as a duplicate later.
   JOB_RETENTION_CHECK_INTERVAL_MS: z.coerce.number().default(6 * 60 * 60_000),
   JOB_RETENTION_MAX_AGE_MS: z.coerce.number().default(2 * 24 * 60 * 60_000),
+  // diff_ready jobs older than this lose only their figure images
+  // (JobFigureFile bytes); the job row is kept. 30 days matches the
+  // result-cache lifetime in result-cache.ts.
+  JOB_FIGURE_RETENTION_MAX_AGE_MS: z.coerce.number().default(2_592_000_000),
   // How many BullMQ pipeline jobs pipeline-worker.main.ts processes
   // concurrently -- previously unset (bullmq's own implicit default is 1),
   // a real horizontal-scaling throughput blocker even before considering

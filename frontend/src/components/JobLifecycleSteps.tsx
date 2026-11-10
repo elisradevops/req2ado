@@ -92,7 +92,8 @@ function reachedKeyFor(
       latestNarrationPhase === 'infer_trace_links'
     ) {
       key = 'score';
-    } else if (stage === 'parse') {
+    } else if (stage === 'parse' || (latestNarrationPhase === 'primer' && stage === null)) {
+      // The whole-document overview runs inside the Parse step, and its narration can arrive before the stage event does.
       key = 'parse';
     } else {
       key = 'analyze'; // infer_hierarchy_start / generate_requirements_start / _done
@@ -239,19 +240,13 @@ export function JobLifecycleSteps({
           the later steps with only a bare (easy-to-miss) scrollbar as the
           only signal anything was cut off.
 
-          py-0.5 (2px top+bottom, so 4px combined -- matches
-          `@keyframes pulse-ring`'s exact peak box-shadow spread in
-          index.css) is a deliberate fix, not stray spacing. Per the CSS
-          Overflow spec, a `visible` value paired with a non-`visible`
-          value on the other axis resolves to the SAME type as that other
-          axis -- setting `overflow-x-auto` alone therefore forces
-          `overflow-y` to compute as `auto` too, in every compliant
-          browser, not just some engines; an explicit `overflow-y-visible`
-          would still be overridden the same way, so it isn't used here.
-          The pulse's glow was being clipped flat by that forced auto
-          scrollport; this padding gives the scrollport itself enough room
-          that the glow fits within its own bounds instead of relying on
-          bleeding past them. */}
+          py-0.5 (2px top+bottom) was added so the current step's pulsing ring
+          had room inside this scrollport: setting `overflow-x-auto` alone
+          forces `overflow-y` to compute as `auto` too (CSS Overflow spec),
+          which clipped the ring's glow flat. The ring was removed in P16
+          (DESIGN.md section 8.3), so nothing needs the room any more; the
+          padding is kept only so the stepper does not shift by 4px, and can
+          go with the next layout change. */}
       <div className="min-w-0 flex-1 overflow-x-auto py-0.5 [mask-image:linear-gradient(to_right,black_calc(100%-20px),transparent)]">
         <Stepper steps={stepDefs.map((s) => s.label)} states={states} subLabels={keys.map((key) => subLabelByKey?.[key])} />
       </div>

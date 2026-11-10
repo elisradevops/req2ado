@@ -14,6 +14,18 @@ _FIGURE_STORE_REQUEST_TIMEOUT_SECONDS = 30.0
 # comment for the full lifecycle/storage-budget reasoning).
 _MAX_LONG_EDGE_PX = 1800
 
+# ADO Server's default attachment limit is 4 MB; keep a margin under it so a
+# stored figure can always be attached. An image over budget is shrunk by
+# _DOWNSCALE_STEP until it fits, but never below _MIN_LONG_EDGE_PX (past that
+# a diagram is unreadable anyway) -- then it is stored as-is.
+_MAX_STORED_BYTES = 3_500_000
+_DOWNSCALE_STEP = 0.8
+_MIN_LONG_EDGE_PX = 800
+
+# Decompression-bomb guard: a header can claim a huge canvas that decodes to
+# gigabytes. Checked on the (lazy) header size before any pixel is decoded.
+_MAX_DECODE_PIXELS = 100_000_000
+
 
 def compress_figure_for_storage(image_bytes: bytes) -> tuple[bytes, str] | None:
     """Re-encodes a raster figure as a resized, optimized PNG for storage in
@@ -26,9 +38,13 @@ def compress_figure_for_storage(image_bytes: bytes) -> tuple[bytes, str] | None:
     support for, see emf_converter.py's own docstring, or any other format
     this can't decode). Storage is best-effort: a figure that can't be
     compressed simply doesn't get attachment capability, it never fails the
-    describe_figure call it's piggybacking on."""
+    describe_figure call it's piggybacking on. None always means failure (there
+    is no intentional-skip case) -- including an image over _MAX_DECODE_PIXELS,
+    refused before decoding; callers report it as a storage failure."""
     try:
         image = Image.open(io.BytesIO(image_bytes))
+        if image.width * image.height > _MAX_DECODE_PIXELS:
+            return None
         image.load()
     except Exception:
         return None
@@ -38,9 +54,20 @@ def compress_figure_for_storage(image_bytes: bytes) -> tuple[bytes, str] | None:
         image = image.resize(new_size, Image.LANCZOS)
     if image.mode not in ("RGB", "RGBA", "L", "P"):
         image = image.convert("RGB")
+    encoded = _encode_png(image)
+    while len(encoded) > _MAX_STORED_BYTES and max(image.size) > _MIN_LONG_EDGE_PX:
+        long_edge = max(image.size)
+        scale = max(_MIN_LONG_EDGE_PX, int(long_edge * _DOWNSCALE_STEP)) / long_edge
+        new_size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
+        image = image.resize(new_size, Image.LANCZOS)
+        encoded = _encode_png(image)
+    return encoded, "image/png"
+
+
+def _encode_png(image: Image.Image) -> bytes:
     buffer = io.BytesIO()
     image.save(buffer, format="PNG", optimize=True)
-    return buffer.getvalue(), "image/png"
+    return buffer.getvalue()
 
 
 class OrchestratorFigureFileClient:
@@ -59,10 +86,15 @@ class OrchestratorFigureFileClient:
         (main.py's _describe_figure_with_progress) is the one that decides
         this is best-effort and swallows the exception, same division of
         responsibility as every other Orchestrator*Client in this package."""
-        with httpx.Client(transport=self._transport, timeout=_FIGURE_STORE_REQUEST_TIMEOUT_SECONDS) as client:
+        with httpx.Client(
+            transport=self._transport, timeout=_FIGURE_STORE_REQUEST_TIMEOUT_SECONDS
+        ) as client:
             response = client.post(
                 f"{self._base_url}/jobs/{job_id}/figures/{figure_id}",
-                json={"bytes": base64.b64encode(image_bytes).decode("ascii"), "mimeType": mime_type},
+                json={
+                    "bytes": base64.b64encode(image_bytes).decode("ascii"),
+                    "mimeType": mime_type,
+                },
                 headers={"Authorization": f"Bearer {self._bearer_token}"},
             )
         response.raise_for_status()

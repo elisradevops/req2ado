@@ -44,6 +44,24 @@ describe('useChatSocket', () => {
     expect(toWsUrl('https://example.com')).toBe('wss://example.com/chat');
   });
 
+  it('resolves a relative apiBaseUrl (the same-origin proxy default) against the page and keeps its prefix', () => {
+    const secure = window.location.protocol === 'https:';
+    expect(toWsUrl('/api')).toBe(`${secure ? 'wss' : 'ws'}://${window.location.host}/api/chat`);
+  });
+
+  it('keeps the path of an absolute apiBaseUrl that has one, with or without a trailing slash', () => {
+    expect(toWsUrl('https://example.com/api')).toBe('wss://example.com/api/chat');
+    expect(toWsUrl('https://example.com/api/')).toBe('wss://example.com/api/chat');
+  });
+
+  it('reports a base url it cannot use as an error event instead of failing silently', async () => {
+    vi.mocked(loadRuntimeConfig).mockResolvedValue({ apiBaseUrl: 'http://' });
+    const onEvent = vi.fn();
+    renderHook(() => useChatSocket('job-1', 'n0', onEvent));
+    await waitFor(() => expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    expect(sockets).toHaveLength(0);
+  });
+
   it('does not synthesize an error event when the socket closes on unmount (intentional close)', async () => {
     const onEvent = vi.fn();
     const { unmount } = renderHook(() => useChatSocket('job-1', 'n0', onEvent));

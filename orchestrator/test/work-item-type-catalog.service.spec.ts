@@ -8,6 +8,7 @@ const TEST_CREDENTIAL = { orgUrl: 'https://ado.example', pat: 'pat-123' };
 // fresh fetch happened.
 function resetIconCache(): void {
   (WorkItemTypeCatalogService as unknown as { iconCache: Map<string, unknown> }).iconCache.clear();
+  (WorkItemTypeCatalogService as unknown as { lookupCache: Map<string, unknown> }).lookupCache?.clear();
 }
 
 describe('WorkItemTypeCatalogService.resolve', () => {
@@ -101,5 +102,73 @@ describe('WorkItemTypeCatalogService.resolve', () => {
     await new WorkItemTypeCatalogService(mcpClient as any).resolve('Project', TEST_CREDENTIAL);
 
     expect(mcpClient.getWorkItemIcon).toHaveBeenCalledTimes(1);
+  });
+});
+
+// GET /jobs/:id for a Diff-ready job made about five sequential ADO round trips on every call (measured 4-8 s), which delayed the
+// "Diff ready" screen. These lookups are project metadata: cached briefly per (project, credential), never shared across users.
+describe('WorkItemTypeCatalogService lookup cache', () => {
+  const LABELS = { Epic: 'Epic', Feature: 'Feature', Requirement: 'User Story' };
+  const make = (overrides: Record<string, jest.Mock> = {}) => {
+    resetIconCache();
+    const mcpClient = {
+      discoverWorkItemTypes: jest.fn().mockResolvedValue([]),
+      discoverWorkItemTypeCategories: jest.fn().mockResolvedValue(LABELS),
+      discoverFieldsDetailed: jest.fn().mockResolvedValue([{ referenceName: 'Microsoft.VSTS.CMMI.RequirementType', allowedValues: ['Functional'] }]),
+      ...overrides,
+    };
+    return { mcpClient, service: new WorkItemTypeCatalogService(mcpClient as any) };
+  };
+
+  it('answers a repeat lookup from the cache instead of asking ADO again', async () => {
+    const { mcpClient, service } = make();
+    await service.resolveCategoryLabels('Project', TEST_CREDENTIAL);
+    await service.resolveCategoryLabels('Project', TEST_CREDENTIAL);
+    await service.resolve('Project', TEST_CREDENTIAL);
+    await service.resolve('Project', TEST_CREDENTIAL);
+    expect(mcpClient.discoverWorkItemTypeCategories).toHaveBeenCalledTimes(1);
+    expect(mcpClient.discoverWorkItemTypes).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not ask for the categories a second time when resolving the classification field', async () => {
+    const { mcpClient, service } = make();
+    await service.resolveCategoryLabels('Project', TEST_CREDENTIAL);
+    const field = await service.resolveRequirementClassificationField('Project', TEST_CREDENTIAL);
+    expect(field).toEqual({ referenceName: 'Microsoft.VSTS.CMMI.RequirementType', allowedValues: ['Functional'] });
+    expect(mcpClient.discoverWorkItemTypeCategories).toHaveBeenCalledTimes(1);
+  });
+
+  it('shares one in-flight request between concurrent callers', async () => {
+    const { mcpClient, service } = make();
+    await Promise.all([service.resolveCategoryLabels('Project', TEST_CREDENTIAL), service.resolveRequirementClassificationField('Project', TEST_CREDENTIAL)]);
+    expect(mcpClient.discoverWorkItemTypeCategories).toHaveBeenCalledTimes(1);
+  });
+
+  it('never serves one user the answer fetched with another credential or for another project', async () => {
+    const { mcpClient, service } = make();
+    await service.resolveCategoryLabels('Project', TEST_CREDENTIAL);
+    await service.resolveCategoryLabels('Project', { ...TEST_CREDENTIAL, pat: 'someone-elses-pat' });
+    await service.resolveCategoryLabels('Project', { orgUrl: 'https://other.example', pat: TEST_CREDENTIAL.pat });
+    await service.resolveCategoryLabels('Other', TEST_CREDENTIAL);
+    expect(mcpClient.discoverWorkItemTypeCategories).toHaveBeenCalledTimes(4);
+  });
+
+  it('does not cache a failed lookup: the next call asks ADO again', async () => {
+    const failing = jest.fn().mockRejectedValueOnce(new Error('ADO down')).mockResolvedValue(LABELS);
+    const { mcpClient, service } = make({ discoverWorkItemTypeCategories: failing });
+    expect(await service.resolveCategoryLabels('Project', TEST_CREDENTIAL)).toEqual({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' });
+    expect(await service.resolveCategoryLabels('Project', TEST_CREDENTIAL)).toEqual(LABELS);
+    expect(mcpClient.discoverWorkItemTypeCategories).toHaveBeenCalledTimes(2);
+  });
+
+  it('asks ADO again once the cached answer is older than the cache lifetime', async () => {
+    const { mcpClient, service } = make();
+    const now = jest.spyOn(Date, 'now');
+    now.mockReturnValue(1_000_000);
+    await service.resolveCategoryLabels('Project', TEST_CREDENTIAL);
+    now.mockReturnValue(1_000_000 + 6 * 60 * 1000);
+    await service.resolveCategoryLabels('Project', TEST_CREDENTIAL);
+    now.mockRestore();
+    expect(mcpClient.discoverWorkItemTypeCategories).toHaveBeenCalledTimes(2);
   });
 });

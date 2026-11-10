@@ -15,6 +15,7 @@ import { InfoTip } from '../ui/Tooltip';
 import { DescriptionMarkdown, Markdown } from '../ui/Markdown';
 import { cn } from '../lib/cn';
 import { LABEL_MICRO } from '../utils/labelMicro';
+import { WEAK_CATEGORY_SCORE, weakestCategory } from '../utils/qualityCategories';
 
 interface Proposal {
   proposedTitle: string | null;
@@ -62,59 +63,50 @@ function predictedLine(data: RewriteComparison | null): string {
   return `Predicted score: ${data.before.score} → ${data.after.score} (${sign}${data.delta}${verdict})`;
 }
 
-// Fixed, non-editable prompt for the "Suggest a better title" chip -- title
-// distillation beyond the first-sentence rule (a shorter label, or a fully
-// custom title unrelated to the source text) can't be done
-// deterministically: two independent heuristic attempts, hand-verified
-// against the golden TV-Receiver/Remote-Control scenario, were rejected --
-// the oracle's own title choices are provably inconsistent under any
-// per-line textual signal (same shape input, different desired output).
-// Sent via the exact same send() path as a normal typed message (in-flight
-// state, typing indicator, proposal card), same as every other suggested
-// prompt below.
-const SUGGEST_TITLE_PROMPT = 'Suggest a more specific, concise title for this requirement based on its description.';
-
 // CR-9 (Take C, "Wizard UX Options" sheet) -- the empty state used to be a
 // centered icon graphic + a row of label-only chips. Replaced with a fake
-// opening Assistant turn ("I have read this requirement. Want me to:")
+// opening Assistant turn ("I have read this <item type>. Want me to:")
 // followed by starter rows in the transcript's own voice: each row states
 // the action AND its one-line effect, so the panel teaches what this chat
 // is for instead of just naming four ideas. "Suggest a better title" folds
 // in as a row here rather than a separate control -- it has no other home
 // now that the header button and the old chip row are both gone. Each row
 // reuses send()'s existing in-flight/typing-indicator path, same as before.
-const SUGGESTED_PROMPTS: { label: string; effect: string; prompt: string }[] = [
-  {
-    label: 'Make it testable',
-    effect: 'rewrite so it is independently verifiable, with clear acceptance criteria',
-    prompt: 'Rewrite this so it is independently testable, with clear acceptance criteria.',
-  },
-  {
-    label: 'Add the missing rationale',
-    effect: 'add a brief rationale explaining why this requirement exists',
-    prompt: 'Add a brief rationale explaining why this requirement exists.',
-  },
-  {
-    label: 'Tighten the wording',
-    effect: 'remove ambiguity and vague terms',
-    prompt: 'Tighten the wording -- remove ambiguity and vague terms.',
-  },
-  {
-    label: 'Suggest a better title',
-    effect: 'was a separate button in the header, before this change',
-    prompt: SUGGEST_TITLE_PROMPT,
-  },
-];
-
-// Same rule as ingestion's chat prompt (chat_service._weakest_categories): the lowest score, and only when it is below the bar.
-const WEAK_CATEGORY_SCORE = 70;
-
-function weakestCategory(scores: Record<string, number> | null | undefined): { name: string; score: number } | null {
-  const usable = Object.entries(scores ?? {}).filter(([, value]) => typeof value === 'number' && Number.isFinite(value));
-  usable.sort((a, b) => a[1] - b[1] || (a[0] < b[0] ? -1 : 1));
-  const [weakest] = usable;
-  return weakest && weakest[1] < WEAK_CATEGORY_SCORE ? { name: weakest[0], score: weakest[1] } : null;
+function suggestedPrompts(noun: string, scored: boolean): { label: string; effect: string; prompt: string }[] {
+  const prompts = [
+    {
+      label: 'Make it testable',
+      effect: 'rewrite so it is independently verifiable, with clear acceptance criteria',
+      prompt: 'Rewrite this so it is independently testable, with clear acceptance criteria.',
+    },
+    {
+      label: 'Add the missing rationale',
+      effect: `add a brief rationale explaining why this ${noun} exists`,
+      prompt: `Add a brief rationale explaining why this ${noun} exists.`,
+    },
+    {
+      label: 'Tighten the wording',
+      effect: 'remove ambiguity and vague terms',
+      prompt: 'Tighten the wording -- remove ambiguity and vague terms.',
+    },
+    {
+      label: 'Suggest a better title',
+      effect: `a more specific, concise title for this ${noun}`,
+      prompt: `Suggest a more specific, concise title for this ${noun} based on its description.`,
+    },
+  ];
+  // Testability is a rubric of requirements; an Epic or a Feature is never scored for it.
+  return scored ? prompts : prompts.filter((p) => p.label !== 'Make it testable');
 }
+
+// Offered first, only for an item the scorer flagged "compound" (review finding R8). A chat turn edits this one item and cannot create
+// siblings, so the starter asks for the first requirement to stay here and the rest to be listed as complete statements to add.
+const SPLIT_STARTER = {
+  label: 'Split into separate requirements',
+  effect: 'this item keeps the first one; the others are listed for you to add as new items',
+  prompt:
+    'This item combines more than one requirement. Keep only the first requirement in this item, and list each remaining requirement as its own complete statement. Ignore any "Proposed acceptance criteria" or "Needs author input" section: those are generated notes, not requirements.',
+};
 
 export function ChatPanel({
   jobId,
@@ -123,7 +115,9 @@ export function ChatPanel({
   disabled,
   disabledReason,
   categoryScores,
+  isCompound,
   onAcceptProposal,
+  onDiscuss,
 }: {
   jobId: string;
   localId: string;
@@ -137,7 +131,12 @@ export function ChatPanel({
   disabledReason?: string;
   // The item's score per quality category: a rewrite is aimed at the weakest one, and the proposal card says which.
   categoryScores?: Record<string, number> | null;
+  // The scorer flagged this item as combining several requirements: adds the split starter.
+  isCompound?: boolean;
   onAcceptProposal: (patch: { title?: string; description?: string }) => void;
+  // "To be discussed": park the proposal in the item's ADO Discussion, leaving its text as is. Absent = the button is not offered.
+  // A rejection keeps the proposal card (the caller already told the user why).
+  onDiscuss?: (patch: { title?: string; description?: string }) => Promise<void> | void;
 }): React.ReactElement {
   const { showToast, showErrorToast } = useToast();
   const [history, setHistory] = useState<ChatMessage[]>([]);
@@ -181,6 +180,8 @@ export function ChatPanel({
   // stronger than a static "can take a couple of minutes" sentence.
   const [streamStartedAt, setStreamStartedAt] = useState<string | null>(null);
   const [proposal, setProposal] = useState<Proposal | null>(null);
+  // A discuss request is in flight: the three proposal actions are locked so none can race it.
+  const [discussing, setDiscussing] = useState(false);
   const [checkState, setCheckState] = useState<ProposalCheck | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const checkRequestRef = useRef(0);
@@ -237,6 +238,7 @@ export function ChatPanel({
   // (the original and the proposal scored together) when the model has answered. A result that arrives after the proposal or the node
   // changed is discarded.
   const checkedKind = itemType === undefined || itemType === 'Requirement';
+  const noun = checkedKind ? 'requirement' : (itemType ?? 'item').toLowerCase();
   useEffect(() => {
     const request = ++checkRequestRef.current;
     setConfirmOpen(false);
@@ -287,7 +289,7 @@ export function ChatPanel({
   // Only the state that belongs to the proposal on screen counts (the render before the effect runs would otherwise see the last one's).
   const check = checkState && checkState.proposal === proposal ? checkState : null;
   const checking = checkedKind && !!proposal?.proposedDescription;
-  const targetCategory = weakestCategory(categoryScores);
+  const targetCategory = weakestCategory(categoryScores, null, WEAK_CATEGORY_SCORE);
   const loading = checking && (!check || check.warnings.status === 'loading' || check.prediction.status === 'loading');
   const warningItems = check?.warnings.status === 'ready' ? check.warnings.items : [];
   const comparison = check?.prediction.status === 'ready' ? check.prediction.data : null;
@@ -438,6 +440,22 @@ export function ChatPanel({
     setProposal(null);
   }
 
+  async function discussProposal(): Promise<void> {
+    if (!proposal || !onDiscuss) return;
+    setDiscussing(true);
+    try {
+      await onDiscuss({
+        title: proposal.proposedTitle ?? undefined,
+        description: proposal.proposedDescription ?? undefined,
+      });
+    } catch {
+      return; // the caller has already surfaced the failure; keep the card so the proposal is not lost
+    } finally {
+      setDiscussing(false);
+    }
+    setProposal(null);
+  }
+
   if (disabled) {
     return (
       <div className="flex h-full flex-col p-4">
@@ -472,10 +490,10 @@ export function ChatPanel({
                 separate graphic. */}
             <div className="mb-2 max-w-[85%] border-l-2 border-hairline-strong pl-2.5">
               <p className={LABEL_MICRO}>Assistant</p>
-              <p className="text-sm text-ink-1">I have read this requirement. Want me to:</p>
+              <p className="text-sm text-ink-1">I have read this {noun}. Want me to:</p>
             </div>
             <div className="ml-2.5 flex flex-col gap-1.5">
-              {SUGGESTED_PROMPTS.map((p) => (
+              {(isCompound ? [SPLIT_STARTER, ...suggestedPrompts(noun, checkedKind)] : suggestedPrompts(noun, checkedKind)).map((p) => (
                 <button
                   key={p.label}
                   type="button"
@@ -501,7 +519,7 @@ export function ChatPanel({
             {visibleHistory.map((m) =>
               m.role === 'user' ? (
                 <div key={m.id} className="mb-3 flex justify-end">
-                  <p className="max-w-[85%] rounded-md bg-surface-alt px-3 py-1.5 text-sm text-ink-1">{m.content}</p>
+                  <p dir="auto" className="max-w-[85%] rounded-md bg-surface-alt px-3 py-1.5 text-sm text-ink-1">{m.content}</p>
                 </div>
               ) : (
                 <div key={m.id} className="mb-3 max-w-[85%] border-l-2 border-hairline-strong pl-2.5">
@@ -547,13 +565,13 @@ export function ChatPanel({
                   </div>
                 )}
                 <div className="mb-3 max-w-[85%] border-l-2 border-hairline-strong pl-2.5">
-                  <p className="flex items-center gap-1.5 text-micro font-semibold uppercase tracking-wide text-live">
+                  <p className="flex items-center gap-1.5 text-meta font-semibold tracking-normal text-ink-3">
                     Assistant
                     {!streaming && !reasoning && (
                       <span className="inline-flex items-center gap-0.5" aria-label="typing">
-                        <span className="h-1 w-1 animate-[typedot_1.1s_ease-in-out_infinite] rounded-full bg-live" style={{ animationDelay: '0ms' }} />
-                        <span className="h-1 w-1 animate-[typedot_1.1s_ease-in-out_infinite] rounded-full bg-live" style={{ animationDelay: '160ms' }} />
-                        <span className="h-1 w-1 animate-[typedot_1.1s_ease-in-out_infinite] rounded-full bg-live" style={{ animationDelay: '320ms' }} />
+                        <span className="h-1 w-1 animate-[typedot_var(--duration-typedot)_var(--ease-in-out)_infinite] rounded-full bg-live" style={{ animationDelay: '0ms' }} />
+                        <span className="h-1 w-1 animate-[typedot_var(--duration-typedot)_var(--ease-in-out)_infinite] rounded-full bg-live" style={{ animationDelay: '160ms' }} />
+                        <span className="h-1 w-1 animate-[typedot_var(--duration-typedot)_var(--ease-in-out)_infinite] rounded-full bg-live" style={{ animationDelay: '320ms' }} />
                       </span>
                     )}
                   </p>
@@ -570,7 +588,7 @@ export function ChatPanel({
           <p className="text-xs">Proposed change</p>
           {targetCategory && proposal.proposedDescription && (
             <p className="text-xs text-ink-3">
-              Aimed at: {targetCategory.name} ({targetCategory.score})
+              Aimed at: {targetCategory.key} ({targetCategory.score})
             </p>
           )}
           {proposal.proposedTitle && (
@@ -605,10 +623,15 @@ export function ChatPanel({
             <p className="mt-1 text-xs text-ink-2">{predictedLine(comparison)}</p>
           )}
           <div className="mt-1.5 flex gap-2">
-            <Button size="sm" onClick={onAcceptClick} disabled={loading}>
+            <Button size="sm" onClick={onAcceptClick} disabled={loading || discussing}>
               Accept
             </Button>
-            <Button size="sm" variant="ghost" onClick={() => setProposal(null)}>
+            {onDiscuss && (
+              <Button size="sm" variant="outline" onClick={() => void discussProposal()} disabled={loading || discussing}>
+                To be discussed
+              </Button>
+            )}
+            <Button size="sm" variant="ghost" onClick={() => setProposal(null)} disabled={discussing}>
               Reject
             </Button>
           </div>

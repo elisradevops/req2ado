@@ -36,7 +36,7 @@ def test_load_csv_format_is_csv(tmp_path: Path) -> None:
 
 def test_load_csv_strips_utf8_bom(tmp_path: Path) -> None:
     path = tmp_path / "bom.csv"
-    path.write_bytes("﻿a,b\r\n1,2\r\n".encode("utf-8"))
+    path.write_bytes("﻿a,b\r\n1,2\r\n".encode())
     doc = load_csv(str(path))
     assert plain_text_rows(doc.tables[0])[0] == ["a", "b"]
 

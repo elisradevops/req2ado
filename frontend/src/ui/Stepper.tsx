@@ -1,5 +1,7 @@
-import { Check, RefreshCw, X } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Check, Ellipsis, RefreshCw, X } from 'lucide-react';
 import { cn } from '../lib/cn';
+import { ARRIVE } from './motion';
 
 export type StepState = 'done' | 'current' | 'awaiting' | 'pending' | 'failed' | 'skipped';
 
@@ -38,6 +40,48 @@ function deriveStates(stepCount: number, activeIndex: number, activeSpinner: boo
   });
 }
 
+// One half of the line between two steps: a hairline track with an ok-coloured
+// fill scaled in from the reading edge (DESIGN.md section 8.3). Together the
+// two halves are one sweep of --duration-medium: the half ending at the
+// finished step runs linear, the half arriving at the next step starts when
+// that one stops and eases out, so the line never stalls at a node. A
+// transform, not a colour fade; `rtl:origin-right` keeps it moving with the
+// reading direction. Emptying is instant.
+function Segment({ edge, filled, second }: { edge: boolean; filled: boolean; second?: boolean }): React.ReactElement {
+  const half = 'calc(var(--duration-medium) / 2)';
+  return (
+    <span data-segment data-filled={filled} className={cn('relative h-px flex-1 overflow-hidden', edge ? 'bg-transparent' : 'bg-hairline-strong')}>
+      {!edge && (
+        <span
+          className={cn('absolute inset-0 origin-left bg-ok transition-transform rtl:origin-right', filled ? 'scale-x-100' : 'scale-x-0')}
+          style={
+            filled
+              ? {
+                  transitionDuration: half,
+                  transitionDelay: second ? half : undefined,
+                  transitionTimingFunction: second ? 'var(--ease-out)' : 'linear',
+                }
+              : { transitionDuration: '0s' }
+          }
+        />
+      )}
+    </span>
+  );
+}
+
+// A step that mounts after the stepper has settled (a step added to the
+// lifecycle) fades in at its own position; its siblings are not animated, so
+// nothing is laid out per frame. `arrivedLate` is read once, at mount, so a
+// later re-render never re-adds the class to a step that was already there.
+function StepItem({ arrivedLate, children, ...rest }: { arrivedLate: boolean; children: React.ReactNode; 'aria-current'?: 'step' }): React.ReactElement {
+  const [arrives] = useState(arrivedLate);
+  return (
+    <li {...rest} className={cn('flex min-w-0 flex-1 flex-col items-center gap-1.5 max-md:px-0.5', arrives && ARRIVE.fade)}>
+      {children}
+    </li>
+  );
+}
+
 export function Stepper({
   steps,
   activeIndex,
@@ -47,8 +91,8 @@ export function Stepper({
   subLabels,
 }: {
   steps: string[];
-  // Superseded by `states` (DESIGN.md Track B, phase B3) but kept as the
-  // path NewJobWizard and any other unmigrated caller still uses.
+  // Superseded by `states` (DESIGN.md Track B, phase B3); only callers that
+  // have not moved to it still pass this.
   activeIndex?: number;
   activeSpinner?: boolean;
   // One hex/CSS-color-value per step, applied to that step's own done/current
@@ -69,6 +113,11 @@ export function Stepper({
   subLabels?: (string | null | undefined)[];
 }): React.ReactElement {
   const resolvedStates = states ?? deriveStates(steps.length, activeIndex ?? 0, activeSpinner);
+  // Steps present on first paint do not animate; one that is added later does.
+  const settled = useRef(false);
+  useEffect(() => {
+    settled.current = true;
+  }, []);
 
   return (
     <ol className="flex items-stretch">
@@ -85,11 +134,13 @@ export function Stepper({
         const rightSegmentDone = state === 'done';
 
         return (
-          <li key={step} className="flex min-w-0 flex-1 flex-col items-center gap-1.5">
+          <StepItem
+            key={step}
+            arrivedLate={settled.current}
+            aria-current={state === 'current' || state === 'awaiting' ? 'step' : undefined}
+          >
             <div className="flex w-full items-center">
-              <span
-                className={cn('h-px flex-1 transition-colors duration-slow', index === 0 ? 'bg-transparent' : leftSegmentDone ? 'bg-ok' : 'bg-hairline-strong')}
-              />
+              <Segment edge={index === 0} filled={leftSegmentDone} second />
               <span
                 data-state={state}
                 style={isColorOverride ? { backgroundColor: color, borderColor: color } : undefined}
@@ -97,28 +148,42 @@ export function Stepper({
                   'relative grid h-7 w-7 flex-none place-items-center rounded-full border-2 text-xs font-semibold transition-colors duration-fast ease-out',
                   !isColorOverride && STATE_CIRCLE_CLASSES[state],
                   isColorOverride && 'text-white',
-                  state === 'current' && 'animate-[pulse-ring_var(--duration-ambient)_var(--ease-in-out)_infinite]',
                 )}
               >
                 {state === 'done' && <Check className="h-3.5 w-3.5" />}
-                {state === 'current' && <RefreshCw className="h-3.5 w-3.5" style={{ animation: 'spin 0.7s linear infinite' }} />}
+                {state === 'current' && (
+                  // The arrow turns four times (under five seconds, WCAG 2.2.2), then fades out as an "in progress" glyph fades in at
+                  // the same instant, so the node never rests as a refresh arrow that reads like a retry button. Under reduced motion
+                  // the delays are zero, so the glyph is the dots from the start.
+                  <span className="relative grid h-3.5 w-3.5 place-items-center">
+                    <span className="absolute inset-0 grid place-items-center" style={{ animation: 'fadeOut var(--duration-fast) linear calc(var(--duration-spin) * 4) both' }}>
+                      <RefreshCw className="h-3.5 w-3.5" style={{ animation: 'spin var(--duration-spin) linear 4' }} />
+                    </span>
+                    <span className="absolute inset-0 grid place-items-center" style={{ animation: 'fadeIn var(--duration-fast) linear calc(var(--duration-spin) * 4) both' }}>
+                      <Ellipsis className="h-3.5 w-3.5" />
+                    </span>
+                  </span>
+                )}
                 {state === 'failed' && <X className="h-3.5 w-3.5" />}
                 {(state === 'awaiting' || state === 'pending' || state === 'skipped') && index + 1}
               </span>
+              <Segment edge={index === steps.length - 1} filled={rightSegmentDone} />
+            </div>
+            <span className={cn('whitespace-nowrap text-meta font-medium max-md:whitespace-normal max-md:break-words max-md:text-center max-md:text-micro', STATE_LABEL_CLASSES[state])}>{step}
+              {state === 'skipped' && <span className="sr-only"> (skipped)</span>}
+            </span>
+            {subLabels?.[index] && (
               <span
                 className={cn(
-                  'h-px flex-1 transition-colors duration-slow',
-                  index === steps.length - 1 ? 'bg-transparent' : rightSegmentDone ? 'bg-ok' : 'bg-hairline-strong',
+                  'whitespace-nowrap rounded-full border px-1.5 py-px font-mono text-micro font-semibold',
+                  // a step that has not been reached reads muted; the accent chip is for the step in play
+                  state === 'pending' ? 'border-hairline bg-surface-alt text-ink-3' : 'border-accent-soft-border bg-accent-soft text-accent-ink',
                 )}
-              />
-            </div>
-            <span className={cn('whitespace-nowrap text-meta font-medium', STATE_LABEL_CLASSES[state])}>{step}</span>
-            {subLabels?.[index] && (
-              <span className="whitespace-nowrap rounded-full border border-accent-soft-border bg-accent-soft px-1.5 py-px font-mono text-micro font-semibold text-accent-ink">
+              >
                 {subLabels[index]}
               </span>
             )}
-          </li>
+          </StepItem>
         );
       })}
     </ol>

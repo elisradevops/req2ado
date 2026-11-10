@@ -30,3 +30,45 @@ export const ISSUE_CODE_TO_CATEGORY: Record<string, string> = {
 export function categoryForIssueCode(code: string): string | null {
   return ISSUE_CODE_TO_CATEGORY[code] ?? null;
 }
+
+// The bar the chat aims a rewrite under; the same one as ingestion's chat prompt.
+export const WEAK_CATEGORY_SCORE = 70;
+
+export interface WeakestCategory {
+  key: string;
+  score: number;
+  // Verbatim text from the org's own checklist for this category, when one was matched.
+  checklistText: string | undefined;
+}
+
+// The lowest-scoring rubric category, so a reviewer sees where an item is weakest without
+// opening the gauge. Scores are a dynamic key -> 0-100 map, so a real 0 is the weakest, not
+// missing; a non-finite value is skipped. Ties go to the alphabetically first key, the same tie-break
+// as ChatPanel's private weakestCategory (and ingestion's chat_service._weakest_categories), so the
+// strip and the chat name the same category. They differ in one way on purpose: the chat only aims at a
+// category below WEAK_CATEGORY_SCORE (pass `below`), while the evidence strip names the lowest for
+// every scored item. One function, so the two cannot drift apart.
+// Null when there is nothing to rank (BASELINE, a manual entry, a job saved before scoring).
+export function weakestCategory(
+  scores: Record<string, number> | null | undefined,
+  checklist?: Record<string, string> | null,
+  // When given, a lowest score at or above it is not weak, so nothing is returned.
+  below?: number,
+): WeakestCategory | null {
+  let weakest: { key: string; score: number } | null = null;
+  for (const [key, score] of Object.entries(scores ?? {})) {
+    if (!Number.isFinite(score)) continue;
+    if (weakest === null || score < weakest.score || (score === weakest.score && key < weakest.key)) weakest = { key, score };
+  }
+  if (weakest === null || (below !== undefined && weakest.score >= below)) return null;
+  return { ...weakest, checklistText: checklist?.[weakest.key] };
+}
+
+// A KB-derived category key can be snake_case verbatim from the org's own ingested checklist
+// document (e.g. "completeness_as_requirement"); splits on '_'/'-' and capitalizes every word.
+export function categoryLabel(key: string): string {
+  return key
+    .split(/[_-]/)
+    .map((word) => (word ? word.charAt(0).toUpperCase() + word.slice(1) : word))
+    .join(' ');
+}

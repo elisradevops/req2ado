@@ -137,6 +137,10 @@ model Job {
   // retrieval score and relevance verdict, not just "this file was
   // offered", per docs/runbook.md's KB-usage-visibility rationale.
   kbCitations      Json      @default("[]")
+  // {filesAvailable, filesCited} -- how many KB files a SURVEY run could use
+  // vs. cited (WorkItemTree.kb_coverage). Nullable: BASELINE / no-KB runs and
+  // jobs created before this column have no value (unknown, never a fake 0).
+  kbCoverage       Json?
   // Tree-level integrity warnings surfaced by ingestion's /level response
   // (WorkItemTree.warnings, SURVEY-only) -- always [] for BASELINE. Persisted
   // here so getById() can return them alongside the diff for the reviewer.
@@ -447,6 +451,12 @@ model IngestedDocument {
   // here too so the KB document list UI can show/edit a file's mode without
   // a round trip to ingestion's Chroma-backed store.
   retrievalMode String?
+  // Chunks the vector store held for this file at its last successful ingest
+  // (a snapshot, not live truth; a skip-unchanged re-ingest reports the
+  // existing count, not 0). Null = unknown (rows from before this column, or
+  // an unavailable count -- an unknown overwrites a possibly stale number). The row alone never proved any
+  // vectors exist; this is what the KB page shows instead.
+  chunkCount    Int?
   ingestedAt    DateTime @default(now())
 
   @@unique([userId, driveItemId])

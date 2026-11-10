@@ -220,12 +220,16 @@
   /* ------------------------------------------------------------------
    * 17. DURATION — 8 rungs (DESIGN.md §2.6).
    * ------------------------------------------------------------------ */
+  --duration-micro: 50ms;
   --duration-instant: 90ms;
   --duration-fast: 140ms;
   --duration-base: 190ms;
   --duration-exit: 120ms;
+  --duration-medium: 240ms;
   --duration-slow: 320ms;
-  --duration-progress: 900ms;
+  --duration-progress: 400ms;
+  --duration-spin: 1000ms;
+  --duration-typedot: 1100ms;
   --duration-ambient: 1500ms;
   --duration-breathe: 2600ms;
 
@@ -237,6 +241,35 @@
   --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
   --ease-linear: linear;
 }
+
+/* Tailwind does not generate duration-<token> utilities from the --duration-* tokens above: without a rule the class is a
+   no-op and the transition runs at Tailwind's 150ms default. These bind each token class to its own token (DESIGN.md
+   section 8.3); motionContract.test.ts fails if source uses a duration-<token> class that is not defined here. */
+@utility duration-micro {
+  transition-duration: var(--duration-micro);
+}
+@utility duration-instant {
+  transition-duration: var(--duration-instant);
+}
+@utility duration-fast {
+  transition-duration: var(--duration-fast);
+}
+@utility duration-base {
+  transition-duration: var(--duration-base);
+}
+@utility duration-exit {
+  transition-duration: var(--duration-exit);
+}
+@utility duration-medium {
+  transition-duration: var(--duration-medium);
+}
+@utility duration-slow {
+  transition-duration: var(--duration-slow);
+}
+@utility duration-progress {
+  transition-duration: var(--duration-progress);
+}
+
 
 @keyframes shimmer {
   from {
@@ -355,16 +388,6 @@
   }
 }
 
-@keyframes listItemIn {
-  from {
-    opacity: 0;
-    transform: translateY(-2px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
 
 @keyframes indeterminate-progress {
   0% {
@@ -378,11 +401,10 @@
 /* Attention motion role (DESIGN.md §8) -- the confirm-to-ADO CTA's only
    animated state, and the only element allowed to breathe at all. */
 @keyframes ctaBreathe {
-  0%,
-  100% {
+  from {
     box-shadow: var(--shadow-cta);
   }
-  50% {
+  to {
     box-shadow: var(--shadow-cta-attention);
   }
 }
@@ -391,19 +413,8 @@
    only ever land on the confirm-to-ADO CTA, once its acknowledgement
    checkbox is ticked (see ui/ConfirmDialog.tsx). */
 .cta-attention {
-  animation: ctaBreathe var(--duration-breathe) var(--ease-in-out) infinite;
-}
-
-/* Stepper "current step" ring -- pairs with the existing spin keyframe on
-   the rotating-arrows icon (DESIGN.md §7, Navigation category). */
-@keyframes pulse-ring {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 var(--color-accent-soft-border);
-  }
-  50% {
-    box-shadow: 0 0 0 4px var(--color-accent-soft-border);
-  }
+  box-shadow: var(--shadow-cta-attention);
+  animation: ctaBreathe var(--duration-breathe) var(--ease-in-out) 1 backwards;
 }
 
 @layer components {
@@ -437,8 +448,8 @@
        Tailwind to have generated a class for it at all -- exactly how
        every other call site in this codebase already consumes these same
        vars (`animate-[fadeIn_var(--duration-base)_var(--ease-out)]` etc). */
-    @apply transition-[transform,box-shadow,border-color] ease-out;
-    transition-duration: var(--duration-base);
+    @apply transition-[transform,translate,box-shadow,border-color] ease-out;
+    transition-duration: var(--duration-fast);
   }
   .liftable:hover {
     @apply shadow-raised -translate-y-px border-hairline-strong;
@@ -460,11 +471,11 @@
     /* See .liftable's own comment above -- @apply cannot resolve a
        custom-named --duration-* value in this Tailwind version. */
     @apply relative border-t border-hairline transition-colors;
-    transition-duration: var(--duration-fast);
+    transition-duration: var(--duration-micro);
   }
   .hoverable-row::before {
     @apply absolute inset-y-0 left-0 w-[2px] scale-y-0 rounded-[2px] bg-accent transition-transform ease-out;
-    transition-duration: var(--duration-fast);
+    transition-duration: var(--duration-micro);
     content: '';
   }
   .hoverable-row:hover {
@@ -539,6 +550,11 @@
       animation-duration: 0.001ms !important;
       animation-iteration-count: 1 !important;
       transition-duration: 0.001ms !important;
+      /* a clamped duration still waits out its delay -- a staggered row would sit
+         at opacity 0 (backwards fill) for up to 168ms, the connector for 190ms */
+      animation-delay: 0s !important;
+      transition-delay: 0s !important;
+      scroll-behavior: auto !important;
     }
 
     /* transition-duration is clamped above, but transition-property is not
@@ -547,6 +563,17 @@
        instant displacement (DESIGN.md §8, reduced-motion clause 1). */
     .liftable {
       transform: none !important;
+      /* Tailwind 4 emits the lift as the `translate` property, which `transform: none` does not cancel */
+      translate: none !important;
+    }
+
+    /* The same gap on a pointer press: Button's active:scale-[0.98] would
+       still shrink the control instantly under the clamp above. The press is
+       still shown (colour and shadow), only the displacement is dropped. */
+    button:active,
+    [role='button']:active {
+      scale: none !important;
+      translate: none !important;
     }
 
     /* Attention's non-motion fallback (DESIGN.md §8, reduced-motion clause

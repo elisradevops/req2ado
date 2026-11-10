@@ -9,7 +9,7 @@ from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, Docume
 from app.leveling.llm_leveling import build_survey_tree
 from app.leveling.tree_builder import build_baseline_tree
 from app.section_analysis_options import DEFAULT_SECTION_ANALYSIS_OPTIONS, SectionAnalysisOptions
-from app.workitem.model import IntegrityWarning, WarningKind
+from app.workitem.model import IntegrityWarning, KbCoverage, WarningKind
 
 SCHEMA_PATH = Path(__file__).parents[2] / "shared" / "schemas" / "work-item-tree.schema.json"
 
@@ -28,7 +28,9 @@ def _baseline_doc() -> CanonicalDoc:
     return CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
-            Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr(path, 0, 10)),
+            Block(
+                id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr(path, 0, 10)
+            ),
             Block(
                 id="b1",
                 kind=BlockKind.PARAGRAPH,
@@ -45,7 +47,12 @@ def _survey_doc() -> CanonicalDoc:
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
             Block(id="b0", kind=BlockKind.PARAGRAPH, text="Display", source_ref=_sr(path, 0, 10)),
-            Block(id="b1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path, 0, 10)),
+            Block(
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
+                text="The display shall support HDR.",
+                source_ref=_sr(path, 0, 10),
+            ),
         ],
     )
 
@@ -58,21 +65,35 @@ class FakeSectionAnalysisClient:
 
     _CONTENT = {
         "n0": {"description": "The system shall handle: Display", "tags": []},
-        "n1": {"description": "The system shall handle: The display shall support HDR.", "tags": []},
+        "n1": {
+            "description": "The system shall handle: The display shall support HDR.",
+            "tags": [],
+        },
     }
 
     def analyze_section_skeleton(
-        self, section_text: str, kb_context: str | None = None, *,
+        self,
+        section_text: str,
+        kb_context: str | None = None,
+        *,
         options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
         user_id: str | None = None,
     ) -> tuple[list[dict], bool]:
         return [
             {"temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "Display"},
-            {"temp_id": "n1", "type": "Requirement", "parent_temp_id": "n0", "title": "HDR support"},
+            {
+                "temp_id": "n1",
+                "type": "Requirement",
+                "parent_temp_id": "n0",
+                "title": "HDR support",
+            },
         ], False
 
     def author_content(
-        self, section_text: str, skeleton_nodes: dict[str, dict], kb_context: str | None = None,
+        self,
+        section_text: str,
+        skeleton_nodes: dict[str, dict],
+        kb_context: str | None = None,
         user_id: str | None = None,
     ) -> tuple[dict[str, dict], bool]:
         return {
@@ -81,7 +102,9 @@ class FakeSectionAnalysisClient:
             if local_id in self._CONTENT
         }, False
 
-    def analyze_section_skeleton_agentic(self, section_text: str, retrieve_fn, **kwargs) -> tuple[list[dict], list[dict], bool]:
+    def analyze_section_skeleton_agentic(
+        self, section_text: str, retrieve_fn, **kwargs
+    ) -> tuple[list[dict], list[dict], bool]:
         raise AssertionError("not exercised by this test -- default model is not tool-capable")
 
 
@@ -114,6 +137,22 @@ def test_survey_tree_with_a_real_warning_matches_work_item_tree_schema(schema) -
     tree = build_survey_tree(_survey_doc(), fake)
     assert len(tree.warnings) >= 1
     jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
+
+
+def test_tree_with_kb_coverage_matches_work_item_tree_schema(schema) -> None:
+    tree = build_baseline_tree(_baseline_doc())
+    tree.kb_coverage = KbCoverage(files_available=3, files_cited=1)
+    dumped = tree.model_dump(mode="json")
+    assert dumped["kb_coverage"] == {"files_available": 3, "files_cited": 1}
+    jsonschema.validate(instance=dumped, schema=schema)
+
+
+def test_baseline_tree_has_no_kb_coverage(schema) -> None:
+    tree = build_baseline_tree(_baseline_doc())
+    assert tree.kb_coverage is None
+    dumped = tree.model_dump(mode="json")
+    assert dumped["kb_coverage"] is None
+    jsonschema.validate(instance=dumped, schema=schema)
 
 
 def test_unsupported_content_note_warning_matches_work_item_tree_schema(schema) -> None:
@@ -243,7 +282,26 @@ def test_parent_title_collision_warning_matches_work_item_tree_schema(schema) ->
             '"X" was proposed as the title of a parent item but matches the title of one of the '
             'requirements under it -- kept the original heading "Y" instead.',
             node_ids=["n0"],
-            detail={"pass": "parent_summary", "rejectedTitle": "X", "fallbackTitle": "Y", "headingAlsoCollides": False},
+            detail={
+                "pass": "parent_summary",
+                "rejectedTitle": "X",
+                "fallbackTitle": "Y",
+                "headingAlsoCollides": False,
+            },
+        )
+    ]
+    jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
+
+
+def test_criteria_value_ungrounded_warning_matches_work_item_tree_schema(schema) -> None:
+    tree = build_baseline_tree(_baseline_doc())
+    tree.warnings = [
+        IntegrityWarning.make(
+            WarningKind.CRITERIA_VALUE_UNGROUNDED,
+            "2 item(s) had acceptance criteria left out because they stated values the document "
+            "does not contain (3 criterion(s) dropped).",
+            node_ids=["n0", "n1"],
+            detail={"pass": "acceptance_criteria", "dropped": 3, "assumptionOnly": 0},
         )
     ]
     jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
@@ -257,7 +315,11 @@ def test_missing_requirement_row_coverage_warning_matches_work_item_tree_schema(
             "1 source table row(s) carry their own literal requirement identifier but no generated "
             "work item claims it -- those rows may have been merged into another requirement or "
             "dropped entirely: P-SENSOR-003# (Sync interval)",
-            detail={"branch": "br0_", "unclaimedCodes": ["P-SENSOR-003#"], "totalIdentifiedRows": 3},
+            detail={
+                "branch": "br0_",
+                "unclaimedCodes": ["P-SENSOR-003#"],
+                "totalIdentifiedRows": 3,
+            },
         )
     ]
     jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)

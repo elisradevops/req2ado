@@ -1,5 +1,6 @@
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
 import cookieParser from 'cookie-parser';
 import { WsAdapter } from '@nestjs/platform-ws';
@@ -18,11 +19,12 @@ const TEST_SESSION_COOKIE = 'req2ado_session=test-token';
 // SessionService is stubbed -- see beforeAll).
 function authedRequest(
   server: Parameters<typeof request>[0],
-): { get: (url: string) => request.Test; post: (url: string) => request.Test; delete: (url: string) => request.Test } {
+): { get: (url: string) => request.Test; post: (url: string) => request.Test; patch: (url: string) => request.Test; delete: (url: string) => request.Test } {
   const agent = request(server);
   return {
     get: (url: string) => agent.get(url).set('Cookie', TEST_SESSION_COOKIE),
     post: (url: string) => agent.post(url).set('Cookie', TEST_SESSION_COOKIE),
+    patch: (url: string) => agent.patch(url).set('Cookie', TEST_SESSION_COOKIE),
     delete: (url: string) => agent.delete(url).set('Cookie', TEST_SESSION_COOKIE),
   };
 }
@@ -34,6 +36,7 @@ describe('JobsController (e2e)', () => {
     list: jest.fn(),
     getById: jest.fn(),
     confirm: jest.fn(),
+    reindexDedup: jest.fn(),
     reject: jest.fn(),
     cancel: jest.fn(),
     delete: jest.fn(),
@@ -43,8 +46,10 @@ describe('JobsController (e2e)', () => {
     getAuditTrail: jest.fn(),
     getDebugCaptures: jest.fn(),
     getSummary: jest.fn(),
+    getWritePreview: jest.fn(),
     getDedupSkips: jest.fn(),
     validateCreatedTree: jest.fn(),
+    moveFigure: jest.fn(),
   };
   const fakeAdoCredentialResolver = { resolve: jest.fn().mockResolvedValue(undefined) };
 
@@ -76,10 +81,17 @@ describe('JobsController (e2e)', () => {
       .overrideProvider(AdoCredentialResolver)
       .useValue(fakeAdoCredentialResolver)
       .compile();
-    app = moduleRef.createNestApplication();
+    const expressApp = moduleRef.createNestApplication<NestExpressApplication>();
+    app = expressApp;
+    // As main.ts: the default 100kb body limit would answer 413 before the selectedLocalIds cap is reached.
+    expressApp.useBodyParser('json', { limit: '10mb' });
     app.use(cookieParser());
     app.useWebSocketAdapter(new WsAdapter(app));
     await app.init();
+    // Bind once, up front. Left unbound, supertest listens on a new ephemeral port for every request and closes it afterwards; a full parallel run
+    // then occasionally got an answer from something else on that port (a 404/403 for a request this app's server never logged), failing
+    // whichever test was unlucky. One bind per spec keeps every request on the same port.
+    await new Promise<void>((resolve) => app.getHttpServer().listen(0, resolve));
   });
 
   afterAll(async () => {
@@ -208,6 +220,54 @@ describe('JobsController (e2e)', () => {
     expect(res.status).toBe(404);
   });
 
+  it('POST /jobs/:id/dedup/reindex returns the service result', async () => {
+    fakeJobsService.reindexDedup.mockResolvedValue({ indexed: 3 });
+    const res = await authedRequest(app.getHttpServer()).post('/jobs/job-1/dedup/reindex');
+    expect(res.status).toBe(201);
+    expect(res.body).toEqual({ indexed: 3 });
+    expect(fakeJobsService.reindexDedup).toHaveBeenCalledWith('job-1');
+  });
+
+  it('POST /jobs/:id/dedup/reindex enforces ownership (404 for another user\'s job, service not called)', async () => {
+    fakeJobsService.getById.mockResolvedValue({ id: 'job-1', userId: 'someone-elses-descriptor' });
+    const res = await authedRequest(app.getHttpServer()).post('/jobs/job-1/dedup/reindex');
+    expect(res.status).toBe(404);
+    expect(fakeJobsService.reindexDedup).not.toHaveBeenCalled();
+  });
+
+  it('PATCH figures route returns the decorated diff and enforces ownership', async () => {
+    fakeJobsService.getById.mockResolvedValue({ userId: TEST_USER_ID, writtenLocalIds: [] });
+    fakeJobsService.moveFigure.mockResolvedValue([
+      { localId: 'a', action: 'create', figureIds: [] },
+      { localId: 'b', action: 'create', figureIds: ['f0'] },
+    ]);
+    const res = await authedRequest(app.getHttpServer()).patch('/jobs/job-1/diff/a/figures/f0').send({ targetLocalId: 'b' });
+    expect(res.status).toBe(200);
+    expect(res.body.dryRunDiff).toEqual([
+      { localId: 'a', action: 'create', figureIds: [], attachFigureIds: [] },
+      { localId: 'b', action: 'create', figureIds: ['f0'], attachFigureIds: ['f0'] },
+    ]);
+    expect(fakeJobsService.moveFigure).toHaveBeenCalledWith('job-1', 'a', 'f0', 'b');
+
+    const detach = await authedRequest(app.getHttpServer()).patch('/jobs/job-1/diff/a/figures/f0').send({ targetLocalId: null });
+    expect(detach.status).toBe(200);
+    expect(fakeJobsService.moveFigure).toHaveBeenLastCalledWith('job-1', 'a', 'f0', null);
+
+    fakeJobsService.moveFigure.mockClear();
+    fakeJobsService.getById.mockResolvedValue({ userId: 'someone-elses-descriptor' });
+    const other = await authedRequest(app.getHttpServer()).patch('/jobs/job-1/diff/a/figures/f0').send({ targetLocalId: 'b' });
+    expect(other.status).toBe(404);
+    expect(fakeJobsService.moveFigure).not.toHaveBeenCalled();
+  });
+
+  it('PATCH figures route rejects a non-string non-null targetLocalId', async () => {
+    for (const body of [{}, { targetLocalId: 5 }, { targetLocalId: true }, { targetLocalId: ['b'] }]) {
+      const res = await authedRequest(app.getHttpServer()).patch('/jobs/job-1/diff/a/figures/f0').send(body);
+      expect(res.status).toBe(400);
+    }
+    expect(fakeJobsService.moveFigure).not.toHaveBeenCalled();
+  });
+
   it('POST /jobs/:id/confirm triggers the write and returns the result', async () => {
     fakeJobsService.confirm.mockResolvedValue({ status: 'succeeded', createdCount: 2 });
     const res = await authedRequest(app.getHttpServer()).post('/jobs/job-1/confirm');
@@ -310,6 +370,108 @@ describe('JobsController (e2e)', () => {
   it('GET /jobs/:id/summary returns 404 for an unknown job', async () => {
     fakeJobsService.getSummary.mockResolvedValue(null);
     const res = await authedRequest(app.getHttpServer()).get('/jobs/unknown/summary');
+    expect(res.status).toBe(404);
+  });
+
+  it('GET /jobs/:id/write-preview returns what a write would do', async () => {
+    const preview = {
+      createdTotal: 3, createdLocalIds: ['a', 'b', 'c'], createdByType: { Requirement: 3 }, excluded: { direct: 0, viaAncestor: 0 }, parentLinks: 2,
+      existingGettingChildren: 0, existingWithoutNewParentLink: 0, traceLinks: { planned: 0, skipped: 0 },
+    };
+    fakeJobsService.getWritePreview.mockResolvedValue(preview);
+    const res = await authedRequest(app.getHttpServer()).get('/jobs/job-1/write-preview');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(preview);
+  });
+
+  it('POST /jobs/:id/write-preview applies the selection from the body', async () => {
+    fakeJobsService.getWritePreview.mockResolvedValue({ createdTotal: 1 });
+    const res = await authedRequest(app.getHttpServer()).post('/jobs/job-1/write-preview').send({ selectedLocalIds: ['a'] });
+    expect(res.status).toBe(200);
+    expect(fakeJobsService.getWritePreview).toHaveBeenCalledWith('job-1', ['a']);
+  });
+
+  it('POST /jobs/:id/write-preview without a body selection previews everything', async () => {
+    fakeJobsService.getWritePreview.mockResolvedValue({ createdTotal: 1 });
+    const res = await authedRequest(app.getHttpServer()).post('/jobs/job-1/write-preview');
+    expect(res.status).toBe(200);
+    expect(fakeJobsService.getWritePreview).toHaveBeenCalledWith('job-1', undefined);
+  });
+
+  it('POST /jobs/:id/write-preview forwards an empty selection as an empty array, not undefined', async () => {
+    fakeJobsService.getWritePreview.mockResolvedValue({ createdTotal: 0 });
+    const res = await authedRequest(app.getHttpServer()).post('/jobs/job-1/write-preview').send({ selectedLocalIds: [] });
+    expect(res.status).toBe(200);
+    expect(fakeJobsService.getWritePreview).toHaveBeenCalledWith('job-1', []);
+  });
+
+  it('POST /jobs/:id/confirm forwards an empty selection as an empty array, not undefined', async () => {
+    fakeJobsService.confirm.mockResolvedValue({ status: 'succeeded', createdCount: 0 });
+    const res = await authedRequest(app.getHttpServer()).post('/jobs/job-1/confirm').send({ selectedLocalIds: [] });
+    expect(res.status).toBe(201);
+    expect(fakeJobsService.confirm).toHaveBeenCalledWith('job-1', undefined, []);
+  });
+
+  it('POST /jobs/:id/confirm rejects selectedLocalIds null with 400 and never writes', async () => {
+    fakeJobsService.confirm.mockClear();
+    const res = await authedRequest(app.getHttpServer()).post('/jobs/job-1/confirm').send({ selectedLocalIds: null });
+    expect(res.status).toBe(400);
+    expect(fakeJobsService.confirm).not.toHaveBeenCalled();
+  });
+
+  it('POST /jobs/:id/write-preview treats selectedLocalIds null like undefined', async () => {
+    fakeJobsService.getWritePreview.mockClear();
+    fakeJobsService.getWritePreview.mockResolvedValue({ createdTotal: 1 });
+    const res = await authedRequest(app.getHttpServer()).post('/jobs/job-1/write-preview').send({ selectedLocalIds: null });
+    expect(res.status).toBe(200);
+    expect(fakeJobsService.getWritePreview).toHaveBeenCalledWith('job-1', undefined);
+  });
+
+  it('POST /jobs/:id/write-preview returns 404 for an unknown job', async () => {
+    fakeJobsService.getWritePreview.mockResolvedValue(null);
+    const res = await authedRequest(app.getHttpServer()).post('/jobs/unknown/write-preview').send({});
+    expect(res.status).toBe(404);
+  });
+
+  it.each([
+    ['a string', 'a'],
+    ['an array with a non-string', ['a', 1]],
+    ['an object', { a: 1 }],
+  ])('rejects a selectedLocalIds that is %s with 400 on write-preview and confirm', async (_name, bad) => {
+    fakeJobsService.getWritePreview.mockClear();
+    fakeJobsService.confirm.mockClear();
+    const preview = await authedRequest(app.getHttpServer()).post('/jobs/job-1/write-preview').send({ selectedLocalIds: bad });
+    expect(preview.status).toBe(400);
+    const confirm = await authedRequest(app.getHttpServer()).post('/jobs/job-1/confirm').send({ selectedLocalIds: bad });
+    expect(confirm.status).toBe(400);
+    expect(fakeJobsService.getWritePreview).not.toHaveBeenCalled();
+    expect(fakeJobsService.confirm).not.toHaveBeenCalled();
+  });
+
+  it('rejects selectedLocalIds longer than the cap with 400', async () => {
+    fakeJobsService.getWritePreview.mockClear();
+    fakeJobsService.confirm.mockClear();
+    const tooMany = Array.from({ length: 50_001 }, (_, i) => `n${i}`);
+    const preview = await authedRequest(app.getHttpServer()).post('/jobs/job-1/write-preview').send({ selectedLocalIds: tooMany });
+    const confirm = await authedRequest(app.getHttpServer()).post('/jobs/job-1/confirm').send({ selectedLocalIds: tooMany });
+    expect(preview.status).toBe(400);
+    expect(confirm.status).toBe(400);
+    expect(fakeJobsService.getWritePreview).not.toHaveBeenCalled();
+    expect(fakeJobsService.confirm).not.toHaveBeenCalled();
+  });
+
+  it('GET and POST write-preview 404 through one helper', async () => {
+    fakeJobsService.getWritePreview.mockResolvedValue(null);
+    const get = await authedRequest(app.getHttpServer()).get('/jobs/unknown/write-preview');
+    const post = await authedRequest(app.getHttpServer()).post('/jobs/unknown/write-preview').send({});
+    expect(get.status).toBe(404);
+    expect(post.status).toBe(404);
+    expect(post.body.message).toBe(get.body.message);
+  });
+
+  it('GET /jobs/:id/write-preview returns 404 for an unknown job', async () => {
+    fakeJobsService.getWritePreview.mockResolvedValue(null);
+    const res = await authedRequest(app.getHttpServer()).get('/jobs/unknown/write-preview');
     expect(res.status).toBe(404);
   });
 

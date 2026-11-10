@@ -127,6 +127,7 @@ def test_a_worker_thread_finds_the_emitter_by_job_id(monkeypatch) -> None:
 
 # ---- conflict detection emits a side-by-side comparison --------------------
 
+
 class EmbedClient:
     def __init__(self, vectors: dict[str, list[float]]) -> None:
         self._vectors = vectors
@@ -140,15 +141,20 @@ class ConflictClient:
         self._verdict = verdict
 
     def judge_duplicate_cluster(
-        self, texts_by_id: dict[str, str], user_id: str | None = None,
+        self,
+        texts_by_id: dict[str, str],
+        user_id: str | None = None,
     ) -> dict:
         return self._verdict
 
 
 def _req(local_id: str, text: str) -> WorkItemNode:
     return WorkItemNode(
-        local_id=local_id, type=WorkItemType.REQUIREMENT, parent_local_id=None,
-        title=text[:60], description=text,
+        local_id=local_id,
+        type=WorkItemType.REQUIREMENT,
+        parent_local_id=None,
+        title=text[:60],
+        description=text,
         source_ref=SourceRef(document_path="x.docx", start_offset=0, end_offset=1),
         mode=WorkItemMode.SURVEY,
     )

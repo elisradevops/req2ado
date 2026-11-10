@@ -1,0 +1,286 @@
+import AxeBuilder from '@axe-core/playwright';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { expect, test, type Page } from '@playwright/test';
+import { HEBREW_TITLE, LONG_TITLE, MIXED_TITLE, type WarningVariant } from '../fixtures/diff-ready';
+import { openDiffReadyJob } from '../fixtures/harness';
+
+// The review screen of a finished job (P14: one approval gate, the title shown
+// once in the details dialog, first Feature open, two different row signals).
+// The project (see playwright.config.ts) supplies the width: 320, 390, 1024, 1440.
+// No backend: the API is mocked and the tree is fixtures/diff-ready.ts.
+
+const dialog = (page: Page) => page.getByRole('dialog');
+const openDetails = async (page: Page, title: string) => {
+  await page.getByRole('button', { name: `Details for ${title}` }).click();
+  await dialog(page).waitFor();
+  // The dialog scales in; measuring mid-animation reports a tiny box (seen at 320px).
+  await dialog(page).evaluate((el) => Promise.all(el.getAnimations().map((a) => a.finished)));
+};
+
+/** Horizontal overflow of the page itself, in px (0 = none). */
+const pageOverflow = (page: Page) =>
+  page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+
+/**
+ * WCAG contrast ratio of an element's text/icon colour against the first
+ * opaque background found walking up. Colours go through a canvas so modern
+ * colour syntax (oklch, color-mix) resolves to plain RGB.
+ */
+async function contrastOf(page: Page, selector: string): Promise<number> {
+  return page.evaluate((sel) => {
+    const rgb = (css: string): [number, number, number, number] => {
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 1;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+      ctx.clearRect(0, 0, 1, 1);
+      ctx.fillStyle = css;
+      ctx.fillRect(0, 0, 1, 1);
+      const [r, g, b, a] = ctx.getImageData(0, 0, 1, 1).data;
+      return [r, g, b, a / 255];
+    };
+    const lum = ([r, g, b]: number[]) => {
+      const f = (v: number) => {
+        const c = v / 255;
+        return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+      };
+      return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+    };
+    const el = document.querySelector(sel);
+    if (!el) throw new Error(`no element for ${sel}`);
+    const fg = rgb(getComputedStyle(el).color);
+    let bg: [number, number, number, number] = [255, 255, 255, 1];
+    for (let node: Element | null = el; node; node = node.parentElement) {
+      const candidate = rgb(getComputedStyle(node).backgroundColor);
+      if (candidate[3] > 0.99) { bg = candidate; break; }
+    }
+    const [hi, lo] = [lum(fg), lum(bg)].sort((a, b) => b - a);
+    return (hi + 0.05) / (lo + 0.05);
+  }, selector);
+}
+
+test.describe('approval gate line', () => {
+  const cases: [WarningVariant, RegExp | null][] = [
+    ['none', null],
+    ['one', /^[\d\s]*warning needs your attention before you approve\.$/],
+    ['many', /^[\d\s]*warnings need your attention before you approve\.$/],
+  ];
+  for (const [variant, wording] of cases) {
+    test(`${variant} warning(s): ${wording ? 'states the gate once, with matching grammar' : 'no gate line'}`, async ({ page }) => {
+      await openDiffReadyJob(page, variant);
+      const gate = page.getByTestId('approval-gate');
+      if (!wording) {
+        await expect(gate).toHaveCount(0);
+        return;
+      }
+      await expect(gate).toHaveCount(1);
+      // The count is an animated odometer whose text is every digit column ("0123456789") and exposes no readable value,
+      // so only the wording around it is checked; singular vs plural still tells one warning kind from several.
+      await expect(gate).toHaveText(wording);
+      // The separate banner this line replaced must be gone.
+      await expect(page.getByRole('button', { name: 'Go to warnings' })).toHaveCount(0);
+    });
+  }
+});
+
+test.describe('tree defaults', () => {
+  test('first Feature with children is open, the next is closed, a childless one has no toggle', async ({ page }) => {
+    // The tree is virtualized: a tall viewport (same width) keeps every fixture row mounted.
+    await page.setViewportSize({ width: page.viewportSize()!.width, height: 1800 });
+    await openDiffReadyJob(page);
+    await expect(page.getByRole('button', { name: 'Collapse Core module' })).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.getByRole('button', { name: 'Expand Power and thermal' })).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.getByText('Hidden until the Feature is opened')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /(expand|collapse) childless feature/i })).toHaveCount(0);
+  });
+
+  test('flag icon and issue triangle are two different, named signals', async ({ page }) => {
+    await openDiffReadyJob(page);
+    // Wide rows carry the icons; phone rows use their own narrow marker (unchanged by P14).
+    test.skip((page.viewportSize()?.width ?? 0) < 768, 'phone rows use the narrow marker');
+    await expect(page.getByRole('img', { name: 'Needs review' }).first()).toBeVisible();
+    await expect(page.getByRole('img', { name: /quality issues?/i }).first()).toBeVisible();
+  });
+});
+
+test.describe('layout at this width', () => {
+  test('no horizontal page scroll, header controls stay on screen and never overlap', async ({ page }) => {
+    await openDiffReadyJob(page);
+    expect(await pageOverflow(page)).toBe(0);
+
+    const names = ['Reject', 'Write to Azure DevOps', 'Download summary', 'Resubmit', 'Delete'];
+    const boxes: { name: string; x: number; y: number; w: number; h: number }[] = [];
+    for (const name of names) {
+      const button = page.getByRole('button', { name }).first();
+      if (!(await button.isVisible().catch(() => false))) continue;
+      const box = await button.boundingBox();
+      if (box) boxes.push({ name, x: box.x, y: box.y, w: box.width, h: box.height });
+    }
+    const viewportWidth = page.viewportSize()!.width;
+    for (const b of boxes) {
+      expect(b.x, `${b.name} starts on screen`).toBeGreaterThanOrEqual(0);
+      expect(b.x + b.w, `${b.name} ends on screen`).toBeLessThanOrEqual(viewportWidth + 0.5);
+    }
+    for (let i = 0; i < boxes.length; i++) {
+      for (let j = i + 1; j < boxes.length; j++) {
+        const [a, b] = [boxes[i], boxes[j]];
+        const overlap = a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+        expect(overlap, `${a.name} overlaps ${b.name}`).toBe(false);
+      }
+    }
+  });
+});
+
+test.describe('details dialog title', () => {
+  const cases: [string, string][] = [
+    ['long English title', LONG_TITLE],
+    ['Hebrew title', HEBREW_TITLE],
+    ['mixed Hebrew and Latin title', MIXED_TITLE],
+  ];
+  for (const [label, title] of cases) {
+    test(`${label}: shown once, never collapses to a sliver, no page overflow`, async ({ page }, testInfo) => {
+      await openDiffReadyJob(page);
+      await openDetails(page, title);
+
+      const header = dialog(page).locator('span[title]', { hasText: title.slice(0, 20) }).first();
+      await expect(header).toBeVisible();
+      await expect(header).toHaveAttribute('title', title);
+      // The browser picks the direction from the text: a Hebrew title resolves to rtl, an English one stays ltr.
+      await expect(header).toHaveAttribute('dir', 'auto');
+      if (title === HEBREW_TITLE) expect(await header.evaluate((el) => getComputedStyle(el).direction)).toBe('rtl');
+      // The bug this guards: a flex item shrinking to a few px wide and thousands of px tall.
+      const box = (await header.boundingBox())!;
+      expect(box.width, 'title is a readable width').toBeGreaterThan(Math.min(140, page.viewportSize()!.width * 0.4));
+      expect(box.height, 'title is not a tall sliver').toBeLessThan(400);
+      // Shown once: the header heading carries it, and the body no longer has its own title heading.
+      await expect(dialog(page).getByRole('heading', { name: title })).toHaveCount(1);
+      await expect(dialog(page).getByRole('heading', { level: 3 })).toHaveCount(0);
+      expect(await pageOverflow(page)).toBe(0);
+
+      const shot = await page.screenshot();
+      await testInfo.attach(`${label}-${testInfo.project.name}`, { body: shot, contentType: 'image/png' });
+      // E2E_SHOTS=<dir> also writes the images there, since a passing test's attachments are not kept.
+      if (process.env.E2E_SHOTS) {
+        mkdirSync(process.env.E2E_SHOTS, { recursive: true });
+        writeFileSync(`${process.env.E2E_SHOTS}/${label.replace(/\s+/g, '-')}-${testInfo.project.name}.png`, shot);
+      }
+    });
+  }
+
+  test('has an accessible name and the Edit button only on an editable item', async ({ page }) => {
+    await openDiffReadyJob(page);
+    await openDetails(page, 'Flagged only');
+    await expect(dialog(page)).toHaveAccessibleName(/flagged only/i);
+    await expect(dialog(page).getByRole('button', { name: 'Edit', exact: true })).toHaveCount(1);
+    await dialog(page).getByRole('button', { name: 'Close' }).click();
+    await expect(dialog(page)).toHaveCount(0);
+    await openDetails(page, 'Already in Azure DevOps');
+    await expect(dialog(page).getByRole('button', { name: 'Edit', exact: true })).toHaveCount(0);
+  });
+
+  test('shows the description as plain text and raises no chat error toast', async ({ page }) => {
+    await openDiffReadyJob(page);
+    await openDetails(page, 'Flagged only');
+    await expect(dialog(page).getByText('Synthetic description.')).toBeVisible();
+    await expect(dialog(page).getByText('<p>')).toHaveCount(0);
+    // The chat socket closes (or not) shortly after the pane mounts; give a failure time to show.
+    await page.waitForTimeout(1000);
+    await expect(page.getByText(/Chat reply failed/)).toHaveCount(0);
+  });
+
+  test('Hebrew markdown resolves to rtl and English stays ltr, in the description and the chat', async ({ page }) => {
+    await openDiffReadyJob(page);
+    // Registered after openDiffReadyJob: Playwright runs the most recent matching route first.
+    const origin = new URL(page.url()).origin;
+    await page.route('**/diff/*/chat', (route) =>
+      route.fulfill({
+        json: {
+          messages: [
+            { id: 'm1', role: 'user', content: 'שלום, תקצר בבקשה', proposedTitle: null, proposedDescription: null, model: null, createdAt: '2026-11-06T00:00:00Z' },
+            { id: 'm2', role: 'assistant', content: 'בוודאי (CPU).\n\n- נקודה\n\nEnglish reply.', proposedTitle: null, proposedDescription: null, model: 'gemma4:26b', createdAt: '2026-11-06T00:00:01Z' },
+          ],
+        },
+        headers: { 'access-control-allow-origin': origin, 'access-control-allow-credentials': 'true' },
+      }),
+    );
+    await openDetails(page, HEBREW_TITLE);
+    const direction = (text: string | RegExp, tag: string) =>
+      dialog(page).locator(tag, { hasText: text }).first().evaluate((el) => getComputedStyle(el).direction);
+    // Description
+    expect(await direction('דרישה', 'h2')).toBe('rtl');
+    expect(await direction('המערכת תספק עיבוד', 'p')).toBe('rtl');
+    expect(await direction('פריט ראשון', 'li')).toBe('rtl');
+    expect(await direction('שלב אחד', 'li')).toBe('rtl');
+    expect(await direction('The system shall boot', 'p')).toBe('ltr');
+    // A Hebrew block hugs the right edge of the description pane (not the right edge of a 68ch box), and an English one the left.
+    const edges = (text: string, tag = 'p') =>
+      dialog(page).locator(tag, { hasText: text }).first().evaluate((el) => {
+        const pane = el.parentElement!.parentElement!;
+        const style = getComputedStyle(pane);
+        const content = pane.getBoundingClientRect();
+        const box = el.getBoundingClientRect();
+        return {
+          fromRight: Math.round(content.right - parseFloat(style.paddingRight) - box.right),
+          fromLeft: Math.round(box.left - content.left - parseFloat(style.paddingLeft)),
+        };
+      });
+    expect((await edges('המערכת תספק עיבוד')).fromRight).toBeLessThanOrEqual(2);
+    expect((await edges('פריט ראשון', 'ul')).fromRight).toBeLessThanOrEqual(2);
+    expect((await edges('שלב אחד', 'ol')).fromRight).toBeLessThanOrEqual(2);
+    expect((await edges('The system shall boot')).fromLeft).toBeLessThanOrEqual(2);
+    // Phone widths show Details and Chat as tabs; wide ones show both panes.
+    const chatTab = dialog(page).getByRole('tab', { name: 'Chat' });
+    if (await chatTab.count()) await chatTab.click();
+    // Chat: the user bubble, an assistant paragraph and list item, and an English reply
+    expect(await direction('שלום, תקצר', 'p')).toBe('rtl');
+    expect(await direction('בוודאי', 'p')).toBe('rtl');
+    expect(await direction('נקודה', 'li')).toBe('rtl');
+    expect(await direction('English reply', 'p')).toBe('ltr');
+    expect(await pageOverflow(page)).toBe(0);
+  });
+
+  test('Hebrew text direction is reported (a finding, not a gate)', async ({ page }, testInfo) => {
+    await openDiffReadyJob(page);
+    await openDetails(page, HEBREW_TITLE);
+    const info = await dialog(page).locator('span[title]', { hasText: HEBREW_TITLE.slice(0, 8) }).first().evaluate((el) => ({
+      dirAttr: el.getAttribute('dir'),
+      direction: getComputedStyle(el).direction,
+      textAlign: getComputedStyle(el).textAlign,
+    }));
+    testInfo.annotations.push({ type: 'hebrew-title-direction', description: JSON.stringify(info) });
+  });
+});
+
+test.describe('contrast of the P14 signals', () => {
+  for (const scheme of ['light', 'dark'] as const) {
+    test(`flag icon >= 3:1 and gate line >= 4.5:1 (${scheme})`, async ({ page }) => {
+      await page.emulateMedia({ colorScheme: scheme });
+      await openDiffReadyJob(page);
+      test.skip((page.viewportSize()?.width ?? 0) < 768, 'the flag icon is a wide-row element');
+      expect(await contrastOf(page, '[role="img"][aria-label="Needs review"]')).toBeGreaterThanOrEqual(3);
+      expect(await contrastOf(page, '[data-testid="approval-gate"]')).toBeGreaterThanOrEqual(4.5);
+    });
+  }
+});
+
+test.describe('accessibility scan', () => {
+  type Results = Awaited<ReturnType<AxeBuilder['analyze']>>;
+  const seriousOnly = (results: Results) =>
+    results.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical').map((v) => `${v.id}: ${v.nodes.length}`);
+
+  test('the warnings card header (where the approval gate now lives) has no serious or critical violations', async ({ page }) => {
+    await openDiffReadyJob(page, 'many');
+    const results = await new AxeBuilder({ page }).include('section[aria-label="Integrity warnings"] > div:first-child').analyze();
+    expect(seriousOnly(results)).toEqual([]);
+  });
+
+  test('whole page: no serious or critical violations', async ({ page }) => {
+    await openDiffReadyJob(page, 'many');
+    expect(seriousOnly(await new AxeBuilder({ page }).analyze())).toEqual([]);
+  });
+
+  test('whole page with the details dialog open: no serious or critical violations', async ({ page }) => {
+    await openDiffReadyJob(page, 'many');
+    await openDetails(page, LONG_TITLE);
+    expect(seriousOnly(await new AxeBuilder({ page }).analyze())).toEqual([]);
+  });
+});

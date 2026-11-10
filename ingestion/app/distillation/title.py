@@ -21,8 +21,22 @@ _SENTENCE_END_PATTERN = re.compile(r"(?<=[.!?])\s+")
 # module's requirement-document content actually produces ("e.g.", "i.e.",
 # "etc.") without over-engineering a full abbreviation dictionary.
 _ABBREVIATIONS = {
-    "e.g.", "i.e.", "etc.", "vs.", "approx.", "fig.", "eq.", "no.",
-    "mr.", "mrs.", "ms.", "dr.", "st.", "cf.", "pp.", "al.",
+    "e.g.",
+    "i.e.",
+    "etc.",
+    "vs.",
+    "approx.",
+    "fig.",
+    "eq.",
+    "no.",
+    "mr.",
+    "mrs.",
+    "ms.",
+    "dr.",
+    "st.",
+    "cf.",
+    "pp.",
+    "al.",
 }
 
 
@@ -88,7 +102,14 @@ def extract_baseline_title(text: str, max_length: int = 256) -> str:
 # name a node with (e.g. an untitled table row, a bare "3." heading).
 # Casefold-compared, so "Requirement", "REQUIREMENT", "requirement " all match.
 _GENERIC_TITLE_LABELS = {
-    "requirement", "item", "section", "untitled", "unnamed", "unknown", "n/a", "tbd",
+    "requirement",
+    "item",
+    "section",
+    "untitled",
+    "unnamed",
+    "unknown",
+    "n/a",
+    "tbd",
 }
 # A title this short (after stripping) carries essentially no information for
 # a reviewer to recognize the item by, regardless of whether it happens to

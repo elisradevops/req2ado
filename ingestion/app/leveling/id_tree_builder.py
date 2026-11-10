@@ -17,6 +17,7 @@ the document's own author wrote, `grounding_score` is COMPUTED (via the
 same `_grounding_score` every other SURVEY node uses), never a hardcoded
 constant, and nothing here ever invents a node that has no real source
 row backing it."""
+
 from __future__ import annotations
 
 import hashlib
@@ -29,13 +30,7 @@ from app.canonical.model import SourceRef, Table
 from app.distillation.description import assemble_description
 from app.distillation.title import extract_baseline_title
 from app.leveling.bounded_chunks import run_chunks_bounded
-from app.leveling.live_context import current_stage_counter
 from app.leveling.customer_id import extract_customer_requirement_code
-from app.leveling.id_hierarchy import HierarchyRow
-from app.leveling.narration_publisher import LevelingProgress, ProgressCallback
-from app.leveling.tree_builder import _hash_description, _table_to_html
-from app.survey.keyed_calls import KeyedEntries, normalize_keyed_result, retry_omitted
-from app.workitem.model import IntegrityWarning, RequirementTag, WarningKind, WorkItemMode, WorkItemNode, WorkItemType
 
 # Previously a second, independent copy of llm_leveling.py's own
 # _significant_words/_grounding_score with an ASCII-only word pattern --
@@ -50,8 +45,20 @@ from app.workitem.model import IntegrityWarning, RequirementTag, WarningKind, Wo
 # create. Aliased under the original private names so every call site below
 # needs no change.
 from app.leveling.grounding import grounding_score as _grounding_score
-from app.leveling.grounding import significant_words as _significant_words
-
+from app.leveling.id_hierarchy import HierarchyRow
+from app.leveling.live_context import current_stage_counter
+from app.leveling.narration_publisher import LevelingProgress, ProgressCallback
+from app.leveling.tree_builder import _hash_description, _table_to_html, strip_repeated_titles
+from app.survey.keyed_calls import KeyedEntries, normalize_keyed_result, retry_omitted
+from app.workitem.model import (
+    IntegrityWarning,
+    RequirementTag,
+    WarningKind,
+    WarningSeverity,
+    WorkItemMode,
+    WorkItemNode,
+    WorkItemType,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,16 +82,25 @@ def _recover_keyed_result(
     if isinstance(raw_result, KeyedEntries):
         return raw_result, raw_result.reason == "no_matching_keys"
     result = normalize_keyed_result(raw_result, chunk_ids)
-    if any(node_id not in result for node_id in chunk_ids) and not any(node_id in result for node_id in chunk_ids):
+    if any(node_id not in result for node_id in chunk_ids) and not any(
+        node_id in result for node_id in chunk_ids
+    ):
         # Ids only, never content, each key cut short -- the line that was missing when a prod job
         # returned empty structured answers for every pass and nothing recorded what came back.
-        top_level_keys = [str(key)[:40] for key in list(raw_result)[:3]] if isinstance(raw_result, dict) else []
+        top_level_keys = (
+            [str(key)[:40] for key in list(raw_result)[:3]] if isinstance(raw_result, dict) else []
+        )
         logger.warning(
             "%s enhancement: response had none of the %d requested ids (type=%s, top-level keys=%d, first keys=%s)",
-            pass_name, len(chunk_ids), type(raw_result).__name__,
-            len(raw_result) if isinstance(raw_result, dict) else 0, top_level_keys,
+            pass_name,
+            len(chunk_ids),
+            type(raw_result).__name__,
+            len(raw_result) if isinstance(raw_result, dict) else 0,
+            top_level_keys,
         )
-    result, _extra_calls = retry_omitted(result, chunk_ids, payload, call, f"{pass_name} enhancement")
+    result, _extra_calls = retry_omitted(
+        result, chunk_ids, payload, call, f"{pass_name} enhancement"
+    )
     return result, not any(node_id in result for node_id in chunk_ids)
 
 
@@ -110,12 +126,16 @@ def _chunk_failure_warning(
     if progress_callback is not None:
         progress_callback(
             LevelingProgress(
-                phase="chunk_warning", branch_index=None, branch_count=0,
-                blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[],
+                phase="chunk_warning",
+                branch_index=None,
+                branch_count=0,
+                blocks_done=0,
+                blocks_total=0,
+                kb_grounded=False,
+                kb_citations=[],
                 warning_message=message,
             )
         )
-
 
 
 def _count_done(stage: str, count: int) -> None:
@@ -170,7 +190,9 @@ class TitleTagClient(Protocol):
     unit of work (see SectionAnalysisClient's own docstring history)."""
 
     def title_and_tags_for_rows(
-        self, texts_by_row_id: dict[str, str], user_id: str | None = None,
+        self,
+        texts_by_row_id: dict[str, str],
+        user_id: str | None = None,
     ) -> dict[str, dict]: ...
 
 
@@ -277,7 +299,9 @@ def _apply_title_tag_pass(
     if not leaf_node_ids:
         return
     by_id = {n.local_id: n for n in nodes}
-    total_chunks = -(-len(leaf_node_ids) // _TITLE_TAG_CHUNK_SIZE)  # ceil division, no float rounding
+    total_chunks = -(
+        -len(leaf_node_ids) // _TITLE_TAG_CHUNK_SIZE
+    )  # ceil division, no float rounding
     # PHASE 1 -- chunk construction, on the calling thread, in document
     # order. Narration is NOT fired here: see _fire_chunk_kickoff below.
     chunk_payloads: list[dict[str, str]] = []
@@ -308,7 +332,9 @@ def _apply_title_tag_pass(
         label_prefix = f"{subtree_label_prefix} -- " if subtree_label_prefix else ""
         progress_callback(
             LevelingProgress(
-                phase="deterministic_subtree", branch_index=None, branch_count=0,
+                phase="deterministic_subtree",
+                branch_index=None,
+                branch_count=0,
                 # blocks_done/blocks_total (not 0/0) -- chunk_num/total_chunks
                 # were already being computed for the narration TEXT below;
                 # feeding the same real fraction into these fields lets
@@ -318,8 +344,12 @@ def _apply_title_tag_pass(
                 # this step yet" for the whole duration of a multi-chunk
                 # pass (confirmed live: 2+ minutes with zero numeric signal
                 # on a real 682-block document).
-                blocks_done=start, blocks_total=len(leaf_node_ids), kb_grounded=False, kb_citations=[],
-                subtree_index=subtree_index, subtree_count=subtree_count,
+                blocks_done=start,
+                blocks_total=len(leaf_node_ids),
+                kb_grounded=False,
+                kb_citations=[],
+                subtree_index=subtree_index,
+                subtree_count=subtree_count,
                 subtree_label=(
                     f"{label_prefix}enhancing titles/tags for {len(chunk_ids)} node(s) "
                     f"(chunk {chunk_num} of {total_chunks})"
@@ -360,22 +390,33 @@ def _apply_title_tag_pass(
             if progress_callback is not None:
                 progress_callback(
                     LevelingProgress(
-                        phase="chunk_warning", branch_index=None, branch_count=0,
-                        blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[],
+                        phase="chunk_warning",
+                        branch_index=None,
+                        branch_count=0,
+                        blocks_done=0,
+                        blocks_total=0,
+                        kb_grounded=False,
+                        kb_citations=[],
                         warning_message=message,
                     )
                 )
             continue
         result, nothing_matched = _recover_keyed_result(
-            outcome.value, chunk_ids, chunk_payloads[outcome.chunk_index],
-            lambda payload: title_tag_client.title_and_tags_for_rows(payload, user_id=user_id), "title_tag",
+            outcome.value,
+            chunk_ids,
+            chunk_payloads[outcome.chunk_index],
+            lambda payload: title_tag_client.title_and_tags_for_rows(payload, user_id=user_id),
+            "title_tag",
         )
         if nothing_matched:
             _chunk_failure_warning(
-                warnings, progress_callback,
+                warnings,
+                progress_callback,
                 f"Title/tag enhancement returned no entries for any of the {len(chunk_ids)} requested node(s), even after a "
                 "retry -- they kept their original text.",
-                chunk_ids, "title_tag", "no_matching_keys",
+                chunk_ids,
+                "title_tag",
+                "no_matching_keys",
             )
             continue
 
@@ -396,8 +437,13 @@ def _apply_title_tag_pass(
             if progress_callback is not None:
                 progress_callback(
                     LevelingProgress(
-                        phase="chunk_warning", branch_index=None, branch_count=0,
-                        blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[],
+                        phase="chunk_warning",
+                        branch_index=None,
+                        branch_count=0,
+                        blocks_done=0,
+                        blocks_total=0,
+                        kb_grounded=False,
+                        kb_citations=[],
                         warning_message=message,
                     )
                 )
@@ -431,7 +477,9 @@ class ParentSummaryClient(Protocol):
     TitleTagClient."""
 
     def summarize_parent_nodes(
-        self, nodes_by_id: dict[str, dict], user_id: str | None = None,
+        self,
+        nodes_by_id: dict[str, dict],
+        user_id: str | None = None,
     ) -> dict[str, dict]: ...
 
 
@@ -458,7 +506,11 @@ _PARENT_SUMMARY_TOKEN_BUDGET = 6_000
 
 
 def _estimate_parent_payload_tokens(payload: dict) -> int:
-    text = payload["title"] + "".join(payload["requirement_titles"]) + "".join(payload["requirement_descriptions"])
+    text = (
+        payload["title"]
+        + "".join(payload["requirement_titles"])
+        + "".join(payload["requirement_descriptions"])
+    )
     return len(text) // _CHARS_PER_TOKEN_ESTIMATE
 
 
@@ -511,7 +563,9 @@ def _normalize_title(title: str) -> str:
     return " ".join(re.sub(r"[^\w\s]", " ", title.casefold()).split())
 
 
-def _colliding_child_title(title: str, requirement_titles: list[str], child_titles: list[str]) -> str | None:
+def _colliding_child_title(
+    title: str, requirement_titles: list[str], child_titles: list[str]
+) -> str | None:
     """The first descendant-requirement or direct-child title that `title`
     equals after normalisation, else None. An empty normalised title never
     collides (nothing meaningful to compare)."""
@@ -525,7 +579,10 @@ def _colliding_child_title(title: str, requirement_titles: list[str], child_titl
 
 
 def resolve_parent_title(
-    new_title: str, current_title: str, requirement_titles: list[str], child_titles: list[str],
+    new_title: str,
+    current_title: str,
+    requirement_titles: list[str],
+    child_titles: list[str],
 ) -> dict:
     """The model's proposed title for an Epic/Feature, checked against the titles under it.
     Returns {"title": new_title} when it is distinct, else {"collision": {...}} -- the pass
@@ -540,7 +597,10 @@ def resolve_parent_title(
             "rejectedTitle": new_title,
             "fallbackTitle": current_title,
             "collidesWith": collided_with,
-            "headingAlsoCollides": _colliding_child_title(current_title, requirement_titles, child_titles) is not None,
+            "headingAlsoCollides": _colliding_child_title(
+                current_title, requirement_titles, child_titles
+            )
+            is not None,
         }
     }
 
@@ -562,6 +622,8 @@ def parent_collision_warning(node_id: str, collision: dict) -> IntegrityWarning:
         message,
         node_ids=[node_id],
         detail={"pass": "parent_summary", **collision},
+        # The original heading was kept, so nothing is left for a reviewer unless it collides too.
+        severity=None if collision["headingAlsoCollides"] else WarningSeverity.AUTO_FIXED,
     )
 
 
@@ -580,12 +642,16 @@ def parent_summary_updates(
     updates: dict = {}
     raw_title = entry.get("title")
     if isinstance(raw_title, str) and raw_title.strip():
-        updates.update(resolve_parent_title(raw_title.strip(), current_title, requirement_titles, child_titles))
+        updates.update(
+            resolve_parent_title(raw_title.strip(), current_title, requirement_titles, child_titles)
+        )
     raw_description = entry.get("description")
     if isinstance(raw_description, str) and raw_description.strip():
         description = raw_description.strip()
         updates["description"] = description
-        updates["grounding_score"] = _grounding_score(description, "\n\n".join(requirement_descriptions))
+        updates["grounding_score"] = _grounding_score(
+            description, "\n\n".join(requirement_descriptions)
+        )
     return updates
 
 
@@ -651,7 +717,9 @@ def _apply_parent_summary_pass(
 
     payload_by_id: dict[str, dict] = {}
     for node_id in parent_node_ids:
-        requirement_texts = _collect_descendant_requirement_texts(node_id, children_by_parent, by_id)
+        requirement_texts = _collect_descendant_requirement_texts(
+            node_id, children_by_parent, by_id
+        )
         payload_by_id[node_id] = {
             "title": by_id[node_id].title,
             "requirement_titles": [title for title, _ in requirement_texts],
@@ -684,7 +752,9 @@ def _apply_parent_summary_pass(
     # PHASE 2 -- only the client call leaves the calling thread.
     outcomes = run_chunks_bounded(
         chunk_payloads,
-        lambda nodes_by_id_payload: client.summarize_parent_nodes(nodes_by_id_payload, user_id=user_id),
+        lambda nodes_by_id_payload: client.summarize_parent_nodes(
+            nodes_by_id_payload, user_id=user_id
+        ),
         chunk_concurrency,
     )
 
@@ -710,22 +780,33 @@ def _apply_parent_summary_pass(
             if progress_callback is not None:
                 progress_callback(
                     LevelingProgress(
-                        phase="chunk_warning", branch_index=None, branch_count=0,
-                        blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[],
+                        phase="chunk_warning",
+                        branch_index=None,
+                        branch_count=0,
+                        blocks_done=0,
+                        blocks_total=0,
+                        kb_grounded=False,
+                        kb_citations=[],
                         warning_message=message,
                     )
                 )
             continue
         result, nothing_matched = _recover_keyed_result(
-            outcome.value, chunk_ids, chunk_payloads[outcome.chunk_index],
-            lambda payload: client.summarize_parent_nodes(payload, user_id=user_id), "parent_summary",
+            outcome.value,
+            chunk_ids,
+            chunk_payloads[outcome.chunk_index],
+            lambda payload: client.summarize_parent_nodes(payload, user_id=user_id),
+            "parent_summary",
         )
         if nothing_matched:
             _chunk_failure_warning(
-                warnings, progress_callback,
+                warnings,
+                progress_callback,
                 f"Parent title/description enhancement returned no entries for any of the {len(chunk_ids)} requested node(s), even after a "
                 "retry -- they kept their original text.",
-                chunk_ids, "parent_summary", "no_matching_keys",
+                chunk_ids,
+                "parent_summary",
+                "no_matching_keys",
             )
             continue
 
@@ -747,8 +828,13 @@ def _apply_parent_summary_pass(
             if progress_callback is not None:
                 progress_callback(
                     LevelingProgress(
-                        phase="chunk_warning", branch_index=None, branch_count=0,
-                        blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[],
+                        phase="chunk_warning",
+                        branch_index=None,
+                        branch_count=0,
+                        blocks_done=0,
+                        blocks_total=0,
+                        kb_grounded=False,
+                        kb_citations=[],
                         warning_message=message,
                     )
                 )
@@ -843,7 +929,9 @@ class SynthesisClient(Protocol):
     verbatim source text exactly as constructed."""
 
     def synthesize_leaf_requirements(
-        self, items_by_id: dict[str, dict], user_id: str | None = None,
+        self,
+        items_by_id: dict[str, dict],
+        user_id: str | None = None,
     ) -> dict[str, dict]: ...
 
 
@@ -912,7 +1000,9 @@ def _apply_synthesis_pass(
             current = ancestor.parent_local_id
         return " > ".join(reversed(labels))
 
-    total_chunks = -(-len(leaf_node_ids) // _SYNTHESIS_CHUNK_SIZE)  # ceil division, no float rounding
+    total_chunks = -(
+        -len(leaf_node_ids) // _SYNTHESIS_CHUNK_SIZE
+    )  # ceil division, no float rounding
     # Payloads built HERE, above the chunk loop -- not inside it as before.
     # `context` reads ancestors' node.title, which this pass itself mutates
     # below, so building per chunk inside the loop made a node's context
@@ -953,11 +1043,17 @@ def _apply_synthesis_pass(
         label_prefix = f"{subtree_label_prefix} -- " if subtree_label_prefix else ""
         progress_callback(
             LevelingProgress(
-                phase="deterministic_subtree", branch_index=None, branch_count=0,
+                phase="deterministic_subtree",
+                branch_index=None,
+                branch_count=0,
                 # See _apply_title_tag_pass's identical comment above --
                 # same fix, same reasoning.
-                blocks_done=start, blocks_total=len(leaf_node_ids), kb_grounded=False, kb_citations=[],
-                subtree_index=subtree_index, subtree_count=subtree_count,
+                blocks_done=start,
+                blocks_total=len(leaf_node_ids),
+                kb_grounded=False,
+                kb_citations=[],
+                subtree_index=subtree_index,
+                subtree_count=subtree_count,
                 subtree_label=(
                     f"{label_prefix}synthesizing requirement text for {len(chunk_ids)} node(s) "
                     f"(chunk {chunk_num} of {total_chunks})"
@@ -968,7 +1064,9 @@ def _apply_synthesis_pass(
     # PHASE 2 -- only the client call leaves the calling thread.
     outcomes = run_chunks_bounded(
         chunk_payloads,
-        lambda items_by_id: synthesis_client.synthesize_leaf_requirements(items_by_id, user_id=user_id),
+        lambda items_by_id: synthesis_client.synthesize_leaf_requirements(
+            items_by_id, user_id=user_id
+        ),
         chunk_concurrency,
     )
 
@@ -994,22 +1092,33 @@ def _apply_synthesis_pass(
             if progress_callback is not None:
                 progress_callback(
                     LevelingProgress(
-                        phase="chunk_warning", branch_index=None, branch_count=0,
-                        blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[],
+                        phase="chunk_warning",
+                        branch_index=None,
+                        branch_count=0,
+                        blocks_done=0,
+                        blocks_total=0,
+                        kb_grounded=False,
+                        kb_citations=[],
                         warning_message=message,
                     )
                 )
             continue
         result, nothing_matched = _recover_keyed_result(
-            outcome.value, chunk_ids, chunk_payloads[outcome.chunk_index],
-            lambda payload: synthesis_client.synthesize_leaf_requirements(payload, user_id=user_id), "synthesis",
+            outcome.value,
+            chunk_ids,
+            chunk_payloads[outcome.chunk_index],
+            lambda payload: synthesis_client.synthesize_leaf_requirements(payload, user_id=user_id),
+            "synthesis",
         )
         if nothing_matched:
             _chunk_failure_warning(
-                warnings, progress_callback,
+                warnings,
+                progress_callback,
                 f"Requirement-text synthesis returned no entries for any of the {len(chunk_ids)} requested node(s), even after a "
                 "retry -- they kept their original text.",
-                chunk_ids, "synthesis", "no_matching_keys",
+                chunk_ids,
+                "synthesis",
+                "no_matching_keys",
             )
             continue
 
@@ -1030,8 +1139,13 @@ def _apply_synthesis_pass(
             if progress_callback is not None:
                 progress_callback(
                     LevelingProgress(
-                        phase="chunk_warning", branch_index=None, branch_count=0,
-                        blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[],
+                        phase="chunk_warning",
+                        branch_index=None,
+                        branch_count=0,
+                        blocks_done=0,
+                        blocks_total=0,
+                        kb_grounded=False,
+                        kb_citations=[],
                         warning_message=message,
                     )
                 )
@@ -1070,6 +1184,9 @@ def build_hierarchy_subtree(
     # (2/3): a heading's own row.parent_index chain already reaches all the
     # way to a true document root with nothing else to prepend.
     section_path_root: str | None = None,
+    # False when the caller folds more text into these nodes afterwards and
+    # strips (strip_repeated_titles) itself once done, so identity stays stable.
+    strip_titles: bool = True,
     # Forwarded unchanged to _apply_synthesis_pass/_apply_title_tag_pass
     # below -- see app.config.Settings.survey_chunk_concurrency. 1 (the
     # default) is the byte-identical previous behavior.
@@ -1297,20 +1414,34 @@ def build_hierarchy_subtree(
             if row.needs_synthesis and i in node_index_by_row
         ]
         _apply_synthesis_pass(
-            nodes, synthesis_leaf_ids, synthesis_client, warnings,
-            progress_callback=progress_callback, subtree_index=subtree_index,
-            subtree_count=subtree_count, subtree_label_prefix=subtree_label,
-            chunk_concurrency=chunk_concurrency, user_id=user_id,
+            nodes,
+            synthesis_leaf_ids,
+            synthesis_client,
+            warnings,
+            progress_callback=progress_callback,
+            subtree_index=subtree_index,
+            subtree_count=subtree_count,
+            subtree_label_prefix=subtree_label,
+            chunk_concurrency=chunk_concurrency,
+            user_id=user_id,
         )
         synthesized_ids = set(synthesis_leaf_ids)
 
     if title_tag_client is not None:
-        leaf_node_ids = [node_id for node_id in requirement_leaf_ids if node_id not in synthesized_ids]
+        leaf_node_ids = [
+            node_id for node_id in requirement_leaf_ids if node_id not in synthesized_ids
+        ]
         _apply_title_tag_pass(
-            nodes, leaf_node_ids, title_tag_client, warnings,
-            progress_callback=progress_callback, subtree_index=subtree_index,
-            subtree_count=subtree_count, subtree_label_prefix=subtree_label,
-            chunk_concurrency=chunk_concurrency, user_id=user_id,
+            nodes,
+            leaf_node_ids,
+            title_tag_client,
+            warnings,
+            progress_callback=progress_callback,
+            subtree_index=subtree_index,
+            subtree_count=subtree_count,
+            subtree_label_prefix=subtree_label,
+            chunk_concurrency=chunk_concurrency,
+            user_id=user_id,
         )
 
     # parent_summary_client (Epic/Feature title+description enhancement) is
@@ -1320,6 +1451,12 @@ def build_hierarchy_subtree(
     # a child set that's about to change. See _detect_deterministic_subtrees,
     # which runs _apply_parent_summary_pass once, after every subtree's own
     # repair has already settled the FINAL parent/child structure.
+
+    # Runs after the synthesis/title passes so they still see the full text. A
+    # caller that folds more text in afterwards passes strip_titles=False and
+    # calls strip_repeated_titles itself once it is done.
+    if strip_titles:
+        strip_repeated_titles(nodes)
 
     return nodes, warnings
 

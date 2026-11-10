@@ -14,6 +14,7 @@ genuinely pathological column wafer-thin enough to fall inside the
 tolerance (well under 5.5pt) cannot hold legible text at all, so is not a
 realistic table shape this fixture needs to defend against.
 """
+
 from pathlib import Path
 
 from reportlab.lib.pagesizes import letter

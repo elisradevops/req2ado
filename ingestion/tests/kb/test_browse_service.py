@@ -12,8 +12,24 @@ VALID_URL = "https://contoso.sharepoint.com/sites/s/Shared%20Documents"
 def test_browse_shared_folder_maps_files_and_folders() -> None:
     graph_client = MagicMock()
     graph_client.list_folder_children.return_value = [
-        GraphFolderChild(id="f1", name="spec.docx", mime_type="application/vnd.openxmlformats", size=100, is_folder=False, download_url="https://x", drive_id="drive-1"),
-        GraphFolderChild(id="d1", name="Subfolder", mime_type=None, size=0, is_folder=True, download_url=None, drive_id="drive-1"),
+        GraphFolderChild(
+            id="f1",
+            name="spec.docx",
+            mime_type="application/vnd.openxmlformats",
+            size=100,
+            is_folder=False,
+            download_url="https://x",
+            drive_id="drive-1",
+        ),
+        GraphFolderChild(
+            id="d1",
+            name="Subfolder",
+            mime_type=None,
+            size=0,
+            is_folder=True,
+            download_url=None,
+            drive_id="drive-1",
+        ),
     ]
 
     result = browse_shared_folder(VALID_URL, graph_client)
@@ -37,7 +53,15 @@ def test_browse_shared_folder_rejects_a_non_http_url_before_calling_graph() -> N
 def test_browse_subfolder_addresses_by_drive_and_item_id() -> None:
     graph_client = MagicMock()
     graph_client.list_children_by_id.return_value = [
-        GraphFolderChild(id="f2", name="nested.pdf", mime_type="application/pdf", size=50, is_folder=False, download_url="https://x", drive_id="drive-1"),
+        GraphFolderChild(
+            id="f2",
+            name="nested.pdf",
+            mime_type="application/pdf",
+            size=50,
+            is_folder=False,
+            download_url="https://x",
+            drive_id="drive-1",
+        ),
     ]
 
     result = browse_subfolder("drive-1", "item-1", graph_client)

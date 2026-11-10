@@ -103,7 +103,8 @@ describe('DestinationBar', () => {
 
   it('hatches the iteration segment instead of leaving it blank when unset', () => {
     render(<DestinationBar teamProject="Radar Systems" areaPath="Radar Systems\EW Suite" />);
-    expect(screen.getByLabelText('Iteration not set')).toBeInTheDocument();
+    // A label on a span with no role is prohibited ARIA (axe aria-prohibited-attr): it must be an img.
+    expect(screen.getByRole('img', { name: 'Iteration not set' })).toBeInTheDocument();
   });
 
   it('never hatches the state segment when unset -- state is not optional the way iteration is', () => {

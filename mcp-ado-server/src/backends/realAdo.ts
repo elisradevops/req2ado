@@ -1,5 +1,6 @@
 import type { AxiosInstance } from 'axios';
 import axios from 'axios';
+import { createHash } from 'crypto';
 import { readFileSync } from 'fs';
 import https from 'https';
 import { buildBasicAuthHeader, type AdoCredential } from '../auth/patAuth.js';
@@ -136,6 +137,22 @@ function buildWiqlQuery(fieldMatch: Record<string, string>): string {
  * JSON-Patch work-item API; linkParentChild/queryIds remain stubs for
  * Tasks 3-4.
  */
+// index.ts builds a new RealAdoBackend for every request, so each operation used to repeat the api-version probe (GET wit/fields, a collection-wide
+// listing) before its real call. The resolved version is remembered for a short time, per (org, PAT): the key holds a hash of the PAT, so a
+// version resolved for one caller is never reused for another, requests that start together share one probe, and a failed probe is dropped.
+const API_VERSION_CACHE_TTL_MS = 10 * 60 * 1000;
+const API_VERSION_CACHE_MAX_ENTRIES = 500;
+const apiVersionCache = new Map<string, { version: Promise<string>; expiresAt: number }>();
+
+function apiVersionCacheKey(credential: AdoCredential): string {
+  return `${credential.orgUrl.replace(/\/$/, '')}|${createHash('sha256').update(credential.pat).digest('hex')}`;
+}
+
+/** Forgets every remembered api-version (tests; also useful after a server upgrade). */
+export function resetApiVersionCache(): void {
+  apiVersionCache.clear();
+}
+
 export class RealAdoBackend implements AdoBackend {
   private httpClient: AxiosInstance;
   private resolvedApiVersion: string | null = null;
@@ -176,16 +193,25 @@ export class RealAdoBackend implements AdoBackend {
   // not a per-project one, so caching the resolved value across differing
   // `project` args within one instance is still correct -- one
   // RealAdoBackend instance serves exactly one credential/request
-  // (index.ts builds a fresh instance per request), so this cache never
-  // leaks across requests or credentials.
+  // (index.ts builds a fresh instance per request); the process-wide cache above
+  // is keyed by org and a hash of the PAT, so it never leaks across credentials.
   private async getApiVersion(): Promise<string> {
     if (this.resolvedApiVersion === null) {
-      this.resolvedApiVersion = await resolveApiVersion(
-        this.credential.orgUrl,
-        this.config.apiVersionLadder,
-        this.credential,
-        this.httpClient,
-      );
+      const key = apiVersionCacheKey(this.credential);
+      let entry = apiVersionCache.get(key);
+      if (!entry || entry.expiresAt <= Date.now()) {
+        if (apiVersionCache.size >= API_VERSION_CACHE_MAX_ENTRIES) apiVersionCache.clear();
+        const created = {
+          version: resolveApiVersion(this.credential.orgUrl, this.config.apiVersionLadder, this.credential, this.httpClient),
+          expiresAt: Date.now() + API_VERSION_CACHE_TTL_MS,
+        };
+        created.version.catch(() => {
+          if (apiVersionCache.get(key) === created) apiVersionCache.delete(key);
+        });
+        apiVersionCache.set(key, created);
+        entry = created;
+      }
+      this.resolvedApiVersion = await entry.version;
     }
     return this.resolvedApiVersion;
   }

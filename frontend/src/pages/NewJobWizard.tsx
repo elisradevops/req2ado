@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { LayoutGrid, AlignLeft, Image, Layers, Table2, TriangleAlert, Lock, ArrowRight, Activity, Cpu, Info } from 'lucide-react';
 import { cn } from '../lib/cn';
+import { restorableDraft, useNewJobDraftStore } from '../store/newJobDraftStore';
 import { FileTypeIcon } from '../components/FileTypeIcon';
 import { FileDropzone, type FileDropzoneStatus } from '../components/FileDropzone';
 import { ModeCards } from '../components/ModeCards';
@@ -12,10 +13,11 @@ import { ProjectPicker } from '../components/ProjectPicker';
 import { formatDestinationPreview } from '../components/DestinationBar';
 import {
   previewJob,
+  previewSummary,
   submitJob,
   listModels,
+  type ModelListing,
   getEstimate,
-  previewExposition,
   type EtaEstimate,
   type PreviewResult,
   type DocumentOverview,
@@ -26,13 +28,16 @@ import { useOrgUrl } from '../store/authStore';
 import { useToast } from '../components/ToastProvider';
 import { PageHeader } from '../ui/PageHeader';
 import { SectionCard } from '../ui/SectionCard';
+import { KbReadinessStrip } from '../components/KbReadinessStrip';
+import { OverviewLines } from '../components/DocumentOverviewCard';
 import { TextField } from '../ui/TextField';
 import { Button } from '../ui/Button';
 import { Spinner } from '../ui/Spinner';
 import { Alert } from '../ui/Alert';
 import { Chip } from '../ui/Chip';
 import { StatTile } from '../ui/StatTile';
-import { Stepper } from '../ui/Stepper';
+import { ARRIVE, useReplayOnChange } from '../ui/motion';
+import { Stepper, type StepState } from '../ui/Stepper';
 import { InfoTip } from '../ui/Tooltip';
 
 // The flow is genuinely two screens (upload, then configure+review) -- a
@@ -40,8 +45,20 @@ import { InfoTip } from '../ui/Tooltip';
 // don't exist as separate screens, since target/options/review all live on
 // one page today. Two honest stages instead of a stage count the UI can't
 // back up.
-const WIZARD_STEPS_BASELINE = ['Upload document', 'Configure & review'];
-const WIZARD_STEPS_SURVEY = ['Upload document', 'Configure & review', 'Confirm understanding'];
+// One list for both modes: the step count never changes when the mode does. BASELINE never reaches step 3, so it shows it muted and tagged
+// "SURVEY only" (a struck-through label read as an error before any mode had been chosen).
+const WIZARD_STEPS = ['Upload document', 'Configure & review', 'Confirm understanding'];
+
+function wizardSubLabels(mode: 'baseline' | 'survey'): (string | null)[] {
+  return [null, null, mode === 'baseline' ? 'SURVEY only' : null];
+}
+
+function wizardStepStates(activeIndex: number): StepState[] {
+  return WIZARD_STEPS.map((_, index) => {
+    if (index < activeIndex) return 'done';
+    return index === activeIndex ? 'awaiting' : 'pending';
+  });
+}
 
 // DESIGN.md §11.1 -- the "honest answer to 'what did it read'": one
 // `.hoverable-row` per section, not just the 4 aggregate stat tiles above
@@ -154,32 +171,115 @@ function WorthKnowingCard({ preview, parsing }: { preview: PreviewResult | null;
   );
 }
 
+/** How long the optional AI summary may take before it is given up on: later than this it is not worth showing. */
+const AI_SUMMARY_WAIT_MS = 90_000;
+
 export function NewJobWizard(): React.ReactElement {
   const navigate = useNavigate();
   const { showToast, showErrorToast } = useToast();
   const orgUrl = useOrgUrl();
-  const [step, setStep] = useState<1 | 2 | 3>(1);
-  const [file, setFile] = useState<File | null>(null);
-  const [preview, setPreview] = useState<PreviewResult | null>(null);
+  // What the user had done before leaving this page and coming back (see newJobDraftStore); empty on a first visit.
+  const [initial] = useState(restorableDraft);
+  const [step, setStep] = useState<1 | 2 | 3>(initial.step);
+  // The three steps share one container, so a step change replays a fade on it rather than remounting (focus survives; DESIGN.md section 8).
+  const stepRootRef = useRef<HTMLDivElement>(null);
+  // Only a step the person has not seen yet fades in; going back to one they have seen is an instant swap.
+  const seenSteps = useRef(new Set<number>([step]));
+  const fadeKey = useRef(String(step));
+  if (!seenSteps.current.has(step)) {
+    seenSteps.current.add(step);
+    fadeKey.current = String(step);
+  }
+  useReplayOnChange(stepRootRef, fadeKey.current, ARRIVE.fade);
+  // A step change replaces the control that had focus, so focus goes to the new step's heading, which reads the step
+  // (W3C multi-page forms, Lightning focus guidance); never on first load. The page title carries the progress too, and
+  // is put back when the wizard unmounts.
+  const firstStepRender = useRef(true);
+  useEffect(() => {
+    if (firstStepRender.current) {
+      firstStepRender.current = false;
+      return;
+    }
+    const heading = stepRootRef.current?.querySelector('h1');
+    if (heading) {
+      heading.tabIndex = -1;
+      heading.focus();
+    }
+  }, [step]);
+  useEffect(() => {
+    const previousTitle = document.title;
+    document.title = `Step ${step} of ${WIZARD_STEPS.length}: ${WIZARD_STEPS[step - 1]} - New Job`;
+    return () => {
+      document.title = previousTitle;
+    };
+  }, [step]);
+  const stepTitle = (
+    <>
+      New Job<span className="sr-only">, step {step} of {WIZARD_STEPS.length}</span>
+    </>
+  );
+  const [file, setFile] = useState<File | null>(initial.file);
+  const [preview, setPreview] = useState<PreviewResult | null>(initial.preview);
   // Dropzone status now lives on step 1 alongside the stat tiles (DESIGN.md
   // Track B, phase B14) -- previously step 1 was JUST the dropzone, and a
   // successful parse immediately navigated to step 2, so the tiles could
   // never actually show a "not parsed yet" state (by the time they render,
   // preview is always already resolved). Real placeholder-to-real-value
   // fill-in requires the tiles to exist on the SAME screen as the dropzone.
-  const [parseStatus, setParseStatus] = useState<FileDropzoneStatus>('idle');
+  const [parseStatus, setParseStatus] = useState<FileDropzoneStatus>(initial.parseStatus);
   const [parseError, setParseError] = useState<string | null>(null);
-  const [mode, setMode] = useState<'baseline' | 'survey'>('baseline');
-  const [project, setProject] = useState('');
-  const [areaPath, setAreaPath] = useState('');
-  const [state, setState] = useState('');
-  const [iterationPath, setIterationPath] = useState('');
-  const [model, setModel] = useState('');
+  const [mode, setMode] = useState<'baseline' | 'survey'>(initial.mode);
+  const [project, setProject] = useState(initial.project);
+  const [areaPath, setAreaPath] = useState(initial.areaPath);
+  const [state, setState] = useState(initial.state);
+  const [iterationPath, setIterationPath] = useState(initial.iterationPath);
+  const [model, setModel] = useState(initial.model);
+  // Mirror the user's work into the draft store so it survives a visit to another page (cleared on submit, replace and logout).
+  useEffect(() => {
+    useNewJobDraftStore.getState().patch({ step, file, preview, parseStatus, mode, model, project, areaPath, state, iterationPath });
+  }, [step, file, preview, parseStatus, mode, model, project, areaPath, state, iterationPath]);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [modelListing, setModelListing] = useState<ModelListing | null>(null);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState(false);
-  const [documentOverview, setDocumentOverview] = useState<DocumentOverview | null>(null);
-  const [expositionStatus, setExpositionStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  // The overview comes with the preview (made from the parsed text and structure alone), so it is always the current file's: nothing to fetch.
+  // The bulky profile stays out of what is submitted with the job.
+  const documentOverview: DocumentOverview | null = preview?.overview
+    ? {
+        synopsis: preview.overview.synopsis,
+        caveat: preview.overview.caveat,
+        ...(preview.overview.lines ? { lines: preview.overview.lines } : {}),
+        ...(preview.overview.structureHint ? { structureHint: preview.overview.structureHint } : {}),
+      }
+    : null;
+  // The optional AI summary: fetched in the background while step 3 is open, never waited on (Start is always available), and hidden when
+  // there is none. 'pending' only while the request is in flight; any failure or timeout leaves nothing on screen.
+  const [aiSummary, setAiSummary] = useState<{ status: 'idle' | 'pending' | 'ready' | 'none'; text?: string }>({ status: 'idle' });
+  const summaryInput = preview?.overview?.profile?.summaryInput;
+  // Bumped by "Write it again": a new value re-runs the effect below, which asks the model once more.
+  const [summaryRun, setSummaryRun] = useState(0);
+  useEffect(() => {
+    if (step !== 3 || mode !== 'survey' || !summaryInput) {
+      setAiSummary({ status: 'idle' });
+      return undefined;
+    }
+    const controller = new AbortController();
+    // Later than this it is not worth showing. The waiting note goes first: an abort resolves the request with null, and a cancelled request's
+    // result is ignored below (it may be a stale one), so nothing else would clear it.
+    const giveUp = window.setTimeout(() => {
+      setAiSummary({ status: 'none' });
+      controller.abort();
+    }, AI_SUMMARY_WAIT_MS);
+    setAiSummary({ status: 'pending' });
+    previewSummary({ summaryInput, model: model || undefined }, controller.signal).then((text) => {
+      if (controller.signal.aborted) return;
+      setAiSummary(text ? { status: 'ready', text } : { status: 'none' });
+    });
+    return () => {
+      window.clearTimeout(giveUp);
+      controller.abort();
+    };
+  }, [step, mode, summaryInput, model, summaryRun]);
   // DESIGN.md §11.2.3.d -- server-computed, both modes shown side by side
   // (ModeCards) so both are fetched regardless of which is selected.
   // undefined while in flight/not-yet-fetched; ModeCards renders '--' for
@@ -213,43 +313,30 @@ export function NewJobWizard(): React.ReactElement {
     setModelsLoading(true);
     setModelsError(false);
     listModels()
-      .then(setAvailableModels)
+      .then((listing) => {
+        setAvailableModels(listing.models);
+        setModelListing(listing);
+        // A model restored from the draft may have gone away while the user was elsewhere: fall back to Default rather than submit it.
+        setModel((current) => (current && !listing.models.includes(current) ? '' : current));
+      })
       .catch(() => {
         setAvailableModels([]);
+        setModelListing(null);
         setModelsError(true);
       })
       .finally(() => setModelsLoading(false));
   }, [mode, availableModels.length]);
 
-  // Fires the exposition call exactly once per entry into step 3 -- guarded
-  // on expositionStatus !== 'idle' so re-renders while step 3 is already
-  // loading/ready/error don't re-fire the request.
-  useEffect(() => {
-    if (step !== 3 || expositionStatus !== 'idle' || !preview) return;
-    setExpositionStatus('loading');
-    previewExposition({ documentMap: preview.documentMap, sectionCount: preview.sectionCount, depth: preview.depth })
-      .then((result) => {
-        // NestJS serializes a `null` route-handler return (the server's own
-        // documented fail-open path) as an EMPTY response body -- axios's
-        // `result` here is actually '' (falsy, not an object), not `null`.
-        // Treat any falsy/non-object result as the fail-open case so the
-        // error branch below renders instead of a 'ready' card with nothing
-        // in it.
-        const overview = result && typeof result === 'object' ? result : null;
-        setDocumentOverview(overview);
-        setExpositionStatus(overview ? 'ready' : 'error');
-      })
-      .catch(() => {
-        setDocumentOverview(null);
-        setExpositionStatus('error');
-      });
-  }, [step, expositionStatus, preview]);
 
   // A stale area path picked under a previous project must not be
   // submittable once the project changes -- the two are meant to stay
   // coherent (browsing project X's area paths then writing to project Y
   // would be silently wrong).
+  // Only on a real change: a project restored from the draft must keep its restored area path.
+  const lastProject = useRef(project);
   useEffect(() => {
+    if (lastProject.current === project) return;
+    lastProject.current = project;
     setAreaPath('');
   }, [project]);
 
@@ -316,12 +403,6 @@ export function NewJobWizard(): React.ReactElement {
     setPreview(null);
     setParseStatus('idle');
     setParseError(null);
-    // Without these, a stale exposition from the PREVIOUS file survives the
-    // replace (expositionStatus stays 'ready'), so step 3's effect guard
-    // (`expositionStatus !== 'idle'`) skips re-fetching for the new file and
-    // the old file's synopsis gets submitted with the new file's job.
-    setDocumentOverview(null);
-    setExpositionStatus('idle');
   }
 
   async function handleSubmit(): Promise<void> {
@@ -337,8 +418,11 @@ export function NewJobWizard(): React.ReactElement {
         state: state || undefined,
         iterationPath: iterationPath || undefined,
         model: mode === 'survey' ? model || undefined : undefined,
-        documentOverview: mode === 'survey' ? documentOverview : undefined,
+        // The AI summary goes with the job only if it was ready: the start button never waits for it.
+        documentOverview: mode === 'survey' ? (documentOverview && aiSummary.status === 'ready' && aiSummary.text ? { ...documentOverview, aiSummary: aiSummary.text } : documentOverview) : undefined,
       });
+      // The job exists now: the next visit to this page starts from nothing, not from this draft.
+      useNewJobDraftStore.getState().reset();
       navigate(`/jobs/${jobId}`);
     } catch (err) {
       showErrorToast('Failed to start the job. Please try again.', err);
@@ -368,9 +452,9 @@ export function NewJobWizard(): React.ReactElement {
 
   if (step === 1) {
     return (
-      <div className="flex flex-col gap-4">
-        <PageHeader title="New Job" description="Upload a requirements document to get started" />
-        <Stepper steps={mode === 'survey' ? WIZARD_STEPS_SURVEY : WIZARD_STEPS_BASELINE} activeIndex={0} />
+      <div ref={stepRootRef} data-testid="wizard-step" className="flex flex-col gap-4">
+        <PageHeader title={stepTitle} description="Upload a requirements document to get started" />
+        <Stepper steps={WIZARD_STEPS} states={wizardStepStates(0)} subLabels={wizardSubLabels(mode)} />
         {/* DESIGN.md §11.1 -- "a two-pane split that owns the viewport by
             construction" -- previously a single narrow column stretched
             across AppShell's full-viewport-height <main>, reading as a
@@ -494,33 +578,66 @@ export function NewJobWizard(): React.ReactElement {
 
   if (step === 3) {
     return (
-      <div className="flex flex-col gap-4">
-        <PageHeader title="New Job" description="Confirm the AI understood this document before it runs" />
-        <Stepper steps={WIZARD_STEPS_SURVEY} activeIndex={2} />
+      <div ref={stepRootRef} data-testid="wizard-step" className="flex flex-col gap-4">
+        <PageHeader title={stepTitle} description="Check what was read from the file before it runs" />
+        <Stepper steps={WIZARD_STEPS} states={wizardStepStates(2)} />
         <SectionCard title="Does this look right?">
           <div className="flex flex-col gap-3">
-            {expositionStatus === 'loading' && (
-              <p className="flex items-center gap-2 text-sm text-ink-3">
-                <Spinner /> Reading the document's structure…
+            {documentOverview?.lines && documentOverview.lines.length > 0 ? (
+              <>
+                <span className="text-xs font-semibold text-ink-2">From the file’s text and structure</span>
+                <OverviewLines lines={documentOverview.lines} />
+              </>
+            ) : documentOverview ? (
+              <p dir="auto" className="break-words text-sm text-ink-1">{documentOverview.synopsis}</p>
+            ) : (
+              <p className="text-sm text-ink-3">No overview available for this document. You can still continue.</p>
+            )}
+            {aiSummary.status === 'pending' && (
+              <p role="status" className="flex items-center gap-2 text-xs text-ink-3">
+                <Spinner /> Writing an AI summary… optional, up to about 90 seconds. If you start now, the job runs without it.
               </p>
             )}
-            {expositionStatus === 'ready' && documentOverview && (
-              <>
-                <p className="text-sm text-ink-1">{documentOverview.synopsis}</p>
-                {documentOverview.caveat && (
-                  <Alert severity="warning">{documentOverview.caveat}</Alert>
-                )}
-              </>
+            {aiSummary.status === 'none' && <p className="text-xs text-ink-3">No AI summary this time. You can continue.</p>}
+            {aiSummary.status === 'ready' && (
+              <div className="flex flex-col gap-1 rounded-sm border border-hairline bg-canvas p-3">
+                <span className="text-xs font-semibold text-ink-2">AI summary</span>
+                <p dir="auto" className="break-words text-sm text-ink-1">{aiSummary.text}</p>
+                <span className="text-xs text-ink-3">Written by a model from the document’s headings and opening text. Check it against the file.</span>
+              </div>
             )}
-            {expositionStatus === 'error' && (
-              <p className="text-sm text-ink-3">Couldn't generate a summary — you can still continue.</p>
+            {/* aria-disabled, not disabled: a natively disabled button drops keyboard focus, and this one is pressed from the keyboard. */}
+            {aiSummary.status !== 'idle' && (
+              <Button
+                variant="outline"
+                size="sm"
+                className={cn('self-start', aiSummary.status === 'pending' && 'cursor-default opacity-60')}
+                aria-disabled={aiSummary.status === 'pending'}
+                onClick={() => {
+                  if (aiSummary.status !== 'pending') setSummaryRun((n) => n + 1);
+                }}
+              >
+                Write it again
+              </Button>
             )}
+            {mode === 'survey' && (
+              <div className="flex flex-col gap-1">
+                <span className="text-xs font-semibold text-ink-2">Your knowledge base</span>
+                <KbReadinessStrip />
+              </div>
+            )}
+            {documentOverview?.caveat && <Alert severity="warning">{documentOverview.caveat}</Alert>}
           </div>
         </SectionCard>
-        <div className="flex flex-wrap items-center gap-3">
+        {/* sticky: the list above can be long and a summary can appear or go away above it, and Start must not move out from under the pointer */}
+        <div className="sticky bottom-0 -mx-1 flex flex-wrap items-center gap-3 border-t border-hairline bg-canvas px-1 py-3">
           <Button variant="outline" onClick={() => setStep(2)}>
             ← Back to configure
           </Button>
+          <span className="flex items-center gap-1.5 text-xs text-ink-3">
+            <Lock className="h-3.5 w-3.5 flex-none" />
+            Starting a job writes nothing. You approve the diff first.
+          </span>
           <Button onClick={handleSubmit} disabled={isSubmitting} className="ml-auto">
             {isSubmitting ? <Spinner /> : <Activity className="h-3.5 w-3.5" />}
             {isSubmitting ? 'Starting…' : 'Looks right — start job'}
@@ -536,16 +653,17 @@ export function NewJobWizard(): React.ReactElement {
   const selectedEstimate = mode === 'baseline' ? baselineEstimate : surveyEstimate;
 
   return (
-    <div className="flex flex-col gap-4">
-      <PageHeader title="New Job" description="Review the parsed document and set where it writes to" />
-      <Stepper steps={mode === 'survey' ? WIZARD_STEPS_SURVEY : WIZARD_STEPS_BASELINE} activeIndex={1} />
+    <div ref={stepRootRef} data-testid="wizard-step" className="flex flex-col gap-4">
+      <PageHeader title={stepTitle} description="Review the parsed document and set where it writes to" />
+      <Stepper steps={WIZARD_STEPS} states={wizardStepStates(1)} subLabels={wizardSubLabels(mode)} />
       {/* Two-column split (prototype's `.split`, ~1.6:1) -- left column is
           document identity + destination, right column is how-to-read +
           options + the submit action. Previously one full-width vertical
           stack; this was the single biggest layout deviation from the
           approved prototype. */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.6fr_1fr]">
-        <div className="flex min-w-0 flex-col gap-4">
+        {/* The right column is far taller than this one: keep Destination in view beside it instead of leaving a blank column. Only on a viewport tall enough to hold the card, so a short window never pins its bottom out of reach. */}
+        <div className="flex min-w-0 flex-col gap-4 lg:self-start lg:[@media(min-height:640px)]:sticky lg:[@media(min-height:640px)]:top-4">
           <SectionCard title="Destination in Azure DevOps">
             <div className="flex flex-col gap-3">
               {hasAdoSession ? (
@@ -661,10 +779,17 @@ export function NewJobWizard(): React.ReactElement {
               model={model}
               onModelChange={setModel}
               availableModels={availableModels}
+              modelDetails={modelListing?.details}
+              recommendedModel={modelListing?.recommended}
               modelsLoading={modelsLoading}
               modelsError={modelsError}
             />
           </SectionCard>
+          {mode === 'survey' && (
+            <SectionCard title="Knowledge base">
+              <KbReadinessStrip />
+            </SectionCard>
+          )}
           {mode === 'survey' && (
             <Alert severity="warning">
               SURVEY mode scales with document size -- figures cost the most, since each triggers a separate vision-model call. You'll

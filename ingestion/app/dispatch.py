@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from fastapi import HTTPException
 
@@ -18,7 +18,17 @@ from app.loaders.text_loader import load_markdown, load_txt
 from app.loaders.xlsx_loader import load_xlsx
 
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif"}
-_SUPPORTED_EXTENSIONS = {".txt", ".md", ".docx", ".xlsx", ".pdf", ".pptx", ".csv", ".rtf", *_IMAGE_EXTENSIONS}
+_SUPPORTED_EXTENSIONS = {
+    ".txt",
+    ".md",
+    ".docx",
+    ".xlsx",
+    ".pdf",
+    ".pptx",
+    ".csv",
+    ".rtf",
+    *_IMAGE_EXTENSIONS,
+}
 
 # Mirrors ocr.py's own _OPEN_TBD_PATTERN exactly (kept in sync by eye --
 # both are one line) -- that module was the ONLY place this classification
@@ -78,6 +88,7 @@ def dispatch_by_extension(
     tmp_path: str,
     languages: str = "eng",
     describe_figure: Callable[[bytes], str] | None = None,
+    on_figure_bytes: Callable[[bytes], None] | None = None,
     on_ocr_page: Callable[[int, int, int, int, str], None] | None = None,
 ) -> CanonicalDoc:
     extension = Path(filename).suffix.lower()
@@ -89,20 +100,24 @@ def dispatch_by_extension(
     elif extension == ".md":
         doc = load_markdown(tmp_path)
     elif extension == ".docx":
-        doc = load_docx(tmp_path, describe_figure=describe_figure)
+        doc = load_docx(tmp_path, describe_figure=describe_figure, on_figure_bytes=on_figure_bytes)
     elif extension == ".xlsx":
         doc = load_xlsx(tmp_path)
     elif extension == ".pptx":
-        doc = load_pptx(tmp_path, describe_figure=describe_figure)
+        doc = load_pptx(tmp_path, describe_figure=describe_figure, on_figure_bytes=on_figure_bytes)
     elif extension == ".csv":
         doc = load_csv(tmp_path)
     elif extension == ".rtf":
         doc = load_rtf(tmp_path)
     elif extension in _IMAGE_EXTENSIONS:
-        doc = load_image(tmp_path, describe_figure=describe_figure)
+        doc = load_image(tmp_path, describe_figure=describe_figure, on_figure_bytes=on_figure_bytes)
     else:
         doc = load_pdf_with_ocr_fallback(
-            tmp_path, languages=languages, describe_figure=describe_figure, on_ocr_page=on_ocr_page,
+            tmp_path,
+            languages=languages,
+            describe_figure=describe_figure,
+            on_figure_bytes=on_figure_bytes,
+            on_ocr_page=on_ocr_page,
         )
     doc = _classify_open_tbd_paragraphs(doc)
     return _normalize_document_identity(doc, filename)

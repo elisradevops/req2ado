@@ -6,6 +6,7 @@ becomes silence: a heartbeat line every few seconds says the run is alive, and t
 error (a failure after the first byte can no longer change the HTTP status, so it travels as a line).
 
 Closing the stream (the caller disconnected) cancels the run's token and the work task, as a dropped plain request did."""
+
 from __future__ import annotations
 
 import asyncio
@@ -33,7 +34,9 @@ async def ndjson_stream(
     `{"type":"error","status":n,"detail":"..."}` (from `describe_failure`)."""
     started = time.monotonic()
     task = asyncio.ensure_future(work())
-    task.add_done_callback(lambda t: None if t.cancelled() else t.exception())  # a failure is reported as a line, never "never retrieved"
+    task.add_done_callback(
+        lambda t: None if t.cancelled() else t.exception()
+    )  # a failure is reported as a line, never "never retrieved"
     try:
         while True:
             done, _pending = await asyncio.wait({task}, timeout=heartbeat_seconds)

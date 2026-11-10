@@ -20,7 +20,6 @@ import pytest
 import app.main as main_module
 from app.main import app
 from app.vision.orchestrator_vision_client import FigureVisionResult
-
 from tests.identity import identity_headers
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -32,12 +31,16 @@ class _BlockingVisionClient:
     """A vision client whose call blocks its calling thread, like the real
     synchronous httpx client does for the duration of a model call."""
 
-    def describe_figure(self, image_bytes, mime_type=None, document_context=None, user_id=None, model=None):
+    def describe_figure(
+        self, image_bytes, mime_type=None, document_context=None, user_id=None, model=None
+    ):
         time.sleep(BLOCK_SECONDS)
         return FigureVisionResult(significant=True, description="a real caption")
 
 
-async def _max_health_stall_while(work: "asyncio.Future[httpx.Response]", client: httpx.AsyncClient) -> float:
+async def _max_health_stall_while(
+    work: "asyncio.Future[httpx.Response]", client: httpx.AsyncClient
+) -> float:
     """Polls /health every ~50ms until `work` finishes; returns the longest
     time /health went unanswered, from the moment a probe was DUE to the
     moment its reply arrived. A blocked loop shows up here as a late wake-up
@@ -59,17 +62,23 @@ async def _max_health_stall_while(work: "asyncio.Future[httpx.Response]", client
 
 
 @pytest.mark.parametrize("concurrency", [1, 4])
-async def test_health_stays_responsive_during_the_figure_captioning_pass(monkeypatch, concurrency) -> None:
+async def test_health_stays_responsive_during_the_figure_captioning_pass(
+    monkeypatch, concurrency
+) -> None:
     monkeypatch.setattr(main_module, "_vision_client", _BlockingVisionClient())
     monkeypatch.setattr(main_module.settings, "vision_caption_concurrency", concurrency)
 
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
         with open(FIXTURES / "multi_figure.docx", "rb") as f:
             upload = asyncio.ensure_future(
                 client.post(
                     "/ingest",
                     params={"mode": "survey"},
-                    headers=identity_headers({"user_id": "test-user", "primer_context": f"event-loop-{uuid.uuid4()}"}),
+                    headers=identity_headers(
+                        {"user_id": "test-user", "primer_context": f"event-loop-{uuid.uuid4()}"}
+                    ),
                     files={"file": ("multi_figure.docx", f.read(), "application/octet-stream")},
                 )
             )
@@ -77,12 +86,18 @@ async def test_health_stays_responsive_during_the_figure_captioning_pass(monkeyp
         response = await upload
 
     assert response.status_code == 200
-    assert [fig["caption"] for fig in response.json()["figures"]] == ["a real caption"] * len(response.json()["figures"])
-    assert slowest < MAX_HEALTH_LATENCY_SECONDS, f"/health went unanswered for {slowest:.2f}s while figures were being captioned"
+    assert [fig["caption"] for fig in response.json()["figures"]] == ["a real caption"] * len(
+        response.json()["figures"]
+    )
+    assert slowest < MAX_HEALTH_LATENCY_SECONDS, (
+        f"/health went unanswered for {slowest:.2f}s while figures were being captioned"
+    )
 
 
 async def _health_stall_during(request_coro_factory) -> tuple[httpx.Response, float]:
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
         work = asyncio.ensure_future(request_coro_factory(client))
         slowest = await _max_health_stall_while(work, client)
         return await work, slowest
@@ -104,12 +119,17 @@ async def test_health_stays_responsive_during_dedup_upsert_batch(monkeypatch) ->
     response, slowest = await _health_stall_during(
         lambda client: client.post(
             "/dedup/upsert-batch",
-            json={"items": [{"item_id": "1", "title": "t", "text": "x", "area_path": "A"}], "user_id": "u"},
+            json={
+                "items": [{"item_id": "1", "title": "t", "text": "x", "area_path": "A"}],
+                "user_id": "u",
+            },
         )
     )
 
     assert response.status_code == 200
-    assert slowest < MAX_HEALTH_LATENCY_SECONDS, f"/health went unanswered for {slowest:.2f}s during a dedup upsert"
+    assert slowest < MAX_HEALTH_LATENCY_SECONDS, (
+        f"/health went unanswered for {slowest:.2f}s during a dedup upsert"
+    )
 
 
 async def test_health_stays_responsive_during_score_item(monkeypatch) -> None:
@@ -131,10 +151,13 @@ async def test_health_stays_responsive_during_score_item(monkeypatch) -> None:
 
     response, slowest = await _health_stall_during(
         lambda client: client.post(
-            "/score-item", json={"description": "The system shall do X.", "user_id": "u", "model": "m"},
+            "/score-item",
+            json={"description": "The system shall do X.", "user_id": "u", "model": "m"},
         )
     )
 
     assert response.status_code == 200
     assert response.json()["quality_score"] == 80
-    assert slowest < MAX_HEALTH_LATENCY_SECONDS, f"/health went unanswered for {slowest:.2f}s during /score-item"
+    assert slowest < MAX_HEALTH_LATENCY_SECONDS, (
+        f"/health went unanswered for {slowest:.2f}s during /score-item"
+    )

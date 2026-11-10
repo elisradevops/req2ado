@@ -12,10 +12,13 @@ copies the context) and the bounded chunk workers (they run under a copy of it),
 
 `JobCancelled` is an ordinary exception on purpose: stages already treat a failed call as fail-open and move on, so the
 remaining calls of a cancelled run each raise at once and the run winds down in moments."""
+
 from __future__ import annotations
 
 import asyncio
 import contextvars
+import threading
+import time
 from collections.abc import Iterator
 from contextlib import asynccontextmanager, contextmanager
 from typing import Protocol
@@ -28,12 +31,42 @@ class JobCancelled(Exception):
 class CancelToken:
     def __init__(self) -> None:
         self.cancelled = False
+        self._callbacks: list = []
+        self._lock = threading.Lock()
 
     def cancel(self) -> None:
-        self.cancelled = True
+        with self._lock:
+            if self.cancelled:
+                return
+            self.cancelled = True
+            callbacks, self._callbacks = self._callbacks, []
+        for callback in callbacks:
+            try:
+                callback()
+            except Exception:  # noqa: BLE001 -- closing a call that already ended must not stop the others
+                pass
+
+    def on_cancel(self, callback):
+        """Runs `callback` when the token is cancelled (at once if it already is), and returns a function that removes it.
+
+        This is how a call that is already in flight (a blocking HTTP request in a worker thread) is stopped: the call
+        registers `client.close` here for the duration of the request."""
+        with self._lock:
+            if not self.cancelled:
+                self._callbacks.append(callback)
+                return lambda: self._remove(callback)
+        callback()
+        return lambda: None
+
+    def _remove(self, callback) -> None:
+        with self._lock:
+            if callback in self._callbacks:
+                self._callbacks.remove(callback)
 
 
-_token_var: contextvars.ContextVar[CancelToken | None] = contextvars.ContextVar("_cancel_token_var", default=None)
+_token_var: contextvars.ContextVar[CancelToken | None] = contextvars.ContextVar(
+    "_cancel_token_var", default=None
+)
 
 
 @contextmanager
@@ -53,6 +86,17 @@ def current_token() -> CancelToken | None:
     return _token_var.get()
 
 
+def sleep(seconds: float, slice_seconds: float = 0.25) -> None:
+    """time.sleep that a cancel ends at once: it raises JobCancelled before each slice once the run is cancelled."""
+    deadline = time.monotonic() + seconds
+    while True:
+        raise_if_cancelled()
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return
+        time.sleep(min(slice_seconds, left))
+
+
 def raise_if_cancelled() -> None:
     """Called before every model call. Outside a scope (chat, rescoring, scripts) it never raises."""
     token = _token_var.get()
@@ -65,7 +109,9 @@ class _Disconnectable(Protocol):
 
 
 @asynccontextmanager
-async def watch_for_disconnect(request: _Disconnectable, token: CancelToken, poll_seconds: float = 2.0):
+async def watch_for_disconnect(
+    request: _Disconnectable, token: CancelToken, poll_seconds: float = 2.0
+):
     """Within the block, cancels `token` as soon as the request's client disconnects."""
     # Stopped with a flag, not task.cancel(): Starlette's is_disconnected() runs inside an anyio cancel scope that can swallow
     # a plain asyncio cancellation, which left the watcher looping and the request hanging.
@@ -78,7 +124,7 @@ async def watch_for_disconnect(request: _Disconnectable, token: CancelToken, pol
                 return
             try:
                 await asyncio.wait_for(stop.wait(), timeout=poll_seconds)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
 
     task = asyncio.create_task(watch())
@@ -88,7 +134,7 @@ async def watch_for_disconnect(request: _Disconnectable, token: CancelToken, pol
         stop.set()
         try:
             await asyncio.wait_for(task, timeout=5)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except (TimeoutError, asyncio.CancelledError):
             task.cancel()
 
 

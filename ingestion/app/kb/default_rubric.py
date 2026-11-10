@@ -7,6 +7,7 @@ it is never an authoring standard (that is the organization's, and comes from it
 The qualities are the ones the requirements-engineering standards agree on (ISO/IEC/IEEE 29148, the INCOSE guide to writing requirements,
 EARS): a requirement is necessary, unambiguous, singular, verifiable, complete, implementation-free, consistent and traceable. Changing the
 text below changes DEFAULT_RUBRIC_VERSION: the version is part of the job result cache key, so results scored with an older rubric are not served."""
+
 from __future__ import annotations
 
 from app.kb.profile import Category, KbProfile, TypeDefinition
@@ -64,18 +65,38 @@ _RUBRIC: list[tuple[str, str, str]] = [
 ]
 
 _TYPES = [
-    TypeDefinition(item_type="epic", text="An outcome or capability area and why it matters to the stakeholders, made concrete by its Features.", sources=["built-in"]),
-    TypeDefinition(item_type="feature", text="One coherent function or behaviour that delivers part of an Epic and can be reviewed on its own.", sources=["built-in"]),
-    TypeDefinition(item_type="requirement", text="One verifiable statement of need about the system, in words that cannot be understood two ways.", sources=["built-in"]),
+    TypeDefinition(
+        item_type="epic",
+        text="An outcome or capability area and why it matters to the stakeholders, made concrete by its Features.",
+        sources=["built-in"],
+    ),
+    TypeDefinition(
+        item_type="feature",
+        text="One coherent function or behaviour that delivers part of an Epic and can be reviewed on its own.",
+        sources=["built-in"],
+    ),
+    TypeDefinition(
+        item_type="requirement",
+        text="One verifiable statement of need about the system, in words that cannot be understood two ways.",
+        sources=["built-in"],
+    ),
 ]
 
 
 def default_profile() -> KbProfile:
     """A fresh object each call (callers may adjust a copy)."""
     return KbProfile(
-        version=DEFAULT_RUBRIC_VERSION, built_with="built-in", source="default",
+        version=DEFAULT_RUBRIC_VERSION,
+        built_with="built-in",
+        source="default",
         categories=[
-            Category(name=name, pass_condition=condition, guidance=guidance, sources=["built-in"], merged_from=[name])
+            Category(
+                name=name,
+                pass_condition=condition,
+                guidance=guidance,
+                sources=["built-in"],
+                merged_from=[name],
+            )
             for name, condition, guidance in _RUBRIC
         ],
         type_definitions=[t.model_copy() for t in _TYPES],

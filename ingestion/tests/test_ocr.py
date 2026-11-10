@@ -34,7 +34,9 @@ def test_ocr_page_to_text_filtered_extracts_hebrew_with_heb_language() -> None:
     # (load_pdf_with_ocr_fallback -> ocr_page_to_text_filtered).
     from app.loaders.ocr import ocr_page_to_text_filtered
 
-    text = ocr_page_to_text_filtered(str(FIXTURES / "hebrew_scanned_sample.pdf"), 0, languages="heb")
+    text = ocr_page_to_text_filtered(
+        str(FIXTURES / "hebrew_scanned_sample.pdf"), 0, languages="heb"
+    )
     assert len(text.strip()) > 0
     # Hebrew Unicode block is U+0590-U+05FF; assert at least one character falls in it,
     # rather than asserting an exact string match (Tesseract's accuracy on synthetic
@@ -164,7 +166,9 @@ def test_ocr_page_to_text_filtered_forwards_languages_to_image_to_data(
     assert mock_image_to_data.call_args.kwargs["lang"] == "heb"
 
 
-def test_load_pdf_with_ocr_fallback_forwards_languages_to_load_pdf_when_nothing_is_scanned() -> None:
+def test_load_pdf_with_ocr_fallback_forwards_languages_to_load_pdf_when_nothing_is_scanned() -> (
+    None
+):
     # any_scanned=False branch (ocr.py:64-65) -- the common case for a real
     # document that has extractable text overall but individual table cells
     # missing text (the motivating bug this whole plan exists to fix).
@@ -173,11 +177,15 @@ def test_load_pdf_with_ocr_fallback_forwards_languages_to_load_pdf_when_nothing_
     from app.canonical.model import CanonicalDoc, Document, DocumentFormat
 
     fake_doc = CanonicalDoc(document=Document(path="x", format=DocumentFormat.PDF, sha256="h"))
-    with patch("app.loaders.ocr.page_has_extractable_text", return_value=True), \
-         patch("app.loaders.ocr.load_pdf") as mock_load_pdf:
+    with (
+        patch("app.loaders.ocr.page_has_extractable_text", return_value=True),
+        patch("app.loaders.ocr.load_pdf") as mock_load_pdf,
+    ):
         mock_load_pdf.return_value = fake_doc
         load_pdf_with_ocr_fallback(str(FIXTURES / "sample.pdf"), languages="heb+eng")
-    mock_load_pdf.assert_called_once_with(str(FIXTURES / "sample.pdf"), describe_figure=None, languages="heb+eng")
+    mock_load_pdf.assert_called_once_with(
+        str(FIXTURES / "sample.pdf"), describe_figure=None, languages="heb+eng"
+    )
 
 
 def test_load_pdf_with_ocr_fallback_forwards_languages_to_load_pdf_when_a_page_is_scanned() -> None:
@@ -188,23 +196,32 @@ def test_load_pdf_with_ocr_fallback_forwards_languages_to_load_pdf_when_a_page_i
     from app.canonical.model import CanonicalDoc, Document, DocumentFormat
 
     fake_doc = CanonicalDoc(document=Document(path="x", format=DocumentFormat.PDF, sha256="h"))
-    with patch("app.loaders.ocr.page_has_extractable_text", return_value=False), \
-         patch("app.loaders.ocr.ocr_page_to_text_filtered", return_value=""), \
-         patch("app.loaders.ocr.load_pdf") as mock_load_pdf:
+    with (
+        patch("app.loaders.ocr.page_has_extractable_text", return_value=False),
+        patch("app.loaders.ocr.ocr_page_to_text_filtered", return_value=""),
+        patch("app.loaders.ocr.load_pdf") as mock_load_pdf,
+    ):
         mock_load_pdf.return_value = fake_doc
         load_pdf_with_ocr_fallback(str(FIXTURES / "scanned_sample.pdf"), languages="heb+eng")
-    mock_load_pdf.assert_called_once_with(str(FIXTURES / "scanned_sample.pdf"), describe_figure=None, languages="heb+eng")
+    mock_load_pdf.assert_called_once_with(
+        str(FIXTURES / "scanned_sample.pdf"), describe_figure=None, languages="heb+eng"
+    )
 
 
 def _mixed_pdf_mocks(  # noqa: ANN202
-    mock_load_pdf, mock_page_has_extractable_text, mock_ocr, mock_pdf_reader, scanned,  # noqa: ANN001
+    mock_load_pdf,
+    mock_page_has_extractable_text,
+    mock_ocr,
+    mock_pdf_reader,
+    scanned,  # noqa: ANN001
 ):
     mock_pdf_reader.return_value.pages = [MagicMock() for _ in range(5)]
     mock_page_has_extractable_text.side_effect = lambda _path, i: i not in scanned
     path = str(FIXTURES / "sample.pdf")
     mock_load_pdf.return_value = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.PDF, sha256="fake"),
-        blocks=[], tables=[],
+        blocks=[],
+        tables=[],
     )
     mock_ocr.side_effect = lambda _p, i, languages="eng": f"text of page {i + 1}"
     return path
@@ -215,7 +232,10 @@ def _mixed_pdf_mocks(  # noqa: ANN202
 @patch("app.loaders.ocr.page_has_extractable_text")
 @patch("app.loaders.ocr.load_pdf")
 def test_on_ocr_page_reports_each_scanned_page_with_counts(
-    mock_load_pdf: MagicMock, mock_has_text: MagicMock, mock_ocr: MagicMock, mock_reader: MagicMock,
+    mock_load_pdf: MagicMock,
+    mock_has_text: MagicMock,
+    mock_ocr: MagicMock,
+    mock_reader: MagicMock,
 ) -> None:
     path = _mixed_pdf_mocks(mock_load_pdf, mock_has_text, mock_ocr, mock_reader, scanned={1, 3, 4})
     calls: list[tuple] = []
@@ -236,7 +256,10 @@ def test_on_ocr_page_reports_each_scanned_page_with_counts(
 @patch("app.loaders.ocr.page_has_extractable_text")
 @patch("app.loaders.ocr.load_pdf")
 def test_a_failing_on_ocr_page_callback_never_changes_the_result(
-    mock_load_pdf: MagicMock, mock_has_text: MagicMock, mock_ocr: MagicMock, mock_reader: MagicMock,
+    mock_load_pdf: MagicMock,
+    mock_has_text: MagicMock,
+    mock_ocr: MagicMock,
+    mock_reader: MagicMock,
 ) -> None:
     path = _mixed_pdf_mocks(mock_load_pdf, mock_has_text, mock_ocr, mock_reader, scanned={1, 3})
     calls: list[int] = []
@@ -259,7 +282,10 @@ def test_a_failing_on_ocr_page_callback_never_changes_the_result(
 @patch("app.loaders.ocr.page_has_extractable_text")
 @patch("app.loaders.ocr.load_pdf")
 def test_on_ocr_page_is_not_called_for_a_text_pdf(
-    mock_load_pdf: MagicMock, mock_has_text: MagicMock, mock_ocr: MagicMock, mock_reader: MagicMock,
+    mock_load_pdf: MagicMock,
+    mock_has_text: MagicMock,
+    mock_ocr: MagicMock,
+    mock_reader: MagicMock,
 ) -> None:
     path = _mixed_pdf_mocks(mock_load_pdf, mock_has_text, mock_ocr, mock_reader, scanned=set())
     calls: list[tuple] = []

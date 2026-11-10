@@ -9,6 +9,7 @@ script tries a list of common font paths and picks the first one that
 exists; if none are found, it raises with a clear error rather than
 silently rendering tofu boxes (empty glyph placeholders).
 """
+
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont

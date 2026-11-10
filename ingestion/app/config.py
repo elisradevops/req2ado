@@ -119,6 +119,12 @@ class Settings(BaseSettings):
     # orchestrator's LLM_REQUEST_TIMEOUT_MS changes, reconsider the other --
     # they're meant to stay in that relative order.
     vision_request_timeout_seconds: float = 590.0
+    # One figure's whole time budget, retries included. A figure that times out is NOT sent again (a slow model is slow
+    # again, and the abandoned first call keeps the backend busy, so the second queues behind it): before this, one figure
+    # could cost 2 x vision_request_timeout_seconds (~20 minutes) and a 36-figure document stalled on figure 1. Each call's
+    # timeout is the budget still left, and a 5xx/429 is retried only if the wait fits. Kept under the ~300 s cut production
+    # puts on an upstream call. 0 switches the budget off (the previous behaviour: 590 s calls, one retry after a timeout).
+    vision_figure_budget_seconds: float = 240.0
     # How many figures may be captioned concurrently by /ingest's post-parse
     # captioning pass. Vision captioning used to run fully inline during the
     # document walk -- one network round-trip per figure, strictly in
@@ -190,6 +196,36 @@ class Settings(BaseSettings):
     # shared backend, raise it only in coordination with whoever operates
     # that backend's own concurrency limit.
     survey_chunk_concurrency: int = 1
+    # How many fixed 20,000-character windows SURVEY's whole-document study (app.leveling.document_study) reads at most; a longer document
+    # is studied only up to this cap and the job warns that it was partly read. 1000 pages of prose is about 125 windows.
+    survey_study_max_windows: int = Field(default=300, ge=1)
+    # The off-switch: false skips the study altogether and acceptance criteria are proposed from the hierarchy alone, without a warning.
+    survey_study_enabled: bool = True
+    # Self-healing of that study: after this many CONSECUTIVE windows that could not be fully read the study stops reading (the job warns it
+    # was partly read); past the soft budget (seconds) it logs a warning and keeps reading, past the hard budget it stops and keeps what it read.
+    survey_study_breaker_failures: int = Field(default=5, ge=1)
+    survey_study_soft_budget_seconds: float = Field(default=1800, ge=1)
+    survey_study_hard_budget_seconds: float = Field(default=2700, ge=1)
+    # How long a fully studied window's findings stay in Redis (per user and document) for a re-run or a resume to reuse.
+    survey_study_cache_ttl_seconds: int = Field(default=86_400, ge=1)
+    # Socket and connect timeout (seconds) of the study's own Redis client: a hung Redis must fail open instead of blocking the study.
+    survey_study_redis_timeout_seconds: float = Field(default=3.0, gt=0)
+    # Global limit on concurrent model calls of the study (app.leveling.llm_lease_limiter): slots across all jobs, slots one user may hold of
+    # them, how long a slot is held before it expires on its own (about twice the ~300 s upstream cut), and how long a call waits for a slot.
+    survey_study_global_slots: int = Field(default=8, ge=1)
+    survey_study_user_slots: int = Field(default=4, ge=1)
+    survey_study_lease_seconds: int = Field(default=600, ge=1)
+    survey_study_lease_max_wait_seconds: int = Field(default=120, ge=1)
+    # How many windows of that study are read at once (app.leveling.study_runner; the job's own scoring shares the proxy's rate limit, so the
+    # study lowers it by one on each 429 it sees), and how many windows ahead of the one being merged may be submitted.
+    survey_study_concurrency: int = Field(default=4, ge=1, le=8)
+    survey_study_lookahead: int = Field(default=8, ge=1)
+    # The acceptance-criteria proposals (app.leveling.acceptance_criteria): how many chunks of requirements are asked at once (2 when no shared
+    # limiter is available), the whole step's time budget (chunks not started by then are reported, not asked) and how long one model attempt
+    # waits for a limiter slot. Each attempt holds one slot of the limiter above.
+    survey_criteria_concurrency: int = Field(default=3, ge=1, le=4)
+    survey_criteria_stage_budget_seconds: float = Field(default=3600, ge=1)
+    survey_criteria_lease_max_wait_seconds: int = Field(default=120, ge=1)
     # How disconnected root sections are grouped under synthetic topical Epics: "deterministic" clusters their titles by
     # embedding similarity with a fixed rule (same input, same groups, whichever chat model runs the job; the model only
     # names the groups), "llm" is the earlier model-chosen grouping, whose group count varied from 1 to 14 between runs

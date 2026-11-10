@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { Pencil, Link2, RefreshCw, Upload, Check } from 'lucide-react';
+import { Pencil, Link2, RefreshCw, Upload, Check, Flag, X } from 'lucide-react';
+import { MoveToPicker, type MoveToPickerCandidate } from './MoveToPicker';
+import { getServerMessage } from '../lib/errorDetails';
 import { TagChips } from './TagChips';
 import { resolveWinningTag } from '../utils/requirementClassification';
 import { REQUIREMENT_TAG_LABELS } from '../utils/labels';
@@ -11,15 +13,17 @@ import { SourceProvenance } from './SourceProvenance';
 import type { KbCitation } from './KbCitationChips';
 import { FigureImage } from './FigureImage';
 import type { DryRunDiffEntry } from './DiffTree';
+import { attachFigureIdsOf } from '../utils/figures';
 import type { TraceLinkFailure } from '../store/jobsStore';
 import { TextField, TextArea } from '../ui/TextField';
 import { Button } from '../ui/Button';
+import { ProposalCard } from './ProposalCard';
 import { Chip } from '../ui/Chip';
 import { Tooltip } from '../ui/Tooltip';
 import { DescriptionMarkdown, Markdown } from '../ui/Markdown';
 import { cn } from '../lib/cn';
 import { LABEL_MICRO } from '../utils/labelMicro';
-import { isFlaggedDiffEntry } from '../utils/diffFlagging';
+import { flaggedDiffEntryReason, isFlaggedDiffEntry } from '../utils/diffFlagging';
 
 // CR-7d rescore: the quality score/categoryScores from JUST BEFORE a
 // successful rescore -- held briefly so QualityGauge can render a real
@@ -36,7 +40,7 @@ const RESCORE_DELTA_VISIBLE_MS = 8000;
 // rule instead of two copies drifting apart.
 export type EntryEditability =
   | { editable: true }
-  | { editable: false; reason: 'matched' | 'excluded' | 'job_locked' };
+  | { editable: false; reason: 'matched' | 'excluded' | 'job_locked' | 'written' };
 
 // Discriminates WHY an entry isn't editable, not just whether it is --
 // canEditEntry's boolean alone collapsed 4 distinct reasons (not a create,
@@ -44,15 +48,19 @@ export type EntryEditability =
 // indistinguishable from a broken UI to a reviewer looking at a
 // reuse/dedup_skip entry. canEditEntry stays a thin wrapper (unchanged
 // signature/behavior) so NodeDetailDialog's ChatPanel gating needs no change.
-export function editabilityOf(entry: DryRunDiffEntry, jobStatus?: string | null): EntryEditability {
+const WRITTEN_NOTE = 'Already written to Azure DevOps by an earlier attempt, so this can no longer change.';
+
+// `written`: an earlier failed attempt already wrote this item to Azure DevOps, and the server refuses changes to it.
+export function editabilityOf(entry: DryRunDiffEntry, jobStatus?: string | null, written?: boolean): EntryEditability {
+  if (written) return { editable: false, reason: 'written' };
   if (jobStatus != null && jobStatus !== 'diff_ready') return { editable: false, reason: 'job_locked' };
   if (entry.excluded) return { editable: false, reason: 'excluded' };
   if (entry.action !== 'create') return { editable: false, reason: 'matched' };
   return { editable: true };
 }
 
-export function canEditEntry(entry: DryRunDiffEntry, jobStatus?: string | null): boolean {
-  return editabilityOf(entry, jobStatus).editable;
+export function canEditEntry(entry: DryRunDiffEntry, jobStatus?: string | null, written?: boolean): boolean {
+  return editabilityOf(entry, jobStatus, written).editable;
 }
 
 // Every loader mints table ids as `t{0-based index}` (pdf_loader.py,
@@ -67,26 +75,38 @@ function tableChipLabel(tableId: string, caption: string | undefined): string {
   return match ? `Table ${Number(match[1]) + 1}` : `Table ${tableId}`;
 }
 
+const NO_DESCRIPTION_EXISTING_ITEM_HINT =
+  'No description. Figures are not attached automatically to items that already exist. You can upload it to this item yourself.';
+const NO_DESCRIPTION_TOOLTIP =
+  'No description. It will be attached to this item when you write. If it belongs to another item, upload it there after writing.';
+
 export function NodeDetailPanel({
   jobId,
   entry,
   jobMode,
   jobStatus,
+  written,
   kbCitations,
   traceTargetTitles,
   traceLinkFailures,
   parentEntry,
   addChildSlot,
+  hideSources,
   moveSlot,
   captionByFigureId,
   nameByFigureId,
   captionByTableId,
   onSave,
   onRescore,
+  onSetProposalAccepted,
+  onRemoveDiscussion,
   onAttachFigure,
+  onMoveFigure,
+  figureMoveTargets,
   onRetryTraceLink,
   descendantCounts,
   requirementClassificationField,
+  editRequest = 0,
 }: {
   // Needed only by the Figures section below (FigureImage's fetch route is
   // job-scoped) -- optional so every existing caller/test that has no
@@ -95,6 +115,8 @@ export function NodeDetailPanel({
   entry: DryRunDiffEntry | null;
   jobMode?: 'baseline' | 'survey' | null;
   jobStatus?: string | null;
+  // Already written to Azure DevOps by an earlier attempt: locked like the other read-only reasons.
+  written?: boolean;
   kbCitations?: KbCitation[];
   // localId -> title lookup across the WHOLE job's diff, not just this
   // entry -- lets TraceLinkChips resolve an intraJob link's target to a
@@ -122,6 +144,9 @@ export function NodeDetailPanel({
   // bottom of the pane, after Sources -- disconnected from the title and
   // easy to miss below a long description/quality/trace-link stack.
   addChildSlot?: React.ReactNode;
+  // The caller shows this entry's provenance itself (NodeDetailDialog's EvidenceStrip owns it there), so the Sources block is left out.
+  // A caller that renders this panel without an EvidenceStrip must not set it.
+  hideSources?: boolean;
   // DESIGN.md §11.5 -- the keyboard-accessible "Move to..." control, owned/
   // wired by the caller (NodeDetailDialog builds the actual
   // MoveEntryControl) for the same reason addChildSlot is: this component
@@ -145,6 +170,10 @@ export function NodeDetailPanel({
   // own contract. Rejecting leaves the stored entry (and its qualityStale
   // flag) untouched -- this component never fabricates a fresh number on
   // failure, it just reflects whatever the server actually persisted.
+  // P9d review gate: accepts or withdraws the generated acceptance-criteria proposal. Owned by the caller (JobDetail.tsx), which persists it.
+  onSetProposalAccepted?: (localId: string, accepted: boolean) => Promise<void> | void;
+  // Removes one "To be discussed" item; owned by the caller (JobDetail.tsx), which persists it. Absent = the list is read-only.
+  onRemoveDiscussion?: (localId: string, entryId: string) => Promise<void> | void;
   onRescore?: (localId: string) => Promise<void>;
   // figureId -> vision-model caption, same figureId scheme entry.figureIds
   // references (computed by the caller, JobDetail.tsx, from the SAME
@@ -168,6 +197,11 @@ export function NodeDetailPanel({
   // comment for why this exists alongside confirm()'s automatic
   // attachment. Same re-throw-on-failure contract as onRescore.
   onAttachFigure?: (localId: string, figureId: string) => Promise<void>;
+  // Moves one figure of this item to another item (before the write), or detaches it when targetLocalId is null.
+  // Rejects on failure; the card shows the reason and keeps the figure where it is.
+  onMoveFigure?: (figureId: string, targetLocalId: string | null) => Promise<void>;
+  // Items a figure may be moved to (the current item is left out here). Only the picker needs them.
+  figureMoveTargets?: MoveToPickerCandidate[];
   // Task 4: manual retry for a trace link (identified by its own
   // JobTraceLinkFailure row id) that failed to write to Azure DevOps during
   // confirm() -- see JobsService.retryTraceLinkWrite's own doc comment. Same
@@ -181,6 +215,10 @@ export function NodeDetailPanel({
   // one entry at a time. Absent (not zeroed) for a Requirement, which
   // never renders this group at all.
   descendantCounts?: { epics: number; features: number; requirements: number };
+  // Bumped by the parent (the dialog's E key) to ask for the edit form. A counter, not a
+  // boolean: the form's state lives here, and every press has to count. Only a change
+  // after mount is a request, and only an editable entry honors it.
+  editRequest?: number;
 }): React.ReactElement {
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState('');
@@ -225,13 +263,19 @@ export function NodeDetailPanel({
   // Handler convention) -- figureAttachStatus alone can't serve that role
   // since its update is async and wouldn't be visible yet to a second
   // rapid click on the same button.
-  const [figureAttachStatus, setFigureAttachStatus] = useState<Record<string, 'attaching' | 'done'>>({});
+  const [figureAttachStatus, setFigureAttachStatus] = useState<Record<string, 'attaching' | 'done' | 'failed'>>({});
   const attachingFigureIdsRef = useRef<Set<string>>(new Set());
   // Task 4: per-failureId trace-link retry status, same in-flight/done
   // convention (and same synchronous-guard-ref reasoning) as
   // figureAttachStatus/attachingFigureIdsRef above.
   const [traceLinkRetryStatus, setTraceLinkRetryStatus] = useState<Record<string, 'retrying' | 'done'>>({});
   const retryingFailureIdsRef = useRef<Set<string>>(new Set());
+  const figuresHeadingRef = useRef<HTMLSpanElement>(null);
+  const panelRootRef = useRef<HTMLDivElement>(null);
+  const refocusAfterFigureChangeRef = useRef(false);
+  // Per-figureId move/detach state, same synchronous-guard-ref pattern as the upload status above.
+  const [figureMoveStatus, setFigureMoveStatus] = useState<Record<string, { pending: boolean; error: string | null }>>({});
+  const movingFigureIdsRef = useRef<Set<string>>(new Set());
 
   // Exit edit mode whenever the selected node changes so a stale draft from
   // the previously-edited node can never be saved onto a different node.
@@ -252,8 +296,25 @@ export function NodeDetailPanel({
     attachingFigureIdsRef.current = new Set();
     setTraceLinkRetryStatus({});
     retryingFailureIdsRef.current = new Set();
+    setFigureMoveStatus({});
+    movingFigureIdsRef.current = new Set();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entry?.localId]);
+
+  const handledEditRequestRef = useRef(editRequest);
+  useEffect(() => {
+    if (editRequest === handledEditRequestRef.current) return;
+    handledEditRequestRef.current = editRequest;
+    if (entry && canEditEntry(entry, jobStatus, written) && !editing) startEditing();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editRequest]);
+
+  // After a figure move the diff updates; if the Figures section is gone, keep focus inside the panel.
+  useEffect(() => {
+    if (!refocusAfterFigureChangeRef.current) return;
+    refocusAfterFigureChangeRef.current = false;
+    if (!figuresHeadingRef.current) panelRootRef.current?.focus();
+  }, [entry]);
 
   if (!entry) {
     return (
@@ -266,7 +327,7 @@ export function NodeDetailPanel({
   // Edit calls a backend route (editDiffEntry) that 409s once the job
   // leaves diff_ready, same as chat's sendTurn -- both panes derive this
   // from the same shared rule (see canEditEntry's own doc comment).
-  const editability = editabilityOf(entry, jobStatus);
+  const editability = editabilityOf(entry, jobStatus, written);
   const canEdit = editability.editable;
   // Insignificant figures (vision model correctly judged decorative/
   // non-technical) are excluded from this per-item view entirely -- they
@@ -274,9 +335,17 @@ export function NodeDetailPanel({
   // for a reviewer. They're still counted in the document-wide "N figures
   // excluded as decorative" summary (JobDetail.tsx), just not repeated on
   // every item that happened to be near one in the source document.
-  const visibleUncaptionedFigureIds = (entry.uncaptionedFigureIds ?? []).filter(
-    (figureId) => !(entry.insignificantFigureIds ?? []).includes(figureId),
+  // Figures attach automatically only to items this job creates or resumes.
+  const noDescriptionHint =
+    entry.action === 'reuse' || entry.action === 'dedup_skip' ? NO_DESCRIPTION_EXISTING_ITEM_HINT : NO_DESCRIPTION_TOOLTIP;
+  const attachFigureIds = attachFigureIdsOf(entry);
+  const detachedFigureIds = entry.detachedFigureIds ?? [];
+  const visibleUncaptionedFigureIds = (entry.uncaptionedFigureIds ?? []).filter((figureId) =>
+    entry.action === 'create'
+      ? attachFigureIds.includes(figureId) || detachedFigureIds.includes(figureId)
+      : !(entry.insignificantFigureIds ?? []).includes(figureId),
   );
+  const undescribedFigureCount = visibleUncaptionedFigureIds.filter((figureId) => !detachedFigureIds.includes(figureId)).length;
   // M3: uses the same shared threshold logic as the diff tree/list view
   // (isFlaggedDiffEntry, which raises the Epic/Feature grounding threshold
   // to 0.35) instead of a hardcoded 0.2 -- otherwise an Epic/Feature that
@@ -285,6 +354,8 @@ export function NodeDetailPanel({
   // deliberately null: this check is scoped to the grounding badge alone,
   // not the separate quality-score gauge already shown above.
   const isLowGrounding = isFlaggedDiffEntry({ type: entry.type, groundingScore: entry.groundingScore, qualityScore: null });
+  // The row's flag only carries this as a tooltip, so the same reason is written out here for keyboard and touch users.
+  const reviewReason = flaggedDiffEntryReason(entry);
 
   function startEditing(): void {
     setDraftTitle(entry!.title);
@@ -356,15 +427,180 @@ export function NodeDetailPanel({
       // onAttachFigure's caller (JobDetail.tsx) owns surfacing the failure
       // (a toast) -- drop this figureId's status entirely so the button
       // reverts to its normal, clickable state for a retry rather than
-      // getting stuck showing "Uploading...".
-      setFigureAttachStatus((prev) => {
+      // getting stuck showing "Uploading...". 'failed' keeps the button
+      // clickable and adds an inline line; a retry resets it to 'attaching'.
+      setFigureAttachStatus((prev) => ({ ...prev, [figureId]: 'failed' }));
+    } finally {
+      attachingFigureIdsRef.current.delete(figureId);
+    }
+  }
+
+  async function handleMoveFigureClick(figureId: string, targetLocalId: string | null): Promise<void> {
+    if (!onMoveFigure || movingFigureIdsRef.current.has(figureId)) return;
+    movingFigureIdsRef.current.add(figureId);
+    setFigureMoveStatus((prev) => ({ ...prev, [figureId]: { pending: true, error: null } }));
+    try {
+      await onMoveFigure(figureId, targetLocalId);
+      // Keep keyboard and screen reader users in the Figures section; the toast announces the result.
+      // When the last figure leaves, the heading unmounts; the effect below then falls back to the panel root.
+      (figuresHeadingRef.current ?? panelRootRef.current)?.focus();
+      refocusAfterFigureChangeRef.current = true;
+      // The diff update removes this card; nothing to keep.
+      setFigureMoveStatus((prev) => {
         const next = { ...prev };
         delete next[figureId];
         return next;
       });
+    } catch (err) {
+      const reason = getServerMessage(err) ?? (err instanceof Error && err.message ? err.message : null);
+      const isMove = targetLocalId != null && targetLocalId !== entry?.localId;
+      const prefix = isMove ? 'Could not move the figure' : 'Could not change the figure';
+      const message = reason ? `${prefix}: ${reason}` : `${prefix}. Please try again.`;
+      setFigureMoveStatus((prev) => ({ ...prev, [figureId]: { pending: false, error: message } }));
     } finally {
-      attachingFigureIdsRef.current.delete(figureId);
+      movingFigureIdsRef.current.delete(figureId);
     }
+  }
+
+  // One figure's image card, shared by the captioned list and the
+  // uncaptioned list (same image, same Upload button logic). `uncaptioned`
+  // only swaps the alt text and adds the amber "No description" label.
+  // `entry` is a parameter so it stays narrowed to non-null here.
+  function renderFigureCard(entry: DryRunDiffEntry, figureId: string, jobId: string, uncaptioned: boolean): React.ReactElement {
+    const status = figureAttachStatus[figureId];
+    // A 'create' entry's real ADO id does not exist until this
+    // job's confirm() has run -- but once confirm() succeeds,
+    // JobsService.confirm's post-confirm dryRunDiff refresh sets
+    // existingAdoId on every resolved entry regardless of its
+    // original action, so this button becomes available for a
+    // 'create' entry too once the job is 'succeeded', not only
+    // for reuse/dedup_skip.
+    const canAttach = entry.existingAdoId != null;
+    const captioned = entry.figureIds ?? [];
+    const shown = [...captioned, ...visibleUncaptionedFigureIds];
+    const position = shown.indexOf(figureId) + 1;
+    const positionAlt = `Figure ${position} of ${shown.length} for this item`;
+    // A figure can be re-homed before the write: on an editable item, and on a matched one (so it can go to an item that
+    // will be created). Never once written, excluded or after the job leaves review.
+    const canMoveFigure =
+      !!onMoveFigure && (editability.editable || (!editability.editable && editability.reason === 'matched'));
+    const detached = detachedFigureIds.includes(figureId);
+    // Figures only attach automatically to items that are not already in Azure DevOps.
+    const canDetach = entry.action !== 'reuse' && entry.action !== 'dedup_skip' && !detached;
+    const positionLabel = `figure ${position} of ${shown.length}`;
+    const moveStatus = figureMoveStatus[figureId];
+    const movePending = !!moveStatus?.pending;
+    return (
+      <li
+        key={figureId}
+        className="flex flex-col gap-2 rounded-sm border border-hairline bg-surface-alt p-2.5 sm:flex-row sm:items-start"
+      >
+        <div className={detached ? 'opacity-50' : undefined}>
+          <FigureImage
+            jobId={jobId}
+            figureId={figureId}
+            active
+            alt={uncaptioned ? positionAlt : nameByFigureId?.[figureId] || positionAlt}
+          />
+        </div>
+        <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+          {captionByFigureId?.[figureId] && (
+            // Final whole-branch review finding: Markdown's own
+            // `p` renderer sets its own `text-sm text-ink-1`
+            // classes directly on the rendered <p> -- an
+            // !important class on THIS wrapper <div> never wins
+            // against that (CSS specificity/importance only
+            // competes between declarations on the SAME element,
+            // not ancestor vs. descendant). `[&_p]:` targets the
+            // rendered <p> itself so the override actually lands.
+            <div className="[&_p]:!text-xs [&_p]:!text-ink-2">
+              <Markdown>{captionByFigureId[figureId]}</Markdown>
+            </div>
+          )}
+          {detached && <Chip className="self-start">Not attached</Chip>}
+          {uncaptioned && !detached && (
+            <>
+              <Tooltip content={noDescriptionHint}>
+                {/* Same warning-band treatment as the chip fallback below. */}
+                <Chip className="self-start border border-warning-border bg-warning-soft text-warning-ink">No description</Chip>
+              </Tooltip>
+              {undescribedFigureCount === 1 && <p className="text-xs text-ink-3">{noDescriptionHint}</p>}
+            </>
+          )}
+          {detached ? (
+            <p className="text-xs text-ink-3">
+              This figure will not be written to Azure DevOps unless you attach it again or move it to another item.
+            </p>
+          ) : (
+            onAttachFigure &&
+            (canAttach ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="flex-none self-start"
+                disabled={status === 'done'}
+                loading={status === 'attaching'}
+                onClick={() => handleAttachFigureClick(figureId)}
+              >
+                {status === 'done' ? <Check className="h-3.5 w-3.5" /> : <Upload className="h-3.5 w-3.5" />}
+                {status === 'done' ? 'Uploaded' : `Upload to ADO (WI-${entry.existingAdoId})`}
+              </Button>
+            ) : (
+              <p className="text-xs text-ink-3">
+                You can upload this figure after the item is written to Azure DevOps.
+              </p>
+            ))
+          )}
+          {status === 'failed' && (
+            <p role="alert" className="text-xs text-danger-ink">
+              Upload failed. Try again.
+            </p>
+          )}
+          {canMoveFigure && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <MoveToPicker
+                triggerLabel="Move to…"
+                triggerAriaLabel={`Move to…, ${positionLabel}`}
+                popoverLabel="Move this figure to…"
+                candidates={(figureMoveTargets ?? []).filter((c) => c.localId !== entry.localId)}
+                emptyText="No other item can take this figure."
+                disabled={movePending}
+                onSelect={(targetLocalId) => {
+                  if (targetLocalId != null) void handleMoveFigureClick(figureId, targetLocalId);
+                }}
+              />
+              {canDetach && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  aria-label={`Don't attach, ${positionLabel}`}
+                  loading={movePending}
+                  onClick={() => void handleMoveFigureClick(figureId, null)}
+                >
+                  Don't attach
+                </Button>
+              )}
+              {detached && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  aria-label={`Attach again, ${positionLabel}`}
+                  loading={movePending}
+                  onClick={() => void handleMoveFigureClick(figureId, entry.localId)}
+                >
+                  Attach again
+                </Button>
+              )}
+            </div>
+          )}
+          {moveStatus?.error && (
+            <p role="alert" className="text-xs text-danger-ink">
+              {moveStatus.error}
+            </p>
+          )}
+        </div>
+      </li>
+    );
   }
 
   // Task 4: same shape as handleAttachFigureClick above -- synchronous ref
@@ -497,22 +733,18 @@ export function NodeDetailPanel({
   }
 
   return (
-    <div className="flex flex-col gap-3 p-5">
+    <div ref={panelRootRef} tabIndex={-1} data-node-detail-panel className="flex flex-col gap-3 p-5 outline-none">
       {/* Edit sits right next to the title it edits -- it used to be a lone
           button at the very bottom of the pane, past description/quality/
           trace-links/sources, disconnected from what it acts on. */}
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex min-w-0 flex-col gap-1">
-          <span className={LABEL_MICRO}>{entry.type}</span>
-          <h3 className="text-title leading-snug">{entry.title}</h3>
-        </div>
-        {canEdit && (
+      {canEdit && (
+        <div className="flex justify-end">
           <Button variant="outline" size="sm" onClick={startEditing} className="flex-none">
             <Pencil className="h-3.5 w-3.5" />
             Edit
           </Button>
-        )}
-      </div>
+        </div>
+      )}
       {moveSlot}
       {/* 'excluded' has no message of its own here -- the dialog header
           already shows a dedicated "Excluded from this run" badge right
@@ -535,6 +767,7 @@ export function NodeDetailPanel({
               re-adding one 400s with TF401349), so a matched item's real
               position is not this job's to re-assert. */}
           {editability.reason === 'matched' && ' Its position in this tree is also read-only in ADO — moving it here only reorganizes your review, it never re-parents the real item.'}
+          {editability.reason === 'written' && !entry.proposal && WRITTEN_NOTE}
           {editability.reason === 'job_locked' && `This job is no longer editable${jobStatus ? ` (status: ${jobStatus})` : ''}.`}
         </p>
       )}
@@ -565,9 +798,53 @@ export function NodeDetailPanel({
           preview should show a reviewer the same structure that lands in
           ADO, not the raw ** and - characters. Max-width measure preserved
           for readability on a dense multi-sentence requirement. */}
-      <div className="max-w-[68ch] text-sm leading-relaxed text-ink-2">
+      {/* The 68ch measure sits on each block, not the wrapper, so a right-to-left
+          block (:dir(rtl), resolved from dir="auto") can anchor to the pane's
+          right edge instead of the right edge of a 68ch box. */}
+      <div className="w-full text-sm leading-relaxed text-ink-2 [&>*]:max-w-[68ch] [&>*:dir(rtl)]:me-auto">
         <DescriptionMarkdown>{entry.description}</DescriptionMarkdown>
       </div>
+      <ProposalCard
+        key={entry.localId}
+        entry={entry}
+        canAccept={canEdit && !!onSetProposalAccepted}
+        lockedNote={
+          editability.editable
+            ? undefined
+            : editability.reason === 'written'
+              ? WRITTEN_NOTE
+              : editability.reason === 'matched'
+              ? 'This item already exists in Azure DevOps, so its description is not written.'
+              : editability.reason === 'excluded'
+                ? 'This item is excluded, so nothing is written for it.'
+                : 'This job is no longer in review, so the choice cannot be changed.'
+        }
+        onSetAccepted={onSetProposalAccepted}
+      />
+      {entry.discussion && entry.discussion.length > 0 && (
+        <div className="flex flex-col gap-1.5 rounded-sm border border-hairline bg-surface-alt p-2.5">
+          <span className={LABEL_MICRO}>To be discussed</span>
+          <p className="text-xs text-ink-3">Posted to this item's Discussion in Azure DevOps when it is created; the text above is unchanged.</p>
+          {entry.discussion.map((d) => (
+            <div key={d.id} className="flex items-start gap-2 border-t border-hairline pt-1.5 text-sm text-ink-2">
+              <div className="min-w-0 flex-1">
+                {d.proposedTitle && (
+                  <p>
+                    <strong>Title:</strong> {d.proposedTitle}
+                  </p>
+                )}
+                {d.proposedDescription && <DescriptionMarkdown>{d.proposedDescription}</DescriptionMarkdown>}
+                <p className="text-xs text-ink-3">{new Date(d.createdAt).toLocaleString()}</p>
+              </div>
+              {canEdit && onRemoveDiscussion && (
+                <Button size="sm" variant="ghost" aria-label="Remove from discussion" onClick={() => void onRemoveDiscussion(entry.localId, d.id)}>
+                  <X className="h-3.5 w-3.5" />
+                </Button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
       {/* Real bug fixed here (confirmed against the agreed mockup, which has
           no "Active Flags" block at all): this used to pair Classification
           with a second "Active Flags" chip cloud showing the SAME issue
@@ -581,6 +858,12 @@ export function NodeDetailPanel({
           fact. Classification alone is real content the gauge doesn't
           cover, so it stays -- as its own full-width block now that it no
           longer needs to share a 2-column row with something else. */}
+      {reviewReason && (
+        <p data-testid="review-reason" className="flex items-start gap-1.5 text-sm text-warning-ink">
+          <Flag aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 flex-none" />
+          <span>Needs review: {reviewReason}</span>
+        </p>
+      )}
       {entry.tags && entry.tags.length > 0 && (
         <div className="flex flex-col gap-1">
           <span className={LABEL_MICRO}>Classification</span>
@@ -718,7 +1001,8 @@ export function NodeDetailPanel({
           />
         </div>
       )}
-      {(entry.sourceRef ||
+      {!hideSources &&
+        (entry.sourceRef ||
         (jobMode === 'survey' && entry.action === 'create' && (entry.type === 'Requirement' || (kbCitations && kbCitations.length > 0)))) && (
         <div className="mt-1">
           <span className="text-xs font-semibold text-ink-2">Sources</span>
@@ -742,61 +1026,12 @@ export function NodeDetailPanel({
           own doc comment. */}
       {((jobId && entry.figureIds && entry.figureIds.length > 0) || visibleUncaptionedFigureIds.length > 0) && (
         <div className="mt-1">
-          <span className="text-xs font-semibold text-ink-2">Figures</span>
+          <span ref={figuresHeadingRef} tabIndex={-1} className="text-xs font-semibold text-ink-2 outline-none">
+            Figures
+          </span>
           {jobId && entry.figureIds && entry.figureIds.length > 0 && (
             <ul className="mt-1 flex flex-col gap-2">
-              {entry.figureIds.map((figureId) => {
-                const status = figureAttachStatus[figureId];
-                // A 'create' entry's real ADO id does not exist until this
-                // job's confirm() has run -- but once confirm() succeeds,
-                // JobsService.confirm's post-confirm dryRunDiff refresh sets
-                // existingAdoId on every resolved entry regardless of its
-                // original action, so this button becomes available for a
-                // 'create' entry too once the job is 'succeeded', not only
-                // for reuse/dedup_skip.
-                const canAttach = entry.existingAdoId != null;
-                return (
-                  <li
-                    key={figureId}
-                    className="flex flex-col gap-2 rounded-sm border border-hairline bg-surface-alt p-2.5 sm:flex-row sm:items-start"
-                  >
-                    <FigureImage jobId={jobId} figureId={figureId} active alt={nameByFigureId?.[figureId] || `Figure referenced by ${entry.title}`} />
-                    <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-                      {captionByFigureId?.[figureId] && (
-                        // Final whole-branch review finding: Markdown's own
-                        // `p` renderer sets its own `text-sm text-ink-1`
-                        // classes directly on the rendered <p> -- an
-                        // !important class on THIS wrapper <div> never wins
-                        // against that (CSS specificity/importance only
-                        // competes between declarations on the SAME element,
-                        // not ancestor vs. descendant). `[&_p]:` targets the
-                        // rendered <p> itself so the override actually lands.
-                        <div className="[&_p]:!text-xs [&_p]:!text-ink-2">
-                          <Markdown>{captionByFigureId[figureId]}</Markdown>
-                        </div>
-                      )}
-                      {onAttachFigure &&
-                        (canAttach ? (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="flex-none self-start"
-                            disabled={status === 'done'}
-                            loading={status === 'attaching'}
-                            onClick={() => handleAttachFigureClick(figureId)}
-                          >
-                            {status === 'done' ? <Check className="h-3.5 w-3.5" /> : <Upload className="h-3.5 w-3.5" />}
-                            {status === 'done' ? 'Uploaded' : `Upload to ADO (WI-${entry.existingAdoId})`}
-                          </Button>
-                        ) : (
-                          <p className="text-xs text-ink-3">
-                            Uploading requires a resolved ADO work item id -- not available until this job has confirmed.
-                          </p>
-                        ))}
-                    </div>
-                  </li>
-                );
-              })}
+              {entry.figureIds.map((figureId) => renderFigureCard(entry, figureId, jobId, false))}
             </ul>
           )}
           {/* Uncaptioned figures -- disjoint from figureIds above (a figure
@@ -804,9 +1039,10 @@ export function NodeDetailPanel({
               below the captioned figures' full image cards, not in a
               separate/collapsed section, because the whole point is making a
               silently-dropped figure visible to a reviewer without them
-              needing to go looking for it. No image fetch here (unlike
-              above) -- there is nothing about this figure in the pipeline's
-              output worth rendering beyond "this exists and got nothing".
+              needing to go looking for it. With a jobId each gets the same
+              image card as above, since it is still attached to this item
+              at write time and placement is positional; without one, only
+              the chip is possible.
               insignificantFigureIds are filtered out of
               visibleUncaptionedFigureIds entirely -- those are the vision
               model CORRECTLY judging a figure decorative/non-technical, not
@@ -815,35 +1051,30 @@ export function NodeDetailPanel({
               explained once at the tree level by the
               vision_captioning_disabled warning -- see JobDetail's warnings
               panel). */}
-          {visibleUncaptionedFigureIds.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {visibleUncaptionedFigureIds.map((figureId) => {
-                return (
-                  <Tooltip
-                    key={figureId}
-                    // Final whole-branch review finding: in BASELINE mode (and
-                    // any SURVEY run with vision explicitly off), caption_status
-                    // is ALWAYS null -- nothing "failed or timed out", vision
-                    // simply never ran for this figure. There is no
-                    // visionActive-equivalent threaded down to this per-figure
-                    // chip (only the tree-level warnings panel knows that), so
-                    // this stays a disjunctive, honest phrasing rather than
-                    // asserting a specific failure occurred.
-                    content="This figure's image was captured, but no description was produced -- the description call failed, or vision captioning was off for this run (see this job's warnings)."
-                  >
+          {visibleUncaptionedFigureIds.length > 0 &&
+            (jobId ? (
+              <>
+                {undescribedFigureCount > 1 && <p className="mt-2 text-xs text-ink-3">{noDescriptionHint}</p>}
+                <ul className="mt-2 flex flex-col gap-2">
+                  {visibleUncaptionedFigureIds.map((figureId) => renderFigureCard(entry, figureId, jobId, true))}
+                </ul>
+              </>
+            ) : (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {visibleUncaptionedFigureIds.map((figureId) => (
+                  <Tooltip key={figureId} content={noDescriptionHint}>
                     {/* Same warning-band treatment QualityGauge's "Needs
                         review" chip uses (bg-warning-soft + border-warning-
                         border + text-warning-ink) -- reused, not a new color,
                         so "amber" means the same thing everywhere in this
                         app. */}
                     <Chip className="border border-warning-border bg-warning-soft text-warning-ink">
-                      Figure {figureId} · no description
+                      Figure {figureId}: no description
                     </Chip>
                   </Tooltip>
-                );
-              })}
-            </div>
-          )}
+                ))}
+              </div>
+            ))}
         </div>
       )}
       {/* Tables folded into this node -- sibling of Figures above, but with

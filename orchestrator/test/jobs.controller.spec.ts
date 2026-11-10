@@ -23,7 +23,7 @@ describe('JobsController.preview', () => {
     };
     const jobsService = { submit: jest.fn() };
     const etaService = { estimate: jest.fn().mockResolvedValue({ mode: 'baseline', estimateMinutes: 1 }) };
-    const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, etaService as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, etaService as any, 500 * 1024 * 1024);
 
     const file = { buffer: Buffer.from('x'), originalname: 'req.docx', size: 4 } as Express.Multer.File;
     const result = await controller.preview(file, undefined, undefined);
@@ -60,7 +60,49 @@ describe('JobsController.preview', () => {
         { number: '1', title: 'Introduction', blockCount: 2, figureCount: 0 },
         { number: '1.1', title: 'Scope', blockCount: 3, figureCount: 1 },
       ],
+      // The overview is made from the parsed document alone, at once: no study of it, no model.
+      overview: expect.objectContaining({ lines: expect.arrayContaining([expect.stringMatching(/text and structure.*no AI/i)]), caveat: null }),
     });
+  });
+
+  it('shows how the baseline parser would build the tree, and still answers when that cannot be had', async () => {
+    const doc = { blocks: [{ kind: 'heading', heading_level: 1, number_label: '1', text: 'Scope' }, { kind: 'paragraph', text: 'It covers the unit.' }], figures: [], tables: [] };
+    const make = (level: jest.Mock) =>
+      new JobsController({ submit: jest.fn() } as any, { ingest: jest.fn().mockResolvedValue(doc), level } as any, {} as any, {} as any, {} as any, { estimate: jest.fn().mockResolvedValue({}) } as any, 500 * 1024 * 1024);
+    const file = { buffer: Buffer.from('x'), originalname: 'req.docx', size: 4 } as Express.Multer.File;
+
+    const level = jest.fn().mockResolvedValue({ nodes: [{ local_id: 'e', type: 'Epic', parent_local_id: null }, { local_id: 'f', type: 'Feature', parent_local_id: 'e' }] });
+    const ok = await make(level).preview(file, undefined, undefined);
+    expect(level).toHaveBeenCalledWith(doc, 'baseline', undefined, undefined, undefined, undefined, undefined, undefined, expect.any(AbortSignal)); // abortable: a slow ingestion is not left running
+    expect(ok.overview.profile.baselineTree).toEqual({ epics: 1, features: 1, requirements: 0, depth: 2, roots: 1 });
+    expect(ok.overview.structureHint).toMatch(/context only/i);
+    expect((ok.overview.lines ?? []).join(' ')).toMatch(/1 Epics, 1 Features and 0 Requirements/);
+
+    // a hung ingestion: the preview answers after the short bound and cancels the call
+    jest.useFakeTimers();
+    let seen: AbortSignal | undefined;
+    // like the real request, a hung call ends with an error once it is aborted
+    const hung = jest.fn().mockImplementation(
+      (...args: unknown[]) =>
+        new Promise((_resolve, reject) => {
+          seen = args[8] as AbortSignal;
+          seen.addEventListener('abort', () => reject(new Error('aborted')));
+        }),
+    );
+    let slow: Awaited<ReturnType<JobsController['preview']>>;
+    try {
+      const pending = make(hung).preview(file, undefined, undefined);
+      await jest.advanceTimersByTimeAsync(9_000);
+      slow = await pending;
+    } finally {
+      jest.useRealTimers();
+    }
+    expect(slow.overview.profile.baselineTree).toBeUndefined();
+    expect(seen?.aborted).toBe(true);
+
+    const failed = await make(jest.fn().mockRejectedValue(new Error('down'))).preview(file, undefined, undefined);
+    expect(failed.overview.profile.baselineTree).toBeUndefined();
+    expect((failed.overview.lines ?? []).length).toBeGreaterThan(0);
   });
 
   it('returns figureCount 0 and depth 0 when the document has no figures or headings', async () => {
@@ -73,7 +115,7 @@ describe('JobsController.preview', () => {
     };
     const jobsService = { submit: jest.fn() };
     const etaService = { estimate: jest.fn().mockResolvedValue({ mode: 'baseline', estimateMinutes: 1 }) };
-    const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, etaService as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, etaService as any, 500 * 1024 * 1024);
 
     const file = { buffer: Buffer.from('x'), originalname: 'req.docx', size: 4 } as Express.Multer.File;
     const result = await controller.preview(file, undefined, undefined);
@@ -88,13 +130,14 @@ describe('JobsController.preview', () => {
       tableCount: 0,
       openTbdCount: 0,
       documentMap: [],
+      overview: expect.objectContaining({ lines: expect.any(Array) }),
     });
   });
 
   it('throws BadRequestException when no file is provided', async () => {
     const jobsService = { submit: jest.fn() };
     const ingestionClient = { ingest: jest.fn() };
-    const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     await expect(controller.preview(undefined, undefined, undefined)).rejects.toThrow('file is required');
     expect(ingestionClient.ingest).not.toHaveBeenCalled();
@@ -104,7 +147,7 @@ describe('JobsController.preview', () => {
     const jobsService = { submit: jest.fn() };
     const ingestionClient = { ingest: jest.fn() };
     const maxUploadSize = 10 * 1024 * 1024; // 10MB
-    const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, {} as any, maxUploadSize, {} as any);
+    const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, {} as any, maxUploadSize);
 
     const file = { buffer: Buffer.from('x'), originalname: 'req.docx', size: 20 * 1024 * 1024 } as Express.Multer.File;
 
@@ -115,7 +158,7 @@ describe('JobsController.preview', () => {
   it('throws BadRequestException when file has unsupported extension', async () => {
     const jobsService = { submit: jest.fn() };
     const ingestionClient = { ingest: jest.fn() };
-    const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     const file = { buffer: Buffer.from('x'), originalname: 'req.exe', size: 4 } as Express.Multer.File;
 
@@ -139,6 +182,46 @@ describe('JobsController.getById', () => {
     originalFilename: 'req.docx',
   };
 
+  it('starts the ADO-backed lookups together instead of one after another (the job fetch waited on their sum)', async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue(TEST_JOB) };
+    const adoCredentialResolver = { resolve: jest.fn().mockResolvedValue({ orgUrl: 'https://ado.example', pat: 'x' }) };
+    let releaseCatalog: (value: Record<string, never>) => void = () => {};
+    const workItemTypeCatalogService = {
+      resolve: jest.fn(() => new Promise<Record<string, never>>((resolve) => { releaseCatalog = resolve; })),
+      resolveCategoryLabels: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }),
+      resolveRequirementClassificationField: jest.fn().mockResolvedValue(null),
+    };
+    const controller = new JobsController(
+      jobsService as any, {} as any, {} as any, adoCredentialResolver as any, workItemTypeCatalogService as any, {} as any, 500 * 1024 * 1024,
+    );
+
+    const pending = controller.getById('job-1', TEST_USER);
+    await new Promise((resolve) => setImmediate(resolve)); // the catalog lookup is still in flight here
+    expect(workItemTypeCatalogService.resolveCategoryLabels).toHaveBeenCalled();
+    expect(workItemTypeCatalogService.resolveRequirementClassificationField).toHaveBeenCalled();
+    releaseCatalog({});
+    await pending;
+  });
+
+  it('keeps the other lookups when one of them fails', async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue(TEST_JOB) };
+    const adoCredentialResolver = { resolve: jest.fn().mockResolvedValue({ orgUrl: 'https://ado.example', pat: 'x' }) };
+    const workItemTypeCatalogService = {
+      resolve: jest.fn().mockRejectedValue(new Error('ADO down')),
+      resolveCategoryLabels: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'User Story' }),
+      resolveRequirementClassificationField: jest.fn().mockResolvedValue({ referenceName: 'X', allowedValues: ['A'] }),
+    };
+    const controller = new JobsController(
+      jobsService as any, {} as any, {} as any, adoCredentialResolver as any, workItemTypeCatalogService as any, {} as any, 500 * 1024 * 1024,
+    );
+
+    const result = await controller.getById('job-1', TEST_USER);
+
+    expect(result.workItemTypeCatalog).toEqual({});
+    expect(result.workItemTypeCategoryLabels.Requirement).toBe('User Story');
+    expect(result.requirementClassificationField).toEqual({ referenceName: 'X', allowedValues: ['A'] });
+  });
+
   it('embeds the resolved work-item-type catalog directly in the response -- no separate frontend request needed', async () => {
     const jobsService = { getById: jest.fn().mockResolvedValue(TEST_JOB) };
     const adoCredentialResolver = { resolve: jest.fn().mockResolvedValue({ orgUrl: 'https://ado.example', pat: 'x' }) };
@@ -150,7 +233,7 @@ describe('JobsController.getById', () => {
       resolveRequirementClassificationField: jest.fn().mockResolvedValue(classificationField),
     };
     const controller = new JobsController(
-      jobsService as any, {} as any, {} as any, adoCredentialResolver as any, workItemTypeCatalogService as any, {} as any, 500 * 1024 * 1024, {} as any,
+      jobsService as any, {} as any, {} as any, adoCredentialResolver as any, workItemTypeCatalogService as any, {} as any, 500 * 1024 * 1024,
     );
 
     const result = await controller.getById('job-1', TEST_USER);
@@ -171,7 +254,7 @@ describe('JobsController.getById', () => {
   it('falls back to the identity category-label map when there is no diff yet', async () => {
     const jobsService = { getById: jest.fn().mockResolvedValue({ ...TEST_JOB, dryRunDiff: null }) };
     const controller = new JobsController(
-      jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any,
+      jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024,
     );
 
     const result = await controller.getById('job-1', TEST_USER);
@@ -184,7 +267,7 @@ describe('JobsController.getById', () => {
     const adoCredentialResolver = { resolve: jest.fn() };
     const workItemTypeCatalogService = { resolve: jest.fn() };
     const controller = new JobsController(
-      jobsService as any, {} as any, {} as any, adoCredentialResolver as any, workItemTypeCatalogService as any, {} as any, 500 * 1024 * 1024, {} as any,
+      jobsService as any, {} as any, {} as any, adoCredentialResolver as any, workItemTypeCatalogService as any, {} as any, 500 * 1024 * 1024,
     );
 
     const result = await controller.getById('job-1', TEST_USER);
@@ -199,7 +282,7 @@ describe('JobsController.getById', () => {
     const adoCredentialResolver = { resolve: jest.fn().mockResolvedValue(undefined) };
     const workItemTypeCatalogService = { resolve: jest.fn() };
     const controller = new JobsController(
-      jobsService as any, {} as any, {} as any, adoCredentialResolver as any, workItemTypeCatalogService as any, {} as any, 500 * 1024 * 1024, {} as any,
+      jobsService as any, {} as any, {} as any, adoCredentialResolver as any, workItemTypeCatalogService as any, {} as any, 500 * 1024 * 1024,
     );
 
     const result = await controller.getById('job-1', TEST_USER);
@@ -213,7 +296,7 @@ describe('JobsController.getById', () => {
     const adoCredentialResolver = { resolve: jest.fn().mockResolvedValue({ orgUrl: 'https://ado.example', pat: 'x' }) };
     const workItemTypeCatalogService = { resolve: jest.fn().mockRejectedValue(new Error('ADO unreachable')) };
     const controller = new JobsController(
-      jobsService as any, {} as any, {} as any, adoCredentialResolver as any, workItemTypeCatalogService as any, {} as any, 500 * 1024 * 1024, {} as any,
+      jobsService as any, {} as any, {} as any, adoCredentialResolver as any, workItemTypeCatalogService as any, {} as any, 500 * 1024 * 1024,
     );
 
     const result = await controller.getById('job-1', TEST_USER);
@@ -232,7 +315,7 @@ describe('JobsController.editDiffEntry', () => {
       getById: jest.fn().mockResolvedValue(TEST_JOB),
       editDiffEntry: jest.fn().mockResolvedValue([{ localId: 'n0' }]),
     };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     await controller.editDiffEntry('job-1', 'n0', TEST_USER, 'New Title', 'New desc', '1.1.2.2', undefined, undefined);
 
@@ -248,7 +331,7 @@ describe('JobsController.editDiffEntry', () => {
       getById: jest.fn().mockResolvedValue(TEST_JOB),
       editDiffEntry: jest.fn().mockResolvedValue([]),
     };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     await controller.editDiffEntry('job-1', 'n0', TEST_USER, undefined, undefined, '  1.1.2.2  ', undefined, undefined);
     expect(jobsService.editDiffEntry).toHaveBeenLastCalledWith('job-1', 'n0', expect.objectContaining({ customerId: '1.1.2.2' }));
@@ -257,12 +340,35 @@ describe('JobsController.editDiffEntry', () => {
     expect(jobsService.editDiffEntry).toHaveBeenLastCalledWith('job-1', 'n0', expect.objectContaining({ customerId: null }));
   });
 
+  // The review UI sends null (not undefined) for a field the reviewer left blank: that clears it. It used to throw
+  // "Cannot read properties of null (reading 'trim')" and answer 500, so no Requirement with an empty SE coverage reference could be saved.
+  it('treats an explicit null customerId or seCoverageRef as clearing it, not as a crash', async () => {
+    const jobsService = {
+      getById: jest.fn().mockResolvedValue(TEST_JOB),
+      editDiffEntry: jest.fn().mockResolvedValue([]),
+    };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+    await controller.editDiffEntry('job-1', 'n0', TEST_USER, 'T', 'D', null as any, undefined, null as any);
+
+    expect(jobsService.editDiffEntry).toHaveBeenCalledWith('job-1', 'n0', expect.objectContaining({ customerId: null, seCoverageRef: null }));
+  });
+
+  it('rejects a customerId or seCoverageRef that is neither a string nor null', async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue(TEST_JOB), editDiffEntry: jest.fn() };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+    await expect(controller.editDiffEntry('job-1', 'n0', TEST_USER, undefined, undefined, 5 as any, undefined, undefined)).rejects.toThrow('customerId must be a string');
+    await expect(controller.editDiffEntry('job-1', 'n0', TEST_USER, undefined, undefined, undefined, undefined, {} as any)).rejects.toThrow('seCoverageRef must be a string');
+    expect(jobsService.editDiffEntry).not.toHaveBeenCalled();
+  });
+
   it('leaves customerId untouched (undefined in the patch) when the caller omits it entirely', async () => {
     const jobsService = {
       getById: jest.fn().mockResolvedValue(TEST_JOB),
       editDiffEntry: jest.fn().mockResolvedValue([]),
     };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     await controller.editDiffEntry('job-1', 'n0', TEST_USER, 'New Title', undefined, undefined, undefined, undefined);
 
@@ -278,7 +384,7 @@ describe('JobsController.editDiffEntry', () => {
       getById: jest.fn().mockResolvedValue(TEST_JOB),
       editDiffEntry: jest.fn(),
     };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     await expect(
       controller.editDiffEntry('job-1', 'n0', TEST_USER, undefined, undefined, 'x'.repeat(129), undefined, undefined),
@@ -291,7 +397,7 @@ describe('JobsController.editDiffEntry', () => {
       getById: jest.fn().mockResolvedValue(TEST_JOB),
       editDiffEntry: jest.fn().mockResolvedValue([]),
     };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     await controller.editDiffEntry('job-1', 'n0', TEST_USER, undefined, undefined, undefined, ['functional', 'safety'], undefined);
 
@@ -306,7 +412,7 @@ describe('JobsController.editDiffEntry', () => {
       getById: jest.fn().mockResolvedValue(TEST_JOB),
       editDiffEntry: jest.fn(),
     };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     await expect(
       controller.editDiffEntry('job-1', 'n0', TEST_USER, undefined, undefined, undefined, ['not_a_real_tag'], undefined),
@@ -319,7 +425,7 @@ describe('JobsController.editDiffEntry', () => {
       getById: jest.fn().mockResolvedValue(TEST_JOB),
       editDiffEntry: jest.fn().mockResolvedValue([]),
     };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     await controller.editDiffEntry('job-1', 'n0', TEST_USER, 'New Title', undefined, undefined, undefined, undefined);
 
@@ -336,7 +442,7 @@ describe('JobsController.moveDiffEntry', () => {
       getById: jest.fn().mockResolvedValue(TEST_JOB),
       moveDiffEntry: jest.fn().mockResolvedValue([{ localId: 'n0', parentLocalId: 'n1' }]),
     };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     const result = await controller.moveDiffEntry('job-1', 'n0', TEST_USER, 'n1', 'n2', 'before');
 
@@ -345,7 +451,7 @@ describe('JobsController.moveDiffEntry', () => {
       anchorLocalId: 'n2',
       placement: 'before',
     });
-    expect(result).toEqual({ dryRunDiff: [{ localId: 'n0', parentLocalId: 'n1' }] });
+    expect(result).toEqual({ dryRunDiff: [{ localId: 'n0', parentLocalId: 'n1', attachFigureIds: [] }] });
   });
 
   it('accepts an explicit null parentLocalId (root placement)', async () => {
@@ -353,7 +459,7 @@ describe('JobsController.moveDiffEntry', () => {
       getById: jest.fn().mockResolvedValue(TEST_JOB),
       moveDiffEntry: jest.fn().mockResolvedValue([]),
     };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     await controller.moveDiffEntry('job-1', 'n0', TEST_USER, null, undefined, undefined);
 
@@ -366,7 +472,7 @@ describe('JobsController.moveDiffEntry', () => {
 
   it('rejects a missing parentLocalId (undefined is not the same as null)', async () => {
     const jobsService = { getById: jest.fn(), moveDiffEntry: jest.fn() };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     await expect(controller.moveDiffEntry('job-1', 'n0', TEST_USER, undefined, undefined, undefined)).rejects.toThrow(
       'parentLocalId is required',
@@ -376,7 +482,7 @@ describe('JobsController.moveDiffEntry', () => {
 
   it('rejects an invalid placement value', async () => {
     const jobsService = { getById: jest.fn(), moveDiffEntry: jest.fn() };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     await expect(controller.moveDiffEntry('job-1', 'n0', TEST_USER, 'n1', undefined, 'sideways' as any)).rejects.toThrow(
       "placement must be 'before' or 'after'",
@@ -385,7 +491,7 @@ describe('JobsController.moveDiffEntry', () => {
 
   it('404s for a job that does not belong to the caller', async () => {
     const jobsService = { getById: jest.fn().mockResolvedValue({ ...TEST_JOB, userId: 'someone-else' }), moveDiffEntry: jest.fn() };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     await expect(controller.moveDiffEntry('job-1', 'n0', TEST_USER, 'n1', undefined, undefined)).rejects.toThrow('not found');
     expect(jobsService.moveDiffEntry).not.toHaveBeenCalled();
@@ -396,7 +502,7 @@ describe('JobsController.setDiffEntriesReviewed', () => {
   const TEST_USER = { userId: 'user-descriptor-1', displayName: 'Jane Doe' } as any;
   const TEST_JOB = { id: 'job-1', userId: 'user-descriptor-1', status: 'diff_ready' };
   const make = (jobsService: any) =>
-    new JobsController(jobsService, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    new JobsController(jobsService, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
   it('delegates to jobsService.setDiffEntriesReviewed and returns the new diff', async () => {
     const jobsService = {
@@ -407,7 +513,7 @@ describe('JobsController.setDiffEntriesReviewed', () => {
     const result = await make(jobsService).setDiffEntriesReviewed('job-1', TEST_USER, ['n0', 'n1'], true);
 
     expect(jobsService.setDiffEntriesReviewed).toHaveBeenCalledWith('job-1', ['n0', 'n1'], true);
-    expect(result).toEqual({ dryRunDiff: [{ localId: 'n0', reviewed: true }] });
+    expect(result).toEqual({ dryRunDiff: [{ localId: 'n0', reviewed: true, attachFigureIds: [] }] });
   });
 
   it.each([
@@ -443,7 +549,7 @@ describe('JobsController.setWarningsAcknowledged', () => {
   const TEST_USER = { userId: 'user-descriptor-1', displayName: 'Jane Doe' } as any;
   const TEST_JOB = { id: 'job-1', userId: 'user-descriptor-1', status: 'diff_ready' };
   const make = (jobsService: any) =>
-    new JobsController(jobsService, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    new JobsController(jobsService, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
   it('delegates by kind, with optional raws, and returns the warnings', async () => {
     const jobsService = {
@@ -490,7 +596,7 @@ describe('JobsController.retryEnhancement', () => {
   const TEST_USER = { userId: 'user-descriptor-1', displayName: 'Jane Doe' } as any;
   const TEST_JOB = { id: 'job-1', userId: 'user-descriptor-1', status: 'diff_ready' };
   const make = (jobsService: any) =>
-    new JobsController(jobsService, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    new JobsController(jobsService, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
   it('delegates with de-duplicated ids and returns the service result', async () => {
     const jobsService = { getById: jest.fn().mockResolvedValue(TEST_JOB), modelOf: jest.fn().mockResolvedValue(null), retryEnhancement: jest.fn().mockResolvedValue({ enhanced: ['a'] }) };
@@ -540,12 +646,12 @@ describe('JobsController.addDiffEntry', () => {
       getById: jest.fn().mockResolvedValue(TEST_JOB),
       addDiffEntry: jest.fn().mockResolvedValue([{ localId: 'n1' }]),
     };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     const result = await controller.addDiffEntry('job-1', TEST_USER, 'n0', 'Requirement', 'Title', 'Desc');
 
     expect(jobsService.addDiffEntry).toHaveBeenCalledWith('job-1', { parentLocalId: 'n0', type: 'Requirement', title: 'Title', description: 'Desc' });
-    expect(result).toEqual({ dryRunDiff: [{ localId: 'n1' }] });
+    expect(result).toEqual({ dryRunDiff: [{ localId: 'n1', attachFigureIds: [] }] });
   });
 
   // CR: reparent -- explicit null (root placement) must be accepted, not
@@ -555,7 +661,7 @@ describe('JobsController.addDiffEntry', () => {
       getById: jest.fn().mockResolvedValue(TEST_JOB),
       addDiffEntry: jest.fn().mockResolvedValue([]),
     };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     await controller.addDiffEntry('job-1', TEST_USER, null, 'Epic', 'Title', 'Desc');
 
@@ -564,7 +670,7 @@ describe('JobsController.addDiffEntry', () => {
 
   it('rejects a missing (undefined) parentLocalId', async () => {
     const jobsService = { getById: jest.fn(), addDiffEntry: jest.fn() };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     await expect(controller.addDiffEntry('job-1', TEST_USER, undefined, 'Epic', 'Title', 'Desc')).rejects.toThrow(
       'parentLocalId (or null for the top level)',
@@ -574,7 +680,7 @@ describe('JobsController.addDiffEntry', () => {
 
   it('rejects a missing type/title/description', async () => {
     const jobsService = { getById: jest.fn(), addDiffEntry: jest.fn() };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     await expect(controller.addDiffEntry('job-1', TEST_USER, 'n0', undefined, 'Title', 'Desc')).rejects.toThrow(
       'parentLocalId (or null for the top level)',
@@ -591,20 +697,67 @@ describe('JobsController.listModels', () => {
       { id: 'gemma4:e4b', name: 'gemma4:e4b', vision: true },
     ]);
     const clientFactory = { getClientFor: jest.fn().mockResolvedValue({ listSelectableModels }) };
-    const controller = new JobsController(jobsService as any, ingestionClient as any, clientFactory as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, ingestionClient as any, clientFactory as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     const user = { userId: 'user-1', displayName: 'User One' } as any;
     const result = await controller.listModels(user);
 
     expect(clientFactory.getClientFor).toHaveBeenCalledWith('user-1');
-    expect(result).toEqual({ models: ['qwen2.5:1.5b', 'gemma4:e4b'] });
+    expect(result.models).toEqual(['qwen2.5:1.5b', 'gemma4:e4b']);
+  });
+
+  describe('model details', () => {
+    const user = { userId: 'user-1', displayName: 'User One' } as any;
+    const listed = [
+      { id: 'qwen2.5:1.5b', name: 'Qwen', vision: false },
+      { id: 'gemma4:e4b', name: 'Gemma', vision: true },
+    ];
+    const make = (etaService: any, modelHealth?: any) =>
+      new JobsController(
+        {} as any, {} as any, { getClientFor: jest.fn().mockResolvedValue({ listSelectableModels: jest.fn().mockResolvedValue(listed) }) } as any,
+        {} as any, {} as any, etaService, 500 * 1024 * 1024, modelHealth,
+      );
+
+    it('recommends the admin default when it is among the visible models, and says what the app does with figures', async () => {
+      const stats = new Map([['gemma4:e4b', { runs: 12, speedVsTypical: 0.8, finishedShare: 0.9 }]]);
+      const eta = { getDefaultModel: () => 'gemma4:e4b', modelStats: jest.fn().mockResolvedValue(stats) };
+
+      const result = await make(eta).listModels(user);
+
+      expect(result.recommended).toBe('gemma4:e4b');
+      expect(result.details).toEqual([
+        { id: 'qwen2.5:1.5b', name: 'Qwen', describesFigures: false, runs: 0, speedVsTypical: null, finishedShare: null },
+        { id: 'gemma4:e4b', name: 'Gemma', describesFigures: true, runs: 12, speedVsTypical: 0.8, finishedShare: 0.9 },
+      ]);
+      expect(eta.modelStats).toHaveBeenCalledWith(['qwen2.5:1.5b', 'gemma4:e4b']);
+    });
+
+    it('recommends nothing when the default is not offered (hidden or failing)', async () => {
+      const eta = { getDefaultModel: () => 'gemma4:e4b', modelStats: jest.fn().mockResolvedValue(new Map()) };
+      const modelHealth = { filterVisible: jest.fn(async (_u: string, m: { id: string }[]) => m.filter((x) => x.id !== 'gemma4:e4b')) };
+
+      const result = await make(eta, modelHealth).listModels(user);
+
+      expect(result.models).toEqual(['qwen2.5:1.5b']);
+      expect(result.recommended).toBeNull();
+    });
+
+    it('still returns the plain list with empty stats when the statistics fail', async () => {
+      const eta = { getDefaultModel: () => 'gemma4:e4b', modelStats: jest.fn().mockRejectedValue(new Error('db down')) };
+
+      const result = await make(eta).listModels(user);
+
+      expect(result.models).toEqual(['qwen2.5:1.5b', 'gemma4:e4b']);
+      expect(result.recommended).toBe('gemma4:e4b');
+      expect(result.details.every((d) => d.runs === 0 && d.speedVsTypical === null && d.finishedShare === null)).toBe(true);
+    });
   });
 });
 
 describe('JobsController.uploadFigureFile', () => {
   it('stores compressed figure bytes via jobsService.storeFigureFile', async () => {
     const jobsService = { getById: jest.fn().mockResolvedValue({ id: 'job-1' }), storeFigureFile: jest.fn().mockResolvedValue(undefined) };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     const bytes = Buffer.from('png bytes');
     const result = await controller.uploadFigureFile('job-1', 'f3', { bytes: bytes.toString('base64'), mimeType: 'image/png' });
@@ -615,7 +768,7 @@ describe('JobsController.uploadFigureFile', () => {
 
   it('404s for an unknown job -- never even parses the body', async () => {
     const jobsService = { getById: jest.fn().mockResolvedValue(null), storeFigureFile: jest.fn() };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     await expect(controller.uploadFigureFile('missing', 'f3', { bytes: 'YQ==', mimeType: 'image/png' })).rejects.toThrow('not found');
     expect(jobsService.storeFigureFile).not.toHaveBeenCalled();
@@ -623,7 +776,7 @@ describe('JobsController.uploadFigureFile', () => {
 
   it('rejects a body missing bytes/mimeType', async () => {
     const jobsService = { getById: jest.fn().mockResolvedValue({ id: 'job-1' }), storeFigureFile: jest.fn() };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     await expect(controller.uploadFigureFile('job-1', 'f3', { bytes: '' } as any)).rejects.toThrow('Invalid request body');
     expect(jobsService.storeFigureFile).not.toHaveBeenCalled();
@@ -631,7 +784,7 @@ describe('JobsController.uploadFigureFile', () => {
 
   it('rejects a figure over the 8MB per-figure cap', async () => {
     const jobsService = { getById: jest.fn().mockResolvedValue({ id: 'job-1' }), storeFigureFile: jest.fn() };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     const oversized = Buffer.alloc(9 * 1024 * 1024, 1).toString('base64');
     await expect(controller.uploadFigureFile('job-1', 'f3', { bytes: oversized, mimeType: 'image/png' })).rejects.toThrow('exceeds');
@@ -647,7 +800,7 @@ describe('JobsController.getFigureFile', () => {
       getById: jest.fn().mockResolvedValue({ id: 'job-1', userId: 'user-descriptor-1' }),
       getFigureFile: jest.fn().mockResolvedValue({ bytes: Buffer.from('png bytes'), mimeType: 'image/png' }),
     };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
     const res = { set: jest.fn(), send: jest.fn() };
 
     await controller.getFigureFile('job-1', 'f0', TEST_USER, res as any);
@@ -662,7 +815,7 @@ describe('JobsController.getFigureFile', () => {
       getById: jest.fn().mockResolvedValue({ id: 'job-1', userId: 'user-descriptor-1' }),
       getFigureFile: jest.fn().mockResolvedValue(null),
     };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
     const res = { set: jest.fn(), send: jest.fn() };
 
     await expect(controller.getFigureFile('job-1', 'f0', TEST_USER, res as any)).rejects.toThrow('not found');
@@ -671,7 +824,7 @@ describe('JobsController.getFigureFile', () => {
 
   it('404s for a job that does not belong to the caller -- same not-403 convention as every other per-job route', async () => {
     const jobsService = { getById: jest.fn().mockResolvedValue({ id: 'job-1', userId: 'someone-else' }), getFigureFile: jest.fn() };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
     const res = { set: jest.fn(), send: jest.fn() };
 
     await expect(controller.getFigureFile('job-1', 'f0', TEST_USER, res as any)).rejects.toThrow('not found');
@@ -688,7 +841,7 @@ describe('JobsController.attachFigureToAdo', () => {
       attachFigureToAdo: jest.fn().mockResolvedValue({ attached: true, adoId: 555 }),
     };
     const adoCredentialResolver = { resolve: jest.fn().mockResolvedValue({ orgUrl: 'https://ado.example', pat: 'x' }) };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, adoCredentialResolver as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, adoCredentialResolver as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     const result = await controller.attachFigureToAdo('job-1', 'n0', 'f0', TEST_USER);
 
@@ -700,7 +853,7 @@ describe('JobsController.attachFigureToAdo', () => {
   it('404s for a job that does not belong to the caller before resolving any credential', async () => {
     const jobsService = { getById: jest.fn().mockResolvedValue({ id: 'job-1', userId: 'someone-else' }), attachFigureToAdo: jest.fn() };
     const adoCredentialResolver = { resolve: jest.fn() };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, adoCredentialResolver as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, adoCredentialResolver as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     await expect(controller.attachFigureToAdo('job-1', 'n0', 'f0', TEST_USER)).rejects.toThrow('not found');
     expect(adoCredentialResolver.resolve).not.toHaveBeenCalled();
@@ -717,7 +870,7 @@ describe('JobsController.retryTraceLinkWrite', () => {
       retryTraceLinkWrite: jest.fn().mockResolvedValue({ written: true, sourceAdoId: 101, targetAdoId: 100 }),
     };
     const adoCredentialResolver = { resolve: jest.fn().mockResolvedValue({ orgUrl: 'https://ado.example', pat: 'x' }) };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, adoCredentialResolver as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, adoCredentialResolver as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     const result = await controller.retryTraceLinkWrite('job-1', 'failure-1', TEST_USER);
 
@@ -729,7 +882,7 @@ describe('JobsController.retryTraceLinkWrite', () => {
   it('404s for a job that does not belong to the caller before resolving any credential', async () => {
     const jobsService = { getById: jest.fn().mockResolvedValue({ id: 'job-1', userId: 'someone-else' }), retryTraceLinkWrite: jest.fn() };
     const adoCredentialResolver = { resolve: jest.fn() };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, adoCredentialResolver as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, adoCredentialResolver as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     await expect(controller.retryTraceLinkWrite('job-1', 'failure-1', TEST_USER)).rejects.toThrow('not found');
     expect(adoCredentialResolver.resolve).not.toHaveBeenCalled();
@@ -747,7 +900,7 @@ describe('JobsController.retryTraceLinkWrite', () => {
 describe('JobsController.getEstimate', () => {
   it('validates the query and calls EtaService.estimate with coerced numbers', async () => {
     const etaService = { estimate: jest.fn().mockResolvedValue({ mode: 'survey', estimateMinutes: 42 }) };
-    const controller = new JobsController({} as any, {} as any, {} as any, {} as any, {} as any, etaService as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController({} as any, {} as any, {} as any, {} as any, {} as any, etaService as any, 500 * 1024 * 1024);
 
     const result = await controller.getEstimate({ blockCount: '682', figureCount: '39', mode: 'survey', model: 'qwen2.5:32b' });
 
@@ -761,7 +914,7 @@ describe('JobsController.getEstimate', () => {
 
   it('rejects a missing/invalid mode with a 400, never a silent default', async () => {
     const etaService = { estimate: jest.fn() };
-    const controller = new JobsController({} as any, {} as any, {} as any, {} as any, {} as any, etaService as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController({} as any, {} as any, {} as any, {} as any, {} as any, etaService as any, 500 * 1024 * 1024);
 
     await expect(controller.getEstimate({ blockCount: '10', figureCount: '2', mode: 'not-a-real-mode' })).rejects.toThrow('Invalid query');
     expect(etaService.estimate).not.toHaveBeenCalled();
@@ -769,7 +922,7 @@ describe('JobsController.getEstimate', () => {
 
   it('rejects a negative blockCount/figureCount', async () => {
     const etaService = { estimate: jest.fn() };
-    const controller = new JobsController({} as any, {} as any, {} as any, {} as any, {} as any, etaService as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController({} as any, {} as any, {} as any, {} as any, {} as any, etaService as any, 500 * 1024 * 1024);
 
     await expect(controller.getEstimate({ blockCount: '-1', figureCount: '2', mode: 'survey' })).rejects.toThrow('Invalid query');
     expect(etaService.estimate).not.toHaveBeenCalled();
@@ -781,7 +934,7 @@ describe('JobsController.getEstimate', () => {
     // confirms the controller passes BASELINE through faithfully rather
     // than defaulting it to survey or dropping it.
     const etaService = { estimate: jest.fn().mockResolvedValue({ mode: 'baseline', estimateMinutes: 1 }) };
-    const controller = new JobsController({} as any, {} as any, {} as any, {} as any, {} as any, etaService as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController({} as any, {} as any, {} as any, {} as any, {} as any, etaService as any, 500 * 1024 * 1024);
 
     const result = await controller.getEstimate({ blockCount: '10', figureCount: '2', mode: 'baseline' });
 
@@ -793,7 +946,7 @@ describe('JobsController.getEstimate', () => {
 describe('JobsController.list', () => {
   it('parses skip/take from the query string and forwards them to JobsService.list', async () => {
     const jobsService = { list: jest.fn().mockResolvedValue([]) };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     await controller.list({ userId: 'user-1' } as any, { skip: '20', take: '10' });
 
@@ -802,7 +955,7 @@ describe('JobsController.list', () => {
 
   it('forwards an empty pagination object when the query string omits skip/take -- byte-identical to before this fix', async () => {
     const jobsService = { list: jest.fn().mockResolvedValue([]) };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     await controller.list({ userId: 'user-1' } as any, {});
 
@@ -811,7 +964,7 @@ describe('JobsController.list', () => {
 
   it('rejects an out-of-range take with 400 and never calls the service', async () => {
     const jobsService = { list: jest.fn() };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     await expect(controller.list({ userId: 'user-1' } as any, { take: '9999' })).rejects.toThrow(BadRequestException);
     expect(jobsService.list).not.toHaveBeenCalled();
@@ -824,7 +977,7 @@ describe('JobsController hidden models (LLM_MODEL_HIDE_PATTERNS)', () => {
   const hidden = (name: string) => name.startsWith('contracts-ai-') || name === 'fai-checker';
   const factory = { isModelHidden: jest.fn(hidden) };
   const make = (jobsService: any) =>
-    new JobsController(jobsService, {} as any, factory as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    new JobsController(jobsService, {} as any, factory as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
   const file = { buffer: Buffer.from('x'), originalname: 'a.docx', size: 1 } as any;
 
   it('refuses a submit that names a hidden model, before reading the file', async () => {
@@ -840,7 +993,7 @@ describe('JobsController hidden models (LLM_MODEL_HIDE_PATTERNS)', () => {
     const modelHealth = { isFailed: jest.fn(async (model: string) => model === 'persona-bot') };
     const controller = new JobsController(
       { submit: jest.fn().mockResolvedValue({ jobId: 'j' }) } as any, { ingest: jest.fn() } as any, { isModelHidden: () => false } as any,
-      {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any, modelHealth as any,
+      {} as any, {} as any, {} as any, 500 * 1024 * 1024, modelHealth as any,
     );
 
     await expect(
@@ -857,9 +1010,9 @@ describe('JobsController hidden models (LLM_MODEL_HIDE_PATTERNS)', () => {
     const modelHealth = { filterVisible: jest.fn(async (_u: string, models: { id: string }[]) => models.filter((m) => m.id !== 'persona-bot')) };
     const controller = new JobsController(
       {} as any, {} as any, { getClientFor: jest.fn().mockResolvedValue({ listSelectableModels }) } as any,
-      {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any, modelHealth as any,
+      {} as any, {} as any, {} as any, 500 * 1024 * 1024, modelHealth as any,
     );
-    expect(await controller.listModels(TEST_USER)).toEqual({ models: ['good'] });
+    expect((await controller.listModels(TEST_USER)).models).toEqual(['good']);
   });
 
   it('does not touch the factory when no model is named', async () => {
@@ -894,5 +1047,186 @@ describe('JobsController hidden models (LLM_MODEL_HIDE_PATTERNS)', () => {
     };
 
     await expect(make(jobsService).resubmit('job-1', TEST_USER)).resolves.toEqual({ jobId: 'job-2' });
+  });
+});
+
+describe('JobsController.setProposalAccepted (P9d)', () => {
+  const TEST_USER = { userId: 'user-descriptor-1', displayName: 'Jane Doe' } as any;
+  const TEST_JOB = { id: 'job-1', userId: 'user-descriptor-1', status: 'diff_ready' };
+  const make = (jobsService: any) =>
+    new JobsController(jobsService, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+  it('delegates to jobsService.setProposalAccepted and returns the new diff', async () => {
+    const jobsService = {
+      getById: jest.fn().mockResolvedValue(TEST_JOB),
+      setProposalAccepted: jest.fn().mockResolvedValue([{ localId: 'n0', proposalAccepted: true }]),
+    };
+
+    const result = await make(jobsService).setProposalAccepted('job-1', 'n0', TEST_USER, true);
+
+    expect(jobsService.setProposalAccepted).toHaveBeenCalledWith('job-1', 'n0', true);
+    expect(result).toEqual({ dryRunDiff: [{ localId: 'n0', proposalAccepted: true, attachFigureIds: [] }] });
+  });
+
+  it('rejects a non-boolean accepted before touching the job', async () => {
+    const jobsService = { getById: jest.fn(), setProposalAccepted: jest.fn() };
+
+    await expect(make(jobsService).setProposalAccepted('job-1', 'n0', TEST_USER, 'yes' as any)).rejects.toThrow('accepted must be a boolean');
+    expect(jobsService.getById).not.toHaveBeenCalled();
+  });
+
+  it('404s for a job that does not belong to the caller', async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue({ ...TEST_JOB, userId: 'someone-else' }), setProposalAccepted: jest.fn() };
+
+    await expect(make(jobsService).setProposalAccepted('job-1', 'n0', TEST_USER, true)).rejects.toThrow('not found');
+    expect(jobsService.setProposalAccepted).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('JobsController.previewSummary', () => {
+  const INPUT = ['§1 Scope: This ICD defines the electrical interfaces of the SOSA backplane for the AirPro LRU.', 'Sections: 1 Scope; 2 Power; 3 Thermal', 'Cited: VITA 46.0, MIL-STD-704'].join('\n');
+  const GOOD = 'This document defines the electrical interfaces of the SOSA backplane for the AirPro unit, covering power and thermal limits, and cites VITA 46.0 and MIL-STD-704 as its references.';
+  const USER = { userId: 'user-1', displayName: 'U' } as any;
+  const make = (chat: jest.Mock, hidden = false, maxTokens?: number) => {
+    const getClientFor = jest.fn().mockResolvedValue({ chat });
+    const controller = new JobsController({} as any, {} as any, { isModelHidden: () => hidden, getClientFor } as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, undefined, maxTokens);
+    return { controller, getClientFor };
+  };
+
+  it('returns the summary the model wrote from the posted input, for the calling user', async () => {
+    const chat = jest.fn().mockResolvedValue({ content: GOOD });
+    const { controller, getClientFor } = make(chat, false, 1500);
+    expect(await controller.previewSummary(USER, { summaryInput: INPUT, model: 'm1' })).toEqual({ summary: GOOD });
+    expect(getClientFor).toHaveBeenCalledWith('user-1');
+    expect((chat.mock.calls[0] as unknown[])[1]).toMatchObject({ maxTokens: 1500, model: 'm1' });
+  });
+
+  it('answers null, never an error, when the model fails or its answer is not grounded', async () => {
+    expect(await make(jest.fn().mockRejectedValue(new Error('down'))).controller.previewSummary(USER, { summaryInput: INPUT })).toEqual({ summary: null });
+    expect(await make(jest.fn().mockResolvedValue({ content: 'Unrelated words about 99 widgets and a CAN bus, long enough to pass the length check but not the input.' })).controller.previewSummary(USER, { summaryInput: INPUT })).toEqual({ summary: null });
+  });
+
+  it.each([[undefined], [''], ['   '], [5], ['x'.repeat(8001)]])('rejects an input that is not usable text within the bound (%p)', async (summaryInput) => {
+    const chat = jest.fn();
+    await expect(make(chat).controller.previewSummary(USER, { summaryInput } as any)).rejects.toBeInstanceOf(BadRequestException);
+    expect(chat).not.toHaveBeenCalled();
+  });
+
+  it('refuses a model that is not available', async () => {
+    const chat = jest.fn();
+    await expect(make(chat, true).controller.previewSummary(USER, { summaryInput: INPUT, model: 'hidden' })).rejects.toBeInstanceOf(BadRequestException);
+    expect(chat).not.toHaveBeenCalled();
+  });
+
+  it('cancels the model call when the browser goes away', async () => {
+    let signal: AbortSignal | undefined;
+    const chat = jest.fn().mockImplementation(async (_m: unknown, opts: { signal: AbortSignal }) => {
+      signal = opts.signal;
+      return { content: GOOD };
+    });
+    const listeners: Record<string, () => void> = {};
+    const res = { on: (event: string, fn: () => void) => { listeners[event] = fn; }, writableEnded: false } as any;
+    const { controller } = make(chat);
+    await controller.previewSummary(USER, { summaryInput: INPUT }, res);
+    listeners.close();
+    expect(signal?.aborted).toBe(true);
+  });
+});
+
+describe('POST /jobs/preview/summary limits', () => {
+  it('is throttled well below the global limit, because it is a model call on caller-chosen text', () => {
+    const handler = JobsController.prototype.previewSummary;
+    expect(Reflect.getMetadata('THROTTLER:LIMITdefault', handler)).toBeLessThanOrEqual(20);
+    expect(Reflect.getMetadata('THROTTLER:TTLdefault', handler)).toBe(60_000);
+  });
+});
+
+describe('JobsController diff-mutating routes return decorated entries', () => {
+  const TEST_USER = { userId: 'user-descriptor-1', displayName: 'Jane Doe' } as any;
+  const TEST_JOB = { id: 'job-1', userId: 'user-descriptor-1', status: 'diff_ready', writtenLocalIds: [] };
+  const created = { localId: 'n0', parentLocalId: null, type: 'Requirement', action: 'create', existingAdoId: null, figureIds: ['f1'] };
+  const reused = { localId: 'n1', parentLocalId: null, type: 'Requirement', action: 'reuse', existingAdoId: 4, figureIds: ['f2'] };
+  const expected = [{ ...created, attachFigureIds: ['f1'] }, { ...reused, attachFigureIds: [] }];
+  const build = (methods: Record<string, jest.Mock>) => {
+    const jobsService = { getById: jest.fn().mockResolvedValue(TEST_JOB), modelOf: jest.fn().mockResolvedValue(null), ...methods };
+    return new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+  };
+  const diff = () => jest.fn().mockResolvedValue([created, reused]);
+
+  it('setDiffEntriesReviewed', async () => {
+    expect(await build({ setDiffEntriesReviewed: diff() }).setDiffEntriesReviewed('job-1', TEST_USER, ['n0'], true)).toEqual({ dryRunDiff: expected });
+  });
+  it('editDiffEntry', async () => {
+    expect(await build({ editDiffEntry: diff() }).editDiffEntry('job-1', 'n0', TEST_USER, 'T', undefined, undefined, undefined, undefined)).toEqual({ dryRunDiff: expected });
+  });
+  it('setDiffEntryExcluded', async () => {
+    expect(await build({ setDiffEntryExcluded: diff() }).setDiffEntryExcluded('job-1', 'n0', TEST_USER, false)).toEqual({ dryRunDiff: expected });
+  });
+  it('setProposalAccepted', async () => {
+    expect(await build({ setProposalAccepted: diff() }).setProposalAccepted('job-1', 'n0', TEST_USER, true)).toEqual({ dryRunDiff: expected });
+  });
+  it('moveDiffEntry', async () => {
+    expect(await build({ moveDiffEntry: diff() }).moveDiffEntry('job-1', 'n0', TEST_USER, null, undefined, undefined)).toEqual({ dryRunDiff: expected });
+  });
+  it('addDiffEntry', async () => {
+    expect(await build({ addDiffEntry: diff() }).addDiffEntry('job-1', TEST_USER, null, 'Requirement', 't', 'd')).toEqual({ dryRunDiff: expected });
+  });
+  it('rescoreDiffEntry', async () => {
+    expect(await build({ rescoreDiffEntry: diff() }).rescoreDiffEntry('job-1', 'n0', TEST_USER)).toEqual({ dryRunDiff: expected });
+  });
+  it('retryEnhancement decorates the dryRunDiff it returns and keeps the other fields', async () => {
+    const retryEnhancement = jest.fn().mockResolvedValue({ dryRunDiff: [created, reused], warnings: [], enhanced: ['n0'], failed: [], skipped: [] });
+    const result: any = await build({ retryEnhancement }).retryEnhancement('job-1', TEST_USER, 'enhancement_call_failed', 'title_tag', ['n0']);
+    expect(result.dryRunDiff).toEqual(expected);
+    expect(result.enhanced).toEqual(['n0']);
+  });
+  it('an entry the job already wrote is decorated even when it was a reuse', async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue({ ...TEST_JOB, writtenLocalIds: ['n1'] }), setDiffEntryExcluded: diff() };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const result: any = await controller.setDiffEntryExcluded('job-1', 'n0', TEST_USER, false);
+    expect(result.dryRunDiff[1].attachFigureIds).toEqual(['f2']);
+  });
+});
+
+describe('JobsController discussion routes', () => {
+  const TEST_USER = { userId: 'user-descriptor-1', displayName: 'Jane Doe' } as any;
+  const TEST_JOB = { id: 'job-1', userId: 'user-descriptor-1', status: 'diff_ready' };
+  const make = (jobsService: any) =>
+    new JobsController(jobsService, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+  const svc = () => ({
+    getById: jest.fn().mockResolvedValue(TEST_JOB),
+    addDiscussionEntry: jest.fn().mockResolvedValue([{ localId: 'n0' }]),
+    removeDiscussionEntry: jest.fn().mockResolvedValue([{ localId: 'n0' }]),
+  });
+
+  it('adds an entry, trimming nothing the caller did not blank', async () => {
+    const jobsService = svc();
+    const result = await make(jobsService).addDiscussionEntry('job-1', 'n0', TEST_USER, 'P', undefined);
+    expect(jobsService.addDiscussionEntry).toHaveBeenCalledWith('job-1', 'n0', { proposedTitle: 'P', proposedDescription: undefined });
+    expect(result).toEqual({ dryRunDiff: [{ localId: 'n0', attachFigureIds: [] }] });
+  });
+
+  it('rejects non-strings, all-blank bodies and over-long text', async () => {
+    const jobsService = svc();
+    const c = make(jobsService);
+    await expect(c.addDiscussionEntry('job-1', 'n0', TEST_USER, 5 as any, undefined)).rejects.toThrow(BadRequestException);
+    await expect(c.addDiscussionEntry('job-1', 'n0', TEST_USER, '  ', '')).rejects.toThrow(BadRequestException);
+    await expect(c.addDiscussionEntry('job-1', 'n0', TEST_USER, undefined, undefined)).rejects.toThrow(BadRequestException);
+    await expect(c.addDiscussionEntry('job-1', 'n0', TEST_USER, 'x'.repeat(1000), undefined)).rejects.toThrow(/limit/);
+    await expect(c.addDiscussionEntry('job-1', 'n0', TEST_USER, undefined, 'x'.repeat(100000))).rejects.toThrow(/limit/);
+    expect(jobsService.addDiscussionEntry).not.toHaveBeenCalled();
+  });
+
+  it('is not reachable on another user\'s job', async () => {
+    const jobsService = { ...svc(), getById: jest.fn().mockResolvedValue({ ...TEST_JOB, userId: 'someone-else' }) };
+    await expect(make(jobsService).addDiscussionEntry('job-1', 'n0', TEST_USER, 'P', undefined)).rejects.toThrow('not found');
+    await expect(make(jobsService).removeDiscussionEntry('job-1', 'n0', 'e1', TEST_USER)).rejects.toThrow('not found');
+  });
+
+  it('removes an entry', async () => {
+    const jobsService = svc();
+    await make(jobsService).removeDiscussionEntry('job-1', 'n0', 'e1', TEST_USER);
+    expect(jobsService.removeDiscussionEntry).toHaveBeenCalledWith('job-1', 'n0', 'e1');
   });
 });

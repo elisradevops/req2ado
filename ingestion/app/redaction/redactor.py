@@ -7,7 +7,9 @@ from app.canonical.model import CanonicalDoc
 _PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"),  # email
     re.compile(r"https?://[^\s]+"),  # url
-    re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"),  # guid
+    re.compile(
+        r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
+    ),  # guid
     re.compile(r"\b[a-zA-Z0-9-]+\.(?:internal|corp|local)\.[a-zA-Z]{2,}\b"),  # hostname
     re.compile(r"\b(?:PN|P/N)-[A-Za-z0-9-]+\b"),  # part number
 ]

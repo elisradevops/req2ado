@@ -1,8 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { BELOW_MD } from '../hooks/useMediaQuery';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, within, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { forwardRef } from 'react';
-import type { CSSProperties, ReactNode } from 'react';
+import { createElement, forwardRef } from 'react';
+import type { ComponentType, CSSProperties, ReactNode } from 'react';
 import { DiffTree } from './DiffTree';
 import type { DryRunDiffEntry } from './DiffTree';
 
@@ -24,17 +25,19 @@ vi.mock('react-window', () => ({
     { scrollToItem: typeof scrollToItem },
     {
       itemCount: number;
-      children: (args: { index: number; style: CSSProperties }) => ReactNode;
+      children: ComponentType<{ index: number; style: CSSProperties; data: unknown }>;
+      itemData?: unknown;
       itemKey?: (index: number) => string;
+      itemSize?: number;
     }
   >((props, ref) => {
     if (typeof ref === 'function') ref({ scrollToItem });
     else if (ref) ref.current = { scrollToItem };
     return (
-      <div>
+      <div data-item-size={props.itemSize}>
         {Array.from({ length: props.itemCount }, (_, index) => {
           if (props.itemKey) itemKeyCalls.push(props.itemKey(index));
-          return <div key={index}>{props.children({ index, style: {} })}</div>;
+          return <div key={index}>{createElement(props.children, { index, style: {}, data: props.itemData })}</div>;
         })}
       </div>
     );
@@ -127,6 +130,20 @@ describe('DiffTree', () => {
     expect(screen.getByText('2')).toBeInTheDocument();
   });
 
+  it('marks a row whose criteria proposal is waiting for review, or accepted (P9d)', () => {
+    const proposal = { kind: 'criteria' as const, html: '<div data-r2a="criteria"><ul><li>x</li></ul></div>' };
+    const entries: DryRunDiffEntry[] = [
+      { localId: 'a', parentLocalId: null, type: 'Requirement', title: 'Pending one', description: '', action: 'create', customerId: null, tags: [], proposal },
+      { localId: 'b', parentLocalId: null, type: 'Requirement', title: 'Accepted one', description: '', action: 'create', customerId: null, tags: [], proposal, proposalAccepted: true },
+      { localId: 'c', parentLocalId: null, type: 'Requirement', title: 'Plain one', description: '', action: 'create', customerId: null, tags: [] },
+      { localId: 'd', parentLocalId: null, type: 'Requirement', title: 'Note one', description: '', action: 'create', customerId: null, tags: [], proposal: { kind: 'needs-input' as const, html: '<div data-r2a="needs-input"></div>' } },
+    ];
+    render(<DiffTree entries={entries} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} />);
+    expect(screen.getAllByText('criteria to review')).toHaveLength(1);
+    expect(screen.getAllByText('criteria accepted')).toHaveLength(1);
+    expect(screen.queryAllByText(/criteria/i)).toHaveLength(2);
+  });
+
   it('renders customerId as a separate badge next to the title, distinct from the row index', () => {
     const withCustomerId: DryRunDiffEntry[] = [
       { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Root Epic', description: '', action: 'create', customerId: null, tags: [] },
@@ -136,9 +153,7 @@ describe('DiffTree', () => {
     render(
       <DiffTree entries={withCustomerId} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} />,
     );
-    // Child Feature starts collapsed by default -- expand it to reach its
-    // Requirement child.
-    fireEvent.click(screen.getByRole('button', { name: /expand child feature/i }));
+    // Child Feature is the first Feature with children, so it starts open.
     // The Requirement's own index (root Epic -> child Feature -> child
     // Requirement, all only children) is "1.1.1" -- present AND distinct
     // from its customerId badge "REQ-AV-014", both rendered simultaneously.
@@ -277,17 +292,46 @@ describe('DiffTree', () => {
     expect(screen.getByText('Child Feature')).toBeInTheDocument();
   });
 
-  it('loads with every Feature collapsed by default, hiding its Requirements', () => {
+  it('loads with the first Feature that has children open and every other Feature collapsed', () => {
     const entries: DryRunDiffEntry[] = [
       { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Epic 1', description: '', action: 'create', customerId: null },
+      { localId: 'f0', parentLocalId: 'e1', type: 'Feature', title: 'Empty Feature', description: '', action: 'create', customerId: null },
       { localId: 'f1', parentLocalId: 'e1', type: 'Feature', title: 'Feature 1', description: '', action: 'create', customerId: null },
       { localId: 'r1', parentLocalId: 'f1', type: 'Requirement', title: 'Req 1', description: '', action: 'create', customerId: null },
+      { localId: 'f2', parentLocalId: 'e1', type: 'Feature', title: 'Feature 2', description: '', action: 'create', customerId: null },
+      { localId: 'r2', parentLocalId: 'f2', type: 'Requirement', title: 'Req 2', description: '', action: 'create', customerId: null },
     ];
     render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
 
     expect(screen.getByText('Epic 1')).toBeInTheDocument();
     expect(screen.getByText('Feature 1')).toBeInTheDocument();
-    expect(screen.queryByText('Req 1')).not.toBeInTheDocument();
+    expect(screen.getByText('Feature 2')).toBeInTheDocument();
+    expect(screen.getByText('Req 1')).toBeInTheDocument();
+    expect(screen.queryByText('Req 2')).not.toBeInTheDocument();
+  });
+
+  it('skips a childless first Feature and opens the first Feature that has children', () => {
+    const entries: DryRunDiffEntry[] = [
+      { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Epic 1', description: '', action: 'create', customerId: null },
+      { localId: 'f1', parentLocalId: 'e1', type: 'Feature', title: 'Feature 1', description: '', action: 'create', customerId: null },
+      { localId: 'f2', parentLocalId: 'e1', type: 'Feature', title: 'Feature 2', description: '', action: 'create', customerId: null },
+      { localId: 'r2', parentLocalId: 'f2', type: 'Requirement', title: 'Req 2', description: '', action: 'create', customerId: null },
+    ];
+    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+    expect(screen.queryByRole('button', { name: /(expand|collapse) feature 1/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Collapse Feature 2' })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText('Req 2')).toBeInTheDocument();
+  });
+
+  it('names the review flag and the issue count separately for assistive tech (two different signals, not two bare triangles)', () => {
+    const entries: DryRunDiffEntry[] = [
+      { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Epic 1', description: '', action: 'create', customerId: null },
+      { localId: 'f1', parentLocalId: 'e1', type: 'Feature', title: 'Feature 1', description: '', action: 'create', customerId: null },
+      { localId: 'r1', parentLocalId: 'f1', type: 'Requirement', title: 'Flagged req', description: '', action: 'create', customerId: null, groundingScore: 0.1 },
+    ];
+    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+    const flag = screen.getByRole('img', { name: /needs review/i, hidden: false });
+    expect(flag).toHaveAttribute('title', expect.stringMatching(/low grounding/i));
   });
 
   it('shows a review chip on a flagged entry, not on a healthy one', () => {
@@ -299,9 +343,7 @@ describe('DiffTree', () => {
     ];
     render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
 
-    // Feature 1 starts collapsed (see the test above) -- expand it to reach the Requirements.
-    fireEvent.click(screen.getByRole('button', { name: /expand feature 1/i }));
-
+    // Feature 1 is the first Feature with children, so it starts open (see the test above).
     // The flagged signal is an icon (title attribute), not chip text -- see
     // the Flags cell's own comment in DiffTree.tsx for why a text chip was
     // replaced with a fixed-size icon.
@@ -349,7 +391,6 @@ describe('DiffTree', () => {
     ];
     render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
 
-    fireEvent.click(screen.getByRole('button', { name: /expand feature 1/i }));
 
     const row = screen.getByText('Flagged reused req').closest('[role="row"], div')?.parentElement as HTMLElement;
     // The flagged icon (title carries the reason) and the action badge's
@@ -381,7 +422,6 @@ describe('DiffTree', () => {
     ];
     render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
 
-    fireEvent.click(screen.getByRole('button', { name: /expand feature 1/i }));
 
     const row = screen.getByText('Unsure req').closest('[role="row"], div')?.parentElement as HTMLElement;
     // Grounding and quality are both healthy here -- the icon's title must
@@ -581,6 +621,225 @@ describe('DiffTree signal counts', () => {
     expect(screen.queryByText(/Ambiguous/i)).not.toBeInTheDocument();
   });
 
+  it('keeps the same-tier chip on the title line at desktop widths', () => {
+    const entries: DryRunDiffEntry[] = [
+      { ...baseEntry, localId: 'p', title: 'Parent req' },
+      { ...baseEntry, localId: 'c', parentLocalId: 'p', title: 'Child req' },
+    ];
+    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+    expect(within(screen.getByText('Child req').parentElement as HTMLElement).getByText('same tier')).toBeInTheDocument();
+  });
+
+  it('exposes the real depth to assistive technology on every row', () => {
+    const entries: DryRunDiffEntry[] = [
+      { ...baseEntry, localId: 'a', title: 'Top', type: 'Epic' },
+      { ...baseEntry, localId: 'b', parentLocalId: 'a', title: 'Child', type: 'Requirement' },
+    ];
+    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+    expect(screen.getByText('Top').closest('[role=treeitem]')).toHaveAttribute('aria-level', '1');
+    expect(screen.getByText('Child').closest('[role=treeitem]')).toHaveAttribute('aria-level', '2');
+  });
+
+  it('keeps the criteria chip a tab stop at desktop widths', () => {
+    const entries: DryRunDiffEntry[] = [{ ...baseEntry, localId: 'a', title: 'Has criteria', proposal: { kind: 'criteria' } as any, proposalAccepted: false }];
+    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+    expect(screen.getByText('criteria to review')).toHaveAttribute('tabindex', '0');
+  });
+
+  it('keeps the desktop order after the title: customer id, same tier, then the criteria chip, all on the title line', () => {
+    const entries: DryRunDiffEntry[] = [
+      { ...baseEntry, localId: 'p', title: 'Parent req' },
+      { ...baseEntry, localId: 'c', parentLocalId: 'p', title: 'Child req', customerId: 'REQ-1', proposal: { kind: 'criteria' } as any, proposalAccepted: false },
+    ];
+    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+    const title = screen.getByText('Child req');
+    const after = (el: Element): number => title.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING;
+    const id = screen.getByText('REQ-1');
+    const tier = screen.getByText('same tier');
+    const criteria = screen.getByText('criteria to review');
+    expect(after(id) && after(tier) && after(criteria)).toBeTruthy();
+    expect(id.compareDocumentPosition(tier) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(tier.compareDocumentPosition(criteria) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(id.parentElement).not.toHaveClass('flex-wrap');
+  });
+
+  it('keeps the external-link glyph on the details button at desktop widths, and no review triangle on line 2', () => {
+    render(<DiffTree entries={[{ ...baseEntry, qualityIssues: ['ambiguous'] }]} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+    const button = screen.getByRole('button', { name: /details for sys req/i });
+    expect(button.querySelector('.lucide-square-arrow-out-up-right')).not.toBeNull();
+    expect(screen.queryByTestId('narrow-flag')).toBeNull();
+  });
+
+  it('keeps single-line 40px rows at desktop widths', () => {
+    const { container } = render(
+      <DiffTree entries={[baseEntry]} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />,
+    );
+    expect(container.querySelector('[data-item-size]')).toHaveAttribute('data-item-size', '40');
+  });
+
+  it('sizes the scroller to its rows, not to a fixed 230px of empty card (review finding V4)', () => {
+    render(<DiffTree entries={[baseEntry]} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+    // 1 row is padded to 3 so the card never collapses; capped by the viewport, never taller than the rows
+    // (jsdom reorders min()/max() when reading it back, so assert the row-based bound, not the whole string)
+    expect(screen.getByRole('tree').style.height).toContain('120px');
+  });
+
+  it('keeps the scroller height when a filter hides rows, so the card does not jump while typing', () => {
+    const entries = Array.from({ length: 6 }, (_, i) => ({ ...baseEntry, localId: `n${i}`, title: i === 0 ? 'Alpha' : `Beta ${i}` }));
+    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="alpha" onToggleExclude={() => {}} />);
+    expect(screen.getByRole('tree').style.height).toContain('240px');
+  });
+
+  it('lets the browser pick each row title\'s direction, so a Hebrew title reads right to left', () => {
+    render(<DiffTree entries={[{ ...baseEntry, title: 'ממשק משתמש (UI) למערכת' }]} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+    expect(screen.getByText('ממשק משתמש (UI) למערכת')).toHaveAttribute('dir', 'auto');
+  });
+
+  it('sets the column header in ink-2: ink-3 on the header tint is 4.1:1', () => {
+    render(<DiffTree entries={[baseEntry]} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+    const header = screen.getByText('Item').parentElement!;
+    expect(header).toHaveClass('text-ink-2');
+    expect(header).not.toHaveClass('text-ink-3');
+  });
+
+  it('draws no "New" pill on a routine row in the desktop status column, but keeps the word for screen readers (V6)', () => {
+    render(<DiffTree entries={[baseEntry]} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+    expect(screen.getByText('New')).toHaveClass('sr-only');
+  });
+
+  describe('below the md breakpoint', () => {
+    const original = window.matchMedia;
+    beforeEach(() => {
+      window.matchMedia = ((query: string) => ({
+        matches: query === BELOW_MD,
+        media: query,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      })) as unknown as typeof window.matchMedia;
+    });
+    afterEach(() => {
+      window.matchMedia = original;
+    });
+
+    const props = { selectedId: null, onSelect: () => {}, filterAction: null, filterText: '', onToggleExclude: () => {} } as const;
+
+    it('lets the browser pick each row title\'s direction on the phone layout too', () => {
+      render(<DiffTree entries={[{ ...baseEntry, title: 'ממשק משתמש (UI) למערכת' }]} {...props} />);
+      expect(screen.getByText('ממשק משתמש (UI) למערכת')).toHaveAttribute('dir', 'auto');
+    });
+
+    it('gives each row two lines of height (64px), with the status as quiet text beneath the title, not a pill', () => {
+      const entries: DryRunDiffEntry[] = [
+        { ...baseEntry, localId: 'a', action: 'reuse', existingAdoId: 3025 },
+        { ...baseEntry, localId: 'b', action: 'dedup_skip', existingAdoId: 3033 },
+      ];
+      const { container } = render(<DiffTree entries={entries} {...props} />);
+      expect(container.querySelector('[data-item-size]')).toHaveAttribute('data-item-size', '64');
+      expect(screen.getByText('Links to WI-3025')).not.toHaveClass('rounded-full');
+      expect(screen.getByText('Dup of WI-3033')).toHaveClass('text-ink-3');
+      expect(screen.getByText('Dup of WI-3033')).toHaveAttribute('title', 'Near-duplicate of WI-3033');
+    });
+
+    it('puts what follows the title (same tier, etc.) on line 2 in the same flow as the status, so no chip is cut on the title line', () => {
+      const entries: DryRunDiffEntry[] = [
+        { ...baseEntry, localId: 'p', title: 'Parent req' },
+        { ...baseEntry, localId: 'c', parentLocalId: 'p', title: 'Child req' },
+      ];
+      render(<DiffTree entries={entries} {...props} />);
+      const chip = screen.getByText('Same tier');
+      expect(chip.parentElement).toHaveClass('flex-wrap');
+      expect(within(chip.parentElement as HTMLElement).getByText('New')).toBeInTheDocument();
+      expect(screen.getByText('Child req')).not.toContainElement(chip);
+    });
+
+    it('promotes rows that need a decision: a labelled triangle and a warm tint, red tint for a same-tier hazard, nothing for a clean row', () => {
+      const entries: DryRunDiffEntry[] = [
+        { ...baseEntry, localId: 'clean', title: 'Clean one' },
+        { ...baseEntry, localId: 'issue', title: 'Issue one', qualityIssues: ['ambiguous'] },
+        { ...baseEntry, localId: 'tier', parentLocalId: 'clean', title: 'Tier one' },
+      ];
+      render(<DiffTree entries={entries} {...props} />);
+      const rowOf = (title: string): HTMLElement => screen.getByText(title).closest('[role=treeitem]') as HTMLElement;
+      expect(rowOf('Clean one')).not.toHaveClass('max-md:bg-warning-soft');
+      expect(rowOf('Clean one')).not.toHaveClass('max-md:bg-danger-soft');
+      expect(within(rowOf('Issue one')).getByTestId('narrow-flag')).toHaveAttribute('aria-label', 'Needs review');
+      expect(rowOf('Issue one')).toHaveClass('max-md:bg-warning-soft');
+      expect(rowOf('Tier one')).toHaveClass('max-md:bg-danger-soft');
+      expect(within(rowOf('Clean one')).queryByTestId('narrow-flag')).toBeNull();
+    });
+
+    it('sizes the two-line row in rem, so a larger text-size setting gets a taller row instead of clipped text', () => {
+      document.documentElement.style.fontSize = '20px';
+      try {
+        const { container } = render(<DiffTree entries={[baseEntry]} {...props} />);
+        expect(container.querySelector('[data-item-size]')).toHaveAttribute('data-item-size', '80');
+      } finally {
+        document.documentElement.style.fontSize = '';
+      }
+    });
+
+    it('puts the customer id and the excluded-ancestor mark on line 2 as well, so none of them is cut on the title line', () => {
+      const entries: DryRunDiffEntry[] = [
+        { ...baseEntry, localId: 'p', title: 'Parent', excluded: true },
+        { ...baseEntry, localId: 'c', parentLocalId: 'p', title: 'Child', customerId: 'REQ-SYS-0012' },
+      ];
+      render(<DiffTree entries={entries} {...props} />);
+      const id = screen.getByText('REQ-SYS-0012');
+      expect(id.parentElement).toHaveClass('flex-wrap');
+      expect(id).toHaveClass('max-w-full');
+      expect(screen.getByText('Child')).not.toContainElement(id);
+    });
+
+    it('does not tint the selected row (the tint utility would hide the selected fill), only its unselected neighbours', () => {
+      const entries: DryRunDiffEntry[] = [
+        { ...baseEntry, localId: 'a', title: 'Flagged selected', qualityIssues: ['ambiguous'] },
+        { ...baseEntry, localId: 'b', title: 'Flagged other', qualityIssues: ['ambiguous'] },
+      ];
+      render(<DiffTree entries={entries} {...props} selectedId="a" />);
+      expect(screen.getByText('Flagged selected').closest('[role=treeitem]')).not.toHaveClass('max-md:bg-warning-soft');
+      expect(screen.getByText('Flagged other').closest('[role=treeitem]')).toHaveClass('max-md:bg-warning-soft');
+      // and the tint gives way to the row hover fill on a narrow window that has a pointer
+      expect(screen.getByText('Flagged other').closest('[role=treeitem]')).toHaveClass('max-md:hover:bg-surface-alt');
+    });
+
+    it('takes the criteria and reason chips out of the tab order, since they may sit on the hidden wrapped line', () => {
+      const entries: DryRunDiffEntry[] = [
+        { ...baseEntry, localId: 'a', title: 'Has criteria', proposal: { kind: 'criteria' } as any, proposalAccepted: false },
+      ];
+      render(<DiffTree entries={entries} {...props} />);
+      expect(screen.getByText('criteria to review')).toHaveAttribute('tabindex', '-1');
+    });
+
+    it('dims the title of a skipped near-duplicate and shows the info glyph, not the external-link glyph, on the details button', () => {
+      const entries: DryRunDiffEntry[] = [{ ...baseEntry, action: 'dedup_skip', existingAdoId: 3033, title: 'Dup one' }];
+      render(<DiffTree entries={entries} {...props} />);
+      expect(screen.getByText('Dup one')).toHaveClass('text-ink-2');
+      const button = screen.getByRole('button', { name: /details for dup one/i });
+      expect(button.querySelector('.lucide-info')).not.toBeNull();
+      expect(button.querySelector('.lucide-square-arrow-out-up-right')).toBeNull();
+    });
+
+    it('caps the indent guides at three levels', () => {
+      // (Features start collapsed, so the chain below avoids them)
+      const entries: DryRunDiffEntry[] = [
+        { ...baseEntry, localId: 'a', title: 'L0', type: 'Epic' },
+        { ...baseEntry, localId: 'b', parentLocalId: 'a', title: 'L1', type: 'Requirement' },
+        { ...baseEntry, localId: 'c', parentLocalId: 'b', title: 'L2', type: 'Requirement' },
+        { ...baseEntry, localId: 'd', parentLocalId: 'c', title: 'L3', type: 'Requirement' },
+        { ...baseEntry, localId: 'e', parentLocalId: 'd', title: 'L4', type: 'Requirement' },
+        { ...baseEntry, localId: 'f', parentLocalId: 'e', title: 'L5', type: 'Requirement' },
+      ];
+      render(<DiffTree entries={entries} {...props} />);
+      const guides = (title: string): number => (screen.getByText(title).closest('[role=treeitem]') as HTMLElement).querySelectorAll('span.w-px').length;
+      expect(guides('L5')).toBe(3);
+    });
+
+    it('shows the work-item type as icon and colour only, keeping the name for screen readers', () => {
+      render(<DiffTree entries={[baseEntry]} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+      expect(screen.getAllByText(baseEntry.type)[0]).toHaveClass('sr-only');
+    });
+  });
+
   it('shows a compact table-count badge when tableIds is present', () => {
     const entries: DryRunDiffEntry[] = [{ ...baseEntry, tableIds: ['t3', 't7'] }];
 
@@ -620,6 +879,17 @@ describe('DiffTree signal counts', () => {
     // would include the 2 insignificant figures nobody will ever see).
     const badge = screen.getByTitle('2 figure(s), 1 without a description');
     expect(badge).toBeInTheDocument();
+  });
+
+  it('DiffTree badge uses attachFigureIds', () => {
+    const entries: DryRunDiffEntry[] = [
+      { ...baseEntry, figureIds: ['f0'], uncaptionedFigureIds: ['f1', 'f2'], attachFigureIds: ['f0', 'f1'] },
+    ];
+
+    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+
+    // The server list wins: f2 is not marked insignificant, but the server did not list it.
+    expect(screen.getByTitle('2 figure(s), 1 without a description')).toBeInTheDocument();
   });
 
   it('hides the figure-count badge entirely when every uncaptioned figure is insignificant and none are captioned', () => {
@@ -763,9 +1033,8 @@ describe('DiffTree drag-and-drop (reparent/reorder)', () => {
         onMove={onMove}
       />,
     );
-    // Feature 1 starts collapsed by default -- expand it so Req 1 (used by
-    // stubMoveEntryRects' own row-position stubbing) actually renders.
-    fireEvent.click(screen.getByRole('button', { name: /expand feature 1/i }));
+    // Feature 1 is the first Feature with children, so it starts open and Req 1 (used by
+    // stubMoveEntryRects' own row-position stubbing) renders.
     stubMoveEntryRects();
     const source = rowFor('Feature 1'); // top=40, center=60
     // Feature 1's center (60) moved to Epic 2's own center (top=160,
@@ -789,9 +1058,8 @@ describe('DiffTree drag-and-drop (reparent/reorder)', () => {
         onMove={onMove}
       />,
     );
-    // Feature 1 starts collapsed by default -- expand it so Req 1 (used by
-    // stubMoveEntryRects' own row-position stubbing) actually renders.
-    fireEvent.click(screen.getByRole('button', { name: /expand feature 1/i }));
+    // Feature 1 is the first Feature with children, so it starts open and Req 1 (used by
+    // stubMoveEntryRects' own row-position stubbing) renders.
     stubMoveEntryRects();
     const source = rowFor('Feature 2'); // top=120, center=140
     // Feature 2's center (140) moved to y=42 -- Feature 1 spans
@@ -815,9 +1083,6 @@ describe('DiffTree drag-and-drop (reparent/reorder)', () => {
         onMove={onMove}
       />,
     );
-    // Feature 1 starts collapsed by default -- expand it so Req 1 (the drop
-    // target this test needs) actually renders.
-    fireEvent.click(screen.getByRole('button', { name: /expand feature 1/i }));
     stubMoveEntryRects();
     const source = rowFor('Epic 1'); // Epic cannot nest under a Requirement, top=0, center=20
     // Req 1 spans top=80..120 -> center=100.
@@ -840,9 +1105,6 @@ describe('DiffTree drag-and-drop (reparent/reorder)', () => {
         onMove={onMove}
       />,
     );
-    // Feature 1 starts collapsed by default -- expand it so Req 1 (the
-    // descendant this test drags onto) actually renders.
-    fireEvent.click(screen.getByRole('button', { name: /expand feature 1/i }));
     stubMoveEntryRects();
     const source = rowFor('Epic 1'); // top=0, center=20
     // Req 1 (top=80..120, center=100) is a descendant of Epic 1 via Feature 1.
@@ -867,9 +1129,8 @@ describe('DiffTree drag-and-drop (reparent/reorder)', () => {
         onMove={onMove}
       />,
     );
-    // Feature 1 starts collapsed by default -- expand it so Req 1 (used by
-    // stubMoveEntryRects' own row-position stubbing) actually renders.
-    fireEvent.click(screen.getByRole('button', { name: /expand feature 1/i }));
+    // Feature 1 is the first Feature with children, so it starts open and Req 1 (used by
+    // stubMoveEntryRects' own row-position stubbing) renders.
     stubMoveEntryRects();
     const source = rowFor('Feature 1'); // top=40, center=60
     dragRow(source, { fromY: 0, toY: 180 - 60 }); // onto Epic 2's center -> 'inside'
@@ -906,9 +1167,6 @@ describe('DiffTree drag-and-drop (reparent/reorder)', () => {
         onMove={vi.fn()}
       />,
     );
-    // Feature 1 starts collapsed by default -- expand it so Req 1 (the
-    // unrelated row clicked below) actually renders.
-    fireEvent.click(screen.getByRole('button', { name: /expand feature 1/i }));
     stubMoveEntryRects();
     const source = rowFor('Feature 1'); // top=40, center=60
     dragRow(source, { fromY: 0, toY: 180 - 60 }); // onto Epic 2's center -> 'inside'
@@ -933,12 +1191,7 @@ describe('DiffTree drag-and-drop (reparent/reorder)', () => {
     render(
       <DiffTree entries={MOVE_ENTRIES} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} canMove onMove={vi.fn()} />,
     );
-    // Feature 1 starts collapsed by default -- expand it so Req 1 renders
-    // (this test asserts on its real visual-order itemKey). Clear the calls
-    // recorded by the pre-expand mount renders first, so the dedup below
-    // reflects only the fully-expanded order, not the initial collapsed one.
-    itemKeyCalls.length = 0;
-    fireEvent.click(screen.getByRole('button', { name: /expand feature 1/i }));
+    // Feature 1 is the first Feature with children, so it starts open and Req 1 renders in this test's real visual order.
     // useContainerHeight's mount effect calls setHeight once (jsdom's
     // getBoundingClientRect always reports 0), so the list legitimately
     // renders twice -- dedupe rather than assert an exact render count,
@@ -964,9 +1217,6 @@ describe('DiffTree drag-and-drop (reparent/reorder)', () => {
     render(
       <DiffTree entries={withExcludedAncestor} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} />,
     );
-    // Feature 1 starts collapsed by default -- expand it so r1 (one of the
-    // three descendants this test counts) actually renders.
-    fireEvent.click(screen.getByRole('button', { name: /expand feature 1/i }));
 
     // f1/f2/r1 are all descendants of the excluded e1 -- each gets the warning.
     expect(screen.getAllByTitle(/ancestor of this item is excluded/i)).toHaveLength(3);
@@ -1004,5 +1254,37 @@ describe('DiffTree drag-and-drop (reparent/reorder)', () => {
 
     expect(rowFor('Feature 1').querySelector('[title*="Already exists in ADO"]')).toBeNull();
     expect(rowFor('Feature 1').querySelector('[title*="Matched to a probable duplicate"]')).toBeNull();
+  });
+});
+
+describe('DiffTree disclosure motion (DESIGN.md section 8.3)', () => {
+  const base = (localId: string, parentLocalId: string | null, type: string, title: string): DryRunDiffEntry => ({
+    localId, parentLocalId, type, title, description: '', action: 'create', customerId: null,
+  }) as DryRunDiffEntry;
+  const entries = [
+    base('e1', null, 'Epic', 'Epic 1'),
+    base('f1', 'e1', 'Feature', 'Feature 1'),
+    base('r0', 'f1', 'Requirement', 'Opened req'),
+    base('f2', 'e1', 'Feature', 'Feature 2'),
+    base('r1', 'f2', 'Requirement', 'Hidden req'),
+  ];
+  const renderTree = () => render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+
+  it('turns one chevron instead of swapping icons, so the disclosure state is a transform', () => {
+    renderTree();
+    const open = screen.getByRole('button', { name: 'Collapse Feature 1' }).querySelector('svg')!;
+    const closed = screen.getByRole('button', { name: 'Expand Feature 2' }).querySelector('svg')!;
+    expect(open).toHaveClass('rotate-90');
+    expect(closed).not.toHaveClass('rotate-90');
+    expect(open).toHaveClass('transition-transform');
+  });
+
+  it('moves no row when it expands or collapses: rows appear and leave at once', () => {
+    renderTree();
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Feature 2' }));
+    expect(screen.getByText('Hidden req').closest('[role="treeitem"]')!.className).not.toMatch(/animate-|fadeIn/);
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse Feature 1' }));
+    expect(screen.queryByText('Opened req')).not.toBeInTheDocument();
+    expect(document.querySelector('[role="treeitem"][class*="animate-"]')).toBeNull();
   });
 });

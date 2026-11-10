@@ -38,9 +38,7 @@ def validate_share_url(url: str) -> None:
         host_lower == suffix or host_lower.endswith("." + suffix)
         for suffix in ALLOWED_HOST_SUFFIXES
     ):
-        raise ValueError(
-            f"host {host!r} is not an allowed SharePoint/OneDrive domain"
-        )
+        raise ValueError(f"host {host!r} is not an allowed SharePoint/OneDrive domain")
 
     try:
         ip = ipaddress.ip_address(host)

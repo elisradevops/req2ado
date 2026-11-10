@@ -44,7 +44,9 @@ def browse_shared_folder(url: str, graph_client: GraphClient) -> list[FolderChil
     ]
 
 
-def browse_subfolder(drive_id: str, item_id: str, graph_client: GraphClient) -> list[FolderChildSummary]:
+def browse_subfolder(
+    drive_id: str, item_id: str, graph_client: GraphClient
+) -> list[FolderChildSummary]:
     """Same as browse_shared_folder, for a subfolder reached during tree
     expansion -- addressed by drive_id + item_id (returned on each folder
     child above), not a share URL."""

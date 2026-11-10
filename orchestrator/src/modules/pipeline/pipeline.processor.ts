@@ -98,6 +98,10 @@ const openWebUiGlobalConfig: OpenWebUiGlobalConfig = {
   EMBED_BASE_URL: config.EMBED_BASE_URL,
   EMBED_MODEL: config.EMBED_MODEL,
   EMBED_PATH: config.EMBED_PATH,
+  EMBED_OPENAI_PATH: config.EMBED_OPENAI_PATH,
+  EMBED_OPENAI_FALLBACK_ROUTES: config.EMBED_OPENAI_FALLBACK_ROUTES,
+  EMBED_MAX_INPUTS_PER_REQUEST: config.EMBED_MAX_INPUTS_PER_REQUEST,
+  EMBED_MAX_TOKENS_PER_REQUEST: config.EMBED_MAX_TOKENS_PER_REQUEST,
   SHOW_PATH: config.SHOW_PATH,
   FILES_UPLOAD_PATH: config.FILES_UPLOAD_PATH,
   FILES_STATUS_PATH: config.FILES_STATUS_PATH,
@@ -144,5 +148,10 @@ export default async function processPipelineJob(job: SandboxedJob<QueuedJobData
     resultCache,
     settingsService,
     ocrLanguages: config.OCR_LANGUAGES,
+    primerOptions: {
+      budgetSeconds: config.PRIMER_BUDGET_SECONDS,
+      heartbeatSeconds: config.PRIMER_HEARTBEAT_SECONDS,
+      skipMemorySeconds: config.PRIMER_SKIP_MEMORY_SECONDS,
+    },
   });
 }

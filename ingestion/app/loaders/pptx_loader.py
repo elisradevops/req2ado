@@ -1,18 +1,32 @@
 from __future__ import annotations
 
 import hashlib
+import logging
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Literal
 
 from pptx import Presentation
 from pptx.enum.dml import MSO_COLOR_TYPE, MSO_FILL_TYPE
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.enum.text import PP_ALIGN
-from pptx.table import _Cell as PptxCell
 from pptx.table import Table as PptxTable
+from pptx.table import _Cell as PptxCell
 
-from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, SourceRef, Table, TableCell
+from app.canonical.model import (
+    Block,
+    BlockKind,
+    CanonicalDoc,
+    Document,
+    DocumentFormat,
+    Figure,
+    SourceRef,
+    Table,
+    TableCell,
+)
 from app.loaders.figure_utils import append_figure
+
+logger = logging.getLogger(__name__)
 
 _PLACEHOLDER_TITLE_IDX = 0  # pptx.enum.shapes placeholder idx for the title placeholder
 
@@ -35,7 +49,10 @@ def _is_degenerate_pptx_image(shape) -> bool:
         width, height = shape.image.size
     except Exception:  # noqa: BLE001 -- see docstring: fail open, never drop a real figure over a decode hiccup
         return False
-    return width <= _DEGENERATE_IMAGE_MAX_DIMENSION_PX and height <= _DEGENERATE_IMAGE_MAX_DIMENSION_PX
+    return (
+        width <= _DEGENERATE_IMAGE_MAX_DIMENSION_PX and height <= _DEGENERATE_IMAGE_MAX_DIMENSION_PX
+    )
+
 
 # PP_ALIGN -> TableCell.align, same "only the values with an exact semantic
 # match get mapped, everything else falls through to None" convention
@@ -257,7 +274,11 @@ def _extract_pptx_table_cells(pptx_table: PptxTable) -> list[list[TableCell | No
     return grid
 
 
-def load_pptx(path: str, describe_figure: Callable[[bytes], str | None] | None = None) -> CanonicalDoc:
+def load_pptx(
+    path: str,
+    describe_figure: Callable[[bytes], str | None] | None = None,
+    on_figure_bytes: Callable[[bytes], None] | None = None,
+) -> CanonicalDoc:
     """One slide -> one HEADING block (its title placeholder, if present) +
     one PARAGRAPH block per other text-frame paragraph (bullets), in slide
     order, then one NOTE block for the slide's speaker notes (if any), one
@@ -313,6 +334,11 @@ def load_pptx(path: str, describe_figure: Callable[[bytes], str | None] | None =
                     # Gap C -- see seen_figure_hashes' own comment above.
                     return
                 caption = None
+                if on_figure_bytes is not None:
+                    try:
+                        on_figure_bytes(image_bytes)
+                    except Exception:  # noqa: BLE001 -- byte capture must not abort the whole deck
+                        logger.warning("on_figure_bytes failed", exc_info=True)
                 if describe_figure is not None:
                     try:
                         caption = describe_figure(image_bytes)
@@ -377,7 +403,9 @@ def load_pptx(path: str, describe_figure: Callable[[bytes], str | None] | None =
                         # convention) is correct; "heuristic" is reserved
                         # for PDF.
                         style_provenance=None,
-                        source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end, page=slide_index),
+                        source_ref=SourceRef(
+                            document_path=path, start_offset=start, end_offset=end, page=slide_index
+                        ),
                     )
                 )
                 table_index += 1
@@ -398,7 +426,9 @@ def load_pptx(path: str, describe_figure: Callable[[bytes], str | None] | None =
                 return
             is_title = title_shape is not None and shape.shape_id == title_shape.shape_id
             for paragraph in shape.text_frame.paragraphs:
-                content = "".join(run.text for run in paragraph.runs).strip() or paragraph.text.strip()
+                content = (
+                    "".join(run.text for run in paragraph.runs).strip() or paragraph.text.strip()
+                )
                 if not content:
                     continue
                 start = offset
@@ -410,7 +440,9 @@ def load_pptx(path: str, describe_figure: Callable[[bytes], str | None] | None =
                         kind=BlockKind.HEADING if is_title else BlockKind.PARAGRAPH,
                         text=content,
                         heading_level=1 if is_title else None,
-                        source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end, page=slide_index),
+                        source_ref=SourceRef(
+                            document_path=path, start_offset=start, end_offset=end, page=slide_index
+                        ),
                     )
                 )
                 block_id += 1
@@ -435,7 +467,9 @@ def load_pptx(path: str, describe_figure: Callable[[bytes], str | None] | None =
                         id=f"b{block_id}",
                         kind=BlockKind.NOTE,
                         text=notes,
-                        source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end, page=slide_index),
+                        source_ref=SourceRef(
+                            document_path=path, start_offset=start, end_offset=end, page=slide_index
+                        ),
                     )
                 )
                 block_id += 1

@@ -12,9 +12,11 @@ const STORAGE_KEY = 'req2ado-ui-preferences';
 interface StoredPreferences {
   denseView: boolean;
   autoSyncLedgers: boolean;
+  // The single-key review shortcuts (J K R A X). WCAG 2.1.4 asks for a way to turn them off.
+  keyboardShortcuts: boolean;
 }
 
-const DEFAULTS: StoredPreferences = { denseView: false, autoSyncLedgers: true };
+const DEFAULTS: StoredPreferences = { denseView: false, autoSyncLedgers: true, keyboardShortcuts: true };
 
 function loadFromLocalStorage(): StoredPreferences {
   const raw = localStorage.getItem(STORAGE_KEY);
@@ -30,17 +32,29 @@ function loadFromLocalStorage(): StoredPreferences {
 interface UiPreferencesState extends StoredPreferences {
   setDenseView: (value: boolean) => void;
   setAutoSyncLedgers: (value: boolean) => void;
+  setKeyboardShortcuts: (value: boolean) => void;
+}
+
+function save(state: StoredPreferences): void {
+  localStorage.setItem(
+    STORAGE_KEY,
+    JSON.stringify({ denseView: state.denseView, autoSyncLedgers: state.autoSyncLedgers, keyboardShortcuts: state.keyboardShortcuts }),
+  );
 }
 
 export const useUiPreferencesStore = create<UiPreferencesState>((set, get) => ({
   ...loadFromLocalStorage(),
   setDenseView: (value) => {
     set({ denseView: value });
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ denseView: value, autoSyncLedgers: get().autoSyncLedgers }));
+    save(get());
   },
   setAutoSyncLedgers: (value) => {
     set({ autoSyncLedgers: value });
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ denseView: get().denseView, autoSyncLedgers: value }));
+    save(get());
+  },
+  setKeyboardShortcuts: (value) => {
+    set({ keyboardShortcuts: value });
+    save(get());
   },
 }));
 
@@ -50,4 +64,8 @@ export function useDenseView(): boolean {
 
 export function useAutoSyncLedgers(): boolean {
   return useUiPreferencesStore((state) => state.autoSyncLedgers);
+}
+
+export function useKeyboardShortcuts(): boolean {
+  return useUiPreferencesStore((state) => state.keyboardShortcuts);
 }

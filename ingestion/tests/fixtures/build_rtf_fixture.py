@@ -1,4 +1,5 @@
 """Run once to (re)generate sample.rtf: `python build_rtf_fixture.py`."""
+
 from pathlib import Path
 
 content = (

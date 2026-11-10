@@ -83,6 +83,15 @@ export const KIND_META: Record<string, KindMeta> = {
     chip: 'Same title',
     unit: ['item', 'items'],
   },
+  criteria_value_ungrounded: {
+    title: 'Acceptance criteria left out',
+    group: 'review',
+    short: 'Some proposed acceptance criteria were left out because they named values not found in the document.',
+    means: 'Nothing wrong was written. These items have no proposed criteria, or fewer than the model suggested.',
+    todo: 'If the item needs acceptance criteria, write them by hand before you confirm.',
+    chip: 'Criteria left out',
+    unit: ['item', 'items'],
+  },
   zero_nodes: {
     title: 'A section produced no items',
     group: 'fix',
@@ -270,6 +279,38 @@ export const KIND_META: Record<string, KindMeta> = {
     chip: 'Original wording',
     unit: ['item', 'items'],
   },
+  // Not a warning the pipeline emits: the label the tree filter wears when "Approve clean items" shows its
+  // list. "info", so the filter offers no mark-all-reviewed of its own (that would skip the spot-check).
+  // Never put a pipeline warning under this kind: it would take this entry's wording.
+  clean_items: {
+    title: 'Clean items',
+    group: 'info',
+    short: 'Items that were not flagged.',
+    means: 'Not flagged: no score or warning asks for a closer look. That does not replace reading the item.',
+    todo: 'Nothing required.',
+    chip: 'Not flagged',
+    unit: ['item', 'items'],
+  },
+  // Not a warning the pipeline emits: the label the tree filter wears when the write summary shows the items left out of the write
+  // (excluded by the reviewer or under an excluded ancestor). "info", so no mark-all-reviewed is offered for it.
+  excluded_items: {
+    title: 'Excluded items',
+    group: 'info',
+    short: 'Items left out of the write.',
+    means: 'Excluded by you, or under an excluded parent. They are not written to Azure DevOps.',
+    todo: 'Nothing required. Include an item again if it should be written.',
+    chip: 'Excluded',
+    unit: ['item', 'items'],
+  },
+  document_study_incomplete: {
+    title: 'Document study incomplete',
+    group: 'info',
+    short: 'The study of the document did not read every part of the file, so some proposals were made with less context.',
+    means: 'The unread parts did not feed the acceptance-criteria proposals. The tree itself is built from the whole document, so nothing is missing from the tree.',
+    todo: 'Nothing required. Resubmit the job to read the unread parts again.',
+    chip: 'Study incomplete',
+    unit: ['warning', 'warnings'],
+  },
   enhancement_response_incomplete: {
     title: 'Enhanced wording incomplete',
     group: 'info',
@@ -355,8 +396,8 @@ export const KIND_META: Record<string, KindMeta> = {
     title: 'Document overview unavailable',
     group: 'info',
     short: 'The whole-document overview could not be generated.',
-    means: 'The analysis ran without that orientation hint. Items are otherwise unaffected.',
-    todo: 'Nothing required. Ask your administrator if it happens on every job.',
+    means: 'The analysis ran without that orientation hint, so figure descriptions and how items are grouped may differ from a run that had it. The text of the items is unchanged.',
+    todo: 'Resubmit later for a run with the overview (after a timeout the same document is skipped for an hour), or ask your administrator if it happens on every job.',
     chip: 'No overview',
     unit: ['job', 'jobs'],
   },
@@ -468,7 +509,9 @@ export function kindMeta(kind: string, severity?: WarningSeverity): KindMeta {
 }
 
 export function warningGroup(warning: Pick<WarningRecord, 'kind' | 'severity'>): WarningGroup {
-  return kindMeta(warning.kind, warning.severity).group;
+  const group = kindMeta(warning.kind, warning.severity).group;
+  // Already resolved by the pipeline: nothing left for the reviewer to do, whatever the kind's usual group.
+  return warning.severity === 'auto_fixed' && group !== 'info' ? 'info' : group;
 }
 
 // A warning is actionable when it needs the reviewer to do something. Info
@@ -496,11 +539,14 @@ export function buildKindGroups(warnings: WarningRecord[]): WarningKindGroup[] {
     let entry = byKind.get(warning.kind);
     if (!entry) {
       const meta = kindMeta(warning.kind, warning.severity);
-      entry = { kind: warning.kind, group: meta.group, meta, records: [], nodeIds: [], severities: [] };
+      entry = { kind: warning.kind, group: warningGroup(warning), meta, records: [], nodeIds: [], severities: [] };
       byKind.set(warning.kind, entry);
       seenNodeIds.set(warning.kind, new Set());
     }
     entry.records.push(warning);
+    // The kind's row takes its most actionable record's group (fix before review before info).
+    const recordGroup = warningGroup(warning);
+    if (GROUP_ORDER.indexOf(recordGroup) < GROUP_ORDER.indexOf(entry.group)) entry.group = recordGroup;
     if (!entry.severities.includes(warning.severity)) entry.severities.push(warning.severity);
     const seen = seenNodeIds.get(warning.kind)!;
     for (const nodeId of warning.nodeIds) {

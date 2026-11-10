@@ -74,6 +74,7 @@ function PathSegment({
           style={{
             backgroundImage: 'repeating-linear-gradient(45deg, var(--color-accent-soft) 0 4px, transparent 4px 8px)',
           }}
+          role="img"
           aria-label={`${label} not set`}
         />
       ) : value ? (
@@ -163,7 +164,7 @@ export function DestinationBar({
     <div className="flex flex-col gap-1.5 rounded-sm border border-hairline-strong bg-surface-alt px-3 py-2 text-sm">
       <div className="flex items-center gap-1">
         <span className={LABEL_MICRO}>{label}</span>
-        <InfoTip content="Where Confirm writes new work items. Existing items are only matched for reuse inside this exact area path." />
+        <InfoTip content="Where Write to Azure DevOps puts new work items. Existing items are only matched for reuse inside this exact area path." />
       </div>
       <div className="flex flex-wrap items-center gap-0.5">
         <PathSegment icon={Briefcase} label="Project" value={teamProject} />

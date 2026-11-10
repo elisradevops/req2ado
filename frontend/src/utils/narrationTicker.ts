@@ -51,6 +51,7 @@ const PHASE_FALLBACK_SENTENCES: Record<NarrationEvent['phase'], string> = {
   page_alignment: 'Deriving real page numbers for the source document.',
   dedup_check: 'Checking for existing/duplicate work items.',
   writing: 'Writing to Azure DevOps.',
+  primer: 'Reading the whole document to understand it.',
   job_failed: 'Job failed.',
   // Never actually looked up -- JobDetail.tsx deliberately excludes
   // chunk_warning from the `narrations` array tickerFor reads (see its own
@@ -129,6 +130,8 @@ function counterFor(latest: NarrationEvent | null): string | null {
       return latest.currentTitle ? latest.currentTitle : latest.blocksTotal > 0 ? `${latest.blocksDone} / ${latest.blocksTotal}` : null;
     case 'writing':
       return latest.blocksTotal > 0 ? `${latest.blocksDone} / ${latest.blocksTotal}` : null;
+    case 'primer':
+      return latest.elapsedSeconds != null ? `${Math.floor(latest.elapsedSeconds / 60)}:${String(latest.elapsedSeconds % 60).padStart(2, '0')}` : null;
     case 'job_failed':
       return latest.lastPhase ? `Last phase: ${latest.lastPhase}` : null;
     default:
@@ -143,7 +146,18 @@ function determinateFor(latest: NarrationEvent | null): number | undefined {
   return Math.min(100, Math.max(0, (100 * latest.blocksDone) / latest.blocksTotal));
 }
 
+// A job whose status has settled is no longer doing the work its last narration describes (a Diff-ready job kept reading "Checking for
+// duplicates -- 8 of 8"). Failed is left out on purpose: its job_failed narration carries the reason.
+const SETTLED_SENTENCES: Record<string, string> = {
+  diff_ready: 'Diff ready for your review.',
+  succeeded: STATUS_FALLBACK_SENTENCES.succeeded,
+  rejected: STATUS_FALLBACK_SENTENCES.rejected,
+  cancelled: STATUS_FALLBACK_SENTENCES.cancelled,
+};
+
 export function tickerFor(input: { status: string; stage: JobStage | null; latest: NarrationEvent | null }): TickerResult {
+  const settled = SETTLED_SENTENCES[input.status];
+  if (settled) return { sentence: settled, counter: null, determinate: undefined };
   return {
     sentence: sentenceFor(input.status, input.stage, input.latest),
     counter: counterFor(input.latest),

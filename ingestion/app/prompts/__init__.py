@@ -24,17 +24,18 @@ str.format() would try to parse as its own placeholder syntax and crash on.
 Marker-replace has no such collision risk regardless of what a prompt's
 own literal content contains.
 """
+
 from __future__ import annotations
 
 import re
-from functools import lru_cache
+from functools import cache
 from pathlib import Path
 
 _PROMPTS_DIR = Path(__file__).parent
 _VERSION_PATTERN = re.compile(r"^(?P<name>.+)\.v(?P<version>\d+)\.txt$")
 
 
-@lru_cache(maxsize=None)
+@cache
 def _latest_version(name: str) -> int:
     versions = [
         int(m.group("version"))
@@ -46,7 +47,7 @@ def _latest_version(name: str) -> int:
     return max(versions)
 
 
-@lru_cache(maxsize=None)
+@cache
 def _read(name: str, version: int) -> str:
     path = _PROMPTS_DIR / f"{name}.v{version}.txt"
     return path.read_text(encoding="utf-8").rstrip("\n")
@@ -65,6 +66,8 @@ def load_prompt(name: str, version: int | None = None, **markers: str) -> str:
     for key, value in markers.items():
         placeholder = f"__{key.upper()}__"
         if placeholder not in text:
-            raise ValueError(f"Prompt {name!r} has no {placeholder!r} placeholder to fill with marker {key!r}")
+            raise ValueError(
+                f"Prompt {name!r} has no {placeholder!r} placeholder to fill with marker {key!r}"
+            )
         text = text.replace(placeholder, value)
     return text

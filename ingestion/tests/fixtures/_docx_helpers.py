@@ -1,5 +1,6 @@
 """Shared helpers for the mock-PRD fixture builder scripts in this
 directory (build_mock_prd_*_docx.py) -- not a pytest test module itself."""
+
 from docx import Document as DocxDocument
 
 

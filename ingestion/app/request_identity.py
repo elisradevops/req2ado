@@ -5,10 +5,13 @@ the customer's document) as query parameters of `/ingest` and `/level`. The serv
 both ended up in the pod log on every job. They travel in headers only (the query form was removed one release after the
 orchestrator stopped sending it; an orchestrator older than 0.3.12 no longer works). The overview can contain any language,
 so it is base64 of its UTF-8 bytes."""
+
 from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
+import re
 
 USER_ID_HEADER = "X-Req2Ado-User-Id"
 PRIMER_HEADER = "X-Req2Ado-Primer-Context"
@@ -17,6 +20,15 @@ PRIMER_HEADER = "X-Req2Ado-Primer-Context"
 def resolve_user_id(header_value: str | None) -> str | None:
     """The user of the call, from its header; an empty header counts as absent."""
     return header_value or None
+
+
+def user_scope(user_id: str | None) -> str:
+    """A cache-key part that isolates one user's cached answers from another's. Hashed so the raw id never reaches a key or a
+    log line; "anon" for a call without a user. That value is only a placeholder: callers must not use it to share cached or stored state,
+    a call without a user id uses no cache and no store at all."""
+    if not user_id:
+        return "anon"
+    return hashlib.sha256(user_id.encode("utf-8")).hexdigest()[:16]
 
 
 def encode_primer_header(text: str) -> str:
@@ -35,8 +47,6 @@ def resolve_primer_context(header_value: str | None) -> str | None:
     """The document overview, decoded from its header; None when absent or not valid base64 of UTF-8."""
     return decode_primer_header(header_value) if header_value else None
 
-
-import re
 
 # A Windows identity (the user ids this deployment stores look like `System.Security.Principal.WindowsIdentity;S-1-5-21-...`)
 # and Azure DevOps identity URIs. Messages that reach a job's failure record, its narration or an HTTP error body must not

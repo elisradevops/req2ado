@@ -1,5 +1,7 @@
 import axios from 'axios';
 import { httpClient } from './httpClient';
+import { loadRuntimeConfig } from './config';
+import { useAuthStore } from '../store/authStore';
 import type { JobSummary, JobDetail } from '../store/jobsStore';
 import type { WarningRecord } from '../utils/warnings';
 
@@ -66,11 +68,32 @@ export interface PreviewResult {
   tableCount: number;
   openTbdCount: number;
   documentMap: DocumentMapSection[];
+  /** The step-3 overview, made from the parsed text and structure alone. Absent from a server that predates it. */
+  overview?: DocumentOverview & { profile?: { summaryInput?: string } };
 }
 
+/** The wizard's overview of a document: `lines` is what step 3 shows, each read off the document's text and structure. */
 export interface DocumentOverview {
   synopsis: string;
   caveat: string | null;
+  lines?: string[];
+  /** The optional AI summary the wizard showed, kept so the job page can show it too. Absent when it was not ready at start. */
+  aiSummary?: string;
+  /** How the file is built, for the SURVEY job's AI stage; carried to the job, never shown. */
+  structureHint?: string;
+}
+
+/**
+ * The optional AI summary of the document: written by the server from the small prepared input the preview returned, and checked against it.
+ * Null when there is none, and also when the call fails or is cancelled: the summary is a bonus, never a reason to show an error.
+ */
+export async function previewSummary(params: { summaryInput: string; model?: string }, signal?: AbortSignal): Promise<string | null> {
+  try {
+    const response = await httpClient.post<{ summary: string | null }>('/jobs/preview/summary', params, { signal });
+    return response.data?.summary ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export async function previewJob(
@@ -99,15 +122,6 @@ export async function getEstimate(params: {
   model?: string;
 }): Promise<EtaEstimate> {
   const response = await httpClient.get<EtaEstimate>('/jobs/estimate', { params });
-  return response.data;
-}
-
-export async function previewExposition(params: {
-  documentMap: DocumentMapSection[];
-  sectionCount: number;
-  depth: number;
-}): Promise<DocumentOverview | null> {
-  const response = await httpClient.post<DocumentOverview | null>('/jobs/preview/exposition', params);
   return response.data;
 }
 
@@ -145,9 +159,26 @@ export async function submitJob(params: SubmitJobParams): Promise<{ jobId: strin
   return response.data;
 }
 
-export async function listModels(): Promise<string[]> {
-  const response = await httpClient.get<{ models: string[] }>('/jobs/models');
-  return response.data.models;
+// What the app can state about one selectable model; every field is something it did or observed, not a quality rating.
+export interface ModelDetail {
+  id: string;
+  name: string;
+  describesFigures: boolean;
+  runs: number;
+  speedVsTypical: number | null;
+  finishedShare: number | null;
+}
+
+export interface ModelListing {
+  models: string[];
+  recommended: string | null;
+  details: ModelDetail[];
+}
+
+export async function listModels(): Promise<ModelListing> {
+  const response = await httpClient.get<Partial<ModelListing> & { models: string[] }>('/jobs/models');
+  // An older orchestrator sends only the ids: the extras are optional, the list is not.
+  return { models: response.data.models, recommended: response.data.recommended ?? null, details: response.data.details ?? [] };
 }
 
 export async function getJob(id: string): Promise<JobDetail> {
@@ -157,6 +188,12 @@ export async function getJob(id: string): Promise<JobDetail> {
 
 export async function confirmJob(id: string): Promise<{ status: string; createdCount: number }> {
   const response = await httpClient.post(`/jobs/${id}/confirm`);
+  return response.data;
+}
+
+// Rebuilds this job's duplicate index from its own records (no Azure DevOps call); a repair for a confirm whose index update failed.
+export async function reindexDedup(id: string): Promise<{ indexed: number }> {
+  const response = await httpClient.post<{ indexed: number }>(`/jobs/${id}/dedup/reindex`);
   return response.data;
 }
 
@@ -195,8 +232,29 @@ export async function editDiffEntry(
   return response.data;
 }
 
+// "To be discussed": park a proposed rewrite in the ADO Discussion at write time without touching the baseline text. See JobsService.addDiscussionEntry.
+export async function addDiscussionEntry(
+  jobId: string,
+  localId: string,
+  entry: { proposedTitle?: string; proposedDescription?: string },
+): Promise<{ dryRunDiff: unknown }> {
+  const response = await httpClient.post(`/jobs/${jobId}/diff/${localId}/discussion`, entry);
+  return response.data;
+}
+
+export async function removeDiscussionEntry(jobId: string, localId: string, entryId: string): Promise<{ dryRunDiff: unknown }> {
+  const response = await httpClient.delete(`/jobs/${jobId}/diff/${localId}/discussion/${entryId}`);
+  return response.data;
+}
+
 export async function setDiffEntryExcluded(jobId: string, localId: string, excluded: boolean): Promise<{ dryRunDiff: unknown }> {
   const response = await httpClient.patch(`/jobs/${jobId}/diff/${localId}/exclude`, { excluded });
+  return response.data;
+}
+
+// The review gate for a generated acceptance-criteria proposal: it is written to ADO only while accepted. See JobsService.setProposalAccepted.
+export async function setProposalAccepted(jobId: string, localId: string, accepted: boolean): Promise<{ dryRunDiff: unknown }> {
+  const response = await httpClient.patch(`/jobs/${jobId}/diff/${localId}/proposal`, { accepted });
   return response.data;
 }
 
@@ -280,6 +338,19 @@ export async function moveDiffEntry(jobId: string, localId: string, input: MoveD
   return response.data;
 }
 
+// Moves one figure of an entry to another entry before the write (same list kind), or detaches it when targetLocalId is null
+// (the image stays stored but is no longer attached). Returns the updated diff; the server refuses written, excluded or
+// identical targets and a figure that is not on the source. See JobsService for the rules.
+export async function moveFigure(
+  jobId: string,
+  sourceLocalId: string,
+  figureId: string,
+  targetLocalId: string | null,
+): Promise<{ dryRunDiff: unknown }> {
+  const response = await httpClient.patch(`/jobs/${jobId}/diff/${sourceLocalId}/figures/${figureId}`, { targetLocalId });
+  return response.data;
+}
+
 export async function rejectJob(id: string): Promise<{ status: string }> {
   const response = await httpClient.post(`/jobs/${id}/reject`);
   return response.data;
@@ -316,6 +387,31 @@ export interface JobSummaryReport {
 
 export async function getSummary(id: string): Promise<JobSummaryReport> {
   const response = await httpClient.get<JobSummaryReport>(`/jobs/${id}/summary`);
+  return response.data;
+}
+
+// What a write would do for this job right now, computed by the server with the rules the write itself uses (GET /jobs/:id/write-preview).
+export interface WritePreview {
+  createdTotal: number;
+  createdLocalIds: string[];
+  createdByType: Record<string, number>;
+  excluded: { direct: number; viaAncestor: number };
+  parentLinks: number;
+  existingGettingChildren: number;
+  existingWithoutNewParentLink: number;
+  traceLinks: { planned: number; skipped: number };
+  alreadyWritten: number;
+  // Figure attachments still to upload; counts as work.
+  figuresToAttach: number;
+  // Figures that have no stored file and will not be attached; does not count as work.
+  figuresUnavailable: number;
+  // Set by the server: the write has anything left to do, and only figures are left.
+  hasWork: boolean;
+  figuresOnly: boolean;
+}
+
+export async function getWritePreview(id: string): Promise<WritePreview> {
+  const response = await httpClient.get<WritePreview>(`/jobs/${id}/write-preview`);
   return response.data;
 }
 

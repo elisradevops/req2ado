@@ -1,7 +1,9 @@
 import { create } from 'zustand';
 import type { KbCitation } from '../components/KbCitationChips';
 import type { FigureDescriptionEntry } from '../components/FigureDescriptions';
+import type { KbCoverage } from '../utils/kbCoverage';
 import type { WarningRecord } from '../utils/warnings';
+import type { DocumentOverview } from '../api/jobs';
 
 export interface JobSummary {
   id: string;
@@ -19,10 +21,15 @@ export interface JobSummary {
 
 export interface JobDetail {
   id: string;
+  // localIds already written to Azure DevOps by an earlier failed attempt; the server refuses changes to their proposal acceptance or text.
+  writtenLocalIds?: string[];
   status: string;
   mode: string;
   dryRunDiff: unknown;
   kbCitations?: KbCitation[];
+  // How much of the KB the run could use vs surfaced -- null for BASELINE and
+  // jobs created before the field existed (see utils/kbCoverage.ts).
+  kbCoverage?: KbCoverage | null;
   // Tree-level integrity warnings from ingestion's /level response
   // (SURVEY-only, e.g. generated node count diverging from source block
   // count) -- distinct from per-node quality/grounding signals. `string`
@@ -60,7 +67,7 @@ export interface JobDetail {
   // like excludedFigureIds/tableDescriptions/iterationPath above, for a job
   // persisted before this column existed -- JobDetail.tsx already reads it
   // via `job.documentOverview ?? null`.
-  documentOverview?: { synopsis: string; caveat: string | null } | null;
+  documentOverview?: DocumentOverview | null;
   createdAt: string;
   areaPath: string;
   // The ADO project this job writes into (Job.adoProject) -- lets

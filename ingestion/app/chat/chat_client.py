@@ -16,7 +16,7 @@ def _proposal_after_marker(full_text: str) -> tuple[str, dict | None, str | None
     if index == -1:
         return full_text.strip(), None, "no_marker"
     message = full_text[:index].strip()
-    raw = full_text[index + len(PROPOSAL_SENTINEL):]
+    raw = full_text[index + len(PROPOSAL_SENTINEL) :]
     start = raw.find("{")
     if start == -1:
         return message, None, "no_object"
@@ -26,7 +26,9 @@ def _proposal_after_marker(full_text: str) -> tuple[str, dict | None, str | None
         return message, None, "invalid_json"
     if not isinstance(parsed, dict):
         return message, None, "no_object"
-    if not isinstance(parsed.get("proposedTitle"), str) and not isinstance(parsed.get("proposedDescription"), str):
+    if not isinstance(parsed.get("proposedTitle"), str) and not isinstance(
+        parsed.get("proposedDescription"), str
+    ):
         return message, None, "no_text"
     return message, parsed, None
 
@@ -45,7 +47,11 @@ def split_message_and_proposal(full_text: str) -> tuple[str, str | None, str | N
     if parsed is None:
         return message, None, None
     title, description = parsed.get("proposedTitle"), parsed.get("proposedDescription")
-    return message, title if isinstance(title, str) else None, description if isinstance(description, str) else None
+    return (
+        message,
+        title if isinstance(title, str) else None,
+        description if isinstance(description, str) else None,
+    )
 
 
 def proposal_failure_reason(full_text: str) -> str | None:
@@ -87,7 +93,9 @@ class ChatLlmClient:
         # same contract every other ingestion LLM client follows.
         if user_id:
             headers["X-Req2Ado-User-Id"] = user_id
-        async with httpx.AsyncClient(transport=self._transport, timeout=_STREAM_REQUEST_TIMEOUT_SECONDS) as client:
+        async with httpx.AsyncClient(
+            transport=self._transport, timeout=_STREAM_REQUEST_TIMEOUT_SECONDS
+        ) as client:
             async with client.stream(
                 "POST",
                 f"{self._base_url}/llm/chat/stream",

@@ -1,11 +1,12 @@
 """The keyed passes' entry contracts (see app.survey.keyed_calls). One `KeyedSpec` per pass
 that has been migrated to the keyed-result module."""
+
 from __future__ import annotations
 
 from app.survey._response_schemas import (
-    _TAGS,
     _CONFIDENCE,
     _ISSUES,
+    _TAGS,
     content_authoring_schema,
     epic_feature_scores_schema,
     figure_table_mapping_schema,
@@ -68,7 +69,10 @@ KB_RELEVANCE_SPEC = KeyedSpec(
 AUTHOR_CONTENT_SPEC = KeyedSpec(
     name="author_content",
     schema_name="content_by_node",
-    fields={"description": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string", "enum": _TAGS}}},
+    fields={
+        "description": {"type": "string"},
+        "tags": {"type": "array", "items": {"type": "string", "enum": _TAGS}},
+    },
     field_prompts={"description": "'description' (string)", "tags": "'tags' (array of strings)"},
     id_noun="node id",
     legacy_schema=content_authoring_schema,
@@ -117,7 +121,7 @@ SCORING_SPEC = KeyedSpec(
     field_prompts={
         "score": "'score' (an integer 0-100)",
         "issues": "'issues' (a list of zero or more issue tags)",
-        "categoryScores": "'categoryScores' (a list of {\"name\", \"score\"} objects)",
+        "categoryScores": '\'categoryScores\' (a list of {"name", "score"} objects)',
         "confidence": "'confidence' (one of 'high', 'medium', 'low')",
     },
     id_noun="node_id",
@@ -130,7 +134,7 @@ EPIC_FEATURE_SCORING_SPEC = KeyedSpec(
     fields={"score": {"type": "integer"}, "categoryScores": _CATEGORY_SCORES},
     field_prompts={
         "score": "'score' (an integer 0-100)",
-        "categoryScores": "'categoryScores' (a list of {\"name\", \"score\"} objects)",
+        "categoryScores": '\'categoryScores\' (a list of {"name", "score"} objects)',
     },
     id_noun="node_id",
     legacy_schema=epic_feature_scores_schema,

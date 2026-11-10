@@ -1,24 +1,24 @@
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
 from app.canonical.model import SourceRef
 
 
-class WorkItemType(str, Enum):
+class WorkItemType(StrEnum):
     EPIC = "Epic"
     FEATURE = "Feature"
     REQUIREMENT = "Requirement"
 
 
-class WorkItemMode(str, Enum):
+class WorkItemMode(StrEnum):
     BASELINE = "BASELINE"
     SURVEY = "SURVEY"
 
 
-class KbCitationRelevance(str, Enum):
+class KbCitationRelevance(StrEnum):
     """Verdict from an LLM relevance-verification call (see
     app.survey.orchestrator_llm_client.OrchestratorLlmClient.judge_kb_relevance)
     judging whether a retrieved KB snippet was actually relevant to the
@@ -36,6 +36,16 @@ class KbCitation(BaseModel):
     source_file: str
     similarity: float
     relevance: KbCitationRelevance = KbCitationRelevance.UNKNOWN
+
+
+class KbCoverage(BaseModel):
+    """How much of the user's KB a SURVEY run could use vs. did cite.
+    `files_cited` counts distinct source files in WorkItemTree.kb_citations
+    (any relevance verdict; on the fallback path broader than any single
+    prompt's grounding -- see build_survey_tree's citation merge)."""
+
+    files_available: int = Field(ge=0)
+    files_cited: int = Field(ge=0)
 
 
 # Per-dimension 0-100 breakdown backing the single overall quality_score
@@ -62,7 +72,7 @@ class KbCitation(BaseModel):
 QualityCategoryScores = dict[str, int]
 
 
-class RequirementQualityIssue(str, Enum):
+class RequirementQualityIssue(StrEnum):
     """Closed vocabulary of quality issues a SURVEY requirement's final
     formalized description can be flagged with, judged against
     EARS/INCOSE/ISO/IEC/IEEE-29148 criteria baked into the scoring prompt,
@@ -92,7 +102,7 @@ class RequirementQualityIssue(str, Enum):
     CONFLICTING_VALUE = "conflicting_value"
 
 
-class QualityConfidence(str, Enum):
+class QualityConfidence(StrEnum):
     """How sure the scoring model is about the quality_score it just gave --
     the abstain channel the scoring prompt previously had none of (SWEEP.md
     section 7). The batched scoring prompt forces an answer for EVERY one of
@@ -118,7 +128,7 @@ class QualityConfidence(str, Enum):
     LOW = "low"
 
 
-class RequirementTag(str, Enum):
+class RequirementTag(StrEnum):
     FUNCTIONAL = "functional"
     NON_FUNCTIONAL = "non_functional"
     INTERFACE = "interface"
@@ -132,12 +142,12 @@ class RequirementTag(str, Enum):
     BEHAVIOR = "behavior"
 
 
-class TraceLinkTargetKind(str, Enum):
+class TraceLinkTargetKind(StrEnum):
     INTRA_JOB = "intraJob"
     CROSS_JOB = "crossJob"
 
 
-class TraceLinkResolutionStatus(str, Enum):
+class TraceLinkResolutionStatus(StrEnum):
     RESOLVED = "resolved"
     UNRESOLVED = "unresolved"
     PENDING = "pending"
@@ -321,7 +331,7 @@ class WorkItemNode(BaseModel):
     needs_synthesis: bool = Field(default=False, exclude=True)
 
 
-class WarningSeverity(str, Enum):
+class WarningSeverity(StrEnum):
     """How a reviewer should treat an IntegrityWarning. auto_fixed:
     deterministic code already resolved it, no action needed. needs_review:
     an AI/heuristic judgment call a human should verify. pipeline_issue:
@@ -333,7 +343,7 @@ class WarningSeverity(str, Enum):
     PIPELINE_ISSUE = "pipeline_issue"
 
 
-class WarningKind(str, Enum):
+class WarningKind(StrEnum):
     """Closed vocabulary of integrity-warning kinds a WorkItemTree can carry.
     Severity is a pure function of kind (see WARNING_SEVERITY below) --
     never set ad hoc at an emission site, so the mapping stays auditable in
@@ -372,6 +382,9 @@ class WarningKind(str, Enum):
     # action are identical across all three.
     ENHANCEMENT_CALL_FAILED = "enhancement_call_failed"
     ENHANCEMENT_RESPONSE_INCOMPLETE = "enhancement_response_incomplete"
+    # The job's document study did not read every part of the file (or could not start): acceptance-criteria proposals had less context. `detail["pass"]`
+    # is "document_study"; the message names which parts were not read. Not an enhancement pass, so it has its own kind and its own plain-language copy.
+    DOCUMENT_STUDY_INCOMPLETE = "document_study_incomplete"
     DROPPED_ROW = "dropped_row"
     FRONT_MATTER_FOLDED = "front_matter_folded"
     TRACE_LINK_INFERENCE_FAILED = "trace_link_inference_failed"
@@ -474,6 +487,10 @@ class WarningKind(str, Enum):
     # heading title collides, both nodes keep the same title and a human
     # should rename one.
     PARENT_TITLE_COLLISION = "parent_title_collision"
+    # The acceptance-criteria grounding filter left out proposed criteria (or the whole proposal, for an unsupported assumption) that stated a value
+    # the document does not contain. No model call failed; `detail["pass"]` is "acceptance_criteria", `dropped` counts criteria, `assumptionOnly` counts
+    # items affected only by an assumption.
+    CRITERIA_VALUE_UNGROUNDED = "criteria_value_ungrounded"
 
 
 WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
@@ -502,6 +519,7 @@ WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
     WarningKind.ADO_VERIFICATION_FAILED: WarningSeverity.PIPELINE_ISSUE,
     WarningKind.ENHANCEMENT_CALL_FAILED: WarningSeverity.PIPELINE_ISSUE,
     WarningKind.ENHANCEMENT_RESPONSE_INCOMPLETE: WarningSeverity.AUTO_FIXED,
+    WarningKind.DOCUMENT_STUDY_INCOMPLETE: WarningSeverity.PIPELINE_ISSUE,
     WarningKind.DROPPED_ROW: WarningSeverity.NEEDS_REVIEW,
     WarningKind.FRONT_MATTER_FOLDED: WarningSeverity.AUTO_FIXED,
     WarningKind.TRACE_LINK_INFERENCE_FAILED: WarningSeverity.PIPELINE_ISSUE,
@@ -519,6 +537,7 @@ WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
     WarningKind.SURVEY_TITLE_DISTILLED: WarningSeverity.AUTO_FIXED,
     WarningKind.DUPLICATE_CUSTOMER_ID: WarningSeverity.NEEDS_REVIEW,
     WarningKind.PARENT_TITLE_COLLISION: WarningSeverity.NEEDS_REVIEW,
+    WarningKind.CRITERIA_VALUE_UNGROUNDED: WarningSeverity.NEEDS_REVIEW,
 }
 
 
@@ -544,10 +563,12 @@ class IntegrityWarning(BaseModel):
         raw: str,
         node_ids: list[str] | None = None,
         detail: dict | None = None,
-    ) -> "IntegrityWarning":
+        severity: WarningSeverity | None = None,
+    ) -> IntegrityWarning:
+        """`severity` overrides the kind's default only when an instance is resolved differently (PARENT_TITLE_COLLISION)."""
         return cls(
             kind=kind,
-            severity=WARNING_SEVERITY[kind],
+            severity=severity or WARNING_SEVERITY[kind],
             node_ids=node_ids or [],
             detail=detail or {},
             raw=raw,
@@ -565,6 +586,9 @@ class WorkItemTree(BaseModel):
     # while formalizing this tree's requirements -- whole-document, not
     # per-node, mirroring trace_links below.
     kb_citations: list[KbCitation] = Field(default_factory=list)
+    # None when no KB grounding ran (BASELINE, SURVEY without KB deps) or the
+    # KB file listing failed -- reporting coverage never fails a job.
+    kb_coverage: KbCoverage | None = None
     trace_links: list[TraceLink] = Field(default_factory=list)
     # Figures/tables SURVEY's whole-document mapping stage judged structurally
     # irrelevant to every work item (a decorative logo, a divider, a page

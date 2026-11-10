@@ -7,7 +7,9 @@ from app.workitem.model import IntegrityWarning, WorkItemMode, WorkItemNode
 _ID_PREFIX = "bl_"
 
 
-def adopt_baseline_structure(doc: CanonicalDoc) -> tuple[list[WorkItemNode], list[IntegrityWarning]]:
+def adopt_baseline_structure(
+    doc: CanonicalDoc,
+) -> tuple[list[WorkItemNode], list[IntegrityWarning]]:
     """The items of `doc` as the BASELINE rules structure them, ready to join a SURVEY tree.
 
     The structure of a document that no deterministic detector claims used to be chosen by the chat model, so the number
@@ -23,13 +25,30 @@ def adopt_baseline_structure(doc: CanonicalDoc) -> tuple[list[WorkItemNode], lis
         adopted = node.model_copy(
             update={
                 "local_id": renamed[node.local_id],
-                "parent_local_id": renamed.get(node.parent_local_id) if node.parent_local_id else None,
+                "parent_local_id": renamed.get(node.parent_local_id)
+                if node.parent_local_id
+                else None,
                 "mode": WorkItemMode.SURVEY,
             }
         )
         nodes.append(adopted)
+
+    def remap(value):
+        if isinstance(value, str):
+            return renamed.get(value, value)
+        if isinstance(value, list):
+            return [remap(item) for item in value]
+        return value
+
     warnings = [
-        warning.model_copy(update={"node_ids": [renamed.get(node_id, node_id) for node_id in warning.node_ids]})
+        warning.model_copy(
+            update={
+                "node_ids": [renamed.get(node_id, node_id) for node_id in warning.node_ids],
+                "detail": {key: remap(value) for key, value in warning.detail.items()}
+                if warning.detail
+                else warning.detail,
+            }
+        )
         for warning in tree.warnings
     ]
     return nodes, warnings

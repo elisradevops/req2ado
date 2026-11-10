@@ -4,14 +4,25 @@ import logging
 
 from starlette.concurrency import run_in_threadpool
 
-from app.chat.chat_client import PROPOSAL_SENTINEL, ChatLlmClient, proposal_failure_reason, split_message_and_proposal
+from app.chat.chat_client import (
+    PROPOSAL_SENTINEL,
+    ChatLlmClient,
+    proposal_failure_reason,
+    split_message_and_proposal,
+)
 from app.chat.context_pack import render_context_pack
 from app.chat.redis_publisher import RedisChatPublisher
 from app.config import settings
 from app.http_errors import describe_exception, exception_details
-from app.leveling.description_text import description_for_model, markers_as_words, restore_tables, split_tables, table_context
 from app.kb.profile import render_authoring_standard
 from app.kb.retrieval import retrieve_context
+from app.leveling.description_text import (
+    description_for_model,
+    markers_as_words,
+    restore_tables,
+    split_tables,
+    table_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +78,7 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "rewrite of the title and/or description, end your reply with a new line "
     f"containing exactly '{PROPOSAL_SENTINEL}' followed by a single-line JSON "
     'object: {{"proposedTitle": <string or null>, "proposedDescription": '
-    '<string or null>}}. If no rewrite was requested, omit the sentinel line '
+    "<string or null>}}. If no rewrite was requested, omit the sentinel line "
     "entirely."
 )
 
@@ -84,9 +95,12 @@ _REWRITE_RULES = (
     "('here is a rewrite') unless the marker line and the JSON follow in the same reply. "
 )
 _SHAPE_REQUIREMENT = "keep it ONE requirement statement (one shall/should/must); "
-_SHAPE_OTHER = "keep it a concise description of the scope of the {kind}, not a requirement statement; "
+_SHAPE_OTHER = (
+    "keep it a concise description of the scope of the {kind}, not a requirement statement; "
+)
 
 
+# Mirrored in frontend/src/utils/qualityCategories.ts (WEAK_CATEGORY_SCORE); a frontend test fails if the two differ.
 _WEAK_CATEGORY_SCORE = 70
 _WEAKEST_SHOWN = 2
 
@@ -96,10 +110,18 @@ def _weakest_categories(scores: dict | None) -> list[tuple[str, float]]:
     if not isinstance(scores, dict):
         return []
     usable = sorted(
-        ((name, float(value)) for name, value in scores.items() if isinstance(name, str) and isinstance(value, (int, float)) and not isinstance(value, bool)),
+        (
+            (name, float(value))
+            for name, value in scores.items()
+            if isinstance(name, str)
+            and isinstance(value, (int, float))
+            and not isinstance(value, bool)
+        ),
         key=lambda pair: (pair[1], pair[0]),
     )
-    return [(name, value) for name, value in usable if value < _WEAK_CATEGORY_SCORE][:_WEAKEST_SHOWN]
+    return [(name, value) for name, value in usable if value < _WEAK_CATEGORY_SCORE][
+        :_WEAKEST_SHOWN
+    ]
 
 
 def weakest_category_note(scores: dict | None, profile) -> str | None:
@@ -109,13 +131,21 @@ def weakest_category_note(scores: dict | None, profile) -> str | None:
     weak = _weakest_categories(scores)
     if not weak:
         return None
-    conditions = {c.name.casefold(): c.pass_condition for c in (profile.categories if profile else []) if c.pass_condition}
+    conditions = {
+        c.name.casefold(): c.pass_condition
+        for c in (profile.categories if profile else [])
+        if c.pass_condition
+    }
     parts = []
     for name, value in weak:
         condition = conditions.get(name.casefold())
-        parts.append(f"{name} ({value:g})" + (f", whose pass condition is: {condition}" if condition else ""))
+        parts.append(
+            f"{name} ({value:g})" + (f", whose pass condition is: {condition}" if condition else "")
+        )
     return (
-        "The item's weakest quality categories are " + "; ".join(parts) + ". When the user asks for a rewrite, aim it at "
+        "The item's weakest quality categories are "
+        + "; ".join(parts)
+        + ". When the user asks for a rewrite, aim it at "
         "improving the weakest category first without losing what the item already does well, and say which category the "
         "rewrite targets. "
     )
@@ -130,7 +160,11 @@ _TABLE_NOTE = (
 
 
 def _build_system_prompt(
-    item: dict, kb_context: str | None, weakest_note: str | None = None, context: dict | None = None, standard: str | None = None,
+    item: dict,
+    kb_context: str | None,
+    weakest_note: str | None = None,
+    context: dict | None = None,
+    standard: str | None = None,
     tables: list[str] | None = None,
 ) -> str:
     """The organization's standard first (what an Epic, Feature and Requirement are, its rules, terms and every category's pass
@@ -141,7 +175,9 @@ def _build_system_prompt(
     if weakest_note:
         quality_note += weakest_note
     item_type = item.get("childType") or item.get("type") or "Requirement"
-    shape = _SHAPE_REQUIREMENT if item_type == "Requirement" else _SHAPE_OTHER.format(kind=item_type)
+    shape = (
+        _SHAPE_REQUIREMENT if item_type == "Requirement" else _SHAPE_OTHER.format(kind=item_type)
+    )
     prompt = _SYSTEM_PROMPT_TEMPLATE.format(
         rewrite_rules=_REWRITE_RULES.format(shape=shape),
         item_type=item_type,
@@ -152,9 +188,13 @@ def _build_system_prompt(
     )
     sections: list[str] = []
     if standard:
-        sections.append(f"The organization's own standard for requirements (authoritative; follow it):\n\n{standard}")
+        sections.append(
+            f"The organization's own standard for requirements (authoritative; follow it):\n\n{standard}"
+        )
     if tables:
-        sections.append(f"The tables of the item's description (read-only, for understanding only):\n\n{table_context(tables)}")
+        sections.append(
+            f"The tables of the item's description (read-only, for understanding only):\n\n{table_context(tables)}"
+        )
     if kb_context:
         sections.append(
             "Reference material from the knowledge base (may be incomplete or irrelevant — use only what's genuinely "
@@ -200,7 +240,9 @@ async def run_chat_turn(
             # single-worker event loop, matching /level and /kb/ingest-* in
             # main.py.
             # Retrieved by what the item says (and what was asked): "improve this" alone retrieves near-random chunks.
-            retrieval_query = "\n".join(part for part in (item.get("title"), retrieval_description, user_message) if part)
+            retrieval_query = "\n".join(
+                part for part in (item.get("title"), retrieval_description, user_message) if part
+            )
             kb_context, _ = await run_in_threadpool(
                 retrieve_context, user_id, retrieval_query, embed_client, vector_store
             )
@@ -208,12 +250,19 @@ async def run_chat_turn(
         weakest = _weakest_categories(item.get("qualityCategoryScores"))
         # Category names and scores only, never the item's or the user's text: shows which category a turn aimed at.
         logger.info(
-            "chat turn: job=%s node=%s weakest=%s profile=%s", job_id, local_id,
-            ", ".join(f"{name}={value:g}" for name, value in weakest) or "none", "yes" if profile is not None else "no",
+            "chat turn: job=%s node=%s weakest=%s profile=%s",
+            job_id,
+            local_id,
+            ", ".join(f"{name}={value:g}" for name, value in weakest) or "none",
+            "yes" if profile is not None else "no",
         )
         system_prompt = _build_system_prompt(
-            item, kb_context, weakest_category_note(item.get("qualityCategoryScores"), profile),
-            context=item.get("context"), standard=render_authoring_standard(profile), tables=tables,
+            item,
+            kb_context,
+            weakest_category_note(item.get("qualityCategoryScores"), profile),
+            context=item.get("context"),
+            standard=render_authoring_standard(profile),
+            tables=tables,
         )
         capped_history = history[-_MAX_HISTORY_TURNS:]
         messages = (
@@ -253,16 +302,25 @@ async def run_chat_turn(
                 proposed_description, table_counts = restore_tables(proposed_description, tables)
                 logger.info(
                     "chat tables: job=%s node=%s tables=%d restored=%d reattached=%d dropped_extra=%d csv_rows_removed=%d",
-                    job_id, local_id, len(tables), table_counts["restored"], table_counts["reattached"],
-                    table_counts["dropped_extra"], table_counts["csv_rows_removed"],
+                    job_id,
+                    local_id,
+                    len(tables),
+                    table_counts["restored"],
+                    table_counts["reattached"],
+                    table_counts["dropped_extra"],
+                    table_counts["csv_rows_removed"],
                 )
         # Why a turn has no proposal, with no text: a reply that announces a rewrite ("...rewrite:") and delivers none looks the same to the
         # user whether the model wrote no marker or an unreadable one.
         reason = proposal_failure_reason(full_text)
         last_line = message.strip().splitlines()[-1].strip() if message.strip() else ""
         logger.info(
-            "chat turn result: job=%s node=%s %s", job_id, local_id,
-            "proposal=yes" if reason is None else f"proposal=none reason={reason} announced={'yes' if reason == 'no_marker' and last_line.endswith(':') else 'no'}",
+            "chat turn result: job=%s node=%s %s",
+            job_id,
+            local_id,
+            "proposal=yes"
+            if reason is None
+            else f"proposal=none reason={reason} announced={'yes' if reason == 'no_marker' and last_line.endswith(':') else 'no'}",
         )
         await publisher.publish_done(
             job_id, local_id, message, proposed_title, proposed_description, model or ""

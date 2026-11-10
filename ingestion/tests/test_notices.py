@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from app.leveling import live_context
 from app.leveling.live_context import live_emitter_scope, notice
-from app.logging_context import job_id_scope
 from app.leveling.notices import NoticePublisher, notices_log_key
+from app.logging_context import job_id_scope
 
 
 class FakeRedis:
@@ -19,7 +21,9 @@ class FakeRedis:
         self.lists.setdefault(name, []).extend(values)
 
     def ltrim(self, name, start, end):
-        self.lists[name] = self.lists[name][start:] if start < 0 else self.lists[name][start : end + 1]
+        self.lists[name] = (
+            self.lists[name][start:] if start < 0 else self.lists[name][start : end + 1]
+        )
 
     def expire(self, name, time):
         return True
@@ -43,7 +47,10 @@ def test_publishes_on_main_channel_and_replay_list() -> None:
     assert channel == "job-events:j1"
     payload = json.loads(body)
     assert payload["type"] == "notice" and payload["kind"] == "output_limit_reached"
-    assert payload["severity"] == "warning" and payload["facts"] == {"step": "analyze", "lastRef": "det0_1"}
+    assert payload["severity"] == "warning" and payload["facts"] == {
+        "step": "analyze",
+        "lastRef": "det0_1",
+    }
     assert redis.lists[notices_log_key("j1")] == [body]
 
 
@@ -72,7 +79,9 @@ def test_unknown_kind_and_severity_are_ignored() -> None:
 
 def test_facts_carry_no_free_text() -> None:
     redis = FakeRedis()
-    NoticePublisher(redis, "j1").publish("stream_fallback", reason="x" * 100, doc={"a": 1}, items=[1])
+    NoticePublisher(redis, "j1").publish(
+        "stream_fallback", reason="x" * 100, doc={"a": 1}, items=[1]
+    )
     facts = json.loads(redis.published[0][1])["facts"]
     assert facts == {"reason": "x" * 40}
 
@@ -131,12 +140,18 @@ def test_client_reports_retry_and_output_limit(monkeypatch) -> None:  # noqa: AN
         calls["n"] += 1
         if calls["n"] == 1:
             return httpx.Response(503, json={"error": "busy"})
-        return httpx.Response(200, json={"content": json.dumps({"nodes": []}), "finishReason": "length"})
+        return httpx.Response(
+            200, json={"content": json.dumps({"nodes": []}), "finishReason": "length"}
+        )
 
     redis = FakeRedis()
     with job_id_scope("j5"), live_emitter_scope("j5", redis):
         _client(handler).analyze_section("Some section text.")
-    kinds = [(json.loads(b)["kind"], json.loads(b)["facts"]) for c, b in redis.published if c == "job-events:j5"]
+    kinds = [
+        (json.loads(b)["kind"], json.loads(b)["facts"])
+        for c, b in redis.published
+        if c == "job-events:j5"
+    ]
     assert ("server_retry", {"status": 503}) in kinds
     assert ("output_limit_reached", {"step": "analyze"}) in kinds
 
@@ -148,8 +163,39 @@ def test_client_is_silent_without_live_progress(monkeypatch) -> None:  # noqa: A
     redis = FakeRedis()
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"content": json.dumps({"nodes": []}), "finishReason": "length"})
+        return httpx.Response(
+            200, json={"content": json.dumps({"nodes": []}), "finishReason": "length"}
+        )
 
     with job_id_scope("j5"), live_emitter_scope("j5", redis):
         _client(handler).analyze_section("Some section text.")
     assert redis.published == []
+
+
+def test_the_document_study_kind_is_published_with_its_facts() -> None:
+    redis = FakeRedis()
+    facts = {"state": "partial", "studied": 9, "windows": 12, "cached": 4, "split": 2, "failed": 1}
+    assert NoticePublisher(redis, "j1").publish(
+        "document_study", "warning", once_key="end", **facts
+    )
+    payload = json.loads(redis.published[0][1])
+    assert (
+        payload["kind"] == "document_study"
+        and payload["severity"] == "warning"
+        and payload["facts"] == facts
+    )
+
+
+def test_every_kind_is_in_the_shared_schema_and_the_other_way_round() -> None:
+    import pathlib
+
+    from app.leveling.notices import NOTICE_KINDS
+
+    assert "document_study" in NOTICE_KINDS
+    schema_path = (
+        pathlib.Path(__file__).resolve().parents[2] / "shared" / "schemas" / "job-live.schema.json"
+    )
+    if not schema_path.exists():
+        pytest.skip("the shared schemas are not part of this checkout")
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    assert set(schema["definitions"]["Notice"]["properties"]["kind"]["enum"]) == set(NOTICE_KINDS)

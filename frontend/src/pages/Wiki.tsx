@@ -11,7 +11,8 @@ import { Button } from '../ui/Button';
 // browser's unstyled defaults -- the same purpose MUI Typography variants
 // served pre-migration, expressed as Tailwind utility classes.
 const MARKDOWN_COMPONENTS: Components = {
-  h1: ({ children }) => <h1 className="mb-2 mt-6 text-2xl font-bold tracking-tight first:mt-0">{children}</h1>,
+  // The page title is the PageHeader's h1, so a markdown "#" renders as an h2 (same look) to keep one h1 per page.
+  h1: ({ children }) => <h2 className="mb-2 mt-6 text-2xl font-bold tracking-tight first:mt-0">{children}</h2>,
   h2: ({ children }) => <h2 className="mb-2 mt-6 text-lg font-bold tracking-tight">{children}</h2>,
   h3: ({ children }) => <h3 className="mb-1.5 mt-5 text-base font-semibold">{children}</h3>,
   p: ({ children }) => <p className="mb-3 text-sm leading-relaxed text-ink-2">{children}</p>,
@@ -32,7 +33,7 @@ const MARKDOWN_COMPONENTS: Components = {
       <table className="w-full text-sm">{children}</table>
     </div>
   ),
-  th: ({ children }) => <th className="border-b border-hairline-strong bg-surface-alt px-2.5 py-1.5 text-left text-xs font-semibold uppercase tracking-wide text-ink-3">{children}</th>,
+  th: ({ children }) => <th className="border-b border-hairline-strong bg-surface-alt px-2.5 py-1.5 text-left text-meta font-semibold tracking-normal text-ink-3">{children}</th>,
   td: ({ children }) => <td className="border-b border-hairline px-2.5 py-1.5">{children}</td>,
 };
 
@@ -67,7 +68,9 @@ export function Wiki(): JSX.Element {
           </Alert>
         ) : content === null ? (
           <Card>
-            <div className="flex flex-col gap-2.5 p-4">
+            <div role="status" aria-busy="true" className="flex flex-col gap-2.5 p-4">
+              {/* The placeholders below are not drawn for the first second (ui/Skeleton), so assistive technology is told at once. */}
+              <span className="sr-only">Loading the user guide…</span>
               <Skeleton className="h-6 w-1/2" />
               <Skeleton className="h-4 w-full" />
               <Skeleton className="h-4 w-full" />

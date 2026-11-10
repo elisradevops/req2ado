@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight, Image } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { Markdown } from '../ui/Markdown';
 import { FigureImage } from './FigureImage';
+import { FIGURE_OUTCOME_TEXT, figureTally, outcomeLine, type FigureOutcome } from '../utils/figureOutcomes';
 
 export interface FigureDescriptionEntry {
   figureIndex: number;
@@ -23,6 +24,10 @@ export interface FigureDescriptionEntry {
   // exact convention ingestion's main.py establishes (figure_id =
   // f"f{figureIndex - 1}") when it builds this array.
   figureId: string;
+  // Only on the stored shape (Job.figureDescriptions): what became of a figure that has no description, and the model's reason for a
+  // "not significant" verdict. Lets a reloaded job say it without the event history, which holds only the latest events.
+  captionStatus?: FigureOutcome;
+  captionReason?: string;
 }
 
 // The activity log (ProgressBanner) only ever shows the LATEST narration
@@ -34,7 +39,20 @@ export interface FigureDescriptionEntry {
 // Job.figureDescriptions column on mount otherwise -- so it survives a
 // reload or reopening a completed job (see JobDetail.tsx's loadJob).
 // Collapsed-by-default, same pattern as CollapsibleWarnings.
-export function FigureDescriptions({ jobId, items }: { jobId: string; items: FigureDescriptionEntry[] }): React.ReactElement | null {
+export function FigureDescriptions({
+  jobId,
+  items,
+  outcomes = {},
+  reasons = {},
+}: {
+  jobId: string;
+  items: FigureDescriptionEntry[];
+  // Figures that ended WITHOUT a description (not significant, or the model gave no usable reply), by their real figure number.
+  // Without them the panel only ever lists the described figures and a missing one looks like a bug.
+  outcomes?: Record<number, FigureOutcome>;
+  /** The vision model's own few words on why a figure was not significant, by figure index. */
+  reasons?: Record<number, string>;
+}): React.ReactElement | null {
   const [expanded, setExpanded] = useState(false);
   // Tracks whether this panel has EVER been expanded, distinct from
   // `expanded` itself -- gates FigureImage's lazy fetch (see its own doc
@@ -47,7 +65,17 @@ export function FigureDescriptions({ jobId, items }: { jobId: string; items: Fig
   useEffect(() => {
     if (expanded) setHasExpandedOnce(true);
   }, [expanded]);
-  if (items.length === 0) return null;
+  // A figure that has a description now is not also "failed": an outcome from an earlier attempt must not list or count it twice.
+  const shown = new Set(items.map((item) => item.figureIndex));
+  const openOutcomes: Record<number, FigureOutcome> = Object.fromEntries(
+    Object.entries(outcomes).filter(([figureIndex]) => !shown.has(Number(figureIndex))),
+  );
+  const outcomeList = Object.entries(openOutcomes)
+    .map(([figureIndex, outcome]) => ({ figureIndex: Number(figureIndex), outcome }))
+    .sort((a, b) => a.figureIndex - b.figureIndex);
+  if (items.length === 0 && outcomeList.length === 0) return null;
+  // "Described" means the model wrote a description; an entry that only has the document's own name does not count.
+  const tally = figureTally(items.filter((item) => item.caption != null).length, openOutcomes);
 
   return (
     <div className="overflow-hidden rounded-sm border border-hairline bg-surface">
@@ -60,9 +88,10 @@ export function FigureDescriptions({ jobId, items }: { jobId: string; items: Fig
         {expanded ? <ChevronDown className="h-4 w-4 flex-none" /> : <ChevronRight className="h-4 w-4 flex-none" />}
         <Image className="h-4 w-4 flex-none" aria-hidden="true" />
         <span className="font-medium">
-          {items.length} figure description{items.length === 1 ? '' : 's'}
+          {outcomeList.length > 0 ? tally : `${items.length} figure description${items.length === 1 ? '' : 's'}`}
         </span>
-        <span className="text-ink-3">-- full vision-model output for each embedded figure</span>
+        {/* the explanation has no room beside the count on a phone; it stays for screen readers */}
+        <span className="text-ink-3 max-md:sr-only">-- what the vision model made of each embedded figure</span>
       </button>
       <div className={cn('grid min-h-0 transition-[grid-template-rows] duration-200 ease-out', expanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]')}>
         <div className="min-h-0 overflow-hidden">
@@ -115,6 +144,22 @@ export function FigureDescriptions({ jobId, items }: { jobId: string; items: Fig
                       above, no empty Markdown block underneath it. */}
                   {item.caption != null && <Markdown>{item.caption}</Markdown>}
                 </div>
+              </li>
+            ))}
+            {items.length > 0 && outcomeList.length > 0 && (
+              <li className="border-t border-hairline/60 pt-2 text-xs font-semibold text-ink-2">Not described ({outcomeList.length})</li>
+            )}
+            {outcomeList.map(({ figureIndex, outcome }) => (
+              <li key={`outcome-${figureIndex}`} className="flex flex-col gap-0.5 border-t border-hairline/60 pt-2 text-sm text-ink-3 first:border-t-0 first:pt-0">
+                <span className="flex flex-wrap gap-x-1">
+                  <span className="font-medium text-ink-2">Figure {figureIndex} in the document:</span>
+                  <span>{FIGURE_OUTCOME_TEXT[outcome]}</span>
+                </span>
+                {outcomeLine(outcome, reasons[figureIndex]) && (
+                  <span dir="auto" className="break-words text-xs text-ink-2">
+                    {outcomeLine(outcome, reasons[figureIndex])}
+                  </span>
+                )}
               </li>
             ))}
           </ul>

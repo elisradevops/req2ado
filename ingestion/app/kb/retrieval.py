@@ -7,6 +7,12 @@ from app.kb.kb_vector_store import KbVectorStore
 
 logger = logging.getLogger(__name__)
 
+# retrieve_context asks the store for this many times top_k candidates, then
+# picks top_k from them round-robin across source files. Without the
+# over-fetch, one file with many near-duplicate chunks fills every slot and
+# the other files are never cited.
+_OVERFETCH_FACTOR = 4
+
 
 class EmbedClient(Protocol):
     def embed(self, texts: list[str], user_id: str | None = None) -> list[list[float]]: ...
@@ -24,7 +30,9 @@ def retrieve_context(
     Knowledge Base is scoped by the ingesting/submitting user's identity,
     NOT any ADO area path -- see KbVectorStore's own docstring), keeps
     hits with distance <= max_distance (cosine similarity >= 0.3), and
-    joins their text with a blank-line separator. Returns
+    joins their text with a blank-line separator. Over-fetches candidates
+    and picks the top_k (nearest hit first, then round-robin across source files), so a file with
+    many near-duplicate chunks cannot crowd every other file out. Returns
     (context, citations): context is None when the collection is empty, no
     hit clears the similarity bar, or the embed/query call itself raises
     (network failure, Chroma error) — KB retrieval is an enhancement, not a
@@ -38,12 +46,13 @@ def retrieve_context(
     callers."""
     try:
         [embedding] = embed_client.embed([query_text], user_id=user_id)
-        hits = vector_store.query(user_id, embedding, top_k)
+        hits = vector_store.query(user_id, embedding, top_k * _OVERFETCH_FACTOR)
     except Exception as exc:  # noqa: BLE001 - retrieval must never fail a SURVEY job
         logger.warning("KB retrieval failed for user_id=%s: %s", user_id, exc)
         return None, []
 
-    survivors = [hit for hit in hits if hit["distance"] <= max_distance]
+    close_hits = [hit for hit in hits if hit["distance"] <= max_distance]
+    survivors = _round_robin_by_source(close_hits, top_k)
     if not survivors:
         return None, []
 
@@ -72,7 +81,32 @@ def retrieve_context(
     return context, citations
 
 
-def fetch_always_include_context(user_id: str, vector_store: KbVectorStore) -> tuple[str | None, list[dict]]:
+def _round_robin_by_source(hits: list[dict], limit: int) -> list[dict]:
+    """Picks up to `limit` hits: the single nearest hit overall first (so the
+    best match is never displaced), then round-robin over the source files
+    (ordered by their nearest remaining hit, the best file included), taking
+    each file's nearest unused hit per round, so weaker files still get a
+    slot instead of the strongest file filling them all.
+    `hits` must be nearest-first, as KbVectorStore.query returns them."""
+    if limit <= 0 or not hits:
+        return []
+    picked: list[dict] = [hits[0]]
+    by_file: dict[str, list[dict]] = {}
+    for hit in hits[1:]:
+        by_file.setdefault(hit["source_file"], []).append(hit)
+    queues = list(by_file.values())
+    while queues and len(picked) < limit:
+        for queue in queues:
+            if len(picked) >= limit:
+                break
+            picked.append(queue.pop(0))
+        queues = [queue for queue in queues if queue]
+    return picked
+
+
+def fetch_always_include_context(
+    user_id: str, vector_store: KbVectorStore
+) -> tuple[str | None, list[dict]]:
     """Full, unconditional text of every KB file tagged retrieval_mode=
     "always_include" at upload time -- the Full-Context-mode counterpart to
     retrieve_context's similarity-gated Focused-Retrieval path, modeled
@@ -103,7 +137,9 @@ def fetch_always_include_context(user_id: str, vector_store: KbVectorStore) -> t
         try:
             text, truncated = vector_store.get_document(user_id, name)
         except Exception as exc:  # noqa: BLE001 - one file's failure must not block the others
-            logger.warning("Failed to fetch always-include document %r for user_id=%s: %s", name, user_id, exc)
+            logger.warning(
+                "Failed to fetch always-include document %r for user_id=%s: %s", name, user_id, exc
+            )
             continue
         if not text:
             continue
@@ -112,7 +148,9 @@ def fetch_always_include_context(user_id: str, vector_store: KbVectorStore) -> t
         # it's included unconditionally, so there is no similarity to
         # report. Fixed at the ceiling rather than omitted so downstream
         # display code (which expects a float) doesn't need a special case.
-        citations.append({"source_file": name, "similarity": 1.0, "text": text, "truncated": truncated})
+        citations.append(
+            {"source_file": name, "similarity": 1.0, "text": text, "truncated": truncated}
+        )
     if not texts:
         return None, []
     return "\n\n".join(texts), citations

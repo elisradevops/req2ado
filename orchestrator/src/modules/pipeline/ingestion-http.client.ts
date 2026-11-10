@@ -237,6 +237,8 @@ export class IngestionHttpClient {
     // skipVision=true), e.g. 'model_not_vision_capable' -- ingestion
     // surfaces it on the job's vision-disabled warning. Omitted otherwise.
     visionSkipReason?: string,
+    // Aborting it closes the connection, which makes ingestion stop the figure captioning that is running (a cancelled job).
+    signal?: AbortSignal,
   ): Promise<CanonicalDoc> {
     const form = new FormData();
     form.append('file', new Blob([fileBuffer]), filename);
@@ -257,7 +259,13 @@ export class IngestionHttpClient {
       params.set('vision_skip_reason', visionSkipReason);
     }
     const url = `${this.baseUrl}/ingest?${params.toString()}`;
-    const response = await fetch(url, { method: 'POST', headers: identityHeaders(userId, primerContext), body: form, dispatcher: this.longRunningAgent });
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: identityHeaders(userId, primerContext),
+      body: form,
+      dispatcher: this.longRunningAgent,
+      ...(signal ? { signal } : {}),
+    });
     if (!response.ok) {
       throw await _ingestionError(response, `Ingestion /ingest request failed: `);
     }
@@ -285,6 +293,8 @@ export class IngestionHttpClient {
     // Out parameter: which rubric ingestion scored this job with (`rubricVersion`: null when none, left undefined by an ingestion that does not
     // report it) and whether it did not get the one it should have (`degraded`). The result cache stores under the rubric the job really used.
     scored?: { rubricVersion?: string | null; degraded?: boolean },
+    // Stops the call when its caller gives up (the wizard's baseline preview): the request is cancelled instead of left running.
+    signal?: AbortSignal,
   ): Promise<WorkItemTree> {
     const params = new URLSearchParams({ mode });
     if (model) params.set('model', model);
@@ -311,7 +321,7 @@ export class IngestionHttpClient {
         headers: { 'Content-Type': 'application/json', Accept: `${NDJSON}, application/json`, ...identityHeaders(userId, primerContext) },
         body: JSON.stringify(doc),
         dispatcher: this.levelAgent,
-        signal: limit,
+        signal: signal ? AbortSignal.any([signal, limit]) : limit,
       });
       if (!response.ok) {
         throw await _ingestionError(response, `Ingestion /level request failed: `);
@@ -748,6 +758,10 @@ export class IngestionHttpClient {
     mimeType: string | null;
     sizeBytes: number;
     chunksStored: number;
+    // Chunks the vector store really holds for the file after the call (the
+    // existing count on a skip-unchanged re-ingest); null from an older
+    // ingestion service that does not report it.
+    chunksInStore: number | null;
     skippedUnchanged: boolean;
   }> {
     const response = await fetch(`${this.baseUrl}/kb/ingest-url`, {
@@ -771,6 +785,7 @@ export class IngestionHttpClient {
       mime_type: string | null;
       size_bytes: number;
       chunks_stored: number;
+      chunks_in_store?: number | null;
       skipped_unchanged: boolean;
     };
     return {
@@ -779,6 +794,7 @@ export class IngestionHttpClient {
       mimeType: body.mime_type,
       sizeBytes: body.size_bytes,
       chunksStored: body.chunks_stored,
+      chunksInStore: body.chunks_in_store ?? null,
       skippedUnchanged: body.skipped_unchanged,
     };
   }
@@ -804,6 +820,7 @@ export class IngestionHttpClient {
         file: string;
         status: string;
         chunks_stored: number;
+        chunks_in_store?: number | null;
         driveitem_id: string | null;
         mime_type: string | null;
         size_bytes: number | null;
@@ -816,6 +833,7 @@ export class IngestionHttpClient {
         file: f.file,
         status: f.status,
         chunksStored: f.chunks_stored,
+        chunksInStore: f.chunks_in_store ?? null,
         driveitemId: f.driveitem_id,
         mimeType: f.mime_type,
         sizeBytes: f.size_bytes,
@@ -842,6 +860,10 @@ export class IngestionHttpClient {
     mimeType: string | null;
     sizeBytes: number;
     chunksStored: number;
+    // Chunks the vector store really holds for the file after the call (the
+    // existing count on a skip-unchanged re-ingest); null from an older
+    // ingestion service that does not report it.
+    chunksInStore: number | null;
     skippedUnchanged: boolean;
   }> {
     const response = await fetch(`${this.baseUrl}/kb/ingest-item`, {
@@ -867,6 +889,7 @@ export class IngestionHttpClient {
       mime_type: string | null;
       size_bytes: number;
       chunks_stored: number;
+      chunks_in_store?: number | null;
       skipped_unchanged: boolean;
     };
     return {
@@ -875,6 +898,7 @@ export class IngestionHttpClient {
       mimeType: body.mime_type,
       sizeBytes: body.size_bytes,
       chunksStored: body.chunks_stored,
+      chunksInStore: body.chunks_in_store ?? null,
       skippedUnchanged: body.skipped_unchanged,
     };
   }

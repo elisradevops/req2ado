@@ -14,6 +14,29 @@ describe('warningKinds', () => {
     expect(warningGroup(warning('reparented_to_feature', 'auto_fixed'))).toBe('info');
   });
 
+  it('an auto_fixed parent_title_collision is informational', () => {
+    const resolved = warning('parent_title_collision', 'auto_fixed', ['a']);
+    expect(warningGroup(resolved)).toBe('info');
+    expect(isActionableWarning(resolved)).toBe(false);
+    const groups = buildKindGroups([resolved]);
+    expect(groups[0].group).toBe('info');
+  });
+
+  it('a needs_review parent_title_collision stays in the fix group', () => {
+    const open = warning('parent_title_collision', 'needs_review', ['a']);
+    expect(warningGroup(open)).toBe('fix');
+    expect(isActionableWarning(open)).toBe(true);
+    expect(buildKindGroups([open])[0].group).toBe('fix');
+  });
+
+  it('a kind with one open record and one auto_fixed record stays actionable', () => {
+    const groups = buildKindGroups([
+      warning('parent_title_collision', 'auto_fixed', ['a']),
+      warning('parent_title_collision', 'needs_review', ['b']),
+    ]);
+    expect(groups[0].group).toBe('fix');
+  });
+
   it('only counts fix and review kinds as actionable', () => {
     expect(isActionableWarning(warning('enhancement_call_failed', 'pipeline_issue'))).toBe(false);
     expect(isActionableWarning(warning('zero_nodes', 'pipeline_issue'))).toBe(true);
@@ -25,6 +48,15 @@ describe('warningKinds', () => {
     expect(kindMeta('brand_new', 'needs_review').group).toBe('review');
     expect(kindMeta('brand_new', 'pipeline_issue').group).toBe('review');
     expect(kindMeta('brand_new').title).toBe('Brand New');
+  });
+
+  it('explains criteria left out for ungrounded values, as a review item, never as a failed call', () => {
+    const meta = KIND_META.criteria_value_ungrounded;
+    expect(meta.group).toBe('review');
+    expect(meta.short).toMatch(/not found in the document/i);
+    expect(meta.means).toMatch(/nothing wrong was written/i);
+    expect(meta.todo).toMatch(/by hand/i);
+    expect(warningGroup(warning('criteria_value_ungrounded', 'needs_review'))).toBe('review');
   });
 
   it('gives every known kind complete copy', () => {
@@ -140,5 +172,18 @@ describe('warningKinds', () => {
 
       expect(retryableEnhancementBatches(entry)).toEqual([]);
     });
+  });
+});
+
+
+describe('document_study_incomplete', () => {
+  it('has its own plain-language entry that says what was not read, not "enhanced wording unavailable"', async () => {
+    const { KIND_META } = await import('./warningKinds');
+    const entry = (KIND_META as Record<string, { title: string; short: string; means: string; group: string }>).document_study_incomplete;
+    expect(entry).toBeDefined();
+    expect(entry.title).toMatch(/study/i);
+    expect(entry.short).toMatch(/not read|did not read|unread/i);
+    expect(entry.means).toMatch(/nothing is missing from the tree|tree itself/i);
+    expect(entry.group).toBe('info');
   });
 });

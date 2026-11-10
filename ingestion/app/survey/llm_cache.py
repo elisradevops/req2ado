@@ -41,7 +41,9 @@ class LlmResponseCache:
         try:
             return json.loads(raw)
         except (TypeError, ValueError):
-            logger.warning("LlmResponseCache.get: stored value was not valid JSON, treating as a cache miss")
+            logger.warning(
+                "LlmResponseCache.get: stored value was not valid JSON, treating as a cache miss"
+            )
             return None
 
     def set(self, key: str, value: object) -> None:
@@ -52,8 +54,13 @@ class LlmResponseCache:
 
 
 def cache_key(
-    operation: str, model: str | None, num_ctx: int | None, top_k: int | None, min_p: float | None,
-    seed: int | None, *parts: object,
+    operation: str,
+    model: str | None,
+    num_ctx: int | None,
+    top_k: int | None,
+    min_p: float | None,
+    seed: int | None,
+    *parts: object,
 ) -> str:
     """Stable cache key covering every input that can change an LLM call's
     output -- not just the prompt/section text. Two identical texts scored
@@ -61,8 +68,13 @@ def cache_key(
     all five are folded into the key alongside the call's own arguments."""
     payload = json.dumps(
         {
-            "operation": operation, "model": model, "num_ctx": num_ctx, "top_k": top_k, "min_p": min_p,
-            "seed": seed, "parts": parts,
+            "operation": operation,
+            "model": model,
+            "num_ctx": num_ctx,
+            "top_k": top_k,
+            "min_p": min_p,
+            "seed": seed,
+            "parts": parts,
         },
         sort_keys=True,
         default=str,

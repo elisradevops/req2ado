@@ -123,7 +123,15 @@ def test_job_transparency_flags_treat_blank_env_vars_as_unset(monkeypatch) -> No
     assert s.live_excerpt_max_chars == 240
 
 
-@pytest.mark.parametrize("name,value", [("LIVE_EXCERPT_MAX_CHARS", "5"), ("LIVE_EXCERPT_MAX_CHARS", "100000"), ("LIVE_PUBLISH_HZ", "0"), ("LIVE_PUBLISH_HZ", "500")])
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        ("LIVE_EXCERPT_MAX_CHARS", "5"),
+        ("LIVE_EXCERPT_MAX_CHARS", "100000"),
+        ("LIVE_PUBLISH_HZ", "0"),
+        ("LIVE_PUBLISH_HZ", "500"),
+    ],
+)
 def test_job_transparency_bounds_reject_out_of_range_values(monkeypatch, name, value) -> None:
     from pydantic import ValidationError
 

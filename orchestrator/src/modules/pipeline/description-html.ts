@@ -1,4 +1,5 @@
 import { marked } from 'marked';
+import type { DiscussionEntry } from '../writeback/dry-run.service';
 
 // CommonMark's raw-HTML-passthrough rule treats any `<` immediately
 // followed by a letter as the start of a real HTML tag -- a literal "<TBD>"
@@ -57,6 +58,63 @@ export function toAdoDescriptionHtml(text: string): string {
 }
 
 /**
+ * A section ingestion generated (not the author's text): proposed acceptance criteria, or a "Needs author input" note. Held apart from
+ * `description` so it reaches ADO only when the reviewer accepts it (criteria only; a needs-input note is informational and never written).
+ */
+export interface DiffProposal {
+  kind: 'criteria' | 'needs-input';
+  html: string;
+}
+
+// Ingestion appends each generated section as one flat <div data-r2a="..."> (escaped text inside, no nested div), after a newline. The shape is
+// a contract with ingestion/app/leveling/acceptance_criteria.py (both sides have a test that pins it).
+const PROPOSAL_SECTION_PATTERN = /\n?<div data-r2a="(criteria|needs-input)">[\s\S]*?<\/div>/g;
+
+/** Splits every generated section off a description; the first one is the proposal. Without one, the text is returned as given. */
+export function splitProposal(description: string): { description: string; proposal: DiffProposal | null } {
+  if (typeof description !== 'string') return { description, proposal: null }; // a malformed node: nothing to split, nothing to hide
+  let proposal: DiffProposal | null = null;
+  const text = description.replace(PROPOSAL_SECTION_PATTERN, (section: string, kind: string) => {
+    proposal ??= { kind: kind as DiffProposal['kind'], html: section.replace(/^\n/, '') };
+    return '';
+  });
+  return { description: text, proposal };
+}
+
+/**
+ * The System.Description to write for a diff entry: the author's text, plus the proposal's HTML (appended as real HTML, not escaped) only
+ * when the reviewer accepted a criteria proposal. A diff made before proposals were held apart carries the section inside `description`
+ * and no `proposal` key at all: it is stripped and never written.
+ */
+export function composeAdoDescriptionHtml(entry: { description: string; proposal?: DiffProposal | null; proposalAccepted?: boolean; isManual?: boolean }): string {
+  // `proposal` is set (to null when there is none) on every entry of a current diff, and a manual entry is the reviewer's own text.
+  const legacy = entry.proposal === undefined && !entry.isManual ? splitProposal(entry.description) : null;
+  const text = legacy ? legacy.description : entry.description;
+  const body = toAdoDescriptionHtml(text);
+  const accepted = entry.proposalAccepted === true && entry.proposal?.kind === 'criteria';
+  return accepted ? `${body}${entry.proposal!.html}` : body;
+}
+
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+/**
+ * The System.History (ADO Discussion) comment for an entry's "To be discussed" rewrites. Text is escaped, not rendered as markdown:
+ * it is a reviewer's note beside the verbatim description, not the description itself.
+ */
+export function composeAdoDiscussionHtml(entries: DiscussionEntry[]): string {
+  return entries
+    .map((e) => {
+      const parts = ['<p><b>To be discussed</b></p>'];
+      if (e.proposedTitle) parts.push(`<p><b>Proposed title:</b> ${escapeHtml(e.proposedTitle)}</p>`);
+      if (e.proposedDescription) parts.push(`<p><b>Proposed description:</b></p><p>${escapeHtml(e.proposedDescription).replace(/\r?\n/g, '<br>')}</p>`);
+      return `<div>${parts.join('')}</div>`;
+    })
+    .join('');
+}
+
+/**
  * Undoes ADO's own write-time HTML re-serialization, confirmed via a real
  * round-trip spike against a live work item (see
  * docs/superpowers/specs/2026-08-12-table-fidelity-design.md's Phase 0
@@ -82,4 +140,105 @@ export function normalizeAdoStoredHtml(storedHtml: string): string {
     .replace(/(colspan|rowspan)=(\d+)/g, '$1="$2"') // undo #1: ADO always emits these bare/unquoted; re-quote to match our own generator's output
     .replace(/style="([^"]*);"/g, 'style="$1"') // undo #2: strip the trailing `;` ADO always appends -- our own generator never emits one
     .replace(/ (<\/(?:td|th|p)>)/g, '$1'); // undo #3: drop ADO's added trailing space immediately before these closing tags (only td/th/p confirmed via the spike; extend if another leaf tag is ever caught by this same behavior)
+}
+
+const NAMED_ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
+
+// One pass, so `&amp;lt;` becomes the text `&lt;` and is never decoded twice. Unknown entities stay as written.
+function decodeEntities(text: string): string {
+  return text
+    .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (whole, body: string) => {
+      if (body[0] === '#') {
+        const code = body[1] === 'x' || body[1] === 'X' ? parseInt(body.slice(2), 16) : parseInt(body.slice(1), 10);
+        if (!Number.isFinite(code) || code < 0 || code > 0x10ffff) return whole;
+        return String.fromCodePoint(code);
+      }
+      return NAMED_ENTITIES[body.toLowerCase()] ?? whole;
+    })
+    .replace(/ /g, ' ');
+}
+
+// Decoded text re-escaped, so literal text can never be mistaken for a tag.
+function canonicalText(text: string): string {
+  return decodeEntities(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// Entities are decoded once (re-escaped by escapeAttrValue, `& < > "`, the same way on both sides), so `&`, `&amp;` and `&#38;` in an href compare equal
+// (ADO stores `?a=1&b=2` as `&amp;`), `&#39;` and `&apos;` match a literal apostrophe, and `&quot;` is how a double quote survives double-quoting.
+function canonicalAttrValue(raw: string): string {
+  return decodeEntities(raw).replace(/\s+/g, ' ').trim();
+}
+
+function escapeAttrValue(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+const ATTRIBUTE_PATTERN = /([^\s"'=<>/]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+)))?/g;
+
+function canonicalTag(tag: string): { text: string; name: string | null; closing: boolean; selfClosing: boolean } {
+  const inner = tag.slice(1, -1);
+  const head = /^(\/?)([a-zA-Z][^\s/>]*)/.exec(inner);
+  if (!head) return { text: `<${inner.replace(/\s+/g, ' ').trim()}>`, name: null, closing: false, selfClosing: false };
+  const name = head[2].toLowerCase();
+  const rest = inner.slice(head[0].length);
+  const selfClosing = /\/\s*$/.test(rest);
+  let attrs = '';
+  for (const m of rest.matchAll(ATTRIBUTE_PATTERN)) {
+    const attrName = m[1].toLowerCase();
+    const rawValue = m[2] ?? m[3] ?? m[4];
+    if (rawValue === undefined) {
+      attrs += ` ${attrName}`;
+      continue;
+    }
+    let value = canonicalAttrValue(rawValue);
+    if (attrName === 'style') {
+      value = value
+        .split(';')
+        .map((part) => part.trim().replace(/\s*:\s*/, ':'))
+        .filter((part) => part !== '')
+        .join(';');
+    }
+    attrs += ` ${attrName}="${escapeAttrValue(value)}"`;
+  }
+  return { text: `<${head[1]}${name}${attrs}${selfClosing ? '/' : ''}>`, name, closing: head[1] === '/', selfClosing };
+}
+
+/**
+ * Comparison-only canonical form, applied to BOTH the expected and the ADO-stored
+ * description. ADO re-serialises HTML on write beyond what normalizeAdoStoredHtml
+ * reverses: it encodes apostrophes (`&#39;`), may emit `&nbsp;`, reflows whitespace
+ * and rewrites style values. This erases only those cosmetic differences; words,
+ * numbers and punctuation stay significant. Never use the result as stored HTML.
+ *
+ * Single tokenising pass: tags (`<[^<>]*>`, linear) and text are handled separately, so
+ * escaped text (`&lt;b&gt;`) can never equal a real tag. Whitespace inside `<pre>` is kept.
+ */
+export function canonicalizeForCompare(html: string): string {
+  const parts = html.split(/(<[^<>]*>)/);
+  const tokens: { tag: boolean; text: string; pre: boolean }[] = [];
+  let preDepth = 0;
+  parts.forEach((part, index) => {
+    if (index % 2 === 1) {
+      const tag = canonicalTag(part);
+      if (tag.name === 'pre' && !tag.selfClosing) {
+        if (tag.closing) preDepth = Math.max(0, preDepth - 1);
+        else preDepth += 1;
+      }
+      tokens.push({ tag: true, text: tag.text, pre: false });
+    } else if (part !== '') {
+      tokens.push({ tag: false, text: canonicalText(part), pre: preDepth > 0 });
+    }
+  });
+  let out = '';
+  tokens.forEach((token, index) => {
+    if (token.tag || token.pre) {
+      out += token.text;
+      return;
+    }
+    let text = token.text.replace(/\s+/g, ' ');
+    if (index === 0 || tokens[index - 1].tag) text = text.replace(/^ /, '');
+    if (index === tokens.length - 1 || tokens[index + 1].tag) text = text.replace(/ $/, '');
+    out += text;
+  });
+  return out.trim();
 }

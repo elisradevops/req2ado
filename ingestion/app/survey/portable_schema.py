@@ -11,13 +11,32 @@ Rules (from the vendors' structured-output documentation, intersected):
 
 The same rules, with the same test vectors (`shared/test-vectors/portable-schema.json`), live in the orchestrator
 (`portable-schema.ts`), so a schema is judged the same way on both sides."""
+
 from __future__ import annotations
 
 FORBIDDEN_KEYWORDS = (
-    "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
-    "minLength", "maxLength", "pattern", "format",
-    "minItems", "maxItems", "uniqueItems", "contains", "minContains", "maxContains",
-    "patternProperties", "propertyNames", "minProperties", "maxProperties", "$ref", "$defs", "definitions",
+    "minimum",
+    "maximum",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "multipleOf",
+    "minLength",
+    "maxLength",
+    "pattern",
+    "format",
+    "minItems",
+    "maxItems",
+    "uniqueItems",
+    "contains",
+    "minContains",
+    "maxContains",
+    "patternProperties",
+    "propertyNames",
+    "minProperties",
+    "maxProperties",
+    "$ref",
+    "$defs",
+    "definitions",
 )
 MAX_PROPERTIES = 100
 MAX_DEPTH = 5

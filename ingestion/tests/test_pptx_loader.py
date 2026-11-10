@@ -107,7 +107,9 @@ def test_load_pptx_captions_embedded_pictures(tmp_path: Path) -> None:
     assert doc.figures[0].source_ref.page == 1
 
 
-def test_load_pptx_skips_a_degenerate_2x2_image_without_calling_describe_figure(tmp_path: Path) -> None:
+def test_load_pptx_skips_a_degenerate_2x2_image_without_calling_describe_figure(
+    tmp_path: Path,
+) -> None:
     # Mirrors pdf_loader.py's and docx_loader.py's own regression test for
     # the same real bug class: a pptx can embed a tiny rendering-trick
     # color-fill image the same way a PDF/docx can -- must never become a
@@ -262,7 +264,9 @@ def test_load_pptx_table_source_ref_carries_slide_number_as_page(tmp_path: Path)
     assert doc.tables[0].source_ref.page == 1
 
 
-def test_load_pptx_horizontal_merge_produces_colspan_and_none_at_spanned_position(tmp_path: Path) -> None:
+def test_load_pptx_horizontal_merge_produces_colspan_and_none_at_spanned_position(
+    tmp_path: Path,
+) -> None:
     presentation = Presentation()
     slide = presentation.slides.add_slide(presentation.slide_layouts[6])
     graphic_frame = slide.shapes.add_table(2, 3, Inches(1), Inches(1), Inches(6), Inches(2))
@@ -288,7 +292,9 @@ def test_load_pptx_horizontal_merge_produces_colspan_and_none_at_spanned_positio
     assert row0[2] is not None and row0[2].colspan == 1
 
 
-def test_load_pptx_vertical_merge_produces_rowspan_and_none_at_spanned_position(tmp_path: Path) -> None:
+def test_load_pptx_vertical_merge_produces_rowspan_and_none_at_spanned_position(
+    tmp_path: Path,
+) -> None:
     presentation = Presentation()
     slide = presentation.slides.add_slide(presentation.slide_layouts[6])
     graphic_frame = slide.shapes.add_table(3, 2, Inches(1), Inches(1), Inches(4), Inches(3))
@@ -311,7 +317,9 @@ def test_load_pptx_vertical_merge_produces_rowspan_and_none_at_spanned_position(
     assert cells[2][0] is not None and cells[2][0].rowspan == 1
 
 
-def test_load_pptx_is_header_true_for_first_row_when_table_first_row_flag_set(tmp_path: Path) -> None:
+def test_load_pptx_is_header_true_for_first_row_when_table_first_row_flag_set(
+    tmp_path: Path,
+) -> None:
     # add_table's own default leaves table.first_row True (confirmed live
     # against the installed python-pptx) -- exercised here without an
     # explicit override to prove the DEFAULT deck-authoring case (a table
@@ -322,7 +330,9 @@ def test_load_pptx_is_header_true_for_first_row_when_table_first_row_flag_set(tm
     assert all(cell is not None and not cell.is_header for cell in row1)
 
 
-def test_load_pptx_is_header_false_for_every_row_when_table_first_row_flag_unset(tmp_path: Path) -> None:
+def test_load_pptx_is_header_false_for_every_row_when_table_first_row_flag_unset(
+    tmp_path: Path,
+) -> None:
     presentation = Presentation()
     slide = presentation.slides.add_slide(presentation.slide_layouts[6])
     graphic_frame = slide.shapes.add_table(2, 2, Inches(1), Inches(1), Inches(4), Inches(2))
@@ -369,11 +379,17 @@ def _build_pptx_with_bold_prefix_cell(tmp_path: Path) -> str:
     return str(path)
 
 
-def test_load_pptx_uniform_bold_rejects_bold_prefix_but_accepts_wholly_bold_cell(tmp_path: Path) -> None:
+def test_load_pptx_uniform_bold_rejects_bold_prefix_but_accepts_wholly_bold_cell(
+    tmp_path: Path,
+) -> None:
     doc = load_pptx(_build_pptx_with_bold_prefix_cell(tmp_path))
     row = doc.tables[0].cells[0]
-    assert row[0] is not None and row[0].bold is False  # bold label prefix must NOT bold the whole cell
-    assert row[1] is not None and row[1].bold is True  # wholly-bold text + trailing non-bold whitespace run
+    assert (
+        row[0] is not None and row[0].bold is False
+    )  # bold label prefix must NOT bold the whole cell
+    assert (
+        row[1] is not None and row[1].bold is True
+    )  # wholly-bold text + trailing non-bold whitespace run
 
 
 def test_load_pptx_alignment_mapping(tmp_path: Path) -> None:
@@ -447,7 +463,9 @@ def test_load_pptx_white_background_normalizes_to_no_fill(tmp_path: Path) -> Non
     assert doc.tables[0].cells[0][0].background_color is None
 
 
-def test_load_pptx_theme_referenced_fill_and_font_color_degrade_to_none_not_raise(tmp_path: Path) -> None:
+def test_load_pptx_theme_referenced_fill_and_font_color_degrade_to_none_not_raise(
+    tmp_path: Path,
+) -> None:
     # The two theme-color traps flagged in the design spec, both proven
     # live against the installed python-pptx before this test was written:
     # (1) a cell with NO explicit fill of its own (inherited from the

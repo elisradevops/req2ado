@@ -36,6 +36,12 @@ import { PrismaClient } from '@prisma/client';
 // script, not a Nest application).
 const _TERMINAL_RETENTION_STATUSES = ['succeeded', 'failed', 'rejected', 'cancelled'];
 
+// diff_ready jobs are never deleted, but their figure image bytes (Postgres
+// Bytes rows) are dropped past this age -- see sweepStaleFigureBytes.
+const _DEFAULT_FIGURE_MAX_AGE_MS = 30 * 24 * 60 * 60_000;
+const _TERMINAL_SWEEP_BATCH = 100;
+const _FIGURE_SWEEP_BATCH = 20;
+
 @Injectable()
 export class JobRetentionService implements OnModuleInit, OnModuleDestroy {
   private intervalHandle?: NodeJS.Timeout;
@@ -44,6 +50,7 @@ export class JobRetentionService implements OnModuleInit, OnModuleDestroy {
     private readonly prisma: PrismaClient,
     private readonly checkIntervalMs: number,
     private readonly maxAgeMs: number,
+    private readonly figureMaxAgeMs: number = _DEFAULT_FIGURE_MAX_AGE_MS,
   ) {}
 
   onModuleInit(): void {
@@ -54,6 +61,10 @@ export class JobRetentionService implements OnModuleInit, OnModuleDestroy {
       this.sweep().catch((err) => {
         // eslint-disable-next-line no-console -- no structured logger in this module yet
         console.error('JobRetentionService sweep failed, will retry next interval:', err);
+      });
+      this.sweepStaleFigureBytes().catch((err) => {
+        // eslint-disable-next-line no-console -- no structured logger in this module yet
+        console.error('JobRetentionService figure sweep failed, will retry next interval:', err);
       });
     }, this.checkIntervalMs);
   }
@@ -67,6 +78,9 @@ export class JobRetentionService implements OnModuleInit, OnModuleDestroy {
     const candidates = await this.prisma.job.findMany({
       where: { status: { in: _TERMINAL_RETENTION_STATUSES }, createdAt: { lt: cutoff } },
       select: { id: true },
+      // Each run takes the next batch; deleted jobs drop out of the query,
+      // so every eligible job is still swept eventually.
+      take: _TERMINAL_SWEEP_BATCH,
     });
     if (candidates.length === 0) return;
     const jobIds = candidates.map((job) => job.id);
@@ -85,6 +99,46 @@ export class JobRetentionService implements OnModuleInit, OnModuleDestroy {
         this.prisma.jobFigureFile.deleteMany({ where: { jobId: { in: jobIds } } }),
         this.prisma.job.deleteMany({ where: { id: { in: jobIds } } }),
       ])
-      .catch(() => undefined);
+      .catch((err) => {
+        // eslint-disable-next-line no-console -- no structured logger in this module yet
+        console.error('JobRetentionService terminal sweep transaction failed, will retry next interval:', err);
+      });
+  }
+
+  // diff_ready jobs are still awaiting a decision so the job row stays, but
+  // their figure images are the bulk of the bytes and would otherwise live
+  // forever. Past figureMaxAgeMs only the JobFigureFile rows go, with one audit
+  // entry per job. Bounded per run; purged jobs no longer match (no figure
+  // rows), so later runs continue.
+  // The age basis is `createdAt` (Job has no updatedAt), so a job created long
+  // ago but still being reviewed loses its figure images; the write preview then
+  // reports them as unavailable.
+  async sweepStaleFigureBytes(): Promise<void> {
+    const cutoff = new Date(Date.now() - this.figureMaxAgeMs);
+    const days = Math.round(this.figureMaxAgeMs / (24 * 60 * 60_000));
+    const stale = await this.prisma.job.findMany({
+      where: { status: 'diff_ready', createdAt: { lt: cutoff }, figureFiles: { some: {} } },
+      orderBy: { createdAt: 'asc' },
+      take: _FIGURE_SWEEP_BATCH,
+      select: { id: true },
+    });
+    for (const { id: jobId } of stale) {
+      try {
+        // Guarded on the job still being diff_ready: a confirm that claimed 'writing' since the findMany keeps its figure bytes. One
+        // transaction, so a failed audit does not leave a purged job with no audit entry.
+        await this.prisma.$transaction([
+          this.prisma.jobFigureFile.deleteMany({ where: { jobId, job: { status: 'diff_ready' } } }),
+          this.prisma.auditEntry.create({
+            data: {
+              jobId,
+              message: `Figure images removed after ${days} days without a write; they can no longer be attached.`,
+            },
+          }),
+        ]);
+      } catch (err) {
+        // eslint-disable-next-line no-console -- no structured logger in this module yet
+        console.error(`JobRetentionService figure purge failed for job ${jobId}:`, err);
+      }
+    }
   }
 }

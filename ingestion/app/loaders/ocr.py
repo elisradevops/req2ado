@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from pdf2image import convert_from_path
 from pypdf import PdfReader
@@ -32,11 +32,16 @@ def ocr_page_to_text_filtered(
     Full watermark detection (image-processing based) is out of scope for
     this function."""
     images = convert_from_path(path, first_page=page_index + 1, last_page=page_index + 1)
-    return ocr_image_to_text_filtered(images[0], languages=languages, confidence_threshold=confidence_threshold)
+    return ocr_image_to_text_filtered(
+        images[0], languages=languages, confidence_threshold=confidence_threshold
+    )
 
 
 def load_pdf_with_ocr_fallback(
-    path: str, languages: str = "eng", describe_figure: Callable[[bytes], str | None] | None = None,
+    path: str,
+    languages: str = "eng",
+    describe_figure: Callable[[bytes], str | None] | None = None,
+    on_figure_bytes: Callable[[bytes], None] | None = None,
     on_ocr_page: Callable[[int, int, int, int, str], None] | None = None,
 ) -> CanonicalDoc:
     """`on_ocr_page(done, total, page_number, page_count, text)` is optional
@@ -44,23 +49,27 @@ def load_pdf_with_ocr_fallback(
     recognised, with how many scanned pages are done of how many there are, the
     PDF page just read, the PDF's page count and the recognised text. It never
     changes the result, and an error inside it is ignored."""
+    # Forwarded only when set, so a caller without the hook sees load_pdf
+    # called exactly as before.
+    byte_hook = {"on_figure_bytes": on_figure_bytes} if on_figure_bytes is not None else {}
     reader = PdfReader(path)
     num_pages = len(reader.pages)
 
     any_scanned = any(not page_has_extractable_text(path, i) for i in range(num_pages))
     if not any_scanned:
-        return load_pdf(path, describe_figure=describe_figure, languages=languages)
+        return load_pdf(path, describe_figure=describe_figure, languages=languages, **byte_hook)
 
     file_path = Path(path)
     sha256 = hashlib.sha256(file_path.read_bytes()).hexdigest()
     document = Document(path=path, format=DocumentFormat.PDF_SCANNED, sha256=sha256)
 
-    text_doc = load_pdf(path, describe_figure=describe_figure, languages=languages)
+    text_doc = load_pdf(path, describe_figure=describe_figure, languages=languages, **byte_hook)
     blocks: list[Block] = list(text_doc.blocks)
 
     scanned_total = (
         sum(1 for i in range(num_pages) if not page_has_extractable_text(path, i))
-        if on_ocr_page is not None else 0
+        if on_ocr_page is not None
+        else 0
     )
     scanned_done = 0
     for page_index in range(num_pages):
@@ -82,7 +91,10 @@ def load_pdf_with_ocr_fallback(
                 kind=kind,
                 text=ocr_text,
                 source_ref=SourceRef(
-                    document_path=path, start_offset=0, end_offset=len(ocr_text), page=page_index + 1
+                    document_path=path,
+                    start_offset=0,
+                    end_offset=len(ocr_text),
+                    page=page_index + 1,
                 ),
             )
         )
@@ -98,4 +110,6 @@ def load_pdf_with_ocr_fallback(
     for i, block in enumerate(blocks):
         block.id = f"b{i}"
 
-    return CanonicalDoc(document=document, blocks=blocks, tables=text_doc.tables, figures=text_doc.figures)
+    return CanonicalDoc(
+        document=document, blocks=blocks, tables=text_doc.tables, figures=text_doc.figures
+    )

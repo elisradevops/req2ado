@@ -1,4 +1,6 @@
 import base64
+import socket
+import ssl
 
 import httpx
 import pytest
@@ -8,6 +10,7 @@ from app.kb.graph_client import (
     GraphClient,
     GraphDriveItem,
     GraphFolderChild,
+    _transport_error,
     decode_jwt_expiry_seconds,
     encode_share_id,
 )
@@ -61,7 +64,9 @@ def test_get_drive_item_parses_the_200_response(monkeypatch) -> None:
     client = GraphClient("tok-1", "https://graph.microsoft.com/v1.0")
     item = client.get_drive_item("https://contoso.sharepoint.com/sites/s/spec.docx")
 
-    assert item == GraphDriveItem(id="01ABC", name="spec.docx", mime_type="application/vnd...docx", size=1234)
+    assert item == GraphDriveItem(
+        id="01ABC", name="spec.docx", mime_type="application/vnd...docx", size=1234
+    )
     assert "/shares/u!" in captured["url"]
     assert "/driveItem" in captured["url"]
     assert captured["auth"] == "Bearer tok-1"
@@ -135,12 +140,154 @@ def test_transport_failure_maps_to_a_502_graph_api_error(monkeypatch) -> None:
     assert excinfo.value.status == 502
     # The token must never appear in the error message.
     assert "tok-1" not in str(excinfo.value)
+    assert excinfo.value.kind == "network"
+
+
+def _raise_chained(outer: Exception, cause: BaseException):
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise outer from cause
+
+    return httpx.MockTransport(handler)
+
+
+def test_tls_verification_failure_is_classified_and_explained(monkeypatch) -> None:
+    cause = ssl.SSLCertVerificationError(
+        1, "[SSL: CERTIFICATE_VERIFY_FAILED] self-signed certificate in certificate chain"
+    )
+    cause.verify_message = "self-signed certificate in certificate chain"
+    _patch_transport(monkeypatch, _raise_chained(httpx.ConnectError("tls"), cause))
+
+    client = GraphClient("tok-1", "https://graph.microsoft.com/v1.0")
+    with pytest.raises(GraphApiError) as excinfo:
+        client.get_drive_item("https://contoso.sharepoint.com/sites/s/spec.docx")
+
+    assert excinfo.value.status == 502
+    assert excinfo.value.kind == "tls"
+    assert "certificate" in str(excinfo.value).lower()
+    assert "self-signed certificate in certificate chain" in str(excinfo.value)
+    assert "tok-1" not in str(excinfo.value)
+
+
+def test_tls_failure_two_levels_down_the_cause_chain_is_still_found(monkeypatch) -> None:
+    # httpx wraps httpcore's error, which wraps the ssl error.
+    inner = ssl.SSLCertVerificationError(1, "bad cert")
+    middle = RuntimeError("httpcore connect error")
+    middle.__cause__ = inner
+    _patch_transport(monkeypatch, _raise_chained(httpx.ConnectError("x"), middle))
+
+    client = GraphClient("tok-1", "https://graph.microsoft.com/v1.0")
+    with pytest.raises(GraphApiError) as excinfo:
+        client.get_drive_item("https://contoso.sharepoint.com/sites/s/spec.docx")
+
+    assert excinfo.value.kind == "tls"
+
+
+def test_transport_error_follows_context_when_there_is_no_explicit_cause() -> None:
+    exc = httpx.ConnectError("x")
+    exc.__context__ = ssl.SSLCertVerificationError(1, "bad cert")
+
+    assert _transport_error(exc).kind == "tls"
+
+
+def test_transport_error_ignores_a_suppressed_context() -> None:
+    exc = httpx.ConnectError("x")
+    exc.__context__ = ssl.SSLCertVerificationError(1, "bad cert")
+    exc.__suppress_context__ = True
+
+    assert _transport_error(exc).kind == "network"
+
+
+def test_transport_error_terminates_on_a_cause_cycle() -> None:
+    a = httpx.ConnectError("a")
+    b = RuntimeError("b")
+    a.__cause__ = b
+    b.__context__ = a
+
+    assert _transport_error(a).kind == "network"
+
+
+def test_transport_error_without_an_attached_request_omits_the_host() -> None:
+    # httpx raises RuntimeError on `.request` when none was attached.
+    error = _transport_error(httpx.ConnectError("x"))
+
+    assert error.status == 502
+    assert str(error) == "could not reach Microsoft Graph"
+
+
+def test_transport_error_names_the_host_but_not_the_query_or_userinfo() -> None:
+    request = httpx.Request("GET", "https://user:pw@dl.example.com/f.pdf?tempauth=SECRET")
+    error = _transport_error(httpx.ConnectError("x", request=request))
+
+    assert "dl.example.com" in str(error)
+    assert "SECRET" not in str(error)
+    assert "pw" not in str(error)
+
+
+def test_dns_failure_is_classified_and_explained(monkeypatch) -> None:
+    cause = socket.gaierror(-2, "Name or service not known")
+    _patch_transport(monkeypatch, _raise_chained(httpx.ConnectError("dns"), cause))
+
+    client = GraphClient("tok-1", "https://graph.microsoft.com/v1.0")
+    with pytest.raises(GraphApiError) as excinfo:
+        client.get_drive_item("https://contoso.sharepoint.com/sites/s/spec.docx")
+
+    assert excinfo.value.status == 502
+    assert excinfo.value.kind == "dns"
+    assert "resolve" in str(excinfo.value).lower()
+
+
+def test_timeout_is_classified_and_explained(monkeypatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("timed out")
+
+    _patch_transport(monkeypatch, httpx.MockTransport(handler))
+
+    client = GraphClient("tok-1", "https://graph.microsoft.com/v1.0")
+    with pytest.raises(GraphApiError) as excinfo:
+        client.get_drive_item("https://contoso.sharepoint.com/sites/s/spec.docx")
+
+    assert excinfo.value.status == 502
+    assert excinfo.value.kind == "timeout"
+    assert "timed out" in str(excinfo.value).lower()
+
+
+def test_status_errors_have_kind_http(monkeypatch) -> None:
+    _patch_transport(monkeypatch, httpx.MockTransport(lambda request: httpx.Response(404)))
+
+    client = GraphClient("tok-1", "https://graph.microsoft.com/v1.0")
+    with pytest.raises(GraphApiError) as excinfo:
+        client.get_drive_item("https://contoso.sharepoint.com/sites/s/spec.docx")
+
+    assert excinfo.value.kind == "http"
+
+
+def test_fetch_child_content_tls_failure_does_not_leak_the_presigned_url(monkeypatch) -> None:
+    # The pre-signed download URL carries a short-lived credential in its
+    # query string; the error text may name the host but never the query.
+    presigned = "https://public.dm.files.1drv.com/y4m/file.pdf?download&tempauth=SECRET-TEMPAUTH"
+    monkeypatch.setattr("app.kb.graph_client.validate_fetch_url", lambda url: None)
+    cause = ssl.SSLCertVerificationError(1, "unable to get local issuer certificate")
+    _patch_transport(monkeypatch, _raise_chained(httpx.ConnectError("tls"), cause))
+
+    client = GraphClient("tok-1", "https://graph.microsoft.com/v1.0")
+    with pytest.raises(GraphApiError) as excinfo:
+        client.fetch_child_content(presigned)
+
+    assert excinfo.value.kind == "tls"
+    assert "SECRET-TEMPAUTH" not in str(excinfo.value)
+    assert "tok-1" not in str(excinfo.value)
 
 
 def test_list_folder_children_parses_files_and_folders(monkeypatch) -> None:
     body = {
         "value": [
-            {"id": "item-1", "name": "a.docx", "size": 10, "file": {"mimeType": "application/x"}, "@microsoft.graph.downloadUrl": "https://dl/a"},
+            {
+                "id": "item-1",
+                "name": "a.docx",
+                "size": 10,
+                "file": {"mimeType": "application/x"},
+                "@microsoft.graph.downloadUrl": "https://dl/a",
+            },
             {"id": "item-2", "name": "Subfolder", "size": 0, "folder": {"childCount": 1}},
         ]
     }
@@ -158,8 +305,17 @@ def test_list_folder_children_parses_files_and_folders(monkeypatch) -> None:
     children = client.list_folder_children("https://contoso.sharepoint.com/sites/s/folder")
 
     assert children == [
-        GraphFolderChild(id="item-1", name="a.docx", mime_type="application/x", size=10, is_folder=False, download_url="https://dl/a"),
-        GraphFolderChild(id="item-2", name="Subfolder", mime_type=None, size=0, is_folder=True, download_url=None),
+        GraphFolderChild(
+            id="item-1",
+            name="a.docx",
+            mime_type="application/x",
+            size=10,
+            is_folder=False,
+            download_url="https://dl/a",
+        ),
+        GraphFolderChild(
+            id="item-2", name="Subfolder", mime_type=None, size=0, is_folder=True, download_url=None
+        ),
     ]
     assert "/children" in captured["url"]
     assert captured["auth"] == "Bearer tok-1"
@@ -189,7 +345,9 @@ def test_fetch_child_content_gets_the_download_url_without_an_auth_header(monkey
     _patch_transport(monkeypatch, httpx.MockTransport(handler))
 
     client = GraphClient("tok-1", "https://graph.microsoft.com/v1.0")
-    content = client.fetch_child_content("https://contoso.sharepoint.com/_layouts/download.aspx?tempauth=xyz")
+    content = client.fetch_child_content(
+        "https://contoso.sharepoint.com/_layouts/download.aspx?tempauth=xyz"
+    )
 
     assert content == b"child file bytes"
     # The pre-signed download URL must NOT carry our bearer token — Graph
@@ -205,12 +363,16 @@ def test_fetch_child_content_raises_graph_api_error_on_non_200(monkeypatch) -> N
 
     client = GraphClient("tok-1", "https://graph.microsoft.com/v1.0")
     with pytest.raises(GraphApiError) as excinfo:
-        client.fetch_child_content("https://contoso.sharepoint.com/_layouts/download.aspx?tempauth=xyz")
+        client.fetch_child_content(
+            "https://contoso.sharepoint.com/_layouts/download.aspx?tempauth=xyz"
+        )
 
     assert excinfo.value.status == 403
 
 
-def test_fetch_child_content_rejects_a_private_ip_download_url_without_a_network_call(monkeypatch) -> None:
+def test_fetch_child_content_rejects_a_private_ip_download_url_without_a_network_call(
+    monkeypatch,
+) -> None:
     # Regression: a tampered/compromised Graph response (or a redirect
     # chain) must not be able to point ingestion at an internal address.
     called = {"count": 0}
@@ -231,7 +393,9 @@ def test_fetch_child_content_rejects_a_private_ip_download_url_without_a_network
 def test_fetch_child_content_rejects_a_non_https_download_url(monkeypatch) -> None:
     client = GraphClient("tok-1", "https://graph.microsoft.com/v1.0")
     with pytest.raises(ValueError):
-        client.fetch_child_content("http://contoso.sharepoint.com/_layouts/download.aspx?tempauth=xyz")
+        client.fetch_child_content(
+            "http://contoso.sharepoint.com/_layouts/download.aspx?tempauth=xyz"
+        )
 
 
 def test_list_folder_children_populates_drive_id_from_parent_reference(monkeypatch) -> None:

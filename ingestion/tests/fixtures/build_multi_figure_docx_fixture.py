@@ -6,6 +6,7 @@ sha256, so two copies of the same image collapse to one figure). No existing
 fixture had more than one embedded image, so this one was added, following
 build_docx_fixture.py's own generation pattern exactly.
 """
+
 import tempfile
 from pathlib import Path
 

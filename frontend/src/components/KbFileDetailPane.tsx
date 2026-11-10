@@ -4,7 +4,7 @@ import { FileTypeIcon, fileTypeLabel } from './FileTypeIcon';
 import { formatFileSize } from '../utils/fileSize';
 import { Button } from '../ui/Button';
 import { EmptyState } from '../ui/EmptyState';
-import { Chip } from '../ui/Chip';
+import { KbIngestStatusChip, hasNoVectors } from './KbIngestStatusChip';
 import { InfoTip } from '../ui/Tooltip';
 import type { FolderTreeEntry } from '../api/kb';
 
@@ -16,6 +16,7 @@ import type { FolderTreeEntry } from '../api/kb';
 export function KbFileDetailPane({
   entry,
   ingested,
+  chunkCount,
   isIngesting,
   alwaysInclude,
   onToggleAlwaysInclude,
@@ -24,6 +25,8 @@ export function KbFileDetailPane({
 }: {
   entry: FolderTreeEntry | null;
   ingested: boolean;
+  // Stored chunk count for this file; null = unknown (see KbIngestStatusChip).
+  chunkCount: number | null;
   isIngesting: boolean;
   // Only meaningful before ingest -- a small, static reference doc (e.g. a
   // CMMI/requirements-writing-standards file) can be tagged "always
@@ -64,20 +67,21 @@ export function KbFileDetailPane({
         <div className="flex items-center justify-between gap-2">
           <dt className="text-ink-3">Knowledge base</dt>
           <dd>
-            <Chip
-              bg={ingested ? 'var(--color-ok-soft)' : 'var(--color-surface-alt)'}
-              color={ingested ? 'var(--color-ok-ink)' : 'var(--color-ink-3)'}
-              className="text-xs font-normal"
-            >
-              {ingested ? 'In knowledge base' : 'Not ingested'}
-            </Chip>
+            <KbIngestStatusChip ingested={ingested} chunkCount={chunkCount} />
           </dd>
         </div>
       </dl>
       {ingested ? (
-        <Button variant="danger" size="sm" onClick={onRequestRemove}>
-          Remove from knowledge base
-        </Button>
+        <>
+          {hasNoVectors(ingested, chunkCount) && entry.downloadUrl && (
+            <Button size="sm" loading={isIngesting} onClick={onIngest}>
+              Re-ingest file
+            </Button>
+          )}
+          <Button variant="danger" size="sm" onClick={onRequestRemove}>
+            Remove from knowledge base
+          </Button>
+        </>
       ) : entry.downloadUrl ? (
         <>
           <label className="flex items-center gap-1.5 text-sm text-ink-2">

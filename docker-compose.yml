@@ -81,6 +81,11 @@ services:
       CHROMA_HOST: chroma
       CHROMA_PORT: 8000
       REDIS_URL: redis://redis:6379
+      # No OTLP collector runs in this stack, so the SDK's default endpoint
+      # (localhost:4318) only produces export-retry tracebacks in the log.
+      # Default to off; set OTEL_SDK_DISABLED=false (plus
+      # OTEL_EXPORTER_OTLP_ENDPOINT) in .env or the shell to export traces.
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-true}
     <<: *app-logging
     ports:
       # Host port 8000 is taken by an unrelated container on dev machines

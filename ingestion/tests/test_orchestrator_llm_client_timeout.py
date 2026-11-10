@@ -1,5 +1,6 @@
 """How long one call to the orchestrator waits: the configured LLM_REQUEST_TIMEOUT_SECONDS for every client, unless a caller that stops waiting
 earlier (the explanation, the rewrite prediction) set `request_timeout_seconds` on its own per-request client."""
+
 import json
 
 import httpx
@@ -48,7 +49,9 @@ CALLS = {
 
 
 @pytest.mark.parametrize("call", CALLS)
-def test_a_client_that_sets_nothing_keeps_the_configured_timeout_on_every_call(call, monkeypatch) -> None:
+def test_a_client_that_sets_nothing_keeps_the_configured_timeout_on_every_call(
+    call, monkeypatch
+) -> None:
     client, timeouts = make_client(monkeypatch)
     assert client.request_timeout_seconds is None
     CALLS[call](client)

@@ -221,5 +221,58 @@ export function noticeCopy(
           'The result is the same.' +
           timesLine(count),
       };
+    case 'document_study': {
+      // Each state is a distinct notice and the newest replaces the last, so there is no "N times" line.
+      // Only whole, non-negative numbers are shown; counts are clamped so the copy never says "Read 13 of 12".
+      const count = (value: unknown): number | null =>
+        typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null;
+      const parts = (n: number): string => `${n.toLocaleString('en-US')} ${n === 1 ? 'part' : 'parts'}`;
+      const total = count(facts.windows);
+      const windows = total !== null && total > 0 ? total : null;
+      const upTo = (n: number | null): number | null => (n === null || windows === null ? n : Math.min(n, windows));
+      const studied = upTo(count(facts.studied));
+      const done = upTo(count(facts.done));
+      const cached = upTo(count(facts.cached));
+      const split = count(facts.split);
+      const failed = count(facts.failed);
+      if (facts.state === 'done') {
+        const all =
+          windows === null ? 'The whole document was read' : windows === 1 ? 'The 1 part was read' : `All ${parts(windows)} were read`;
+        const smaller = split === null || split === 0 ? '' : split === 1 ? ' One part had to be read in smaller pieces.' : ` ${split.toLocaleString('en-US')} of them had to be read in smaller pieces.`;
+        return {
+          title: 'Document read',
+          detail: `${all}, so proposed acceptance criteria can use the document's own definitions, markers and standards.${smaller}`,
+        };
+      }
+      if (facts.state === 'partial') {
+        const read = studied !== null && windows !== null ? `Read ${studied.toLocaleString('en-US')} of ${parts(windows)}` : 'Only part of the document was read';
+        const unread = failed !== null && failed > 0 ? ` ${failed.toLocaleString('en-US')} could not be read.` : '';
+        return {
+          title: 'Document only partly read',
+          detail:
+            `${read}, so proposed acceptance criteria used less of the document's context.${unread} ` +
+            'Check items marked as needing author input. Running the same document again retries the unread parts and reuses the ones already read, for a limited time.',
+        };
+      }
+      if (facts.state === 'stopped') {
+        const read = studied !== null && windows !== null ? ` Read ${studied.toLocaleString('en-US')} of ${parts(windows)}.` : '';
+        return {
+          title: 'Document reading stopped early',
+          detail:
+            `Nothing needed acceptance criteria, so the rest of the document was not read.${read} ` +
+            'What was read is kept for a limited time, so running the same document again reuses it.',
+        };
+      }
+      if (done !== null && windows !== null) {
+        return { title: 'Reading the document', detail: `Read ${done.toLocaleString('en-US')} of ${parts(windows)} so far.` };
+      }
+      return {
+        title: 'Reading the document',
+        detail:
+          'Reading the whole document before proposing acceptance criteria' +
+          (windows !== null ? `: ${parts(windows)}.` : '.') +
+          (cached !== null && cached > 0 ? ` ${cached.toLocaleString('en-US')} ${cached === 1 ? 'was' : 'were'} already read in an earlier run.` : ''),
+      };
+    }
   }
 }

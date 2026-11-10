@@ -6,15 +6,24 @@ import re
 from pathlib import Path
 
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Figure, SourceRef, Table, TableCell
-from app.distillation.description import assemble_description
+from app.distillation.description import assemble_description, strip_leading_title
 from app.distillation.title import extract_baseline_title
 from app.leveling.autodetect import classify_numbering_branch, is_heading_style_branch
 from app.leveling.customer_id import extract_customer_requirement_code
 from app.leveling.depth import authored_numbering_label, resolve_block_depth
+from app.leveling.hierarchy_rules import ensure_ladder, type_headings_by_shape
 from app.leveling.profiles import heading_style_type_for_depth
+from app.leveling.requirement_rows import atomizable_requirement_rows, row_title_and_description
 from app.leveling.table_color import colgroup_html, resolve_cell_style_colors, table_style_attr
 from app.leveling.warnings_finalize import finalize_warnings
-from app.workitem.model import IntegrityWarning, WarningKind, WorkItemMode, WorkItemNode, WorkItemTree, WorkItemType
+from app.workitem.model import (
+    IntegrityWarning,
+    WarningKind,
+    WorkItemMode,
+    WorkItemNode,
+    WorkItemTree,
+    WorkItemType,
+)
 
 
 def _split_into_branches(doc: CanonicalDoc) -> list[list[Block]]:
@@ -120,6 +129,18 @@ def _bound_branch_size(branch: list[Block], max_block_count: int) -> list[list[B
 
 def _hash_description(description: str) -> str:
     return hashlib.sha256(description.encode()).hexdigest()
+
+
+def strip_repeated_titles(nodes: list[WorkItemNode]) -> None:
+    """R5: a heading is the title, so it is not repeated at the top of the
+    description. Only fidelity_hash follows the shown description; identity_hash
+    keeps hashing the full source text (a re-run still matches existing items).
+    Call once per node, after every fold into its description has finished."""
+    for node in nodes:
+        shown = strip_leading_title(node.description, node.title)
+        if shown != node.description:
+            node.description = shown
+            node.fidelity_hash = _hash_description(shown)
 
 
 def _hash_identity(description: str, source_ref: SourceRef) -> str:
@@ -444,7 +465,9 @@ def _table_to_html(table: Table) -> str:
             thead_rows.append(_render_table_row(row, "th", table.border_style))
             continue
         still_leading = False
-        tbody_rows.append(_render_table_row(row, "th" if _row_is_header(row) else "td", table.border_style))
+        tbody_rows.append(
+            _render_table_row(row, "th" if _row_is_header(row) else "td", table.border_style)
+        )
 
     caption_html = (
         f"<caption>{html.escape(table.caption)}</caption>"
@@ -472,7 +495,9 @@ def _ocr_recovered_table_warning(table: Table, node_ids: list[str]) -> Integrity
     site below (each table is only ever folded once, unlike SURVEY's
     _ocr_recovered_table_warnings, which scans a whole branch's table list
     at once; see that function's own docstring for why the shapes differ)."""
-    recovered_count = sum(1 for row in table.cells for cell in row if cell is not None and cell.ocr_recovered)
+    recovered_count = sum(
+        1 for row in table.cells for cell in row if cell is not None and cell.ocr_recovered
+    )
     if recovered_count == 0:
         return None
     return IntegrityWarning.make(
@@ -505,7 +530,9 @@ def _nested_table_dropped_warning(table: Table, node_ids: list[str]) -> Integrit
     _extract_table_cells), None otherwise -- same one-warning-per-table,
     called-at-the-single-BASELINE-fold-site shape as
     _ocr_recovered_table_warning just above."""
-    dropped_count = sum(1 for row in table.cells for cell in row if cell is not None and cell.nested_table_dropped)
+    dropped_count = sum(
+        1 for row in table.cells for cell in row if cell is not None and cell.nested_table_dropped
+    )
     if dropped_count == 0:
         return None
     return IntegrityWarning.make(
@@ -530,7 +557,9 @@ def _order_key(ref: SourceRef) -> tuple[int, int]:
     return (ref.page or 0, ref.start_offset)
 
 
-def _partition_tables_by_branch(branches: list[list[Block]], tables: list[Table]) -> list[list[Table]]:
+def _partition_tables_by_branch(
+    branches: list[list[Block]], tables: list[Table]
+) -> list[list[Table]]:
     """Buckets each table into the top-level branch it falls within, by
     document order (_order_key) -- used so a table folds into the parent
     node ITS branch produced (§F/ADO 294208 etc's ECS/FAN/GPU/routing
@@ -855,18 +884,32 @@ def _build_flat_list_tree(doc: CanonicalDoc, branches: list[list[Block]]) -> Wor
     # Epic/Feature synthetic wrappers never carry a customer_id -- only
     # Requirement nodes do (see WorkItemNode.customer_id's own docstring).
     epic = WorkItemNode(
-        local_id="n0", type=WorkItemType.EPIC, parent_local_id=None,
-        title=doc_title, description=doc_title, customer_id=None,
-        source_ref=first_source_ref, fidelity_hash=_hash_description(doc_title),
+        local_id="n0",
+        type=WorkItemType.EPIC,
+        parent_local_id=None,
+        title=doc_title,
+        description=doc_title,
+        customer_id=None,
+        source_ref=first_source_ref,
+        fidelity_hash=_hash_description(doc_title),
         identity_hash=_hash_identity(doc_title, first_source_ref),
-        tags=[], mode=WorkItemMode.BASELINE, child_type=WorkItemType.FEATURE,
+        tags=[],
+        mode=WorkItemMode.BASELINE,
+        child_type=WorkItemType.FEATURE,
     )
     feature = WorkItemNode(
-        local_id="n1", type=WorkItemType.FEATURE, parent_local_id=epic.local_id,
-        title=doc_title, description=doc_title, customer_id=None,
-        source_ref=first_source_ref, fidelity_hash=_hash_description(doc_title),
+        local_id="n1",
+        type=WorkItemType.FEATURE,
+        parent_local_id=epic.local_id,
+        title=doc_title,
+        description=doc_title,
+        customer_id=None,
+        source_ref=first_source_ref,
+        fidelity_hash=_hash_description(doc_title),
         identity_hash=_hash_identity(doc_title, first_source_ref),
-        tags=[], mode=WorkItemMode.BASELINE, child_type=WorkItemType.REQUIREMENT,
+        tags=[],
+        mode=WorkItemMode.BASELINE,
+        child_type=WorkItemType.REQUIREMENT,
     )
     # section_path=[] is correct throughout this function, same reasoning as
     # _build_headingless_tree's identical comment -- a flat numbered list
@@ -902,8 +945,11 @@ def _build_flat_list_tree(doc: CanonicalDoc, branches: list[list[Block]]) -> Wor
                         insignificant_figure_ids = [figure_id]
         nodes.append(
             WorkItemNode(
-                local_id=f"n{index + 2}", type=WorkItemType.REQUIREMENT, parent_local_id=feature.local_id,
-                title=extract_baseline_title(display_text), description=display_text,
+                local_id=f"n{index + 2}",
+                type=WorkItemType.REQUIREMENT,
+                parent_local_id=feature.local_id,
+                title=extract_baseline_title(display_text),
+                description=display_text,
                 # A customer-assigned code (e.g. "REQ-AV-014") anywhere in
                 # this item's own text wins first; falls back to a real
                 # document-authored number when this item's own text
@@ -912,12 +958,17 @@ def _build_flat_list_tree(doc: CanonicalDoc, branches: list[list[Block]]) -> Wor
                 # number and no customer code -- never fabricated (see
                 # extract_customer_requirement_code's/
                 # authored_numbering_label's own docstrings).
-                customer_id=extract_customer_requirement_code(block.text) or authored_numbering_label(block),
-                source_ref=block.source_ref, fidelity_hash=_hash_description(display_text),
+                customer_id=extract_customer_requirement_code(block.text)
+                or authored_numbering_label(block),
+                source_ref=block.source_ref,
+                fidelity_hash=_hash_description(display_text),
                 identity_hash=_hash_identity(display_text, block.source_ref),
-                tags=[], figure_ids=figure_ids, uncaptioned_figure_ids=uncaptioned_figure_ids,
+                tags=[],
+                figure_ids=figure_ids,
+                uncaptioned_figure_ids=uncaptioned_figure_ids,
                 insignificant_figure_ids=insignificant_figure_ids,
-                mode=WorkItemMode.BASELINE, child_type=WorkItemType.REQUIREMENT,
+                mode=WorkItemMode.BASELINE,
+                child_type=WorkItemType.REQUIREMENT,
             )
         )
     return WorkItemTree(nodes=nodes)
@@ -990,7 +1041,9 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
     if len(branches) > 1 and all(len(branch) == 1 for branch in branches):
         return _build_flat_list_tree(doc, branches)
 
-    table_buckets = _partition_tables_by_branch(branches, doc.tables) if doc.tables else [[] for _ in branches]
+    table_buckets = (
+        _partition_tables_by_branch(branches, doc.tables) if doc.tables else [[] for _ in branches]
+    )
     # Whole-document (not per-branch) block.id -> Figure.id map -- see
     # figure_id_by_block_id's own docstring. Built once, up front, since a
     # figure's block can never move between branches after
@@ -1029,8 +1082,15 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
     orphan_source_ref: SourceRef | None = None
     front_matter_flushed = False
 
+    # Per branch: [first node index, is a heading branch, nodes typed by the heading rule, nodes typed by the numbering
+    # classifier]. A numbering-root branch whose nodes mostly came from Word headings (real documents mix them) is
+    # typed by shape too; a branch that is mostly numbered text keeps its classifier.
+    branch_node_starts: list[list] = []
+    block_by_node: dict[str, Block] = {}
+    front_matter_ids: set[str] = set()
     for branch_blocks, branch_tables in zip(branches, table_buckets):
         heading_branch = is_heading_style_branch(branch_blocks)
+        branch_node_starts.append([len(nodes), heading_branch, 0, 0])
         # Numbering-label branches: bottom-up tree-shape classification (see
         # classify_numbering_branch's own docstring) replaces the retired
         # depth-threshold heuristic entirely -- no "profile" concept is
@@ -1074,15 +1134,76 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
                     if nested_table_warning is not None:
                         warnings.append(nested_table_warning)
                     continue
-                if stack:
+                atoms = atomizable_requirement_rows(table) if stack else None
+                if atoms:
+                    # A requirements-list table (every row carries its own
+                    # document-authored id): each row is its own Requirement
+                    # under the open node, not one more block of that node's
+                    # description. See requirement_rows.atomizable_requirement_rows.
+                    open_node = nodes_by_id[stack[-1][1]]
+                    row_section_path = [
+                        nodes_by_id[ancestor_id].title for _depth, ancestor_id in stack
+                    ]
+                    row_source_ref = table.source_ref.model_copy(
+                        update={"section_path": row_section_path}
+                    )
+                    row_node_ids: list[str] = []
+                    code_occurrences: dict[str, int] = {}
+                    for atom in atoms:
+                        occurrence = code_occurrences.get(atom.code, 0)
+                        code_occurrences[atom.code] = occurrence + 1
+                        row_title_text, row_text = row_title_and_description(atom.code, atom.cells)
+                        row_local_id = f"n{node_counter}"
+                        node_counter += 1
+                        row_node = WorkItemNode(
+                            local_id=row_local_id,
+                            type=WorkItemType.REQUIREMENT,
+                            parent_local_id=open_node.local_id,
+                            title=extract_baseline_title(row_title_text),
+                            description=row_text,
+                            customer_id=atom.code,
+                            source_ref=row_source_ref,
+                            fidelity_hash=_hash_description(row_text),
+                            # Every row shares the table's one source span, so the
+                            # position-only hash needs a per-row discriminator: the
+                            # row's own document-authored code (stable when rows or
+                            # tables are inserted elsewhere), plus an occurrence
+                            # count in case a code repeats within the table.
+                            identity_hash=_hash_identity_for_synthesized_node(
+                                f"table_row:{atom.code}:{occurrence}", row_source_ref
+                            ),
+                            tags=[],
+                            mode=WorkItemMode.BASELINE,
+                            child_type=WorkItemType.REQUIREMENT,
+                            table_ids=[table.id],
+                        )
+                        nodes.append(row_node)
+                        nodes_by_id[row_local_id] = row_node
+                        row_node_ids.append(row_local_id)
+                    if table.caption and table.caption.strip():
+                        # The caption is table-level text no row carries; keep it on the parent.
+                        open_node.description = assemble_description(
+                            open_node.description, table.caption.strip()
+                        )
+                        open_node.fidelity_hash = _hash_description(open_node.description)
+                    open_node.source_ref = _widen_page_end(open_node.source_ref, table.source_ref)
+                    ocr_warning = _ocr_recovered_table_warning(table, node_ids=row_node_ids)
+                    nested_table_warning = _nested_table_dropped_warning(
+                        table, node_ids=row_node_ids
+                    )
+                elif stack:
                     open_node = nodes_by_id[stack[-1][1]]
                     open_node.description = assemble_description(open_node.description, description)
                     open_node.fidelity_hash = _hash_description(open_node.description)
-                    open_node.identity_hash = _hash_identity(open_node.description, open_node.source_ref)
+                    open_node.identity_hash = _hash_identity(
+                        open_node.description, open_node.source_ref
+                    )
                     open_node.source_ref = _widen_page_end(open_node.source_ref, table.source_ref)
                     open_node.table_ids.append(table.id)
                     ocr_warning = _ocr_recovered_table_warning(table, node_ids=[open_node.local_id])
-                    nested_table_warning = _nested_table_dropped_warning(table, node_ids=[open_node.local_id])
+                    nested_table_warning = _nested_table_dropped_warning(
+                        table, node_ids=[open_node.local_id]
+                    )
                 else:
                     if orphan_source_ref is None:
                         orphan_source_ref = table.source_ref
@@ -1093,7 +1214,11 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
                             WarningKind.FRONT_MATTER_FOLDED,
                             f"A table ({title_preview}) precedes any heading/numbering in its "
                             f"branch -- folded into a synthetic front-matter node instead of being dropped.",
-                            detail={"kind": "table", "sourceId": table.id, "preview": title_preview},
+                            detail={
+                                "kind": "table",
+                                "sourceId": table.id,
+                                "preview": title_preview,
+                            },
                         )
                     )
                     ocr_warning = _ocr_recovered_table_warning(table, node_ids=[])
@@ -1143,7 +1268,9 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
                     # front-matter figure just above.
                     if stack and figure_id is not None:
                         open_node = nodes_by_id[stack[-1][1]]
-                        open_node.source_ref = _widen_page_end(open_node.source_ref, block.source_ref)
+                        open_node.source_ref = _widen_page_end(
+                            open_node.source_ref, block.source_ref
+                        )
                         open_node.figure_ids.append(figure_id)
                     continue
 
@@ -1168,9 +1295,13 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
 
                 if stack:
                     open_node = nodes_by_id[stack[-1][1]]
-                    open_node.description = assemble_description(open_node.description, display_text)
+                    open_node.description = assemble_description(
+                        open_node.description, display_text
+                    )
                     open_node.fidelity_hash = _hash_description(open_node.description)
-                    open_node.identity_hash = _hash_identity(open_node.description, open_node.source_ref)
+                    open_node.identity_hash = _hash_identity(
+                        open_node.description, open_node.source_ref
+                    )
                     open_node.source_ref = _widen_page_end(open_node.source_ref, block.source_ref)
                 else:
                     if orphan_source_ref is None:
@@ -1198,6 +1329,7 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
                 entry = classification.get(block.id)
                 if entry is not None:
                     node_type, node_child_type, display_text = entry
+                    branch_node_starts[-1][3] += 1
                 else:
                     # A block inside a numbering-label branch (is_heading_style_branch
                     # is False for the branch overall, decided by the branch's root
@@ -1212,6 +1344,7 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
                     # an arbitrary default.
                     node_type = heading_style_type_for_depth(depth)
                     node_child_type = WorkItemType.REQUIREMENT
+                    branch_node_starts[-1][2] += 1
 
             while stack and stack[-1][0] >= depth:
                 stack.pop()
@@ -1231,7 +1364,9 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
             # does not copy a nested BaseModel on assignment, so mutating
             # the new node's own source_ref in place would corrupt the
             # ORIGINAL Block's source_ref too (they'd be the same object).
-            section_path = [nodes_by_id[ancestor_id].title for _ancestor_depth, ancestor_id in stack]
+            section_path = [
+                nodes_by_id[ancestor_id].title for _ancestor_depth, ancestor_id in stack
+            ]
             node = WorkItemNode(
                 local_id=local_id,
                 type=node_type,
@@ -1246,7 +1381,10 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
                 # authored_numbering_label's/WorkItemNode.customer_id's own
                 # docstrings.
                 customer_id=(
-                    (extract_customer_requirement_code(block.text) or authored_numbering_label(block))
+                    (
+                        extract_customer_requirement_code(block.text)
+                        or authored_numbering_label(block)
+                    )
                     if node_type == WorkItemType.REQUIREMENT
                     else None
                 ),
@@ -1259,6 +1397,7 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
             )
             nodes.append(node)
             nodes_by_id[local_id] = node
+            block_by_node[local_id] = block
             stack.append((depth, local_id))
 
             if orphan_entries and not front_matter_flushed:
@@ -1268,7 +1407,9 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
                     front_matter_text = assemble_description(front_matter_text, extra)
                 front_matter_local_id = f"n{node_counter}"
                 node_counter += 1
-                front_matter_source_ref = orphan_source_ref if orphan_source_ref is not None else node.source_ref
+                front_matter_source_ref = (
+                    orphan_source_ref if orphan_source_ref is not None else node.source_ref
+                )
                 front_matter_node = WorkItemNode(
                     local_id=front_matter_local_id,
                     type=WorkItemType.REQUIREMENT,
@@ -1289,5 +1430,30 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
                 )
                 nodes.append(front_matter_node)
                 nodes_by_id[front_matter_local_id] = front_matter_node
+                front_matter_ids.add(front_matter_local_id)
+
+    strip_repeated_titles(nodes)  # R5, once every fold above is done
+
+    # Epic -> Feature -> Requirement: heading branches are typed from their own shape (the old depth-only rule left a
+    # document without level-1 headings as Requirements under Requirements), then any missing parent is added.
+    branch_ends = [entry[0] for entry in branch_node_starts[1:]] + [len(nodes)]
+    for (start, is_heading, from_heading_rule, from_classifier), end in zip(
+        branch_node_starts, branch_ends
+    ):
+        if is_heading or from_heading_rule > from_classifier:
+            type_headings_by_shape(nodes[start:end], non_structural_ids=front_matter_ids)
+            for node in nodes[start:end]:
+                block = block_by_node.get(node.local_id)
+                if (
+                    node.type == WorkItemType.REQUIREMENT
+                    and node.customer_id is None
+                    and block is not None
+                ):
+                    # Same rule as at creation, now that the final type is known (a heading first created as a
+                    # Feature can end up a Requirement).
+                    node.customer_id = extract_customer_requirement_code(
+                        block.text
+                    ) or authored_numbering_label(block)
+    ensure_ladder(nodes, _derive_doc_title(doc), warnings)
 
     return WorkItemTree(nodes=nodes, warnings=finalize_warnings(warnings))

@@ -30,9 +30,11 @@ heading heuristic), keeping this fixture on the structured path where the
 table folds into an open node and its OCR-recovery warning is emitted --
 the actual behavior this fixture and its end-to-end test exist to prove.
 """
+
 from pathlib import Path
 
-from PIL import Image as PILImage, ImageDraw
+from PIL import Image as PILImage
+from PIL import ImageDraw
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet

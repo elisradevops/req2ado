@@ -8,8 +8,8 @@ from openpyxl import load_workbook
 from openpyxl.styles.borders import Side
 from openpyxl.styles.colors import Color
 from openpyxl.styles.fills import PatternFill
-from openpyxl.utils.cell import coordinate_to_tuple
 from openpyxl.utils import get_column_letter
+from openpyxl.utils.cell import coordinate_to_tuple
 from openpyxl.worksheet.worksheet import Worksheet
 
 from app.canonical.model import CanonicalDoc, Document, DocumentFormat, SourceRef, Table, TableCell
@@ -448,7 +448,9 @@ def load_xlsx(path: str) -> CanonicalDoc:
                 # work item, silently collapsing an entire workbook into one
                 # item. Same running-offset-per-table convention
                 # pptx_loader.py already uses for the identical reason.
-                source_ref=SourceRef(document_path=path, start_offset=sheet_index, end_offset=sheet_index + 1),
+                source_ref=SourceRef(
+                    document_path=path, start_offset=sheet_index, end_offset=sheet_index + 1
+                ),
             )
         )
 

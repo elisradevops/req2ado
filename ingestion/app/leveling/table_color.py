@@ -244,7 +244,10 @@ def normalize_background(hex_color: str | None) -> str | None:
     validated = validate_hex_color(hex_color)
     if validated is None:
         return None
-    if relative_luminance(validated) > _NO_FILL_LUMINANCE_THRESHOLD and _chroma(validated) < _CHROMA_THRESHOLD:
+    if (
+        relative_luminance(validated) > _NO_FILL_LUMINANCE_THRESHOLD
+        and _chroma(validated) < _CHROMA_THRESHOLD
+    ):
         return None
     return validated
 
@@ -440,9 +443,7 @@ def colgroup_html(column_widths: list[float] | None) -> str:
     `<colgroup>`."""
     if not column_widths:
         return ""
-    cols = "".join(
-        f'<col style="width:{_clamp_fraction(w) * 100:g}%">' for w in column_widths
-    )
+    cols = "".join(f'<col style="width:{_clamp_fraction(w) * 100:g}%">' for w in column_widths)
     return f"<colgroup>{cols}</colgroup>"
 
 

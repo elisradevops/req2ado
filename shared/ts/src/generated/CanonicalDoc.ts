@@ -115,4 +115,8 @@ export interface Figure {
    * Why `caption` is null, when it is. 'insignificant': the vision model judged the figure decorative/non-technical. 'vision_failed': the vision call itself errored/timed out or returned an unparseable response. Null both when a real caption was produced AND when vision never ran for this figure at all (disabled for the whole run, or BASELINE mode) -- the latter is deliberately not distinguished here; see CanonicalDoc.vision_active and WarningKind.vision_captioning_disabled for that case instead.
    */
   caption_status?: 'insignificant' | 'vision_failed' | null;
+  /**
+   * The vision model's own one-line reason when it judged the figure not significant ('A company logo.'), kept so a reloaded job can say why a figure has no description. Set beside caption_status 'insignificant'; null otherwise.
+   */
+  caption_reason?: string | null;
 }

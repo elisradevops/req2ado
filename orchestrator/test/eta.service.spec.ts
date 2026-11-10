@@ -394,3 +394,90 @@ describe('EtaService', () => {
     expect(result.upperMinutes).toBeCloseTo(result.estimateMinutes * 1.25, 5);
   });
 });
+
+describe('EtaService.modelStats', () => {
+  const outcome = (model: string | null, status: string, count: number) => ({ model, status, _count: { _all: count } });
+  const prismaWith = (rows: any[], outcomes: any[]): any => ({
+    job: { findMany: jest.fn().mockResolvedValue(rows), groupBy: jest.fn().mockResolvedValue(outcomes) },
+  });
+  // Mixed sizes so the OLS fit has a slope; every row of one model runs `minutes` long.
+  const rowsFor = (model: string, count: number, minutes: number) =>
+    Array.from({ length: count }, (_, i) =>
+      row({ model, blockCount: 100 + i * 50, figureCount: i, diffReadyAt: new Date(new Date('2026-08-01T00:00:00Z').getTime() + minutes * (1 + i) * 60_000) }),
+    );
+
+  it('reports no speed and no outcome share for a model with fewer than 3 runs', async () => {
+    const service = new EtaService(prismaWith(rowsFor('model-a', 2, 30), [outcome('model-a', 'diff_ready', 2)]), 'model-a');
+
+    const stats = await service.modelStats(['model-a']);
+
+    expect(stats.get('model-a')).toEqual({ runs: expect.any(Number), speedVsTypical: null, finishedShare: null });
+  });
+
+  it('gives the model that ran faster than the fit a speed factor below 1, clamped to the estimator range', async () => {
+    const rows = [...rowsFor('slow', 5, 120), ...rowsFor('fast', 5, 1)];
+    const service = new EtaService(prismaWith(rows, []), 'slow');
+
+    const stats = await service.modelStats(['slow', 'fast']);
+
+    expect(stats.get('fast')!.speedVsTypical).toBeGreaterThanOrEqual(0.5);
+    expect(stats.get('fast')!.speedVsTypical).toBeLessThan(1);
+    expect(stats.get('slow')!.speedVsTypical).toBeGreaterThan(1);
+    expect(stats.get('slow')!.speedVsTypical).toBeLessThanOrEqual(2);
+    expect(stats.get('fast')!.runs).toBe(5);
+  });
+
+  it('withholds speed when the history gives the estimator no usable fit (it then applies no model adjustment either)', async () => {
+    const flat = Array.from({ length: 4 }, () => row({ model: 'model-a', blockCount: 200, figureCount: 10 }));
+    const stats = await new EtaService(prismaWith(flat, []), 'model-a').modelStats(['model-a']);
+
+    expect(stats.get('model-a')).toEqual({ runs: 0, speedVsTypical: null, finishedShare: null });
+  });
+
+  it('counts failed against finished jobs, treats rejected as finished, and ignores cancelled and still-running', async () => {
+    const outcomes = [
+      outcome('model-a', 'diff_ready', 2),
+      outcome('model-a', 'rejected', 1),
+      outcome('model-a', 'failed', 1),
+      outcome('model-a', 'cancelled', 5),
+      outcome('model-a', 'running', 5),
+    ];
+    const service = new EtaService(prismaWith([], outcomes), 'model-a');
+
+    const stats = await service.modelStats(['model-a']);
+
+    expect(stats.get('model-a')!.finishedShare).toBeCloseTo(3 / 4, 5);
+  });
+
+  it('files jobs with no stored model under the configured default', async () => {
+    const outcomes = [outcome(null, 'diff_ready', 3)];
+    const service = new EtaService(prismaWith([], outcomes), 'the-default');
+
+    const stats = await service.modelStats(['the-default']);
+
+    expect(stats.get('the-default')!.finishedShare).toBe(1);
+  });
+
+  it('answers every requested model, with empty stats for one it has never seen', async () => {
+    const service = new EtaService(prismaWith([], []), 'model-a');
+
+    const stats = await service.modelStats(['brand-new']);
+
+    expect(stats.get('brand-new')).toEqual({ runs: 0, speedVsTypical: null, finishedShare: null });
+  });
+
+  it('restricts the outcome query to SURVEY jobs inside the estimator window', async () => {
+    const prisma = prismaWith([], []);
+    await new EtaService(prisma, 'model-a').modelStats(['model-a']);
+
+    const args = prisma.job.groupBy.mock.calls[0][0];
+    expect(args.where.mode).toBe('survey');
+    expect(args.where.createdAt.gte).toBeInstanceOf(Date);
+    expect(args.where.status.in).toEqual(expect.arrayContaining(['diff_ready', 'failed']));
+    expect(args.where.status.in).not.toContain('cancelled');
+  });
+
+  it('exposes the configured default model name', () => {
+    expect(new EtaService(prismaWith([], []), 'the-default').getDefaultModel()).toBe('the-default');
+  });
+});

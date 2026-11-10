@@ -1,18 +1,10 @@
-import { computeDeterministicCaveat, DocumentOverviewService } from '../src/modules/pipeline/document-overview.service';
+import { computeDeterministicCaveat, parseDocumentOverview } from '../src/modules/pipeline/document-overview.service';
 import type { DocumentMapSection } from '../src/modules/pipeline/document-map';
 
 const USER_ID = 'user-1';
 
 function section(blockCount: number): DocumentMapSection {
   return { number: null, title: 'Section', blockCount, figureCount: 0 };
-}
-
-// Mirrors config.schema.ts's DOCUMENT_OVERVIEW_MAX_TOKENS default (4000).
-const configService = { get: jest.fn().mockReturnValue(4000) };
-
-function serviceWithChat(chat: jest.Mock) {
-  const getClientFor = jest.fn().mockResolvedValue({ chat });
-  return new DocumentOverviewService({ getClientFor } as any, configService as any);
 }
 
 describe('computeDeterministicCaveat', () => {
@@ -42,96 +34,57 @@ describe('computeDeterministicCaveat', () => {
   });
 });
 
-describe('DocumentOverviewService.generate', () => {
-  it('returns a synopsis with the deterministic caveat attached', async () => {
-    const chat = jest.fn().mockResolvedValue({ content: 'This document specifies interface requirements for a backplane.' });
-    const service = serviceWithChat(chat);
 
-    const documentMap = Array.from({ length: 6 }, () => section(10));
-    const result = await service.generate({ documentMap, sectionCount: 6, depth: 2 }, USER_ID);
-
-    expect(result).toEqual({
-      synopsis: 'This document specifies interface requirements for a backplane.',
-      caveat: null,
-    });
-    expect(chat).toHaveBeenCalledWith(
-      expect.any(Array),
-      // think: false is required -- a reasoning-capable model otherwise
-      // burns the whole maxTokens budget on hidden chain-of-thought and
-      // returns empty content (confirmed live against a real reasoning
-      // model backend; the mocked chat() above can't catch this on its own).
-      expect.objectContaining({ seed: 42, maxTokens: 4000, think: false }),
-    );
+describe('parseDocumentOverview', () => {
+  it('keeps a well-formed overview with its lines and hint', () => {
+    expect(parseDocumentOverview(JSON.stringify({ synopsis: 's', caveat: 'c', lines: ['a', 'b'], structureHint: 'hint' }))).toEqual({ synopsis: 's', caveat: 'c', lines: ['a', 'b'], structureHint: 'hint' });
   });
 
-  it('forwards a non-default DOCUMENT_OVERVIEW_MAX_TOKENS from config, not a hardcoded value', async () => {
-    const chat = jest.fn().mockResolvedValue({ content: 'A synopsis.' });
-    const getClientFor = jest.fn().mockResolvedValue({ chat });
-    const customConfig = { get: jest.fn().mockReturnValue(9999) };
-    const service = new DocumentOverviewService({ getClientFor } as any, customConfig as any);
-
-    await service.generate({ documentMap: [section(10)], sectionCount: 1, depth: 1 }, USER_ID);
-
-    expect(customConfig.get).toHaveBeenCalledWith('DOCUMENT_OVERVIEW_MAX_TOKENS');
-    expect(chat).toHaveBeenCalledWith(expect.any(Array), expect.objectContaining({ maxTokens: 9999 }));
+  it('is null for anything that is not an overview, never throwing', () => {
+    for (const raw of [undefined, '', '{nope', '[]', '{"caveat":null}', '{"synopsis":5}']) expect(parseDocumentOverview(raw)).toBeNull();
   });
 
-  it('fails open to null when the LLM call throws', async () => {
-    const chat = jest.fn().mockRejectedValue(new Error('backend unreachable'));
-    const service = serviceWithChat(chat);
+  it('drops lines that are too many, too long or not text, and makes the hint one bounded line', () => {
+    expect(parseDocumentOverview(JSON.stringify({ synopsis: 's', lines: Array.from({ length: 41 }, () => 'x') }))).toEqual({ synopsis: 's', caveat: null });
+    expect(parseDocumentOverview(JSON.stringify({ synopsis: 's', lines: ['x'.repeat(2001)] }))).toEqual({ synopsis: 's', caveat: null });
+    expect(parseDocumentOverview(JSON.stringify({ synopsis: 's', lines: [1] }))).toEqual({ synopsis: 's', caveat: null });
+    const hint = parseDocumentOverview(JSON.stringify({ synopsis: 's', structureHint: `a\n\nb${'c'.repeat(2000)}` }))!.structureHint!;
+    expect(hint).not.toMatch(/\n/);
+    expect(hint.length).toBeLessThanOrEqual(1000);
+  });
+});
 
-    const result = await service.generate({ documentMap: [section(10)], sectionCount: 1, depth: 1 }, USER_ID);
+describe('the stored AI summary', () => {
+  it('is kept as one bounded paragraph, and is optional', () => {
+    const out = parseDocumentOverview(JSON.stringify({ synopsis: 's', aiSummary: `First.\n\nSecond.${'x'.repeat(2000)}` }))!;
+    expect(out.aiSummary).not.toMatch(/\n/);
+    expect(Array.from(out.aiSummary!).length).toBeLessThanOrEqual(1500);
+    expect(parseDocumentOverview(JSON.stringify({ synopsis: 's' }))).not.toHaveProperty('aiSummary');
+    expect(parseDocumentOverview(JSON.stringify({ synopsis: 's', aiSummary: 5 }))).not.toHaveProperty('aiSummary');
+  });
+});
 
-    expect(result).toBeNull();
+describe('the overview contract bounds', () => {
+  it('cuts a synopsis and a caveat to the schema bound, in code points', () => {
+    const out = parseDocumentOverview(JSON.stringify({ synopsis: '😀'.repeat(9000), caveat: 'c'.repeat(2000) }))!;
+    expect(Array.from(out.synopsis)).toHaveLength(8000);
+    expect(out.caveat).toHaveLength(1000);
   });
 
-  it('fails open to null when the LLM returns empty content', async () => {
-    const chat = jest.fn().mockResolvedValue({ content: '   ' });
-    const service = serviceWithChat(chat);
-
-    const result = await service.generate({ documentMap: [section(10)], sectionCount: 1, depth: 1 }, USER_ID);
-
-    expect(result).toBeNull();
+  it('counts a line in code points, as the schema does, so a long emoji line is not dropped', () => {
+    expect(parseDocumentOverview(JSON.stringify({ synopsis: 's', lines: ['😀'.repeat(1500)] }))!.lines).toHaveLength(1);
   });
+});
 
-  it('fails open to null when the caller has no Open WebUI connection configured', async () => {
-    const getClientFor = jest.fn().mockRejectedValue(new Error('no profile'));
-    const service = new DocumentOverviewService({ getClientFor } as any, configService as any);
+describe('the overview contract', () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const schema = require('../../shared/schemas/document-overview.schema.json');
 
-    const result = await service.generate({ documentMap: [section(10)], sectionCount: 1, depth: 1 }, USER_ID);
-
-    expect(result).toBeNull();
-  });
-
-  it('fails open to null when documentMap is malformed and computeDeterministicCaveat throws synchronously', async () => {
-    const chat = jest.fn().mockResolvedValue({ content: 'unused' });
-    const service = serviceWithChat(chat);
-
-    // A malformed shape (null instead of an array) makes computeDeterministicCaveat's
-    // own .filter() throw a TypeError before any LLM call is even attempted --
-    // this must degrade to null via the surrounding try/catch, not propagate.
-    const result = await service.generate({ documentMap: null as any, sectionCount: 1, depth: 1 }, USER_ID);
-
-    expect(result).toBeNull();
-    expect(chat).not.toHaveBeenCalled();
-  });
-
-  it('caps the heading list sent to the LLM and appends a trailing count for the rest', async () => {
-    const chat = jest.fn().mockResolvedValue({ content: 'A large fragmented document.' });
-    const service = serviceWithChat(chat);
-
-    const documentMap = Array.from({ length: 200 }, (_, i) => ({
-      number: null,
-      title: `Section ${i + 1}`,
-      blockCount: 10,
-      figureCount: 0,
-    }));
-
-    await service.generate({ documentMap, sectionCount: 200, depth: 2 }, USER_ID);
-
-    const userMessage = chat.mock.calls[0][0].find((m: { role: string }) => m.role === 'user');
-    expect(userMessage.content).toContain('Section 150');
-    expect(userMessage.content).not.toContain('Section 151');
-    expect(userMessage.content).toContain('…and 50 more sections');
+  it('the parser accepts exactly what the shared schema describes, with the same bounds', () => {
+    expect(Object.keys(schema.properties).sort()).toEqual(['aiSummary', 'caveat', 'lines', 'structureHint', 'synopsis']);
+    const full = parseDocumentOverview(JSON.stringify({ synopsis: 's', caveat: 'c', lines: Array.from({ length: schema.properties.lines.maxItems }, () => 'x'.repeat(schema.properties.lines.items.maxLength)), structureHint: 'h'.repeat(schema.properties.structureHint.maxLength) }))!;
+    expect(full.lines).toHaveLength(schema.properties.lines.maxItems);
+    expect(full.structureHint).toHaveLength(schema.properties.structureHint.maxLength);
+    expect(parseDocumentOverview(JSON.stringify({ synopsis: 's', lines: Array.from({ length: schema.properties.lines.maxItems + 1 }, () => 'x') }))!.lines).toBeUndefined();
   });
 });

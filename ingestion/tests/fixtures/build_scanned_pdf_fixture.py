@@ -4,6 +4,7 @@ Produces a PDF whose single page has NO extractable text layer (an image-only
 page), simulating a scanned/photographed document, so the OCR fallback path
 can be exercised without needing a real scanner.
 """
+
 from pathlib import Path
 
 from PIL import Image, ImageDraw

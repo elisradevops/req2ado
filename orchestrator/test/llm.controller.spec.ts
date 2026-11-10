@@ -1,5 +1,6 @@
 import 'reflect-metadata';
-import { BadRequestException, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, HttpException, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import OpenAI from 'openai';
 import { LlmController } from '../src/modules/llm/llm.controller';
 import { ModelInfoUnavailableError } from '../src/modules/llm/openwebui.client';
 
@@ -310,6 +311,141 @@ describe('LlmController', () => {
       `${JSON.stringify({ delta: 'c' })}\n`,
     ]);
     expect(res.end).toHaveBeenCalled();
+  });
+
+  describe('chat disconnect', () => {
+    const chatBody = { messages: [{ role: 'user' as const, content: 'hi' }] };
+    const fakeRes = () => {
+      const handlers: Record<string, () => void> = {};
+      return {
+        res: { writableEnded: false, on: (event: string, handler: () => void) => { handlers[event] = handler; } } as any,
+        fire: (event: string) => handlers[event]?.(),
+      };
+    };
+
+    it('aborts the upstream chat call when the caller closes the connection before an answer is sent', async () => {
+      let signal: AbortSignal | undefined;
+      const chat = jest.fn().mockImplementation(
+        (_m: unknown, opts: { signal?: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            signal = opts.signal;
+            opts.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+          }),
+      );
+      const { controller } = makeController({ chat });
+      const { res, fire } = fakeRes();
+      const call = controller.chat(chatBody, USER_ID, res);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(signal?.aborted).toBe(false);
+      fire('close');
+      await expect(call).rejects.toThrow('aborted');
+      expect(signal?.aborted).toBe(true);
+    });
+
+    it('does not abort when the connection closes after the answer was fully sent, and a call without a response object still works', async () => {
+      let signal: AbortSignal | undefined;
+      const chat = jest.fn().mockImplementation(async (_m: unknown, opts: { signal?: AbortSignal }) => {
+        signal = opts.signal;
+        return { content: 'ok' };
+      });
+      const { controller } = makeController({ chat });
+      const { res, fire } = fakeRes();
+      await controller.chat(chatBody, USER_ID, res);
+      res.writableEnded = true;
+      fire('close');
+      expect(signal?.aborted).toBe(false);
+      await expect(controller.chat(chatBody, USER_ID)).resolves.toEqual({ content: 'ok' });
+    });
+  });
+
+  describe('vision budget and disconnect', () => {
+    const body = { prompt: 'describe this figure', images: [Buffer.from('img').toString('base64')] };
+    const fakeRes = () => {
+      const handlers: Record<string, () => void> = {};
+      return {
+        res: { writableEnded: false, on: (event: string, handler: () => void) => { handlers[event] = handler; } } as any,
+        fire: (event: string) => handlers[event]?.(),
+      };
+    };
+
+    it('turns the X-Req2Ado-Deadline-Ms header into an absolute deadline for the call', async () => {
+      const vision = jest.fn().mockResolvedValue('d');
+      const { controller } = makeController({ vision });
+      const before = Date.now();
+      await controller.vision(body, USER_ID, '240000', fakeRes().res);
+      const opts = vision.mock.calls[0][2];
+      expect(opts.deadlineAtMs).toBeGreaterThanOrEqual(before + 240_000);
+      expect(opts.deadlineAtMs).toBeLessThanOrEqual(Date.now() + 240_000);
+    });
+
+    it.each([undefined, 'abc', '0', '-5', ''])('ignores a missing or invalid deadline header (%p)', async (header) => {
+      const vision = jest.fn().mockResolvedValue('d');
+      const { controller } = makeController({ vision });
+      await controller.vision(body, USER_ID, header as string | undefined, fakeRes().res);
+      expect(vision.mock.calls[0][2]?.deadlineAtMs).toBeUndefined();
+    });
+
+    describe('upstream errors keep their HTTP status', () => {
+      const apiError = (status: number, headers: Record<string, string> = {}) =>
+        Object.assign(Object.create(OpenAI.APIError.prototype), { status, message: `upstream ${status}`, headers });
+
+      it.each([400, 401, 404, 429, 502])('passes an upstream %i on to the caller instead of collapsing it to a 500', async (status) => {
+        const vision = jest.fn().mockRejectedValue(apiError(status));
+        const { controller } = makeController({ vision });
+        const error: any = await controller.vision(body, USER_ID, undefined, fakeRes().res).catch((e) => e);
+        expect(error).toBeInstanceOf(HttpException);
+        expect(error.getStatus()).toBe(status);
+      });
+
+      it('forwards the provider\'s Retry-After on a 429 so the caller can wait exactly that long', async () => {
+        const vision = jest.fn().mockRejectedValue(apiError(429, { 'retry-after': '7' }));
+        const { controller } = makeController({ vision });
+        const setHeader = jest.fn();
+        const { res } = fakeRes();
+        res.setHeader = setHeader;
+        await controller.vision(body, USER_ID, undefined, res).catch(() => undefined);
+        expect(setHeader).toHaveBeenCalledWith('Retry-After', '7');
+      });
+
+      it('leaves an error that is not an upstream HTTP error as it was', async () => {
+        const vision = jest.fn().mockRejectedValue(new Error('boom'));
+        const { controller } = makeController({ vision });
+        await expect(controller.vision(body, USER_ID, undefined, fakeRes().res)).rejects.toThrow('boom');
+      });
+    });
+
+    it('aborts the upstream call when the caller closes the connection before an answer is sent', async () => {
+      let signal: AbortSignal | undefined;
+      const vision = jest.fn().mockImplementation(
+        (_p: string, _i: Buffer[], opts: { signal?: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            signal = opts.signal;
+            opts.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+          }),
+      );
+      const { controller } = makeController({ vision });
+      const { res, fire } = fakeRes();
+      const call = controller.vision(body, USER_ID, undefined, res);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(signal?.aborted).toBe(false);
+      fire('close');
+      await expect(call).rejects.toThrow('aborted');
+      expect(signal?.aborted).toBe(true);
+    });
+
+    it('does not abort when the connection closes after the answer was fully sent', async () => {
+      let signal: AbortSignal | undefined;
+      const vision = jest.fn().mockImplementation(async (_p: string, _i: Buffer[], opts: { signal?: AbortSignal }) => {
+        signal = opts.signal;
+        return 'd';
+      });
+      const { controller } = makeController({ vision });
+      const { res, fire } = fakeRes();
+      await controller.vision(body, USER_ID, undefined, res);
+      res.writableEnded = true;
+      fire('close');
+      expect(signal?.aborted).toBe(false);
+    });
   });
 
   it('threads an explicit responseSchema from the request body into llmClient.vision', async () => {

@@ -161,6 +161,25 @@ describe('Settings', () => {
       expect(JSON.parse(localStorage.getItem('req2ado-ui-preferences')!)).toMatchObject({ denseView: true });
     });
 
+    it('toggles Keyboard Shortcuts, defaulting to on, and keeps the other saved preferences', async () => {
+      renderPage();
+      const toggle = screen.getByRole('switch', { name: /keyboard shortcuts/i });
+      expect(toggle).toHaveAttribute('aria-checked', 'true');
+
+      await userEvent.click(toggle);
+
+      expect(toggle).toHaveAttribute('aria-checked', 'false');
+      expect(JSON.parse(localStorage.getItem('req2ado-ui-preferences')!)).toMatchObject({ keyboardShortcuts: false });
+      // Saving another preference afterwards must not drop this one.
+      const dense = screen.getByRole('switch', { name: /dense view/i });
+      const denseBefore = dense.getAttribute('aria-checked') === 'true';
+      await userEvent.click(dense);
+      expect(JSON.parse(localStorage.getItem('req2ado-ui-preferences')!)).toMatchObject({
+        keyboardShortcuts: false,
+        denseView: !denseBefore,
+      });
+    });
+
     it('toggles Auto-Sync Ledgers, defaulting to on', async () => {
       renderPage();
       const toggle = screen.getByRole('switch', { name: /auto-sync ledgers/i });

@@ -19,7 +19,15 @@ logger = logging.getLogger(__name__)
 # each in JobEvent, no migration) and kept in a short replay list for a stream that
 # reconnects. Best-effort: a failure is logged once and never reaches the job.
 
-NOTICE_KINDS = ("output_limit_reached", "server_retry", "context_assumed", "stream_fallback")
+# `document_study` is a state-evolving notice: up to about 5 per job (start, quarter milestones, one finish), all emitted from one thread (the
+# study's coordinator). The frontend keeps one row per kind, and the per-kind count acts as the sequence number that orders them.
+NOTICE_KINDS = (
+    "output_limit_reached",
+    "server_retry",
+    "context_assumed",
+    "stream_fallback",
+    "document_study",
+)
 NOTICE_SEVERITIES = ("info", "warning")
 NOTICE_TTL_SECONDS = 24 * 3600
 NOTICE_LOG_MAX = 50
@@ -63,7 +71,12 @@ class NoticePublisher:
         self._warned = False
 
     def publish(
-        self, kind: str, severity: str = "info", *, once_key: str | None = None, **facts: Any,
+        self,
+        kind: str,
+        severity: str = "info",
+        *,
+        once_key: str | None = None,
+        **facts: Any,
     ) -> bool:
         """Returns True when a notice was sent. `once_key` limits a kind to one notice
         per key for the job (for example one per model)."""
@@ -101,6 +114,7 @@ class NoticePublisher:
                 self._warned = True
                 logger.warning(
                     "Notice dropped for job %s (further drops not logged)",
-                    self._job_id, exc_info=True,
+                    self._job_id,
+                    exc_info=True,
                 )
             return False

@@ -87,6 +87,24 @@ def test_publish_includes_kb_citations_in_camelcase_when_grounded() -> None:
     assert "grounded with 1 KB file" in payload["message"]
 
 
+def test_publish_includes_kb_files_available_when_known() -> None:
+    redis_client = _FakeRedis()
+    publisher = NarrationPublisher(redis_client, "job-1")
+
+    publisher.publish(_progress(kb_files_available=3))
+
+    assert json.loads(redis_client.publish_calls[0][1])["kbFilesAvailable"] == 3
+
+
+def test_publish_kb_files_available_is_null_when_unknown() -> None:
+    redis_client = _FakeRedis()
+    publisher = NarrationPublisher(redis_client, "job-1")
+
+    publisher.publish(_progress())
+
+    assert json.loads(redis_client.publish_calls[0][1])["kbFilesAvailable"] is None
+
+
 def test_publish_never_raises_when_redis_fails() -> None:
     redis_client = _FakeRedis(raises=RuntimeError("redis unavailable"))
     publisher = NarrationPublisher(redis_client, "job-1")
@@ -185,13 +203,17 @@ def test_publish_score_requirements_done_message_reports_issues_found() -> None:
     assert "3 quality issue(s) flagged" in payload["message"]
 
 
-def test_publish_score_requirements_message_includes_batch_progress_when_chunk_fields_are_set() -> None:
+def test_publish_score_requirements_message_includes_batch_progress_when_chunk_fields_are_set() -> (
+    None
+):
     # Unlike figure/table totals, the whole document's requirement count is
     # known upfront -- chunk_index/chunk_count is real progress, not a guess.
     redis_client = _FakeRedis()
     publisher = NarrationPublisher(redis_client, "job-1")
 
-    publisher.publish(_progress(phase="score_requirements", draft_count=150, chunk_index=1, chunk_count=4))
+    publisher.publish(
+        _progress(phase="score_requirements", draft_count=150, chunk_index=1, chunk_count=4)
+    )
 
     payload = json.loads(redis_client.publish_calls[0][1])
     assert payload["chunkIndex"] == 1
@@ -203,7 +225,9 @@ def test_publish_score_requirements_done_message_includes_batch_progress() -> No
     redis_client = _FakeRedis()
     publisher = NarrationPublisher(redis_client, "job-1")
 
-    publisher.publish(_progress(phase="score_requirements_done", issues_found=2, chunk_index=0, chunk_count=2))
+    publisher.publish(
+        _progress(phase="score_requirements_done", issues_found=2, chunk_index=0, chunk_count=2)
+    )
 
     payload = json.loads(redis_client.publish_calls[0][1])
     assert payload["chunkIndex"] == 0
@@ -211,7 +235,9 @@ def test_publish_score_requirements_done_message_includes_batch_progress() -> No
     assert "batch 1 of 2" in payload["message"]
 
 
-def test_publish_score_requirements_message_omits_batch_progress_when_chunk_fields_are_absent() -> None:
+def test_publish_score_requirements_message_omits_batch_progress_when_chunk_fields_are_absent() -> (
+    None
+):
     # A single-chunk document (the common case) never sets chunk_index/
     # chunk_count -- the message must not show a stray "batch" fragment.
     redis_client = _FakeRedis()
@@ -225,7 +251,9 @@ def test_publish_score_requirements_message_omits_batch_progress_when_chunk_fiel
     assert "batch" not in payload["message"]
 
 
-def test_publish_describe_figure_reports_a_running_count_not_a_fraction_when_no_total_known() -> None:
+def test_publish_describe_figure_reports_a_running_count_not_a_fraction_when_no_total_known() -> (
+    None
+):
     # Without a figure_count (no pre-count ran ahead of this walk -- see
     # main.py's /ingest), this stays a running count ("figure 5 so far"),
     # not "5 of N" -- see the sibling test below for the case where a
@@ -236,8 +264,13 @@ def test_publish_describe_figure_reports_a_running_count_not_a_fraction_when_no_
     publisher.publish(
         LevelingProgress(
             phase="describe_figure",
-            branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
-            kb_grounded=False, kb_citations=[], figure_index=5,
+            branch_index=None,
+            branch_count=0,
+            blocks_done=0,
+            blocks_total=0,
+            kb_grounded=False,
+            kb_citations=[],
+            figure_index=5,
         )
     )
 
@@ -261,8 +294,14 @@ def test_publish_describe_figure_reports_a_real_total_when_a_precount_ran() -> N
     publisher.publish(
         LevelingProgress(
             phase="describe_figure",
-            branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
-            kb_grounded=False, kb_citations=[], figure_index=5, figure_count=39,
+            branch_index=None,
+            branch_count=0,
+            blocks_done=0,
+            blocks_total=0,
+            kb_grounded=False,
+            kb_citations=[],
+            figure_index=5,
+            figure_count=39,
         )
     )
 
@@ -272,7 +311,9 @@ def test_publish_describe_figure_reports_a_real_total_when_a_precount_ran() -> N
     assert "so far" not in payload["message"]
 
 
-def test_publish_describe_figure_with_a_caption_shows_the_real_result_not_the_generic_counter() -> None:
+def test_publish_describe_figure_with_a_caption_shows_the_real_result_not_the_generic_counter() -> (
+    None
+):
     # Once the vision call returns, the SECOND describe_figure event (this
     # one) must show the actual caption text, not repeat the generic
     # "figure N so far" line -- that repetition (identical rows for every
@@ -283,19 +324,32 @@ def test_publish_describe_figure_with_a_caption_shows_the_real_result_not_the_ge
     publisher.publish(
         LevelingProgress(
             phase="describe_figure",
-            branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
-            kb_grounded=False, kb_citations=[],
-            figure_index=3, figure_caption="A schematic showing the power rail connections between PSU and backplane.",
+            branch_index=None,
+            branch_count=0,
+            blocks_done=0,
+            blocks_total=0,
+            kb_grounded=False,
+            kb_citations=[],
+            figure_index=3,
+            figure_caption="A schematic showing the power rail connections between PSU and backplane.",
         )
     )
 
     payload = json.loads(redis_client.publish_calls[0][1])
-    assert payload["figureCaption"] == "A schematic showing the power rail connections between PSU and backplane."
-    assert payload["message"] == "Figure 3: A schematic showing the power rail connections between PSU and backplane."
+    assert (
+        payload["figureCaption"]
+        == "A schematic showing the power rail connections between PSU and backplane."
+    )
+    assert (
+        payload["message"]
+        == "Figure 3: A schematic showing the power rail connections between PSU and backplane."
+    )
     assert "so far" not in payload["message"]
 
 
-def test_publish_describe_figure_with_an_empty_caption_falls_back_to_honest_wording_not_a_blank_line() -> None:
+def test_publish_describe_figure_with_an_empty_caption_falls_back_to_honest_wording_not_a_blank_line() -> (
+    None
+):
     # Real gap this closes (user-reported, live): a real vision-model reply
     # that's an empty string (distinct from None -- "in flight") previously
     # produced a bare "Figure N: " with nothing after the colon, a genuinely
@@ -306,9 +360,14 @@ def test_publish_describe_figure_with_an_empty_caption_falls_back_to_honest_word
     publisher.publish(
         LevelingProgress(
             phase="describe_figure",
-            branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
-            kb_grounded=False, kb_citations=[],
-            figure_index=38, figure_caption="",
+            branch_index=None,
+            branch_count=0,
+            blocks_done=0,
+            blocks_total=0,
+            kb_grounded=False,
+            kb_citations=[],
+            figure_index=38,
+            figure_caption="",
         )
     )
 
@@ -329,18 +388,26 @@ def test_publish_preparing_analysis_carries_a_real_message() -> None:
     publisher.publish(
         LevelingProgress(
             phase="preparing_analysis",
-            branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
-            kb_grounded=False, kb_citations=[],
+            branch_index=None,
+            branch_count=0,
+            blocks_done=0,
+            blocks_total=0,
+            kb_grounded=False,
+            kb_citations=[],
         )
     )
 
     payload = json.loads(redis_client.publish_calls[0][1])
     assert payload["phase"] == "preparing_analysis"
     assert "Preparing analysis" in payload["message"]
-    assert "0 of 0" not in payload["message"]  # no bogus block-count suffix, blocksTotal isn't known yet
+    assert (
+        "0 of 0" not in payload["message"]
+    )  # no bogus block-count suffix, blocksTotal isn't known yet
 
 
-def test_publish_describe_figure_caption_is_truncated_in_the_message_but_not_in_the_raw_field() -> None:
+def test_publish_describe_figure_caption_is_truncated_in_the_message_but_not_in_the_raw_field() -> (
+    None
+):
     redis_client = _FakeRedis()
     publisher = NarrationPublisher(redis_client, "job-1")
     long_caption = "A" * 300
@@ -348,9 +415,14 @@ def test_publish_describe_figure_caption_is_truncated_in_the_message_but_not_in_
     publisher.publish(
         LevelingProgress(
             phase="describe_figure",
-            branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
-            kb_grounded=False, kb_citations=[],
-            figure_index=1, figure_caption=long_caption,
+            branch_index=None,
+            branch_count=0,
+            blocks_done=0,
+            blocks_total=0,
+            kb_grounded=False,
+            kb_citations=[],
+            figure_index=1,
+            figure_caption=long_caption,
         )
     )
 
@@ -367,9 +439,15 @@ def test_publish_parse_done_reports_block_table_and_figure_counts() -> None:
     publisher.publish(
         LevelingProgress(
             phase="parse_done",
-            branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
-            kb_grounded=False, kb_citations=[],
-            block_count=682, table_count=5, figure_count=39,
+            branch_index=None,
+            branch_count=0,
+            blocks_done=0,
+            blocks_total=0,
+            kb_grounded=False,
+            kb_citations=[],
+            block_count=682,
+            table_count=5,
+            figure_count=39,
         )
     )
 
@@ -388,16 +466,40 @@ def test_publish_section_complete_carries_camelcased_section_nodes_and_a_count_m
         _progress(
             phase="section_complete",
             section_nodes=[
-                {"type": "Requirement", "title": "HDR support", "text": "The display shall support HDR.", "quality_score": 87, "customer_id": "P-SENSOR-001#"},
-                {"type": "Feature", "title": "Display", "text": "The system shall handle: Display", "quality_score": None, "customer_id": None},
+                {
+                    "type": "Requirement",
+                    "title": "HDR support",
+                    "text": "The display shall support HDR.",
+                    "quality_score": 87,
+                    "customer_id": "P-SENSOR-001#",
+                },
+                {
+                    "type": "Feature",
+                    "title": "Display",
+                    "text": "The system shall handle: Display",
+                    "quality_score": None,
+                    "customer_id": None,
+                },
             ],
         )
     )
 
     payload = json.loads(redis_client.publish_calls[0][1])
     assert payload["sectionNodes"] == [
-        {"type": "Requirement", "title": "HDR support", "text": "The display shall support HDR.", "qualityScore": 87, "customerId": "P-SENSOR-001#"},
-        {"type": "Feature", "title": "Display", "text": "The system shall handle: Display", "qualityScore": None, "customerId": None},
+        {
+            "type": "Requirement",
+            "title": "HDR support",
+            "text": "The display shall support HDR.",
+            "qualityScore": 87,
+            "customerId": "P-SENSOR-001#",
+        },
+        {
+            "type": "Feature",
+            "title": "Display",
+            "text": "The system shall handle: Display",
+            "qualityScore": None,
+            "customerId": None,
+        },
     ]
     assert "2 item(s) drafted" in payload["message"]
 
@@ -496,8 +598,12 @@ def test_publish_deterministic_subtree_carries_index_count_and_label() -> None:
 
     publisher.publish(
         _progress(
-            phase="deterministic_subtree", branch_index=None, branch_count=0,
-            subtree_index=1, subtree_count=3, subtree_label="Table t2",
+            phase="deterministic_subtree",
+            branch_index=None,
+            branch_count=0,
+            subtree_index=1,
+            subtree_count=3,
+            subtree_label="Table t2",
         )
     )
 
@@ -515,8 +621,12 @@ def test_publish_table_detected_reports_row_count_and_qualifying_status() -> Non
 
     publisher.publish(
         _progress(
-            phase="table_detected", branch_index=None, branch_count=0,
-            table_id="t1", table_row_count=42, table_qualifies=True,
+            phase="table_detected",
+            branch_index=None,
+            branch_count=0,
+            table_id="t1",
+            table_row_count=42,
+            table_qualifies=True,
         )
     )
 
@@ -538,9 +648,14 @@ def test_publish_table_detected_reports_position_and_total() -> None:
 
     publisher.publish(
         _progress(
-            phase="table_detected", branch_index=None, branch_count=0,
-            table_id="t1", table_row_count=42, table_qualifies=True,
-            table_index=2, table_count=5,
+            phase="table_detected",
+            branch_index=None,
+            branch_count=0,
+            table_id="t1",
+            table_row_count=42,
+            table_qualifies=True,
+            table_index=2,
+            table_count=5,
         )
     )
 
@@ -556,8 +671,12 @@ def test_publish_table_detected_reports_non_qualifying_tables_honestly() -> None
 
     publisher.publish(
         _progress(
-            phase="table_detected", branch_index=None, branch_count=0,
-            table_id="t2", table_row_count=0, table_qualifies=False,
+            phase="table_detected",
+            branch_index=None,
+            branch_count=0,
+            table_id="t2",
+            table_row_count=0,
+            table_qualifies=False,
         )
     )
 
@@ -573,7 +692,8 @@ def test_publish_score_requirements_message_includes_sample_titles() -> None:
 
     publisher.publish(
         _progress(
-            phase="score_requirements", draft_count=2,
+            phase="score_requirements",
+            draft_count=2,
             sample_titles=["12V Compliance Standards", "3.3V Aux Compliance Standards"],
         )
     )
@@ -593,9 +713,13 @@ def test_publish_job_failed_reports_error_type_message_elapsed_and_last_phase() 
 
     publisher.publish(
         _progress(
-            phase="job_failed", branch_index=None, branch_count=0,
-            error_type="ReadTimeout", error_message="timed out",
-            elapsed_seconds=1523.4, last_phase="score_requirements",
+            phase="job_failed",
+            branch_index=None,
+            branch_count=0,
+            error_type="ReadTimeout",
+            error_message="timed out",
+            elapsed_seconds=1523.4,
+            last_phase="score_requirements",
         )
     )
 
@@ -640,3 +764,22 @@ def test_last_known_phase_is_recorded_even_when_the_redis_publish_itself_fails()
     publisher.publish(_progress(phase="regroup_roots"))
 
     assert last_known_phase("job-last-phase-outage") == "regroup_roots"
+
+
+def test_publish_carries_the_models_reason_for_a_figure_judged_not_significant() -> None:
+    redis_client = _FakeRedis()
+    NarrationPublisher(redis_client, "job-1").publish(
+        _progress(
+            phase="describe_figure",
+            figure_index=3,
+            figure_caption_status="insignificant",
+            figure_caption_reason="A company logo.",
+        )
+    )
+    payload = json.loads(redis_client.publish_calls[0][1])
+    assert payload["figureCaptionStatus"] == "insignificant"
+    assert payload["figureCaptionReason"] == "A company logo."
+    NarrationPublisher(redis_client, "job-1").publish(
+        _progress(phase="describe_figure", figure_index=4)
+    )
+    assert json.loads(redis_client.publish_calls[1][1])["figureCaptionReason"] is None

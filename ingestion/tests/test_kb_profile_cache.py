@@ -2,6 +2,7 @@
 
 The extraction is a temperature-1 sample: without this, every rebuild re-sampled every document and the category names the
 documents "wrote" drifted from build to build (12, 13 and 14 categories from the same three documents)."""
+
 from app.kb import profile as profile_module
 from app.kb.kb_vector_store import KbVectorStore
 from app.kb.profile import ChromaProfileStore, InMemoryProfileStore, build_profile, ensure_profile
@@ -23,7 +24,12 @@ class DriftingClient(FakeProfileClient):
     def extract_kb_document_profile(self, name, window_text, user_id=None):
         self.extract_calls.append(name)
         self.n += 1
-        return {"categories": [{"name": f"{name[0]} variant {self.n}", "pass_condition": "c"}], "rules": [], "type_definitions": [], "glossary": []}
+        return {
+            "categories": [{"name": f"{name[0]} variant {self.n}", "pass_condition": "c"}],
+            "rules": [],
+            "type_definitions": [],
+            "glossary": [],
+        }
 
 
 class Kb:
@@ -46,9 +52,13 @@ def test_an_unchanged_document_is_not_extracted_again_and_keeps_its_categories()
     first = ensure_profile("u1", kb, store, client, model="m1")
     kb.docs["C.pptx"] = "CAT: Complete | Whole"  # a new document makes the profile stale
     second = ensure_profile("u1", kb, store, client, model="m1")
-    assert [c for c in client.extract_calls].count("A.pptx") == 1 and client.extract_calls.count("B.pptx") == 1
+    assert [c for c in client.extract_calls].count("A.pptx") == 1 and client.extract_calls.count(
+        "B.pptx"
+    ) == 1
     assert client.extract_calls.count("C.pptx") == 1
-    assert {"A variant 1", "B variant 2"} <= set(names(second))  # what the unchanged documents said the first time
+    assert {"A variant 1", "B variant 2"} <= set(
+        names(second)
+    )  # what the unchanged documents said the first time
     assert first.version != second.version
 
 
@@ -70,15 +80,24 @@ def test_a_different_model_extracts_everything_again() -> None:
 def test_a_change_to_the_extraction_itself_invalidates_the_cache(monkeypatch) -> None:
     store, client, kb = InMemoryProfileStore(), DriftingClient(), Kb(dict(DOCS))
     ensure_profile("u1", kb, store, client, model="m1")
-    monkeypatch.setattr(profile_module, "WINDOW_CHARS", profile_module.WINDOW_CHARS + 1)  # the reading of a document changed
+    monkeypatch.setattr(
+        profile_module, "WINDOW_CHARS", profile_module.WINDOW_CHARS + 1
+    )  # the reading of a document changed
     kb.docs["C.pptx"] = "CAT: Complete | Whole"
     ensure_profile("u1", kb, store, client, model="m1")
     assert client.extract_calls.count("A.pptx") == 2
 
 
 def test_only_complete_results_are_stored() -> None:
-    long_with_a_failing_window = "CAT: Fine | f\n" + "x" * (profile_module.WINDOW_CHARS + 200) + "\nBOOM"
-    docs = {"ok.pptx": "CAT: Testable | t", "boom.pptx": "BOOM", "partial.pptx": long_with_a_failing_window, "empty.pptx": "nothing useful here"}
+    long_with_a_failing_window = (
+        "CAT: Fine | f\n" + "x" * (profile_module.WINDOW_CHARS + 200) + "\nBOOM"
+    )
+    docs = {
+        "ok.pptx": "CAT: Testable | t",
+        "boom.pptx": "BOOM",
+        "partial.pptx": long_with_a_failing_window,
+        "empty.pptx": "nothing useful here",
+    }
     store, client, kb = InMemoryProfileStore(), FakeProfileClient(), Kb(dict(docs))
     ensure_profile("u1", kb, store, client, model="m1")
     first_round = {n: client.extract_calls.count(n) for n in docs}
@@ -86,7 +105,9 @@ def test_only_complete_results_are_stored() -> None:
     ensure_profile("u1", kb, store, client, model="m1")
     again = {n: client.extract_calls.count(n) - first_round[n] for n in docs}
     assert again["ok.pptx"] == 0  # complete: reused
-    assert again["boom.pptx"] > 0 and again["partial.pptx"] > 0 and again["empty.pptx"] > 0  # failed, partly failed, empty: tried again
+    assert (
+        again["boom.pptx"] > 0 and again["partial.pptx"] > 0 and again["empty.pptx"] > 0
+    )  # failed, partly failed, empty: tried again
 
 
 def test_a_verdict_of_not_relevant_is_remembered_but_a_failed_verdict_is_not() -> None:
@@ -102,7 +123,9 @@ def test_a_verdict_of_not_relevant_is_remembered_but_a_failed_verdict_is_not() -
     ensure_profile("u2", kb2, store2, flaky, model="m1")
     kb2.docs["more.pptx"] = "CAT: More | m"
     ensure_profile("u2", kb2, store2, flaky, model="m1")
-    assert flaky.relevance_calls.count("ok.pptx") == 2  # the judgement failed, so nothing was stored for it
+    assert (
+        flaky.relevance_calls.count("ok.pptx") == 2
+    )  # the judgement failed, so nothing was stored for it
 
 
 def test_a_refresh_ignores_what_is_stored_and_replaces_it() -> None:
@@ -112,7 +135,9 @@ def test_a_refresh_ignores_what_is_stored_and_replaces_it() -> None:
     refreshed = ensure_profile("u1", kb, store, client, model="m1", refresh=True)
     assert client.extract_calls.count("A.pptx") == 2
     ensure_profile("u1", Kb({**kb.docs, "D.pptx": "CAT: D | d"}), store, client, model="m1")
-    assert client.extract_calls.count("A.pptx") == 2  # the refreshed extraction is what is reused afterwards
+    assert (
+        client.extract_calls.count("A.pptx") == 2
+    )  # the refreshed extraction is what is reused afterwards
     assert "A variant" in "".join(names(refreshed))
 
 
@@ -124,12 +149,16 @@ def test_a_deleted_document_leaves_nothing_behind() -> None:
     assert sorted(store.document_cache("u1").files()) == ["A.pptx"]
 
 
-def test_the_cache_survives_a_restart_and_is_dropped_with_the_users_knowledge_base(tmp_path) -> None:
+def test_the_cache_survives_a_restart_and_is_dropped_with_the_users_knowledge_base(
+    tmp_path,
+) -> None:
     path = str(tmp_path / "chroma")
     client, kb = DriftingClient(), Kb(dict(DOCS))
     ensure_profile("u1", kb, ChromaProfileStore(KbVectorStore(path)), client, model="m1")
     kb.docs["C.pptx"] = "CAT: Complete | Whole"
-    ensure_profile("u1", kb, ChromaProfileStore(KbVectorStore(path)), client, model="m1")  # a new process: new store objects
+    ensure_profile(
+        "u1", kb, ChromaProfileStore(KbVectorStore(path)), client, model="m1"
+    )  # a new process: new store objects
     assert client.extract_calls.count("A.pptx") == 1
 
     purged = KbVectorStore(path)
@@ -187,7 +216,12 @@ def test_the_route_passes_refresh_on() -> None:
         return None
 
     with patch("app.main.ensure_profile", side_effect=fake):
-        assert TestClient(app).post("/kb/profile", json={"user_id": "u", "model": "m", "refresh": True}).status_code == 404
+        assert (
+            TestClient(app)
+            .post("/kb/profile", json={"user_id": "u", "model": "m", "refresh": True})
+            .status_code
+            == 404
+        )
         assert seen == {"refresh": True, "model": "m"}
         TestClient(app).post("/kb/profile", json={"user_id": "u", "model": "m"})
         assert seen["refresh"] is False

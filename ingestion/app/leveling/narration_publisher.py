@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Callable, Literal
+from typing import Literal
 
 import redis
 
@@ -170,6 +171,11 @@ class LevelingProgress:
     # actually finished -- the first real "what did scoring find" signal a
     # user sees, previously nothing ever told them scoring had concluded.
     issues_found: int | None = None
+    # Distinct KB source files with stored vectors when this SURVEY run
+    # retrieved from the KB (stamped onto every event after retrieval by
+    # llm_leveling._stamp_kb_files_available); None when unknown or no KB
+    # grounding ran. Lets the UI show "N of M KB files" next to kb_citations.
+    kb_files_available: int | None = None
     # describe_figure only: 1-based count of figures described so far in
     # THIS document. Before this field existed, a figure-heavy document
     # (confirmed live: one real document had 39 embedded figures, each a
@@ -228,6 +234,8 @@ class LevelingProgress:
     # during a live run too, without changing figure_caption/the ticker's
     # own text at all.
     figure_caption_status: str | None = None
+    # describe_figure only, with status "insignificant": the vision model's own few words on why, shown beside the verdict.
+    figure_caption_reason: str | None = None
     # section_complete only: this branch's finished nodes (type/title/text/
     # quality_score, in generation order) -- the real "parsed and formatted
     # response" a reviewer can inspect live, per section, instead of only
@@ -337,6 +345,7 @@ def _truncate_caption(caption: str) -> str:
         return collapsed
     return f"{collapsed[:_CAPTION_PREVIEW_LENGTH]}…"
 
+
 _PHASE_MESSAGES: dict[Phase, str] = {
     "describe_figure": "Describing an embedded figure via the vision model",
     "parse_done": "Finished parsing the document",
@@ -403,7 +412,11 @@ def _format_message(progress: LevelingProgress) -> str:
             base += f" (table {progress.table_index} of {progress.table_count})"
         if progress.table_row_count is not None:
             base += f" -- {progress.table_row_count} row(s)"
-        base += " (qualifies for deterministic hierarchy detection)" if progress.table_qualifies else " (not ID-shaped, will go through LLM analysis)"
+        base += (
+            " (qualifies for deterministic hierarchy detection)"
+            if progress.table_qualifies
+            else " (not ID-shaped, will go through LLM analysis)"
+        )
         return base
     if progress.phase == "preparing_analysis":
         return base
@@ -536,8 +549,10 @@ class NarrationPublisher:
                 "blocksTotal": progress.blocks_total,
                 "kbGrounded": progress.kb_grounded,
                 "kbCitations": [
-                    {"sourceFile": c["source_file"], "similarity": c["similarity"]} for c in progress.kb_citations
+                    {"sourceFile": c["source_file"], "similarity": c["similarity"]}
+                    for c in progress.kb_citations
                 ],
+                "kbFilesAvailable": progress.kb_files_available,
                 "model": progress.model,
                 "draftCount": progress.draft_count,
                 "issuesFound": progress.issues_found,
@@ -549,6 +564,7 @@ class NarrationPublisher:
                 "pageAlignAnchoredRatio": progress.page_align_anchored_ratio,
                 "figureCaption": progress.figure_caption,
                 "figureCaptionStatus": progress.figure_caption_status,
+                "figureCaptionReason": progress.figure_caption_reason,
                 "sectionNodes": (
                     [
                         {

@@ -1,5 +1,6 @@
 """The keyed-result module (app.survey.keyed_calls): one contract for "ask about N ids, get
 N validated entries back" -- schema, prompt sentence, tolerant parsing, bounded recovery."""
+
 import json
 import logging
 
@@ -7,7 +8,6 @@ import httpx
 import pytest
 
 import app.survey.keyed_calls as keyed_calls_module
-import app.survey.orchestrator_llm_client as client_module
 from app.leveling.id_tree_builder import _apply_title_tag_pass, build_hierarchy_subtree
 from app.leveling.live_stream import DraftingDisplay
 from app.prompts import load_prompt
@@ -44,17 +44,28 @@ def _default_modes(monkeypatch):
 
 def test_a_spec_must_describe_every_field_in_the_prompt_and_may_not_use_the_reserved_id() -> None:
     with pytest.raises(ValueError, match="same fields"):
-        KeyedSpec(name="x", schema_name="x", fields={"a": {"type": "string"}}, field_prompts={"b": "'b'"})
+        KeyedSpec(
+            name="x", schema_name="x", fields={"a": {"type": "string"}}, field_prompts={"b": "'b'"}
+        )
     with pytest.raises(ValueError, match="reserved"):
-        KeyedSpec(name="x", schema_name="x", fields={"id": {"type": "string"}}, field_prompts={"id": "'id'"})
+        KeyedSpec(
+            name="x",
+            schema_name="x",
+            fields={"id": {"type": "string"}},
+            field_prompts={"id": "'id'"},
+        )
 
 
 # -- modes --------------------------------------------------------------------------------
 
 
-def test_mode_defaults_to_the_global_setting_and_a_named_pass_is_forced_to_array(monkeypatch) -> None:
+def test_mode_defaults_to_the_global_setting_and_a_named_pass_is_forced_to_array(
+    monkeypatch,
+) -> None:
     assert mode_for(SPEC) == "none"
-    monkeypatch.setattr(keyed_calls_module.settings, "keyed_schema_passes", "synthesis, title_tag ,x")
+    monkeypatch.setattr(
+        keyed_calls_module.settings, "keyed_schema_passes", "synthesis, title_tag ,x"
+    )
     assert mode_for(SPEC) == "array"
     monkeypatch.setattr(keyed_calls_module.settings, "keyed_schema_passes", "synthesis")
     assert mode_for(SPEC) == "none"
@@ -83,7 +94,15 @@ def test_the_array_schema_follows_the_vendor_rules_for_strict_structured_output(
         # Closed objects (Anthropic + OpenAI/Azure strict), every property required.
         assert obj["additionalProperties"] is False
         assert set(obj["required"]) == set(obj["properties"])
-    forbidden = {"minimum", "maximum", "minItems", "maxItems", "minLength", "maxLength", "patternProperties"}
+    forbidden = {
+        "minimum",
+        "maximum",
+        "minItems",
+        "maxItems",
+        "minLength",
+        "maxLength",
+        "patternProperties",
+    }
     assert not any(isinstance(n, dict) and forbidden & n.keys() for n in _walk(schema))
     entry = schema["properties"]["items"]["items"]
     assert list(entry["properties"]) == ["id", "title", "tags"]
@@ -109,7 +128,10 @@ def test_the_output_sentence_and_the_schema_are_generated_from_the_same_fields()
     sentence = describe_output(SPEC, "array")
     for name in SPEC.fields:
         assert SPEC.field_prompts[name] in sentence
-    assert set(items_schema(SPEC)["schema"]["properties"]["items"]["items"]["properties"]) == {"id", *SPEC.fields}
+    assert set(items_schema(SPEC)["schema"]["properties"]["items"]["items"]["properties"]) == {
+        "id",
+        *SPEC.fields,
+    }
     assert '"items"' in sentence and '"id"' in sentence
 
 
@@ -119,7 +141,12 @@ def test_the_default_mode_renders_exactly_the_prompt_prod_already_ran() -> None:
     markers = {"tag_vocabulary": ", ".join(t.value for t in RequirementTag), "row_count": "3"}
     v1 = load_prompt("title_and_tags_for_rows", version=1, **markers)
     for mode in ("none", "legacy_map"):
-        v2 = load_prompt("title_and_tags_for_rows", version=2, output_format=describe_output(SPEC, mode), **markers)
+        v2 = load_prompt(
+            "title_and_tags_for_rows",
+            version=2,
+            output_format=describe_output(SPEC, mode),
+            **markers,
+        )
         assert v2 == v1
 
 
@@ -130,7 +157,9 @@ ENTRY = {"title": "T", "tags": []}
 
 
 def test_normalize_reads_the_array_format() -> None:
-    result = normalize_keyed_result({"items": [{"id": "r1", **ENTRY}, {"id": " r2 ", **ENTRY}]}, IDS)
+    result = normalize_keyed_result(
+        {"items": [{"id": "r1", **ENTRY}, {"id": " r2 ", **ENTRY}]}, IDS
+    )
     assert result == {"r1": ENTRY, "r2": ENTRY}
 
 
@@ -138,14 +167,18 @@ def test_normalize_reads_a_bare_array_the_legacy_map_and_a_wrapped_map() -> None
     assert normalize_keyed_result([{"id": "r1", **ENTRY}], IDS) == {"r1": ENTRY}
     assert normalize_keyed_result({"r1": ENTRY, " r2": ENTRY}, IDS) == {"r1": ENTRY, "r2": ENTRY}
     assert normalize_keyed_result({"results": {"r1": ENTRY}}, IDS) == {"r1": ENTRY}
-    assert normalize_keyed_result({"output": {"items": [{"id": "r1", **ENTRY}]}}, IDS) == {"r1": ENTRY}
+    assert normalize_keyed_result({"output": {"items": [{"id": "r1", **ENTRY}]}}, IDS) == {
+        "r1": ENTRY
+    }
 
 
 def test_normalize_never_mistakes_a_genuine_one_entry_answer_for_a_wrapper() -> None:
     assert normalize_keyed_result({"r1": ENTRY}, IDS) == {"r1": ENTRY}
 
 
-@pytest.mark.parametrize("garbage", [None, "text", 3, {}, [], [{"nope": 1}], {"items": "x"}, {"items": [{"id": "zzz"}]}])
+@pytest.mark.parametrize(
+    "garbage", [None, "text", 3, {}, [], [{"nope": 1}], {"items": "x"}, {"items": [{"id": "zzz"}]}]
+)
 def test_normalize_yields_nothing_usable_for_garbage(garbage) -> None:
     assert not (set(normalize_keyed_result(garbage, IDS)) & set(IDS))
 
@@ -201,7 +234,11 @@ def test_a_systematic_failure_stops_after_one_extra_call_and_is_not_called_an_om
     send, calls = _send_factory([{}, {}])
     entries = run_keyed(send, PAYLOAD, SPEC)
     assert len(calls) == 2  # the full call, then the first half only
-    assert entries.reason == "no_matching_keys" and len(entries) == 0 and entries.missing == list(PAYLOAD)
+    assert (
+        entries.reason == "no_matching_keys"
+        and len(entries) == 0
+        and entries.missing == list(PAYLOAD)
+    )
 
 
 def test_a_retry_that_raises_leaves_the_ids_omitted_without_failing_the_call() -> None:
@@ -237,7 +274,9 @@ def test_retry_omitted_reports_how_many_extra_calls_it_made() -> None:
 
 
 def _client(handler):
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
     client._transport = httpx.MockTransport(handler)
     return client
 
@@ -245,19 +284,28 @@ def _client(handler):
 ROWS = {"det0_h1": "Size: 3U 1 inch", "det0_h2": "Over-current protection"}
 
 
-def test_title_and_tags_in_array_mode_sends_the_fixed_schema_and_a_matching_prompt(monkeypatch) -> None:
+def test_title_and_tags_in_array_mode_sends_the_fixed_schema_and_a_matching_prompt(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(keyed_calls_module.settings, "keyed_schema_passes", "title_tag")
     bodies: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         bodies.append(body)
-        content = {"items": [{"id": k, "title": f"T {k}", "tags": ["safety"]} for k in json.loads(body["messages"][1]["content"])]}
+        content = {
+            "items": [
+                {"id": k, "title": f"T {k}", "tags": ["safety"]}
+                for k in json.loads(body["messages"][1]["content"])
+            ]
+        }
         return httpx.Response(200, json={"content": json.dumps(content)})
 
     result = _client(handler).title_and_tags_for_rows(ROWS)
 
-    assert result == {k: {"title": f"T {k}", "tags": ["safety"]} for k in ROWS}  # array -> id map at the boundary
+    assert result == {
+        k: {"title": f"T {k}", "tags": ["safety"]} for k in ROWS
+    }  # array -> id map at the boundary
     assert len(bodies) == 1
     assert bodies[0]["responseSchema"] == items_schema(SPEC)
     prompt = bodies[0]["messages"][0]["content"]
@@ -267,7 +315,9 @@ def test_title_and_tags_in_array_mode_sends_the_fixed_schema_and_a_matching_prom
 def test_title_and_tags_in_none_mode_still_reads_a_legacy_map_answer() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert "responseSchema" not in json.loads(request.content)
-        return httpx.Response(200, json={"content": json.dumps({k: {"title": "T", "tags": []} for k in ROWS})})
+        return httpx.Response(
+            200, json={"content": json.dumps({k: {"title": "T", "tags": []} for k in ROWS})}
+        )
 
     assert set(_client(handler).title_and_tags_for_rows(ROWS)) == set(ROWS)
 
@@ -279,7 +329,9 @@ def test_title_and_tags_retries_only_the_omitted_ids() -> None:
         asked = list(json.loads(json.loads(request.content)["messages"][1]["content"]))
         seen.append(asked)
         answered = asked[:1] if len(seen) == 1 else asked
-        return httpx.Response(200, json={"content": json.dumps({k: {"title": "T", "tags": []} for k in answered})})
+        return httpx.Response(
+            200, json={"content": json.dumps({k: {"title": "T", "tags": []} for k in answered})}
+        )
 
     result = _client(handler).title_and_tags_for_rows(ROWS)
     assert set(result) == set(ROWS)
@@ -308,7 +360,9 @@ def test_the_title_tag_pass_does_not_retry_again_when_the_client_already_did() -
     warnings: list = []
     _apply_title_tag_pass(nodes, ids, MigratedClient(), warnings)
 
-    assert calls["n"] == 1  # the pass trusts the KeyedEntries (its own retry would have called again)
+    assert (
+        calls["n"] == 1
+    )  # the pass trusts the KeyedEntries (its own retry would have called again)
     assert next(n for n in nodes if n.local_id == ids[0]).title == "Only"
     assert [w.kind for w in warnings] == [WarningKind.ENHANCEMENT_RESPONSE_INCOMPLETE]
 
@@ -353,7 +407,14 @@ class _RecordingEmitter:
 def test_the_live_display_names_each_array_item_by_its_id() -> None:
     emitter = _RecordingEmitter()
     display = DraftingDisplay(emitter, {"r1": "a", "r2": "b"})
-    stream = json.dumps({"items": [{"id": "r1", "title": "First", "tags": []}, {"id": "r2", "title": "Second", "tags": []}]})
+    stream = json.dumps(
+        {
+            "items": [
+                {"id": "r1", "title": "First", "tags": []},
+                {"id": "r2", "title": "Second", "tags": []},
+            ]
+        }
+    )
     for start in range(0, len(stream), 7):  # arbitrary chunking, including splits inside strings
         display.feed(stream[start : start + 7])
 
@@ -375,12 +436,17 @@ def array_mode(monkeypatch):
     monkeypatch.setattr(keyed_calls_module.settings, "keyed_schema_passes", "title_tag")
 
 
-def test_an_empty_array_answer_falls_back_to_prompt_only_once_and_the_pair_stays_degraded(array_mode, caplog) -> None:
+def test_an_empty_array_answer_falls_back_to_prompt_only_once_and_the_pair_stays_degraded(
+    array_mode, caplog
+) -> None:
     send, calls = _send_factory([{"items": []}, _all, _all])
     with caplog.at_level(logging.WARNING, logger="app.survey.keyed_calls"):
         first = run_keyed(send, PAYLOAD, SPEC, model="claude-opus-4-8")
 
-    assert send.modes == ["array", "none"]  # the schema'd call, then the same call prompt-only -- no half retry first
+    assert send.modes == [
+        "array",
+        "none",
+    ]  # the schema'd call, then the same call prompt-only -- no half retry first
     assert first.reason is None and first.degraded is True and first.mode == "none"
     assert any("from now on" in r.getMessage() for r in caplog.records)
     assert mode_for(SPEC, "claude-opus-4-8") == "none"
@@ -397,7 +463,11 @@ def test_a_partial_array_answer_is_not_a_reason_to_abandon_the_schema(array_mode
     send, _ = _send_factory([first, _all, _all])
     entries = run_keyed(send, PAYLOAD, SPEC, model="m")
 
-    assert send.modes == ["array", "array", "array"]  # the retry of the omitted ids stays on the schema
+    assert send.modes == [
+        "array",
+        "array",
+        "array",
+    ]  # the retry of the omitted ids stays on the schema
     assert entries.reason is None and entries.degraded is False
     assert mode_for(SPEC, "m") == "array"
 
@@ -426,17 +496,27 @@ def test_client_degrades_after_the_schema_returns_nothing_and_stops_sending_it(a
         asked = list(json.loads(body["messages"][1]["content"]))
         if "responseSchema" in body:  # the schema'd call is answered with an empty array
             return httpx.Response(200, json={"content": json.dumps({"items": []})})
-        return httpx.Response(200, json={"content": json.dumps({k: {"title": "T", "tags": []} for k in asked})})
+        return httpx.Response(
+            200, json={"content": json.dumps({k: {"title": "T", "tags": []} for k in asked})}
+        )
 
     client = _client(handler)
     assert set(client.title_and_tags_for_rows(ROWS)) == set(ROWS)
     assert set(client.title_and_tags_for_rows(ROWS)) == set(ROWS)
 
-    assert ["responseSchema" in b for b in bodies] == [True, False, False]  # schema once, then prompt-only
-    assert "exactly one" not in bodies[2]["messages"][0]["content"]  # and the prompt asks for the map shape again
+    assert ["responseSchema" in b for b in bodies] == [
+        True,
+        False,
+        False,
+    ]  # schema once, then prompt-only
+    assert (
+        "exactly one" not in bodies[2]["messages"][0]["content"]
+    )  # and the prompt asks for the map shape again
 
 
-def test_a_truncated_array_answer_keeps_its_complete_items_and_only_the_rest_is_retried(array_mode) -> None:
+def test_a_truncated_array_answer_keeps_its_complete_items_and_only_the_rest_is_retried(
+    array_mode,
+) -> None:
     # Documented caveat: hitting max_tokens can cut the answer off mid-array ("may be incomplete and not
     # match your schema"). The complete elements before the cut must survive, and only what is missing
     # is asked again.
@@ -460,7 +540,9 @@ def test_a_truncated_array_answer_keeps_its_complete_items_and_only_the_rest_is_
 
 
 def test_an_entry_with_none_of_the_contracts_fields_is_not_counted_as_returned() -> None:
-    result = normalize_keyed_result({"items": [{"id": "r1", **ENTRY}, {"id": "r2"}]}, IDS, ["title", "tags"])
+    result = normalize_keyed_result(
+        {"items": [{"id": "r1", **ENTRY}, {"id": "r2"}]}, IDS, ["title", "tags"]
+    )
     assert set(result) == {"r1"}
     legacy = normalize_keyed_result({"r1": ENTRY, "r2": {}}, IDS, ["title", "tags"])
     assert set(legacy) == {"r1"}
@@ -468,13 +550,19 @@ def test_an_entry_with_none_of_the_contracts_fields_is_not_counted_as_returned()
     assert set(normalize_keyed_result({"r1": ENTRY, "r2": {}}, IDS)) == {"r1", "r2"}
 
 
-def test_a_length_truncated_answer_distrusts_its_last_entry_but_other_shapes_are_untouched() -> None:
+def test_a_length_truncated_answer_distrusts_its_last_entry_but_other_shapes_are_untouched() -> (
+    None
+):
     from app.survey.keyed_calls import drop_possibly_cut_last_entry
 
-    assert drop_possibly_cut_last_entry({"items": [{"id": "a"}, {"id": "b"}]}) == {"items": [{"id": "a"}]}
+    assert drop_possibly_cut_last_entry({"items": [{"id": "a"}, {"id": "b"}]}) == {
+        "items": [{"id": "a"}]
+    }
     assert drop_possibly_cut_last_entry({"a": {"t": 1}, "b": {"t": 2}}) == {"a": {"t": 1}}
     verdict = {"verdict": "redundant", "conflicting_values": ["x"]}
-    assert drop_possibly_cut_last_entry(verdict) == verdict  # a fixed-shape object is not an entry list
+    assert (
+        drop_possibly_cut_last_entry(verdict) == verdict
+    )  # a fixed-shape object is not an entry list
     assert drop_possibly_cut_last_entry({"links": [1, 2]}) == {"links": [1, 2]}
     assert drop_possibly_cut_last_entry({"items": []}) == {"items": []}
 

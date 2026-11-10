@@ -4,8 +4,8 @@ from __future__ import annotations
 import hashlib
 import logging
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from pydantic import BaseModel
 
@@ -24,6 +24,11 @@ class IngestResult(BaseModel):
     size_bytes: int
     chunks_stored: int
     skipped_unchanged: bool
+    # Chunks the store really holds for this file after the call: equals
+    # chunks_stored on a fresh ingest, but is the existing count (not 0) on the
+    # skip-unchanged branch, so callers can record a truthful number. None =
+    # unknown (count unavailable); never 0 by default.
+    chunks_in_store: int | None = None
 
 
 # Recursive folder-crawl depth cap: bounds worst-case Graph API calls
@@ -37,6 +42,7 @@ class FolderIngestFileResult(BaseModel):
     file: str
     status: str  # "ingested" | "skipped_unchanged" | "failed"
     chunks_stored: int
+    chunks_in_store: int | None = None
     driveitem_id: str | None = None
     mime_type: str | None = None
     size_bytes: int | None = None
@@ -114,6 +120,13 @@ def _store_document(
             vector_store.rename_file(user_id, item_id, name)
         except Exception as exc:  # noqa: BLE001 - rename metadata update must never fail an ingest
             logger.warning("rename_file failed for %s (source_id=%s): %s", name, item_id, exc)
+        # Best-effort like the rename above: a store hiccup here must not fail
+        # the (otherwise infallible) skip branch; the count is then unknown.
+        try:
+            chunks_in_store: int | None = vector_store.count_file_chunks(user_id, item_id)
+        except Exception as exc:  # noqa: BLE001 - count is informational only
+            logger.warning("count_file_chunks failed for %s (source_id=%s): %s", name, item_id, exc)
+            chunks_in_store = None
         return IngestResult(
             document_name=name,
             driveitem_id=item_id,
@@ -121,6 +134,7 @@ def _store_document(
             size_bytes=len(content),
             chunks_stored=0,
             skipped_unchanged=True,
+            chunks_in_store=chunks_in_store,
         )
 
     suffix = Path(name).suffix
@@ -157,16 +171,22 @@ def _store_document(
     if checklist_client is not None:
         try:
             full_text = "\n\n".join(chunk.text for chunk in chunks)
-            quality_checklist = checklist_client.extract_quality_checklist(full_text, user_id=user_id)
+            quality_checklist = checklist_client.extract_quality_checklist(
+                full_text, user_id=user_id
+            )
         except Exception as exc:  # noqa: BLE001 - checklist extraction must never fail an ingest
             logger.warning("Quality-checklist extraction failed for %s: %s", name, exc)
             quality_checklist = None
         definitions_fn = getattr(checklist_client, "extract_quality_checklist_definitions", None)
         if quality_checklist and definitions_fn is not None:
             try:
-                quality_checklist_definitions = definitions_fn(full_text, quality_checklist, user_id=user_id)
+                quality_checklist_definitions = definitions_fn(
+                    full_text, quality_checklist, user_id=user_id
+                )
             except Exception as exc:  # noqa: BLE001 - same "enhancement, never a hard dependency" tolerance
-                logger.warning("Quality-checklist definition extraction failed for %s: %s", name, exc)
+                logger.warning(
+                    "Quality-checklist definition extraction failed for %s: %s", name, exc
+                )
                 quality_checklist_definitions = None
 
     # Embed every chunk BEFORE deleting the file's old chunks or upserting
@@ -200,6 +220,7 @@ def _store_document(
         size_bytes=len(content),
         chunks_stored=len(embedded),
         skipped_unchanged=False,
+        chunks_in_store=len(embedded),
     )
 
 
@@ -232,8 +253,16 @@ def ingest_document_from_url(
         raise ValueError(f"file exceeds {MAX_FILE_SIZE_BYTES}-byte limit: {len(content)}")
 
     result = _store_document(
-        item.name, item.id, content, user_id, doc_type, embed_client, vector_store,
-        describe_figure=describe_figure, checklist_client=checklist_client, retrieval_mode=retrieval_mode,
+        item.name,
+        item.id,
+        content,
+        user_id,
+        doc_type,
+        embed_client,
+        vector_store,
+        describe_figure=describe_figure,
+        checklist_client=checklist_client,
+        retrieval_mode=retrieval_mode,
     )
     return result.model_copy(update={"mime_type": item.mime_type})
 
@@ -262,8 +291,16 @@ def ingest_folder_child(
     if len(content) > MAX_FILE_SIZE_BYTES:
         raise ValueError(f"file exceeds {MAX_FILE_SIZE_BYTES}-byte limit: {len(content)}")
     return _store_document(
-        name, item_id, content, user_id, doc_type, embed_client, vector_store,
-        describe_figure=describe_figure, checklist_client=checklist_client, retrieval_mode=retrieval_mode,
+        name,
+        item_id,
+        content,
+        user_id,
+        doc_type,
+        embed_client,
+        vector_store,
+        describe_figure=describe_figure,
+        checklist_client=checklist_client,
+        retrieval_mode=retrieval_mode,
     )
 
 
@@ -297,7 +334,13 @@ def _ingest_folder_children(
                 grandchildren = graph_client.list_children_by_id(child.drive_id, child.id)
             except Exception as exc:  # noqa: BLE001 - one subtree's failure must not abort siblings
                 results.append(
-                    FolderIngestFileResult(file=child.name, status="failed", chunks_stored=0, reason=str(exc), relative_path=relative_path)
+                    FolderIngestFileResult(
+                        file=child.name,
+                        status="failed",
+                        chunks_stored=0,
+                        reason=str(exc),
+                        relative_path=relative_path,
+                    )
                 )
                 continue
             _ingest_folder_children(
@@ -327,14 +370,22 @@ def _ingest_folder_children(
                 raise ValueError(f"file exceeds {MAX_FILE_SIZE_BYTES}-byte limit: {len(content)}")
 
             result = _store_document(
-                child.name, child.id, content, user_id, doc_type, embed_client, vector_store,
-                describe_figure=describe_figure, checklist_client=checklist_client,
+                child.name,
+                child.id,
+                content,
+                user_id,
+                doc_type,
+                embed_client,
+                vector_store,
+                describe_figure=describe_figure,
+                checklist_client=checklist_client,
             )
             results.append(
                 FolderIngestFileResult(
                     file=child.name,
                     status="skipped_unchanged" if result.skipped_unchanged else "ingested",
                     chunks_stored=result.chunks_stored,
+                    chunks_in_store=result.chunks_in_store,
                     driveitem_id=child.id,
                     mime_type=child.mime_type,
                     size_bytes=len(content),
@@ -342,7 +393,15 @@ def _ingest_folder_children(
                 )
             )
         except Exception as exc:  # noqa: BLE001 - one file's failure must not abort the batch
-            results.append(FolderIngestFileResult(file=child.name, status="failed", chunks_stored=0, reason=str(exc), relative_path=relative_path))
+            results.append(
+                FolderIngestFileResult(
+                    file=child.name,
+                    status="failed",
+                    chunks_stored=0,
+                    reason=str(exc),
+                    relative_path=relative_path,
+                )
+            )
 
 
 def ingest_folder_from_url(
@@ -371,7 +430,17 @@ def ingest_folder_from_url(
     # a folder found 5 levels down from the root is listed but not descended
     # into (its own children, at depth 6, are never fetched).
     _ingest_folder_children(
-        children, "", 1, user_id, doc_type, graph_client, embed_client, vector_store, recursive,
-        results, describe_figure=describe_figure, checklist_client=checklist_client,
+        children,
+        "",
+        1,
+        user_id,
+        doc_type,
+        graph_client,
+        embed_client,
+        vector_store,
+        recursive,
+        results,
+        describe_figure=describe_figure,
+        checklist_client=checklist_client,
     )
     return FolderIngestResult(files=results)

@@ -149,6 +149,8 @@ export function FigureImage({
       <img
         src={state.url}
         alt={alt}
+        loading="lazy"
+        decoding="async"
         className="h-40 w-full min-w-0 max-w-full flex-none rounded-sm border border-hairline object-contain sm:max-w-xs"
       />
     );

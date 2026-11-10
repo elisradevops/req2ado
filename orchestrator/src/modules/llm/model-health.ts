@@ -54,6 +54,8 @@ export function parseVerdict(raw: string | null | undefined): ModelVerdict | und
 
 /** The slice of the LLM client a probe needs. */
 export interface ProbeClient {
+  /** How many calls that are real work run on this client right now; absent means unknown (the probe goes ahead). */
+  activeWorkCalls?(): number;
   chat(messages: { role: 'system' | 'user' | 'assistant'; content: string }[], opts?: LlmChatOptions): Promise<LlmChatResult>;
 }
 
@@ -125,33 +127,41 @@ function parseRows(content: string): { id?: unknown }[] | null {
   }
 }
 
+/** One probe call: marked as background, and cancelled when it outlives its time, so it stops holding the backend (a timeout alone left it running to the client timeout). */
+async function probeCall(client: ProbeClient, messages: Parameters<ProbeClient['chat']>[0], opts: LlmChatOptions, timeoutMs: number): Promise<LlmChatResult> {
+  const controller = new AbortController();
+  try {
+    return await withTimeout(client.chat(messages, { ...opts, background: true, signal: controller.signal }), timeoutMs);
+  } finally {
+    controller.abort();
+  }
+}
+
 async function probeOnce(client: ProbeClient, model: string, timeoutMs: number): Promise<void> {
   // 1. A plain call that carries our own instruction: a persona/agent preset that injects its own prompt ignores it.
-  const plain = await withTimeout(
-    client.chat(
-      [
-        { role: 'system', content: `Reply with exactly the token ${PLAIN_TOKEN} and nothing else.` },
-        { role: 'user', content: 'Go.' },
-      ],
-      { model, temperature: 0, maxTokens: 200 },
-    ),
+  const plain = await probeCall(
+    client,
+    [
+      { role: 'system', content: `Reply with exactly the token ${PLAIN_TOKEN} and nothing else.` },
+      { role: 'user', content: 'Go.' },
+    ],
+    { model, temperature: 0, maxTokens: 200 },
     timeoutMs,
   );
   if (!plain.content.includes(PLAIN_TOKEN)) throw new ProbeFailure('ignored_instruction');
 
   // 2. Structured output on three synthetic rows (a schema the model cannot take degrades to a prompt-only answer,
   //    which still has to parse).
-  const structured = await withTimeout(
-    client.chat(
-      [
-        {
-          role: 'system',
-          content: 'Return JSON of the form {"rows":[{"id":"<id>","label":"<id in upper case>"}]} with one row per id given.',
-        },
-        { role: 'user', content: STRUCTURED_IDS.join(', ') },
-      ],
-      { model, temperature: 0, maxTokens: 400, responseSchema: ROWS_SCHEMA },
-    ),
+  const structured = await probeCall(
+    client,
+    [
+      {
+        role: 'system',
+        content: 'Return JSON of the form {"rows":[{"id":"<id>","label":"<id in upper case>"}]} with one row per id given.',
+      },
+      { role: 'user', content: STRUCTURED_IDS.join(', ') },
+    ],
+    { model, temperature: 0, maxTokens: 400, responseSchema: ROWS_SCHEMA },
     timeoutMs,
   );
   const rows = parseRows(structured.content);

@@ -1,5 +1,9 @@
 from app.canonical.model import Block, BlockKind, SourceRef, Table, TableCell
-from app.leveling.heading_outline import HeadingOutlineEntry, entries_for_blocks, heading_outline_entries
+from app.leveling.heading_outline import (
+    HeadingOutlineEntry,
+    entries_for_blocks,
+    heading_outline_entries,
+)
 
 _NON_REQ_TEXT = "Some descriptive text about this topic here."  # 7 words, no modal verb
 _SHALL_TEXT = "The system shall handle this case correctly."  # 7 words, has "shall"
@@ -10,11 +14,19 @@ def _sr(start: int, end: int, path: str = "x.docx") -> SourceRef:
 
 
 def _heading(text: str, level: int, offset: int, block_id: str = "b") -> Block:
-    return Block(id=block_id, kind=BlockKind.HEADING, text=text, heading_level=level, source_ref=_sr(offset, offset + 1))
+    return Block(
+        id=block_id,
+        kind=BlockKind.HEADING,
+        text=text,
+        heading_level=level,
+        source_ref=_sr(offset, offset + 1),
+    )
 
 
 def _para(offset: int, text: str = _NON_REQ_TEXT, block_id: str = "p") -> Block:
-    return Block(id=block_id, kind=BlockKind.PARAGRAPH, text=text, source_ref=_sr(offset, offset + 1))
+    return Block(
+        id=block_id, kind=BlockKind.PARAGRAPH, text=text, source_ref=_sr(offset, offset + 1)
+    )
 
 
 def _shall_para(offset: int, block_id: str = "p") -> Block:
@@ -27,14 +39,22 @@ def _id_table(offset: int, n_rows: int, table_id: str = "t0") -> Table:
     rows = [["#", "Parameter", "Requirement / Value"]]
     for i in range(n_rows):
         rows.append([f"P-SENSOR-{i:03d}#", f"Param {i}", f"The system shall do thing {i}."])
-    return Table(id=table_id, cells=[[TableCell(text=c) for c in row] for row in rows], source_ref=_sr(offset, offset + 1))
+    return Table(
+        id=table_id,
+        cells=[[TableCell(text=c) for c in row] for row in rows],
+        source_ref=_sr(offset, offset + 1),
+    )
 
 
 def _values_table(offset: int, table_id: str = "t0") -> Table:
     """A supplementary values table with no id column and no requirement-
     shaped cell content (AirPro's own convention)."""
     rows = [["Wire", "Gauge"], ["W1", "24 AWG"], ["W2", "26 AWG"]]
-    return Table(id=table_id, cells=[[TableCell(text=c) for c in row] for row in rows], source_ref=_sr(offset, offset + 1))
+    return Table(
+        id=table_id,
+        cells=[[TableCell(text=c) for c in row] for row in rows],
+        source_ref=_sr(offset, offset + 1),
+    )
 
 
 def _titles_types(entries: list[HeadingOutlineEntry]) -> list[tuple[str, str]]:
@@ -158,8 +178,10 @@ def test_leaf_with_exactly_one_obligation_stays_requirement() -> None:
 
 def test_leaf_with_two_obligations_becomes_feature_and_its_parent_becomes_epic() -> None:
     blocks = [
-        _heading("Domain", 1, 0, "b0"), _heading("Sync", 2, 1, "b1"),
-        _shall_para(2, "p1"), _shall_para(3, "p2"),
+        _heading("Domain", 1, 0, "b0"),
+        _heading("Sync", 2, 1, "b1"),
+        _shall_para(2, "p1"),
+        _shall_para(3, "p2"),
         _heading("Other Domain", 1, 4, "b2"),
     ]
     entries = heading_outline_entries(blocks)
@@ -169,7 +191,11 @@ def test_leaf_with_two_obligations_becomes_feature_and_its_parent_becomes_epic()
 
 
 def test_two_qualifying_id_table_rows_count_as_two_obligations() -> None:
-    blocks = [_heading("Domain", 1, 0, "b0"), _heading("Sync", 2, 1, "b1"), _heading("Other Domain", 1, 3, "b2")]
+    blocks = [
+        _heading("Domain", 1, 0, "b0"),
+        _heading("Sync", 2, 1, "b1"),
+        _heading("Other Domain", 1, 3, "b2"),
+    ]
     entries = heading_outline_entries(blocks, [_id_table(2, 2)])
     by_title = {e.title: e.suggested_type for e in entries}
     assert by_title["Domain"] == "Epic"
@@ -178,8 +204,10 @@ def test_two_qualifying_id_table_rows_count_as_two_obligations() -> None:
 
 def test_non_requirement_shaped_prose_never_counts_as_an_obligation() -> None:
     blocks = [
-        _heading("Other", 2, 0, "b0"), _heading("Sync", 2, 1, "b1"),
-        _para(2, block_id="p1"), _para(3, block_id="p2"),
+        _heading("Other", 2, 0, "b0"),
+        _heading("Sync", 2, 1, "b1"),
+        _para(2, block_id="p1"),
+        _para(3, block_id="p2"),
     ]
     entries = heading_outline_entries(blocks)
     by_title = {e.title: e.suggested_type for e in entries}
@@ -216,13 +244,17 @@ def test_level_offset_invariance_same_shape_different_absolute_levels() -> None:
     # above).
     def _shape(level_a: int, level_b: int) -> list[Block]:
         return [
-            _heading("Domain", level_a, 0, "b0"), _heading("Sync", level_b, 1, "b1"),
-            _shall_para(2, "p1"), _shall_para(3, "p2"),
+            _heading("Domain", level_a, 0, "b0"),
+            _heading("Sync", level_b, 1, "b1"),
+            _shall_para(2, "p1"),
+            _shall_para(3, "p2"),
             _heading("Other Domain", level_a, 4, "b2"),
         ]
 
     for level_a, level_b in [(1, 2), (2, 3), (3, 5)]:  # (3, 5) also skips a level
-        by_title = {e.title: e.suggested_type for e in heading_outline_entries(_shape(level_a, level_b))}
+        by_title = {
+            e.title: e.suggested_type for e in heading_outline_entries(_shape(level_a, level_b))
+        }
         assert by_title["Domain"] == "Epic"
         assert by_title["Sync"] == "Feature"
 
@@ -256,7 +288,12 @@ def test_a_lone_top_tier_heading_with_everything_else_deeper_is_suppressed() -> 
     # direction: a suppressed real Epic just falls back to the model's
     # own pre-existing judgment, whereas naming a bare Title as an Epic is
     # the confirmed, actively wrong shape this fix exists to prevent).
-    blocks = [_heading("Domain", 1, 0, "b0"), _heading("Sync", 2, 1, "b1"), _shall_para(2, "p1"), _shall_para(3, "p2")]
+    blocks = [
+        _heading("Domain", 1, 0, "b0"),
+        _heading("Sync", 2, 1, "b1"),
+        _shall_para(2, "p1"),
+        _shall_para(3, "p2"),
+    ]
     entries = heading_outline_entries(blocks)
     assert "Domain" not in {e.title for e in entries}
 
@@ -265,24 +302,36 @@ def test_pdf_shaped_table_on_a_later_page_is_still_counted_via_order_key() -> No
     # _order_key is (page, start_offset) -- a heading on page 1 and its
     # requirements table on page 2 must still resolve in document order.
     heading = Block(
-        id="h0", kind=BlockKind.HEADING, text="Domain", heading_level=1,
+        id="h0",
+        kind=BlockKind.HEADING,
+        text="Domain",
+        heading_level=1,
         source_ref=SourceRef(document_path="x.pdf", start_offset=0, end_offset=1, page=1),
     )
     sync = Block(
-        id="h1", kind=BlockKind.HEADING, text="Sync", heading_level=2,
+        id="h1",
+        kind=BlockKind.HEADING,
+        text="Sync",
+        heading_level=2,
         source_ref=SourceRef(document_path="x.pdf", start_offset=0, end_offset=1, page=1),
     )
     other_domain = Block(
-        id="h2", kind=BlockKind.HEADING, text="Other Domain", heading_level=1,
+        id="h2",
+        kind=BlockKind.HEADING,
+        text="Other Domain",
+        heading_level=1,
         source_ref=SourceRef(document_path="x.pdf", start_offset=0, end_offset=1, page=3),
     )
     table = Table(
         id="t0",
-        cells=[[TableCell(text=c) for c in row] for row in [
-            ["#", "Requirement"],
-            ["P-SENSOR-001#", "The system shall do thing 0."],
-            ["P-SENSOR-002#", "The system shall do thing 1."],
-        ]],
+        cells=[
+            [TableCell(text=c) for c in row]
+            for row in [
+                ["#", "Requirement"],
+                ["P-SENSOR-001#", "The system shall do thing 0."],
+                ["P-SENSOR-002#", "The system shall do thing 1."],
+            ]
+        ],
         source_ref=SourceRef(document_path="x.pdf", start_offset=0, end_offset=1, page=2),
     )
     entries = heading_outline_entries([heading, sync, other_domain], [table])
@@ -296,7 +345,9 @@ def test_pdf_shaped_table_on_a_later_page_is_still_counted_via_order_key() -> No
 
 def test_entries_for_blocks_filters_and_preserves_order() -> None:
     blocks = [
-        _heading("Domain", 1, 0, "b0"), _heading("Sync", 2, 1, "b1"), _heading("Other", 2, 2, "b2"),
+        _heading("Domain", 1, 0, "b0"),
+        _heading("Sync", 2, 1, "b1"),
+        _heading("Other", 2, 2, "b2"),
         _heading("Other Domain", 1, 5, "b3"),
     ]
     entries = heading_outline_entries(blocks, [_id_table(3, 2, "t0"), _id_table(4, 2, "t1")])
@@ -312,7 +363,9 @@ def test_entries_for_blocks_never_raises_on_none_or_empty() -> None:
     assert entries_for_blocks(entries, []) == []
 
 
-def test_filtering_a_document_wide_outline_survives_a_branch_split_the_suppression_heuristic_would_not() -> None:
+def test_filtering_a_document_wide_outline_survives_a_branch_split_the_suppression_heuristic_would_not() -> (
+    None
+):
     # The exact regression this filter-not-recompute design (D5) guards
     # against: classify_by_nesting's own TYPE computation is bottom-up
     # (subset-invariant -- a node's type depends only on its own
@@ -330,20 +383,35 @@ def test_filtering_a_document_wide_outline_survives_a_branch_split_the_suppressi
     # this real Epic.
     def _domain(title: str, offset: int, block_id: str) -> list:
         return [
-            _heading(title, 1, offset, block_id), _heading(f"{title} Feature", 2, offset + 1, f"{block_id}f"),
-            _shall_para(offset + 2, f"{block_id}p1"), _shall_para(offset + 3, f"{block_id}p2"),
+            _heading(title, 1, offset, block_id),
+            _heading(f"{title} Feature", 2, offset + 1, f"{block_id}f"),
+            _shall_para(offset + 2, f"{block_id}p1"),
+            _shall_para(offset + 3, f"{block_id}p2"),
         ]
 
-    full_blocks = _domain("Alpha", 0, "a") + _domain("Beta", 4, "b") + _domain("Gamma", 8, "g") + _domain("Delta", 12, "d")
+    full_blocks = (
+        _domain("Alpha", 0, "a")
+        + _domain("Beta", 4, "b")
+        + _domain("Gamma", 8, "g")
+        + _domain("Delta", 12, "d")
+    )
     full_entries = heading_outline_entries(full_blocks)
-    assert ("Beta", "Epic") in _titles_types(full_entries)  # sanity: correctly typed in the full document
+    assert ("Beta", "Epic") in _titles_types(
+        full_entries
+    )  # sanity: correctly typed in the full document
 
-    beta_subset = full_blocks[4:8]  # Beta's own complete subtree, isolated -- as a branch split might produce
+    beta_subset = full_blocks[
+        4:8
+    ]  # Beta's own complete subtree, isolated -- as a branch split might produce
     filtered = entries_for_blocks(full_entries, beta_subset)
-    assert ("Beta", "Epic") in _titles_types(filtered)  # preserved when filtered from the full-document computation
+    assert ("Beta", "Epic") in _titles_types(
+        filtered
+    )  # preserved when filtered from the full-document computation
 
     recomputed_from_subset = heading_outline_entries(beta_subset)
-    assert "Beta" not in {e.title for e in recomputed_from_subset}  # wrongly suppressed if recomputed in isolation
+    assert "Beta" not in {
+        e.title for e in recomputed_from_subset
+    }  # wrongly suppressed if recomputed in isolation
 
 
 # --- Robustness --------------------------------------------------------------

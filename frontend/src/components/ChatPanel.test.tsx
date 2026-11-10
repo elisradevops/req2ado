@@ -69,6 +69,68 @@ describe('ChatPanel', () => {
     expect(await screen.findByText(/i have read this requirement/i)).toBeInTheDocument();
   });
 
+  it('offers the split starter first for a compound item, and sends its fixed prompt', async () => {
+    render(
+      <ToastProvider>
+        <ChatPanel jobId="job-1" localId="n0" disabled={false} isCompound onAcceptProposal={vi.fn()} />
+      </ToastProvider>,
+    );
+    const split = await screen.findByRole('button', { name: /split into separate requirements/i });
+    const rows = screen.getAllByRole('button').filter((b) => /make it testable|split into separate/i.test(b.textContent ?? ''));
+    expect(rows[0]).toBe(split);
+    await userEvent.click(split);
+    await waitFor(() => expect(chatApi.sendChatTurn).toHaveBeenCalledTimes(1));
+    const [jobId, localId, message] = vi.mocked(chatApi.sendChatTurn).mock.calls[0];
+    expect([jobId, localId]).toEqual(['job-1', 'n0']);
+    expect(message).toMatch(/combines more than one requirement/i);
+  });
+
+  it('hides every starter, the split one included, once the chat has history', async () => {
+    vi.mocked(chatApi.getChatHistory).mockResolvedValue([
+      { id: '1', role: 'user', content: 'hello', createdAt: '2026-11-02T00:00:00Z' } as never,
+    ]);
+    render(
+      <ToastProvider>
+        <ChatPanel jobId="job-1" localId="n0" disabled={false} isCompound onAcceptProposal={vi.fn()} />
+      </ToastProvider>,
+    );
+    expect(await screen.findByText('hello')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /split into separate requirements/i })).not.toBeInTheDocument();
+  });
+
+  it('lets the browser pick the direction of a user bubble and an assistant reply (Hebrew)', async () => {
+    vi.mocked(chatApi.getChatHistory).mockResolvedValue([
+      { id: '1', role: 'user', content: 'שלום עולם', createdAt: '2026-11-02T00:00:00Z' } as never,
+      { id: '2', role: 'assistant', content: 'תשובה בעברית', createdAt: '2026-11-02T00:00:01Z' } as never,
+    ]);
+    render(
+      <ToastProvider>
+        <ChatPanel jobId="job-1" localId="n0" disabled={false} onAcceptProposal={vi.fn()} />
+      </ToastProvider>,
+    );
+    expect(await screen.findByText('שלום עולם')).toHaveAttribute('dir', 'auto');
+    expect(screen.getByText('תשובה בעברית')).toHaveAttribute('dir', 'auto');
+  });
+
+  it('shows no starters at all while the chat is disabled, even for a compound item', () => {
+    render(
+      <ToastProvider>
+        <ChatPanel jobId="job-1" localId="n0" disabled isCompound onAcceptProposal={vi.fn()} />
+      </ToastProvider>,
+    );
+    expect(screen.queryByRole('button', { name: /split into separate requirements/i })).not.toBeInTheDocument();
+  });
+
+  it('does not offer the split starter for an item that is not compound', async () => {
+    render(
+      <ToastProvider>
+        <ChatPanel jobId="job-1" localId="n0" disabled={false} onAcceptProposal={vi.fn()} />
+      </ToastProvider>,
+    );
+    await screen.findByText(/i have read this requirement/i);
+    expect(screen.queryByRole('button', { name: /split into separate requirements/i })).not.toBeInTheDocument();
+  });
+
   it('renders an assistant reply\'s markdown (e.g. **bold**) as real formatting, not literal asterisks', async () => {
     vi.mocked(chatApi.getChatHistory).mockResolvedValue([
       {
@@ -210,6 +272,59 @@ describe('ChatPanel', () => {
     await user.click(screen.getByRole('button', { name: /accept/i }));
 
     expect(onAcceptProposal).toHaveBeenCalledWith({ title: 'New title', description: undefined });
+  });
+
+  it('"To be discussed" calls onDiscuss with the proposal, not onAcceptProposal, and clears the card', async () => {
+    let capturedOnEvent: ((event: import('../hooks/useChatSocket').StreamEvent) => void) | undefined;
+    vi.mocked(useChatSocket).mockImplementation((_jobId, _localId, onEvent) => {
+      capturedOnEvent = onEvent;
+    });
+    const onAcceptProposal = vi.fn();
+    const onDiscuss = vi.fn();
+    render(
+      <ToastProvider>
+        <ChatPanel jobId="job-1" localId="n0" disabled={false} onAcceptProposal={onAcceptProposal} onDiscuss={onDiscuss} />
+      </ToastProvider>,
+    );
+    await screen.findByPlaceholderText(/ask the assistant/i);
+
+    capturedOnEvent?.({ type: 'done', message: 'Here you go', proposedTitle: 'New title', proposedDescription: null, model: 'llama3.1' });
+
+    const user = userEvent.setup();
+    await screen.findByText('New title');
+    await user.click(screen.getByRole('button', { name: /to be discussed/i }));
+
+    expect(onDiscuss).toHaveBeenCalledWith({ title: 'New title', description: undefined });
+    expect(onAcceptProposal).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: /to be discussed/i })).not.toBeInTheDocument();
+  });
+
+  it('disables Accept, "To be discussed" and Reject while a discuss request is in flight', async () => {
+    let capturedOnEvent: ((event: import('../hooks/useChatSocket').StreamEvent) => void) | undefined;
+    vi.mocked(useChatSocket).mockImplementation((_jobId, _localId, onEvent) => {
+      capturedOnEvent = onEvent;
+    });
+    let finish: () => void = () => {};
+    const onDiscuss = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    render(
+      <ToastProvider>
+        <ChatPanel jobId="job-1" localId="n0" disabled={false} onAcceptProposal={vi.fn()} onDiscuss={onDiscuss} />
+      </ToastProvider>,
+    );
+    await screen.findByPlaceholderText(/ask the assistant/i);
+
+    capturedOnEvent?.({ type: 'done', message: 'Here you go', proposedTitle: 'New title', proposedDescription: null, model: 'llama3.1' });
+
+    const user = userEvent.setup();
+    await screen.findByText('New title');
+    await user.click(screen.getByRole('button', { name: /to be discussed/i }));
+
+    expect(screen.getByRole('button', { name: /^accept$/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /to be discussed/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /^reject$/i })).toBeDisabled();
+
+    await act(async () => { finish(); });
+    expect(screen.queryByRole('button', { name: /to be discussed/i })).not.toBeInTheDocument();
   });
 
   it('shows a proposed description with a table as a real table, like the detail window does, not as markup text', async () => {
@@ -391,6 +506,19 @@ describe('ChatPanel', () => {
     // duplicate control -- there both is, and can only ever be, one, since
     // the persistent header button this used to also guard against is gone).
     expect(screen.getAllByRole('button', { name: /^suggest a (better )?title/i })).toHaveLength(1);
+  });
+
+  it('names an Epic as an epic and offers no testability starter for it', async () => {
+    render(
+      <ToastProvider>
+        <ChatPanel jobId="job-1" localId="n0" itemType="Epic" disabled={false} onAcceptProposal={vi.fn()} />
+      </ToastProvider>,
+    );
+    await screen.findByPlaceholderText(/ask the assistant/i);
+    expect(screen.getByText('I have read this epic. Want me to:')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^make it testable/i })).not.toBeInTheDocument();
+    expect(screen.getByText('add a brief rationale explaining why this epic exists')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^tighten the wording/i })).toBeInTheDocument();
   });
 
   it('clicking a starter row sends its real prompt text through the normal send() path', async () => {

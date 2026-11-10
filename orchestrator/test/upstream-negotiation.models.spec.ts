@@ -142,7 +142,10 @@ describe('negotiation parsers (documented wordings)', () => {
   it('proposes a raised budget once, within the ceiling, and never above what was sent', () => {
     expect(raisedBudgetFor(50, adaptation())).toBe(4000);
     expect(raisedBudgetFor(1000, adaptation())).toBe(4000);
-    expect(raisedBudgetFor(20000, adaptation())).toBe(64000);
+    expect(raisedBudgetFor(20000, adaptation())).toBe(64000); // default ceiling unchanged for callers that pass none
+    expect(raisedBudgetFor(4000, adaptation(), true, 16000)).toBe(16000);
+    expect(raisedBudgetFor(20000, adaptation({ maxTokensCap: 131072 }))).toBe(80000); // default callers keep a learned cap above the default ceiling
+    expect(raisedBudgetFor(4000, adaptation({ maxTokensCap: 131072 }), true, 16000)).toBe(16000);
     expect(raisedBudgetFor(50, adaptation({ maxTokensFloor: 4000 }))).toBeNull();
     expect(raisedBudgetFor(16384, adaptation({ maxTokensCap: 16384 }))).toBeNull();
     expect(raisedBudgetFor(undefined, adaptation())).toBeNull();

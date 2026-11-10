@@ -112,6 +112,14 @@ export interface LlmChatOptions {
   // an opt-out, not a blanket setting, so callers that DO want reasoning
   // (e.g. a user-facing chat turn) are unaffected.
   think?: boolean;
+  /** `study`: a document-study window. Raised once on a cut-off answer, with its own remembered limit kept apart from other chat calls, and a bounded rung time. */
+  budgetKind?: 'study';
+  /** Epoch ms by which the call, retries included, should be over; no new attempt starts past it. */
+  deadlineAtMs?: number;
+  /** Stops the call (and its retries) when the caller goes away or gives up. */
+  signal?: AbortSignal;
+  /** A call that is not real work (a model health probe): not counted by activeWorkCalls, so it never makes another probe wait. */
+  background?: boolean;
 }
 
 /**
@@ -144,5 +152,18 @@ export interface LlmClient {
   listModels(): Promise<string[]>;
   streamChat(messages: ChatMessage[], opts?: LlmChatOptions): AsyncGenerator<LlmStreamChunk>;
   embed(texts: string[], opts?: { model?: string }): Promise<number[][]>;
-  vision(prompt: string, images: Buffer[], opts?: { model?: string; mimeType?: string; responseSchema?: LlmResponseSchema; detail?: 'low' | 'high' | 'auto' }): Promise<string>;
+  vision(
+    prompt: string,
+    images: Buffer[],
+    opts?: {
+      model?: string;
+      mimeType?: string;
+      responseSchema?: LlmResponseSchema;
+      detail?: 'low' | 'high' | 'auto';
+      /** Stops the call (and its retries) when the caller goes away. */
+      signal?: AbortSignal;
+      /** Epoch ms by which the call, retries included, should be over; no new attempt starts past it. */
+      deadlineAtMs?: number;
+    },
+  ): Promise<string>;
 }

@@ -28,6 +28,21 @@ describe('IngestionHttpClient', () => {
     expect(options.body).toBeInstanceOf(FormData);
   });
 
+  it('passes the abort signal to the /ingest request, so a cancelled job stops the parse and its figure calls', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ blocks: [] }) });
+    const controller = new AbortController();
+    await new IngestionHttpClient('http://ingestion.internal').ingest(
+      Buffer.from('x'), 'x.txt', false, 'survey', 'job-1', undefined, undefined, 'user-1', undefined, undefined, controller.signal,
+    );
+    expect((global.fetch as jest.Mock).mock.calls[0][1].signal).toBe(controller.signal);
+  });
+
+  it('sends no signal when none is given (preview and every earlier call site)', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ blocks: [] }) });
+    await new IngestionHttpClient('http://ingestion.internal').ingest(Buffer.from('x'), 'x.txt');
+    expect((global.fetch as jest.Mock).mock.calls[0][1].signal).toBeUndefined();
+  });
+
   it('uses the long-running dispatcher for /ingest, same as /level', async () => {
     // Regression: /ingest previously used the plain default-timeout fetch --
     // fine when it was pure CPU-bound parsing, but real job submission's
@@ -460,6 +475,7 @@ describe('IngestionHttpClient.ingestUrl', () => {
         mime_type: 'application/pdf',
         size_bytes: 1024,
         chunks_stored: 3,
+        chunks_in_store: 3,
         skipped_unchanged: false,
       }),
     });
@@ -487,8 +503,31 @@ describe('IngestionHttpClient.ingestUrl', () => {
       mimeType: 'application/pdf',
       sizeBytes: 1024,
       chunksStored: 3,
+      chunksInStore: 3,
       skippedUnchanged: false,
     });
+  });
+
+  it('maps chunks_in_store, and null when an older ingestion service omits it (count unknown, not 0)', async () => {
+    const body = { document_name: 'd.pdf', driveitem_id: 'drive-1', mime_type: null, size_bytes: 1, chunks_stored: 0, skipped_unchanged: true };
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ...body, chunks_in_store: 32 }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => body })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ...body, chunks_in_store: 5 }) }) as any;
+
+    const client = new IngestionHttpClient('http://ingestion:8000');
+    expect((await client.ingestUrl('https://x/d.pdf', 'u', null)).chunksInStore).toBe(32);
+    expect((await client.ingestUrl('https://x/d.pdf', 'u', null)).chunksInStore).toBeNull();
+    expect((await client.ingestItem('d.pdf', 'drive-1', 'https://dl', 'u', null)).chunksInStore).toBe(5);
+
+    global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => body }) as any;
+    expect((await client.ingestItem('d.pdf', 'drive-1', 'https://dl', 'u', null)).chunksInStore).toBeNull();
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ files: [{ file: 'a.docx', status: 'skipped_unchanged', chunks_stored: 0, driveitem_id: 'd', mime_type: null, size_bytes: 1, reason: null, relative_path: 'a.docx' }] }),
+    }) as any;
+    expect((await client.ingestFolderUrl('https://x/folder', 'u', null)).files[0].chunksInStore).toBeNull();
   });
 
   it('forwards retrievalMode as retrieval_mode in the request body', async () => {
@@ -547,8 +586,8 @@ describe('IngestionHttpClient.ingestFolderUrl', () => {
       ok: true,
       json: async () => ({
         files: [
-          { file: 'a.docx', status: 'ingested', chunks_stored: 2, driveitem_id: 'drive-a', mime_type: 'application/a', size_bytes: 100, reason: null, relative_path: 'a.docx' },
-          { file: 'bad.docx', status: 'failed', chunks_stored: 0, driveitem_id: null, mime_type: null, size_bytes: null, reason: 'corrupt', relative_path: null },
+          { file: 'a.docx', status: 'ingested', chunks_stored: 2, chunks_in_store: 2, driveitem_id: 'drive-a', mime_type: 'application/a', size_bytes: 100, reason: null, relative_path: 'a.docx' },
+          { file: 'bad.docx', status: 'failed', chunks_stored: 0, chunks_in_store: 0, driveitem_id: null, mime_type: null, size_bytes: null, reason: 'corrupt', relative_path: null },
         ],
       }),
     });
@@ -566,8 +605,8 @@ describe('IngestionHttpClient.ingestFolderUrl', () => {
     );
     expect(result).toEqual({
       files: [
-        { file: 'a.docx', status: 'ingested', chunksStored: 2, driveitemId: 'drive-a', mimeType: 'application/a', sizeBytes: 100, reason: null, relativePath: 'a.docx' },
-        { file: 'bad.docx', status: 'failed', chunksStored: 0, driveitemId: null, mimeType: null, sizeBytes: null, reason: 'corrupt', relativePath: null },
+        { file: 'a.docx', status: 'ingested', chunksStored: 2, chunksInStore: 2, driveitemId: 'drive-a', mimeType: 'application/a', sizeBytes: 100, reason: null, relativePath: 'a.docx' },
+        { file: 'bad.docx', status: 'failed', chunksStored: 0, chunksInStore: 0, driveitemId: null, mimeType: null, sizeBytes: null, reason: 'corrupt', relativePath: null },
       ],
     });
   });
@@ -761,4 +800,5 @@ describe('IngestionHttpClient.level: which rubric the job was scored with', () =
     (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ nodes: [] }) });
     await expect(new IngestionHttpClient('http://ingestion.internal').level(MINIMAL_DOC, 'survey')).resolves.toEqual({ nodes: [] });
   });
+
 });

@@ -45,10 +45,16 @@ unbounded-star grammar regardless. DO NOT add a maxItems-BOUNDED
 top-level array schema without re-verifying the cliff against whatever
 Ollama version is in use at the time.
 """
+
 from __future__ import annotations
 
 from app.config import settings
-from app.workitem.model import QualityConfidence, RequirementQualityIssue, RequirementTag, WorkItemType
+from app.workitem.model import (
+    QualityConfidence,
+    RequirementQualityIssue,
+    RequirementTag,
+    WorkItemType,
+)
 
 _TAGS = [t.value for t in RequirementTag]
 _ISSUES = [t.value for t in RequirementQualityIssue]
@@ -222,7 +228,12 @@ def trace_links_schema() -> dict:
                             "target_ref": {"type": "string"},
                             "evidence_quote": {"type": "string"},
                         },
-                        "required": ["source_node_id", "reference_name", "target_ref", "evidence_quote"],
+                        "required": [
+                            "source_node_id",
+                            "reference_name",
+                            "target_ref",
+                            "evidence_quote",
+                        ],
                         "additionalProperties": False,
                     },
                 }
@@ -641,7 +652,10 @@ def kb_document_profile_schema() -> dict:
                     "type": "array",
                     "items": {
                         "type": "object",
-                        "properties": {"name": {"type": "string"}, "pass_condition": {"type": "string"}},
+                        "properties": {
+                            "name": {"type": "string"},
+                            "pass_condition": {"type": "string"},
+                        },
                         "required": ["name", "pass_condition"],
                         "additionalProperties": False,
                     },
@@ -650,7 +664,13 @@ def kb_document_profile_schema() -> dict:
                     "type": "array",
                     "items": {
                         "type": "object",
-                        "properties": {"item_type": {"type": "string", "enum": ["epic", "feature", "requirement"]}, "text": {"type": "string"}},
+                        "properties": {
+                            "item_type": {
+                                "type": "string",
+                                "enum": ["epic", "feature", "requirement"],
+                            },
+                            "text": {"type": "string"},
+                        },
                         "required": ["item_type", "text"],
                         "additionalProperties": False,
                     },
@@ -660,13 +680,91 @@ def kb_document_profile_schema() -> dict:
                     "type": "array",
                     "items": {
                         "type": "object",
-                        "properties": {"term": {"type": "string"}, "definition": {"type": "string"}},
+                        "properties": {
+                            "term": {"type": "string"},
+                            "definition": {"type": "string"},
+                        },
                         "required": ["term", "definition"],
                         "additionalProperties": False,
                     },
                 },
             },
             "required": ["categories", "type_definitions", "rules", "glossary"],
+            "additionalProperties": False,
+        },
+    }
+
+
+def document_study_schema() -> dict:
+    """study_document_window: what one window of the job's document states about its glossary, unresolved-value markers, verification
+    wording, cited standards, table roles, list lead-ins and the sentences that state its purpose. Entries are checked against the window text by the caller."""
+    strings = {"type": "array", "items": {"type": "string"}}
+    return {
+        "name": "document_study",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "glossary": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "term": {"type": "string"},
+                            "definition": {"type": "string"},
+                        },
+                        "required": ["term", "definition"],
+                        "additionalProperties": False,
+                    },
+                },
+                "placeholder_tokens": strings,
+                "verification_statements": strings,
+                "standards_cited": strings,
+                "table_roles": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"table": {"type": "string"}, "role": {"type": "string"}},
+                        "required": ["table", "role"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": [
+                "glossary",
+                "placeholder_tokens",
+                "verification_statements",
+                "standards_cited",
+                "table_roles",
+            ],
+            "additionalProperties": False,
+        },
+    }
+
+
+def acceptance_criteria_schema() -> dict:
+    """propose_acceptance_criteria: one entry per requirement with proposed criteria, the assumptions behind them, and whether a value
+    the criteria depend on is missing from the input."""
+    return {
+        "name": "acceptance_criteria",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "criteria": {"type": "array", "items": {"type": "string"}},
+                            "assumptions": {"type": "array", "items": {"type": "string"}},
+                            "needs_author_input": {"type": "boolean"},
+                        },
+                        "required": ["id", "criteria", "assumptions", "needs_author_input"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["items"],
             "additionalProperties": False,
         },
     }
@@ -736,7 +834,10 @@ def score_explanation_schema() -> dict:
                     "type": "array",
                     "items": {
                         "type": "object",
-                        "properties": {"category": {"type": "string"}, "reason": {"type": "string"}},
+                        "properties": {
+                            "category": {"type": "string"},
+                            "reason": {"type": "string"},
+                        },
                         "required": ["category", "reason"],
                         "additionalProperties": False,
                     },

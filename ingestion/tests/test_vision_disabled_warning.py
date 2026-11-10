@@ -14,7 +14,15 @@ import json
 import httpx
 from fastapi.testclient import TestClient
 
-from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, Figure, SourceRef
+from app.canonical.model import (
+    Block,
+    BlockKind,
+    CanonicalDoc,
+    Document,
+    DocumentFormat,
+    Figure,
+    SourceRef,
+)
 from app.main import app
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 
@@ -48,7 +56,15 @@ def _survey_handler(request: httpx.Request) -> httpx.Response:
     body = json.loads(request.content)
     system_prompt = body["messages"][0]["content"]
     if _ANALYZE_SECTION_MARKER in system_prompt:
-        nodes = [{"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "text": "The system shall power on.", "tags": ["functional"]}]
+        nodes = [
+            {
+                "temp_id": "n0",
+                "type": "Epic",
+                "parent_temp_id": None,
+                "text": "The system shall power on.",
+                "tags": ["functional"],
+            }
+        ]
         return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
     return httpx.Response(200, json={"content": "{}"})
 
@@ -56,7 +72,9 @@ def _survey_handler(request: httpx.Request) -> httpx.Response:
 def _patch_orchestrator_client(monkeypatch) -> None:
     original_init = OrchestratorLlmClient.__init__
 
-    def patched_init(self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None, cache=None):
+    def patched_init(
+        self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None, cache=None
+    ):
         original_init(self, base_url, bearer_token, model=model)
         self._transport = httpx.MockTransport(_survey_handler)
 

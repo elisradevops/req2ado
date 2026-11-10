@@ -1,6 +1,7 @@
+import { BELOW_MD, useMediaQuery } from '../hooks/useMediaQuery';
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ChevronDown, ChevronRight } from 'lucide-react';
+import { ChevronDown, ChevronRight, TriangleAlert } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { buildWorkItemUrl } from '../utils/adoLinks';
 import type { WarningRecord } from '../utils/warnings';
@@ -63,6 +64,8 @@ export function CollapsibleWarnings({
   titleByLocalId,
   orgUrl,
   project,
+  gateCount,
+  fixGroupTitle,
 }: {
   warnings: WarningRecord[];
   // Filters the proposed tree to a kind's affected items. Omitted: rows
@@ -92,12 +95,23 @@ export function CollapsibleWarnings({
   titleByLocalId?: Record<string, string>;
   orgUrl?: string | null;
   project?: string | null;
+  // How many warning types still need the reviewer before approving. Shown as the card's own first line, so the gate is said once, here,
+  // rather than in a banner above a card that says it again.
+  gateCount?: number;
+  // Replaces the fix group's heading when nothing is left to fix before confirming (a finished job).
+  fixGroupTitle?: string;
 }): React.ReactElement | null {
   const kindGroups = useMemo(() => buildKindGroups(warnings), [warnings]);
   const hasActionable = kindGroups.some((entry) => entry.group !== 'info');
   const [openKind, setOpenKind] = useState('');
-  // For your information stays collapsed unless it's all there is.
-  const [infoOpen, setInfoOpen] = useState(() => !hasActionable);
+  // Below md the card starts folded to its group headings, so a phone reaches the diff tree without scrolling past every row; each heading shows
+  // its count and opens its rows. At md and up "Fix before confirming" and "Review" start open as before. For your information stays collapsed
+  // unless it's all there is.
+  const narrow = useMediaQuery(BELOW_MD);
+  // Only what the reader has toggled is stored; every other group's default is derived here, so warnings that arrive after mount and a
+  // breakpoint change both get the right default.
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
+  const isGroupOpen = (group: string): boolean => openGroups[group] ?? (group === 'info' ? !hasActionable : !narrow);
 
   if (kindGroups.length === 0) return null;
 
@@ -113,20 +127,27 @@ export function CollapsibleWarnings({
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 border-b border-hairline px-3.5 py-2.5">
         <h2 className="text-sm font-semibold text-ink-1">Integrity warnings</h2>
         <span className="text-xs text-ink-3">{summary}</span>
+        {gateCount != null && gateCount > 0 && (
+          <p data-testid="approval-gate" role="status" className="flex w-full items-center gap-1.5 text-sm font-medium text-warning-ink">
+            <TriangleAlert aria-hidden="true" className="h-3.5 w-3.5 flex-none" />
+            <span><AnimatedNumber value={gateCount} /> warning{gateCount === 1 ? '' : 's'} need{gateCount === 1 ? 's' : ''} your attention before you approve.</span>
+          </p>
+        )}
       </div>
       <Accordion value={openKind} onValueChange={setOpenKind}>
         {GROUP_ORDER.map((group) => {
           const entries = kindGroups.filter((entry) => entry.group === group);
           if (entries.length === 0) return null;
-          const { title, line } = GROUP_META[group];
-          const collapsible = group === 'info';
-          const open = !collapsible || infoOpen;
+          const { line } = GROUP_META[group];
+          const title = group === 'fix' && fixGroupTitle ? fixGroupTitle : GROUP_META[group].title;
+          const collapsible = group === 'info' || narrow;
+          const open = !collapsible || isGroupOpen(group);
           return (
             <div key={group} className="border-b border-hairline last:border-b-0">
               {collapsible ? (
                 <button
                   type="button"
-                  onClick={() => setInfoOpen((prev) => !prev)}
+                  onClick={() => setOpenGroups((prev) => ({ ...prev, [group]: !isGroupOpen(group) }))}
                   aria-expanded={open}
                   className={cn('flex w-full flex-wrap items-center gap-x-2.5 gap-y-0.5 px-3.5 py-2 text-left text-xs', GROUP_HEAD_CLASS[group])}
                 >
@@ -220,7 +241,7 @@ function KindRow({
         {retrying && (
           <span className="mt-1.5 flex items-center gap-2 text-xs text-ink-3">
             <span className="w-20 flex-none">
-              <ProgressBar value={(retrying.done / retrying.total) * 100} active />
+              <ProgressBar value={(retrying.done / retrying.total) * 100} label={`Retry progress: ${meta.title}`} />
             </span>
             <span className="tabular-nums" role="status">
               Retrying: <AnimatedNumber value={retrying.done} /> of {retrying.total.toLocaleString()}
@@ -230,7 +251,7 @@ function KindRow({
         {showProgress && (
           <span className="mt-1.5 flex items-center gap-2 text-xs text-ink-3">
             <span className="w-20 flex-none">
-              <ProgressBar value={(progress.reviewed / progress.total) * 100} />
+              <ProgressBar value={(progress.reviewed / progress.total) * 100} label={`Review progress: ${meta.title}`} />
             </span>
             <span className="tabular-nums">
               <AnimatedNumber value={progress.reviewed} /> of {progress.total.toLocaleString()} reviewed

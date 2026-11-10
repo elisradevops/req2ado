@@ -1,13 +1,17 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   getJob,
   confirmJob,
   getAudit,
+  reindexDedup,
   getEventHistory,
   getDebugCaptures,
   editDiffEntry,
+  addDiscussionEntry,
+  removeDiscussionEntry,
   setDiffEntryExcluded,
+  setProposalAccepted,
   setDiffEntriesReviewed,
   setWarningsAcknowledged,
   retryEnhancement,
@@ -19,16 +23,21 @@ import {
   deleteJob,
   resubmitJob,
   getSummary,
+  getWritePreview,
   attachFigureToAdo,
+  moveFigure,
   retryTraceLinkWrite,
   validateCreatedTree,
   type AuditEntry,
   type DebugCaptureEntry,
+  type DocumentOverview,
   type JobEventRecord,
   type JobSummaryReport,
   type MoveDiffEntryInput,
   type ValidationResult,
 } from '../api/jobs';
+import { appendNarration } from '../utils/narrationLog';
+import { outcomeOf, outcomesFromHistory, reasonOf, reasonsFromHistory, type FigureOutcome } from '../utils/figureOutcomes';
 import { subscribeToJobEvents, isValidNarrationEvent, isValidNotice, type JobStage, type NarrationEvent } from '../api/events';
 import type { Notice } from '../api/liveTypes';
 import { useLiveRunStore, mergeNotice } from '../store/liveRunStore';
@@ -36,6 +45,7 @@ import { RunNotices } from '../components/liveRun/RunNotices';
 import { RUN_SUMMARY_HEADING } from '../utils/liveCopy';
 import { loadRuntimeConfig } from '../api/config';
 import { useOrgUrl } from '../store/authStore';
+import { usePageLabelStore } from '../store/pageLabelStore';
 import { StatusChip } from '../components/StatusChip';
 import { ModeBadge } from '../components/ModeBadge';
 import { ProgressBanner } from '../components/ProgressBanner';
@@ -51,8 +61,18 @@ import { NodeDetailDialog } from '../components/NodeDetailDialog';
 import { AddChildCard } from '../components/AddChildCard';
 import { applyMoveOptimistically } from '../lib/applyMove';
 import { cn } from '../lib/cn';
+import { ARRIVE, MOTION, scrollBehavior } from '../ui/motion';
+import { describeJobKbCoverage, type KbCoverage } from '../utils/kbCoverage';
 import { getServerMessage } from '../lib/errorDetails';
 import { isFlaggedDiffEntry } from '../utils/diffFlagging';
+import { buildReviewQueue, cleanApproval, isExcludedWithAncestors, reviewQueueModeReducer, riskReason, spotCheckSample } from '../utils/reviewQueue';
+import { BulkApproveDialog } from '../components/BulkApproveDialog';
+import { WriteSummary, type WriteSummaryState } from '../components/WriteSummary';
+import { approvalBreakdown, type ApprovalMethod } from '../utils/approvalBreakdown';
+import { countWarningsForWrite, isFiguresOnlyWrite, writeHasWork } from '../utils/writeSummary';
+import { orderLikeTree } from '../utils/diffTreeOrder';
+import { useKeyboardShortcuts } from '../store/uiPreferencesStore';
+import { useUndoAnnouncement, type QueueUndo } from '../hooks/useUndoAnnouncement';
 import { useToast } from '../components/ToastProvider';
 import type { KbCitation } from '../components/KbCitationChips';
 import type { TraceLinkFailure } from '../store/jobsStore';
@@ -84,9 +104,10 @@ import { FigureDescriptions, type FigureDescriptionEntry } from '../components/F
 import { SectionResults, type SectionResultEntry } from '../components/SectionResults';
 import type { WorkItemTypeCatalogEntry } from '../api/ado';
 import { isRunDetailStatus, shouldShowTiles, shouldShowTabs, shouldShowFilterBar } from './jobDetailLayout';
-import { FileX2, X } from 'lucide-react';
+import { Download, FileX2, RotateCw, ShieldCheck, Trash2, Upload, X } from 'lucide-react';
+import { IconButton } from '../ui/IconButton';
 import { EmptyState } from '../ui/EmptyState';
-import { LABEL_MICRO } from '../utils/labelMicro';
+import { DocumentOverviewCard } from '../components/DocumentOverviewCard';
 
 // WID 300578's own field/expected/actual can carry the item's full
 // (HTML-normalized) description -- long, and often not useful in full for
@@ -94,6 +115,8 @@ import { LABEL_MICRO } from '../utils/labelMicro';
 // convention as SourceProvenance/other single-line previews elsewhere in
 // this app.
 const VALIDATION_MISMATCH_PREVIEW_LENGTH = 80;
+// How long the final write summary waits for the server's preview before showing "couldn't check".
+const WRITE_PREVIEW_TIMEOUT_MS = 15000;
 function truncateForDisplay(text: string): string {
   const collapsed = text.replace(/\s+/g, ' ').trim();
   if (collapsed.length <= VALIDATION_MISMATCH_PREVIEW_LENGTH) return collapsed;
@@ -106,14 +129,40 @@ export function JobDetail(): React.ReactElement {
   const orgUrl = useOrgUrl();
   const { showToast, showErrorToast } = useToast();
   const [status, setStatus] = useState<string | null>(null);
+  // Set once, when a job that was running on this page finishes into diff_ready (DESIGN.md section 8, "result ready"). The message
+  // is captured at that moment, so a later edit that changes the item count never re-announces it; `fading` ends after the entrance.
+  // A job opened already finished never sets it, and it is cleared when the page moves to another job.
+  const [arrival, setArrival] = useState<{ message: string; fading: boolean } | null>(null);
+  const previousStatus = useRef<string | null>(null);
+  useEffect(() => {
+    previousStatus.current = null;
+    setArrival(null);
+  }, [id]);
+  useEffect(() => {
+    const was = previousStatus.current;
+    previousStatus.current = status;
+    if (status === 'diff_ready' && (was === 'pending' || was === 'running')) {
+      setArrival({ message: `The diff is ready to review: ${diff.length.toLocaleString()} ${diff.length === 1 ? 'item' : 'items'}.`, fading: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only a status change is an arrival; diff is read as it is at that moment
+  }, [status]);
+  const fading = arrival?.fading ?? false;
+  useEffect(() => {
+    if (!fading) return undefined;
+    const timer = setTimeout(() => setArrival((current) => (current ? { ...current, fading: false } : current)), MOTION.durationMs.medium);
+    return () => clearTimeout(timer);
+  }, [fading]);
   const [mode, setMode] = useState<string | null>(null);
-  const [documentOverview, setDocumentOverview] = useState<{ synopsis: string; caveat: string | null } | null>(null);
+  const [documentOverview, setDocumentOverview] = useState<DocumentOverview | null>(null);
   const [kbCitations, setKbCitations] = useState<KbCitation[]>([]);
+  const [kbCoverage, setKbCoverage] = useState<KbCoverage | null>(null);
   // STAGE 2 mapping's own excluded lists (see jobsStore.JobDetail's own
   // comment) -- same load/refetch lifecycle as kbCitations above (only
   // known once the tree exists, so seeded at mount and refreshed once the
   // job reaches a terminal narration stage).
   const [excludedFigureIds, setExcludedFigureIds] = useState<string[]>([]);
+  // Items an earlier failed write already created in Azure DevOps (the server refuses changes to them): locks them in the details dialog.
+  const [writtenLocalIds, setWrittenLocalIds] = useState<string[]>([]);
   const [excludedTableIds, setExcludedTableIds] = useState<string[]>([]);
   const [warnings, setWarnings] = useState<(WarningRecord | string)[]>([]);
   // Task 4: JobTraceLinkFailure rows -- see NodeDetailPanel's own doc
@@ -138,9 +187,104 @@ export function JobDetail(): React.ReactElement {
   // so a live warning doesn't disappear then reappear once the job
   // actually completes and the persisted list supersedes it.
   const [liveWarnings, setLiveWarnings] = useState<string[]>([]);
-  const [diff, setDiff] = useState<DryRunDiffEntry[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [diff, setDiffState] = useState<DryRunDiffEntry[]>([]);
+  const [selectedId, setSelectedIdState] = useState<string | null>(null);
+  // Write-through mirrors of review state that handlers started in an older render (an Undo, a save that
+  // finishes later) must read current: updated synchronously inside the one setter per state, so they cannot drift.
+  const diffRef = useRef<DryRunDiffEntry[]>([]);
+  const selectedIdRef = useRef<string | null>(null);
+  function setDiff(next: DryRunDiffEntry[] | ((prev: DryRunDiffEntry[]) => DryRunDiffEntry[])): void {
+    const value = typeof next === 'function' ? next(diffRef.current) : next;
+    diffRef.current = value;
+    setDiffState(value);
+  }
+  function setSelectedId(next: string | null): void {
+    selectedIdRef.current = next;
+    setSelectedIdState(next);
+  }
   const [dialogOpen, setDialogOpen] = useState(false);
+  // The risk-ordered review queue (P17a): while on, the details dialog steps through
+  // `reviewQueue` instead of the tree, and A / X act on the open item. `done` is the queue worked
+  // through to its end: the queue button it was opened from is gone by then, so a "done" row takes
+  // focus when the dialog closes (focus is never dropped).
+  const [queueState, dispatchQueueState] = useReducer(reviewQueueModeReducer, { kind: 'off' });
+  const queueMode = queueState.kind === 'queue';
+  const queueFinished = queueState.kind === 'done';
+  const spotCheckMode = queueState.kind === 'spotCheck';
+  // "Approve clean items" (P17c): the confirmation, the sample items the reviewer has said look right
+  // (UI session only, never saved or sent), a note for the confirmation, and the save in flight.
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [spotChecked, setSpotChecked] = useState<ReadonlySet<string>>(new Set());
+  // How each reviewed item was approved in THIS page session, for the final write summary (P17d). Never saved or sent: a reload
+  // starts every approved item as "reviewed earlier".
+  const [approvalMethods, setApprovalMethodsState] = useState<ReadonlyMap<string, ApprovalMethod>>(new Map());
+  const [bulkCheckedIds, setBulkCheckedIdsState] = useState<ReadonlySet<string>>(new Set());
+  const approvalMethodsRef = useRef<ReadonlyMap<string, ApprovalMethod>>(new Map());
+  const bulkCheckedIdsRef = useRef<ReadonlySet<string>>(new Set());
+  function setApprovalMethods(update: (prev: ReadonlyMap<string, ApprovalMethod>) => ReadonlyMap<string, ApprovalMethod>): void {
+    const next = update(approvalMethodsRef.current);
+    approvalMethodsRef.current = next;
+    setApprovalMethodsState(next);
+  }
+  function setBulkCheckedIds(update: (prev: ReadonlySet<string>) => ReadonlySet<string>): void {
+    const next = update(bulkCheckedIdsRef.current);
+    bulkCheckedIdsRef.current = next;
+    setBulkCheckedIdsState(next);
+  }
+  // A second click on "Approve N clean items" in the same tick would otherwise save twice (state is too slow).
+  const approveCleanInFlightRef = useRef(false);
+  // Review-flag saves go out one at a time, in the order they were made, so an Undo can never reach the server before the mark it undoes.
+  // Each link settles whether its save worked or not, so a failed one never blocks the next.
+  const reviewWriteChainRef = useRef<Promise<void>>(Promise.resolve());
+  // Per item: the newest review write made for it, how many of its writes are unsaved, and the state the server last confirmed.
+  // A failed save only rolls back items whose newest write it still is, and to the confirmed state (not to a guess).
+  const reviewSeqRef = useRef(new Map<string, number>());
+  const reviewPendingRef = useRef(new Map<string, number>());
+  const reviewConfirmedRef = useRef(new Map<string, { reviewed: boolean; method?: ApprovalMethod; bulk: boolean }>());
+  // The route's job id as of the latest render, for saves that finish after the page moved to another job.
+  const currentJobIdRef = useRef(id);
+  currentJobIdRef.current = id;
+  // False once the page is gone: a save that finishes later must not toast, announce or set state.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+  const [editedIds, setEditedIds] = useState<ReadonlySet<string>>(new Set());
+  const [bulkNotice, setBulkNotice] = useState('');
+  // The announcement is read out by the polite live region next to the tree ("Accepted. 2 left.").
+  const {
+    lastUndoRef,
+    hasUndo,
+    setLastUndo,
+    clearLastUndoIf,
+    announcement: queueAnnouncement,
+    setAnnouncement: setQueueAnnouncement,
+    announceAgain,
+  } = useUndoAnnouncement();
+  const queueDoneRef = useRef<HTMLDivElement>(null);
+  const queueButtonRef = useRef<HTMLButtonElement>(null);
+  // Where the bulk confirmation returns focus when it closes: its opener can sit inside the details dialog
+  // (the spot-check hands back to it), which is gone by then.
+  const approveCleanButtonRef = useRef<HTMLButtonElement>(null);
+  // True only for the close that starts the spot-check: the details dialog takes focus, so the closing confirmation must not.
+  const [bulkHandOver, setBulkHandOver] = useState(false);
+  // The write confirmation closed to take the reviewer somewhere: focus must not go back to the header button (which scrolls the page up).
+  const [writeHandOver, setWriteHandOver] = useState(false);
+  // Set while the dialog was opened by the queue, so closing it can hand focus back.
+  const queueOpenedRef = useRef(false);
+  // Kept in step with `dialogOpen` by updateDialogOpen, so async code (a failed save) reads the
+  // current value rather than the one from the last commit.
+  const dialogOpenRef = useRef(false);
+  function updateDialogOpen(open: boolean): void {
+    dialogOpenRef.current = open;
+    setDialogOpen(open);
+  }
+  // Set when a failed save leaves the dialog closed: focus goes to the queue button once it renders.
+  const [refocusQueueButton, setRefocusQueueButton] = useState(false);
+  const keyboardShortcuts = useKeyboardShortcuts();
   const [stage, setStage] = useState<JobStage | null>(null);
   const [narrations, setNarrations] = useState<NarrationEvent[]>([]);
   // Populated directly from the SSE callback (not derived from the
@@ -151,6 +295,10 @@ export function JobDetail(): React.ReactElement {
   // (before/after the vision call) collapse to one entry, the second
   // overwriting the first once the real caption arrives.
   const [figureCaptionsByIndex, setFigureCaptionsByIndex] = useState<Record<number, string>>({});
+  // Figures that ended without a description (not significant / no usable reply), by real figure number: from live events and, after a
+  // reload, from the stored event history. Shown in the figure panel so a missing description is explained.
+  const [figureOutcomesByIndex, setFigureOutcomesByIndex] = useState<Record<number, FigureOutcome>>({});
+  const [figureReasonsByIndex, setFigureReasonsByIndex] = useState<Record<number, string>>({});
   // Task 5: the document's own figure name (parsed at ingest time, not a
   // vision-narrated value) -- unlike figureCaptionsByIndex, this has no
   // live-SSE counterpart (narration events never carry a name), so it is
@@ -190,10 +338,13 @@ export function JobDetail(): React.ReactElement {
   const [workItemState, setWorkItemState] = useState<string | null>(null);
   const [sourceFilename, setSourceFilename] = useState<string | null>(null);
   const [confirmDialogOpen, setConfirmDialogOpen] = useState(false);
+  const [writeSummaryState, setWriteSummaryState] = useState<WriteSummaryState>({ status: 'loading' });
   const [rejectDialogOpen, setRejectDialogOpen] = useState(false);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [resubmitDialogOpen, setResubmitDialogOpen] = useState(false);
+  const [reindexDialogOpen, setReindexDialogOpen] = useState(false);
+  const [isReindexing, setIsReindexing] = useState(false);
   const [filterAction, setFilterAction] = useState<string | null>(null);
   const [filterText, setFilterText] = useState('');
   const [filterFlaggedOnly, setFilterFlaggedOnly] = useState(false);
@@ -257,8 +408,10 @@ export function JobDetail(): React.ReactElement {
         setMode(job.mode);
         setDocumentOverview(job.documentOverview ?? null);
         setKbCitations(job.kbCitations ?? []);
+        setKbCoverage(job.kbCoverage ?? null);
         setExcludedFigureIds(job.excludedFigureIds ?? []);
         setExcludedTableIds(job.excludedTableIds ?? []);
+        setWrittenLocalIds(job.writtenLocalIds ?? []);
         setWarnings(job.warnings ?? []);
         setTraceLinkFailures(job.traceLinkFailures ?? []);
         setCreatedItemCount(job.createdItemCount ?? 0);
@@ -283,7 +436,24 @@ export function JobDetail(): React.ReactElement {
         setFigureNamesByIndex((current) => {
           const seeded: Record<number, string | null> = {};
           for (const entry of job.figureDescriptions ?? []) {
-            seeded[entry.figureIndex] = entry.name;
+            // An entry kept only to say what became of the figure (no description, no name) is not a described figure.
+            if (entry.name != null || entry.caption) seeded[entry.figureIndex] = entry.name;
+          }
+          return { ...seeded, ...current };
+        });
+        // What became of the figures that ended without a description, and why: stored with the job, so it does not depend on the event
+        // history (which keeps only the latest events). A live outcome of this run still wins over the stored one.
+        setFigureOutcomesByIndex((current) => {
+          const seeded: Record<number, FigureOutcome> = {};
+          for (const entry of job.figureDescriptions ?? []) {
+            if (entry.captionStatus && !entry.caption) seeded[entry.figureIndex] = entry.captionStatus;
+          }
+          return { ...seeded, ...current };
+        });
+        setFigureReasonsByIndex((current) => {
+          const seeded: Record<number, string> = {};
+          for (const entry of job.figureDescriptions ?? []) {
+            if (entry.captionReason && entry.captionStatus === 'insignificant' && !entry.caption) seeded[entry.figureIndex] = entry.captionReason;
           }
           return { ...seeded, ...current };
         });
@@ -295,6 +465,7 @@ export function JobDetail(): React.ReactElement {
         setIterationPath(job.iterationPath ?? null);
         setWorkItemState(job.state ?? null);
         setSourceFilename(job.originalFilename);
+        if (job.originalFilename) usePageLabelStore.getState().setJobLabel(job.id, job.originalFilename);
         setTypeCatalog(job.workItemTypeCatalog ?? null);
         setCategoryLabels(job.workItemTypeCategoryLabels ?? null);
         setRequirementClassificationField(job.requirementClassificationField ?? null);
@@ -309,6 +480,20 @@ export function JobDetail(): React.ReactElement {
       cancelled = true;
     };
   }
+
+  // The route reuses this component when only the job id changes, so what was gathered for the previous job (the figure outcomes and
+  // reasons, the overview, the live narration and its stored history) must not stay on screen: the seeds below only add to it.
+  useEffect(() => {
+    setFigureCaptionsByIndex({});
+    setFigureOutcomesByIndex({});
+    setFigureReasonsByIndex({});
+    setFigureNamesByIndex({});
+    setTableDescriptions([]);
+    setSectionResultsByIndex({});
+    setNarrations([]);
+    setEventHistory([]);
+    setDocumentOverview(null);
+  }, [id]);
 
   useEffect(loadJob, [id]);
 
@@ -416,8 +601,10 @@ export function JobDetail(): React.ReactElement {
               setTraceLinkFailures(job.traceLinkFailures ?? []);
               setCreatedItemCount(job.createdItemCount ?? 0);
               setKbCitations(job.kbCitations ?? []);
+              setKbCoverage(job.kbCoverage ?? null);
               setExcludedFigureIds(job.excludedFigureIds ?? []);
               setExcludedTableIds(job.excludedTableIds ?? []);
+              setWrittenLocalIds(job.writtenLocalIds ?? []);
               // No live-narration counterpart (tables are never narrated
               // during a run, see tableDescriptions' own useState doc
               // comment) -- this refetch is the only point after the
@@ -449,7 +636,7 @@ export function JobDetail(): React.ReactElement {
             // Cap accumulated narrations -- a long-running SURVEY job with
             // many branches could otherwise grow this list unboundedly for
             // the duration of the whole job.
-            setNarrations((current) => [...current, narration].slice(-50));
+            setNarrations((current) => appendNarration(current, { ...narration, at: new Date().toISOString() }));
           }
           // figureCaptionStatus (non-null) means the model judged this
           // figure insignificant/failed -- figureCaption is STILL truthy in
@@ -470,8 +657,15 @@ export function JobDetail(): React.ReactElement {
             const { figureIndex, figureCaption } = narration;
             setFigureCaptionsByIndex((current) => ({ ...current, [figureIndex]: figureCaption }));
           }
+          const figureOutcome = outcomeOf(narration);
+          if (figureOutcome) {
+            const [outcomeIndex, outcome] = figureOutcome;
+            setFigureOutcomesByIndex((current) => ({ ...current, [outcomeIndex]: outcome }));
+          }
+          const figureReason = reasonOf(narration);
+          if (figureReason) setFigureReasonsByIndex((current) => ({ ...current, [figureReason[0]]: figureReason[1] }));
           if (narration.phase === 'section_complete' && narration.branchIndex != null && narration.sectionNodes) {
-            const { branchIndex, sectionLabel, sectionNodes, kbGrounded, kbCitations } = narration;
+            const { branchIndex, sectionLabel, sectionNodes, kbGrounded, kbCitations, kbFilesAvailable } = narration;
             setSectionResultsByIndex((current) => ({
               ...current,
               [branchIndex]: {
@@ -480,6 +674,7 @@ export function JobDetail(): React.ReactElement {
                 nodes: sectionNodes,
                 kbGrounded,
                 kbCitations,
+                kbFilesAvailable,
               },
             }));
           }
@@ -526,13 +721,33 @@ export function JobDetail(): React.ReactElement {
   // both cover the same recent window) is dropped rather than shown twice.
   const mergedNarrations = useMemo<NarrationEvent[]>(() => {
     const seen = new Set(narrations.map((n) => `${n.phase}|${n.message}`));
+    // Recorded times per event content, in order, so two identical events each get their own time.
+    const recordedAt = new Map<string, string[]>();
+    for (const event of eventHistory) {
+      if (!isValidNarrationEvent(event.detail)) continue;
+      const key = `${event.detail.phase}|${event.detail.message}`;
+      const times = recordedAt.get(key);
+      if (times) times.push(event.createdAt);
+      else recordedAt.set(key, [event.createdAt]);
+    }
     const historical: NarrationEvent[] = [];
     for (const event of eventHistory) {
       if (isValidNarrationEvent(event.detail) && !seen.has(`${event.detail.phase}|${event.detail.message}`)) {
-        historical.push(event.detail);
+        historical.push({ ...event.detail, at: event.createdAt });
       }
     }
-    return [...historical, ...narrations];
+    // A live event also in the history keeps its place, with the time the server recorded it (the more accurate of the two).
+    const used = new Map<string, number>();
+    const live = narrations.map((n) => {
+      const key = `${n.phase}|${n.message}`;
+      const times = recordedAt.get(key);
+      if (!times) return n;
+      const nth = used.get(key) ?? 0;
+      used.set(key, nth + 1);
+      const recorded = times[Math.min(nth, times.length - 1)];
+      return { ...n, at: recorded };
+    });
+    return [...historical, ...live];
   }, [eventHistory, narrations]);
 
   // Backfills figureCaptionsByIndex from durable history too -- the live
@@ -566,6 +781,17 @@ export function JobDetail(): React.ReactElement {
     }
     if (Object.keys(seeded).length > 0) {
       setFigureCaptionsByIndex((current) => ({ ...seeded, ...current }));
+    }
+  }, [eventHistory]);
+
+  useEffect(() => {
+    const seeded = outcomesFromHistory(eventHistory);
+    if (Object.keys(seeded).length > 0) {
+      setFigureOutcomesByIndex((current) => ({ ...seeded, ...current }));
+    }
+    const seededReasons = reasonsFromHistory(eventHistory);
+    if (Object.keys(seededReasons).length > 0) {
+      setFigureReasonsByIndex((current) => ({ ...seededReasons, ...current }));
     }
   }, [eventHistory]);
 
@@ -646,6 +872,7 @@ export function JobDetail(): React.ReactElement {
   // through the same normalizeWarning (persisted `warnings` may still be a
   // legacy string[] job; liveWarnings is always plain strings, see its own
   // doc comment above) so the rest of the page only ever handles one shape.
+  const kbCoverageNote = describeJobKbCoverage(kbCoverage);
   const mergedWarnings = useMemo<WarningRecord[]>(() => {
     const normalizedPersisted = warnings.map(normalizeWarning);
     const persistedRawTexts = new Set(normalizedPersisted.map((w) => w.raw));
@@ -672,6 +899,97 @@ export function JobDetail(): React.ReactElement {
     return parts.length > 0 ? `${parts.join(' and ')} excluded as decorative` : null;
   }, [excludedFigureIds, excludedTableIds]);
 
+  // The final write summary (P17d): what the write would do, asked of the server each time the confirmation opens, so it is never older
+  // than the dialog. A reply for an earlier opening is dropped.
+  useEffect(() => {
+    // Back to 'loading' on close too, so the next opening never flashes the previous result (or a disabled button).
+    setWriteSummaryState({ status: 'loading' });
+    if (!confirmDialogOpen || !id) return;
+    let cancelled = false;
+    // A check that never answers must not leave the button disabled forever: after this long it is shown as "couldn't check".
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = Symbol('timeout');
+    const timeout = new Promise<typeof timedOut>((resolve) => {
+      timer = setTimeout(() => resolve(timedOut), WRITE_PREVIEW_TIMEOUT_MS);
+    });
+    void (async () => {
+      try {
+        const preview = await Promise.race([getWritePreview(id), timeout]);
+        if (cancelled) return;
+        // The summary is advisory and must never block the write: anything but a real preview is shown as "couldn't check".
+        if (preview === timedOut) {
+          setWriteSummaryState({ status: 'error', reason: 'timeout' });
+          return;
+        }
+        if (
+          !preview ||
+          typeof preview.createdTotal !== 'number' ||
+          !Array.isArray(preview.createdLocalIds) ||
+          typeof preview.parentLinks !== 'number' ||
+          typeof preview.figuresToAttach !== 'number' ||
+          typeof preview.figuresUnavailable !== 'number' ||
+          typeof preview.hasWork !== 'boolean' ||
+          typeof preview.figuresOnly !== 'boolean' ||
+          !preview.traceLinks ||
+          typeof preview.traceLinks !== 'object' ||
+          typeof preview.traceLinks.planned !== 'number'
+        ) {
+          setWriteSummaryState({ status: 'error' });
+          return;
+        }
+        setWriteSummaryState({ status: 'ready', preview, review: { edited: 0, single: 0, bulk: 0, bulkSpotChecked: 0, group: 0, earlier: 0, notReviewed: 0 } });
+      } catch {
+        if (!cancelled) setWriteSummaryState({ status: 'error' });
+      } finally {
+        clearTimeout(timer);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [confirmDialogOpen, id]);
+
+  // The dialog describes a diff that can still be written. If the job leaves 'diff_ready' while it is open (cancelled or failed
+  // elsewhere), close it. Our own write closes it first (handleConfirm) and only then sets 'writing', and isMutatingRef covers the gap.
+  useEffect(() => {
+    if (confirmDialogOpen && status !== 'diff_ready' && !isMutatingRef.current) {
+      setConfirmDialogOpen(false);
+      // Another session may already have started or finished this very write: then "Nothing was written" would be false.
+      showToast(
+        status === 'writing' || status === 'succeeded'
+          ? 'This job is already being written or was already written, so this write was cancelled.'
+          : 'The job changed, so the write was cancelled. Nothing was written.',
+        'error',
+      );
+    }
+  }, [confirmDialogOpen, status, showToast]);
+
+  // How the items that will be written were reviewed, from the server's list of them and what this page session recorded.
+  const writeSummary = useMemo<WriteSummaryState>(() => {
+    if (writeSummaryState.status !== 'ready') return writeSummaryState;
+    return {
+      status: 'ready',
+      preview: writeSummaryState.preview,
+      review: approvalBreakdown({
+        createdLocalIds: writeSummaryState.preview.createdLocalIds,
+        reviewedIds: new Set(diff.filter((entry) => entry.reviewed).map((entry) => entry.localId)),
+        methods: approvalMethods as Map<string, ApprovalMethod>,
+        spotCheckedIds: bulkCheckedIds as Set<string>,
+        editedIds: editedIds as Set<string>,
+      }),
+    };
+  }, [writeSummaryState, diff, approvalMethods, bulkCheckedIds, editedIds]);
+  const writeWarningCounts = useMemo(() => countWarningsForWrite(mergedWarnings), [mergedWarnings]);
+  const previewedTotal = writeSummaryState.status === 'ready' ? writeSummaryState.preview.createdTotal : null;
+  const writePreviewed = writeSummaryState.status === 'ready' ? writeSummaryState.preview : null;
+  const nothingToWrite = writePreviewed !== null && !writeHasWork(writePreviewed);
+  const writeLoading = writeSummaryState.status === 'loading';
+  // Only links are left (a retry after a failed write): nothing new is created, but the write still has work to finish.
+  const figuresOnlyWrite = writePreviewed !== null && isFiguresOnlyWrite(writePreviewed);
+  const finishingLinks = writePreviewed !== null && writePreviewed.createdTotal === 0 && !nothingToWrite && !figuresOnlyWrite;
+  const figuresToAttach = writePreviewed?.figuresToAttach ?? 0;
+
   async function handleConfirm(): Promise<void> {
     if (!id || !orgUrl || isMutatingRef.current) return;
     isMutatingRef.current = true;
@@ -689,6 +1007,7 @@ export function JobDetail(): React.ReactElement {
       const job = await getJob(id);
       setStatus(job.status);
       setCreatedItemCount(job.createdItemCount ?? 0);
+      setWrittenLocalIds(job.writtenLocalIds ?? []);
       showToast(`Confirmed — ${result.createdCount} work item(s) written to Azure DevOps.`, 'success');
     } catch {
       setMutationError('Confirm failed — the job may be safe to retry. Check the Audit tab for details.');
@@ -700,6 +1019,7 @@ export function JobDetail(): React.ReactElement {
       if (job) {
         setStatus(job.status);
         setCreatedItemCount(job.createdItemCount ?? 0);
+        setWrittenLocalIds(job.writtenLocalIds ?? []);
       }
     } finally {
       isMutatingRef.current = false;
@@ -821,13 +1141,28 @@ export function JobDetail(): React.ReactElement {
     }
   }
 
-  async function handleToggleExclude(localId: string, excluded: boolean): Promise<void> {
-    if (!id || isDiffMutatingRef.current) return;
+  // A server reply can predate a reviewed mark made while its request was out, so for an item this page has
+  // written review state for (an unsaved write, or any write since the page loaded: what the page shows is then
+  // what the server has, or will have) this page's own flag wins; for every other item the server's value is taken.
+  // `keepAllCurrent` (the move rollback) keeps this page's flag for every item present in both lists.
+  function mergeServerDiff(serverDiff: DryRunDiffEntry[], keepAllCurrent = false): DryRunDiffEntry[] {
+    const mine = new Map(diffRef.current.map((entry) => [entry.localId, entry.reviewed]));
+    return serverDiff.map((entry) =>
+      mine.has(entry.localId) &&
+      (keepAllCurrent || reviewPendingRef.current.has(entry.localId) || reviewSeqRef.current.has(entry.localId))
+        ? { ...entry, reviewed: mine.get(entry.localId) }
+        : entry,
+    );
+  }
+
+  // Resolves true once the server has accepted the change (the review queue steps on only then).
+  async function excludeEntry(localId: string, excluded: boolean): Promise<boolean> {
+    if (!id || isDiffMutatingRef.current) return false;
     isDiffMutatingRef.current = true;
     setIsDiffMutating(true);
     try {
       const result = await setDiffEntryExcluded(id, localId, excluded);
-      setDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []);
+      setDiff(mergeServerDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []));
       try {
         setSummary(await getSummary(id));
       } catch {
@@ -836,12 +1171,48 @@ export function JobDetail(): React.ReactElement {
         // until the next successful refetch, rather than blocking the
         // exclusion toggle (which already succeeded) on this.
       }
+      return true;
     } catch (err) {
-      showErrorToast('Failed to update — please try again.', err);
+      showErrorToast(getServerMessage(err) ?? 'Failed to update — please try again.', err);
+      return false;
     } finally {
       isDiffMutatingRef.current = false;
       setIsDiffMutating(false);
     }
+  }
+
+  async function handleToggleExclude(localId: string, excluded: boolean): Promise<void> {
+    await excludeEntry(localId, excluded);
+  }
+
+  // Remembers how an item was approved, for the write summary (P17d). A null method forgets it: not reviewed, or a failed save rolled back.
+  function recordApprovalMethod(localIds: string[], method: ApprovalMethod | null): void {
+    setApprovalMethods((prev) => {
+      const next = new Map(prev);
+      for (const localId of localIds) {
+        if (method) next.set(localId, method);
+        else next.delete(localId);
+      }
+      return next;
+    });
+    if (method !== 'bulk') {
+      setBulkCheckedIds((prev) => {
+        if (!localIds.some((localId) => prev.has(localId))) return prev;
+        const next = new Set(prev);
+        for (const localId of localIds) next.delete(localId);
+        return next;
+      });
+    }
+  }
+
+  // The ids among `ids` that are still reviewed, not excluded and were approved with `method`: what an Undo of that
+  // approval may take back. Items excluded, or approved another way, since are left alone.
+  function idsStillApproved(ids: string[], method: ApprovalMethod): string[] {
+    const current = new Map(diffRef.current.map((entry) => [entry.localId, entry]));
+    return ids.filter((localId) => {
+      const entry = current.get(localId);
+      return !!entry && !!entry.reviewed && !entry.excluded && approvalMethodsRef.current.get(localId) === method;
+    });
   }
 
   // Marks items reviewed (or not), optimistically: the flag flips at once so
@@ -851,25 +1222,114 @@ export function JobDetail(): React.ReactElement {
   // this call changed are put back. `force` skips the "already in that
   // state" filter, which Undo needs: its closure holds the diff from the
   // render that created it, not the current one.
-  async function handleSetReviewed(localIds: string[], reviewed: boolean, options?: { force?: boolean }): Promise<void> {
-    if (!id) return;
+  async function handleSetReviewed(
+    localIds: string[],
+    reviewed: boolean,
+    options?: { force?: boolean; onToastUndo?: () => void; method?: ApprovalMethod; spotCheckedIds?: string[] },
+  ): Promise<boolean> {
+    if (!id) return false;
     const wanted = new Set(localIds);
     const changed = options?.force
       ? localIds
-      : diff.filter((entry) => wanted.has(entry.localId) && !!entry.reviewed !== reviewed).map((entry) => entry.localId);
-    if (changed.length === 0) return;
+      : diffRef.current.filter((entry) => wanted.has(entry.localId) && !!entry.reviewed !== reviewed).map((entry) => entry.localId);
+    if (changed.length === 0) return true;
     const changedSet = new Set(changed);
-    setDiff((prev) => prev.map((entry) => (changedSet.has(entry.localId) ? { ...entry, reviewed } : entry)));
+    const jobId = id;
+    const targetMethod = reviewed ? (options?.method ?? 'single') : undefined;
+    // With no unsaved write for an item, what the page shows is what the server has: remember it as the state to roll back to.
+    const reviewedNow = new Map(diffRef.current.map((entry) => [entry.localId, !!entry.reviewed]));
+    const mySeq = new Map<string, number>();
+    for (const localId of changed) {
+      const seq = (reviewSeqRef.current.get(localId) ?? 0) + 1;
+      reviewSeqRef.current.set(localId, seq);
+      mySeq.set(localId, seq);
+      const pending = reviewPendingRef.current.get(localId) ?? 0;
+      if (pending === 0) {
+        reviewConfirmedRef.current.set(localId, {
+          reviewed: reviewedNow.get(localId) ?? false,
+          method: approvalMethodsRef.current.get(localId),
+          bulk: bulkCheckedIdsRef.current.has(localId),
+        });
+      }
+      reviewPendingRef.current.set(localId, pending + 1);
+    }
     try {
-      await setDiffEntriesReviewed(id, changed, reviewed);
+      setDiff((prev) => prev.map((entry) => (changedSet.has(entry.localId) ? { ...entry, reviewed } : entry)));
+      recordApprovalMethod(changed, reviewed ? (options?.method ?? 'single') : null);
+      // The items the reviewer looked at count as "looked at" from the moment of the mark, not once the save is back.
+      const lookedAt = (options?.spotCheckedIds ?? []).filter((localId) => changedSet.has(localId));
+      if (reviewed && lookedAt.length > 0) setBulkCheckedIds((prev) => new Set([...prev, ...lookedAt]));
+      const save = reviewWriteChainRef.current.then(() => setDiffEntriesReviewed(id, changed, reviewed));
+      reviewWriteChainRef.current = save.then(
+        () => undefined,
+        () => undefined,
+      );
+      await save;
+      for (const localId of changed) {
+        reviewConfirmedRef.current.set(localId, {
+          reviewed,
+          method: targetMethod,
+          bulk: !!targetMethod && bulkCheckedIdsRef.current.has(localId),
+        });
+      }
+      // The page has moved to another job: its state is not this save's to touch.
+      if (currentJobIdRef.current !== jobId || !mountedRef.current) return true;
       showToast(
         `${changed.length === 1 ? '1 item' : `${changed.length.toLocaleString()} items`} marked ${reviewed ? 'reviewed' : 'not reviewed'}.`,
         'success',
-        { label: 'Undo', onAction: () => void handleSetReviewed(changed, !reviewed, { force: true }) },
+        {
+          label: 'Undo',
+          onAction: () => {
+            options?.onToastUndo?.();
+            // Taking a mark back only touches what is still approved that way; putting one back is not filtered.
+            const undoIds = reviewed ? idsStillApproved(changed, options?.method ?? 'single') : changed;
+            if (undoIds.length === 0) {
+              announceAgain('Nothing left to undo.');
+              return;
+            }
+            void handleSetReviewed(undoIds, !reviewed, { force: true });
+          },
+        },
       );
+      return true;
     } catch (err) {
-      setDiff((prev) => prev.map((entry) => (changedSet.has(entry.localId) ? { ...entry, reviewed: !reviewed } : entry)));
+      if (currentJobIdRef.current !== jobId || !mountedRef.current) return false;
+      // Only items this call is still the newest write for; the rest belong to a later call, which settles them.
+      const rollBack = changed.filter((localId) => reviewSeqRef.current.get(localId) === mySeq.get(localId));
+      // A newer write owns every item: this call is superseded, so there is nothing to put back, to say or to navigate back to.
+      if (rollBack.length === 0) return true;
+      const rollBackSet = new Set(rollBack);
+      const confirmed = reviewConfirmedRef.current;
+      setDiff((prev) =>
+        prev.map((entry) =>
+          rollBackSet.has(entry.localId) ? { ...entry, reviewed: confirmed.get(entry.localId)?.reviewed ?? !reviewed } : entry,
+        ),
+      );
+      setApprovalMethods((prev) => {
+        const next = new Map(prev);
+        for (const localId of rollBack) {
+          const method = confirmed.get(localId)?.method;
+          if (method) next.set(localId, method);
+          else next.delete(localId);
+        }
+        return next;
+      });
+      setBulkCheckedIds((prev) => {
+        const next = new Set(prev);
+        for (const localId of rollBack) {
+          if (confirmed.get(localId)?.bulk) next.add(localId);
+          else next.delete(localId);
+        }
+        return next;
+      });
       showErrorToast('Failed to update review state — please try again.', err);
+      return false;
+    } finally {
+      for (const localId of changed) {
+        const pending = (reviewPendingRef.current.get(localId) ?? 1) - 1;
+        if (pending <= 0) reviewPendingRef.current.delete(localId);
+        else reviewPendingRef.current.set(localId, pending);
+      }
     }
   }
 
@@ -884,8 +1344,305 @@ export function JobDetail(): React.ReactElement {
     if (next) {
       setSelectedId(next.localId);
     } else {
-      setDialogOpen(false);
+      updateDialogOpen(false);
     }
+  }
+
+  // Steps the queue on after an accept or exclude: `rest` is what is left once the
+  // open item is gone. Ends queue mode, and closes the dialog, when nothing is.
+  function advanceReviewQueue(rest: DryRunDiffEntry[], verb: string): void {
+    if (rest.length === 0) {
+      // 'finish' ends a running queue; markDone covers a dialog the reviewer closed while the save ran.
+      dispatchQueueState('finish');
+      dispatchQueueState('markDone');
+      updateDialogOpen(false);
+      setQueueAnnouncement(`${verb}. Review queue done.`);
+      return;
+    }
+    setSelectedId(rest[0].localId);
+    setQueueAnnouncement(`${verb}. ${rest.length} left.`);
+  }
+
+  // Scroll to an element and put focus on it, once the closing dialog has finished (two frames), so Radix's own focus work
+  // and the page jump it can cause are over before this lands.
+  function goAndFocus(elementId: string): void {
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        const el = document.getElementById(elementId);
+        if (!el) return;
+        el.scrollIntoView({ behavior: scrollBehavior(), block: 'start' });
+        el.focus({ preventScroll: false });
+      }),
+    );
+  }
+
+  // The write confirmation's shortcuts: each closes it without returning focus to the header button, then takes the reviewer there.
+  function handleWriteReviewUnreviewed(): void {
+    setWriteHandOver(true);
+    setConfirmDialogOpen(false);
+    if (reviewQueue.length > 0) {
+      handleStartReviewQueue();
+      return;
+    }
+    setTab('tree');
+    goAndFocus('proposed-tree');
+  }
+
+  function handleWriteShowWarnings(): void {
+    setWriteHandOver(true);
+    setConfirmDialogOpen(false);
+    setTab('tree');
+    goAndFocus('integrity-warnings');
+  }
+
+  // Entries left out of the write, directly or through an excluded ancestor: the preview's "excluded" count.
+  function handleWriteShowExcluded(): void {
+    const byId = new Map(diff.map((entry) => [entry.localId, entry]));
+    const cache = new Map<string, boolean>();
+    const nodeIds = new Set(diff.filter((entry) => isExcludedWithAncestors(entry, byId, cache)).map((entry) => entry.localId));
+    setWriteHandOver(true);
+    setConfirmDialogOpen(false);
+    setTab('tree');
+    setFocusWarning({ kind: 'excluded_items', label: 'Left out of the write', nodeIds });
+    goAndFocus('proposed-tree');
+  }
+
+  function handleStartReviewQueue(): void {
+    if (reviewQueue.length === 0) return;
+    setQueueAnnouncement('');
+    setLastUndo(null);
+    setSelectedId(reviewQueue[0].localId);
+    dispatchQueueState('open');
+    queueOpenedRef.current = true;
+    updateDialogOpen(true);
+  }
+
+  // Back to an item whose save failed: the queue steps on at once (marking is optimistic), so a
+  // failure has to bring the reviewer back, not leave them past it with "done" already said.
+  // A dialog the reviewer has already left (or the queue closed at its end) is not reopened:
+  // the queue button, the error toast and the announcement carry the failure, and focus moves
+  // to that button, since the "done" row it was on is gone.
+  function returnToQueueItem(localId: string, message: string): void {
+    setSelectedId(localId);
+    setQueueAnnouncement(message);
+    if (dialogOpenRef.current) {
+      dispatchQueueState('open');
+      queueOpenedRef.current = true;
+      updateDialogOpen(true);
+    } else {
+      dispatchQueueState('clearDone');
+      setRefocusQueueButton(true);
+    }
+  }
+
+  async function handleQueueAccept(): Promise<void> {
+    if (!selectedId) return;
+    if (isDiffMutatingRef.current) {
+      announceAgain('Still saving. Try again.');
+      return;
+    }
+    const markedId = selectedId;
+    const markedTitle = diff.find((entry) => entry.localId === markedId)?.title ?? 'item';
+    const rest = reviewQueue.filter((entry) => entry.localId !== markedId);
+    // Recorded before the save, so accepts that finish out of order cannot make U undo an older one.
+    const undo: QueueUndo = {
+      label: markedTitle,
+      run: () => handleSetReviewed(idsStillApproved([markedId], 'single'), false, { force: true }),
+    };
+    setLastUndo(undo);
+    const saved = handleSetReviewed([markedId], true, { onToastUndo: () => clearLastUndoIf(undo) });
+    advanceReviewQueue(rest, 'Marked reviewed');
+    if (!(await saved)) {
+      clearLastUndoIf(undo);
+      returnToQueueItem(markedId, `Couldn't mark "${markedTitle}" reviewed. Try again.`);
+    }
+  }
+
+  // Exclude is the reject: it takes the item's whole subtree out of the write, so what
+  // is left is worked out as if it were already excluded, not just minus this item. Unlike
+  // marking it waits for the server (the tree is replaced by its reply) and offers Undo.
+  async function handleQueueReject(): Promise<void> {
+    if (!selectedId) return;
+    if (isDiffMutatingRef.current) {
+      announceAgain('Still saving. Try again.');
+      return;
+    }
+    const excludedId = selectedId;
+    setQueueAnnouncement('');
+    const rest = buildReviewQueue(
+      diff.map((entry) => (entry.localId === excludedId ? { ...entry, excluded: true } : entry)),
+      warningKindGroups,
+    );
+    if (!(await excludeWithUndo(excludedId))) return;
+    // Step on only if the reviewer is still on the excluded item; one who moved on (J/K) keeps their place.
+    if (selectedIdRef.current === excludedId) advanceReviewQueue(rest, 'Excluded');
+    else setQueueAnnouncement(`Excluded. ${rest.length} left.`);
+  }
+
+  // Excludes the item and offers Undo (toast and the U key); says so when the save fails.
+  async function excludeWithUndo(excludedId: string): Promise<boolean> {
+    const excludedEntry = diff.find((entry) => entry.localId === excludedId);
+    if (!(await excludeEntry(excludedId, true))) {
+      setQueueAnnouncement(`Couldn't exclude "${excludedEntry?.title ?? 'item'}". Try again.`);
+      return false;
+    }
+    const below = descendantCountsByLocalId[excludedId];
+    const belowCount = below ? below.epics + below.features + below.requirements : 0;
+    const undo: QueueUndo = { label: excludedEntry?.title ?? 'item', run: () => excludeEntry(excludedId, false) };
+    // While another save is in flight the Undo cannot run: say so and put the same toast back, keeping U set.
+    function showExcludedToast(): void {
+      showToast(
+        `Excluded "${excludedEntry?.title ?? 'item'}"${belowCount > 0 ? ` and ${belowCount.toLocaleString()} below it` : ''}.`,
+        'success',
+        {
+          label: 'Undo',
+          onAction: () => {
+            if (isDiffMutatingRef.current) {
+              announceAgain('Still saving. Try again.');
+              showExcludedToast();
+              return;
+            }
+            clearLastUndoIf(undo);
+            void excludeEntry(excludedId, false);
+          },
+        },
+      );
+    }
+    showExcludedToast();
+    setLastUndo(undo);
+    return true;
+  }
+
+  // The mandatory look before "approve clean items": a sample of the clean items, stepped through
+  // in the details dialog. The confirmation comes back when the dialog closes (see the effect below).
+  function handleOpenBulkApprove(): void {
+    setSpotChecked(new Set());
+    setBulkNotice('');
+    setBulkHandOver(false);
+    setBulkOpen(true);
+  }
+
+  function handleStartSpotCheck(): void {
+    const next = spotCheckSampleItems.find((entry) => !spotChecked.has(entry.localId));
+    if (!next) return;
+    setQueueAnnouncement('');
+    setSelectedId(next.localId);
+    setBulkHandOver(true);
+    setBulkOpen(false);
+    dispatchQueueState('startSpotCheck');
+    updateDialogOpen(true);
+  }
+
+  function handleSpotCheckLooksRight(): void {
+    if (!selectedId) return;
+    const checked = new Set(spotChecked).add(selectedId);
+    setSpotChecked(checked);
+    const checkedCount = spotCheckSampleItems.filter((entry) => checked.has(entry.localId)).length;
+    const next = spotCheckSampleItems.find((entry) => !checked.has(entry.localId));
+    setQueueAnnouncement(
+      next
+        ? `Looks right. ${checkedCount} of ${spotCheckSampleItems.length} checked.`
+        : `Spot-check done. ${checkedCount} of ${spotCheckSampleItems.length} checked.`,
+    );
+    if (next) setSelectedId(next.localId);
+    else updateDialogOpen(false);
+  }
+
+  // Exclude from inside the spot-check: the sample is worked out again from what is left, and the
+  // effect below moves on to the next unchecked item (or ends the spot-check).
+  async function handleSpotCheckExclude(): Promise<void> {
+    if (!selectedId) return;
+    if (isDiffMutatingRef.current) {
+      announceAgain('Still saving. Try again.');
+      return;
+    }
+    setQueueAnnouncement('');
+    const excludedId = selectedId;
+    if (await excludeWithUndo(excludedId)) {
+      // Restored by Undo later, it is a fresh item: it has to be looked at again.
+      setSpotChecked((prev) => {
+        if (!prev.has(excludedId)) return prev;
+        const next = new Set(prev);
+        next.delete(excludedId);
+        return next;
+      });
+      setQueueAnnouncement('Excluded. The sample is worked out again.');
+    }
+  }
+
+  // Shows the clean items in the tree (the same filter a warning chip uses), so the reviewer can read them.
+  function handleShowCleanList(): void {
+    setFocusWarning({ kind: 'clean_items', label: 'Clean items', nodeIds: new Set(bulk.items.map((entry) => entry.localId)) });
+    setBulkOpen(false);
+    setQueueAnnouncement(`Showing ${bulkLabel} in the tree.`);
+  }
+
+  // ONE version-guarded call for every clean item, undoable as one step. Only the reviewed mark is
+  // set: nothing reaches Azure DevOps until the write is confirmed. The list is the one this render
+  // shows in the confirmation, so what is approved is what the reviewer was looking at.
+  async function handleApproveClean(): Promise<void> {
+    if (approveCleanInFlightRef.current) return;
+    approveCleanInFlightRef.current = true;
+    try {
+      await approveCleanItems();
+    } finally {
+      approveCleanInFlightRef.current = false;
+    }
+  }
+
+  async function approveCleanItems(): Promise<void> {
+    const ids = bulk.items.map((entry) => entry.localId);
+    if (ids.length === 0 || spotCheckCheckedCount < spotCheckSampleItems.length) return;
+    if (isDiffMutatingRef.current) {
+      setBulkNotice('Still saving. Try again.');
+      return;
+    }
+    const label = `${ids.length.toLocaleString()} clean ${ids.length === 1 ? 'item' : 'items'}`;
+    let undo: QueueUndo | undefined;
+    // Marking is optimistic, so the confirmation closes at once and comes back only if the save fails.
+    setBulkNotice('');
+    setBulkOpen(false);
+    const sampledIds = spotCheckSampleItems.map((entry) => entry.localId);
+    const saved = await handleSetReviewed(ids, true, {
+      onToastUndo: () => clearLastUndoIf(undo),
+      method: 'bulk',
+      spotCheckedIds: sampledIds.filter((localId) => spotChecked.has(localId)),
+    });
+    if (!mountedRef.current) return;
+    if (!saved) {
+      setBulkNotice(`Couldn't approve ${label}. Try again.`);
+      setQueueAnnouncement(`Couldn't approve ${label}. Try again.`);
+      setBulkOpen(true);
+      return;
+    }
+    undo = { label, run: () => handleSetReviewed(idsStillApproved(ids, 'bulk'), false, { force: true }) };
+    setLastUndo(undo);
+    setQueueAnnouncement(`Approved ${label}. Undo available.`);
+    // The list filter was a snapshot of the clean items; they are reviewed now, so it has nothing left to say.
+    setFocusWarning((current) => (current?.kind === 'clean_items' ? null : current));
+    // The action and its dialog are gone: focus goes to what is left to review, or to the "done" row.
+    if (reviewQueue.length === ids.length) dispatchQueueState('markDone');
+    setRefocusQueueButton(true);
+  }
+
+  // U: the toast's Undo is out of reach while the modal dialog is open, so the key runs the same step.
+  function handleQueueUndo(): void {
+    const undo = lastUndoRef.current;
+    if (!undo) return;
+    if (isDiffMutatingRef.current) {
+      announceAgain('Still saving. Try again.');
+      return;
+    }
+    setLastUndo(null);
+    setQueueAnnouncement('');
+    void undo.run().then((done) => {
+      if (done) {
+        setQueueAnnouncement(`Undone: "${undo.label}".`);
+      } else {
+        setLastUndo(undo);
+        announceAgain(`Couldn't undo "${undo.label}". Try again.`);
+      }
+    });
   }
 
   // Re-runs a failed enhancement pass for the items its warning lists, a
@@ -988,7 +1745,7 @@ export function JobDetail(): React.ReactElement {
     try {
       for (const entry of targets) {
         const result = await setDiffEntryExcluded(id, entry.localId, excluded);
-        setDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []);
+        setDiff(mergeServerDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []));
         succeeded += 1;
       }
       try {
@@ -1000,7 +1757,10 @@ export function JobDetail(): React.ReactElement {
       }
       showToast(`${excluded ? 'Excluded' : 'Included'} ${succeeded} item${succeeded === 1 ? '' : 's'}.`, 'success');
     } catch (err) {
-      showErrorToast(`Stopped after updating ${succeeded} of ${targets.length} item(s) — please retry.`, err);
+      showErrorToast(
+        `Stopped after updating ${succeeded} of ${targets.length} item(s) — ${getServerMessage(err) ?? 'please retry.'}`,
+        err,
+      );
     } finally {
       isDiffMutatingRef.current = false;
       setIsDiffMutating(false);
@@ -1026,13 +1786,14 @@ export function JobDetail(): React.ReactElement {
     if (!id || isDiffMutatingRef.current) return;
     isDiffMutatingRef.current = true;
     setIsDiffMutating(true);
-    const previousDiff = diff;
+    const previousDiff = diffRef.current;
     setDiff((current) => applyMoveOptimistically(current, localId, input));
     try {
       const result = await moveDiffEntry(id, localId, input);
-      setDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []);
+      setDiff(mergeServerDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []));
     } catch (err) {
-      setDiff(previousDiff);
+      // Back to the tree as it was, but never to a stale reviewed flag.
+      setDiff(mergeServerDiff(previousDiff, true));
       showErrorToast('Failed to move — please try again.', err);
     } finally {
       isDiffMutatingRef.current = false;
@@ -1064,10 +1825,75 @@ export function JobDetail(): React.ReactElement {
     setIsDiffMutating(true);
     try {
       const result = await editDiffEntry(id, localId, patch);
-      setDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []);
+      setDiff(mergeServerDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []));
+      setEditedIds((prev) => new Set(prev).add(localId));
       showToast('Changes saved.', 'success');
     } catch (err) {
       showErrorToast('Failed to save changes — please try again.', err);
+    } finally {
+      isDiffMutatingRef.current = false;
+      setIsDiffMutating(false);
+    }
+  }
+
+  // P9d review gate: accept (or withdraw) a generated acceptance-criteria proposal. Serialized with the other diff mutations; re-throws on
+  // failure so ProposalCard's own pending state resets.
+  async function handleSetProposalAccepted(localId: string, accepted: boolean): Promise<void> {
+    if (!id) return;
+    if (isDiffMutatingRef.current) {
+      showToast('Try again — another change is still saving.', 'error');
+      return;
+    }
+    isDiffMutatingRef.current = true;
+    setIsDiffMutating(true);
+    try {
+      const result = await setProposalAccepted(id, localId, accepted);
+      setDiff(mergeServerDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []));
+    } catch (err) {
+      showErrorToast('Failed to update the proposal — please try again.', err);
+      throw err;
+    } finally {
+      isDiffMutatingRef.current = false;
+      setIsDiffMutating(false);
+    }
+  }
+
+  // "To be discussed": park a chat proposal in the item's ADO Discussion; the item's own text is untouched. Serialized with the other diff
+  // mutations; re-throws on failure so the chat keeps the proposal card.
+  async function handleAddDiscussion(localId: string, entry: { proposedTitle?: string; proposedDescription?: string }): Promise<void> {
+    if (!id) return;
+    if (isDiffMutatingRef.current) {
+      showToast('Try again — another change is still saving.', 'error');
+      throw new Error('another change is still saving');
+    }
+    isDiffMutatingRef.current = true;
+    setIsDiffMutating(true);
+    try {
+      const result = await addDiscussionEntry(id, localId, entry);
+      setDiff(mergeServerDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []));
+      showToast('Added to the discussion; it will be posted to Azure DevOps on Confirm.', 'success');
+    } catch (err) {
+      showErrorToast('Failed to add to the discussion — please try again.', err);
+      throw err;
+    } finally {
+      isDiffMutatingRef.current = false;
+      setIsDiffMutating(false);
+    }
+  }
+
+  async function handleRemoveDiscussion(localId: string, entryId: string): Promise<void> {
+    if (!id) return;
+    if (isDiffMutatingRef.current) {
+      showToast('Try again — another change is still saving.', 'error');
+      return;
+    }
+    isDiffMutatingRef.current = true;
+    setIsDiffMutating(true);
+    try {
+      const result = await removeDiscussionEntry(id, localId, entryId);
+      setDiff(mergeServerDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []));
+    } catch (err) {
+      showErrorToast('Failed to remove the discussion item — please try again.', err);
     } finally {
       isDiffMutatingRef.current = false;
       setIsDiffMutating(false);
@@ -1082,7 +1908,7 @@ export function JobDetail(): React.ReactElement {
     if (!id) return;
     try {
       const result = await rescoreDiffEntry(id, localId);
-      setDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []);
+      setDiff(mergeServerDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []));
       showToast('Rescored.', 'success');
     } catch (err) {
       // The server's own reason (e.g. "Rescore did not return a usable score")
@@ -1109,6 +1935,38 @@ export function JobDetail(): React.ReactElement {
     } catch (err) {
       showErrorToast('Failed to upload figure — please try again.', err);
       throw err;
+    }
+  }
+
+  // Moves one of an entry's figures to another item, or detaches it (target null). Re-throws on failure so the figure
+  // card shows the server's reason inline and keeps the figure where it is. The write preview is fetched each time the
+  // write dialog opens, so no cached preview needs refreshing here.
+  async function handleMoveFigure(sourceLocalId: string, figureId: string, targetLocalId: string | null): Promise<void> {
+    if (!id) return;
+    if (isDiffMutatingRef.current) throw new Error('Another change is still saving. Try again in a moment.');
+    isDiffMutatingRef.current = true;
+    setIsDiffMutating(true);
+    try {
+      const result = await moveFigure(id, sourceLocalId, figureId, targetLocalId);
+      // Same label the picker showed, including the parent, so same-named items stay apart.
+      const targetTitle = targetLocalId != null ? figureMoveTargets.find((target) => target.localId === targetLocalId)?.title : undefined;
+      setDiff(mergeServerDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []));
+      if (targetLocalId == null) {
+        showToast('Figure will not be attached', 'success', {
+          label: 'Undo',
+          onAction: () => {
+            // Attaching again is a move to the item's own id.
+            void handleMoveFigure(sourceLocalId, figureId, sourceLocalId).catch((err) => showErrorToast(getServerMessage(err) ?? 'Could not undo. Please try again.', err));
+          },
+        });
+      } else if (targetLocalId === sourceLocalId) {
+        showToast('Figure will be attached again', 'success');
+      } else {
+        showToast(`Figure moved to ${targetTitle ?? 'the other item'}`, 'success');
+      }
+    } finally {
+      isDiffMutatingRef.current = false;
+      setIsDiffMutating(false);
     }
   }
 
@@ -1157,13 +2015,46 @@ export function JobDetail(): React.ReactElement {
     setIsDiffMutating(true);
     try {
       const result = await addDiffEntry(id, { parentLocalId, ...input });
-      setDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []);
+      setDiff(mergeServerDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []));
       showToast('Item added.', 'success');
     } catch (err) {
       showErrorToast('Failed to add item — please try again.', err);
     } finally {
       isDiffMutatingRef.current = false;
       setIsDiffMutating(false);
+    }
+  }
+
+  // The confirm-time duplicate-index update is best-effort and records a failure in the audit trail; offer the repair until a later rebuild
+  // entry shows it was done.
+  const needsDedupRebuild = useMemo(() => {
+    let lastFailure = -Infinity;
+    let lastRebuild = -Infinity;
+    for (const entry of audit) {
+      const at = Date.parse(entry.createdAt);
+      if (entry.message.startsWith('Dedup index may be only partly updated')) lastFailure = Math.max(lastFailure, at);
+      else if (entry.message.startsWith('Duplicate index rebuilt')) lastRebuild = Math.max(lastRebuild, at);
+    }
+    return lastFailure > -Infinity && lastRebuild < lastFailure;
+  }, [audit]);
+
+  async function handleReindexDedup(): Promise<void> {
+    if (!id) return;
+    setIsReindexing(true);
+    try {
+      const result = await reindexDedup(id);
+      setReindexDialogOpen(false);
+      showToast(`Duplicate index rebuilt for ${result.indexed} items`, 'success');
+    } catch (err) {
+      setReindexDialogOpen(false);
+      showErrorToast(getServerMessage(err) ?? 'Failed to rebuild the duplicate index. Please try again.', err);
+    } finally {
+      setIsReindexing(false);
+    }
+    try {
+      setAudit(await getAudit(id));
+    } catch {
+      // The list refresh is a courtesy; the toast already carries the outcome.
     }
   }
 
@@ -1198,6 +2089,23 @@ export function JobDetail(): React.ReactElement {
   // so it can tell the reviewer "this will be linked under an existing
   // parent" instead of leaving that only implicit in the parent row's own
   // badge, several rows away in the tree.
+  const writtenLocalIdSet = useMemo(() => new Set(writtenLocalIds), [writtenLocalIds]);
+  // Items a figure can be moved to: only items that can receive an automatic attachment (created by this job, not excluded, not
+  // already written). The parent's title tells same-named items apart.
+  const figureMoveTargets = useMemo(() => {
+    const byId = new Map(diff.map((entry) => [entry.localId, entry]));
+    return diff
+      .filter((entry) => entry.action === 'create' && !entry.excluded && !writtenLocalIdSet.has(entry.localId))
+      .map((entry) => {
+        const parent = entry.parentLocalId != null ? byId.get(entry.parentLocalId) : undefined;
+        return {
+          localId: entry.localId,
+          type: entry.type,
+          title: parent ? `${entry.title} (in ${parent.title})` : entry.title,
+          customerId: entry.customerId ?? null,
+        };
+      });
+  }, [diff, writtenLocalIdSet]);
   const diffByLocalId = useMemo(() => Object.fromEntries(diff.map((e) => [e.localId, e])), [diff]);
 
   // DESIGN.md §11.4.1 -- an Epic/Feature has no quality rubric, so its
@@ -1291,7 +2199,11 @@ export function JobDetail(): React.ReactElement {
 
   // Whether the focused warning is one the reviewer works through (fix or
   // review) rather than an informational one with nothing to mark.
-  const focusReviewable = !!focusWarning && kindMeta(focusWarning.kind).group !== 'info';
+  // Grouped the way the banner groups it, so a kind whose records are all auto_fixed counts as info.
+  const focusGroup = focusWarning
+    ? (warningKindGroups.find((entry) => entry.kind === focusWarning.kind)?.group ?? kindMeta(focusWarning.kind).group)
+    : null;
+  const focusReviewable = !!focusWarning && focusGroup !== 'info';
 
   // The focused warning's items still to be shown: its own set, minus the
   // ones already reviewed while "hide reviewed" is on. Drives the tree, the
@@ -1318,14 +2230,97 @@ export function JobDetail(): React.ReactElement {
     return result;
   }, [focusWarning, focusReviewable, reviewedIds]);
 
+  // The clean items "Approve clean items" would mark reviewed, and the sample to look at first. Only for SURVEY:
+  // BASELINE carries no scores, and its text is verbatim.
+  const bulk = useMemo(
+    () => cleanApproval(mode === 'survey' && status === 'diff_ready' ? diff : [], warningKindGroups),
+    [mode, status, diff, warningKindGroups],
+  );
+  const spotCheckSampleItems = useMemo(() => spotCheckSample(bulk.items), [bulk]);
+  // Only sample items that are still clean count: one that was excluded since drops out, and a new member must be checked.
+  const spotCheckCheckedCount = spotCheckSampleItems.filter((entry) => spotChecked.has(entry.localId)).length;
+  const bulkLabel = `${bulk.items.length.toLocaleString()} clean ${bulk.items.length === 1 ? 'item' : 'items'}`;
   // Banner for the details dialog: only while the open item is one of the
   // focused warning's own items (a reviewer who stepped outside the set, or
   // opened an unrelated row, shouldn't see a stale reason).
   const dialogReason = useMemo(() => {
+    const queueEntry = queueMode && selectedId ? diff.find((entry) => entry.localId === selectedId) : undefined;
+    if (queueEntry) return riskReason(queueEntry, warningKindGroups);
+    if (spotCheckMode && selectedId && spotCheckSampleItems.some((entry) => entry.localId === selectedId)) {
+      return {
+        title: `Spot-check: ${spotCheckCheckedCount.toLocaleString()} of ${spotCheckSampleItems.length.toLocaleString()} checked`,
+        todo: 'Read it against its source. If it looks right, say so; if not, exclude it or edit it. Nothing is approved until you confirm.',
+        group: 'info' as const,
+      };
+    }
     if (!focusWarning || !selectedId || !focusWarning.nodeIds.has(selectedId)) return null;
     const meta = kindMeta(focusWarning.kind);
     return { title: meta.title, todo: meta.todo, group: meta.group };
-  }, [focusWarning, selectedId]);
+  }, [queueMode, spotCheckMode, spotCheckSampleItems, spotCheckCheckedCount, diff, warningKindGroups, focusWarning, selectedId]);
+
+  // What is still to review, riskiest first. Only built for a job still awaiting review.
+  const reviewQueue = useMemo(
+    () => (status === 'diff_ready' ? buildReviewQueue(diff, warningKindGroups) : []),
+    [status, diff, warningKindGroups],
+  );
+  // Leaving the dialog (Escape, the close button) ends queue mode. A spot-check ends too, and hands back to its confirmation.
+  useEffect(() => {
+    if (dialogOpen) return;
+    dispatchQueueState('close');
+    if (spotCheckMode) {
+      dispatchQueueState('endSpotCheck');
+      setBulkHandOver(false);
+      setBulkOpen(true);
+    }
+  }, [dialogOpen, spotCheckMode]);
+  // The spot-check follows the sample the same way: an open item that has dropped out (excluded, or the sample moved)
+  // hands over to the first unchecked one, and with none left the dialog closes, which returns to the confirmation.
+  useEffect(() => {
+    if (!spotCheckMode || isDiffMutating) return;
+    if (status !== 'diff_ready' || spotCheckSampleItems.length === 0) {
+      updateDialogOpen(false);
+    } else if (!selectedId || !spotCheckSampleItems.some((entry) => entry.localId === selectedId)) {
+      const next = spotCheckSampleItems.find((entry) => !spotChecked.has(entry.localId));
+      if (next) setSelectedId(next.localId);
+      else updateDialogOpen(false);
+    }
+  }, [spotCheckMode, isDiffMutating, status, spotCheckSampleItems, spotChecked, selectedId]);
+  // Nothing left to approve (all reviewed, excluded or flagged since): the confirmation has nothing to say.
+  useEffect(() => {
+    if (bulkOpen && bulk.items.length === 0) setBulkOpen(false);
+  }, [bulkOpen, bulk.items.length]);
+  // The app's dialogs have no Radix trigger to hand focus back to, so on close it falls to the
+  // page body. After the queue's dialog closes, focus goes to the "done" row when the queue is
+  // finished, otherwise back to the queue button. After a tick, so it lands once the dialog is gone.
+  const showQueueDone = queueFinished && !dialogOpen && status === 'diff_ready' && reviewQueue.length === 0;
+  // Queue mode follows the queue: it ends when the job leaves review or nothing is left, and
+  // an open item that has dropped out of the queue (a refresh, an undo) hands over to the first.
+  useEffect(() => {
+    // Not while an exclude is saving: its reply empties the queue a render before the queue steps on.
+    if (!queueMode || isDiffMutating) return;
+    if (status !== 'diff_ready' || reviewQueue.length === 0) {
+      dispatchQueueState('close');
+    } else if (!selectedId || !reviewQueue.some((entry) => entry.localId === selectedId)) {
+      setSelectedId(reviewQueue[0].localId);
+    }
+  }, [queueMode, isDiffMutating, status, reviewQueue, selectedId]);
+  // After a failed save with the dialog already closed: wait for the refilled queue to render its button.
+  useEffect(() => {
+    const target = queueDoneRef.current ?? queueButtonRef.current;
+    if (!refocusQueueButton || !target) return;
+    target.focus();
+    setRefocusQueueButton(false);
+  }, [refocusQueueButton, reviewQueue.length]);
+  // A "done" row is only true until the queue refills.
+  useEffect(() => {
+    if (queueFinished && reviewQueue.length > 0) dispatchQueueState('clearDone');
+  }, [queueFinished, reviewQueue.length]);
+  useEffect(() => {
+    if (dialogOpen || !queueOpenedRef.current) return undefined;
+    queueOpenedRef.current = false;
+    const timer = setTimeout(() => (queueDoneRef.current ?? queueButtonRef.current)?.focus(), 0);
+    return () => clearTimeout(timer);
+  }, [dialogOpen]);
 
   // Backs the toolbar's "Needs review" chip -- see isFlaggedDiffEntry.
   const flaggedCount = useMemo(() => diff.filter((entry) => isFlaggedDiffEntry(entry)).length, [diff]);
@@ -1337,21 +2332,25 @@ export function JobDetail(): React.ReactElement {
   // prev/next is an acceptable simplification, not a correctness bug.
   const filteredForNav = useMemo(() => {
     const query = filterText.trim().toLowerCase();
-    return diff.filter(
+    // In the order the tree draws them: the diff lists a wrapper Epic after its children.
+    return orderLikeTree(diff).filter(
       (entry) => matchesDiffFilter(entry, filterAction, query) && (!focusVisibleIds || focusVisibleIds.has(entry.localId)),
     );
   }, [diff, filterAction, filterText, focusVisibleIds]);
 
+  // Prev / next follow the risk order in queue mode, the filtered tree order otherwise.
+  const navList = queueMode ? reviewQueue : spotCheckMode ? spotCheckSampleItems : filteredForNav;
+
   function handleNavigateDialog(direction: 'prev' | 'next'): void {
-    const currentIndex = filteredForNav.findIndex((entry) => entry.localId === selectedId);
+    const currentIndex = navList.findIndex((entry) => entry.localId === selectedId);
     if (currentIndex === -1) return;
-    const nextIndex = direction === 'next' ? Math.min(filteredForNav.length - 1, currentIndex + 1) : Math.max(0, currentIndex - 1);
-    setSelectedId(filteredForNav[nextIndex].localId);
+    const nextIndex = direction === 'next' ? Math.min(navList.length - 1, currentIndex + 1) : Math.max(0, currentIndex - 1);
+    setSelectedId(navList[nextIndex].localId);
   }
 
-  const navIndex = filteredForNav.findIndex((entry) => entry.localId === selectedId);
+  const navIndex = navList.findIndex((entry) => entry.localId === selectedId);
   const hasPrevEntry = navIndex > 0;
-  const hasNextEntry = navIndex !== -1 && navIndex < filteredForNav.length - 1;
+  const hasNextEntry = navIndex !== -1 && navIndex < navList.length - 1;
 
   if (loadError) {
     return (
@@ -1366,7 +2365,9 @@ export function JobDetail(): React.ReactElement {
 
   if (!loaded) {
     return (
-      <div className="flex flex-col gap-3 p-4">
+      <div role="status" aria-busy="true" className="flex flex-col gap-3 p-4">
+        {/* The placeholders below are not drawn for the first second (ui/Skeleton), so assistive technology is told at once. */}
+        <span className="sr-only">Loading job…</span>
         <Skeleton className="h-6 w-1/3" />
         <Skeleton className="h-4 w-1/2" />
         <div className="grid grid-cols-3 gap-2.5">
@@ -1416,9 +2417,33 @@ export function JobDetail(): React.ReactElement {
   // Review controls for the open item: only while a fix/review warning is
   // focused, the item belongs to it, and the job still accepts marking.
   const dialogReview =
-    focusReviewable && focusWarning && selectedId && focusWarning.nodeIds.has(selectedId) && status === 'diff_ready'
+    queueMode && selectedId && status === 'diff_ready'
       ? {
           reviewed: reviewedIds.has(selectedId),
+          busy: isDiffMutating,
+          onBusyAttempt: () => announceAgain('Still saving. Try again.'),
+          onMark: () => void handleQueueAccept(),
+          onUnmark: () => void handleSetReviewed([selectedId], false),
+          onReject: () => void handleQueueReject(),
+          onUndo: hasUndo ? handleQueueUndo : undefined,
+        }
+      : spotCheckMode && selectedId && status === 'diff_ready'
+      ? {
+          // Nothing is marked reviewed here: "looks right" only counts toward the sample.
+          reviewed: false,
+          busy: isDiffMutating,
+          onBusyAttempt: () => announceAgain('Still saving. Try again.'),
+          onMark: handleSpotCheckLooksRight,
+          onUnmark: () => undefined,
+          onReject: () => void handleSpotCheckExclude(),
+          markLabel: 'Looks right and next',
+          markHint: 'looks right',
+        }
+      : focusReviewable && focusWarning && selectedId && focusWarning.nodeIds.has(selectedId) && status === 'diff_ready'
+      ? {
+          reviewed: reviewedIds.has(selectedId),
+          busy: isDiffMutating,
+          onBusyAttempt: () => announceAgain('Still saving. Try again.'),
           onMark: handleMarkSelectedReviewedAndNext,
           onUnmark: () => void handleSetReviewed([selectedId], false),
         }
@@ -1432,10 +2457,14 @@ export function JobDetail(): React.ReactElement {
     // own mx-2, and the Tabs block had none at all -- content visibly
     // didn't line up down the page).
     <div className="flex flex-col gap-3 px-2">
+      {/* Present from the start so the later text is announced; focus is never moved. */}
+      <div role="status" aria-live="polite" className="sr-only" data-testid="job-arrival-status">
+        {arrival?.message ?? ''}
+      </div>
       <div className="flex flex-col gap-1 border-b border-hairline pb-2 pt-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex min-w-0 flex-wrap items-baseline gap-2">
-            {sourceFilename && <span className="truncate text-sm font-medium text-ink-1">{sourceFilename}</span>}
+            <h1 className="truncate text-sm font-medium text-ink-1">{sourceFilename || 'Job'}</h1>
             {status && <StatusChip status={status} />}
             {mode && <ModeBadge mode={mode as 'baseline' | 'survey'} />}
             {startedAt && (
@@ -1444,44 +2473,53 @@ export function JobDetail(): React.ReactElement {
               </Tooltip>
             )}
           </div>
-          <div className="flex flex-none flex-wrap gap-2">
-            <Button size="sm" variant="ghost" onClick={handleDownloadSummary}>
-              Download summary
-            </Button>
-            {(status === 'pending' || status === 'running') && (
-              <Button variant="danger" onClick={() => setCancelDialogOpen(true)} disabled={isMutating}>
-                Cancel run
-              </Button>
-            )}
-            {status === 'diff_ready' && (
-              <>
-                <Button variant="danger" onClick={() => setRejectDialogOpen(true)} disabled={isMutating}>
-                  Reject
-                </Button>
-                <Tooltip content={canWriteToAdo ? 'Write the reviewed items to Azure DevOps' : 'Sign in with an Azure DevOps org URL and PAT to confirm'}>
-                  <span>
-                    <Button variant="cta" onClick={() => setConfirmDialogOpen(true)} disabled={isMutating || !canWriteToAdo}>
-                      Confirm
+          {/* Three tiers, not five equal buttons (DESIGN.md §5): the primary action and its counterpart decision carry text and colour; everything
+              else is a labelled icon (name + tooltip). The DOM order is the visual order at every width (decisions, then tools, Delete last, a
+              divider away from the decisions); below md the decisions take the first, full-width row and the tools sit under them. */}
+          <div className="flex max-w-full flex-wrap items-center gap-x-3 gap-y-2 max-md:w-full">
+            {(status === 'pending' || status === 'running' || status === 'diff_ready') && (
+              <div className="flex items-center gap-2 max-md:w-full">
+                {(status === 'pending' || status === 'running') && (
+                  <Button variant="danger" onClick={() => setCancelDialogOpen(true)} disabled={isMutating} className="max-md:min-h-11">
+                    <X className="h-3.5 w-3.5" />
+                    Cancel run
+                  </Button>
+                )}
+                {status === 'diff_ready' && (
+                  <>
+                    <Button variant="danger" onClick={() => setRejectDialogOpen(true)} disabled={isMutating} className="max-md:min-h-11">
+                      <X className="h-3.5 w-3.5" />
+                      Reject
                     </Button>
+                    <Tooltip content={canWriteToAdo ? 'Write the reviewed items to Azure DevOps' : 'Sign in with an Azure DevOps org URL and PAT to write'}>
+                      <span className="max-md:flex-1">
+                        <Button variant="cta" onClick={() => { setWriteHandOver(false); setConfirmDialogOpen(true); }} disabled={isMutating || !canWriteToAdo} className="max-md:min-h-11 max-md:w-full">
+                          <Upload className="h-3.5 w-3.5" />
+                          Write to Azure DevOps
+                        </Button>
+                      </span>
+                    </Tooltip>
+                  </>
+                )}
+                {/* a divider between the decisions and the tools at desktop widths; the phone puts the tools on their own row instead */}
+                <span aria-hidden="true" className="ml-1 hidden h-5 w-px bg-hairline-strong md:block" />
+              </div>
+            )}
+            <div role="group" aria-label="Job tools" className="flex items-center gap-0.5 max-md:w-full">
+              <IconButton label="Download summary" compactLabel="Download" icon={Download} onClick={handleDownloadSummary} />
+              {status !== 'pending' && status !== 'running' && status !== 'writing' && createdItemCount > 0 && (
+                <IconButton label={isValidating ? 'Validating…' : 'Validate'} compactLabel={isValidating ? 'Validating…' : 'Validate'} icon={ShieldCheck} onClick={handleValidate} loading={isValidating} />
+              )}
+              {status !== 'pending' && status !== 'running' && status !== 'writing' && (
+                <>
+                  <IconButton label="Resubmit" compactLabel="Resubmit" icon={RotateCw} onClick={() => setResubmitDialogOpen(true)} disabled={isMutating} />
+                  <span aria-hidden="true" className="mx-1 h-5 w-px bg-hairline-strong max-md:hidden" />
+                  <span className="max-md:ml-auto">
+                    <IconButton label="Delete" compactLabel="Delete" icon={Trash2} tone="danger" onClick={() => setDeleteDialogOpen(true)} disabled={isMutating} />
                   </span>
-                </Tooltip>
-              </>
-            )}
-            {status !== 'pending' && status !== 'running' && status !== 'writing' && createdItemCount > 0 && (
-              <Button size="sm" variant="ghost" onClick={handleValidate} disabled={isValidating}>
-                {isValidating ? 'Validating…' : 'Validate'}
-              </Button>
-            )}
-            {status !== 'pending' && status !== 'running' && status !== 'writing' && (
-              <>
-                <Button variant="outline" size="sm" onClick={() => setResubmitDialogOpen(true)} disabled={isMutating}>
-                  Resubmit
-                </Button>
-                <Button variant="outline" size="sm" onClick={() => setDeleteDialogOpen(true)} disabled={isMutating}>
-                  Delete
-                </Button>
-              </>
-            )}
+                </>
+              )}
+            </div>
           </div>
         </div>
         {(teamProject || areaPath) && (
@@ -1493,18 +2531,56 @@ export function JobDetail(): React.ReactElement {
       <ConfirmDialog
         open={confirmDialogOpen}
         onOpenChange={setConfirmDialogOpen}
-        title="Write these items to Azure DevOps?"
+        title={figuresOnlyWrite ? 'Attach figures to Azure DevOps items?' : 'Write these items to Azure DevOps?'}
         description={
           <>
-            This creates{summary ? ` ${summary.created} new work item${summary.created === 1 ? '' : 's'}` : ' the reviewed work items'} under{' '}
-            <strong>{areaPath ?? 'the configured area path'}</strong>. This cannot be undone from req2ado — items must be deleted directly in
-            Azure DevOps afterward.
+            {figuresOnlyWrite ? (
+              <>This attaches the figures to their items under{' '}</>
+            ) : finishingLinks ? (
+              figuresToAttach > 0 ? <>This adds the remaining links and attaches the figures under{' '}</> : <>This finishes writing the remaining links under{' '}</>
+            ) : (
+              <>This creates{previewedTotal !== null ? ` ${previewedTotal.toLocaleString()} new work item${previewedTotal === 1 ? '' : 's'}` : summary ? ` ${summary.created} new work item${summary.created === 1 ? '' : 's'}` : ' the reviewed work items'} under{' '}</>
+            )}
+            <strong><bdi className="[overflow-wrap:anywhere]">{areaPath ?? 'the configured area path'}</bdi></strong>.{' '}
+            {figuresOnlyWrite
+              ? 'This cannot be undone from req2ado. Attachments must be removed directly in Azure DevOps afterward.'
+              : 'This cannot be undone from req2ado — items must be deleted directly in Azure DevOps afterward.'}
           </>
         }
-        confirmLabel="Confirm and write"
+        confirmLabel={figuresOnlyWrite && teamProject ? `Attach ${figuresToAttach.toLocaleString()} ${figuresToAttach === 1 ? 'figure' : 'figures'} to ${teamProject}` : finishingLinks && teamProject ? `Finish writing to ${teamProject}` : previewedTotal !== null && teamProject ? `Write ${previewedTotal.toLocaleString()} ${previewedTotal === 1 ? 'item' : 'items'} to ${teamProject}` : 'Confirm and write'}
+        confirmDisabled={writeLoading || nothingToWrite}
+        confirmDisabledReason={writeLoading ? 'Checking what will be written.' : 'Nothing will be created, so there is nothing to write.'}
         onConfirm={handleConfirm}
         isConfirming={isMutating}
         variant="irreversible"
+        cancelVariant="outline"
+        restoreFocus={!writeHandOver}
+      >
+        <WriteSummary
+          state={writeSummary}
+          teamProject={teamProject}
+          areaPath={areaPath}
+          warnings={writeWarningCounts}
+          onReviewUnreviewed={handleWriteReviewUnreviewed}
+          onShowWarnings={handleWriteShowWarnings}
+          onShowExcluded={handleWriteShowExcluded}
+        />
+      </ConfirmDialog>
+      <BulkApproveDialog
+        open={bulkOpen}
+        onOpenChange={setBulkOpen}
+        count={bulk.items.length}
+        lowestScore={bulk.lowestScore}
+        highestScore={bulk.highestScore}
+        leftOut={{ flagged: bulk.flagged, unscored: bulk.unscored, stale: bulk.stale }}
+        sampleSize={spotCheckSampleItems.length}
+        checkedCount={spotCheckCheckedCount}
+        notice={bulkNotice}
+        onStartSpotCheck={handleStartSpotCheck}
+        onShowList={handleShowCleanList}
+        onApprove={() => void handleApproveClean()}
+        returnFocusRef={approveCleanButtonRef}
+        restoreFocus={!bulkHandOver}
       />
       <ConfirmDialog
         open={rejectDialogOpen}
@@ -1534,6 +2610,15 @@ export function JobDetail(): React.ReactElement {
         confirmLabel="Resubmit"
         onConfirm={handleResubmit}
         isConfirming={isMutating}
+      />
+      <ConfirmDialog
+        open={reindexDialogOpen}
+        onOpenChange={setReindexDialogOpen}
+        title="Rebuild the duplicate index?"
+        description="Only do this if these items still exist in Azure DevOps. If any were deleted there, they will still be treated as duplicates until you remove them from the index."
+        confirmLabel="Rebuild index"
+        onConfirm={handleReindexDedup}
+        isConfirming={isReindexing}
       />
       <ConfirmDialog
         open={deleteDialogOpen}
@@ -1624,37 +2709,12 @@ export function JobDetail(): React.ReactElement {
           />
         </div>
       )}
-      {mode === 'survey' && documentOverview && (
-        <div className="mb-4 flex flex-col gap-2 rounded-md border border-hairline bg-surface p-3">
-          <span className={LABEL_MICRO}>Document overview</span>
-          <p className="text-sm text-ink-1">{documentOverview.synopsis}</p>
-          {documentOverview.caveat && <Alert severity="warning">{documentOverview.caveat}</Alert>}
-          <span className="text-xs text-ink-3">Generated from the document's real structure — not a literal excerpt.</span>
-        </div>
-      )}
       {mode === 'baseline' && (
         <div className="mb-4 flex items-start gap-2 rounded-md border border-dashed border-hairline-strong p-3 text-xs text-ink-3">
           <span>
             Document overview isn't produced for BASELINE jobs — deterministic extraction, nothing to verify.
           </span>
         </div>
-      )}
-      {actionableWarningCount > 0 && (
-        <Alert severity="warning" className="mb-4">
-          <div className="flex flex-wrap items-center justify-between gap-2.5">
-            <span>
-              <AnimatedNumber value={actionableWarningCount} /> warning{actionableWarningCount === 1 ? '' : 's'} need
-              {actionableWarningCount === 1 ? 's' : ''} your attention before you approve.
-            </span>
-            <button
-              type="button"
-              onClick={() => document.getElementById('integrity-warnings')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-              className="flex-none rounded-sm border border-warning-border bg-surface px-2.5 py-1 text-xs font-medium text-warning-ink hover:border-current"
-            >
-              Go to warnings
-            </button>
-          </div>
-        </Alert>
       )}
       {actionableWarningCount === 0 && trackableKinds.length > 0 && (
         <Alert severity="success" className="mb-4">
@@ -1678,9 +2738,17 @@ export function JobDetail(): React.ReactElement {
           jobId={id}
         />
       )}
-      <div id="integrity-warnings">
+      {mode === 'survey' && documentOverview && <DocumentOverviewCard overview={documentOverview} />}
+      {kbCoverageNote && (
+        <p className={cn('px-2 text-xs', kbCoverageNote.tone === 'warning' ? 'text-warning-ink' : 'text-ink-3')}>
+          {kbCoverageNote.text}
+        </p>
+      )}
+      <div id="integrity-warnings" tabIndex={-1} className="outline-none">
         <CollapsibleWarnings
           warnings={mergedWarnings}
+          gateCount={status === 'diff_ready' ? actionableWarningCount : undefined}
+          fixGroupTitle={status !== null && ['succeeded', 'failed', 'rejected', 'cancelled'].includes(status) ? 'Flagged before writing' : undefined}
           focusedKind={focusWarning?.kind ?? null}
           reviewedIds={reviewedIds}
           // Marking is advisory review state on a still-editable job; once
@@ -1701,7 +2769,7 @@ export function JobDetail(): React.ReactElement {
             setFilterFlaggedOnly(false);
             setTab('tree');
             requestAnimationFrame(() =>
-              document.getElementById('proposed-tree')?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+              document.getElementById('proposed-tree')?.scrollIntoView({ behavior: scrollBehavior(), block: 'start' }),
             );
           }}
           onJumpToNode={(localId) => {
@@ -1712,7 +2780,7 @@ export function JobDetail(): React.ReactElement {
             // looked like it did nothing on any list of real size.
             setTab('tree');
             setSelectedId(localId);
-            setDialogOpen(true);
+            updateDialogOpen(true);
           }}
           adoIdByLocalId={adoIdByLocalId}
           titleByLocalId={titleByLocalId}
@@ -1728,7 +2796,7 @@ export function JobDetail(): React.ReactElement {
           titleByRef={titleByLocalIdMap}
         />
       )}
-      <FigureDescriptions jobId={id!} items={figureDescriptions} />
+      <FigureDescriptions jobId={id!} items={figureDescriptions} outcomes={figureOutcomesByIndex} reasons={figureReasonsByIndex} />
       <SectionResults items={sectionResults} />
       {showTiles && summary && (
         // Plain tiles -- no icon/hint/interactive. Confirmed against the
@@ -1742,7 +2810,7 @@ export function JobDetail(): React.ReactElement {
         // information. (An earlier pass this session added icon/hint here
         // without having seen the mockup; reverted once the mockup showed
         // otherwise.)
-        <div className="grid grid-cols-3 gap-2.5">
+        <div className="grid grid-cols-3 gap-2.5 max-md:gap-1.5">
           <StatTile value={summary.created} label="New" tone="ok" />
           <StatTile value={summary.reused} label="Reused" />
           <StatTile value={summary.dedupSkipped} label="Duplicates skipped" tone={summary.dedupSkipped > 0 ? 'warning' : 'dim'} />
@@ -1759,7 +2827,7 @@ export function JobDetail(): React.ReactElement {
           ]}
         >
           {tab === 'tree' ? (
-            <div id="proposed-tree" className="pt-3">
+            <div id="proposed-tree" tabIndex={-1} className={cn('pt-3 outline-none', fading && ARRIVE.fadeMedium)}>
               <Card>
                 {/* DESIGN.md §11.5 -- the artifact's persistent "+ New item"
                     toolbar button, previously missing entirely: creation
@@ -1772,12 +2840,37 @@ export function JobDetail(): React.ReactElement {
                 {mode === 'survey' && status === 'diff_ready' && (
                   <div className="border-b border-hairline p-3">
                     <AddChildCard
+                      compact
                       jobMode="survey"
                       allEntries={diff}
                       categoryLabels={categoryLabels ?? undefined}
                       typeCatalog={typeCatalog ?? undefined}
                       onAdd={(input) => handleAddChild(input.parentLocalId, { type: input.type, title: input.title, description: input.description })}
                     />
+                  </div>
+                )}
+                {/* Always mounted so the live region exists before its text changes. */}
+                <div role="status" aria-live="polite" className="sr-only" data-testid="review-queue-status">
+                  {queueAnnouncement}
+                </div>
+                {showQueueDone && (
+                  <div className="flex border-b border-hairline p-3">
+                    <div ref={queueDoneRef} tabIndex={-1} className="text-sm font-medium text-ink-2 outline-none">
+                      Review queue done.
+                    </div>
+                  </div>
+                )}
+                {/* Stays mounted in queue mode: it is where focus returns when the dialog closes. */}
+                {status === 'diff_ready' && reviewQueue.length > 0 && (
+                  <div className="flex flex-wrap gap-2 border-b border-hairline p-3">
+                    <Button ref={queueButtonRef} size="sm" variant="outline" onClick={handleStartReviewQueue}>
+                      Review in risk order · {reviewQueue.length.toLocaleString()}
+                    </Button>
+                    {bulk.items.length > 0 && (
+                      <Button ref={approveCleanButtonRef} size="sm" variant="outline" onClick={handleOpenBulkApprove}>
+                        Approve {bulkLabel}
+                      </Button>
+                    )}
                   </div>
                 )}
                 {(showFilterBar || focusWarning) && (
@@ -1788,7 +2881,7 @@ export function JobDetail(): React.ReactElement {
                       onChange={(e) => setFilterText(e.target.value)}
                       className="max-w-[240px] flex-1"
                     />
-                    <Select value={filterAction ?? ''} onChange={(e) => setFilterAction(e.target.value || null)} className="max-w-[160px]">
+                    <Select aria-label="Filter by action" value={filterAction ?? ''} onChange={(e) => setFilterAction(e.target.value || null)} className="max-w-[160px]">
                       <option value="">All actions</option>
                       <option value="create">New</option>
                       <option value="reuse">Reuse</option>
@@ -1802,7 +2895,7 @@ export function JobDetail(): React.ReactElement {
                           'flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold',
                           filterFlaggedOnly
                             ? 'border-warning bg-warning-soft text-warning-ink'
-                            : 'border-warning-border bg-warning-soft text-warning',
+                            : 'border-warning-border bg-warning-soft text-warning-ink',
                         )}
                       >
                         ⚠ Needs review · {flaggedCount}
@@ -1844,7 +2937,7 @@ export function JobDetail(): React.ReactElement {
                       <Button
                         size="sm"
                         variant="outline"
-                        onClick={() => void handleSetReviewed([...focusWarning.nodeIds], true)}
+                        onClick={() => void handleSetReviewed([...focusWarning.nodeIds], true, { method: 'group' })}
                       >
                         Mark all reviewed
                       </Button>
@@ -1875,7 +2968,7 @@ export function JobDetail(): React.ReactElement {
                     onSelect={setSelectedId}
                     onOpenDetails={(localId) => {
                       setSelectedId(localId);
-                      setDialogOpen(true);
+                      updateDialogOpen(true);
                     }}
                     filterAction={filterAction}
                     filterText={filterText}
@@ -1894,9 +2987,10 @@ export function JobDetail(): React.ReactElement {
               </Card>
               <NodeDetailDialog
                 open={dialogOpen}
-                onOpenChange={setDialogOpen}
+                onOpenChange={updateDialogOpen}
                 jobId={id!}
                 entry={selectedEntry}
+                written={!!selectedEntry && writtenLocalIdSet.has(selectedEntry.localId)}
                 jobMode={mode as 'baseline' | 'survey' | null}
                 jobStatus={status}
                 kbCitations={kbCitations}
@@ -1909,7 +3003,14 @@ export function JobDetail(): React.ReactElement {
                 captionByTableId={captionByTableId}
                 onSave={handleSaveEdit}
                 onRescore={handleRescore}
+                onSetProposalAccepted={handleSetProposalAccepted}
+                onAddDiscussion={handleAddDiscussion}
+                onRemoveDiscussion={handleRemoveDiscussion}
                 onAttachFigure={handleAttachFigure}
+                onMoveFigure={
+                  selectedEntry ? (figureId, targetLocalId) => handleMoveFigure(selectedEntry.localId, figureId, targetLocalId) : undefined
+                }
+                figureMoveTargets={figureMoveTargets}
                 onRetryTraceLink={handleRetryTraceLink}
                 onAddChild={handleAddChild}
                 onMove={handleMoveEntry}
@@ -1918,6 +3019,8 @@ export function JobDetail(): React.ReactElement {
                 hasNext={hasNextEntry}
                 reason={dialogReason}
                 review={dialogReview}
+                shortcutsEnabled={keyboardShortcuts}
+                announcement={queueAnnouncement}
                 typeCatalog={typeCatalog ?? undefined}
                 categoryLabels={categoryLabels ?? undefined}
                 requirementClassificationField={requirementClassificationField}
@@ -1925,6 +3028,13 @@ export function JobDetail(): React.ReactElement {
             </div>
           ) : (
             <div className="flex flex-col gap-3 p-4">
+              {needsDedupRebuild && (
+                <div>
+                  <Button variant="outline" size="sm" onClick={() => setReindexDialogOpen(true)}>
+                    Rebuild duplicate index
+                  </Button>
+                </div>
+              )}
               <AuditEntryList entries={audit} />
               {debugCaptures.length > 0 && (
                 <div className="flex flex-col gap-2 border-t border-hairline pt-3">

@@ -1,21 +1,35 @@
 import logging
+import threading
+import time
 
 from app.canonical.model import SourceRef
 from app.leveling.scoring import (
-    _CANARY_MAX_SCORE,
     _CANARY_NODE_ID,
     _CANARY_TEXT,
+    _SCORING_CHUNK_NODE_COUNT,
     _apply_quality_scores,
     _match_category_checklist,
+    _score_all_requirements,
+    _score_epics_and_features,
     score_single_requirement_text,
+    score_texts_together,
 )
-from app.workitem.model import IntegrityWarning, QualityConfidence, WorkItemMode, WorkItemNode, WorkItemType
+from app.workitem.model import (
+    IntegrityWarning,
+    QualityConfidence,
+    WorkItemMode,
+    WorkItemNode,
+    WorkItemType,
+)
 
 
 def _requirement_node(local_id: str, description: str) -> WorkItemNode:
     return WorkItemNode(
-        local_id=local_id, parent_local_id=None, type=WorkItemType.REQUIREMENT,
-        title=local_id, description=description,
+        local_id=local_id,
+        parent_local_id=None,
+        type=WorkItemType.REQUIREMENT,
+        title=local_id,
+        description=description,
         source_ref=SourceRef(document_path="x.docx", start_offset=0, end_offset=1),
         mode=WorkItemMode.SURVEY,
     )
@@ -27,8 +41,12 @@ class _FakeScoringClient:
         self.calls: list[tuple] = []
 
     def score_requirements_for_document(
-        self, descriptions_by_node_id, criteria_context=None, kb_context=None,
-        category_checklist=None, user_id=None,
+        self,
+        descriptions_by_node_id,
+        criteria_context=None,
+        kb_context=None,
+        category_checklist=None,
+        user_id=None,
     ):
         self.calls.append(
             (descriptions_by_node_id, criteria_context, kb_context, category_checklist)
@@ -48,7 +66,11 @@ def test_returns_parsed_score_issues_and_category_scores() -> None:
     )
 
     score, issues, category_scores, _confidence = score_single_requirement_text(
-        "The system shall do x.", client, None, None, None,
+        "The system shall do x.",
+        client,
+        None,
+        None,
+        None,
     )
 
     assert score == 72
@@ -59,10 +81,23 @@ def test_returns_parsed_score_issues_and_category_scores() -> None:
 
 
 def test_confidence_round_trips_through_single_requirement_scoring() -> None:
-    client = _FakeScoringClient({"adhoc": {"score": 80, "issues": [], "categoryScores": {"clarity": 80}, "confidence": "low"}})
+    client = _FakeScoringClient(
+        {
+            "adhoc": {
+                "score": 80,
+                "issues": [],
+                "categoryScores": {"clarity": 80},
+                "confidence": "low",
+            }
+        }
+    )
 
     score, issues, category_scores, confidence = score_single_requirement_text(
-        "The system shall do a thing.", client, None, None, None,
+        "The system shall do a thing.",
+        client,
+        None,
+        None,
+        None,
     )
 
     assert score == 80
@@ -78,9 +113,13 @@ def test_missing_confidence_falls_back_to_none_without_crashing() -> None:
     # rejects response_format degrades to a schema-less retry), so an entry
     # with no 'confidence' key at all is a REAL, expected shape -- it must
     # parse to None, not raise, exactly like a missing categoryScores does.
-    client = _FakeScoringClient({"adhoc": {"score": 80, "issues": [], "categoryScores": {"clarity": 80}}})
+    client = _FakeScoringClient(
+        {"adhoc": {"score": 80, "issues": [], "categoryScores": {"clarity": 80}}}
+    )
 
-    _, _, _, confidence = score_single_requirement_text("The system shall do a thing.", client, None, None, None)
+    _, _, _, confidence = score_single_requirement_text(
+        "The system shall do a thing.", client, None, None, None
+    )
 
     assert confidence is None
 
@@ -90,7 +129,9 @@ def test_unknown_confidence_value_falls_back_to_none() -> None:
     # batch or smuggle an off-vocabulary value into WorkItemNode -- same
     # closed-vocabulary tolerance as the 'issues' filter right beside it.
     for bad in ["very high", "LOW ", 0.9, None, ["low"]]:
-        client = _FakeScoringClient({"adhoc": {"score": 80, "issues": [], "categoryScores": {}, "confidence": bad}})
+        client = _FakeScoringClient(
+            {"adhoc": {"score": 80, "issues": [], "categoryScores": {}, "confidence": bad}}
+        )
         _, _, _, confidence = score_single_requirement_text("x shall y.", client, None, None, None)
         assert confidence is None, f"expected None for {bad!r}"
 
@@ -99,7 +140,11 @@ def test_sends_the_single_description_under_an_adhoc_key() -> None:
     client = _FakeScoringClient({"adhoc": {"score": 50, "issues": [], "categoryScores": None}})
 
     score_single_requirement_text(
-        "The system shall do x.", client, None, "kb ctx", ["clarity", "rationale"],
+        "The system shall do x.",
+        client,
+        None,
+        "kb ctx",
+        ["clarity", "rationale"],
     )
 
     descriptions_by_node_id, criteria_context, kb_context, category_checklist = client.calls[0]
@@ -116,7 +161,11 @@ def test_missing_score_entry_returns_none_score_and_empty_issues() -> None:
     client = _FakeScoringClient({})  # the LLM returned no entry for "adhoc" at all
 
     score, issues, category_scores, _confidence = score_single_requirement_text(
-        "The system shall do x.", client, None, None, None,
+        "The system shall do x.",
+        client,
+        None,
+        None,
+        None,
     )
 
     assert score is None
@@ -128,7 +177,11 @@ def test_malformed_score_out_of_range_falls_back_to_none() -> None:
     client = _FakeScoringClient({"adhoc": {"score": 150, "issues": [], "categoryScores": None}})
 
     score, _issues, _category_scores, _confidence = score_single_requirement_text(
-        "The system shall do x.", client, None, None, None,
+        "The system shall do x.",
+        client,
+        None,
+        None,
+        None,
     )
 
     assert score is None
@@ -141,7 +194,11 @@ def test_boolean_score_is_rejected_same_as_batched_scoring() -> None:
     client = _FakeScoringClient({"adhoc": {"score": True, "issues": [], "categoryScores": None}})
 
     score, _issues, _category_scores, _confidence = score_single_requirement_text(
-        "The system shall do x.", client, None, None, None,
+        "The system shall do x.",
+        client,
+        None,
+        None,
+        None,
     )
 
     assert score is None
@@ -189,7 +246,10 @@ class TestMatchCategoryChecklist:
     def test_matches_keys_present_in_both(self) -> None:
         result = _match_category_checklist(
             {"Necessary": 80, "Unambiguous": 60},
-            {"Necessary": "States something not already satisfied.", "Verifiable": "Can be objectively checked."},
+            {
+                "Necessary": "States something not already satisfied.",
+                "Verifiable": "Can be objectively checked.",
+            },
         )
         assert result == {"Necessary": "States something not already satisfied."}
 
@@ -198,7 +258,8 @@ class TestMatchCategoryChecklist:
         # VERBATIM, but this stays tolerant of minor case/whitespace drift
         # rather than losing a real match over it.
         result = _match_category_checklist(
-            {"  necessary  ": 80}, {"Necessary": "Real definition."},
+            {"  necessary  ": 80},
+            {"Necessary": "Real definition."},
         )
         assert result == {"  necessary  ": "Real definition."}
 
@@ -207,14 +268,16 @@ class TestMatchCategoryChecklist:
         # separate explanation) is a real, expected case -- correctly
         # produces no entry for it, not an error.
         result = _match_category_checklist(
-            {"Necessary": 80, "Ranked": 70}, {"Necessary": "Real definition."},
+            {"Necessary": 80, "Ranked": 70},
+            {"Necessary": "Real definition."},
         )
         assert result == {"Necessary": "Real definition."}
         assert "Ranked" not in result
 
     def test_returns_none_when_nothing_matches_at_all(self) -> None:
         result = _match_category_checklist(
-            {"clarity": 80}, {"Necessary": "Real definition."},
+            {"clarity": 80},
+            {"Necessary": "Real definition."},
         )
         assert result is None
 
@@ -237,18 +300,6 @@ class TestMatchCategoryChecklist:
         assert "completeness_as_requirement" not in result
 
 
-import threading
-import time
-
-from app.canonical.model import SourceRef
-from app.leveling.scoring import (
-    _SCORING_CHUNK_NODE_COUNT,
-    _score_all_requirements,
-    _score_epics_and_features,
-)
-from app.workitem.model import WorkItemMode, WorkItemNode, WorkItemType
-
-
 def _sr(offset: int = 0) -> SourceRef:
     return SourceRef(document_path="x.docx", start_offset=offset, end_offset=offset + 1)
 
@@ -259,9 +310,13 @@ def _requirement_nodes(count: int) -> list[WorkItemNode]:
     # the chunk count collapses to 1 and the test passes vacuously.
     return [
         WorkItemNode(
-            local_id=f"r{i}", parent_local_id=None, type=WorkItemType.REQUIREMENT,
-            title=f"R{i}", description=f"The system shall do distinct thing number {i}.",
-            source_ref=_sr(i), mode=WorkItemMode.SURVEY,
+            local_id=f"r{i}",
+            parent_local_id=None,
+            type=WorkItemType.REQUIREMENT,
+            title=f"R{i}",
+            description=f"The system shall do distinct thing number {i}.",
+            source_ref=_sr(i),
+            mode=WorkItemMode.SURVEY,
         )
         for i in range(count)
     ]
@@ -270,9 +325,13 @@ def _requirement_nodes(count: int) -> list[WorkItemNode]:
 def _epic_nodes(count: int) -> list[WorkItemNode]:
     return [
         WorkItemNode(
-            local_id=f"e{i}", parent_local_id=None, type=WorkItemType.EPIC,
-            title=f"E{i}", description=f"Capability area {i}.",
-            source_ref=_sr(i), mode=WorkItemMode.SURVEY,
+            local_id=f"e{i}",
+            parent_local_id=None,
+            type=WorkItemType.EPIC,
+            title=f"E{i}",
+            description=f"Capability area {i}.",
+            source_ref=_sr(i),
+            mode=WorkItemMode.SURVEY,
         )
         for i in range(count)
     ]
@@ -283,14 +342,30 @@ def test_score_all_requirements_runs_chunks_concurrently() -> None:
     lock = threading.Lock()
 
     class ThreadRecordingClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
+        def score_requirements_for_document(
+            self,
+            descriptions_by_node_id,
+            criteria_context=None,
+            kb_context=None,
+            category_checklist=None,
+            user_id=None,
+        ):
             with lock:
                 seen.add(threading.current_thread().name)
             time.sleep(0.05)
             return {node_id: {"score": 80, "issues": []} for node_id in descriptions_by_node_id}
 
     _score_all_requirements(
-        _requirement_nodes(320), ThreadRecordingClient(), [], None, None, [], None, None, 0, 1,
+        _requirement_nodes(320),
+        ThreadRecordingClient(),
+        [],
+        None,
+        None,
+        [],
+        None,
+        None,
+        0,
+        1,
         chunk_concurrency=3,
     )
 
@@ -299,11 +374,22 @@ def test_score_all_requirements_runs_chunks_concurrently() -> None:
 
 def test_score_all_requirements_output_is_identical_serial_vs_concurrent() -> None:
     class OrderSensitiveClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
+        def score_requirements_for_document(
+            self,
+            descriptions_by_node_id,
+            criteria_context=None,
+            kb_context=None,
+            category_checklist=None,
+            user_id=None,
+        ):
             if "r0" in descriptions_by_node_id:
                 time.sleep(0.2)
             return {
-                node_id: {"score": 70 + (index % 10), "issues": ["ambiguous"], "categoryScores": {"clarity": 60}}
+                node_id: {
+                    "score": 70 + (index % 10),
+                    "issues": ["ambiguous"],
+                    "categoryScores": {"clarity": 60},
+                }
                 for index, node_id in enumerate(descriptions_by_node_id)
             }
 
@@ -311,11 +397,28 @@ def test_score_all_requirements_output_is_identical_serial_vs_concurrent() -> No
         nodes = _requirement_nodes(320)
         warnings: list = []
         _score_all_requirements(
-            nodes, OrderSensitiveClient(), warnings, None, None, [], None, None, 0, 1,
+            nodes,
+            OrderSensitiveClient(),
+            warnings,
+            None,
+            None,
+            [],
+            None,
+            None,
+            0,
+            1,
             chunk_concurrency=concurrency,
         )
         return (
-            [(n.local_id, n.quality_score, [i.value for i in n.quality_issues], n.quality_category_scores) for n in nodes],
+            [
+                (
+                    n.local_id,
+                    n.quality_score,
+                    [i.value for i in n.quality_issues],
+                    n.quality_category_scores,
+                )
+                for n in nodes
+            ],
             [w.raw for w in warnings],
         )
 
@@ -324,7 +427,14 @@ def test_score_all_requirements_output_is_identical_serial_vs_concurrent() -> No
 
 def test_score_all_requirements_narrates_chunks_in_document_order_under_concurrency() -> None:
     class SlowFirstChunkClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
+        def score_requirements_for_document(
+            self,
+            descriptions_by_node_id,
+            criteria_context=None,
+            kb_context=None,
+            category_checklist=None,
+            user_id=None,
+        ):
             if "r0" in descriptions_by_node_id:
                 time.sleep(0.2)
             return {node_id: {"score": 80, "issues": []} for node_id in descriptions_by_node_id}
@@ -332,7 +442,16 @@ def test_score_all_requirements_narrates_chunks_in_document_order_under_concurre
     fired: list = []
 
     _score_all_requirements(
-        _requirement_nodes(320), SlowFirstChunkClient(), [], None, None, [], fired.append, None, 0, 1,
+        _requirement_nodes(320),
+        SlowFirstChunkClient(),
+        [],
+        None,
+        None,
+        [],
+        fired.append,
+        None,
+        0,
+        1,
         chunk_concurrency=4,
     )
 
@@ -349,9 +468,18 @@ def test_score_all_requirements_narrates_chunks_in_document_order_under_concurre
     assert [e.blocks_done for e in dones] == [min(start + size, 320) for start in chunk_starts]
 
 
-def test_score_all_requirements_one_failing_chunk_still_scores_the_others_under_concurrency() -> None:
+def test_score_all_requirements_one_failing_chunk_still_scores_the_others_under_concurrency() -> (
+    None
+):
     class SecondChunkRaisesClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
+        def score_requirements_for_document(
+            self,
+            descriptions_by_node_id,
+            criteria_context=None,
+            kb_context=None,
+            category_checklist=None,
+            user_id=None,
+        ):
             if "r150" in descriptions_by_node_id:
                 raise RuntimeError("boom")
             return {node_id: {"score": 80, "issues": []} for node_id in descriptions_by_node_id}
@@ -361,7 +489,16 @@ def test_score_all_requirements_one_failing_chunk_still_scores_the_others_under_
     fired: list = []
 
     _score_all_requirements(
-        nodes, SecondChunkRaisesClient(), warnings, None, None, [], fired.append, None, 0, 1,
+        nodes,
+        SecondChunkRaisesClient(),
+        warnings,
+        None,
+        None,
+        [],
+        fired.append,
+        None,
+        0,
+        1,
         chunk_concurrency=4,
     )
 
@@ -385,7 +522,14 @@ def test_score_epics_and_features_runs_chunks_concurrently() -> None:
             return {node_id: {"score": 75} for node_id in nodes_by_id}
 
     _score_epics_and_features(
-        _epic_nodes(320), ThreadRecordingClient(), [], None, None, 0, 1, chunk_concurrency=3,
+        _epic_nodes(320),
+        ThreadRecordingClient(),
+        [],
+        None,
+        None,
+        0,
+        1,
+        chunk_concurrency=3,
     )
 
     assert len(seen) > 1
@@ -405,7 +549,14 @@ def test_score_epics_and_features_output_is_identical_serial_vs_concurrent() -> 
         nodes = _epic_nodes(320)
         warnings: list = []
         _score_epics_and_features(
-            nodes, OrderSensitiveClient(), warnings, None, None, 0, 1, chunk_concurrency=concurrency,
+            nodes,
+            OrderSensitiveClient(),
+            warnings,
+            None,
+            None,
+            0,
+            1,
+            chunk_concurrency=concurrency,
         )
         return (
             [(n.local_id, n.quality_score, n.quality_category_scores) for n in nodes],
@@ -425,7 +576,14 @@ def test_score_epics_and_features_narrates_chunks_in_document_order_under_concur
     fired: list = []
 
     _score_epics_and_features(
-        _epic_nodes(320), SlowFirstChunkClient(), [], fired.append, None, 0, 1, chunk_concurrency=4,
+        _epic_nodes(320),
+        SlowFirstChunkClient(),
+        [],
+        fired.append,
+        None,
+        0,
+        1,
+        chunk_concurrency=4,
     )
 
     starts = [e for e in fired if e.phase == "score_requirements"]
@@ -447,7 +605,11 @@ class _CanaryObservingClient:
         self._canary_score = canary_score
 
     def score_requirements_for_document(
-        self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None,
+        self,
+        descriptions_by_node_id,
+        criteria_context=None,
+        kb_context=None,
+        category_checklist=None,
         user_id=None,
     ) -> dict[str, dict]:
         self.batches.append(dict(descriptions_by_node_id))
@@ -540,7 +702,14 @@ def test_absent_canary_entry_is_itself_logged_as_drift(caplog) -> None:
     # real signal (stopped honoring the instruction, or a truncated
     # response) -- distinct message, same log-only treatment.
     class _IgnoresTheCanaryClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
+        def score_requirements_for_document(
+            self,
+            descriptions_by_node_id,
+            criteria_context=None,
+            kb_context=None,
+            category_checklist=None,
+            user_id=None,
+        ):
             return {"n1": {"score": 90, "issues": [], "categoryScores": {"clarity": 90}}}
 
     nodes = [_requirement_node("n1", "The system shall emit a heartbeat every 1 s.")]
@@ -559,7 +728,14 @@ def test_score_all_requirements_splits_a_timed_out_chunk_and_scores_every_node()
     calls: list[int] = []
 
     class TimesOutOnFullChunkClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
+        def score_requirements_for_document(
+            self,
+            descriptions_by_node_id,
+            criteria_context=None,
+            kb_context=None,
+            category_checklist=None,
+            user_id=None,
+        ):
             calls.append(len(descriptions_by_node_id))
             # Real batches carry the canary too, so only a call big enough to
             # be the full chunk times out; its halves succeed.
@@ -570,7 +746,9 @@ def test_score_all_requirements_splits_a_timed_out_chunk_and_scores_every_node()
     nodes = _requirement_nodes(_SCORING_CHUNK_NODE_COUNT)
     warnings: list = []
 
-    _score_all_requirements(nodes, TimesOutOnFullChunkClient(), warnings, None, None, [], None, None, 0, 1)
+    _score_all_requirements(
+        nodes, TimesOutOnFullChunkClient(), warnings, None, None, [], None, None, 0, 1
+    )
 
     assert all(n.quality_score == 80 for n in nodes)
     assert not any(w.kind.value == "scoring_failed" for w in warnings)
@@ -581,8 +759,18 @@ def test_score_all_requirements_reports_only_the_half_that_still_times_out() -> 
     import httpx
 
     class SecondHalfAlwaysTimesOutClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
-            if len(descriptions_by_node_id) > _SCORING_CHUNK_NODE_COUNT * 0.6 or last_id in descriptions_by_node_id:
+        def score_requirements_for_document(
+            self,
+            descriptions_by_node_id,
+            criteria_context=None,
+            kb_context=None,
+            category_checklist=None,
+            user_id=None,
+        ):
+            if (
+                len(descriptions_by_node_id) > _SCORING_CHUNK_NODE_COUNT * 0.6
+                or last_id in descriptions_by_node_id
+            ):
                 raise httpx.ReadTimeout("timed out")
             return {node_id: {"score": 70, "issues": []} for node_id in descriptions_by_node_id}
 
@@ -590,7 +778,9 @@ def test_score_all_requirements_reports_only_the_half_that_still_times_out() -> 
     last_id = f"r{_SCORING_CHUNK_NODE_COUNT - 1}"
     warnings: list = []
 
-    _score_all_requirements(nodes, SecondHalfAlwaysTimesOutClient(), warnings, None, None, [], None, None, 0, 1)
+    _score_all_requirements(
+        nodes, SecondHalfAlwaysTimesOutClient(), warnings, None, None, [], None, None, 0, 1
+    )
 
     by_id = {n.local_id: n for n in nodes}
     assert by_id["r0"].quality_score == 70
@@ -612,20 +802,33 @@ def test_scoring_chunks_close_on_the_character_budget_not_just_the_node_count() 
 
     assert [len(c) for c in chunks] == [2, 2]  # two halves fit the budget exactly, a third does not
     huge = "y" * (scoring._SCORING_CHUNK_CHAR_BUDGET * 3)
-    assert scoring._chunk_by_count_and_chars([huge], len) == [[huge]]  # an oversized item gets its own chunk
+    assert scoring._chunk_by_count_and_chars([huge], len) == [
+        [huge]
+    ]  # an oversized item gets its own chunk
 
 
 def test_scoring_missing_carries_a_reason_telling_total_failure_from_partial() -> None:
-    nodes = [_requirement_node("a", "The system shall do A."), _requirement_node("b", "The system shall do B.")]
+    nodes = [
+        _requirement_node("a", "The system shall do A."),
+        _requirement_node("b", "The system shall do B."),
+    ]
     warnings: list = []
     _apply_quality_scores(nodes, _FakeScoringClient({}), warnings, "")
     missing = [w for w in warnings if w.kind.value == "scoring_missing"]
     assert missing and missing[0].detail["reason"] == "no_matching_keys"
 
-    nodes = [_requirement_node("a", "The system shall do A."), _requirement_node("b", "The system shall do B.")]
+    nodes = [
+        _requirement_node("a", "The system shall do A."),
+        _requirement_node("b", "The system shall do B."),
+    ]
     warnings = []
     _apply_quality_scores(
-        nodes, _FakeScoringClient({"a": {"score": 80, "issues": [], "categoryScores": {}, "confidence": "high"}}), warnings, "",
+        nodes,
+        _FakeScoringClient(
+            {"a": {"score": 80, "issues": [], "categoryScores": {}, "confidence": "high"}}
+        ),
+        warnings,
+        "",
     )
     missing = [w for w in warnings if w.kind.value == "scoring_missing"]
     assert missing and missing[0].detail["reason"] == "partial"
@@ -635,7 +838,9 @@ def _http_status_error(status: int):
     import httpx
 
     request = httpx.Request("POST", "http://orchestrator/llm/chat")
-    return httpx.HTTPStatusError(f"{status}", request=request, response=httpx.Response(status, request=request))
+    return httpx.HTTPStatusError(
+        f"{status}", request=request, response=httpx.Response(status, request=request)
+    )
 
 
 def test_scoring_batches_default_to_a_size_that_finishes_well_inside_a_gateway_timeout() -> None:
@@ -647,7 +852,14 @@ def test_a_5xx_scoring_failure_is_retried_as_two_halves_but_an_auth_error_is_not
     calls: list[int] = []
 
     class Fails500OnFullChunkClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
+        def score_requirements_for_document(
+            self,
+            descriptions_by_node_id,
+            criteria_context=None,
+            kb_context=None,
+            category_checklist=None,
+            user_id=None,
+        ):
             calls.append(len(descriptions_by_node_id))
             if len(descriptions_by_node_id) > _SCORING_CHUNK_NODE_COUNT * 0.6:
                 raise _http_status_error(500)
@@ -655,7 +867,9 @@ def test_a_5xx_scoring_failure_is_retried_as_two_halves_but_an_auth_error_is_not
 
     nodes = _requirement_nodes(_SCORING_CHUNK_NODE_COUNT)
     warnings: list = []
-    _score_all_requirements(nodes, Fails500OnFullChunkClient(), warnings, None, None, [], None, None, 0, 1)
+    _score_all_requirements(
+        nodes, Fails500OnFullChunkClient(), warnings, None, None, [], None, None, 0, 1
+    )
     assert all(n.quality_score == 80 for n in nodes)
     assert not any(w.kind.value == "scoring_failed" for w in warnings)
     assert len(calls) == 3  # full chunk, then each half once
@@ -663,7 +877,14 @@ def test_a_5xx_scoring_failure_is_retried_as_two_halves_but_an_auth_error_is_not
     calls.clear()
 
     class Fails400Client:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
+        def score_requirements_for_document(
+            self,
+            descriptions_by_node_id,
+            criteria_context=None,
+            kb_context=None,
+            category_checklist=None,
+            user_id=None,
+        ):
             calls.append(len(descriptions_by_node_id))
             raise _http_status_error(401)
 
@@ -671,14 +892,23 @@ def test_a_5xx_scoring_failure_is_retried_as_two_halves_but_an_auth_error_is_not
     warnings = []
     _score_all_requirements(nodes, Fails400Client(), warnings, None, None, [], None, None, 0, 1)
     assert len(calls) == 1  # an auth failure is not about size -- no split
-    assert [w.detail["errorType"] for w in warnings if w.kind.value == "scoring_failed"] == ["HTTPStatusError"]
+    assert [w.detail["errorType"] for w in warnings if w.kind.value == "scoring_failed"] == [
+        "HTTPStatusError"
+    ]
 
 
 def test_a_400_scoring_failure_is_retried_as_two_halves_and_the_survivor_half_is_kept() -> None:
     calls: list[int] = []
 
     class Fails400OnFullChunkClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
+        def score_requirements_for_document(
+            self,
+            descriptions_by_node_id,
+            criteria_context=None,
+            kb_context=None,
+            category_checklist=None,
+            user_id=None,
+        ):
             calls.append(len(descriptions_by_node_id))
             if len(descriptions_by_node_id) > _SCORING_CHUNK_NODE_COUNT * 0.6:
                 raise _http_status_error(400)
@@ -686,7 +916,9 @@ def test_a_400_scoring_failure_is_retried_as_two_halves_and_the_survivor_half_is
 
     nodes = _requirement_nodes(_SCORING_CHUNK_NODE_COUNT)
     warnings: list = []
-    _score_all_requirements(nodes, Fails400OnFullChunkClient(), warnings, None, None, [], None, None, 0, 1)
+    _score_all_requirements(
+        nodes, Fails400OnFullChunkClient(), warnings, None, None, [], None, None, 0, 1
+    )
     assert all(n.quality_score == 80 for n in nodes)
     assert not any(w.kind.value == "scoring_failed" for w in warnings)
     assert len(calls) == 3
@@ -709,24 +941,98 @@ def test_epic_feature_scoring_also_splits_on_a_5xx() -> None:
     assert not any(w.kind.value == "scoring_failed" for w in warnings)
 
 
-def test_the_scoring_batch_shrinks_as_the_category_list_grows_so_one_answer_stays_the_same_size() -> None:
+def test_the_scoring_batch_shrinks_as_the_category_list_grows_so_one_answer_stays_the_same_size() -> (
+    None
+):
     from app.leveling import scoring
 
     limit = scoring.scoring_chunk_node_limit
     assert limit(None) == scoring._SCORING_CHUNK_NODE_COUNT  # the built-in list: unchanged
     assert limit(6) == scoring._SCORING_CHUNK_NODE_COUNT
     assert limit(8) < limit(6) or limit(8) == scoring._SCORING_CHUNK_NODE_COUNT
-    assert limit(21) < limit(8)  # 21 overlapping names made 50-requirement answers outlast the upstream's 300 s
+    assert limit(21) < limit(
+        8
+    )  # 21 overlapping names made 50-requirement answers outlast the upstream's 300 s
     assert limit(500) >= 10  # never a batch of one
-    assert limit(8) * 8 <= scoring._SCORING_OUTPUT_BUDGET and limit(21) * 21 <= scoring._SCORING_OUTPUT_BUDGET + 21
+    assert (
+        limit(8) * 8 <= scoring._SCORING_OUTPUT_BUDGET
+        and limit(21) * 21 <= scoring._SCORING_OUTPUT_BUDGET + 21
+    )
 
 
 def test_chunks_follow_the_node_limit_for_the_categories_in_use() -> None:
     from app.leveling import scoring
 
     items = [f"r{i}" for i in range(60)]
-    wide = scoring._chunk_by_count_and_chars(items, len, node_limit=scoring.scoring_chunk_node_limit(21))
+    wide = scoring._chunk_by_count_and_chars(
+        items, len, node_limit=scoring.scoring_chunk_node_limit(21)
+    )
     narrow = scoring._chunk_by_count_and_chars(items, len)
     assert max(len(c) for c in wide) == scoring.scoring_chunk_node_limit(21)
     assert max(len(c) for c in narrow) == scoring._SCORING_CHUNK_NODE_COUNT
     assert [i for c in wide for i in c] == items  # document order preserved
+
+
+def test_structural_flags_cap_high_confidence_in_document_scoring() -> None:
+    nodes = [_requirement_node(f"n{i}", f"text {i}") for i in range(4)]
+    client = _FakeScoringClient(
+        {
+            "n0": {"score": 45, "issues": ["fragment"], "categoryScores": {}, "confidence": "high"},
+            "n1": {
+                "score": 40,
+                "issues": ["placeholder", "vague_term"],
+                "categoryScores": {},
+                "confidence": "high",
+            },
+            "n2": {
+                "score": 30,
+                "issues": ["not_a_requirement"],
+                "categoryScores": {},
+                "confidence": "medium",
+            },
+            "n3": {
+                "score": 90,
+                "issues": ["vague_term"],
+                "categoryScores": {},
+                "confidence": "high",
+            },
+        },
+    )
+
+    _apply_quality_scores(nodes, client, [], "")
+
+    assert nodes[0].quality_confidence is QualityConfidence.MEDIUM
+    assert nodes[1].quality_confidence is QualityConfidence.MEDIUM
+    assert nodes[2].quality_confidence is QualityConfidence.MEDIUM  # never raised
+    assert nodes[3].quality_confidence is QualityConfidence.HIGH  # non-structural flag: untouched
+
+
+def test_structural_flag_never_raises_low_confidence_or_invents_one() -> None:
+    client = _FakeScoringClient(
+        {
+            "a": {"score": 40, "issues": ["fragment"], "categoryScores": {}, "confidence": "low"},
+            "b": {"score": 40, "issues": ["fragment"], "categoryScores": {}},
+        },
+    )
+
+    out = score_texts_together({"a": "x", "b": "y"}, client, None, None, None)
+
+    assert out["a"][3] is QualityConfidence.LOW
+    assert out["b"][3] is None
+
+
+def test_structural_flags_cap_high_confidence_in_single_text_scoring() -> None:
+    client = _FakeScoringClient(
+        {
+            "adhoc": {
+                "score": 45,
+                "issues": ["placeholder"],
+                "categoryScores": {},
+                "confidence": "high",
+            }
+        },
+    )
+
+    _, _, _, confidence = score_single_requirement_text("TBD", client, None, None, None)
+
+    assert confidence is QualityConfidence.MEDIUM

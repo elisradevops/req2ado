@@ -33,6 +33,10 @@ describe('LlmController (e2e)', () => {
     app = moduleRef.createNestApplication();
     app.useWebSocketAdapter(new WsAdapter(app));
     await app.init();
+    // Bind once, up front. Left unbound, supertest listens on a new ephemeral port for every request and closes it afterwards; a full parallel run
+    // then occasionally got an answer from something else on that port (a 404/403 for a request this app's server never logged), failing
+    // whichever test was unlucky. One bind per spec keeps every request on the same port.
+    await new Promise<void>((resolve) => app.getHttpServer().listen(0, resolve));
   });
 
   afterAll(async () => {
@@ -105,7 +109,7 @@ describe('LlmController (e2e)', () => {
       .send({ messages: [{ role: 'user', content: 'hi' }], temperature: 0 });
     expect(fakeOpenWebUiClient.chat).toHaveBeenCalledWith(
       [{ role: 'user', content: 'hi' }],
-      { temperature: 0 },
+      { temperature: 0, signal: expect.any(AbortSignal) },
     );
   });
 
@@ -163,7 +167,7 @@ describe('LlmController (e2e)', () => {
       expect(fakeOpenWebUiClient.vision).toHaveBeenCalledWith(
         'describe this figure',
         [Buffer.from('fake-png-bytes')],
-        undefined,
+        { signal: expect.any(AbortSignal) }, // always sent now, so a closed connection can stop the upstream call
       );
     });
 
@@ -174,7 +178,7 @@ describe('LlmController (e2e)', () => {
         .set('Authorization', 'Bearer test-llm-proxy-bearer')
         .set('X-Req2Ado-User-Id', 'user-1')
         .send({ prompt: 'describe', images: ['aGVsbG8='], model: 'llava' });
-      expect(fakeOpenWebUiClient.vision).toHaveBeenCalledWith('describe', [Buffer.from('hello')], { model: 'llava' });
+      expect(fakeOpenWebUiClient.vision).toHaveBeenCalledWith('describe', [Buffer.from('hello')], expect.objectContaining({ model: 'llava', signal: expect.any(AbortSignal) }));
     });
 
     it('forwards an explicit mimeType when provided (a real non-PNG image)', async () => {
@@ -184,7 +188,7 @@ describe('LlmController (e2e)', () => {
         .set('Authorization', 'Bearer test-llm-proxy-bearer')
         .set('X-Req2Ado-User-Id', 'user-1')
         .send({ prompt: 'describe', images: ['aGVsbG8='], mimeType: 'image/jpeg' });
-      expect(fakeOpenWebUiClient.vision).toHaveBeenCalledWith('describe', [Buffer.from('hello')], { mimeType: 'image/jpeg' });
+      expect(fakeOpenWebUiClient.vision).toHaveBeenCalledWith('describe', [Buffer.from('hello')], expect.objectContaining({ mimeType: 'image/jpeg', signal: expect.any(AbortSignal) }));
     });
   });
 });

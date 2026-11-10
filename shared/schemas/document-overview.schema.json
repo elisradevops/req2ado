@@ -1,0 +1,29 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://req2ado/schemas/document-overview.schema.json",
+  "title": "DocumentOverview",
+  "description": "The wizard's step-3 overview of a document, made from its parsed text and structure alone (orchestrator/src/modules/pipeline/document-profile.ts, no model). Sent back with the job (SURVEY only) and stored in Job.documentOverview. Single source of truth - the orchestrator's TS type is generated from this file (shared/ts, `pnpm generate`); the frontend's hand-written copy in frontend/src/api/jobs.ts must match it. Bounds are enforced where a browser submits it (parseDocumentOverview).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["synopsis", "caveat"],
+  "properties": {
+    "synopsis": { "type": "string", "maxLength": 8000, "description": "The lines joined into one paragraph: what an older client, or a job stored before `lines` existed, shows." },
+    "caveat": { "type": ["string", "null"], "maxLength": 1000, "description": "A warning about a deeply nested or fragmented heading structure, or null." },
+    "lines": {
+      "type": "array",
+      "maxItems": 40,
+      "items": { "type": "string", "maxLength": 2000 },
+      "description": "What step 3 and the job page show, one entry per line, each read off the document's text and structure."
+    },
+    "aiSummary": {
+      "type": "string",
+      "maxLength": 1500,
+      "description": "The optional AI summary the wizard showed (written by a model from the document's headings and opening text, checked against that input), kept so the job page can show it. One paragraph. Absent when it was not ready when the job started."
+    },
+    "structureHint": {
+      "type": "string",
+      "maxLength": 1000,
+      "description": "How the file is built, for the SURVEY job's AI stage (appended to its document context). One line, no control characters. Carried to the job, never shown."
+    }
+  }
+}

@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { Prisma } from '@prisma/client';
 import { runPipelineJob } from '../src/modules/pipeline/pipeline.worker';
 
 import { JobResultCache } from '../src/modules/pipeline/result-cache';
@@ -84,9 +85,9 @@ describe('runPipelineJob', () => {
 
     // Trailing undefined is ocrLanguages (deps has no ocrLanguages set here)
     // -- see the dedicated NEW-04 test below for the real-value case.
-    expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(Buffer.from('text'), 'x.txt', false, 'baseline', 'job-1', undefined, undefined, undefined);
+    expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(Buffer.from('text'), 'x.txt', false, 'baseline', 'job-1', undefined, undefined, undefined, undefined, undefined, expect.any(AbortSignal));
     expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [{ id: 'b0' }] }, 'baseline', undefined, [], 'gemma4:12b', 'job-1', undefined);
-    expect(result).toEqual([{ localId: 'n0', action: 'create', existingAdoId: null }]);
+    expect(result).toEqual([{ localId: 'n0', action: 'create', existingAdoId: null, proposal: null }]);
   });
 
   it('forwards deps.ocrLanguages to ingestionClient.ingest (NEW-04)', async () => {
@@ -110,7 +111,7 @@ describe('runPipelineJob', () => {
       },
     );
 
-    expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(Buffer.from('text'), 'x.txt', false, 'baseline', 'job-1', undefined, 'heb+eng', undefined);
+    expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(Buffer.from('text'), 'x.txt', false, 'baseline', 'job-1', undefined, 'heb+eng', undefined, undefined, undefined, expect.any(AbortSignal));
   });
 
   it("forwards job.userId to ingestionClient.ingest as the 8th argument, so figure-vision captioning during /ingest resolves the submitting user's own Open WebUI connection", async () => {
@@ -133,7 +134,7 @@ describe('runPipelineJob', () => {
       },
     );
 
-    expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(Buffer.from('text'), 'x.txt', false, 'baseline', 'job-1', undefined, undefined, 'user-1');
+    expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(Buffer.from('text'), 'x.txt', false, 'baseline', 'job-1', undefined, undefined, 'user-1', undefined, undefined, expect.any(AbortSignal));
   });
 
   describe('figure vision plan (SURVEY)', () => {
@@ -164,7 +165,7 @@ describe('runPipelineJob', () => {
       const list = jest.fn().mockResolvedValue([{ id: 'claude-opus-4-8', name: 'Opus', vision: true }]);
       await runPipelineJob(surveyJob, depsWith(list));
       expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(
-        Buffer.from('text'), 'x.txt', false, 'survey', 'job-1', undefined, undefined, 'user-1', 'claude-opus-4-8', undefined,
+        Buffer.from('text'), 'x.txt', false, 'survey', 'job-1', undefined, undefined, 'user-1', 'claude-opus-4-8', undefined, expect.any(AbortSignal),
       );
     });
 
@@ -172,7 +173,7 @@ describe('runPipelineJob', () => {
       const list = jest.fn().mockResolvedValue([{ id: 'claude-opus-4-8', name: 'Opus', vision: false }]);
       await runPipelineJob(surveyJob, depsWith(list));
       expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(
-        Buffer.from('text'), 'x.txt', true, 'survey', 'job-1', undefined, undefined, 'user-1', 'claude-opus-4-8', 'model_not_vision_capable',
+        Buffer.from('text'), 'x.txt', true, 'survey', 'job-1', undefined, undefined, 'user-1', 'claude-opus-4-8', 'model_not_vision_capable', expect.any(AbortSignal),
       );
     });
 
@@ -316,12 +317,13 @@ describe('runPipelineJob', () => {
     );
 
     expect(fakePrisma.job.update).toHaveBeenCalledWith({
-      where: { id: 'job-1' },
+      where: { id: 'job-1', status: { not: 'cancelled' } },
       data: {
         status: 'diff_ready',
         dryRunDiff: [],
         warnings: [],
         kbCitations: [],
+        kbCoverage: Prisma.DbNull,
         figureDescriptions: [],
         tableDescriptions: [],
         // Backward-compat default: the mocked level() response has neither
@@ -366,7 +368,7 @@ describe('runPipelineJob', () => {
     // because this job's mode is 'baseline', which never calls an LLM at
     // all; a SURVEY job would record the effective model instead.
     expect(fakePrisma.job.update).toHaveBeenNthCalledWith(1, {
-      where: { id: 'job-1' },
+      where: { id: 'job-1', status: { not: 'cancelled' } },
       data: { status: 'running', startedAt: expect.any(Date), model: null },
     });
     expect(fakeJobEventsPublisher.publish).toHaveBeenNthCalledWith(1, 'job-1', 'parse');
@@ -940,7 +942,7 @@ describe('runPipelineJob', () => {
       expect.any(Function),
     );
     expect(fakePrisma.job.update).toHaveBeenCalledWith({
-      where: { id: 'job-1' },
+      where: { id: 'job-1', status: { not: 'cancelled' } },
       data: {
         status: 'diff_ready',
         dryRunDiff: [],
@@ -954,6 +956,7 @@ describe('runPipelineJob', () => {
           },
         ],
         kbCitations: [],
+        kbCoverage: Prisma.DbNull,
         figureDescriptions: [],
         tableDescriptions: [],
         // Doc-wide ids the mapping stage judged decorative/irrelevant, or
@@ -1217,6 +1220,44 @@ describe('runPipelineJob', () => {
     // settingsService -- see the dedicated Settings-threshold tests below.
     // 5th arg (userId) is undefined since this job's userId is null.
     expect(fakeIngestionClient.checkDuplicate).toHaveBeenCalledWith('Desc 0', 'Title 0', 'Project\\Area1', undefined, undefined);
+  });
+
+  it('holds a generated acceptance-criteria section apart from the description (P9d): the diff sees the clean text, the entry carries the proposal unaccepted', async () => {
+    const section = '<div data-r2a="criteria"><ul><li>Given X</li></ul></div>';
+    fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+    fakeIngestionClient.level.mockResolvedValue({
+      nodes: [
+        { local_id: 'n0', parent_local_id: null, type: 'Requirement', title: 'T0', description: `Desc 0\n${section}`, fidelity_hash: null, identity_hash: 'idA', customer_id: null },
+        { local_id: 'n1', parent_local_id: null, type: 'Requirement', title: 'T1', description: 'Desc 1', fidelity_hash: null, identity_hash: 'idB', customer_id: null },
+      ],
+    });
+    fakeDryRunService.diff.mockImplementation(async (inputs: any[]) =>
+      inputs.map((n) => ({ localId: n.localId, parentLocalId: null, type: n.type, title: n.title, description: n.description, action: 'create', existingAdoId: null, similarity: null, sourceHash: n.sourceHash, customerId: null, seCoverageRef: null, tags: [] })),
+    );
+
+    await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        defaultLlmModel: 'gemma4:12b',
+      },
+    );
+
+    const inputs = fakeDryRunService.diff.mock.calls[0][0];
+    expect(inputs.map((n: any) => n.description)).toEqual(['Desc 0', 'Desc 1']);
+    expect(inputs.map((n: any) => n.sourceHash)).toEqual(['idA', 'idB']);
+    const stored = fakePrisma.job.update.mock.calls.find((c: any[]) => c[0].data.status === 'diff_ready')[0].data.dryRunDiff;
+    expect(stored[0].proposal).toEqual({ kind: 'criteria', html: section });
+    expect(stored[0].description).toBe('Desc 0');
+    expect(stored[0].proposalAccepted).toBeUndefined();
+    expect(stored[1].proposal).toBeNull();
   });
 
   it("forwards job.userId to ingestionClient.checkDuplicate as the 5th argument, so the dedup tie-break LLM judge resolves the submitting user's own Open WebUI connection", async () => {
@@ -1565,7 +1606,7 @@ describe('runPipelineJob', () => {
     );
 
     expect(fakePrisma.job.update).toHaveBeenCalledWith({
-      where: { id: 'job-1' },
+      where: { id: 'job-1', status: { not: 'cancelled' } },
       data: {
         status: 'diff_ready',
         dryRunDiff: [],
@@ -1574,6 +1615,7 @@ describe('runPipelineJob', () => {
           { sourceFile: 'doc-a.docx', similarity: 0.9, relevance: 'relevant' },
           { sourceFile: 'doc-b.pdf', similarity: 0.7, relevance: 'unknown' },
         ],
+        kbCoverage: Prisma.DbNull,
         figureDescriptions: [],
         tableDescriptions: [],
         excludedFigureIds: [],
@@ -1585,6 +1627,36 @@ describe('runPipelineJob', () => {
         diffReadyAt: expect.any(Date),
       },
     });
+  });
+
+  it("persists the tree's kb_coverage as camelCase and clears the column (DbNull) when the tree has none", async () => {
+    const deps = {
+      ingestionClient: fakeIngestionClient as any,
+      dryRunService: fakeDryRunService as any,
+      idempotencyService: fakeIdempotencyService as any,
+      prisma: fakePrisma as any,
+      jobEventsPublisher: fakeJobEventsPublisher as any,
+      mcpClient: fakeMcpClient as any,
+      backfillService: fakeBackfillService as any,
+      adoCredentialResolver: fakeAdoCredentialResolver as any,
+      defaultLlmModel: 'gemma4:12b',
+    };
+    const job = { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey' as const, fileBuffer: Buffer.from(''), filename: 'x.txt' };
+    fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+    fakeDryRunService.diff.mockResolvedValue([]);
+
+    fakeIngestionClient.level.mockResolvedValue({ nodes: [], kb_coverage: { files_available: 3, files_cited: 1 } });
+    await runPipelineJob(job, deps);
+    expect(fakePrisma.job.update).toHaveBeenCalledWith({
+      where: { id: 'job-1', status: { not: 'cancelled' } },
+      data: expect.objectContaining({ status: 'diff_ready', kbCoverage: { filesAvailable: 3, filesCited: 1 } }),
+    });
+
+    fakePrisma.job.update.mockClear();
+    fakeIngestionClient.level.mockResolvedValue({ nodes: [], kb_coverage: null });
+    await runPipelineJob(job, deps);
+    const data = fakePrisma.job.update.mock.calls.find((c: any[]) => c[0].data.status === 'diff_ready')[0].data;
+    expect(data.kbCoverage).toBe(Prisma.DbNull);
   });
 
   it("extracts figures with a real caption or name from ingestion's /ingest response and persists them 1-based by array position", async () => {
@@ -1616,7 +1688,7 @@ describe('runPipelineJob', () => {
     );
 
     expect(fakePrisma.job.update).toHaveBeenCalledWith({
-      where: { id: 'job-1' },
+      where: { id: 'job-1', status: { not: 'cancelled' } },
       data: expect.objectContaining({
         // fig-b (no caption AND no name) is dropped -- nothing to show, same
         // rule live SSE narration already applies. fig-d (a name but no
@@ -1661,7 +1733,7 @@ describe('runPipelineJob', () => {
     );
 
     expect(fakePrisma.job.update).toHaveBeenCalledWith({
-      where: { id: 'job-1' },
+      where: { id: 'job-1', status: { not: 'cancelled' } },
       data: expect.objectContaining({
         figureDescriptions: [
           { figureIndex: 1, figureId: 'fig-a', name: null, caption: 'A block diagram.' },
@@ -1670,6 +1742,42 @@ describe('runPipelineJob', () => {
         ],
       }),
     });
+  });
+
+  it('keeps a figure that was judged not significant or failed even when the document gave it no name, with the model\'s reason, so a reload can still say what became of it', async () => {
+    fakeIngestionClient.ingest.mockResolvedValue({
+      blocks: [],
+      figures: [
+        { id: 'fig-a', caption: 'A block diagram.', name: null },
+        { id: 'fig-b', caption: null, name: null, caption_status: 'insignificant', caption_reason: 'A company logo.' },
+        { id: 'fig-c', caption: null, name: null, caption_status: 'vision_failed' },
+        { id: 'fig-d', caption: null, name: null },
+      ],
+    });
+    fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
+    fakeDryRunService.diff.mockResolvedValue([]);
+
+    await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        defaultLlmModel: 'gemma4:12b',
+      },
+    );
+
+    const stored = fakePrisma.job.update.mock.calls.map((c: any[]) => c[0].data.figureDescriptions).find(Boolean);
+    expect(stored).toEqual([
+      { figureIndex: 1, figureId: 'fig-a', name: null, caption: 'A block diagram.' },
+      { figureIndex: 2, figureId: 'fig-b', name: null, caption: null, captionStatus: 'insignificant', captionReason: 'A company logo.' },
+      { figureIndex: 3, figureId: 'fig-c', name: null, caption: null, captionStatus: 'vision_failed' },
+    ]);
   });
 
   it("extracts tables with a real caption from ingestion's /ingest response, keyed by the table's own id", async () => {
@@ -1700,7 +1808,7 @@ describe('runPipelineJob', () => {
     );
 
     expect(fakePrisma.job.update).toHaveBeenCalledWith({
-      where: { id: 'job-1' },
+      where: { id: 'job-1', status: { not: 'cancelled' } },
       data: expect.objectContaining({
         // t1 (no real caption) is dropped -- nothing to show, same rule
         // figureDescriptions already applies. Keyed by tableId, not a
@@ -1799,9 +1907,9 @@ describe('runPipelineJob', () => {
     );
 
     expect(result).toEqual([
-      { localId: 'n0', action: 'create', existingAdoId: null, similarity: null },
-      { localId: 'n1', action: 'create', existingAdoId: null, similarity: null },
-      { localId: 'n2', action: 'reuse', existingAdoId: 42, similarity: null },
+      { localId: 'n0', action: 'create', existingAdoId: null, similarity: null , proposal: null },
+      { localId: 'n1', action: 'create', existingAdoId: null, similarity: null , proposal: null },
+      { localId: 'n2', action: 'reuse', existingAdoId: 42, similarity: null , proposal: null },
     ]);
     // Both downgraded entries get their stale match cleaned up: the reuse
     // entry (n0/533) via IdempotencyMapping deletion, the dedup_skip entry
@@ -2346,8 +2454,8 @@ describe('runPipelineJob', () => {
     );
 
     expect(result).toEqual([
-      { localId: 'n0', action: 'create', existingAdoId: null, similarity: null },
-      { localId: 'n1', action: 'create', existingAdoId: null, similarity: null },
+      { localId: 'n0', action: 'create', existingAdoId: null, similarity: null , proposal: null },
+      { localId: 'n1', action: 'create', existingAdoId: null, similarity: null , proposal: null },
     ]);
     expect(fakePrisma.job.update).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ status: 'diff_ready' }) }),
@@ -2384,6 +2492,68 @@ describe('runPipelineJob', () => {
       expect(fakePrisma.auditEntry.create).toHaveBeenCalledWith({
         data: { jobId: 'job-1', message: 'Pipeline stopped: job was cancelled' },
       });
+    });
+
+    it('aborts an in-flight ingest as soon as the job is cancelled and ends as cancelled, not failed', async () => {
+      let ingestSignal: AbortSignal | undefined;
+      let ingestStarted = false;
+      fakeIngestionClient.ingest.mockImplementation(
+        (...args: unknown[]) =>
+          new Promise((_resolve, reject) => {
+            ingestStarted = true;
+            ingestSignal = args[10] as AbortSignal;
+            ingestSignal.addEventListener('abort', () => reject(new Error('This operation was aborted')));
+          }),
+      );
+      fakePrisma.job.findUnique.mockImplementation(async () => ({ status: ingestStarted ? 'cancelled' : 'running' }));
+
+      const result = await runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+        {
+          ingestionClient: fakeIngestionClient as any,
+          dryRunService: fakeDryRunService as any,
+          idempotencyService: fakeIdempotencyService as any,
+          prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
+          backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          defaultLlmModel: 'gemma4:12b',
+          cancelPollMs: 20,
+        },
+      );
+
+      expect(result).toEqual([]);
+      expect(ingestSignal?.aborted).toBe(true);
+      expect(fakeIngestionClient.level).not.toHaveBeenCalled();
+      expect(fakePrisma.job.update).not.toHaveBeenCalledWith(expect.objectContaining({ data: { status: 'failed' } }));
+      expect(fakeJobEventsPublisher.publish).toHaveBeenCalledWith('job-1', 'cancelled');
+    });
+
+    it('stops watching for a cancel once the ingest has finished', async () => {
+      fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+      fakeIngestionClient.level.mockResolvedValue({ nodes: [{ local_id: 'n0', fidelity_hash: 'h', customer_id: null }] });
+      fakeDryRunService.diff.mockResolvedValue([{ localId: 'n0', action: 'create', existingAdoId: null }]);
+      fakePrisma.job.findUnique.mockResolvedValue({ status: 'running' });
+
+      await runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+        {
+          ingestionClient: fakeIngestionClient as any,
+          dryRunService: fakeDryRunService as any,
+          idempotencyService: fakeIdempotencyService as any,
+          prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
+          backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          defaultLlmModel: 'gemma4:12b',
+          cancelPollMs: 10,
+        },
+      );
+      const callsAtEnd = fakePrisma.job.findUnique.mock.calls.length;
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(fakePrisma.job.findUnique.mock.calls.length).toBe(callsAtEnd);
     });
 
     it('never overwrites status to running when the job was already cancelled the instant the worker picked it up', async () => {
@@ -2459,6 +2629,59 @@ describe('runPipelineJob', () => {
       expect(fakePrisma.auditEntry.create).toHaveBeenCalledWith({
         data: { jobId: 'job-1', message: 'Pipeline stopped: job was cancelled' },
       });
+    });
+
+    const baselineDeps = () => ({
+      ingestionClient: fakeIngestionClient as any,
+      dryRunService: fakeDryRunService as any,
+      idempotencyService: fakeIdempotencyService as any,
+      prisma: fakePrisma as any,
+      jobEventsPublisher: fakeJobEventsPublisher as any,
+      mcpClient: fakeMcpClient as any,
+      backfillService: fakeBackfillService as any,
+      adoCredentialResolver: fakeAdoCredentialResolver as any,
+      defaultLlmModel: 'gemma4:12b',
+    });
+    const baselineJob = { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' } as any;
+    const notFound = () => new Prisma.PrismaClientKnownRequestError('Record not found', { code: 'P2025', clientVersion: 'x' });
+    // these tests script findUnique/update; put the defaults back so no later test inherits them
+    afterEach(() => {
+      fakePrisma.job.update.mockReset();
+      fakePrisma.job.findUnique.mockReset().mockResolvedValue({ status: 'running' });
+    });
+
+    it('a cancel() landing between the start check and the "running" write is not overwritten: the write only matches a row that is not cancelled', async () => {
+      fakePrisma.job.findUnique.mockResolvedValueOnce({ status: 'running' }).mockResolvedValue({ status: 'cancelled' });
+      fakePrisma.job.update.mockRejectedValueOnce(notFound());
+      const result = await runPipelineJob(baselineJob, baselineDeps());
+      expect(result).toEqual([]);
+      expect(fakePrisma.job.update).toHaveBeenNthCalledWith(1, expect.objectContaining({ where: { id: 'job-1', status: { not: 'cancelled' } } }));
+      expect(fakeIngestionClient.ingest).not.toHaveBeenCalled();
+      expect(fakeJobEventsPublisher.publish).toHaveBeenCalledWith('job-1', 'cancelled');
+    });
+
+    it('a cancel() landing between the last check and the "diff_ready" write is not overwritten either', async () => {
+      fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+      fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
+      fakeDryRunService.diff.mockResolvedValue([]);
+      fakePrisma.job.update.mockImplementation(async (args: any) => {
+        if (args.data.status === 'diff_ready') {
+          fakePrisma.job.findUnique.mockResolvedValue({ status: 'cancelled' });
+          throw notFound();
+        }
+        return undefined;
+      });
+      const result = await runPipelineJob(baselineJob, baselineDeps());
+      expect(result).toEqual([]);
+      expect(fakePrisma.job.update).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'job-1', status: { not: 'cancelled' } }, data: expect.objectContaining({ status: 'diff_ready' }) }));
+      expect(fakeJobEventsPublisher.publish).toHaveBeenCalledWith('job-1', 'cancelled');
+      expect(fakeJobEventsPublisher.publish).not.toHaveBeenCalledWith('job-1', 'diff_ready');
+    });
+
+    it('a missing row that is not a cancel is still an error, not a silent stop', async () => {
+      fakePrisma.job.update.mockRejectedValueOnce(notFound());
+      fakePrisma.job.findUnique.mockResolvedValue({ status: 'running' });
+      await expect(runPipelineJob(baselineJob, baselineDeps())).rejects.toBeDefined();
     });
 
     it('does not resurrect a job to "failed" when a different error throws from the tail after a concurrent cancel() already landed', async () => {
@@ -2699,7 +2922,7 @@ describe('runPipelineJob', () => {
       expect(fakeIngestionClient.level).toHaveBeenCalledWith(
         bigDoc, 'survey', 'user-1', [], 'gemma4:12b', 'job-1', 'This is an avionics ICD.',
       );
-      expect(fakeOpenWebUiClient.uploadFile).toHaveBeenCalledWith(bigFileBuffer, 'x.pdf');
+      expect(fakeOpenWebUiClient.uploadFile).toHaveBeenCalledWith(bigFileBuffer, 'x.pdf', expect.any(AbortSignal)); // abortable: a cancel or the budget stops it
       // chatWithFullFileContext, NOT chat() -- chat() goes through the
       // OpenAI SDK, which can never reach Open WebUI's native file-context
       // endpoint (see chatWithFullFileContext's own doc comment,
@@ -2767,6 +2990,45 @@ describe('runPipelineJob', () => {
       expect(fakeIngestionClient.level).toHaveBeenCalledWith(
         bigDoc, 'survey', 'user-1', [], 'gemma4:12b', 'job-1', 'cached primer text',
       );
+    });
+
+    it('gives the AI stage the structure hint from the wizard overview, after the primer text, and without any primer at all', async () => {
+      const deps = {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        defaultLlmModel: 'gemma4:12b',
+      };
+      const job = { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: 'user-1', mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf', structureHint: 'HINT: 4 sections, baseline builds 1 Epics.' };
+
+      await runPipelineJob(job as any, deps as any); // no primer wired
+      expect(fakeIngestionClient.level).toHaveBeenLastCalledWith(bigDoc, 'survey', 'user-1', [], 'gemma4:12b', 'job-1', 'HINT: 4 sections, baseline builds 1 Epics.');
+
+      fakeOpenWebUiClient.uploadFile.mockResolvedValue('file-1');
+      fakeOpenWebUiClient.pollFileProcessed.mockResolvedValue(true);
+      fakeOpenWebUiClient.chatWithFullFileContext.mockResolvedValue({ content: 'This is an avionics ICD.' });
+      fakePrimerCacheRedis.get.mockResolvedValue(null);
+      await runPipelineJob(job as any, { ...deps, openWebUiClientFactory: { getClientFor: jest.fn().mockResolvedValue(fakeOpenWebUiClient) } as any, primerCacheRedis: fakePrimerCacheRedis as any } as any);
+      expect(fakeIngestionClient.level).toHaveBeenLastCalledWith(
+        bigDoc, 'survey', 'user-1', [], 'gemma4:12b', 'job-1', 'This is an avionics ICD.\n\nHINT: 4 sections, baseline builds 1 Epics.',
+      );
+    });
+
+    it('never gives a BASELINE job the structure hint: it makes no model call', async () => {
+      await runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: null, userId: null, mode: 'baseline', fileBuffer: bigFileBuffer, filename: 'x.pdf', structureHint: 'HINT' } as any,
+        {
+          ingestionClient: fakeIngestionClient as any, dryRunService: fakeDryRunService as any, idempotencyService: fakeIdempotencyService as any, prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any, mcpClient: fakeMcpClient as any, backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any, defaultLlmModel: 'gemma4:12b',
+        } as any,
+      );
+      expect(fakeIngestionClient.level).toHaveBeenLastCalledWith(bigDoc, 'baseline', undefined, [], 'gemma4:12b', 'job-1', undefined);
     });
 
     it('never attempts the primer for a BASELINE job, even with primer deps wired and a large document -- BASELINE never calls an LLM', async () => {
@@ -2868,7 +3130,9 @@ describe('runPipelineJob', () => {
       // EVERY job, forever. Failing open is correct; failing open silently
       // is not.
       const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
-      fakeOpenWebUiClient.uploadFile.mockRejectedValue(new Error('404 Not Found: /api/v1/files/'));
+      // The log carries the error's kind and HTTP status only: an upstream error object can hold headers, the base URL or a fragment of the
+      // request body (which is the customer's document).
+      fakeOpenWebUiClient.uploadFile.mockRejectedValue(Object.assign(new Error('404 Not Found: /api/v1/files/ secret-document-text'), { status: 404 }));
       fakePrimerCacheRedis.get.mockResolvedValue(null);
 
       try {
@@ -2891,10 +3155,8 @@ describe('runPipelineJob', () => {
 
         // Asserted BEFORE mockRestore() below -- mockRestore also resets the
         // spy's recorded calls, so asserting after it always sees zero.
-        expect(consoleErrorSpy).toHaveBeenCalledWith(
-          expect.stringContaining('job-1'),
-          expect.objectContaining({ message: expect.stringContaining('/api/v1/files/') }),
-        );
+        expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringMatching(/job-1.*Error.*404/));
+        expect(JSON.stringify(consoleErrorSpy.mock.calls)).not.toContain('secret-document-text');
       } finally {
         consoleErrorSpy.mockRestore();
       }

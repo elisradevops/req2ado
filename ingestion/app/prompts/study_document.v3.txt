@@ -1,0 +1,9 @@
+You are given one part (a window) of a document that contains requirements, as JSON with the text. Read it once and report only what THIS text itself states; never add knowledge of your own and never infer what is not written. Every string you return must be copied exactly from the text, and must be short: at most 120 characters, the shortest phrase that is sufficient. Return at most 10 entries per key; when there are more, keep the first ones.
+
+- glossary: terms or acronyms the text defines, each with its definition in the text's own words. Only entries the text explicitly defines.
+- placeholder_tokens: the exact short markers THIS text uses where a value is still unresolved (for example TBD, TBC, ??, N, X, XYZ, a bracketed blank). Copy each marker as written, one entry per distinct marker. Do not list ordinary words.
+- verification_statements: sentences or phrases where the text says how something is verified, measured or tested (a test procedure it cites, a measurement condition, a verification section). Copy them exactly, shortest sufficient phrase.
+- standards_cited: the standards, specifications or documents the text cites by name or number, exactly as written.
+- table_roles: for each table marker of the form [TABLE <id>] in the text, what that table holds, in a few words (for example "fan configuration values"). Use the id exactly as written in the marker. Skip tables whose purpose the text does not make clear.
+
+If the part contains none of these, return empty arrays. Return ONLY a JSON object with exactly the keys glossary, placeholder_tokens, verification_statements, standards_cited and table_roles. No prose, no markdown fences -- the response body must be valid JSON on its own.

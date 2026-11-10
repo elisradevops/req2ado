@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { NodeDetailDialog } from './NodeDetailDialog';
 import { ToastProvider } from './ToastProvider';
 import type { DryRunDiffEntry } from './DiffTree';
@@ -46,9 +46,34 @@ describe('NodeDetailDialog', () => {
     vi.mocked(jobsApi.getFigureFile).mockResolvedValue(null);
   });
 
+  it('shows the evidence strip once, and not a second Sources block in the details', () => {
+    renderDialog({ entry: { ...ENTRY, sourceRef: { documentPath: 'spec.docx', startOffset: 0, endOffset: 5, page: 2 } } });
+    expect(screen.getByRole('region', { name: 'Evidence' })).toBeInTheDocument();
+    expect(screen.getAllByText('spec.docx')).toHaveLength(1);
+    expect(screen.queryByText('Sources')).not.toBeInTheDocument();
+  });
+
   it('renders nothing when entry is null', () => {
     const { container } = renderDialog({ entry: null });
     expect(container.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it('shows the item title once: in the dialog header, not again as a heading in the body', () => {
+    renderDialog();
+    expect(screen.getAllByText('Req Title')).toHaveLength(1);
+    expect(screen.queryByRole('heading', { name: 'Req Title' })).not.toBeInTheDocument();
+  });
+
+  it('wraps the header title and keeps it readable in full via title, instead of truncating it', () => {
+    renderDialog();
+    const title = screen.getAllByText('Req Title')[0];
+    expect(title).toHaveAttribute('title', 'Req Title');
+    expect(title.className).not.toContain('truncate');
+  });
+
+  it('lets the browser pick the header title\'s direction, so a Hebrew title reads right to left', () => {
+    renderDialog({ entry: { ...ENTRY, title: 'ממשק משתמש (UI) למערכת' } });
+    expect(screen.getByText('ממשק משתמש (UI) למערכת')).toHaveAttribute('dir', 'auto');
   });
 
   it('renders the item title, type badge, and customer ID in the header', () => {
@@ -69,6 +94,30 @@ describe('NodeDetailDialog', () => {
     renderDialog();
     expect(screen.getByText('Req body')).toBeInTheDocument();
     expect(screen.queryByPlaceholderText(/ask the assistant/i)).not.toBeInTheDocument();
+  });
+
+  it('offers the split starter in the chat only for a fresh compound-flagged Requirement', async () => {
+    const matchMediaSpy = vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({
+      matches: true, media: query, onchange: null, addListener: () => {}, removeListener: () => {},
+      addEventListener: () => {}, removeEventListener: () => {}, dispatchEvent: () => false,
+    }) as unknown as MediaQueryList);
+    const props = { onSave: vi.fn(), jobMode: 'survey' as const, jobStatus: 'diff_ready' };
+    try {
+      const fresh = renderDialog({ entry: { ...ENTRY, qualityIssues: ['compound'] } as DryRunDiffEntry, ...props });
+      expect(await screen.findByRole('button', { name: /split into separate requirements/i })).toBeInTheDocument();
+      fresh.unmount();
+
+      const stale = renderDialog({ entry: { ...ENTRY, qualityIssues: ['compound'], qualityStale: true } as DryRunDiffEntry, ...props });
+      await screen.findByText(/i have read this requirement/i);
+      expect(screen.queryByRole('button', { name: /split into separate requirements/i })).not.toBeInTheDocument();
+      stale.unmount();
+
+      renderDialog({ entry: { ...ENTRY, type: 'Feature', qualityIssues: ['compound'] } as DryRunDiffEntry, ...props });
+      await screen.findByText(/i have read this feature/i);
+      expect(screen.queryByRole('button', { name: /split into separate requirements/i })).not.toBeInTheDocument();
+    } finally {
+      matchMediaSpy.mockRestore();
+    }
   });
 
   it('does not render an interactive exclude control -- excluding is a table-row action, not a dialog action', () => {
@@ -102,6 +151,18 @@ describe('NodeDetailDialog', () => {
       </ToastProvider>,
     );
     expect(screen.getByRole('button', { name: /^add direct child wi$/i })).toBeInTheDocument();
+  });
+
+  // class pin: jsdom has no layout
+  it('gives the header chevrons a visible focus ring, 16px icons and a 24px hit area', () => {
+    renderDialog({ onNavigate: vi.fn(), hasPrev: true, hasNext: true });
+    for (const name of [/previous item/i, /next item/i]) {
+      const button = screen.getByRole('button', { name });
+      expect(button.className).toContain('focus-visible:outline-2');
+      expect(button.className).toContain('focus-visible:outline-focus');
+      expect(button).toHaveClass('min-h-6', 'min-w-6');
+      expect(button.querySelector('svg')).toHaveClass('h-4', 'w-4');
+    }
   });
 
   it('calls onNavigate("next")/("prev") when the header chevrons are clicked, gated by hasNext/hasPrev', async () => {
@@ -178,6 +239,22 @@ describe('NodeDetailDialog', () => {
       expect(onMark).toHaveBeenCalledTimes(2);
     });
 
+    it('words the mark as "Looks right and next" for a spot-check, on the button, the key hint and A or R', async () => {
+      const onMark = vi.fn();
+      renderDialog({
+        onNavigate: vi.fn(),
+        reason: { title: 'No flags', todo: 'Read it.', group: 'info' },
+        review: { reviewed: false, onMark, onUnmark: vi.fn(), markLabel: 'Looks right and next', markHint: 'looks right' },
+      });
+      const { default: userEvent } = await import('@testing-library/user-event');
+
+      expect(screen.queryByRole('button', { name: 'Mark reviewed and next' })).not.toBeInTheDocument();
+      expect(screen.getByRole('note')).toHaveTextContent(/A\/R\s*looks right/);
+      await userEvent.click(screen.getByRole('button', { name: 'Looks right and next' }));
+      await userEvent.keyboard('a');
+      expect(onMark).toHaveBeenCalledTimes(2);
+    });
+
     it('swaps to Mark not reviewed for a reviewed item, and R no longer marks', async () => {
       const onMark = vi.fn();
       const onUnmark = vi.fn();
@@ -199,6 +276,387 @@ describe('NodeDetailDialog', () => {
     it('shows no reason banner by default', () => {
       renderDialog();
       expect(screen.queryByRole('note')).not.toBeInTheDocument();
+    });
+
+    describe('accept / exclude keys (risk-ordered queue)', () => {
+      const reason = { title: 'Review queue', todo: 'Riskiest first.', group: 'review' as const };
+
+      it('A accepts the item, same as R', async () => {
+        const onMark = vi.fn();
+        renderDialog({ onNavigate: vi.fn(), reason, review: { reviewed: false, onMark, onUnmark: vi.fn() } });
+        const { default: userEvent } = await import('@testing-library/user-event');
+
+        await userEvent.keyboard('a');
+        expect(onMark).toHaveBeenCalledTimes(1);
+        await userEvent.keyboard('r');
+        expect(onMark).toHaveBeenCalledTimes(2);
+      });
+
+      it('X excludes the item and the button does the same, only when the page offers it', async () => {
+        const onReject = vi.fn();
+        renderDialog({ onNavigate: vi.fn(), reason, review: { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn(), onReject } });
+        const { default: userEvent } = await import('@testing-library/user-event');
+
+        await userEvent.keyboard('x');
+        expect(onReject).toHaveBeenCalledTimes(1);
+        await userEvent.click(screen.getByRole('button', { name: 'Exclude and next' }));
+        expect(onReject).toHaveBeenCalledTimes(2);
+      });
+
+      it('offers no exclude control and ignores X when there is no onReject (the warning-focus review)', async () => {
+        renderDialog({ onNavigate: vi.fn(), reason, review: { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn() } });
+        const { default: userEvent } = await import('@testing-library/user-event');
+
+        await userEvent.keyboard('x');
+        expect(screen.queryByRole('button', { name: 'Exclude and next' })).not.toBeInTheDocument();
+      });
+
+      it('ignores A and X on a reviewed item', async () => {
+        const onMark = vi.fn();
+        const onReject = vi.fn();
+        renderDialog({ onNavigate: vi.fn(), reason, review: { reviewed: true, onMark, onUnmark: vi.fn(), onReject } });
+        const { default: userEvent } = await import('@testing-library/user-event');
+
+        await userEvent.keyboard('ax');
+        expect(onMark).not.toHaveBeenCalled();
+        expect(onReject).not.toHaveBeenCalled();
+      });
+
+      it('speaks its announcement from inside the dialog, since the page behind a modal is hidden from screen readers', () => {
+        renderDialog({ onNavigate: vi.fn(), reason, announcement: 'Marked reviewed. 2 left.' });
+        const status = within(screen.getByRole('dialog')).getByRole('status');
+        expect(status).toHaveTextContent('Marked reviewed. 2 left.');
+        expect(status).toHaveAttribute('aria-live', 'polite');
+      });
+
+      it('ignores a held key: A, R, X, U and E act once per press, not once per key repeat', () => {
+        const onMark = vi.fn();
+        const onReject = vi.fn();
+        const onUndo = vi.fn();
+        renderDialog({ onNavigate: vi.fn(), reason, review: { reviewed: false, onMark, onUnmark: vi.fn(), onReject, onUndo } });
+
+        for (const key of ['a', 'r', 'x', 'u', 'e']) fireEvent.keyDown(window, { key, repeat: true });
+        fireEvent.keyDown(window, { key: 'ש', code: 'KeyA', repeat: true });
+        expect(onMark).not.toHaveBeenCalled();
+        expect(onReject).not.toHaveBeenCalled();
+        expect(onUndo).not.toHaveBeenCalled();
+        expect(screen.queryByRole('textbox', { name: /title/i })).not.toBeInTheDocument();
+
+        fireEvent.keyDown(window, { key: 'a' });
+        expect(onMark).toHaveBeenCalledTimes(1);
+        fireEvent.keyDown(window, { key: 'u' });
+        expect(onUndo).toHaveBeenCalledTimes(1);
+        fireEvent.keyDown(window, { key: 'ש', code: 'KeyA' });
+        expect(onMark).toHaveBeenCalledTimes(2);
+      });
+
+      it('does not treat a dead, IME or unidentified key as a shortcut through the physical code', () => {
+        const onMark = vi.fn();
+        const onReject = vi.fn();
+        renderDialog({ onNavigate: vi.fn(), reason, review: { reviewed: false, onMark, onUnmark: vi.fn(), onReject } });
+        for (const key of ['Dead', 'Unidentified', 'Process']) {
+          fireEvent.keyDown(window, { key, code: 'KeyA' });
+          fireEvent.keyDown(window, { key, code: 'KeyX' });
+        }
+        expect(onMark).not.toHaveBeenCalled();
+        expect(onReject).not.toHaveBeenCalled();
+      });
+
+      it('ignores a key whose real origin (composedPath, e.g. inside a shadow root) is a text field', () => {
+        const onMark = vi.fn();
+        renderDialog({ onNavigate: vi.fn(), reason, review: { reviewed: false, onMark, onUnmark: vi.fn() } });
+        const textarea = document.createElement('textarea');
+        const event = new KeyboardEvent('keydown', { key: 'a', bubbles: true, cancelable: true });
+        Object.defineProperty(event, 'composedPath', { value: () => [textarea, window] });
+        window.dispatchEvent(event);
+        expect(onMark).not.toHaveBeenCalled();
+      });
+
+      it('hides the key hints from screen readers (aria-keyshortcuts carries the keys) in both placements', () => {
+        const { unmount } = renderDialog({
+          onNavigate: vi.fn(),
+          reason,
+          review: { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn() },
+        });
+        expect(screen.getByTestId('key-hints')).toHaveAttribute('aria-hidden', 'true');
+        unmount();
+        renderDialog({ onNavigate: vi.fn(), review: { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn() } });
+        expect(screen.getByTestId('key-hints')).toHaveAttribute('aria-hidden', 'true');
+      });
+
+      // class pin: jsdom has no layout
+      it('lets the key hints wrap onto the next line, keeping each key with its label', () => {
+        renderDialog({
+          onNavigate: vi.fn(),
+          reason,
+          review: { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn(), onReject: vi.fn(), onUndo: vi.fn() },
+        });
+        const keys = Array.from(screen.getByRole('note').querySelectorAll('kbd'));
+        expect(keys.map((k) => k.textContent)).toEqual(['J', 'K', 'A/R', 'X', 'U', 'E']);
+        for (const key of keys) {
+          // One wrapper per key, so a break can only fall between pairs.
+          expect(key.parentElement).toHaveClass('whitespace-nowrap');
+          expect(key.parentElement?.querySelectorAll('kbd')).toHaveLength(1);
+          // The space that lets the line break sits outside the pair: inside a nowrap span it cannot break.
+          expect(key.parentElement?.textContent).toMatch(/^\S/);
+          // A logical margin, so the hints keep their gap from the text in a right-to-left layout too.
+          expect(key.parentElement?.parentElement).toHaveClass('ms-2');
+          expect(key.parentElement?.parentElement).not.toHaveClass('ml-2');
+          // A line that cannot wrap runs past the dialog edge on a phone.
+          expect(key.parentElement?.parentElement).not.toHaveClass('whitespace-nowrap');
+        }
+      });
+
+      it('names the actions the way the buttons do', () => {
+        renderDialog({ onNavigate: vi.fn(), reason, review: { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn(), onReject: vi.fn() } });
+        const note = screen.getByRole('note');
+        expect(note).toHaveTextContent(/A\/R\s*mark reviewed/);
+        expect(note).toHaveTextContent(/X\s*exclude/);
+      });
+
+      it('does not act while typing in a field', async () => {
+        const onMark = vi.fn();
+        renderDialog({ onNavigate: vi.fn(), reason, review: { reviewed: false, onMark, onUnmark: vi.fn() } });
+        const { default: userEvent } = await import('@testing-library/user-event');
+        // Inside the dialog: Radix's focus trap would pull an outside field's focus back in.
+        const input = document.createElement('input');
+        screen.getByRole('dialog').appendChild(input);
+        input.focus();
+
+        await userEvent.keyboard('a');
+        expect(onMark).not.toHaveBeenCalled();
+        input.remove();
+      });
+
+      it('U runs the last undo, hint and key both gated by the shortcuts switch', async () => {
+        const onUndo = vi.fn();
+        const review = { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn(), onUndo };
+        const { unmount } = renderDialog({ onNavigate: vi.fn(), reason, review });
+        const { default: userEvent } = await import('@testing-library/user-event');
+
+        expect(screen.getByRole('note')).toHaveTextContent(/U\s*undo/);
+        await userEvent.keyboard('u');
+        expect(onUndo).toHaveBeenCalledTimes(1);
+        unmount();
+
+        const off = vi.fn();
+        renderDialog({ onNavigate: vi.fn(), reason, shortcutsEnabled: false, review: { ...review, onUndo: off } });
+        await userEvent.keyboard('u');
+        expect(off).not.toHaveBeenCalled();
+      });
+
+      it('shows no undo hint and ignores U when the page offers no undo', async () => {
+        renderDialog({ onNavigate: vi.fn(), reason, review: { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn() } });
+        const { default: userEvent } = await import('@testing-library/user-event');
+        expect(screen.getByRole('note')).not.toHaveTextContent(/undo/i);
+        await userEvent.keyboard('u');
+      });
+
+      it('E opens the edit form of an editable item and shows the hint only then', async () => {
+        const { default: userEvent } = await import('@testing-library/user-event');
+        const { unmount } = renderDialog({ onNavigate: vi.fn(), reason, jobStatus: 'diff_ready' });
+        expect(screen.getByRole('note')).toHaveTextContent(/E\s*edit/);
+        await userEvent.keyboard('e');
+        expect(await screen.findByDisplayValue('Req Title')).toBeInTheDocument();
+        unmount();
+
+        renderDialog({ onNavigate: vi.fn(), reason, jobStatus: 'succeeded' });
+        expect(screen.getByRole('note')).not.toHaveTextContent(/E\s*edit/);
+        await userEvent.keyboard('e');
+        expect(screen.queryByDisplayValue('Req Title')).not.toBeInTheDocument();
+      });
+
+      it('E does nothing with shortcuts off and is not a request while typing', async () => {
+        const { default: userEvent } = await import('@testing-library/user-event');
+        const { unmount } = renderDialog({ onNavigate: vi.fn(), reason, shortcutsEnabled: false });
+        await userEvent.keyboard('e');
+        expect(screen.queryByDisplayValue('Req Title')).not.toBeInTheDocument();
+        unmount();
+
+        renderDialog({ onNavigate: vi.fn(), reason });
+        const input = document.createElement('input');
+        screen.getByRole('dialog').appendChild(input);
+        input.focus();
+        await userEvent.keyboard('e');
+        expect(screen.queryByDisplayValue('Req Title')).not.toBeInTheDocument();
+        input.remove();
+      });
+
+      it('ignores letters typed inside a listbox, option, menu, menuitem or combobox in the dialog', () => {
+        const onMark = vi.fn();
+        const onReject = vi.fn();
+        renderDialog({ onNavigate: vi.fn(), reason, review: { reviewed: false, onMark, onUnmark: vi.fn(), onReject } });
+        const dialog = screen.getByRole('dialog');
+        for (const role of ['option', 'menuitem', 'combobox', 'listbox']) {
+          const el = document.createElement('div');
+          el.setAttribute('role', role);
+          el.tabIndex = 0;
+          dialog.appendChild(el);
+          fireEvent.keyDown(el, { key: 'a' });
+          fireEvent.keyDown(el, { key: 'x' });
+        }
+        expect(onMark).not.toHaveBeenCalled();
+        expect(onReject).not.toHaveBeenCalled();
+      });
+
+      it('ignores Shift+letter, IME composition and keyCode 229', () => {
+        const onMark = vi.fn();
+        const onReject = vi.fn();
+        renderDialog({ onNavigate: vi.fn(), reason, review: { reviewed: false, onMark, onUnmark: vi.fn(), onReject } });
+        fireEvent.keyDown(window, { key: 'A', shiftKey: true });
+        fireEvent.keyDown(window, { key: 'X', shiftKey: true });
+        fireEvent.keyDown(window, { key: 'a', isComposing: true });
+        fireEvent.keyDown(window, { key: 'a', keyCode: 229 });
+        expect(onMark).not.toHaveBeenCalled();
+        expect(onReject).not.toHaveBeenCalled();
+      });
+
+      it('works on a Hebrew layout through the physical key, and a Latin key still wins over the code', () => {
+        const onMark = vi.fn();
+        const onReject = vi.fn();
+        const onNavigate = vi.fn();
+        renderDialog({
+          onNavigate,
+          hasNext: true,
+          hasPrev: true,
+          reason,
+          review: { reviewed: false, onMark, onUnmark: vi.fn(), onReject },
+        });
+        fireEvent.keyDown(window, { key: '\u05E9', code: 'KeyA' });
+        expect(onMark).toHaveBeenCalledTimes(1);
+        fireEvent.keyDown(window, { key: '\u05E1', code: 'KeyX' });
+        expect(onReject).toHaveBeenCalledTimes(1);
+        fireEvent.keyDown(window, { key: '\u05D7', code: 'KeyJ' });
+        expect(onNavigate).toHaveBeenLastCalledWith('next');
+        fireEvent.keyDown(window, { key: '\u05DC', code: 'KeyK' });
+        expect(onNavigate).toHaveBeenLastCalledWith('prev');
+        // AZERTY: the Latin key 'a' is on the physical Q position and still marks.
+        fireEvent.keyDown(window, { key: 'a', code: 'KeyQ' });
+        expect(onMark).toHaveBeenCalledTimes(2);
+        // A Latin 'q' on the physical A position is not a shortcut.
+        fireEvent.keyDown(window, { key: 'q', code: 'KeyA' });
+        expect(onMark).toHaveBeenCalledTimes(2);
+      });
+
+      it('shows the key hints in a thin row when there is no reason, with A/R for the mark', () => {
+        renderDialog({
+          onNavigate: vi.fn(),
+          review: { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn(), onReject: vi.fn() },
+        });
+        expect(screen.queryByRole('note')).not.toBeInTheDocument();
+        const hints = screen.getByTestId('key-hints');
+        expect(Array.from(hints.querySelectorAll('kbd')).map((k) => k.textContent)).toEqual(['J', 'K', 'A/R', 'X', 'E']);
+      });
+
+      it('shows the hints with no reason for a spot-check, with the keys that mode supports', () => {
+        renderDialog({
+          onNavigate: vi.fn(),
+          review: {
+            reviewed: false, onMark: vi.fn(), onUnmark: vi.fn(), onReject: vi.fn(),
+            markLabel: 'Looks right and next', markHint: 'looks right',
+          },
+        });
+        const hints = screen.getByTestId('key-hints');
+        expect(hints).toHaveTextContent(/A\/R\s*looks right/);
+        expect(Array.from(hints.querySelectorAll('kbd')).map((k) => k.textContent)).toEqual(['J', 'K', 'A/R', 'X', 'E']);
+      });
+
+      it('declares aria-keyshortcuts on the buttons only while shortcuts are on', () => {
+        const props = {
+          onNavigate: vi.fn(),
+          hasNext: true,
+          hasPrev: true,
+          reason,
+          review: { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn(), onReject: vi.fn() },
+        };
+        const { unmount } = renderDialog(props);
+        expect(screen.getByRole('button', { name: 'Mark reviewed and next' })).toHaveAttribute('aria-keyshortcuts', 'A R');
+        expect(screen.getByRole('button', { name: 'Exclude and next' })).toHaveAttribute('aria-keyshortcuts', 'X');
+        expect(screen.getByRole('button', { name: /previous item/i })).toHaveAttribute('aria-keyshortcuts', 'K');
+        expect(screen.getByRole('button', { name: /next item/i })).toHaveAttribute('aria-keyshortcuts', 'J');
+        unmount();
+        renderDialog({ ...props, shortcutsEnabled: false });
+        for (const name of ['Mark reviewed and next', 'Exclude and next', /previous item/i, /next item/i]) {
+          expect(screen.getByRole('button', { name })).not.toHaveAttribute('aria-keyshortcuts');
+        }
+      });
+
+      it('marks the mode buttons busy without disabling them, and ignores clicks and keys while busy', async () => {
+        const onMark = vi.fn();
+        const onReject = vi.fn();
+        const onBusyAttempt = vi.fn();
+        renderDialog({
+          onNavigate: vi.fn(),
+          reason,
+          review: { reviewed: false, busy: true, onMark, onUnmark: vi.fn(), onReject, onBusyAttempt },
+        });
+        const { default: userEvent } = await import('@testing-library/user-event');
+        let attempts = 0;
+        for (const name of ['Mark reviewed and next', 'Exclude and next']) {
+          const button = screen.getByRole('button', { name });
+          expect(button).toHaveAttribute('aria-busy', 'true');
+          expect(button).toHaveAttribute('aria-disabled', 'true');
+          expect(button).not.toBeDisabled();
+          await userEvent.click(button);
+          expect(onBusyAttempt).toHaveBeenCalledTimes(++attempts);
+        }
+        for (const key of ['a', 'r', 'x']) {
+          await userEvent.keyboard(key);
+          expect(onBusyAttempt).toHaveBeenCalledTimes(++attempts);
+        }
+        expect(onMark).not.toHaveBeenCalled();
+        expect(onReject).not.toHaveBeenCalled();
+      });
+
+      it('marks "Mark not reviewed" busy too, and acts normally when not busy', async () => {
+        const onUnmark = vi.fn();
+        const onBusyAttempt = vi.fn();
+        const { unmount } = renderDialog({
+          onNavigate: vi.fn(),
+          reason,
+          review: { reviewed: true, busy: true, onMark: vi.fn(), onUnmark, onBusyAttempt },
+        });
+        const { default: userEvent } = await import('@testing-library/user-event');
+        const busyButton = screen.getByRole('button', { name: 'Mark not reviewed' });
+        expect(busyButton).toHaveAttribute('aria-busy', 'true');
+        await userEvent.click(busyButton);
+        expect(onUnmark).not.toHaveBeenCalled();
+        expect(onBusyAttempt).toHaveBeenCalledTimes(1);
+        unmount();
+
+        const onMark = vi.fn();
+        renderDialog({ onNavigate: vi.fn(), reason, review: { reviewed: false, busy: false, onMark, onUnmark } });
+        const button = screen.getByRole('button', { name: 'Mark reviewed and next' });
+        expect(button).not.toHaveAttribute('aria-busy', 'true');
+        expect(button).not.toHaveAttribute('aria-disabled', 'true');
+        await userEvent.click(button);
+        await userEvent.keyboard('a');
+        expect(onMark).toHaveBeenCalledTimes(2);
+      });
+
+      it('turns every single-key shortcut off, J and K included, and hides the key hints', async () => {
+        const onMark = vi.fn();
+        const onReject = vi.fn();
+        const onNavigate = vi.fn();
+        renderDialog({
+          onNavigate,
+          hasNext: true,
+          hasPrev: true,
+          shortcutsEnabled: false,
+          reason,
+          review: { reviewed: false, onMark, onUnmark: vi.fn(), onReject },
+        });
+        const { default: userEvent } = await import('@testing-library/user-event');
+
+        await userEvent.keyboard('jkrax');
+        expect(onMark).not.toHaveBeenCalled();
+        expect(onReject).not.toHaveBeenCalled();
+        expect(onNavigate).not.toHaveBeenCalled();
+        expect(screen.getByRole('note').querySelector('kbd')).toBeNull();
+        // The buttons still work with the mouse or Enter.
+        await userEvent.click(screen.getByRole('button', { name: 'Exclude and next' }));
+        expect(onReject).toHaveBeenCalledTimes(1);
+      });
     });
   });
 
@@ -276,7 +734,7 @@ describe('NodeDetailDialog', () => {
     it('does not offer the upload action for a "create" entry -- no resolved ADO id is available in this view', () => {
       renderDialog({ entry: { ...ENTRY, action: 'create', existingAdoId: null, figureIds: ['f0'] }, onAttachFigure: vi.fn() });
       expect(screen.queryByRole('button', { name: /upload to ado/i })).not.toBeInTheDocument();
-      expect(screen.getByText(/not available until this job has confirmed/i)).toBeInTheDocument();
+      expect(screen.getByText(/after the item is written to Azure DevOps/i)).toBeInTheDocument();
     });
 
     it('reverts to a clickable button (not stuck) when onAttachFigure rejects', async () => {

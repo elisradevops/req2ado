@@ -48,6 +48,14 @@ export function Dialog({
   // (content-sized, centered) is unaffected when omitted.
   unpadded = false,
   maxHeightClassName,
+  // Where focus goes on close instead of the remembered opener, when that
+  // element is connected. For a caller that hands over between dialogs, where
+  // the remembered opener may be inside a dialog that is about to unmount.
+  returnFocusRef,
+  // false: closing moves no focus (a hand-over where another dialog or
+  // control takes focus itself and a closing dialog must not steal it back).
+  restoreFocus = true,
+  describedById,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -58,8 +66,22 @@ export function Dialog({
   maxWidthClassName?: string;
   unpadded?: boolean;
   maxHeightClassName?: string;
+  returnFocusRef?: React.RefObject<HTMLElement | null>;
+  restoreFocus?: boolean;
+  // Id of an element in the body that describes the dialog, for a caller that has no `description` of its own.
+  describedById?: string;
 }): React.ReactElement {
   const contentRef = useRef<HTMLDivElement>(null);
+  const openerRef = useRef<HTMLElement | null>(null);
+
+  // Radix only returns focus to a Dialog.Trigger, and every caller here
+  // flips its own `open` boolean instead of rendering one, so on close Radix
+  // focuses a null trigger and focus falls to <body>. Remember what had
+  // focus at the moment of opening (layout effect: before Radix moves focus
+  // into the content) and hand it back in onCloseAutoFocus.
+  useLayoutEffect(() => {
+    if (open) openerRef.current = document.activeElement as HTMLElement | null;
+  }, [open]);
 
   // Must be a layout effect (runs synchronously before paint), not a plain
   // effect -- the very first animation frame needs `transform-origin`
@@ -82,6 +104,22 @@ export function Dialog({
         <RadixDialog.Overlay className="fixed inset-0 z-40 bg-scrim data-[state=open]:animate-[fadeIn_var(--duration-base)_var(--ease-out)] data-[state=closed]:animate-[fadeOut_var(--duration-exit)_var(--ease-in)]" />
         <RadixDialog.Content
           ref={contentRef}
+          // Spread only when given: an explicit undefined would override Radix's own link to the description.
+          {...(describedById ? { 'aria-describedby': describedById } : {})}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            const opener = openerRef.current;
+            openerRef.current = null;
+            if (!restoreFocus) return;
+            const preferred = returnFocusRef?.current;
+            if (preferred && preferred.isConnected) {
+              preferred.focus();
+              return;
+            }
+            // A removed opener (its row went away while the dialog was open)
+            // is left alone; the caller decides where focus goes then.
+            if (opener && opener !== document.body && opener.isConnected) opener.focus();
+          }}
           // Falls back to 50%/50% (the box's own center) whenever no real
           // click anchored this open -- keyboard-triggered opens, or the
           // very first render before any pointerdown has ever fired.
@@ -107,7 +145,7 @@ export function Dialog({
             )}
           </div>
           {children && (
-            <div className={unpadded ? 'flex min-h-0 flex-1 flex-col' : 'flex flex-col gap-3 px-5 pb-1'}>{children}</div>
+            <div className={unpadded ? 'flex min-h-0 flex-1 flex-col' : 'flex min-h-0 flex-col gap-3 overflow-y-auto px-5 pt-1 pb-1'}>{children}</div>
           )}
           {footer && <div className="mt-3.5 flex flex-none items-center gap-2.5 border-t border-hairline bg-canvas px-5 py-3.5">{footer}</div>}
         </RadixDialog.Content>

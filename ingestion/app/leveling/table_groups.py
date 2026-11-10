@@ -79,23 +79,17 @@ confirmed empirically to produce identical output across both sources on
 the same real document content. Every name below is re-exported for
 backward compatibility; nothing about this module's own behavior changed.
 """
+
 from __future__ import annotations
 
 from collections.abc import Iterable
 
 from app.canonical.model import Table
-from app.leveling.id_hierarchy import (
+from app.leveling.id_hierarchy import (  # noqa: F401 -- EPIC/FEATURE/REQUIREMENT are re-exported (tests import them from here)
     EPIC,
     FEATURE,
-    ID_PATTERN as _ID_PATTERN,
-    LETTER_SEGMENT_BASE as _LETTER_SEGMENT_BASE,
-    MIN_CHILDREN_TO_QUALIFY as _MIN_CHILDREN_TO_QUALIFY,
-    MIN_ID_ROW_FRACTION as _MIN_ID_ROW_FRACTION,
-    MIN_ID_ROWS as _MIN_ID_ROWS,
     REQUIREMENT,
-    SHALL_PATTERN as _SHALL_PATTERN,
     TableGroupInfo,
-    is_letter_segment as _is_letter_segment,
     parsed_id_rows_from_table,
     qualifying_groups,
 )

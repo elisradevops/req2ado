@@ -14,6 +14,10 @@ export interface WorkItemTree {
    */
   warnings?: IntegrityWarning[];
   kb_citations?: KbCitation[];
+  /**
+   * How much of the user's Knowledge Base a SURVEY run could use versus did cite. null when no KB grounding ran (BASELINE, or SURVEY without KB dependencies) or the file listing failed; absent on trees produced before this field existed.
+   */
+  kb_coverage?: KbCoverage | null;
   trace_links?: TraceLink[];
   /**
    * Doc-wide (never per-node): figures SURVEY's figure/table mapping stage judged structurally irrelevant to every work item, or could not place because the mapping call failed. Never present in any node's figure_ids. Always [] for BASELINE.
@@ -163,6 +167,7 @@ export interface IntegrityWarning {
     | 'scoring_inconsistent_categories'
     | 'enhancement_call_failed'
     | 'enhancement_response_incomplete'
+    | 'document_study_incomplete'
     | 'dropped_row'
     | 'front_matter_folded'
     | 'trace_link_inference_failed'
@@ -179,7 +184,8 @@ export interface IntegrityWarning {
     | 'survey_title_distilled'
     | 'missing_requirement_row_coverage'
     | 'duplicate_customer_id'
-    | 'parent_title_collision';
+    | 'parent_title_collision'
+    | 'criteria_value_ungrounded';
   /**
    * auto_fixed: deterministic code already resolved it, no action needed. needs_review: an AI/heuristic judgment call a human should verify. pipeline_issue: something broke or was incomplete for this run.
    */
@@ -201,6 +207,16 @@ export interface KbCitation {
   source_file: string;
   similarity: number;
   relevance?: 'relevant' | 'not_relevant' | 'unknown';
+}
+export interface KbCoverage {
+  /**
+   * Distinct source files with stored vectors in the user's KB when the run retrieved from it.
+   */
+  files_available: number;
+  /**
+   * Distinct source files in kb_citations: files surfaced by retrieval/always-include for this run (any relevance verdict). On the SURVEY fallback path this is broader than any single prompt's grounding.
+   */
+  files_cited: number;
 }
 export interface TraceLink {
   source_local_id: string;

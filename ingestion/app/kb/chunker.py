@@ -29,7 +29,9 @@ def chunk_canonical_doc(doc: CanonicalDoc) -> list[KbChunk]:
     as before (byte-identical to pre-table-support behavior for any
     doc.tables == [] document) -- table chunks are simply added after."""
     has_headings = any(block.kind == BlockKind.HEADING for block in doc.blocks)
-    block_chunks = _chunk_by_fixed_window(doc.blocks) if not has_headings else _chunk_by_heading(doc.blocks)
+    block_chunks = (
+        _chunk_by_fixed_window(doc.blocks) if not has_headings else _chunk_by_heading(doc.blocks)
+    )
     return block_chunks + _table_chunks(doc.tables, start_index=len(block_chunks))
 
 
@@ -62,7 +64,9 @@ def _chunk_by_heading(blocks: list[Block]) -> list[KbChunk]:
 
     for block in blocks:
         starts_new_section = block.kind == BlockKind.HEADING and (
-            current_level is None or block.heading_level is None or block.heading_level <= current_level
+            current_level is None
+            or block.heading_level is None
+            or block.heading_level <= current_level
         )
         if starts_new_section:
             flush()

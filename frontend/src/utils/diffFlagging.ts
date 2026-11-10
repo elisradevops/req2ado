@@ -23,6 +23,12 @@ const LOW_QUALITY_THRESHOLD = 50;
 // low-quality item already is.
 const LOW_CONFIDENCE = 'low';
 
+// The "low score" half of isFlaggedDiffEntry on its own, for callers that
+// rank a low quality score above the other flags (the risk-ordered review queue).
+export function isLowQualityEntry(entry: { qualityScore?: number | null }): boolean {
+  return entry.qualityScore != null && entry.qualityScore < LOW_QUALITY_THRESHOLD;
+}
+
 export function isFlaggedDiffEntry(entry: {
   type?: string;
   groundingScore?: number | null;
@@ -34,7 +40,7 @@ export function isFlaggedDiffEntry(entry: {
     : LOW_GROUNDING_THRESHOLD;
   return (
     (entry.groundingScore != null && entry.groundingScore < groundingThreshold) ||
-    (entry.qualityScore != null && entry.qualityScore < LOW_QUALITY_THRESHOLD) ||
+    isLowQualityEntry(entry) ||
     entry.qualityConfidence === LOW_CONFIDENCE
   );
 }

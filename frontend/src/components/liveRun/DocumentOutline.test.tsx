@@ -61,4 +61,9 @@ describe('DocumentOutline', () => {
     expect(rows[1].style.paddingLeft).toBe('44px');
     expect(rows[2].style.paddingLeft).toBe('68px');
   });
+
+  it('lets the browser pick a row title\'s direction, so a Hebrew title reads right to left', () => {
+    render(<DocumentOutline items={[{ ...item(1), title: 'ממשק משתמש (UI) למערכת' }]} doneRefs={{}} workingRefs={new Set()} truncated={false} />);
+    expect(screen.getByText('ממשק משתמש (UI) למערכת')).toHaveAttribute('dir', 'auto');
+  });
 });
