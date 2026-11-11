@@ -636,3 +636,82 @@ def test_get_item_by_id_raises_graph_api_error_with_the_graph_status(monkeypatch
         client.get_item_by_id("drive-1", "item-9")
 
     assert exc.value.status == status
+
+
+# --- paging: a folder with more children than one Graph page must not be cut off ---
+
+_GRAPH = "https://graph.microsoft.com/v1.0"
+
+
+def _file(n: int) -> dict:
+    return {"id": f"item-{n}", "name": f"f{n}.pdf", "size": 1, "file": {"mimeType": "application/pdf"}}
+
+
+def _paged_handler(pages: dict[str, dict], seen: list[str]):
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        body = pages.get(str(request.url))
+        return httpx.Response(200, json=body) if body is not None else httpx.Response(404)
+
+    return handler
+
+
+@pytest.mark.parametrize("call", ["share", "by_id"])
+def test_listing_follows_next_link_until_the_last_page(monkeypatch, call) -> None:
+    first = f"{_GRAPH}/shares/x/driveItem/children" if call == "share" else f"{_GRAPH}/drives/d/items/i/children"
+    page2 = f"{_GRAPH}/next?page=2"
+    page3 = f"{_GRAPH}/next?page=3"
+    pages = {
+        first: {"value": [_file(1), _file(2)], "@odata.nextLink": page2},
+        page2: {"value": [_file(3)], "@odata.nextLink": page3},
+        page3: {"value": [_file(4)]},
+    }
+    seen: list[str] = []
+    _patch_transport(monkeypatch, httpx.MockTransport(_paged_handler(pages, seen)))
+    client = GraphClient("tok", _GRAPH)
+    monkeypatch.setattr("app.kb.graph_client.encode_share_id", lambda url: "x")
+
+    children = (
+        client.list_folder_children("https://contoso.sharepoint.com/f")
+        if call == "share"
+        else client.list_children_by_id("d", "i")
+    )
+
+    assert [c.id for c in children] == ["item-1", "item-2", "item-3", "item-4"]
+    assert seen == [first, page2, page3]
+
+
+def test_a_next_link_to_another_host_is_refused_and_never_sent_the_token(monkeypatch) -> None:
+    first = f"{_GRAPH}/drives/d/items/i/children"
+    pages = {first: {"value": [_file(1)], "@odata.nextLink": "https://evil.example.com/steal"}}
+    seen: list[str] = []
+    _patch_transport(monkeypatch, httpx.MockTransport(_paged_handler(pages, seen)))
+
+    with pytest.raises(GraphApiError) as excinfo:
+        GraphClient("tok", _GRAPH).list_children_by_id("d", "i")
+
+    assert seen == [first]
+    assert "next page" in str(excinfo.value).lower()
+
+
+def test_a_failure_on_a_later_page_raises_rather_than_returning_a_short_list(monkeypatch) -> None:
+    first = f"{_GRAPH}/drives/d/items/i/children"
+    pages = {first: {"value": [_file(1)], "@odata.nextLink": f"{_GRAPH}/missing"}}
+    _patch_transport(monkeypatch, httpx.MockTransport(_paged_handler(pages, [])))
+
+    with pytest.raises(GraphApiError) as excinfo:
+        GraphClient("tok", _GRAPH).list_children_by_id("d", "i")
+
+    assert excinfo.value.status == 404
+
+
+def test_a_next_link_loop_is_stopped_with_an_error(monkeypatch) -> None:
+    first = f"{_GRAPH}/drives/d/items/i/children"
+    loop = f"{_GRAPH}/loop"
+    pages = {first: {"value": [_file(1)], "@odata.nextLink": loop}, loop: {"value": [_file(2)], "@odata.nextLink": loop}}
+    _patch_transport(monkeypatch, httpx.MockTransport(_paged_handler(pages, [])))
+
+    with pytest.raises(GraphApiError) as excinfo:
+        GraphClient("tok", _GRAPH).list_children_by_id("d", "i")
+
+    assert "pages" in str(excinfo.value).lower()
