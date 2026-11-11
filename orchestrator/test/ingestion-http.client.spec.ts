@@ -801,4 +801,68 @@ describe('IngestionHttpClient.level: which rubric the job was scored with', () =
     await expect(new IngestionHttpClient('http://ingestion.internal').level(MINIMAL_DOC, 'survey')).resolves.toEqual({ nodes: [] });
   });
 
+
+  describe('ingestDriveItem()', () => {
+    const body = { document_name: 'guide.pptx', driveitem_id: 'item-1', mime_type: 'application/pdf', size_bytes: 10, chunks_stored: 3, chunks_in_store: 3, skipped_unchanged: false };
+
+    it('POSTs the drive and item ids (not a download URL) to /kb/ingest-drive-item and maps the result', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => body });
+      const client = new IngestionHttpClient('http://ingestion:8000');
+
+      const result = await client.ingestDriveItem('drive-1', 'item-1', 'user-1', 'SRD', 'vault-token', 'always_include');
+
+      const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
+      expect(url).toBe('http://ingestion:8000/kb/ingest-drive-item');
+      expect(options.method).toBe('POST');
+      expect(JSON.parse(options.body)).toEqual({
+        drive_id: 'drive-1',
+        item_id: 'item-1',
+        user_id: 'user-1',
+        doc_type: 'SRD',
+        graph_token: 'vault-token',
+        retrieval_mode: 'always_include',
+      });
+      expect(result).toEqual({
+        documentName: 'guide.pptx',
+        driveitemId: 'item-1',
+        mimeType: 'application/pdf',
+        sizeBytes: 10,
+        chunksStored: 3,
+        chunksInStore: 3,
+        skippedUnchanged: false,
+      });
+    });
+
+    it('sends nulls for an absent token, mode and doc type', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => body });
+
+      await new IngestionHttpClient('http://ingestion:8000').ingestDriveItem('drive-1', 'item-1', 'user-1', null);
+
+      expect(JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body)).toMatchObject({ doc_type: null, graph_token: null, retrieval_mode: null });
+    });
+
+    it('passes the abort signal, so a caller can stop waiting for a slow file', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => body });
+      const controller = new AbortController();
+
+      await new IngestionHttpClient('http://ingestion:8000').ingestDriveItem('d', 'i', 'u', null, null, null, controller.signal);
+
+      expect((global.fetch as jest.Mock).mock.calls[0][1].signal).toBe(controller.signal);
+    });
+
+    it('maps chunks_in_store to null when an older ingestion service omits it', async () => {
+      const { chunks_in_store: _omitted, ...withoutCount } = body;
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => withoutCount });
+
+      const result = await new IngestionHttpClient('http://ingestion:8000').ingestDriveItem('d', 'i', 'u', null);
+
+      expect(result.chunksInStore).toBeNull();
+    });
+
+    it.each([401, 404, 400, 502])('throws an IngestionHttpError carrying the status %s', async (status) => {
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status, json: async () => ({ detail: 'nope' }), text: async () => '{"detail":"nope"}' });
+
+      await expect(new IngestionHttpClient('http://ingestion:8000').ingestDriveItem('d', 'i', 'u', null)).rejects.toMatchObject({ status });
+    });
+  });
 });

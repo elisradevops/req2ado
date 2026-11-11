@@ -574,3 +574,65 @@ def test_decode_jwt_expiry_seconds_returns_none_when_exp_claim_is_missing() -> N
     token = f"{header}.{payload}.unsigned"
 
     assert decode_jwt_expiry_seconds(token) is None
+
+
+def test_get_item_by_id_requests_the_drive_item_and_maps_it_with_a_fresh_download_url(
+    monkeypatch,
+) -> None:
+    body = {
+        "id": "item-9",
+        "name": "Guide.pptx",
+        "size": 4096,
+        "file": {"mimeType": "application/vnd.pptx"},
+        "parentReference": {"driveId": "drive-1"},
+        "@microsoft.graph.downloadUrl": "https://download.example/fresh",
+    }
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["auth"] = request.headers["Authorization"]
+        return httpx.Response(200, json=body)
+
+    _patch_transport(monkeypatch, httpx.MockTransport(handler))
+    client = GraphClient("tok", "https://graph.microsoft.com/v1.0")
+
+    item = client.get_item_by_id("drive-1", "item-9")
+
+    assert captured["url"] == "https://graph.microsoft.com/v1.0/drives/drive-1/items/item-9"
+    assert captured["auth"] == "Bearer tok"
+    assert item == GraphFolderChild(
+        id="item-9",
+        name="Guide.pptx",
+        mime_type="application/vnd.pptx",
+        size=4096,
+        is_folder=False,
+        download_url="https://download.example/fresh",
+        drive_id="drive-1",
+    )
+
+
+def test_get_item_by_id_flags_a_folder(monkeypatch) -> None:
+    body = {"id": "d1", "name": "Sub Items", "size": 0, "folder": {"childCount": 2}}
+    _patch_transport(
+        monkeypatch, httpx.MockTransport(lambda request: httpx.Response(200, json=body))
+    )
+    client = GraphClient("tok", "https://graph.microsoft.com/v1.0")
+
+    item = client.get_item_by_id("drive-1", "d1")
+
+    assert item.is_folder is True
+    assert item.download_url is None
+
+
+@pytest.mark.parametrize("status", [401, 403, 404, 429, 503])
+def test_get_item_by_id_raises_graph_api_error_with_the_graph_status(monkeypatch, status) -> None:
+    _patch_transport(
+        monkeypatch, httpx.MockTransport(lambda request: httpx.Response(status, json={}))
+    )
+    client = GraphClient("tok", "https://graph.microsoft.com/v1.0")
+
+    with pytest.raises(GraphApiError) as exc:
+        client.get_item_by_id("drive-1", "item-9")
+
+    assert exc.value.status == status

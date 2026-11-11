@@ -251,6 +251,37 @@ describe('KbService', () => {
     expect(result).toEqual({ status: 'invalid', expiresInSeconds: null });
   });
 
+  it('reconnectSharePointToken() resumes the batches that were waiting for a fresh token, once the token is stored', async () => {
+    const ingestionClient = { getSharePointStatus: jest.fn().mockResolvedValue({ status: 'valid', expiresInSeconds: 3600 }) };
+    const order: string[] = [];
+    const credentialVault = { get: jest.fn(), set: jest.fn().mockImplementation(async () => order.push('stored')) };
+    const batches = { resumePausedBy: jest.fn().mockImplementation(async () => order.push('resumed')) };
+    const service = new KbService({} as any, ingestionClient as any, credentialVault as any, undefined, batches as any);
+
+    await service.reconnectSharePointToken('good-token', 'user-1');
+
+    expect(batches.resumePausedBy).toHaveBeenCalledWith('sharepoint_token');
+    expect(order).toEqual(['stored', 'resumed']);
+  });
+
+  it('reconnectSharePointToken() does not resume anything for a token that is not valid', async () => {
+    const ingestionClient = { getSharePointStatus: jest.fn().mockResolvedValue({ status: 'invalid', expiresInSeconds: null }) };
+    const batches = { resumePausedBy: jest.fn() };
+    const service = new KbService({} as any, ingestionClient as any, { get: jest.fn(), set: jest.fn() } as any, undefined, batches as any);
+
+    await service.reconnectSharePointToken('bad-token', 'user-1');
+
+    expect(batches.resumePausedBy).not.toHaveBeenCalled();
+  });
+
+  it('reconnectSharePointToken() still succeeds when resuming the batches fails', async () => {
+    const ingestionClient = { getSharePointStatus: jest.fn().mockResolvedValue({ status: 'valid', expiresInSeconds: 3600 }) };
+    const batches = { resumePausedBy: jest.fn().mockRejectedValue(new Error('db down')) };
+    const service = new KbService({} as any, ingestionClient as any, { get: jest.fn(), set: jest.fn().mockResolvedValue(undefined) } as any, undefined, batches as any);
+
+    await expect(service.reconnectSharePointToken('good-token', 'user-1')).resolves.toEqual({ status: 'valid', expiresInSeconds: 3600 });
+  });
+
   it('reconnectSharePointToken() vaults the token with rotation attribution when valid', async () => {
     const ingestionClient = { getSharePointStatus: jest.fn().mockResolvedValue({ status: 'valid', expiresInSeconds: 3600 }) };
     const credentialVault = { get: jest.fn(), set: jest.fn().mockResolvedValue(undefined) };
@@ -377,6 +408,81 @@ describe('KbService', () => {
 
       await expect(service.setRetrievalMode('doc-1', 'Project\\Area1', 'always_include')).rejects.toThrow('boom');
       expect(prisma.ingestedDocument.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('recordIngestedDocument() and ingestDriveItem()', () => {
+    const ingestResult = { documentName: 'guide.pptx', driveitemId: 'item-1', mimeType: 'application/pdf', sizeBytes: 5, chunksStored: 3, chunksInStore: 3, skippedUnchanged: false };
+
+    function build(overrides: { vaultToken?: unknown } = {}) {
+      const ingestionClient = { ingestDriveItem: jest.fn().mockResolvedValue(ingestResult) };
+      const prisma = { ingestedDocument: { upsert: jest.fn().mockResolvedValue({ id: 'row-1' }) } };
+      const profileScheduler = { schedule: jest.fn().mockResolvedValue(undefined) };
+      const vault = { ...fakeCredentialVault, get: jest.fn().mockResolvedValue(overrides.vaultToken ?? null) };
+      const service = new KbService(prisma as any, ingestionClient as any, vault as any, profileScheduler as any);
+      return { service, ingestionClient, prisma, profileScheduler };
+    }
+
+    it('recordIngestedDocument() upserts the row under the relative path and returns its id', async () => {
+      const { service, prisma } = build();
+
+      const id = await service.recordIngestedDocument('u', ingestResult, { relativePath: 'Sub/guide.pptx', docType: 'SRD', retrievalMode: 'always_include' });
+
+      expect(id).toBe('row-1');
+      expect(prisma.ingestedDocument.upsert).toHaveBeenCalledWith({
+        where: { userId_driveItemId: { userId: 'u', driveItemId: 'item-1' } },
+        create: { userId: 'u', driveItemId: 'item-1', name: 'Sub/guide.pptx', sizeBytes: 5, mimeType: 'application/pdf', docType: 'SRD', retrievalMode: 'always_include', chunkCount: 3 },
+        update: { name: 'Sub/guide.pptx', sizeBytes: 5, mimeType: 'application/pdf', docType: 'SRD', retrievalMode: 'always_include', chunkCount: 3, ingestedAt: expect.any(Date) },
+      });
+    });
+
+    it('ingestDriveItem() ingests by ids with the freshly read token, records the document and schedules the profile', async () => {
+      const { service, ingestionClient, prisma, profileScheduler } = build({ vaultToken: JSON.stringify({ token: 'rotated', rotatedByUserId: 'x', rotatedAt: 'now' }) });
+
+      const result = await service.ingestDriveItem({ userId: 'u', driveId: 'drive-1', itemId: 'item-1', relativePath: 'Sub/guide.pptx', docType: null, retrievalMode: 'retrieve' });
+
+      expect(ingestionClient.ingestDriveItem).toHaveBeenCalledWith('drive-1', 'item-1', 'u', null, 'rotated', 'retrieve', undefined);
+      expect(prisma.ingestedDocument.upsert).toHaveBeenCalledWith(expect.objectContaining({ create: expect.objectContaining({ name: 'Sub/guide.pptx', retrievalMode: 'retrieve' }) }));
+      expect(profileScheduler.schedule).toHaveBeenCalledWith('u');
+      expect(result).toEqual({ ...ingestResult, ingestedDocumentId: 'row-1' });
+    });
+
+    it('ingestDriveItem() with scheduleProfile:false leaves the profile build to the caller', async () => {
+      const { service, profileScheduler } = build();
+
+      await service.ingestDriveItem({ userId: 'u', driveId: 'd', itemId: 'i', relativePath: 'g.pptx', docType: null, retrievalMode: null, scheduleProfile: false });
+
+      expect(profileScheduler.schedule).not.toHaveBeenCalled();
+    });
+
+    it('ingestDriveItem() forwards the abort signal', async () => {
+      const { service, ingestionClient } = build();
+      const controller = new AbortController();
+
+      await service.ingestDriveItem({ userId: 'u', driveId: 'd', itemId: 'i', relativePath: 'g.pptx', docType: null, retrievalMode: null, signal: controller.signal });
+
+      expect(ingestionClient.ingestDriveItem.mock.calls[0][6]).toBe(controller.signal);
+    });
+
+    it('ingestDriveItem() records nothing when the ingestion fails', async () => {
+      const { service, ingestionClient, prisma, profileScheduler } = build();
+      ingestionClient.ingestDriveItem.mockRejectedValue(new Error('boom'));
+
+      await expect(service.ingestDriveItem({ userId: 'u', driveId: 'd', itemId: 'i', relativePath: 'g.pptx', docType: null, retrievalMode: null })).rejects.toThrow('boom');
+
+      expect(prisma.ingestedDocument.upsert).not.toHaveBeenCalled();
+      expect(profileScheduler.schedule).not.toHaveBeenCalled();
+    });
+
+    it('ingestItem() still records through the same path', async () => {
+      const ingestionClient = { ingestItem: jest.fn().mockResolvedValue(ingestResult) };
+      const prisma = { ingestedDocument: { upsert: jest.fn().mockResolvedValue({ id: 'row-1' }) } };
+      const service = new KbService(prisma as any, ingestionClient as any, fakeCredentialVault as any);
+      const spy = jest.spyOn(service, 'recordIngestedDocument');
+
+      await service.ingestItem('guide.pptx', 'item-1', 'https://dl', 'Sub/guide.pptx', 'u', null, 'always_include');
+
+      expect(spy).toHaveBeenCalledWith('u', ingestResult, { relativePath: 'Sub/guide.pptx', docType: null, retrievalMode: 'always_include' });
     });
   });
 });

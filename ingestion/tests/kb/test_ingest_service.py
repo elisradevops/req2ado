@@ -1186,3 +1186,203 @@ def test_folder_ingest_of_a_new_file_stays_similarity_gated(mock_dispatch, tmp_p
     )
 
     assert store.list_always_include_documents("Project\\Area1") == []
+
+
+# ---- Batch ingest: addressed by drive + item id, fresh download link ----
+
+
+def _drive_graph(item: GraphFolderChild, content: bytes = DOCX_CONTENT) -> MagicMock:
+    graph_client = MagicMock()
+    graph_client.get_item_by_id.return_value = item
+    graph_client.fetch_child_content.return_value = content
+    return graph_client
+
+
+def _drive_item(**overrides) -> GraphFolderChild:
+    fields = dict(
+        id="item-1",
+        name="guide.docx",
+        mime_type="application/vnd.openxmlformats",
+        size=len(DOCX_CONTENT),
+        is_folder=False,
+        download_url="https://download.example/fresh",
+        drive_id="drive-1",
+    )
+    fields.update(overrides)
+    return GraphFolderChild(**fields)
+
+
+def _ingest_drive_item(graph_client, store, **overrides):
+    from app.kb.ingest_service import ingest_drive_item
+
+    kwargs = dict(
+        drive_id="drive-1",
+        item_id="item-1",
+        user_id="Project\\Area1",
+        doc_type=None,
+        graph_client=graph_client,
+        embed_client=FakeEmbedClient(),
+        vector_store=store,
+    )
+    kwargs.update(overrides)
+    return ingest_drive_item(**kwargs)
+
+
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_ingest_drive_item_looks_the_item_up_and_downloads_it_fresh(
+    mock_dispatch, tmp_path
+) -> None:
+    mock_dispatch.return_value = _fake_doc("Some paragraph text")
+    graph_client = _drive_graph(_drive_item())
+    store = KbVectorStore(persist_path=str(tmp_path))
+
+    result = _ingest_drive_item(graph_client, store)
+
+    graph_client.get_item_by_id.assert_called_once_with("drive-1", "item-1")
+    graph_client.fetch_child_content.assert_called_once_with("https://download.example/fresh")
+    assert result.document_name == "guide.docx"
+    assert result.driveitem_id == "item-1"
+    assert result.mime_type == "application/vnd.openxmlformats"
+    assert result.chunks_stored == 1
+    assert store.get_document("Project\\Area1", "guide.docx") == ("Some paragraph text", False)
+
+
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_ingest_drive_item_passes_the_retrieval_mode_through(mock_dispatch, tmp_path) -> None:
+    mock_dispatch.return_value = _fake_doc("text")
+    store = KbVectorStore(persist_path=str(tmp_path))
+
+    _ingest_drive_item(_drive_graph(_drive_item()), store, retrieval_mode="always_include")
+
+    assert store.list_always_include_documents("Project\\Area1") == ["guide.docx"]
+
+
+def test_ingest_drive_item_rejects_an_oversized_file_before_downloading_it(tmp_path) -> None:
+    graph_client = _drive_graph(_drive_item(size=MAX_FILE_SIZE_BYTES + 1))
+
+    with pytest.raises(ValueError, match="exceeds"):
+        _ingest_drive_item(graph_client, KbVectorStore(persist_path=str(tmp_path)))
+
+    graph_client.fetch_child_content.assert_not_called()
+
+
+def test_ingest_drive_item_rejects_a_folder(tmp_path) -> None:
+    graph_client = _drive_graph(_drive_item(is_folder=True, download_url=None))
+
+    with pytest.raises(ValueError, match="folder"):
+        _ingest_drive_item(graph_client, KbVectorStore(persist_path=str(tmp_path)))
+
+    graph_client.fetch_child_content.assert_not_called()
+
+
+def test_ingest_drive_item_rejects_an_item_with_no_download_url(tmp_path) -> None:
+    graph_client = _drive_graph(_drive_item(download_url=None))
+
+    with pytest.raises(ValueError, match="download"):
+        _ingest_drive_item(graph_client, KbVectorStore(persist_path=str(tmp_path)))
+
+
+def test_ingest_drive_item_rejects_a_download_larger_than_the_limit(tmp_path) -> None:
+    graph_client = _drive_graph(_drive_item(), content=b"0" * (MAX_FILE_SIZE_BYTES + 1))
+
+    with pytest.raises(ValueError, match="exceeds"):
+        _ingest_drive_item(graph_client, KbVectorStore(persist_path=str(tmp_path)))
+
+
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_two_ingests_of_the_same_item_never_run_at_once(mock_dispatch, tmp_path) -> None:
+    import threading
+    import time
+
+    running = 0
+    peak = 0
+    guard = threading.Lock()
+
+    def slow_dispatch(*args, **kwargs):
+        nonlocal running, peak
+        with guard:
+            running += 1
+            peak = max(peak, running)
+        time.sleep(0.15)
+        with guard:
+            running -= 1
+        return _fake_doc("text")
+
+    mock_dispatch.side_effect = slow_dispatch
+    store = KbVectorStore(persist_path=str(tmp_path))
+    results = []
+
+    def run():
+        results.append(_ingest_drive_item(_drive_graph(_drive_item()), store))
+
+    threads = [threading.Thread(target=run) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert peak == 1
+    # The second one found the first one's work already stored and skipped it.
+    assert sorted(r.skipped_unchanged for r in results) == [False, True]
+
+
+# ---- An unchanged file still takes the retrieval mode it is now asked for ----
+
+
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_an_unchanged_file_is_retagged_when_a_different_mode_is_requested(
+    mock_dispatch, tmp_path
+) -> None:
+    mock_dispatch.return_value = _fake_doc("text")
+    store = KbVectorStore(persist_path=str(tmp_path))
+    _store("doc.docx", store)  # ingested in the default mode
+    mock_dispatch.reset_mock()
+
+    result = _store_with_mode("doc.docx", store, "always_include")
+
+    assert result.skipped_unchanged is True
+    mock_dispatch.assert_not_called()
+    assert store.list_always_include_documents("Project\\Area1") == ["doc.docx"]
+
+
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_an_unchanged_always_include_file_goes_back_to_retrieval_when_asked_for_the_default(
+    mock_dispatch, tmp_path
+) -> None:
+    mock_dispatch.return_value = _fake_doc("text")
+    store = KbVectorStore(persist_path=str(tmp_path))
+    _store_with_mode("doc.docx", store, "always_include")
+
+    result = _store_with_mode("doc.docx", store, None)
+
+    assert result.skipped_unchanged is True
+    assert store.list_always_include_documents("Project\\Area1") == []
+
+
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_an_unchanged_file_asked_for_the_mode_it_already_has_is_not_touched(
+    mock_dispatch, tmp_path
+) -> None:
+    mock_dispatch.return_value = _fake_doc("text")
+    store = KbVectorStore(persist_path=str(tmp_path))
+    _store_with_mode("doc.docx", store, "always_include")
+    store.set_retrieval_mode = MagicMock()  # type: ignore[method-assign]
+
+    _store_with_mode("doc.docx", store, "always_include")
+
+    store.set_retrieval_mode.assert_not_called()
+
+
+def _store_with_mode(name: str, store: KbVectorStore, mode: str | None):
+    from app.kb.ingest_service import _store_document
+
+    return _store_document(
+        name,
+        "item-1",
+        DOCX_CONTENT,
+        "Project\\Area1",
+        None,
+        FakeEmbedClient(),
+        store,
+        retrieval_mode=mode,
+    )

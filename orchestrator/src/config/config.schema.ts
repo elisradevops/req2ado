@@ -257,6 +257,12 @@ export const configSchema = z.object({
   // one Postgres write), well below BATCH_PUMP_INTERVAL_MS's own
   // many-tick horizon.
   BATCH_SUBMIT_STUCK_MS: z.coerce.number().default(5 * 60_000),
+  // Knowledge-base batch ingest (KbIngestRunner): how often it looks for a file that is ready, how long one file may take
+  // before the attempt is given up on (large decks with many figures can run long), and how many attempts a file gets
+  // before a transient failure becomes final.
+  KB_INGEST_TICK_MS: z.coerce.number().default(2_000),
+  KB_INGEST_ITEM_TIMEOUT_MS: z.coerce.number().default(30 * 60_000),
+  KB_INGEST_MAX_ATTEMPTS: z.coerce.number().int().min(1).default(3),
 });
 
 export type AppConfig = z.infer<typeof configSchema>;

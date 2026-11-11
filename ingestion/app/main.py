@@ -42,6 +42,7 @@ from app.kb.ingest_service import (
     FolderIngestResult,
     IngestResult,
     ingest_document_from_url,
+    ingest_drive_item,
     ingest_folder_child,
     ingest_folder_from_url,
 )
@@ -1277,6 +1278,15 @@ class KbIngestItemRequest(BaseModel):
     user_id: str
     doc_type: str | None = None
     retrieval_mode: str | None = None
+    graph_token: str | None = None
+
+
+class KbIngestDriveItemRequest(BaseModel):
+    drive_id: str
+    item_id: str
+    user_id: str
+    doc_type: str | None = None
+    retrieval_mode: Literal["retrieve", "always_include"] | None = None
     graph_token: str | None = None
 
 
@@ -3237,6 +3247,44 @@ async def kb_ingest_item(body: KbIngestItemRequest) -> IngestResult:
             # KB ingestion shares SURVEY's figure-significance filter (with no
             # document_context) -- an insignificant figure is dropped and will
             # not be KB-retrievable. See _describe_figure's own SCOPE NOTE.
+            # Closes over body.user_id -- see /kb/ingest-url's identical comment.
+            describe_figure=(
+                (
+                    lambda image_bytes: _describe_figure(
+                        image_bytes, user_id=body.user_id, purpose="kb"
+                    )
+                )
+                if _vision_client is not None
+                else None
+            ),
+            checklist_client=_checklist_client,
+            retrieval_mode=body.retrieval_mode,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except GraphApiError as exc:
+        status = exc.status if exc.status in (401, 403, 404) else 502
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+
+@app.post("/kb/ingest-drive-item", response_model=IngestResult)
+async def kb_ingest_drive_item(body: KbIngestDriveItemRequest) -> IngestResult:
+    # Ingests one file addressed by drive + item id (not a pre-signed download URL): the batch runner queues files and
+    # ingests them later, when a URL it was handed at browse time may have expired, so the file is looked up and downloaded
+    # here, now. Same token/threadpool/error-mapping reasoning as /kb/ingest-item above.
+    try:
+        graph_client = GraphClient(
+            body.graph_token or settings.sharepoint_token or "", settings.graph_base_url
+        )
+        return await run_in_threadpool(
+            ingest_drive_item,
+            body.drive_id,
+            body.item_id,
+            body.user_id,
+            body.doc_type,
+            graph_client,
+            _embed_client,
+            _kb_vector_store,
             # Closes over body.user_id -- see /kb/ingest-url's identical comment.
             describe_figure=(
                 (

@@ -462,6 +462,70 @@ model IngestedDocument {
   @@unique([userId, driveItemId])
 }
 
+// A batch of knowledge-base files ingested one after another by KbIngestRunner, in the orchestrator, so the work survives
+// a closed browser tab and an orchestrator restart. State lives here (not in Redis: the queue store keeps nothing across a
+// restart); counts are computed from the items on read, so they cannot drift from them.
+model KbIngestBatch {
+  id                 String              @id @default(uuid())
+  userId             String
+  // The SharePoint/OneDrive drive and folder the files were chosen from, and the folder's path (display only).
+  driveId            String
+  folderItemId       String?
+  folderPath         String
+  docType            String?
+  // "queued" | "running" | "paused" | "completed" | "completed_with_errors" | "cancelled" | "failed"
+  status             String
+  // Why a "paused" batch waits, e.g. "sharepoint_token" (the token expired: reconnect, then it resumes).
+  pauseReason        String?
+  cancelRequestedAt  DateTime?
+  // When the knowledge-base profile build was requested for this batch (once, at the end).
+  profileScheduledAt DateTime?
+  // Bumped on every change, so a client can tell cheaply whether anything moved.
+  version            Int                 @default(0)
+  createdAt          DateTime            @default(now())
+  startedAt          DateTime?
+  finishedAt         DateTime?
+  items              KbIngestBatchItem[]
+
+  @@index([userId, createdAt])
+  @@index([status])
+}
+
+// One file of a batch. `itemId` is the Graph drive-item id (what ingestion looks the file up by when it runs).
+model KbIngestBatchItem {
+  id                 String        @id @default(uuid())
+  batchId            String
+  batch              KbIngestBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  ordinal            Int
+  driveId            String
+  itemId             String
+  // The bare file name (what ingestion stores it under) and the path from the browsed root (what the document list shows).
+  name               String
+  relativePath       String
+  sizeBytes          Int
+  // "retrieve" | "always_include", chosen in the add dialog.
+  retrievalMode      String
+  // "queued" | "running" | "added" | "unchanged" | "failed" | "skipped" | "cancelled"
+  state              String
+  attempts           Int           @default(0)
+  // A transient failure is retried not before this.
+  nextAttemptAt      DateTime?
+  // While "running": when the runner gives up on this attempt and takes the file back.
+  leaseUntil         DateTime?
+  // "transient" | "permanent" | "auth"
+  errorKind          String?
+  reason             String?
+  chunksStored       Int?
+  chunksInStore      Int?
+  ingestedDocumentId String?
+  startedAt          DateTime?
+  finishedAt         DateTime?
+
+  @@unique([batchId, itemId])
+  @@index([state, nextAttemptAt])
+  @@index([batchId, ordinal])
+}
+
 // One row per chat turn (user message or assistant reply) on a single
 // dry-run diff entry. A log, not a state machine — acceptance of a
 // proposal is a normal editDiffEntry PATCH, not tracked here. See

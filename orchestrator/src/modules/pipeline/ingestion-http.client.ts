@@ -922,6 +922,67 @@ export class IngestionHttpClient {
     }
   }
 
+  /**
+   * Ingests one file addressed by drive + item id. Unlike ingestItem, no download URL is passed: ingestion looks the item up
+   * and downloads it when called, so a file queued long ago is not at the mercy of a link that has since expired. `signal`
+   * lets the caller stop waiting for a slow file.
+   */
+  async ingestDriveItem(
+    driveId: string,
+    itemId: string,
+    userId: string,
+    docType: string | null,
+    graphToken?: string | null,
+    retrievalMode?: 'retrieve' | 'always_include' | null,
+    signal?: AbortSignal,
+  ): Promise<{
+    documentName: string;
+    driveitemId: string;
+    mimeType: string | null;
+    sizeBytes: number;
+    chunksStored: number;
+    // Chunks the vector store really holds for the file after the call (the existing count on a skip-unchanged); null from
+    // an older ingestion service that does not report it.
+    chunksInStore: number | null;
+    skippedUnchanged: boolean;
+  }> {
+    const response = await fetch(`${this.baseUrl}/kb/ingest-drive-item`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        drive_id: driveId,
+        item_id: itemId,
+        user_id: userId,
+        doc_type: docType,
+        graph_token: graphToken ?? null,
+        retrieval_mode: retrievalMode ?? null,
+      }),
+      dispatcher: this.longRunningAgent,
+      ...(signal ? { signal } : {}),
+    });
+    if (!response.ok) {
+      throw await _ingestionError(response, `Ingestion /kb/ingest-drive-item request failed: `);
+    }
+    const body = (await response.json()) as {
+      document_name: string;
+      driveitem_id: string;
+      mime_type: string | null;
+      size_bytes: number;
+      chunks_stored: number;
+      chunks_in_store?: number | null;
+      skipped_unchanged: boolean;
+    };
+    return {
+      documentName: body.document_name,
+      driveitemId: body.driveitem_id,
+      mimeType: body.mime_type,
+      sizeBytes: body.size_bytes,
+      chunksStored: body.chunks_stored,
+      chunksInStore: body.chunks_in_store ?? null,
+      skippedUnchanged: body.skipped_unchanged,
+    };
+  }
+
   async browseFolder(url: string, graphToken?: string | null): Promise<FolderChild[]> {
     const response = await fetch(`${this.baseUrl}/kb/browse-folder`, {
       method: 'POST',

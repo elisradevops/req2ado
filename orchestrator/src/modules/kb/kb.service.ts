@@ -93,6 +93,8 @@ export class KbService {
     private readonly credentialVault: CredentialVaultService,
     // Rebuilds the user's KB profile in the background after a change of their knowledge base (never fails the action).
     private readonly profileScheduler?: { schedule(userId: string): Promise<void> },
+    // Continues batch ingests that paused for want of a valid SharePoint token once a new one is saved.
+    private readonly batchResumer?: { resumePausedBy(reason: string): Promise<number> },
   ) {}
 
   /**
@@ -131,6 +133,13 @@ export class KbService {
     }
     const payload: VaultedSharePointToken = { token, rotatedByUserId, rotatedAt: new Date().toISOString() };
     await this.credentialVault.set(SHARED_OWNER_KEY, 'sharepoint_token', JSON.stringify(payload));
+    // The token is shared, so every batch that stopped for want of a valid one can go on now. Not part of the reconnect: if
+    // this fails the new token is saved all the same, and a batch can be resumed by hand.
+    try {
+      await this.batchResumer?.resumePausedBy('sharepoint_token');
+    } catch (error) {
+      logger.warn(`Could not resume the knowledge-base batches waiting for a SharePoint token: ${error instanceof Error ? error.message : String(error)}`);
+    }
     return status;
   }
 
@@ -272,24 +281,16 @@ export class KbService {
   }
 
   /**
-   * Ingests exactly one file from an already-browsed tree row -- addressed
-   * by its Graph download URL (no sharing link needed), so a reviewer can
-   * pull in a single file without leaving the tree view. `relativePath` is
-   * stored as the document's name (matching ingestFolderUrl's own
-   * `relativePath ?? file` convention) so the tree's own alreadyIngested
-   * cross-reference keeps matching correctly on the next browse.
+   * Records an ingested file in the user's document list (the row the tree's alreadyIngested cross-reference and the
+   * remove action use), under its relative path, and returns the row's id. The one place a file's row is written after
+   * ingestion, shared by the single-file and the batch paths.
    */
-  async ingestItem(
-    name: string,
-    itemId: string,
-    downloadUrl: string,
-    relativePath: string,
+  async recordIngestedDocument(
     userId: string,
-    docType: string | null,
-    retrievalMode: string | null = null,
-  ): Promise<IngestUrlResult & { ingestedDocumentId: string }> {
-    const graphToken = await this.resolveGraphTokenOverride();
-    const result = await this.ingestionClient.ingestItem(name, itemId, downloadUrl, userId, docType, graphToken, retrievalMode);
+    result: IngestUrlResult,
+    options: { relativePath: string; docType: string | null; retrievalMode: string | null },
+  ): Promise<string> {
+    const { relativePath, docType, retrievalMode } = options;
     const row = await this.prisma.ingestedDocument.upsert({
       where: { userId_driveItemId: { userId, driveItemId: result.driveitemId } },
       create: {
@@ -312,12 +313,60 @@ export class KbService {
         ingestedAt: new Date(),
       },
     });
+    return row.id;
+  }
+
+  /**
+   * Ingests one file addressed by drive + item id and records it. Used by the batch runner: the SharePoint token is read
+   * fresh from the vault for every file (so one rotated mid-batch is picked up), ingestion looks the item up itself (no
+   * download link to expire), and the profile build is left to the caller (`scheduleProfile: false`), because a batch
+   * schedules it once at the end: a build per file would start between files and compete with the next one for the LLM.
+   * Nothing is recorded when the ingestion fails.
+   */
+  async ingestDriveItem(input: {
+    userId: string;
+    driveId: string;
+    itemId: string;
+    relativePath: string;
+    docType: string | null;
+    retrievalMode: 'retrieve' | 'always_include' | null;
+    scheduleProfile?: boolean;
+    signal?: AbortSignal;
+  }): Promise<IngestUrlResult & { ingestedDocumentId: string }> {
+    const { userId, driveId, itemId, relativePath, docType, retrievalMode, scheduleProfile = true, signal } = input;
+    const graphToken = await this.resolveGraphTokenOverride();
+    const result = await this.ingestionClient.ingestDriveItem(driveId, itemId, userId, docType, graphToken, retrievalMode, signal);
+    const ingestedDocumentId = await this.recordIngestedDocument(userId, result, { relativePath, docType, retrievalMode });
+    if (scheduleProfile) await this.profileScheduler?.schedule(userId);
+    return { ...result, ingestedDocumentId };
+  }
+
+  /**
+   * Ingests exactly one file from an already-browsed tree row -- addressed
+   * by its Graph download URL (no sharing link needed), so a reviewer can
+   * pull in a single file without leaving the tree view. `relativePath` is
+   * stored as the document's name (matching ingestFolderUrl's own
+   * `relativePath ?? file` convention) so the tree's own alreadyIngested
+   * cross-reference keeps matching correctly on the next browse.
+   */
+  async ingestItem(
+    name: string,
+    itemId: string,
+    downloadUrl: string,
+    relativePath: string,
+    userId: string,
+    docType: string | null,
+    retrievalMode: string | null = null,
+  ): Promise<IngestUrlResult & { ingestedDocumentId: string }> {
+    const graphToken = await this.resolveGraphTokenOverride();
+    const result = await this.ingestionClient.ingestItem(name, itemId, downloadUrl, userId, docType, graphToken, retrievalMode);
     // Returned so the tree row that triggered this can immediately offer a
     // remove action -- IngestUrlResult alone only carries the Graph
     // driveitemId, not the Prisma row's own id that DELETE
     // /kb/documents/:id needs.
+    const ingestedDocumentId = await this.recordIngestedDocument(userId, result, { relativePath, docType, retrievalMode });
     await this.profileScheduler?.schedule(userId);
-    return { ...result, ingestedDocumentId: row.id };
+    return { ...result, ingestedDocumentId };
   }
 
   async ingestFolderUrl(

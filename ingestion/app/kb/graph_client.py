@@ -186,6 +186,26 @@ class GraphClient:
             raise _error_for_status(fallback.status_code)
         raise _error_for_status(response.status_code)
 
+    def get_item_by_id(self, drive_id: str, item_id: str) -> GraphFolderChild:
+        """One drive item addressed by drive + item id, with a download link issued right now. Graph's pre-signed
+        `@microsoft.graph.downloadUrl` is short-lived (about an hour, sometimes minutes), so work that is queued and run
+        later (the batch ingest) must look the item up when it runs instead of keeping the link it was browsed with. An
+        expired link fails like an expired token (401/403), which looks the same to the caller; this call, authenticated
+        with the bearer token, tells the two apart."""
+        response = self._get(f"{self.base_url}/drives/{drive_id}/items/{item_id}")
+        if response.status_code != 200:
+            raise _error_for_status(response.status_code)
+        item = response.json()
+        return GraphFolderChild(
+            id=item["id"],
+            name=item["name"],
+            mime_type=item.get("file", {}).get("mimeType"),
+            size=item.get("size", 0),
+            is_folder="folder" in item,
+            download_url=item.get("@microsoft.graph.downloadUrl"),
+            drive_id=item.get("parentReference", {}).get("driveId"),
+        )
+
     def list_folder_children(self, url: str) -> list[GraphFolderChild]:
         """Lists the immediate children of a shared folder. Each file child
         carries Graph's own pre-signed `@microsoft.graph.downloadUrl` —

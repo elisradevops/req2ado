@@ -129,6 +129,18 @@ describe('configSchema batch/folder ingestion fields (NEW-05)', () => {
     expect(result.BATCH_PUMP_INTERVAL_MS).toBe(10_000);
   });
 
+  it('defaults the knowledge-base batch ingest settings', () => {
+    const result = configSchema.parse(BASE_ENV);
+    expect(result.KB_INGEST_TICK_MS).toBe(2_000);
+    expect(result.KB_INGEST_ITEM_TIMEOUT_MS).toBe(30 * 60_000);
+    expect(result.KB_INGEST_MAX_ATTEMPTS).toBe(3);
+  });
+
+  it('coerces knowledge-base batch ingest overrides from string env values', () => {
+    const result = configSchema.parse({ ...BASE_ENV, KB_INGEST_TICK_MS: '500', KB_INGEST_ITEM_TIMEOUT_MS: '60000', KB_INGEST_MAX_ATTEMPTS: '5' });
+    expect([result.KB_INGEST_TICK_MS, result.KB_INGEST_ITEM_TIMEOUT_MS, result.KB_INGEST_MAX_ATTEMPTS]).toEqual([500, 60_000, 5]);
+  });
+
   it('defaults MAX_BATCH_FILES to 25 when unset', () => {
     const result = configSchema.parse(BASE_ENV);
     expect(result.MAX_BATCH_FILES).toBe(25);
