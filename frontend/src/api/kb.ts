@@ -81,6 +81,9 @@ export interface FolderTreeEntry {
   sizeBytes: number;
   isFolder: boolean;
   driveId: string | null;
+  // The drive this item lives in, for files and folders alike (`driveId` above is only for descending into a folder). What a
+  // batch ingest addresses a file by, together with its id. Absent from an older backend.
+  parentDriveId?: string | null;
   alreadyIngested: boolean;
   // The matched IngestedDocument's id when alreadyIngested is true -- what
   // a row's remove action deletes by. Null for folders and not-yet-ingested
