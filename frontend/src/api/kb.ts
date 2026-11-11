@@ -25,6 +25,8 @@ export interface IngestedDocument {
   ingestedAt: string;
   // Chunks held at last ingest; null = unknown (legacy row).
   chunkCount?: number | null;
+  // The SharePoint library the file came from; null/absent = added before it was recorded.
+  driveId?: string | null;
 }
 
 export interface FolderIngestFile {
@@ -122,6 +124,9 @@ export async function ingestFolderItem(
   // Right for small, static reference material (a CMMI/requirements-
   // writing-standards doc) whose relevance is definitional, not topical.
   retrievalMode?: KbRetrievalMode,
+  // The SharePoint library (Graph drive) the file is in. The server refuses a file from a different library than the one the
+  // knowledge base already holds (409 kb_drive_mismatch), so it needs to know.
+  driveId?: string,
 ): Promise<IngestResult & { ingestedDocumentId: string }> {
   const response = await httpClient.post<IngestResult & { ingestedDocumentId: string }>('/kb/ingest-item', {
     name,
@@ -130,7 +135,15 @@ export async function ingestFolderItem(
     relativePath,
     userId,
     retrievalMode,
+    driveId,
   });
+  return response.data;
+}
+
+// The user agreed to swap libraries: removes the knowledge-base files that came from any other library (or whose library was
+// never recorded). `failed` lists the ones that could not be removed; they stay listed and the call can be repeated.
+export async function switchKbSource(driveId: string): Promise<{ removed: number; failed: { id: string; name: string }[] }> {
+  const response = await httpClient.post<{ removed: number; failed: { id: string; name: string }[] }>('/kb/source/switch', { driveId });
   return response.data;
 }
 

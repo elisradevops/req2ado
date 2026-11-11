@@ -8,6 +8,7 @@ import {
   ingestFolderItem,
   reconnectSharePoint,
   setRetrievalMode,
+  switchKbSource,
   type FolderTreeEntry,
   type KbRetrievalMode,
   type SharePointStatus,
@@ -16,6 +17,7 @@ import { SharePointFolderTree } from '../components/SharePointFolderTree';
 import { KbSourceBar } from '../components/KbSourceBar';
 import { KbAddDialog } from '../components/KbAddDialog';
 import { KbAddBatchDialog } from '../components/KbAddBatchDialog';
+import { KbSwitchLibraryDialog } from '../components/KbSwitchLibraryDialog';
 import { KbIngestQueue } from '../components/KbIngestQueue';
 import { KbFileList } from '../components/KbFileList';
 import { KbFileDetailPane } from '../components/KbFileDetailPane';
@@ -24,6 +26,7 @@ import { useToast } from '../components/ToastProvider';
 import { useUserId } from '../store/authStore';
 import { useConnectionStatusStore } from '../store/connectionStatusStore';
 import { isBatchStatusFinished, useKbIngestStore } from '../store/kbIngestStore';
+import { driveMismatchOf, type DriveMismatch } from '../utils/kbDriveMismatch';
 import { PageHeader } from '../ui/PageHeader';
 import { TextField } from '../ui/TextField';
 import { Button } from '../ui/Button';
@@ -70,6 +73,15 @@ function describeIngestError(error: unknown): string {
     }
   }
   return 'Ingest failed — check the sharing link and try again.';
+}
+
+// Why a library switch did not go through, in words. The server's own sentence is kept for a refusal (a batch still running).
+function describeSwitchError(error: unknown): string {
+  if (isAxiosError(error) && error.response?.status === 409) {
+    const message = (error.response.data as { message?: unknown } | undefined)?.message;
+    if (typeof message === 'string' && message) return message;
+  }
+  return 'Could not remove the old files. Try again.';
 }
 
 interface PendingRemoval {
@@ -151,6 +163,11 @@ export function KnowledgeBase(): React.ReactElement {
   // Files ticked in the list to add together, and the dialog that asks how to add them (with the choice remembered for the folder).
   const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
   const [batchDialog, setBatchDialog] = useState<{ remembered: KbRetrievalMode | null } | null>(null);
+  // Set when the files being added are from a different SharePoint library than the ones already in the knowledge base: the user
+  // is asked before the old files are removed, and `retry` repeats what they were doing once they have been.
+  const [driveSwitch, setDriveSwitch] = useState<(DriveMismatch & { driveId: string; retry: () => Promise<unknown> }) | null>(null);
+  const [switching, setSwitching] = useState(false);
+  const [switchError, setSwitchError] = useState<string | null>(null);
   // The batch being added in the background (kept by the server, so it is found again after a reload).
   const ingestBatch = useKbIngestStore((s) => s.batch);
   const ingestError = useKbIngestStore((s) => s.error);
@@ -385,6 +402,12 @@ export function KnowledgeBase(): React.ReactElement {
   // Resolves true when the file was added (or re-ingested), false when it was not.
   async function handleIngestFile(entry: FolderTreeEntry, mode: KbRetrievalMode): Promise<boolean> {
     if (!userId || !entry.downloadUrl || ingestingId || ingestingRef.current) return false;
+    // The library comes with the listing (as for a batch); the server needs it to keep one library per knowledge base.
+    const driveId = entry.parentDriveId ?? currentFolder.driveId;
+    if (!driveId) {
+      showToast('Could not tell which SharePoint drive this file is in. Refresh the folder and try again.', 'error');
+      return false;
+    }
     ingestingRef.current = true;
     setIngestingId(entry.id);
     // Re-ingest = the file was already in the KB but had no stored vectors.
@@ -395,7 +418,7 @@ export function KnowledgeBase(): React.ReactElement {
       // chunks first.
       const docId = reingest ? ingestedDocIdOf(entry) : null;
       if (docId && currentModeOf(entry) !== mode) await setRetrievalMode(docId, mode);
-      const result = await ingestFolderItem(entry.name, entry.id, entry.downloadUrl, relativePath, userId, mode === 'always_include' ? 'always_include' : undefined);
+      const result = await ingestFolderItem(entry.name, entry.id, entry.downloadUrl, relativePath, userId, mode === 'always_include' ? 'always_include' : undefined, driveId);
       setAlwaysIncludeSelection((prev) => ({ ...prev, [entry.id]: mode === 'always_include' }));
       setIngestOverrides((prev) => ({
         ...prev,
@@ -419,6 +442,13 @@ export function KnowledgeBase(): React.ReactElement {
       }
       return true;
     } catch (err) {
+      const mismatch = driveMismatchOf(err);
+      if (mismatch) {
+        // Not a failure: ask first, then do the same again.
+        setAddTarget(null);
+        askToSwitch(driveId, mismatch, () => handleIngestFile(entry, mode));
+        return false;
+      }
       showErrorToast(`Failed to ${reingest ? 're-ingest' : 'add'} "${entry.name}" — please try again.`, err);
       return false;
     } finally {
@@ -506,6 +536,12 @@ export function KnowledgeBase(): React.ReactElement {
     try {
       await useKbIngestStore.getState().submit(userId, { driveId, folderItemId: currentFolder.id, folderPath: currentFolder.path, docType: null, items });
     } catch (err) {
+      const mismatch = driveMismatchOf(err);
+      if (mismatch) {
+        setBatchDialog(null);
+        askToSwitch(driveId, mismatch, () => handleConfirmBatch(choices, remember));
+        return;
+      }
       showErrorToast('Failed to start the batch — please try again.', err);
       return;
     }
@@ -515,6 +551,35 @@ export function KnowledgeBase(): React.ReactElement {
     setBatchDialog(null);
     setCheckedIds(new Set());
     showToast(`Adding ${items.length} ${items.length === 1 ? 'file' : 'files'} in the background. You can leave this page.`, 'success');
+  }
+
+  function askToSwitch(driveId: string, mismatch: DriveMismatch, retry: () => Promise<unknown>): void {
+    setSwitchError(null);
+    setDriveSwitch({ ...mismatch, driveId, retry });
+  }
+
+  async function confirmSwitch(): Promise<void> {
+    const pending = driveSwitch;
+    if (!pending || switching) return;
+    setSwitching(true);
+    setSwitchError(null);
+    try {
+      const result = await switchKbSource(pending.driveId);
+      if (result.failed.length > 0) {
+        const names = result.failed.map((file) => file.name).join(', ');
+        setSwitchError(`Could not remove ${result.failed.length} ${result.failed.length === 1 ? 'file' : 'files'} (${names}). Try again.`);
+        return;
+      }
+    } catch (err) {
+      setSwitchError(describeSwitchError(err));
+      return;
+    } finally {
+      setSwitching(false);
+    }
+    setDriveSwitch(null);
+    // Do what the user was doing, then list the folder again so no row still claims a file that was removed.
+    await pending.retry();
+    await reloadKeepingFolder();
   }
 
   async function handleReconnect(): Promise<void> {
@@ -641,6 +706,17 @@ export function KnowledgeBase(): React.ReactElement {
           icon={FolderTree}
           title="No folder browsed yet"
           description="Paste a SharePoint or OneDrive folder link above to see its contents -- add or remove any file directly from the tree."
+        />
+      )}
+      {driveSwitch && (
+        <KbSwitchLibraryDialog
+          open
+          onOpenChange={(open) => !open && !switching && setDriveSwitch(null)}
+          otherDrive={driveSwitch.otherDrive}
+          unknownDrive={driveSwitch.unknownDrive}
+          isWorking={switching}
+          errorMessage={switchError}
+          onConfirm={() => void confirmSwitch()}
         />
       )}
       {batchDialog && (

@@ -5,12 +5,14 @@ import {
   createKbIngestBatch,
   getKbIngestBatch,
   getKbProfile,
+  ingestFolderItem,
   ingestFolderUrl,
   ingestUrl,
   listIngestedDocuments,
   listKbIngestBatches,
   resumeKbIngestBatch,
   retryFailedKbIngestBatch,
+  switchKbSource,
 } from './kb';
 
 vi.mock('./httpClient');
@@ -147,5 +149,26 @@ describe('the rubric', () => {
       expect(await getKbProfile()).toEqual(view);
       expect(httpClient.get).toHaveBeenCalledWith('/kb/profile');
     });
+  });
+});
+
+describe('one library per knowledge base', () => {
+  it('ingestFolderItem sends the library the file is in', async () => {
+    const post = vi.mocked(httpClient.post).mockResolvedValue({ data: { ingestedDocumentId: 'doc-1' } });
+
+    await ingestFolderItem('a.pdf', 'item-1', 'https://dl', 'Sub/a.pdf', 'user-1', 'always_include', 'drive-9');
+
+    expect(post).toHaveBeenCalledWith('/kb/ingest-item', {
+      name: 'a.pdf', itemId: 'item-1', downloadUrl: 'https://dl', relativePath: 'Sub/a.pdf', userId: 'user-1', retrievalMode: 'always_include', driveId: 'drive-9',
+    });
+  });
+
+  it('switchKbSource POSTs the library to keep and returns what was removed and what could not be', async () => {
+    const post = vi.mocked(httpClient.post).mockResolvedValue({ data: { removed: 2, failed: [{ id: 'x', name: 'old.pdf' }] } });
+
+    const result = await switchKbSource('drive-9');
+
+    expect(post).toHaveBeenCalledWith('/kb/source/switch', { driveId: 'drive-9' });
+    expect(result).toEqual({ removed: 2, failed: [{ id: 'x', name: 'old.pdf' }] });
   });
 });

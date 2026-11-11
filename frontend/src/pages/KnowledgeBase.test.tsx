@@ -58,7 +58,7 @@ describe('KnowledgeBase', () => {
 
   it('browses a shared folder, showing files and subfolders in a tree', async () => {
     vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([
-      { id: 'f1', name: 'spec.docx', mimeType: 'application/vnd.openxmlformats', sizeBytes: 2048, isFolder: false, driveId: null, alreadyIngested: true, ingestedDocumentId: 'doc-1', downloadUrl: null },
+      { id: 'f1', name: 'spec.docx', mimeType: 'application/vnd.openxmlformats', sizeBytes: 2048, isFolder: false, driveId: null, parentDriveId: 'drive-1', alreadyIngested: true, ingestedDocumentId: 'doc-1', downloadUrl: null },
       { id: 'd1', name: 'Subfolder', mimeType: null, sizeBytes: 0, isFolder: true, driveId: 'drive-1', alreadyIngested: false, ingestedDocumentId: null, downloadUrl: null },
     ]);
     renderPage();
@@ -81,7 +81,7 @@ describe('KnowledgeBase', () => {
     // ingest even work?" even though the underlying documents were fine.
     localStorage.setItem('req2ado-kb-browse-url', 'https://share.example/remembered');
     vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([
-      { id: 'f1', name: 'remembered.docx', mimeType: 'application/vnd.openxmlformats', sizeBytes: 1024, isFolder: false, driveId: null, alreadyIngested: false, ingestedDocumentId: null, downloadUrl: null },
+      { id: 'f1', name: 'remembered.docx', mimeType: 'application/vnd.openxmlformats', sizeBytes: 1024, isFolder: false, driveId: null, parentDriveId: 'drive-1', alreadyIngested: false, ingestedDocumentId: null, downloadUrl: null },
     ]);
 
     renderPage();
@@ -143,7 +143,7 @@ describe('KnowledgeBase', () => {
 
   it('adds a not-yet-ingested file straight from the tree', async () => {
     vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([
-      { id: 'f1', name: 'spec.docx', mimeType: null, sizeBytes: 2048, isFolder: false, driveId: null, alreadyIngested: false, ingestedDocumentId: null, downloadUrl: 'https://graph.example/download/f1' },
+      { id: 'f1', name: 'spec.docx', mimeType: null, sizeBytes: 2048, isFolder: false, driveId: null, parentDriveId: 'drive-1', alreadyIngested: false, ingestedDocumentId: null, downloadUrl: 'https://graph.example/download/f1' },
     ]);
     vi.spyOn(kbApi, 'ingestFolderItem').mockResolvedValue({
       documentName: 'spec.docx',
@@ -165,7 +165,7 @@ describe('KnowledgeBase', () => {
 
     await waitFor(() =>
       expect(kbApi.ingestFolderItem).toHaveBeenCalledWith(
-        'spec.docx', 'f1', 'https://graph.example/download/f1', 'spec.docx', 'user-descriptor-1', undefined,
+        'spec.docx', 'f1', 'https://graph.example/download/f1', 'spec.docx', 'user-descriptor-1', undefined, 'drive-1',
       ),
     );
     await waitFor(() => expect(screen.getByText(/added "spec\.docx" to the knowledge base/i)).toBeInTheDocument());
@@ -175,7 +175,7 @@ describe('KnowledgeBase', () => {
   async function browseWith(entries: Partial<FolderTreeEntry>[]): Promise<void> {
     vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue(
       entries.map((e, i) => ({
-        id: `f${i + 1}`, name: `file${i + 1}.pdf`, mimeType: null, sizeBytes: 1024, isFolder: false, driveId: null,
+        id: `f${i + 1}`, name: `file${i + 1}.pdf`, mimeType: null, sizeBytes: 1024, isFolder: false, driveId: null, parentDriveId: 'drive-1',
         alreadyIngested: true, ingestedDocumentId: `doc-${i + 1}`, downloadUrl: 'https://graph.example/d', ...e,
       })) as FolderTreeEntry[],
     );
@@ -259,14 +259,14 @@ describe('KnowledgeBase', () => {
 
     await waitFor(() =>
       expect(kbApi.ingestFolderItem).toHaveBeenCalledWith(
-        'file1.pdf', 'f1', 'https://graph.example/d', 'file1.pdf', 'user-descriptor-1', 'always_include',
+        'file1.pdf', 'f1', 'https://graph.example/d', 'file1.pdf', 'user-descriptor-1', 'always_include', 'drive-1',
       ),
     );
   });
 
   it('removes an already-ingested file from the tree after confirming', async () => {
     vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([
-      { id: 'f1', name: 'spec.docx', mimeType: null, sizeBytes: 2048, isFolder: false, driveId: null, alreadyIngested: true, ingestedDocumentId: 'doc-1', downloadUrl: null },
+      { id: 'f1', name: 'spec.docx', mimeType: null, sizeBytes: 2048, isFolder: false, driveId: null, parentDriveId: 'drive-1', alreadyIngested: true, ingestedDocumentId: 'doc-1', downloadUrl: null },
     ]);
     vi.spyOn(kbApi, 'deleteIngestedDocument').mockResolvedValue(undefined);
     renderPage();
@@ -284,7 +284,7 @@ describe('KnowledgeBase', () => {
 
   it('shows an error toast and keeps the confirm dialog open when removal fails', async () => {
     vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([
-      { id: 'f1', name: 'spec.docx', mimeType: null, sizeBytes: 2048, isFolder: false, driveId: null, alreadyIngested: true, ingestedDocumentId: 'doc-1', downloadUrl: null },
+      { id: 'f1', name: 'spec.docx', mimeType: null, sizeBytes: 2048, isFolder: false, driveId: null, parentDriveId: 'drive-1', alreadyIngested: true, ingestedDocumentId: 'doc-1', downloadUrl: null },
     ]);
     vi.spyOn(kbApi, 'deleteIngestedDocument').mockRejectedValue(new Error('boom'));
     renderPage();
@@ -333,7 +333,7 @@ describe('KnowledgeBase', () => {
         { id: 'd1', name: 'Subfolder', mimeType: null, sizeBytes: 0, isFolder: true, driveId: 'drive-1', alreadyIngested: false, ingestedDocumentId: null, downloadUrl: null },
       ]);
       vi.spyOn(kbApi, 'browseSubfolder').mockResolvedValue([
-        { id: 'f2', name: 'nested.pdf', mimeType: null, sizeBytes: 4096, isFolder: false, driveId: null, alreadyIngested: false, ingestedDocumentId: null, downloadUrl: 'https://graph.example/download/f2' },
+        { id: 'f2', name: 'nested.pdf', mimeType: null, sizeBytes: 4096, isFolder: false, driveId: null, parentDriveId: 'drive-1', alreadyIngested: false, ingestedDocumentId: null, downloadUrl: 'https://graph.example/download/f2' },
       ]);
       renderPage();
 
@@ -353,7 +353,7 @@ describe('KnowledgeBase', () => {
 
     it('selects a file and shows its metadata in the right-hand detail pane', async () => {
       vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([
-        { id: 'f1', name: 'spec.docx', mimeType: null, sizeBytes: 2048, isFolder: false, driveId: null, alreadyIngested: false, ingestedDocumentId: null, downloadUrl: 'https://graph.example/download/f1' },
+        { id: 'f1', name: 'spec.docx', mimeType: null, sizeBytes: 2048, isFolder: false, driveId: null, parentDriveId: 'drive-1', alreadyIngested: false, ingestedDocumentId: null, downloadUrl: 'https://graph.example/download/f1' },
       ]);
       renderPage();
 
@@ -374,7 +374,7 @@ describe('KnowledgeBase', () => {
 
     it('keeps the detail pane in sync after ingesting a file from the center-pane row action', async () => {
       vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([
-        { id: 'f1', name: 'spec.docx', mimeType: null, sizeBytes: 2048, isFolder: false, driveId: null, alreadyIngested: false, ingestedDocumentId: null, downloadUrl: 'https://graph.example/download/f1' },
+        { id: 'f1', name: 'spec.docx', mimeType: null, sizeBytes: 2048, isFolder: false, driveId: null, parentDriveId: 'drive-1', alreadyIngested: false, ingestedDocumentId: null, downloadUrl: 'https://graph.example/download/f1' },
       ]);
       vi.spyOn(kbApi, 'ingestFolderItem').mockResolvedValue({
         documentName: 'spec.docx', driveitemId: 'f1', mimeType: null, sizeBytes: 2048, chunksStored: 3, skippedUnchanged: false, ingestedDocumentId: 'doc-1',
@@ -397,7 +397,7 @@ describe('KnowledgeBase', () => {
 
     it('ingests with retrievalMode="always_include" when Reference is chosen in the add dialog', async () => {
       vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([
-        { id: 'f1', name: 'standards.docx', mimeType: null, sizeBytes: 2048, isFolder: false, driveId: null, alreadyIngested: false, ingestedDocumentId: null, downloadUrl: 'https://graph.example/download/f1' },
+        { id: 'f1', name: 'standards.docx', mimeType: null, sizeBytes: 2048, isFolder: false, driveId: null, parentDriveId: 'drive-1', alreadyIngested: false, ingestedDocumentId: null, downloadUrl: 'https://graph.example/download/f1' },
       ]);
       vi.spyOn(kbApi, 'ingestFolderItem').mockResolvedValue({
         documentName: 'standards.docx', driveitemId: 'f1', mimeType: null, sizeBytes: 2048, chunksStored: 3, skippedUnchanged: false, ingestedDocumentId: 'doc-1',
@@ -414,7 +414,7 @@ describe('KnowledgeBase', () => {
 
       await waitFor(() =>
         expect(kbApi.ingestFolderItem).toHaveBeenCalledWith(
-          'standards.docx', 'f1', 'https://graph.example/download/f1', 'standards.docx', 'user-descriptor-1', 'always_include',
+          'standards.docx', 'f1', 'https://graph.example/download/f1', 'standards.docx', 'user-descriptor-1', 'always_include', 'drive-1',
         ),
       );
     });
@@ -422,7 +422,7 @@ describe('KnowledgeBase', () => {
     describe('re-ingesting a file that already has stored vectors', () => {
       async function openIngestedFile(retrievalMode: string | null) {
         vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([
-          { id: 'f1', name: 'guide.pptx', mimeType: null, sizeBytes: 2048, isFolder: false, driveId: null, alreadyIngested: true, ingestedDocumentId: 'doc-1', downloadUrl: 'https://graph.example/download/f1', chunkCount: 11, retrievalMode },
+          { id: 'f1', name: 'guide.pptx', mimeType: null, sizeBytes: 2048, isFolder: false, driveId: null, parentDriveId: 'drive-1', alreadyIngested: true, ingestedDocumentId: 'doc-1', downloadUrl: 'https://graph.example/download/f1', chunkCount: 11, retrievalMode },
         ]);
         renderPage();
         await userEvent.type(screen.getByLabelText(/sharing url/i), 'https://share.example/folder');
@@ -448,7 +448,7 @@ describe('KnowledgeBase', () => {
 
         await waitFor(() =>
           expect(kbApi.ingestFolderItem).toHaveBeenCalledWith(
-            'guide.pptx', 'f1', 'https://graph.example/download/f1', 'guide.pptx', 'user-descriptor-1', 'always_include',
+            'guide.pptx', 'f1', 'https://graph.example/download/f1', 'guide.pptx', 'user-descriptor-1', 'always_include', 'drive-1',
           ),
         );
       });
@@ -457,7 +457,7 @@ describe('KnowledgeBase', () => {
     describe('switching the retrieval mode of an already-ingested file', () => {
       async function openIngestedFile(retrievalMode: string | null) {
         vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([
-          { id: 'f1', name: 'guide.pptx', mimeType: null, sizeBytes: 2048, isFolder: false, driveId: null, alreadyIngested: true, ingestedDocumentId: 'doc-1', downloadUrl: 'https://graph.example/download/f1', retrievalMode },
+          { id: 'f1', name: 'guide.pptx', mimeType: null, sizeBytes: 2048, isFolder: false, driveId: null, parentDriveId: 'drive-1', alreadyIngested: true, ingestedDocumentId: 'doc-1', downloadUrl: 'https://graph.example/download/f1', retrievalMode },
         ]);
         renderPage();
         await userEvent.type(screen.getByLabelText(/sharing url/i), 'https://share.example/folder');
@@ -507,7 +507,7 @@ describe('KnowledgeBase', () => {
         { id: 'd1', name: 'Subfolder', mimeType: null, sizeBytes: 0, isFolder: true, driveId: 'drive-1', alreadyIngested: false, ingestedDocumentId: null, downloadUrl: null },
       ]);
       vi.spyOn(kbApi, 'browseSubfolder').mockResolvedValue([
-        { id: 'f2', name: 'nested.pdf', mimeType: null, sizeBytes: 4096, isFolder: false, driveId: null, alreadyIngested: false, ingestedDocumentId: null, downloadUrl: null },
+        { id: 'f2', name: 'nested.pdf', mimeType: null, sizeBytes: 4096, isFolder: false, driveId: null, parentDriveId: 'drive-1', alreadyIngested: false, ingestedDocumentId: null, downloadUrl: null },
       ]);
       renderPage();
 
@@ -565,7 +565,7 @@ describe('KnowledgeBase', () => {
 
     it('handleIngestFile: a rapid second click on the dialog\'s Add button before ingest resolves does not fire a second request', async () => {
       vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([
-        { id: 'f1', name: 'spec.docx', mimeType: null, sizeBytes: 2048, isFolder: false, driveId: null, alreadyIngested: false, ingestedDocumentId: null, downloadUrl: 'https://graph.example/download/f1' },
+        { id: 'f1', name: 'spec.docx', mimeType: null, sizeBytes: 2048, isFolder: false, driveId: null, parentDriveId: 'drive-1', alreadyIngested: false, ingestedDocumentId: null, downloadUrl: 'https://graph.example/download/f1' },
       ]);
       let resolveIngest!: (result: Awaited<ReturnType<typeof kbApi.ingestFolderItem>>) => void;
       const deferred = new Promise<Awaited<ReturnType<typeof kbApi.ingestFolderItem>>>((resolve) => {
@@ -608,7 +608,7 @@ describe('KnowledgeBase', () => {
 
     it('handleRemoveDocument: a rapid second confirm click before removal resolves does not fire a second request', async () => {
       vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([
-        { id: 'f1', name: 'spec.docx', mimeType: null, sizeBytes: 2048, isFolder: false, driveId: null, alreadyIngested: true, ingestedDocumentId: 'doc-1', downloadUrl: null },
+        { id: 'f1', name: 'spec.docx', mimeType: null, sizeBytes: 2048, isFolder: false, driveId: null, parentDriveId: 'drive-1', alreadyIngested: true, ingestedDocumentId: 'doc-1', downloadUrl: null },
       ]);
       let resolveRemove!: () => void;
       const deferred = new Promise<void>((resolve) => {
@@ -678,7 +678,7 @@ describe('KnowledgeBase', () => {
         resolveA = resolve;
       });
       const bEntries: FolderTreeEntry[] = [
-        { id: 'b-nested', name: 'b-nested.pdf', mimeType: null, sizeBytes: 100, isFolder: false, driveId: null, alreadyIngested: false, ingestedDocumentId: null, downloadUrl: null },
+        { id: 'b-nested', name: 'b-nested.pdf', mimeType: null, sizeBytes: 100, isFolder: false, driveId: null, parentDriveId: 'drive-1', alreadyIngested: false, ingestedDocumentId: null, downloadUrl: null },
       ];
       vi.spyOn(kbApi, 'browseSubfolder').mockImplementation((_driveId, itemId) => (itemId === 'a1' ? aPromise : Promise.resolve(bEntries)));
 
@@ -707,7 +707,7 @@ describe('KnowledgeBase', () => {
       // center pane, or its breadcrumb, out from under B's already-shown state.
       await act(async () => {
         resolveA([
-          { id: 'a-nested', name: 'a-nested.pdf', mimeType: null, sizeBytes: 100, isFolder: false, driveId: null, alreadyIngested: false, ingestedDocumentId: null, downloadUrl: null },
+          { id: 'a-nested', name: 'a-nested.pdf', mimeType: null, sizeBytes: 100, isFolder: false, driveId: null, parentDriveId: 'drive-1', alreadyIngested: false, ingestedDocumentId: null, downloadUrl: null },
         ]);
         await Promise.resolve();
         await Promise.resolve();
@@ -755,7 +755,7 @@ describe('KnowledgeBase', () => {
       // already-shown state.
       await act(async () => {
         resolveSubfolder([
-          { id: 'nested', name: 'nested.pdf', mimeType: null, sizeBytes: 100, isFolder: false, driveId: null, alreadyIngested: false, ingestedDocumentId: null, downloadUrl: null },
+          { id: 'nested', name: 'nested.pdf', mimeType: null, sizeBytes: 100, isFolder: false, driveId: null, parentDriveId: 'drive-1', alreadyIngested: false, ingestedDocumentId: null, downloadUrl: null },
         ]);
         await Promise.resolve();
         await Promise.resolve();
@@ -771,7 +771,7 @@ describe('KnowledgeBase', () => {
 describe('KnowledgeBase source bar and reconnect', () => {
   const SAVED = 'https://share.example/remembered';
   const FILE: FolderTreeEntry = {
-    id: 'f1', name: 'guide.docx', mimeType: null, sizeBytes: 1024, isFolder: false, driveId: null, alreadyIngested: false, ingestedDocumentId: null, downloadUrl: 'https://dl/f1',
+    id: 'f1', name: 'guide.docx', mimeType: null, sizeBytes: 1024, isFolder: false, driveId: null, parentDriveId: 'drive-1', alreadyIngested: false, ingestedDocumentId: null, downloadUrl: 'https://dl/f1',
   };
   const FOLDER: FolderTreeEntry = {
     id: 'd1', name: 'Subfolder', mimeType: null, sizeBytes: 0, isFolder: true, driveId: 'drive-1', alreadyIngested: false, ingestedDocumentId: null, downloadUrl: null,
@@ -999,7 +999,7 @@ describe('KnowledgeBase source bar and reconnect', () => {
 describe('KnowledgeBase "Add to knowledge base" dialog', () => {
   const SAVED = 'https://share.example/remembered';
   const NEW_FILE: FolderTreeEntry = {
-    id: 'f1', name: 'spec.docx', mimeType: null, sizeBytes: 2048, isFolder: false, driveId: null, alreadyIngested: false, ingestedDocumentId: null, downloadUrl: 'https://dl/f1',
+    id: 'f1', name: 'spec.docx', mimeType: null, sizeBytes: 2048, isFolder: false, driveId: null, parentDriveId: 'drive-1', alreadyIngested: false, ingestedDocumentId: null, downloadUrl: 'https://dl/f1',
   };
   const OTHER_FILE: FolderTreeEntry = { ...NEW_FILE, id: 'f2', name: 'other.docx', downloadUrl: 'https://dl/f2' };
   const INGESTED: FolderTreeEntry = {
@@ -1069,12 +1069,12 @@ describe('KnowledgeBase "Add to knowledge base" dialog', () => {
 
     await userEvent.click(screen.getByRole('button', { name: /add spec\.docx to the knowledge base/i }));
     await chooseAndConfirm('search');
-    await waitFor(() => expect(kbApi.ingestFolderItem).toHaveBeenCalledWith('spec.docx', 'f1', 'https://dl/f1', 'spec.docx', 'user-descriptor-1', undefined));
+    await waitFor(() => expect(kbApi.ingestFolderItem).toHaveBeenCalledWith('spec.docx', 'f1', 'https://dl/f1', 'spec.docx', 'user-descriptor-1', undefined, 'drive-1'));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
 
     await userEvent.click(screen.getByRole('button', { name: /add other\.docx to the knowledge base/i }));
     await chooseAndConfirm('reference');
-    await waitFor(() => expect(kbApi.ingestFolderItem).toHaveBeenCalledWith('other.docx', 'f2', 'https://dl/f2', 'other.docx', 'user-descriptor-1', 'always_include'));
+    await waitFor(() => expect(kbApi.ingestFolderItem).toHaveBeenCalledWith('other.docx', 'f2', 'https://dl/f2', 'other.docx', 'user-descriptor-1', 'always_include', 'drive-1'));
   });
 
   it('shows the new file as Reference afterwards, on the switch in the detail pane', async () => {
@@ -1123,7 +1123,7 @@ describe('KnowledgeBase "Add to knowledge base" dialog', () => {
     await chooseAndConfirm('reference', /^re-ingest$/i);
 
     await waitFor(() => expect(kbApi.setRetrievalMode).toHaveBeenCalledWith('doc-3', 'always_include'));
-    await waitFor(() => expect(kbApi.ingestFolderItem).toHaveBeenCalledWith('guide.pptx', 'f3', 'https://dl/f3', 'guide.pptx', 'user-descriptor-1', 'always_include'));
+    await waitFor(() => expect(kbApi.ingestFolderItem).toHaveBeenCalledWith('guide.pptx', 'f3', 'https://dl/f3', 'guide.pptx', 'user-descriptor-1', 'always_include', 'drive-1'));
   });
 
   it('re-ingesting a file in the same mode does not retag it', async () => {
@@ -1390,5 +1390,165 @@ describe('KnowledgeBase batch add', () => {
 
       await waitFor(() => expect(kbApi.browseSharedFolder).toHaveBeenCalledTimes(2), { timeout: 8000 });
     }, 15000);
+  });
+});
+
+describe('KnowledgeBase library switch', () => {
+  const SAVED = 'https://share.example/remembered';
+  const base = { mimeType: null, isFolder: false, driveId: null, parentDriveId: 'drive-NEW', alreadyIngested: false, ingestedDocumentId: null } as const;
+  const A: FolderTreeEntry = { ...base, id: 'a', name: 'a.docx', sizeBytes: 1000, downloadUrl: 'https://dl/a' };
+
+  const mismatch = (otherDrive = 3, unknownDrive = 0): AxiosError =>
+    new AxiosError('conflict', 'ERR_BAD_REQUEST', undefined, undefined, {
+      status: 409,
+      data: { code: 'kb_drive_mismatch', otherDriveDocuments: otherDrive, unknownDriveDocuments: unknownDrive },
+    } as never);
+
+  const queuedBatch = (): kbApi.KbIngestBatch => ({
+    id: 'batch-1', status: 'queued', pauseReason: null, cancelRequested: false, driveId: 'drive-NEW', folderItemId: null, folderPath: '', docType: null, version: 1,
+    createdAt: '2026-11-12T09:00:00Z', startedAt: null, finishedAt: null,
+    counts: { total: 1, queued: 1, running: 0, added: 0, unchanged: 0, failed: 0, skipped: 0, cancelled: 0 },
+    items: [],
+  });
+
+  async function open(): Promise<void> {
+    localStorage.setItem('req2ado-kb-browse-url', SAVED);
+    vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([A]);
+    renderPage();
+    await screen.findAllByText('a.docx');
+  }
+
+  async function addViaBatch(): Promise<void> {
+    await userEvent.click(screen.getByRole('checkbox', { name: 'Select a.docx' }));
+    await userEvent.click(screen.getByRole('button', { name: /^add 1 to knowledge base/i }));
+    const dialog = await screen.findByRole('dialog');
+    await userEvent.click(within(dialog).getByRole('radio', { name: /^search/i }));
+    await userEvent.click(within(dialog).getByRole('button', { name: /^add 1 to knowledge base$/i }));
+  }
+
+  async function addSingle(): Promise<void> {
+    await userEvent.click(screen.getByRole('button', { name: /add a\.docx to the knowledge base/i }));
+    await chooseAndConfirm('search');
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'valid', expiresInSeconds: 2820 });
+    vi.spyOn(kbApi, 'getRubric').mockResolvedValue({ version: 'v1', source: 'kb', builtAt: null, removed: [], categories: [] });
+    vi.spyOn(kbApi, 'listKbIngestBatches').mockResolvedValue([]);
+    localStorage.clear();
+  });
+
+  it('asks before removing anything when a batch comes from a different library, then removes and adds', async () => {
+    vi.spyOn(kbApi, 'createKbIngestBatch').mockRejectedValueOnce(mismatch(3)).mockResolvedValueOnce(queuedBatch());
+    vi.spyOn(kbApi, 'switchKbSource').mockResolvedValue({ removed: 3, failed: [] });
+    await open();
+
+    await addViaBatch();
+
+    const dialog = await screen.findByRole('dialog', { name: /switch to this library/i });
+    expect(within(dialog).getByText(/holds 3 files from a different sharepoint library/i)).toBeInTheDocument();
+    expect(kbApi.switchKbSource).not.toHaveBeenCalled();
+
+    await userEvent.click(within(dialog).getByRole('button', { name: /remove 3 files and continue/i }));
+
+    await waitFor(() => expect(kbApi.switchKbSource).toHaveBeenCalledWith('drive-NEW'));
+    await waitFor(() => expect(kbApi.createKbIngestBatch).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText(/adding 1 file in the background/i)).toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: /switch to this library/i })).toBeNull();
+  });
+
+  it('lists the folder again after the switch, so the rows no longer claim files that were removed', async () => {
+    vi.spyOn(kbApi, 'createKbIngestBatch').mockRejectedValueOnce(mismatch()).mockResolvedValueOnce(queuedBatch());
+    vi.spyOn(kbApi, 'switchKbSource').mockResolvedValue({ removed: 3, failed: [] });
+    await open();
+    const browsesBefore = vi.mocked(kbApi.browseSharedFolder).mock.calls.length;
+
+    await addViaBatch();
+    await userEvent.click(within(await screen.findByRole('dialog', { name: /switch to this library/i })).getByRole('button', { name: /remove 3 files and continue/i }));
+
+    await waitFor(() => expect(vi.mocked(kbApi.browseSharedFolder).mock.calls.length).toBeGreaterThan(browsesBefore));
+  });
+
+  it('removes nothing, and adds nothing, when the user cancels', async () => {
+    vi.spyOn(kbApi, 'createKbIngestBatch').mockRejectedValue(mismatch());
+    vi.spyOn(kbApi, 'switchKbSource').mockResolvedValue({ removed: 0, failed: [] });
+    await open();
+    await addViaBatch();
+
+    await userEvent.click(within(await screen.findByRole('dialog', { name: /switch to this library/i })).getByRole('button', { name: /^cancel$/i }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(kbApi.switchKbSource).not.toHaveBeenCalled();
+    expect(kbApi.createKbIngestBatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('says what could not be removed, stays open, and does not add until the removal is complete', async () => {
+    vi.spyOn(kbApi, 'createKbIngestBatch').mockRejectedValue(mismatch(2));
+    vi.spyOn(kbApi, 'switchKbSource').mockResolvedValue({ removed: 1, failed: [{ id: 'x', name: 'old.pdf' }] });
+    await open();
+    await addViaBatch();
+
+    await userEvent.click(within(await screen.findByRole('dialog', { name: /switch to this library/i })).getByRole('button', { name: /remove 2 files and continue/i }));
+
+    expect(await screen.findByText(/could not remove 1 file \(old\.pdf\)/i)).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: /switch to this library/i })).toBeInTheDocument();
+    expect(kbApi.createKbIngestBatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('explains a refused switch while files are still being added, in words', async () => {
+    vi.spyOn(kbApi, 'createKbIngestBatch').mockRejectedValue(mismatch());
+    vi.spyOn(kbApi, 'switchKbSource').mockRejectedValue(
+      new AxiosError('conflict', 'ERR_BAD_REQUEST', undefined, undefined, { status: 409, data: { code: 'kb_batch_active', message: 'Files are still being added.' } } as never),
+    );
+    await open();
+    await addViaBatch();
+
+    await userEvent.click(within(await screen.findByRole('dialog', { name: /switch to this library/i })).getByRole('button', { name: /remove 3 files and continue/i }));
+
+    expect(await screen.findByText(/files are still being added/i)).toBeInTheDocument();
+    expect(kbApi.createKbIngestBatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends the library with a single file, and asks the same way when it is a different one', async () => {
+    vi.spyOn(kbApi, 'ingestFolderItem')
+      .mockRejectedValueOnce(mismatch(1, 2))
+      .mockResolvedValueOnce({ documentName: 'a.docx', driveitemId: 'a', mimeType: null, sizeBytes: 1000, chunksStored: 2, chunksInStore: 2, skippedUnchanged: false, ingestedDocumentId: 'doc-1' });
+    vi.spyOn(kbApi, 'switchKbSource').mockResolvedValue({ removed: 3, failed: [] });
+    await open();
+
+    await addSingle();
+
+    expect(kbApi.ingestFolderItem).toHaveBeenCalledWith('a.docx', 'a', 'https://dl/a', 'a.docx', 'user-descriptor-1', undefined, 'drive-NEW');
+    const dialog = await screen.findByRole('dialog', { name: /switch to this library/i });
+    expect(within(dialog).getByText(/2 files were added before the library was tracked/i)).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole('button', { name: /remove 3 files and continue/i }));
+
+    await waitFor(() => expect(kbApi.switchKbSource).toHaveBeenCalledWith('drive-NEW'));
+    await waitFor(() => expect(kbApi.ingestFolderItem).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText(/added "a\.docx" to the knowledge base/i)).toBeInTheDocument();
+  });
+
+  it('does not treat another failure as a library mismatch', async () => {
+    vi.spyOn(kbApi, 'ingestFolderItem').mockRejectedValue(new Error('boom'));
+    await open();
+
+    await addSingle();
+
+    expect(await screen.findByText(/failed to add "a\.docx"/i)).toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: /switch to this library/i })).toBeNull();
+  });
+
+  it('refuses to guess the library of a single file when the backend did not say', async () => {
+    vi.spyOn(kbApi, 'ingestFolderItem').mockResolvedValue({} as never);
+    localStorage.setItem('req2ado-kb-browse-url', SAVED);
+    vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([{ ...A, parentDriveId: null }]);
+    renderPage();
+    await screen.findAllByText('a.docx');
+
+    await addSingle();
+
+    expect(await screen.findByText(/could not tell which sharepoint drive/i)).toBeInTheDocument();
+    expect(kbApi.ingestFolderItem).not.toHaveBeenCalled();
   });
 });
