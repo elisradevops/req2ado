@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
 import type { PrismaClient } from '@prisma/client';
+import { KbDriveMismatchException, findDriveConflict } from './kb-drive';
 
 // The batch ledger behind "add these files to the knowledge base": what was asked for, what each file is doing, and the
 // user-facing operations on it (cancel, retry the failures, resume). It decides nothing about HOW a file is ingested: that is
@@ -228,6 +229,9 @@ export class KbIngestBatchService {
    */
   async create(userId: string, raw: unknown): Promise<KbIngestBatchView> {
     const input = parseBatchInput(raw);
+
+    const driveConflict = await findDriveConflict(this.prisma, userId, input.driveId);
+    if (driveConflict) throw new KbDriveMismatchException(driveConflict);
 
     const activeBatches = await this.prisma.kbIngestBatch.findMany({ where: { userId, status: { in: ACTIVE_BATCH_STATUSES } }, select: { id: true } });
     if (activeBatches.length >= KB_INGEST_MAX_ACTIVE_BATCHES) {

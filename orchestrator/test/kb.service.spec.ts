@@ -559,4 +559,102 @@ describe('KbService', () => {
       expect((await service.getProfile('u')).state).toBe('none');
     });
   });
+  describe('the one-library rule', () => {
+    const ingestResult = { documentName: 'a.pdf', driveitemId: 'item-1', mimeType: 'application/pdf', sizeBytes: 5, chunksStored: 1, chunksInStore: 1, skippedUnchanged: false };
+
+    function build(docs: Record<string, unknown>[] = [], options: { activeBatches?: number; failDelete?: string } = {}) {
+      const ingestionClient = {
+        ingestItem: jest.fn().mockResolvedValue(ingestResult),
+        deleteDocument: jest.fn().mockImplementation(async (_user: string, name: string) => {
+          if (name === options.failDelete) throw new Error('chroma down');
+        }),
+      };
+      const prisma = {
+        ingestedDocument: {
+          findMany: jest.fn().mockResolvedValue(docs),
+          upsert: jest.fn().mockResolvedValue({ id: 'row-1' }),
+          delete: jest.fn().mockResolvedValue(undefined),
+        },
+        kbIngestBatch: { count: jest.fn().mockResolvedValue(options.activeBatches ?? 0) },
+      };
+      const profileScheduler = { schedule: jest.fn().mockResolvedValue(undefined) };
+      const service = new KbService(prisma as any, ingestionClient as any, fakeCredentialVault as any, profileScheduler as any);
+      return { service, ingestionClient, prisma, profileScheduler };
+    }
+
+    const doc = (id: string, driveId: string | null) => ({ id, userId: 'u', name: `${id}.pdf`, driveItemId: `item-${id}`, driveId });
+
+    it('recordIngestedDocument() stores the library the file came from', async () => {
+      const { service, prisma } = build();
+
+      await service.recordIngestedDocument('u', ingestResult, { relativePath: 'a.pdf', docType: null, retrievalMode: null, driveId: 'drive-1' });
+
+      expect(prisma.ingestedDocument.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({ create: expect.objectContaining({ driveId: 'drive-1' }), update: expect.objectContaining({ driveId: 'drive-1' }) }),
+      );
+    });
+
+    it('ingestItem() with a library that differs from the knowledge base is refused before anything is ingested', async () => {
+      const { service, ingestionClient } = build([doc('x', 'drive-OLD')]);
+
+      await expect(service.ingestItem('a.pdf', 'item-1', 'https://dl', 'a.pdf', 'u', null, null, 'drive-NEW')).rejects.toMatchObject({
+        response: { code: 'kb_drive_mismatch', otherDriveDocuments: 1 },
+      });
+      expect(ingestionClient.ingestItem).not.toHaveBeenCalled();
+    });
+
+    it('ingestItem() from the same library goes through and records it', async () => {
+      const { service, prisma } = build([doc('x', 'drive-1')]);
+
+      await service.ingestItem('a.pdf', 'item-1', 'https://dl', 'a.pdf', 'u', null, null, 'drive-1');
+
+      expect(prisma.ingestedDocument.upsert).toHaveBeenCalledWith(expect.objectContaining({ create: expect.objectContaining({ driveId: 'drive-1' }) }));
+    });
+
+    describe('switchDrive()', () => {
+      it('removes the documents of other libraries and of unknown ones, keeps the new library\'s, and schedules the profile once', async () => {
+        const { service, ingestionClient, prisma, profileScheduler } = build([doc('keep', 'drive-NEW'), doc('old', 'drive-OLD'), doc('legacy', null)]);
+
+        const result = await service.switchDrive('u', 'drive-NEW');
+
+        expect(result).toEqual({ removed: 2, failed: [] });
+        expect(ingestionClient.deleteDocument.mock.calls.map((c: unknown[]) => c[1]).sort()).toEqual(['legacy.pdf', 'old.pdf']);
+        expect(prisma.ingestedDocument.delete.mock.calls.map((c: any[]) => c[0].where.id).sort()).toEqual(['legacy', 'old']);
+        expect(profileScheduler.schedule).toHaveBeenCalledTimes(1);
+      });
+
+      it('does nothing, and schedules nothing, when there is nothing to remove', async () => {
+        const { service, ingestionClient, profileScheduler } = build([doc('keep', 'drive-NEW')]);
+
+        expect(await service.switchDrive('u', 'drive-NEW')).toEqual({ removed: 0, failed: [] });
+        expect(ingestionClient.deleteDocument).not.toHaveBeenCalled();
+        expect(profileScheduler.schedule).not.toHaveBeenCalled();
+      });
+
+      it('is refused while a batch is still going, so no file is added back behind the cleanup', async () => {
+        const { service, ingestionClient } = build([doc('old', 'drive-OLD')], { activeBatches: 1 });
+
+        await expect(service.switchDrive('u', 'drive-NEW')).rejects.toMatchObject({ response: { code: 'kb_batch_active' } });
+        expect(ingestionClient.deleteDocument).not.toHaveBeenCalled();
+      });
+
+      it('reports a document it could not remove, keeps its row so it stays listed, and carries on with the rest', async () => {
+        const { service, prisma } = build([doc('bad', 'drive-OLD'), doc('good', 'drive-OLD')], { failDelete: 'bad.pdf' });
+
+        const result = await service.switchDrive('u', 'drive-NEW');
+
+        expect(result.removed).toBe(1);
+        expect(result.failed).toEqual([{ id: 'bad', name: 'bad.pdf' }]);
+        expect(prisma.ingestedDocument.delete.mock.calls.map((c: any[]) => c[0].where.id)).toEqual(['good']);
+      });
+
+      it('only ever touches the given user\'s documents', async () => {
+        const { service, prisma } = build([]);
+
+        await service.switchDrive('user-7', 'drive-NEW');
+
+        expect(prisma.ingestedDocument.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { userId: 'user-7' } }));
+      });
+    });
+  });
 });

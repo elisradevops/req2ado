@@ -457,6 +457,9 @@ model IngestedDocument {
   // an unavailable count -- an unknown overwrites a possibly stale number). The row alone never proved any
   // vectors exist; this is what the KB page shows instead.
   chunkCount    Int?
+  // The SharePoint library (Graph drive) the file came from. A knowledge base holds one library; null = added before this was
+  // recorded, so it cannot be told apart from another library's file and is cleared when the user next adds files.
+  driveId       String?
   ingestedAt    DateTime @default(now())
 
   @@unique([userId, driveItemId])

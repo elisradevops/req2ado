@@ -175,6 +175,18 @@ export class KbController {
     return { ok: true };
   }
 
+  // The user agreed to swap libraries: removes the files of any other library (see KbService.switchDrive).
+  @Post('source/switch')
+  async switchSource(
+    @CurrentUser() user: SessionUser,
+    @Body('driveId') driveId: string | undefined,
+  ): Promise<{ removed: number; failed: { id: string; name: string }[] }> {
+    if (!driveId) {
+      throw new BadRequestException('driveId is required');
+    }
+    return this.kbService.switchDrive(user.userId, driveId);
+  }
+
   @Post('ingest-item')
   async ingestItem(
     @CurrentUser() user: SessionUser,
@@ -184,13 +196,17 @@ export class KbController {
     @Body('relativePath') relativePath: string | undefined,
     @Body('docType') docType: string | undefined,
     @Body('retrievalMode') retrievalMode?: string,
+    @Body('driveId') driveId?: string,
   ): Promise<IngestUrlResult> {
     if (!name || !itemId || !downloadUrl) {
       throw new BadRequestException('name, itemId, and downloadUrl are required');
     }
+    if (!driveId) {
+      throw new BadRequestException('driveId is required');
+    }
     try {
       return await this.kbService.ingestItem(
-        name, itemId, downloadUrl, relativePath ?? name, user.userId, docType ?? null, retrievalMode ?? null,
+        name, itemId, downloadUrl, relativePath ?? name, user.userId, docType ?? null, retrievalMode ?? null, driveId,
       );
     } catch (err) {
       if (err instanceof IngestionHttpError) {

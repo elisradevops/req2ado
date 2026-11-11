@@ -42,6 +42,44 @@ describe('KbIngestBatchService', () => {
       expect(prisma.items().every((row) => row.driveId === 'drive-1')).toBe(true);
     });
 
+    describe('the one-library rule', () => {
+      const withDocs = (documents: Record<string, unknown>[]) => {
+        prisma = makeKbIngestPrismaFake({ documents });
+        service = new KbIngestBatchService(prisma as any);
+      };
+
+      it('refuses a batch from another library than the one already in the knowledge base, and queues nothing', async () => {
+        withDocs([{ userId: USER, driveId: 'drive-OLD' }, { userId: USER, driveId: 'drive-OLD' }]);
+
+        const attempt = service.create(USER, body([item(1)]));
+
+        await expect(attempt).rejects.toMatchObject({ response: { code: 'kb_drive_mismatch', otherDriveDocuments: 2, unknownDriveDocuments: 0 } });
+        expect(prisma.batches()).toHaveLength(0);
+      });
+
+      it('treats documents with no recorded library as a mismatch the user has to clear once', async () => {
+        withDocs([{ userId: USER, driveId: null }]);
+
+        await expect(service.create(USER, body([item(1)]))).rejects.toMatchObject({ response: { code: 'kb_drive_mismatch', unknownDriveDocuments: 1 } });
+      });
+
+      it('accepts a batch from the same library, whatever the folder', async () => {
+        withDocs([{ userId: USER, driveId: 'drive-1' }]);
+
+        const view = await service.create(USER, body([item(1)]));
+
+        expect(view.status).toBe('queued');
+      });
+
+      it('ignores another user\'s documents', async () => {
+        withDocs([{ userId: OTHER_USER, driveId: 'drive-OLD' }]);
+
+        const view = await service.create(USER, body([item(1)]));
+
+        expect(view.status).toBe('queued');
+      });
+    });
+
     it('collapses a file listed twice in one request', async () => {
       const view = await service.create(USER, body([item(1), item(1, { retrievalMode: 'always_include' }), item(2)]));
 

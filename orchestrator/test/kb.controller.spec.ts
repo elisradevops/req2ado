@@ -55,10 +55,10 @@ describe('KbController', () => {
     const kbService = { ingestItem: jest.fn().mockResolvedValue(ingestResult) };
     const controller = new KbController(kbService as any);
 
-    await controller.ingestItem(TEST_USER, 'standards.docx', 'item-1', 'https://download.example/x', undefined, undefined, 'always_include');
+    await controller.ingestItem(TEST_USER, 'standards.docx', 'item-1', 'https://download.example/x', undefined, undefined, 'always_include', 'drive-1');
 
     expect(kbService.ingestItem).toHaveBeenCalledWith(
-      'standards.docx', 'item-1', 'https://download.example/x', 'standards.docx', TEST_USER.userId, null, 'always_include',
+      'standards.docx', 'item-1', 'https://download.example/x', 'standards.docx', TEST_USER.userId, null, 'always_include', 'drive-1',
     );
   });
 
@@ -231,5 +231,26 @@ describe('KbController', () => {
       expect(await controller.profile(TEST_USER)).toBe(view);
       expect(kbService.getProfile).toHaveBeenCalledWith(TEST_USER.userId);
     });
+  });
+  it('ingestItem() requires the library (driveId) and passes it on', async () => {
+    const kbService = { ingestItem: jest.fn().mockResolvedValue({}) };
+    const controller = new KbController(kbService as any);
+
+    await expect(controller.ingestItem(TEST_USER, 'a.pdf', 'item-1', 'https://dl', undefined, undefined, undefined, undefined)).rejects.toThrow(/driveId/);
+    expect(kbService.ingestItem).not.toHaveBeenCalled();
+
+    await controller.ingestItem(TEST_USER, 'a.pdf', 'item-1', 'https://dl', undefined, undefined, undefined, 'drive-1');
+    expect(kbService.ingestItem).toHaveBeenCalledWith('a.pdf', 'item-1', 'https://dl', 'a.pdf', TEST_USER.userId, null, null, 'drive-1');
+  });
+
+  it('switchSource() removes the other libraries\' documents for the session user', async () => {
+    const kbService = { switchDrive: jest.fn().mockResolvedValue({ removed: 2, failed: [] }) };
+    const controller = new KbController(kbService as any);
+
+    await expect(controller.switchSource(TEST_USER, undefined)).rejects.toThrow(/driveId/);
+    const result = await controller.switchSource(TEST_USER, 'drive-NEW');
+
+    expect(kbService.switchDrive).toHaveBeenCalledWith(TEST_USER.userId, 'drive-NEW');
+    expect(result).toEqual({ removed: 2, failed: [] });
   });
 });

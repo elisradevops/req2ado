@@ -128,6 +128,8 @@ function sortRows(rows: Row[], orderBy: Row | Row[] | undefined): Row[] {
 export interface KbIngestPrismaFake {
   kbIngestBatch: ModelFake;
   kbIngestBatchItem: ModelFake;
+  /** Only what the drive guard reads: the user's documents. */
+  ingestedDocument: ModelFake;
   $transaction: <T>(work: ((tx: KbIngestPrismaFake) => Promise<T>) | Promise<unknown>[]) => Promise<T | unknown[]>;
   /** The rows as they are now (copies), for assertions. */
   batches: () => Row[];
@@ -148,14 +150,15 @@ interface ModelFake {
   count: (args?: { where?: Where }) => Promise<number>;
 }
 
-export function makeKbIngestPrismaFake(initial: { batches?: Row[]; items?: Row[] } = {}): KbIngestPrismaFake {
+export function makeKbIngestPrismaFake(initial: { batches?: Row[]; items?: Row[]; documents?: Row[] } = {}): KbIngestPrismaFake {
   let clock = new Date('2026-11-12T09:00:00.000Z');
   let sequence = 0;
-  const tables: Record<'kbIngestBatch' | 'kbIngestBatchItem', Row[]> = {
+  const tables: Record<'kbIngestBatch' | 'kbIngestBatchItem' | 'ingestedDocument', Row[]> = {
     kbIngestBatch: (initial.batches ?? []).map((row) => ({ ...BATCH_DEFAULTS, createdAt: clock, ...row })),
     kbIngestBatchItem: (initial.items ?? []).map((row) => ({ ...ITEM_DEFAULTS, ...row })),
+    ingestedDocument: (initial.documents ?? []).map((row) => ({ ...row })),
   };
-  const defaultsFor = (table: keyof typeof tables): Row => (table === 'kbIngestBatch' ? BATCH_DEFAULTS : ITEM_DEFAULTS);
+  const defaultsFor = (table: keyof typeof tables): Row => (table === 'kbIngestBatch' ? BATCH_DEFAULTS : table === 'kbIngestBatchItem' ? ITEM_DEFAULTS : {});
 
   function model(table: keyof typeof tables): ModelFake {
     const rows = tables[table];
@@ -222,6 +225,7 @@ export function makeKbIngestPrismaFake(initial: { batches?: Row[]; items?: Row[]
   const fake: KbIngestPrismaFake = {
     kbIngestBatch: model('kbIngestBatch'),
     kbIngestBatchItem: model('kbIngestBatchItem'),
+    ingestedDocument: model('ingestedDocument'),
     $transaction: (async (work: unknown) => {
       if (typeof work === 'function') return (work as (tx: KbIngestPrismaFake) => Promise<unknown>)(fake);
       return Promise.all(work as Promise<unknown>[]);

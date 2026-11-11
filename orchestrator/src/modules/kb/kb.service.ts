@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
-import { Injectable, Logger } from '@nestjs/common';
+import { ConflictException, Injectable, Logger } from '@nestjs/common';
 import type { PrismaClient } from '@prisma/client';
 import type { FolderChild, IngestionHttpClient, Rubric, SharePointStatus } from '../pipeline/ingestion-http.client';
 import { CredentialVaultService, SHARED_OWNER_KEY } from '../auth/credential-vault.service';
+import { KbDriveMismatchException, findDriveConflict } from './kb-drive';
 
 interface VaultedSharePointToken {
   token: string;
@@ -48,6 +49,8 @@ export interface IngestedDocumentSummary {
   retrievalMode: string | null;
   // Chunks the vector store held for this file at its last successful ingest (a snapshot); null = unknown (older rows, or the count was unavailable).
   chunkCount: number | null;
+  // The SharePoint library the file came from; null = recorded before this was tracked.
+  driveId: string | null;
   ingestedAt: Date;
 }
 
@@ -353,9 +356,11 @@ export class KbService {
   async recordIngestedDocument(
     userId: string,
     result: IngestUrlResult,
-    options: { relativePath: string; docType: string | null; retrievalMode: string | null },
+    options: { relativePath: string; docType: string | null; retrievalMode: string | null; driveId?: string },
   ): Promise<string> {
-    const { relativePath, docType, retrievalMode } = options;
+    const { relativePath, docType, retrievalMode, driveId } = options;
+    // Left out when unknown, so an ingest path that does not know the library never blanks one that was recorded.
+    const drive = driveId ? { driveId } : {};
     const row = await this.prisma.ingestedDocument.upsert({
       where: { userId_driveItemId: { userId, driveItemId: result.driveitemId } },
       create: {
@@ -367,6 +372,7 @@ export class KbService {
         docType,
         retrievalMode,
         chunkCount: result.chunksInStore,
+        ...drive,
       },
       update: {
         name: relativePath,
@@ -375,6 +381,7 @@ export class KbService {
         docType,
         retrievalMode,
         chunkCount: result.chunksInStore,
+        ...drive,
         ingestedAt: new Date(),
       },
     });
@@ -401,7 +408,7 @@ export class KbService {
     const { userId, driveId, itemId, relativePath, docType, retrievalMode, scheduleProfile = true, signal } = input;
     const graphToken = await this.resolveGraphTokenOverride();
     const result = await this.ingestionClient.ingestDriveItem(driveId, itemId, userId, docType, graphToken, retrievalMode, signal);
-    const ingestedDocumentId = await this.recordIngestedDocument(userId, result, { relativePath, docType, retrievalMode });
+    const ingestedDocumentId = await this.recordIngestedDocument(userId, result, { relativePath, docType, retrievalMode, driveId });
     if (scheduleProfile) await this.profileScheduler?.schedule(userId);
     return { ...result, ingestedDocumentId };
   }
@@ -422,16 +429,54 @@ export class KbService {
     userId: string,
     docType: string | null,
     retrievalMode: string | null = null,
+    driveId?: string,
   ): Promise<IngestUrlResult & { ingestedDocumentId: string }> {
+    if (driveId) {
+      const conflict = await findDriveConflict(this.prisma, userId, driveId);
+      if (conflict) throw new KbDriveMismatchException(conflict);
+    }
     const graphToken = await this.resolveGraphTokenOverride();
     const result = await this.ingestionClient.ingestItem(name, itemId, downloadUrl, userId, docType, graphToken, retrievalMode);
     // Returned so the tree row that triggered this can immediately offer a
     // remove action -- IngestUrlResult alone only carries the Graph
     // driveitemId, not the Prisma row's own id that DELETE
     // /kb/documents/:id needs.
-    const ingestedDocumentId = await this.recordIngestedDocument(userId, result, { relativePath, docType, retrievalMode });
+    const ingestedDocumentId = await this.recordIngestedDocument(userId, result, { relativePath, docType, retrievalMode, driveId });
     await this.profileScheduler?.schedule(userId);
     return { ...result, ingestedDocumentId };
+  }
+
+  /**
+   * Makes the user's knowledge base hold only files of `driveId`: removes every document that came from another library, or
+   * whose library was never recorded, the same way deleteDocument does (its chunks first, then its row, so a failure leaves
+   * the file listed instead of orphaning vectors). Refused while a batch is still going, or it would add files back behind
+   * the cleanup. A file that could not be removed is reported, not hidden, and the rest carry on; running it again finishes
+   * the job. The profile is rebuilt once at the end.
+   */
+  async switchDrive(userId: string, driveId: string): Promise<{ removed: number; failed: { id: string; name: string }[] }> {
+    const active = await this.prisma.kbIngestBatch.count({ where: { userId, status: { in: ['queued', 'running', 'paused'] } } });
+    if (active > 0) {
+      throw new ConflictException({ code: 'kb_batch_active', message: 'Files are still being added. Wait for them to finish, or cancel them, then switch.' });
+    }
+    const documents = await this.prisma.ingestedDocument.findMany({ where: { userId } });
+    const doomed = documents.filter((document) => document.driveId !== driveId);
+    let removed = 0;
+    const failed: { id: string; name: string }[] = [];
+    for (const document of doomed) {
+      try {
+        await this.ingestionClient.deleteDocument(document.userId, document.name, document.driveItemId);
+        await this.prisma.ingestedDocument.delete({ where: { id: document.id } });
+        removed += 1;
+      } catch (error) {
+        logger.warn(`KB switch: could not remove "${document.name}" (id=${document.id}): ${error instanceof Error ? error.message : String(error)}`);
+        failed.push({ id: document.id, name: document.name });
+      }
+    }
+    if (removed > 0) {
+      logger.log(`KB library switch: user=${createHash('sha256').update(userId).digest('hex').slice(0, 10)} removed=${removed} failed=${failed.length}`);
+      await this.profileScheduler?.schedule(userId);
+    }
+    return { removed, failed };
   }
 
   async ingestFolderUrl(
