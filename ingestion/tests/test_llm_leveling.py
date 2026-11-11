@@ -11661,3 +11661,37 @@ def test_a_call_without_a_user_id_never_touches_the_study_store() -> None:
     assert (
         redis.calls == [] and len(study.windows) == 2
     )  # read afresh each time, nothing stored or reused
+
+
+def test_merge_always_include_context_marks_its_citations_as_always_included() -> None:
+    from app.leveling.llm_leveling import _merge_always_include_context
+    from app.workitem.model import KbCitation, KbCitationRelevance
+
+    retrieved = KbCitation(
+        source_file="spec.docx", similarity=0.42, relevance=KbCitationRelevance.NOT_RELEVANT
+    )
+    prefetched = (
+        "guide text",
+        [
+            {
+                "source_file": "guide.pptx",
+                "similarity": 1.0,
+                "text": "guide text",
+                "truncated": False,
+            }
+        ],
+    )
+
+    _, citations = _merge_always_include_context(
+        "ctx",
+        [retrieved],
+        "u",
+        None,
+        prefetched=prefetched,  # type: ignore[arg-type]
+    )
+
+    by_file = {c.source_file: c for c in citations}
+    assert by_file["guide.pptx"].inclusion == "always"
+    assert by_file["guide.pptx"].relevance == KbCitationRelevance.RELEVANT
+    # A retrieved citation keeps the default.
+    assert by_file["spec.docx"].inclusion == "retrieved"

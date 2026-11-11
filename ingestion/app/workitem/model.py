@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -36,6 +37,10 @@ class KbCitation(BaseModel):
     source_file: str
     similarity: float
     relevance: KbCitationRelevance = KbCitationRelevance.UNKNOWN
+    # "always": an always-include (Full Context) file, injected in full and
+    # never scored against the query -- `similarity` is then a fixed
+    # placeholder, not a retrieval score.
+    inclusion: Literal["retrieved", "always"] = "retrieved"
 
 
 class KbCoverage(BaseModel):

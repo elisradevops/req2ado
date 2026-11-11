@@ -207,6 +207,10 @@ export interface KbCitation {
   source_file: string;
   similarity: number;
   relevance?: 'relevant' | 'not_relevant' | 'unknown';
+  /**
+   * How the file reached the prompt. 'retrieved' (default when absent): similarity-gated, so `similarity` is a real retrieval score. 'always': an always-include (Full Context) file injected in full, never scored against the query, so `similarity` is a fixed placeholder and must not be shown as a score.
+   */
+  inclusion?: 'retrieved' | 'always';
 }
 export interface KbCoverage {
   /**

@@ -197,4 +197,28 @@ describe('KbController', () => {
     expect(kbService.reconnectSharePointToken).toHaveBeenCalledWith('new-token', TEST_USER.userId);
     expect(result).toBe(status);
   });
+  describe('setRetrievalMode()', () => {
+    it('400s on an unknown mode without calling the service', async () => {
+      const kbService = { setRetrievalMode: jest.fn() };
+      const controller = new KbController(kbService as any);
+
+      await expect(controller.setRetrievalMode('doc-1', TEST_USER, { retrievalMode: 'everything' })).rejects.toThrow(/retrievalMode/);
+      expect(kbService.setRetrievalMode).not.toHaveBeenCalled();
+    });
+
+    it('404s when the service finds no such document for the session user', async () => {
+      const kbService = { setRetrievalMode: jest.fn().mockResolvedValue(null) };
+      const controller = new KbController(kbService as any);
+
+      await expect(controller.setRetrievalMode('doc-1', TEST_USER, { retrievalMode: 'always_include' })).rejects.toThrow(/not found/i);
+    });
+
+    it('delegates with the session userId', async () => {
+      const kbService = { setRetrievalMode: jest.fn().mockResolvedValue({ id: 'doc-1' }) };
+      const controller = new KbController(kbService as any);
+
+      expect(await controller.setRetrievalMode('doc-1', TEST_USER, { retrievalMode: 'always_include' })).toEqual({ ok: true });
+      expect(kbService.setRetrievalMode).toHaveBeenCalledWith('doc-1', TEST_USER.userId, 'always_include');
+    });
+  });
 });

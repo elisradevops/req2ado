@@ -340,4 +340,43 @@ describe('KbService', () => {
       expect(result).toEqual([expect.objectContaining({ alreadyIngested: false, ingestedDocumentId: null })]);
     });
   });
+  describe('setRetrievalMode()', () => {
+    const document = { id: 'doc-1', userId: 'Project\\Area1', driveItemId: 'drive-1', name: 'guide.pptx', retrievalMode: null };
+
+    it('retags the stored chunks and records the mode on the row', async () => {
+      const ingestionClient = { setRetrievalMode: jest.fn().mockResolvedValue(undefined) };
+      const prisma = {
+        ingestedDocument: {
+          findUnique: jest.fn().mockResolvedValue(document),
+          update: jest.fn().mockResolvedValue({ ...document, retrievalMode: 'always_include' }),
+        },
+      };
+      const service = new KbService(prisma as any, ingestionClient as any, fakeCredentialVault as any);
+
+      const result = await service.setRetrievalMode('doc-1', 'Project\\Area1', 'always_include');
+
+      expect(ingestionClient.setRetrievalMode).toHaveBeenCalledWith('Project\\Area1', 'drive-1', 'always_include');
+      expect(prisma.ingestedDocument.update).toHaveBeenCalledWith({ where: { id: 'doc-1' }, data: { retrievalMode: 'always_include' } });
+      expect(result).toEqual(expect.objectContaining({ retrievalMode: 'always_include' }));
+    });
+
+    it('returns null without touching the index when the row belongs to another user', async () => {
+      const ingestionClient = { setRetrievalMode: jest.fn() };
+      const prisma = { ingestedDocument: { findUnique: jest.fn().mockResolvedValue(document), update: jest.fn() } };
+      const service = new KbService(prisma as any, ingestionClient as any, fakeCredentialVault as any);
+
+      expect(await service.setRetrievalMode('doc-1', 'Someone\\Else', 'always_include')).toBeNull();
+      expect(ingestionClient.setRetrievalMode).not.toHaveBeenCalled();
+      expect(prisma.ingestedDocument.update).not.toHaveBeenCalled();
+    });
+
+    it('does not record the mode when the index update fails', async () => {
+      const ingestionClient = { setRetrievalMode: jest.fn().mockRejectedValue(new Error('boom')) };
+      const prisma = { ingestedDocument: { findUnique: jest.fn().mockResolvedValue(document), update: jest.fn() } };
+      const service = new KbService(prisma as any, ingestionClient as any, fakeCredentialVault as any);
+
+      await expect(service.setRetrievalMode('doc-1', 'Project\\Area1', 'always_include')).rejects.toThrow('boom');
+      expect(prisma.ingestedDocument.update).not.toHaveBeenCalled();
+    });
+  });
 });

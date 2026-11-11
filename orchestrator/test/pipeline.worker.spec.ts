@@ -1584,7 +1584,7 @@ describe('runPipelineJob', () => {
     fakeIngestionClient.level.mockResolvedValue({
       nodes: [],
       kb_citations: [
-        { source_file: 'doc-a.docx', similarity: 0.9, relevance: 'relevant' },
+        { source_file: 'doc-a.docx', similarity: 0.9, relevance: 'relevant', inclusion: 'always' },
         { source_file: 'doc-b.pdf', similarity: 0.7, relevance: 'unknown' },
       ],
     });
@@ -1612,7 +1612,7 @@ describe('runPipelineJob', () => {
         dryRunDiff: [],
         warnings: [],
         kbCitations: [
-          { sourceFile: 'doc-a.docx', similarity: 0.9, relevance: 'relevant' },
+          { sourceFile: 'doc-a.docx', similarity: 0.9, relevance: 'relevant', inclusion: 'always' },
           { sourceFile: 'doc-b.pdf', similarity: 0.7, relevance: 'unknown' },
         ],
         kbCoverage: Prisma.DbNull,

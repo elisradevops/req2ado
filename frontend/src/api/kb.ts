@@ -66,6 +66,11 @@ export async function deleteIngestedDocument(id: string, userId: string): Promis
   await httpClient.delete(`/kb/documents/${id}`, { params: { userId } });
 }
 
+// Switches an already-ingested file between similarity-gated retrieval and full-context injection (no re-ingest).
+export async function setRetrievalMode(id: string, retrievalMode: 'retrieve' | 'always_include'): Promise<void> {
+  await httpClient.put(`/kb/documents/${id}/retrieval-mode`, { retrievalMode });
+}
+
 export interface FolderTreeEntry {
   id: string;
   name: string;

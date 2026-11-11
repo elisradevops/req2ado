@@ -208,6 +208,22 @@ export class KbService {
   }
 
   /**
+   * Switches an already-ingested file between similarity-gated retrieval and
+   * full-context injection by retagging its stored chunks (no re-ingest). The
+   * index is updated first so the row never claims a mode the index doesn't
+   * have. Scoped like deleteDocument: null (caller maps to 404) for a missing
+   * row or another user's.
+   */
+  async setRetrievalMode(id: string, expectedUserId: string, retrievalMode: 'retrieve' | 'always_include'): Promise<IngestedDocumentSummary | null> {
+    const document = await this.prisma.ingestedDocument.findUnique({ where: { id } });
+    if (!document || document.userId !== expectedUserId) {
+      return null;
+    }
+    await this.ingestionClient.setRetrievalMode(document.userId, document.driveItemId, retrievalMode);
+    return this.prisma.ingestedDocument.update({ where: { id }, data: { retrievalMode } });
+  }
+
+  /**
    * Lists a shared folder's immediate children (live from Graph, no
    * caching/mirroring -- see the design note on FolderChildSummary in
    * ingestion) and marks each file as already-in-KB or not, scoped to

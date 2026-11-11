@@ -874,7 +874,7 @@ export async function runPipelineJob(
     const tree = levelResult as {
       nodes: LeveledNode[];
       warnings?: LeveledWarning[];
-      kb_citations?: { source_file: string; similarity: number; relevance: string }[];
+      kb_citations?: { source_file: string; similarity: number; relevance: string; inclusion?: string }[];
       kb_coverage?: { files_available: number; files_cited: number } | null;
       trace_links?: LeveledTraceLink[];
       excluded_figure_ids?: string[];
@@ -1238,6 +1238,7 @@ export async function runPipelineJob(
           sourceFile: c.source_file,
           similarity: c.similarity,
           relevance: c.relevance,
+          inclusion: c.inclusion,
         })) as any,
         // Explicit NULL when ingestion reported no coverage (BASELINE, SURVEY
         // without KB grounding, listing failure) so a re-run never keeps a

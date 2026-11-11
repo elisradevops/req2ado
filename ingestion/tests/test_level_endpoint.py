@@ -451,7 +451,12 @@ def test_level_endpoint_survey_mode_with_area_path_injects_kb_context(
         "Injected KB reference text." in prompt for prompt in grounded_prompts
     )
     assert response.json()["kb_citations"] == [
-        {"source_file": "ref-doc.docx", "similarity": 0.9, "relevance": "unknown"}
+        {
+            "source_file": "ref-doc.docx",
+            "similarity": 0.9,
+            "relevance": "unknown",
+            "inclusion": "retrieved",
+        }
     ]
 
 

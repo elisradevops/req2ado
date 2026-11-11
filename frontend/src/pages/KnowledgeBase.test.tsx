@@ -403,6 +403,88 @@ describe('KnowledgeBase', () => {
       );
     });
 
+    describe('re-ingesting a file that already has stored vectors', () => {
+      async function openIngestedFile(retrievalMode: string | null) {
+        vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([
+          { id: 'f1', name: 'guide.pptx', mimeType: null, sizeBytes: 2048, isFolder: false, driveId: null, alreadyIngested: true, ingestedDocumentId: 'doc-1', downloadUrl: 'https://graph.example/download/f1', chunkCount: 11, retrievalMode },
+        ]);
+        renderPage();
+        await userEvent.type(screen.getByLabelText(/sharing url/i), 'https://share.example/folder');
+        await userEvent.click(screen.getByRole('button', { name: /^browse$/i }));
+        await waitFor(() => expect(screen.getByText('guide.pptx')).toBeInTheDocument());
+        await userEvent.click(screen.getByText('guide.pptx').closest('tr')!);
+      }
+
+      it('offers "Re-ingest file" in the detail pane so a parser fix can reach it', async () => {
+        await openIngestedFile(null);
+
+        expect(await screen.findByRole('button', { name: /^re-ingest file$/i })).toBeInTheDocument();
+      });
+
+      it('keeps an always-include file in always-include mode when re-ingesting it', async () => {
+        vi.spyOn(kbApi, 'ingestFolderItem').mockResolvedValue({
+          documentName: 'guide.pptx', driveitemId: 'f1', mimeType: null, sizeBytes: 2048, chunksStored: 12, chunksInStore: 12, skippedUnchanged: false, ingestedDocumentId: 'doc-1',
+        });
+        await openIngestedFile('always_include');
+
+        await userEvent.click(await screen.findByRole('button', { name: /^re-ingest file$/i }));
+
+        await waitFor(() =>
+          expect(kbApi.ingestFolderItem).toHaveBeenCalledWith(
+            'guide.pptx', 'f1', 'https://graph.example/download/f1', 'guide.pptx', 'user-descriptor-1', 'always_include',
+          ),
+        );
+      });
+    });
+
+    describe('switching the retrieval mode of an already-ingested file', () => {
+      async function openIngestedFile(retrievalMode: string | null) {
+        vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([
+          { id: 'f1', name: 'guide.pptx', mimeType: null, sizeBytes: 2048, isFolder: false, driveId: null, alreadyIngested: true, ingestedDocumentId: 'doc-1', downloadUrl: 'https://graph.example/download/f1', retrievalMode },
+        ]);
+        renderPage();
+        await userEvent.type(screen.getByLabelText(/sharing url/i), 'https://share.example/folder');
+        await userEvent.click(screen.getByRole('button', { name: /^browse$/i }));
+        await waitFor(() => expect(screen.getByText('guide.pptx')).toBeInTheDocument());
+        await userEvent.click(screen.getByText('guide.pptx').closest('tr')!);
+        return screen.findByRole('checkbox', { name: /always include \(full context\)/i });
+      }
+
+      it('shows the stored mode and switches it on without re-ingesting', async () => {
+        vi.spyOn(kbApi, 'setRetrievalMode').mockResolvedValue(undefined);
+        vi.spyOn(kbApi, 'ingestFolderItem');
+        const checkbox = await openIngestedFile(null);
+        expect(checkbox).not.toBeChecked();
+
+        await userEvent.click(checkbox);
+
+        await waitFor(() => expect(kbApi.setRetrievalMode).toHaveBeenCalledWith('doc-1', 'always_include'));
+        await waitFor(() => expect(checkbox).toBeChecked());
+        expect(kbApi.ingestFolderItem).not.toHaveBeenCalled();
+      });
+
+      it('switches an always-include file back to retrieve', async () => {
+        vi.spyOn(kbApi, 'setRetrievalMode').mockResolvedValue(undefined);
+        const checkbox = await openIngestedFile('always_include');
+        expect(checkbox).toBeChecked();
+
+        await userEvent.click(checkbox);
+
+        await waitFor(() => expect(kbApi.setRetrievalMode).toHaveBeenCalledWith('doc-1', 'retrieve'));
+        await waitFor(() => expect(checkbox).not.toBeChecked());
+      });
+
+      it('leaves the checkbox unchanged when the update fails', async () => {
+        vi.spyOn(kbApi, 'setRetrievalMode').mockRejectedValue(new Error('boom'));
+        const checkbox = await openIngestedFile(null);
+
+        await userEvent.click(checkbox);
+
+        await waitFor(() => expect(kbApi.setRetrievalMode).toHaveBeenCalled());
+        expect(checkbox).not.toBeChecked();
+      });
+    });
+
     it('returns to the root folder via the center pane\'s "Root" breadcrumb', async () => {
       vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([
         { id: 'd1', name: 'Subfolder', mimeType: null, sizeBytes: 0, isFolder: true, driveId: 'drive-1', alreadyIngested: false, ingestedDocumentId: null, downloadUrl: null },

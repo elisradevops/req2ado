@@ -6,6 +6,10 @@ export interface KbCitation {
   sourceFile: string;
   similarity: number;
   relevance: 'relevant' | 'not_relevant' | 'unknown';
+  // 'always': an always-include (Full Context) file injected in full and never
+  // scored against the section, so `similarity` is a placeholder, not a score.
+  // Absent (older jobs) means 'retrieved'.
+  inclusion?: 'retrieved' | 'always';
 }
 
 interface RelevancePresentation {
@@ -66,15 +70,20 @@ export function KbCitationChips({ citations }: { citations: KbCitation[] | undef
         // "NaN%" in the tooltip -- NaN.toFixed(0) returns the string "NaN",
         // not an error, so this needs its own explicit guard.
         const similarityPercent = Number.isFinite(citation.similarity) ? `${(citation.similarity * 100).toFixed(0)}%` : 'unknown';
+        // An always-included file was never scored against the section, so it
+        // gets its own label and no score -- showing its placeholder
+        // similarity would read as a (meaningless) relevance percentage.
+        const always = citation.inclusion === 'always';
+        const chipLabel = always ? 'Always included' : presentation.chipLabel;
+        const tooltip = always
+          ? 'Included in full in every survey (Full Context mode); not scored against this section.'
+          : `${presentation.tooltipLabel} -- closest-passage match: ${similarityPercent}`;
         return (
-          <Tooltip
-            key={citation.sourceFile}
-            content={`${presentation.tooltipLabel} -- retrieval text-overlap score: ${similarityPercent} (not a relevance measure; this KB doc is a process/style guide, so overlap with a specific technical requirement is naturally low even when the guidance applies)`}
-          >
+          <Tooltip key={citation.sourceFile} content={tooltip}>
             <Chip bg={presentation.bg} color={presentation.color} className="border" style={{ borderColor: presentation.border }}>
               {Icon && <Icon className="h-3 w-3" />}
               <bdi>
-                {presentation.chipLabel} · {citation.sourceFile}
+                {chipLabel} · {citation.sourceFile}
               </bdi>
             </Chip>
           </Tooltip>

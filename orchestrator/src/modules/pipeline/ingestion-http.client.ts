@@ -911,6 +911,17 @@ export class IngestionHttpClient {
     }
   }
 
+  async setRetrievalMode(userId: string, sourceId: string, retrievalMode: 'retrieve' | 'always_include'): Promise<void> {
+    const response = await fetch(`${this.baseUrl}/kb/documents/retrieval-mode`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId, source_id: sourceId, retrieval_mode: retrievalMode }),
+    });
+    if (!response.ok) {
+      throw await _ingestionError(response, `Ingestion PUT /kb/documents/retrieval-mode request failed: `);
+    }
+  }
+
   async browseFolder(url: string, graphToken?: string | null): Promise<FolderChild[]> {
     const response = await fetch(`${this.baseUrl}/kb/browse-folder`, {
       method: 'POST',

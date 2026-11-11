@@ -8,6 +8,7 @@ import {
   getSharePointStatus,
   ingestFolderItem,
   reconnectSharePoint,
+  setRetrievalMode,
   type FolderTreeEntry,
   type SharePointStatus,
 } from '../api/kb';
@@ -177,6 +178,8 @@ export function KnowledgeBase(): React.ReactElement {
   // detail pane before ingest -- keyed by entry.id so switching the
   // selected file never leaks one file's choice onto another's checkbox.
   const [alwaysIncludeSelection, setAlwaysIncludeSelection] = useState<Record<string, boolean>>({});
+  // Entry id whose retrieval-mode switch (on an already-ingested file) is in flight.
+  const [modeUpdatingId, setModeUpdatingId] = useState<string | null>(null);
 
   const [documentPendingRemoval, setDocumentPendingRemoval] = useState<PendingRemoval | null>(null);
   const [isRemoving, setIsRemoving] = useState(false);
@@ -203,6 +206,39 @@ export function KnowledgeBase(): React.ReactElement {
 
   function ingestedDocIdOf(entry: FolderTreeEntry): string | null {
     return ingestOverrides[entry.id]?.docId ?? entry.ingestedDocumentId;
+  }
+
+  // The user's choice this session, else the stored mode from the browse.
+  function isAlwaysInclude(entry: FolderTreeEntry): boolean {
+    return alwaysIncludeSelection[entry.id] ?? entry.retrievalMode === 'always_include';
+  }
+
+  // Before ingest the choice is only recorded (applied at ingest). On an
+  // ingested file it is applied immediately by retagging the stored chunks,
+  // and recorded only once that succeeded so the checkbox never claims a mode
+  // the index doesn't have.
+  async function handleToggleAlwaysInclude(entry: FolderTreeEntry, value: boolean): Promise<void> {
+    const docId = isIngested(entry) ? ingestedDocIdOf(entry) : null;
+    if (!docId) {
+      setAlwaysIncludeSelection((prev) => ({ ...prev, [entry.id]: value }));
+      return;
+    }
+    if (modeUpdatingId) return;
+    setModeUpdatingId(entry.id);
+    try {
+      await setRetrievalMode(docId, value ? 'always_include' : 'retrieve');
+      setAlwaysIncludeSelection((prev) => ({ ...prev, [entry.id]: value }));
+      showToast(
+        value
+          ? `"${entry.name}" will now be included in full in every survey.`
+          : `"${entry.name}" will now be retrieved only when relevant.`,
+        'success',
+      );
+    } catch (err) {
+      showErrorToast(`Failed to update "${entry.name}" — please try again.`, err);
+    } finally {
+      setModeUpdatingId(null);
+    }
   }
 
   // Optional urlOverride: the mount-restore effect below calls this with the
@@ -306,10 +342,10 @@ export function KnowledgeBase(): React.ReactElement {
     const reingest = isIngested(entry);
     try {
       const relativePath = currentFolder.path ? `${currentFolder.path}/${entry.name}` : entry.name;
-      // A re-ingest of an already-ingested file keeps its stored mode rather
-      // than silently resetting an always-include doc to similarity retrieval.
-      const retrievalMode =
-        alwaysIncludeSelection[entry.id] || entry.retrievalMode === 'always_include' ? 'always_include' : undefined;
+      // A re-ingest of an already-ingested file keeps its current mode (the
+      // user's switch this session, else the stored one) rather than silently
+      // resetting an always-include doc to similarity retrieval.
+      const retrievalMode = isAlwaysInclude(entry) ? 'always_include' : undefined;
       const result = await ingestFolderItem(entry.name, entry.id, entry.downloadUrl, relativePath, userId, retrievalMode);
       setIngestOverrides((prev) => ({
         ...prev,
@@ -462,10 +498,9 @@ export function KnowledgeBase(): React.ReactElement {
                 ingested={selectedFile ? isIngested(selectedFile) : false}
                 chunkCount={selectedFile ? chunkCountOf(selectedFile) : null}
                 isIngesting={selectedFile ? ingestingId === selectedFile.id : false}
-                alwaysInclude={selectedFile ? (alwaysIncludeSelection[selectedFile.id] ?? false) : false}
-                onToggleAlwaysInclude={(value) =>
-                  selectedFile && setAlwaysIncludeSelection((prev) => ({ ...prev, [selectedFile.id]: value }))
-                }
+                alwaysInclude={selectedFile ? isAlwaysInclude(selectedFile) : false}
+                isUpdatingMode={selectedFile ? modeUpdatingId === selectedFile.id : false}
+                onToggleAlwaysInclude={(value) => selectedFile && handleToggleAlwaysInclude(selectedFile, value)}
                 onIngest={() => selectedFile && handleIngestFile(selectedFile)}
                 onRequestRemove={() => selectedFile && handleRequestRemove(selectedFile)}
               />

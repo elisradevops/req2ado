@@ -794,6 +794,7 @@ def _merge_always_include_context(
                 source_file=c["source_file"],
                 similarity=c["similarity"],
                 relevance=KbCitationRelevance.RELEVANT,
+                inclusion="always",
             )
             for c in always_include_raw
         ),

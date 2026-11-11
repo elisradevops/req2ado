@@ -150,6 +150,24 @@ export class KbController {
     return { ok: true };
   }
 
+  // Switches an ingested file between "retrieve" (similarity-gated) and "always_include" (full text in every SURVEY prompt).
+  @Put('documents/:id/retrieval-mode')
+  async setRetrievalMode(
+    @Param('id') id: string,
+    @CurrentUser() user: SessionUser,
+    @Body() body: { retrievalMode?: unknown },
+  ): Promise<{ ok: true }> {
+    const mode = body?.retrievalMode;
+    if (mode !== 'retrieve' && mode !== 'always_include') {
+      throw new BadRequestException("retrievalMode must be 'retrieve' or 'always_include'");
+    }
+    const updated = await this.kbService.setRetrievalMode(id, user.userId, mode);
+    if (!updated) {
+      throw new NotFoundException(`Document ${id} not found`);
+    }
+    return { ok: true };
+  }
+
   @Post('ingest-item')
   async ingestItem(
     @CurrentUser() user: SessionUser,
