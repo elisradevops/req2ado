@@ -7,6 +7,7 @@ import { KbIngestBatchController } from './kb-ingest-batch.controller';
 import { KbIngestBatchService } from './kb-ingest-batch.service';
 import { DEFAULT_BACKOFF_MS, KbIngestRunner } from './kb-ingest-runner';
 import { KbIngestRunnerTimer } from './kb-ingest-runner-timer';
+import { KbIngestRetentionService } from './kb-ingest-retention.service';
 import { IngestionHttpClient } from '../pipeline/ingestion-http.client';
 import { AuthModule } from '../auth/auth.module';
 import { CredentialVaultService } from '../auth/credential-vault.service';
@@ -67,6 +68,13 @@ import { KB_PROFILE_QUEUE, KbProfileScheduler } from './kb-profile.scheduler';
           maxAttempts: config.get<number>('KB_INGEST_MAX_ATTEMPTS')!,
           backoffMs: DEFAULT_BACKOFF_MS,
         }),
+    },
+    {
+      // Forgets finished batches after KB_INGEST_RETENTION_MS, checked every six hours.
+      provide: KbIngestRetentionService,
+      inject: [KbIngestBatchService, ConfigService],
+      useFactory: (batches: KbIngestBatchService, config: ConfigService) =>
+        new KbIngestRetentionService(batches, 6 * 60 * 60_000, config.get<number>('KB_INGEST_RETENTION_MS')!),
     },
     {
       provide: KbIngestRunnerTimer,

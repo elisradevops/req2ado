@@ -333,4 +333,50 @@ describe('KbIngestBatchService', () => {
       expect(await service.resume(OTHER_USER, created.id)).toBeNull();
     });
   });
+
+  describe('deleteFinishedBefore()', () => {
+    const DAY = 24 * 60 * 60_000;
+    const NOW = new Date('2026-11-12T09:00:00.000Z');
+    const ago = (days: number) => new Date(NOW.getTime() - days * DAY);
+
+    function seed() {
+      prisma = makeKbIngestPrismaFake({
+        batches: [
+          { id: 'old-done', userId: USER, status: 'completed', finishedAt: ago(40), driveId: 'd', folderPath: '' },
+          { id: 'old-errors', userId: USER, status: 'completed_with_errors', finishedAt: ago(31), driveId: 'd', folderPath: '' },
+          { id: 'old-cancelled', userId: OTHER_USER, status: 'cancelled', finishedAt: ago(35), driveId: 'd', folderPath: '' },
+          { id: 'old-failed', userId: USER, status: 'failed', finishedAt: ago(90), driveId: 'd', folderPath: '' },
+          { id: 'recent', userId: USER, status: 'completed', finishedAt: ago(5), driveId: 'd', folderPath: '' },
+          { id: 'old-but-paused', userId: USER, status: 'paused', createdAt: ago(60), finishedAt: null, driveId: 'd', folderPath: '' },
+          { id: 'old-but-running', userId: USER, status: 'running', createdAt: ago(60), finishedAt: null, driveId: 'd', folderPath: '' },
+        ],
+        items: [
+          { id: 'i1', batchId: 'old-done', ordinal: 0, driveId: 'd', itemId: 'a', name: 'a', relativePath: 'a', sizeBytes: 1, retrievalMode: 'retrieve', state: 'added' },
+          { id: 'i2', batchId: 'recent', ordinal: 0, driveId: 'd', itemId: 'b', name: 'b', relativePath: 'b', sizeBytes: 1, retrievalMode: 'retrieve', state: 'added' },
+        ],
+      });
+      service = new KbIngestBatchService(prisma as any);
+    }
+
+    it('removes finished batches older than the cutoff, with their files, and nothing else', async () => {
+      seed();
+
+      expect(await service.deleteFinishedBefore(ago(30))).toBe(4);
+
+      expect(prisma.batches().map((b) => b.id).sort()).toEqual(['old-but-paused', 'old-but-running', 'recent']);
+      expect(prisma.items().map((i) => i.id)).toEqual(['i2']);
+    });
+
+    it('never touches a batch that has not finished, however old', async () => {
+      seed();
+
+      await service.deleteFinishedBefore(new Date(NOW.getTime() + DAY));
+
+      expect(prisma.batches().map((b) => b.id).sort()).toEqual(['old-but-paused', 'old-but-running']);
+    });
+
+    it('returns 0 when there is nothing to remove', async () => {
+      expect(await service.deleteFinishedBefore(ago(30))).toBe(0);
+    });
+  });
 });

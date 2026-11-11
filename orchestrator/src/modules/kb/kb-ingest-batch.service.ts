@@ -286,6 +286,16 @@ export class KbIngestBatchService {
     return toBatchView(batch, items, true);
   }
 
+  /**
+   * Removes batches that finished before `cutoff`, with their files (the foreign key cascades). A batch still queued, running
+   * or paused is never removed, however old: someone may still be waiting on it. The documents the files added are not
+   * touched; this only forgets the record of the batch. Returns how many batches went.
+   */
+  async deleteFinishedBefore(cutoff: Date): Promise<number> {
+    const removed = await this.prisma.kbIngestBatch.deleteMany({ where: { status: { in: FINISHED_BATCH_STATUSES }, finishedAt: { lt: cutoff } } });
+    return removed.count;
+  }
+
   /** The user's recent batches, newest first, with counts but without their files. */
   async list(userId: string, options: { active?: boolean; limit?: number }): Promise<KbIngestBatchView[]> {
     const limit = Math.min(Math.max(options.limit ?? 10, 1), 50);

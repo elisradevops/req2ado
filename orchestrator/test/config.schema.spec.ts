@@ -134,6 +134,7 @@ describe('configSchema batch/folder ingestion fields (NEW-05)', () => {
     expect(result.KB_INGEST_TICK_MS).toBe(2_000);
     expect(result.KB_INGEST_ITEM_TIMEOUT_MS).toBe(30 * 60_000);
     expect(result.KB_INGEST_MAX_ATTEMPTS).toBe(3);
+    expect(result.KB_INGEST_RETENTION_MS).toBe(30 * 24 * 60 * 60_000);
   });
 
   it('coerces knowledge-base batch ingest overrides from string env values', () => {

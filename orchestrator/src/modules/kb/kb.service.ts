@@ -21,6 +21,22 @@ export interface IngestUrlResult {
   skippedUnchanged: boolean;
 }
 
+export type KbProfileState = 'none' | 'queued' | 'building' | 'ready' | 'no_model';
+
+/** What the page shows about the grading rubric the knowledge base builds: whether it is ready, and what each document gave it. */
+export interface KbProfileView {
+  state: KbProfileState;
+  // When the stored profile was built; null when none is stored.
+  builtAt: string | null;
+  version: string | null;
+  builtWith: string | null;
+  docsInKb: number;
+  docsContributing: number;
+  truncated: boolean;
+  docs: { file: string; status: string; reason: string | null; categories: number; rules: number; typeDefinitions: number; glossary: number }[];
+  conflicts: { kind: string; key: string; variantCount: number }[];
+}
+
 export interface IngestedDocumentSummary {
   id: string;
   userId: string;
@@ -92,7 +108,11 @@ export class KbService {
     private readonly ingestionClient: IngestionHttpClient,
     private readonly credentialVault: CredentialVaultService,
     // Rebuilds the user's KB profile in the background after a change of their knowledge base (never fails the action).
-    private readonly profileScheduler?: { schedule(userId: string): Promise<void> },
+    private readonly profileScheduler?: {
+      schedule(userId: string): Promise<void>;
+      activity?(userId: string): Promise<'idle' | 'queued' | 'building'>;
+      hasModel?(userId: string): Promise<boolean>;
+    },
     // Continues batch ingests that paused for want of a valid SharePoint token once a new one is saved.
     private readonly batchResumer?: { resumePausedBy(reason: string): Promise<number> },
   ) {}
@@ -278,6 +298,51 @@ export class KbService {
         retrievalMode: ingestedDocumentId !== null ? (retrievalModeByDriveItemId.get(child.id) ?? null) : null,
       };
     });
+  }
+
+  /**
+   * The grading rubric's state for the page's ingestion report. The profile is built in the background after an ingest (a
+   * debounce, then a run of LLM calls), so `state` says whether a build is queued or running, and the stored profile, if any,
+   * is returned either way (the previous one while a new one builds). With none stored: `none` when a build could start,
+   * `no_model` when the user has no model connection to build it with (the first job builds it then, with its own).
+   */
+  async getProfile(userId: string): Promise<KbProfileView> {
+    const activityPromise: Promise<'idle' | 'queued' | 'building'> = this.profileScheduler?.activity?.(userId) ?? Promise.resolve('idle');
+    const [stored, activity] = await Promise.all([this.ingestionClient.getKbProfile(userId), activityPromise]);
+    if (!stored) {
+      const hasModel = (await this.profileScheduler?.hasModel?.(userId)) ?? true;
+      return {
+        state: activity !== 'idle' ? activity : hasModel ? 'none' : 'no_model',
+        builtAt: null,
+        version: null,
+        builtWith: null,
+        docsInKb: 0,
+        docsContributing: 0,
+        truncated: false,
+        docs: [],
+        conflicts: [],
+      };
+    }
+    const profile = stored.profile ?? {};
+    return {
+      state: activity !== 'idle' ? activity : 'ready',
+      builtAt: profile.built_at ?? null,
+      version: stored.version,
+      builtWith: stored.builtWith,
+      docsInKb: stored.docsInKb,
+      docsContributing: stored.docsContributing,
+      truncated: profile.truncated ?? false,
+      docs: (profile.docs ?? []).map((d) => ({
+        file: d.file,
+        status: d.status,
+        reason: d.reason,
+        categories: d.categories,
+        rules: d.rules,
+        typeDefinitions: d.type_definitions,
+        glossary: d.glossary,
+      })),
+      conflicts: (profile.conflicts ?? []).map((c) => ({ kind: c.kind, key: c.key, variantCount: c.variants.length })),
+    };
   }
 
   /**

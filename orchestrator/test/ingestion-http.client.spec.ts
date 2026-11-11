@@ -865,4 +865,74 @@ describe('IngestionHttpClient.level: which rubric the job was scored with', () =
       await expect(new IngestionHttpClient('http://ingestion:8000').ingestDriveItem('d', 'i', 'u', null)).rejects.toMatchObject({ status });
     });
   });
+
+  describe('browsing: the drive each child lives in', () => {
+    const child = (overrides: Record<string, unknown> = {}) => ({
+      id: 'f1', name: 'a.pdf', mime_type: 'application/pdf', size_bytes: 5, is_folder: false, drive_id: null, parent_drive_id: 'drive-1', download_url: 'https://dl', ...overrides,
+    });
+
+    it('browseFolder() maps parent_drive_id to parentDriveId for files and folders alike', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        json: async () => [child(), child({ id: 'd1', is_folder: true, drive_id: 'drive-1', download_url: null })],
+      });
+
+      const children = await new IngestionHttpClient('http://ingestion:8000').browseFolder('https://contoso.sharepoint.com/folder');
+
+      expect(children.map((c) => [c.id, c.driveId, c.parentDriveId])).toEqual([
+        ['f1', null, 'drive-1'],
+        ['d1', 'drive-1', 'drive-1'],
+      ]);
+    });
+
+    it('browseChildren() does too', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => [child({ parent_drive_id: 'drive-9' })] });
+
+      const children = await new IngestionHttpClient('http://ingestion:8000').browseChildren('drive-9', 'folder-1');
+
+      expect(children[0].parentDriveId).toBe('drive-9');
+    });
+
+    it('is null when an older ingestion service does not send it', async () => {
+      const { parent_drive_id: _omitted, ...older } = child();
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => [older] });
+
+      const children = await new IngestionHttpClient('http://ingestion:8000').browseFolder('https://contoso.sharepoint.com/folder');
+
+      expect(children[0].parentDriveId).toBeNull();
+    });
+  });
+
+  describe('getKbProfile()', () => {
+    const stored = {
+      version: 'v1', builtWith: 'm', docsInKb: 2, docsContributing: 1,
+      profile: {
+        built_at: '2026-11-11T10:00:00Z', truncated: false,
+        docs: [{ file: 'a.pptx', status: 'contributed', reason: null, categories: 3, rules: 5, type_definitions: 1, glossary: 2 }],
+        conflicts: [{ kind: 'type_definition', key: 'requirement', variants: [{ text: 'x', sources: ['a'] }, { text: 'y', sources: ['b'] }] }],
+        categories: [], rules: [], glossary: [], type_definitions: [],
+      },
+    };
+
+    it('GETs the stored profile for the user, encoding the id', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200, json: async () => stored });
+
+      const result = await new IngestionHttpClient('http://ingestion:8000').getKbProfile('Project\\Area 1');
+
+      expect((global.fetch as jest.Mock).mock.calls[0][0]).toBe('http://ingestion:8000/kb/profile?user_id=Project%5CArea+1');
+      expect(result).toEqual(stored);
+    });
+
+    it('is null when no profile is stored yet', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 404, json: async () => ({}), text: async () => '' });
+
+      expect(await new IngestionHttpClient('http://ingestion:8000').getKbProfile('u')).toBeNull();
+    });
+
+    it('throws an IngestionHttpError for any other failure', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 500, json: async () => ({ detail: 'boom' }), text: async () => '{"detail":"boom"}' });
+
+      await expect(new IngestionHttpClient('http://ingestion:8000').getKbProfile('u')).rejects.toMatchObject({ status: 500 });
+    });
+  });
 });

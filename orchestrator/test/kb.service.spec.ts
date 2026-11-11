@@ -485,4 +485,78 @@ describe('KbService', () => {
       expect(spy).toHaveBeenCalledWith('u', ingestResult, { relativePath: 'Sub/guide.pptx', docType: null, retrievalMode: 'always_include' });
     });
   });
+
+  describe('getProfile()', () => {
+    const stored = {
+      version: 'v1', builtWith: 'model-1', docsInKb: 3, docsContributing: 2,
+      profile: {
+        built_at: '2026-11-11T10:00:00Z', truncated: true,
+        docs: [
+          { file: 'a.pptx', status: 'contributed', reason: null, categories: 10, rules: 32, type_definitions: 0, glossary: 7 },
+          { file: 'b.pptx', status: 'not_relevant', reason: 'about recipes', categories: 0, rules: 0, type_definitions: 0, glossary: 0 },
+        ],
+        conflicts: [{ kind: 'type_definition', key: 'requirement', variants: [{ text: 'x', sources: ['a'] }, { text: 'y', sources: ['b'] }] }],
+      },
+    };
+
+    function build(options: { stored?: unknown; activity?: 'idle' | 'queued' | 'building'; hasModel?: boolean } = {}) {
+      const ingestionClient = { getKbProfile: jest.fn().mockResolvedValue(options.stored === undefined ? stored : options.stored) };
+      const scheduler = { schedule: jest.fn(), activity: jest.fn().mockResolvedValue(options.activity ?? 'idle'), hasModel: jest.fn().mockResolvedValue(options.hasModel ?? true) };
+      return { service: new KbService({} as any, ingestionClient as any, fakeCredentialVault as any, scheduler as any), ingestionClient, scheduler };
+    }
+
+    it('reports a stored profile as ready, with what each document contributed and the conflicts', async () => {
+      const { service } = build();
+
+      expect(await service.getProfile('u')).toEqual({
+        state: 'ready',
+        builtAt: '2026-11-11T10:00:00Z',
+        version: 'v1',
+        builtWith: 'model-1',
+        docsInKb: 3,
+        docsContributing: 2,
+        truncated: true,
+        docs: [
+          { file: 'a.pptx', status: 'contributed', reason: null, categories: 10, rules: 32, typeDefinitions: 0, glossary: 7 },
+          { file: 'b.pptx', status: 'not_relevant', reason: 'about recipes', categories: 0, rules: 0, typeDefinitions: 0, glossary: 0 },
+        ],
+        conflicts: [{ kind: 'type_definition', key: 'requirement', variantCount: 2 }],
+      });
+    });
+
+    it.each(['queued', 'building'] as const)('says %s while a build is pending or running, and still shows the previous profile', async (activity) => {
+      const { service } = build({ activity });
+
+      const view = await service.getProfile('u');
+
+      expect(view.state).toBe(activity);
+      expect(view.docs).toHaveLength(2);
+    });
+
+    it('with nothing stored: none when a build could start, no_model when no model connection exists', async () => {
+      expect((await build({ stored: null }).service.getProfile('u')).state).toBe('none');
+      expect((await build({ stored: null, hasModel: false }).service.getProfile('u')).state).toBe('no_model');
+    });
+
+    it('with nothing stored but a build under way, says so', async () => {
+      const view = await build({ stored: null, activity: 'building' }).service.getProfile('u');
+
+      expect(view).toMatchObject({ state: 'building', docs: [], conflicts: [], builtAt: null, version: null });
+    });
+
+    it('tolerates a stored profile without optional parts', async () => {
+      const { service } = build({ stored: { version: 'v1', builtWith: 'm', docsInKb: 0, docsContributing: 0, profile: {} } });
+
+      expect(await service.getProfile('u')).toMatchObject({ state: 'ready', docs: [], conflicts: [], builtAt: null, truncated: false });
+    });
+
+    it('works without a scheduler (no queue configured): ready if stored, none otherwise', async () => {
+      const ingestionClient = { getKbProfile: jest.fn().mockResolvedValue(stored) };
+      const service = new KbService({} as any, ingestionClient as any, fakeCredentialVault as any);
+
+      expect((await service.getProfile('u')).state).toBe('ready');
+      ingestionClient.getKbProfile.mockResolvedValue(null);
+      expect((await service.getProfile('u')).state).toBe('none');
+    });
+  });
 });

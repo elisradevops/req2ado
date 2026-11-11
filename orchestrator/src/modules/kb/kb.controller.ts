@@ -1,5 +1,5 @@
 import { BadRequestException, Body, Controller, Delete, Get, HttpException, NotFoundException, Param, Post, Put, Query } from '@nestjs/common';
-import { BrowseFolderEntry, FolderIngestUrlResult, IngestedDocumentSummary, IngestUrlResult, KbService } from './kb.service';
+import { BrowseFolderEntry, FolderIngestUrlResult, IngestedDocumentSummary, IngestUrlResult, KbProfileView, KbService } from './kb.service';
 import { IngestionHttpError, Rubric, SharePointStatus } from '../pipeline/ingestion-http.client';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { SessionUser } from '../auth/session.service';
@@ -108,6 +108,13 @@ export class KbController {
 
   // The rubric the session user's jobs are graded against: the categories derived from their knowledge base (or the built-in ones), each with
   // its pass condition, whether it is pinned, and what was removed. Scoped to the session: no request shape can ask for someone else's.
+  // The grading rubric's state for the ingestion report: ready / building / queued, and what each document contributed. Scoped to
+  // the session: no request shape can ask for someone else's.
+  @Get('profile')
+  async profile(@CurrentUser() user: SessionUser): Promise<KbProfileView> {
+    return this.kbService.getProfile(user.userId);
+  }
+
   @Get('rubric')
   async getRubric(@CurrentUser() user: SessionUser): Promise<Rubric> {
     return this.kbService.getRubric(user.userId);

@@ -221,4 +221,15 @@ describe('KbController', () => {
       expect(kbService.setRetrievalMode).toHaveBeenCalledWith('doc-1', TEST_USER.userId, 'always_include');
     });
   });
+
+  describe('profile()', () => {
+    it('returns the profile view for the session user, never one named in the request', async () => {
+      const view = { state: 'ready' };
+      const kbService = { getProfile: jest.fn().mockResolvedValue(view) };
+      const controller = new KbController(kbService as any);
+
+      expect(await controller.profile(TEST_USER)).toBe(view);
+      expect(kbService.getProfile).toHaveBeenCalledWith(TEST_USER.userId);
+    });
+  });
 });

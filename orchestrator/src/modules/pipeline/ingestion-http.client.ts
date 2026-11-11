@@ -70,6 +70,20 @@ export interface ScoreExplanation {
   rubric: { source: string; version: string | null };
 }
 
+/** GET /kb/profile as ingestion returns it (only the parts the knowledge-base page reads are typed). */
+export interface StoredKbProfile {
+  version: string;
+  builtWith: string;
+  docsInKb: number;
+  docsContributing: number;
+  profile: {
+    built_at?: string | null;
+    truncated?: boolean;
+    docs?: { file: string; status: string; reason: string | null; categories: number; rules: number; type_definitions: number; glossary: number }[];
+    conflicts?: { kind: string; key: string; variants: unknown[] }[];
+  };
+}
+
 export class IngestionHttpError extends Error {
   // traceback: ingestion's own Python traceback, present only when ingestion
   // runs with EXPOSE_ERROR_DETAILS on. Kept off `message` so audit trails and
@@ -746,6 +760,19 @@ export class IngestionHttpClient {
     return (await response.json()) as { version: string; builtWith: string; docsInKb: number; docsContributing: number };
   }
 
+  /**
+   * The stored KB profile for the user (what each document contributed to the grading rubric, and the conflicts between
+   * documents), exactly as ingestion holds it. null: none is stored yet (no build has finished, or the user has no documents).
+   */
+  async getKbProfile(userId: string): Promise<StoredKbProfile | null> {
+    const response = await fetch(`${this.baseUrl}/kb/profile?${new URLSearchParams({ user_id: userId }).toString()}`);
+    if (response.status === 404) return null;
+    if (!response.ok) {
+      throw await _ingestionError(response, `Ingestion GET /kb/profile request failed: `);
+    }
+    return (await response.json()) as StoredKbProfile;
+  }
+
   async ingestUrl(
     url: string,
     userId: string,
@@ -1050,6 +1077,9 @@ export interface FolderChild {
   sizeBytes: number;
   isFolder: boolean;
   driveId: string | null;
+  // The drive this item lives in, for files and folders alike. `driveId` is only for descending into a folder; a batch ingest
+  // addresses a FILE by drive + item id. Null from an older ingestion service that does not send it.
+  parentDriveId: string | null;
   // Files only -- Graph's pre-signed download URL, needed to ingest this
   // exact item via /kb/ingest-item without its own sharing link.
   downloadUrl: string | null;
@@ -1063,6 +1093,7 @@ function mapFolderChildren(
     size_bytes: number;
     is_folder: boolean;
     drive_id: string | null;
+    parent_drive_id?: string | null;
     download_url: string | null;
   }[],
 ): FolderChild[] {
@@ -1073,6 +1104,7 @@ function mapFolderChildren(
     sizeBytes: item.size_bytes,
     isFolder: item.is_folder,
     driveId: item.drive_id,
+    parentDriveId: item.parent_drive_id ?? null,
     downloadUrl: item.download_url,
   }));
 }

@@ -263,6 +263,9 @@ export const configSchema = z.object({
   KB_INGEST_TICK_MS: z.coerce.number().default(2_000),
   KB_INGEST_ITEM_TIMEOUT_MS: z.coerce.number().default(30 * 60_000),
   KB_INGEST_MAX_ATTEMPTS: z.coerce.number().int().min(1).default(3),
+  // How long a finished knowledge-base batch is kept (its per-file outcomes feed the ingestion report), then forgotten. The
+  // documents it added are not affected.
+  KB_INGEST_RETENTION_MS: z.coerce.number().default(30 * 24 * 60 * 60_000),
 });
 
 export type AppConfig = z.infer<typeof configSchema>;
