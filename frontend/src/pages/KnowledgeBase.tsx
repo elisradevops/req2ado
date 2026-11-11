@@ -5,7 +5,6 @@ import {
   browseSharedFolder,
   browseSubfolder,
   deleteIngestedDocument,
-  getSharePointStatus,
   ingestFolderItem,
   reconnectSharePoint,
   setRetrievalMode,
@@ -13,11 +12,13 @@ import {
   type SharePointStatus,
 } from '../api/kb';
 import { SharePointFolderTree } from '../components/SharePointFolderTree';
+import { KbSourceBar } from '../components/KbSourceBar';
 import { KbFileList } from '../components/KbFileList';
 import { KbFileDetailPane } from '../components/KbFileDetailPane';
 import { RubricPanel } from '../components/RubricPanel';
 import { useToast } from '../components/ToastProvider';
 import { useUserId } from '../store/authStore';
+import { useConnectionStatusStore } from '../store/connectionStatusStore';
 import { PageHeader } from '../ui/PageHeader';
 import { TextField } from '../ui/TextField';
 import { Button } from '../ui/Button';
@@ -25,61 +26,9 @@ import { Spinner } from '../ui/Spinner';
 import { Card } from '../ui/Card';
 import { Skeleton } from '../ui/Skeleton';
 import { EmptyState } from '../ui/EmptyState';
-import { Chip } from '../ui/Chip';
 import { Alert } from '../ui/Alert';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { Dialog } from '../ui/Dialog';
-import { formatSharePointExpiry } from '../utils/sharePointStatus';
-import { cn } from '../lib/cn';
-
-// Same semantic-token approach Settings.tsx's own SharePoint status chip
-// already uses (TONE_CHIP_CLASSES) -- was raw bg/color CSS-var strings
-// (including a bare hex white) here, a second, independent color system for
-// the identical concept.
-const STATUS_COPY: Record<SharePointStatus['status'], { label: string; chipClassName: string }> = {
-  valid: { label: 'Connected', chipClassName: 'bg-ok-soft text-ok-ink border-ok-border' },
-  invalid: { label: 'Token invalid', chipClassName: 'bg-danger-soft text-danger-ink border-danger-border' },
-  unreachable: { label: "Can't reach Microsoft Graph", chipClassName: 'bg-warning-soft text-warning-ink border-warning-border' },
-  not_configured: { label: 'Not configured', chipClassName: 'bg-surface-alt text-ink-3 border-hairline-strong' },
-};
-
-function SharePointStatusStrip({ onReconnect }: { onReconnect: () => void }): React.ReactElement {
-  const [status, setStatus] = useState<SharePointStatus | null>(null);
-
-  useEffect(() => {
-    getSharePointStatus()
-      .then(setStatus)
-      .catch(() => setStatus({ status: 'unreachable', expiresInSeconds: null }));
-  }, []);
-
-  if (!status) {
-    return (
-      <Card>
-        <div className="flex items-center gap-2 p-2.5">
-          <Skeleton className="h-5 w-40" />
-        </div>
-      </Card>
-    );
-  }
-
-  const copy = STATUS_COPY[status.status];
-  const expiry = formatSharePointExpiry(status.expiresInSeconds);
-
-  return (
-    <Card>
-      <div className="flex flex-wrap items-center gap-2.5 p-2.5">
-        <Chip className={cn('border text-xs font-normal', copy.chipClassName)}>SharePoint</Chip>
-        <span className="text-sm text-ink-2">
-          {copy.label}
-          {expiry && <span className="text-ink-3"> · {expiry}</span>}
-        </span>
-        <Button size="sm" variant="outline" onClick={onReconnect} className="ml-auto">
-          Reconnect
-        </Button>
-      </div>
-    </Card>
-  );
-}
 
 // Maps the backend's Graph/SharePoint error status codes (see
 // ingestion/app/kb/graph_client.py's _error_for_status and
@@ -104,7 +53,7 @@ function describeIngestError(error: unknown): string {
         // session died" interceptor and log the user out of the whole app
         // over an expired SharePoint token, not an expired orchestrator
         // session.
-        return 'The server’s SharePoint access token has expired or is invalid — ask an admin to refresh it, then try again.';
+        return 'The SharePoint access token has expired or is invalid — use Reconnect above to refresh it, then try again.';
       case 403:
         return 'The configured SharePoint access token doesn’t have permission to read this link.';
       case 404:
@@ -145,10 +94,22 @@ const ROOT_FOLDER: CurrentFolder = { id: null, driveId: null, path: '', name: 'R
 // the underlying ingested documents were never actually lost.
 const KB_BROWSE_URL_STORAGE_KEY = 'req2ado-kb-browse-url';
 
+const SHAREPOINT_UNREACHABLE: SharePointStatus = { status: 'unreachable', expiresInSeconds: null };
+
 export function KnowledgeBase(): React.ReactElement {
   const { showToast, showErrorToast } = useToast();
   const userId = useUserId();
+  // What is typed in the URL field.
   const [browseUrl, setBrowseUrl] = useState('');
+  // The folder URL actually being shown: restored on load, or set by a successful browse. The source bar shows it.
+  const [sourceUrl, setSourceUrl] = useState<string | null>(null);
+  const [lastBrowsedAt, setLastBrowsedAt] = useState<number | null>(null);
+  // Shared with the rest of the app (polled and refreshed in one place); a check that failed reads as unreachable.
+  const sharePointEntry = useConnectionStatusStore((s) => s.sharePoint);
+  const sharePointStatus = sharePointEntry.error ? SHAREPOINT_UNREACHABLE : sharePointEntry.data;
+  useEffect(() => {
+    void useConnectionStatusStore.getState().refresh('sharePoint');
+  }, []);
   // The root folder's own children -- also what the left-pane tree walks
   // recursively (foldersOnly) and what the center pane shows by default.
   const [rootEntries, setRootEntries] = useState<FolderTreeEntry[] | null>(null);
@@ -189,7 +150,6 @@ export function KnowledgeBase(): React.ReactElement {
   const [isReconnecting, setIsReconnecting] = useState(false);
   const isReconnectingRef = useRef(false);
   const [reconnectError, setReconnectError] = useState<string | null>(null);
-  const [statusRefreshKey, setStatusRefreshKey] = useState(0);
 
   function isIngested(entry: FolderTreeEntry): boolean {
     return ingestOverrides[entry.id]?.ingested ?? entry.alreadyIngested;
@@ -244,9 +204,10 @@ export function KnowledgeBase(): React.ReactElement {
   // Optional urlOverride: the mount-restore effect below calls this with the
   // just-read localStorage value directly, since setBrowseUrl's own update
   // wouldn't be visible in this closure until the next render.
-  async function handleBrowse(urlOverride?: string): Promise<void> {
+  // Resolves true when the folder was browsed, false when it could not be (error shown) or a browse was already running.
+  async function handleBrowse(urlOverride?: string): Promise<boolean> {
     const url = urlOverride ?? browseUrl;
-    if (!url || !userId || browsingRef.current) return;
+    if (!url || !userId || browsingRef.current) return false;
     browsingRef.current = true;
     setBrowsing(true);
     setBrowseError(null);
@@ -265,8 +226,12 @@ export function KnowledgeBase(): React.ReactElement {
       setSelectedFileId(null);
       setIngestOverrides({});
       localStorage.setItem(KB_BROWSE_URL_STORAGE_KEY, url);
+      setSourceUrl(url);
+      setLastBrowsedAt(Date.now());
+      return true;
     } catch (error) {
       setBrowseError(describeIngestError(error));
+      return false;
     } finally {
       browsingRef.current = false;
       setBrowsing(false);
@@ -281,6 +246,7 @@ export function KnowledgeBase(): React.ReactElement {
     const saved = localStorage.getItem(KB_BROWSE_URL_STORAGE_KEY);
     if (!saved) return;
     setBrowseUrl(saved);
+    setSourceUrl(saved);
     void handleBrowse(saved);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- restore-on-mount only, not on every browseUrl/handleBrowse change
   }, [userId]);
@@ -417,7 +383,18 @@ export function KnowledgeBase(): React.ReactElement {
       }
       showToast('SharePoint reconnected.', 'success');
       setReconnectOpen(false);
-      setStatusRefreshKey((k) => k + 1);
+      useConnectionStatusStore.getState().record('sharePoint', status);
+      // The folder was not readable before (that is why the token was replaced), so the explorer is empty or showing a stale
+      // error. Browse it again now rather than leaving that until the user presses Browse, and put them back where they were.
+      setBrowseError(null);
+      const url = sourceUrl ?? browseUrl;
+      if (url) {
+        const previousFolder = currentFolder;
+        const browsed = await handleBrowse(url);
+        if (browsed && previousFolder.id && previousFolder.driveId) {
+          await navigateToFolder(previousFolder.id, previousFolder.driveId, previousFolder.path, previousFolder.name);
+        }
+      }
     } catch {
       setReconnectError('SharePoint rejected that token. Check you copied the whole value — they are long.');
     } finally {
@@ -432,22 +409,18 @@ export function KnowledgeBase(): React.ReactElement {
   return (
     <div className="flex flex-col gap-4">
       <PageHeader title="Knowledge Base" description="Documents your SURVEY jobs are judged against. Only visible to your own jobs." />
-      <SharePointStatusStrip key={statusRefreshKey} onReconnect={openReconnect} />
-      <Card>
-        <div className="flex max-w-[560px] items-end gap-1.5 p-4">
-          <TextField
-            label="Sharing URL"
-            helperText="Paste a SharePoint or OneDrive folder's 'Share' link -- every file and subfolder inside becomes browsable below."
-            value={browseUrl}
-            onChange={(event) => setBrowseUrl(event.target.value)}
-            fullWidth
-          />
-          <Button onClick={() => handleBrowse()} disabled={!browseUrl || !userId || browsing}>
-            {browsing && <Spinner />}
-            {browsing ? 'Browsing…' : 'Browse'}
-          </Button>
-        </div>
-      </Card>
+      <KbSourceBar
+        sourceUrl={sourceUrl}
+        draftUrl={browseUrl}
+        onDraftUrlChange={setBrowseUrl}
+        status={sharePointStatus}
+        browsing={browsing}
+        canBrowse={!!userId}
+        lastBrowsedAt={lastBrowsedAt}
+        onBrowse={() => void handleBrowse()}
+        onRefresh={() => void handleBrowse(sourceUrl ?? browseUrl)}
+        onReconnect={openReconnect}
+      />
       {browsing ? (
         <Card>
           <div className="flex flex-col gap-2 p-3.5">

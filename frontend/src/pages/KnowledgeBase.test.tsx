@@ -80,7 +80,9 @@ describe('KnowledgeBase', () => {
 
     await waitFor(() => expect(kbApi.browseSharedFolder).toHaveBeenCalledWith('https://share.example/remembered', 'user-descriptor-1'));
     await waitFor(() => expect(screen.getByText('remembered.docx')).toBeInTheDocument());
-    expect(screen.getByLabelText(/sharing url/i)).toHaveValue('https://share.example/remembered');
+    // The saved source is shown in the source bar; the URL form only appears under Change.
+    expect(screen.queryByLabelText(/sharing url/i)).toBeNull();
+    expect(screen.getByText('https://share.example/remembered')).toBeInTheDocument();
   });
 
   it('does not auto-browse on mount when no folder URL was previously saved', async () => {
@@ -541,7 +543,8 @@ describe('KnowledgeBase', () => {
         await Promise.resolve();
       });
 
-      await waitFor(() => expect(browseButton).not.toBeDisabled());
+      // The browse succeeded, so the URL form has collapsed into the source bar, whose Refresh is available again.
+      await waitFor(() => expect(screen.getByRole('button', { name: /^refresh$/i })).not.toBeDisabled());
       expect(kbApi.browseSharedFolder).toHaveBeenCalledTimes(1);
     });
 
@@ -743,6 +746,234 @@ describe('KnowledgeBase', () => {
       expect(screen.queryByText('nested.pdf')).toBeNull();
       expect(folderNav).toHaveTextContent(/root/i);
       expect(screen.getAllByText('Subfolder').length).toBeGreaterThan(0);
+    });
+  });
+});
+
+describe('KnowledgeBase source bar and reconnect', () => {
+  const SAVED = 'https://share.example/remembered';
+  const FILE: FolderTreeEntry = {
+    id: 'f1', name: 'guide.docx', mimeType: null, sizeBytes: 1024, isFolder: false, driveId: null, alreadyIngested: false, ingestedDocumentId: null, downloadUrl: 'https://dl/f1',
+  };
+  const FOLDER: FolderTreeEntry = {
+    id: 'd1', name: 'Subfolder', mimeType: null, sizeBytes: 0, isFolder: true, driveId: 'drive-1', alreadyIngested: false, ingestedDocumentId: null, downloadUrl: null,
+  };
+
+  function tokenExpired(): AxiosError {
+    const error = new AxiosError('Request failed', '424');
+    error.response = { status: 424, data: {}, statusText: '', headers: {}, config: {} as never };
+    return error;
+  }
+
+  async function reconnectWith(token: string): Promise<void> {
+    await userEvent.click(screen.getByRole('button', { name: /^reconnect$/i }));
+    await userEvent.type(screen.getByLabelText(/sharepoint access token/i), token);
+    await userEvent.click(screen.getAllByRole('button', { name: /^reconnect$/i }).at(-1)!);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'valid', expiresInSeconds: 2820 });
+    vi.spyOn(kbApi, 'getRubric').mockResolvedValue({ version: 'v1', source: 'kb', builtAt: null, removed: [], categories: [] });
+    localStorage.clear();
+  });
+
+  it('shows the saved source in a bar, not the URL form', async () => {
+    localStorage.setItem('req2ado-kb-browse-url', SAVED);
+    vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([FILE]);
+    renderPage();
+
+    expect(await screen.findByText('guide.docx')).toBeInTheDocument();
+
+    expect(screen.queryByLabelText(/sharing url/i)).toBeNull();
+    expect(screen.getByText(SAVED)).toBeInTheDocument();
+    for (const name of [/^refresh$/i, /^change$/i, /^reconnect$/i]) {
+      expect(screen.getByRole('button', { name })).toBeInTheDocument();
+    }
+  });
+
+  it('shows the URL form, with Reconnect beside it, when no source is saved', async () => {
+    renderPage();
+
+    expect(await screen.findByLabelText(/sharing url/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^reconnect$/i })).toBeInTheDocument();
+  });
+
+  it('Change opens an inline form and Cancel keeps the current source', async () => {
+    localStorage.setItem('req2ado-kb-browse-url', SAVED);
+    vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([FILE]);
+    renderPage();
+    await screen.findByText('guide.docx');
+
+    await userEvent.click(screen.getByRole('button', { name: /^change$/i }));
+    expect(screen.getByLabelText(/sharing url/i)).toHaveValue(SAVED);
+    await userEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
+
+    expect(screen.queryByLabelText(/sharing url/i)).toBeNull();
+    expect(screen.getByText(SAVED)).toBeInTheDocument();
+    expect(kbApi.browseSharedFolder).toHaveBeenCalledTimes(1);
+  });
+
+  it('Change then Browse switches to the new source and remembers it', async () => {
+    localStorage.setItem('req2ado-kb-browse-url', SAVED);
+    vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([FILE]);
+    renderPage();
+    await screen.findByText('guide.docx');
+
+    await userEvent.click(screen.getByRole('button', { name: /^change$/i }));
+    await userEvent.clear(screen.getByLabelText(/sharing url/i));
+    await userEvent.type(screen.getByLabelText(/sharing url/i), 'https://share.example/other');
+    await userEvent.click(screen.getByRole('button', { name: /^browse$/i }));
+
+    await waitFor(() => expect(kbApi.browseSharedFolder).toHaveBeenLastCalledWith('https://share.example/other', 'user-descriptor-1'));
+    await waitFor(() => expect(screen.queryByLabelText(/sharing url/i)).toBeNull());
+    expect(screen.getByText('https://share.example/other')).toBeInTheDocument();
+    expect(localStorage.getItem('req2ado-kb-browse-url')).toBe('https://share.example/other');
+  });
+
+  it('Refresh browses the saved source again', async () => {
+    localStorage.setItem('req2ado-kb-browse-url', SAVED);
+    vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([FILE]);
+    renderPage();
+    await screen.findByText('guide.docx');
+
+    await userEvent.click(screen.getByRole('button', { name: /^refresh$/i }));
+
+    await waitFor(() => expect(kbApi.browseSharedFolder).toHaveBeenCalledTimes(2));
+  });
+
+  it('after a successful reconnect, browses the saved source again and clears the stale error', async () => {
+    localStorage.setItem('req2ado-kb-browse-url', SAVED);
+    vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'invalid', expiresInSeconds: null });
+    vi.spyOn(kbApi, 'browseSharedFolder').mockRejectedValueOnce(tokenExpired()).mockResolvedValue([FILE]);
+    vi.spyOn(kbApi, 'reconnectSharePoint').mockResolvedValue({ status: 'valid', expiresInSeconds: 3600 });
+    renderPage();
+    expect(await screen.findByText(/sharepoint access token has expired or is invalid/i)).toBeInTheDocument();
+
+    await reconnectWith('fresh-token');
+
+    expect(await screen.findByText('guide.docx')).toBeInTheDocument();
+    expect(kbApi.browseSharedFolder).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(/sharepoint access token has expired or is invalid/i)).toBeNull();
+  });
+
+  it('does not browse again when the reconnect token is rejected', async () => {
+    localStorage.setItem('req2ado-kb-browse-url', SAVED);
+    vi.spyOn(kbApi, 'browseSharedFolder').mockRejectedValue(tokenExpired());
+    vi.spyOn(kbApi, 'reconnectSharePoint').mockResolvedValue({ status: 'invalid', expiresInSeconds: null });
+    renderPage();
+    await screen.findByText(/sharepoint access token has expired or is invalid/i);
+
+    await reconnectWith('bad-token');
+
+    expect(await screen.findByText(/sharepoint rejected that token/i)).toBeInTheDocument();
+    expect(kbApi.browseSharedFolder).toHaveBeenCalledTimes(1);
+  });
+
+  it('reopens the folder that was open before the reconnect', async () => {
+    localStorage.setItem('req2ado-kb-browse-url', SAVED);
+    vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([FOLDER]);
+    vi.spyOn(kbApi, 'browseSubfolder').mockResolvedValue([{ ...FILE, id: 'f2', name: 'nested.docx' }]);
+    vi.spyOn(kbApi, 'reconnectSharePoint').mockResolvedValue({ status: 'valid', expiresInSeconds: 3600 });
+    renderPage();
+    await screen.findAllByText('Subfolder');
+    await userEvent.click(screen.getAllByText('Subfolder').map((el) => el.closest('tr')).find(Boolean)!);
+    await screen.findByText('nested.docx');
+
+    await reconnectWith('fresh-token');
+
+    await waitFor(() => expect(kbApi.browseSharedFolder).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(kbApi.browseSubfolder).toHaveBeenCalledTimes(2));
+    expect(kbApi.browseSubfolder).toHaveBeenLastCalledWith('drive-1', 'd1', 'user-descriptor-1', 'Subfolder');
+    expect(await screen.findByText('nested.docx')).toBeInTheDocument();
+  });
+
+  it('disables Refresh and Browse while the token is invalid, and says why', async () => {
+    localStorage.setItem('req2ado-kb-browse-url', SAVED);
+    vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'invalid', expiresInSeconds: null });
+    vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([FILE]);
+    renderPage();
+    await screen.findByText('guide.docx');
+
+    expect(await screen.findByText(/reconnect sharepoint first/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^refresh$/i })).toBeDisabled();
+    await userEvent.click(screen.getByRole('button', { name: /^change$/i }));
+    expect(screen.getByRole('button', { name: /^browse$/i })).toBeDisabled();
+  });
+
+  describe('control hierarchy and icons', () => {
+    const hasIcon = (el: HTMLElement): boolean => el.querySelector('svg') !== null;
+    const emphasised = (el: HTMLElement): boolean => /\bbg-action\b/.test(el.className);
+
+    async function openSavedSource(status: 'valid' | 'invalid'): Promise<void> {
+      localStorage.setItem('req2ado-kb-browse-url', SAVED);
+      vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status, expiresInSeconds: status === 'valid' ? 2820 : null });
+      vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([FILE]);
+      renderPage();
+      await screen.findByText('guide.docx');
+      await screen.findByText(status === 'valid' ? /^connected/i : /token invalid/i);
+    }
+
+    it('gives every action in the source bar an icon', async () => {
+      await openSavedSource('valid');
+
+      for (const name of [/^refresh$/i, /^change$/i, /^reconnect$/i]) {
+        expect(hasIcon(screen.getByRole('button', { name }))).toBe(true);
+      }
+    });
+
+    it('keeps the source bar calm while the token is healthy: no action is emphasised', async () => {
+      await openSavedSource('valid');
+
+      for (const name of [/^refresh$/i, /^change$/i, /^reconnect$/i]) {
+        expect(emphasised(screen.getByRole('button', { name }))).toBe(false);
+      }
+    });
+
+    it('makes Reconnect the one emphasised action when the token needs attention', async () => {
+      await openSavedSource('invalid');
+
+      expect(emphasised(screen.getByRole('button', { name: /^reconnect$/i }))).toBe(true);
+      expect(emphasised(screen.getByRole('button', { name: /^change$/i }))).toBe(false);
+      expect(emphasised(screen.getByRole('button', { name: /^refresh$/i }))).toBe(false);
+    });
+
+    it('marks the status with an icon as well as words', async () => {
+      await openSavedSource('valid');
+
+      expect(screen.getByText(/^connected/i).closest('[data-status]')).toHaveAttribute('data-status', 'valid');
+      expect(screen.getByText(/^connected/i).closest('[data-status]')!.querySelector('svg')).not.toBeNull();
+    });
+
+    it('in the form, Browse is the one emphasised action and each action has an icon', async () => {
+      renderPage();
+      const url = await screen.findByLabelText(/sharing url/i);
+      await userEvent.type(url, 'https://share.example/folder');
+
+      const browse = screen.getByRole('button', { name: /^browse$/i });
+      expect(emphasised(browse)).toBe(true);
+      expect(hasIcon(browse)).toBe(true);
+      const reconnect = screen.getByRole('button', { name: /^reconnect$/i });
+      expect(hasIcon(reconnect)).toBe(true);
+      expect(emphasised(reconnect)).toBe(false);
+    });
+
+    it('in the form, Reconnect takes over as the emphasised action when the token needs attention', async () => {
+      vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'invalid', expiresInSeconds: null });
+      renderPage();
+      await screen.findByText(/token invalid/i);
+
+      expect(emphasised(screen.getByRole('button', { name: /^reconnect$/i }))).toBe(true);
+    });
+
+    it('gives Cancel an icon while changing the source', async () => {
+      localStorage.setItem('req2ado-kb-browse-url', SAVED);
+      vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([FILE]);
+      renderPage();
+      await screen.findByText('guide.docx');
+      await userEvent.click(screen.getByRole('button', { name: /^change$/i }));
+
+      expect(hasIcon(screen.getByRole('button', { name: /^cancel$/i }))).toBe(true);
     });
   });
 });
