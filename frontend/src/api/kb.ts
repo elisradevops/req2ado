@@ -187,3 +187,130 @@ export async function putRubric(input: RubricInput): Promise<Rubric> {
   const response = await httpClient.put<Rubric>('/kb/rubric', input);
   return response.data;
 }
+
+// ---- Batch ingest: many files added by one request, ingested one after another by the server ----
+
+export type KbIngestBatchStatus = 'queued' | 'running' | 'paused' | 'completed' | 'completed_with_errors' | 'cancelled' | 'failed';
+export type KbIngestItemState = 'queued' | 'running' | 'added' | 'unchanged' | 'failed' | 'skipped' | 'cancelled';
+
+export interface KbIngestItem {
+  id: string;
+  ordinal: number;
+  itemId: string;
+  name: string;
+  relativePath: string;
+  sizeBytes: number;
+  retrievalMode: KbRetrievalMode;
+  state: KbIngestItemState;
+  attempts: number;
+  errorKind: 'transient' | 'permanent' | 'auth' | null;
+  reason: string | null;
+  chunksStored: number | null;
+  chunksInStore: number | null;
+  ingestedDocumentId: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+export interface KbIngestCounts {
+  total: number;
+  queued: number;
+  running: number;
+  added: number;
+  unchanged: number;
+  failed: number;
+  skipped: number;
+  cancelled: number;
+}
+
+export interface KbIngestBatch {
+  id: string;
+  status: KbIngestBatchStatus;
+  // Why a paused batch waits, e.g. "sharepoint_token" (replace the token, and it carries on by itself).
+  pauseReason: string | null;
+  cancelRequested: boolean;
+  driveId: string;
+  folderItemId: string | null;
+  folderPath: string;
+  docType: string | null;
+  // Changes whenever anything in the batch does.
+  version: number;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  counts: KbIngestCounts;
+  // Present for one batch, absent in a list.
+  items?: KbIngestItem[];
+}
+
+export interface CreateKbIngestBatchInput {
+  driveId: string;
+  folderItemId?: string | null;
+  folderPath: string;
+  docType?: string | null;
+  items: { itemId: string; name: string; relativePath: string; sizeBytes: number; retrievalMode: KbRetrievalMode }[];
+}
+
+export async function createKbIngestBatch(input: CreateKbIngestBatchInput): Promise<KbIngestBatch> {
+  const response = await httpClient.post<KbIngestBatch>('/kb/ingest-batches', input);
+  return response.data;
+}
+
+export async function listKbIngestBatches(options: { active?: boolean; limit?: number } = {}): Promise<KbIngestBatch[]> {
+  const params: Record<string, string | number> = {};
+  if (options.active) params.active = 'true';
+  if (options.limit !== undefined) params.limit = options.limit;
+  const response = await httpClient.get<KbIngestBatch[]>('/kb/ingest-batches', { params });
+  return response.data;
+}
+
+export async function getKbIngestBatch(id: string): Promise<KbIngestBatch> {
+  const response = await httpClient.get<KbIngestBatch>(`/kb/ingest-batches/${id}`);
+  return response.data;
+}
+
+export async function cancelKbIngestBatch(id: string): Promise<KbIngestBatch> {
+  const response = await httpClient.post<KbIngestBatch>(`/kb/ingest-batches/${id}/cancel`);
+  return response.data;
+}
+
+export async function retryFailedKbIngestBatch(id: string): Promise<KbIngestBatch> {
+  const response = await httpClient.post<KbIngestBatch>(`/kb/ingest-batches/${id}/retry-failed`);
+  return response.data;
+}
+
+export async function resumeKbIngestBatch(id: string): Promise<KbIngestBatch> {
+  const response = await httpClient.post<KbIngestBatch>(`/kb/ingest-batches/${id}/resume`);
+  return response.data;
+}
+
+// ---- The grading rubric the knowledge base builds, as the ingestion report shows it ----
+
+export type KbProfileState = 'none' | 'queued' | 'building' | 'ready' | 'no_model';
+
+export interface KbProfileDocument {
+  file: string;
+  status: 'contributed' | 'not_relevant' | 'extracted_nothing' | 'failed' | string;
+  reason: string | null;
+  categories: number;
+  rules: number;
+  typeDefinitions: number;
+  glossary: number;
+}
+
+export interface KbProfile {
+  state: KbProfileState;
+  builtAt: string | null;
+  version: string | null;
+  builtWith: string | null;
+  docsInKb: number;
+  docsContributing: number;
+  truncated: boolean;
+  docs: KbProfileDocument[];
+  conflicts: { kind: string; key: string; variantCount: number }[];
+}
+
+export async function getKbProfile(): Promise<KbProfile> {
+  const response = await httpClient.get<KbProfile>('/kb/profile');
+  return response.data;
+}

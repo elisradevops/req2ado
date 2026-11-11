@@ -87,4 +87,7 @@ vi.mock('@number-flow/react', () => ({
 afterEach(async () => {
   const { useConnectionStatusStore } = await import('../store/connectionStatusStore');
   useConnectionStatusStore.getState().reset();
+  // Same for the knowledge-base batch: its polling must not outlive the test that started it.
+  const { useKbIngestStore } = await import('../store/kbIngestStore');
+  useKbIngestStore.getState().reset();
 });

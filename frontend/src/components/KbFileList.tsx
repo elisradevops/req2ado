@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { Folder, ChevronRight, Plus, Trash2, RefreshCw } from 'lucide-react';
+import { Button } from '../ui/Button';
+import { Checkbox } from '../ui/Checkbox';
 import { extensionOf } from '../utils/extension';
 import type { FolderTreeEntry } from '../api/kb';
 import { formatFileSize } from '../utils/fileSize';
@@ -39,6 +41,11 @@ export function KbFileList({
   ingestingId,
   onIngest,
   onRequestRemove,
+  checkedIds,
+  onToggleChecked,
+  onSetChecked,
+  onAddChecked,
+  onClearChecked,
 }: {
   entries: FolderTreeEntry[] | null;
   loading: boolean;
@@ -52,11 +59,26 @@ export function KbFileList({
   ingestingId: string | null;
   onIngest: (entry: FolderTreeEntry) => void;
   onRequestRemove: (entry: FolderTreeEntry) => void;
+  // Selecting several files to add at once. All optional together: without them the list has no checkboxes and no selection bar.
+  checkedIds?: Set<string>;
+  onToggleChecked?: (entry: FolderTreeEntry) => void;
+  onSetChecked?: (ids: string[], checked: boolean) => void;
+  onAddChecked?: () => void;
+  onClearChecked?: () => void;
 }): React.ReactElement {
   const [search, setSearch] = useState('');
 
   const query = search.trim().toLowerCase();
   const visible = (entries ?? []).filter((entry) => !query || entry.name.toLowerCase().includes(query));
+
+  // A file can be added when it has a download link; a folder never. The selection covers what the search leaves showing.
+  const selectable = checkedIds !== undefined && onToggleChecked !== undefined && onSetChecked !== undefined;
+  const eligible = visible.filter((entry) => !entry.isFolder && entry.downloadUrl);
+  const eligibleIds = eligible.map((entry) => entry.id);
+  const checkedCount = eligibleIds.filter((id) => checkedIds?.has(id)).length;
+  const allChecked = eligibleIds.length > 0 && checkedCount === eligibleIds.length;
+  const newIds = eligible.filter((entry) => !isIngested(entry)).map((entry) => entry.id);
+  const totalChecked = checkedIds?.size ?? 0;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -81,6 +103,26 @@ export function KbFileList({
           className="max-w-[200px]"
         />
       </div>
+      {selectable && (totalChecked > 0 || newIds.length > 0) && (
+        <div className="flex flex-wrap items-center gap-2 border-b border-hairline bg-surface-alt px-3 py-2">
+          {totalChecked > 0 ? (
+            <>
+              <span className="text-sm font-medium text-ink-2">{totalChecked} selected</span>
+              <Button size="sm" onClick={onAddChecked}>
+                <Plus className="h-4 w-4" aria-hidden="true" />
+                Add {totalChecked} to knowledge base…
+              </Button>
+              <Button size="sm" variant="ghost" onClick={onClearChecked}>
+                Clear selection
+              </Button>
+            </>
+          ) : (
+            <Button size="sm" variant="outline" onClick={() => onSetChecked(newIds, true)}>
+              Select new ({newIds.length})
+            </Button>
+          )}
+        </div>
+      )}
       <div className="min-h-0 flex-1 overflow-y-auto">
         {loading ? (
           // DESIGN.md §7 Row category: loading is a Skeleton row of
@@ -104,6 +146,17 @@ export function KbFileList({
           <table className="w-full text-sm">
             <thead>
               <tr>
+                {selectable && (
+                  <TableHeaderCell sticky className="w-9 pr-0">
+                    {eligibleIds.length > 0 && (
+                      <Checkbox
+                        checked={allChecked ? true : checkedCount > 0 ? 'indeterminate' : false}
+                        onCheckedChange={(value) => onSetChecked(eligibleIds, value)}
+                        ariaLabel="Select all files"
+                      />
+                    )}
+                  </TableHeaderCell>
+                )}
                 <TableHeaderCell sticky>Name</TableHeaderCell>
                 <TableHeaderCell sticky>Type</TableHeaderCell>
                 <TableHeaderCell sticky>Size</TableHeaderCell>
@@ -132,6 +185,13 @@ export function KbFileList({
                       selected && 'bg-accent-soft',
                     )}
                   >
+                    {selectable && (
+                      <td className="w-9 py-2 pl-3.5 pr-0" onClick={(e) => e.stopPropagation()}>
+                        {!entry.isFolder && entry.downloadUrl && (
+                          <Checkbox checked={checkedIds.has(entry.id)} onCheckedChange={() => onToggleChecked(entry)} ariaLabel={`Select ${entry.name}`} />
+                        )}
+                      </td>
+                    )}
                     <td className="px-3.5 py-2">
                       <span className="flex items-center gap-1.5">
                         {entry.isFolder ? (

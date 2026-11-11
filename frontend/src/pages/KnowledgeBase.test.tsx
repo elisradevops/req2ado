@@ -1152,3 +1152,243 @@ describe('KnowledgeBase "Add to knowledge base" dialog', () => {
     expect(within(dialog).getByRole('button', { name: /^add to knowledge base$/i })).toBeEnabled();
   });
 });
+
+describe('KnowledgeBase batch add', () => {
+  const SAVED = 'https://share.example/remembered';
+  const base = { mimeType: null, isFolder: false, driveId: null, parentDriveId: 'drive-1', alreadyIngested: false, ingestedDocumentId: null } as const;
+  const A: FolderTreeEntry = { ...base, id: 'a', name: 'a.docx', sizeBytes: 1000, downloadUrl: 'https://dl/a' };
+  const B: FolderTreeEntry = { ...base, id: 'b', name: 'b.docx', sizeBytes: 2000, downloadUrl: 'https://dl/b' };
+  const C: FolderTreeEntry = { ...base, id: 'c', name: 'c.docx', sizeBytes: 3000, downloadUrl: 'https://dl/c', alreadyIngested: true, ingestedDocumentId: 'doc-c', chunkCount: 4 };
+
+  const item = (entry: FolderTreeEntry, state: kbApi.KbIngestItemState, overrides: Partial<kbApi.KbIngestItem> = {}): kbApi.KbIngestItem => ({
+    id: `i-${entry.id}`, ordinal: 0, itemId: entry.id, name: entry.name, relativePath: entry.name, sizeBytes: entry.sizeBytes, retrievalMode: 'retrieve', state, attempts: 0,
+    errorKind: null, reason: null, chunksStored: null, chunksInStore: null, ingestedDocumentId: null, startedAt: null, finishedAt: null, ...overrides,
+  });
+
+  function batchView(status: kbApi.KbIngestBatchStatus, items: kbApi.KbIngestItem[], overrides: Partial<kbApi.KbIngestBatch> = {}): kbApi.KbIngestBatch {
+    const count = (s: kbApi.KbIngestItemState) => items.filter((i) => i.state === s).length;
+    return {
+      id: 'batch-1', status, pauseReason: null, cancelRequested: false, driveId: 'drive-1', folderItemId: null, folderPath: '', docType: null, version: 1,
+      createdAt: '2026-11-12T09:00:00Z', startedAt: null, finishedAt: ['completed', 'completed_with_errors', 'failed', 'cancelled'].includes(status) ? '2026-11-12T09:05:00Z' : null,
+      counts: { total: items.length, queued: count('queued'), running: count('running'), added: count('added'), unchanged: count('unchanged'), failed: count('failed'), skipped: count('skipped'), cancelled: count('cancelled') },
+      items, ...overrides,
+    };
+  }
+
+  async function open(entries: FolderTreeEntry[]): Promise<void> {
+    localStorage.setItem('req2ado-kb-browse-url', SAVED);
+    vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue(entries);
+    renderPage();
+    // The batch panel lists the same files, so a name can appear more than once.
+    await screen.findAllByText(entries[0].name);
+  }
+
+  const tick = (name: string) => screen.getByRole('checkbox', { name: `Select ${name}` });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'valid', expiresInSeconds: 2820 });
+    vi.spyOn(kbApi, 'getRubric').mockResolvedValue({ version: 'v1', source: 'kb', builtAt: null, removed: [], categories: [] });
+    vi.spyOn(kbApi, 'listKbIngestBatches').mockResolvedValue([]);
+    localStorage.clear();
+  });
+
+  it('adds the selected files as one batch, in the background', async () => {
+    vi.spyOn(kbApi, 'createKbIngestBatch').mockResolvedValue(batchView('queued', [item(A, 'queued'), item(B, 'queued')]));
+    await open([A, B, C]);
+
+    await userEvent.click(tick('a.docx'));
+    await userEvent.click(tick('b.docx'));
+    await userEvent.click(screen.getByRole('button', { name: /^add 2 to knowledge base/i }));
+    const dialog = await screen.findByRole('dialog', { name: /add 2 files to the knowledge base/i });
+    await userEvent.click(within(dialog).getByRole('radio', { name: /^search/i }));
+    await userEvent.click(within(dialog).getByRole('switch', { name: 'Reference: b.docx' }));
+    await userEvent.click(within(dialog).getByRole('button', { name: /^add 2 to knowledge base$/i }));
+
+    await waitFor(() =>
+      expect(kbApi.createKbIngestBatch).toHaveBeenCalledWith({
+        driveId: 'drive-1',
+        folderItemId: null,
+        folderPath: '',
+        docType: null,
+        items: [
+          { itemId: 'a', name: 'a.docx', relativePath: 'a.docx', sizeBytes: 1000, retrievalMode: 'retrieve' },
+          { itemId: 'b', name: 'b.docx', relativePath: 'b.docx', sizeBytes: 2000, retrievalMode: 'always_include' },
+        ],
+      }),
+    );
+    expect(await screen.findByRole('heading', { name: /adding 1 of 2 files/i })).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.queryByText('2 selected')).toBeNull(); // the selection is spent
+  });
+
+  it('says so in a toast, and leaves the page free to use', async () => {
+    vi.spyOn(kbApi, 'createKbIngestBatch').mockResolvedValue(batchView('queued', [item(A, 'queued')]));
+    await open([A]);
+    await userEvent.click(tick('a.docx'));
+    await userEvent.click(screen.getByRole('button', { name: /^add 1 to knowledge base/i }));
+    const dialog = await screen.findByRole('dialog');
+    await userEvent.click(within(dialog).getByRole('radio', { name: /^search/i }));
+    await userEvent.click(within(dialog).getByRole('button', { name: /^add 1 to knowledge base$/i }));
+
+    expect(await screen.findByText(/adding 1 file in the background/i)).toBeInTheDocument();
+  });
+
+  it('puts the folder\'s path on the batch and on each file when a subfolder is open', async () => {
+    const folder: FolderTreeEntry = { id: 'd1', name: 'Standards', mimeType: null, sizeBytes: 0, isFolder: true, driveId: 'drive-9', parentDriveId: 'drive-9', alreadyIngested: false, ingestedDocumentId: null, downloadUrl: null };
+    const nested: FolderTreeEntry = { ...A, id: 'n1', name: 'nested.docx', parentDriveId: 'drive-9', downloadUrl: 'https://dl/n1' };
+    localStorage.setItem('req2ado-kb-browse-url', SAVED);
+    vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([folder]);
+    vi.spyOn(kbApi, 'browseSubfolder').mockResolvedValue([nested]);
+    vi.spyOn(kbApi, 'createKbIngestBatch').mockResolvedValue(batchView('queued', [item(nested, 'queued')]));
+    renderPage();
+    await userEvent.click((await screen.findAllByText('Standards')).map((el) => el.closest('tr')).find(Boolean)!);
+    await screen.findByText('nested.docx');
+
+    await userEvent.click(tick('nested.docx'));
+    await userEvent.click(screen.getByRole('button', { name: /^add 1 to knowledge base/i }));
+    const dialog = await screen.findByRole('dialog');
+    await userEvent.click(within(dialog).getByRole('radio', { name: /^search/i }));
+    await userEvent.click(within(dialog).getByRole('button', { name: /^add 1 to knowledge base$/i }));
+
+    await waitFor(() =>
+      expect(kbApi.createKbIngestBatch).toHaveBeenCalledWith(
+        expect.objectContaining({ driveId: 'drive-9', folderItemId: 'd1', folderPath: 'Standards', items: [expect.objectContaining({ itemId: 'n1', relativePath: 'Standards/nested.docx' })] }),
+      ),
+    );
+  });
+
+  it('selects the files not yet in the knowledge base with one click', async () => {
+    await open([A, B, C]);
+
+    await userEvent.click(screen.getByRole('button', { name: /select new \(2\)/i }));
+
+    expect(tick('a.docx')).toBeChecked();
+    expect(tick('b.docx')).toBeChecked();
+    expect(tick('c.docx')).not.toBeChecked();
+    expect(screen.getByText('2 selected')).toBeInTheDocument();
+  });
+
+  it('keeps the dialog open and says why when the server refuses the batch', async () => {
+    vi.spyOn(kbApi, 'createKbIngestBatch').mockRejectedValue(new Error('conflict'));
+    await open([A]);
+    await userEvent.click(tick('a.docx'));
+    await userEvent.click(screen.getByRole('button', { name: /^add 1 to knowledge base/i }));
+    const dialog = await screen.findByRole('dialog');
+    await userEvent.click(within(dialog).getByRole('radio', { name: /^search/i }));
+
+    await userEvent.click(within(dialog).getByRole('button', { name: /^add 1 to knowledge base$/i }));
+
+    expect(await screen.findByText(/failed to start the batch/i)).toBeInTheDocument();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(kbApi.createKbIngestBatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses to guess the drive when the backend did not say which one', async () => {
+    vi.spyOn(kbApi, 'createKbIngestBatch').mockResolvedValue(batchView('queued', []));
+    await open([{ ...A, parentDriveId: null }]);
+    await userEvent.click(tick('a.docx'));
+    await userEvent.click(screen.getByRole('button', { name: /^add 1 to knowledge base/i }));
+    const dialog = await screen.findByRole('dialog');
+    await userEvent.click(within(dialog).getByRole('radio', { name: /^search/i }));
+
+    await userEvent.click(within(dialog).getByRole('button', { name: /^add 1 to knowledge base$/i }));
+
+    expect(await screen.findByText(/could not tell which sharepoint drive/i)).toBeInTheDocument();
+    expect(kbApi.createKbIngestBatch).not.toHaveBeenCalled();
+  });
+
+  it('remembers a choice for the folder in the batch dialog too', async () => {
+    vi.spyOn(kbApi, 'createKbIngestBatch').mockResolvedValue(batchView('completed', [item(A, 'added')]));
+    await open([A, B]);
+    await userEvent.click(tick('a.docx'));
+    await userEvent.click(screen.getByRole('button', { name: /^add 1 to knowledge base/i }));
+    const first = await screen.findByRole('dialog');
+    await userEvent.click(within(first).getByRole('radio', { name: /^reference/i }));
+    await userEvent.click(within(first).getByRole('checkbox', { name: /remember my choice for this folder/i }));
+    await userEvent.click(within(first).getByRole('button', { name: /^add 1 to knowledge base$/i }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await userEvent.click(within(screen.getByRole('region', { name: /knowledge base batch/i })).getByRole('button', { name: /^dismiss$/i }));
+
+    await userEvent.click(tick('b.docx'));
+    await userEvent.click(screen.getByRole('button', { name: /^add 1 to knowledge base/i }));
+
+    const second = await screen.findByRole('dialog');
+    expect(within(second).getByRole('radio', { name: /^reference/i })).toHaveAttribute('aria-checked', 'true');
+  });
+
+  describe('the batch on show', () => {
+    it('is found again after a reload', async () => {
+      vi.spyOn(kbApi, 'listKbIngestBatches').mockResolvedValue([batchView('running', [item(A, 'running'), item(B, 'queued')])]);
+      vi.spyOn(kbApi, 'getKbIngestBatch').mockResolvedValue(batchView('running', [item(A, 'running'), item(B, 'queued')]));
+      await open([A, B]);
+
+      expect(await screen.findByRole('heading', { name: /adding 1 of 2 files/i })).toBeInTheDocument();
+      expect(screen.getByRole('list', { name: /files in this batch/i })).toBeInTheDocument();
+    });
+
+    it('shows nothing when there is no batch', async () => {
+      await open([A]);
+
+      expect(screen.queryByRole('list', { name: /files in this batch/i })).toBeNull();
+    });
+
+    it('cancels from the panel', async () => {
+      const running = batchView('running', [item(A, 'running'), item(B, 'queued')]);
+      vi.spyOn(kbApi, 'listKbIngestBatches').mockResolvedValue([running]);
+      vi.spyOn(kbApi, 'getKbIngestBatch').mockResolvedValue(running);
+      vi.spyOn(kbApi, 'cancelKbIngestBatch').mockResolvedValue({ ...running, cancelRequested: true });
+      await open([A, B]);
+
+      await userEvent.click(await screen.findByRole('button', { name: /^cancel$/i }));
+
+      expect(kbApi.cancelKbIngestBatch).toHaveBeenCalledWith('batch-1');
+      expect(await screen.findByRole('heading', { name: /finishing the current file/i })).toBeInTheDocument();
+    });
+
+    it('retries only the failed files from the panel', async () => {
+      const done = batchView('completed_with_errors', [item(A, 'added'), item(B, 'failed', { reason: 'unsupported' })]);
+      vi.spyOn(kbApi, 'listKbIngestBatches').mockResolvedValue([done]);
+      vi.spyOn(kbApi, 'getKbIngestBatch').mockResolvedValue(done);
+      vi.spyOn(kbApi, 'retryFailedKbIngestBatch').mockResolvedValue(batchView('queued', [item(A, 'added'), item(B, 'queued')]));
+      await open([A, B]);
+
+      await userEvent.click(await screen.findByRole('button', { name: /retry 1 failed/i }));
+
+      expect(kbApi.retryFailedKbIngestBatch).toHaveBeenCalledWith('batch-1');
+    });
+
+    it('resumes a paused batch from the panel', async () => {
+      const paused = batchView('paused', [item(A, 'queued')], { pauseReason: 'sharepoint_token' });
+      vi.spyOn(kbApi, 'listKbIngestBatches').mockResolvedValue([paused]);
+      vi.spyOn(kbApi, 'getKbIngestBatch').mockResolvedValue(paused);
+      vi.spyOn(kbApi, 'resumeKbIngestBatch').mockResolvedValue(batchView('queued', [item(A, 'queued')]));
+      await open([A]);
+
+      await userEvent.click(await screen.findByRole('button', { name: /^resume$/i }));
+
+      expect(kbApi.resumeKbIngestBatch).toHaveBeenCalledWith('batch-1');
+    });
+
+    it('dismisses a finished batch', async () => {
+      const done = batchView('completed', [item(A, 'added', { chunksInStore: 3 })]);
+      vi.spyOn(kbApi, 'listKbIngestBatches').mockResolvedValue([done]);
+      vi.spyOn(kbApi, 'getKbIngestBatch').mockResolvedValue(done);
+      await open([A]);
+
+      await userEvent.click(within(await screen.findByRole('region', { name: /knowledge base batch/i })).getByRole('button', { name: /^dismiss$/i }));
+
+      expect(screen.queryByRole('list', { name: /files in this batch/i })).toBeNull();
+    });
+
+    it('lists the folder again when a running batch finishes, so the rows show what got in', async () => {
+      const running = batchView('running', [item(A, 'running')]);
+      vi.spyOn(kbApi, 'listKbIngestBatches').mockResolvedValue([running]);
+      vi.spyOn(kbApi, 'getKbIngestBatch').mockResolvedValueOnce(running).mockResolvedValue(batchView('completed', [item(A, 'added', { chunksInStore: 3 })]));
+      await open([A]);
+      expect(kbApi.browseSharedFolder).toHaveBeenCalledTimes(1);
+
+      await waitFor(() => expect(kbApi.browseSharedFolder).toHaveBeenCalledTimes(2), { timeout: 8000 });
+    }, 15000);
+  });
+});

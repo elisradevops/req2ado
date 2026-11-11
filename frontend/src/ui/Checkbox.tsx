@@ -1,5 +1,5 @@
 import { Checkbox as RadixCheckbox } from 'radix-ui';
-import { Check } from 'lucide-react';
+import { Check, Minus } from 'lucide-react';
 import { cn } from '../lib/cn';
 
 export function Checkbox({
@@ -9,7 +9,8 @@ export function Checkbox({
   ariaLabel,
   className,
 }: {
-  checked: boolean;
+  // 'indeterminate' is the "some of them" state of a select-all box; clicking it selects everything.
+  checked: boolean | 'indeterminate';
   onCheckedChange: (checked: boolean) => void;
   disabled?: boolean;
   ariaLabel?: string;
@@ -25,12 +26,12 @@ export function Checkbox({
         // relative + the absolutely-positioned ::before expander give this a
         // 24x24 CSS-px hit target (DESIGN.md §13) without inflating the
         // visible 15px box itself.
-        'relative flex h-[15px] w-[15px] flex-none items-center justify-center rounded-sm border border-hairline-strong bg-surface transition-colors duration-fast ease-out hover:border-ink-3 data-[state=checked]:border-accent data-[state=checked]:bg-accent disabled:cursor-not-allowed disabled:opacity-50 before:absolute before:-inset-[4.5px] before:content-[\'\']',
+        'relative flex h-[15px] w-[15px] flex-none items-center justify-center rounded-sm border border-hairline-strong bg-surface transition-colors duration-fast ease-out hover:border-ink-3 data-[state=checked]:border-accent data-[state=checked]:bg-accent data-[state=indeterminate]:border-accent data-[state=indeterminate]:bg-accent disabled:cursor-not-allowed disabled:opacity-50 before:absolute before:-inset-[4.5px] before:content-[\'\']',
         className,
       )}
     >
       <RadixCheckbox.Indicator>
-        <Check className="h-2.5 w-2.5 text-white" strokeWidth={3} />
+        {checked === 'indeterminate' ? <Minus className="h-2.5 w-2.5 text-white" strokeWidth={3} /> : <Check className="h-2.5 w-2.5 text-white" strokeWidth={3} />}
       </RadixCheckbox.Indicator>
     </RadixCheckbox.Root>
   );

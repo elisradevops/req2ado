@@ -1,6 +1,17 @@
 import { describe, it, expect, vi } from 'vitest';
 import { httpClient } from './httpClient';
-import { ingestFolderUrl, ingestUrl, listIngestedDocuments } from './kb';
+import {
+  cancelKbIngestBatch,
+  createKbIngestBatch,
+  getKbIngestBatch,
+  getKbProfile,
+  ingestFolderUrl,
+  ingestUrl,
+  listIngestedDocuments,
+  listKbIngestBatches,
+  resumeKbIngestBatch,
+  retryFailedKbIngestBatch,
+} from './kb';
 
 vi.mock('./httpClient');
 
@@ -80,5 +91,61 @@ describe('the rubric', () => {
     const input = { pinned: [{ name: 'Testable', passCondition: 'Pinned' }], removed: ['Essential'] };
     expect(await putRubric(input)).toEqual(rubric);
     expect(httpClient.put).toHaveBeenCalledWith('/kb/rubric', input);
+  });
+
+  describe('batch ingest', () => {
+    const batch = { id: 'b1', status: 'queued' };
+
+    it('createKbIngestBatch POSTs the files and where they came from to /kb/ingest-batches', async () => {
+      (httpClient.post as any).mockResolvedValue({ data: batch });
+      const input = {
+        driveId: 'drive-1', folderItemId: 'folder-1', folderPath: 'Sub', docType: null,
+        items: [{ itemId: 'i1', name: 'a.pdf', relativePath: 'Sub/a.pdf', sizeBytes: 10, retrievalMode: 'retrieve' as const }],
+      };
+
+      expect(await createKbIngestBatch(input)).toEqual(batch);
+      expect(httpClient.post).toHaveBeenCalledWith('/kb/ingest-batches', input);
+    });
+
+    it('listKbIngestBatches asks only for active batches when told to, with the limit', async () => {
+      (httpClient.get as any).mockResolvedValue({ data: [batch] });
+
+      expect(await listKbIngestBatches({ active: true, limit: 3 })).toEqual([batch]);
+      expect(httpClient.get).toHaveBeenCalledWith('/kb/ingest-batches', { params: { active: 'true', limit: 3 } });
+    });
+
+    it('listKbIngestBatches sends no params when none are given', async () => {
+      (httpClient.get as any).mockResolvedValue({ data: [] });
+
+      await listKbIngestBatches();
+
+      expect(httpClient.get).toHaveBeenCalledWith('/kb/ingest-batches', { params: {} });
+    });
+
+    it('getKbIngestBatch GETs one batch by id', async () => {
+      (httpClient.get as any).mockResolvedValue({ data: batch });
+
+      expect(await getKbIngestBatch('b1')).toEqual(batch);
+      expect(httpClient.get).toHaveBeenCalledWith('/kb/ingest-batches/b1');
+    });
+
+    it.each([
+      ['cancel', cancelKbIngestBatch],
+      ['retry-failed', retryFailedKbIngestBatch],
+      ['resume', resumeKbIngestBatch],
+    ])('%s POSTs to the batch\'s own action', async (action, call) => {
+      (httpClient.post as any).mockResolvedValue({ data: batch });
+
+      expect(await call('b1')).toEqual(batch);
+      expect(httpClient.post).toHaveBeenCalledWith(`/kb/ingest-batches/b1/${action}`);
+    });
+
+    it('getKbProfile GETs the grading rubric state', async () => {
+      const view = { state: 'ready', docs: [] };
+      (httpClient.get as any).mockResolvedValue({ data: view });
+
+      expect(await getKbProfile()).toEqual(view);
+      expect(httpClient.get).toHaveBeenCalledWith('/kb/profile');
+    });
   });
 });
