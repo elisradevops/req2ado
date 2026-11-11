@@ -9,10 +9,12 @@ import {
   reconnectSharePoint,
   setRetrievalMode,
   type FolderTreeEntry,
+  type KbRetrievalMode,
   type SharePointStatus,
 } from '../api/kb';
 import { SharePointFolderTree } from '../components/SharePointFolderTree';
 import { KbSourceBar } from '../components/KbSourceBar';
+import { KbAddDialog } from '../components/KbAddDialog';
 import { KbFileList } from '../components/KbFileList';
 import { KbFileDetailPane } from '../components/KbFileDetailPane';
 import { RubricPanel } from '../components/RubricPanel';
@@ -141,6 +143,8 @@ export function KnowledgeBase(): React.ReactElement {
   const [alwaysIncludeSelection, setAlwaysIncludeSelection] = useState<Record<string, boolean>>({});
   // Entry id whose retrieval-mode switch (on an already-ingested file) is in flight.
   const [modeUpdatingId, setModeUpdatingId] = useState<string | null>(null);
+  // The file the "Add to knowledge base" dialog is open for, with the choice remembered for its folder (read once, when it opens).
+  const [addTarget, setAddTarget] = useState<{ entry: FolderTreeEntry; remembered: KbRetrievalMode | null } | null>(null);
 
   const [documentPendingRemoval, setDocumentPendingRemoval] = useState<PendingRemoval | null>(null);
   const [isRemoving, setIsRemoving] = useState(false);
@@ -173,17 +177,61 @@ export function KnowledgeBase(): React.ReactElement {
     return alwaysIncludeSelection[entry.id] ?? entry.retrievalMode === 'always_include';
   }
 
+  // The mode of a file already in the knowledge base; null for one that is not.
+  function currentModeOf(entry: FolderTreeEntry): KbRetrievalMode | null {
+    if (!isIngested(entry)) return null;
+    return isAlwaysInclude(entry) ? 'always_include' : 'retrieve';
+  }
+
+  // "Remember my choice for this folder": per user and folder, so a folder of guides stays one click once decided. Browser
+  // storage can be unavailable or full; the dialog then simply starts with nothing chosen.
+  function folderModeKey(): string | null {
+    return userId ? `req2ado-kb-folder-mode:${userId}:${currentFolder.driveId ?? 'root'}:${currentFolder.id ?? 'root'}` : null;
+  }
+
+  function readRememberedMode(): KbRetrievalMode | null {
+    const key = folderModeKey();
+    if (!key) return null;
+    try {
+      const value = localStorage.getItem(key);
+      return value === 'retrieve' || value === 'always_include' ? value : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function rememberMode(mode: KbRetrievalMode): void {
+    const key = folderModeKey();
+    if (!key) return;
+    try {
+      localStorage.setItem(key, mode);
+    } catch {
+      // Not remembered: the choice itself is not affected.
+    }
+  }
+
+  // Every way of adding a file (row action, detail pane) comes here first: the file is not ingested until the user has chosen
+  // how jobs use it.
+  function requestAdd(entry: FolderTreeEntry): void {
+    if (!entry.downloadUrl) return;
+    setAddTarget({ entry, remembered: readRememberedMode() });
+  }
+
+  async function handleConfirmAdd(entry: FolderTreeEntry, mode: KbRetrievalMode, remember: boolean): Promise<void> {
+    if (remember) rememberMode(mode);
+    // The dialog closes once the file is in; after a failure it stays open (the error is toasted) so the user can try again
+    // without choosing again.
+    if (await handleIngestFile(entry, mode)) setAddTarget(null);
+  }
+
   // Before ingest the choice is only recorded (applied at ingest). On an
   // ingested file it is applied immediately by retagging the stored chunks,
   // and recorded only once that succeeded so the checkbox never claims a mode
   // the index doesn't have.
   async function handleToggleAlwaysInclude(entry: FolderTreeEntry, value: boolean): Promise<void> {
     const docId = isIngested(entry) ? ingestedDocIdOf(entry) : null;
-    if (!docId) {
-      setAlwaysIncludeSelection((prev) => ({ ...prev, [entry.id]: value }));
-      return;
-    }
-    if (modeUpdatingId) return;
+    // Only an ingested file has a switch; the choice for a new file is made in the add dialog.
+    if (!docId || modeUpdatingId) return;
     setModeUpdatingId(entry.id);
     try {
       await setRetrievalMode(docId, value ? 'always_include' : 'retrieve');
@@ -300,19 +348,21 @@ export function KnowledgeBase(): React.ReactElement {
     setSelectedFileId(null);
   }
 
-  async function handleIngestFile(entry: FolderTreeEntry): Promise<void> {
-    if (!userId || !entry.downloadUrl || ingestingId || ingestingRef.current) return;
+  // Resolves true when the file was added (or re-ingested), false when it was not.
+  async function handleIngestFile(entry: FolderTreeEntry, mode: KbRetrievalMode): Promise<boolean> {
+    if (!userId || !entry.downloadUrl || ingestingId || ingestingRef.current) return false;
     ingestingRef.current = true;
     setIngestingId(entry.id);
     // Re-ingest = the file was already in the KB but had no stored vectors.
     const reingest = isIngested(entry);
     try {
       const relativePath = currentFolder.path ? `${currentFolder.path}/${entry.name}` : entry.name;
-      // A re-ingest of an already-ingested file keeps its current mode (the
-      // user's switch this session, else the stored one) rather than silently
-      // resetting an always-include doc to similarity retrieval.
-      const retrievalMode = isAlwaysInclude(entry) ? 'always_include' : undefined;
-      const result = await ingestFolderItem(entry.name, entry.id, entry.downloadUrl, relativePath, userId, retrievalMode);
+      // An unchanged file is skipped by the ingest and would keep its old mode, so a changed mode is applied to its stored
+      // chunks first.
+      const docId = reingest ? ingestedDocIdOf(entry) : null;
+      if (docId && currentModeOf(entry) !== mode) await setRetrievalMode(docId, mode);
+      const result = await ingestFolderItem(entry.name, entry.id, entry.downloadUrl, relativePath, userId, mode === 'always_include' ? 'always_include' : undefined);
+      setAlwaysIncludeSelection((prev) => ({ ...prev, [entry.id]: mode === 'always_include' }));
       setIngestOverrides((prev) => ({
         ...prev,
         [entry.id]: {
@@ -333,8 +383,10 @@ export function KnowledgeBase(): React.ReactElement {
       } else {
         showToast(`Added "${entry.name}" to the knowledge base.`, 'success');
       }
+      return true;
     } catch (err) {
       showErrorToast(`Failed to ${reingest ? 're-ingest' : 'add'} "${entry.name}" — please try again.`, err);
+      return false;
     } finally {
       ingestingRef.current = false;
       setIngestingId(null);
@@ -462,7 +514,7 @@ export function KnowledgeBase(): React.ReactElement {
               isIngested={isIngested}
               chunkCountOf={chunkCountOf}
               ingestingId={ingestingId}
-              onIngest={handleIngestFile}
+              onIngest={requestAdd}
               onRequestRemove={handleRequestRemove}
             />
             <div className="min-h-0 overflow-y-auto">
@@ -474,7 +526,7 @@ export function KnowledgeBase(): React.ReactElement {
                 alwaysInclude={selectedFile ? isAlwaysInclude(selectedFile) : false}
                 isUpdatingMode={selectedFile ? modeUpdatingId === selectedFile.id : false}
                 onToggleAlwaysInclude={(value) => selectedFile && handleToggleAlwaysInclude(selectedFile, value)}
-                onIngest={() => selectedFile && handleIngestFile(selectedFile)}
+                onIngest={() => selectedFile && requestAdd(selectedFile)}
                 onRequestRemove={() => selectedFile && handleRequestRemove(selectedFile)}
               />
             </div>
@@ -485,6 +537,20 @@ export function KnowledgeBase(): React.ReactElement {
           icon={FolderTree}
           title="No folder browsed yet"
           description="Paste a SharePoint or OneDrive folder link above to see its contents -- add or remove any file directly from the tree."
+        />
+      )}
+      {addTarget && (
+        <KbAddDialog
+          open
+          onOpenChange={(open) => {
+            // Closing while the request is being sent would hide its outcome; it closes itself when done.
+            if (!open && ingestingId !== addTarget.entry.id) setAddTarget(null);
+          }}
+          file={{ name: addTarget.entry.name, sizeBytes: addTarget.entry.sizeBytes }}
+          currentMode={currentModeOf(addTarget.entry)}
+          rememberedMode={addTarget.remembered}
+          isSubmitting={ingestingId === addTarget.entry.id}
+          onConfirm={(mode, remember) => void handleConfirmAdd(addTarget.entry, mode, remember)}
         />
       )}
       <Dialog

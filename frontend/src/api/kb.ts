@@ -67,7 +67,10 @@ export async function deleteIngestedDocument(id: string, userId: string): Promis
 }
 
 // Switches an already-ingested file between similarity-gated retrieval and full-context injection (no re-ingest).
-export async function setRetrievalMode(id: string, retrievalMode: 'retrieve' | 'always_include'): Promise<void> {
+// How a knowledge-base file reaches a job: 'retrieve' = only when a section is similar to it; 'always_include' = its full text in every job.
+export type KbRetrievalMode = 'retrieve' | 'always_include';
+
+export async function setRetrievalMode(id: string, retrievalMode: KbRetrievalMode): Promise<void> {
   await httpClient.put(`/kb/documents/${id}/retrieval-mode`, { retrievalMode });
 }
 
@@ -115,7 +118,7 @@ export async function ingestFolderItem(
   // Open WebUI's own Knowledge feature (Focused Retrieval vs Full Context).
   // Right for small, static reference material (a CMMI/requirements-
   // writing-standards doc) whose relevance is definitional, not topical.
-  retrievalMode?: 'retrieve' | 'always_include',
+  retrievalMode?: KbRetrievalMode,
 ): Promise<IngestResult & { ingestedDocumentId: string }> {
   const response = await httpClient.post<IngestResult & { ingestedDocumentId: string }>('/kb/ingest-item', {
     name,

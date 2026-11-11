@@ -7,18 +7,21 @@ export function Switch({
   checked,
   onCheckedChange,
   ariaLabel,
+  disabled,
 }: {
   checked: boolean;
   onCheckedChange: (checked: boolean) => void;
   ariaLabel: string;
+  disabled?: boolean;
 }): React.ReactElement {
   return (
     <RadixSwitch.Root
       checked={checked}
       onCheckedChange={onCheckedChange}
       aria-label={ariaLabel}
+      disabled={disabled}
       className={cn(
-        'relative h-5 w-9 flex-none cursor-pointer rounded-full border transition-colors duration-fast ease-out',
+        'relative h-5 w-9 flex-none cursor-pointer rounded-full border transition-colors duration-fast ease-out disabled:cursor-not-allowed disabled:opacity-50',
         checked ? 'border-accent bg-accent' : 'border-hairline-strong bg-surface-alt',
       )}
     >

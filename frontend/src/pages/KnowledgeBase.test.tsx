@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { AxiosError } from 'axios';
 import { KnowledgeBase } from './KnowledgeBase';
@@ -17,6 +17,14 @@ function renderPage(): void {
       <KnowledgeBase />
     </ToastProvider>,
   );
+}
+
+// Every way of adding a file now opens the "Add to knowledge base" dialog first. Picks how jobs use the file (null = keep what the
+// dialog preselected, as for a file already in the knowledge base) and confirms.
+async function chooseAndConfirm(choice: 'search' | 'reference' | null, confirm: RegExp = /^add to knowledge base$/i): Promise<void> {
+  const dialog = await screen.findByRole('dialog');
+  if (choice) await userEvent.click(within(dialog).getByRole('radio', { name: choice === 'search' ? /^search/i : /^reference/i }));
+  await userEvent.click(within(dialog).getByRole('button', { name: confirm }));
 }
 
 describe('KnowledgeBase', () => {
@@ -153,6 +161,7 @@ describe('KnowledgeBase', () => {
     await waitFor(() => expect(screen.getByText('spec.docx')).toBeInTheDocument());
 
     await userEvent.click(screen.getByRole('button', { name: /add spec\.docx to the knowledge base/i }));
+    await chooseAndConfirm('search');
 
     await waitFor(() =>
       expect(kbApi.ingestFolderItem).toHaveBeenCalledWith(
@@ -202,6 +211,7 @@ describe('KnowledgeBase', () => {
     await browseWith([{ chunkCount: 0 }]);
 
     await userEvent.click(screen.getByRole('button', { name: /re-ingest file1\.pdf/i }));
+    await chooseAndConfirm(null, /^re-ingest$/i);
 
     await waitFor(() => expect(screen.getByText('In knowledge base · 12 chunks')).toBeInTheDocument());
     expect(screen.queryByText('No vectors')).toBeNull();
@@ -216,6 +226,7 @@ describe('KnowledgeBase', () => {
     await browseWith([{ chunkCount: 0 }]);
 
     await userEvent.click(screen.getByRole('button', { name: /re-ingest file1\.pdf/i }));
+    await chooseAndConfirm(null, /^re-ingest$/i);
 
     await waitFor(() => expect(kbApi.ingestFolderItem).toHaveBeenCalled());
     expect(await screen.findByText('No vectors')).toBeInTheDocument();
@@ -231,6 +242,7 @@ describe('KnowledgeBase', () => {
     await browseWith([{ chunkCount: 0 }]);
 
     await userEvent.click(screen.getByRole('button', { name: /re-ingest file1\.pdf/i }));
+    await chooseAndConfirm(null, /^re-ingest$/i);
 
     expect(await screen.findByText('In knowledge base · 7 chunks')).toBeInTheDocument();
   });
@@ -243,6 +255,7 @@ describe('KnowledgeBase', () => {
     await browseWith([{ chunkCount: 0, retrievalMode: 'always_include' }]);
 
     await userEvent.click(screen.getByRole('button', { name: /re-ingest file1\.pdf/i }));
+    await chooseAndConfirm(null, /^re-ingest$/i);
 
     await waitFor(() =>
       expect(kbApi.ingestFolderItem).toHaveBeenCalledWith(
@@ -377,11 +390,12 @@ describe('KnowledgeBase', () => {
 
       // The row action (not the detail pane's own button) is what ingests here.
       await userEvent.click(screen.getByRole('button', { name: /add spec\.docx to the knowledge base/i }));
+      await chooseAndConfirm('search');
 
       await waitFor(() => expect(screen.getByRole('button', { name: /remove from knowledge base/i })).toBeInTheDocument());
     });
 
-    it('ingests with retrievalMode="always_include" when the detail pane checkbox is checked', async () => {
+    it('ingests with retrievalMode="always_include" when Reference is chosen in the add dialog', async () => {
       vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([
         { id: 'f1', name: 'standards.docx', mimeType: null, sizeBytes: 2048, isFolder: false, driveId: null, alreadyIngested: false, ingestedDocumentId: null, downloadUrl: 'https://graph.example/download/f1' },
       ]);
@@ -395,8 +409,8 @@ describe('KnowledgeBase', () => {
       await waitFor(() => expect(screen.getByText('standards.docx')).toBeInTheDocument());
 
       await userEvent.click(screen.getByText('standards.docx').closest('tr')!);
-      await userEvent.click(screen.getByRole('checkbox', { name: /always include \(full context\)/i }));
       await userEvent.click(screen.getByRole('button', { name: /^add to knowledge base$/i }));
+      await chooseAndConfirm('reference');
 
       await waitFor(() =>
         expect(kbApi.ingestFolderItem).toHaveBeenCalledWith(
@@ -430,6 +444,7 @@ describe('KnowledgeBase', () => {
         await openIngestedFile('always_include');
 
         await userEvent.click(await screen.findByRole('button', { name: /^re-ingest file$/i }));
+        await chooseAndConfirm(null, /^re-ingest$/i);
 
         await waitFor(() =>
           expect(kbApi.ingestFolderItem).toHaveBeenCalledWith(
@@ -449,7 +464,7 @@ describe('KnowledgeBase', () => {
         await userEvent.click(screen.getByRole('button', { name: /^browse$/i }));
         await waitFor(() => expect(screen.getByText('guide.pptx')).toBeInTheDocument());
         await userEvent.click(screen.getByText('guide.pptx').closest('tr')!);
-        return screen.findByRole('checkbox', { name: /always include \(full context\)/i });
+        return screen.findByRole('switch', { name: /reference \(always include\)/i });
       }
 
       it('shows the stored mode and switches it on without re-ingesting', async () => {
@@ -548,7 +563,7 @@ describe('KnowledgeBase', () => {
       expect(kbApi.browseSharedFolder).toHaveBeenCalledTimes(1);
     });
 
-    it('handleIngestFile: a rapid second click on the same row before ingest resolves does not fire a second request', async () => {
+    it('handleIngestFile: a rapid second click on the dialog\'s Add button before ingest resolves does not fire a second request', async () => {
       vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([
         { id: 'f1', name: 'spec.docx', mimeType: null, sizeBytes: 2048, isFolder: false, driveId: null, alreadyIngested: false, ingestedDocumentId: null, downloadUrl: 'https://graph.example/download/f1' },
       ]);
@@ -563,12 +578,15 @@ describe('KnowledgeBase', () => {
       await userEvent.click(screen.getByRole('button', { name: /^browse$/i }));
       await waitFor(() => expect(screen.getByText('spec.docx')).toBeInTheDocument());
 
-      const ingestButton = screen.getByRole('button', { name: /add spec\.docx to the knowledge base/i });
+      await userEvent.click(screen.getByRole('button', { name: /add spec\.docx to the knowledge base/i }));
+      const dialog = await screen.findByRole('dialog');
+      await userEvent.click(within(dialog).getByRole('radio', { name: /^search/i }));
+      const addButton = within(dialog).getByRole('button', { name: /^add to knowledge base$/i });
       // Both clicks inside ONE outer act() -- see handleBrowse's own test
       // above for why this is what actually forces the re-entry race.
       act(() => {
-        fireEvent.click(ingestButton);
-        fireEvent.click(ingestButton);
+        fireEvent.click(addButton);
+        fireEvent.click(addButton);
       });
 
       await act(async () => {
@@ -975,5 +993,162 @@ describe('KnowledgeBase source bar and reconnect', () => {
 
       expect(hasIcon(screen.getByRole('button', { name: /^cancel$/i }))).toBe(true);
     });
+  });
+});
+
+describe('KnowledgeBase "Add to knowledge base" dialog', () => {
+  const SAVED = 'https://share.example/remembered';
+  const NEW_FILE: FolderTreeEntry = {
+    id: 'f1', name: 'spec.docx', mimeType: null, sizeBytes: 2048, isFolder: false, driveId: null, alreadyIngested: false, ingestedDocumentId: null, downloadUrl: 'https://dl/f1',
+  };
+  const OTHER_FILE: FolderTreeEntry = { ...NEW_FILE, id: 'f2', name: 'other.docx', downloadUrl: 'https://dl/f2' };
+  const INGESTED: FolderTreeEntry = {
+    ...NEW_FILE, id: 'f3', name: 'guide.pptx', alreadyIngested: true, ingestedDocumentId: 'doc-3', downloadUrl: 'https://dl/f3', chunkCount: 11, retrievalMode: null,
+  };
+
+  function ingestResult(entry: FolderTreeEntry, skippedUnchanged = false) {
+    return { documentName: entry.name, driveitemId: entry.id, mimeType: null, sizeBytes: entry.sizeBytes, chunksStored: 3, chunksInStore: 3, skippedUnchanged, ingestedDocumentId: `doc-${entry.id}` };
+  }
+
+  async function open(entries: FolderTreeEntry[]): Promise<void> {
+    localStorage.setItem('req2ado-kb-browse-url', SAVED);
+    vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue(entries);
+    renderPage();
+    await screen.findByText(entries[0].name);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'valid', expiresInSeconds: 2820 });
+    vi.spyOn(kbApi, 'getRubric').mockResolvedValue({ version: 'v1', source: 'kb', builtAt: null, removed: [], categories: [] });
+    vi.spyOn(kbApi, 'ingestFolderItem').mockImplementation(async (name, id) => ingestResult({ ...NEW_FILE, id, name }));
+    localStorage.clear();
+  });
+
+  it('opens from the row action and sends nothing until the user confirms', async () => {
+    await open([NEW_FILE]);
+
+    await userEvent.click(screen.getByRole('button', { name: /add spec\.docx to the knowledge base/i }));
+
+    expect(await screen.findByRole('dialog', { name: /add "\s*spec\.docx\s*" to the knowledge base/i })).toBeInTheDocument();
+    expect(kbApi.ingestFolderItem).not.toHaveBeenCalled();
+  });
+
+  it('opens from the detail pane too', async () => {
+    await open([NEW_FILE]);
+    await userEvent.click(screen.getByText('spec.docx').closest('tr')!);
+
+    await userEvent.click(await screen.findByRole('button', { name: /^add to knowledge base$/i }));
+
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    expect(kbApi.ingestFolderItem).not.toHaveBeenCalled();
+  });
+
+  it('Cancel adds nothing', async () => {
+    await open([NEW_FILE]);
+    await userEvent.click(screen.getByRole('button', { name: /add spec\.docx to the knowledge base/i }));
+
+    await userEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: /^cancel$/i }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(kbApi.ingestFolderItem).not.toHaveBeenCalled();
+  });
+
+  it('no longer offers the always-include checkbox before a file is added', async () => {
+    await open([NEW_FILE]);
+    await userEvent.click(screen.getByText('spec.docx').closest('tr')!);
+
+    await screen.findByRole('button', { name: /^add to knowledge base$/i });
+
+    expect(screen.queryByRole('checkbox', { name: /always include/i })).toBeNull();
+    expect(screen.queryByRole('switch', { name: /reference \(always include\)/i })).toBeNull();
+  });
+
+  it('sends Search as the default mode and Reference as always_include', async () => {
+    await open([NEW_FILE, OTHER_FILE]);
+
+    await userEvent.click(screen.getByRole('button', { name: /add spec\.docx to the knowledge base/i }));
+    await chooseAndConfirm('search');
+    await waitFor(() => expect(kbApi.ingestFolderItem).toHaveBeenCalledWith('spec.docx', 'f1', 'https://dl/f1', 'spec.docx', 'user-descriptor-1', undefined));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+    await userEvent.click(screen.getByRole('button', { name: /add other\.docx to the knowledge base/i }));
+    await chooseAndConfirm('reference');
+    await waitFor(() => expect(kbApi.ingestFolderItem).toHaveBeenCalledWith('other.docx', 'f2', 'https://dl/f2', 'other.docx', 'user-descriptor-1', 'always_include'));
+  });
+
+  it('shows the new file as Reference afterwards, on the switch in the detail pane', async () => {
+    await open([NEW_FILE]);
+    await userEvent.click(screen.getByText('spec.docx').closest('tr')!);
+    await userEvent.click(await screen.findByRole('button', { name: /^add to knowledge base$/i }));
+    await chooseAndConfirm('reference');
+
+    expect(await screen.findByRole('switch', { name: /reference \(always include\)/i })).toBeChecked();
+  });
+
+  it('remembers a choice for the folder, and offers it the next time', async () => {
+    await open([NEW_FILE, OTHER_FILE]);
+    await userEvent.click(screen.getByRole('button', { name: /add spec\.docx to the knowledge base/i }));
+    const first = await screen.findByRole('dialog');
+    await userEvent.click(within(first).getByRole('radio', { name: /^reference/i }));
+    await userEvent.click(within(first).getByRole('checkbox', { name: /remember my choice for this folder/i }));
+    await userEvent.click(within(first).getByRole('button', { name: /^add to knowledge base$/i }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+    await userEvent.click(screen.getByRole('button', { name: /add other\.docx to the knowledge base/i }));
+
+    const second = await screen.findByRole('dialog');
+    expect(within(second).getByRole('radio', { name: /^reference/i })).toHaveAttribute('aria-checked', 'true');
+    expect(within(second).getByText(/your earlier choice for this folder/i)).toBeInTheDocument();
+  });
+
+  it('does not remember a choice unless asked', async () => {
+    await open([NEW_FILE, OTHER_FILE]);
+    await userEvent.click(screen.getByRole('button', { name: /add spec\.docx to the knowledge base/i }));
+    await chooseAndConfirm('reference');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+    await userEvent.click(screen.getByRole('button', { name: /add other\.docx to the knowledge base/i }));
+
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByRole('radio', { name: /^reference/i })).toHaveAttribute('aria-checked', 'false');
+  });
+
+  it('re-ingesting a file applies a changed mode to its stored chunks first, then re-ingests', async () => {
+    vi.spyOn(kbApi, 'setRetrievalMode').mockResolvedValue(undefined);
+    await open([INGESTED]);
+    await userEvent.click(screen.getByText('guide.pptx').closest('tr')!);
+    await userEvent.click(await screen.findByRole('button', { name: /^re-ingest file$/i }));
+
+    await chooseAndConfirm('reference', /^re-ingest$/i);
+
+    await waitFor(() => expect(kbApi.setRetrievalMode).toHaveBeenCalledWith('doc-3', 'always_include'));
+    await waitFor(() => expect(kbApi.ingestFolderItem).toHaveBeenCalledWith('guide.pptx', 'f3', 'https://dl/f3', 'guide.pptx', 'user-descriptor-1', 'always_include'));
+  });
+
+  it('re-ingesting a file in the same mode does not retag it', async () => {
+    vi.spyOn(kbApi, 'setRetrievalMode').mockResolvedValue(undefined);
+    await open([INGESTED]);
+    await userEvent.click(screen.getByText('guide.pptx').closest('tr')!);
+    await userEvent.click(await screen.findByRole('button', { name: /^re-ingest file$/i }));
+
+    await chooseAndConfirm(null, /^re-ingest$/i);
+
+    await waitFor(() => expect(kbApi.ingestFolderItem).toHaveBeenCalled());
+    expect(kbApi.setRetrievalMode).not.toHaveBeenCalled();
+  });
+
+  it('keeps the dialog open and shows an error when adding fails', async () => {
+    vi.spyOn(kbApi, 'ingestFolderItem').mockRejectedValue(new Error('boom'));
+    await open([NEW_FILE]);
+    await userEvent.click(screen.getByRole('button', { name: /add spec\.docx to the knowledge base/i }));
+
+    await chooseAndConfirm('search');
+
+    expect(await screen.findByText(/failed to add "spec\.docx"/i)).toBeInTheDocument();
+    // Still open, with the choice kept, so a retry is one click.
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByRole('radio', { name: /^search/i })).toHaveAttribute('aria-checked', 'true');
+    expect(within(dialog).getByRole('button', { name: /^add to knowledge base$/i })).toBeEnabled();
   });
 });
