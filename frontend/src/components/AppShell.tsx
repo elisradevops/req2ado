@@ -6,9 +6,10 @@ import { cn } from '../lib/cn';
 import { useDisplayName, useAuthStore } from '../store/authStore';
 import { usePageLabelStore } from '../store/pageLabelStore';
 import { logoutSession } from '../api/auth';
-import { getAdoStatus, type AdoStatus } from '../api/ado';
-import { getSharePointStatus, type SharePointStatus } from '../api/kb';
-import { getLlmStatus, type LlmStatus } from '../api/llm';
+import type { AdoStatus } from '../api/ado';
+import type { SharePointStatus } from '../api/kb';
+import type { LlmStatus } from '../api/llm';
+import { startConnectionStatusPolling, useConnectionStatusStore, type StatusEntry } from '../store/connectionStatusStore';
 import { formatSharePointExpiry } from '../utils/sharePointStatus';
 import { Tooltip } from '../ui/Tooltip';
 import { ARRIVE, useReplayOnChange } from '../ui/motion';
@@ -74,6 +75,17 @@ function llmDetail(status: LlmStatus | null): string {
   if (status.status === 'reachable') return `Connected, ${status.latencyMs}ms`;
   if (status.status === 'not_configured') return 'Not configured';
   return "Can't reach the LLM backend";
+}
+
+// What the rail shows when a check could not be completed: the integration is not reachable from here.
+const ADO_UNREACHABLE: AdoStatus = { status: 'unreachable' };
+const SHAREPOINT_UNREACHABLE: SharePointStatus = { status: 'unreachable', expiresInSeconds: null };
+const LLM_UNREACHABLE: LlmStatus = { status: 'unreachable', latencyMs: null };
+
+// null while the first check is still running (the dot pulses), the unreachable fallback when the last
+// check failed, otherwise what the server said.
+function statusOf<T>(entry: StatusEntry<T>, unreachable: T): T | null {
+  return entry.error ? unreachable : entry.data;
 }
 
 const RAIL_EXPANDED_WIDTH = 220;
@@ -174,9 +186,9 @@ export function AppShell({ children }: { children: ReactNode }): React.ReactElem
   useReplayOnChange(mainRef, location.pathname, ARRIVE.fade);
   // Set when the drawer closes because a link was followed: focus then belongs to the new page, not to the menu button.
   const closedByNavigation = useRef(false);
-  const [adoStatus, setAdoStatus] = useState<AdoStatus | null>(null);
-  const [sharePointStatus, setSharePointStatus] = useState<SharePointStatus | null>(null);
-  const [llmStatus, setLlmStatus] = useState<LlmStatus | null>(null);
+  const adoStatus = statusOf(useConnectionStatusStore((s) => s.ado), ADO_UNREACHABLE);
+  const sharePointStatus = statusOf(useConnectionStatusStore((s) => s.sharePoint), SHAREPOINT_UNREACHABLE);
+  const llmStatus = statusOf(useConnectionStatusStore((s) => s.llm), LLM_UNREACHABLE);
 
   // Following a link, or pressing Escape, puts the drawer away; it never stays over the page that was just opened.
   useEffect(() => {
@@ -220,17 +232,8 @@ export function AppShell({ children }: { children: ReactNode }): React.ReactElem
     drawerWasOpen.current = drawerOpen;
   }, [drawerOpen]);
 
-  useEffect(() => {
-    getAdoStatus()
-      .then(setAdoStatus)
-      .catch(() => setAdoStatus({ status: 'unreachable' }));
-    getSharePointStatus()
-      .then(setSharePointStatus)
-      .catch(() => setSharePointStatus({ status: 'unreachable', expiresInSeconds: null }));
-    getLlmStatus()
-      .then(setLlmStatus)
-      .catch(() => setLlmStatus({ status: 'unreachable', latencyMs: null }));
-  }, []);
+  // The connection checks run now and then keep running (visible tab only), shared with every page.
+  useEffect(() => startConnectionStatusPolling(), []);
 
   // Revokes the real server session FIRST (a DELETE against the Session
   // table -- clearing only local state would leave that session's cookie

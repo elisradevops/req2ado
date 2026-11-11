@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { httpClient } from '../api/httpClient';
-import { getSharePointStatus, reconnectSharePoint, type SharePointStatus } from '../api/kb';
+import { reconnectSharePoint, type SharePointStatus } from '../api/kb';
 import { getAppSettings, updateAppSettings } from '../api/settings';
 import { getLlmConnection, getLlmConnectionModels, setLlmConnection, type LlmConnectionStatus, type LlmSelectableModel } from '../api/llmConnection';
+import { useConnectionStatusStore } from '../store/connectionStatusStore';
 import { useLlmConnectionStore } from '../store/llmConnectionStore';
 import { useAuthStore, useDisplayName, useOrgUrl, useUserId } from '../store/authStore';
 import { useDenseView, useAutoSyncLedgers, useKeyboardShortcuts, useUiPreferencesStore } from '../store/uiPreferencesStore';
@@ -22,6 +23,8 @@ import { Skeleton } from '../ui/Skeleton';
 import { cn } from '../lib/cn';
 
 type IntegrationTone = 'ok' | 'danger' | 'warning' | 'dim';
+
+const SHAREPOINT_UNREACHABLE: SharePointStatus = { status: 'unreachable', expiresInSeconds: null };
 
 const SHAREPOINT_COPY: Record<SharePointStatus['status'], { label: string; tone: IntegrationTone; reason: string | null }> = {
   valid: { label: 'Connected', tone: 'ok', reason: null },
@@ -176,7 +179,9 @@ export function Settings(): React.ReactElement {
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [reconnectError, setReconnectError] = useState<string | null>(null);
 
-  const [sharePointStatus, setSharePointStatus] = useState<SharePointStatus | null>(null);
+  // Shared with the rest of the app (polled and refreshed in one place); a check that failed reads as unreachable.
+  const sharePointEntry = useConnectionStatusStore((s) => s.sharePoint);
+  const sharePointStatus = sharePointEntry.error ? SHAREPOINT_UNREACHABLE : sharePointEntry.data;
   const [sharePointReconnectOpen, setSharePointReconnectOpen] = useState(false);
   const [sharePointToken, setSharePointToken] = useState('');
   const [isSharePointReconnecting, setIsSharePointReconnecting] = useState(false);
@@ -205,9 +210,7 @@ export function Settings(): React.ReactElement {
   const isSharePointReconnectingRef = useRef(false);
 
   useEffect(() => {
-    getSharePointStatus()
-      .then(setSharePointStatus)
-      .catch(() => setSharePointStatus({ status: 'unreachable', expiresInSeconds: null }));
+    void useConnectionStatusStore.getState().refresh('sharePoint');
   }, []);
 
   useEffect(() => {
@@ -276,7 +279,7 @@ export function Settings(): React.ReactElement {
         setSharePointReconnectError('SharePoint rejected that token. Check you copied the whole value — they are long.');
         return;
       }
-      setSharePointStatus(status);
+      useConnectionStatusStore.getState().record('sharePoint', status);
       showToast('SharePoint reconnected.', 'success');
       setSharePointReconnectOpen(false);
     } catch {

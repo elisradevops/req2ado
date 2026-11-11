@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { getSharePointStatus, listIngestedDocuments, type IngestedDocument, type SharePointStatus } from '../api/kb';
+import { listIngestedDocuments, type IngestedDocument, type SharePointStatus } from '../api/kb';
 import { useUserId } from '../store/authStore';
+import { useConnectionStatusStore } from '../store/connectionStatusStore';
 import { Chip } from '../ui/Chip';
 import { Skeleton } from '../ui/Skeleton';
 
@@ -22,21 +23,26 @@ const plural = (n: number, one: string, many: string): string => (n === 1 ? one 
 type LoadState =
   | { kind: 'loading' }
   | { kind: 'error' }
-  | { kind: 'ready'; documents: IngestedDocument[]; sharePoint: SharePointStatus | null };
+  | { kind: 'ready'; documents: IngestedDocument[] };
 
 export function KbReadinessStrip(): React.ReactElement {
   const userId = useUserId();
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
+  // SharePoint's state is shared with the rest of the app (it is polled and refreshed in one place). A check that could not
+  // be completed says nothing either way, so it shows no SharePoint chip rather than a wrong one.
+  const sharePointEntry = useConnectionStatusStore((s) => s.sharePoint);
+  const refreshConnection = useConnectionStatusStore((s) => s.refresh);
+  useEffect(() => {
+    void refreshConnection('sharePoint');
+  }, [refreshConnection]);
+  const sharePoint = sharePointEntry.error ? null : sharePointEntry.data;
 
   useEffect(() => {
     let cancelled = false;
     setState({ kind: 'loading' });
-    Promise.all([
-      listIngestedDocuments(userId ?? undefined),
-      getSharePointStatus().catch((): SharePointStatus | null => null),
-    ])
-      .then(([documents, sharePoint]) => {
-        if (!cancelled) setState({ kind: 'ready', documents, sharePoint });
+    listIngestedDocuments(userId ?? undefined)
+      .then((documents) => {
+        if (!cancelled) setState({ kind: 'ready', documents });
       })
       .catch(() => {
         if (!cancelled) setState({ kind: 'error' });
@@ -57,7 +63,7 @@ export function KbReadinessStrip(): React.ReactElement {
     return <p className="text-xs text-ink-3">Couldn't check your knowledge base right now.</p>;
   }
 
-  const { documents, sharePoint } = state;
+  const { documents } = state;
   // A file only grounds a run if it holds vectors. A count of 0 says it has none; a missing count (older ingests, or ones whose
   // vectors were lost) says nothing either way, so it is not counted as ready -- "6 files" must not include files we cannot vouch for.
   const noVectors = documents.filter((d) => d.chunkCount === 0).length;
