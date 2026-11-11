@@ -610,6 +610,55 @@ def test_list_always_include_documents_returns_only_tagged_files() -> None:
         assert store.list_always_include_documents("Project\\Area1") == ["standards.docx"]
 
 
+def _upsert_two_chunks(store: KbVectorStore, source_id: str, name: str) -> None:
+    for index in range(2):
+        store.upsert_chunk(
+            chunk_id=f"{source_id}:{name}:{index}",
+            embedding=[1.0, float(index), 0.0],
+            text=f"t{index}",
+            user_id="Project\\Area1",
+            source_file=name,
+            source_id=source_id,
+            chunk_index=index,
+            file_hash=f"hash-{source_id}",
+        )
+
+
+def test_set_retrieval_mode_retags_every_chunk_of_the_source_only() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        _upsert_two_chunks(store, "source-1", "guide.pptx")
+        _upsert_two_chunks(store, "source-2", "spec.docx")
+
+        store.set_retrieval_mode("Project\\Area1", "source-1", "always_include")
+
+        assert store.list_always_include_documents("Project\\Area1") == ["guide.pptx"]
+        # Only retagged: the chunks' other metadata and text are untouched.
+        assert store.get_document("Project\\Area1", "guide.pptx") == ("t0\n\nt1", False)
+        assert (
+            store.existing_file_hash("Project\\Area1", "guide.pptx", "source-1") == "hash-source-1"
+        )
+
+
+def test_set_retrieval_mode_back_to_retrieve_removes_it_from_always_include() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        _upsert_two_chunks(store, "source-1", "guide.pptx")
+        store.set_retrieval_mode("Project\\Area1", "source-1", "always_include")
+
+        store.set_retrieval_mode("Project\\Area1", "source-1", "retrieve")
+
+        assert store.list_always_include_documents("Project\\Area1") == []
+
+
+def test_set_retrieval_mode_is_a_noop_when_never_ingested() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        store.set_retrieval_mode(
+            "Project\\Area1", "never-ingested", "always_include"
+        )  # must not raise
+
+
 def test_upsert_chunk_default_retrieval_mode_is_not_stored_as_always_include() -> None:
     # retrieval_mode omitted (the common case) must behave byte-identically
     # to before this field existed -- never accidentally tagged.
@@ -934,3 +983,57 @@ def test_an_unrelated_invalid_argument_error_still_propagates() -> None:
     store = _store_with_failing_client(InvalidArgumentError("bad where clause"))
     with pytest.raises(InvalidArgumentError):
         store.list_documents("Project\\Area1")
+
+
+def _upsert_one(store: KbVectorStore, **extra) -> None:
+    store.upsert_chunk(
+        chunk_id="source-1:deck.pptx:0",
+        embedding=[1.0, 0.0, 0.0],
+        text="t",
+        user_id="Project\\Area1",
+        source_file="deck.pptx",
+        source_id="source-1",
+        chunk_index=0,
+        file_hash="hash-1",
+        **extra,
+    )
+
+
+def test_existing_parse_version_is_none_for_a_never_ingested_file() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        assert store.existing_parse_version("Project\\Area1", "source-1") is None
+
+
+def test_existing_parse_version_round_trips_the_stored_version() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        _upsert_one(store, parse_version=2)
+        assert store.existing_parse_version("Project\\Area1", "source-1") == 2
+
+
+def test_existing_parse_version_is_none_for_chunks_stored_without_one() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        _upsert_one(store)
+        assert store.existing_parse_version("Project\\Area1", "source-1") is None
+
+
+def test_existing_retrieval_mode_is_none_for_a_never_ingested_file() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        assert store.existing_retrieval_mode("Project\\Area1", "source-1") is None
+
+
+def test_existing_retrieval_mode_reads_the_stored_mode() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        _upsert_one(store, retrieval_mode="always_include")
+        assert store.existing_retrieval_mode("Project\\Area1", "source-1") == "always_include"
+
+
+def test_existing_retrieval_mode_is_none_for_the_default_mode() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        _upsert_one(store)
+        assert store.existing_retrieval_mode("Project\\Area1", "source-1") is None

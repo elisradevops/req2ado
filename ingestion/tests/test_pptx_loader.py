@@ -606,3 +606,345 @@ def test_load_pptx_descends_into_a_nested_group_shape(tmp_path: Path) -> None:
     doc = load_pptx(str(path))
 
     assert len(doc.figures) == 1
+
+
+# ---- KB content gaps found by the synthetic Hebrew/English deck experiment ----
+
+
+def _png_buffer(color: str = "red", size: tuple[int, int] = (10, 10)):
+    from io import BytesIO
+
+    from PIL import Image
+
+    buffer = BytesIO()
+    Image.new("RGB", size, color=color).save(buffer, format="PNG")
+    buffer.seek(0)
+    return buffer
+
+
+def _add_smartart(slide, node_texts: list[list[str]], *, extra_points: str = "") -> None:
+    """Adds a minimal SmartArt graphic frame (data model part only, as much as the loader
+    needs). Each entry of `node_texts` is one node point holding one paragraph per string."""
+    from lxml import etree
+    from pptx.opc.package import Part
+    from pptx.opc.packuri import PackURI
+
+    a_ns = "http://schemas.openxmlformats.org/drawingml/2006/main"
+    p_ns = "http://schemas.openxmlformats.org/presentationml/2006/main"
+    r_ns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    dgm_ns = "http://schemas.openxmlformats.org/drawingml/2006/diagram"
+    points = ""
+    for index, paragraphs in enumerate(node_texts, start=1):
+        body = "".join(f"<a:p><a:r><a:t>{text}</a:t></a:r></a:p>" for text in paragraphs)
+        points += (
+            f'<dgm:pt modelId="{{0000000{index}-0000-0000-0000-000000000000}}"><dgm:prSet/><dgm:spPr/>'
+            f"<dgm:t><a:bodyPr/><a:lstStyle/>{body}</dgm:t></dgm:pt>"
+        )
+    data_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<dgm:dataModel xmlns:dgm="{dgm_ns}" xmlns:a="{a_ns}"><dgm:ptLst>'
+        '<dgm:pt modelId="{00000000-0000-0000-0000-000000000000}" type="doc"><dgm:prSet/><dgm:spPr/></dgm:pt>'
+        f"{points}{extra_points}</dgm:ptLst><dgm:cxnLst/></dgm:dataModel>"
+    ).encode()
+    data_part = Part(
+        PackURI("/ppt/diagrams/data1.xml"),
+        "application/vnd.openxmlformats-officedocument.drawingml.diagramData+xml",
+        slide.part.package,
+        data_xml,
+    )
+    rid = slide.part.relate_to(
+        data_part, "http://schemas.openxmlformats.org/officeDocument/2006/relationships/diagramData"
+    )
+    frame = etree.fromstring(
+        f'<p:graphicFrame xmlns:p="{p_ns}" xmlns:a="{a_ns}" xmlns:r="{r_ns}"><p:nvGraphicFramePr>'
+        '<p:cNvPr id="200" name="Diagram 1"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr>'
+        '<p:xfrm><a:off x="500000" y="1500000"/><a:ext cx="4000000" cy="2000000"/></p:xfrm><a:graphic>'
+        f'<a:graphicData uri="{dgm_ns}"><dgm:relIds xmlns:dgm="{dgm_ns}" r:dm="{rid}" r:lo="{rid}" '
+        f'r:qs="{rid}" r:cs="{rid}"/></a:graphicData></a:graphic></p:graphicFrame>'
+    )
+    slide.shapes._spTree.append(frame)
+
+
+def test_load_pptx_captions_a_picture_inside_a_picture_placeholder(tmp_path: Path) -> None:
+    from pptx.enum.shapes import PP_PLACEHOLDER
+
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[8])  # Picture with Caption
+    picture_placeholder = next(
+        p for p in slide.placeholders if p.placeholder_format.type == PP_PLACEHOLDER.PICTURE
+    )
+    picture_placeholder.insert_picture(_png_buffer())
+    path = tmp_path / "placeholder_picture.pptx"
+    presentation.save(str(path))
+
+    calls: list[bytes] = []
+
+    def fake_describe_figure(image_bytes: bytes) -> str:
+        calls.append(image_bytes)
+        return "a red square"
+
+    doc = load_pptx(str(path), describe_figure=fake_describe_figure)
+
+    assert len(calls) == 1
+    assert [f.caption for f in doc.figures] == ["a red square"]
+    assert any(b.text == "[FIGURE: a red square]" for b in doc.blocks)
+
+
+def test_load_pptx_reads_smartart_node_text(tmp_path: Path) -> None:
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[5])  # Title Only
+    slide.shapes.title.text = "Process"
+    # A presentation-only point and a transition point carry no authored text of their own.
+    extra = (
+        '<dgm:pt modelId="{00000009-0000-0000-0000-000000000000}" type="pres"><dgm:prSet/><dgm:spPr/></dgm:pt>'
+        '<dgm:pt modelId="{0000000a-0000-0000-0000-000000000000}" type="parTrans"><dgm:prSet/><dgm:spPr/></dgm:pt>'
+    )
+    _add_smartart(
+        slide,
+        [["שלב ראשון: Collect"], ["Review", "בדיקת עמיתים"]],
+        extra_points=extra,
+    )
+    path = tmp_path / "smartart.pptx"
+    presentation.save(str(path))
+
+    doc = load_pptx(str(path))
+
+    texts = [b.text for b in doc.blocks]
+    assert "שלב ראשון: Collect" in texts
+    assert "Review" in texts
+    assert "בדיקת עמיתים" in texts
+    # Authored order, each text exactly once, all on this slide.
+    smartart_texts = [t for t in texts if t != "Process"]
+    assert smartart_texts == ["שלב ראשון: Collect", "Review", "בדיקת עמיתים"]
+    assert {b.source_ref.page for b in doc.blocks} == {1}
+
+
+def test_load_pptx_skips_a_malformed_smartart_part_without_failing_the_deck(
+    tmp_path: Path, caplog
+) -> None:
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[5])
+    slide.shapes.title.text = "Process"
+    _add_smartart(slide, [["will be corrupted"]])
+    path = tmp_path / "bad_smartart.pptx"
+    presentation.save(str(path))
+    # Corrupt the stored data model after saving by loading it back and replacing the blob.
+    reloaded = Presentation(str(path))
+    for rel in reloaded.slides[0].part.rels.values():
+        if rel.reltype.endswith("/diagramData"):
+            rel.target_part._blob = b"<not xml"
+    reloaded.save(str(path))
+
+    with caplog.at_level("WARNING"):
+        doc = load_pptx(str(path))
+
+    assert [b.text for b in doc.blocks] == ["Process"]
+    assert "could not read SmartArt text" in caplog.text
+
+
+def _add_chart(slide, title: str | None, categories, series: dict[str, tuple]):
+    from pptx.chart.data import CategoryChartData
+    from pptx.enum.chart import XL_CHART_TYPE
+
+    chart_data = CategoryChartData()
+    chart_data.categories = categories
+    for name, values in series.items():
+        chart_data.add_series(name, values)
+    chart = slide.shapes.add_chart(
+        XL_CHART_TYPE.COLUMN_CLUSTERED, Inches(1), Inches(1), Inches(6), Inches(3), chart_data
+    ).chart
+    if title is not None:
+        chart.has_title = True
+        chart.chart_title.text_frame.text = title
+    return chart
+
+
+def test_load_pptx_turns_a_native_chart_into_a_table(tmp_path: Path) -> None:
+    from app.canonical.model import plain_text_rows
+
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[5])
+    slide.shapes.title.text = "Quality trend"
+    _add_chart(
+        slide,
+        "Defects per release",
+        ["גרסה 1", "Release 2"],
+        {"Defects": (3, 5.5), "Fixes": (1, 2)},
+    )
+    path = tmp_path / "chart.pptx"
+    presentation.save(str(path))
+
+    doc = load_pptx(str(path))
+
+    assert len(doc.tables) == 1
+    table = doc.tables[0]
+    assert table.caption == "Defects per release"
+    assert plain_text_rows(table) == [
+        ["", "Defects", "Fixes"],
+        ["גרסה 1", "3", "1"],
+        ["Release 2", "5.5", "2"],
+    ]
+    assert table.source_ref.page == 1
+
+
+def test_load_pptx_names_an_untitled_chart_generically(tmp_path: Path) -> None:
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[5])
+    slide.shapes.title.text = "Quality trend"
+    _add_chart(slide, None, ["A"], {"S": (1,)})
+    path = tmp_path / "chart_untitled.pptx"
+    presentation.save(str(path))
+
+    assert load_pptx(str(path)).tables[0].caption == "Chart"
+
+
+def test_load_pptx_keeps_series_names_for_a_chart_without_categories(tmp_path: Path) -> None:
+    from pptx.chart.data import XyChartData
+    from pptx.enum.chart import XL_CHART_TYPE
+
+    from app.canonical.model import plain_text_rows
+
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[5])
+    slide.shapes.title.text = "Scatter"
+    chart_data = XyChartData()
+    series = chart_data.add_series("Latency vs load")
+    series.add_data_point(1, 2)
+    slide.shapes.add_chart(
+        XL_CHART_TYPE.XY_SCATTER, Inches(1), Inches(1), Inches(6), Inches(3), chart_data
+    )
+    path = tmp_path / "xy.pptx"
+    presentation.save(str(path))
+
+    doc = load_pptx(str(path))
+
+    assert len(doc.tables) == 1
+    assert any("Latency vs load" in cell for row in plain_text_rows(doc.tables[0]) for cell in row)
+
+
+def test_load_pptx_keeps_a_soft_line_break_as_a_separator(tmp_path: Path) -> None:
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[5])
+    slide.shapes.title.text = "Soft breaks"
+    box = slide.shapes.add_textbox(Inches(1), Inches(2), Inches(5), Inches(1))
+    paragraph = box.text_frame.paragraphs[0]
+    paragraph.add_run().text = "line one"
+    paragraph.add_line_break()
+    paragraph.add_run().text = "line two"
+    path = tmp_path / "soft_break.pptx"
+    presentation.save(str(path))
+
+    doc = load_pptx(str(path))
+
+    assert "line one\nline two" in [b.text for b in doc.blocks]
+
+
+def test_load_pptx_uses_a_space_for_a_soft_line_break_in_a_slide_title(tmp_path: Path) -> None:
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[5])
+    paragraph = slide.shapes.title.text_frame.paragraphs[0]
+    paragraph.add_run().text = "Part one"
+    paragraph.add_line_break()
+    paragraph.add_run().text = "part two"
+    path = tmp_path / "title_break.pptx"
+    presentation.save(str(path))
+
+    headings = [b.text for b in load_pptx(str(path)).blocks if b.kind == BlockKind.HEADING]
+
+    assert headings == ["Part one part two"]
+
+
+def _deck_with_alt_text(tmp_path: Path, descr: str) -> str:
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    picture = slide.shapes.add_picture(_png_buffer(), Inches(1), Inches(1))
+    picture._element.nvPicPr.cNvPr.set("descr", descr)
+    path = tmp_path / "alt.pptx"
+    presentation.save(str(path))
+    return str(path)
+
+
+def test_load_pptx_uses_alt_text_as_the_caption_when_there_is_no_vision(tmp_path: Path) -> None:
+    doc = load_pptx(_deck_with_alt_text(tmp_path, "Review workflow: draft, review, approve"))
+
+    assert [f.caption for f in doc.figures] == ["Review workflow: draft, review, approve"]
+
+
+@pytest.mark.parametrize("auto_name", ["Picture 3", "image1.png", "IMG_0042.JPG", ""])
+def test_load_pptx_ignores_auto_generated_alt_text(tmp_path: Path, auto_name: str) -> None:
+    doc = load_pptx(_deck_with_alt_text(tmp_path, auto_name))
+
+    assert [f.caption for f in doc.figures] == [None]
+
+
+def test_load_pptx_does_not_override_a_vision_verdict_with_alt_text(tmp_path: Path) -> None:
+    # The vision model judged the picture insignificant (None): alt text must not resurrect it.
+    doc = load_pptx(_deck_with_alt_text(tmp_path, "Company logo"), describe_figure=lambda _b: None)
+
+    assert [f.caption for f in doc.figures] == [None]
+
+
+def _deck_with_hidden_slide(tmp_path: Path) -> str:
+    presentation = Presentation()
+    visible = presentation.slides.add_slide(presentation.slide_layouts[5])
+    visible.shapes.title.text = "Visible slide"
+    hidden = presentation.slides.add_slide(presentation.slide_layouts[5])
+    hidden.shapes.title.text = "Hidden slide"
+    hidden._element.set("show", "0")
+    path = tmp_path / "hidden.pptx"
+    presentation.save(str(path))
+    return str(path)
+
+
+def test_load_pptx_includes_hidden_slides_by_default(tmp_path: Path) -> None:
+    doc = load_pptx(_deck_with_hidden_slide(tmp_path))
+
+    assert [b.text for b in doc.blocks] == ["Visible slide", "Hidden slide"]
+
+
+def test_load_pptx_can_skip_hidden_slides(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("app.loaders.pptx_loader._INCLUDE_HIDDEN_SLIDES", False)
+
+    doc = load_pptx(_deck_with_hidden_slide(tmp_path))
+
+    assert [b.text for b in doc.blocks] == ["Visible slide"]
+
+
+def test_load_pptx_falls_back_to_alt_text_when_the_vision_call_raises(tmp_path: Path) -> None:
+    def failing_describe(_image_bytes: bytes) -> str:
+        raise RuntimeError("vision backend down")
+
+    doc = load_pptx(
+        _deck_with_alt_text(tmp_path, "Review workflow: draft, review, approve"),
+        describe_figure=failing_describe,
+    )
+
+    assert [f.caption for f in doc.figures] == ["Review workflow: draft, review, approve"]
+
+
+def test_load_pptx_soft_break_paragraph_leaves_out_field_text_like_its_siblings(
+    tmp_path: Path,
+) -> None:
+    from lxml import etree
+
+    a_ns = "http://schemas.openxmlformats.org/drawingml/2006/main"
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[5])
+    slide.shapes.title.text = "Footer"
+    box = slide.shapes.add_textbox(Inches(1), Inches(2), Inches(5), Inches(1))
+    paragraph = box.text_frame.paragraphs[0]
+    paragraph.add_run().text = "Page"
+    paragraph.add_line_break()
+    paragraph.add_run().text = "Confidential"
+    field = etree.fromstring(
+        f'<a:fld xmlns:a="{a_ns}" id="{{B6F15528-21DE-4FAA-801E-634DDDAF4B2B}}" type="slidenum">'
+        "<a:rPr/><a:t>7</a:t></a:fld>"
+    )
+    paragraph._p.insert(1, field)  # between "Page" and the line break
+    path = tmp_path / "field_break.pptx"
+    presentation.save(str(path))
+
+    texts = [b.text for b in load_pptx(str(path)).blocks]
+
+    assert "Page\nConfidential" in texts
+    assert not any("7" in t for t in texts)

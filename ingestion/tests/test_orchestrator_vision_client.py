@@ -1024,3 +1024,93 @@ def test_the_prompt_version_changes_with_the_prompt_so_old_verdicts_are_not_reus
     from app.vision.orchestrator_vision_client import PROMPT_VERSION, _build_prompt
 
     assert PROMPT_VERSION and "table" in _build_prompt(None).lower()
+
+
+# ---- KB transcription mode: the survey prompt and its cache must stay untouched ----
+
+
+def _capture_client(captured: dict, reply: dict) -> OrchestratorVisionClient:
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"description": json.dumps(reply)})
+
+    client = OrchestratorVisionClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
+    )
+    client._transport = httpx.MockTransport(handler)
+    return client
+
+
+def test_the_survey_prompt_version_is_pinned() -> None:
+    # Editing the survey prompt or schema changes this and invalidates every user's cached
+    # figure captions (a one-time re-captioning, and node counts can shift). The KB
+    # transcription mode must never be what changes it.
+    assert PROMPT_VERSION == "d941fa2a916c"
+
+
+def test_describe_figure_default_request_is_the_survey_request_unchanged() -> None:
+    captured: dict = {}
+    client = _capture_client(captured, {"significant": True, "description": "ok"})
+
+    result = client.describe_figure(b"img")
+
+    assert captured["body"]["prompt"] == _build_prompt(None)
+    assert captured["body"]["responseSchema"]["schema"] == _FIGURE_SIGNIFICANCE_SCHEMA
+    assert "visible_text" not in _FIGURE_SIGNIFICANCE_SCHEMA["properties"]
+    assert result is not None and result.visible_text is None
+
+
+def test_describe_figure_transcribe_asks_for_visible_text_verbatim() -> None:
+    captured: dict = {}
+    client = _capture_client(
+        captured,
+        {
+            "significant": True,
+            "description": "a rules slide",
+            "visible_text": "כל דרישה חייבת להיות ניתנת לבדיקה",
+        },
+    )
+
+    result = client.describe_figure(b"img", transcribe=True)
+
+    body = captured["body"]
+    assert body["prompt"] == _build_prompt(None, transcribe=True)
+    assert "visible_text" in body["responseSchema"]["schema"]["properties"]
+    assert "visible_text" not in body["responseSchema"]["schema"].get("required", [])
+    prompt = body["prompt"].lower()
+    assert "exactly" in prompt and "original language" in prompt and "reading order" in prompt
+    assert result is not None
+    assert result.visible_text == "כל דרישה חייבת להיות ניתנת לבדיקה"
+
+
+def test_transcribe_prompt_extends_the_survey_prompt_and_keeps_the_context_clause() -> None:
+    assert _build_prompt(None, transcribe=True).startswith(_build_prompt(None))
+    with_context = _build_prompt("A guide to writing requirements", transcribe=True)
+    assert "A guide to writing requirements" in with_context
+
+
+def test_transcribe_mode_has_its_own_prompt_version_derived_from_its_text() -> None:
+    import hashlib
+
+    from app.vision.orchestrator_vision_client import _KB_FIGURE_SCHEMA, KB_PROMPT_VERSION
+
+    expected = hashlib.sha256(
+        (
+            _build_prompt(None, transcribe=True) + json.dumps(_KB_FIGURE_SCHEMA, sort_keys=True)
+        ).encode("utf-8")
+    ).hexdigest()[:12]
+    assert KB_PROMPT_VERSION == expected
+    assert KB_PROMPT_VERSION != PROMPT_VERSION
+
+
+@pytest.mark.parametrize("visible", [None, "", "   ", 7])
+def test_a_missing_or_blank_visible_text_parses_as_none(visible) -> None:
+    captured: dict = {}
+    reply = {"significant": True, "description": "a slide"}
+    if visible is not None:
+        reply["visible_text"] = visible
+    client = _capture_client(captured, reply)
+
+    result = client.describe_figure(b"img", transcribe=True)
+
+    assert result is not None and result.visible_text is None

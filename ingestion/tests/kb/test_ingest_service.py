@@ -1023,3 +1023,166 @@ def test_skip_branch_reports_unknown_count_when_the_count_read_fails(
 
     assert result.skipped_unchanged is True
     assert result.chunks_in_store is None
+
+
+# ---- A parser fix must reach files that were ingested before it ----
+
+
+def _legacy_store(tmp_path, name: str, content: bytes) -> KbVectorStore:
+    """A store holding `name` as an older ingest left it: same bytes, no parse_version."""
+    import hashlib
+
+    store = KbVectorStore(persist_path=str(tmp_path))
+    store.upsert_chunk(
+        chunk_id=f"item-1:{name}:0",
+        embedding=[1.0, 0.0, 0.0],
+        text="old text",
+        user_id="Project\\Area1",
+        source_file=name,
+        source_id="item-1",
+        chunk_index=0,
+        file_hash=hashlib.sha256(content).hexdigest(),
+    )
+    return store
+
+
+def _store(name: str, store: KbVectorStore):
+    from app.kb.ingest_service import _store_document
+
+    return _store_document(
+        name, "item-1", DOCX_CONTENT, "Project\\Area1", None, FakeEmbedClient(), store
+    )
+
+
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_an_unchanged_pptx_ingested_by_an_older_parser_is_parsed_again(
+    mock_dispatch, tmp_path
+) -> None:
+    mock_dispatch.return_value = _fake_doc("Fresh text from the improved parser")
+    store = _legacy_store(tmp_path, "deck.pptx", DOCX_CONTENT)
+
+    result = _store("deck.pptx", store)
+
+    assert result.skipped_unchanged is False
+    assert mock_dispatch.call_count == 1
+    assert store.get_document("Project\\Area1", "deck.pptx") == (
+        "Fresh text from the improved parser",
+        False,
+    )
+    assert store.existing_parse_version("Project\\Area1", "item-1") is not None
+
+
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_an_unchanged_pptx_already_on_the_current_parser_is_skipped(
+    mock_dispatch, tmp_path
+) -> None:
+    mock_dispatch.return_value = _fake_doc("text")
+    store = KbVectorStore(persist_path=str(tmp_path))
+    _store("deck.pptx", store)
+    mock_dispatch.reset_mock()
+
+    result = _store("deck.pptx", store)
+
+    assert result.skipped_unchanged is True
+    mock_dispatch.assert_not_called()
+
+
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_an_unchanged_docx_without_a_parse_version_is_still_skipped(
+    mock_dispatch, tmp_path
+) -> None:
+    store = _legacy_store(tmp_path, "doc.docx", DOCX_CONTENT)
+
+    result = _store("doc.docx", store)
+
+    assert result.skipped_unchanged is True
+    mock_dispatch.assert_not_called()
+    assert store.existing_parse_version("Project\\Area1", "item-1") is None
+
+
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_reingesting_a_pptx_keeps_its_retrieval_mode_when_the_caller_passes_it(
+    mock_dispatch, tmp_path
+) -> None:
+    from app.kb.ingest_service import _store_document
+
+    mock_dispatch.return_value = _fake_doc("Fresh text")
+    store = _legacy_store(tmp_path, "deck.pptx", DOCX_CONTENT)
+
+    _store_document(
+        "deck.pptx",
+        "item-1",
+        DOCX_CONTENT,
+        "Project\\Area1",
+        None,
+        FakeEmbedClient(),
+        store,
+        retrieval_mode="always_include",
+    )
+
+    assert store.list_always_include_documents("Project\\Area1") == ["deck.pptx"]
+
+
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_folder_ingest_keeps_an_always_include_files_mode_when_it_re_parses_it(
+    mock_dispatch, tmp_path
+) -> None:
+    # The folder route has no per-file mode of its own. A deck ingested earlier as always-include
+    # that is re-parsed here (an older parser revision) must not silently fall back to
+    # similarity retrieval while the database row still says always-include.
+    mock_dispatch.return_value = _fake_doc("Fresh text from the improved parser")
+    store = _legacy_store(tmp_path, "deck.pptx", DOCX_CONTENT)
+    store.set_retrieval_mode("Project\\Area1", "item-1", "always_include")
+    graph_client = MagicMock()
+    graph_client.list_folder_children.return_value = [
+        GraphFolderChild(
+            id="item-1",
+            name="deck.pptx",
+            mime_type=None,
+            size=len(DOCX_CONTENT),
+            is_folder=False,
+            download_url="https://dl/deck",
+        )
+    ]
+    graph_client.fetch_child_content.return_value = DOCX_CONTENT
+
+    result = ingest_folder_from_url(
+        url="https://contoso.sharepoint.com/sites/s/folder",
+        user_id="Project\\Area1",
+        doc_type=None,
+        graph_client=graph_client,
+        embed_client=FakeEmbedClient(),
+        vector_store=store,
+    )
+
+    assert [f.status for f in result.files] == ["ingested"]
+    assert store.list_always_include_documents("Project\\Area1") == ["deck.pptx"]
+
+
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_folder_ingest_of_a_new_file_stays_similarity_gated(mock_dispatch, tmp_path) -> None:
+    mock_dispatch.return_value = _fake_doc("text")
+    store = KbVectorStore(persist_path=str(tmp_path))
+    graph_client = MagicMock()
+    graph_client.list_folder_children.return_value = [
+        GraphFolderChild(
+            id="item-9",
+            name="new.docx",
+            mime_type=None,
+            size=len(DOCX_CONTENT),
+            is_folder=False,
+            download_url="https://dl/new",
+        )
+    ]
+    graph_client.fetch_child_content.return_value = DOCX_CONTENT
+
+    ingest_folder_from_url(
+        url="https://contoso.sharepoint.com/sites/s/folder",
+        user_id="Project\\Area1",
+        doc_type=None,
+        graph_client=graph_client,
+        embed_client=FakeEmbedClient(),
+        vector_store=store,
+    )
+
+    assert store.list_always_include_documents("Project\\Area1") == []

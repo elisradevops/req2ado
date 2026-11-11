@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
 
+from lxml import etree
 from pptx import Presentation
 from pptx.enum.dml import MSO_COLOR_TYPE, MSO_FILL_TYPE
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.enum.text import PP_ALIGN
+from pptx.shapes.placeholder import PlaceholderPicture
 from pptx.table import Table as PptxTable
 from pptx.table import _Cell as PptxCell
 
@@ -52,6 +55,113 @@ def _is_degenerate_pptx_image(shape) -> bool:
     return (
         width <= _DEGENERATE_IMAGE_MAX_DIMENSION_PX and height <= _DEGENERATE_IMAGE_MAX_DIMENSION_PX
     )
+
+
+# Slides marked hidden in PowerPoint (`show="0"`) are indexed like any other slide: dropping
+# content silently is the worse failure for reference material. Flip to skip them.
+_INCLUDE_HIDDEN_SLIDES = True
+
+_DGM_NS = "http://schemas.openxmlformats.org/drawingml/2006/diagram"
+_A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+_R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+
+# An alt text that is only the picture's file name or PowerPoint's own "Picture 3" is not authored
+# content.
+_AUTO_ALT_TEXT = re.compile(
+    r"^(picture|image|graphic)\s*\d*$|\.(png|jpe?g|gif|bmp|tiff?|emf|wmf|svg)$", re.I
+)
+
+
+def _usable_alt_text(shape) -> str | None:
+    """The author-written alt text (`cNvPr/@descr`) of a picture, or None when absent or only
+    an auto-generated name."""
+    try:
+        descr = (shape._element.xpath("./p:nvPicPr/p:cNvPr/@descr") or [""])[0].strip()
+    except Exception:  # noqa: BLE001 -- alt text is a bonus, never worth failing the deck
+        return None
+    return descr if descr and not _AUTO_ALT_TEXT.search(descr) else None
+
+
+def _smartart_node_texts(shape, slide_part) -> list[str]:
+    """Text of the authored nodes of a SmartArt graphic frame, one string per paragraph, in
+    document order; [] when the shape is not SmartArt. Read from the diagram's DATA part
+    (`dgm:pt` of type `node`: the `doc`, `pres`, `parTrans` and `sibTrans` points carry no
+    authored text). A part that cannot be read or parsed is skipped, never fatal."""
+    try:
+        graphic_data = shape._element.xpath("./a:graphic/a:graphicData")
+        if not graphic_data or not (graphic_data[0].get("uri") or "").endswith("/diagram"):
+            return []
+        rel_ids = next(
+            (child for child in graphic_data[0] if etree.QName(child).localname == "relIds"), None
+        )
+        data_rid = None if rel_ids is None else rel_ids.get(f"{{{_R_NS}}}dm")
+        if data_rid is None:
+            return []
+        parser = etree.XMLParser(resolve_entities=False, no_network=True)
+        root = etree.fromstring(slide_part.related_part(data_rid).blob, parser)
+    except Exception:  # noqa: BLE001 -- a malformed diagram part must not abort the deck
+        logger.warning("could not read SmartArt text", exc_info=True)
+        return []
+    texts: list[str] = []
+    for point in root.iter(f"{{{_DGM_NS}}}pt"):
+        if point.get("type", "node") != "node":
+            continue
+        for paragraph in point.iter(f"{{{_A_NS}}}p"):
+            text = "".join(
+                " " if etree.QName(el).localname == "br" else (el.text or "")
+                for el in paragraph.iter(f"{{{_A_NS}}}t", f"{{{_A_NS}}}br")
+            ).strip()
+            if text:
+                texts.append(text)
+    return texts
+
+
+def _text_with_breaks(paragraph, break_text: str) -> str:
+    """The text of the paragraph's runs, with each soft line break (`a:br`) as `break_text`.
+    Falls back to python-pptx's own text (which includes field text) when no run has any."""
+    parts: list[str] = []
+    for child in paragraph._p:
+        name = etree.QName(child).localname
+        if name == "r":
+            parts.append("".join(t.text or "" for t in child.iter(f"{{{_A_NS}}}t")))
+        elif name == "br":
+            parts.append(break_text)
+    return "".join(parts).strip() or paragraph.text.replace("\v", break_text).strip()
+
+
+def _chart_value_text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        return str(int(value)) if value.is_integer() else f"{value:f}".rstrip("0").rstrip(".")
+    return str(value)
+
+
+def _chart_table_cells(chart) -> tuple[str | None, list[list[TableCell | None]]]:
+    """(title, grid) of a native chart as readable text: header row = a blank corner plus the
+    series names, one row per category with each series' value. A chart without categories
+    (XY/bubble) keeps its series names only."""
+    title = None
+    if chart.has_title and chart.chart_title.has_text_frame:
+        title = chart.chart_title.text_frame.text.strip() or None
+    series = list(chart.series)
+    categories = [str(category) for category in chart.plots[0].categories] if series else []
+    if not categories:
+        grid = [[TableCell(text="Series", is_header=True)]]
+        grid += [[TableCell(text=str(s.name))] for s in series]
+        return title, grid
+    header = [TableCell(text="", is_header=True)] + [
+        TableCell(text=str(s.name), is_header=True) for s in series
+    ]
+    values = [list(s.values) for s in series]
+    grid = [header]
+    for row_index, category in enumerate(categories):
+        row = [TableCell(text=category)]
+        for series_values in values:
+            value = series_values[row_index] if row_index < len(series_values) else None
+            row.append(TableCell(text=_chart_value_text(value)))
+        grid.append(row)
+    return title, grid
 
 
 # PP_ALIGN -> TableCell.align, same "only the values with an exact semantic
@@ -315,11 +425,35 @@ def load_pptx(
     # model.py already treats a pptx slide index as a real, ground-truth
     # pagination source -- not an approximation needing a provenance tag.
     for slide_index, slide in enumerate(presentation.slides, start=1):
+        if not _INCLUDE_HIDDEN_SLIDES and slide._element.get("show") == "0":
+            continue
         title_shape = slide.shapes.title
+
+        def _append_text_block(content: str, *, is_title: bool) -> None:
+            nonlocal block_id, offset
+            if not content:
+                return
+            start = offset
+            end = start + len(content)
+            offset = end + 1
+            blocks.append(
+                Block(
+                    id=f"b{block_id}",
+                    kind=BlockKind.HEADING if is_title else BlockKind.PARAGRAPH,
+                    text=content,
+                    heading_level=1 if is_title else None,
+                    source_ref=SourceRef(
+                        document_path=path, start_offset=start, end_offset=end, page=slide_index
+                    ),
+                )
+            )
+            block_id += 1
 
         def _process_shape(shape) -> None:
             nonlocal block_id, offset, figure_index, table_index
-            if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
+            # A picture dropped into a picture placeholder reports shape_type PLACEHOLDER, not
+            # PICTURE, so it needs its own check or it vanishes with no trace.
+            if shape.shape_type == MSO_SHAPE_TYPE.PICTURE or isinstance(shape, PlaceholderPicture):
                 if _is_degenerate_pptx_image(shape):
                     # Not a real figure -- see _is_degenerate_pptx_image's
                     # own docstring. Skipped before touching `offset`/
@@ -343,7 +477,15 @@ def load_pptx(
                     try:
                         caption = describe_figure(image_bytes)
                     except Exception:  # noqa: BLE001 -- a vision failure must not abort the whole deck
-                        caption = None
+                        # The call failed, so there is no verdict to respect: the author's own
+                        # alt text is the only description there is.
+                        caption = _usable_alt_text(shape)
+                else:
+                    # No vision configured: same, the alt text is all there is.
+                    caption = _usable_alt_text(shape)
+                # A None RETURNED by describe_figure is a verdict (the model judged the picture
+                # insignificant), or a failure the callback absorbed itself: alt text does not
+                # override it.
                 # A figure gets a real slot in the same running offset
                 # counter used for text blocks below (like docx_loader's
                 # table handling), instead of a hardcoded (0, 0), so it
@@ -411,6 +553,34 @@ def load_pptx(
                 table_index += 1
                 return
 
+            if shape.has_chart:
+                try:
+                    chart_title, chart_cells = _chart_table_cells(shape.chart)
+                except Exception:  # noqa: BLE001 -- one unreadable chart must not abort the deck
+                    logger.warning("could not read chart data", exc_info=True)
+                    return
+                start = offset
+                end = start + 1
+                offset = end
+                tables.append(
+                    Table(
+                        id=f"t{table_index}",
+                        cells=chart_cells,
+                        caption=chart_title or "Chart",
+                        source_ref=SourceRef(
+                            document_path=path, start_offset=start, end_offset=end, page=slide_index
+                        ),
+                    )
+                )
+                table_index += 1
+                return
+
+            smartart_texts = _smartart_node_texts(shape, slide.part)
+            if smartart_texts:
+                for text in smartart_texts:
+                    _append_text_block(text, is_title=False)
+                return
+
             if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
                 # A group shape's own .shapes exposes the identical
                 # collection interface as a slide's top-level shapes --
@@ -426,26 +596,17 @@ def load_pptx(
                 return
             is_title = title_shape is not None and shape.shape_id == title_shape.shape_id
             for paragraph in shape.text_frame.paragraphs:
-                content = (
-                    "".join(run.text for run in paragraph.runs).strip() or paragraph.text.strip()
-                )
-                if not content:
-                    continue
-                start = offset
-                end = start + len(content)
-                offset = end + 1
-                blocks.append(
-                    Block(
-                        id=f"b{block_id}",
-                        kind=BlockKind.HEADING if is_title else BlockKind.PARAGRAPH,
-                        text=content,
-                        heading_level=1 if is_title else None,
-                        source_ref=SourceRef(
-                            document_path=path, start_offset=start, end_offset=end, page=slide_index
-                        ),
+                if "\v" in paragraph.text:
+                    # An `a:br` soft line break: joining runs alone would glue the words on
+                    # either side together. Built from the runs and breaks only, so a field
+                    # (slide number, date) is left out exactly as in a paragraph with no break.
+                    content = _text_with_breaks(paragraph, " " if is_title else "\n")
+                else:
+                    content = (
+                        "".join(run.text for run in paragraph.runs).strip()
+                        or paragraph.text.strip()
                     )
-                )
-                block_id += 1
+                _append_text_block(content, is_title=is_title)
 
         for shape in slide.shapes:
             _process_shape(shape)

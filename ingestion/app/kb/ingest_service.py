@@ -57,6 +57,16 @@ class FolderIngestResult(BaseModel):
     files: list[FolderIngestFileResult]
 
 
+# Bump when the .pptx loader/chunker starts extracting more of a deck. An already-ingested deck
+# whose bytes are unchanged is otherwise skipped by the hash check and would never get the fix.
+PPTX_PARSE_VERSION = 2
+
+
+def parse_version_for(name: str) -> int | None:
+    """The current parser revision for this file type, None for types with no versioned parser."""
+    return PPTX_PARSE_VERSION if Path(name).suffix.lower() == ".pptx" else None
+
+
 def _store_document(
     name: str,
     item_id: str,
@@ -102,7 +112,11 @@ def _store_document(
     verify_supported_content(name, content)
 
     file_hash = hashlib.sha256(content).hexdigest()
-    if vector_store.existing_file_hash(user_id, name, item_id) == file_hash:
+    parse_version = parse_version_for(name)
+    if (
+        vector_store.existing_file_hash(user_id, name, item_id) == file_hash
+        and vector_store.existing_parse_version(user_id, item_id) == parse_version
+    ):
         # Content unchanged, so no re-parse/re-embed needed -- but the file
         # may have been renamed/moved on SharePoint since it was last
         # ingested (source_id, the stable Graph drive-item identity,
@@ -211,6 +225,7 @@ def _store_document(
             quality_checklist=quality_checklist,
             quality_checklist_definitions=quality_checklist_definitions,
             retrieval_mode=retrieval_mode,
+            parse_version=parse_version,
         )
 
     return IngestResult(
@@ -379,6 +394,9 @@ def _ingest_folder_children(
                 vector_store,
                 describe_figure=describe_figure,
                 checklist_client=checklist_client,
+                # The folder route has no per-file mode: re-parsing a file (changed, or ingested by
+                # an older parser) must keep the mode it already has, not reset it to retrieval.
+                retrieval_mode=vector_store.existing_retrieval_mode(user_id, child.id),
             )
             results.append(
                 FolderIngestFileResult(

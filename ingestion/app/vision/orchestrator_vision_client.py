@@ -63,6 +63,9 @@ class FigureVisionResult(NamedTuple):
     # Only for significant=False: the model's own few words on what the image is and why it adds nothing, shown to the reader beside the
     # verdict so a "not significant" can be checked. None for a significant figure, or when the model gave none.
     reason: str | None = None
+    # Only in KB transcription mode (describe_figure(transcribe=True)): the text visible in the
+    # image, copied as written in its own language. None in the default mode, or when blank.
+    visible_text: str | None = None
 
 
 _FIGURE_SIGNIFICANCE_SCHEMA = {
@@ -110,6 +113,23 @@ _FIGURE_SIGNIFICANCE_SCHEMA["properties"]["reason"] = {
 }
 
 
+# KB mode's schema: the survey one plus the verbatim text of the image. Built as a copy so the survey
+# schema (and with it PROMPT_VERSION and every cached caption) is untouched.
+_KB_FIGURE_SCHEMA = {
+    **_FIGURE_SIGNIFICANCE_SCHEMA,
+    "properties": {
+        **_FIGURE_SIGNIFICANCE_SCHEMA["properties"],
+        "visible_text": {
+            "type": "string",
+            "description": (
+                "Every piece of text visible in the image, copied EXACTLY as written, in its "
+                "original language and script (Hebrew stays Hebrew), in reading order. Empty "
+                "when the image contains no text."
+            ),
+        },
+    },
+}
+
 _MAX_REASON_CHARS = 140
 
 
@@ -124,7 +144,7 @@ def _short_reason(text: str) -> str | None:
     return (cut[: cut.rfind(" ")] if " " in cut else cut).rstrip()
 
 
-def _build_prompt(document_context: str | None) -> str:
+def _build_prompt(document_context: str | None, transcribe: bool = False) -> str:
     # Real live incident history behind this exact wording (2 rounds):
     # (1) the deployed vision model, for a multi-view engineering drawing,
     # ignored a soft "one or two sentences" instruction and produced a
@@ -160,6 +180,16 @@ def _build_prompt(document_context: str | None) -> str:
         "label) -- not a sentence, not a restatement of the description. "
         "If you judge the figure NOT significant, also say in a few words why: what the image is and why it adds nothing."
     )
+    if transcribe:
+        # Knowledge-base images are often slides of rules, templates or diagrams whose value is
+        # the words in them, so a 2-4 sentence summary loses most of it.
+        base += (
+            " This image is reference material for a knowledge base. Copy every piece of "
+            "visible text exactly as written, in its original language and script, in reading "
+            "order, into visible_text -- do not translate, summarize or correct it. Write the "
+            "description in the same main language as the text in the image. An image that "
+            "contains text, a table, a chart or a diagram of ideas IS significant."
+        )
     if not document_context:
         return base
     return (
@@ -189,6 +219,14 @@ def _build_prompt(document_context: str | None) -> str:
 # separate version-bump step to remember or forget.
 PROMPT_VERSION = hashlib.sha256(
     (_build_prompt(None) + json.dumps(_FIGURE_SIGNIFICANCE_SCHEMA, sort_keys=True)).encode("utf-8")
+).hexdigest()[:12]
+
+
+# The KB transcription mode keeps its own cache version so its captions never mix with the survey's.
+KB_PROMPT_VERSION = hashlib.sha256(
+    (_build_prompt(None, transcribe=True) + json.dumps(_KB_FIGURE_SCHEMA, sort_keys=True)).encode(
+        "utf-8"
+    )
 ).hexdigest()[:12]
 
 
@@ -275,11 +313,18 @@ def _parse_figure_response(raw: str) -> FigureVisionResult | None:
                 if not parsed["significant"] and isinstance(raw_reason, str)
                 else None
             )
+            raw_visible = parsed.get("visible_text")
+            visible_text = (
+                raw_visible.strip()
+                if isinstance(raw_visible, str) and raw_visible.strip()
+                else None
+            )
             return FigureVisionResult(
                 significant=parsed["significant"],
                 description=description,
                 title=title,
                 reason=reason,
+                visible_text=visible_text,
             )
     # Sizes only, never the reply: it is model output about a customer document.
     logger.warning(
@@ -368,8 +413,11 @@ class OrchestratorVisionClient:
         document_context: str | None = None,
         user_id: str | None = None,
         model: str | None = None,
+        transcribe: bool = False,
     ) -> FigureVisionResult | None:
-        """`mime_type` (e.g. 'image/jpeg'), when supplied, tells the
+        """`transcribe` (knowledge-base images only): also ask for the image's visible text,
+        verbatim and in its own language, as `visible_text`. False (the default) sends exactly
+        the survey request. `mime_type` (e.g. 'image/jpeg'), when supplied, tells the
         orchestrator's real content-type instead of its pre-existing
         hardcoded 'image/png' default. `document_context` (the whole-
         document AI primer, see pipeline.worker.ts) lets significance be
@@ -404,11 +452,11 @@ class OrchestratorVisionClient:
                 call_headers["X-Req2Ado-Deadline-Ms"] = str(int(timeout * 1000))
             job_cancel.raise_if_cancelled()  # a cancelled run sends no further call
             body = {
-                "prompt": _build_prompt(document_context),
+                "prompt": _build_prompt(document_context, transcribe),
                 "images": [base64.b64encode(data).decode("ascii")],
                 "responseSchema": {
-                    "name": "figure_significance",
-                    "schema": _FIGURE_SIGNIFICANCE_SCHEMA,
+                    "name": "figure_transcription" if transcribe else "figure_significance",
+                    "schema": _KB_FIGURE_SCHEMA if transcribe else _FIGURE_SIGNIFICANCE_SCHEMA,
                 },
                 **({"mimeType": mime} if mime else {}),
                 **({"model": model} if model else {}),

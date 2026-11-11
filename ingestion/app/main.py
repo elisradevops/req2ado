@@ -92,6 +92,7 @@ from app.vision.figure_storage_client import (
     compress_figure_for_storage,
 )
 from app.vision.orchestrator_vision_client import (
+    KB_PROMPT_VERSION,
     PROMPT_VERSION,
     OrchestratorVisionClient,
     _strip_degenerate_continuation,
@@ -443,7 +444,10 @@ def _figure_caption_cache_key(
     original_image_bytes: bytes,
     document_context: str | None,
     model: str | None = None,
+    purpose: Literal["survey", "kb"] = "survey",
 ) -> str:
+    # `purpose` "kb" is the knowledge-base transcription mode (its own prompt, so its own version);
+    # "survey" keeps the key shape it always had, so no cached survey caption is invalidated.
     # Keyed on the ORIGINAL bytes handed to _describe_figure, before any
     # EMF/WMF->PNG conversion below -- two callers with byte-identical
     # source images must hit the same cache entry regardless of which
@@ -462,7 +466,8 @@ def _figure_caption_cache_key(
     # served for a job that selected another. None (KB routes, no explicit
     # model) keeps the pre-model key shape.
     model_part = f":{hashlib.sha256(model.encode('utf-8')).hexdigest()[:16]}" if model else ""
-    return f"figcap:{PROMPT_VERSION}:{_VISION_INPUT_VERSION}:{hashlib.sha256(original_image_bytes).hexdigest()}:{context_hash}{model_part}"
+    prompt_version = KB_PROMPT_VERSION if purpose == "kb" else PROMPT_VERSION
+    return f"figcap:{prompt_version}:{_VISION_INPUT_VERSION}:{hashlib.sha256(original_image_bytes).hexdigest()}:{context_hash}{model_part}"
 
 
 def _rasterize_for_vision(image_bytes: bytes) -> tuple[bytes, str | None]:
@@ -550,6 +555,11 @@ def _describe_figure(
     # The job's selected model, threaded from /ingest's `vision_model`.
     # None (KB routes) lets the orchestrator use the user's profile model.
     model: str | None = None,
+    # "kb" (the three KB-ingestion routes): also transcribe the image's visible text verbatim
+    # and return it after the description, so a slide of rules or a diagram of ideas is
+    # indexed by its words, not by a 2-4 sentence summary. Its own prompt, cache key and
+    # cache entries; "survey" (every other caller) is exactly as before.
+    purpose: Literal["survey", "kb"] = "survey",
 ) -> str | None:
     # SCOPE NOTE (KB ingestion): this function is shared by SURVEY-mode
     # /ingest AND the three KB-ingestion routes below (/kb/ingest-url,
@@ -557,14 +567,14 @@ def _describe_figure(
     # ALSO go through the vision significance filter -- with
     # document_context=None there, since KB ingestion has no whole-document AI
     # primer. Consequence, stated plainly: a figure the vision model judges
-    # insignificant (decorative logo, placeholder block) gets caption=None and
-    # is therefore NOT part of the indexed text, so it will not be retrievable
-    # via KB search. This is an accepted side effect of routing every
-    # describe_figure caller through one significance-aware implementation, not
-    # an original requirement of the content-significance-filtering plan (whose
-    # Global Constraints scoped both mechanisms to SURVEY mode) -- documented
-    # rather than bypassed because a per-caller bypass flag is a larger,
-    # separately-reviewable change.
+    # insignificant (decorative logo, placeholder block) gets caption=None, so
+    # no description or text of it is indexed (its "[FIGURE: none]" placeholder
+    # is dropped by the KB chunker, app/kb/chunker.py). This is an accepted
+    # side effect of routing every describe_figure caller through one
+    # significance-aware implementation, not an original requirement of the
+    # content-significance-filtering plan (whose Global Constraints scoped both
+    # mechanisms to SURVEY mode) -- documented rather than bypassed because a
+    # per-caller bypass flag is a larger, separately-reviewable change.
     #
     # Confirmed real root cause of run-to-run SURVEY node-count variance
     # (74 vs ~120 nodes for the identical document): a figure's caption was
@@ -576,7 +586,7 @@ def _describe_figure(
     # once document context feeds the judgment (an image byte-identical
     # cache key alone would silently leak document A's verdict onto
     # document B). Fails open on any Redis error in either direction.
-    cache_key = _figure_caption_cache_key(image_bytes, document_context, model)
+    cache_key = _figure_caption_cache_key(image_bytes, document_context, model, purpose)
     try:
         cached = _narration_redis.get(cache_key)
         if cached is not None:
@@ -605,7 +615,11 @@ def _describe_figure(
                 # malformed one; must not raise/miss the cache over it.
                 if caption_status_out is not None and cached_obj.get("title"):
                     caption_status_out["title"] = cached_obj["title"]
-                return _strip_degenerate_continuation(cached_obj["description"])
+                return _with_transcription(
+                    _strip_degenerate_continuation(cached_obj["description"]),
+                    cached_obj.get("visible_text"),
+                    purpose,
+                )
             except (json.JSONDecodeError, KeyError, UnicodeDecodeError):
                 pass  # Treat an unparseable cache entry as a miss -- fall through to a live vision call.
     except Exception:
@@ -622,7 +636,11 @@ def _describe_figure(
     describe_bytes, mime_type = _flatten_for_vision(
         describe_bytes, mime_type
     )  # what the model is sent: transparency onto white
-    model_args = {"model": model} if model else {}
+    # Only a KB call passes the extra keyword: the survey call stays byte-for-byte what it was.
+    model_args = {
+        **({"model": model} if model else {}),
+        **({"transcribe": True} if purpose == "kb" else {}),
+    }
     result = _vision_client.describe_figure(
         describe_bytes, mime_type, document_context, user_id=user_id, **model_args
     )
@@ -675,6 +693,7 @@ def _describe_figure(
                         "description": result.description,
                         "title": result.title,
                         "reason": result.reason,
+                        "visible_text": result.visible_text,
                     }
                 ),
                 ex=_FIGURE_CAPTION_CACHE_TTL_SECONDS,
@@ -692,7 +711,17 @@ def _describe_figure(
     # caption AND no fallback name from either source, same as before.
     if result.significant and result.title and caption_status_out is not None:
         caption_status_out["title"] = result.title
-    return result.description if result.significant else None
+    if not result.significant:
+        return None
+    return _with_transcription(result.description, result.visible_text, purpose)
+
+
+def _with_transcription(description: str, visible_text: str | None, purpose: str) -> str:
+    """A KB caption is the description followed by the image's own text (the survey caption is
+    the description alone)."""
+    if purpose != "kb" or not isinstance(visible_text, str) or not visible_text.strip():
+        return description
+    return f"{description}\n{_strip_degenerate_continuation(visible_text)}"
 
 
 # Consecutive failed vision calls after which captioning stops for the rest
@@ -3118,7 +3147,11 @@ async def kb_ingest_url(body: KbIngestUrlRequest) -> IngestResult:
             # `describe_figure` callback contract is a single-bytes-arg
             # Callable, so the closure is what threads user_id through.
             describe_figure=(
-                (lambda image_bytes: _describe_figure(image_bytes, user_id=body.user_id))
+                (
+                    lambda image_bytes: _describe_figure(
+                        image_bytes, user_id=body.user_id, purpose="kb"
+                    )
+                )
                 if _vision_client is not None
                 else None
             ),
@@ -3159,7 +3192,11 @@ async def kb_ingest_folder_url(body: KbIngestUrlRequest) -> FolderIngestResult:
             # not be KB-retrievable. See _describe_figure's own SCOPE NOTE.
             # Closes over body.user_id -- see /kb/ingest-url's identical comment.
             describe_figure=(
-                (lambda image_bytes: _describe_figure(image_bytes, user_id=body.user_id))
+                (
+                    lambda image_bytes: _describe_figure(
+                        image_bytes, user_id=body.user_id, purpose="kb"
+                    )
+                )
                 if _vision_client is not None
                 else None
             ),
@@ -3202,7 +3239,11 @@ async def kb_ingest_item(body: KbIngestItemRequest) -> IngestResult:
             # not be KB-retrievable. See _describe_figure's own SCOPE NOTE.
             # Closes over body.user_id -- see /kb/ingest-url's identical comment.
             describe_figure=(
-                (lambda image_bytes: _describe_figure(image_bytes, user_id=body.user_id))
+                (
+                    lambda image_bytes: _describe_figure(
+                        image_bytes, user_id=body.user_id, purpose="kb"
+                    )
+                )
                 if _vision_client is not None
                 else None
             ),
@@ -3232,6 +3273,33 @@ async def kb_delete_document(user_id: str, source_file: str, source_id: str) -> 
         _audit_user(user_id),
         source_file,
         source_id,
+    )
+    return {"ok": True}
+
+
+class KbSetRetrievalModeRequest(BaseModel):
+    user_id: str
+    source_id: str
+    retrieval_mode: str
+
+
+@app.put("/kb/documents/retrieval-mode")
+async def kb_set_retrieval_mode(body: KbSetRetrievalModeRequest) -> dict[str, bool]:
+    # Switches an ALREADY-ingested file between similarity-gated "retrieve" and
+    # full-context "always_include" by retagging its stored chunks -- no
+    # re-parse/re-embed. run_in_threadpool: Chroma's client is synchronous I/O.
+    if body.retrieval_mode not in ("retrieve", "always_include"):
+        raise HTTPException(
+            status_code=400, detail="retrieval_mode must be 'retrieve' or 'always_include'"
+        )
+    await run_in_threadpool(
+        _kb_vector_store.set_retrieval_mode, body.user_id, body.source_id, body.retrieval_mode
+    )
+    logger.info(
+        "KB retrieval mode set: user=%s source_id=%s mode=%s",
+        _audit_user(body.user_id),
+        body.source_id,
+        body.retrieval_mode,
     )
     return {"ok": True}
 

@@ -93,3 +93,32 @@ def test_removing_a_document_is_logged(tmp_path, monkeypatch, caplog) -> None:
     assert response.status_code == 200
     lines = [r.getMessage() for r in caplog.records if "KB document removed" in r.getMessage()]
     assert len(lines) == 1 and "a.pptx" in lines[0] and "Area1" not in lines[0]
+
+
+def test_kb_set_retrieval_mode_switches_an_ingested_file_to_always_include(
+    tmp_path, monkeypatch
+) -> None:
+    store = _store_with_a_chunk(tmp_path)
+    monkeypatch.setattr(main, "_kb_vector_store", store)
+
+    response = client.put(
+        "/kb/documents/retrieval-mode",
+        json={"user_id": "Project\\Area1", "source_id": "d1", "retrieval_mode": "always_include"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    assert store.list_always_include_documents("Project\\Area1") == ["a.pptx"]
+
+
+def test_kb_set_retrieval_mode_rejects_an_unknown_mode(tmp_path, monkeypatch) -> None:
+    store = _store_with_a_chunk(tmp_path)
+    monkeypatch.setattr(main, "_kb_vector_store", store)
+
+    response = client.put(
+        "/kb/documents/retrieval-mode",
+        json={"user_id": "Project\\Area1", "source_id": "d1", "retrieval_mode": "everything"},
+    )
+
+    assert response.status_code == 400
+    assert store.list_always_include_documents("Project\\Area1") == []

@@ -162,3 +162,112 @@ def test_multiple_tables_each_get_their_own_chunk_in_order() -> None:
     assert "Second" in chunks[1].text
     assert chunks[0].chunk_index == 0
     assert chunks[1].chunk_index == 1
+
+
+# ---- PPTX: tables stay with their slide; empty figure placeholders are noise ----
+
+
+def _ref(page: int | None) -> SourceRef:
+    return SourceRef(document_path="deck.pptx", start_offset=0, end_offset=0, page=page)
+
+
+def _pptx_doc(blocks: list[Block], tables: list[Table]) -> CanonicalDoc:
+    return CanonicalDoc(
+        document=Document(path="deck.pptx", format=DocumentFormat.PPTX, sha256="h"),
+        blocks=blocks,
+        tables=tables,
+    )
+
+
+def _slide_heading(block_id: str, text: str, page: int) -> Block:
+    return Block(
+        id=block_id, kind=BlockKind.HEADING, text=text, heading_level=1, source_ref=_ref(page)
+    )
+
+
+def _table(table_id: str, page: int, caption: str | None, cell_text: str) -> Table:
+    return Table(
+        id=table_id,
+        cells=[[TableCell(text="Col", is_header=True)], [TableCell(text=cell_text)]],
+        caption=caption,
+        source_ref=_ref(page),
+    )
+
+
+def test_a_pptx_table_is_placed_in_the_chunk_of_its_own_slide() -> None:
+    blocks = [
+        _slide_heading("b0", "Slide one", 1),
+        Block(id="b1", kind=BlockKind.PARAGRAPH, text="Body one", source_ref=_ref(1)),
+        _slide_heading("b2", "Slide two", 2),
+        Block(id="b3", kind=BlockKind.PARAGRAPH, text="Body two", source_ref=_ref(2)),
+    ]
+
+    chunks = chunk_canonical_doc(_pptx_doc(blocks, [_table("t0", 1, "Rules", "VALUE-ONE")]))
+
+    assert len(chunks) == 2  # no separate table chunk at the end
+    assert "Slide one" in chunks[0].text and "VALUE-ONE" in chunks[0].text
+    assert chunks[0].text.index("Body one") < chunks[0].text.index("VALUE-ONE")
+    assert "Rules" in chunks[0].text
+    assert "VALUE-ONE" not in chunks[1].text
+
+
+def test_a_pptx_table_on_a_slide_with_no_text_blocks_goes_with_the_preceding_slide() -> None:
+    blocks = [
+        _slide_heading("b0", "Slide one", 1),
+        _slide_heading("b1", "Slide three", 3),
+    ]
+
+    chunks = chunk_canonical_doc(_pptx_doc(blocks, [_table("t0", 2, None, "ORPHAN-VALUE")]))
+
+    assert len(chunks) == 2
+    assert "ORPHAN-VALUE" in chunks[0].text
+    assert "ORPHAN-VALUE" not in chunks[1].text
+
+
+def test_pptx_tables_keep_their_order_within_one_slide() -> None:
+    blocks = [_slide_heading("b0", "Slide one", 1)]
+    tables = [_table("t0", 1, None, "FIRST"), _table("t1", 1, None, "SECOND")]
+
+    chunks = chunk_canonical_doc(_pptx_doc(blocks, tables))
+
+    assert len(chunks) == 1
+    assert chunks[0].text.index("FIRST") < chunks[0].text.index("SECOND")
+
+
+def test_a_non_pptx_document_still_gets_its_tables_as_separate_trailing_chunks() -> None:
+    blocks = [
+        Block(id="b0", kind=BlockKind.HEADING, text="Section", heading_level=1, source_ref=REF),
+        Block(id="b1", kind=BlockKind.PARAGRAPH, text="Body", source_ref=REF),
+    ]
+    table = Table(id="t0", cells=[[TableCell(text="Only")]], caption="Cap", source_ref=REF)
+
+    chunks = chunk_canonical_doc(_doc(blocks, [table]))
+
+    assert [c.text.split("\n")[0] for c in chunks] == ["Section", "Cap"]
+
+
+def test_empty_figure_placeholders_are_not_indexed() -> None:
+    blocks = [
+        Block(id="b0", kind=BlockKind.HEADING, text="Slide", heading_level=1, source_ref=REF),
+        Block(id="b1", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=REF),
+        Block(id="b2", kind=BlockKind.FIGURE, text="[FIGURE: a flow chart]", source_ref=REF),
+    ]
+
+    chunks = chunk_canonical_doc(_doc(blocks))
+
+    assert [c.text for c in chunks] == ["Slide\n[FIGURE: a flow chart]"]
+
+
+def test_empty_figure_placeholders_are_dropped_in_the_no_heading_fallback_too() -> None:
+    blocks = [
+        Block(id="b0", kind=BlockKind.PARAGRAPH, text="Only text", source_ref=REF),
+        Block(id="b1", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=REF),
+    ]
+
+    assert [c.text for c in chunk_canonical_doc(_doc(blocks))] == ["Only text"]
+
+
+def test_a_document_of_only_empty_figure_placeholders_produces_no_chunk() -> None:
+    blocks = [Block(id="b0", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=REF)]
+
+    assert chunk_canonical_doc(_doc(blocks)) == []
