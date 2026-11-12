@@ -56,6 +56,19 @@ cd ingestion
 
 `label` is 1 for a duplicate and 0 for a pair that is not. A row carries either the score the check produced or the two recorded, already blended, vectors.
 
+## Scoring text pairs with a model
+
+`ingestion/scripts/dedup_score_pairs.py` takes pairs of texts (`{"a", "b", "label", "lang", "source"}`), embeds them the way the real check does
+(title and description blended), and prints precision, recall and F0.5 at the threshold in use and at the best one. `--save` writes the scores for
+`dedup_eval.py`. It supports the local Ollama route only; production's OpenAI-style route is not covered.
+
+`ingestion/scripts/samples/dedup_pairs_draft.jsonl` is a **draft of 36 synthetic pairs written by an assistant for review**, not data from a real project:
+18 duplicates and 18 near-misses, in English, Hebrew and mixed. Treat any number from it as a smoke test only.
+
+Draft-set result on local `bge-m3:latest` (2026-11-12): duplicates scored 0.67 to 0.94 (median 0.86); near-misses scored 0.60 to 0.86. At 0.90 the check
+wrongly skips nothing but catches 1 of 18 duplicates, and none in Hebrew. The best threshold on this set is about 0.84. This is a pointer, not a
+calibration: the set is small and synthetic, and production uses a different model. The 0.90 default was not changed.
+
 ## What the evaluation needs from you
 
 The scripts cannot say anything useful without real pairs. A set of about 200 pairs from your own projects, labelled by people who know them, is the minimum to

@@ -39,6 +39,7 @@ import { AuthModule } from '../auth/auth.module';
           EMBED_TRANSPORT: config.get<'ollama' | 'openai'>('EMBED_TRANSPORT')!,
           EMBED_BASE_URL: config.get<string>('EMBED_BASE_URL'),
           EMBED_MODEL: config.get<string>('EMBED_MODEL')!,
+          EMBED_REDACT: config.get<boolean>('EMBED_REDACT'),
           EMBED_PATH: config.get<string>('EMBED_PATH')!,
           EMBED_OPENAI_PATH: config.get<string>('EMBED_OPENAI_PATH'),
           EMBED_OPENAI_FALLBACK_ROUTES: config.get<string[]>('EMBED_OPENAI_FALLBACK_ROUTES'),

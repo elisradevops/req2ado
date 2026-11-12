@@ -116,6 +116,12 @@ export const configSchema = z.object({
   EMBED_TRANSPORT: z.enum(['ollama', 'openai']).default('ollama'),
   EMBED_BASE_URL: z.string().optional(),
   EMBED_MODEL: z.string().min(1),
+  // Redact e-mail addresses and links from the text before it is embedded. On by default; set to false when the embedding connection is the
+  // only thing that sees the text (a local Open WebUI): the placeholder every redacted item shares makes unrelated items look alike.
+  EMBED_REDACT: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
   EMBED_PATH: z.string().default('/api/embed'),
   // Embedding request-size limits (modules/llm/embed-batching.ts). Unset: the limits come from the model-family table, then
   // from what the upstream's rejections taught the client. Set only to pin a deployment whose limits differ from its family.

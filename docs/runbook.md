@@ -99,8 +99,13 @@ English-only and cuts input at 256 word pieces.
    `ingestion` (`bash scripts/rebuild-app-services.sh`).
 3. Re-add each user's Knowledge Base documents (the batch add on the
    Knowledge Base page). The duplicate index rebuilds on the next job.
-4. Check Hebrew before trusting the threshold: label about 20 Hebrew pairs and
-   run `ingestion/scripts/dedup_eval.py` (see `docs/dedup-evaluation.md`).
+4. Set `EMBED_REDACT=false` in `.env` so text is not masked before it reaches
+   this local model (masking strips real content and lowers match scores). Leave
+   it unset, which means `true`, for any model that is not local to the machine.
+5. Check Hebrew before trusting the threshold: label text pairs and run
+   `ingestion/scripts/dedup_score_pairs.py <pairs.jsonl> --env-file ../.env`
+   (the script runs on the host, so use `EMBED_BASE_URL=http://localhost:3000`
+   instead of `host.docker.internal`). See `docs/dedup-evaluation.md`.
    Scores are not comparable with production's `text-embedding-3-small`, so
    the threshold needs its own check.
 

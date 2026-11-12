@@ -31,6 +31,12 @@ describe('configSchema LLM fields', () => {
     expect(() => configSchema.parse(rest)).toThrow();
   });
 
+  it('redacts the text it embeds unless EMBED_REDACT=false', () => {
+    expect(configSchema.parse(BASE_ENV).EMBED_REDACT).toBe(true);
+    expect(configSchema.parse({ ...BASE_ENV, EMBED_REDACT: 'false' }).EMBED_REDACT).toBe(false);
+    expect(configSchema.parse({ ...BASE_ENV, EMBED_REDACT: 'true' }).EMBED_REDACT).toBe(true);
+  });
+
   it('coerces LLM_TRUSTED_LOCAL=true from a string env value', () => {
     const result = configSchema.parse({ ...BASE_ENV, LLM_TRUSTED_LOCAL: 'true' });
     expect(result.LLM_TRUSTED_LOCAL).toBe(true);
