@@ -11,6 +11,12 @@ import * as llmApi from '../api/llm';
 import { useAuthStore } from '../store/authStore';
 import { AT_LEAST_MD, BELOW_MD } from '../hooks/useMediaQuery';
 import { usePageLabelStore } from '../store/pageLabelStore';
+import { useUiPreferencesStore } from '../store/uiPreferencesStore';
+
+// The collapse choice is remembered, so it must not leak from one test to the next.
+beforeEach(() => {
+  useUiPreferencesStore.setState({ railCollapsed: false });
+});
 
 vi.mock('../api/auth');
 vi.mock('../api/ado');
@@ -189,102 +195,79 @@ describe('AppShell breadcrumbs', () => {
   });
 });
 
-describe('AppShell connection-status LEDs', () => {
+describe('AppShell connection status', () => {
   beforeEach(() => {
     useAuthStore.getState().login('https://ado.example', 'Jane', 'user-descriptor-1');
   });
 
-  it('shows both ADO and SharePoint connection rows once their status resolves', async () => {
-    vi.spyOn(adoApi, 'getAdoStatus').mockResolvedValue({ status: 'valid' });
-    vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'valid', expiresInSeconds: 2820 });
-    vi.spyOn(llmApi, 'getLlmStatus').mockResolvedValue({ status: 'reachable', latencyMs: 42 });
-
-    render(
+  function renderApp() {
+    return render(
       <MemoryRouter>
         <AppShell>
           <div />
         </AppShell>
       </MemoryRouter>,
     );
+  }
 
-    expect(await screen.findByText('Azure DevOps')).toBeInTheDocument();
-    expect(screen.getByText('SharePoint')).toBeInTheDocument();
-  });
-
-  it('shows the LLM Backend connection row with its real reachable latency', async () => {
+  it('says all systems are OK once every connection has answered', async () => {
     vi.spyOn(adoApi, 'getAdoStatus').mockResolvedValue({ status: 'valid' });
     vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'valid', expiresInSeconds: 2820 });
     vi.spyOn(llmApi, 'getLlmStatus').mockResolvedValue({ status: 'reachable', latencyMs: 42 });
 
-    render(
-      <MemoryRouter>
-        <AppShell>
-          <div />
-        </AppShell>
-      </MemoryRouter>,
-    );
+    renderApp();
 
-    expect(await screen.findByText('LLM Backend')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'System status: All systems OK' })).toBeInTheDocument();
   });
 
-  it('shows the LLM Backend row as unreachable when the health check fails, not stuck loading', async () => {
+  it('says one needs attention when the LLM health check fails, not stuck loading', async () => {
     vi.spyOn(adoApi, 'getAdoStatus').mockResolvedValue({ status: 'valid' });
     vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'valid', expiresInSeconds: 2820 });
     vi.spyOn(llmApi, 'getLlmStatus').mockRejectedValue(new Error('network'));
 
-    render(
-      <MemoryRouter>
-        <AppShell>
-          <div />
-        </AppShell>
-      </MemoryRouter>,
-    );
+    renderApp();
 
-    expect(await screen.findByText('LLM Backend')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'System status: 1 needs attention' })).toBeInTheDocument();
   });
 
-  it('falls back to unreachable when either status call rejects, rather than leaving the LED stuck on a stale state', async () => {
+  it('counts every call that rejects as needing attention, rather than leaving a stale state', async () => {
     vi.spyOn(adoApi, 'getAdoStatus').mockRejectedValue(new Error('network'));
     vi.spyOn(kbApi, 'getSharePointStatus').mockRejectedValue(new Error('network'));
     vi.spyOn(llmApi, 'getLlmStatus').mockResolvedValue({ status: 'reachable', latencyMs: 42 });
 
-    render(
-      <MemoryRouter>
-        <AppShell>
-          <div />
-        </AppShell>
-      </MemoryRouter>,
-    );
+    renderApp();
 
-    expect(await screen.findByText('Azure DevOps')).toBeInTheDocument();
-    expect(screen.getByText('SharePoint')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'System status: 2 need attention' })).toBeInTheDocument();
   });
 
-  it('shows a live (pulsing) dot while the connectivity check is still in flight, not a false-failure red one', async () => {
-    // Regression coverage: the dot color function previously fell through
-    // its `undefined` status case straight to the danger/red branch for
-    // the entire loading window, before either check had resolved --
-    // confirmed real bug, not a hypothetical.
+  it('says it is checking while a check is still in flight, not a false failure', async () => {
+    // Regression coverage: a status that had not answered yet used to read as a failure for the whole loading window.
     let resolveAdo: (value: { status: 'valid' }) => void = () => {};
     vi.spyOn(adoApi, 'getAdoStatus').mockImplementation(() => new Promise((resolve) => (resolveAdo = resolve)));
     vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'valid', expiresInSeconds: 2820 });
     vi.spyOn(llmApi, 'getLlmStatus').mockResolvedValue({ status: 'reachable', latencyMs: 42 });
 
-    render(
-      <MemoryRouter>
-        <AppShell>
-          <div />
-        </AppShell>
-      </MemoryRouter>,
-    );
+    renderApp();
 
-    const adoRow = await screen.findByText('Azure DevOps');
-    // The pulsing dot uses animate-ping (DESIGN.md's Ambient motion role) --
-    // present only while status is still unresolved.
-    expect(adoRow.parentElement?.querySelector('.animate-ping')).not.toBeNull();
+    expect(await screen.findByRole('button', { name: 'System status: Checking connections…' })).toBeInTheDocument();
+    expect(screen.queryByTestId('connection-count')).toBeNull();
 
     resolveAdo({ status: 'valid' });
-    await waitFor(() => expect(adoRow.parentElement?.querySelector('.animate-ping')).toBeNull());
+    expect(await screen.findByRole('button', { name: 'System status: All systems OK' })).toBeInTheDocument();
+  });
+
+  it('opens the detail of each connection from the rail item', async () => {
+    vi.spyOn(adoApi, 'getAdoStatus').mockResolvedValue({ status: 'valid' });
+    vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'valid', expiresInSeconds: 2820 });
+    vi.spyOn(llmApi, 'getLlmStatus').mockResolvedValue({ status: 'reachable', latencyMs: 42 });
+    renderApp();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'System status: All systems OK' }));
+
+    const dialog = await screen.findByRole('dialog', { name: /connections/i });
+    expect(within(dialog).getByText('Azure DevOps')).toBeInTheDocument();
+    expect(within(dialog).getByText('Connected, expires in 47 minutes')).toBeInTheDocument();
+    expect(within(dialog).getByText('Connected, 42ms')).toBeInTheDocument();
   });
 });
 
@@ -419,14 +402,15 @@ describe('AppShell below the md breakpoint', () => {
     try {
       renderShell();
       await userEvent.click(screen.getByRole('button', { name: 'Collapse navigation' }));
-      expect(screen.queryByText('Knowledge Base')).toBeNull();
+      expect(screen.getByText('Knowledge Base')).toHaveClass('opacity-0');
 
       setNarrow(true);
-      expect(screen.getByText('Knowledge Base')).toBeInTheDocument();
-      expect(screen.getByText('Connections')).toBeInTheDocument();
+      expect(screen.getByText('Knowledge Base')).not.toHaveClass('opacity-0');
+      expect(screen.getByRole('button', { name: /^system status:/i })).toBeInTheDocument();
+      expect(screen.getByText(/all systems ok|checking connections/i)).toBeVisible();
 
       setNarrow(false);
-      expect(screen.queryByText('Knowledge Base')).toBeNull();
+      expect(screen.getByText('Knowledge Base')).toHaveClass('opacity-0');
       expect(screen.getByRole('button', { name: 'Expand navigation' })).toBeInTheDocument();
 
       // a focused nav link keeps focus across the flip, because it is not remounted
@@ -490,31 +474,17 @@ describe('AppShell below the md breakpoint', () => {
     }
   });
 
-  it('says in words what each connection dot means, and names the account button as a menu', async () => {
+  it('says the connection status in words, and names the account button as a menu', async () => {
     renderShell();
-    const group = screen.getByRole('group', { name: 'Connections' });
-    expect(await within(group).findByText('Connected')).toBeInTheDocument();
-    expect(within(group).getByText('Connected, expires in 47 minutes')).toBeInTheDocument();
-    expect(within(group).getByText('Connected, 42ms')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'System status: All systems OK' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Account menu, Jane' })).toBeInTheDocument();
   });
 
-  it('keeps each connection\'s service name for screen readers on the collapsed rail', async () => {
+  it('keeps the status in words for screen readers on the collapsed rail', async () => {
     renderShell();
     await userEvent.click(screen.getByRole('button', { name: 'Collapse navigation' }));
-    const group = screen.getByRole('group', { name: 'Connections' });
-    for (const name of ['Azure DevOps', 'SharePoint', 'LLM Backend']) {
-      expect(within(group).getByText(name)).toHaveClass('sr-only');
-    }
-  });
-
-  it('labels the three connection indicators as one group', async () => {
-    renderShell();
-    const group = screen.getByRole('group', { name: 'Connections' });
-    expect(within(group).getByText('Azure DevOps')).toBeInTheDocument();
-    expect(within(group).getByText('SharePoint')).toBeInTheDocument();
-    expect(within(group).getByText('LLM Backend')).toBeInTheDocument();
-    await waitFor(() => expect(adoApi.getAdoStatus).toHaveBeenCalled());
+    expect(await screen.findByText('All systems OK')).toHaveClass('sr-only');
+    expect(screen.getByRole('button', { name: 'System status: All systems OK' })).toBeInTheDocument();
   });
 });
 
@@ -540,5 +510,89 @@ describe('AppShell route enter', () => {
 
     await userEvent.click(screen.getByRole('link', { name: 'go to help' }));
     expect(main.className).toContain('fadeIn');
+  });
+});
+
+describe('AppShell rail layout', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    useUiPreferencesStore.setState({ railCollapsed: false });
+    useAuthStore.getState().login('https://ado.example', 'Jane', 'user-descriptor-1');
+    vi.spyOn(adoApi, 'getAdoStatus').mockResolvedValue({ status: 'valid' });
+    vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'valid', expiresInSeconds: 2820 });
+    vi.spyOn(llmApi, 'getLlmStatus').mockResolvedValue({ status: 'reachable', latencyMs: 42 });
+  });
+
+  function renderRail() {
+    return render(
+      <MemoryRouter initialEntries={['/jobs']}>
+        <AppShell>
+          <div />
+        </AppShell>
+      </MemoryRouter>,
+    );
+  }
+
+  it('keeps every label in the page when the rail is collapsed, hidden by fading, so the links keep their names', async () => {
+    renderRail();
+    await userEvent.click(screen.getByRole('button', { name: 'Collapse navigation' }));
+
+    expect(screen.getByText('Knowledge Base')).toHaveClass('opacity-0');
+    expect(screen.getByRole('link', { name: 'Knowledge Base' })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Expand navigation' }));
+    expect(screen.getByText('Knowledge Base')).not.toHaveClass('opacity-0');
+  });
+
+  it('keeps the icons on one vertical line whether the rail is open or closed', async () => {
+    renderRail();
+    const nav = within(screen.getByTestId('app-rail')).getByRole('list');
+    const before = within(nav).getAllByRole('link').map((link) => link.className);
+    await userEvent.click(screen.getByRole('button', { name: 'Collapse navigation' }));
+    const after = within(nav).getAllByRole('link').map((link) => link.className);
+
+    // class pin: jsdom has no layout. Nothing that positions the icon may depend on the collapsed state.
+    const positioning = (className: string) => className.split(/\s+/).filter((token) => /^(h-10|pl-4|pr-3|gap-3)$/.test(token));
+    expect(after.map(positioning)).toEqual(before.map(positioning));
+    expect(positioning(before[0])).toEqual(expect.arrayContaining(['h-10', 'pl-4', 'gap-3']));
+  });
+
+  it('animates its width with the slow token, not a raw duration', () => {
+    renderRail();
+
+    const className = screen.getByTestId('app-rail').className;
+    expect(className).toContain('duration-slow');
+    expect(className).not.toContain('duration-300');
+  });
+
+  it('opens with the product name in a brand row, and fades the name when collapsed', async () => {
+    renderRail();
+    const rail = screen.getByTestId('app-rail');
+
+    expect(within(rail).getByText('req2ado')).not.toHaveClass('opacity-0');
+    expect(within(rail).getByText('R2')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Collapse navigation' }));
+    expect(within(rail).getByText('req2ado')).toHaveClass('opacity-0');
+  });
+
+  it('puts the collapse toggle at the bottom, and says whether the rail is open', async () => {
+    renderRail();
+    const toggle = screen.getByRole('button', { name: 'Collapse navigation' });
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    const status = screen.getByRole('button', { name: /^system status:/i });
+    expect(status.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await userEvent.click(toggle);
+    expect(screen.getByRole('button', { name: 'Expand navigation' })).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('remembers the choice across a reload', async () => {
+    const first = renderRail();
+    await userEvent.click(screen.getByRole('button', { name: 'Collapse navigation' }));
+    first.unmount();
+
+    renderRail();
+
+    expect(screen.getByRole('button', { name: 'Expand navigation' })).toBeInTheDocument();
+    expect(screen.getByText('Knowledge Base')).toHaveClass('opacity-0');
   });
 });
