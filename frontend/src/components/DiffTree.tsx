@@ -110,6 +110,11 @@ export interface DryRunDiffEntry {
   description: string;
   action: 'create' | 'reuse' | 'dedup_skip';
   existingAdoId?: number | null;
+  // How alike the matched existing item is (a skipped near-duplicate only), 0 to 1.
+  similarity?: number | null;
+  // Set when the reviewer chose "Create as new item" for something that matched: what it matched, and what they chose with it.
+  duplicateOf?: { existingAdoId: number; similarity: number | null };
+  duplicateOverride?: { linkTree: boolean; relateToExisting: boolean };
   customerId: string | null;
   // Manually-entered forward reference to a Systems Engineering
   // requirements-layer artifact, never auto-populated -- see ingestion's
@@ -1249,7 +1254,7 @@ function DiffTreeRow({
               {/* Line 2, starting at the title's left edge. Order is by what must never be lost: what it will do first (wrapping hides the LAST chips, and the red tint still marks a same-tier row), then the hazard text,
                   then the rest. Whole chips wrap out of sight rather than being cut in half; the Details dialog has all of them. */}
               <span className="flex h-6 min-w-0 flex-wrap content-start items-center gap-x-1 overflow-hidden">
-                <ActionBadge action={entry.action} existingAdoId={entry.existingAdoId} orgUrl={orgUrl} project={project} quiet />
+                <ActionBadge action={entry.action} existingAdoId={entry.existingAdoId} matchedWi={entry.duplicateOf?.existingAdoId} orgUrl={orgUrl} project={project} quiet />
                 {sameTierPhoneEl}
                 {criteriaEl}
                 {reasonEl}
@@ -1290,7 +1295,7 @@ function DiffTreeRow({
           it. */}
       {!narrow && (
         <span className="flex flex-none items-center justify-end overflow-hidden">
-          <ActionBadge action={entry.action} existingAdoId={entry.existingAdoId} orgUrl={orgUrl} project={project} hideNew />
+          <ActionBadge action={entry.action} existingAdoId={entry.existingAdoId} matchedWi={entry.duplicateOf?.existingAdoId} orgUrl={orgUrl} project={project} hideNew />
         </span>
       )}
 

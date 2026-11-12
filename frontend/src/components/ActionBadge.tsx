@@ -24,6 +24,7 @@ export function ActionBadge({
   project,
   quiet = false,
   hideNew = false,
+  matchedWi,
 }: {
   action: 'create' | 'reuse' | 'dedup_skip';
   existingAdoId?: number | null;
@@ -39,7 +40,12 @@ export function ActionBadge({
   // is noise and drowns the rows that differ (links, near-duplicates). The word
   // stays for screen readers; those other statuses keep their pill.
   hideNew?: boolean;
+  // A new item the reviewer chose to create although it matched this existing one ("Create as new item"): always marked, so it stands out.
+  matchedWi?: number | null;
 }): React.ReactElement {
+  if (quiet && action === 'create' && matchedWi != null) {
+    return <span className="flex-none whitespace-nowrap text-xs font-medium text-ink-2">New · matched WI-{matchedWi}</span>;
+  }
   if (quiet) {
     const full = actionLabel({ action, existingAdoId });
     const isLink = action !== 'create' && existingAdoId != null && !!orgUrl;
@@ -58,6 +64,13 @@ export function ActionBadge({
       <a href={buildWorkItemUrl(orgUrl, project, existingAdoId)} target="_blank" rel="noreferrer" draggable={false} className="flex h-6 flex-none items-center">
         {text}
       </a>
+    );
+  }
+  if (action === 'create' && matchedWi != null) {
+    return (
+      <Chip bg="var(--color-surface-alt)" color="var(--color-ink-2)" className="border border-hairline-strong">
+        New, matched WI-{matchedWi}
+      </Chip>
     );
   }
   if (action === 'create') {

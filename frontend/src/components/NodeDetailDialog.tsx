@@ -11,6 +11,7 @@ import { EvidenceStrip } from './EvidenceStrip';
 import { AddChildCard } from './AddChildCard';
 import { ChatPanel } from './ChatPanel';
 import { MoveToPicker, type MoveToPickerCandidate } from './MoveToPicker';
+import { DuplicateMatchCard, type DuplicateOverrideOptions } from './DuplicateMatchCard';
 import { cn } from '../lib/cn';
 import { canBeRoot } from '../lib/canNest';
 import type { WarningGroup } from '../utils/warningKinds';
@@ -122,6 +123,10 @@ export function NodeDetailDialog({
   onSave,
   onRescore,
   onSetProposalAccepted,
+  onOverrideDuplicate,
+  onUndoDuplicateOverride,
+  orgUrl,
+  project,
   onAddDiscussion,
   onRemoveDiscussion,
   onAttachFigure,
@@ -182,6 +187,12 @@ export function NodeDetailDialog({
   requirementClassificationField?: { referenceName: string; allowedValues: string[] } | null;
   onRescore?: (localId: string) => Promise<void>;
   onSetProposalAccepted?: (localId: string, accepted: boolean) => Promise<void> | void;
+  // "Create as new item" on a skipped near-duplicate, and its undo. Absent = the card only shows what the item matched.
+  onOverrideDuplicate?: (localId: string, options: DuplicateOverrideOptions) => Promise<void>;
+  onUndoDuplicateOverride?: (localId: string) => Promise<void>;
+  // The org and the job's team project, for the link to the matched item.
+  orgUrl?: string | null;
+  project?: string | null;
   // "To be discussed": park a chat proposal in the item's ADO Discussion instead of applying it; remove one later from the item's list.
   onAddDiscussion?: (localId: string, entry: { proposedTitle?: string; proposedDescription?: string }) => Promise<void> | void;
   onRemoveDiscussion?: (localId: string, entryId: string) => Promise<void> | void;
@@ -358,6 +369,18 @@ export function NodeDetailDialog({
       <MoveEntryControl entry={entry} allEntries={Object.values(diffByLocalId ?? {})} categoryLabels={categoryLabels} typeCatalog={typeCatalog} onMove={onMove} />
     ) : undefined;
 
+  const duplicateSlot =
+    entry.action === 'dedup_skip' || entry.duplicateOf ? (
+      <DuplicateMatchCard
+        entry={{ ...entry, existingAdoId: entry.existingAdoId ?? null, similarity: entry.similarity ?? null }}
+        orgUrl={orgUrl}
+        project={project}
+        canDecide={jobStatus === 'diff_ready' && !written && !!onOverrideDuplicate && !!onUndoDuplicateOverride}
+        onOverride={(options) => onOverrideDuplicate?.(entry.localId, options) ?? Promise.resolve()}
+        onUndo={() => onUndoDuplicateOverride?.(entry.localId) ?? Promise.resolve()}
+      />
+    ) : undefined;
+
   const evidenceStrip = <EvidenceStrip entry={entry} jobMode={jobMode} kbCitations={kbCitations} />;
 
   const keyHints: Array<[string, string]> = [
@@ -384,6 +407,7 @@ export function NodeDetailDialog({
       addChildSlot={addChildSlot}
       hideSources
       moveSlot={moveSlot}
+      duplicateSlot={duplicateSlot}
       captionByFigureId={captionByFigureId}
       nameByFigureId={nameByFigureId}
       captionByTableId={captionByTableId}

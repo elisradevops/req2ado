@@ -89,3 +89,24 @@ describe('ActionBadge', () => {
     });
   });
 });
+
+describe('ActionBadge for an item created although it matched an existing one', () => {
+  it('says so even where a plain new item is not marked, so the row stands out in the tree', () => {
+    render(<ActionBadge action="create" hideNew matchedWi={123} />);
+
+    expect(screen.getByText(/new, matched wi-123/i)).toBeInTheDocument();
+  });
+
+  it('says so in the quiet phone row too', () => {
+    render(<ActionBadge action="create" quiet matchedWi={123} />);
+
+    expect(screen.getByText(/new · matched wi-123/i)).toBeInTheDocument();
+  });
+
+  it('is unchanged for a plain new item', () => {
+    render(<ActionBadge action="create" />);
+
+    expect(screen.queryByText(/matched/i)).toBeNull();
+  });
+});
+

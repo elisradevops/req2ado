@@ -93,6 +93,7 @@ export function NodeDetailPanel({
   addChildSlot,
   hideSources,
   moveSlot,
+  duplicateSlot,
   captionByFigureId,
   nameByFigureId,
   captionByTableId,
@@ -155,6 +156,8 @@ export function NodeDetailPanel({
   // editability message -- visible without scrolling, the same reasoning
   // addChildSlot's own doc comment gives for not burying it at the bottom.
   moveSlot?: React.ReactNode;
+  // The "already exists" card for a skipped near-duplicate (or one created anyway), built by the caller for the same reason moveSlot is.
+  duplicateSlot?: React.ReactNode;
   onSave?: (
     localId: string,
     patch: { title: string; description: string; customerId?: string | null; tags?: string[]; seCoverageRef?: string | null },
@@ -745,6 +748,7 @@ export function NodeDetailPanel({
           </Button>
         </div>
       )}
+      {duplicateSlot}
       {moveSlot}
       {/* 'excluded' has no message of its own here -- the dialog header
           already shows a dedicated "Excluded from this run" badge right

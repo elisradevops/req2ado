@@ -11,6 +11,8 @@ import {
   addDiscussionEntry,
   removeDiscussionEntry,
   setDiffEntryExcluded,
+  overrideDuplicate,
+  undoDuplicateOverride,
   setProposalAccepted,
   setDiffEntriesReviewed,
   setWarningsAcknowledged,
@@ -1838,6 +1840,40 @@ export function JobDetail(): React.ReactElement {
 
   // P9d review gate: accept (or withdraw) a generated acceptance-criteria proposal. Serialized with the other diff mutations; re-throws on
   // failure so ProposalCard's own pending state resets.
+  // "Create as new item" for a skipped near-duplicate, and its undo. Serialized with the other diff changes; re-throws so the dialog can say it failed.
+  async function handleOverrideDuplicate(localId: string, options: { linkTree: boolean; relateToExisting: boolean }): Promise<void> {
+    await changeDuplicateChoice(() => overrideDuplicate(id!, localId, options));
+  }
+
+  async function handleUndoDuplicateOverride(localId: string): Promise<void> {
+    await changeDuplicateChoice(() => undoDuplicateOverride(id!, localId));
+  }
+
+  async function changeDuplicateChoice(call: () => Promise<{ dryRunDiff: unknown }>): Promise<void> {
+    if (!id) return;
+    if (isDiffMutatingRef.current) {
+      showToast('Try again — another change is still saving.', 'error');
+      throw new Error('another change is saving');
+    }
+    isDiffMutatingRef.current = true;
+    setIsDiffMutating(true);
+    try {
+      const result = await call();
+      setDiff(mergeServerDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []));
+      try {
+        setSummary(await getSummary(id));
+      } catch {
+        // Best-effort: the counts catch up on the next successful fetch.
+      }
+    } catch (err) {
+      showErrorToast(getServerMessage(err) ?? 'Failed to update — please try again.', err);
+      throw err;
+    } finally {
+      isDiffMutatingRef.current = false;
+      setIsDiffMutating(false);
+    }
+  }
+
   async function handleSetProposalAccepted(localId: string, accepted: boolean): Promise<void> {
     if (!id) return;
     if (isDiffMutatingRef.current) {
@@ -3004,6 +3040,10 @@ export function JobDetail(): React.ReactElement {
                 onSave={handleSaveEdit}
                 onRescore={handleRescore}
                 onSetProposalAccepted={handleSetProposalAccepted}
+                onOverrideDuplicate={handleOverrideDuplicate}
+                onUndoDuplicateOverride={handleUndoDuplicateOverride}
+                orgUrl={orgUrl}
+                project={teamProject}
                 onAddDiscussion={handleAddDiscussion}
                 onRemoveDiscussion={handleRemoveDiscussion}
                 onAttachFigure={handleAttachFigure}

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import axios from 'axios';
 import { httpClient } from './httpClient';
-import { explainScore, listJobs, submitJob, confirmJob, editDiffEntry, addDiscussionEntry, removeDiscussionEntry, setDiffEntryExcluded, setProposalAccepted, setDiffEntriesReviewed, setWarningsAcknowledged, retryEnhancement, addDiffEntry, rescoreDiffEntry, getFigureFile, attachFigureToAdo, moveFigure, retryTraceLinkWrite, validateCreatedTree, previewSummary } from './jobs';
+import { overrideDuplicate, undoDuplicateOverride, explainScore, listJobs, submitJob, confirmJob, editDiffEntry, addDiscussionEntry, removeDiscussionEntry, setDiffEntryExcluded, setProposalAccepted, setDiffEntriesReviewed, setWarningsAcknowledged, retryEnhancement, addDiffEntry, rescoreDiffEntry, getFigureFile, attachFigureToAdo, moveFigure, retryTraceLinkWrite, validateCreatedTree, previewSummary } from './jobs';
 
 vi.mock('./httpClient');
 vi.mock('./config', () => ({ loadRuntimeConfig: vi.fn().mockResolvedValue({ apiBaseUrl: '/api' }) }));
@@ -222,3 +222,23 @@ describe('jobs api', () => {
     expect(httpClient.post).toHaveBeenLastCalledWith('/jobs/job-1/diff/n0/score-explain', { categories: ['Verifiable'] });
   });
 });
+
+describe('duplicate override calls', () => {
+  it('overrideDuplicate posts the reviewer\'s two choices to the entry', async () => {
+    const post = vi.mocked(httpClient.post).mockResolvedValue({ data: { dryRunDiff: [] } });
+
+    const result = await overrideDuplicate('job-1', 'n1', { linkTree: false, relateToExisting: true });
+
+    expect(post).toHaveBeenCalledWith('/jobs/job-1/diff/n1/duplicate-override', { linkTree: false, relateToExisting: true });
+    expect(result).toEqual({ dryRunDiff: [] });
+  });
+
+  it('undoDuplicateOverride deletes it', async () => {
+    const del = vi.mocked(httpClient.delete).mockResolvedValue({ data: { dryRunDiff: [] } });
+
+    await undoDuplicateOverride('job-1', 'n1');
+
+    expect(del).toHaveBeenCalledWith('/jobs/job-1/diff/n1/duplicate-override');
+  });
+});
+

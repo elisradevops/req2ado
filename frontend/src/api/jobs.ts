@@ -250,6 +250,18 @@ export async function removeDiscussionEntry(jobId: string, localId: string, entr
   return response.data;
 }
 
+// "Create as new item" on a skipped near-duplicate: it becomes a new item that remembers what it matched, optionally linked into the job's tree
+// and optionally Related to the item it matched. The existing item is never changed. See JobsService.overrideDuplicate.
+export async function overrideDuplicate(jobId: string, localId: string, options: { linkTree: boolean; relateToExisting: boolean }): Promise<{ dryRunDiff: unknown }> {
+  const response = await httpClient.post(`/jobs/${jobId}/diff/${localId}/duplicate-override`, options);
+  return response.data;
+}
+
+export async function undoDuplicateOverride(jobId: string, localId: string): Promise<{ dryRunDiff: unknown }> {
+  const response = await httpClient.delete(`/jobs/${jobId}/diff/${localId}/duplicate-override`);
+  return response.data;
+}
+
 export async function setDiffEntryExcluded(jobId: string, localId: string, excluded: boolean): Promise<{ dryRunDiff: unknown }> {
   const response = await httpClient.patch(`/jobs/${jobId}/diff/${localId}/exclude`, { excluded });
   return response.data;
