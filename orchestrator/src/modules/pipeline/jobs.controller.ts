@@ -668,6 +668,34 @@ export class JobsController {
     return { dryRunDiff: decorateStoredDiff(dryRunDiff, writtenLocalIds) };
   }
 
+  // Creates a skipped near-duplicate as a new item anyway. Both choices are optional: the new item is linked into this job's tree unless
+  // `linkTree` is false, and gets a Related link to the item it matched only when `relateToExisting` is true.
+  @Post(':id/diff/:localId/duplicate-override')
+  async overrideDuplicate(
+    @Param('id') id: string,
+    @Param('localId') localId: string,
+    @CurrentUser() user: SessionUser,
+    @Body('linkTree') linkTree: boolean | undefined,
+    @Body('relateToExisting') relateToExisting: boolean | undefined,
+  ): Promise<{ dryRunDiff: unknown }> {
+    if (linkTree !== undefined && typeof linkTree !== 'boolean') throw new BadRequestException('linkTree must be a boolean');
+    if (relateToExisting !== undefined && typeof relateToExisting !== 'boolean') throw new BadRequestException('relateToExisting must be a boolean');
+    const { writtenLocalIds } = await this.ownedJob(id, user);
+    const dryRunDiff = await this.jobsService.overrideDuplicate(id, localId, { linkTree: linkTree ?? true, relateToExisting: relateToExisting ?? false });
+    return { dryRunDiff: decorateStoredDiff(dryRunDiff, writtenLocalIds) };
+  }
+
+  @Delete(':id/diff/:localId/duplicate-override')
+  async undoDuplicateOverride(
+    @Param('id') id: string,
+    @Param('localId') localId: string,
+    @CurrentUser() user: SessionUser,
+  ): Promise<{ dryRunDiff: unknown }> {
+    const { writtenLocalIds } = await this.ownedJob(id, user);
+    const dryRunDiff = await this.jobsService.undoDuplicateOverride(id, localId);
+    return { dryRunDiff: decorateStoredDiff(dryRunDiff, writtenLocalIds) };
+  }
+
   @Patch(':id/diff/:localId/proposal')
   async setProposalAccepted(
     @Param('id') id: string,

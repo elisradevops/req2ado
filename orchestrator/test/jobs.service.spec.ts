@@ -7337,3 +7337,88 @@ describe('JobsService.confirm — discussion (System.History)', () => {
     });
   });
 });
+
+describe('JobsService duplicate override', () => {
+  const skipped = (overrides: Record<string, unknown> = {}) => ({
+    localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'Child', description: 'd1', action: 'dedup_skip', existingAdoId: 123, similarity: 0.93,
+    sourceHash: 'h1', customerId: null, traceLinks: [], ...overrides,
+  });
+  const build = (entries: Record<string, unknown>[]) => {
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const prisma = {
+      createdItemMapping: { findUnique: jest.fn().mockResolvedValue(null) },
+      job: { updateMany, findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', diffVersion: 0, dryRunDiff: entries }) },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+    return { service, updateMany };
+  };
+  const parent = { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null };
+
+  it('turns a skipped item into a new one that remembers what it matched', async () => {
+    const { service } = build([parent, skipped()]);
+
+    const result = await service.overrideDuplicate('job-1', 'n1', { linkTree: true, relateToExisting: false });
+
+    expect(result[1]).toMatchObject({
+      action: 'create', existingAdoId: null, similarity: null,
+      duplicateOf: { existingAdoId: 123, similarity: 0.93 },
+      duplicateOverride: { linkTree: true, relateToExisting: false },
+    });
+    expect(result[1].traceLinks).toEqual([]);
+  });
+
+  it('adds a Related link to the existing item when asked, as a resolved link the write already knows how to make', async () => {
+    const { service } = build([parent, skipped()]);
+
+    const result = await service.overrideDuplicate('job-1', 'n1', { linkTree: true, relateToExisting: true });
+
+    expect(result[1].traceLinks).toEqual([
+      expect.objectContaining({ sourceLocalId: 'n1', referenceName: 'System.LinkTypes.Related', targetKind: 'crossJob', resolvedAdoId: 123, resolutionStatus: 'resolved' }),
+    ]);
+  });
+
+  it('keeps the links the entry already had when it adds the Related one', async () => {
+    const existing = { sourceLocalId: 'n1', referenceName: 'Microsoft.VSTS.Common.TestedBy', displayName: 'Tested by', targetKind: 'intraJob', targetLocalId: 'n9', resolutionStatus: 'resolved' };
+    const { service } = build([parent, skipped({ traceLinks: [existing] })]);
+
+    const result = await service.overrideDuplicate('job-1', 'n1', { linkTree: false, relateToExisting: true });
+
+    expect(result[1].traceLinks).toHaveLength(2);
+    expect(result[1].traceLinks![0]).toEqual(existing);
+  });
+
+  it.each([
+    ['an entry that is not a skipped duplicate', { action: 'create', existingAdoId: null, similarity: null }],
+    ['an exact reuse of an existing item', { action: 'reuse', similarity: null }],
+  ])('refuses %s', async (_label, overrides) => {
+    const { service, updateMany } = build([parent, skipped(overrides)]);
+
+    await expect(service.overrideDuplicate('job-1', 'n1', { linkTree: true, relateToExisting: false })).rejects.toThrow(BadRequestException);
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
+  it('404s for an entry that is not in the diff', async () => {
+    const { service } = build([parent]);
+
+    await expect(service.overrideDuplicate('job-1', 'nope', { linkTree: true, relateToExisting: false })).rejects.toThrow(NotFoundException);
+  });
+
+  it('undoes the override: the item is a skipped duplicate again, and the Related link it added is gone', async () => {
+    const { service } = build([parent, skipped()]);
+    const overridden = await service.overrideDuplicate('job-1', 'n1', { linkTree: true, relateToExisting: true });
+    const { service: again } = build(overridden as unknown as Record<string, unknown>[]);
+
+    const result = await again.undoDuplicateOverride('job-1', 'n1');
+
+    expect(result[1]).toMatchObject({ action: 'dedup_skip', existingAdoId: 123, similarity: 0.93, traceLinks: [] });
+    expect(result[1]).not.toHaveProperty('duplicateOf');
+    expect(result[1]).not.toHaveProperty('duplicateOverride');
+  });
+
+  it('refuses to undo an entry that was never overridden', async () => {
+    const { service } = build([parent, skipped()]);
+
+    await expect(service.undoDuplicateOverride('job-1', 'n1')).rejects.toThrow(BadRequestException);
+  });
+});
+

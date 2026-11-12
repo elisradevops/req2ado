@@ -17,7 +17,7 @@ import type { McpClient } from './mcp.client';
 import { IngestionHttpError, type IngestionHttpClient, type RewriteComparison, type ScoreExplanation } from './ingestion-http.client';
 import { buildChatContext } from '../chat/chat-context';
 import type { IdempotencyService } from '../writeback/idempotency.service';
-import type { DiscussionEntry, DryRunDiffEntry, WarningRecord } from '../writeback/dry-run.service';
+import type { DiscussionEntry, DryRunDiffEntry, TraceLink, WarningRecord } from '../writeback/dry-run.service';
 import { mapWithConcurrency, type SettledResult } from './map-with-concurrency';
 import { buildExclusionChecker, filterExcludedDiffEntries, summarizeDiffEntries } from './diff-summary';
 import { attachableFigureIds, buildWritePreview, findOrphanedSelections, findUnknownSelections, planHasWork, selectEntriesToCreate, selectEntriesToLink, selectTraceLinks, type WritePlanEntry, type WritePreview } from './write-plan';
@@ -810,6 +810,56 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       const index = diff.findIndex((entry) => entry.localId === localId);
       if (index === -1) throw new NotFoundException(`Diff entry ${localId} not found`);
       diff[index] = { ...diff[index], excluded };
+      return diff;
+    });
+  }
+
+  // "Create as new item" on a skipped near-duplicate: the item becomes a plain create that remembers what it matched, so the choice can be
+  // undone. The existing item is never touched. `relateToExisting` adds a Related link to it, kept as a resolved trace link on the entry so the
+  // write, its retries and the write preview treat it like every other link; `linkTree: false` leaves the new item out of this job's
+  // parent/child links (see selectEntriesToLink).
+  async overrideDuplicate(id: string, localId: string, options: { linkTree: boolean; relateToExisting: boolean }): Promise<DryRunDiffEntry[]> {
+    await this.assertNotWritten(id, localId);
+    return this.mutateDiffVersioned(id, (diff) => {
+      const index = diff.findIndex((entry) => entry.localId === localId);
+      if (index === -1) throw new NotFoundException(`Diff entry ${localId} not found`);
+      const entry = diff[index];
+      if (entry.action !== 'dedup_skip' || entry.existingAdoId === null) {
+        throw new BadRequestException('only an item skipped as a near-duplicate can be created anyway');
+      }
+      const related: TraceLink[] = options.relateToExisting
+        ? [{ sourceLocalId: entry.localId, referenceName: 'System.LinkTypes.Related', displayName: 'Related', targetKind: 'crossJob', resolvedAdoId: entry.existingAdoId, resolutionStatus: 'resolved' }]
+        : [];
+      diff[index] = {
+        ...entry,
+        action: 'create',
+        existingAdoId: null,
+        similarity: null,
+        duplicateOf: { existingAdoId: entry.existingAdoId, similarity: entry.similarity },
+        duplicateOverride: { linkTree: options.linkTree, relateToExisting: options.relateToExisting },
+        traceLinks: [...(entry.traceLinks ?? []), ...related],
+      };
+      return diff;
+    });
+  }
+
+  async undoDuplicateOverride(id: string, localId: string): Promise<DryRunDiffEntry[]> {
+    await this.assertNotWritten(id, localId);
+    return this.mutateDiffVersioned(id, (diff) => {
+      const index = diff.findIndex((entry) => entry.localId === localId);
+      if (index === -1) throw new NotFoundException(`Diff entry ${localId} not found`);
+      const { duplicateOf, duplicateOverride, ...entry } = diff[index];
+      if (!duplicateOf || !duplicateOverride) throw new BadRequestException('this item was not created anyway');
+      diff[index] = {
+        ...entry,
+        action: 'dedup_skip',
+        existingAdoId: duplicateOf.existingAdoId,
+        similarity: duplicateOf.similarity,
+        // Only the Related link the override added goes; every other link on the entry stays.
+        traceLinks: (entry.traceLinks ?? []).filter(
+          (link) => !(link.referenceName === 'System.LinkTypes.Related' && link.targetKind === 'crossJob' && link.resolvedAdoId === duplicateOf.existingAdoId),
+        ),
+      };
       return diff;
     });
   }

@@ -173,6 +173,12 @@ export interface DryRunDiffEntry {
   description: string;
   action: 'create' | 'reuse' | 'dedup_skip';
   existingAdoId: number | null;
+  // Set when the reviewer chose to create an item that had matched an existing one ("Create as new item"). The entry is then a plain
+  // 'create' (existingAdoId and similarity are cleared) that remembers what it matched, so the choice can be undone.
+  duplicateOf?: { existingAdoId: number; similarity: number | null };
+  // What the reviewer chose with it: whether the new item is linked into this job's tree (to its parent, and its children to it), and
+  // whether it also gets a Related link to the item it matched (kept as a resolved trace link on the entry).
+  duplicateOverride?: { linkTree: boolean; relateToExisting: boolean };
   // Distinct from 'reuse': an exact-hash match (idempotency lookup) is a
   // certain fact, while a 'dedup_skip' match comes from the embedding
   // service's probabilistic similarity judgment. similarity is populated

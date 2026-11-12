@@ -1264,3 +1264,49 @@ describe('JobsController.submit: the scope of the duplicate check', () => {
   });
 });
 
+describe('JobsController duplicate override routes', () => {
+  const USER = { userId: 'user-1', displayName: 'User One' } as any;
+  const build = () => {
+    const jobsService = {
+      overrideDuplicate: jest.fn().mockResolvedValue([{ localId: 'n1', action: 'create' }]),
+      undoDuplicateOverride: jest.fn().mockResolvedValue([{ localId: 'n1', action: 'dedup_skip' }]),
+      getJobOrThrow: jest.fn(),
+    };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    jest.spyOn(controller as any, 'ownedJob').mockResolvedValue({ writtenLocalIds: new Set<string>() });
+    return { controller, jobsService };
+  };
+
+  it('creates the item anyway, with the tree links on and no Related link unless asked', async () => {
+    const { controller, jobsService } = build();
+
+    await controller.overrideDuplicate('job-1', 'n1', USER, undefined, undefined);
+
+    expect(jobsService.overrideDuplicate).toHaveBeenCalledWith('job-1', 'n1', { linkTree: true, relateToExisting: false });
+  });
+
+  it('passes the reviewer\'s choices on', async () => {
+    const { controller, jobsService } = build();
+
+    await controller.overrideDuplicate('job-1', 'n1', USER, false, true);
+
+    expect(jobsService.overrideDuplicate).toHaveBeenCalledWith('job-1', 'n1', { linkTree: false, relateToExisting: true });
+  });
+
+  it('refuses a choice that is not true or false', async () => {
+    const { controller, jobsService } = build();
+
+    await expect(controller.overrideDuplicate('job-1', 'n1', USER, 'yes' as any, undefined)).rejects.toThrow(/linkTree/);
+    expect(jobsService.overrideDuplicate).not.toHaveBeenCalled();
+  });
+
+  it('undoes it', async () => {
+    const { controller, jobsService } = build();
+
+    const result = await controller.undoDuplicateOverride('job-1', 'n1', USER);
+
+    expect(jobsService.undoDuplicateOverride).toHaveBeenCalledWith('job-1', 'n1');
+    expect(result).toEqual({ dryRunDiff: expect.anything() });
+  });
+});
+
