@@ -2,6 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor, act, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ScoreExplanationPanel } from './ScoreExplanationPanel';
+import { ToastProvider } from './ToastProvider';
+import * as kbApi from '../api/kb';
+
+vi.mock('../api/kb');
 
 const answer = (overrides: Record<string, unknown> = {}) => ({
   explanations: [
@@ -115,5 +119,21 @@ describe('ScoreExplanationPanel', () => {
     render(<ScoreExplanationPanel load={vi.fn().mockRejectedValue(new Error('504'))} resetKey="n0" />);
     await userEvent.setup().click(screen.getByRole('button', { name: /why this score/i }));
     expect(await screen.findByText(/could not explain this score\. the model can be slow at times; try again\./i)).toBeInTheDocument();
+  });
+
+  it('lets the user open the rubric the score was held to, once the reasons are shown', async () => {
+    vi.mocked(kbApi.getRubric).mockResolvedValue({ version: 'v1', source: 'kb', builtAt: null, removed: [], categories: [] });
+    const user = userEvent.setup();
+    render(
+      <ToastProvider>
+        <ScoreExplanationPanel load={vi.fn().mockResolvedValue(answer({ basis: 'knowledge_base' }))} resetKey="k" />
+      </ToastProvider>,
+    );
+    expect(screen.queryByRole('button', { name: /customize the rubric/i })).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: /why this score/i }));
+    await user.click(await screen.findByRole('button', { name: /customize the rubric/i }));
+
+    expect(await screen.findByRole('dialog', { name: /grading rubric/i })).toBeInTheDocument();
   });
 });

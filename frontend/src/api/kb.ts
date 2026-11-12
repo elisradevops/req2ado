@@ -106,8 +106,8 @@ export async function browseSharedFolder(url: string, userId: string): Promise<F
   return response.data;
 }
 
-export async function browseSubfolder(driveId: string, itemId: string, userId: string, path: string): Promise<FolderTreeEntry[]> {
-  const response = await httpClient.get<FolderTreeEntry[]>('/kb/browse-children', { params: { driveId, itemId, userId, path } });
+export async function browseSubfolder(driveId: string, itemId: string, userId: string, path: string, signal?: AbortSignal): Promise<FolderTreeEntry[]> {
+  const response = await httpClient.get<FolderTreeEntry[]>('/kb/browse-children', { params: { driveId, itemId, userId, path }, signal });
   return response.data;
 }
 

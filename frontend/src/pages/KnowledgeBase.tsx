@@ -21,12 +21,16 @@ import { KbSwitchLibraryDialog } from '../components/KbSwitchLibraryDialog';
 import { KbIngestQueue } from '../components/KbIngestQueue';
 import { KbFileList } from '../components/KbFileList';
 import { KbFileDetailPane } from '../components/KbFileDetailPane';
-import { RubricPanel } from '../components/RubricPanel';
+import { RubricDialog } from '../components/RubricDialog';
+import { KbHealthSummary } from '../components/KbHealthSummary';
+import { KbIngestReport } from '../components/KbIngestReport';
+import { useKbProfile } from '../hooks/useKbProfile';
 import { useToast } from '../components/ToastProvider';
 import { useUserId } from '../store/authStore';
 import { useConnectionStatusStore } from '../store/connectionStatusStore';
 import { isBatchStatusFinished, useKbIngestStore } from '../store/kbIngestStore';
 import { driveMismatchOf, type DriveMismatch } from '../utils/kbDriveMismatch';
+import { walkFolders, type WalkedFile } from '../utils/kbFolderWalk';
 import { PageHeader } from '../ui/PageHeader';
 import { TextField } from '../ui/TextField';
 import { Button } from '../ui/Button';
@@ -163,6 +167,19 @@ export function KnowledgeBase(): React.ReactElement {
   // Files ticked in the list to add together, and the dialog that asks how to add them (with the choice remembered for the folder).
   const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
   const [batchDialog, setBatchDialog] = useState<{ remembered: KbRetrievalMode | null } | null>(null);
+  // "Include subfolders": ticking a folder (or "Select all") also takes the files below it. What a scan found is kept per ticked folder
+  // until the selection is cleared or another folder is opened; `scan` is how far a running scan is.
+  const [includeSubfolders, setIncludeSubfolders] = useState(false);
+  const [folderSelections, setFolderSelections] = useState<Map<string, { files: WalkedFile[]; notices: string[] }>>(new Map());
+  const [scan, setScan] = useState<{ folders: number; files: number } | null>(null);
+  const scanController = useRef<AbortController | null>(null);
+  // Bumped whenever the selection is dropped, so a scan that finishes afterwards is recognised and ignored.
+  const scanSeq = useRef(0);
+  // The root listing as last fetched, for putting the root back on show after a refresh that kept the folder.
+  const lastRootEntries = useRef<FolderTreeEntry[] | null>(null);
+  // The ingestion report and the grading rubric open as dialogs, from the batch panel and the health summary.
+  const [reportOpen, setReportOpen] = useState(false);
+  const [rubricOpen, setRubricOpen] = useState(false);
   // Set when the files being added are from a different SharePoint library than the ones already in the knowledge base: the user
   // is asked before the old files are removed, and `retry` repeats what they were doing once they have been.
   const [driveSwitch, setDriveSwitch] = useState<(DriveMismatch & { driveId: string; retry: () => Promise<unknown> }) | null>(null);
@@ -171,6 +188,9 @@ export function KnowledgeBase(): React.ReactElement {
   // The batch being added in the background (kept by the server, so it is found again after a reload).
   const ingestBatch = useKbIngestStore((s) => s.batch);
   const ingestError = useKbIngestStore((s) => s.error);
+  // The rubric is rebuilt after a batch that added files; a rubric built before the batch finished does not include them yet.
+  const rebuildSince = ingestBatch && isBatchStatusFinished(ingestBatch.status) && ingestBatch.counts.added > 0 ? ingestBatch.finishedAt : null;
+  const rubric = useKbProfile({ enabled: !!userId, since: rebuildSince });
   const ingestBusy = useKbIngestStore((s) => s.busy);
 
   const [documentPendingRemoval, setDocumentPendingRemoval] = useState<PendingRemoval | null>(null);
@@ -280,16 +300,24 @@ export function KnowledgeBase(): React.ReactElement {
   // just-read localStorage value directly, since setBrowseUrl's own update
   // wouldn't be visible in this closure until the next render.
   // Resolves true when the folder was browsed, false when it could not be (error shown) or a browse was already running.
-  async function handleBrowse(urlOverride?: string): Promise<boolean> {
+  // `keepFolder`: a refresh of the same tree (for example when a batch finishes) that leaves the user where they are, instead of
+  // starting over at the root; the caller puts the folder on show back.
+  async function handleBrowse(urlOverride?: string, options?: { keepFolder?: boolean }): Promise<boolean> {
     const url = urlOverride ?? browseUrl;
     if (!url || !userId || browsingRef.current) return false;
     browsingRef.current = true;
     setBrowsing(true);
     setBrowseError(null);
-    setRootEntries(null);
+    if (!options?.keepFolder) setRootEntries(null);
     try {
       const entries = await browseSharedFolder(url, userId);
       setRootEntries(entries);
+      lastRootEntries.current = entries;
+      if (options?.keepFolder) {
+        setIngestOverrides({});
+        setLastBrowsedAt(Date.now());
+        return true;
+      }
       // A fresh browse is a new tree -- reset all navigation/selection back
       // to root rather than pointing at a folder/file that may no longer
       // exist under the newly-browsed link. Also bump the shared sequence
@@ -345,10 +373,12 @@ export function KnowledgeBase(): React.ReactElement {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only a change of the batch's status matters here
   }, [ingestBatch?.id, ingestBatch?.status]);
 
-  // A selection belongs to the folder it was made in (and to one listing of it).
+  // A selection belongs to the folder it was made in, in the tree it was made in. A refresh of the same tree keeps it.
   useEffect(() => {
-    setCheckedIds(new Set());
-  }, [currentFolder.id, currentFolder.driveId, rootEntries]);
+    resetSelection();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- resetSelection only calls setters and refs
+  }, [currentFolder.id, currentFolder.driveId, sourceUrl]);
+  useEffect(() => () => scanController.current?.abort(), []);
 
   async function navigateToFolder(id: string, driveId: string | null, path: string, name: string): Promise<void> {
     if (!userId || !driveId) return;
@@ -491,9 +521,14 @@ export function KnowledgeBase(): React.ReactElement {
     const url = sourceUrl ?? browseUrl;
     if (!url) return;
     const previousFolder = currentFolder;
-    const browsed = await handleBrowse(url);
-    if (browsed && previousFolder.id && previousFolder.driveId) {
+    // If the user opens another folder while this runs, theirs wins: only put the old one back when nothing moved meanwhile.
+    const navigation = folderNavSeqRef.current;
+    const browsed = await handleBrowse(url, { keepFolder: true });
+    if (!browsed || navigation !== folderNavSeqRef.current) return;
+    if (previousFolder.id && previousFolder.driveId) {
       await navigateToFolder(previousFolder.id, previousFolder.driveId, previousFolder.path, previousFolder.name);
+    } else {
+      setCenterEntries(lastRootEntries.current);
     }
   }
 
@@ -516,22 +551,109 @@ export function KnowledgeBase(): React.ReactElement {
     });
   }
 
-  // The files ticked in the folder on show (a folder change clears the ticks, so these are all in it).
-  const checkedFiles = (centerEntries ?? []).filter((entry) => checkedIds.has(entry.id) && !entry.isFolder && entry.downloadUrl);
+  // Turning the option off takes back what was selected below the folders (and stops a scan for it): files the list no longer
+  // shows a way to unselect must not stay selected, or be sent.
+  function handleIncludeSubfolders(include: boolean): void {
+    setIncludeSubfolders(include);
+    if (include) return;
+    scanSeq.current += 1;
+    scanController.current?.abort();
+    scanController.current = null;
+    setScan(null);
+    setFolderSelections(new Map());
+  }
+
+  // Drops everything selected, and any scan still running for it.
+  function resetSelection(): void {
+    scanSeq.current += 1;
+    scanController.current?.abort();
+    scanController.current = null;
+    setScan(null);
+    setCheckedIds(new Set());
+    setFolderSelections(new Map());
+  }
+
+  // Selects (or unselects) everything below some folders. The folders are read one after another, with progress and a cancel; a folder
+  // cancelled halfway adds nothing, and one that cannot be read in full says what is missing instead of failing the rest.
+  async function setFolderChecked(folders: FolderTreeEntry[], checked: boolean, options?: { onlyNew: boolean }): Promise<void> {
+    if (!checked) {
+      setFolderSelections((previous) => {
+        const next = new Map(previous);
+        for (const folder of folders) next.delete(folder.id);
+        return next;
+      });
+      return;
+    }
+    const todo = folders.filter((folder) => !folderSelections.has(folder.id));
+    if (!userId || todo.length === 0 || scanController.current) return;
+    const controller = new AbortController();
+    scanController.current = controller;
+    const mine = scanSeq.current;
+    const found = new Map<string, { files: WalkedFile[]; notices: string[] }>();
+    let foldersDone = 0;
+    let filesDone = 0;
+    setScan({ folders: 0, files: 0 });
+    try {
+      for (const folder of todo) {
+        let last = { folders: 0, files: 0 };
+        const result = await walkFolders([{ entry: folder, subpath: folder.name }], userId, {
+          pathPrefix: currentFolder.path,
+          signal: controller.signal,
+          onProgress: (progress) => {
+            last = progress;
+            if (mine === scanSeq.current) setScan({ folders: foldersDone + progress.folders, files: filesDone + progress.files });
+          },
+        });
+        if (mine !== scanSeq.current || result.cancelled) break;
+        foldersDone += last.folders;
+        const files = options?.onlyNew ? result.files.filter((walked) => !isIngested(walked.entry)) : result.files;
+        filesDone += files.length;
+        found.set(folder.id, { files, notices: result.partial });
+        if (result.expired) {
+          showToast('SharePoint access expired during the scan. Reconnect SharePoint, then select again.', 'warning');
+          break;
+        }
+      }
+    } finally {
+      if (mine === scanSeq.current) {
+        scanController.current = null;
+        setScan(null);
+      }
+    }
+    if (mine === scanSeq.current && found.size > 0) setFolderSelections((previous) => new Map([...previous, ...found]));
+  }
+
+  // What is selected: the files ticked in the folder on show (a folder change clears the ticks, so these are all in it), then the
+  // files found below the ticked folders, each with the folder it is in.
+  const directlyChecked = (centerEntries ?? []).filter((entry) => checkedIds.has(entry.id) && !entry.isFolder && entry.downloadUrl);
+  const selectedFiles = [
+    ...directlyChecked.map((entry) => ({ entry, folder: '' })),
+    ...[...folderSelections.values()].flatMap((selection) => selection.files.map((walked) => ({ entry: walked.entry, folder: walked.subpath }))),
+  ];
+  const everyCheckedId = new Set(selectedFiles.map((selected) => selected.entry.id));
+  const scanNotices = [...new Set([...folderSelections.values()].flatMap((selection) => selection.notices))];
 
   async function handleConfirmBatch(choices: { id: string; mode: KbRetrievalMode }[], remember: boolean): Promise<void> {
     if (!userId) return;
-    const byId = new Map((centerEntries ?? []).map((entry) => [entry.id, entry]));
-    // The drive a file lives in comes with the listing; one folder is one drive. An older backend does not send it.
-    const driveId = checkedFiles.map((entry) => entry.parentDriveId).find(Boolean) ?? currentFolder.driveId;
+    const byId = new Map(selectedFiles.map((selected) => [selected.entry.id, selected]));
+    // The drive a file lives in comes with the listing. A knowledge base holds one library, so files from two are not sent.
+    const drives = new Set(selectedFiles.map((selected) => selected.entry.parentDriveId).filter(Boolean));
+    if (drives.size > 1) {
+      showToast('These files are in more than one SharePoint library. A knowledge base holds one library, so add the files of one library at a time.', 'error');
+      return;
+    }
+    // An older backend does not send the drive with each file.
+    const driveId = [...drives][0] ?? currentFolder.driveId;
     if (!driveId) {
       showToast('Could not tell which SharePoint drive these files are in. Refresh the folder and try again.', 'error');
       return;
     }
     const items = choices.flatMap(({ id, mode }) => {
-      const entry = byId.get(id);
-      if (!entry) return [];
-      return [{ itemId: entry.id, name: entry.name, relativePath: currentFolder.path ? `${currentFolder.path}/${entry.name}` : entry.name, sizeBytes: entry.sizeBytes, retrievalMode: mode }];
+      const selected = byId.get(id);
+      if (!selected) return [];
+      const { entry, folder } = selected;
+      const relativePath = [currentFolder.path, folder, entry.name].filter(Boolean).join('/');
+      return [{ itemId: entry.id, name: entry.name, relativePath, sizeBytes: entry.sizeBytes, retrievalMode: mode }];
     });
     try {
       await useKbIngestStore.getState().submit(userId, { driveId, folderItemId: currentFolder.id, folderPath: currentFolder.path, docType: null, items });
@@ -549,7 +671,7 @@ export function KnowledgeBase(): React.ReactElement {
     const reference = choices.filter((c) => c.mode === 'always_include').length;
     if (remember) rememberMode(reference * 2 >= choices.length ? 'always_include' : 'retrieve');
     setBatchDialog(null);
-    setCheckedIds(new Set());
+    resetSelection();
     showToast(`Adding ${items.length} ${items.length === 1 ? 'file' : 'files'} in the background. You can leave this page.`, 'success');
   }
 
@@ -635,6 +757,7 @@ export function KnowledgeBase(): React.ReactElement {
           onRetryFailed={() => void useKbIngestStore.getState().retryFailed()}
           onResume={() => void useKbIngestStore.getState().resume()}
           onDismiss={() => useKbIngestStore.getState().dismiss()}
+          onOpenReport={() => setReportOpen(true)}
         />
       )}
       {browsing ? (
@@ -680,11 +803,17 @@ export function KnowledgeBase(): React.ReactElement {
               ingestingId={ingestingId}
               onIngest={requestAdd}
               onRequestRemove={handleRequestRemove}
-              checkedIds={checkedIds}
+              checkedIds={everyCheckedId}
               onToggleChecked={toggleChecked}
               onSetChecked={setChecked}
               onAddChecked={() => setBatchDialog({ remembered: readRememberedMode() })}
-              onClearChecked={() => setCheckedIds(new Set())}
+              onClearChecked={resetSelection}
+              includeSubfolders={includeSubfolders}
+              onIncludeSubfoldersChange={handleIncludeSubfolders}
+              checkedFolderIds={new Set(folderSelections.keys())}
+              onSetFolderChecked={(folders, checked, options) => void setFolderChecked(folders, checked, options)}
+              scan={scan}
+              onCancelScan={() => scanController.current?.abort()}
             />
             <div className="min-h-0 overflow-y-auto">
               <KbFileDetailPane
@@ -723,7 +852,8 @@ export function KnowledgeBase(): React.ReactElement {
         <KbAddBatchDialog
           open
           onOpenChange={(open) => !open && !ingestBusy && setBatchDialog(null)}
-          files={checkedFiles.map((entry) => ({ id: entry.id, name: entry.name, sizeBytes: entry.sizeBytes, currentMode: currentModeOf(entry) }))}
+          files={selectedFiles.map(({ entry, folder }) => ({ id: entry.id, name: entry.name, sizeBytes: entry.sizeBytes, currentMode: currentModeOf(entry), folder }))}
+          scanNotices={scanNotices}
           rememberedMode={batchDialog.remembered}
           isSubmitting={ingestBusy}
           onConfirm={(choices, remember) => void handleConfirmBatch(choices, remember)}
@@ -776,7 +906,10 @@ export function KnowledgeBase(): React.ReactElement {
         title="Remove this document from the knowledge base?"
         description={
           <>
-            <strong>{documentPendingRemoval?.name}</strong> will no longer be judged against or cited by SURVEY jobs. This deletes its
+            <strong>
+              <bdi dir="auto">{documentPendingRemoval?.name}</bdi>
+            </strong>{' '}
+            will no longer be judged against or cited by SURVEY jobs. This deletes its
             stored content and cannot be undone -- add it again from the tree if you need it back.
           </>
         }
@@ -785,7 +918,11 @@ export function KnowledgeBase(): React.ReactElement {
         isConfirming={isRemoving}
         variant="destructive"
       />
-      <RubricPanel />
+      <KbHealthSummary rubric={rubric} hasReport={!!ingestBatch && isBatchStatusFinished(ingestBatch.status)} onViewReport={() => setReportOpen(true)} onCustomizeRubric={() => setRubricOpen(true)} />
+      {ingestBatch && isBatchStatusFinished(ingestBatch.status) && (
+        <KbIngestReport open={reportOpen} onOpenChange={setReportOpen} batch={ingestBatch} rubric={rubric} onCustomizeRubric={() => setRubricOpen(true)} />
+      )}
+      <RubricDialog open={rubricOpen} onOpenChange={setRubricOpen} />
     </div>
   );
 }

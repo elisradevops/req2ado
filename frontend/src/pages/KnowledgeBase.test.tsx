@@ -27,6 +27,15 @@ async function chooseAndConfirm(choice: 'search' | 'reference' | null, confirm: 
   await userEvent.click(within(dialog).getByRole('button', { name: confirm }));
 }
 
+const READY_PROFILE: kbApi.KbProfile = {
+  state: 'ready', builtAt: '2026-11-12T09:10:00Z', version: 'v1', builtWith: 'model', docsInKb: 3, docsContributing: 2, truncated: false, docs: [], conflicts: [],
+};
+
+// Every page test reads the rubric status; most do not care what it says.
+beforeEach(() => {
+  vi.mocked(kbApi.getKbProfile).mockResolvedValue(READY_PROFILE);
+});
+
 describe('KnowledgeBase', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -38,11 +47,15 @@ describe('KnowledgeBase', () => {
     localStorage.clear();
   });
 
-  it('shows the quality rubric the user\'s jobs are graded against, next to the documents it comes from', async () => {
+  it('keeps the rubric off the page: it opens from the health summary, unchanged, in a dialog', async () => {
     renderPage();
-    expect(await screen.findByText('Quality rubric')).toBeInTheDocument();
-    expect(await screen.findByLabelText('Pass condition of Testable')).toHaveValue('Can be verified');
-    expect(kbApi.getRubric).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText('Quality rubric')).toBeNull();
+    expect(kbApi.getRubric).not.toHaveBeenCalled();
+
+    await userEvent.click(await screen.findByRole('button', { name: /customize the rubric/i }));
+
+    const dialog = await screen.findByRole('dialog', { name: /grading rubric/i });
+    expect(await within(dialog).findByLabelText('Pass condition of Testable')).toHaveValue('Can be verified');
   });
 
   it('does not render a bearer-token / password field on initial load', async () => {
@@ -1550,5 +1563,339 @@ describe('KnowledgeBase library switch', () => {
 
     expect(await screen.findByText(/could not tell which sharepoint drive/i)).toBeInTheDocument();
     expect(kbApi.ingestFolderItem).not.toHaveBeenCalled();
+  });
+});
+
+describe('KnowledgeBase include subfolders', () => {
+  const SAVED = 'https://share.example/remembered';
+  const base = { mimeType: null, isFolder: false, driveId: null, parentDriveId: 'drive-1', alreadyIngested: false, ingestedDocumentId: null } as const;
+  const pdf = (id: string, overrides: Partial<FolderTreeEntry> = {}): FolderTreeEntry => ({ ...base, id, name: `${id}.pdf`, sizeBytes: 1000, downloadUrl: `https://dl/${id}`, ...overrides });
+  const dir = (id: string, name: string): FolderTreeEntry => ({ ...base, id, name, isFolder: true, driveId: 'drive-1', sizeBytes: 0, downloadUrl: null });
+
+  const queuedBatch = (): kbApi.KbIngestBatch => ({
+    id: 'batch-1', status: 'queued', pauseReason: null, cancelRequested: false, driveId: 'drive-1', folderItemId: null, folderPath: '', docType: null, version: 1,
+    createdAt: '2026-11-12T09:00:00Z', startedAt: null, finishedAt: null,
+    counts: { total: 3, queued: 3, running: 0, added: 0, unchanged: 0, failed: 0, skipped: 0, cancelled: 0 }, items: [],
+  });
+
+  // Root: 01.pdf, 02.pdf and the folder "Sub Items" holding 03.pdf (and a deeper folder with 04.pdf).
+  const ROOT = [pdf('01'), pdf('02'), dir('d1', 'Sub Items')];
+  function tree(children: Record<string, FolderTreeEntry[]>): void {
+    vi.mocked(kbApi.browseSubfolder).mockImplementation(async (_drive, itemId) => children[itemId] ?? []);
+  }
+
+  async function open(root: FolderTreeEntry[] = ROOT): Promise<void> {
+    localStorage.setItem('req2ado-kb-browse-url', SAVED);
+    vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue(root);
+    renderPage();
+    await screen.findAllByText('01.pdf');
+  }
+
+  const includeSwitch = () => screen.getByRole('switch', { name: /include subfolders/i });
+
+  // A listing that takes a moment, as a real one does: the page shows it as empty meanwhile, which is what can reset a selection.
+  const slowListing = (entries: FolderTreeEntry[]) => vi.mocked(kbApi.browseSharedFolder).mockImplementation(() => new Promise((resolve) => setTimeout(() => resolve(entries), 150)));
+
+  async function addSelected(count: number): Promise<HTMLElement> {
+    await userEvent.click(screen.getByRole('button', { name: new RegExp(`^add ${count} to knowledge base`, 'i') }));
+    const dialog = await screen.findByRole('dialog');
+    await userEvent.click(within(dialog).getByRole('radio', { name: /^search/i }));
+    return dialog;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'valid', expiresInSeconds: 2820 });
+    vi.spyOn(kbApi, 'getRubric').mockResolvedValue({ version: 'v1', source: 'kb', builtAt: null, removed: [], categories: [] });
+    vi.spyOn(kbApi, 'listKbIngestBatches').mockResolvedValue([]);
+    localStorage.clear();
+  });
+
+  it('says subfolders are left out until the option is switched on', async () => {
+    tree({ d1: [pdf('03')] });
+    await open();
+
+    expect(screen.getByText(/only files in this folder are selected\. 1 subfolder is not included/i)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('checkbox', { name: /select all files/i }));
+
+    expect(screen.getByText('2 selected')).toBeInTheDocument();
+    expect(kbApi.browseSubfolder).not.toHaveBeenCalled();
+  });
+
+  it('with the option on, "Select all" takes the files in the subfolders too, and all go in one batch', async () => {
+    tree({ d1: [pdf('03')] });
+    vi.spyOn(kbApi, 'createKbIngestBatch').mockResolvedValue(queuedBatch());
+    await open();
+
+    await userEvent.click(includeSwitch());
+    await userEvent.click(screen.getByRole('checkbox', { name: /select all files/i }));
+    expect(await screen.findByText('3 selected')).toBeInTheDocument();
+
+    const dialog = await addSelected(3);
+    expect(within(dialog).getByRole('group', { name: 'Sub Items' })).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole('button', { name: /^add 3 to knowledge base$/i }));
+
+    await waitFor(() =>
+      expect(kbApi.createKbIngestBatch).toHaveBeenCalledWith({
+        driveId: 'drive-1',
+        folderItemId: null,
+        folderPath: '',
+        docType: null,
+        items: [
+          { itemId: '01', name: '01.pdf', relativePath: '01.pdf', sizeBytes: 1000, retrievalMode: 'retrieve' },
+          { itemId: '02', name: '02.pdf', relativePath: '02.pdf', sizeBytes: 1000, retrievalMode: 'retrieve' },
+          { itemId: '03', name: '03.pdf', relativePath: 'Sub Items/03.pdf', sizeBytes: 1000, retrievalMode: 'retrieve' },
+        ],
+      }),
+    );
+    expect(kbApi.browseSubfolder).toHaveBeenCalledWith('drive-1', 'd1', 'user-descriptor-1', 'Sub Items', expect.anything());
+  });
+
+  it('reaches folders nested below the first level', async () => {
+    tree({ d1: [dir('d2', 'Deep')], d2: [pdf('04')] });
+    vi.spyOn(kbApi, 'createKbIngestBatch').mockResolvedValue(queuedBatch());
+    await open([dir('d1', 'Sub Items')].concat([pdf('01')]));
+
+    await userEvent.click(includeSwitch());
+    await userEvent.click(screen.getByRole('checkbox', { name: /select folder sub items/i }));
+    await screen.findByText('1 selected');
+    await addSelected(1);
+    await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /^add 1 to knowledge base$/i }));
+
+    await waitFor(() => expect(kbApi.createKbIngestBatch).toHaveBeenCalledWith(expect.objectContaining({ items: [expect.objectContaining({ itemId: '04', relativePath: 'Sub Items/Deep/04.pdf' })] })));
+  });
+
+  it('ticking a folder selects what is below it, and unticking takes it back', async () => {
+    tree({ d1: [pdf('03'), pdf('05')] });
+    await open();
+    await userEvent.click(includeSwitch());
+
+    await userEvent.click(screen.getByRole('checkbox', { name: /select folder sub items/i }));
+    expect(await screen.findByText('2 selected')).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: /select folder sub items/i })).toBeChecked();
+
+    await userEvent.click(screen.getByRole('checkbox', { name: /select folder sub items/i }));
+    await waitFor(() => expect(screen.queryByText(/\d+ selected/)).toBeNull());
+  });
+
+  it('"Select new" skips files already in the knowledge base, in the subfolders too', async () => {
+    tree({ d1: [pdf('03', { alreadyIngested: true, ingestedDocumentId: 'doc-3', chunkCount: 4 }), pdf('05')] });
+    await open([pdf('01'), pdf('02', { alreadyIngested: true, ingestedDocumentId: 'doc-2', chunkCount: 3 }), dir('d1', 'Sub Items')]);
+    await userEvent.click(includeSwitch());
+
+    await userEvent.click(screen.getByRole('button', { name: /^select new$/i }));
+
+    expect(await screen.findByText('2 selected')).toBeInTheDocument(); // 01 and 05
+  });
+
+  it('shows the scan as it goes and can be cancelled, adding nothing from the cancelled folder', async () => {
+    let signal: AbortSignal | undefined;
+    vi.mocked(kbApi.browseSubfolder).mockImplementation(
+      (_d, _i, _u, _p, s) =>
+        new Promise((_resolve, reject) => {
+          signal = s;
+          s?.addEventListener('abort', () => reject(new AxiosError('canceled', 'ERR_CANCELED')));
+        }),
+    );
+    await open();
+    await userEvent.click(includeSwitch());
+
+    await userEvent.click(screen.getByRole('checkbox', { name: /select folder sub items/i }));
+    expect(await screen.findByRole('status')).toHaveTextContent(/scanning subfolders/i);
+    await userEvent.click(screen.getByRole('button', { name: /cancel scan/i }));
+
+    await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
+    expect(signal?.aborted).toBe(true);
+    expect(screen.queryByText(/\d+ selected/)).toBeNull();
+    expect(screen.getByRole('checkbox', { name: /select folder sub items/i })).not.toBeChecked();
+  });
+
+  it('says what a scan could not read, and still lets the user add what it found', async () => {
+    vi.mocked(kbApi.browseSubfolder).mockImplementation(async (_d, itemId) => {
+      if (itemId === 'd1') return [dir('bad', 'Secret'), pdf('03')];
+      throw new AxiosError('x', 'ERR', undefined, undefined, { status: 403 } as never);
+    });
+    vi.spyOn(kbApi, 'createKbIngestBatch').mockResolvedValue(queuedBatch());
+    await open();
+    await userEvent.click(includeSwitch());
+
+    await userEvent.click(screen.getByRole('checkbox', { name: /select folder sub items/i }));
+    await screen.findByText('1 selected');
+    const dialog = await addSelected(1);
+
+    expect(within(dialog).getByText(/could not read "sub items\/secret"/i)).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole('button', { name: /^add 1 to knowledge base$/i }));
+    await waitFor(() => expect(kbApi.createKbIngestBatch).toHaveBeenCalled());
+  });
+
+  it('refuses files from more than one SharePoint library, without sending anything', async () => {
+    tree({ d1: [pdf('03', { parentDriveId: 'drive-2' })] });
+    vi.spyOn(kbApi, 'createKbIngestBatch').mockResolvedValue(queuedBatch());
+    await open();
+    await userEvent.click(includeSwitch());
+    await userEvent.click(screen.getByRole('checkbox', { name: /select all files/i }));
+    await screen.findByText('3 selected');
+
+    const dialog = await addSelected(3);
+    await userEvent.click(within(dialog).getByRole('button', { name: /^add 3 to knowledge base$/i }));
+
+    expect(await screen.findByText(/more than one sharepoint library/i)).toBeInTheDocument();
+    expect(kbApi.createKbIngestBatch).not.toHaveBeenCalled();
+  });
+
+  it('drops the result of a scan that finishes after the user has moved to another folder', async () => {
+    let finish: (entries: FolderTreeEntry[]) => void = () => undefined;
+    vi.mocked(kbApi.browseSubfolder).mockImplementation((_d, itemId) =>
+      itemId === 'd1' ? new Promise((resolve) => (finish = resolve)) : Promise.resolve([]),
+    );
+    await open([pdf('01'), dir('d1', 'Sub Items'), dir('d9', 'Elsewhere')]);
+    await userEvent.click(includeSwitch());
+    await userEvent.click(screen.getByRole('checkbox', { name: /select folder sub items/i }));
+    await screen.findByRole('status');
+
+    await userEvent.click(screen.getAllByText('Elsewhere').map((el) => el.closest('tr')).find(Boolean)!);
+    await act(async () => finish([pdf('03')]));
+
+    await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
+    expect(screen.queryByText(/\d+ selected/)).toBeNull();
+  });
+
+  it('keeps the option and the scan out of a folder with no subfolders', async () => {
+    await open([pdf('01'), pdf('02')]);
+
+    expect(screen.queryByRole('switch', { name: /include subfolders/i })).toBeNull();
+  });
+
+  it('drops what was selected below the folders when "Include subfolders" is turned off, so nothing hidden is sent', async () => {
+    tree({ d1: [pdf('03'), pdf('05')] });
+    await open();
+    await userEvent.click(includeSwitch());
+    await userEvent.click(screen.getByRole('checkbox', { name: /select folder sub items/i }));
+    expect(await screen.findByText('2 selected')).toBeInTheDocument();
+
+    await userEvent.click(includeSwitch());
+
+    await waitFor(() => expect(screen.queryByText(/\d+ selected/)).toBeNull());
+  });
+
+  it('keeps the selection when a batch that was already running finishes and the folder is listed again', async () => {
+    const running = { ...queuedBatch(), id: 'b-run', status: 'running' as const };
+    const done = { ...running, status: 'completed' as const, finishedAt: '2026-11-12T09:05:00Z' };
+    vi.spyOn(kbApi, 'listKbIngestBatches').mockResolvedValue([running]);
+    vi.spyOn(kbApi, 'getKbIngestBatch').mockResolvedValueOnce(running).mockResolvedValue(done);
+    await open([pdf('01'), pdf('02')]);
+    await userEvent.click(screen.getByRole('checkbox', { name: 'Select 02.pdf' }));
+    expect(screen.getByText('1 selected')).toBeInTheDocument();
+    const listings = vi.mocked(kbApi.browseSharedFolder).mock.calls.length;
+    slowListing([pdf('01'), pdf('02')]);
+
+    await waitFor(() => expect(vi.mocked(kbApi.browseSharedFolder).mock.calls.length).toBeGreaterThan(listings), { timeout: 8000 });
+
+    // The re-list has finished (the panel shows the finished batch and the list is back), and the ticked file is still ticked.
+    await screen.findByRole('heading', { name: /added 1 file|everything was already up to date|finished/i });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await screen.findAllByText('02.pdf');
+    expect(screen.getByText('1 selected')).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: 'Select 02.pdf' })).toBeChecked();
+  }, 15000);
+
+  it('stays in the subfolder the user is in when a batch finishes and the listing is refreshed', async () => {
+    tree({ d1: [pdf('03')] });
+    const running = { ...queuedBatch(), id: 'b-run', status: 'running' as const };
+    const done = { ...running, status: 'completed' as const, finishedAt: '2026-11-12T09:05:00Z' };
+    vi.spyOn(kbApi, 'listKbIngestBatches').mockResolvedValue([running]);
+    vi.spyOn(kbApi, 'getKbIngestBatch').mockResolvedValueOnce(running).mockResolvedValue(done);
+    await open();
+    await userEvent.click(screen.getAllByText('Sub Items').map((el) => el.closest('tr')).find(Boolean)!);
+    await screen.findByText('03.pdf');
+    const listings = vi.mocked(kbApi.browseSharedFolder).mock.calls.length;
+    slowListing(ROOT);
+
+    await waitFor(() => expect(vi.mocked(kbApi.browseSharedFolder).mock.calls.length).toBeGreaterThan(listings), { timeout: 8000 });
+
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(await screen.findByText('03.pdf')).toBeInTheDocument();
+    expect(screen.queryByText('01.pdf')).toBeNull();
+  }, 15000);
+});
+
+describe('KnowledgeBase ingestion report and rubric', () => {
+  const SAVED = 'https://share.example/remembered';
+  const base = { mimeType: null, isFolder: false, driveId: null, parentDriveId: 'drive-1', alreadyIngested: false, ingestedDocumentId: null } as const;
+  const A: FolderTreeEntry = { ...base, id: 'a', name: 'a.docx', sizeBytes: 1000, downloadUrl: 'https://dl/a' };
+
+  const finished = (overrides: Partial<kbApi.KbIngestBatch> = {}): kbApi.KbIngestBatch => ({
+    id: 'batch-1', status: 'completed', pauseReason: null, cancelRequested: false, driveId: 'drive-1', folderItemId: null, folderPath: '', docType: null, version: 1,
+    createdAt: '2026-11-12T09:00:00Z', startedAt: null, finishedAt: '2026-11-12T09:05:00Z',
+    counts: { total: 1, queued: 0, running: 0, added: 1, unchanged: 0, failed: 0, skipped: 0, cancelled: 0 },
+    items: [{ id: 'i1', ordinal: 0, itemId: 'a', name: 'a.docx', relativePath: 'a.docx', sizeBytes: 1000, retrievalMode: 'retrieve', state: 'added', attempts: 0, errorKind: null, reason: null, chunksStored: 3, chunksInStore: 3, ingestedDocumentId: 'doc-a', startedAt: null, finishedAt: null }],
+    ...overrides,
+  });
+
+  async function open(batch: kbApi.KbIngestBatch | null): Promise<void> {
+    localStorage.setItem('req2ado-kb-browse-url', SAVED);
+    vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([A]);
+    vi.spyOn(kbApi, 'listKbIngestBatches').mockResolvedValue(batch ? [batch] : []);
+    if (batch) vi.spyOn(kbApi, 'getKbIngestBatch').mockResolvedValue(batch);
+    renderPage();
+    await screen.findAllByText('a.docx');
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(kbApi.getKbProfile).mockResolvedValue({ ...READY_PROFILE, docs: [{ file: 'a.docx', status: 'contributed', reason: null, categories: 2, rules: 4, typeDefinitions: 0, glossary: 0 }] });
+    vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'valid', expiresInSeconds: 2820 });
+    vi.spyOn(kbApi, 'getRubric').mockResolvedValue({ version: 'v1', source: 'kb', builtAt: null, removed: [], categories: [] });
+    localStorage.clear();
+  });
+
+  it('shows how much of the knowledge base the rubric draws on', async () => {
+    await open(null);
+
+    expect(await screen.findByText(/the grading rubric draws on 2 of 3 documents/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /view the last report/i })).toBeNull();
+  });
+
+  it('opens the report of a finished batch from the batch panel: what happened to each file and what the rubric made of it', async () => {
+    await open(finished());
+
+    await userEvent.click(await screen.findByRole('button', { name: /^view report$/i }));
+
+    const dialog = await screen.findByRole('dialog', { name: /ingestion report/i });
+    expect(within(dialog).getByText('a.docx').closest('li')).toHaveTextContent(/added · 3 chunks/i);
+    expect(await within(dialog).findByText(/shaped the rubric: 2 categories, 4 rules/i)).toBeInTheDocument();
+  });
+
+  it('opens the same report from the health summary', async () => {
+    await open(finished());
+
+    await userEvent.click(await screen.findByRole('button', { name: /view the last report/i }));
+
+    expect(await screen.findByRole('dialog', { name: /ingestion report/i })).toBeInTheDocument();
+  });
+
+  it('opens the rubric from the report', async () => {
+    await open(finished());
+    await userEvent.click(await screen.findByRole('button', { name: /^view report$/i }));
+    const report = await screen.findByRole('dialog', { name: /ingestion report/i });
+
+    await userEvent.click(await within(report).findByRole('button', { name: /customize the rubric/i }));
+
+    expect(await screen.findByRole('dialog', { name: /grading rubric/i })).toBeInTheDocument();
+  });
+
+  it('waits for a rubric built after the batch, and says so, rather than showing an older one as the answer', async () => {
+    vi.mocked(kbApi.getKbProfile).mockResolvedValue({ ...READY_PROFILE, builtAt: '2026-11-12T08:00:00Z' });
+    await open(finished());
+
+    expect(await screen.findByText(/updating the grading rubric/i)).toBeInTheDocument();
+  });
+
+  it('does not wait for a rebuild when nothing was added, since none is coming', async () => {
+    vi.mocked(kbApi.getKbProfile).mockResolvedValue({ ...READY_PROFILE, builtAt: '2026-11-12T08:00:00Z' });
+    const unchanged = finished({ counts: { total: 1, queued: 0, running: 0, added: 0, unchanged: 1, failed: 0, skipped: 0, cancelled: 0 } });
+    await open(unchanged);
+
+    expect(await screen.findByText(/the grading rubric draws on 2 of 3 documents/i)).toBeInTheDocument();
   });
 });

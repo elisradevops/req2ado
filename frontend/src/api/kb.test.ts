@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { httpClient } from './httpClient';
 import {
+  browseSubfolder,
   cancelKbIngestBatch,
   createKbIngestBatch,
   getKbIngestBatch,
@@ -170,5 +171,16 @@ describe('one library per knowledge base', () => {
 
     expect(post).toHaveBeenCalledWith('/kb/source/switch', { driveId: 'drive-9' });
     expect(result).toEqual({ removed: 2, failed: [{ id: 'x', name: 'old.pdf' }] });
+  });
+});
+
+describe('browseSubfolder', () => {
+  it('lists a subfolder by drive and item id, and can be cancelled with an abort signal', async () => {
+    const get = vi.mocked(httpClient.get).mockResolvedValue({ data: [] });
+    const controller = new AbortController();
+
+    await browseSubfolder('drive-1', 'item-1', 'user-1', 'Sub', controller.signal);
+
+    expect(get).toHaveBeenCalledWith('/kb/browse-children', { params: { driveId: 'drive-1', itemId: 'item-1', userId: 'user-1', path: 'Sub' }, signal: controller.signal });
   });
 });

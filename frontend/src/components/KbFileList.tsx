@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Folder, ChevronRight, Plus, Trash2, RefreshCw } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { Checkbox } from '../ui/Checkbox';
+import { Switch } from '../ui/Switch';
 import { extensionOf } from '../utils/extension';
 import type { FolderTreeEntry } from '../api/kb';
 import { formatFileSize } from '../utils/fileSize';
@@ -46,6 +47,12 @@ export function KbFileList({
   onSetChecked,
   onAddChecked,
   onClearChecked,
+  includeSubfolders,
+  onIncludeSubfoldersChange,
+  checkedFolderIds,
+  onSetFolderChecked,
+  scan,
+  onCancelScan,
 }: {
   entries: FolderTreeEntry[] | null;
   loading: boolean;
@@ -65,6 +72,16 @@ export function KbFileList({
   onSetChecked?: (ids: string[], checked: boolean) => void;
   onAddChecked?: () => void;
   onClearChecked?: () => void;
+  // "Include subfolders": the selection reaches into the folders below this one. Absent = the list offers no such option.
+  includeSubfolders?: boolean;
+  onIncludeSubfoldersChange?: (include: boolean) => void;
+  // The folders whose contents are selected, and the way to select or unselect everything below some folders (`onlyNew`: only
+  // the files not yet in the knowledge base).
+  checkedFolderIds?: Set<string>;
+  onSetFolderChecked?: (folders: FolderTreeEntry[], checked: boolean, options?: { onlyNew: boolean }) => void;
+  // Set while the folders below are being read: how far it is.
+  scan?: { folders: number; files: number } | null;
+  onCancelScan?: () => void;
 }): React.ReactElement {
   const [search, setSearch] = useState('');
 
@@ -79,6 +96,10 @@ export function KbFileList({
   const allChecked = eligibleIds.length > 0 && checkedCount === eligibleIds.length;
   const newIds = eligible.filter((entry) => !isIngested(entry)).map((entry) => entry.id);
   const totalChecked = checkedIds?.size ?? 0;
+  const visibleFolders = visible.filter((entry) => entry.isFolder);
+  const offersSubfolders = onIncludeSubfoldersChange !== undefined && visibleFolders.length > 0;
+  const reachIntoFolders = selectable && !!includeSubfolders && onSetFolderChecked !== undefined && visibleFolders.length > 0;
+  const scanning = !!scan;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -103,12 +124,12 @@ export function KbFileList({
           className="max-w-[200px]"
         />
       </div>
-      {selectable && (totalChecked > 0 || newIds.length > 0) && (
+      {selectable && (totalChecked > 0 || newIds.length > 0 || offersSubfolders) && (
         <div className="flex flex-wrap items-center gap-2 border-b border-hairline bg-surface-alt px-3 py-2">
           {totalChecked > 0 ? (
             <>
               <span className="text-sm font-medium text-ink-2">{totalChecked} selected</span>
-              <Button size="sm" onClick={onAddChecked}>
+              <Button size="sm" onClick={onAddChecked} disabled={scanning}>
                 <Plus className="h-4 w-4" aria-hidden="true" />
                 Add {totalChecked} to knowledge base…
               </Button>
@@ -117,9 +138,47 @@ export function KbFileList({
               </Button>
             </>
           ) : (
-            <Button size="sm" variant="outline" onClick={() => onSetChecked(newIds, true)}>
-              Select new ({newIds.length})
-            </Button>
+            (newIds.length > 0 || reachIntoFolders) && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  onSetChecked(newIds, true);
+                  if (reachIntoFolders) onSetFolderChecked(visibleFolders, true, { onlyNew: true });
+                }}
+                disabled={scanning}
+              >
+                {reachIntoFolders ? 'Select new' : `Select new (${newIds.length})`}
+              </Button>
+            )
+          )}
+          {offersSubfolders && (
+            <div className="ml-auto flex items-center gap-2 text-sm text-ink-2">
+              {!includeSubfolders && (
+                <span>
+                  Only files in this folder are selected. {visibleFolders.length} {visibleFolders.length === 1 ? 'subfolder is' : 'subfolders are'} not included.
+                </span>
+              )}
+              <label className="flex cursor-pointer items-center gap-2">
+                <Switch checked={!!includeSubfolders} onCheckedChange={onIncludeSubfoldersChange} ariaLabel="Include subfolders" disabled={scanning} />
+                Include subfolders
+              </label>
+            </div>
+          )}
+          {scan && (
+            <div className="flex w-full items-center gap-2 text-sm text-ink-2">
+              {/* Only the fact that it is scanning is announced: the counts change many times a second. */}
+              <span className="flex items-center gap-2">
+                <Spinner />
+                <span role="status">Scanning subfolders…</span>
+                <span aria-hidden="true">
+                  {scan.folders} {scan.folders === 1 ? 'folder' : 'folders'}, {scan.files} {scan.files === 1 ? 'file' : 'files'}
+                </span>
+              </span>
+              <Button size="sm" variant="ghost" onClick={onCancelScan}>
+                Cancel scan
+              </Button>
+            </div>
           )}
         </div>
       )}
@@ -148,11 +207,14 @@ export function KbFileList({
               <tr>
                 {selectable && (
                   <TableHeaderCell sticky className="w-9 pr-0">
-                    {eligibleIds.length > 0 && (
+                    {(eligibleIds.length > 0 || reachIntoFolders) && (
                       <Checkbox
                         checked={allChecked ? true : checkedCount > 0 ? 'indeterminate' : false}
-                        onCheckedChange={(value) => onSetChecked(eligibleIds, value)}
-                        ariaLabel="Select all files"
+                        onCheckedChange={(value) => {
+                          onSetChecked(eligibleIds, value);
+                          if (reachIntoFolders) onSetFolderChecked(visibleFolders, value);
+                        }}
+                        ariaLabel={reachIntoFolders ? 'Select all files and folders' : 'Select all files'}
                       />
                     )}
                   </TableHeaderCell>
@@ -189,6 +251,14 @@ export function KbFileList({
                       <td className="w-9 py-2 pl-3.5 pr-0" onClick={(e) => e.stopPropagation()}>
                         {!entry.isFolder && entry.downloadUrl && (
                           <Checkbox checked={checkedIds.has(entry.id)} onCheckedChange={() => onToggleChecked(entry)} ariaLabel={`Select ${entry.name}`} />
+                        )}
+                        {entry.isFolder && reachIntoFolders && (
+                          <Checkbox
+                            checked={!!checkedFolderIds?.has(entry.id)}
+                            onCheckedChange={(value) => onSetFolderChecked([entry], value)}
+                            ariaLabel={`Select folder ${entry.name}`}
+                            disabled={scanning}
+                          />
                         )}
                       </td>
                     )}

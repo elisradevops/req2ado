@@ -266,4 +266,96 @@ describe('KbAddBatchDialog', () => {
 
     expect(within(screen.getByRole('list', { name: /files to add/i })).getByText('מדריך.docx').closest('bdi')).toHaveAttribute('dir', 'auto');
   });
+
+  describe('files from subfolders', () => {
+    const nested = (): BatchFile[] => [
+      { id: 'a', name: 'a.pdf', sizeBytes: 1000, currentMode: null },
+      { id: 'b', name: 'same.pdf', sizeBytes: 1000, currentMode: null, folder: 'Sub Items' },
+      { id: 'c', name: 'same.pdf', sizeBytes: 1000, currentMode: null, folder: 'Sub Items/Deep' },
+      { id: 'd', name: 'מדריך.docx', sizeBytes: 1000, currentMode: null, folder: 'תיקייה' },
+    ];
+
+    it('groups the files by the folder they are in, so the same name in two folders can be told apart', () => {
+      renderDialog(nested());
+
+      const list = screen.getByRole('list', { name: /files to add/i });
+      const groups = within(list).getAllByRole('group');
+      expect(groups.map((group) => group.getAttribute('aria-label'))).toEqual(['This folder', 'Sub Items', 'Sub Items/Deep', 'תיקייה']);
+      expect(within(groups[1]).getByText('same.pdf')).toBeInTheDocument();
+      expect(within(groups[2]).getByText('same.pdf')).toBeInTheDocument();
+    });
+
+    it('shows a folder name bidirectionally safe', () => {
+      renderDialog(nested());
+
+      const heading = screen.getByText('תיקייה');
+      expect(heading.closest('bdi')).toHaveAttribute('dir', 'auto');
+    });
+
+    it('keeps one switch per file, each named by its own file, and sends every file back', async () => {
+      const { onConfirm } = renderDialog(nested());
+      await userEvent.click(search());
+
+      await userEvent.click(confirmButton(4));
+
+      expect(onConfirm).toHaveBeenCalledWith(
+        [{ id: 'a', mode: 'retrieve' }, { id: 'b', mode: 'retrieve' }, { id: 'c', mode: 'retrieve' }, { id: 'd', mode: 'retrieve' }],
+        false,
+      );
+    });
+
+    it('does not group a list that is all in one folder', () => {
+      renderDialog(files(3));
+
+      expect(screen.queryByRole('group')).toBeNull();
+    });
+  });
+
+  describe('a scan that did not find everything', () => {
+    it('says what was left out, and still lets the user add what was found', async () => {
+      const { onConfirm } = renderDialog(files(2), { scanNotices: ['Could not read "Secret".', 'Some folders are nested more than 5 levels deep and were not opened.'] });
+
+      expect(screen.getByText(/could not read "secret"/i)).toBeInTheDocument();
+      expect(screen.getByText(/more than 5 levels deep/i)).toBeInTheDocument();
+      await userEvent.click(search());
+      await userEvent.click(confirmButton(2));
+      expect(onConfirm).toHaveBeenCalled();
+    });
+
+    it('says nothing when the scan was complete', () => {
+      renderDialog(files(2), { scanNotices: [] });
+
+      expect(screen.queryByText(/not opened|could not read/i)).toBeNull();
+    });
+  });
+
+  it('tells the user how to get under the limit when a selection is too big', async () => {
+    renderDialog(files(201));
+    await userEvent.click(search());
+
+    expect(screen.getByText(/open a subfolder/i)).toBeInTheDocument();
+  });
+
+  it('stays within the screen, scrolling inside, so the buttons are always reachable', () => {
+    renderDialog(files(3));
+
+    expect(screen.getByRole('dialog').className).toContain('max-h-[calc(100dvh-2rem)]');
+  });
+
+  it('says in words, beside every switch, what it does', () => {
+    renderDialog(files(2));
+
+    const rows = within(screen.getByRole('list', { name: /files to add/i })).getAllByRole('listitem');
+    expect(rows).toHaveLength(2);
+    for (const row of rows) expect(within(row).getByText('Reference')).toBeInTheDocument();
+  });
+
+  it('lets a long unbroken file name wrap instead of cutting it off', () => {
+    const name = 'Requirements_Engineering_and_ADO_Work_Item_Standard_Version_2_Final_Reviewed_Customer_Copy.docx';
+    renderDialog([{ id: 'long', name, sizeBytes: 1024, currentMode: null }]);
+
+    const text = within(screen.getByRole('list', { name: /files to add/i })).getByText(name).parentElement as HTMLElement;
+    expect(text.className).toContain('[overflow-wrap:anywhere]');
+    expect(text.className).not.toContain('truncate');
+  });
 });

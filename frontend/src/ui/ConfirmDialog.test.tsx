@@ -129,6 +129,17 @@ describe('ConfirmDialog variants', () => {
     expect(description.closest('.bg-danger-soft')).not.toBeNull();
   });
 
+  it('lets a long unbroken name wrap inside the callout instead of running out of it', () => {
+    const name = '01_Requirements_Engineering_and_ADO_Work_Item_Standard_Version_2_Final_Reviewed.pdf';
+    render(<ConfirmDialog open onOpenChange={() => {}} title="Delete?" description={<strong>{name}</strong>} confirmLabel="Go" onConfirm={() => {}} variant="destructive" />);
+
+    const callout = screen.getByText(name).closest('.bg-danger-soft') as HTMLElement;
+    // class pin: jsdom has no layout. A flex child needs min-w-0 to be allowed to shrink, and a word without breaks needs anywhere-wrapping.
+    const text = callout.lastElementChild as HTMLElement;
+    expect(text.className).toContain('min-w-0');
+    expect(text.className).toContain('[overflow-wrap:anywhere]');
+  });
+
   it('does not render an empty padded body when destructive has no description and no children', () => {
     const { container } = render(
       <ConfirmDialog open onOpenChange={() => {}} title="Delete?" confirmLabel="Go" onConfirm={() => {}} variant="destructive" />,

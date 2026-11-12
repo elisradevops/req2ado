@@ -21,6 +21,8 @@ export interface BatchFile {
   sizeBytes: number;
   // The mode of a file that is already in the knowledge base; null for a new one.
   currentMode: KbRetrievalMode | null;
+  // The folder it is in, below the folder the user was looking at ('' or absent = that folder itself). Files are listed by it.
+  folder?: string;
 }
 
 interface Props {
@@ -31,6 +33,8 @@ interface Props {
   rememberedMode: KbRetrievalMode | null;
   onConfirm: (choices: { id: string; mode: KbRetrievalMode }[], rememberForFolder: boolean) => void;
   isSubmitting?: boolean;
+  // What a scan of the subfolders could not cover, in words; nothing when it was complete.
+  scanNotices?: string[];
 }
 
 const plural = (n: number, one: string, many: string): string => (n === 1 ? one : many);
@@ -44,7 +48,7 @@ function startingMode(files: BatchFile[], remembered: KbRetrievalMode | null): K
   return remembered;
 }
 
-export function KbAddBatchDialog({ open, onOpenChange, files, rememberedMode, onConfirm, isSubmitting = false }: Props): React.ReactElement {
+export function KbAddBatchDialog({ open, onOpenChange, files, rememberedMode, onConfirm, isSubmitting = false, scanNotices = [] }: Props): React.ReactElement {
   const tooLarge = useMemo(() => files.filter((f) => f.sizeBytes > KB_MAX_FILE_BYTES), [files]);
   const eligible = useMemo(() => files.filter((f) => f.sizeBytes <= KB_MAX_FILE_BYTES), [files]);
 
@@ -66,6 +70,13 @@ export function KbAddBatchDialog({ open, onOpenChange, files, rememberedMode, on
   const largeReference = referenceFiles.filter((f) => f.sizeBytes >= LARGE_FILE_WARNING_BYTES);
   const fromRemembered = rememberedMode !== null && mode === rememberedMode && startingMode(eligible, null) === null;
   const tooMany = eligible.length > KB_BATCH_MAX_FILES;
+  // Files from subfolders are listed under their folder (the same name can be in two of them); a flat list stays flat.
+  const grouped = eligible.some((f) => (f.folder ?? '') !== '');
+  const groups = useMemo(() => {
+    const byFolder = new Map<string, BatchFile[]>();
+    for (const file of eligible) byFolder.set(file.folder ?? '', [...(byFolder.get(file.folder ?? '') ?? []), file]);
+    return [...byFolder.entries()].map(([folder, members]) => ({ folder, members }));
+  }, [eligible]);
   const canConfirm = mode !== null && eligible.length > 0 && !tooMany && !isSubmitting;
 
   return (
@@ -73,6 +84,7 @@ export function KbAddBatchDialog({ open, onOpenChange, files, rememberedMode, on
       open={open}
       onOpenChange={onOpenChange}
       maxWidthClassName="max-w-[560px]"
+      maxHeightClassName="max-h-[calc(100dvh-2rem)]"
       title={`Add ${eligible.length} ${plural(eligible.length, 'file', 'files')} to the knowledge base`}
       description="Choose how your survey jobs should use these documents. They are added in the background, one after another, so you can leave this page."
       footer={
@@ -95,7 +107,17 @@ export function KbAddBatchDialog({ open, onOpenChange, files, rememberedMode, on
           {tooLarge.map((f) => f.name).join(', ')}
         </Alert>
       )}
-      {tooMany && <Alert severity="error">A batch holds at most {KB_BATCH_MAX_FILES} files. Select fewer files and try again.</Alert>}
+      {scanNotices.length > 0 && (
+        <Alert severity="warning">
+          <p>Not every file was found:</p>
+          <ul className="list-disc pl-4">
+            {scanNotices.map((notice) => (
+              <li key={notice}>{notice}</li>
+            ))}
+          </ul>
+        </Alert>
+      )}
+      {tooMany && <Alert severity="error">A batch holds at most {KB_BATCH_MAX_FILES} files. Select fewer files, or open a subfolder, and try again.</Alert>}
 
       {eligible.length > 0 && (
         <>
@@ -127,26 +149,43 @@ export function KbAddBatchDialog({ open, onOpenChange, files, rememberedMode, on
           )}
 
           <ul aria-label="Files to add" className="flex max-h-56 flex-col divide-y divide-hairline overflow-y-auto rounded-sm border border-hairline">
-            {eligible.map((file) => {
-              const hint = suggestRetrievalMode(file.name, file.sizeBytes);
+            {groups.map(({ folder, members }) => {
+              const rows = members.map((file) => {
+                const hint = suggestRetrievalMode(file.name, file.sizeBytes);
+                return (
+                  <li key={file.id} className="flex items-center gap-3 px-2.5 py-1.5 text-sm">
+                    <div className="flex min-w-0 flex-1 flex-col">
+                      <span className="min-w-0 text-ink-1 [overflow-wrap:anywhere]">
+                        <bdi dir="auto">{file.name}</bdi>
+                      </span>
+                      <span className="text-xs text-ink-3">
+                        {formatFileSize(file.sizeBytes)}
+                        {file.currentMode && ` · In the knowledge base: ${MODE_WORD[file.currentMode]}`}
+                        {hint && ' · Suggested: Reference'}
+                      </span>
+                    </div>
+                    <label className="flex flex-none items-center gap-2 text-xs text-ink-2">
+                      Reference
+                      <Switch
+                        checked={modeOf(file) === 'always_include'}
+                        onCheckedChange={(checked) => setOverrides((prev) => ({ ...prev, [file.id]: checked ? 'always_include' : 'retrieve' }))}
+                        ariaLabel={`Reference: ${file.name}`}
+                        disabled={isSubmitting || mode === null}
+                      />
+                    </label>
+                  </li>
+                );
+              });
+              if (!grouped) return rows;
+              const label = folder === '' ? 'This folder' : folder;
               return (
-                <li key={file.id} className="flex items-center gap-3 px-2.5 py-1.5 text-sm">
-                  <div className="flex min-w-0 flex-1 flex-col">
-                    <span className="truncate text-ink-1">
-                      <bdi dir="auto">{file.name}</bdi>
-                    </span>
-                    <span className="text-xs text-ink-3">
-                      {formatFileSize(file.sizeBytes)}
-                      {file.currentMode && ` · In the knowledge base: ${MODE_WORD[file.currentMode]}`}
-                      {hint && ' · Suggested: Reference'}
-                    </span>
-                  </div>
-                  <Switch
-                    checked={modeOf(file) === 'always_include'}
-                    onCheckedChange={(checked) => setOverrides((prev) => ({ ...prev, [file.id]: checked ? 'always_include' : 'retrieve' }))}
-                    ariaLabel={`Reference: ${file.name}`}
-                    disabled={isSubmitting || mode === null}
-                  />
+                <li key={`group:${folder}`} role="presentation" className="list-none">
+                  <ul role="group" aria-label={label} className="divide-y divide-hairline">
+                    <li role="presentation" className="bg-surface-alt px-2.5 py-1 text-xs font-medium text-ink-3">
+                      <bdi dir="auto">{label}</bdi>
+                    </li>
+                    {rows}
+                  </ul>
                 </li>
               );
             })}
