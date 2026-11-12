@@ -143,6 +143,12 @@ describe('KbIngestQueue', () => {
       expect(screen.getByRole('button', { name: /retry 1 failed/i })).toBeInTheDocument();
     });
 
+    it('a cancelled file says "Cancelled" once, not again as its stored reason', () => {
+      renderQueue(batch('cancelled', [item(1, 'added'), item(2, 'cancelled', { reason: 'cancelled' })]));
+
+      expect(screen.getByText('file2.pdf').closest('li')!.textContent).not.toMatch(/cancelled.*cancelled/i);
+    });
+
     it('cancelled: says what got in before it stopped', () => {
       renderQueue(batch('cancelled', [item(1, 'added'), item(2, 'cancelled')]));
 

@@ -50,6 +50,12 @@ describe('KbIngestReport', () => {
       expect(row('file5.pdf')).toHaveTextContent(/cancelled/i);
     });
 
+    it('a cancelled file says "Cancelled" once, not again as its stored reason', () => {
+      renderReport(batch([item(1, 'cancelled', { reason: 'cancelled' })]), read('loading'));
+
+      expect(row('file1.pdf').textContent).not.toMatch(/cancelled.*cancelled/i);
+    });
+
     it('warns about a file that stored no text, and says what to try', () => {
       renderReport(batch([item(1, 'added', { chunksInStore: 0 })]), read('loading'));
 

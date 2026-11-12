@@ -28,6 +28,35 @@ describe('KbAddBatchDialog', () => {
     expect(screen.getByRole('dialog', { name: /add 3 files to the knowledge base/i })).toBeInTheDocument();
   });
 
+  describe('when the page re-renders around it (a status poll, any state change) with an equal but new file list', () => {
+    const element = (list: BatchFile[], rememberedMode: 'retrieve' | 'always_include' | null = null) => (
+      <KbAddBatchDialog open onOpenChange={vi.fn()} files={list} rememberedMode={rememberedMode} onConfirm={vi.fn()} />
+    );
+
+    it('keeps the mode the user chose, instead of putting the remembered one back', async () => {
+      const { rerender } = render(element(files(2), 'always_include'));
+      expect(reference()).toHaveAttribute('aria-checked', 'true'); // the remembered choice is the start
+      await userEvent.click(search());
+
+      rerender(element(files(2), 'always_include'));
+
+      expect(search()).toHaveAttribute('aria-checked', 'true');
+      expect(reference()).toHaveAttribute('aria-checked', 'false');
+    });
+
+    it('keeps a file switched by hand, and the "remember" tick', async () => {
+      const { rerender } = render(element(files(2)));
+      await userEvent.click(search());
+      await userEvent.click(rowSwitch('Customer_SRS_1.docx'));
+      await userEvent.click(screen.getByRole('checkbox', { name: /remember my choice for this folder/i }));
+
+      rerender(element(files(2)));
+
+      expect(rowSwitch('Customer_SRS_1.docx')).toBeChecked();
+      expect(screen.getByRole('checkbox', { name: /remember my choice for this folder/i })).toBeChecked();
+    });
+  });
+
   it('says "1 file" for one', () => {
     renderDialog(files(1));
 

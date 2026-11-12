@@ -38,7 +38,8 @@ function outcomeDetail(item: KbIngestItem): string | null {
     if (item.chunksInStore === 0) return 'No text could be stored. The file may be scanned images or empty; try a text-based version.';
     return item.chunksInStore !== null ? `${item.chunksInStore} ${plural(item.chunksInStore, 'chunk', 'chunks')}` : null;
   }
-  return item.reason;
+  // A stored reason that only repeats the state word ("cancelled") adds nothing beside it.
+  return item.reason && item.reason.toLowerCase() !== OUTCOME[item.state].word.toLowerCase() ? item.reason : null;
 }
 
 // What the rubric made of one file, said for a file that is in the knowledge base now.

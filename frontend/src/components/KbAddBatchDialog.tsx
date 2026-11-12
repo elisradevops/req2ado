@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { KbRetrievalMode } from '../api/kb';
 import { formatFileSize } from '../utils/fileSize';
 import { KB_BATCH_LONG_RUN_FILES, KB_BATCH_MANY_REFERENCE_FILES, KB_BATCH_MAX_FILES, KB_MAX_FILE_BYTES } from '../utils/kbBatchLimits';
@@ -56,13 +56,17 @@ export function KbAddBatchDialog({ open, onOpenChange, files, rememberedMode, on
   // Files the user flipped one by one; changing the choice for all starts them over from it.
   const [overrides, setOverrides] = useState<Record<string, KbRetrievalMode>>({});
   const [remember, setRemember] = useState(false);
+  // Starts over each time the dialog opens, and only then: the page hands over a new list on every render of its own (a status poll is
+  // enough), and starting over on each of those would quietly put the remembered mode back over what the user just chose.
+  const latest = useRef({ eligible, rememberedMode });
+  latest.current = { eligible, rememberedMode };
   useEffect(() => {
     if (open) {
-      setMode(startingMode(eligible, rememberedMode));
+      setMode(startingMode(latest.current.eligible, latest.current.rememberedMode));
       setOverrides({});
       setRemember(false);
     }
-  }, [open, eligible, rememberedMode]);
+  }, [open]);
 
   const modeOf = (file: BatchFile): KbRetrievalMode | null => overrides[file.id] ?? mode;
   const suggested = eligible.filter((f) => suggestRetrievalMode(f.name, f.sizeBytes));

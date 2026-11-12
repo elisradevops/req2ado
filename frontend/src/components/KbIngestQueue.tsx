@@ -44,7 +44,8 @@ function describeFile(item: KbIngestItem): { word: string; detail: string | null
     const chunks = item.chunksInStore !== null ? `${item.chunksInStore} ${plural(item.chunksInStore, 'chunk', 'chunks')}` : null;
     return { word, detail: item.reason ?? chunks };
   }
-  return { word, detail: item.reason };
+  // A stored reason that only repeats the state word ("cancelled") adds nothing beside it.
+  return { word, detail: item.reason && item.reason.toLowerCase() !== word.toLowerCase() ? item.reason : null };
 }
 
 function FileStateIcon({ state }: { state: KbIngestItemState }): React.ReactElement {
