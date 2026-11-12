@@ -1,6 +1,7 @@
 import { UnauthorizedException } from '@nestjs/common';
 import { AuthController } from '../src/modules/auth/auth.controller';
 import type { SessionUser } from '../src/modules/auth/session.service';
+import { SESSION_COOKIE_NAME } from '../src/modules/auth/session.constants';
 
 const TEST_USER: SessionUser = { userId: 'Microsoft.TeamFoundation.Identity;S-1-5-21-000', displayName: 'Jane Doe' };
 
@@ -100,5 +101,25 @@ describe('AuthController.login', () => {
       controller.login({ adoOrgUrl: 'https://tfs.internal/tfs/Collection', pat: 'fresh-pat' }, res as any),
     ).rejects.toThrow('Sign-in succeeded but the server failed to establish a session. Please try again.');
     expect(res.cookie).not.toHaveBeenCalled();
+  });
+
+  it('passes the details ADO reported on to the session, and returns them to the page', async () => {
+    const identity = { identity: TEST_USER.userId, displayName: 'Jane Doe', email: 'jane@corp.example', accountName: 'CORP\\jane', adoUserGuid: 'guid-1' };
+    const sessionService = { create: jest.fn().mockResolvedValue('raw-session-token') };
+    const controller = new AuthController({ validateAndIdentify: jest.fn().mockResolvedValue(identity) } as any, sessionService as any, { set: jest.fn() } as any);
+
+    const result = await controller.login({ adoOrgUrl: 'https://tfs.internal/tfs/Collection', pat: 'fresh-pat' }, makeRes() as any);
+
+    expect(sessionService.create).toHaveBeenCalledWith(TEST_USER.userId, 'Jane Doe', { email: 'jane@corp.example', accountName: 'CORP\\jane', adoUserGuid: 'guid-1' });
+    expect(result).toEqual({ displayName: 'Jane Doe', userId: TEST_USER.userId, email: 'jane@corp.example', accountName: 'CORP\\jane' });
+  });
+
+  it('me() returns the details kept with the session', async () => {
+    const sessionService = { validate: jest.fn().mockResolvedValue({ userId: TEST_USER.userId, displayName: 'Jane Doe', email: 'jane@corp.example', accountName: 'CORP\\jane', adoUserGuid: 'guid-1' }) };
+    const controller = new AuthController({} as any, sessionService as any, {} as any);
+
+    const result = await controller.me({ cookies: { [SESSION_COOKIE_NAME]: 'raw' } } as any);
+
+    expect(result).toEqual({ authenticated: true, userId: TEST_USER.userId, displayName: 'Jane Doe', email: 'jane@corp.example', accountName: 'CORP\\jane' });
   });
 });

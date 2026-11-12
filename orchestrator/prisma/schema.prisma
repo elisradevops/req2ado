@@ -21,6 +21,10 @@ model Session {
   tokenHash    String   @unique
   userId       String
   displayName  String
+  // What ADO also said about the person at sign-in, for the Profile page. Null for a session issued before these were kept.
+  email        String?
+  accountName  String?
+  adoUserGuid  String?
   createdAt    DateTime @default(now())
   expiresAt    DateTime
 }

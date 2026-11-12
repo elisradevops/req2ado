@@ -3,11 +3,11 @@ import { SessionService } from '../src/modules/auth/session.service';
 // In-memory fake standing in for Prisma's `session` model -- only the
 // shape SessionService actually touches (create/findUnique/deleteMany).
 function makeFakePrisma() {
-  const rows: { tokenHash: string; userId: string; displayName: string; expiresAt: Date }[] = [];
+  const rows: { tokenHash: string; userId: string; displayName: string; expiresAt: Date; email?: string; accountName?: string; adoUserGuid?: string }[] = [];
   return {
     rows,
     session: {
-      create: jest.fn(async ({ data }: { data: { tokenHash: string; userId: string; displayName: string; expiresAt: Date } }) => {
+      create: jest.fn(async ({ data }: { data: { tokenHash: string; userId: string; displayName: string; expiresAt: Date; email?: string; accountName?: string; adoUserGuid?: string } }) => {
         rows.push(data);
         return data;
       }),
@@ -76,5 +76,24 @@ describe('SessionService', () => {
     const service = new SessionService(prisma as any);
 
     await expect(service.revoke('never-issued-token')).resolves.toBeUndefined();
+  });
+
+  it('keeps the e-mail, account name and ADO id given at sign-in, and returns them with the session', async () => {
+    const prisma = makeFakePrisma();
+    const service = new SessionService(prisma as any);
+
+    const token = await service.create('user-1', 'Jane Doe', { email: 'jane@corp.example', accountName: 'CORP\\jane', adoUserGuid: 'guid-1' });
+    const user = await service.validate(token);
+
+    expect(user).toEqual({ userId: 'user-1', displayName: 'Jane Doe', email: 'jane@corp.example', accountName: 'CORP\\jane', adoUserGuid: 'guid-1' });
+  });
+
+  it('leaves the details out for a session issued without them (before they were kept)', async () => {
+    const prisma = makeFakePrisma();
+    const service = new SessionService(prisma as any);
+
+    const token = await service.create('user-1', 'Jane Doe');
+
+    expect(await service.validate(token)).toEqual({ userId: 'user-1', displayName: 'Jane Doe' });
   });
 });
