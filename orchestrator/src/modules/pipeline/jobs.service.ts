@@ -827,7 +827,10 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       if (entry.action !== 'dedup_skip' || entry.existingAdoId === null) {
         throw new BadRequestException('only an item skipped as a near-duplicate can be created anyway');
       }
-      const related: TraceLink[] = options.relateToExisting
+      const alreadyRelated = (entry.traceLinks ?? []).some(
+        (link) => link.referenceName === 'System.LinkTypes.Related' && link.targetKind === 'crossJob' && link.resolvedAdoId === entry.existingAdoId,
+      );
+      const related: TraceLink[] = options.relateToExisting && !alreadyRelated
         ? [{ sourceLocalId: entry.localId, referenceName: 'System.LinkTypes.Related', displayName: 'Related', targetKind: 'crossJob', resolvedAdoId: entry.existingAdoId, resolutionStatus: 'resolved' }]
         : [];
       diff[index] = {
@@ -855,9 +858,9 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         action: 'dedup_skip',
         existingAdoId: duplicateOf.existingAdoId,
         similarity: duplicateOf.similarity,
-        // Only the Related link the override added goes; every other link on the entry stays.
+        // Only the Related link the override added goes (none when it was not asked for); every other link on the entry stays.
         traceLinks: (entry.traceLinks ?? []).filter(
-          (link) => !(link.referenceName === 'System.LinkTypes.Related' && link.targetKind === 'crossJob' && link.resolvedAdoId === duplicateOf.existingAdoId),
+          (link) => !(duplicateOverride.relateToExisting && link.referenceName === 'System.LinkTypes.Related' && link.targetKind === 'crossJob' && link.resolvedAdoId === duplicateOf.existingAdoId),
         ),
       };
       return diff;

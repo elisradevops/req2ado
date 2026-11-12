@@ -7415,6 +7415,26 @@ describe('JobsService duplicate override', () => {
     expect(result[1]).not.toHaveProperty('duplicateOverride');
   });
 
+  it('does not add a second Related link when the entry already has one to the same item', async () => {
+    const related = { sourceLocalId: 'n1', referenceName: 'System.LinkTypes.Related', displayName: 'Related', targetKind: 'crossJob', resolvedAdoId: 123, resolutionStatus: 'resolved' };
+    const { service } = build([parent, skipped({ traceLinks: [related] })]);
+
+    const result = await service.overrideDuplicate('job-1', 'n1', { linkTree: true, relateToExisting: true });
+
+    expect(result[1].traceLinks).toEqual([related]);
+  });
+
+  it('undo keeps a Related link to the same item that the override did not add', async () => {
+    const related = { sourceLocalId: 'n1', referenceName: 'System.LinkTypes.Related', displayName: 'Related', targetKind: 'crossJob', resolvedAdoId: 123, resolutionStatus: 'resolved' };
+    const { service } = build([parent, skipped({ traceLinks: [related] })]);
+    const overridden = await service.overrideDuplicate('job-1', 'n1', { linkTree: true, relateToExisting: false });
+    const { service: again } = build(overridden as unknown as Record<string, unknown>[]);
+
+    const result = await again.undoDuplicateOverride('job-1', 'n1');
+
+    expect(result[1].traceLinks).toEqual([related]);
+  });
+
   it('refuses to undo an entry that was never overridden', async () => {
     const { service } = build([parent, skipped()]);
 

@@ -346,6 +346,22 @@ describe('KbIngestRunner', () => {
       expect(batch('b1').finishedAt).not.toBeNull();
     });
 
+    it('ends as cancelled, not paused, when the file in flight hits an expired token after the user cancelled', async () => {
+      build({ batches: [batchRow('b1', 'u1')], items: [itemRow('b1', 0), itemRow('b1', 1)] });
+      let fail!: (error: unknown) => void;
+      kb.ingestDriveItem.mockReturnValue(new Promise((_resolve, reject) => (fail = reject)));
+
+      const running = runner.pumpOnce();
+      await new Promise((resolve) => setImmediate(resolve));
+      await new KbIngestBatchService(prisma as any).cancel('u1', 'b1');
+      fail(new IngestionHttpError(401, 'token expired'));
+      await running;
+
+      expect(item('b1-i0').state).toBe('cancelled');
+      expect(item('b1-i1').state).toBe('cancelled');
+      expect(batch('b1')).toMatchObject({ status: 'cancelled', pauseReason: null });
+    });
+
     it('finishes a cancelled batch that was left with a file waiting to retry (stuck by an earlier run, or by a restart)', async () => {
       build({
         batches: [batchRow('b1', 'u1', { status: 'running', cancelRequestedAt: T0 })],
@@ -417,6 +433,21 @@ describe('KbIngestRunner', () => {
       expect(item('b1-i0')).toMatchObject({ state: 'queued', leaseUntil: null, attempts: 1 });
       await runner.pumpOnce();
       expect(item('b1-i0').state).toBe('added');
+    });
+
+    it('after a restart, fails a file that has already used all its attempts instead of queueing it again (a file that crashes the process would loop for ever)', async () => {
+      build({
+        batches: [batchRow('b1', 'u1', { status: 'running' })],
+        items: [itemRow('b1', 0, { state: 'running', attempts: 3, leaseUntil: new Date(T0.getTime() + 60_000) }), itemRow('b1', 1, { state: 'running', attempts: 2, leaseUntil: new Date(T0.getTime() + 60_000) })],
+      });
+
+      await runner.recoverOrphans();
+
+      expect(item('b1-i0')).toMatchObject({ state: 'failed', errorKind: 'transient', leaseUntil: null });
+      expect(item('b1-i0').reason).toMatch(/restart/i);
+      expect(item('b1-i1').state).toBe('queued');
+      expect(await runner.pumpOnce()).toBe(true);
+      expect(batch('b1').status).toBe('completed_with_errors');
     });
 
     it('takes back a file whose lease ran out, and fails it when it has used all its attempts', async () => {

@@ -120,13 +120,37 @@ export class KbIngestRunner {
     }
   }
 
-  /** After a restart no file is really running any more: whatever was is put back in the queue (its attempt stays counted). */
+  /**
+   * After a restart no file is really running any more: whatever was is put back in the queue (its attempt stays counted). One that
+   * has already used all its attempts is failed instead: a file that crashes the process would otherwise be taken, crash it again
+   * and be put back on every start, for ever.
+   */
   async recoverOrphans(): Promise<void> {
-    const recovered = await this.prisma.kbIngestBatchItem.updateMany({
-      where: { state: 'running' },
-      data: { state: 'queued', leaseUntil: null, startedAt: null, errorKind: 'transient', reason: 'interrupted by a restart; retrying' },
-    });
-    if (recovered.count > 0) logger.warn(`Re-queued ${recovered.count} knowledge-base file(s) that were running when the process stopped`);
+    const running = await this.prisma.kbIngestBatchItem.findMany({ where: { state: 'running' } });
+    const now = this.now();
+    let requeued = 0;
+    const touched = new Set<string>();
+    for (const item of running) {
+      if (item.attempts >= this.options.maxAttempts) {
+        await this.prisma.kbIngestBatchItem.update({
+          where: { id: item.id },
+          data: { state: 'failed', leaseUntil: null, errorKind: 'transient', reason: 'interrupted by a restart on every attempt; giving up', finishedAt: now },
+        });
+      } else {
+        await this.prisma.kbIngestBatchItem.update({
+          where: { id: item.id },
+          data: { state: 'queued', leaseUntil: null, startedAt: null, errorKind: 'transient', reason: 'interrupted by a restart; retrying' },
+        });
+        requeued += 1;
+      }
+      touched.add(item.batchId);
+    }
+    for (const batchId of touched) {
+      await this.bumpVersion(batchId);
+      await this.settleBatch(batchId);
+    }
+    if (requeued > 0) logger.warn(`Re-queued ${requeued} knowledge-base file(s) that were running when the process stopped`);
+    if (touched.size > 0 && requeued < running.length) logger.warn(`Failed ${running.length - requeued} knowledge-base file(s) that were interrupted by a restart on every attempt`);
   }
 
   /** A file whose attempt outlived its lease is taken back, or failed when it has used all its attempts. */

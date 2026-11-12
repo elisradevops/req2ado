@@ -349,6 +349,67 @@ def test_judge_client_distinct_verdict_downgrades_an_embedding_match() -> None:
         ]
 
 
+def test_a_match_with_no_stored_text_is_not_skipped_when_a_judge_is_configured_because_nothing_can_confirm_it() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ChromaVectorStore(persist_path=tmp)
+        store.upsert("old-item", [1.0, 0.0], area_path="Project\\Area1")  # indexed before texts were stored
+        judge_client = RecordingJudgeClient("redundant")
+
+        result = check_for_duplicates(
+            text="shall support terrestrial broadcast input",
+            title="shall support terrestrial broadcast input",
+            item_id="candidate-item",
+            area_path="Project\\Area1",
+            embed_client=FakeEmbedClient({"shall support terrestrial broadcast input": [1.0, 0.0]}),
+            vector_store=store,
+            judge_client=judge_client,
+        )
+
+        assert result.is_duplicate is False
+        assert result.judge_verdict == "unverified"
+        assert result.matched_item_id == "old-item"
+        assert judge_client.calls == []
+
+
+def test_a_later_match_with_no_stored_text_does_not_get_skipped_after_the_judge_said_distinct_to_an_earlier_one() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ChromaVectorStore(persist_path=tmp)
+        store.upsert("judged-item", [1.0, 0.0], area_path="Project\\Area1", document="a different requirement")
+        store.upsert("old-item", [0.95, 0.31], area_path="Project\\Area1")
+        judge_client = RecordingJudgeClient("distinct")
+
+        result = check_for_duplicates(
+            text="shall support terrestrial broadcast input",
+            title="shall support terrestrial broadcast input",
+            item_id="candidate-item",
+            area_path="Project\\Area1",
+            embed_client=FakeEmbedClient({"shall support terrestrial broadcast input": [1.0, 0.0]}),
+            vector_store=store,
+            judge_client=judge_client,
+        )
+
+        assert result.is_duplicate is False
+        assert len(judge_client.calls) == 1
+
+
+def test_a_match_with_no_stored_text_still_stands_when_there_is_no_judge_at_all() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ChromaVectorStore(persist_path=tmp)
+        store.upsert("old-item", [1.0, 0.0], area_path="Project\\Area1")
+
+        result = check_for_duplicates(
+            text="shall support terrestrial broadcast input",
+            title="shall support terrestrial broadcast input",
+            item_id="candidate-item",
+            area_path="Project\\Area1",
+            embed_client=FakeEmbedClient({"shall support terrestrial broadcast input": [1.0, 0.0]}),
+            vector_store=store,
+        )
+
+        assert result.is_duplicate is True
+        assert result.judge_verdict is None
+
+
 def test_judge_client_redundant_verdict_keeps_the_duplicate_flag() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         store = ChromaVectorStore(persist_path=tmp)

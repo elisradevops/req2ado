@@ -15,9 +15,8 @@ logger = logging.getLogger(__name__)
 
 class DuplicateJudgeClient(Protocol):
     """Optional, narrow LLM capability: verify a >=threshold embedding
-    match before trusting it. Real gap closed here: `all-minilm` (this
-    codebase's configured EMBED_MODEL) is a small, general-purpose
-    sentence embedding -- confirmed real false-positive risk for two
+    match before trusting it. Real gap closed here: a small, general-purpose
+    sentence embedding (the original local default was `all-minilm`) has a real false-positive risk for two
     topically-adjacent but SCOPALLY DISTINCT short phrases (e.g. "UART and
     USB Ports" vs "USB Communication", both about "USB" but different
     requirement scope), which the existing numeric-literal veto
@@ -141,6 +140,8 @@ def check_for_duplicates(
     with an existing one; it is kept, with the verdict and the matched item
     reported so a reviewer can compare the two (the within-job conflict
     judge, conflict_detection.py, is a separate concern).
+    A match whose own text was never stored (an item indexed before texts were kept) cannot be judged either: with a judge configured it
+    is not skipped and judge_verdict is "unverified"; with no judge configured it stands, as before.
     A judge exception means the match was never confirmed, and a skip on an
     unconfirmed match is the unsafe direction: confirm() skips 'create' for
     a dedup_skip match, so a real requirement would silently never reach
@@ -181,8 +182,12 @@ def check_for_duplicates(
     first_verdict: str | None = None
     judged = 0
     for candidate in candidates:
-        if judge_client is None or candidate.document is None:
-            return result_for(candidate, True, None)  # nothing to confirm it with: the similarity stands
+        if judge_client is None:
+            return result_for(candidate, True, None)  # no judge is configured: the similarity stands
+        if candidate.document is None:
+            # A judge is configured but this item's text was never stored, so the match cannot be confirmed, and skipping on an
+            # unconfirmed match is the unsafe direction (see the judge-failure case below).
+            return result_for(candidate, False, "unverified")
         if judged >= max_judged:
             break
         judged += 1
