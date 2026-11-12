@@ -377,6 +377,32 @@ describe('IngestionHttpClient', () => {
     expect(JSON.parse(options.body)).toEqual({ text: 'a description', title: 'a title', area_path: 'Proj\\Area' });
   });
 
+  it('checkDuplicate says what kind of item it is and how wide to search, and leaves both out when not given', async () => {
+    global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ is_duplicate: false, matched_item_id: null, similarity: null }) }) as any;
+    const client = new IngestionHttpClient('http://ingestion:8000');
+
+    await client.checkDuplicate('d', 't', 'Proj\\Area', undefined, undefined, undefined, { typeCategory: 'Requirement', scope: 'project' });
+    await client.checkDuplicate('d', 't', 'Proj\\Area');
+
+    const [first, second] = (global.fetch as jest.Mock).mock.calls.map((call) => JSON.parse(call[1].body));
+    expect(first).toMatchObject({ type_category: 'Requirement', scope: 'project' });
+    expect(second).not.toHaveProperty('type_category');
+    expect(second).not.toHaveProperty('scope');
+  });
+
+  it('upsertDedupEntry and the batch carry the kind of each item', async () => {
+    global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true }) }) as any;
+    const client = new IngestionHttpClient('http://ingestion:8000');
+
+    await client.upsertDedupEntry('1', 'a', 'A', 'Proj\\Area', undefined, 'Feature');
+    await client.upsertDedupEntriesBatch([{ itemId: '2', text: 'b', title: 'B', areaPath: 'Proj\\Area', typeCategory: 'Epic' }, { itemId: '3', text: 'c', title: 'C', areaPath: 'Proj\\Area' }]);
+
+    const [single, batch] = (global.fetch as jest.Mock).mock.calls.map((call) => JSON.parse(call[1].body));
+    expect(single.type_category).toBe('Feature');
+    expect(batch.items[0].type_category).toBe('Epic');
+    expect(batch.items[1]).not.toHaveProperty('type_category');
+  });
+
   it('checkDuplicate includes threshold in the request body when provided', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({
       ok: true,
@@ -506,6 +532,23 @@ describe('IngestionHttpClient.ingestUrl', () => {
       chunksInStore: 3,
       skippedUnchanged: false,
     });
+  });
+
+  it('maps the drive a file is in, for a single url and for each file of a folder, and leaves it out when not sent', async () => {
+    const body = { document_name: 'd.pdf', driveitem_id: 'item-1', mime_type: null, size_bytes: 1, chunks_stored: 1, skipped_unchanged: false };
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ...body, drive_id: 'drive-9' }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => body })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ files: [{ file: 'a.docx', status: 'ingested', chunks_stored: 1, driveitem_id: 'd', mime_type: null, size_bytes: 1, reason: null, relative_path: 'a.docx', drive_id: 'drive-9' }] }),
+      }) as any;
+
+    const client = new IngestionHttpClient('http://ingestion:8000');
+    expect((await client.ingestUrl('https://x/d.pdf', 'u', null)).driveId).toBe('drive-9');
+    expect((await client.ingestUrl('https://x/d.pdf', 'u', null)).driveId).toBeUndefined();
+    expect((await client.ingestFolderUrl('https://x/folder', 'u', null)).files[0].driveId).toBe('drive-9');
   });
 
   it('maps chunks_in_store, and null when an older ingestion service omits it (count unknown, not 0)', async () => {

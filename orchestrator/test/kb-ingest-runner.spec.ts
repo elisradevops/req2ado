@@ -326,6 +326,38 @@ describe('KbIngestRunner', () => {
       expect(batch('b1').status).toBe('cancelled');
       expect(scheduler.schedule).toHaveBeenCalledWith('u1'); // what was added still counts
     });
+
+    it('does not put a file back in the queue for a retry once the user has cancelled, and so does not leave the batch hanging', async () => {
+      // The file in flight fails with a retryable error AFTER the cancel swept the waiting files: it must be cancelled too,
+      // or nothing would ever pick it up again and the batch would say "finishing the current file" for ever.
+      build({ batches: [batchRow('b1', 'u1')], items: [itemRow('b1', 0), itemRow('b1', 1)] });
+      let fail!: (error: unknown) => void;
+      kb.ingestDriveItem.mockReturnValue(new Promise((_resolve, reject) => (fail = reject)));
+
+      const running = runner.pumpOnce();
+      await new Promise((resolve) => setImmediate(resolve));
+      await new KbIngestBatchService(prisma as any).cancel('u1', 'b1');
+      fail(new IngestionHttpError(502, 'bad gateway'));
+      await running;
+
+      expect(item('b1-i0').state).toBe('cancelled');
+      expect(item('b1-i1').state).toBe('cancelled');
+      expect(batch('b1').status).toBe('cancelled');
+      expect(batch('b1').finishedAt).not.toBeNull();
+    });
+
+    it('finishes a cancelled batch that was left with a file waiting to retry (stuck by an earlier run, or by a restart)', async () => {
+      build({
+        batches: [batchRow('b1', 'u1', { status: 'running', cancelRequestedAt: T0 })],
+        items: [itemRow('b1', 0, { attempts: 1, errorKind: 'transient', reason: 'fetch failed', nextAttemptAt: new Date(T0.getTime() - 1000) }), itemRow('b1', 1, { state: 'cancelled' })],
+      });
+
+      expect(await runner.pumpOnce()).toBe(false);
+
+      expect(kb.ingestDriveItem).not.toHaveBeenCalled();
+      expect(item('b1-i0').state).toBe('cancelled');
+      expect(batch('b1').status).toBe('cancelled');
+    });
   });
 
   describe('fairness and exclusion', () => {

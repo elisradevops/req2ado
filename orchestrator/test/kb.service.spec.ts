@@ -28,6 +28,30 @@ describe('KbService', () => {
     expect(result).toEqual(ingestResult);
   });
 
+  it('ingestUrl() records the library the file is in when ingestion reports it', async () => {
+    const ingestResult = { documentName: 'doc.pdf', driveitemId: 'item-1', mimeType: null, sizeBytes: 1, chunksStored: 1, chunksInStore: 1, skippedUnchanged: false, driveId: 'drive-9' };
+    const ingestionClient = { ingestUrl: jest.fn().mockResolvedValue(ingestResult) };
+    const prisma = { ingestedDocument: { upsert: jest.fn().mockResolvedValue(undefined) } };
+    const service = new KbService(prisma as any, ingestionClient as any, fakeCredentialVault as any);
+
+    await service.ingestUrl('https://contoso.sharepoint.com/x', 'u', null);
+
+    expect(prisma.ingestedDocument.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ create: expect.objectContaining({ driveId: 'drive-9' }), update: expect.objectContaining({ driveId: 'drive-9' }) }),
+    );
+  });
+
+  it('ingestFolderUrl() records the library of each file', async () => {
+    const files = [{ file: 'a.docx', status: 'ingested', chunksStored: 1, chunksInStore: 1, driveitemId: 'item-a', mimeType: null, sizeBytes: 1, reason: null, relativePath: 'a.docx', driveId: 'drive-9' }];
+    const ingestionClient = { ingestFolderUrl: jest.fn().mockResolvedValue({ files }) };
+    const prisma = { ingestedDocument: { upsert: jest.fn().mockResolvedValue(undefined) } };
+    const service = new KbService(prisma as any, ingestionClient as any, fakeCredentialVault as any);
+
+    await service.ingestFolderUrl('https://contoso.sharepoint.com/folder', 'u', null);
+
+    expect(prisma.ingestedDocument.upsert).toHaveBeenCalledWith(expect.objectContaining({ create: expect.objectContaining({ driveId: 'drive-9' }) }));
+  });
+
   it('ingestUrl() forwards retrievalMode to the ingestion client and persists it', async () => {
     const ingestResult = {
       documentName: 'standards.docx',

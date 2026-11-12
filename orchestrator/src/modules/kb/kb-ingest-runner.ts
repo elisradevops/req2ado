@@ -110,6 +110,7 @@ export class KbIngestRunner {
     this.busy = true;
     try {
       await this.reclaimExpiredLeases();
+      await this.finishCancelledBatches();
       const claimed = await this.claimNext();
       if (!claimed) return false;
       await this.process(claimed.item, claimed.batch);
@@ -215,8 +216,29 @@ export class KbIngestRunner {
     } catch (error) {
       await this.recordFailure(item, batch, error);
     }
+    // A cancel that arrived while this file was in flight swept the waiting files, but not this one: a retry it was just given
+    // would never be taken up again.
+    await this.cancelWaitingFiles(batch.id);
     await this.bumpVersion(batch.id);
     await this.settleBatch(batch.id);
+  }
+
+  /**
+   * A cancelled batch is never dispatched from, so a file left waiting in one (put back for a retry, or put back by a restart,
+   * after the cancel had swept the queue) would hold it open for ever. Cancels those files and lets the batch end.
+   */
+  private async finishCancelledBatches(): Promise<void> {
+    const stuck = (await this.prisma.kbIngestBatch.findMany({ where: { status: { in: ['queued', 'running'] }, cancelRequestedAt: { not: null } } })) as BatchRow[];
+    for (const batch of stuck) {
+      await this.cancelWaitingFiles(batch.id);
+      await this.settleBatch(batch.id);
+    }
+  }
+
+  private async cancelWaitingFiles(batchId: string): Promise<void> {
+    const batch = (await this.prisma.kbIngestBatch.findFirst({ where: { id: batchId } })) as BatchRow | null;
+    if (!batch || batch.cancelRequestedAt === null || FINISHED.includes(batch.status)) return;
+    await this.prisma.kbIngestBatchItem.updateMany({ where: { batchId, state: 'queued' }, data: { state: 'cancelled', reason: 'cancelled', nextAttemptAt: null, finishedAt: this.now() } });
   }
 
   private async recordFailure(item: ItemRow, batch: BatchRow, error: unknown): Promise<void> {

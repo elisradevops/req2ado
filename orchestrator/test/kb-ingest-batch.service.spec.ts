@@ -417,4 +417,54 @@ describe('KbIngestBatchService', () => {
       expect(await service.deleteFinishedBefore(ago(30))).toBe(0);
     });
   });
+
+  describe('the one-library rule on retry and resume', () => {
+    const seeded = (status: string, documents: Record<string, unknown>[]) => {
+      prisma = makeKbIngestPrismaFake({
+        batches: [{ id: 'b1', userId: USER, driveId: 'drive-1', folderPath: '', status, pauseReason: status === 'paused' ? 'sharepoint_token' : null }],
+        items: [{ id: 'i1', batchId: 'b1', ordinal: 0, driveId: 'drive-1', itemId: 'x', name: 'x.pdf', relativePath: 'x.pdf', sizeBytes: 1, retrievalMode: 'retrieve', state: status === 'paused' ? 'queued' : 'failed' }],
+        documents,
+      });
+      service = new KbIngestBatchService(prisma as any);
+    };
+
+    it('does not retry a finished batch once the knowledge base holds another library', async () => {
+      seeded('completed_with_errors', [{ userId: USER, driveId: 'drive-2' }]);
+
+      await expect(service.retryFailed(USER, 'b1')).rejects.toMatchObject({ response: { code: 'kb_drive_mismatch' } });
+      expect(prisma.batches()[0].status).toBe('completed_with_errors');
+      expect(prisma.items()[0].state).toBe('failed');
+    });
+
+    it('retries as before when the knowledge base is still that library', async () => {
+      seeded('completed_with_errors', [{ userId: USER, driveId: 'drive-1' }]);
+
+      const view = await service.retryFailed(USER, 'b1');
+
+      expect(view!.status).toBe('queued');
+    });
+
+    it('still retries when the only thing in the way is older documents with no recorded library: that is not a switch', async () => {
+      seeded('completed_with_errors', [{ userId: USER, driveId: null }, { userId: USER, driveId: 'drive-1' }]);
+
+      const view = await service.retryFailed(USER, 'b1');
+
+      expect(view!.status).toBe('queued');
+    });
+
+    it('and still resumes a paused batch in the same situation', async () => {
+      seeded('paused', [{ userId: USER, driveId: null }]);
+
+      const view = await service.resume(USER, 'b1');
+
+      expect(view!.status).toBe('queued');
+    });
+
+    it('does not resume a paused batch of another library than the knowledge base now holds', async () => {
+      seeded('paused', [{ userId: USER, driveId: 'drive-2' }]);
+
+      await expect(service.resume(USER, 'b1')).rejects.toMatchObject({ response: { code: 'kb_drive_mismatch' } });
+      expect(prisma.batches()[0].status).toBe('paused');
+    });
+  });
 });

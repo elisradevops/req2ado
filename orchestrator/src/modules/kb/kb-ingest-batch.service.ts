@@ -283,6 +283,13 @@ export class KbIngestBatchService {
     return (await this.get(userId, batchId))!;
   }
 
+  // A batch is for one library. If the knowledge base has moved to a KNOWN other one since, its files must not be added back. Older
+  // documents with no recorded library do not count here: nothing was switched, and they are cleared when new files are added.
+  private async assertSameLibrary(userId: string, driveId: string): Promise<void> {
+    const conflict = await findDriveConflict(this.prisma, userId, driveId);
+    if (conflict && conflict.otherDrive > 0) throw new KbDriveMismatchException(conflict);
+  }
+
   async get(userId: string, id: string): Promise<KbIngestBatchView | null> {
     const batch = await this.prisma.kbIngestBatch.findFirst({ where: { id, userId } });
     if (!batch) return null;
@@ -350,6 +357,7 @@ export class KbIngestBatchService {
     if (batch.status !== 'paused' && batch.status !== 'completed_with_errors' && batch.status !== 'failed') {
       throw new ConflictException('Only a finished or paused batch can have its failed files retried.');
     }
+    await this.assertSameLibrary(userId, batch.driveId);
     const retried = await this.prisma.kbIngestBatchItem.updateMany({
       where: { batchId: id, state: 'failed' },
       data: { state: 'queued', attempts: 0, errorKind: null, reason: null, nextAttemptAt: null, leaseUntil: null, startedAt: null, finishedAt: null },
@@ -382,6 +390,7 @@ export class KbIngestBatchService {
     const batch = await this.prisma.kbIngestBatch.findFirst({ where: { id, userId } });
     if (!batch) return null;
     if (batch.status !== 'paused') throw new ConflictException('Only a paused batch can be resumed.');
+    await this.assertSameLibrary(userId, batch.driveId);
     await this.prisma.kbIngestBatch.update({ where: { id }, data: { status: 'queued', pauseReason: null, version: { increment: 1 } } });
     return this.get(userId, id);
   }

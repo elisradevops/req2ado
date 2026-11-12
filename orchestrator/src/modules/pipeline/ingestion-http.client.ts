@@ -650,6 +650,9 @@ export class IngestionHttpClient {
     // Job transparency (B9b): lets ingestion show a confirmed duplicate side by
     // side on this job's running screen. Display only, optional.
     jobId?: string,
+    // What the item is compared against: its own kind (Epic / Feature / Requirement) and how wide to look (the area path and the
+    // ones under it, or the whole project). Both omitted: as before.
+    options?: { typeCategory?: string; scope?: 'area_path' | 'project' },
   ): Promise<{ isDuplicate: boolean; matchedItemId: string | null; similarity: number | null }> {
     const response = await fetch(`${this.baseUrl}/dedup/check`, {
       method: 'POST',
@@ -661,6 +664,8 @@ export class IngestionHttpClient {
         ...(threshold !== undefined ? { threshold } : {}),
         ...(userId ? { user_id: userId } : {}),
         ...(jobId ? { job_id: jobId } : {}),
+        ...(options?.typeCategory ? { type_category: options.typeCategory } : {}),
+        ...(options?.scope ? { scope: options.scope } : {}),
       }),
     });
     if (!response.ok) {
@@ -670,11 +675,11 @@ export class IngestionHttpClient {
     return { isDuplicate: body.is_duplicate, matchedItemId: body.matched_item_id, similarity: body.similarity };
   }
 
-  async upsertDedupEntry(itemId: string, text: string, title: string, areaPath: string, userId?: string): Promise<void> {
+  async upsertDedupEntry(itemId: string, text: string, title: string, areaPath: string, userId?: string, typeCategory?: string): Promise<void> {
     const response = await fetch(`${this.baseUrl}/dedup/upsert`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ item_id: itemId, text, title, area_path: areaPath, ...(userId ? { user_id: userId } : {}) }),
+      body: JSON.stringify({ item_id: itemId, text, title, area_path: areaPath, ...(userId ? { user_id: userId } : {}), ...(typeCategory ? { type_category: typeCategory } : {}) }),
     });
     if (!response.ok) {
       throw await _ingestionError(response, `Ingestion /dedup/upsert request failed: `);
@@ -690,13 +695,13 @@ export class IngestionHttpClient {
    * run) -- needed so ingestion's /llm/embed call can resolve the
    * submitting user's own Open WebUI connection.
    */
-  async upsertDedupEntriesBatch(items: { itemId: string; text: string; title: string; areaPath: string }[], userId?: string): Promise<void> {
+  async upsertDedupEntriesBatch(items: { itemId: string; text: string; title: string; areaPath: string; typeCategory?: string }[], userId?: string): Promise<void> {
     if (items.length === 0) return;
     const response = await fetch(`${this.baseUrl}/dedup/upsert-batch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        items: items.map((item) => ({ item_id: item.itemId, text: item.text, title: item.title, area_path: item.areaPath })),
+        items: items.map((item) => ({ item_id: item.itemId, text: item.text, title: item.title, area_path: item.areaPath, ...(item.typeCategory ? { type_category: item.typeCategory } : {}) })),
         ...(userId ? { user_id: userId } : {}),
       }),
     });
@@ -790,6 +795,8 @@ export class IngestionHttpClient {
     // ingestion service that does not report it.
     chunksInStore: number | null;
     skippedUnchanged: boolean;
+    // The SharePoint library the file is in, when the ingestion service says (absent from an older one).
+    driveId?: string;
   }> {
     const response = await fetch(`${this.baseUrl}/kb/ingest-url`, {
       method: 'POST',
@@ -814,6 +821,7 @@ export class IngestionHttpClient {
       chunks_stored: number;
       chunks_in_store?: number | null;
       skipped_unchanged: boolean;
+      drive_id?: string | null;
     };
     return {
       documentName: body.document_name,
@@ -823,6 +831,7 @@ export class IngestionHttpClient {
       chunksStored: body.chunks_stored,
       chunksInStore: body.chunks_in_store ?? null,
       skippedUnchanged: body.skipped_unchanged,
+      ...(body.drive_id ? { driveId: body.drive_id } : {}),
     };
   }
 
@@ -853,6 +862,7 @@ export class IngestionHttpClient {
         size_bytes: number | null;
         reason: string | null;
         relative_path: string | null;
+        drive_id?: string | null;
       }[];
     };
     return {
@@ -866,6 +876,7 @@ export class IngestionHttpClient {
         sizeBytes: f.size_bytes,
         reason: f.reason,
         relativePath: f.relative_path,
+        ...(f.drive_id ? { driveId: f.drive_id } : {}),
       })),
     };
   }

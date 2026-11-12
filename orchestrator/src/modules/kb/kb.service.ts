@@ -64,6 +64,8 @@ export interface FolderIngestFile {
   sizeBytes: number | null;
   reason: string | null;
   relativePath: string | null;
+  // The SharePoint library the file is in, when ingestion says.
+  driveId?: string;
 }
 
 export interface FolderIngestUrlResult {
@@ -185,6 +187,7 @@ export class KbService {
         docType,
         retrievalMode,
         chunkCount: result.chunksInStore,
+        ...(result.driveId ? { driveId: result.driveId } : {}),
       },
       update: {
         name: result.documentName,
@@ -193,6 +196,7 @@ export class KbService {
         docType,
         retrievalMode,
         chunkCount: result.chunksInStore,
+        ...(result.driveId ? { driveId: result.driveId } : {}),
         ingestedAt: new Date(),
       },
     });
@@ -503,6 +507,7 @@ export class KbService {
             mimeType: f.mimeType,
             docType,
             chunkCount: f.chunksInStore,
+            ...(f.driveId ? { driveId: f.driveId } : {}),
           },
           update: {
             name: f.relativePath ?? f.file,
@@ -510,6 +515,7 @@ export class KbService {
             mimeType: f.mimeType,
             docType,
             chunkCount: f.chunksInStore,
+            ...(f.driveId ? { driveId: f.driveId } : {}),
             ingestedAt: new Date(),
           },
         }),
