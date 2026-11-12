@@ -1294,6 +1294,24 @@ describe('ProgressBanner live run view', () => {
     useLiveRunStore.getState().reset();
   });
 
+  it('does not ask for a document map for a BASELINE job: it never has one, so the request would only fail', async () => {
+    render(<ProgressBanner stage="parse" startedAt="2026-07-09T10:00:00Z" mode="baseline" jobId="job-1" />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(50);
+    });
+
+    expect(getRunMap).not.toHaveBeenCalled();
+  });
+
+  it('still asks for the document map of a SURVEY job', async () => {
+    render(<ProgressBanner stage="parse" startedAt="2026-07-09T10:00:00Z" mode="survey" jobId="job-1" />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(50);
+    });
+
+    expect(getRunMap).toHaveBeenCalledWith('job-1');
+  });
+
   const send = (progress: Record<string, unknown>): void => {
     act(() => {
       useLiveRunStore.getState().ingestProgress({

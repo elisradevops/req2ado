@@ -699,7 +699,8 @@ export function ProgressBanner({
         </div>
         )}
 
-        <LiveRunPanel jobId={jobId} running />
+        {/* Only a SURVEY run publishes a document map; asking for one on a BASELINE run is a request that always fails. */}
+        <LiveRunPanel jobId={jobId} running={mode === 'survey'} />
 
         {modelCallInFlight && modelCallElapsedMs !== undefined && !detSubtreeChunk && !liveActive && (
           <p className='mt-2.5 rounded-md border border-hairline-strong bg-surface-alt p-3 text-xs text-ink-2' data-testid='model-call-clock'>

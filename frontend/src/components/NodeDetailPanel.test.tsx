@@ -174,6 +174,38 @@ describe('NodeDetailPanel', () => {
     expect(screen.queryByRole('button', { name: /score this item/i })).not.toBeInTheDocument();
   });
 
+  it.each(['reuse', 'dedup_skip'] as const)('says nothing about scoring for a never-scored %s Requirement: it will not be created, so there is nothing to score', (action) => {
+    renderPanel(
+      <NodeDetailPanel
+        entry={{ localId: 'e2', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action, existingAdoId: 42, similarity: 0.93, customerId: null, tags: [] }}
+      />,
+    );
+
+    expect(screen.queryByText('Not scored yet.')).not.toBeInTheDocument();
+  });
+
+  it('does not repeat "already exists" in a grey note when the duplicate card says it, but keeps the note about its position', () => {
+    renderPanel(
+      <NodeDetailPanel
+        entry={{ localId: 'e2', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'dedup_skip', existingAdoId: 42, similarity: 0.93, customerId: null, tags: [] }}
+        duplicateSlot={<div>Already exists in Azure DevOps</div>}
+      />,
+    );
+
+    expect(screen.queryByText(/read-only: this maps to an item that already exists/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/its position in this tree is also read-only in ado/i)).toBeInTheDocument();
+  });
+
+  it('keeps the read-only note for an exact reuse, which has no duplicate card', () => {
+    renderPanel(
+      <NodeDetailPanel
+        entry={{ localId: 'e2', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'reuse', existingAdoId: 42, customerId: null, tags: [] }}
+      />,
+    );
+
+    expect(screen.getByText(/read-only: this maps to an item that already exists/i)).toBeInTheDocument();
+  });
+
   it('clicking Score this item calls onRescore with the entry localId -- reuses the exact same rescore action a stale item\'s Re-check quality button uses', async () => {
     const { default: userEvent } = await import('@testing-library/user-event');
     const user = userEvent.setup();

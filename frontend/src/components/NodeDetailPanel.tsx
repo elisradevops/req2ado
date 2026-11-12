@@ -757,7 +757,9 @@ export function NodeDetailPanel({
           no such coverage anywhere else, so they get one here. */}
       {!editability.editable && editability.reason !== 'excluded' && (
         <p className="text-xs text-ink-3">
+          {/* The duplicate card already says a near-duplicate exists (and links it), so it is not repeated here. */}
           {editability.reason === 'matched' &&
+            !(duplicateSlot && entry.action === 'dedup_skip') &&
             (entry.existingAdoId != null
               ? <>Read-only: this maps to an item that already exists in ADO (<span className="font-mono">WI-{entry.existingAdoId}</span>). Edit it in Azure DevOps.</>
               : 'Read-only: this item maps to an existing ADO work item, not a new one.')}
@@ -770,7 +772,8 @@ export function NodeDetailPanel({
               at most one Parent relation per work item (confirmed live:
               re-adding one 400s with TF401349), so a matched item's real
               position is not this job's to re-assert. */}
-          {editability.reason === 'matched' && ' Its position in this tree is also read-only in ADO — moving it here only reorganizes your review, it never re-parents the real item.'}
+          {editability.reason === 'matched' &&
+            `${duplicateSlot && entry.action === 'dedup_skip' ? '' : ' '}Its position in this tree is also read-only in ADO — moving it here only reorganizes your review, it never re-parents the real item.`}
           {editability.reason === 'written' && !entry.proposal && WRITTEN_NOTE}
           {editability.reason === 'job_locked' && `This job is no longer editable${jobStatus ? ` (status: ${jobStatus})` : ''}.`}
         </p>
@@ -882,7 +885,8 @@ export function NodeDetailPanel({
           an Epic/Feature never having a rubric to begin with -- the former
           must show the gauge's own empty/failed state, not silently
           disappear like the latter. */}
-      {entry.type === 'Requirement' && (
+      {/* An item that maps to one that already exists is not created, so "Not scored yet" would invite a score for nothing. */}
+      {entry.type === 'Requirement' && !(entry.qualityScore == null && (entry.action === 'reuse' || entry.action === 'dedup_skip')) && (
         <div className="flex flex-col gap-1.5 rounded-sm border border-hairline bg-surface-alt p-2.5">
           {entry.qualityScore != null ? (
             <>

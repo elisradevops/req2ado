@@ -11,7 +11,9 @@ from pypdf import PdfReader
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, SourceRef
 from app.loaders.pdf_loader import load_pdf, ocr_image_to_text_filtered, page_has_extractable_text
 
-_OPEN_TBD_PATTERN = re.compile(r"\b(OPEN|TBD)\b[:\s]", re.IGNORECASE)
+# TBD, and OPEN followed by a colon, in any case; OPEN followed by a space only in capitals, so the ordinary word ("SOSA Open VPX",
+# "open the hatch") is not a placeholder.
+_OPEN_TBD_PATTERN = re.compile(r"(?i:\bTBD\b[:\s]|\bOPEN\b:)|\bOPEN\b\s")
 
 
 def ocr_page_to_text_filtered(

@@ -36,7 +36,9 @@ _SUPPORTED_EXTENSIONS = {
 # PDF content, even though the pattern itself has nothing OCR-specific
 # about it. Applying it here, once, to every loader's own PARAGRAPH blocks
 # closes that gap universally instead of teaching each loader its own copy.
-_OPEN_TBD_PATTERN = re.compile(r"\b(OPEN|TBD)\b[:\s]", re.IGNORECASE)
+# TBD, and OPEN followed by a colon, in any case; OPEN followed by a space only in capitals, so the ordinary word ("SOSA Open VPX",
+# "open the hatch") is not a placeholder.
+_OPEN_TBD_PATTERN = re.compile(r"(?i:\bTBD\b[:\s]|\bOPEN\b:)|\bOPEN\b\s")
 
 
 def _classify_open_tbd_paragraphs(doc: CanonicalDoc) -> CanonicalDoc:

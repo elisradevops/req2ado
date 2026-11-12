@@ -2783,6 +2783,46 @@ describe('runPipelineJob', () => {
       );
     });
 
+    describe('what the backfill reports', () => {
+      const run = async () => {
+        fakePrisma.areaPathBackfill.findUnique.mockResolvedValue(null);
+        await runPipelineJob(
+          { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: 'user-1', mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+          {
+            ingestionClient: fakeIngestionClient as any,
+            dryRunService: fakeDryRunService as any,
+            idempotencyService: fakeIdempotencyService as any,
+            prisma: fakePrisma as any,
+            jobEventsPublisher: fakeJobEventsPublisher as any,
+            mcpClient: fakeMcpClient as any,
+            backfillService: fakeBackfillService as any,
+            adoCredentialResolver: fakeAdoCredentialResolver as any,
+            defaultLlmModel: 'gemma4:12b',
+          },
+        );
+      };
+
+      it('logs how many items it scanned, seeded and skipped, so an empty or wrong area path can be told from "no duplicates"', async () => {
+        const info = jest.spyOn(console, 'info').mockImplementation(() => undefined);
+        fakeBackfillService.backfillAreaPath.mockResolvedValueOnce({ scanned: 322, seeded: 16, skipped: 306, skippedReasons: { 'unsupported type': 306 } });
+
+        await run();
+
+        expect(info).toHaveBeenCalledWith(expect.stringMatching(/Area-path backfill for Project\\Area1: scanned 322, seeded 16, skipped 306/));
+        info.mockRestore();
+      });
+
+      it('says so when it found nothing in the area path', async () => {
+        const info = jest.spyOn(console, 'info').mockImplementation(() => undefined);
+        fakeBackfillService.backfillAreaPath.mockResolvedValueOnce({ scanned: 0, seeded: 0, skipped: 0, skippedReasons: {} });
+
+        await run();
+
+        expect(info).toHaveBeenCalledWith(expect.stringMatching(/scanned 0.*no work items were found in this area path/i));
+        info.mockRestore();
+      });
+    });
+
     it('does not re-scan an area path backfilled less than 24h ago', async () => {
       fakePrisma.areaPathBackfill.findUnique.mockResolvedValue({
         areaPath: 'Project\\Area1',

@@ -72,6 +72,17 @@ async function maybeBackfillAreaPath(
       console.error(`Area-path backfill for ${areaPath} could not update the dedup index; it will be retried by the next job`);
       return;
     }
+    // What it found, so an area path with no items (or a wrong one) can be told apart from "no duplicates".
+    if (result) {
+      const reasons = Object.entries(result.skippedReasons ?? {})
+        .map(([reason, count]) => `${reason}: ${count}`)
+        .join(', ');
+      // eslint-disable-next-line no-console -- worker process logging, not app logging
+      console.info(
+        `Area-path backfill for ${areaPath}: scanned ${result.scanned}, seeded ${result.seeded}, skipped ${result.skipped}${reasons ? ` (${reasons})` : ''}` +
+          (result.scanned === 0 ? '; no work items were found in this area path, so there is nothing to match against there yet' : ''),
+      );
+    }
     await prisma.areaPathBackfill.upsert({
       where: { areaPath },
       create: { areaPath, lastBackfilledAt: new Date(), indexVersion: DEDUP_INDEX_VERSION, embedModel },
