@@ -374,7 +374,7 @@ export class DryRunService {
   async diff(
     nodes: DryRunTreeNode[],
     idempotencyService: IdempotencyService,
-    dedupCheck?: (text: string, title: string, areaPath: string) => Promise<{ isDuplicate: boolean; matchedItemId: string | null; similarity: number | null }>,
+    dedupCheck?: (text: string, title: string, areaPath: string, typeCategory: string) => Promise<{ isDuplicate: boolean; matchedItemId: string | null; similarity: number | null }>,
     // Optional -- previously this burst (confirmed live: ~543 calls on a
     // real job) published NO progress signal at all, so the UI showed
     // nothing for however long it took. `completed`/`total` (not a
@@ -448,7 +448,7 @@ export class DryRunService {
   private async diffOneNode(
     node: DryRunTreeNode,
     idempotencyMap: Map<string, number>,
-    dedupCheck?: (text: string, title: string, areaPath: string) => Promise<{ isDuplicate: boolean; matchedItemId: string | null; similarity: number | null }>,
+    dedupCheck?: (text: string, title: string, areaPath: string, typeCategory: string) => Promise<{ isDuplicate: boolean; matchedItemId: string | null; similarity: number | null }>,
   ): Promise<DryRunDiffEntry> {
     {
       const existingAdoId = this.resolveExistingAdoId(node, idempotencyMap);
@@ -492,7 +492,7 @@ export class DryRunService {
           // ever did, so the same asymmetry left unfixed here would widen
           // sharply and risk real duplicate ADO item creation for exactly
           // the requirements this feature touches.
-          const dedupResult = await dedupCheck(stripHtmlTags(node.description), node.title, node.areaPath);
+          const dedupResult = await dedupCheck(stripHtmlTags(node.description), node.title, node.areaPath, node.type);
           const matchedAdoId = dedupResult.matchedItemId !== null ? Number(dedupResult.matchedItemId) : null;
           // A bad dedup-store record (matchedItemId not a real numeric ADO
           // id) must fall through to 'create' below, same "creating a

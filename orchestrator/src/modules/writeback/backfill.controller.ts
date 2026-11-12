@@ -17,6 +17,7 @@ export class BackfillController {
       throw new BadRequestException('areaPath is required');
     }
     const credential = await this.adoCredentialResolver.resolve(user.userId);
-    return this.backfillService.backfillAreaPath(areaPath, credential);
+    // The user: ingestion embeds with that user's own connection, and without it the call is refused every time.
+    return this.backfillService.backfillAreaPath(areaPath, credential, user.userId);
   }
 }

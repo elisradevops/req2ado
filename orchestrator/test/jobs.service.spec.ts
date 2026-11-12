@@ -112,6 +112,43 @@ describe('JobsService.confirm', () => {
     expect(linkParentChild).toHaveBeenCalledWith(101, 100, undefined);
   });
 
+  it('adds each created item to the duplicate index with its kind, so a later check compares it with items of the same kind', async () => {
+    const createWorkItem = jest.fn().mockResolvedValueOnce({ id: 100 }).mockResolvedValueOnce({ id: 101 });
+    const upsertDedupEntriesBatch = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project', userId: 'user-1',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
+            { localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'Child', description: 'd1', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null, sourceRef: null, tags: [] },
+          ],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild: jest.fn().mockResolvedValue(undefined), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn().mockResolvedValue(undefined) } as any,
+      { upsertDedupEntriesBatch } as any,
+      'redis://unused',
+    );
+
+    await service.confirm('job-1');
+
+    expect(upsertDedupEntriesBatch).toHaveBeenCalledWith(
+      [
+        { itemId: '100', text: 'd0', title: 'Parent', areaPath: 'Project\\Area1', typeCategory: 'Feature' },
+        { itemId: '101', text: 'd1', title: 'Child', areaPath: 'Project\\Area1', typeCategory: 'Requirement' },
+      ],
+      'user-1',
+    );
+  });
+
   it('throws and reverts status back to diff_ready (not stuck in writing) when adoProject is null -- the write-path hard-fail this column exists to enforce', async () => {
     const createWorkItem = jest.fn();
     const updateSpy = jest.fn().mockResolvedValue(undefined);
@@ -1086,8 +1123,8 @@ describe('JobsService.confirm', () => {
     expect(upsertDedupEntriesBatch).toHaveBeenCalledTimes(1);
     expect(upsertDedupEntriesBatch).toHaveBeenCalledWith(
       [
-        { itemId: '500', text: 'D', title: 'T', areaPath: 'Project\\Area1' },
-        { itemId: '501', text: 'D2', title: 'T2', areaPath: 'Project\\Area1' },
+        { itemId: '500', text: 'D', title: 'T', areaPath: 'Project\\Area1', typeCategory: 'Requirement' },
+        { itemId: '501', text: 'D2', title: 'T2', areaPath: 'Project\\Area1', typeCategory: 'Requirement' },
       ],
       undefined,
     );
@@ -1121,7 +1158,7 @@ describe('JobsService.confirm', () => {
     await service.confirm('job-1');
 
     expect(upsertDedupEntriesBatch).toHaveBeenCalledWith(
-      [{ itemId: '500', text: 'D', title: 'T', areaPath: 'Project\\Area1' }],
+      [{ itemId: '500', text: 'D', title: 'T', areaPath: 'Project\\Area1', typeCategory: 'Requirement' }],
       'user-1',
     );
   });
@@ -5435,6 +5472,41 @@ describe('JobsService.submit', () => {
     expect(jobSourceFileCreate).toHaveBeenCalledWith({ data: { jobId: 'job-1', bytes: Buffer.from('small file') } });
   });
 
+  it('keeps how wide the duplicate check looks on the job and sends it to the worker, defaulting to the area path', async () => {
+    const queueAdd = jest.spyOn(Queue.prototype, 'add').mockResolvedValue(undefined as any);
+    queueAdd.mockClear(); // a spy left by an earlier test keeps its calls
+    const jobCreate = jest.fn().mockResolvedValue({ id: 'job-1' });
+    const prisma = { job: { create: jobCreate }, auditEntry: { create: jest.fn().mockResolvedValue(undefined) }, jobSourceFile: { create: jest.fn() } };
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+    const base = { areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline' as const, fileBuffer: Buffer.from('x'), filename: 'doc.txt', sourceHash: 'h' };
+
+    await service.submit({ ...base, dedupScope: 'project' });
+    await service.submit(base);
+
+    expect(jobCreate.mock.calls[0][0].data.dedupScope).toBe('project');
+    expect(queueAdd.mock.calls[0][1]).toMatchObject({ dedupScope: 'project' });
+    expect(jobCreate.mock.calls[1][0].data.dedupScope).toBe('area_path');
+    expect(queueAdd.mock.calls[1][1]).toMatchObject({ dedupScope: 'area_path' });
+  });
+
+  it('a resubmitted job keeps the scope of the original', async () => {
+    jest.spyOn(Queue.prototype, 'add').mockResolvedValue(undefined as any);
+    const jobCreate = jest.fn().mockResolvedValue({ id: 'job-2' });
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: 'u', mode: 'survey', originalFilename: 'd.txt', sourceHash: 'h', state: 'Proposed', iterationPath: null, model: null, documentOverview: null, dedupScope: 'project' }),
+        create: jobCreate,
+      },
+      jobSourceFile: { findUnique: jest.fn().mockResolvedValue({ jobId: 'job-1', bytes: Buffer.from('b') }), create: jest.fn() },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+    };
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    await service.resubmit('job-1');
+
+    expect(jobCreate.mock.calls[0][0].data.dedupScope).toBe('project');
+  });
+
   it('does not persist bytes over the size cap', async () => {
     jest.spyOn(Queue.prototype, 'add').mockResolvedValue(undefined as any);
     const jobSourceFileCreate = jest.fn().mockResolvedValue(undefined);
@@ -6697,8 +6769,8 @@ describe('JobsService.reindexDedup', () => {
     await expect(service.reindexDedup('job-1')).resolves.toEqual({ indexed: 2 });
     expect(upsert).toHaveBeenCalledWith(
       [
-        { itemId: '1000', text: 'Desc 0', title: 'Title 0', areaPath: 'P\\A' },
-        { itemId: '1001', text: 'Desc 1', title: 'Title 1', areaPath: 'P\\A' },
+        { itemId: '1000', text: 'Desc 0', title: 'Title 0', areaPath: 'P\\A', typeCategory: 'Requirement' },
+        { itemId: '1001', text: 'Desc 1', title: 'Title 1', areaPath: 'P\\A', typeCategory: 'Requirement' },
       ],
       'u1',
     );

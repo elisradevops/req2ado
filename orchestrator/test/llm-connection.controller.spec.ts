@@ -16,6 +16,7 @@ function makeController(overrides: {
   const llmConfigResolver = overrides.llmConfigResolver ?? { resolve: jest.fn().mockResolvedValue(undefined) };
   const clientFactory = overrides.clientFactory ?? {
     listModelsForToken: jest.fn().mockResolvedValue(CATALOG),
+    embeddingsWorkForToken: jest.fn().mockResolvedValue(true),
     invalidate: jest.fn(),
   };
   const controller = new LlmConnectionController(vault, llmConfigResolver, clientFactory);
@@ -73,6 +74,40 @@ describe('LlmConnectionController', () => {
   });
 
   describe('POST /llm/connection', () => {
+    describe('the embedding check made when a token is saved', () => {
+      const body = { apiKey: 'sk-new', chatModel: 'qwen2.5:14b' };
+
+      it('tries one embedding with the token being saved, and says nothing more when it works', async () => {
+        const { controller, clientFactory } = makeController();
+
+        const result = await controller.setConnection(USER, body);
+
+        expect(clientFactory.embeddingsWorkForToken).toHaveBeenCalledWith('sk-new');
+        expect(result).toEqual({ ok: true });
+      });
+
+      it('still saves a connection whose account cannot embed, and says duplicate detection cannot use it', async () => {
+        const { controller, vault } = makeController({
+          clientFactory: { listModelsForToken: jest.fn().mockResolvedValue(CATALOG), embeddingsWorkForToken: jest.fn().mockResolvedValue(false), invalidate: jest.fn() },
+        });
+
+        const result = await controller.setConnection(USER, body);
+
+        expect(vault.set).toHaveBeenCalled();
+        expect(result).toEqual({ ok: true, embeddings: 'unavailable' });
+      });
+
+      it('does not try to embed with a token that failed validation', async () => {
+        const embeddingsWorkForToken = jest.fn();
+        const { controller } = makeController({
+          clientFactory: { listModelsForToken: jest.fn().mockRejectedValue(new Error('401')), embeddingsWorkForToken, invalidate: jest.fn() },
+        });
+
+        await expect(controller.setConnection(USER, body)).rejects.toThrow(BadRequestException);
+        expect(embeddingsWorkForToken).not.toHaveBeenCalled();
+      });
+    });
+
     it('validates the token live before storing, and rejects with 400 on an invalid body', async () => {
       const { controller } = makeController();
       await expect(controller.setConnection(USER, {})).rejects.toThrow(BadRequestException);

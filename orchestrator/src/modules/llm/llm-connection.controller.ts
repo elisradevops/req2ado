@@ -67,7 +67,7 @@ export class LlmConnectionController {
   }
 
   @Post()
-  async setConnection(@CurrentUser() user: SessionUser, @Body() rawBody: unknown): Promise<{ ok: true }> {
+  async setConnection(@CurrentUser() user: SessionUser, @Body() rawBody: unknown): Promise<{ ok: true; embeddings?: 'unavailable' }> {
     const parseResult = llmConnectionRequestSchema.safeParse(rawBody);
     if (!parseResult.success) {
       throw new BadRequestException('Invalid request body: apiKey and chatModel are required, visionModel is optional');
@@ -96,6 +96,8 @@ export class LlmConnectionController {
     // old model) would keep serving this user's requests until process
     // restart -- same hazard getClientFor()'s own doc comment describes.
     this.clientFactory.invalidate(user.userId);
-    return { ok: true };
+    // The connection is saved either way (chat works without embeddings), but the user is told when duplicate detection cannot use it.
+    const embeddingsWork = await this.clientFactory.embeddingsWorkForToken(body.apiKey);
+    return embeddingsWork ? { ok: true } : { ok: true, embeddings: 'unavailable' };
   }
 }

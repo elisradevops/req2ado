@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { Prisma } from '@prisma/client';
-import { runPipelineJob } from '../src/modules/pipeline/pipeline.worker';
+import { runPipelineJob, DEDUP_INDEX_VERSION } from '../src/modules/pipeline/pipeline.worker';
 
 import { JobResultCache } from '../src/modules/pipeline/result-cache';
 
@@ -27,7 +27,7 @@ describe('runPipelineJob', () => {
     // existing test's happy/failure path -- the dedicated area-path
     // backfill describe block below overrides this per-test.
     areaPathBackfill: {
-      findUnique: jest.fn().mockResolvedValue({ areaPath: 'Project\\Area1', lastBackfilledAt: new Date() }),
+      findUnique: jest.fn().mockResolvedValue({ areaPath: 'Project\\Area1', lastBackfilledAt: new Date(), indexVersion: DEDUP_INDEX_VERSION, embedModel: '' }),
       upsert: jest.fn(),
     },
   };
@@ -1219,7 +1219,7 @@ describe('runPipelineJob', () => {
     // 4th arg (dedupThreshold) is undefined here since deps has no
     // settingsService -- see the dedicated Settings-threshold tests below.
     // 5th arg (userId) is undefined since this job's userId is null.
-    expect(fakeIngestionClient.checkDuplicate).toHaveBeenCalledWith('Desc 0', 'Title 0', 'Project\\Area1', undefined, undefined);
+    expect(fakeIngestionClient.checkDuplicate).toHaveBeenCalledWith('Desc 0', 'Title 0', 'Project\\Area1', undefined, undefined, undefined, { typeCategory: undefined, scope: 'area_path' });
   });
 
   it('holds a generated acceptance-criteria section apart from the description (P9d): the diff sees the clean text, the entry carries the proposal unaccepted', async () => {
@@ -1285,7 +1285,7 @@ describe('runPipelineJob', () => {
 
     const dedupCheckArg = fakeDryRunService.diff.mock.calls[0][2];
     await dedupCheckArg('Desc 0', 'Title 0', 'Project\\Area1');
-    expect(fakeIngestionClient.checkDuplicate).toHaveBeenCalledWith('Desc 0', 'Title 0', 'Project\\Area1', undefined, 'user-1');
+    expect(fakeIngestionClient.checkDuplicate).toHaveBeenCalledWith('Desc 0', 'Title 0', 'Project\\Area1', undefined, 'user-1', undefined, { typeCategory: undefined, scope: 'area_path' });
   });
 
   it('fetches the live dedup threshold from settingsService once per job and forwards it to checkDuplicate', async () => {
@@ -1316,7 +1316,7 @@ describe('runPipelineJob', () => {
     expect(fakeSettingsService.get).toHaveBeenCalledTimes(1);
     const dedupCheckArg = fakeDryRunService.diff.mock.calls[0][2];
     await dedupCheckArg('Desc 0', 'Title 0', 'Project\\Area1');
-    expect(fakeIngestionClient.checkDuplicate).toHaveBeenCalledWith('Desc 0', 'Title 0', 'Project\\Area1', 0.75, undefined);
+    expect(fakeIngestionClient.checkDuplicate).toHaveBeenCalledWith('Desc 0', 'Title 0', 'Project\\Area1', 0.75, undefined, undefined, { typeCategory: undefined, scope: 'area_path' });
   });
 
   it('fails open (no dedup threshold override, no job failure) when settingsService.get() rejects', async () => {
@@ -1346,7 +1346,7 @@ describe('runPipelineJob', () => {
 
     const dedupCheckArg = fakeDryRunService.diff.mock.calls[0][2];
     await dedupCheckArg('Desc 0', 'Title 0', 'Project\\Area1');
-    expect(fakeIngestionClient.checkDuplicate).toHaveBeenCalledWith('Desc 0', 'Title 0', 'Project\\Area1', undefined, undefined);
+    expect(fakeIngestionClient.checkDuplicate).toHaveBeenCalledWith('Desc 0', 'Title 0', 'Project\\Area1', undefined, undefined, undefined, { typeCategory: undefined, scope: 'area_path' });
   });
 
   it('always supplies the dedupCheck callback -- deciding whether a work item already exists is a required step, not opt-in (WID 300567: the followUp flag itself was removed as dead)', async () => {
@@ -2787,6 +2787,8 @@ describe('runPipelineJob', () => {
       fakePrisma.areaPathBackfill.findUnique.mockResolvedValue({
         areaPath: 'Project\\Area1',
         lastBackfilledAt: new Date(Date.now() - 60 * 60 * 1000), // 1h ago
+        indexVersion: DEDUP_INDEX_VERSION,
+        embedModel: '',
       });
 
       await runPipelineJob(
@@ -2805,6 +2807,83 @@ describe('runPipelineJob', () => {
       );
 
       expect(fakeBackfillService.backfillAreaPath).not.toHaveBeenCalled();
+      expect(fakePrisma.areaPathBackfill.upsert).not.toHaveBeenCalled();
+    });
+
+    const job = { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: 'user-1', mode: 'baseline' as const, fileBuffer: Buffer.from(''), filename: 'x.txt' };
+    const deps = (extra: Record<string, unknown> = {}) => ({
+      ingestionClient: fakeIngestionClient as any,
+      dryRunService: fakeDryRunService as any,
+      idempotencyService: fakeIdempotencyService as any,
+      prisma: fakePrisma as any,
+      jobEventsPublisher: fakeJobEventsPublisher as any,
+      mcpClient: fakeMcpClient as any,
+      backfillService: fakeBackfillService as any,
+      adoCredentialResolver: fakeAdoCredentialResolver as any,
+      defaultLlmModel: 'gemma4:12b',
+      ...extra,
+    });
+
+    it('scans again when the stored scan was made for an older layout of the index, however recent it is', async () => {
+      fakePrisma.areaPathBackfill.findUnique.mockResolvedValue({ areaPath: 'Project\\Area1', lastBackfilledAt: new Date(), indexVersion: 0, embedModel: '' });
+
+      await runPipelineJob(job, deps());
+
+      expect(fakeBackfillService.backfillAreaPath).toHaveBeenCalled();
+    });
+
+    it('scans again when the embedding model has changed since the last scan, because the new model starts with an empty index', async () => {
+      fakePrisma.areaPathBackfill.findUnique.mockResolvedValue({ areaPath: 'Project\\Area1', lastBackfilledAt: new Date(), indexVersion: DEDUP_INDEX_VERSION, embedModel: 'old-model' });
+
+      await runPipelineJob(job, deps({ embedModel: 'new-model' }));
+
+      expect(fakeBackfillService.backfillAreaPath).toHaveBeenCalled();
+    });
+
+    it('scans the whole project, not just the area path, for a job that searches the whole project', async () => {
+      fakePrisma.areaPathBackfill.findUnique.mockResolvedValue(null);
+
+      await runPipelineJob({ ...job, areaPath: 'Project\\Area1\\Child', dedupScope: 'project' }, deps());
+
+      const scanned = fakeBackfillService.backfillAreaPath.mock.calls.map((call: unknown[]) => call[0]);
+      expect(scanned).toEqual(expect.arrayContaining(['Project\\Area1\\Child', 'Project']));
+    });
+
+    it('scans only the area path for a job that searches the area path and what is under it', async () => {
+      fakePrisma.areaPathBackfill.findUnique.mockResolvedValue(null);
+
+      await runPipelineJob({ ...job, areaPath: 'Project\\Area1\\Child' }, deps());
+
+      expect(fakeBackfillService.backfillAreaPath.mock.calls.map((call: unknown[]) => call[0])).toEqual(['Project\\Area1\\Child']);
+    });
+
+    it('does not scan the project twice when the job is already at the project root', async () => {
+      fakePrisma.areaPathBackfill.findUnique.mockResolvedValue(null);
+
+      await runPipelineJob({ ...job, areaPath: 'Project', dedupScope: 'project' }, deps());
+
+      expect(fakeBackfillService.backfillAreaPath).toHaveBeenCalledTimes(1);
+    });
+
+    it('records the layout and the model with the scan, so the next job knows whether it still holds', async () => {
+      fakePrisma.areaPathBackfill.findUnique.mockResolvedValue(null);
+
+      await runPipelineJob(job, deps({ embedModel: 'text-embedding-3-small' }));
+
+      expect(fakePrisma.areaPathBackfill.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({ indexVersion: DEDUP_INDEX_VERSION, embedModel: 'text-embedding-3-small' }),
+          update: expect.objectContaining({ indexVersion: DEDUP_INDEX_VERSION, embedModel: 'text-embedding-3-small' }),
+        }),
+      );
+    });
+
+    it('does not record a scan as done when the embedding service refused the index update', async () => {
+      fakePrisma.areaPathBackfill.findUnique.mockResolvedValue(null);
+      fakeBackfillService.backfillAreaPath.mockResolvedValueOnce({ scanned: 3, seeded: 3, skipped: 0, skippedReasons: {}, dedupUpsertRefused: true });
+
+      await runPipelineJob(job, deps());
+
       expect(fakePrisma.areaPathBackfill.upsert).not.toHaveBeenCalled();
     });
 
@@ -3313,7 +3392,7 @@ describe('runPipelineJob progress service wiring (job transparency B4)', () => {
     dedupSkipAudit: { createMany: jest.fn() },
     jobFigureFile: { deleteMany: jest.fn() },
     areaPathBackfill: {
-      findUnique: jest.fn().mockResolvedValue({ areaPath: 'Project\\Area1', lastBackfilledAt: new Date() }),
+      findUnique: jest.fn().mockResolvedValue({ areaPath: 'Project\\Area1', lastBackfilledAt: new Date(), indexVersion: DEDUP_INDEX_VERSION, embedModel: '' }),
       upsert: jest.fn(),
     },
   };
@@ -3377,10 +3456,10 @@ describe('runPipelineJob progress service wiring (job transparency B4)', () => {
     const progressService = { track: jest.fn().mockResolvedValue(stop), record: jest.fn(), finish: jest.fn() };
 
     await runPipelineJob(job, { ...baseDeps(), progressService: progressService as any });
-    expect(ingestion.checkDuplicate).toHaveBeenLastCalledWith('Desc', 'Title', 'Project\\Area1', undefined, undefined, 'job-1');
+    expect(ingestion.checkDuplicate).toHaveBeenLastCalledWith('Desc', 'Title', 'Project\\Area1', undefined, undefined, 'job-1', { typeCategory: undefined, scope: 'area_path' });
 
     await runPipelineJob(job, baseDeps());
-    expect(ingestion.checkDuplicate).toHaveBeenLastCalledWith('Desc', 'Title', 'Project\\Area1', undefined, undefined);
+    expect(ingestion.checkDuplicate).toHaveBeenLastCalledWith('Desc', 'Title', 'Project\\Area1', undefined, undefined, undefined, { typeCategory: undefined, scope: 'area_path' });
   });
 
   it('stops tracking even when the leveling call fails', async () => {
@@ -3402,3 +3481,90 @@ describe('runPipelineJob progress service wiring (job transparency B4)', () => {
     await expect(runPipelineJob(job, baseDeps())).resolves.toEqual([]);
   });
 });
+
+
+describe('runPipelineJob: what the duplicate check compares against', () => {
+  function build(overrides: { job?: Record<string, unknown> } = {}) {
+    const prisma = {
+      job: { update: jest.fn(), updateMany: jest.fn().mockResolvedValue({ count: 1 }), findUnique: jest.fn().mockResolvedValue({ status: 'running' }) },
+      auditEntry: { create: jest.fn() },
+      dedupSkipAudit: { createMany: jest.fn() },
+      jobFigureFile: { deleteMany: jest.fn() },
+      areaPathBackfill: { findUnique: jest.fn().mockResolvedValue({ areaPath: 'Project\\Area1', lastBackfilledAt: new Date(), indexVersion: DEDUP_INDEX_VERSION, embedModel: '' }), upsert: jest.fn() },
+    };
+    const ingestion = {
+      ingest: jest.fn().mockResolvedValue({ blocks: [] }),
+      level: jest.fn().mockResolvedValue({ nodes: [] }),
+      checkDuplicate: jest.fn().mockResolvedValue({ isDuplicate: false, matchedItemId: null, similarity: null }),
+      deleteDedupEntry: jest.fn(),
+    };
+    const dryRun = { diff: jest.fn().mockResolvedValue([]) };
+    const run = () =>
+      runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: 'user-1', mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt', ...overrides.job },
+        {
+          ingestionClient: ingestion as any,
+          dryRunService: dryRun as any,
+          idempotencyService: { deleteByAdoWorkItemId: jest.fn() } as any,
+          prisma: prisma as any,
+          jobEventsPublisher: { publish: jest.fn(), publishNarration: jest.fn() } as any,
+          mcpClient: { discoverLinkTypes: jest.fn().mockResolvedValue([]), discoverFields: jest.fn().mockResolvedValue([]), queryIds: jest.fn().mockResolvedValue([]), getWorkItemsBatch: jest.fn().mockResolvedValue([]) } as any,
+          backfillService: { backfillAreaPath: jest.fn() } as any,
+          adoCredentialResolver: { resolve: jest.fn().mockResolvedValue(undefined) } as any,
+          defaultLlmModel: 'gemma4:12b',
+        },
+      );
+    return { prisma, ingestion, dryRun, run };
+  }
+
+  it('asks for items of the same kind, searched in the area path and the ones under it unless the job says otherwise', async () => {
+    const { ingestion, dryRun, run } = build();
+    await run();
+
+    await dryRun.diff.mock.calls[0][2]('text', 'title', 'Project\\Area1', 'Feature');
+
+    expect(ingestion.checkDuplicate).toHaveBeenCalledWith('text', 'title', 'Project\\Area1', undefined, 'user-1', undefined, { typeCategory: 'Feature', scope: 'area_path' });
+  });
+
+  it('searches the whole project when the job was submitted that way', async () => {
+    const { ingestion, dryRun, run } = build({ job: { dedupScope: 'project' } });
+    await run();
+
+    await dryRun.diff.mock.calls[0][2]('text', 'title', 'Project\\Area1', 'Requirement');
+
+    expect(ingestion.checkDuplicate).toHaveBeenCalledWith('text', 'title', 'Project\\Area1', undefined, 'user-1', undefined, { typeCategory: 'Requirement', scope: 'project' });
+  });
+
+  it('says on the job that the duplicate check could not run, instead of quietly creating everything', async () => {
+    const { ingestion, dryRun, prisma, run } = build();
+    ingestion.checkDuplicate.mockRejectedValue(new Error('embedding service down'));
+    dryRun.diff.mockImplementation(async (_inputs: unknown, _idem: unknown, check: (...args: string[]) => Promise<unknown>) => {
+      for (const id of ['a', 'b']) await check('t', id, 'Project\\Area1', 'Requirement').catch(() => undefined);
+      return [];
+    });
+
+    await run();
+
+    expect(prisma.job.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          warnings: expect.arrayContaining([expect.objectContaining({ kind: 'dedup_check_failed', severity: 'pipeline_issue', detail: expect.objectContaining({ failed: 2 }) })]),
+        }),
+      }),
+    );
+  });
+
+  it('adds no warning when every check ran', async () => {
+    const { dryRun, prisma, run } = build();
+    dryRun.diff.mockImplementation(async (_i: unknown, _d: unknown, check: (...args: string[]) => Promise<unknown>) => {
+      await check('t', 'a', 'Project\\Area1', 'Requirement');
+      return [];
+    });
+
+    await run();
+
+    const warnings = (prisma.job.update.mock.calls.at(-1)?.[0]?.data?.warnings ?? []) as { kind: string }[];
+    expect(warnings.some((w) => w.kind === 'dedup_check_failed')).toBe(false);
+  });
+});
+

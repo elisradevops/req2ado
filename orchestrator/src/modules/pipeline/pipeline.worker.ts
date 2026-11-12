@@ -29,6 +29,10 @@ import { splitProposal, type DiffProposal } from './description-html';
 // zero manual action.
 const AREA_PATH_BACKFILL_STALE_AFTER_MS = 24 * 60 * 60 * 1000;
 
+// The layout of what the backfill puts in the similarity index. Bump it when that changes (this one: each entry carries its kind, and
+// the index knows which area paths exist), so every area path is scanned again at once instead of after up to 24 hours.
+export const DEDUP_INDEX_VERSION = 2;
+
 /**
  * Closes the "manually-created ADO items are invisible to dedup" gap for
  * THIS job's own areaPath, with no user action ever needed -- previously
@@ -49,13 +53,20 @@ async function maybeBackfillAreaPath(
   areaPath: string,
   credential: AdoRequestCredential | undefined,
   userId?: string,
+  // The embedding model the index is built with: a different model starts with an empty index, so a scan made under another one
+  // does not count.
+  embedModel = '',
 ): Promise<void> {
   try {
     const existing = await prisma.areaPathBackfill.findUnique({ where: { areaPath } });
-    const isStale = !existing || Date.now() - existing.lastBackfilledAt.getTime() > AREA_PATH_BACKFILL_STALE_AFTER_MS;
+    const isStale =
+      !existing ||
+      existing.indexVersion !== DEDUP_INDEX_VERSION ||
+      existing.embedModel !== embedModel ||
+      Date.now() - existing.lastBackfilledAt.getTime() > AREA_PATH_BACKFILL_STALE_AFTER_MS;
     if (!isStale) return;
     const result = await backfillService.backfillAreaPath(areaPath, credential, userId);
-    if (result?.dedupUpsertFailed) {
+    if (result?.dedupUpsertFailed || result?.dedupUpsertRefused) {
       // The similarity index was not updated: do not record the area path as done, the next job tries again.
       // eslint-disable-next-line no-console -- worker process logging, not app logging
       console.error(`Area-path backfill for ${areaPath} could not update the dedup index; it will be retried by the next job`);
@@ -63,8 +74,8 @@ async function maybeBackfillAreaPath(
     }
     await prisma.areaPathBackfill.upsert({
       where: { areaPath },
-      create: { areaPath, lastBackfilledAt: new Date() },
-      update: { lastBackfilledAt: new Date() },
+      create: { areaPath, lastBackfilledAt: new Date(), indexVersion: DEDUP_INDEX_VERSION, embedModel },
+      update: { lastBackfilledAt: new Date(), indexVersion: DEDUP_INDEX_VERSION, embedModel },
     });
   } catch (error) {
     // eslint-disable-next-line no-console -- worker process logging, not app logging
@@ -86,6 +97,8 @@ export interface PipelineJobInput {
   // areaPath (ADO write-back destination + dedup key only). Nullable: an
   // older/mocked job predating this field simply gets no KB grounding.
   userId: string | null;
+  // How wide the duplicate check looks: the area path and the ones under it (the default), or the whole project.
+  dedupScope?: 'area_path' | 'project' | null;
   mode: 'baseline' | 'survey';
   fileBuffer: Buffer;
   filename: string;
@@ -113,6 +126,8 @@ export interface PipelineWorkerDeps {
   mcpClient: McpClient;
   // See maybeBackfillAreaPath's own doc comment.
   backfillService: BackfillService;
+  // The embedding model of the similarity index, so a scan made under another model is not trusted. Absent: ''.
+  embedModel?: string;
   // Resolves the submitting user's vaulted ADO credential (by job.userId)
   // for the real-ADO-backend discovery calls below (discoverLinkTypes,
   // discoverFields) -- previously these ran with NO credential at all
@@ -724,7 +739,12 @@ export async function runPipelineJob(
               visionPlan?.skipReason,
               cancelSignal,
             ),
-        maybeBackfillAreaPath(deps.prisma, deps.backfillService, job.areaPath, credential, job.userId ?? undefined),
+        maybeBackfillAreaPath(deps.prisma, deps.backfillService, job.areaPath, credential, job.userId ?? undefined, deps.embedModel ?? ''),
+        // A job that searches the whole project needs every area of it in the index, not only the ones an earlier job happened to scan:
+        // the project's root area path covers all of them.
+        ...(job.dedupScope === 'project' && job.areaPath.includes('\\')
+          ? [maybeBackfillAreaPath(deps.prisma, deps.backfillService, job.areaPath.split('\\')[0], credential, job.userId ?? undefined, deps.embedModel ?? '')]
+          : []),
       ]),
     );
 
@@ -1085,7 +1105,11 @@ export async function runPipelineJob(
     );
     // Job transparency (B9b): passed only when live progress is configured, so
     // every existing call keeps exactly its previous arguments.
-    const liveJobIdArg: [string] | [] = deps.progressService ? [job.id] : [];
+    const liveJobId: string | undefined = deps.progressService ? job.id : undefined;
+    const dedupScope = job.dedupScope === 'project' ? 'project' : 'area_path';
+    // How many checks could not run (the embedding service was down or refused): each such item is created as if there were no
+    // duplicate check, so the reviewer is told rather than left to assume none were found.
+    let dedupChecksFailed = 0;
     // Timed per call: the duplicate check is one embed (and sometimes one judge call) per node, and a slow rerun cannot be explained without
     // knowing how long each took. One counts-only summary line below.
     const dedupDurations: number[] = [];
@@ -1093,10 +1117,16 @@ export async function runPipelineJob(
     const diff = await deps.dryRunService.diff(
       diffInputs,
       deps.idempotencyService,
-      async (text, title, areaPath) => {
+      async (text, title, areaPath, typeCategory) => {
         const startedAt = Date.now();
         try {
-          return await deps.ingestionClient.checkDuplicate(text, title, areaPath, dedupThreshold, job.userId ?? undefined, ...liveJobIdArg);
+          return await deps.ingestionClient.checkDuplicate(text, title, areaPath, dedupThreshold, job.userId ?? undefined, liveJobId, {
+            typeCategory,
+            scope: dedupScope,
+          });
+        } catch (error) {
+          dedupChecksFailed += 1;
+          throw error;
         } finally {
           dedupDurations.push(Date.now() - startedAt);
         }
@@ -1144,6 +1174,15 @@ export async function runPipelineJob(
     // so a stale match is already downgraded to 'create' in what that step
     // (and the Prisma write after it) both operate on.
     const verificationWarnings: WarningRecord[] = [];
+    if (dedupChecksFailed > 0) {
+      verificationWarnings.push({
+        kind: 'dedup_check_failed',
+        severity: 'pipeline_issue',
+        nodeIds: [],
+        detail: { failed: dedupChecksFailed, total: dedupDurations.length },
+        raw: `${dedupChecksFailed} of ${dedupDurations.length} duplicate checks could not run`,
+      });
+    }
     const verifiedDiff = await verifyExistingAdoIdsStillExist(
       diff,
       (ids) => deps.mcpClient.getWorkItemsBatch(ids, credential),

@@ -241,6 +241,8 @@ export class JobsController {
     @Body('iterationPath') iterationPath: string | undefined,
     @Body('model') model: string | undefined,
     @Body('documentOverview') documentOverviewRaw: string | undefined,
+    // How wide the duplicate check looks: the area path and the ones under it (the default), or the whole project.
+    @Body('dedupScope') dedupScope?: string,
   ): Promise<{ jobId: string }> {
     await this.assertModelAllowed(model);
     if (!file) {
@@ -272,6 +274,9 @@ export class JobsController {
     if (mode !== undefined && mode !== 'baseline' && mode !== 'survey') {
       throw new BadRequestException(`mode must be 'baseline' or 'survey', got: ${mode}`);
     }
+    if (dedupScope !== undefined && dedupScope !== 'area_path' && dedupScope !== 'project') {
+      throw new BadRequestException(`dedupScope must be 'area_path' or 'project', got: ${dedupScope}`);
+    }
     const sourceHash = createHash('sha256').update(file.buffer).digest('hex');
     // Parsed defensively: a malformed overview is no overview, and never fails job creation.
     const documentOverview = parseDocumentOverview(documentOverviewRaw);
@@ -292,6 +297,7 @@ export class JobsController {
       iterationPath: iterationPath ?? null,
       model,
       documentOverview,
+      ...(dedupScope ? { dedupScope } : {}),
     });
   }
 

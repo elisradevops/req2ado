@@ -141,6 +141,7 @@ export default async function processPipelineJob(job: SandboxedJob<QueuedJobData
     progressService,
     mcpClient,
     backfillService,
+    embedModel: config.EMBED_MODEL,
     adoCredentialResolver,
     defaultLlmModel: config.LLM_CHAT_MODEL,
     openWebUiClientFactory,

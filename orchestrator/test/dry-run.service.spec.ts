@@ -377,7 +377,7 @@ describe('DryRunService', () => {
         tags: [],
       },
     ]);
-    expect(dedupCheck).toHaveBeenCalledWith('Desc 0', 'Title 0', 'Project\\Area1');
+    expect(dedupCheck).toHaveBeenCalledWith('Desc 0', 'Title 0', 'Project\\Area1', 'Requirement');
   });
 
   it('falls through to "create" (not a NaN existingAdoId) when dedupCheck returns a non-numeric matchedItemId', async () => {
@@ -460,7 +460,7 @@ describe('DryRunService', () => {
     // from the SAME markup, standing in for what a real ADO-side
     // equivalent item's stripped description looks like -- both sides of
     // the comparison must land on this identical plain-text string.
-    expect(dedupCheck).toHaveBeenCalledWith('Intro. Slot Qty A 2', 'Title 0', 'Project\\Area1');
+    expect(dedupCheck).toHaveBeenCalledWith('Intro. Slot Qty A 2', 'Title 0', 'Project\\Area1', 'Requirement');
   });
 
   it('marks a node as "create" when no exact-hash match exists and dedupCheck finds no duplicate', async () => {

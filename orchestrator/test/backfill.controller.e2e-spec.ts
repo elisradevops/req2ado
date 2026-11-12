@@ -80,7 +80,7 @@ describe('BackfillController (e2e)', () => {
 
     expect(res.status).toBe(201);
     expect(res.body).toEqual({ scanned: 5, seeded: 4, skipped: 1, skippedReasons: { 'unsupported type': 1 } });
-    expect(fakeBackfillService.backfillAreaPath).toHaveBeenCalledWith('Project\\Area1', undefined);
+    expect(fakeBackfillService.backfillAreaPath).toHaveBeenCalledWith('Project\\Area1', undefined, 'test-user');
   });
 
   it('POST /backfill resolves the ADO credential from the vault by session userId', async () => {
@@ -93,9 +93,10 @@ describe('BackfillController (e2e)', () => {
       .send({ areaPath: 'Project\\Area1' });
 
     expect(fakeAdoCredentialResolver.resolve).toHaveBeenCalledWith('test-user');
-    expect(fakeBackfillService.backfillAreaPath).toHaveBeenCalledWith('Project\\Area1', {
-      orgUrl: 'https://tfs.internal/tfs/Collection',
-      pat: 'fake-pat',
-    });
+    expect(fakeBackfillService.backfillAreaPath).toHaveBeenCalledWith(
+      'Project\\Area1',
+      { orgUrl: 'https://tfs.internal/tfs/Collection', pat: 'fake-pat' },
+      'test-user',
+    );
   });
 });

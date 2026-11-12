@@ -56,8 +56,8 @@ describe('BackfillService.backfillAreaPath', () => {
     expect(record).toHaveBeenCalledWith(sourceHashFor('D1'), 'Project\\Area1', 100);
     expect(record).toHaveBeenCalledWith(sourceHashFor('D2'), 'Project\\Area1', 101);
     expect(upsertDedupEntriesBatch).toHaveBeenCalledWith([
-      { itemId: '100', text: 'D1', title: 'T1', areaPath: 'Project\\Area1' },
-      { itemId: '101', text: 'D2', title: 'T2', areaPath: 'Project\\Area1' },
+      { itemId: '100', text: 'D1', title: 'T1', areaPath: 'Project\\Area1', typeCategory: expect.any(String) },
+      { itemId: '101', text: 'D2', title: 'T2', areaPath: 'Project\\Area1', typeCategory: expect.any(String) },
     ]);
   });
 
@@ -161,6 +161,7 @@ describe('BackfillService.backfillAreaPath', () => {
         text: 'Lists the specific set of Standard Replacement Units.',
         title: 'SRU Module Inventory',
         areaPath: 'Project\\Area1',
+        typeCategory: expect.any(String),
       },
     ]);
   });
@@ -193,6 +194,7 @@ describe('BackfillService.backfillAreaPath', () => {
         text: 'The unit shall survive drop testing.',
         title: 'The unit shall survive drop testing.',
         areaPath: 'Project\\Area1',
+        typeCategory: expect.any(String),
       },
     ]);
   });
@@ -221,7 +223,7 @@ describe('BackfillService.backfillAreaPath', () => {
 
     expect(result).toEqual({ scanned: 1, seeded: 1, skipped: 0, skippedReasons: {} });
     expect(upsertDedupEntriesBatch).toHaveBeenCalledWith([
-      { itemId: '649', text: 'D1', title: 'D1', areaPath: 'Project\\Area1' },
+      { itemId: '649', text: 'D1', title: 'D1', areaPath: 'Project\\Area1', typeCategory: expect.any(String) },
     ]);
     consoleErrorSpy.mockRestore();
   });
@@ -365,8 +367,8 @@ describe('BackfillService.backfillAreaPath', () => {
 
     expect(result.seeded).toBe(2); // both items still counted -- the failure was best-effort only
     expect(upsertDedupEntriesBatch).toHaveBeenCalledWith([
-      { itemId: '500', text: 'D1', title: 'D1', areaPath: 'Project\\Area1' },
-      { itemId: '501', text: 'D2', title: 'D2', areaPath: 'Project\\Area1' },
+      { itemId: '500', text: 'D1', title: 'D1', areaPath: 'Project\\Area1', typeCategory: expect.any(String) },
+      { itemId: '501', text: 'D2', title: 'D2', areaPath: 'Project\\Area1', typeCategory: expect.any(String) },
     ]);
     consoleErrorSpy.mockRestore();
   });
@@ -453,9 +455,9 @@ describe('BackfillService.backfillAreaPath', () => {
     await service.backfillAreaPath('Project\\Area1');
 
     expect(upsertDedupEntriesBatch).toHaveBeenCalledWith([
-      { itemId: '900', text: 'D0', title: 'D0', areaPath: 'Project\\Area1' },
-      { itemId: '901', text: 'D1', title: 'D1', areaPath: 'Project\\Area1' },
-      { itemId: '902', text: 'D2', title: 'D2', areaPath: 'Project\\Area1' },
+      { itemId: '900', text: 'D0', title: 'D0', areaPath: 'Project\\Area1', typeCategory: expect.any(String) },
+      { itemId: '901', text: 'D1', title: 'D1', areaPath: 'Project\\Area1', typeCategory: expect.any(String) },
+      { itemId: '902', text: 'D2', title: 'D2', areaPath: 'Project\\Area1', typeCategory: expect.any(String) },
     ]);
   });
 
@@ -541,7 +543,7 @@ describe('BackfillService.backfillAreaPath', () => {
     expect(lookup).toHaveBeenCalledWith(sourceHashFor('D1'), 'Project\\Parent\\Child');
     expect(record).toHaveBeenCalledWith(sourceHashFor('D1'), 'Project\\Parent\\Child', 650);
     expect(upsertDedupEntriesBatch).toHaveBeenCalledWith([
-      { itemId: '650', text: 'D1', title: 'Nested Item', areaPath: 'Project\\Parent\\Child' },
+      { itemId: '650', text: 'D1', title: 'Nested Item', areaPath: 'Project\\Parent\\Child', typeCategory: expect.any(String) },
     ]);
   });
 
@@ -561,7 +563,7 @@ describe('BackfillService.backfillAreaPath', () => {
     await service.backfillAreaPath('Project\\Parent');
 
     expect(upsertDedupEntriesBatch).toHaveBeenCalledWith([
-      { itemId: '651', text: 'D1', title: 'D1', areaPath: 'Project\\Parent' },
+      { itemId: '651', text: 'D1', title: 'D1', areaPath: 'Project\\Parent', typeCategory: expect.any(String) },
     ]);
   });
 });
@@ -588,3 +590,59 @@ describe('stripHtmlTags', () => {
     expect(stripHtmlTags('R&D &unknownthing; AT&T')).toBe('R&D &unknownthing; AT&T');
   });
 });
+
+describe('BackfillService.backfillAreaPath: kind and state of the items it indexes', () => {
+  function build(items: unknown[], categories: Record<string, string> = CMMI_CATEGORIES) {
+    const upsertDedupEntriesBatch = jest.fn().mockResolvedValue(undefined);
+    const service = new BackfillService(
+      { queryIds: jest.fn().mockResolvedValue(items.map((_, i) => 100 + i)), getWorkItemsBatch: jest.fn().mockResolvedValue(items), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue(categories) } as any,
+      { upsertDedupEntriesBatch } as any,
+      { lookup: jest.fn().mockResolvedValue(null), record: jest.fn().mockResolvedValue(undefined) } as any,
+    );
+    return { service, upsertDedupEntriesBatch };
+  }
+  const item = (id: number, type: string, state: string, text = `D${id}`) => ({
+    id, type, parentId: null, fields: { 'System.Title': `T${id}`, 'System.Description': text, 'System.State': state, 'System.AreaPath': 'Project\\Area1' },
+  });
+
+  it('stores each item under its kind (Epic / Feature / Requirement), whatever the process calls it', async () => {
+    const { service, upsertDedupEntriesBatch } = build(
+      [item(100, 'Epic', 'Active'), item(101, 'Feature', 'Active'), item(102, 'User Story', 'Active')],
+      { Epic: 'Epic', Feature: 'Feature', Requirement: 'User Story' },
+    );
+
+    await service.backfillAreaPath('Project\\Area1');
+
+    expect(upsertDedupEntriesBatch.mock.calls[0][0].map((i: { itemId: string; typeCategory: string }) => [i.itemId, i.typeCategory])).toEqual([
+      ['100', 'Epic'],
+      ['101', 'Feature'],
+      ['102', 'Requirement'],
+    ]);
+  });
+
+  it('keeps Closed items: they exist in Azure DevOps like any other', async () => {
+    const { service, upsertDedupEntriesBatch } = build([item(100, 'Requirement', 'Closed')]);
+
+    const result = await service.backfillAreaPath('Project\\Area1');
+
+    expect(result.seeded).toBe(1);
+    expect(upsertDedupEntriesBatch.mock.calls[0][0]).toHaveLength(1);
+  });
+
+  it('leaves Removed items out, and says so in the skipped reasons', async () => {
+    const { service, upsertDedupEntriesBatch } = build([item(100, 'Requirement', 'Removed'), item(101, 'Requirement', 'removed', 'D101'), item(102, 'Requirement', 'Active')]);
+
+    const result = await service.backfillAreaPath('Project\\Area1');
+
+    expect(result.seeded).toBe(1);
+    expect(result.skippedReasons).toEqual({ removed: 2 });
+    expect(upsertDedupEntriesBatch.mock.calls[0][0].map((i: { itemId: string }) => i.itemId)).toEqual(['102']);
+  });
+
+  it('indexes an item whose state is not known', async () => {
+    const { service } = build([{ id: 100, type: 'Requirement', parentId: null, fields: { 'System.Title': 'T', 'System.Description': 'D', 'System.AreaPath': 'Project\\Area1' } }]);
+
+    expect((await service.backfillAreaPath('Project\\Area1')).seeded).toBe(1);
+  });
+});
+

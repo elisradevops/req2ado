@@ -60,6 +60,8 @@ model ExternalCredential {
 model Job {
   id               String    @id @default(uuid())
   mode             String // "baseline" | "survey"
+  // How wide the duplicate check looks: "area_path" (the path and the ones under it, the default) or "project".
+  dedupScope       String    @default("area_path")
   status           String // "pending" | "running" | "diff_ready" | "writing" | "succeeded" | "failed" | "rejected" | "cancelled"
   sourceHash       String
   areaPath         String
@@ -315,6 +317,10 @@ model DedupSkipAudit {
 model AreaPathBackfill {
   areaPath         String   @id
   lastBackfilledAt DateTime
+  // What the scan was made for: the layout of the similarity index (DEDUP_INDEX_VERSION) and the embedding model. A scan made for another
+  // layout or model does not count, however recent it is.
+  indexVersion     Int      @default(0)
+  embedModel       String   @default("")
 }
 
 // Durable local-id -> ADO-id resume state for confirm() (the "P4b" tree

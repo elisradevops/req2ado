@@ -59,6 +59,8 @@ export interface SubmitJobInput {
   // KB grounding simply stays off for a job with no resolved identity.
   userId: string | null;
   mode: 'baseline' | 'survey';
+  // How wide the duplicate check looks: the area path and the ones under it (the default), or the whole project.
+  dedupScope?: 'area_path' | 'project';
   fileBuffer: Buffer;
   filename: string;
   sourceHash: string;
@@ -198,12 +200,13 @@ export interface JobDetail {
   documentOverview: DocumentOverview | null;
 }
 
-type DedupUpsertItem = { itemId: string; text: string; title: string; areaPath: string };
+type DedupUpsertItem = { itemId: string; text: string; title: string; areaPath: string; typeCategory?: string };
 const DEDUP_REINDEX_CHUNK_SIZE = 200;
 
 // One definition of what a created item contributes to the duplicate index, shared by confirm() and reindexDedup() so they cannot drift.
-function buildDedupUpsertItem(adoWorkItemId: number, entry: { title: string; description: string }, areaPath: string): DedupUpsertItem {
-  return { itemId: String(adoWorkItemId), text: entry.description, title: entry.title, areaPath };
+function buildDedupUpsertItem(adoWorkItemId: number, entry: { title: string; description: string; type?: string }, areaPath: string): DedupUpsertItem {
+  // `type` is the kind (Epic / Feature / Requirement): a later check compares an item only with items of its own kind.
+  return { itemId: String(adoWorkItemId), text: entry.description, title: entry.title, areaPath, ...(entry.type ? { typeCategory: entry.type } : {}) };
 }
 
 @Injectable()
@@ -341,6 +344,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         areaPath: input.areaPath,
         adoProject: input.adoProject ?? null,
         userId: input.userId,
+        dedupScope: input.dedupScope ?? 'area_path',
         state: input.state ?? this.initialState,
         iterationPath: input.iterationPath ?? null,
         originalFilename: input.filename,
@@ -367,6 +371,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         areaPath: input.areaPath,
         adoProject: input.adoProject ?? null,
         userId: input.userId,
+        dedupScope: input.dedupScope ?? 'area_path',
         mode: input.mode,
         fileBufferBase64: input.fileBuffer.toString('base64'),
         filename: input.filename,
@@ -412,6 +417,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       areaPath: job.areaPath,
       adoProject: job.adoProject,
       userId: job.userId,
+      dedupScope: job.dedupScope === 'project' ? 'project' : 'area_path',
       mode: job.mode as 'baseline' | 'survey',
       fileBuffer: Buffer.from(sourceFile.bytes),
       filename: job.originalFilename,

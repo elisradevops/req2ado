@@ -1230,3 +1230,37 @@ describe('JobsController discussion routes', () => {
     expect(jobsService.removeDiscussionEntry).toHaveBeenCalledWith('job-1', 'n0', 'e1');
   });
 });
+
+describe('JobsController.submit: the scope of the duplicate check', () => {
+  const TEST_USER = { userId: 'user-1', displayName: 'User One' } as any;
+  const file = { buffer: Buffer.from('x'), originalname: 'req.docx', size: 4 } as Express.Multer.File;
+  const build = () => {
+    const jobsService = { submit: jest.fn().mockResolvedValue({ jobId: 'job-1' }) };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    return { controller, jobsService };
+  };
+
+  it('passes the scope the form chose on to the job', async () => {
+    const { controller, jobsService } = build();
+
+    await controller.submit(file, TEST_USER, 'Project\\A', 'Project', 'baseline', undefined, undefined, undefined, undefined, 'project');
+
+    expect(jobsService.submit).toHaveBeenCalledWith(expect.objectContaining({ dedupScope: 'project' }));
+  });
+
+  it('leaves it out when the form did not say, so the default applies', async () => {
+    const { controller, jobsService } = build();
+
+    await controller.submit(file, TEST_USER, 'Project\\A', 'Project', 'baseline', undefined, undefined, undefined, undefined, undefined);
+
+    expect(jobsService.submit.mock.calls[0][0].dedupScope).toBeUndefined();
+  });
+
+  it('refuses a scope it does not know', async () => {
+    const { controller, jobsService } = build();
+
+    await expect(controller.submit(file, TEST_USER, 'Project\\A', 'Project', 'baseline', undefined, undefined, undefined, undefined, 'galaxy')).rejects.toThrow(/dedupScope/);
+    expect(jobsService.submit).not.toHaveBeenCalled();
+  });
+});
+
