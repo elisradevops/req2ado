@@ -163,6 +163,18 @@ describe('KbFileList selection', () => {
     expect(onIngest).toHaveBeenCalledWith(expect.objectContaining({ id: 'a' }));
   });
 
+  it('keeps the actions row occupied when every file is already in, so selecting one does not move the list down', () => {
+    renderList([{ ...file('a'), alreadyIngested: true }, FOLDER], { includeSubfolders: false });
+
+    expect(screen.queryByRole('button', { name: /select new/i })).toBeNull();
+    expect(screen.getByText(/select files to add them, or to change how they are used/i)).toBeInTheDocument();
+  });
+
+  it('does not add that hint once files are selected, or when a "Select new" button already fills the row', () => {
+    renderList([{ ...file('a'), alreadyIngested: true }, FOLDER], { includeSubfolders: false, checkedIds: new Set(['a']) });
+    expect(screen.queryByText(/select files to add them/i)).toBeNull();
+  });
+
   describe('subfolders', () => {
     const SECOND_FOLDER: FolderTreeEntry = { ...FOLDER, id: 'd2', name: 'Archive' };
 

@@ -26,6 +26,8 @@ interface KbAddDialogProps {
   isSubmitting?: boolean;
 }
 
+const MODE_WORD: Record<KbRetrievalMode, string> = { retrieve: 'Search', always_include: 'Reference' };
+
 export function KbAddDialog({ open, onOpenChange, file, currentMode, rememberedMode, onConfirm, isSubmitting = false }: KbAddDialogProps): React.ReactElement {
   const initialMode = currentMode ?? rememberedMode;
   const [mode, setMode] = useState<KbRetrievalMode | null>(initialMode);
@@ -69,7 +71,7 @@ export function KbAddDialog({ open, onOpenChange, file, currentMode, rememberedM
     >
       <KbModeChoice mode={mode} onChange={setMode} referenceSuggestion={suggestion ? `Suggested: ${suggestion.reason}` : undefined} disabled={isSubmitting} />
 
-      {fromRemembered && <p className="text-xs text-ink-3">Using your earlier choice for this folder.</p>}
+      {fromRemembered && <p className="text-xs text-ink-3">Using your earlier choice for this folder ({MODE_WORD[mode as KbRetrievalMode]}). Change it above if this is different.</p>}
 
       {largeReference && (
         <Alert severity="warning">

@@ -341,18 +341,24 @@ export function KnowledgeBase(): React.ReactElement {
     }
   }
 
-  // Restores the last-browsed folder on mount (page refresh, or navigating
-  // back to this page) -- runs once userId is available, matching every
-  // other userId-gated fetch in this file.
+  // Restores the last-browsed folder on mount (page refresh, or navigating back to this page). It waits for the first SharePoint status
+  // check: a token already known to be invalid or missing cannot read the folder, so browsing would only fail (a 424 and an error
+  // banner repeating what the source bar already says). The saved source is still shown; once the status says the token works, the
+  // browse happens, so a reconnect from elsewhere (the status popover) picks the page up too.
+  const restoredRef = useRef(false);
+  const tokenChecked = sharePointEntry.checkedAt !== null;
+  const tokenBlocked = sharePointStatus?.status === 'invalid' || sharePointStatus?.status === 'not_configured';
   useEffect(() => {
-    if (!userId) return;
+    if (!userId || !tokenChecked || restoredRef.current) return;
     const saved = localStorage.getItem(KB_BROWSE_URL_STORAGE_KEY);
     if (!saved) return;
     setBrowseUrl(saved);
     setSourceUrl(saved);
+    if (tokenBlocked) return;
+    restoredRef.current = true;
     void handleBrowse(saved);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- restore-on-mount only, not on every browseUrl/handleBrowse change
-  }, [userId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- restore once, not on every browseUrl/handleBrowse change
+  }, [userId, tokenChecked, tokenBlocked]);
 
   // Finds the batch this user already has going (after a reload, or coming back to the page), and stops following it on the way out:
   // the batch itself carries on on the server.

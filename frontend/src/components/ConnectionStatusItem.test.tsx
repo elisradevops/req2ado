@@ -64,6 +64,21 @@ describe('ConnectionStatusItem', () => {
       expect(screen.getByTestId('connection-count')).toHaveTextContent('1');
       expect(screen.getByRole('button', { name: 'System status: 1 needs attention' })).toBeInTheDocument();
     });
+
+    it('collapsed, puts the count on the icon inside the rail instead of beside it, where there is no room', () => {
+      seed({ llm: known({ status: 'unreachable' as const, latencyMs: null }) });
+      renderItem(true);
+
+      expect(screen.getByTestId('connection-count')).toHaveClass('absolute');
+      expect(screen.getByTestId('connection-count')).not.toHaveClass('ml-auto');
+    });
+
+    it('expanded, keeps the count at the end of the row', () => {
+      seed({ llm: known({ status: 'unreachable' as const, latencyMs: null }) });
+      renderItem(false);
+
+      expect(screen.getByTestId('connection-count')).toHaveClass('ml-auto');
+    });
   });
 
   describe('the popover', () => {

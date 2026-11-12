@@ -134,7 +134,7 @@ describe('KbAddDialog', () => {
     renderDialog({ rememberedMode: 'always_include' });
 
     expect(reference()).toHaveAttribute('aria-checked', 'true');
-    expect(screen.getByText(/your earlier choice for this folder/i)).toBeInTheDocument();
+    expect(screen.getByText(/your earlier choice for this folder \(reference\)\. change it above/i)).toBeInTheDocument();
     expect(confirmButton()).toBeEnabled();
   });
 

@@ -7,6 +7,7 @@ import { ToastProvider } from '../components/ToastProvider';
 import * as kbApi from '../api/kb';
 import type { FolderTreeEntry } from '../api/kb';
 import { useAuthStore } from '../store/authStore';
+import { useConnectionStatusStore } from '../store/connectionStatusStore';
 
 vi.mock('../api/kb');
 
@@ -33,6 +34,8 @@ const READY_PROFILE: kbApi.KbProfile = {
 
 // Every page test reads the rubric status; most do not care what it says.
 beforeEach(() => {
+  // The status store is shared by every test: a status read by an earlier one must not look like this page's first check.
+  useConnectionStatusStore.getState().reset();
   vi.mocked(kbApi.getKbProfile).mockResolvedValue(READY_PROFILE);
 });
 
@@ -875,7 +878,6 @@ describe('KnowledgeBase source bar and reconnect', () => {
 
   it('after a successful reconnect, browses the saved source again and clears the stale error', async () => {
     localStorage.setItem('req2ado-kb-browse-url', SAVED);
-    vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'invalid', expiresInSeconds: null });
     vi.spyOn(kbApi, 'browseSharedFolder').mockRejectedValueOnce(tokenExpired()).mockResolvedValue([FILE]);
     vi.spyOn(kbApi, 'reconnectSharePoint').mockResolvedValue({ status: 'valid', expiresInSeconds: 3600 });
     renderPage();
@@ -919,14 +921,36 @@ describe('KnowledgeBase source bar and reconnect', () => {
     expect(await screen.findByText('nested.docx')).toBeInTheDocument();
   });
 
+  it('does not browse on load while the saved token is invalid: one reconnect hint, no failed request and no error banner', async () => {
+    localStorage.setItem('req2ado-kb-browse-url', SAVED);
+    vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'invalid', expiresInSeconds: null });
+    vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([FILE]);
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText(/token invalid/i)).toBeInTheDocument());
+    expect(screen.getByText(SAVED)).toBeInTheDocument();
+    expect(screen.getAllByText(/reconnect sharepoint first/i)).toHaveLength(1);
+    expect(kbApi.browseSharedFolder).not.toHaveBeenCalled();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('browses the saved source once the status check says the token is usable', async () => {
+    localStorage.setItem('req2ado-kb-browse-url', SAVED);
+    vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([FILE]);
+    renderPage();
+
+    expect(await screen.findByText('guide.docx')).toBeInTheDocument();
+    expect(kbApi.browseSharedFolder).toHaveBeenCalledTimes(1);
+  });
+
   it('disables Refresh and Browse while the token is invalid, and says why', async () => {
     localStorage.setItem('req2ado-kb-browse-url', SAVED);
     vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'invalid', expiresInSeconds: null });
     vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([FILE]);
     renderPage();
-    await screen.findByText('guide.docx');
 
-    expect(await screen.findByText(/reconnect sharepoint first/i)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText(/token invalid/i)).toBeInTheDocument());
+    expect(screen.getByText(/reconnect sharepoint first/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^refresh$/i })).toBeDisabled();
     await userEvent.click(screen.getByRole('button', { name: /^change$/i }));
     expect(screen.getByRole('button', { name: /^browse$/i })).toBeDisabled();
@@ -941,7 +965,7 @@ describe('KnowledgeBase source bar and reconnect', () => {
       vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status, expiresInSeconds: status === 'valid' ? 2820 : null });
       vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([FILE]);
       renderPage();
-      await screen.findByText('guide.docx');
+      if (status === 'valid') await screen.findByText('guide.docx');
       await screen.findByText(status === 'valid' ? /^connected/i : /token invalid/i);
     }
 

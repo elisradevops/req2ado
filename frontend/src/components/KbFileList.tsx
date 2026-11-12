@@ -124,7 +124,7 @@ export function KbFileList({
           className="max-w-[200px]"
         />
       </div>
-      {selectable && (totalChecked > 0 || newIds.length > 0 || offersSubfolders) && (
+      {selectable && (totalChecked > 0 || newIds.length > 0 || offersSubfolders || eligible.length > 0) && (
         <div className="flex flex-wrap items-center gap-2 border-b border-hairline bg-surface-alt px-3 py-2">
           {totalChecked > 0 ? (
             <>
@@ -138,7 +138,7 @@ export function KbFileList({
               </Button>
             </>
           ) : (
-            (newIds.length > 0 || reachIntoFolders) && (
+            newIds.length > 0 || reachIntoFolders ? (
               <Button
                 size="sm"
                 variant="outline"
@@ -150,10 +150,14 @@ export function KbFileList({
               >
                 {reachIntoFolders ? 'Select new' : `Select new (${newIds.length})`}
               </Button>
-            )
+            ) : eligible.length > 0 ? (
+              // Keeps this row filled, so choosing a file does not push the list down by a row.
+              <span className="inline-flex min-h-6 items-center text-sm text-ink-3">Select files to add them, or to change how they are used.</span>
+            ) : null
           )}
+          {/* On its own row, so the bar is as tall with files selected (the actions are wider) as without. */}
           {offersSubfolders && (
-            <div className="ml-auto flex items-center gap-2 text-sm text-ink-2">
+            <div className="flex w-full items-center justify-end gap-2 text-sm text-ink-2">
               {!includeSubfolders && (
                 <span>
                   Only files in this folder are selected. {visibleFolders.length} {visibleFolders.length === 1 ? 'subfolder is' : 'subfolders are'} not included.
@@ -262,7 +266,7 @@ export function KbFileList({
                         )}
                       </td>
                     )}
-                    <td className="px-3.5 py-2">
+                    <td className="w-full max-w-0 px-3.5 py-2">
                       <span className="flex items-center gap-1.5">
                         {entry.isFolder ? (
                           <Folder className="h-3.5 w-3.5 flex-none text-ink-3" />

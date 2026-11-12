@@ -145,7 +145,7 @@ describe('KbAddBatchDialog', () => {
       renderDialog(files(2), { rememberedMode: 'always_include' });
 
       expect(reference()).toHaveAttribute('aria-checked', 'true');
-      expect(screen.getByText(/your earlier choice for this folder/i)).toBeInTheDocument();
+      expect(screen.getByText(/your earlier choice for this folder \(reference\)\. change it above/i)).toBeInTheDocument();
       expect(confirmButton(2)).toBeEnabled();
     });
 

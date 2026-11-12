@@ -72,7 +72,7 @@ export function ConnectionStatusItem({ collapsed }: { collapsed: boolean }): Rea
     <button
       type="button"
       aria-label={`System status: ${summary.label}`}
-      className="flex h-10 w-full items-center gap-3 rounded-sm pl-4 pr-3 text-sm text-ink-on-dark-dim transition-colors duration-instant hover:bg-rail-hover hover:text-white max-md:h-11"
+      className="relative flex h-10 w-full items-center gap-3 rounded-sm pl-4 pr-3 text-sm text-ink-on-dark-dim transition-colors duration-instant hover:bg-rail-hover hover:text-white max-md:h-11"
     >
       {summary.state === 'checking' ? (
         <Spinner className="h-4 w-4 flex-none text-live" />
@@ -88,7 +88,12 @@ export function ConnectionStatusItem({ collapsed }: { collapsed: boolean }): Rea
         <span
           data-testid="connection-count"
           aria-hidden="true"
-          className={cn('ml-auto grid h-5 min-w-5 place-items-center rounded-full px-1 text-xs font-semibold tabular-nums text-white', anyDanger ? 'bg-danger' : 'bg-warning')}
+          // Collapsed, the rail has no room beside the icon: the count sits on the icon's corner, inside the rail, instead of hanging over its edge.
+          className={cn(
+            'grid h-5 min-w-5 place-items-center rounded-full px-1 text-xs font-semibold tabular-nums text-white',
+            collapsed ? 'absolute left-7 top-0.5' : 'ml-auto',
+            anyDanger ? 'bg-danger' : 'bg-warning',
+          )}
         >
           {summary.attentionCount}
         </span>

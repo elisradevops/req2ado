@@ -101,13 +101,15 @@ export interface FolderTreeEntry {
   downloadUrl: string | null;
 }
 
-export async function browseSharedFolder(url: string, userId: string): Promise<FolderTreeEntry[]> {
-  const response = await httpClient.get<FolderTreeEntry[]>('/kb/browse-folder', { params: { url, userId } });
+// The user id is not sent: the server takes the user from the session, and a query string ends up in access logs. The parameter stays so
+// callers need not change.
+export async function browseSharedFolder(url: string, _userId: string): Promise<FolderTreeEntry[]> {
+  const response = await httpClient.get<FolderTreeEntry[]>('/kb/browse-folder', { params: { url } });
   return response.data;
 }
 
-export async function browseSubfolder(driveId: string, itemId: string, userId: string, path: string, signal?: AbortSignal): Promise<FolderTreeEntry[]> {
-  const response = await httpClient.get<FolderTreeEntry[]>('/kb/browse-children', { params: { driveId, itemId, userId, path }, signal });
+export async function browseSubfolder(driveId: string, itemId: string, _userId: string, path: string, signal?: AbortSignal): Promise<FolderTreeEntry[]> {
+  const response = await httpClient.get<FolderTreeEntry[]>('/kb/browse-children', { params: { driveId, itemId, path }, signal });
   return response.data;
 }
 

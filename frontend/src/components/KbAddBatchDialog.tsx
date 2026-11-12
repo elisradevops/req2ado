@@ -130,7 +130,7 @@ export function KbAddBatchDialog({ open, onOpenChange, files, rememberedMode, on
             referenceSuggestion={suggested.length > 0 ? `Suggested for ${suggested.length} of these files: the name looks like a guide or standard` : undefined}
             disabled={isSubmitting}
           />
-          {fromRemembered && <p className="text-xs text-ink-3">Using your earlier choice for this folder.</p>}
+          {fromRemembered && <p className="text-xs text-ink-3">Using your earlier choice for this folder ({MODE_WORD[mode as KbRetrievalMode]}). Change it above if this is different.</p>}
 
           {referenceFiles.length > KB_BATCH_MANY_REFERENCE_FILES && (
             <Alert severity="warning">

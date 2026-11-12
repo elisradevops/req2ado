@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { httpClient } from './httpClient';
 import {
+  browseSharedFolder,
   browseSubfolder,
   cancelKbIngestBatch,
   createKbIngestBatch,
@@ -181,6 +182,24 @@ describe('browseSubfolder', () => {
 
     await browseSubfolder('drive-1', 'item-1', 'user-1', 'Sub', controller.signal);
 
-    expect(get).toHaveBeenCalledWith('/kb/browse-children', { params: { driveId: 'drive-1', itemId: 'item-1', userId: 'user-1', path: 'Sub' }, signal: controller.signal });
+    expect(get).toHaveBeenCalledWith('/kb/browse-children', { params: { driveId: 'drive-1', itemId: 'item-1', path: 'Sub' }, signal: controller.signal });
+  });
+
+  it('does not put the user id in the URL: the server knows the user from the session', async () => {
+    const get = vi.mocked(httpClient.get).mockResolvedValue({ data: [] });
+
+    await browseSubfolder('drive-1', 'item-1', 'Microsoft.IdentityModel.Claims.ClaimsIdentity;0003', 'Sub');
+
+    expect(JSON.stringify(get.mock.calls[0])).not.toContain('Microsoft.IdentityModel');
+  });
+});
+
+describe('browseSharedFolder', () => {
+  it('does not put the user id in the URL: the server knows the user from the session', async () => {
+    const get = vi.mocked(httpClient.get).mockResolvedValue({ data: [] });
+
+    await browseSharedFolder('https://share.example/f', 'Microsoft.IdentityModel.Claims.ClaimsIdentity;0003');
+
+    expect(get).toHaveBeenCalledWith('/kb/browse-folder', { params: { url: 'https://share.example/f' } });
   });
 });
