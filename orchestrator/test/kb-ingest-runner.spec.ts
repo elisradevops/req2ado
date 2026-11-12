@@ -1,5 +1,6 @@
 import { KbIngestRunner } from '../src/modules/kb/kb-ingest-runner';
 import { KbIngestBatchService } from '../src/modules/kb/kb-ingest-batch.service';
+import { KbDriveMismatchException } from '../src/modules/kb/kb-drive';
 import { IngestionHttpError } from '../src/modules/pipeline/ingestion-http.client';
 import { makeKbIngestPrismaFake, type KbIngestPrismaFake } from './helpers/kbIngestPrismaFake';
 
@@ -178,6 +179,17 @@ describe('KbIngestRunner', () => {
       expect(item('b1-i0')).toMatchObject({ state: 'failed', errorKind: 'permanent', reason: 'unsupported file type' });
       expect(item('b1-i1').state).toBe('added');
       expect(batch('b1').status).toBe('completed_with_errors');
+    });
+
+    it('a file refused because the knowledge base is now on another library fails at once, with the reason, and is not retried', async () => {
+      build({ batches: [batchRow('b1', 'u1')], items: [itemRow('b1', 0)] });
+      kb.ingestDriveItem.mockRejectedValue(new KbDriveMismatchException({ otherDrive: 2, unknownDrive: 0 }));
+
+      await runner.pumpOnce();
+
+      expect(item('b1-i0')).toMatchObject({ state: 'failed', errorKind: 'permanent', attempts: 1 });
+      expect(item('b1-i0').reason).toMatch(/different SharePoint library/i);
+      expect(kb.ingestDriveItem).toHaveBeenCalledTimes(1);
     });
 
     it('a batch where every file failed is failed', async () => {

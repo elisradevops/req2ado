@@ -410,6 +410,10 @@ export class KbService {
     signal?: AbortSignal;
   }): Promise<IngestUrlResult & { ingestedDocumentId: string }> {
     const { userId, driveId, itemId, relativePath, docType, retrievalMode, scheduleProfile = true, signal } = input;
+    // The one-library rule, checked per file as ingestItem does: the knowledge base may have taken files of another library since
+    // this batch was queued (a single file added meanwhile), and nothing here would stop this one landing beside them.
+    const conflict = await findDriveConflict(this.prisma, userId, driveId);
+    if (conflict) throw new KbDriveMismatchException(conflict);
     const graphToken = await this.resolveGraphTokenOverride();
     const result = await this.ingestionClient.ingestDriveItem(driveId, itemId, userId, docType, graphToken, retrievalMode, signal);
     const ingestedDocumentId = await this.recordIngestedDocument(userId, result, { relativePath, docType, retrievalMode, driveId });

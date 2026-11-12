@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { PrismaClient } from '@prisma/client';
 import { IngestionHttpError } from '../pipeline/ingestion-http.client';
+import { KbDriveMismatchException } from './kb-drive';
 import type { KbService } from './kb.service';
 import type { KbRetrievalMode } from './kb-ingest-batch.service';
 
@@ -48,6 +49,8 @@ function shorten(message: string): string {
  * later. Anything else the service refused (unsupported, too large, not found, no permission) will be refused again.
  */
 export function classifyIngestError(error: unknown): ClassifiedError {
+  // The knowledge base holds another library now: the file will be refused again however often it is tried.
+  if (error instanceof KbDriveMismatchException) return { kind: 'permanent', reason: 'the knowledge base now holds files from a different SharePoint library' };
   if (error instanceof IngestionHttpError) {
     const { status } = error;
     if (status === 401 || status === 424) return { kind: 'auth', reason: 'SharePoint token expired or invalid' };

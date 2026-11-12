@@ -93,6 +93,33 @@ describe('kbIngestStore', () => {
       expect(useKbIngestStore.getState().batch).toBeNull();
     });
 
+    it('a late answer does not replace a batch the user created while it was on its way', async () => {
+      let answerList!: (value: KbIngestBatch[]) => void;
+      vi.mocked(kbApi.listKbIngestBatches).mockReturnValue(new Promise((resolve) => (answerList = resolve)));
+      vi.mocked(kbApi.getKbIngestBatch).mockResolvedValue(batch({ id: 'old' }));
+      vi.mocked(kbApi.createKbIngestBatch).mockResolvedValue(batch({ id: 'new' }));
+
+      const attaching = useKbIngestStore.getState().attach('user-1');
+      await useKbIngestStore.getState().submit('user-1', CREATE_INPUT);
+      answerList([batch({ id: 'old' })]);
+      await attaching;
+
+      expect(useKbIngestStore.getState().batch?.id).toBe('new');
+    });
+
+    it('a late answer does not bring back a batch the user dismissed while it was on its way', async () => {
+      let answerList!: (value: KbIngestBatch[]) => void;
+      vi.mocked(kbApi.listKbIngestBatches).mockReturnValue(new Promise((resolve) => (answerList = resolve)));
+      vi.mocked(kbApi.getKbIngestBatch).mockResolvedValue(batch({ id: 'old' }));
+
+      const attaching = useKbIngestStore.getState().attach('user-1');
+      useKbIngestStore.getState().dismiss();
+      answerList([batch({ id: 'old' })]);
+      await attaching;
+
+      expect(useKbIngestStore.getState().batch).toBeNull();
+    });
+
     it('a failure to look is not an error the page has to handle: it just shows nothing', async () => {
       vi.mocked(kbApi.listKbIngestBatches).mockRejectedValue(new Error('network'));
 

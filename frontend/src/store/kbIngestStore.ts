@@ -152,14 +152,19 @@ export const useKbIngestStore = create<KbIngestState>((set, get) => {
         set({ ...initial });
       }
       set({ ownerId: userId });
+      // The batch on show may change while these requests are on their way (the user adds files, or dismisses the report): a
+      // late answer must not put an older batch back over it.
+      const mine = generation;
       try {
         const [active] = await listKbIngestBatches({ active: true, limit: 1 });
+        if (mine !== generation) return;
         if (!active) {
           follow(); // a batch already on show may still be running
           return;
         }
         // A list leaves the files out.
         const full = await getKbIngestBatch(active.id);
+        if (mine !== generation) return;
         generation += 1;
         set({ batch: full, error: null });
         follow();

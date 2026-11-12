@@ -440,7 +440,7 @@ describe('KbService', () => {
 
     function build(overrides: { vaultToken?: unknown } = {}) {
       const ingestionClient = { ingestDriveItem: jest.fn().mockResolvedValue(ingestResult) };
-      const prisma = { ingestedDocument: { upsert: jest.fn().mockResolvedValue({ id: 'row-1' }) } };
+      const prisma = { ingestedDocument: { upsert: jest.fn().mockResolvedValue({ id: 'row-1' }), findMany: jest.fn().mockResolvedValue([]) } };
       const profileScheduler = { schedule: jest.fn().mockResolvedValue(undefined) };
       const vault = { ...fakeCredentialVault, get: jest.fn().mockResolvedValue(overrides.vaultToken ?? null) };
       const service = new KbService(prisma as any, ingestionClient as any, vault as any, profileScheduler as any);
@@ -625,6 +625,27 @@ describe('KbService', () => {
         response: { code: 'kb_drive_mismatch', otherDriveDocuments: 1 },
       });
       expect(ingestionClient.ingestItem).not.toHaveBeenCalled();
+    });
+
+    it('ingestDriveItem() (the batch path) is refused too when the knowledge base moved to another library since the batch was queued', async () => {
+      const { service } = build([doc('x', 'drive-OLD')]);
+      const ingestDriveItem = jest.fn().mockResolvedValue(ingestResult);
+      (service as any).ingestionClient.ingestDriveItem = ingestDriveItem;
+
+      await expect(
+        service.ingestDriveItem({ userId: 'u', driveId: 'drive-NEW', itemId: 'item-1', relativePath: 'a.pdf', docType: null, retrievalMode: null }),
+      ).rejects.toMatchObject({ response: { code: 'kb_drive_mismatch', otherDriveDocuments: 1 } });
+      expect(ingestDriveItem).not.toHaveBeenCalled();
+    });
+
+    it('ingestDriveItem() from the same library goes through', async () => {
+      const { service } = build([doc('x', 'drive-1')]);
+      const ingestDriveItem = jest.fn().mockResolvedValue(ingestResult);
+      (service as any).ingestionClient.ingestDriveItem = ingestDriveItem;
+
+      await service.ingestDriveItem({ userId: 'u', driveId: 'drive-1', itemId: 'item-1', relativePath: 'a.pdf', docType: null, retrievalMode: null });
+
+      expect(ingestDriveItem).toHaveBeenCalled();
     });
 
     it('ingestItem() from the same library goes through and records it', async () => {
