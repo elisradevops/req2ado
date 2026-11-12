@@ -9,6 +9,8 @@ export interface AppSettings {
   // Cosine similarity in [0, 1]. At or above this, dedup_check treats a
   // proposed item as an existing duplicate and skips it (dedup_skip).
   dedupThreshold: number;
+  // The embedding model the similarity is measured with. Read-only: set by whoever runs the system. Absent when the server does not say.
+  embeddingModel?: string;
 }
 
 export async function getAppSettings(): Promise<AppSettings> {

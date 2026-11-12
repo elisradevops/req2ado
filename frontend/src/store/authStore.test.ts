@@ -51,4 +51,20 @@ describe('authStore', () => {
     loadFromSessionStorage();
     expect(sessionStorage.getItem(LEGACY_V1_STORAGE_KEY)).toBeNull();
   });
+
+  it('keeps the e-mail and account name given at sign-in, across a reload, and forgets them on logout', () => {
+    useAuthStore.getState().login('https://ado.example', 'Jane Doe', 'user-descriptor-1', { email: 'jane@corp.example', accountName: 'CORP\\jane' });
+
+    expect(useAuthStore.getState()).toMatchObject({ email: 'jane@corp.example', accountName: 'CORP\\jane' });
+    expect(loadFromSessionStorage()).toMatchObject({ email: 'jane@corp.example', accountName: 'CORP\\jane' });
+
+    useAuthStore.getState().logout();
+    expect(useAuthStore.getState()).toMatchObject({ email: null, accountName: null });
+  });
+
+  it('has no e-mail or account name for a session stored before they were kept', () => {
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ orgUrl: 'https://ado.example', displayName: 'Jane Doe', userId: 'user-descriptor-1' }));
+
+    expect(loadFromSessionStorage()).toMatchObject({ email: null, accountName: null });
+  });
 });

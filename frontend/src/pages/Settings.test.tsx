@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Settings } from './Settings';
 import { ToastProvider } from '../components/ToastProvider';
@@ -8,6 +8,7 @@ import { httpClient } from '../api/httpClient';
 import * as kbApi from '../api/kb';
 import * as settingsApi from '../api/settings';
 import * as llmConnectionApi from '../api/llmConnection';
+import { useConnectionStatusStore } from '../store/connectionStatusStore';
 
 vi.mock('../api/httpClient', () => ({ httpClient: { post: vi.fn() } }));
 vi.mock('../api/kb');
@@ -204,6 +205,36 @@ describe('Settings', () => {
       expect(await findThresholdField()).toHaveValue(85);
     });
 
+    it('says in plain words what the threshold does, and that nothing is skipped without a confirmation', async () => {
+      vi.mocked(settingsApi.getAppSettings).mockResolvedValue({ dedupThreshold: 0.9 });
+      renderPage();
+
+      await findThresholdField();
+
+      expect(screen.getByText(/how alike two items must be to count as duplicates/i)).toBeInTheDocument();
+      expect(screen.getByText(/a second check confirms every match; if it cannot run, nothing is skipped/i)).toBeInTheDocument();
+    });
+
+    it('shows the embedding model the similarity is measured with, as read-only information', async () => {
+      vi.mocked(settingsApi.getAppSettings).mockResolvedValue({ dedupThreshold: 0.9, embeddingModel: 'text-embedding-3-small' });
+      renderPage();
+
+      await findThresholdField();
+
+      expect(screen.getByText('text-embedding-3-small')).toBeInTheDocument();
+      expect(screen.getByText(/set by whoever runs this system/i)).toBeInTheDocument();
+      expect(screen.queryByRole('textbox', { name: /embedding model/i })).toBeNull();
+    });
+
+    it('says nothing about a model when the server did not name one', async () => {
+      vi.mocked(settingsApi.getAppSettings).mockResolvedValue({ dedupThreshold: 0.9 });
+      renderPage();
+
+      await findThresholdField();
+
+      expect(screen.queryByText(/set by whoever runs this system/i)).toBeNull();
+    });
+
     it('saves the edited percentage back as a 0-1 fraction', async () => {
       vi.mocked(settingsApi.updateAppSettings).mockResolvedValue({ dedupThreshold: 0.94 });
       renderPage();
@@ -291,6 +322,25 @@ describe('Settings', () => {
       await waitFor(() => expect(screen.getByText(/open webui connection saved/i)).toBeInTheDocument());
     });
 
+    it('saves the connection and says duplicate detection cannot use it when the account cannot embed', async () => {
+      vi.spyOn(llmConnectionApi, 'getLlmConnectionModels').mockResolvedValue([{ id: 'gemma4:e4b', name: 'gemma4:e4b', vision: true }]);
+      vi.spyOn(llmConnectionApi, 'setLlmConnection').mockResolvedValue({ embeddings: 'unavailable' });
+      renderPage();
+
+      await waitFor(() => expect(screen.getByText('Open WebUI')).toBeInTheDocument());
+      const configureButtons = screen.getAllByRole('button', { name: /^configure$/i });
+      await userEvent.click(configureButtons[configureButtons.length - 1]);
+      await userEvent.type(screen.getByLabelText(/open webui api token/i), 'sk-test-token');
+      await userEvent.click(screen.getByRole('button', { name: /load models/i }));
+      await waitFor(() => expect(llmConnectionApi.getLlmConnectionModels).toHaveBeenCalled());
+      await userEvent.click(screen.getByLabelText(/^model$/i));
+      await userEvent.click(await screen.findByRole('option', { name: 'gemma4:e4b' }));
+      await userEvent.click(screen.getByRole('button', { name: /^save$/i }));
+
+      await waitFor(() => expect(screen.getByText(/open webui connection saved/i)).toBeInTheDocument());
+      expect(screen.getByText(/duplicate detection cannot use this connection yet/i)).toBeInTheDocument();
+    });
+
     it('shows an inline error and does not save when the pasted token fails validation', async () => {
       vi.spyOn(llmConnectionApi, 'getLlmConnectionModels').mockRejectedValue(new Error('401'));
       renderPage();
@@ -345,6 +395,56 @@ describe('Settings', () => {
       // Picker shows only vision-capable models; non-vision models are filtered out.
       expect(screen.getByRole('option', { name: 'devstral-small-2:24b' })).toBeInTheDocument();
       expect(screen.queryByRole('option', { name: 'qwen2.5:14b' })).not.toBeInTheDocument();
+    });
+  });
+
+  describe('profile', () => {
+    function renderWithDetails(): void {
+      useAuthStore.getState().login('https://tfs.corp.example/tfs/DefaultCollection', 'Jane Doe', 'user-descriptor-1', { email: 'jane@corp.example', accountName: 'CORP\\jane' });
+      render(
+        <ToastProvider>
+          <Settings />
+        </ToastProvider>,
+      );
+    }
+
+    it('shows who is signed in as ADO knows them, not the technical id', () => {
+      renderWithDetails();
+
+      expect(screen.getByText('jane@corp.example')).toBeInTheDocument();
+      expect(screen.getByText('CORP\\jane')).toBeInTheDocument();
+      expect(screen.getByText('tfs.corp.example')).toBeInTheDocument();
+      expect(screen.queryByText('user-descriptor-1')).toBeNull();
+    });
+
+    it('keeps the details when the Azure DevOps token is reconnected', async () => {
+      vi.mocked(httpClient.post).mockResolvedValue({ data: { ok: true } });
+      renderWithDetails();
+
+      await userEvent.click(screen.getByRole('button', { name: /reconnect/i }));
+      await userEvent.type(screen.getByLabelText(/personal access token/i), 'new-pat-value');
+      await userEvent.click(screen.getByRole('button', { name: /^reconnect$/i, hidden: false }));
+
+      await waitFor(() => expect(httpClient.post).toHaveBeenCalled());
+      await waitFor(() => expect(useAuthStore.getState().email).toBe('jane@corp.example'));
+    });
+  });
+
+  describe('the Azure DevOps row says what the check found, not always "ok"', () => {
+    const row = () => screen.getByText('Azure DevOps').closest('div.rounded-md') as HTMLElement;
+
+    it('is plain when the connection is fine', () => {
+      useConnectionStatusStore.setState({ ado: { data: { status: 'valid' }, error: false, checkedAt: 1, inFlight: false } });
+      renderPage();
+
+      expect(row().className).not.toMatch(/warning|danger/);
+    });
+
+    it('turns to a warning, in words, when it cannot be reached', () => {
+      useConnectionStatusStore.setState({ ado: { data: { status: 'unreachable' }, error: false, checkedAt: 1, inFlight: false } });
+      renderPage();
+
+      expect(within(row()).getByText(/can't reach azure devops/i)).toBeInTheDocument();
     });
   });
 });

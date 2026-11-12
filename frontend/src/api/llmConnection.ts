@@ -28,6 +28,8 @@ export async function getLlmConnectionModels(token?: string): Promise<LlmSelecta
   return response.data.models;
 }
 
-export async function setLlmConnection(apiKey: string, chatModel: string, visionModel?: string): Promise<void> {
-  await httpClient.post('/llm/connection', { apiKey, chatModel, ...(visionModel ? { visionModel } : {}) });
+// `embeddings: 'unavailable'` means the connection was saved but this account cannot get an embedding, so duplicate detection cannot use it.
+export async function setLlmConnection(apiKey: string, chatModel: string, visionModel?: string): Promise<{ embeddings?: 'unavailable' }> {
+  const response = await httpClient.post<{ ok: true; embeddings?: 'unavailable' }>('/llm/connection', { apiKey, chatModel, ...(visionModel ? { visionModel } : {}) });
+  return { ...(response?.data?.embeddings ? { embeddings: response.data.embeddings } : {}) };
 }

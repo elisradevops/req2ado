@@ -5,10 +5,12 @@ import { getAppSettings, updateAppSettings } from '../api/settings';
 import { getLlmConnection, getLlmConnectionModels, setLlmConnection, type LlmConnectionStatus, type LlmSelectableModel } from '../api/llmConnection';
 import { useConnectionStatusStore } from '../store/connectionStatusStore';
 import { useLlmConnectionStore } from '../store/llmConnectionStore';
-import { useAuthStore, useDisplayName, useOrgUrl, useUserId } from '../store/authStore';
+import { useAccountName, useAuthStore, useDisplayName, useEmail, useOrgUrl, useUserId } from '../store/authStore';
 import { useDenseView, useAutoSyncLedgers, useKeyboardShortcuts, useUiPreferencesStore } from '../store/uiPreferencesStore';
 import { useToast } from '../components/ToastProvider';
 import { formatSharePointExpiry } from '../utils/sharePointStatus';
+import { adoConnectionRow, type HealthState } from '../utils/connectionHealth';
+import { ProfileCard } from '../components/ProfileCard';
 import { PageHeader } from '../ui/PageHeader';
 import { SectionCard } from '../ui/SectionCard';
 import { Button } from '../ui/Button';
@@ -23,6 +25,9 @@ import { Skeleton } from '../ui/Skeleton';
 import { cn } from '../lib/cn';
 
 type IntegrationTone = 'ok' | 'danger' | 'warning' | 'dim';
+
+// What the connection check found, as the row's tone: a rejected credential is danger, an unreachable service a warning.
+const ADO_TONE: Record<HealthState, IntegrationTone> = { ok: 'ok', attention: 'warning', danger: 'danger', off: 'dim', checking: 'dim' };
 
 const SHAREPOINT_UNREACHABLE: SharePointStatus = { status: 'unreachable', expiresInSeconds: null };
 
@@ -169,6 +174,10 @@ export function Settings(): React.ReactElement {
   const displayName = useDisplayName();
   const orgUrl = useOrgUrl();
   const userId = useUserId();
+  const email = useEmail();
+  const accountName = useAccountName();
+  const adoEntry = useConnectionStatusStore((s) => s.ado);
+  const adoRow = adoConnectionRow(adoEntry);
   const { showToast } = useToast();
   const denseView = useDenseView();
   const autoSyncLedgers = useAutoSyncLedgers();
@@ -203,6 +212,7 @@ export function Settings(): React.ReactElement {
   const [thresholdPercent, setThresholdPercent] = useState('');
   const [savedThresholdPercent, setSavedThresholdPercent] = useState<string | null>(null);
   const [isThresholdLoading, setIsThresholdLoading] = useState(true);
+  const [embeddingModel, setEmbeddingModel] = useState<string | null>(null);
   const [isSavingThreshold, setIsSavingThreshold] = useState(false);
   const [thresholdError, setThresholdError] = useState<string | null>(null);
   const isSavingThresholdRef = useRef(false);
@@ -225,6 +235,7 @@ export function Settings(): React.ReactElement {
         const percentText = fractionToPercentText(settings.dedupThreshold);
         setThresholdPercent(percentText);
         setSavedThresholdPercent(percentText);
+        setEmbeddingModel(settings.embeddingModel ?? null);
       })
       .catch(() => setThresholdError(THRESHOLD_LOAD_ERROR))
       .finally(() => setIsThresholdLoading(false));
@@ -249,7 +260,7 @@ export function Settings(): React.ReactElement {
       // orgUrl is the only locally-cached field this touches -- the PAT
       // itself never enters authStore; the vault write already happened
       // server-side in the request above.
-      useAuthStore.getState().login(newOrgUrl, displayName ?? '', userId ?? '');
+      useAuthStore.getState().login(newOrgUrl, displayName ?? '', userId ?? '', { email, accountName });
       showToast('Azure DevOps connection updated.', 'success');
       setReconnectOpen(false);
     } catch {
@@ -338,7 +349,7 @@ export function Settings(): React.ReactElement {
     setIsSavingLlmConnection(true);
     setLlmConnectionError(null);
     try {
-      await setLlmConnection(llmToken.trim(), llmChatModel);
+      const saved = await setLlmConnection(llmToken.trim(), llmChatModel);
       const status = await getLlmConnection();
       setLlmConnectionState(status);
       // Flips RouteGuard's cached gate state directly -- without this, a
@@ -348,6 +359,10 @@ export function Settings(): React.ReactElement {
       // re-checks once per session, not on every navigation.
       useLlmConnectionStore.getState().setConfigured(status.configured);
       showToast('Open WebUI connection saved.', 'success');
+      // Saved either way (chat works without it), but the user should hear that matching against existing items will not run.
+      if (saved?.embeddings === 'unavailable') {
+        showToast('Duplicate detection cannot use this connection yet: your account cannot reach the embedding model. Ask whoever runs this system to give your account access to it.', 'warning');
+      }
       setLlmDialogOpen(false);
     } catch {
       setLlmConnectionError('Could not save this connection. Check the token and selected models and try again.');
@@ -406,10 +421,7 @@ export function Settings(): React.ReactElement {
       <PageHeader title="Profile & Connections" />
       <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
         <SectionCard title="Profile">
-          <div className="flex flex-col gap-1 text-sm">
-            <p className="font-medium text-ink-1">{displayName}</p>
-            <p className="font-mono text-xs text-ink-3">{userId}</p>
-          </div>
+          <ProfileCard displayName={displayName} email={email} accountName={accountName} userId={userId} orgUrl={orgUrl} />
         </SectionCard>
 
         <div className="flex flex-col gap-4">
@@ -419,7 +431,8 @@ export function Settings(): React.ReactElement {
                 icon={<span className="text-xs font-bold">ADO</span>}
                 name="Azure DevOps"
                 detail={orgUrl ?? 'Not connected'}
-                tone="ok"
+                tone={ADO_TONE[adoRow.state]}
+                reason={adoRow.state === 'attention' || adoRow.state === 'danger' ? adoRow.word : null}
                 actionLabel="Reconnect"
                 onAction={openReconnect}
               />
@@ -480,8 +493,9 @@ export function Settings(): React.ReactElement {
                       <InfoTip content="Raise it and the system gets more conservative about calling two items duplicates: fewer items are skipped by mistake, but a real near-duplicate is likelier to slip through and be created a second time in Azure DevOps. Lower it and more items are skipped as duplicates, including ones you wanted created. Compared as a cosine similarity against work items already in the project." />
                     </p>
                     <p className="text-xs text-ink-3">
-                      A proposed item scoring at or above this against an existing work item is skipped as a duplicate instead of created.
+                      How alike two items must be to count as duplicates. A proposed item scoring at or above this against an existing work item is skipped instead of created.
                     </p>
+                    <p className="text-xs text-ink-3">A second check confirms every match; if it cannot run, nothing is skipped.</p>
                   </div>
                   <div className="flex flex-none items-center gap-1.5">
                     <TextField
@@ -498,6 +512,12 @@ export function Settings(): React.ReactElement {
                     <span className="text-sm text-ink-2">%</span>
                   </div>
                 </div>
+                {embeddingModel && (
+                  <p className="flex flex-wrap items-baseline gap-x-2 text-xs text-ink-3">
+                    Similarity is measured with <span className="font-mono text-ink-2">{embeddingModel}</span>
+                    <span>(set by whoever runs this system)</span>
+                  </p>
+                )}
                 {thresholdError && <p className="text-sm text-danger">{thresholdError}</p>}
                 <div className="flex justify-end">
                   <Button
