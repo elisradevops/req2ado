@@ -125,6 +125,11 @@
   --color-live: #06b6d4;
   --color-live-soft: #ecfeff;
 
+  /* Brand colours (DESIGN.md §2, brand colours): for the non-interactive brand panel of the sign-in page only. Never on a control,
+     a status, a chip or a focus ring; signal yellow keeps meaning "irreversible write". brandTokens.test.ts enforces the scope. */
+  --color-brand-blue: #1b4a8f;
+  --color-brand-yellow: #fde134;
+
   --color-shimmer-highlight: #e6ebf4;
 
   /* ------------------------------------------------------------------

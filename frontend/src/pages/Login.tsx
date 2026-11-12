@@ -51,7 +51,7 @@ export function Login(): JSX.Element {
       // never has to guard against a trailing slash producing a broken `//`.
       const normalizedOrgUrl = adoOrgUrl.trim().replace(/\/+$/, '');
       const response = await httpClient.post('/auth/login', { adoOrgUrl: normalizedOrgUrl, pat });
-      useAuthStore.getState().login(normalizedOrgUrl, response.data.displayName, response.data.userId);
+      useAuthStore.getState().login(normalizedOrgUrl, response.data.displayName, response.data.userId, { email: response.data.email, accountName: response.data.accountName });
       navigate('/jobs');
     } catch (err) {
       setStatus('error');
@@ -62,38 +62,59 @@ export function Login(): JSX.Element {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-canvas px-4">
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          void handleLogin();
-        }}
-        className="w-full max-w-[420px] rounded-md border border-hairline bg-surface p-8 shadow-card"
-      >
-        <h1 className="text-lg font-semibold">Sign in to req2ado</h1>
-        <p className="mb-6 mt-1 text-sm text-ink-3">
-          Your ADO Personal Access Token identifies you and grants exactly the permissions your ADO account already has.
-        </p>
+    <div className="flex min-h-screen flex-col bg-canvas md:flex-row">
+      {/* The brand panel is decoration: no control lives in it. Its colours are the brand tokens, which exist only for this panel. */}
+      <aside data-testid="login-brand" className="flex flex-none flex-col justify-between bg-brand-blue px-6 py-4 text-white md:w-[40%] md:px-12 md:py-12">
+        <div className="flex items-center gap-3">
+          <span className="grid h-10 w-10 flex-none place-items-center rounded-md bg-brand-yellow text-sm font-bold tracking-wide text-brand-blue">R2</span>
+          <span className="text-lg font-semibold">req2ado</span>
+        </div>
+        <div className="hidden flex-col gap-3 md:flex">
+          <h2 className="text-2xl font-semibold leading-tight">From requirement documents to Azure DevOps work items</h2>
+          <p className="max-w-[360px] text-sm text-white/80">Review every proposed change before anything is written to your project.</p>
+        </div>
+        <span className="hidden h-1 w-16 rounded-sm bg-brand-yellow md:block" aria-hidden="true" />
+      </aside>
+      <main className="flex flex-1 items-center justify-center px-4 py-10">
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            void handleLogin();
+          }}
+          className="w-full max-w-[420px] rounded-md border border-hairline bg-surface p-8 shadow-card"
+        >
+          <h1 className="text-lg font-semibold">Welcome to req2ado</h1>
+          <p className="mb-6 mt-1 text-sm text-ink-3">
+            Your ADO Personal Access Token identifies you and grants exactly the permissions your ADO account already has.
+          </p>
 
-        <div className="flex flex-col gap-3">
-          <TextField label="ADO Organization URL" value={adoOrgUrl} onChange={(e) => setAdoOrgUrl(e.target.value)} fullWidth autoFocus />
-          <div className="flex items-end gap-1.5">
+          <div className="flex flex-col gap-3">
+            <TextField
+              label="ADO Organization URL"
+              value={adoOrgUrl}
+              onChange={(e) => setAdoOrgUrl(e.target.value)}
+              placeholder="https://tfs.example.com/tfs/DefaultCollection"
+              fullWidth
+              autoFocus
+            />
             <TextField
               label="Personal Access Token"
+              labelExtra={
+                <InfoTip content="In Azure DevOps: User settings → Personal access tokens → New Token. Grant Work Items (Read, write, & manage) at minimum — that's the only scope req2ado needs." />
+              }
               type="password"
               value={pat}
               onChange={(e) => setPat(e.target.value)}
               fullWidth
             />
-            <InfoTip content="In Azure DevOps: User settings → Personal access tokens → New Token. Grant Work Items (Read, write, & manage) at minimum — that's the only scope req2ado needs." />
+            <Button type="submit" disabled={!adoOrgUrl || !pat || status === 'checking'}>
+              {status === 'checking' && <Spinner />}
+              Sign in
+            </Button>
+            {status === 'error' && <Alert severity="error">{errorMessage}</Alert>}
           </div>
-          <Button type="submit" disabled={!adoOrgUrl || !pat || status === 'checking'}>
-            {status === 'checking' && <Spinner />}
-            Sign in
-          </Button>
-          {status === 'error' && <Alert severity="error">{errorMessage}</Alert>}
-        </div>
-      </form>
+        </form>
+      </main>
     </div>
   );
 }

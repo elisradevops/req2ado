@@ -114,4 +114,56 @@ describe('Login page', () => {
 
     await waitFor(() => expect(screen.getByText('Invalid ADO organization URL or Personal Access Token')).toBeInTheDocument());
   });
+
+  describe('layout', () => {
+    it('welcomes the user, and says in a line what signing in does', () => {
+      renderLogin();
+
+      expect(screen.getByRole('heading', { level: 1, name: 'Welcome to req2ado' })).toBeInTheDocument();
+      expect(screen.getByText(/personal access token identifies you/i)).toBeInTheDocument();
+    });
+
+    it('puts the token help in the label row, beside the label, not beside the input', () => {
+      renderLogin();
+
+      const input = screen.getByLabelText('Personal Access Token');
+      const label = document.querySelector(`label[for="${input.id}"]`) as HTMLElement;
+      const tip = screen.getByRole('button', { name: /more information/i });
+      // the tip lives in the same row as the label, so it can never narrow the field or sit off its baseline
+      expect(label.parentElement).toContainElement(tip);
+      expect(label.parentElement).not.toContainElement(input);
+    });
+
+    it('gives both fields the full width of the form', () => {
+      renderLogin();
+
+      expect(screen.getByLabelText('ADO Organization URL').className).toContain('w-full');
+      expect(screen.getByLabelText('Personal Access Token').className).toContain('w-full');
+    });
+
+    it('shows an example of the organization address', () => {
+      renderLogin();
+
+      expect(screen.getByLabelText('ADO Organization URL')).toHaveAttribute('placeholder', expect.stringMatching(/^https:\/\//));
+    });
+
+    it('has a brand panel with the product name that is not part of the form', () => {
+      renderLogin();
+
+      const brand = screen.getByTestId('login-brand');
+      expect(brand).toHaveTextContent('req2ado');
+      expect(brand.querySelector('button, input, a')).toBeNull();
+    });
+  });
+
+  it('keeps the e-mail and account name the server returns, for the Profile page', async () => {
+    vi.spyOn(httpClient, 'post').mockResolvedValueOnce({ data: { displayName: 'Jane Doe', userId: 'u1', email: 'jane@corp.example', accountName: 'CORP\\jane' } });
+    renderLogin();
+    fireEvent.change(screen.getByLabelText('ADO Organization URL'), { target: { value: 'https://tfs.internal/tfs/Collection' } });
+    fireEvent.change(screen.getByLabelText('Personal Access Token'), { target: { value: 'fake-pat' } });
+    fireEvent.click(screen.getByText('Sign in'));
+
+    await waitFor(() => expect(useAuthStore.getState().email).toBe('jane@corp.example'));
+    expect(useAuthStore.getState().accountName).toBe('CORP\\jane');
+  });
 });
