@@ -10,6 +10,20 @@ from app.dedup.vector_store import ChromaVectorStore
 client = TestClient(main.app)
 
 
+class _ConfirmingJudge:
+    """Stands in for the LLM judge: says every close pair is a real duplicate, as a live judge would for identical text."""
+
+    def judge_duplicate_pair(self, candidate_text: str, matched_text: str, user_id: str | None = None) -> dict:
+        return {"verdict": "redundant"}
+
+
+@pytest.fixture(autouse=True)
+def _judge_confirms_by_default(monkeypatch) -> None:
+    # No LLM is reachable from the tests. A judge that cannot be reached means "not confirmed, so not skipped", so tests that
+    # expect a skip must say the judge confirms it. The judge-down case has its own test below.
+    monkeypatch.setattr(main, "_dedup_judge_client", _ConfirmingJudge())
+
+
 def _mock_embed_handler(request: httpx.Request) -> httpx.Response:
     texts = json.loads(request.content)["texts"]
     # Deterministic embedding derived from text content so identical texts
@@ -798,11 +812,11 @@ def test_dedup_upsert_batch_vector_store_failure_in_later_chunk_keeps_earlier_ch
     real = main._vector_store.upsert_many
     state = {"n": 0}
 
-    def flaky(items, area_path):
+    def flaky(items, area_path, **kwargs):
         state["n"] += 1
         if state["n"] == 2:
             raise RuntimeError("chroma down")
-        return real(items, area_path)
+        return real(items, area_path, **kwargs)
 
     with patch.object(main._vector_store, "upsert_many", side_effect=flaky):
         response = client.post("/dedup/upsert-batch", json={"items": _batch_items(300)})
@@ -829,3 +843,79 @@ def test_dedup_upsert_batch_small_batch_makes_one_embed_call(tmp_path, monkeypat
 
 def test_embed_for_dedup_with_an_empty_list_returns_an_empty_list() -> None:
     assert main._embed_for_dedup([], "user-1") == []
+
+
+def test_dedup_check_when_the_judge_cannot_be_reached_does_not_skip_the_item(tmp_path, monkeypatch) -> None:
+    class _DownJudge:
+        def judge_duplicate_pair(self, candidate_text: str, matched_text: str, user_id: str | None = None) -> dict:
+            raise RuntimeError("LLM unreachable")
+
+    monkeypatch.setattr(main, "_vector_store", ChromaVectorStore(str(tmp_path)))
+    monkeypatch.setattr(main, "_dedup_judge_client", _DownJudge())
+    main._embed_client._transport = httpx.MockTransport(_mock_embed_handler)
+    payload = {"text": "The unit shall survive a drop.", "title": "The unit shall survive a drop.", "area_path": "Project\\Area1"}
+    client.post("/dedup/upsert", json={"item_id": "item-1", **payload})
+
+    body = client.post("/dedup/check", json=payload).json()
+
+    assert body["is_duplicate"] is False
+    assert body["judge_verdict"] == "judge_failed"
+    assert body["matched_item_id"] == "item-1"
+
+
+def _post_payload(**overrides):
+    return {"text": "The unit shall survive a drop.", "title": "The unit shall survive a drop.", "area_path": "Project\\Area1", **overrides}
+
+
+def test_an_item_is_only_compared_with_items_of_its_own_type(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "_vector_store", ChromaVectorStore(str(tmp_path)))
+    main._embed_client._transport = httpx.MockTransport(_mock_embed_handler)
+    client.post("/dedup/upsert", json={"item_id": "feature-1", "type_category": "Feature", **_post_payload()})
+
+    as_requirement = client.post("/dedup/check", json=_post_payload(type_category="Requirement")).json()
+    as_feature = client.post("/dedup/check", json=_post_payload(type_category="Feature")).json()
+
+    assert as_requirement["is_duplicate"] is False
+    assert as_feature["is_duplicate"] is True and as_feature["matched_item_id"] == "feature-1"
+
+
+def test_the_scope_of_a_check_can_be_the_whole_project(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "_vector_store", ChromaVectorStore(str(tmp_path)))
+    main._embed_client._transport = httpx.MockTransport(_mock_embed_handler)
+    client.post("/dedup/upsert", json={"item_id": "elsewhere", "type_category": "Requirement", **_post_payload(area_path="Project\\Other")})
+
+    by_area = client.post("/dedup/check", json=_post_payload(type_category="Requirement", scope="area_path")).json()
+    by_project = client.post("/dedup/check", json=_post_payload(type_category="Requirement", scope="project")).json()
+
+    assert by_area["is_duplicate"] is False
+    assert by_project["is_duplicate"] is True and by_project["matched_item_id"] == "elsewhere"
+
+
+def test_a_check_without_a_type_or_scope_behaves_as_it_did_before(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "_vector_store", ChromaVectorStore(str(tmp_path)))
+    main._embed_client._transport = httpx.MockTransport(_mock_embed_handler)
+    client.post("/dedup/upsert", json={"item_id": "item-1", **_post_payload()})
+
+    body = client.post("/dedup/check", json=_post_payload()).json()
+
+    assert body["is_duplicate"] is True and body["matched_item_id"] == "item-1"
+
+
+def test_an_unknown_scope_is_refused(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "_vector_store", ChromaVectorStore(str(tmp_path)))
+
+    assert client.post("/dedup/check", json=_post_payload(scope="galaxy")).status_code == 422
+
+
+def test_a_batch_upsert_keeps_the_type_of_each_item(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "_vector_store", ChromaVectorStore(str(tmp_path)))
+    main._embed_client._transport = httpx.MockTransport(_mock_embed_handler)
+    client.post(
+        "/dedup/upsert-batch",
+        json={"items": [{"item_id": "epic-1", "type_category": "Epic", **_post_payload()}, {"item_id": "req-1", "type_category": "Requirement", **_post_payload()}]},
+    )
+
+    as_epic = client.post("/dedup/check", json=_post_payload(type_category="Epic")).json()
+
+    assert as_epic["is_duplicate"] is True and as_epic["matched_item_id"] == "epic-1"
+

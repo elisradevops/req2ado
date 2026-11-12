@@ -59,10 +59,10 @@ class DuplicateCheckResult(BaseModel):
     # see WHY a match was kept or downgraded, not just the raw boolean.
     # None means the judge never ran (no client supplied, or the embedding
     # itself said not-duplicate) -- distinct from an empty/absent verdict.
-    # "judge_failed" means it ran but raised -- is_duplicate is the
-    # embedding's own unverified verdict in that case, not a real judge
-    # confirmation; a caller/UI should treat this differently from a real
-    # "redundant"/"contradictory"/"distinct" verdict.
+    # "judge_failed" means it ran but raised: the match was never confirmed,
+    # so is_duplicate is False (the item is not skipped); a caller/UI should
+    # treat this differently from a real "redundant"/"contradictory"/
+    # "distinct" verdict.
     judge_verdict: str | None = None
     # The matched item's own text, kept so the caller can show the two texts
     # side by side on the running-job screen (job transparency, B9b). Never part
@@ -83,6 +83,13 @@ def check_for_duplicates(
     # Out-parameter, filled with embed_ms / query_ms / judge_ms (milliseconds; judge_ms only when the judge ran): lets the caller say
     # where the time of a slow check went. Observation only.
     timings: dict[str, int] | None = None,
+    # What the proposed item is compared against: items of the same kind (Epic / Feature / Requirement; None = any kind), in the
+    # area path and the ones under it ("area_path") or anywhere in the project ("project").
+    type_category: str | None = None,
+    scope: str = "area_path",
+    # How many of the closest stored items to look at, and how many of those (all at or above the threshold) may cost a judge call.
+    top_k: int = 5,
+    max_judged: int = 3,
 ) -> DuplicateCheckResult:
     """Embeds `title`+`text` (blended, see below) and checks the blend
     against the Area-Path-scoped vector store for a near-duplicate.
@@ -128,61 +135,71 @@ def check_for_duplicates(
     matches, not every dedup check. A 'distinct' verdict downgrades
     is_duplicate to False (genuinely different requirements that only
     happened to embed as similar -- the "USB Ports" vs "USB Communication"
-    failure mode); 'redundant'/'contradictory' both count as a real
-    duplicate HERE (this call only answers "does this ADO item already
-    exist," not conflict semantics -- see conflict_detection.py for that).
-    A judge exception, or no matched_document to judge against, leaves the
-    embedding's own verdict standing -- UNLIKE every other fail-open path in
-    this codebase, this is the unsafe direction: leaving is_duplicate=True
-    means a real requirement is silently never created in ADO (confirm()
-    skips 'create' for a dedup_skip match), while the reviewer sees a
-    confident "near-duplicate" badge with no indication the judge never
-    actually confirmed it. judge_verdict is set to "judge_failed" (distinct
-    from None, which means the judge never ran at all) so this is at least
-    visible downstream, and the failure is logged -- every other optional
-    client in this module already does both."""
+    failure mode); Only 'redundant' counts as a
+    duplicate HERE. 'contradictory' means similar wording with DIFFERENT
+    content, so skipping it would silently drop a requirement that disagrees
+    with an existing one; it is kept, with the verdict and the matched item
+    reported so a reviewer can compare the two (the within-job conflict
+    judge, conflict_detection.py, is a separate concern).
+    A judge exception means the match was never confirmed, and a skip on an
+    unconfirmed match is the unsafe direction: confirm() skips 'create' for
+    a dedup_skip match, so a real requirement would silently never reach
+    ADO. The requirement is therefore NOT skipped (is_duplicate=False): a
+    duplicate that gets created is visible and fixable, one that is never
+    created is not. judge_verdict is "judge_failed" (distinct from None,
+    which means the judge never ran at all) and the failure is logged, and
+    the similarity and matched item are still reported."""
     started = time.monotonic()
     title_embedding, description_embedding = embed_client.embed([title, text], user_id=user_id)
     embedded = time.monotonic()
     embedding = blend_embeddings(title_embedding, description_embedding)
-    nearest = vector_store.query_nearest(embedding, area_path=area_path)
+    matches = vector_store.query_nearest_many(embedding, area_path, scope=scope, type_category=type_category, top_k=top_k)
     if timings is not None:
         timings["embed_ms"] = round((embedded - started) * 1000)
         timings["query_ms"] = round((time.monotonic() - embedded) * 1000)
-    if nearest is None:
+    if not matches:
         return DuplicateCheckResult(is_duplicate=False)
 
-    matched_item_id, similarity, matched_document = nearest
-    is_duplicate = similarity >= threshold
-    if (
-        is_duplicate
-        and matched_document is not None
-        and _numeric_tokens(text) != _numeric_tokens(matched_document)
-    ):
-        is_duplicate = False
+    # Only matches at or above the threshold are candidates, and one whose numbers differ from the proposed text is not a duplicate
+    # of it. An older entry with no stored text cannot be compared, so it stays a candidate (fails open, as before).
+    own_numbers = _numeric_tokens(text)
+    candidates = [m for m in matches if m.similarity >= threshold and (m.document is None or _numeric_tokens(m.document) == own_numbers)]
 
-    judge_verdict: str | None = None
-    if is_duplicate and judge_client is not None and matched_document is not None:
+    def result_for(match, duplicate: bool, verdict: str | None) -> DuplicateCheckResult:
+        return DuplicateCheckResult(
+            is_duplicate=duplicate,
+            judge_verdict=verdict,
+            matched_item_id=match.item_id,
+            similarity=match.similarity,
+            matched_text=match.document,
+        )
+
+    if not candidates:
+        return result_for(matches[0], False, None)
+
+    first_considered = candidates[0]
+    first_verdict: str | None = None
+    judged = 0
+    for candidate in candidates:
+        if judge_client is None or candidate.document is None:
+            return result_for(candidate, True, None)  # nothing to confirm it with: the similarity stands
+        if judged >= max_judged:
+            break
+        judged += 1
         judge_started = time.monotonic()
         try:
-            result = judge_client.judge_duplicate_pair(text, matched_document, user_id=user_id)
-            judge_verdict = result.get("verdict")
-            if judge_verdict == "distinct":
-                is_duplicate = False
+            verdict = judge_client.judge_duplicate_pair(text, candidate.document, user_id=user_id).get("verdict")
         except Exception as exc:  # noqa: BLE001 - see this function's own docstring
             logger.warning(
-                "Dedup judge call failed, embedding verdict (is_duplicate=%s) stands unverified: %s",
-                is_duplicate,
+                "Dedup judge call failed, so the embedding match was never confirmed and the item is not skipped: %s",
                 exc,
             )
-            judge_verdict = "judge_failed"
-        if timings is not None:
-            timings["judge_ms"] = round((time.monotonic() - judge_started) * 1000)
-
-    return DuplicateCheckResult(
-        is_duplicate=is_duplicate,
-        judge_verdict=judge_verdict,
-        matched_item_id=matched_item_id,
-        similarity=similarity,
-        matched_text=matched_document,
-    )
+            return result_for(candidate, False, "judge_failed")
+        finally:
+            if timings is not None:
+                timings["judge_ms"] = timings.get("judge_ms", 0) + round((time.monotonic() - judge_started) * 1000)
+        if candidate is first_considered:
+            first_verdict = verdict
+        if verdict == "redundant":
+            return result_for(candidate, True, verdict)
+    return result_for(first_considered, False, first_verdict)

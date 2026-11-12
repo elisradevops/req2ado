@@ -40,6 +40,8 @@ class GraphDriveItem(BaseModel):
     name: str
     mime_type: str | None
     size: int
+    # The SharePoint library (drive) the item is in; None when Graph does not say.
+    drive_id: str | None = None
 
 
 class GraphFolderChild(BaseModel):
@@ -173,6 +175,7 @@ class GraphClient:
             name=body["name"],
             mime_type=body.get("file", {}).get("mimeType"),
             size=body.get("size", 0),
+            drive_id=body.get("parentReference", {}).get("driveId"),
         )
 
     def fetch_content(self, url: str) -> bytes:

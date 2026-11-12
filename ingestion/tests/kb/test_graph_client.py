@@ -715,3 +715,17 @@ def test_a_next_link_loop_is_stopped_with_an_error(monkeypatch) -> None:
         GraphClient("tok", _GRAPH).list_children_by_id("d", "i")
 
     assert "pages" in str(excinfo.value).lower()
+
+
+def test_get_drive_item_reports_the_drive_it_lives_in(monkeypatch) -> None:
+    body = {
+        "id": "01ABC",
+        "name": "spec.docx",
+        "size": 5,
+        "parentReference": {"driveId": "b!drive-1"},
+    }
+    _patch_transport(monkeypatch, httpx.MockTransport(lambda request: httpx.Response(200, json=body)))
+
+    item = GraphClient("tok", "https://graph.microsoft.com/v1.0").get_drive_item("https://contoso.sharepoint.com/f")
+
+    assert item.drive_id == "b!drive-1"

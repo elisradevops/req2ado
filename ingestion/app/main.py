@@ -1217,6 +1217,10 @@ class DedupCheckRequest(BaseModel):
     # check_for_duplicates's own 0.90 default, identical to before this
     # field existed.
     threshold: float | None = None
+    # What the proposed item is compared against: items of its own kind (Epic / Feature / Requirement; omitted = any kind), in the
+    # area path and the ones under it ("area_path", the default) or anywhere in the project ("project").
+    type_category: str | None = None
+    scope: Literal["area_path", "project"] = "area_path"
     # The submitting user's identity, forwarded to judge_duplicate_pair's
     # own per-call user_id param (see OrchestratorLlmClient's own
     # X-Req2Ado-User-Id threading) so this route's LLM tie-break judge call
@@ -1232,6 +1236,8 @@ class DedupUpsertRequest(BaseModel):
     text: str
     title: str
     area_path: str
+    # The kind of work item (Epic / Feature / Requirement), stored so a check can compare like with like. Omitted = not known.
+    type_category: str | None = None
     # See DedupCheckRequest.user_id's own doc comment -- same purpose, this
     # route's own /llm/embed call needs it to resolve a per-user connection.
     user_id: str | None = None
@@ -2841,6 +2847,8 @@ def dedup_check(body: DedupCheckRequest) -> DuplicateCheckResult:
             judge_client=_dedup_judge_client,
             user_id=body.user_id,
             timings=timings,
+            type_category=body.type_category,
+            scope=body.scope,
             **kwargs,
         )
     )
@@ -2877,7 +2885,7 @@ def dedup_upsert(body: DedupUpsertRequest) -> dict[str, bool]:
     # document=body.text: stores the item's original text alongside its
     # embedding, so a future check_for_duplicates call can run its
     # numeric-literal guard (X7) against the actual matched text.
-    _vector_store.upsert(body.item_id, embedding, body.area_path, document=body.text)
+    _vector_store.upsert(body.item_id, embedding, body.area_path, document=body.text, type_category=body.type_category)
     return {"ok": True}
 
 
@@ -2980,14 +2988,16 @@ def dedup_upsert_batch(body: DedupUpsertBatchRequest) -> dict[str, bool]:
         # areaPath (see JobsService's dedupUpsertItems), but the grouping here
         # stays correct even if that ever stops holding.
         items_by_area_path: dict[str, list[tuple[str, list[float], str]]] = {}
+        kinds_by_area_path: dict[str, list[str | None]] = {}
         for item, embedding in zip(chunk_items, blended_embeddings):
             items_by_area_path.setdefault(item.area_path, []).append(
                 (item.item_id, embedding, item.text)
             )
+            kinds_by_area_path.setdefault(item.area_path, []).append(item.type_category)
 
         try:
             for area_path, items in items_by_area_path.items():
-                _vector_store.upsert_many(items, area_path)
+                _vector_store.upsert_many(items, area_path, type_categories=kinds_by_area_path[area_path])
         except Exception as exc:
             logger.exception(
                 "dedup upsert-batch: vector store write failed after %d of %d items", start, n

@@ -31,6 +31,8 @@ class IngestResult(BaseModel):
     # skip-unchanged branch, so callers can record a truthful number. None =
     # unknown (count unavailable); never 0 by default.
     chunks_in_store: int | None = None
+    # The SharePoint library the file is in, when known (the orchestrator records it to keep one library per knowledge base).
+    drive_id: str | None = None
 
 
 # Recursive folder-crawl depth cap: bounds worst-case Graph API calls
@@ -53,6 +55,7 @@ class FolderIngestFileResult(BaseModel):
     # `file` for top-level entries. Distinguishes same-named files across
     # different subfolders in a recursive ingest.
     relative_path: str | None = None
+    drive_id: str | None = None
 
 
 class FolderIngestResult(BaseModel):
@@ -319,7 +322,7 @@ def ingest_document_from_url(
         checklist_client=checklist_client,
         retrieval_mode=retrieval_mode,
     )
-    return result.model_copy(update={"mime_type": item.mime_type})
+    return result.model_copy(update={"mime_type": item.mime_type, "drive_id": item.drive_id})
 
 
 def ingest_drive_item(
@@ -492,6 +495,7 @@ def _ingest_folder_children(
                     mime_type=child.mime_type,
                     size_bytes=len(content),
                     relative_path=relative_path,
+                    drive_id=child.drive_id,
                 )
             )
         except Exception as exc:  # noqa: BLE001 - one file's failure must not abort the batch

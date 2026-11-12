@@ -2123,11 +2123,12 @@ class OrchestratorLlmClient:
         and USB Ports" vs "USB Communication", both about "USB" but
         different requirement scope). Same 'redundant'/'contradictory'/
         'distinct' vocabulary as judge_duplicate_cluster's own within-job
-        cluster judgment -- 'distinct' is the one that matters here (the
-        candidate is genuinely a different requirement, only topically
-        similar); 'redundant'/'contradictory' both mean the ADO item IS a
-        real match for check_for_duplicates.py's purposes (it only answers
-        "does this already exist," not conflict semantics)."""
+        cluster judgment. Only 'redundant' confirms the match: the
+        candidate restates the ADO item, so it is skipped. 'distinct' (a
+        genuinely different requirement, only topically similar) and
+        'contradictory' (similar wording, different content) both mean the
+        candidate is kept -- skipping a contradictory one would silently
+        drop a requirement that disagrees with an existing one."""
         system_prompt = load_prompt("judge_duplicate_pair")
         return self._chat_json(
             system_prompt,

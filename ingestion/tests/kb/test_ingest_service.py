@@ -1386,3 +1386,47 @@ def _store_with_mode(name: str, store: KbVectorStore, mode: str | None):
         store,
         retrieval_mode=mode,
     )
+
+
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_a_url_ingest_reports_the_drive_the_file_is_in(mock_dispatch, tmp_path) -> None:
+    mock_dispatch.return_value = _fake_doc("Some paragraph text")
+    graph_client = MagicMock()
+    graph_client.get_drive_item.return_value = GraphDriveItem(
+        id="item-1", name="doc.docx", mime_type=None, size=len(DOCX_CONTENT), drive_id="drive-9"
+    )
+    graph_client.fetch_content.return_value = DOCX_CONTENT
+
+    result = ingest_document_from_url(
+        url=VALID_URL,
+        user_id="u",
+        doc_type=None,
+        graph_client=graph_client,
+        embed_client=FakeEmbedClient(),
+        vector_store=KbVectorStore(persist_path=str(tmp_path)),
+    )
+
+    assert result.drive_id == "drive-9"
+
+
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_a_folder_ingest_reports_the_drive_of_each_file(mock_dispatch, tmp_path) -> None:
+    mock_dispatch.return_value = _fake_doc("Some paragraph text")
+    graph_client = MagicMock()
+    graph_client.list_folder_children.return_value = [
+        GraphFolderChild(
+            id="item-1", name="a.docx", mime_type=None, size=len(DOCX_CONTENT), is_folder=False, download_url="https://dl/a", drive_id="drive-9"
+        ),
+    ]
+    graph_client.fetch_child_content.return_value = DOCX_CONTENT
+
+    result = ingest_folder_from_url(
+        url="https://contoso.sharepoint.com/sites/s/folder",
+        user_id="u",
+        doc_type=None,
+        graph_client=graph_client,
+        embed_client=FakeEmbedClient(),
+        vector_store=KbVectorStore(persist_path=str(tmp_path)),
+    )
+
+    assert [f.drive_id for f in result.files] == ["drive-9"]
