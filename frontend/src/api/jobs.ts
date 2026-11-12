@@ -136,6 +136,8 @@ export interface SubmitJobParams {
   mode: 'baseline' | 'survey';
   state?: string;
   iterationPath?: string;
+  // How wide the duplicate check looks: the area path and everything under it (the default; not sent) or the whole project.
+  dedupScope?: 'area_path' | 'project';
   // SURVEY-only LLM model override (BASELINE never calls an LLM). Unset
   // means "use whatever the orchestrator is configured with".
   model?: string;
@@ -153,6 +155,7 @@ export async function submitJob(params: SubmitJobParams): Promise<{ jobId: strin
   form.append('mode', params.mode);
   if (params.state) form.append('state', params.state);
   if (params.iterationPath) form.append('iterationPath', params.iterationPath);
+  if (params.dedupScope === 'project') form.append('dedupScope', params.dedupScope);
   if (params.model) form.append('model', params.model);
   if (params.documentOverview) form.append('documentOverview', JSON.stringify(params.documentOverview));
   const response = await httpClient.post('/jobs', form);

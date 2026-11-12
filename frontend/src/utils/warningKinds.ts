@@ -383,6 +383,15 @@ export const KIND_META: Record<string, KindMeta> = {
     chip: 'Unverified',
     unit: ['batch', 'batches'],
   },
+  dedup_check_failed: {
+    title: 'Duplicate check did not run',
+    group: 'review',
+    short: 'Some items could not be compared with the items already in Azure DevOps.',
+    means: 'Those items were created as new without being checked, so one of them may already exist in Azure DevOps.',
+    todo: 'Search Azure DevOps for the affected items before you create them, or resubmit the job once the embedding service is back.',
+    chip: 'Not checked',
+    unit: ['check', 'checks'],
+  },
   figure_caption_failed: {
     title: 'Figures without a description',
     group: 'review',

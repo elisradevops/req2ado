@@ -187,3 +187,15 @@ describe('document_study_incomplete', () => {
     expect(entry.group).toBe('info');
   });
 });
+
+describe('dedup_check_failed', () => {
+  it('tells the reviewer the duplicate check did not run, what that means, and what to do', () => {
+    const meta = kindMeta('dedup_check_failed');
+
+    expect(meta.title).toMatch(/duplicate check/i);
+    expect(meta.means).toMatch(/created as new|without/i);
+    expect(meta.todo).toMatch(/azure devops|search/i);
+    expect(meta.group).toBe('review');
+  });
+});
+

@@ -39,6 +39,7 @@ import { StatTile } from '../ui/StatTile';
 import { ARRIVE, useReplayOnChange } from '../ui/motion';
 import { Stepper, type StepState } from '../ui/Stepper';
 import { InfoTip } from '../ui/Tooltip';
+import { Select } from '../ui/Select';
 
 // The flow is genuinely two screens (upload, then configure+review) -- a
 // 4-label stepper (Source/Target/Options/Review) would claim stages that
@@ -233,11 +234,12 @@ export function NewJobWizard(): React.ReactElement {
   const [areaPath, setAreaPath] = useState(initial.areaPath);
   const [state, setState] = useState(initial.state);
   const [iterationPath, setIterationPath] = useState(initial.iterationPath);
+  const [dedupScope, setDedupScope] = useState<'area_path' | 'project'>(initial.dedupScope);
   const [model, setModel] = useState(initial.model);
   // Mirror the user's work into the draft store so it survives a visit to another page (cleared on submit, replace and logout).
   useEffect(() => {
-    useNewJobDraftStore.getState().patch({ step, file, preview, parseStatus, mode, model, project, areaPath, state, iterationPath });
-  }, [step, file, preview, parseStatus, mode, model, project, areaPath, state, iterationPath]);
+    useNewJobDraftStore.getState().patch({ step, file, preview, parseStatus, mode, model, project, areaPath, state, iterationPath, dedupScope });
+  }, [step, file, preview, parseStatus, mode, model, project, areaPath, state, iterationPath, dedupScope]);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [modelListing, setModelListing] = useState<ModelListing | null>(null);
   const [modelsLoading, setModelsLoading] = useState(false);
@@ -417,6 +419,7 @@ export function NewJobWizard(): React.ReactElement {
         mode,
         state: state || undefined,
         iterationPath: iterationPath || undefined,
+        dedupScope: dedupScope === 'project' ? 'project' : undefined,
         model: mode === 'survey' ? model || undefined : undefined,
         // The AI summary goes with the job only if it was ready: the start button never waits for it.
         documentOverview: mode === 'survey' ? (documentOverview && aiSummary.status === 'ready' && aiSummary.text ? { ...documentOverview, aiSummary: aiSummary.text } : documentOverview) : undefined,
@@ -745,6 +748,19 @@ export function NewJobWizard(): React.ReactElement {
                   />
                 )}
               </div>
+              <Select
+                label="Search for duplicates in"
+                labelExtra={
+                  <InfoTip content="Each proposed item is compared with items of the same kind (Epic, Feature or Requirement) that already exist in Azure DevOps, and one that is almost the same as an existing item is flagged with a link to it instead of being created again. Closed items count; Removed items do not." />
+                }
+                value={dedupScope}
+                onChange={(event) => setDedupScope(event.target.value === 'project' ? 'project' : 'area_path')}
+                helperText="Items of the same kind (Epic, Feature or Requirement) that already exist in the place you choose."
+                fullWidth
+              >
+                <option value="area_path">This area path and everything under it</option>
+                <option value="project">The whole project</option>
+              </Select>
               {/* One compact mono line, not JobDetail's full 4-box
                   DestinationBar -- the agreed design (§11.2.2) wants a
                   live "read it back" restatement here, but this card's 4

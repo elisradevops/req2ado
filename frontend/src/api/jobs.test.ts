@@ -14,6 +14,19 @@ describe('jobs api', () => {
     expect(result).toEqual([{ id: 'j1' }]);
   });
 
+  it('submitJob says how wide the duplicate check looks only when it is not the default', async () => {
+    const post = vi.mocked(httpClient.post).mockResolvedValue({ data: { jobId: 'job-1' } });
+
+    await submitJob({ file: new File(['x'], 'req.docx'), areaPath: 'Project\\Area1', mode: 'baseline', dedupScope: 'project' });
+    await submitJob({ file: new File(['x'], 'req.docx'), areaPath: 'Project\\Area1', mode: 'baseline', dedupScope: 'area_path' });
+    await submitJob({ file: new File(['x'], 'req.docx'), areaPath: 'Project\\Area1', mode: 'baseline' });
+
+    const [first, second, third] = post.mock.calls.map((call) => call[1] as FormData);
+    expect(first.get('dedupScope')).toBe('project');
+    expect(second.get('dedupScope')).toBeNull();
+    expect(third.get('dedupScope')).toBeNull();
+  });
+
   it('submitJob appends file/areaPath/mode to the form data', async () => {
     (httpClient.post as any).mockResolvedValue({ data: { jobId: 'job-1' } });
 

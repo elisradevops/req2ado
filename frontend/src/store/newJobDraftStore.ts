@@ -19,6 +19,8 @@ export interface NewJobDraft {
   areaPath: string;
   state: string;
   iterationPath: string;
+  // How wide the duplicate check looks.
+  dedupScope: 'area_path' | 'project';
 }
 
 export const EMPTY_DRAFT: NewJobDraft = {
@@ -32,6 +34,7 @@ export const EMPTY_DRAFT: NewJobDraft = {
   areaPath: '',
   state: '',
   iterationPath: '',
+  dedupScope: 'area_path',
 };
 
 interface NewJobDraftStore {

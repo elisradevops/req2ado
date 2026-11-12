@@ -435,6 +435,52 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
     expect(screen.queryByText('1 file · 32 chunks')).toBeNull();
   });
 
+  describe('where duplicates are looked for', () => {
+    async function toStepTwo(): Promise<void> {
+      vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({
+        blockCount: 1, sectionCount: 1, figureCount: 0, depth: 1, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
+      } as any);
+      vi.spyOn(jobsApi, 'submitJob').mockResolvedValue({ jobId: 'job-1' });
+      render(
+        <ToastProvider>
+          <MemoryRouter>
+            <NewJobWizard />
+          </MemoryRouter>
+        </ToastProvider>,
+      );
+      await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'req.docx'));
+      await waitFor(() => expect(screen.getByRole('button', { name: /configure/i })).not.toBeDisabled());
+      await userEvent.click(screen.getByRole('button', { name: /configure/i }));
+      await userEvent.type(screen.getByLabelText(/area path/i), 'Project\\Area1');
+    }
+
+    it('searches the area path and everything under it by default, and does not send a scope', async () => {
+      await toStepTwo();
+
+      expect(screen.getByLabelText(/search for duplicates in/i)).toHaveTextContent(/this area path and everything under it/i);
+      await userEvent.click(screen.getByRole('button', { name: /start job/i }));
+
+      expect(jobsApi.submitJob).toHaveBeenCalledWith(expect.objectContaining({ dedupScope: undefined }));
+    });
+
+    it('can be widened to the whole project, and the job is submitted that way', async () => {
+      await toStepTwo();
+
+      await userEvent.click(screen.getByLabelText(/search for duplicates in/i));
+      await userEvent.click(await screen.findByRole('option', { name: /the whole project/i }));
+      await userEvent.click(screen.getByRole('button', { name: /start job/i }));
+
+      expect(jobsApi.submitJob).toHaveBeenCalledWith(expect.objectContaining({ dedupScope: 'project' }));
+    });
+
+    it('explains what each choice means', async () => {
+      await toStepTwo();
+
+      expect(screen.getByLabelText(/search for duplicates in/i)).toBeInTheDocument();
+      expect(screen.getByText(/items of the same kind \(epic, feature or requirement\) that already exist/i)).toBeInTheDocument();
+    });
+  });
+
   it('BASELINE never shows step 3 -- Start job submits directly from step 2', async () => {
     vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({
       blockCount: 1, sectionCount: 1, figureCount: 0, depth: 1, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
