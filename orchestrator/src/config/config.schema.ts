@@ -122,6 +122,9 @@ export const configSchema = z.object({
     .enum(['true', 'false'])
     .default('true')
     .transform((v) => v === 'true'),
+  // Who may change the duplicate threshold in Settings: user ids, comma-separated, exactly as the app knows them (Profile > Technical ID). Empty or
+  // unset = every signed-in user may, as before this setting existed. The app has no roles; this is the one place that tells people apart.
+  REQ2ADO_ADMIN_USER_IDS: z.string().optional(),
   EMBED_PATH: z.string().default('/api/embed'),
   // Embedding request-size limits (modules/llm/embed-batching.ts). Unset: the limits come from the model-family table, then
   // from what the upstream's rejections taught the client. Set only to pin a deployment whose limits differ from its family.

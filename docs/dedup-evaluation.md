@@ -31,7 +31,7 @@ can merge. Every judgement below weighs a wrong skip as the worse error.
 | 5 | Matching is filtered by area path only. Item type and parent are not used, so a Requirement can be matched against a Feature. | `query_nearest(embedding, area_path)` | Medium | **Fixed**: matching is by item kind, and the job chooses the area path or the whole project. Parent is still not used. |
 | 6 | Requirement boilerplate ("The system shall...") is shared by almost every item and pushes cosine similarity up for unrelated pairs. | reasoning from the data shape, not measured | Medium | Open: not measured. |
 | 7 | Hebrew and mixed Hebrew/English text have never been evaluated. | no Hebrew pairs in any test or fixture | Medium | Partly: a draft set of synthetic Hebrew pairs exists (below) and local `bge-m3` has been run on it. Real labelled pairs are still needed. |
-| 8 | One global threshold that any signed-in user can change (`settings.dto.ts`). The app has no roles. | `settings.dto.ts` | Medium | Open. |
+| 8 | One global threshold that any signed-in user can change (`settings.dto.ts`). The app has no roles. | `settings.dto.ts` | Medium | **Fixed, opt-in**: `REQ2ADO_ADMIN_USER_IDS` limits who can change it; empty keeps today's behaviour for everyone (see `docs/runbook.md`). |
 | 9 | `DedupSkipAudit` stores only the skipped pairs (a score and an ADO id), not the texts or the verdicts, and never the pairs that were not skipped. It cannot serve as a labelled set, because it only contains predicted positives. | `schema.prisma` | Low | Open. |
 | 10 | The Settings page described the threshold in terms of cosine similarity and did not say that a second check confirms every match. | `Settings.tsx` | Low | **Fixed**: plain wording, and the embedding model is shown read-only. |
 
@@ -82,7 +82,7 @@ The hard non-duplicates matter most, because those are the pairs the threshold h
 
 1. Calibrate the threshold for `text-embedding-3-small` (finding 3) and for the local model, and record the result here with the date and model.
 2. Try normalising away requirement boilerplate before embedding (finding 6), judged by the same evaluation.
-3. Restrict who can change the threshold (finding 8), and log the texts and verdicts of every decision (finding 9) so the next set can be built from real use.
+3. Log the texts and verdicts of every decision (finding 9) so the next set can be built from real use. This stores requirement text, so how long to keep it and whether to mask it must be decided first.
 
 ## Not verified
 

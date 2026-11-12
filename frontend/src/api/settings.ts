@@ -11,6 +11,8 @@ export interface AppSettings {
   dedupThreshold: number;
   // The embedding model the similarity is measured with. Read-only: set by whoever runs the system. Absent when the server does not say.
   embeddingModel?: string;
+  // Whether this user may change the threshold. Absent against an older server, which let everyone.
+  canEditDedupThreshold?: boolean;
 }
 
 export async function getAppSettings(): Promise<AppSettings> {

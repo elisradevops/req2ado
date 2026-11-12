@@ -31,6 +31,16 @@ export class SettingsService {
     return model ? { embeddingModel: model } : {};
   }
 
+  // Whether this user may change the threshold. With no administrators set (REQ2ADO_ADMIN_USER_IDS empty or unset) everyone may, which
+  // is how it was before the setting existed; once any are set, only those exact ids may.
+  canEdit(userId: string): boolean {
+    const admins = (this.config?.get<string>('REQ2ADO_ADMIN_USER_IDS') ?? '')
+      .split(',')
+      .map((id) => id.trim())
+      .filter((id) => id.length > 0);
+    return admins.length === 0 || admins.includes(userId);
+  }
+
   async get(): Promise<AppSettingsView> {
     const row = await this.prisma.appSettings.findUnique({ where: { id: SETTINGS_ROW_ID } });
     return { dedupThreshold: row?.dedupThreshold ?? DEFAULT_DEDUP_THRESHOLD, ...this.embeddingModel() };

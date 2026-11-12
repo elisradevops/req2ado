@@ -235,6 +235,48 @@ describe('Settings', () => {
       expect(screen.queryByText(/set by whoever runs this system/i)).toBeNull();
     });
 
+    describe('who may change it', () => {
+      it('is read-only, with the reason, for a user who may not edit it', async () => {
+        vi.mocked(settingsApi.getAppSettings).mockResolvedValue({ dedupThreshold: 0.9, canEditDedupThreshold: false });
+        renderPage();
+
+        const field = await findThresholdField();
+
+        expect(field).toBeDisabled();
+        expect(screen.getByRole('button', { name: /save threshold/i })).toBeDisabled();
+        expect(screen.getByText(/only an administrator can change this/i)).toBeInTheDocument();
+      });
+
+      it('is editable, with no note, when the server says the user may', async () => {
+        vi.mocked(settingsApi.getAppSettings).mockResolvedValue({ dedupThreshold: 0.9, canEditDedupThreshold: true });
+        renderPage();
+
+        expect(await findThresholdField()).toBeEnabled();
+        expect(screen.queryByText(/only an administrator can change this/i)).toBeNull();
+      });
+
+      it('is editable against a server that does not say (an older one)', async () => {
+        vi.mocked(settingsApi.getAppSettings).mockResolvedValue({ dedupThreshold: 0.9 });
+        renderPage();
+
+        expect(await findThresholdField()).toBeEnabled();
+      });
+
+      it('says so, in words, when a save is refused as not allowed', async () => {
+        const refused = Object.assign(new Error('403'), { isAxiosError: true, response: { status: 403, data: { code: 'settings_forbidden' } } });
+        vi.mocked(settingsApi.updateAppSettings).mockRejectedValue(refused);
+        renderPage();
+
+        const field = await findThresholdField();
+        await userEvent.clear(field);
+        await userEvent.type(field, '80');
+        await userEvent.click(screen.getByRole('button', { name: /save threshold/i }));
+
+        expect(await screen.findByText(/only an administrator can change the threshold/i)).toBeInTheDocument();
+        expect(screen.queryByText(/check your connection/i)).toBeNull();
+      });
+    });
+
     it('saves the edited percentage back as a 0-1 fraction', async () => {
       vi.mocked(settingsApi.updateAppSettings).mockResolvedValue({ dedupThreshold: 0.94 });
       renderPage();
@@ -445,6 +487,14 @@ describe('Settings', () => {
       renderPage();
 
       expect(within(row()).getByText(/^connected · https:\/\/ado\.example$/i)).toBeInTheDocument();
+    });
+
+    it('says in words, as a danger, that its token was rejected', () => {
+      useConnectionStatusStore.setState({ ado: { data: { status: 'invalid' }, error: false, checkedAt: 1, inFlight: false } });
+      renderPage();
+
+      expect(within(row()).getByText(/token rejected/i)).toBeInTheDocument();
+      expect(row().className).toMatch(/danger/);
     });
 
     it('turns to a warning, in words, when it cannot be reached', () => {

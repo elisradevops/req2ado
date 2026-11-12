@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { httpClient } from '../api/httpClient';
 import { reconnectSharePoint, type SharePointStatus } from '../api/kb';
+import { isAxiosError } from 'axios';
 import { getAppSettings, updateAppSettings } from '../api/settings';
 import { getLlmConnection, getLlmConnectionModels, setLlmConnection, type LlmConnectionStatus, type LlmSelectableModel } from '../api/llmConnection';
 import { useConnectionStatusStore } from '../store/connectionStatusStore';
@@ -63,6 +64,7 @@ const THRESHOLD_PERCENT_MIN = 0;
 const THRESHOLD_PERCENT_MAX = 100;
 const THRESHOLD_LOAD_ERROR = "Couldn't load the current threshold. Reload the page to try again.";
 const THRESHOLD_SAVE_ERROR = "Couldn't save the threshold. Check your connection and try again.";
+const THRESHOLD_FORBIDDEN_ERROR = 'Only an administrator can change the threshold.';
 const THRESHOLD_RANGE_ERROR = `Enter a percentage between ${THRESHOLD_PERCENT_MIN} and ${THRESHOLD_PERCENT_MAX}.`;
 
 // 0.905 -> "90.5". Rounds to one decimal place of a percent, which is finer
@@ -214,6 +216,8 @@ export function Settings(): React.ReactElement {
   const [savedThresholdPercent, setSavedThresholdPercent] = useState<string | null>(null);
   const [isThresholdLoading, setIsThresholdLoading] = useState(true);
   const [embeddingModel, setEmbeddingModel] = useState<string | null>(null);
+  // Whether this user may change the threshold; true until the server says otherwise (an older one let everyone).
+  const [canEditThreshold, setCanEditThreshold] = useState(true);
   const [isSavingThreshold, setIsSavingThreshold] = useState(false);
   const [thresholdError, setThresholdError] = useState<string | null>(null);
   const isSavingThresholdRef = useRef(false);
@@ -237,6 +241,7 @@ export function Settings(): React.ReactElement {
         setThresholdPercent(percentText);
         setSavedThresholdPercent(percentText);
         setEmbeddingModel(settings.embeddingModel ?? null);
+        setCanEditThreshold(settings.canEditDedupThreshold !== false);
       })
       .catch(() => setThresholdError(THRESHOLD_LOAD_ERROR))
       .finally(() => setIsThresholdLoading(false));
@@ -394,8 +399,8 @@ export function Settings(): React.ReactElement {
       setThresholdPercent(percentText);
       setSavedThresholdPercent(percentText);
       showToast('Duplicate detection threshold saved.', 'success');
-    } catch {
-      setThresholdError(THRESHOLD_SAVE_ERROR);
+    } catch (error) {
+      setThresholdError(isAxiosError(error) && error.response?.status === 403 ? THRESHOLD_FORBIDDEN_ERROR : THRESHOLD_SAVE_ERROR);
     } finally {
       isSavingThresholdRef.current = false;
       setIsSavingThreshold(false);
@@ -509,7 +514,7 @@ export function Settings(): React.ReactElement {
                       aria-label="Similarity threshold percentage"
                       value={thresholdPercent}
                       onChange={(e) => setThresholdPercent(e.target.value)}
-                      disabled={isThresholdUnavailable || isSavingThreshold}
+                      disabled={isThresholdUnavailable || !canEditThreshold || isSavingThreshold}
                       className="w-[72px] text-right"
                     />
                     <span className="text-sm text-ink-2">%</span>
@@ -521,12 +526,13 @@ export function Settings(): React.ReactElement {
                     <span>(set by whoever runs this system)</span>
                   </p>
                 )}
+                {!canEditThreshold && <p className="text-xs text-ink-3">Only an administrator can change this. Ask whoever runs this system.</p>}
                 {thresholdError && <p className="text-sm text-danger">{thresholdError}</p>}
                 <div className="flex justify-end">
                   <Button
                     size="sm"
                     onClick={handleSaveThreshold}
-                    disabled={isThresholdUnavailable || !isThresholdDirty || !isThresholdValid || isSavingThreshold}
+                    disabled={isThresholdUnavailable || !canEditThreshold || !isThresholdDirty || !isThresholdValid || isSavingThreshold}
                   >
                     {isSavingThreshold && <Spinner />}
                     Save threshold

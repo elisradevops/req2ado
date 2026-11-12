@@ -86,6 +86,14 @@ deleted.
    live set first (re-run step 2/3, then re-list and diff) before deleting
    anything. When in doubt, leave them; they cost only disk.
 
+### Who can change the duplicate threshold
+
+By default every signed-in user can change the similarity threshold in Settings (the app has no roles). To limit it, set `REQ2ADO_ADMIN_USER_IDS` in
+`.env` to a comma-separated list of user ids and recreate `orchestrator`. Each person's id is under Profile & Connections > Technical ID (copy the full
+value; it is long and contains a semicolon and an at sign). Everyone not on the list sees the threshold read-only with the reason, and a save from them is
+refused (HTTP 403, code `settings_forbidden`). Unset or empty means everyone, as before. Match is exact, so a mistyped id locks that person out until fixed.
+The Helm chart does not pass this variable yet.
+
 ### Local development: bge-m3
 
 Local development reaches Ollama through Open WebUI. For Hebrew, use `bge-m3`
