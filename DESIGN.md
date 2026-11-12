@@ -354,11 +354,9 @@ silently delete a row — close it by changing the code, then move it to §18.**
 
 | # | This document prescribes | `index.css` currently has | Impact |
 |---|---|---|---|
-| A | `--font-display` / `--font-sans` = IBM Plex Sans | `'Inter Tight Variable'` / `'Inter Variable'` | Cosmetic; the mono/proportional seam in §1.2 stays visible until migrated. Requires adding the Plex Sans package alongside the existing `@fontsource` Plex Mono. |
 | B | `--text-*: initial`, `--radius-*: initial`, `--shadow-*: initial`, `--duration-*: initial`, `--ease-*: initial` in `@theme` | only `--color-*: initial` is present | The colour scale is mechanically deleted; the other scales are not. Today they are enforced by `tokens.test.ts`'s regex ratchet instead of by the cascade. Adding the `initial` lines would make `text-3xl`, `rounded-2xl`, `duration-500` compile-time impossible rather than test-time detectable. |
-| C | `.liftable` / `.hoverable-row` as `@layer components` utilities (§6) | neither class exists; `.lift` exists only as a reduced-motion marker, with the transition and hover spelled out per call site (see `ui/StatTile.tsx`) | Until §6 lands, hover behaviour is re-decided per component — the exact problem §6 exists to end. |
 
-Nothing else in §1 diverges. Every colour, spacing, radius, shadow, duration and
+Rows A (Plex) and C (`.liftable`) were closed in code earlier and are recorded in §18; their stale rows were removed here. Nothing else in §1 diverges. Every colour, spacing, radius, shadow, duration and
 easing value above matches `index.css` exactly.
 
 ---
@@ -374,6 +372,7 @@ easing value above matches `index.css` exactly.
 | Primary action | `action`, `action-hover`, `action-active` | The one affirmative CTA per view (Start job, Save, Configure) | Two `action`-coloured buttons competing in one view |
 | Interactive / selected | `accent` family | Focus rings, selected rows/cards, active nav, links, checked inputs, the `.hoverable-row` rail, progress fills, stat-tile icons | Anything not currently interactive-or-chosen |
 | Irreversible-write CTA | `signal` family | **Exactly one class of element**: the confirm-to-ADO CTA and its acknowledgement affordance | Focus rings, stat tiles, status chips, toasts, lifecycle steps, any other button |
+| Brand panel (sign-in page) | `brand-blue`, `brand-yellow` | **Exactly one surface**: the non-interactive brand panel of `pages/Login.tsx`. Brand blue is its background; brand yellow is its mark tile and accent bar. | Any control, chip, status, link, focus ring or any other page. `brand-yellow` is **not** `signal` and never means "irreversible write" (§16.7); `brand-*` and `rail-*` (§16.8) are separate scopes. `design/brandTokens.test.ts` fails if any other file uses them. |
 | Nav rail | `rail-*` | `components/AppShell.tsx`'s `<nav>` and its children — **and nothing else** | Buttons, inputs, selected table rows, progress bars — anywhere else |
 | Dark status strip | `ink-1` as a background | **Exactly one element**: `components/NarrationTicker.tsx`'s bar (§11.3) | Any other dark surface; `ink-1` stays a text token everywhere else |
 | Streaming / in-flight | `live` | A chip or icon **only while a stream is actually open** | A terminal status; anything static |
@@ -425,6 +424,9 @@ here with its computed ratio **before merge**.
 | Pair | Ratio | Passes |
 |---|---|---|
 | `ink-1` / white | 14.2:1 | yes |
+| white / `brand-blue` | 8.67:1 | yes (sign-in brand panel text) |
+| white at 80% / `brand-blue` | 6.20:1 | yes (the panel's secondary line) |
+| `brand-blue` / `brand-yellow` | 6.60:1 | yes (the mark tile; the yellow accent bar on blue is the same pair) |
 | `ink-2` / white | 10.4:1 | yes |
 | `ink-3` / `surface` | 5.49:1 | yes |
 | `ink-3` / `canvas` | 5.00:1 | yes — retuned from `#64748b`, which was 4.33:1 on canvas, a real SC 1.4.3 failure on the app's own page background. Fixed with zero call-site churn since every use was already `text-ink-3`. |
@@ -3324,6 +3326,43 @@ on `surface-alt`), the exit-animation order of the two-dialog hand-over in a rea
 browser, and the write against a real Azure DevOps server. Recorded Lows are in the
 backlog (items 31 to 33).
 
+### §11.7 — Knowledge Base, sign-in and connection status
+
+Written after the pages were built, from what they do. Each rule has a test; where a rule rests on a published guideline the source is named.
+
+**Page shape.** Source bar (the folder link, its status in words, Refresh / Change / Reconnect) → explorer (folders, files with checkboxes, details) → batch panel
+(only while a batch is on show) → knowledge-base health line. The grading rubric is **not** on the page: it opens in a dialog from the health line, the
+ingestion report and a job's score explanation.
+
+**Adding files.** Nothing is ingested before the user has chosen how jobs use the file: Search (retrieved only when similar) or Reference (the full text goes into
+every job, so every job pays for it). One choice can apply to many files, any single file can be flipped, the choice is never preselected unless the user said to
+remember it, and a suggestion states its reason. The per-file switch carries a visible word ("Reference"); a bare switch is not enough (§13).
+
+**Selecting.** Checkboxes on files, "Select all" and "Select new" in a bar that appears only when it has something to do. Folders are left out of a selection unless
+"Include subfolders" is on; while it is off the bar says how many subfolders are not included. Turning it off takes back anything selected below those folders.
+Scanning shows how far it is in words ("3 folders, 41 files"), can be cancelled, keeps what it found when it stops early, and names what it left out. Limits are
+stated, never silent: 200 files per batch, 50 MB per file, 5 levels, 100 folders.
+
+**One library.** A knowledge base holds one SharePoint library. Adding from another asks first, in a destructive confirmation (§7) that says how many files go and
+why, with Cancel as the safe path. Nothing is removed until it is confirmed. Browsing or changing the source removes nothing.
+
+**Background batch.** Server-kept, so it survives leaving the page. States are words with an icon; one status region announces only the start and the end, never
+each file; the progress bar names its reading ("1 of 4 files done"). Cancel finishes the current file and says so. A SharePoint token that runs out pauses the
+batch and says what to do. The finished batch's report lists each file's outcome, a warning for a file that stored no text, and what each file gave the rubric.
+
+**Names.** File and folder names are wrapped in `<bdi dir="auto">`, and a long unbroken name must wrap inside its container (`min-w-0` and `overflow-wrap:anywhere`
+on any flex child that can hold one).
+
+**Sign-in.** A split layout from `md` up (brand panel about 40%, form), the brand panel as a top band below it. Help for a field sits in the field's label row
+(`labelExtra`), never beside the input. The brand panel is decoration: no control lives in it.
+
+**Connection status.** One rail item, not three lights: "All systems OK", or "N need attention" with a count; it says "Checking connections…" until the first answers
+and never shows a failure for a check that has not finished. Its popover lists each connection in words, when it was checked, "Check now", and where to fix it.
+A rejected credential is danger; an unreachable service is a warning; a connection nobody set up is neither.
+
+**Navigation rail.** Icons sit on one vertical line whether the rail is open or closed; labels stay in the page and fade, so links keep their names; the choice is
+remembered; the toggle reports `aria-expanded`.
+
 ---
 
 ## §12 — Content and voice
@@ -3379,6 +3418,19 @@ backlog (items 31 to 33).
   files were surfaced for this job." `{0, 0}` reads "No knowledge-base files
   were available to this job." — never "0 of 0". BASELINE and pre-existing jobs
   show no coverage line at all.
+- **Confirm only what is serious, and say what it does; undo what can be undone.** A confirmation is for an action with a serious consequence (the write to
+  Azure DevOps, removing a document or a library's files). It names the object and the count, its button says the verb ("Remove 3 files and continue"), and it never
+  asks "Are you sure?". Anything reversible is done at once and offers undo where one exists. A confirmation used for everything stops being read
+  (NN/g, *Confirmation dialogs*; Fluent 2 alert dialogs; Atlassian modal dialog).
+- **Long work is visible, stoppable and survives leaving.** Over about a second the user is told something is happening; over about ten seconds they are told how far
+  (counted work, "N of M"), shown what is being done, and offered a way to stop (NN/g, *Response times* and *Progress indicators*). Work the server keeps going is
+  found again on return, and its end is announced in a status region without moving focus (WCAG 4.1.3).
+- **Errors say what happened and what to do, where it happened, and keep the user's input** (NN/g, *Error message guidelines*; Primer, *Saving*).
+- **Empty states say why they are empty and what to do next** — still loading, unavailable, or nothing yet (NN/g, *Empty states*; Atlassian empty state).
+- **Text direction.** Runtime text of unknown direction (file names, folder paths, people's names) is wrapped in `<bdi dir="auto">`; CSS uses logical start/end
+  properties for anything that must flip (W3C i18n, *Structural markup and right-to-left*; *Inline markup and bidirectional text*).
+
+---
 
 ## §13 — Accessibility contract
 
@@ -3403,8 +3455,9 @@ backlog (items 31 to 33).
   setting, and its hint line disappears with it (WCAG 2.1.4). Results of those keys
   are announced from a status region inside the open dialog (§11.6).
 - **Colour is never the sole carrier of state.** Selected rows and cards set
-  real `aria-selected` / `aria-checked` / `aria-pressed`; status carries a chip
-  label and usually an icon in addition to colour; the proposed-versus-written
+  real `aria-selected` / `aria-checked` / `aria-pressed`; status carries a text
+  label and an icon or shape in addition to colour (colour is never one of the two
+  cues that carry the meaning); the proposed-versus-written
   distinction (§0.3) also changes the available action affordance, not only the
   paint.
 - Progress bars set `role="progressbar"` with `aria-valuenow` / `aria-valuemin`
@@ -3517,7 +3570,7 @@ Mechanically checkable, and not re-litigable without a §17 change to this file.
     links.
 13. No transform other than `translateY`, `scale`/`scaleY`, and `translateX`
     (the last only for the indeterminate progress loop). No rotation outside
-    `Spinner`. No skew, no 3-D.
+    `Spinner` and the quarter turn of a disclosure chevron (§8). No skew, no 3-D.
 14. No border-radius above 16px except `rounded-full` on pills, dots, avatars,
     and progress-track caps.
 15. No nesting a `Card` inside a `Card`.
@@ -3650,3 +3703,7 @@ code, then moving its row up into §18.
 |---|---|---|
 | `--text-*` / `--radius-*` / `--shadow-*` / `--duration-*` / `--ease-*` `: initial` | `index.css` `@theme` | §1.8 row B |
 | **Stage 2** — per-category `why` / `fix` strings from the model | `_response_schemas.py` (`scores_schema`, `epic_feature_scores_schema`), both `score_*.v1.txt` prompts, `orchestrator_llm_client.py:846-914`, `scoring.py:326-349`, `model.py:62`, regenerated `shared/ts`, `dry-run.service.ts:23`, `pipeline.worker.ts:202`, `DiffTree.tsx:71`, `QualityGauge.tsx:23` | §11.4.3 — new data end to end; no DB migration (`dryRunDiff` is JSON) |
+| `--color-brand-blue: #1b4a8f`, `--color-brand-yellow: #fde134` | **added** (§2 row, §3 rows) | For the sign-in page's brand panel only; `design/brandTokens.test.ts` guards the scope. Brand yellow is not signal yellow (§16.7). |
+| §1.8 rows A (Plex) and C (`.liftable`) | **rows removed** | Both were already closed in code and recorded above; the stale rows were still in §1.8. |
+| §16.13 "no rotation outside `Spinner`" | amended to allow the disclosure chevron's quarter turn | §8 already allowed it; the two rules disagreed. |
+| §13 "status usually has an icon" | amended: a text label plus an icon or shape, always | The rule was weaker than its own "never colour alone". Carbon status pattern and WCAG 1.4.1 ask for two cues. |

@@ -63,11 +63,14 @@ deleted.
    orchestrator and ingestion consume the same one; setting it on only one
    service silently splits them. `ingestion/tests/test_embed_model_drift.py`
    guards the plumbing that makes this true.
-2. Re-backfill dedup for every area path, using the procedure in the section
-   above (list `AreaPathBackfill`, then `POST /backfill` for each). Until an
-   area path is re-backfilled, its pre-swap entries are simply absent — a
-   dedup check behaves as if that area path had never been ingested, so
-   nothing is *wrongly* matched, but real duplicates stop being caught.
+2. Re-backfill dedup. This now happens by itself: each area path's scan
+   records the embedding model (and the layout of the index), so the next job
+   against that area path scans it again under the new model, and a
+   whole-project job scans the project's root. To do it ahead of time, list
+   `AreaPathBackfill` and `POST /backfill` for each area path. Until an area
+   path is re-scanned, its pre-swap entries are simply absent — a dedup check
+   behaves as if that area path had never been ingested, so nothing is
+   *wrongly* matched, but real duplicates stop being caught.
 3. Re-ingest each user's KB sources (`POST /kb/ingest-url` per source).
    Nothing needs purging first: `existing_file_hash` reads from inside the
    collection, so under the new model it reports "never ingested" and the
@@ -82,6 +85,24 @@ deleted.
    `req2ado_kb_<32 hex>` — the same shape as the new ones, so identify the
    live set first (re-run step 2/3, then re-list and diff) before deleting
    anything. When in doubt, leave them; they cost only disk.
+
+### Local development: bge-m3
+
+Local development reaches Ollama through Open WebUI. For Hebrew, use `bge-m3`
+(1.2 GB, 1,024 dimensions, 8,192-token input, "more than 100 working
+languages", MIT licence); the previous local default `all-minilm` is
+English-only and cuts input at 256 word pieces.
+
+1. On the machine running Ollama behind Open WebUI: `ollama pull bge-m3`.
+2. In `.env`: `EMBED_TRANSPORT=ollama`, `EMBED_PATH=/ollama/api/embed`,
+   `EMBED_MODEL=bge-m3:latest`. Recreate `orchestrator`, `pipeline-worker` and
+   `ingestion` (`bash scripts/rebuild-app-services.sh`).
+3. Re-add each user's Knowledge Base documents (the batch add on the
+   Knowledge Base page). The duplicate index rebuilds on the next job.
+4. Check Hebrew before trusting the threshold: label about 20 Hebrew pairs and
+   run `ingestion/scripts/dedup_eval.py` (see `docs/dedup-evaluation.md`).
+   Scores are not comparable with production's `text-embedding-3-small`, so
+   the threshold needs its own check.
 
 **Do not** try to "fix" a mid-swap state by reverting `EMBED_MODEL` to make the
 old collections reachable again unless you are *certain* which model wrote
