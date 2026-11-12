@@ -3363,6 +3363,20 @@ A rejected credential is danger; an unreachable service is a warning; a connecti
 **Navigation rail.** Icons sit on one vertical line whether the rail is open or closed; labels stay in the page and fade, so links keep their names; the choice is
 remembered; the toggle reports `aria-expanded`.
 
+**Duplicate review.** An item skipped as a near-duplicate says so in words ("Already exists in Azure DevOps"), names the work item it matches as a link that
+opens it, says how alike the two are, and says that the existing item is not changed. The one action is "Create as new item…", a choice dialog with two optional
+links: into this job's tree (on by default) and Related to the existing item (off). It is not a destructive confirmation (§7), because the choice is undoable:
+the item then says "Will be created as a new item" with Undo, and Undo restores the skip. Nothing here edits the existing item. A skipped or reused item shows no
+quality score or "Not scored yet", because it will not be created.
+
+**Narrow screens.** Below `lg` the Knowledge Base explorer stacks: the folder tree is left out (the breadcrumb and the folder rows navigate), the file list takes
+the full width, and the details open under it once a file is chosen. The file list drops Type and Size below `md` and keeps a minimum width for the name. A status
+or address that can be long wraps inside its row (`Settings` integrations), so an action is never pushed off the screen. No page scrolls sideways; a wide table
+scrolls inside its own container.
+
+**State that the user sets.** A dialog starts from what is known when it opens and not again until it re-opens. State must never be reset by an effect keyed on a
+list or object the parent builds anew on each render: any re-render (a status poll is enough) would put the starting value back over the user's choice.
+
 ---
 
 ## §12 — Content and voice
@@ -3707,3 +3721,4 @@ code, then moving its row up into §18.
 | §1.8 rows A (Plex) and C (`.liftable`) | **rows removed** | Both were already closed in code and recorded above; the stale rows were still in §1.8. |
 | §16.13 "no rotation outside `Spinner`" | amended to allow the disclosure chevron's quarter turn | §8 already allowed it; the two rules disagreed. |
 | §13 "status usually has an icon" | amended: a text label plus an icon or shape, always | The rule was weaker than its own "never colour alone". Carbon status pattern and WCAG 1.4.1 ask for two cues. |
+| §11.7 duplicate review, narrow screens, user-set state | **added** | Written from the pages as built. Each rule has a test: `DuplicateMatchCard`, `KnowledgeBase` (stacking), `KbFileList` (columns), `KbAddBatchDialog` (re-render). |
