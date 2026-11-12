@@ -36,7 +36,7 @@ describe('Settings', () => {
   it('shows the signed-in identity and current org URL', () => {
     renderPage();
     expect(screen.getByText('Jane Doe')).toBeInTheDocument();
-    expect(screen.getByText('https://ado.example')).toBeInTheDocument();
+    expect(screen.getByText(/https:\/\/ado\.example/)).toBeInTheDocument();
   });
 
   it('reconnect calls /auth/ado-credential (not /auth/login -- no new session) and updates the stored org URL', async () => {
@@ -438,6 +438,13 @@ describe('Settings', () => {
       renderPage();
 
       expect(row().className).not.toMatch(/warning|danger/);
+    });
+
+    it('says "Connected" in words when the connection is fine, not by colour alone', () => {
+      useConnectionStatusStore.setState({ ado: { data: { status: 'valid' }, error: false, checkedAt: 1, inFlight: false } });
+      renderPage();
+
+      expect(within(row()).getByText(/^connected · https:\/\/ado\.example$/i)).toBeInTheDocument();
     });
 
     it('turns to a warning, in words, when it cannot be reached', () => {

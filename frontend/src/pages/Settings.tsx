@@ -120,9 +120,10 @@ function IntegrationRow({
     <div className={cn('flex items-center gap-3 rounded-md border p-3', TONE_CARD_CLASSES[tone])}>
       <span className="grid h-8 w-8 flex-none place-items-center rounded-md bg-surface-alt text-ink-3">{icon}</span>
       <div className="min-w-0 flex-1">
-        <p className="flex items-center gap-2 text-sm font-medium text-ink-1">
+        <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium text-ink-1">
           {name}
-          <Chip className={cn('border text-xs font-normal', TONE_CHIP_CLASSES[tone])}>{detail}</Chip>
+          {/* The status can be long (an address, an expiry): it wraps inside the row instead of pushing the action off a narrow screen. */}
+          <Chip className={cn('max-w-full rounded-xl border text-xs font-normal whitespace-normal [overflow-wrap:anywhere]', TONE_CHIP_CLASSES[tone])}>{detail}</Chip>
         </p>
         {reason && <p className="mt-0.5 text-xs text-danger-ink">{reason}</p>}
       </div>
@@ -419,7 +420,7 @@ export function Settings(): React.ReactElement {
   return (
     <div className="flex flex-col gap-4">
       <PageHeader title="Profile & Connections" />
-      <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
         <SectionCard title="Profile">
           <ProfileCard displayName={displayName} email={email} accountName={accountName} userId={userId} orgUrl={orgUrl} />
         </SectionCard>
@@ -430,7 +431,9 @@ export function Settings(): React.ReactElement {
               <IntegrationRow
                 icon={<span className="text-xs font-bold">ADO</span>}
                 name="Azure DevOps"
-                detail={orgUrl ?? 'Not connected'}
+                // A healthy or still-checking connection says so in words beside the address (the failures say it below the row), so the
+                // state is never carried by the colour of the chip alone.
+                detail={adoRow.state === 'ok' || adoRow.state === 'checking' ? `${adoRow.word}${orgUrl ? ` · ${orgUrl}` : ''}` : (orgUrl ?? 'Not connected')}
                 tone={ADO_TONE[adoRow.state]}
                 reason={adoRow.state === 'attention' || adoRow.state === 'danger' ? adoRow.word : null}
                 actionLabel="Reconnect"

@@ -8,11 +8,14 @@ Findings below are from reading the code unless marked otherwise. Nothing here w
 For each proposed item (`ingestion/app/dedup/check_for_duplicates.py`):
 
 1. The title and the description are embedded separately and blended 50/50 into one vector (`embedding_blend.py`).
-2. The nearest stored item in the same area path is found by cosine similarity (`vector_store.py`, `query_nearest`).
-3. At or above the threshold (0.90 by default, one global value in `AppSettings`) it is a candidate duplicate.
-4. A numeric guard drops the candidate if the two texts carry different numbers or units ("at least 87%" against "at least 93%").
-5. An LLM judge reads the two texts and answers `redundant`, `distinct` or `contradictory`.
-6. A duplicate is skipped: `confirm()` does not create the work item.
+2. The five nearest stored items of the same kind (Epic, Feature or Requirement) are found by cosine similarity (`vector_store.py`, `query_nearest_many`),
+   in the job's area path and the ones under it, or anywhere in the project when the job asks for that (`dedup scope`).
+3. Those at or above the threshold (0.90 by default, one global value in `AppSettings`) are candidates.
+4. A numeric guard drops a candidate if the two texts carry different numbers or units ("at least 87%" against "at least 93%").
+5. An LLM judge reads the candidate pair, for up to three candidates, and answers `redundant`, `distinct` or `contradictory`. Only `redundant` skips the item.
+   A candidate whose own text was never stored cannot be judged and is not skipped (`unverified`).
+6. A duplicate is skipped: `confirm()` does not create the work item. The review shows it as "Already exists in Azure DevOps", with a link, and lets the
+   reviewer create it as a new item anyway (never editing the existing one).
 
 The cost of a mistake is lopsided. A wrong skip silently loses a real requirement. A missed duplicate creates one extra item that a reviewer
 can merge. Every judgement below weighs a wrong skip as the worse error.
@@ -24,10 +27,10 @@ can merge. Every judgement below weighs a wrong skip as the worse error.
 | 1 | A judge that could not run still left the skip in place, so a real requirement could be dropped with no confirmation. | `check_for_duplicates.py` (judge `except` branch) | High | **Fixed**: an unconfirmed match is not skipped. |
 | 2 | A `contradictory` verdict counted as a duplicate, so an item that disagrees with an existing one was dropped. | same file | Medium | **Fixed**: `contradictory` is not a duplicate; the verdict and the matched item are still reported. |
 | 3 | The 0.90 threshold and the 50/50 blend were tuned on a handful of pairs. The docstring records one pair at 0.755 against 0.747 and a minimum of 0.9416 over the measured true duplicates, and does not name the embedding model. Production uses `OpenAI/text-embedding-3-small` (`deploy/helm/req2ado/values.yaml`). Scores from one model do not transfer to another. | `embedding_blend.py`, `values.yaml` | High | Open: needs a labelled set (below). |
-| 4 | Only the single nearest item is compared (`n_results=1`). A true duplicate that is the second-nearest is missed, and a nearer non-duplicate hides it. | `vector_store.py` | Medium | Open. |
-| 5 | Matching is filtered by area path only. Item type and parent are not used, so a Requirement can be matched against a Feature. | `query_nearest(embedding, area_path)` | Medium | Open. |
+| 4 | Only the single nearest item is compared (`n_results=1`). A true duplicate that is the second-nearest is missed, and a nearer non-duplicate hides it. | `vector_store.py` | Medium | **Fixed**: the five nearest are looked at, and up to three of those at or above the threshold go to the judge. |
+| 5 | Matching is filtered by area path only. Item type and parent are not used, so a Requirement can be matched against a Feature. | `query_nearest(embedding, area_path)` | Medium | **Fixed**: matching is by item kind, and the job chooses the area path or the whole project. Parent is still not used. |
 | 6 | Requirement boilerplate ("The system shall...") is shared by almost every item and pushes cosine similarity up for unrelated pairs. | reasoning from the data shape, not measured | Medium | Open: not measured. |
-| 7 | Hebrew and mixed Hebrew/English text have never been evaluated. | no Hebrew pairs in any test or fixture | Medium | Open: the evaluation set must include them. |
+| 7 | Hebrew and mixed Hebrew/English text have never been evaluated. | no Hebrew pairs in any test or fixture | Medium | Partly: a draft set of synthetic Hebrew pairs exists (below) and local `bge-m3` has been run on it. Real labelled pairs are still needed. |
 | 8 | One global threshold that any signed-in user can change (`settings.dto.ts`). The app has no roles. | `settings.dto.ts` | Medium | Open. |
 | 9 | `DedupSkipAudit` stores only the skipped pairs (a score and an ADO id), not the texts or the verdicts, and never the pairs that were not skipped. It cannot serve as a labelled set, because it only contains predicted positives. | `schema.prisma` | Low | Open. |
 | 10 | The Settings page described the threshold in terms of cosine similarity and did not say that a second check confirms every match. | `Settings.tsx` | Low | **Fixed**: plain wording, and the embedding model is shown read-only. |
@@ -77,13 +80,12 @@ The hard non-duplicates matter most, because those are the pairs the threshold h
 
 ## Follow-ups, once the set exists
 
-1. Calibrate the threshold for `text-embedding-3-small` (finding 3) and record the result here with the date and model.
-2. Compare top-k with a re-rank step against the single nearest item (finding 4).
-3. Try normalising away requirement boilerplate before embedding (finding 6), judged by the same evaluation.
-4. Block by item type and parent (finding 5).
-5. Restrict who can change the threshold (finding 8), and log the texts and verdicts of every decision (finding 9) so the next set can be built from real use.
+1. Calibrate the threshold for `text-embedding-3-small` (finding 3) and for the local model, and record the result here with the date and model.
+2. Try normalising away requirement boilerplate before embedding (finding 6), judged by the same evaluation.
+3. Restrict who can change the threshold (finding 8), and log the texts and verdicts of every decision (finding 9) so the next set can be built from real use.
 
 ## Not verified
 
 - Behaviour of the judge on Hebrew text.
 - Any number in this document as a measurement on production data: none was taken.
+- The threshold against Hebrew content on real data: the only Hebrew numbers come from the synthetic draft set.

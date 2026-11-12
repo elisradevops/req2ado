@@ -812,6 +812,23 @@ describe('KnowledgeBase source bar and reconnect', () => {
     localStorage.clear();
   });
 
+  describe('on a narrow screen (below the large breakpoint the panes stack)', () => {
+    it('shows the details pane only once a file is selected, and the folder tree never', async () => {
+      localStorage.setItem('req2ado-kb-browse-url', SAVED);
+      vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([FILE, FOLDER]);
+      renderPage();
+      await screen.findByText('guide.docx');
+
+      // Hidden by default below lg (`hidden`), shown from lg up (`lg:block`).
+      expect(screen.getByTestId('kb-folder-tree-pane')).toHaveClass('hidden', 'lg:block');
+      expect(screen.getByTestId('kb-detail-pane')).toHaveClass('hidden', 'lg:block');
+
+      await userEvent.click(screen.getByText('guide.docx'));
+
+      expect(screen.getByTestId('kb-detail-pane')).not.toHaveClass('hidden');
+    });
+  });
+
   it('shows the saved source in a bar, not the URL form', async () => {
     localStorage.setItem('req2ado-kb-browse-url', SAVED);
     vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([FILE]);

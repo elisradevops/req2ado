@@ -224,8 +224,9 @@ export function KbFileList({
                   </TableHeaderCell>
                 )}
                 <TableHeaderCell sticky>Name</TableHeaderCell>
-                <TableHeaderCell sticky>Type</TableHeaderCell>
-                <TableHeaderCell sticky>Size</TableHeaderCell>
+                {/* Type and Size give way on a narrow screen, so the name keeps room (the icon already shows the type). */}
+                <TableHeaderCell sticky className="hidden md:table-cell">Type</TableHeaderCell>
+                <TableHeaderCell sticky className="hidden md:table-cell">Size</TableHeaderCell>
                 <TableHeaderCell sticky>Status</TableHeaderCell>
                 <TableHeaderCell sticky align="right">
                   <span className="sr-only">Actions</span>
@@ -266,7 +267,7 @@ export function KbFileList({
                         )}
                       </td>
                     )}
-                    <td className="w-full max-w-0 px-3.5 py-2">
+                    <td className="w-full min-w-32 max-w-0 px-3.5 py-2">
                       <span className="flex items-center gap-1.5">
                         {entry.isFolder ? (
                           <Folder className="h-3.5 w-3.5 flex-none text-ink-3" />
@@ -277,8 +278,8 @@ export function KbFileList({
                         {entry.isFolder && <ChevronRight className="h-3.5 w-3.5 flex-none text-ink-3" />}
                       </span>
                     </td>
-                    <td className="px-3.5 py-2 text-ink-3">{entry.isFolder ? 'Folder' : fileTypeLabel(extensionOf(entry.name))}</td>
-                    <td className="px-3.5 py-2 font-mono text-xs tabular-nums text-ink-3">{entry.isFolder ? '—' : formatFileSize(entry.sizeBytes)}</td>
+                    <td className="hidden px-3.5 py-2 text-ink-3 md:table-cell">{entry.isFolder ? 'Folder' : fileTypeLabel(extensionOf(entry.name))}</td>
+                    <td className="hidden px-3.5 py-2 font-mono text-xs tabular-nums text-ink-3 md:table-cell">{entry.isFolder ? '—' : formatFileSize(entry.sizeBytes)}</td>
                     <td className="px-3.5 py-2">
                       {!entry.isFolder && (
                         <KbIngestStatusChip ingested={ingested} chunkCount={chunkCountOf(entry)} />

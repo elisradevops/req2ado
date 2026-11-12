@@ -781,8 +781,10 @@ export function KnowledgeBase(): React.ReactElement {
         // files (center) / selected file's details (right) -- replaces the
         // single scrolling tree-with-inline-actions layout.
         <Card className="overflow-hidden">
-          <div className="grid h-[560px] grid-cols-[220px_minmax(0,1fr)_280px] divide-x divide-hairline">
-            <div className="min-h-0 overflow-y-auto p-2">
+          {/* Three panes from lg up. Below it they stack: the folder tree is left out (the breadcrumb and the folder rows navigate), the
+              list takes the full width, and the details open under it once a file is chosen. */}
+          <div className="flex flex-col lg:grid lg:h-[560px] lg:grid-cols-[220px_minmax(0,1fr)_280px] lg:divide-x lg:divide-hairline">
+            <div data-testid="kb-folder-tree-pane" className="hidden min-h-0 overflow-y-auto p-2 lg:block">
               {rootEntries.filter((e) => e.isFolder).length === 0 ? (
                 <p className="p-2 text-xs text-ink-3">No subfolders here.</p>
               ) : (
@@ -796,6 +798,7 @@ export function KnowledgeBase(): React.ReactElement {
                 />
               )}
             </div>
+            <div className="flex max-h-[70dvh] min-h-0 flex-col lg:max-h-none">
             <KbFileList
               entries={centerEntries}
               loading={centerLoading}
@@ -821,7 +824,8 @@ export function KnowledgeBase(): React.ReactElement {
               scan={scan}
               onCancelScan={() => scanController.current?.abort()}
             />
-            <div className="min-h-0 overflow-y-auto">
+            </div>
+            <div data-testid="kb-detail-pane" className={`min-h-0 overflow-y-auto border-t border-hairline lg:block lg:border-t-0 ${selectedFile ? '' : 'hidden'}`}>
               <KbFileDetailPane
                 entry={selectedFile}
                 ingested={selectedFile ? isIngested(selectedFile) : false}

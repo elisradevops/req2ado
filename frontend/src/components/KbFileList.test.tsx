@@ -175,6 +175,18 @@ describe('KbFileList selection', () => {
     expect(screen.queryByText(/select files to add them/i)).toBeNull();
   });
 
+  it('on a narrow screen drops the Type and Size columns (the icon shows the type) and keeps a width for the name', () => {
+    renderList([file('a')]);
+
+    for (const heading of ['Type', 'Size']) {
+      expect(screen.getByRole('columnheader', { name: heading })).toHaveClass('hidden', 'md:table-cell');
+    }
+    const cells = within(screen.getByText('a.pdf').closest('tr')!).getAllByRole('cell');
+    const nameCell = cells.find((cell) => cell.textContent === 'a.pdf')!;
+    expect(nameCell.className).toMatch(/min-w-/);
+    expect(cells.filter((cell) => /hidden/.test(cell.className) && /md:table-cell/.test(cell.className))).toHaveLength(2);
+  });
+
   describe('subfolders', () => {
     const SECOND_FOLDER: FolderTreeEntry = { ...FOLDER, id: 'd2', name: 'Archive' };
 
