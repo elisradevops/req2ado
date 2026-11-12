@@ -5,7 +5,7 @@ import re
 import time
 from typing import Protocol
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from app.dedup.embedding_blend import blend_embeddings
 from app.dedup.vector_store import ChromaVectorStore
@@ -63,10 +63,10 @@ class DuplicateCheckResult(BaseModel):
     # treat this differently from a real "redundant"/"contradictory"/
     # "distinct" verdict.
     judge_verdict: str | None = None
-    # The matched item's own text, kept so the caller can show the two texts
-    # side by side on the running-job screen (job transparency, B9b). Never part
-    # of the HTTP response (exclude=True): it is internal to this process.
-    matched_text: str | None = Field(default=None, exclude=True)
+    # The matched item's own text: shown beside the proposed one on the running-job screen (job transparency, B9b) and kept by the
+    # orchestrator's decision log (why was this item skipped?). It is the existing item's description, readable by anyone with access
+    # to Azure DevOps, and the call is service to service. None when there was no match, or the match has no stored text.
+    matched_text: str | None = None
 
 
 def check_for_duplicates(

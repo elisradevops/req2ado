@@ -31,6 +31,13 @@ describe('configSchema LLM fields', () => {
     expect(() => configSchema.parse(rest)).toThrow();
   });
 
+  it('keeps the duplicate decision log for 30 days unless DEDUP_DECISION_LOG_RETENTION_MS says otherwise, and refuses a non-positive age', () => {
+    expect(configSchema.parse(BASE_ENV).DEDUP_DECISION_LOG_RETENTION_MS).toBe(30 * 24 * 60 * 60_000);
+    expect(configSchema.parse({ ...BASE_ENV, DEDUP_DECISION_LOG_RETENTION_MS: '7776000000' }).DEDUP_DECISION_LOG_RETENTION_MS).toBe(7_776_000_000);
+    expect(() => configSchema.parse({ ...BASE_ENV, DEDUP_DECISION_LOG_RETENTION_MS: '0' })).toThrow();
+    expect(() => configSchema.parse({ ...BASE_ENV, DEDUP_DECISION_LOG_RETENTION_MS: '-1' })).toThrow();
+  });
+
   it('redacts the text it embeds unless EMBED_REDACT=false', () => {
     expect(configSchema.parse(BASE_ENV).EMBED_REDACT).toBe(true);
     expect(configSchema.parse({ ...BASE_ENV, EMBED_REDACT: 'false' }).EMBED_REDACT).toBe(false);

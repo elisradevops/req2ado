@@ -653,7 +653,7 @@ export class IngestionHttpClient {
     // What the item is compared against: its own kind (Epic / Feature / Requirement) and how wide to look (the area path and the
     // ones under it, or the whole project). Both omitted: as before.
     options?: { typeCategory?: string; scope?: 'area_path' | 'project' },
-  ): Promise<{ isDuplicate: boolean; matchedItemId: string | null; similarity: number | null }> {
+  ): Promise<{ isDuplicate: boolean; matchedItemId: string | null; similarity: number | null; judgeVerdict: string | null; matchedText: string | null }> {
     const response = await fetch(`${this.baseUrl}/dedup/check`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -671,8 +671,21 @@ export class IngestionHttpClient {
     if (!response.ok) {
       throw await _ingestionError(response, `Ingestion /dedup/check request failed: `);
     }
-    const body = (await response.json()) as { is_duplicate: boolean; matched_item_id: string | null; similarity: number | null };
-    return { isDuplicate: body.is_duplicate, matchedItemId: body.matched_item_id, similarity: body.similarity };
+    const body = (await response.json()) as {
+      is_duplicate: boolean;
+      matched_item_id: string | null;
+      similarity: number | null;
+      judge_verdict?: string | null;
+      matched_text?: string | null;
+    };
+    // The verdict and the matched item's text are only for the decision log (why was this item skipped?); the check itself needs neither.
+    return {
+      isDuplicate: body.is_duplicate,
+      matchedItemId: body.matched_item_id,
+      similarity: body.similarity,
+      judgeVerdict: body.judge_verdict ?? null,
+      matchedText: body.matched_text ?? null,
+    };
   }
 
   async upsertDedupEntry(itemId: string, text: string, title: string, areaPath: string, userId?: string, typeCategory?: string): Promise<void> {

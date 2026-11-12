@@ -3708,6 +3708,57 @@ describe('JobsService.confirm — exclusion', () => {
   });
 });
 
+describe('JobsService.confirm — the decision log', () => {
+  const build = (dryRunDiff: Record<string, unknown>[]) => {
+    const logUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const prisma = {
+      job: { updateMany: jest.fn().mockResolvedValue({ count: 1 }), findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project', dryRunDiff }), update: jest.fn().mockResolvedValue(undefined) },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+      dedupDecisionLog: { updateMany: logUpdateMany },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem: jest.fn().mockResolvedValue({ id: 700 }), linkParentChild: jest.fn(), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+    );
+    return { service, logUpdateMany };
+  };
+  const entry = (overrides: Record<string, unknown>) => ({ parentLocalId: null, type: 'Requirement', title: 'T', description: 'd', action: 'create', existingAdoId: null, sourceHash: 'h', customerId: null, ...overrides });
+
+  it('records which skips the reviewer left alone and which they created anyway, once the diff is final', async () => {
+    const { service, logUpdateMany } = build([
+      entry({ localId: 'n0', title: 'New one' }),
+      entry({ localId: 'n1', action: 'dedup_skip', existingAdoId: 123, similarity: 0.94 }),
+      entry({ localId: 'n2', duplicateOf: { existingAdoId: 124, similarity: 0.93 }, duplicateOverride: { linkTree: true, relateToExisting: false } }),
+    ]);
+
+    await service.confirm('job-1');
+
+    expect(logUpdateMany).toHaveBeenCalledWith({ where: { jobId: 'job-1', localId: { in: ['n1'] }, decision: 'skipped' }, data: { reviewerOutcome: 'kept_skipped', reviewerAt: expect.any(Date) } });
+    expect(logUpdateMany).toHaveBeenCalledWith({ where: { jobId: 'job-1', localId: { in: ['n2'] }, decision: 'skipped' }, data: { reviewerOutcome: 'created_anyway', reviewerAt: expect.any(Date) } });
+  });
+
+  it('writes nothing to the log when the job had no skips', async () => {
+    const { service, logUpdateMany } = build([entry({ localId: 'n0' })]);
+
+    await service.confirm('job-1');
+
+    expect(logUpdateMany).not.toHaveBeenCalled();
+  });
+
+  it('does not fail the confirm when the log cannot be updated', async () => {
+    const error = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { service, logUpdateMany } = build([entry({ localId: 'n0' }), entry({ localId: 'n1', action: 'dedup_skip', existingAdoId: 123, similarity: 0.94 })]);
+    logUpdateMany.mockRejectedValue(new Error('db down'));
+
+    await expect(service.confirm('job-1')).resolves.toMatchObject({ status: 'succeeded' });
+    error.mockRestore();
+  });
+});
+
 describe('JobsService.confirm — trace links', () => {
   it('writes a resolved intraJob trace link after both endpoints have real ADO ids', async () => {
     const createWorkItem = jest.fn()
@@ -7345,12 +7396,14 @@ describe('JobsService duplicate override', () => {
   });
   const build = (entries: Record<string, unknown>[]) => {
     const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const logUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
     const prisma = {
       createdItemMapping: { findUnique: jest.fn().mockResolvedValue(null) },
       job: { updateMany, findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', diffVersion: 0, dryRunDiff: entries }) },
+      dedupDecisionLog: { updateMany: logUpdateMany },
     };
     const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
-    return { service, updateMany };
+    return { service, updateMany, logUpdateMany };
   };
   const parent = { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null };
 
@@ -7433,6 +7486,25 @@ describe('JobsService duplicate override', () => {
     const result = await again.undoDuplicateOverride('job-1', 'n1');
 
     expect(result[1].traceLinks).toEqual([related]);
+  });
+
+  it('records in the decision log that the reviewer created the item anyway, and that they took it back', async () => {
+    const { service, logUpdateMany } = build([parent, skipped()]);
+    const overridden = await service.overrideDuplicate('job-1', 'n1', { linkTree: true, relateToExisting: false });
+
+    expect(logUpdateMany).toHaveBeenCalledWith({ where: { jobId: 'job-1', localId: { in: ['n1'] }, decision: 'skipped' }, data: { reviewerOutcome: 'created_anyway', reviewerAt: expect.any(Date) } });
+
+    const { service: again, logUpdateMany: undoLog } = build(overridden as unknown as Record<string, unknown>[]);
+    await again.undoDuplicateOverride('job-1', 'n1');
+
+    expect(undoLog).toHaveBeenCalledWith({ where: { jobId: 'job-1', localId: { in: ['n1'] }, decision: 'skipped' }, data: { reviewerOutcome: null, reviewerAt: null } });
+  });
+
+  it('writes no outcome when the override is refused', async () => {
+    const { service, logUpdateMany } = build([parent, skipped({ action: 'create', existingAdoId: null, similarity: null })]);
+
+    await expect(service.overrideDuplicate('job-1', 'n1', { linkTree: true, relateToExisting: false })).rejects.toThrow(BadRequestException);
+    expect(logUpdateMany).not.toHaveBeenCalled();
   });
 
   it('refuses to undo an entry that was never overridden', async () => {

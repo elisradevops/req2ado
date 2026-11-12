@@ -305,6 +305,36 @@ model DedupSkipAudit {
   @@index([jobId])
 }
 
+// Why an item was (or was nearly) skipped as a duplicate: both texts, the score and the judge's verdict, kept for DEDUP_DECISION_LOG_RETENTION_MS
+// (30 days by default) so "why was this requirement never created?" can still be answered after the job itself is gone. Only pairs at or above
+// the threshold are written (skipped ones, and ones the judge rejected), never every item. Text only: no attachments, files or figures.
+// jobId is a plain string, deliberately not a relation: a finished job (and its DedupSkipAudit rows) is deleted after a couple of days.
+model DedupDecisionLog {
+  id              String    @id @default(uuid())
+  jobId           String
+  localId         String
+  itemType        String
+  areaPath        String
+  scope           String
+  candidateTitle  String
+  candidateText   String
+  matchedAdoId    Int?
+  matchedText     String?
+  similarity      Float
+  threshold       Float?
+  // The judge's answer when it ran ('redundant', 'distinct', 'contradictory', 'judge_failed', 'unverified'); null when it did not.
+  judgeVerdict    String?
+  // 'skipped': the item was not created as a duplicate. 'not_skipped': a close match that the judge did not confirm.
+  decision        String
+  // What the reviewer did with a skip: 'kept_skipped' (confirmed with the skip left alone) or 'created_anyway' (create as new item).
+  reviewerOutcome String?
+  reviewerAt      DateTime?
+  createdAt       DateTime  @default(now())
+
+  @@index([createdAt])
+  @@index([jobId, localId])
+}
+
 // Throttle state for BackfillService.backfillAreaPath -- runPipelineJob
 // now auto-runs a backfill for its own job.areaPath (closing the
 // "manually-created ADO items are invisible to dedup" gap, previously

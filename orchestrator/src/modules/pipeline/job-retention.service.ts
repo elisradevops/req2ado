@@ -1,5 +1,6 @@
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
+import { deleteDecisionsOlderThan } from './dedup-decision-log';
 
 // Real gap this closes: nothing in this system ever ages out old job
 // records -- a long-running dev/prod instance accumulates every job's full
@@ -41,6 +42,9 @@ const _TERMINAL_RETENTION_STATUSES = ['succeeded', 'failed', 'rejected', 'cancel
 const _DEFAULT_FIGURE_MAX_AGE_MS = 30 * 24 * 60 * 60_000;
 const _TERMINAL_SWEEP_BATCH = 100;
 const _FIGURE_SWEEP_BATCH = 20;
+// The duplicate decision log (why an item was skipped) outlives its job, which is gone after a couple of days: it has its own age. 30 days
+// unless DEDUP_DECISION_LOG_RETENTION_MS says otherwise.
+const _DEFAULT_DECISION_LOG_MAX_AGE_MS = 30 * 24 * 60 * 60_000;
 
 @Injectable()
 export class JobRetentionService implements OnModuleInit, OnModuleDestroy {
@@ -51,6 +55,7 @@ export class JobRetentionService implements OnModuleInit, OnModuleDestroy {
     private readonly checkIntervalMs: number,
     private readonly maxAgeMs: number,
     private readonly figureMaxAgeMs: number = _DEFAULT_FIGURE_MAX_AGE_MS,
+    private readonly decisionLogMaxAgeMs: number = _DEFAULT_DECISION_LOG_MAX_AGE_MS,
   ) {}
 
   onModuleInit(): void {
@@ -65,6 +70,10 @@ export class JobRetentionService implements OnModuleInit, OnModuleDestroy {
       this.sweepStaleFigureBytes().catch((err) => {
         // eslint-disable-next-line no-console -- no structured logger in this module yet
         console.error('JobRetentionService figure sweep failed, will retry next interval:', err);
+      });
+      this.sweepDecisionLog().catch((err) => {
+        // eslint-disable-next-line no-console -- no structured logger in this module yet
+        console.error('JobRetentionService decision log sweep failed, will retry next interval:', err);
       });
     }, this.checkIntervalMs);
   }
@@ -103,6 +112,11 @@ export class JobRetentionService implements OnModuleInit, OnModuleDestroy {
         // eslint-disable-next-line no-console -- no structured logger in this module yet
         console.error('JobRetentionService terminal sweep transaction failed, will retry next interval:', err);
       });
+  }
+
+  // Rows of the duplicate decision log past their own age. Independent of the jobs (the log has no relation to them).
+  async sweepDecisionLog(): Promise<void> {
+    await deleteDecisionsOlderThan(this.prisma, new Date(Date.now() - this.decisionLogMaxAgeMs));
   }
 
   // diff_ready jobs are still awaiting a decision so the job row stays, but

@@ -11,6 +11,7 @@ function fakePrisma(candidates: { id: string }[]) {
     jobEvent: { deleteMany },
     auditEntry: { deleteMany, create: jest.fn().mockResolvedValue({}) },
     dedupSkipAudit: { deleteMany },
+    dedupDecisionLog: { deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
     createdItemMapping: { deleteMany },
     jobSourceFile: { deleteMany },
     jobFigureFile: { deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
@@ -124,6 +125,61 @@ describe('JobRetentionService', () => {
       consoleError.mockRestore();
       jest.useRealTimers();
     }
+  });
+
+  describe('sweepDecisionLog', () => {
+    const DECISION_LOG_MAX_AGE_MS = 30 * 24 * 60 * 60_000;
+    const NOW = new Date('2026-11-12T00:00:00Z').getTime();
+
+    it('removes decision-log rows older than its own age, which is not the job age (jobs go in 2 days, the log stays 30 by default)', async () => {
+      jest.useFakeTimers().setSystemTime(NOW);
+      try {
+        const prisma = fakePrisma([]);
+        prisma.dedupDecisionLog.deleteMany.mockResolvedValue({ count: 3 });
+        const service = new JobRetentionService(prisma as any, CHECK_INTERVAL_MS, MAX_AGE_MS, undefined, DECISION_LOG_MAX_AGE_MS);
+
+        await service.sweepDecisionLog();
+
+        expect(prisma.dedupDecisionLog.deleteMany).toHaveBeenCalledWith({ where: { createdAt: { lt: new Date(NOW - DECISION_LOG_MAX_AGE_MS) } } });
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('keeps rows for 30 days when no age is given', async () => {
+      jest.useFakeTimers().setSystemTime(NOW);
+      try {
+        const prisma = fakePrisma([]);
+        const service = new JobRetentionService(prisma as any, CHECK_INTERVAL_MS, MAX_AGE_MS);
+
+        await service.sweepDecisionLog();
+
+        expect(prisma.dedupDecisionLog.deleteMany).toHaveBeenCalledWith({ where: { createdAt: { lt: new Date(NOW - 30 * 24 * 60 * 60_000) } } });
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('runs on every tick, and a failure is logged, never an unhandled rejection', async () => {
+      jest.useFakeTimers();
+      const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      try {
+        const prisma = fakePrisma([]);
+        prisma.dedupDecisionLog.deleteMany.mockRejectedValueOnce(new Error('db stalled'));
+        const service = new JobRetentionService(prisma as any, CHECK_INTERVAL_MS, MAX_AGE_MS);
+
+        service.onModuleInit();
+        await jest.advanceTimersByTimeAsync(CHECK_INTERVAL_MS);
+        await jest.advanceTimersByTimeAsync(CHECK_INTERVAL_MS);
+
+        expect(consoleError).toHaveBeenCalledWith(expect.stringContaining('decision log sweep failed'), expect.any(Error));
+        expect(prisma.dedupDecisionLog.deleteMany).toHaveBeenCalledTimes(2);
+        service.onModuleDestroy();
+      } finally {
+        consoleError.mockRestore();
+        jest.useRealTimers();
+      }
+    });
   });
 
   describe('sweepStaleFigureBytes', () => {

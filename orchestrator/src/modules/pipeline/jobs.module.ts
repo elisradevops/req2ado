@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { PrismaClient } from '@prisma/client';
 import Redis from 'ioredis';
 import { JobsController } from './jobs.controller';
+import { DedupDecisionsController } from './dedup-decisions.controller';
 import { AdoController } from './ado.controller';
 import {
   JobEventsController,
@@ -30,7 +31,7 @@ import { BatchPumpService } from '../batch/batch-pump.service';
 
 @Module({
   imports: [ConfigModule, LlmModule, AuthModule],
-  controllers: [JobsController, AdoController, JobEventsController, BackfillController, BatchController],
+  controllers: [JobsController, AdoController, JobEventsController, BackfillController, BatchController, DedupDecisionsController],
   providers: [
     { provide: PrismaClient, useValue: new PrismaClient() },
     {
@@ -240,6 +241,7 @@ import { BatchPumpService } from '../batch/batch-pump.service';
           config.get<number>('JOB_RETENTION_CHECK_INTERVAL_MS')!,
           config.get<number>('JOB_RETENTION_MAX_AGE_MS')!,
           config.get<number>('JOB_FIGURE_RETENTION_MAX_AGE_MS')!,
+          config.get<number>('DEDUP_DECISION_LOG_RETENTION_MS')!,
         ),
     },
     {

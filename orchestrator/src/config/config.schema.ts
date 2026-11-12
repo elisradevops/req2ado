@@ -209,6 +209,8 @@ export const configSchema = z.object({
   // (JobFigureFile bytes); the job row is kept. 30 days matches the
   // result-cache lifetime in result-cache.ts.
   JOB_FIGURE_RETENTION_MAX_AGE_MS: z.coerce.number().default(2_592_000_000),
+  // How long the duplicate decision log (why an item was skipped: both texts, the score, the verdict) is kept, in ms. Text only, no files. 30 days.
+  DEDUP_DECISION_LOG_RETENTION_MS: z.coerce.number().int().positive().default(30 * 24 * 60 * 60_000),
   // How many BullMQ pipeline jobs pipeline-worker.main.ts processes
   // concurrently -- previously unset (bullmq's own implicit default is 1),
   // a real horizontal-scaling throughput blocker even before considering

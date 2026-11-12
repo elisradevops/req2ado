@@ -8,7 +8,9 @@ this runs without a network in tests.
 
 from __future__ import annotations
 
+import csv
 import json
+import re
 from collections.abc import Callable
 from pathlib import Path
 
@@ -35,6 +37,59 @@ def load_text_pairs(path: Path) -> list[dict]:
             raise ValueError(f"line {number}: {exc}") from exc
         rows.append(row)
     return rows
+
+
+_HEBREW = re.compile(r"[\u0590-\u05FF]")
+
+
+def detect_lang(a: str, b: str) -> str:
+    """"he" when both texts have Hebrew letters, "he-en" when only one does, otherwise "en" (the label the evaluation splits by)."""
+    hebrew_a, hebrew_b = bool(_HEBREW.search(a)), bool(_HEBREW.search(b))
+    if hebrew_a and hebrew_b:
+        return "he"
+    return "he-en" if hebrew_a or hebrew_b else "en"
+
+
+def load_decision_export(path: Path) -> list[dict]:
+    """Reads what GET /dedup/decisions returns, as JSON (a list of rows) or as CSV (the same columns)."""
+    path = Path(path)
+    if path.suffix.lower() == ".csv":
+        with path.open(encoding="utf-8", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        for row in rows:
+            if row.get("similarity") not in (None, ""):
+                row["similarity"] = float(row["similarity"])
+            row["reviewerOutcome"] = row.get("reviewerOutcome") or None
+        return rows
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, list):
+        raise ValueError("a decision export is a list of rows")
+    return data
+
+
+_LABEL_BY_OUTCOME = {"kept_skipped": 1, "created_anyway": 0}
+
+
+def pairs_from_decisions(rows: list[dict]) -> tuple[list[dict], int]:
+    """Labelled text pairs from the decision log: a skip the reviewer left alone is a duplicate (1), an item they created anyway is not (0).
+
+    Returns (pairs, undecided): rows the reviewer has not decided yet are counted, not guessed. The log keeps no title for the matched
+    item, so the pairs carry no titles and are scored on the texts alone, both sides alike; the scores are close to, not the same as, the
+    ones the real check produced.
+    """
+    pairs: list[dict] = []
+    undecided = 0
+    for row in rows:
+        a, b = row.get("candidateText"), row.get("matchedText")
+        if not a or not b:
+            continue
+        label = _LABEL_BY_OUTCOME.get(row.get("reviewerOutcome") or "")
+        if label is None:
+            undecided += 1
+            continue
+        day = str(row.get("createdAt", ""))[:10]
+        pairs.append({"a": a, "b": b, "label": label, "lang": detect_lang(a, b), "source": f"decision-log {day} job {str(row.get('jobId', ''))[:8]}"})
+    return pairs, undecided
 
 
 def score_pairs(rows: list[dict], embed: Embed) -> list[dict]:

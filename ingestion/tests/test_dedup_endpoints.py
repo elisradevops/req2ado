@@ -508,14 +508,26 @@ def test_dedup_check_emits_a_duplicate_comparison_for_a_job(tmp_path, monkeypatc
     assert frame["a_text"] == frame["b_text"] == "The unit shall survive a drop."
 
 
-def test_dedup_check_response_never_carries_the_matched_text(tmp_path, monkeypatch) -> None:
+def test_dedup_check_response_carries_the_matched_text_so_the_caller_can_log_the_decision(tmp_path, monkeypatch) -> None:
+    # The orchestrator's decision log keeps both texts of a match (why was this item skipped?). They are the existing item's own
+    # description, already readable by anyone with access to Azure DevOps, and the call is service to service.
     _seed_duplicate(tmp_path, monkeypatch)
     _patch_scope(monkeypatch, _RecordingEmitter())
 
     body = _check("job-9")
 
-    assert "matched_text" not in body
-    assert set(body) == {"is_duplicate", "matched_item_id", "similarity", "judge_verdict"}
+    assert body["matched_text"] == "The unit shall survive a drop."
+    assert set(body) == {"is_duplicate", "matched_item_id", "similarity", "judge_verdict", "matched_text"}
+
+
+def test_dedup_check_with_no_match_has_no_matched_text(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "_vector_store", ChromaVectorStore(str(tmp_path)))
+    main._embed_client._transport = httpx.MockTransport(_mock_embed_handler)
+
+    body = client.post("/dedup/check", json={"text": "Nothing like it.", "title": "Nothing like it.", "area_path": "Project\\Area1"}).json()
+
+    assert body["is_duplicate"] is False
+    assert body["matched_text"] is None
 
 
 def test_dedup_check_emits_nothing_without_a_job_id(tmp_path, monkeypatch) -> None:

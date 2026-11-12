@@ -86,6 +86,33 @@ deleted.
    live set first (re-run step 2/3, then re-list and diff) before deleting
    anything. When in doubt, leave them; they cost only disk.
 
+### The duplicate decision log
+
+A finished job is deleted after a couple of days, so without a record nobody could answer "why was this requirement never created?". The decision log keeps
+that answer: for every proposed item whose closest match scored at or above the threshold (skipped, or a close match the judge did not confirm) it stores
+both texts as written, the work item it matched, the score, the threshold in force and the judge's verdict. What the reviewer then did is added: "kept
+skipped" (confirmed with the skip left alone) or "created anyway" ("Create as new item"). Undo clears it.
+
+- **What is stored:** text only. Never attachments, source files or figures, so it adds nothing to file storage. Each text is cut at 2,000 characters, and
+  at most the 500 closest matches of a job are kept.
+- **How long:** 30 days by default, `DEDUP_DECISION_LOG_RETENTION_MS` in `.env`. A sweep every 6 hours removes older rows. The log has no link to the job,
+  so deleting a job does not delete it, and it does not keep a job alive.
+- **Who can read it:** every signed-in user, like the job results (the texts are the same ones anyone with access to Azure DevOps can read).
+  `GET /api/dedup/decisions` takes `since`, `until` (dates), `jobId`, `outcome` (`kept_skipped`, `created_anyway`, `undecided`), `limit` (default 200, at
+  most 1,000) and `format=json|csv`.
+- **Best-effort:** a failure to write it is logged and never fails a job or a review action.
+- **Using it to check the threshold:** export the decided rows and turn them into labelled pairs, then score them with the model in use:
+
+  ```
+  curl -s -b <session cookie> 'http://localhost:4082/api/dedup/decisions?outcome=kept_skipped&limit=1000' > skipped.json
+  curl -s -b <session cookie> 'http://localhost:4082/api/dedup/decisions?outcome=created_anyway&limit=1000' > created.json
+  cd ingestion && .venv/bin/python scripts/dedup_export_pairs.py ../skipped.json ../created.json --out pairs.jsonl
+  .venv/bin/python scripts/dedup_score_pairs.py pairs.jsonl --env-file ../.env
+  ```
+
+  The log keeps no title for the matched item, so these pairs are scored on the texts alone, close to but not the same as the real check's scores.
+  The export is what lasts: save it before the 30 days are up.
+
 ### Who can change the duplicate threshold
 
 By default every signed-in user can change the similarity threshold in Settings (the app has no roles). To limit it, set `REQ2ADO_ADMIN_USER_IDS` in

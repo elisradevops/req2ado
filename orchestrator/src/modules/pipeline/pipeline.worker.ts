@@ -12,6 +12,7 @@ import { resolveCrossJobTraceLinks, verifyExistingAdoIdsStillExist, type Warning
 import type { DryRunService, DryRunTreeNode } from '../writeback/dry-run.service';
 import type { IdempotencyService } from '../writeback/idempotency.service';
 import type { BackfillService } from '../writeback/backfill.service';
+import { recordDecisions, selectRowsToLog, type DedupCheckObservation } from './dedup-decision-log';
 import type { JobEventsPublisher } from './job-events.publisher';
 import type { ProgressService } from './progress.service';
 import type { McpClient, AdoRequestCredential } from './mcp.client';
@@ -1124,17 +1125,25 @@ export async function runPipelineJob(
     // Timed per call: the duplicate check is one embed (and sometimes one judge call) per node, and a slow rerun cannot be explained without
     // knowing how long each took. One counts-only summary line below.
     const dedupDurations: number[] = [];
+    const dedupObservations: DedupCheckObservation[] = [];
     const dedupStartedAt = Date.now();
     const diff = await deps.dryRunService.diff(
       diffInputs,
       deps.idempotencyService,
-      async (text, title, areaPath, typeCategory) => {
+      async (text, title, areaPath, typeCategory, localId) => {
         const startedAt = Date.now();
         try {
-          return await deps.ingestionClient.checkDuplicate(text, title, areaPath, dedupThreshold, job.userId ?? undefined, liveJobId, {
+          const checked = await deps.ingestionClient.checkDuplicate(text, title, areaPath, dedupThreshold, job.userId ?? undefined, liveJobId, {
             typeCategory,
             scope: dedupScope,
           });
+          // What each check found, for the decision log below (which keeps only the ones that reached the threshold).
+          dedupObservations.push({
+            localId, itemType: typeCategory, areaPath, title, text,
+            isDuplicate: checked.isDuplicate, matchedItemId: checked.matchedItemId, matchedText: checked.matchedText ?? null,
+            similarity: checked.similarity, judgeVerdict: checked.judgeVerdict ?? null,
+          });
+          return checked;
         } catch (error) {
           dedupChecksFailed += 1;
           throw error;
@@ -1153,6 +1162,9 @@ export async function runPipelineJob(
         });
       },
     );
+
+    // Why items were skipped, kept for a while after this job is gone. Best-effort: never fails the job.
+    await recordDecisions(deps.prisma, selectRowsToLog(job.id, dedupScope, dedupThreshold, dedupObservations));
 
     // Generated sections (proposed acceptance criteria, "Needs author input") were held out of the description above, so the dedup check and
     // the reviewer's text never contain them; they travel on the entry and reach ADO only when the reviewer accepts them (confirm()).

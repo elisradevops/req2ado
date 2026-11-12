@@ -32,6 +32,7 @@ import { canonicalizeForCompare, composeAdoDescriptionHtml, composeAdoDiscussion
 import type { JobEventsPublisher } from './job-events.publisher';
 import { canNest, canBeRoot } from './canNest';
 import { attachFigures, buildFigureAttachmentFilename, sanitizeFigureError } from './figure-attach';
+import { setReviewerOutcomes } from './dedup-decision-log';
 
 export { buildFigureAttachmentFilename };
 
@@ -820,7 +821,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
   // parent/child links (see selectEntriesToLink).
   async overrideDuplicate(id: string, localId: string, options: { linkTree: boolean; relateToExisting: boolean }): Promise<DryRunDiffEntry[]> {
     await this.assertNotWritten(id, localId);
-    return this.mutateDiffVersioned(id, (diff) => {
+    const updated = await this.mutateDiffVersioned(id, (diff) => {
       const index = diff.findIndex((entry) => entry.localId === localId);
       if (index === -1) throw new NotFoundException(`Diff entry ${localId} not found`);
       const entry = diff[index];
@@ -844,11 +845,14 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       };
       return diff;
     });
+    // The decision log learns what the reviewer chose (best-effort: never fails the action).
+    await setReviewerOutcomes(this.prisma, id, { createdAnyway: [localId] });
+    return updated;
   }
 
   async undoDuplicateOverride(id: string, localId: string): Promise<DryRunDiffEntry[]> {
     await this.assertNotWritten(id, localId);
-    return this.mutateDiffVersioned(id, (diff) => {
+    const updated = await this.mutateDiffVersioned(id, (diff) => {
       const index = diff.findIndex((entry) => entry.localId === localId);
       if (index === -1) throw new NotFoundException(`Diff entry ${localId} not found`);
       const { duplicateOf, duplicateOverride, ...entry } = diff[index];
@@ -865,6 +869,8 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       };
       return diff;
     });
+    await setReviewerOutcomes(this.prisma, id, { undone: [localId] });
+    return updated;
   }
 
   // Reviewer correction of figure placement before the write. The figure keeps its list kind (captioned stays captioned, an uncaptioned one
@@ -2312,6 +2318,12 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     if (claim.count === 0) {
       throw new ConflictException(`Job ${id} changed or is no longer confirmable; review the diff and confirm again`);
     }
+    // The diff is final from here: tell the decision log what the reviewer did with each skip (left alone, or created anyway). Best-effort.
+    const reviewed = plannedDiff as unknown as { localId: string; action: string; duplicateOf?: unknown }[];
+    await setReviewerOutcomes(this.prisma, id, {
+      keptSkipped: reviewed.filter((entry) => entry.action === 'dedup_skip').map((entry) => entry.localId),
+      createdAnyway: reviewed.filter((entry) => entry.action === 'create' && entry.duplicateOf !== undefined).map((entry) => entry.localId),
+    });
     // The mappings validated above were read BEFORE the claim: a concurrent confirm that wrote some items, failed and reset the job to diff_ready
     // (the failure path does not bump diffVersion) would still let this claim succeed on a stale snapshot and re-create those items in ADO.
     // Re-read after the claim and bail out (back to diff_ready, no audit entry, no 'writing' event) if anything differs; any error here also reverts.

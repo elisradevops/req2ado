@@ -371,10 +371,22 @@ describe('IngestionHttpClient', () => {
     const client = new IngestionHttpClient('http://ingestion.internal');
     const result = await client.checkDuplicate('a description', 'a title', 'Proj\\Area');
 
-    expect(result).toEqual({ isDuplicate: true, matchedItemId: '649', similarity: 0.92 });
+    expect(result).toEqual({ isDuplicate: true, matchedItemId: '649', similarity: 0.92, judgeVerdict: null, matchedText: null });
     const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
     expect(url).toBe('http://ingestion.internal/dedup/check');
     expect(JSON.parse(options.body)).toEqual({ text: 'a description', title: 'a title', area_path: 'Proj\\Area' });
+  });
+
+  it('checkDuplicate passes on the judge verdict and the matched item text, for the decision log', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      json: async () => ({ is_duplicate: false, matched_item_id: '649', similarity: 0.93, judge_verdict: 'distinct', matched_text: 'The existing requirement.' }),
+    });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+
+    const result = await client.checkDuplicate('a description', 'a title', 'Proj\\Area');
+
+    expect(result).toEqual({ isDuplicate: false, matchedItemId: '649', similarity: 0.93, judgeVerdict: 'distinct', matchedText: 'The existing requirement.' });
   });
 
   it('checkDuplicate says what kind of item it is and how wide to search, and leaves both out when not given', async () => {

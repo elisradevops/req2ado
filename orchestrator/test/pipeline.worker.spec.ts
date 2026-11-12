@@ -21,6 +21,7 @@ describe('runPipelineJob', () => {
     job: { update: jest.fn(), updateMany: jest.fn().mockResolvedValue({ count: 1 }), findUnique: jest.fn().mockResolvedValue({ status: 'running' }) },
     auditEntry: { create: jest.fn() },
     dedupSkipAudit: { createMany: jest.fn() },
+    dedupDecisionLog: { createMany: jest.fn().mockResolvedValue({ count: 0 }) },
     jobFigureFile: { deleteMany: jest.fn() },
     // Defaults to "recently backfilled" (findUnique resolves a fresh
     // lastBackfilledAt) so maybeBackfillAreaPath is a no-op for every
@@ -2781,6 +2782,62 @@ describe('runPipelineJob', () => {
       expect(fakePrisma.areaPathBackfill.upsert).toHaveBeenCalledWith(
         expect.objectContaining({ where: { areaPath: 'Project\\Area1' } }),
       );
+    });
+
+    describe('the decision log', () => {
+      const run = async (checks: { localId: string; result: Record<string, unknown> }[], extra: Record<string, unknown> = {}) => {
+        fakePrisma.areaPathBackfill.findUnique.mockResolvedValue({ areaPath: 'Project\\Area1', lastBackfilledAt: new Date(), indexVersion: DEDUP_INDEX_VERSION, embedModel: '' });
+        fakeIngestionClient.checkDuplicate = jest.fn().mockImplementation(async (text: string) => checks.find((c) => c.result.text === text)!.result);
+        fakeDryRunService.diff.mockImplementation(async (_inputs: unknown, _idem: unknown, check: (...args: unknown[]) => Promise<unknown>) => {
+          for (const c of checks) await check(c.result.text, `Title ${c.localId}`, 'Project\\Area1', 'Requirement', c.localId);
+          return checks.map((c) => ({ localId: c.localId, action: 'create', existingAdoId: null }));
+        });
+        await runPipelineJob(
+          { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: 'user-1', mode: 'baseline', dedupScope: 'project', fileBuffer: Buffer.from(''), filename: 'x.txt', ...extra },
+          {
+            ingestionClient: fakeIngestionClient as any, dryRunService: fakeDryRunService as any, idempotencyService: fakeIdempotencyService as any, prisma: fakePrisma as any,
+            jobEventsPublisher: fakeJobEventsPublisher as any, mcpClient: fakeMcpClient as any, backfillService: fakeBackfillService as any,
+            adoCredentialResolver: fakeAdoCredentialResolver as any, defaultLlmModel: 'gemma4:12b',
+            settingsService: { get: jest.fn().mockResolvedValue({ dedupThreshold: 0.9 }) } as any,
+          },
+        );
+      };
+      const result = (text: string, overrides: Record<string, unknown> = {}) => ({
+        text, isDuplicate: true, matchedItemId: '321', similarity: 0.95, judgeVerdict: 'redundant', matchedText: `Existing: ${text}`, ...overrides,
+      });
+
+      it('writes a row for each check whose closest match reached the threshold, and none for the rest', async () => {
+        fakePrisma.dedupDecisionLog.createMany.mockClear();
+
+        await run([
+          { localId: 'n1', result: result('skipped one') },
+          { localId: 'n2', result: result('close but distinct', { isDuplicate: false, similarity: 0.92, judgeVerdict: 'distinct' }) },
+          { localId: 'n3', result: result('far away', { isDuplicate: false, similarity: 0.4, judgeVerdict: null }) },
+        ]);
+
+        const { data } = fakePrisma.dedupDecisionLog.createMany.mock.calls[0][0];
+        expect(data.map((r: any) => [r.localId, r.decision, r.judgeVerdict])).toEqual([
+          ['n1', 'skipped', 'redundant'],
+          ['n2', 'not_skipped', 'distinct'],
+        ]);
+        expect(data[0]).toMatchObject({ jobId: 'job-1', scope: 'project', itemType: 'Requirement', matchedAdoId: 321, matchedText: 'Existing: skipped one', threshold: 0.9, candidateTitle: 'Title n1' });
+      });
+
+      it('writes nothing, and does not fail, when no check reached the threshold', async () => {
+        fakePrisma.dedupDecisionLog.createMany.mockClear();
+
+        await run([{ localId: 'n1', result: result('far away', { isDuplicate: false, similarity: 0.4, judgeVerdict: null }) }]);
+
+        expect(fakePrisma.dedupDecisionLog.createMany).not.toHaveBeenCalled();
+      });
+
+      it('does not fail the job when the log cannot be written', async () => {
+        const error = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+        fakePrisma.dedupDecisionLog.createMany.mockRejectedValueOnce(new Error('db down'));
+
+        await expect(run([{ localId: 'n1', result: result('skipped one') }])).resolves.toBeUndefined();
+        error.mockRestore();
+      });
     });
 
     describe('what the backfill reports', () => {
