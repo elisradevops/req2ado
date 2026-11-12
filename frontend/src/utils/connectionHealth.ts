@@ -40,6 +40,8 @@ export function adoConnectionRow(entry: StatusEntry<AdoStatus>): ConnectionRow {
   switch (entry.data?.status) {
     case 'valid':
       return { ...base, state: 'ok', word: 'Connected' };
+    case 'invalid':
+      return { ...base, state: 'danger', word: 'Token rejected' };
     case 'not_configured':
       return { ...base, state: 'off', word: 'Not configured' };
     case 'unreachable':

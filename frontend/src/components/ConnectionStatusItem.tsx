@@ -67,6 +67,8 @@ export function ConnectionStatusItem({ collapsed }: { collapsed: boolean }): Rea
   const anyDanger = rows.some((row) => row.state === 'danger');
   const sharePointRow = rows.find((row) => row.kind === 'sharePoint');
   const sharePointNeedsFixing = sharePointRow?.state === 'attention' || sharePointRow?.state === 'danger';
+  // Only a rejected token is fixed by a new one; an unreachable server is not.
+  const adoTokenRejected = rows.find((row) => row.kind === 'ado')?.state === 'danger';
 
   const trigger = (
     <button
@@ -132,6 +134,11 @@ export function ConnectionStatusItem({ collapsed }: { collapsed: boolean }): Rea
                 {sharePointNeedsFixing && (
                   <Link to="/knowledge-base" onClick={() => setOpen(false)} className="py-1.5 font-medium text-accent-ink hover:underline max-md:py-3">
                     Reconnect SharePoint
+                  </Link>
+                )}
+                {adoTokenRejected && (
+                  <Link to="/settings" onClick={() => setOpen(false)} className="py-1.5 font-medium text-accent-ink hover:underline max-md:py-3">
+                    Reconnect Azure DevOps
                   </Link>
                 )}
                 <Link to="/settings" onClick={() => setOpen(false)} className="py-1.5 font-medium text-accent-ink hover:underline max-md:py-3">

@@ -34,6 +34,7 @@ describe('connectionRows', () => {
       expect(row(entries({ sharePoint: entry({ status: 'invalid' as const, expiresInSeconds: null }) }), 'sharePoint')).toMatchObject({ state: 'danger', word: 'Token invalid' });
       expect(row(entries({ sharePoint: entry({ status: 'unreachable' as const, expiresInSeconds: null }) }), 'sharePoint')).toMatchObject({ state: 'attention', word: "Can't reach Microsoft Graph" });
       expect(row(entries({ ado: entry({ status: 'unreachable' as const }) }), 'ado')).toMatchObject({ state: 'attention', word: "Can't reach Azure DevOps" });
+      expect(row(entries({ ado: entry({ status: 'invalid' as const }) }), 'ado')).toMatchObject({ state: 'danger', word: 'Token rejected' });
       expect(row(entries({ llm: entry({ status: 'unreachable' as const, latencyMs: null }) }), 'llm')).toMatchObject({ state: 'attention', word: "Can't reach the LLM backend" });
     });
 

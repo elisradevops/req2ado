@@ -150,6 +150,25 @@ describe('ConnectionStatusItem', () => {
       expect(within(dialog).getByRole('link', { name: /profile & connections/i })).toHaveAttribute('href', '/settings');
     });
 
+    it('offers to reconnect Azure DevOps, on the page where it is done, when its token is rejected', async () => {
+      seed({ ado: known({ status: 'invalid' as const }) });
+      renderItem();
+
+      const dialog = await open();
+
+      expect(within(dialog).getByText('Token rejected')).toBeInTheDocument();
+      expect(within(dialog).getByRole('link', { name: /reconnect azure devops/i })).toHaveAttribute('href', '/settings');
+    });
+
+    it('does not offer it when Azure DevOps is only unreachable: a new token would not help', async () => {
+      seed({ ado: known({ status: 'unreachable' as const }) });
+      renderItem();
+
+      const dialog = await open();
+
+      expect(within(dialog).queryByRole('link', { name: /reconnect azure devops/i })).toBeNull();
+    });
+
     it('gives the links in the popover room to be hit, also on a phone', async () => {
       seed({ sharePoint: known({ status: 'invalid' as const, expiresInSeconds: null }) });
       renderItem();
