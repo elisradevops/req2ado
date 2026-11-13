@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, act } from '@testing-library/react';
+import { render, screen, waitFor, within, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Routes, Route, Link } from 'react-router-dom';
 import { NewJobWizard } from './NewJobWizard';
@@ -17,6 +17,7 @@ vi.mock('../api/kb');
 // The SURVEY configure step shows a KB readiness strip; give it a healthy KB
 // by default so unrelated tests never hit the network or an undefined mock.
 beforeEach(() => {
+  localStorage.clear();
   useNewJobDraftStore.getState().reset();
   vi.spyOn(kbApi, 'listIngestedDocuments').mockResolvedValue([]);
   vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'valid', expiresInSeconds: 3600 });
@@ -43,8 +44,8 @@ describe('NewJobWizard Step 1', () => {
         </MemoryRouter>
       </ToastProvider>,
     );
-    expect(document.title).toBe('Step 1 of 3: Upload document - New Job');
-    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('New Job, step 1 of 3');
+    expect(document.title).toBe('Step 1 of 3: Upload document - New job');
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('New job, step 1 of 3');
     expect(document.activeElement).toBe(document.body);
     unmount();
     expect(document.title).toBe('req2ado');
@@ -293,7 +294,11 @@ describe('NewJobWizard Step 1', () => {
     expect(jobsApi.getEstimate).toHaveBeenCalledWith(
       expect.objectContaining({ blockCount: 682, figureCount: 39, mode: 'survey' }),
     );
+    // The §0 line sits beside the primary action on step 1...
+    expect(screen.getByText('Nothing reaches Azure DevOps until you approve the proposed diff.')).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: /configure/i }));
+    // ...and on step 2.
+    expect(await screen.findByText('Nothing reaches Azure DevOps until you approve the proposed diff.')).toBeInTheDocument();
     // BASELINE is selected by default -- its flat 1-minute estimate (not a
     // range, since lower===upper) shows in the cost card, computed
     // server-side, not from a deleted local formula. "1 min" legitimately
@@ -692,6 +697,22 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
       expect(screen.getByText('No AI summary this time. You can continue.')).toBeInTheDocument();
     });
 
+    it('keeps a summary that arrived in time on screen after the 90 seconds have passed (the give-up timer must not outlive the result)', async () => {
+      vi.spyOn(jobsApi, 'previewSummary').mockResolvedValue('A backplane ICD covering power and thermal limits.');
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        await openStep3(withInput);
+        await waitFor(() => expect(screen.getByText('A backplane ICD covering power and thermal limits.')).toBeInTheDocument());
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(120_000);
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(screen.getByText('A backplane ICD covering power and thermal limits.')).toBeInTheDocument();
+      expect(screen.queryByText('No AI summary this time. You can continue.')).not.toBeInTheDocument();
+    });
+
     it('offers to write the summary again once it is ready, and asks the model a second time', async () => {
       const spy = vi.spyOn(jobsApi, 'previewSummary').mockResolvedValueOnce('First wording.').mockResolvedValueOnce('Second wording.');
       await openStep3(withInput);
@@ -781,7 +802,7 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
 
   it('says on step 3, beside the Start button, that starting writes nothing', async () => {
     await openStep3();
-    expect(screen.getByRole('button', { name: /looks right/i }).parentElement).toHaveTextContent(/starting a job writes nothing/i);
+    expect(screen.getByRole('button', { name: /looks right/i }).parentElement).toHaveTextContent(/nothing reaches azure devops until you approve the proposed diff/i);
   });
 
   it('shows the same three steps in BASELINE and SURVEY, with step 3 tagged SURVEY only in BASELINE', async () => {
@@ -851,13 +872,13 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
     document.title = 'req2ado';
     await openStep3();
     const heading = screen.getByRole('heading', { level: 1 });
-    expect(heading).toHaveTextContent('New Job, step 3 of 3');
+    expect(heading).toHaveTextContent('New job, step 3 of 3');
     expect(heading).toHaveFocus();
-    expect(document.title).toBe('Step 3 of 3: Confirm understanding - New Job');
+    expect(document.title).toBe('Step 3 of 3: Confirm understanding - New job');
 
     await userEvent.click(screen.getByRole('button', { name: /back to configure/i }));
     expect(screen.getByRole('heading', { level: 1 })).toHaveFocus();
-    expect(document.title).toBe('Step 2 of 3: Configure & review - New Job');
+    expect(document.title).toBe('Step 2 of 3: Configure & review - New job');
   });
 
   it('does not replay the fade when the person goes back to a step they have already seen', async () => {
@@ -926,5 +947,312 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
     await userEvent.click(screen.getByRole('button', { name: /start job|looks right/i }));
 
     expect(jobsApi.submitJob).toHaveBeenCalledWith(expect.objectContaining({ documentOverview: null }));
+  });
+});
+
+describe('NewJobWizard step 2 layout (DESIGN.md §11.2.5)', () => {
+  const ESTIMATES = (): void => {
+    vi.spyOn(jobsApi, 'getEstimate').mockImplementation(async ({ mode }) =>
+      mode === 'baseline'
+        ? ({ mode: 'baseline', estimateMinutes: 1, lowerMinutes: 1, upperMinutes: 1, basis: 'bootstrap', sampleCount: 0, modelSampleCount: 0, modelAdjustment: 1, windowDays: 90 } as any)
+        : ({ mode: 'survey', estimateMinutes: 25, lowerMinutes: 20, upperMinutes: 30, basis: 'blended', sampleCount: 5, modelSampleCount: 5, modelAdjustment: 1, windowDays: 90 } as any),
+    );
+  };
+
+  async function reachStep2(): Promise<void> {
+    vi.spyOn(jobsApi, 'listModels').mockResolvedValue({ models: ['qwen2.5:1.5b'], recommended: null, details: [] });
+    vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({
+      blockCount: 682, sectionCount: 24, figureCount: 39, depth: 4, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
+    } as any);
+    ESTIMATES();
+    render(
+      <ToastProvider>
+        <MemoryRouter>
+          <NewJobWizard />
+        </MemoryRouter>
+      </ToastProvider>,
+    );
+    await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'AirPro_ICD.docx'));
+    await userEvent.click(await screen.findByRole('button', { name: /configure/i }));
+    await screen.findByText(/typically, once it starts/i);
+  }
+
+  it('shows the uploaded document in the summary rail, with its counts', async () => {
+    await reachStep2();
+    const rail = screen.getByRole('complementary', { name: 'This run' });
+    expect(rail).toHaveTextContent('AirPro_ICD.docx');
+    expect(rail).toHaveTextContent('682 blocks');
+    expect(rail).toHaveTextContent('24 sections');
+    expect(rail).toHaveTextContent('39 figures');
+  });
+
+  it('puts the question on the canvas, so the mode cards are the only cards (DESIGN.md §16.15, §11.2.5)', async () => {
+    await reachStep2();
+    expect(screen.getByRole('heading', { level: 2, name: 'How should it read the document?' })).toBeInTheDocument();
+    const modes = screen.getByRole('radiogroup', { name: 'Analysis mode' });
+    // no card around the mode cards: neither a Card ancestor nor a card-shaped wrapper
+    expect(modes.closest('.shadow-card')).toBeNull();
+  });
+
+  it('lets you change the document from the rail, which goes back to step 1', async () => {
+    await reachStep2();
+    await userEvent.click(screen.getByRole('button', { name: /change document/i }));
+    expect(await screen.findByRole('heading', { level: 1 })).toHaveTextContent('New job, step 1 of 3');
+  });
+
+  it('keeps the primary action and the safety line together in the rail', async () => {
+    await reachStep2();
+    const rail = screen.getByRole('complementary', { name: 'This run' });
+    expect(rail).toContainElement(screen.getByRole('button', { name: /^start job$/i }));
+    expect(rail).toHaveTextContent('Nothing reaches Azure DevOps until you approve the proposed diff.');
+  });
+
+  it('folds iteration, state and duplicate scope under a closed "More options" that reads their values back', async () => {
+    await reachStep2();
+    const summary = screen.getByText('More options').closest('summary') as HTMLElement;
+    const details = summary.closest('details') as HTMLDetailsElement;
+    expect(details.open).toBe(false);
+    expect(summary).toHaveTextContent('Iteration: project default');
+    expect(summary).toHaveTextContent('State: default');
+    expect(summary).toHaveTextContent('Duplicates: this area path and below');
+    expect(details).toHaveTextContent('Search for duplicates in');
+  });
+
+  it('gives the estimate one home beside the mode cards: no separate cost card and no warning alert for SURVEY', async () => {
+    await reachStep2();
+    await userEvent.click(screen.getByRole('radio', { name: /survey/i }));
+    expect(screen.queryByText('What will it cost you?')).not.toBeInTheDocument();
+    expect(screen.queryByText(/SURVEY mode scales with document size/i)).not.toBeInTheDocument();
+    expect(screen.getAllByText(/typically, once it starts/i)).toHaveLength(1);
+  });
+
+  it('says in the rail why the primary action is disabled, because the destination it needs can be below the fold', async () => {
+    await reachStep2();
+    const rail = screen.getByRole('complementary', { name: 'This run' });
+    expect(screen.getByRole('button', { name: /^start job$/i })).toBeDisabled();
+    expect(rail).toHaveTextContent('Choose an area path to continue.');
+  });
+
+  it('drops that reason once the destination is filled in', async () => {
+    await reachStep2();
+    await userEvent.type(screen.getByLabelText(/area path/i), 'Project\\Area');
+    expect(screen.getByRole('button', { name: /^start job$/i })).toBeEnabled();
+    expect(screen.queryByText(/to continue\./i)).not.toBeInTheDocument();
+  });
+});
+
+describe('NewJobWizard step 1: a document with no headings (DESIGN.md §11.1)', () => {
+  async function uploadWith(preview: Record<string, unknown>): Promise<void> {
+    vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({
+      blockCount: 2, sectionCount: 0, figureCount: 0, depth: 0, fileType: 'txt', tableCount: 0, openTbdCount: 0, documentMap: [], ...preview,
+    } as any);
+    render(
+      <ToastProvider>
+        <MemoryRouter>
+          <NewJobWizard />
+        </MemoryRouter>
+      </ToastProvider>,
+    );
+    await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'notes.txt'));
+  }
+
+  it('says so, instead of "nothing unusual", and what BASELINE does with it', async () => {
+    await uploadWith({});
+    expect(await screen.findByText(/no headings found/i)).toBeInTheDocument();
+    // What the leveler does: clause numbering gives structure where the text has it; only with none is everything one Epic and one Feature.
+    expect(screen.getByText(/uses clause numbering/i)).toBeInTheDocument();
+    expect(screen.getByText(/with none, it groups everything under one Epic and one Feature/i)).toBeInTheDocument();
+    expect(screen.queryByText(/nothing unusual found/i)).not.toBeInTheDocument();
+  });
+
+  it('says nothing about headings when the document has them', async () => {
+    await uploadWith({ sectionCount: 4, blockCount: 30 });
+    expect(await screen.findByText(/nothing unusual found/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no headings found/i)).not.toBeInTheDocument();
+  });
+});
+
+
+describe('NewJobWizard: remembers the last job\'s mode and destination (J2)', () => {
+  function mockApis() {
+    vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({
+      blockCount: 20, sectionCount: 3, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
+    } as any);
+    vi.spyOn(jobsApi, 'submitJob').mockResolvedValue({ jobId: 'job-77' });
+    vi.spyOn(jobsApi, 'listModels').mockResolvedValue({ models: ['qwen2.5:1.5b'], recommended: null, details: [] });
+    vi.spyOn(adoApi, 'getProjects').mockResolvedValue([{ id: '1', name: 'Project' }]);
+    vi.spyOn(adoApi, 'getAreaPaths').mockResolvedValue({ path: 'Project', children: [] });
+    vi.spyOn(adoApi, 'getIterationPaths').mockResolvedValue({ path: 'Project', children: [] });
+    vi.spyOn(adoApi, 'getStates').mockResolvedValue(['Proposed', 'Active']);
+    useAuthStore.getState().login('https://ado.example', 'Jane', 'user-descriptor-1');
+  }
+  const renderWizard = () =>
+    render(
+      <ToastProvider>
+        <MemoryRouter>
+          <NewJobWizard />
+        </MemoryRouter>
+      </ToastProvider>,
+    );
+  async function uploadAndConfigure() {
+    await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'req.docx'));
+    await waitFor(() => expect(screen.getByText(/20/)).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: /configure/i }));
+  }
+
+  it('saves the mode, project and area path once a job has started, under the signed-in user', async () => {
+    mockApis();
+    renderWizard();
+    await uploadAndConfigure();
+    await userEvent.click(screen.getByText('SURVEY'));
+    await userEvent.click(screen.getByLabelText(/team project/i));
+    await userEvent.click(await screen.findByRole('option', { name: 'Project' }));
+    await userEvent.type(await screen.findByLabelText(/area path/i), 'Project');
+    await userEvent.click(screen.getByRole('button', { name: /continue/i }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /looks right/i })).not.toBeDisabled());
+    await userEvent.click(screen.getByRole('button', { name: /looks right/i }));
+    await waitFor(() => expect(jobsApi.submitJob).toHaveBeenCalled());
+
+    expect(JSON.parse(localStorage.getItem('req2ado-last-job:user-descriptor-1') ?? 'null')).toEqual({
+      mode: 'survey', project: 'Project', areaPath: 'Project',
+    });
+  });
+
+  it('starts the next job from them: mode selected and destination filled, nothing re-picked', async () => {
+    mockApis();
+    localStorage.setItem('req2ado-last-job:user-descriptor-1', JSON.stringify({ mode: 'survey', project: 'Project', areaPath: 'Project\\Customer Requirements' }));
+    renderWizard();
+    await uploadAndConfigure();
+    expect(screen.getByRole('radio', { name: /SURVEY/ })).toBeChecked();
+    expect(screen.getByLabelText(/team project/i)).toHaveValue('Project');
+    expect(await screen.findByLabelText(/area path/i)).toHaveValue('Project\\Customer Requirements');
+  });
+
+  it('does not start from another user\'s choices', async () => {
+    mockApis();
+    localStorage.setItem('req2ado-last-job:someone-else', JSON.stringify({ mode: 'survey', project: 'Project', areaPath: 'Project\\X' }));
+    renderWizard();
+    await uploadAndConfigure();
+    expect(screen.getByRole('radio', { name: /BASELINE/ })).toBeChecked();
+  });
+});
+
+describe('NewJobWizard step 2: the rail does not claim a destination the form has not got (review #8)', () => {
+  it('says the destination is not chosen yet while only the project is picked, and shows it once the area path is set', async () => {
+    vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({
+      blockCount: 20, sectionCount: 3, figureCount: 0, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
+    } as any);
+    vi.spyOn(jobsApi, 'listModels').mockResolvedValue({ models: ['qwen2.5:1.5b'], recommended: null, details: [] });
+    vi.spyOn(adoApi, 'getProjects').mockResolvedValue([{ id: '1', name: 'Project' }]);
+    vi.spyOn(adoApi, 'getAreaPaths').mockResolvedValue({ path: 'Project', children: [] });
+    vi.spyOn(adoApi, 'getIterationPaths').mockResolvedValue({ path: 'Project', children: [] });
+    vi.spyOn(adoApi, 'getStates').mockResolvedValue(['Proposed']);
+    useAuthStore.getState().login('https://ado.example', 'Jane', 'user-descriptor-1');
+    render(
+      <ToastProvider>
+        <MemoryRouter>
+          <NewJobWizard />
+        </MemoryRouter>
+      </ToastProvider>,
+    );
+    await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'req.docx'));
+    await waitFor(() => expect(screen.getByText(/20/)).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: /configure/i }));
+    await userEvent.click(screen.getByLabelText(/team project/i));
+    await userEvent.click(await screen.findByRole('option', { name: 'Project' }));
+
+    const rail = screen.getByRole('complementary', { name: 'This run' });
+    expect(within(rail).getByText('Not chosen yet')).toBeInTheDocument();
+    expect(screen.getByText(/choose an area path to continue/i)).toBeInTheDocument();
+
+    await userEvent.type(await screen.findByLabelText(/area path/i), 'Project');
+    expect(within(rail).queryByText('Not chosen yet')).not.toBeInTheDocument();
+  });
+});
+
+describe('NewJobWizard step 3 keeps the "This run" rail beside Start (J4, owner decision 2026-11-12)', () => {
+  it('shows the file, the mode and where it lands next to the start button', async () => {
+    vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({
+      blockCount: 20, sectionCount: 3, figureCount: 0, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
+    } as any);
+    vi.spyOn(jobsApi, 'submitJob').mockResolvedValue({ jobId: 'job-5' });
+    vi.spyOn(jobsApi, 'listModels').mockResolvedValue({ models: ['qwen2.5:1.5b'], recommended: null, details: [] });
+    vi.spyOn(adoApi, 'getProjects').mockResolvedValue([{ id: '1', name: 'Project' }]);
+    vi.spyOn(adoApi, 'getAreaPaths').mockResolvedValue({ path: 'Project', children: [] });
+    vi.spyOn(adoApi, 'getIterationPaths').mockResolvedValue({ path: 'Project', children: [] });
+    vi.spyOn(adoApi, 'getStates').mockResolvedValue(['Proposed', 'Active']);
+    useAuthStore.getState().login('https://ado.example', 'Jane', 'user-descriptor-1');
+    render(
+      <ToastProvider>
+        <MemoryRouter>
+          <NewJobWizard />
+        </MemoryRouter>
+      </ToastProvider>,
+    );
+    await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'req.docx'));
+    await waitFor(() => expect(screen.getByText(/20/)).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: /configure/i }));
+    await userEvent.click(screen.getByText('SURVEY'));
+    await userEvent.click(screen.getByLabelText(/team project/i));
+    await userEvent.click(await screen.findByRole('option', { name: 'Project' }));
+    await userEvent.type(await screen.findByLabelText(/area path/i), 'Project');
+    await userEvent.click(screen.getByRole('button', { name: /continue/i }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /looks right/i })).toBeInTheDocument());
+
+    const rail = screen.getByRole('complementary', { name: 'This run' });
+    expect(within(rail).getByText('req.docx')).toBeInTheDocument();
+    expect(within(rail).getByText(/SURVEY/)).toBeInTheDocument();
+    expect(within(rail).getByText(/Project/)).toBeInTheDocument();
+    // The step's own actions stay in the main column, not the rail.
+    expect(within(rail).queryByRole('button', { name: /looks right/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /looks right/i })).toBeInTheDocument();
+    // On a phone the rail comes after the action bar, so the bar says where it lands itself (hidden from lg up, where the rail is beside it).
+    const start = screen.getByRole('button', { name: /looks right/i });
+    const bar = start.parentElement as HTMLElement;
+    expect(within(bar).getByText(/^Lands in /)).toHaveClass('lg:hidden');
+    expect(within(bar).getByText(/^Lands in /)).toHaveTextContent('Project');
+  });
+});
+
+describe('NewJobWizard step 1: a file with a name that was processed before (J3)', () => {
+  async function uploadNamed(name: string, jobs: unknown): Promise<void> {
+    vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({
+      blockCount: 12, sectionCount: 3, figureCount: 0, depth: 2, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
+    } as any);
+    vi.spyOn(jobsApi, 'listJobs').mockResolvedValue(jobs as any);
+    render(
+      <ToastProvider>
+        <MemoryRouter>
+          <NewJobWizard />
+        </MemoryRouter>
+      </ToastProvider>,
+    );
+    await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], name));
+  }
+  const earlier = (id: string, name: string, createdAt: string, status = 'diff_ready') => ({
+    id, mode: 'survey', status, areaPath: 'P\\A', originalFilename: name, itemCount: 5, createdItemCount: 0, createdAt,
+  });
+
+  it('says a file with this name was already run, with the job, its state and when, and does not block anything', async () => {
+    const recent = new Date(Date.now() - 3 * 3600 * 1000).toISOString();
+    await uploadNamed('spec.docx', [earlier('4270e8be-1979-4cd3-94ea-a0a0d5ef6ed0', 'spec.docx', recent), earlier('zzzzzzzz-2', 'spec.docx', '2026-10-01T00:00:00Z')]);
+    const note = await screen.findByText(/already ran a file with this name/i);
+    expect(note.closest('div')).toHaveTextContent('4270e8be');
+    expect(note.closest('div')).toHaveTextContent('Diff ready');
+    expect(note.closest('div')).toHaveTextContent('1 other time');
+    expect(screen.getByRole('link', { name: /4270e8be/ })).toHaveAttribute('href', '/jobs/4270e8be-1979-4cd3-94ea-a0a0d5ef6ed0');
+    expect(screen.getByRole('button', { name: /configure/i })).toBeEnabled();
+  });
+
+  it('says nothing for a new file name', async () => {
+    await uploadNamed('fresh.docx', [earlier('4270e8be-1', 'spec.docx', '2026-11-12T00:00:00Z')]);
+    await screen.findByText(/straightforward parse|detected|found/i);
+    expect(screen.queryByText(/already ran a file with this name/i)).not.toBeInTheDocument();
+  });
+
+  it('carries on without the note when the job list cannot be read', async () => {
+    await uploadNamed('spec.docx', undefined);
+    await waitFor(() => expect(screen.getByRole('button', { name: /configure/i })).toBeEnabled());
+    expect(screen.queryByText(/already ran a file with this name/i)).not.toBeInTheDocument();
   });
 });

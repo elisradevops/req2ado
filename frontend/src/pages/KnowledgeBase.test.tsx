@@ -95,7 +95,7 @@ describe('KnowledgeBase', () => {
     // the page or refreshing always required re-pasting the URL and
     // clicking Browse again, which read as "the tree cleared / did the
     // ingest even work?" even though the underlying documents were fine.
-    localStorage.setItem('req2ado-kb-browse-url', 'https://share.example/remembered');
+    localStorage.setItem('req2ado-kb-browse-url:user-descriptor-1', 'https://share.example/remembered');
     vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([
       { id: 'f1', name: 'remembered.docx', mimeType: 'application/vnd.openxmlformats', sizeBytes: 1024, isFolder: false, driveId: null, parentDriveId: 'drive-1', alreadyIngested: false, ingestedDocumentId: null, downloadUrl: null },
     ]);
@@ -107,6 +107,47 @@ describe('KnowledgeBase', () => {
     // The saved source is shown in the source bar; the URL form only appears under Change.
     expect(screen.queryByLabelText(/sharing url/i)).toBeNull();
     expect(screen.getByText('https://share.example/remembered')).toBeInTheDocument();
+  });
+
+  it('shows the saved source, and no false "nothing connected" frame, while the SharePoint status is still loading', async () => {
+    // Seen on every visit: until the status check returned, the page said "Connect a SharePoint folder" and "No folder browsed
+    // yet" although a folder was saved and was about to be browsed (DESIGN.md §12: loading is not an empty state).
+    localStorage.setItem('req2ado-kb-browse-url:user-descriptor-1', 'https://share.example/remembered');
+    vi.spyOn(kbApi, 'getSharePointStatus').mockReturnValue(new Promise(() => undefined));
+
+    renderPage();
+
+    expect(screen.getByText('https://share.example/remembered')).toBeInTheDocument();
+    expect(screen.queryByText(/no folder browsed yet/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/connect a sharepoint folder/i)).not.toBeInTheDocument();
+  });
+
+  it('shows the saved SharePoint link without its token, on screen and in the tooltip, and keeps the full link for Change (F2)', async () => {
+    const FULL = 'https://contoso.sharepoint.com/:f:/s/Team/EqAbC123dEf456GhI789jKl?e=SECRETtoken99';
+    localStorage.setItem('req2ado-kb-browse-url:user-descriptor-1', FULL);
+    renderPage();
+    expect(screen.getByText('https://contoso.sharepoint.com/:f:/s/Team/…')).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('EqAbC123dEf456GhI789jKl');
+    expect(document.body.textContent).not.toContain('SECRETtoken99');
+    await userEvent.click(await screen.findByRole('button', { name: /change/i }));
+    expect(await screen.findByLabelText(/sharing url/i)).toHaveValue(FULL);
+  });
+
+  it('removes a sharing link an earlier version left under the old global key, as soon as the page opens', async () => {
+    localStorage.setItem('req2ado-kb-browse-url', 'https://share.example/old-global?e=SECRET');
+    renderPage();
+    await waitFor(() => expect(screen.getByText(/no folder browsed yet/i)).toBeInTheDocument());
+    expect(localStorage.getItem('req2ado-kb-browse-url')).toBeNull();
+  });
+
+  it('does not restore another user\'s folder, nor the old global key that belonged to whoever browsed last', async () => {
+    localStorage.setItem('req2ado-kb-browse-url:someone-else', 'https://share.example/theirs');
+    localStorage.setItem('req2ado-kb-browse-url', 'https://share.example/old-global');
+    renderPage();
+    await waitFor(() => expect(screen.getByText(/no folder browsed yet/i)).toBeInTheDocument());
+    expect(kbApi.browseSharedFolder).not.toHaveBeenCalled();
+    expect(screen.queryByText('https://share.example/theirs')).not.toBeInTheDocument();
+    expect(screen.queryByText('https://share.example/old-global')).not.toBeInTheDocument();
   });
 
   it('does not auto-browse on mount when no folder URL was previously saved', async () => {
@@ -294,7 +335,7 @@ describe('KnowledgeBase', () => {
     await userEvent.click(screen.getByRole('button', { name: /remove spec\.docx from the knowledge base/i }));
     await userEvent.click(screen.getByRole('button', { name: /remove document/i }));
 
-    await waitFor(() => expect(kbApi.deleteIngestedDocument).toHaveBeenCalledWith('doc-1', 'user-descriptor-1'));
+    await waitFor(() => expect(kbApi.deleteIngestedDocument).toHaveBeenCalledWith('doc-1'));
     await waitFor(() => expect(screen.getByText(/removed "spec\.docx"/i)).toBeInTheDocument());
   });
 
@@ -814,7 +855,7 @@ describe('KnowledgeBase source bar and reconnect', () => {
 
   describe('on a narrow screen (below the large breakpoint the panes stack)', () => {
     it('shows the details pane only once a file is selected, and the folder tree never', async () => {
-      localStorage.setItem('req2ado-kb-browse-url', SAVED);
+      localStorage.setItem('req2ado-kb-browse-url:user-descriptor-1', SAVED);
       vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([FILE, FOLDER]);
       renderPage();
       await screen.findByText('guide.docx');
@@ -830,7 +871,7 @@ describe('KnowledgeBase source bar and reconnect', () => {
   });
 
   it('shows the saved source in a bar, not the URL form', async () => {
-    localStorage.setItem('req2ado-kb-browse-url', SAVED);
+    localStorage.setItem('req2ado-kb-browse-url:user-descriptor-1', SAVED);
     vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([FILE]);
     renderPage();
 
@@ -851,7 +892,7 @@ describe('KnowledgeBase source bar and reconnect', () => {
   });
 
   it('Change opens an inline form and Cancel keeps the current source', async () => {
-    localStorage.setItem('req2ado-kb-browse-url', SAVED);
+    localStorage.setItem('req2ado-kb-browse-url:user-descriptor-1', SAVED);
     vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([FILE]);
     renderPage();
     await screen.findByText('guide.docx');
@@ -866,7 +907,7 @@ describe('KnowledgeBase source bar and reconnect', () => {
   });
 
   it('Change then Browse switches to the new source and remembers it', async () => {
-    localStorage.setItem('req2ado-kb-browse-url', SAVED);
+    localStorage.setItem('req2ado-kb-browse-url:user-descriptor-1', SAVED);
     vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([FILE]);
     renderPage();
     await screen.findByText('guide.docx');
@@ -879,11 +920,11 @@ describe('KnowledgeBase source bar and reconnect', () => {
     await waitFor(() => expect(kbApi.browseSharedFolder).toHaveBeenLastCalledWith('https://share.example/other', 'user-descriptor-1'));
     await waitFor(() => expect(screen.queryByLabelText(/sharing url/i)).toBeNull());
     expect(screen.getByText('https://share.example/other')).toBeInTheDocument();
-    expect(localStorage.getItem('req2ado-kb-browse-url')).toBe('https://share.example/other');
+    expect(localStorage.getItem('req2ado-kb-browse-url:user-descriptor-1')).toBe('https://share.example/other');
   });
 
   it('Refresh browses the saved source again', async () => {
-    localStorage.setItem('req2ado-kb-browse-url', SAVED);
+    localStorage.setItem('req2ado-kb-browse-url:user-descriptor-1', SAVED);
     vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([FILE]);
     renderPage();
     await screen.findByText('guide.docx');
@@ -894,7 +935,7 @@ describe('KnowledgeBase source bar and reconnect', () => {
   });
 
   it('after a successful reconnect, browses the saved source again and clears the stale error', async () => {
-    localStorage.setItem('req2ado-kb-browse-url', SAVED);
+    localStorage.setItem('req2ado-kb-browse-url:user-descriptor-1', SAVED);
     vi.spyOn(kbApi, 'browseSharedFolder').mockRejectedValueOnce(tokenExpired()).mockResolvedValue([FILE]);
     vi.spyOn(kbApi, 'reconnectSharePoint').mockResolvedValue({ status: 'valid', expiresInSeconds: 3600 });
     renderPage();
@@ -908,7 +949,7 @@ describe('KnowledgeBase source bar and reconnect', () => {
   });
 
   it('does not browse again when the reconnect token is rejected', async () => {
-    localStorage.setItem('req2ado-kb-browse-url', SAVED);
+    localStorage.setItem('req2ado-kb-browse-url:user-descriptor-1', SAVED);
     vi.spyOn(kbApi, 'browseSharedFolder').mockRejectedValue(tokenExpired());
     vi.spyOn(kbApi, 'reconnectSharePoint').mockResolvedValue({ status: 'invalid', expiresInSeconds: null });
     renderPage();
@@ -921,7 +962,7 @@ describe('KnowledgeBase source bar and reconnect', () => {
   });
 
   it('reopens the folder that was open before the reconnect', async () => {
-    localStorage.setItem('req2ado-kb-browse-url', SAVED);
+    localStorage.setItem('req2ado-kb-browse-url:user-descriptor-1', SAVED);
     vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([FOLDER]);
     vi.spyOn(kbApi, 'browseSubfolder').mockResolvedValue([{ ...FILE, id: 'f2', name: 'nested.docx' }]);
     vi.spyOn(kbApi, 'reconnectSharePoint').mockResolvedValue({ status: 'valid', expiresInSeconds: 3600 });
@@ -939,7 +980,7 @@ describe('KnowledgeBase source bar and reconnect', () => {
   });
 
   it('does not browse on load while the saved token is invalid: one reconnect hint, no failed request and no error banner', async () => {
-    localStorage.setItem('req2ado-kb-browse-url', SAVED);
+    localStorage.setItem('req2ado-kb-browse-url:user-descriptor-1', SAVED);
     vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'invalid', expiresInSeconds: null });
     vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([FILE]);
     renderPage();
@@ -952,7 +993,7 @@ describe('KnowledgeBase source bar and reconnect', () => {
   });
 
   it('browses the saved source once the status check says the token is usable', async () => {
-    localStorage.setItem('req2ado-kb-browse-url', SAVED);
+    localStorage.setItem('req2ado-kb-browse-url:user-descriptor-1', SAVED);
     vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([FILE]);
     renderPage();
 
@@ -961,7 +1002,7 @@ describe('KnowledgeBase source bar and reconnect', () => {
   });
 
   it('disables Refresh and Browse while the token is invalid, and says why', async () => {
-    localStorage.setItem('req2ado-kb-browse-url', SAVED);
+    localStorage.setItem('req2ado-kb-browse-url:user-descriptor-1', SAVED);
     vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'invalid', expiresInSeconds: null });
     vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([FILE]);
     renderPage();
@@ -978,7 +1019,7 @@ describe('KnowledgeBase source bar and reconnect', () => {
     const emphasised = (el: HTMLElement): boolean => /\bbg-action\b/.test(el.className);
 
     async function openSavedSource(status: 'valid' | 'invalid'): Promise<void> {
-      localStorage.setItem('req2ado-kb-browse-url', SAVED);
+      localStorage.setItem('req2ado-kb-browse-url:user-descriptor-1', SAVED);
       vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status, expiresInSeconds: status === 'valid' ? 2820 : null });
       vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([FILE]);
       renderPage();
@@ -1039,7 +1080,7 @@ describe('KnowledgeBase source bar and reconnect', () => {
     });
 
     it('gives Cancel an icon while changing the source', async () => {
-      localStorage.setItem('req2ado-kb-browse-url', SAVED);
+      localStorage.setItem('req2ado-kb-browse-url:user-descriptor-1', SAVED);
       vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([FILE]);
       renderPage();
       await screen.findByText('guide.docx');
@@ -1065,7 +1106,7 @@ describe('KnowledgeBase "Add to knowledge base" dialog', () => {
   }
 
   async function open(entries: FolderTreeEntry[]): Promise<void> {
-    localStorage.setItem('req2ado-kb-browse-url', SAVED);
+    localStorage.setItem('req2ado-kb-browse-url:user-descriptor-1', SAVED);
     vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue(entries);
     renderPage();
     await screen.findByText(entries[0].name);
@@ -1230,7 +1271,7 @@ describe('KnowledgeBase batch add', () => {
   }
 
   async function open(entries: FolderTreeEntry[]): Promise<void> {
-    localStorage.setItem('req2ado-kb-browse-url', SAVED);
+    localStorage.setItem('req2ado-kb-browse-url:user-descriptor-1', SAVED);
     vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue(entries);
     renderPage();
     // The batch panel lists the same files, so a name can appear more than once.
@@ -1291,7 +1332,7 @@ describe('KnowledgeBase batch add', () => {
   it('puts the folder\'s path on the batch and on each file when a subfolder is open', async () => {
     const folder: FolderTreeEntry = { id: 'd1', name: 'Standards', mimeType: null, sizeBytes: 0, isFolder: true, driveId: 'drive-9', parentDriveId: 'drive-9', alreadyIngested: false, ingestedDocumentId: null, downloadUrl: null };
     const nested: FolderTreeEntry = { ...A, id: 'n1', name: 'nested.docx', parentDriveId: 'drive-9', downloadUrl: 'https://dl/n1' };
-    localStorage.setItem('req2ado-kb-browse-url', SAVED);
+    localStorage.setItem('req2ado-kb-browse-url:user-descriptor-1', SAVED);
     vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([folder]);
     vi.spyOn(kbApi, 'browseSubfolder').mockResolvedValue([nested]);
     vi.spyOn(kbApi, 'createKbIngestBatch').mockResolvedValue(batchView('queued', [item(nested, 'queued')]));
@@ -1466,7 +1507,7 @@ describe('KnowledgeBase library switch', () => {
   });
 
   async function open(): Promise<void> {
-    localStorage.setItem('req2ado-kb-browse-url', SAVED);
+    localStorage.setItem('req2ado-kb-browse-url:user-descriptor-1', SAVED);
     vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([A]);
     renderPage();
     await screen.findAllByText('a.docx');
@@ -1595,7 +1636,7 @@ describe('KnowledgeBase library switch', () => {
 
   it('refuses to guess the library of a single file when the backend did not say', async () => {
     vi.spyOn(kbApi, 'ingestFolderItem').mockResolvedValue({} as never);
-    localStorage.setItem('req2ado-kb-browse-url', SAVED);
+    localStorage.setItem('req2ado-kb-browse-url:user-descriptor-1', SAVED);
     vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([{ ...A, parentDriveId: null }]);
     renderPage();
     await screen.findAllByText('a.docx');
@@ -1626,7 +1667,7 @@ describe('KnowledgeBase include subfolders', () => {
   }
 
   async function open(root: FolderTreeEntry[] = ROOT): Promise<void> {
-    localStorage.setItem('req2ado-kb-browse-url', SAVED);
+    localStorage.setItem('req2ado-kb-browse-url:user-descriptor-1', SAVED);
     vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue(root);
     renderPage();
     await screen.findAllByText('01.pdf');
@@ -1874,7 +1915,7 @@ describe('KnowledgeBase ingestion report and rubric', () => {
   });
 
   async function open(batch: kbApi.KbIngestBatch | null): Promise<void> {
-    localStorage.setItem('req2ado-kb-browse-url', SAVED);
+    localStorage.setItem('req2ado-kb-browse-url:user-descriptor-1', SAVED);
     vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([A]);
     vi.spyOn(kbApi, 'listKbIngestBatches').mockResolvedValue(batch ? [batch] : []);
     if (batch) vi.spyOn(kbApi, 'getKbIngestBatch').mockResolvedValue(batch);

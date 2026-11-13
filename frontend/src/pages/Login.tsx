@@ -67,10 +67,10 @@ export function Login(): JSX.Element {
       <aside data-testid="login-brand" className="flex flex-none flex-col justify-between bg-brand-blue px-6 py-4 text-white md:w-[40%] md:px-12 md:py-12">
         <div className="flex items-center gap-3">
           <span className="grid h-10 w-10 flex-none place-items-center rounded-md bg-brand-yellow text-sm font-bold tracking-wide text-brand-blue">R2</span>
-          <span className="text-lg font-semibold">req2ado</span>
+          <span className="text-title font-semibold">req2ado</span>
         </div>
         <div className="hidden flex-col gap-3 md:flex">
-          <h2 className="text-2xl font-semibold leading-tight">From requirement documents to Azure DevOps work items</h2>
+          <h2 className="text-display font-semibold leading-tight">From requirement documents to Azure DevOps work items</h2>
           <p className="max-w-[360px] text-sm text-white/80">Review every proposed change before anything is written to your project.</p>
         </div>
         <span className="hidden h-1 w-16 rounded-sm bg-brand-yellow md:block" aria-hidden="true" />
@@ -83,14 +83,14 @@ export function Login(): JSX.Element {
           }}
           className="w-full max-w-[420px] rounded-md border border-hairline bg-surface p-8 shadow-card"
         >
-          <h1 className="text-lg font-semibold">Welcome to req2ado</h1>
+          <h1 className="text-title font-semibold">Welcome to req2ado</h1>
           <p className="mb-6 mt-1 text-sm text-ink-3">
-            Your ADO Personal Access Token identifies you and grants exactly the permissions your ADO account already has.
+            Your Azure DevOps personal access token identifies you and grants exactly the permissions your Azure DevOps account already has.
           </p>
 
           <div className="flex flex-col gap-3">
             <TextField
-              label="ADO Organization URL"
+              label="Azure DevOps organization URL"
               value={adoOrgUrl}
               onChange={(e) => setAdoOrgUrl(e.target.value)}
               placeholder="https://tfs.example.com/tfs/DefaultCollection"

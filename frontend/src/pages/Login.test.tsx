@@ -34,7 +34,7 @@ describe('Login page', () => {
     vi.spyOn(httpClient, 'post').mockResolvedValueOnce({ data: { displayName: 'Jane Doe' } });
 
     renderLogin();
-    fireEvent.change(screen.getByLabelText('ADO Organization URL'), { target: { value: 'https://tfs.internal/tfs/Collection' } });
+    fireEvent.change(screen.getByLabelText('Azure DevOps organization URL'), { target: { value: 'https://tfs.internal/tfs/Collection' } });
     fireEvent.change(screen.getByLabelText('Personal Access Token'), { target: { value: 'fake-pat' } });
     fireEvent.click(screen.getByText('Sign in'));
 
@@ -49,7 +49,7 @@ describe('Login page', () => {
     vi.spyOn(httpClient, 'post').mockResolvedValueOnce({ data: { displayName: 'Jane Doe' } });
 
     renderLogin();
-    fireEvent.change(screen.getByLabelText('ADO Organization URL'), { target: { value: 'https://tfs.internal/tfs/Collection' } });
+    fireEvent.change(screen.getByLabelText('Azure DevOps organization URL'), { target: { value: 'https://tfs.internal/tfs/Collection' } });
     fireEvent.change(screen.getByLabelText('Personal Access Token'), { target: { value: 'fake-pat' } });
     fireEvent.click(screen.getByText('Sign in'));
 
@@ -66,7 +66,7 @@ describe('Login page', () => {
     vi.spyOn(httpClient, 'post').mockResolvedValueOnce({ data: { displayName: 'Jane Doe' } });
 
     renderLogin();
-    fireEvent.change(screen.getByLabelText('ADO Organization URL'), { target: { value: 'https://dev.azure.com/elisradevops/' } });
+    fireEvent.change(screen.getByLabelText('Azure DevOps organization URL'), { target: { value: 'https://dev.azure.com/elisradevops/' } });
     fireEvent.change(screen.getByLabelText('Personal Access Token'), { target: { value: 'fake-pat' } });
     fireEvent.click(screen.getByText('Sign in'));
 
@@ -91,7 +91,7 @@ describe('Login page', () => {
     vi.spyOn(httpClient, 'post').mockReturnValueOnce(postPromise);
 
     renderLogin();
-    fireEvent.change(screen.getByLabelText('ADO Organization URL'), { target: { value: 'https://tfs.internal/tfs/Collection' } });
+    fireEvent.change(screen.getByLabelText('Azure DevOps organization URL'), { target: { value: 'https://tfs.internal/tfs/Collection' } });
     fireEvent.change(screen.getByLabelText('Personal Access Token'), { target: { value: 'fake-pat' } });
     const submitButton = screen.getByText('Sign in');
     act(() => {
@@ -108,7 +108,7 @@ describe('Login page', () => {
     vi.spyOn(httpClient, 'post').mockRejectedValueOnce(new Error('Invalid ADO organization URL or Personal Access Token'));
 
     renderLogin();
-    fireEvent.change(screen.getByLabelText('ADO Organization URL'), { target: { value: 'https://tfs.internal/tfs/Collection' } });
+    fireEvent.change(screen.getByLabelText('Azure DevOps organization URL'), { target: { value: 'https://tfs.internal/tfs/Collection' } });
     fireEvent.change(screen.getByLabelText('Personal Access Token'), { target: { value: 'fake-pat' } });
     fireEvent.click(screen.getByText('Sign in'));
 
@@ -137,14 +137,14 @@ describe('Login page', () => {
     it('gives both fields the full width of the form', () => {
       renderLogin();
 
-      expect(screen.getByLabelText('ADO Organization URL').className).toContain('w-full');
+      expect(screen.getByLabelText('Azure DevOps organization URL').className).toContain('w-full');
       expect(screen.getByLabelText('Personal Access Token').className).toContain('w-full');
     });
 
     it('shows an example of the organization address', () => {
       renderLogin();
 
-      expect(screen.getByLabelText('ADO Organization URL')).toHaveAttribute('placeholder', expect.stringMatching(/^https:\/\//));
+      expect(screen.getByLabelText('Azure DevOps organization URL')).toHaveAttribute('placeholder', expect.stringMatching(/^https:\/\//));
     });
 
     it('has a brand panel with the product name that is not part of the form', () => {
@@ -159,7 +159,7 @@ describe('Login page', () => {
   it('keeps the e-mail and account name the server returns, for the Profile page', async () => {
     vi.spyOn(httpClient, 'post').mockResolvedValueOnce({ data: { displayName: 'Jane Doe', userId: 'u1', email: 'jane@corp.example', accountName: 'CORP\\jane' } });
     renderLogin();
-    fireEvent.change(screen.getByLabelText('ADO Organization URL'), { target: { value: 'https://tfs.internal/tfs/Collection' } });
+    fireEvent.change(screen.getByLabelText('Azure DevOps organization URL'), { target: { value: 'https://tfs.internal/tfs/Collection' } });
     fireEvent.change(screen.getByLabelText('Personal Access Token'), { target: { value: 'fake-pat' } });
     fireEvent.click(screen.getByText('Sign in'));
 

@@ -119,7 +119,7 @@ export function BatchJobWizard(): React.ReactElement {
 
   return (
     <div className="flex flex-col gap-4">
-      <PageHeader title="New Batch" description="Upload multiple requirements documents to process them together" />
+      <PageHeader title="New batch" description="Upload multiple requirements documents to process them together" />
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.6fr_1fr]">
         <div className="flex min-w-0 flex-col gap-4">
           <SectionCard title="Documents">

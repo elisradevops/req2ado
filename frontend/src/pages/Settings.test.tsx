@@ -33,6 +33,11 @@ describe('Settings', () => {
     vi.spyOn(llmConnectionApi, 'getLlmConnection').mockResolvedValue({ configured: false });
   });
 
+  it('names every review shortcut in the Keyboard shortcuts description (the guide lists the same seven)', () => {
+    renderPage();
+    expect(screen.getByText('Single-key shortcuts while reviewing: J, K, A, R, X, E and U')).toBeInTheDocument();
+  });
+
   it('shows the signed-in identity and current org URL', () => {
     renderPage();
     expect(screen.getByText('Jane Doe')).toBeInTheDocument();
@@ -64,7 +69,7 @@ describe('Settings', () => {
     const reconnectButtons = screen.getAllByRole('button', { name: /^reconnect$/i });
     await userEvent.click(reconnectButtons[reconnectButtons.length - 1]);
 
-    await waitFor(() => expect(screen.getByText(/invalid ado organization url or personal access token/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/invalid azure devops organization url or personal access token/i)).toBeInTheDocument());
   });
 
   // isReconnectingRef guard -- fireEvent.click (not userEvent.click) is used
@@ -97,7 +102,7 @@ describe('Settings', () => {
     await waitFor(() => expect(screen.getByText(/azure devops connection updated/i)).toBeInTheDocument());
   });
 
-  describe('SharePoint integration row + Display Preferences (DESIGN.md Track B, phase B11)', () => {
+  describe('SharePoint integration row + Display preferences (DESIGN.md Track B, phase B11)', () => {
     it('shows the real SharePoint connection status once it resolves', async () => {
       vi.mocked(kbApi.getSharePointStatus).mockResolvedValue({ status: 'invalid', expiresInSeconds: null });
       renderPage();
@@ -151,7 +156,7 @@ describe('Settings', () => {
       await waitFor(() => expect(screen.getByText(/sharepoint reconnected/i)).toBeInTheDocument());
     });
 
-    it('toggles Dense View and persists it to localStorage', async () => {
+    it('toggles Dense view and persists it to localStorage', async () => {
       renderPage();
       const toggle = screen.getByRole('switch', { name: /dense view/i });
       expect(toggle).toHaveAttribute('aria-checked', 'false');
@@ -162,7 +167,7 @@ describe('Settings', () => {
       expect(JSON.parse(localStorage.getItem('req2ado-ui-preferences')!)).toMatchObject({ denseView: true });
     });
 
-    it('toggles Keyboard Shortcuts, defaulting to on, and keeps the other saved preferences', async () => {
+    it('toggles Keyboard shortcuts, defaulting to on, and keeps the other saved preferences', async () => {
       renderPage();
       const toggle = screen.getByRole('switch', { name: /keyboard shortcuts/i });
       expect(toggle).toHaveAttribute('aria-checked', 'true');
@@ -181,7 +186,7 @@ describe('Settings', () => {
       });
     });
 
-    it('toggles Auto-Sync Ledgers, defaulting to on', async () => {
+    it('toggles Auto-sync ledgers, defaulting to on', async () => {
       renderPage();
       const toggle = screen.getByRole('switch', { name: /auto-sync ledgers/i });
       expect(toggle).toHaveAttribute('aria-checked', 'true');
@@ -192,7 +197,7 @@ describe('Settings', () => {
     });
   });
 
-  describe('Duplicate Detection threshold (NEW-07)', () => {
+  describe('Duplicate detection threshold (NEW-07)', () => {
     async function findThresholdField(): Promise<HTMLInputElement> {
       return (await screen.findByLabelText(/similarity threshold percentage/i)) as HTMLInputElement;
     }
@@ -201,7 +206,7 @@ describe('Settings', () => {
       vi.mocked(settingsApi.getAppSettings).mockResolvedValue({ dedupThreshold: 0.85 });
       renderPage();
 
-      expect(await screen.findByText('Duplicate Detection')).toBeInTheDocument();
+      expect(await screen.findByText('Duplicate detection')).toBeInTheDocument();
       expect(await findThresholdField()).toHaveValue(85);
     });
 

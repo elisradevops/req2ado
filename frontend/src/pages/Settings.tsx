@@ -12,6 +12,7 @@ import { useToast } from '../components/ToastProvider';
 import { formatSharePointExpiry } from '../utils/sharePointStatus';
 import { adoConnectionRow, type HealthState } from '../utils/connectionHealth';
 import { ProfileCard } from '../components/ProfileCard';
+import { usePageTitle } from '../hooks/usePageTitle';
 import { PageHeader } from '../ui/PageHeader';
 import { SectionCard } from '../ui/SectionCard';
 import { Button } from '../ui/Button';
@@ -24,6 +25,7 @@ import { Switch } from '../ui/Switch';
 import { Select } from '../ui/Select';
 import { Skeleton } from '../ui/Skeleton';
 import { cn } from '../lib/cn';
+import { Briefcase } from 'lucide-react';
 
 type IntegrationTone = 'ok' | 'danger' | 'warning' | 'dim';
 
@@ -125,7 +127,7 @@ function IntegrationRow({
         <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium text-ink-1">
           {name}
           {/* The status can be long (an address, an expiry): it wraps inside the row instead of pushing the action off a narrow screen. */}
-          <Chip className={cn('max-w-full rounded-xl border text-xs font-normal whitespace-normal [overflow-wrap:anywhere]', TONE_CHIP_CLASSES[tone])}>{detail}</Chip>
+          <Chip className={cn('max-w-full rounded-lg border text-xs font-normal whitespace-normal [overflow-wrap:anywhere]', TONE_CHIP_CLASSES[tone])}>{detail}</Chip>
         </p>
         {reason && <p className="mt-0.5 text-xs text-danger-ink">{reason}</p>}
       </div>
@@ -174,6 +176,7 @@ function DisplayPreferenceRow({
  * than only ever being discoverable by visiting the Knowledge Base page.
  */
 export function Settings(): React.ReactElement {
+  usePageTitle('Profile and connections');
   const displayName = useDisplayName();
   const orgUrl = useOrgUrl();
   const userId = useUserId();
@@ -270,7 +273,7 @@ export function Settings(): React.ReactElement {
       showToast('Azure DevOps connection updated.', 'success');
       setReconnectOpen(false);
     } catch {
-      setReconnectError('Invalid ADO organization URL or Personal Access Token, or it belongs to a different ADO account.');
+      setReconnectError('Invalid Azure DevOps organization URL or personal access token, or it belongs to a different Azure DevOps account.');
     } finally {
       isReconnectingRef.current = false;
       setIsReconnecting(false);
@@ -424,7 +427,7 @@ export function Settings(): React.ReactElement {
 
   return (
     <div className="flex flex-col gap-4">
-      <PageHeader title="Profile & Connections" />
+      <PageHeader title="Profile and connections" />
       <div className="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
         <SectionCard title="Profile">
           <ProfileCard displayName={displayName} email={email} accountName={accountName} userId={userId} orgUrl={orgUrl} />
@@ -434,7 +437,7 @@ export function Settings(): React.ReactElement {
           <SectionCard title="Integrations">
             <div className="flex flex-col gap-2.5">
               <IntegrationRow
-                icon={<span className="text-xs font-bold">ADO</span>}
+                icon={<Briefcase className="h-4 w-4" aria-hidden="true" />}
                 name="Azure DevOps"
                 // A healthy or still-checking connection says so in words beside the address (the failures say it below the row), so the
                 // state is never carried by the colour of the chip alone.
@@ -466,30 +469,30 @@ export function Settings(): React.ReactElement {
             </div>
           </SectionCard>
 
-          <SectionCard title="Display Preferences">
+          <SectionCard title="Display preferences">
             <div className="flex flex-col gap-3">
               <DisplayPreferenceRow
-                label="Dense View"
+                label="Dense view"
                 description="Reduce padding for data tables"
                 checked={denseView}
                 onCheckedChange={(value) => useUiPreferencesStore.getState().setDenseView(value)}
               />
               <DisplayPreferenceRow
-                label="Auto-Sync Ledgers"
-                description="Periodically fetch updates from ADO"
+                label="Auto-sync ledgers"
+                description="Periodically fetch updates from Azure DevOps"
                 checked={autoSyncLedgers}
                 onCheckedChange={(value) => useUiPreferencesStore.getState().setAutoSyncLedgers(value)}
               />
               <DisplayPreferenceRow
-                label="Keyboard Shortcuts"
-                description="Single-key shortcuts while reviewing: J, K, A, R and X"
+                label="Keyboard shortcuts"
+                description="Single-key shortcuts while reviewing: J, K, A, R, X, E and U"
                 checked={keyboardShortcuts}
                 onCheckedChange={(value) => useUiPreferencesStore.getState().setKeyboardShortcuts(value)}
               />
             </div>
           </SectionCard>
 
-          <SectionCard title="Duplicate Detection">
+          <SectionCard title="Duplicate detection">
             {isThresholdLoading ? (
               <Skeleton className="h-8 w-full" />
             ) : (
@@ -562,7 +565,7 @@ export function Settings(): React.ReactElement {
           </>
         }
       >
-        <TextField label="ADO Organization URL" value={newOrgUrl} onChange={(e) => setNewOrgUrl(e.target.value)} fullWidth />
+        <TextField label="Azure DevOps organization URL" value={newOrgUrl} onChange={(e) => setNewOrgUrl(e.target.value)} fullWidth />
         <div className="flex items-end gap-1.5">
           <TextField label="Personal Access Token" type="password" value={newPat} onChange={(e) => setNewPat(e.target.value)} fullWidth />
           <InfoTip content="Needs Work Items (Read, write, & manage) scope at minimum. Reconnecting re-validates and re-encrypts this token server-side without signing you out." />

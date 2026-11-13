@@ -1,3 +1,4 @@
+import { readKbBrowseUrl, removeLegacyKbBrowseUrl, writeKbBrowseUrl } from '../utils/kbBrowseUrl';
 import { useEffect, useRef, useState } from 'react';
 import { isAxiosError } from 'axios';
 import { FolderTree } from 'lucide-react';
@@ -31,6 +32,7 @@ import { useConnectionStatusStore } from '../store/connectionStatusStore';
 import { isBatchStatusFinished, useKbIngestStore } from '../store/kbIngestStore';
 import { driveMismatchOf, type DriveMismatch } from '../utils/kbDriveMismatch';
 import { walkFolders, type WalkedFile } from '../utils/kbFolderWalk';
+import { usePageTitle } from '../hooks/usePageTitle';
 import { PageHeader } from '../ui/PageHeader';
 import { TextField } from '../ui/TextField';
 import { Button } from '../ui/Button';
@@ -106,24 +108,16 @@ interface CurrentFolder {
 
 const ROOT_FOLDER: CurrentFolder = { id: null, driveId: null, path: '', name: 'Root' };
 
-// Not a secret -- the user's own pasted SharePoint/OneDrive sharing URL, so
-// localStorage (survives across tabs/restarts, unlike authStore's session-
-// scoped sessionStorage) is fine here. Without this, the tree looked like it
-// "cleared" every time the user left the page or refreshed: the browse
-// state was 100% in-memory with nothing to restore from, so returning to
-// the page always required re-pasting the URL and clicking Browse again --
-// the underlying ingested documents were never actually lost.
-const KB_BROWSE_URL_STORAGE_KEY = 'req2ado-kb-browse-url';
-
 const SHAREPOINT_UNREACHABLE: SharePointStatus = { status: 'unreachable', expiresInSeconds: null };
 
 export function KnowledgeBase(): React.ReactElement {
+  usePageTitle('Knowledge base');
   const { showToast, showErrorToast } = useToast();
   const userId = useUserId();
   // What is typed in the URL field.
   const [browseUrl, setBrowseUrl] = useState('');
   // The folder URL actually being shown: restored on load, or set by a successful browse. The source bar shows it.
-  const [sourceUrl, setSourceUrl] = useState<string | null>(null);
+  const [sourceUrl, setSourceUrl] = useState<string | null>(() => readKbBrowseUrl(userId));
   const [lastBrowsedAt, setLastBrowsedAt] = useState<number | null>(null);
   // Shared with the rest of the app (polled and refreshed in one place); a check that failed reads as unreachable.
   const sharePointEntry = useConnectionStatusStore((s) => s.sharePoint);
@@ -328,7 +322,7 @@ export function KnowledgeBase(): React.ReactElement {
       setCenterEntries(entries);
       setSelectedFileId(null);
       setIngestOverrides({});
-      localStorage.setItem(KB_BROWSE_URL_STORAGE_KEY, url);
+      writeKbBrowseUrl(userId, url);
       setSourceUrl(url);
       setLastBrowsedAt(Date.now());
       return true;
@@ -346,11 +340,14 @@ export function KnowledgeBase(): React.ReactElement {
   // banner repeating what the source bar already says). The saved source is still shown; once the status says the token works, the
   // browse happens, so a reconnect from elsewhere (the status popover) picks the page up too.
   const restoredRef = useRef(false);
+  useEffect(() => {
+    removeLegacyKbBrowseUrl();
+  }, []);
   const tokenChecked = sharePointEntry.checkedAt !== null;
   const tokenBlocked = sharePointStatus?.status === 'invalid' || sharePointStatus?.status === 'not_configured';
   useEffect(() => {
     if (!userId || !tokenChecked || restoredRef.current) return;
-    const saved = localStorage.getItem(KB_BROWSE_URL_STORAGE_KEY);
+    const saved = readKbBrowseUrl(userId);
     if (!saved) return;
     setBrowseUrl(saved);
     setSourceUrl(saved);
@@ -504,7 +501,7 @@ export function KnowledgeBase(): React.ReactElement {
     isRemovingRef.current = true;
     setIsRemoving(true);
     try {
-      await deleteIngestedDocument(documentPendingRemoval.documentId, userId);
+      await deleteIngestedDocument(documentPendingRemoval.documentId);
       showToast(`Removed "${documentPendingRemoval.name}" from the knowledge base.`, 'success');
       setIngestOverrides((prev) => ({ ...prev, [documentPendingRemoval.entryId]: { ingested: false, docId: null } }));
       setDocumentPendingRemoval(null);
@@ -741,7 +738,7 @@ export function KnowledgeBase(): React.ReactElement {
 
   return (
     <div className="flex flex-col gap-4">
-      <PageHeader title="Knowledge Base" description="Documents your SURVEY jobs are judged against. Only visible to your own jobs." />
+      <PageHeader title="Knowledge base" description="Documents your SURVEY jobs are judged against. Only visible to your own jobs." />
       <KbSourceBar
         sourceUrl={sourceUrl}
         draftUrl={browseUrl}
@@ -766,7 +763,8 @@ export function KnowledgeBase(): React.ReactElement {
           onOpenReport={() => setReportOpen(true)}
         />
       )}
-      {browsing ? (
+      {browsing || (sourceUrl !== null && !tokenChecked && !rootEntries && !browseError) ? (
+        // Loading, or a saved folder waiting for the first status check: never the "nothing browsed" empty state (§12).
         <Card>
           <div className="flex flex-col gap-2 p-3.5">
             {Array.from({ length: 3 }).map((_, i) => (

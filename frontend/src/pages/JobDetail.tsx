@@ -50,14 +50,19 @@ import { useOrgUrl } from '../store/authStore';
 import { usePageLabelStore } from '../store/pageLabelStore';
 import { StatusChip } from '../components/StatusChip';
 import { ModeBadge } from '../components/ModeBadge';
-import { ProgressBanner } from '../components/ProgressBanner';
-import { JobLifecycleSteps, type LifecycleKey } from '../components/JobLifecycleSteps';
+import { ProgressBanner, PHASE_SUBLABEL } from '../components/ProgressBanner';
+import { ActivityFeed, useActivityLog } from '../components/ActivityFeed';
+import { Disclosure } from '../ui/Disclosure';
+import { LiveStatusRegion } from '../components/liveRun/LiveStatusRegion';
+import { usePageTitle } from '../hooks/usePageTitle';
+import { formatDate, formatDateTime } from '../utils/formatDateTime';
+import { lifecyclePhases, type LifecycleKey } from '../components/JobLifecycleSteps';
+import { PhaseRail, type PhaseRailRow } from '../components/jobPhase/PhaseRail';
+import { PhaseSummary } from '../components/jobPhase/PhaseSummary';
 import {
   parseDeterministicSubtreeChunk,
   formatDeterministicSubtreePassSubLabel,
 } from '../utils/deterministicSubtreeChunk';
-import { NarrationTicker } from '../components/NarrationTicker';
-import { tickerFor } from '../utils/narrationTicker';
 import { DiffTree, type DryRunDiffEntry } from '../components/DiffTree';
 import { NodeDetailDialog } from '../components/NodeDetailDialog';
 import { AddChildCard } from '../components/AddChildCard';
@@ -66,8 +71,10 @@ import { cn } from '../lib/cn';
 import { ARRIVE, MOTION, scrollBehavior } from '../ui/motion';
 import { describeJobKbCoverage, type KbCoverage } from '../utils/kbCoverage';
 import { getServerMessage } from '../lib/errorDetails';
-import { isFlaggedDiffEntry } from '../utils/diffFlagging';
-import { buildReviewQueue, cleanApproval, isExcludedWithAncestors, reviewQueueModeReducer, riskReason, spotCheckSample } from '../utils/reviewQueue';
+import { computeWriteGate } from '../utils/writeGate';
+import { describeFailureCause, failureAuditMessage } from '../utils/failureCause';
+import { REVIEW_GROUP_META } from '../components/reviewGroupMeta';
+import { buildReviewQueue, cleanApproval, groupReviewQueue, isExcludedWithAncestors, nextInQueue, REVIEW_GROUP_ORDER, reviewQueueModeReducer, type ReviewGroup, riskReason, spotCheckSample } from '../utils/reviewQueue';
 import { BulkApproveDialog } from '../components/BulkApproveDialog';
 import { WriteSummary, type WriteSummaryState } from '../components/WriteSummary';
 import { approvalBreakdown, type ApprovalMethod } from '../utils/approvalBreakdown';
@@ -87,7 +94,6 @@ import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { Tooltip } from '../ui/Tooltip';
 import { DestinationBar } from '../components/DestinationBar';
 import { Card } from '../ui/Card';
-import { StatTile } from '../ui/StatTile';
 import { TextField } from '../ui/TextField';
 import { AnimatedNumber } from '../ui/AnimatedNumber';
 import { Select } from '../ui/Select';
@@ -105,8 +111,9 @@ import { matchesDiffFilter } from '../utils/diffFilterMatch';
 import { FigureDescriptions, type FigureDescriptionEntry } from '../components/FigureDescriptions';
 import { SectionResults, type SectionResultEntry } from '../components/SectionResults';
 import type { WorkItemTypeCatalogEntry } from '../api/ado';
-import { isRunDetailStatus, shouldShowTiles, shouldShowTabs, shouldShowFilterBar } from './jobDetailLayout';
-import { Download, FileX2, RotateCw, ShieldCheck, Trash2, Upload, X } from 'lucide-react';
+import { isRunDetailStatus, shouldShowTiles, shouldShowTabs, shouldShowFilterBar, shouldShowNothingWrittenLine, reviewHeadline } from './jobDetailLayout';
+import { SafetyLine } from '../components/SafetyLine';
+import { Download, FileX2, RotateCw, ShieldCheck, Trash2, TriangleAlert, Upload, X } from 'lucide-react';
 import { IconButton } from '../ui/IconButton';
 import { EmptyState } from '../ui/EmptyState';
 import { DocumentOverviewCard } from '../components/DocumentOverviewCard';
@@ -165,6 +172,8 @@ export function JobDetail(): React.ReactElement {
   const [excludedFigureIds, setExcludedFigureIds] = useState<string[]>([]);
   // Items an earlier failed write already created in Azure DevOps (the server refuses changes to them): locks them in the details dialog.
   const [writtenLocalIds, setWrittenLocalIds] = useState<string[]>([]);
+  // DESIGN.md §11.3.5: null = follow the live phase; a key = the user is reading that phase and nothing moves the view.
+  const [pickedPhase, setPickedPhase] = useState<LifecycleKey | null>(null);
   const [excludedTableIds, setExcludedTableIds] = useState<string[]>([]);
   const [warnings, setWarnings] = useState<(WarningRecord | string)[]>([]);
   // Task 4: JobTraceLinkFailure rows -- see NodeDetailPanel's own doc
@@ -349,7 +358,8 @@ export function JobDetail(): React.ReactElement {
   const [isReindexing, setIsReindexing] = useState(false);
   const [filterAction, setFilterAction] = useState<string | null>(null);
   const [filterText, setFilterText] = useState('');
-  const [filterFlaggedOnly, setFilterFlaggedOnly] = useState(false);
+  // The review group the tree is narrowed to (Fix before writing, Check, Clean, Structure); one at a time.
+  const [reviewGroup, setReviewGroup] = useState<ReviewGroup | null>(null);
   // Set by a warning row's tree button (see CollapsibleWarnings'
   // onFocusKind): narrows the tree, bulk include/exclude and prev/next to
   // that warning kind's affected items. Another filter dimension, ANDed
@@ -495,6 +505,8 @@ export function JobDetail(): React.ReactElement {
     setNarrations([]);
     setEventHistory([]);
     setDocumentOverview(null);
+    // The previous job's failure cause must not show on this one while its own audit loads, or if it cannot be read.
+    setFailureAudit([]);
   }, [id]);
 
   useEffect(loadJob, [id]);
@@ -554,6 +566,14 @@ export function JobDetail(): React.ReactElement {
   // optimistically, before its own confirmJob() call even resolves, so the
   // subscription needs to already be (or become) live for that status too.
   const isLive = status === 'pending' || status === 'running' || status === 'writing';
+  usePageTitle(sourceFilename ? sourceFilename : 'Job');
+  // A phase picked while reading one run must not outlive that run's live period or follow the reader to another job.
+  useEffect(() => {
+    setPickedPhase(null);
+  }, [isLive]);
+  useEffect(() => {
+    setPickedPhase(null);
+  }, [id]);
   useEffect(() => {
     if (!id || !isLive) return;
     let unsubscribe: (() => void) | undefined;
@@ -751,6 +771,8 @@ export function JobDetail(): React.ReactElement {
     });
     return [...historical, ...live];
   }, [eventHistory, narrations]);
+  // DESIGN.md §11.3.5: the record of what the run reported outlives the run. While it runs, ProgressBanner owns it.
+  const runLogEvents = useActivityLog(mergedNarrations, (event) => PHASE_SUBLABEL[event.phase] ?? event.phase);
 
   // Backfills figureCaptionsByIndex from durable history too -- the live
   // SSE callback above only ever sees events published AFTER this page
@@ -982,7 +1004,6 @@ export function JobDetail(): React.ReactElement {
       }),
     };
   }, [writeSummaryState, diff, approvalMethods, bulkCheckedIds, editedIds]);
-  const writeWarningCounts = useMemo(() => countWarningsForWrite(mergedWarnings), [mergedWarnings]);
   const previewedTotal = writeSummaryState.status === 'ready' ? writeSummaryState.preview.createdTotal : null;
   const writePreviewed = writeSummaryState.status === 'ready' ? writeSummaryState.preview : null;
   const nothingToWrite = writePreviewed !== null && !writeHasWork(writePreviewed);
@@ -1352,7 +1373,7 @@ export function JobDetail(): React.ReactElement {
 
   // Steps the queue on after an accept or exclude: `rest` is what is left once the
   // open item is gone. Ends queue mode, and closes the dialog, when nothing is.
-  function advanceReviewQueue(rest: DryRunDiffEntry[], verb: string): void {
+  function advanceReviewQueue(rest: DryRunDiffEntry[], verb: string, fromId?: string): void {
     if (rest.length === 0) {
       // 'finish' ends a running queue; markDone covers a dialog the reviewer closed while the save ran.
       dispatchQueueState('finish');
@@ -1361,7 +1382,9 @@ export function JobDetail(): React.ReactElement {
       setQueueAnnouncement(`${verb}. Review queue done.`);
       return;
     }
-    setSelectedId(rest[0].localId);
+    // The item after the one just dealt with, not the top of what is left: a reviewer who stepped on with J keeps moving forward.
+    const next = (fromId ? nextInQueue(reviewQueue, fromId, rest) : undefined) ?? rest[0];
+    setSelectedId(next.localId);
     setQueueAnnouncement(`${verb}. ${rest.length} left.`);
   }
 
@@ -1453,7 +1476,7 @@ export function JobDetail(): React.ReactElement {
     };
     setLastUndo(undo);
     const saved = handleSetReviewed([markedId], true, { onToastUndo: () => clearLastUndoIf(undo) });
-    advanceReviewQueue(rest, 'Marked reviewed');
+    advanceReviewQueue(rest, 'Marked reviewed', markedId);
     if (!(await saved)) {
       clearLastUndoIf(undo);
       returnToQueueItem(markedId, `Couldn't mark "${markedTitle}" reviewed. Try again.`);
@@ -1477,7 +1500,7 @@ export function JobDetail(): React.ReactElement {
     );
     if (!(await excludeWithUndo(excludedId))) return;
     // Step on only if the reviewer is still on the excluded item; one who moved on (J/K) keeps their place.
-    if (selectedIdRef.current === excludedId) advanceReviewQueue(rest, 'Excluded');
+    if (selectedIdRef.current === excludedId) advanceReviewQueue(rest, 'Excluded', excludedId);
     else setQueueAnnouncement(`Excluded. ${rest.length} left.`);
   }
 
@@ -1705,6 +1728,42 @@ export function JobDetail(): React.ReactElement {
 
   // Marks integrity warnings handled. Optimistic, like handleSetReviewed;
   // a failure puts back each affected record's own prior value.
+  // Narrow the tree to a warning's items and bring it into view. A prior name/action filter would silently hide some of the items
+  // the row's count promises, so those are reset. Also what Write does while a "Fix before writing" kind is open.
+  function handleFocusKind(kind: string, nodeIds: string[], label: string): void {
+    setFocusWarning({ kind, label, nodeIds: new Set(nodeIds) });
+    setFilterAction(null);
+    setFilterText('');
+    setReviewGroup(null);
+    setTab('tree');
+    requestAnimationFrame(() =>
+      document.getElementById('proposed-tree')?.scrollIntoView({ behavior: scrollBehavior(), block: 'start' }),
+    );
+  }
+
+  // Write while blocked takes the reviewer to the first thing that blocks it, in the same narrowed tree "Fix in tree" gives.
+  function handleWriteClick(): void {
+    const blocker = writeGate.firstBlocker;
+    if (blocker) {
+      const entry = warningKindGroups.find((group) => group.kind === blocker.kind);
+      const count = writeGate.remaining.toLocaleString();
+      const noun = writeGate.remaining === 1 ? 'item' : 'items';
+      if (!entry || entry.nodeIds.length === 0) {
+        // A blocker with no items in the tree (a section that produced nothing, say): the warning is the place to go, not an empty tree.
+        setQueueAnnouncement(`Write is blocked: ${count} ${noun} to fix before writing. Showing the warning.`);
+        goAndFocus('integrity-warnings');
+        return;
+      }
+      handleFocusKind(blocker.kind, blocker.nodeIds.length > 0 ? blocker.nodeIds : entry.nodeIds, blocker.title);
+      // Said and shown: the jump scrolls the page away from Write, so the live region says why, and focus follows the reviewer to the tree.
+      setQueueAnnouncement(`Write is blocked: ${count} ${noun} to fix before writing. Showing ${writeGate.remaining === 1 ? 'it' : 'them'}.`);
+      goAndFocus('proposed-tree');
+      return;
+    }
+    setWriteHandOver(false);
+    setConfirmDialogOpen(true);
+  }
+
   async function handleAcknowledge(kind: string, raws: string[] | undefined, acknowledged: boolean): Promise<void> {
     if (!id) return;
     const matches = (warning: WarningRecord | string): warning is WarningRecord =>
@@ -1715,7 +1774,16 @@ export function JobDetail(): React.ReactElement {
     setWarnings((prev) => prev.map((warning) => (matches(warning) ? { ...warning, acknowledged } : warning)));
     try {
       await setWarningsAcknowledged(id, { kind, raws, acknowledged });
-      showToast(acknowledged ? 'Marked handled.' : 'Marked not handled.', 'success', {
+      // A counted acceptance says what was accepted ("Accepted 7 without a Customer ID."), not a generic "handled".
+      const counted = warningKindGroups.find((group) => group.kind === kind);
+      const acceptedLabel = counted?.meta.ackPolicy === 'kind_counted' ? counted.meta.countedAckLabel : undefined;
+      const acceptedCount = counted ? (counted.nodeIds.length > 0 ? counted.nodeIds.length : counted.records.length) : 0;
+      showToast(
+        acknowledged
+          ? acceptedLabel ? `Accepted ${acceptedCount.toLocaleString()} ${acceptedLabel}.` : 'Marked handled.'
+          : acceptedLabel ? 'Acceptance undone.' : 'Marked not handled.',
+        'success',
+        {
         label: 'Undo',
         onAction: () => void handleAcknowledge(kind, raws, !acknowledged),
       });
@@ -1736,7 +1804,6 @@ export function JobDetail(): React.ReactElement {
     const targets = diff.filter(
       (entry) =>
         matchesDiffFilter(entry, filterAction, query) &&
-        (!filterFlaggedOnly || isFlaggedDiffEntry(entry)) &&
         (!focusVisibleIds || focusVisibleIds.has(entry.localId)) &&
         !!entry.excluded !== excluded,
     );
@@ -1907,7 +1974,7 @@ export function JobDetail(): React.ReactElement {
     try {
       const result = await addDiscussionEntry(id, localId, entry);
       setDiff(mergeServerDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []));
-      showToast('Added to the discussion; it will be posted to Azure DevOps on Confirm.', 'success');
+      showToast('Added to the discussion; it will be posted to Azure DevOps when you write.', 'success');
     } catch (err) {
       showErrorToast('Failed to add to the discussion — please try again.', err);
       throw err;
@@ -2224,6 +2291,15 @@ export function JobDetail(): React.ReactElement {
 
   // Reviewer progress, from the server-persisted flag on each diff entry.
   const reviewedIds = useMemo(() => new Set(diff.filter((entry) => entry.reviewed).map((entry) => entry.localId)), [diff]);
+  // Items the reviewer has decided on: marked reviewed, or left out of the write (directly or through an excluded ancestor, which
+  // confirm drops too). One set for the warning rows, the banner count and the write gate, so they cannot disagree.
+  const handledIds = useMemo(() => {
+    const byId = new Map(diff.map((entry) => [entry.localId, entry]));
+    const cache = new Map<string, boolean>();
+    const handled = new Set<string>();
+    for (const entry of diff) if (entry.reviewed || isExcludedWithAncestors(entry, byId, cache)) handled.add(entry.localId);
+    return handled;
+  }, [diff]);
 
   // Counted per warning TYPE (one row each in the panel), not per record:
   // "3 warnings need your attention" must match the 3 rows to fix or review.
@@ -2231,7 +2307,18 @@ export function JobDetail(): React.ReactElement {
   // and neither does one the reviewer has finished.
   const warningKindGroups = useMemo(() => buildKindGroups(mergedWarnings), [mergedWarnings]);
   const trackableKinds = useMemo(() => warningKindGroups.filter((entry) => entry.group !== 'info'), [warningKindGroups]);
-  const actionableWarningCount = trackableKinds.filter((entry) => !kindProgress(entry, reviewedIds).complete).length;
+  const actionableWarningCount = trackableKinds.filter((entry) => !kindProgress(entry, handledIds).complete).length;
+  // Hard block: Write is not available while a "Fix before writing" kind is open (only while the diff is still awaiting the write).
+  // A "Fix before writing" kind is cleared item by item (or, where the source has nothing to correct, by its counted acknowledgement):
+  // never by marking the whole list reviewed.
+  const focusIsFixKind = !!focusWarning && warningKindGroups.some((group) => group.kind === focusWarning.kind && group.group === 'fix');
+  const writeGate = useMemo(() => computeWriteGate(status === 'diff_ready' ? warningKindGroups : [], handledIds), [status, warningKindGroups, handledIds]);
+  // The blocking count comes from the gate (an item the reviewer decided on is not open, whatever its record says), so the dialog
+  // and the Write button never disagree.
+  const writeWarningCounts = useMemo(() => {
+    const counts = countWarningsForWrite(mergedWarnings);
+    return { ...counts, open: { ...counts.open, fix: writeGate.blockers.length } };
+  }, [mergedWarnings, writeGate]);
 
   // Whether the focused warning is one the reviewer works through (fix or
   // review) rather than an informational one with nothing to mark.
@@ -2244,11 +2331,25 @@ export function JobDetail(): React.ReactElement {
   // The focused warning's items still to be shown: its own set, minus the
   // ones already reviewed while "hide reviewed" is on. Drives the tree, the
   // bulk include/exclude and prev/next, so all three agree on the list.
-  const focusVisibleIds = useMemo(() => {
+  const warningVisibleIds = useMemo(() => {
     if (!focusWarning) return undefined;
     if (!hideReviewed || !focusReviewable) return focusWarning.nodeIds;
     return new Set([...focusWarning.nodeIds].filter((localId) => !reviewedIds.has(localId)));
   }, [focusWarning, focusReviewable, hideReviewed, reviewedIds]);
+  // What is still to decide, by group (Fix before writing, Check, Clean, Structure), classified once per change of the diff or warnings.
+  const reviewGroups = useMemo(
+    () => (status === 'diff_ready' ? groupReviewQueue(diff, warningKindGroups) : { fix: [], check: [], clean: [], structure: [] }),
+    [status, diff, warningKindGroups],
+  );
+  // The pressed group, unless it has emptied (its last item was decided or excluded): its chip is gone then, so the filter goes with it
+  // rather than leaving a tree filtered to nothing and no control to clear it.
+  const activeReviewGroup = reviewGroup && reviewGroups[reviewGroup].length > 0 ? reviewGroup : null;
+  // A group filter and a warning focus together narrow to the items in both.
+  const focusVisibleIds = useMemo(() => {
+    if (!activeReviewGroup) return warningVisibleIds;
+    const groupIds = new Set(reviewGroups[activeReviewGroup].map((entry) => entry.localId));
+    return warningVisibleIds ? new Set([...warningVisibleIds].filter((localId) => groupIds.has(localId))) : groupIds;
+  }, [activeReviewGroup, reviewGroups, warningVisibleIds]);
   const focusReviewedCount = focusWarning ? [...focusWarning.nodeIds].filter((localId) => reviewedIds.has(localId)).length : 0;
 
   // Per-item reason shown as a chip on tree rows while a warning is
@@ -2328,6 +2429,8 @@ export function JobDetail(): React.ReactElement {
   // The app's dialogs have no Radix trigger to hand focus back to, so on close it falls to the
   // page body. After the queue's dialog closes, focus goes to the "done" row when the queue is
   // finished, otherwise back to the queue button. After a tick, so it lands once the dialog is gone.
+  // Where the open item sat in the queue, so one that drops out hands over to the item that took its place.
+  const queueSlotRef = useRef<number | null>(null);
   const showQueueDone = queueFinished && !dialogOpen && status === 'diff_ready' && reviewQueue.length === 0;
   // Queue mode follows the queue: it ends when the job leaves review or nothing is left, and
   // an open item that has dropped out of the queue (a refresh, an undo) hands over to the first.
@@ -2336,8 +2439,15 @@ export function JobDetail(): React.ReactElement {
     if (!queueMode || isDiffMutating) return;
     if (status !== 'diff_ready' || reviewQueue.length === 0) {
       dispatchQueueState('close');
-    } else if (!selectedId || !reviewQueue.some((entry) => entry.localId === selectedId)) {
-      setSelectedId(reviewQueue[0].localId);
+      return;
+    }
+    const position = selectedId ? reviewQueue.findIndex((entry) => entry.localId === selectedId) : -1;
+    if (position !== -1) {
+      queueSlotRef.current = position;
+    } else {
+      // Dropped out (a refresh, an undo): the item now in its place is the next one; the first only when the place is unknown.
+      const slot = queueSlotRef.current;
+      setSelectedId(reviewQueue[slot == null ? 0 : Math.min(slot, reviewQueue.length - 1)].localId);
     }
   }, [queueMode, isDiffMutating, status, reviewQueue, selectedId]);
   // After a failed save with the dialog already closed: wait for the refilled queue to render its button.
@@ -2357,9 +2467,6 @@ export function JobDetail(): React.ReactElement {
     const timer = setTimeout(() => (queueDoneRef.current ?? queueButtonRef.current)?.focus(), 0);
     return () => clearTimeout(timer);
   }, [dialogOpen]);
-
-  // Backs the toolbar's "Needs review" chip -- see isFlaggedDiffEntry.
-  const flaggedCount = useMemo(() => diff.filter((entry) => isFlaggedDiffEntry(entry)).length, [diff]);
 
   // Same filter predicate DiffTree applies internally (see its own `rows`
   // useMemo) -- NOT collapse-aware, since collapse state is internal to
@@ -2383,6 +2490,31 @@ export function JobDetail(): React.ReactElement {
     const nextIndex = direction === 'next' ? Math.min(navList.length - 1, currentIndex + 1) : Math.max(0, currentIndex - 1);
     setSelectedId(navList[nextIndex].localId);
   }
+
+  // A failed run with no stored failure event: the cause is only in the audit trail, so it is fetched for the card without a click.
+  // Best effort: the card falls back to its generic line.
+  const hasFailedEvent = eventHistory.some((event) => event.phase === 'job_failed');
+  // Kept apart from `audit` (the Audit tab's list and the card's "View audit" button): reading the cause must change nothing else on screen.
+  const [failureAudit, setFailureAudit] = useState<AuditEntry[]>([]);
+  useEffect(() => {
+    if (status !== 'failed' || hasFailedEvent || !id) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const entries = await getAudit(id);
+        if (!cancelled && Array.isArray(entries)) setFailureAudit(entries);
+      } catch {
+        // Best effort: without it the card keeps its generic line.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [status, hasFailedEvent, id]);
+  const failureCause = useMemo(() => {
+    const message = failureAuditMessage(failureAudit.length > 0 ? failureAudit : audit);
+    return message === null ? null : describeFailureCause(message);
+  }, [failureAudit, audit]);
 
   const navIndex = navList.findIndex((entry) => entry.localId === selectedId);
   const hasPrevEntry = navIndex > 0;
@@ -2445,13 +2577,65 @@ export function JobDetail(): React.ReactElement {
   if (latestNarrationForSteps?.phase === 'describe_figure' && latestNarrationForSteps.figureIndex != null && latestNarrationForSteps.figureCount != null) {
     stepSubLabelByKey.parse = `figures ${latestNarrationForSteps.figureIndex}/${latestNarrationForSteps.figureCount}`;
   }
+  // The whole-document read is one long model call inside the Parse step; without a word under the step it looks like
+  // a parser that has stopped.
+  if (latestNarrationForSteps?.phase === 'primer') stepSubLabelByKey.parse = 'reading whole document';
   if (latestNarrationForSteps?.phase === 'deterministic_subtree') {
     const chunk = parseDeterministicSubtreeChunk(latestNarrationForSteps.subtreeLabel);
     if (chunk) stepSubLabelByKey.analyze = formatDeterministicSubtreePassSubLabel(chunk);
   }
 
+  // DESIGN.md §11.3.5: while a run is in progress the phases are a rail beside one phase view; once it stops, the stepper returns.
+  const liveLayout = isLive && !!mode && !!status;
+  const latestPhaseForSteps =
+    latestNarrationForSteps?.phase === 'job_failed' ? (latestNarrationForSteps.lastPhase ?? null) : (latestNarrationForSteps?.phase ?? null);
+  // The rail also stays after the run stops (DESIGN.md §11.3.5): Review is then the phase in view, and the finished phases stay readable.
+  const reviewLayout = !isLive && !!mode && !!status;
+  const phaseModel = liveLayout || reviewLayout ? lifecyclePhases(mode as 'baseline' | 'survey', status as string, stage, latestPhaseForSteps) : null;
+  const viewKey: LifecycleKey | null = phaseModel
+    ? pickedPhase && phaseModel.phases.some((phase) => phase.key === pickedPhase)
+      ? pickedPhase
+      : phaseModel.liveKey
+    : null;
+  const phaseProducedByKey: Partial<Record<LifecycleKey, string>> = {};
+  if (figureDescriptions.length > 0) {
+    phaseProducedByKey.parse = `${figureDescriptions.length} figure${figureDescriptions.length === 1 ? '' : 's'} described`;
+  }
+  if (sectionResults.length > 0) {
+    phaseProducedByKey.analyze = `${sectionResults.length} section${sectionResults.length === 1 ? '' : 's'} analyzed`;
+  }
+  const phaseRailRows: PhaseRailRow[] = (phaseModel?.phases ?? []).map((phase) => ({
+    key: phase.key,
+    label: phase.label,
+    state: phase.state,
+    line:
+      phase.state === 'done'
+        ? (phaseProducedByKey[phase.key] ?? 'Finished')
+        : phase.state === 'current'
+          ? (stepSubLabelByKey[phase.key] ?? 'In progress')
+          : phase.state === 'awaiting'
+            ? (status === 'pending' ? 'Queued' : 'Waiting for you')
+            : phase.state === 'failed'
+              ? 'Failed here'
+              : phase.state === 'skipped'
+                ? 'Skipped'
+                : phase.purpose,
+  }));
+  // What belongs to one phase, shown with that phase instead of in a global stack.
+  const phaseBody = (key: LifecycleKey): React.ReactNode => (
+    <>
+      {key === 'parse' && mode === 'survey' && documentOverview && <DocumentOverviewCard overview={documentOverview} />}
+      {key === 'parse' && (
+        <FigureDescriptions jobId={id!} items={figureDescriptions} outcomes={figureOutcomesByIndex} reasons={figureReasonsByIndex} />
+      )}
+      {key === 'analyze' && <SectionResults items={sectionResults} />}
+    </>
+  );
+
   // Review controls for the open item: only while a fix/review warning is
   // focused, the item belongs to it, and the job still accepts marking.
+  // 1-based place of the open item in the review queue (0 when it is not in it).
+  const queuePosition = queueMode && selectedId ? reviewQueue.findIndex((entry) => entry.localId === selectedId) + 1 : 0;
   const dialogReview =
     queueMode && selectedId && status === 'diff_ready'
       ? {
@@ -2460,6 +2644,7 @@ export function JobDetail(): React.ReactElement {
           onBusyAttempt: () => announceAgain('Still saving. Try again.'),
           onMark: () => void handleQueueAccept(),
           onUnmark: () => void handleSetReviewed([selectedId], false),
+          position: queuePosition > 0 ? { index: queuePosition, total: reviewQueue.length } : undefined,
           onReject: () => void handleQueueReject(),
           onUndo: hasUndo ? handleQueueUndo : undefined,
         }
@@ -2485,286 +2670,57 @@ export function JobDetail(): React.ReactElement {
         }
       : null;
 
-  return (
-    // px-2 lives on this one outer container -- every child below relies on
-    // it for its horizontal inset instead of re-declaring its own mx-2/px-2
-    // (previously scattered per-element and inconsistently: header had
-    // px-2, the mutation-error alert had mx-2, CollapsibleWarnings had its
-    // own mx-2, and the Tabs block had none at all -- content visibly
-    // didn't line up down the page).
-    <div className="flex flex-col gap-3 px-2">
-      {/* Present from the start so the later text is announced; focus is never moved. */}
-      <div role="status" aria-live="polite" className="sr-only" data-testid="job-arrival-status">
-        {arrival?.message ?? ''}
-      </div>
-      <div className="flex flex-col gap-1 border-b border-hairline pb-2 pt-2">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex min-w-0 flex-wrap items-baseline gap-2">
-            <h1 className="truncate text-sm font-medium text-ink-1">{sourceFilename || 'Job'}</h1>
-            {status && <StatusChip status={status} />}
-            {mode && <ModeBadge mode={mode as 'baseline' | 'survey'} />}
-            {startedAt && (
-              <Tooltip content={new Date(startedAt).toLocaleString()}>
-                <span className="font-mono text-xs text-ink-3">{new Date(startedAt).toLocaleDateString()}</span>
-              </Tooltip>
-            )}
-          </div>
-          {/* Three tiers, not five equal buttons (DESIGN.md §5): the primary action and its counterpart decision carry text and colour; everything
-              else is a labelled icon (name + tooltip). The DOM order is the visual order at every width (decisions, then tools, Delete last, a
-              divider away from the decisions); below md the decisions take the first, full-width row and the tools sit under them. */}
-          <div className="flex max-w-full flex-wrap items-center gap-x-3 gap-y-2 max-md:w-full">
-            {(status === 'pending' || status === 'running' || status === 'diff_ready') && (
-              <div className="flex items-center gap-2 max-md:w-full">
-                {(status === 'pending' || status === 'running') && (
-                  <Button variant="danger" onClick={() => setCancelDialogOpen(true)} disabled={isMutating} className="max-md:min-h-11">
-                    <X className="h-3.5 w-3.5" />
-                    Cancel run
-                  </Button>
-                )}
-                {status === 'diff_ready' && (
-                  <>
-                    <Button variant="danger" onClick={() => setRejectDialogOpen(true)} disabled={isMutating} className="max-md:min-h-11">
-                      <X className="h-3.5 w-3.5" />
-                      Reject
-                    </Button>
-                    <Tooltip content={canWriteToAdo ? 'Write the reviewed items to Azure DevOps' : 'Sign in with an Azure DevOps org URL and PAT to write'}>
-                      <span className="max-md:flex-1">
-                        <Button variant="cta" onClick={() => { setWriteHandOver(false); setConfirmDialogOpen(true); }} disabled={isMutating || !canWriteToAdo} className="max-md:min-h-11 max-md:w-full">
-                          <Upload className="h-3.5 w-3.5" />
-                          Write to Azure DevOps
-                        </Button>
-                      </span>
-                    </Tooltip>
-                  </>
-                )}
-                {/* a divider between the decisions and the tools at desktop widths; the phone puts the tools on their own row instead */}
-                <span aria-hidden="true" className="ml-1 hidden h-5 w-px bg-hairline-strong md:block" />
-              </div>
-            )}
-            <div role="group" aria-label="Job tools" className="flex items-center gap-0.5 max-md:w-full">
-              <IconButton label="Download summary" compactLabel="Download" icon={Download} onClick={handleDownloadSummary} />
-              {status !== 'pending' && status !== 'running' && status !== 'writing' && createdItemCount > 0 && (
-                <IconButton label={isValidating ? 'Validating…' : 'Validate'} compactLabel={isValidating ? 'Validating…' : 'Validate'} icon={ShieldCheck} onClick={handleValidate} loading={isValidating} />
-              )}
-              {status !== 'pending' && status !== 'running' && status !== 'writing' && (
-                <>
-                  <IconButton label="Resubmit" compactLabel="Resubmit" icon={RotateCw} onClick={() => setResubmitDialogOpen(true)} disabled={isMutating} />
-                  <span aria-hidden="true" className="mx-1 h-5 w-px bg-hairline-strong max-md:hidden" />
-                  <span className="max-md:ml-auto">
-                    <IconButton label="Delete" compactLabel="Delete" icon={Trash2} tone="danger" onClick={() => setDeleteDialogOpen(true)} disabled={isMutating} />
-                  </span>
-                </>
-              )}
-            </div>
-          </div>
+  const reviewMain = (
+    <>
+      {!liveLayout && status && (
+        <div data-testid="review-header">
+          <h2 className="text-title">{reviewHeadline(status)}</h2>
+          {showTiles && summary && (
+            <p className="text-sm text-ink-2">{`${summary.created} new · ${summary.reused} reused · ${summary.dedupSkipped} skipped as duplicate`}</p>
+          )}
         </div>
-        {(teamProject || areaPath) && (
-          <div className="mt-1">
-            <DestinationBar teamProject={teamProject} areaPath={areaPath} iterationPath={iterationPath} state={workItemState} />
-          </div>
-        )}
-      </div>
-      <ConfirmDialog
-        open={confirmDialogOpen}
-        onOpenChange={setConfirmDialogOpen}
-        title={figuresOnlyWrite ? 'Attach figures to Azure DevOps items?' : 'Write these items to Azure DevOps?'}
-        description={
-          <>
-            {figuresOnlyWrite ? (
-              <>This attaches the figures to their items under{' '}</>
-            ) : finishingLinks ? (
-              figuresToAttach > 0 ? <>This adds the remaining links and attaches the figures under{' '}</> : <>This finishes writing the remaining links under{' '}</>
-            ) : (
-              <>This creates{previewedTotal !== null ? ` ${previewedTotal.toLocaleString()} new work item${previewedTotal === 1 ? '' : 's'}` : summary ? ` ${summary.created} new work item${summary.created === 1 ? '' : 's'}` : ' the reviewed work items'} under{' '}</>
-            )}
-            <strong><bdi className="[overflow-wrap:anywhere]">{areaPath ?? 'the configured area path'}</bdi></strong>.{' '}
-            {figuresOnlyWrite
-              ? 'This cannot be undone from req2ado. Attachments must be removed directly in Azure DevOps afterward.'
-              : 'This cannot be undone from req2ado — items must be deleted directly in Azure DevOps afterward.'}
-          </>
-        }
-        confirmLabel={figuresOnlyWrite && teamProject ? `Attach ${figuresToAttach.toLocaleString()} ${figuresToAttach === 1 ? 'figure' : 'figures'} to ${teamProject}` : finishingLinks && teamProject ? `Finish writing to ${teamProject}` : previewedTotal !== null && teamProject ? `Write ${previewedTotal.toLocaleString()} ${previewedTotal === 1 ? 'item' : 'items'} to ${teamProject}` : 'Confirm and write'}
-        confirmDisabled={writeLoading || nothingToWrite}
-        confirmDisabledReason={writeLoading ? 'Checking what will be written.' : 'Nothing will be created, so there is nothing to write.'}
-        onConfirm={handleConfirm}
-        isConfirming={isMutating}
-        variant="irreversible"
-        cancelVariant="outline"
-        restoreFocus={!writeHandOver}
-      >
-        <WriteSummary
-          state={writeSummary}
-          teamProject={teamProject}
-          areaPath={areaPath}
-          warnings={writeWarningCounts}
-          onReviewUnreviewed={handleWriteReviewUnreviewed}
-          onShowWarnings={handleWriteShowWarnings}
-          onShowExcluded={handleWriteShowExcluded}
-        />
-      </ConfirmDialog>
-      <BulkApproveDialog
-        open={bulkOpen}
-        onOpenChange={setBulkOpen}
-        count={bulk.items.length}
-        lowestScore={bulk.lowestScore}
-        highestScore={bulk.highestScore}
-        leftOut={{ flagged: bulk.flagged, unscored: bulk.unscored, stale: bulk.stale }}
-        sampleSize={spotCheckSampleItems.length}
-        checkedCount={spotCheckCheckedCount}
-        notice={bulkNotice}
-        onStartSpotCheck={handleStartSpotCheck}
-        onShowList={handleShowCleanList}
-        onApprove={() => void handleApproveClean()}
-        returnFocusRef={approveCleanButtonRef}
-        restoreFocus={!bulkHandOver}
-      />
-      <ConfirmDialog
-        open={rejectDialogOpen}
-        onOpenChange={setRejectDialogOpen}
-        title="Reject this job?"
-        description="Nothing has been written to Azure DevOps yet, so nothing is undone -- this only marks the job as rejected and closes review."
-        confirmLabel="Reject job"
-        onConfirm={handleReject}
-        isConfirming={isMutating}
-        variant="destructive"
-      />
-      <ConfirmDialog
-        open={cancelDialogOpen}
-        onOpenChange={setCancelDialogOpen}
-        title="Cancel this run?"
-        description="Nothing has been written to Azure DevOps yet. If the job is still actively parsing or analyzing the document, cancelling may take effect at its next checkpoint rather than instantly."
-        confirmLabel="Cancel run"
-        onConfirm={handleCancel}
-        isConfirming={isMutating}
-        variant="destructive"
-      />
-      <ConfirmDialog
-        open={resubmitDialogOpen}
-        onOpenChange={setResubmitDialogOpen}
-        title="Resubmit this job?"
-        description="Runs the same source document again as a new job, using the same settings. If nothing in the document or destination has changed, Confirm on the new job will reuse the same Azure DevOps items rather than creating duplicates."
-        confirmLabel="Resubmit"
-        onConfirm={handleResubmit}
-        isConfirming={isMutating}
-      />
-      <ConfirmDialog
-        open={reindexDialogOpen}
-        onOpenChange={setReindexDialogOpen}
-        title="Rebuild the duplicate index?"
-        description="Only do this if these items still exist in Azure DevOps. If any were deleted there, they will still be treated as duplicates until you remove them from the index."
-        confirmLabel="Rebuild index"
-        onConfirm={handleReindexDedup}
-        isConfirming={isReindexing}
-      />
-      <ConfirmDialog
-        open={deleteDialogOpen}
-        onOpenChange={setDeleteDialogOpen}
-        title="Delete this job?"
-        description={
-          status === 'succeeded'
-            ? 'This removes the job and its history from req2ado only -- any work items already written to Azure DevOps are NOT deleted and must be removed there directly, if wanted. This cannot be undone.'
-            : 'This permanently removes the job and its history from req2ado. This cannot be undone.'
-        }
-        confirmLabel="Delete job"
-        onConfirm={handleDelete}
-        isConfirming={isMutating}
-        variant="destructive"
-      />
-      {mutationError && (
-        <Alert severity="error" onClose={() => setMutationError(null)}>
-          {mutationError}
-        </Alert>
       )}
-      {/* Resume-safe partial write (300577) -- confirm()'s own resume
-          machinery already makes clicking Confirm again safe (see its
-          CreatedItemMapping-backed skip logic), but a reviewer had no way
-          to tell "confirm never ran" apart from "confirm ran, partly
-          wrote, then failed" before this banner. Shown only for a
-          diff_ready job with a nonzero createdItemCount -- a fresh,
-          never-confirmed job has none. */}
-      {status === 'diff_ready' && createdItemCount > 0 && (
-        <Alert severity="info">
-          {createdItemCount} work item{createdItemCount === 1 ? '' : 's'} from a previous attempt{' '}
-          {createdItemCount === 1 ? 'was' : 'were'} already written to Azure DevOps. Clicking Confirm resumes
-          safely — it will not create duplicates.
-        </Alert>
-      )}
-      {/* WID 300578: real-ADO-state validation result, shown until the
-          reviewer navigates away or runs it again. `field: 'existence'`
-          (JobsService.validateCreatedTree's own synthetic value) means the
-          ADO item itself is gone, not a field-content mismatch --
-          expected/actual are then plain sentences, not field values, so
-          they render as-is rather than truncated code. */}
-      {validationResult && (
-        <Alert severity={validationResult.valid ? 'success' : 'warning'} onClose={() => setValidationResult(null)}>
-          {validationResult.valid ? (
-            <>All {validationResult.checkedCount} checked work item{validationResult.checkedCount === 1 ? '' : 's'} match what was confirmed.</>
-          ) : (
-            <div className="flex flex-col gap-2">
-              <span>
-                {validationResult.mismatches.length} mismatch{validationResult.mismatches.length === 1 ? '' : 'es'} found across{' '}
-                {validationResult.checkedCount} checked work item{validationResult.checkedCount === 1 ? '' : 's'}:
-              </span>
-              <ul className="flex flex-col gap-1 text-xs">
-                {validationResult.mismatches.map((m, i) => (
-                  <li key={`${m.localId}-${m.field}-${i}`} className="font-mono">
-                    WI-{m.adoWorkItemId} ({m.field}): expected{' '}
-                    {m.field === 'existence' ? m.expected : `"${truncateForDisplay(m.expected)}"`}, got{' '}
-                    {m.field === 'existence' ? m.actual : `"${truncateForDisplay(m.actual)}"`}
-                  </li>
-                ))}
-              </ul>
+      {!liveLayout && status && (
+        <Disclosure
+          key={id}
+          // Where a run stopped is the first thing to read about a job that did not finish.
+          defaultOpen={status === 'failed' || status === 'cancelled'}
+          title="Run details"
+        >
+          {/* DESIGN.md §11.3.5, review state: the task comes first. The phase rail beside it is the stepper; the run's record lives here. */}
+          {!liveLayout && runLogEvents.length > 0 && (
+            <div className="overflow-hidden rounded-md border border-hairline">
+              <ActivityFeed events={runLogEvents} collapsedByDefault />
             </div>
           )}
-        </Alert>
-      )}
-      {mode && status && (
-        <div className="mb-4 overflow-hidden rounded-md border border-hairline">
-          <JobLifecycleSteps
-            mode={mode as 'baseline' | 'survey'}
-            status={status}
-            stage={stage}
-            // job_failed is itself the LAST narration on a job that died
-            // mid-pipeline -- its own .phase ('job_failed') isn't one of
-            // the real pipeline phases the stepper knows how to place, so
-            // on its own it always fell through to a hardcoded, often-wrong
-            // default. Ingestion already publishes exactly the phase the
-            // job was on when it died as this event's own lastPhase field
-            // (see api/events.ts) -- use that instead when it's present.
-            latestNarrationPhase={
-              mergedNarrations.at(-1)?.phase === 'job_failed'
-                ? (mergedNarrations.at(-1)?.lastPhase ?? null)
-                : (mergedNarrations.at(-1)?.phase ?? null)
-            }
-            subLabelByKey={stepSubLabelByKey}
-          />
-          <NarrationTicker
-            sentence={tickerFor({ status, stage, latest: mergedNarrations.at(-1) ?? null }).sentence}
-            isLive={(status === 'pending' || status === 'running' || status === 'writing') && !!startedAt}
-            startedAt={startedAt ?? ''}
-          />
-        </div>
-      )}
-      {mode === 'baseline' && (
-        <div className="mb-4 flex items-start gap-2 rounded-md border border-dashed border-hairline-strong p-3 text-xs text-ink-3">
-          <span>
-            Document overview isn't produced for BASELINE jobs — deterministic extraction, nothing to verify.
-          </span>
-        </div>
+          {kbCoverageNote && (
+            <p className={cn('px-2 text-xs', kbCoverageNote.tone === 'warning' ? 'text-warning-ink' : 'text-ink-3')}>
+              {kbCoverageNote.text}
+            </p>
+          )}
+          {!isRunDetailStatus(status) && (
+            <RunNotices
+              notices={historyNotices}
+              heading={RUN_SUMMARY_HEADING}
+              storageKey={`${id}.summary`}
+              titleByRef={titleByLocalIdMap}
+            />
+          )}
+        </Disclosure>
       )}
       {actionableWarningCount === 0 && trackableKinds.length > 0 && (
         <Alert severity="success" className="mb-4">
           All warnings handled. You can approve the diff.
         </Alert>
       )}
-      {status === 'pending' && (
+      {status === 'pending' && !liveLayout && (
         <Alert severity="info">
           <span className="flex items-center gap-2">
             <Spinner /> Queued — waiting for a pipeline worker to pick this job up.
           </span>
         </Alert>
       )}
-      {isRunDetailStatus(status) && stage && mode && startedAt && (
+      {isRunDetailStatus(status) && stage && mode && startedAt && !liveLayout && (
         <ProgressBanner
           stage={stage}
           startedAt={startedAt}
@@ -2774,19 +2730,14 @@ export function JobDetail(): React.ReactElement {
           jobId={id}
         />
       )}
-      {mode === 'survey' && documentOverview && <DocumentOverviewCard overview={documentOverview} />}
-      {kbCoverageNote && (
-        <p className={cn('px-2 text-xs', kbCoverageNote.tone === 'warning' ? 'text-warning-ink' : 'text-ink-3')}>
-          {kbCoverageNote.text}
-        </p>
-      )}
       <div id="integrity-warnings" tabIndex={-1} className="outline-none">
         <CollapsibleWarnings
           warnings={mergedWarnings}
           gateCount={status === 'diff_ready' ? actionableWarningCount : undefined}
           fixGroupTitle={status !== null && ['succeeded', 'failed', 'rejected', 'cancelled'].includes(status) ? 'Flagged before writing' : undefined}
+          readOnly={status !== null && status !== 'diff_ready'}
           focusedKind={focusWarning?.kind ?? null}
-          reviewedIds={reviewedIds}
+          reviewedIds={handledIds}
           // Marking is advisory review state on a still-editable job; once
           // the job leaves diff_ready the server refuses it.
           onAcknowledge={status === 'diff_ready' ? handleAcknowledge : undefined}
@@ -2795,19 +2746,7 @@ export function JobDetail(): React.ReactElement {
             retryCancelRef.current = true;
           }}
           retryProgress={retryProgress}
-          onFocusKind={(kind, nodeIds, label) => {
-            // Narrow the tree to this warning's items and bring it into
-            // view. A prior name/action filter would silently hide some of
-            // the items the row's count promises, so those are reset.
-            setFocusWarning({ kind, label, nodeIds: new Set(nodeIds) });
-            setFilterAction(null);
-            setFilterText('');
-            setFilterFlaggedOnly(false);
-            setTab('tree');
-            requestAnimationFrame(() =>
-              document.getElementById('proposed-tree')?.scrollIntoView({ behavior: scrollBehavior(), block: 'start' }),
-            );
-          }}
+          onFocusKind={handleFocusKind}
           onJumpToNode={(localId) => {
             // Matches onOpenDetails below exactly -- previously this only
             // switched tabs and set selection, which (a) never scrolled the
@@ -2824,41 +2763,17 @@ export function JobDetail(): React.ReactElement {
           project={teamProject}
         />
       </div>
-      {!isRunDetailStatus(status) && (
-        <RunNotices
-          notices={historyNotices}
-          heading={RUN_SUMMARY_HEADING}
-          storageKey={`${id}.summary`}
-          titleByRef={titleByLocalIdMap}
-        />
-      )}
-      <FigureDescriptions jobId={id!} items={figureDescriptions} outcomes={figureOutcomesByIndex} reasons={figureReasonsByIndex} />
-      <SectionResults items={sectionResults} />
-      {showTiles && summary && (
-        // Plain tiles -- no icon/hint/interactive. Confirmed against the
-        // agreed mockup (§11.3): these three tiles render as bare
-        // value+label, unlike the wizard's Blocks/Sections/Figures/Depth
-        // tiles which DO carry icon+hint because those are unfamiliar
-        // parsing terms that genuinely need a one-line explanation. "New,"
-        // "Reused," and "Duplicates skipped" are already plain English --
-        // adding an icon and a hint restating the label in slightly longer
-        // words was over-explaining the obvious, not adding real
-        // information. (An earlier pass this session added icon/hint here
-        // without having seen the mockup; reverted once the mockup showed
-        // otherwise.)
-        <div className="grid grid-cols-3 gap-2.5 max-md:gap-1.5">
-          <StatTile value={summary.created} label="New" tone="ok" />
-          <StatTile value={summary.reused} label="Reused" />
-          <StatTile value={summary.dedupSkipped} label="Duplicates skipped" tone={summary.dedupSkipped > 0 ? 'warning' : 'dim'} />
-        </div>
-      )}
       {excludedSummaryText && <p className="text-sm text-ink-3">{excludedSummaryText}</p>}
       {showTabs ? (
         <Tabs
           value={tab}
           onValueChange={(value) => (value === 'audit' ? handleShowAudit() : setTab(value as 'tree' | 'audit'))}
           tabs={[
-            { value: 'tree', label: `Diff (${diff.length})` },
+            {
+              value: 'tree',
+              // §0 item 3: never call something already in Azure DevOps a proposal. A partial write is neither all one nor the other.
+              label: `${status === 'succeeded' ? 'Written items' : Math.max(createdItemCount, writtenLocalIds.length) > 0 ? 'Items' : 'Proposed items'} (${diff.length})`,
+            },
             { value: 'audit', label: `Audit (${audit.length})` },
           ]}
         >
@@ -2897,8 +2812,11 @@ export function JobDetail(): React.ReactElement {
                   </div>
                 )}
                 {/* Stays mounted in queue mode: it is where focus returns when the dialog closes. */}
-                {status === 'diff_ready' && reviewQueue.length > 0 && (
-                  <div className="flex flex-wrap gap-2 border-b border-hairline p-3">
+                {((status === 'diff_ready' && reviewQueue.length > 0) || showFilterBar || focusWarning) && (
+                  // One row for the review actions, the filters and the bulk actions (DESIGN.md §11.3.5, review state).
+                  <div className="flex flex-wrap items-center gap-2 border-b border-hairline p-3">
+                    {status === 'diff_ready' && reviewQueue.length > 0 && (
+                      <>
                     <Button ref={queueButtonRef} size="sm" variant="outline" onClick={handleStartReviewQueue}>
                       Review in risk order · {reviewQueue.length.toLocaleString()}
                     </Button>
@@ -2907,10 +2825,10 @@ export function JobDetail(): React.ReactElement {
                         Approve {bulkLabel}
                       </Button>
                     )}
-                  </div>
-                )}
-                {(showFilterBar || focusWarning) && (
-                  <div className="flex flex-wrap gap-2 border-b border-hairline p-3">
+                      </>
+                    )}
+                    {(showFilterBar || focusWarning) && (
+                      <>
                     <TextField
                       placeholder="Filter by title…"
                       value={filterText}
@@ -2920,23 +2838,30 @@ export function JobDetail(): React.ReactElement {
                     <Select aria-label="Filter by action" value={filterAction ?? ''} onChange={(e) => setFilterAction(e.target.value || null)} className="max-w-[160px]">
                       <option value="">All actions</option>
                       <option value="create">New</option>
-                      <option value="reuse">Reuse</option>
-                      <option value="dedup_skip">Near-duplicate</option>
+                      <option value="reuse">Reused</option>
+                      <option value="dedup_skip">Skipped as duplicate</option>
                     </Select>
-                    {flaggedCount > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => setFilterFlaggedOnly((prev) => !prev)}
-                        className={cn(
-                          'flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold',
-                          filterFlaggedOnly
-                            ? 'border-warning bg-warning-soft text-warning-ink'
-                            : 'border-warning-border bg-warning-soft text-warning-ink',
-                        )}
-                      >
-                        ⚠ Needs review · {flaggedCount}
-                      </button>
-                    )}
+                    {REVIEW_GROUP_ORDER.map((group) => {
+                      if (reviewGroups[group].length === 0) return null;
+                      const meta = REVIEW_GROUP_META[group];
+                      const GroupIcon = meta.icon;
+                      return (
+                        <Tooltip key={group} content={meta.rule}>
+                          <button
+                            type="button"
+                            onClick={() => setReviewGroup(activeReviewGroup === group ? null : group)}
+                            aria-pressed={activeReviewGroup === group}
+                            className={cn(
+                              'flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold',
+                              activeReviewGroup === group ? meta.onClass : meta.offClass,
+                            )}
+                          >
+                            <GroupIcon className="h-3.5 w-3.5 flex-none" aria-hidden="true" />
+                            {meta.title} · {reviewGroups[group].length}
+                          </button>
+                        </Tooltip>
+                      );
+                    })}
                     {focusWarning && (
                       <span className="flex items-center gap-1.5 rounded-full border border-accent-soft-border bg-accent-soft py-1 pl-2.5 pr-1 text-xs font-medium text-accent-ink">
                         {focusWarning.label}:{' '}
@@ -2969,7 +2894,7 @@ export function JobDetail(): React.ReactElement {
                         Hide reviewed
                       </label>
                     )}
-                    {focusWarning && focusReviewable && status === 'diff_ready' && focusReviewedCount < focusWarning.nodeIds.size && (
+                    {focusWarning && focusReviewable && status === 'diff_ready' && !focusIsFixKind && focusReviewedCount < focusWarning.nodeIds.size && (
                       <Button
                         size="sm"
                         variant="outline"
@@ -2981,12 +2906,14 @@ export function JobDetail(): React.ReactElement {
                     {status === 'diff_ready' && (
                       <div className="ml-auto flex gap-2">
                         <Button size="sm" variant="ghost" onClick={() => handleBulkExclude(true)} disabled={isDiffMutating}>
-                          Exclude {filterAction || filterText || filterFlaggedOnly || focusWarning ? 'matching' : 'all'}
+                          Exclude {filterAction || filterText || activeReviewGroup || focusWarning ? 'matching' : 'all'}
                         </Button>
                         <Button size="sm" variant="ghost" onClick={() => handleBulkExclude(false)} disabled={isDiffMutating}>
-                          Include {filterAction || filterText || filterFlaggedOnly || focusWarning ? 'matching' : 'all'}
+                          Include {filterAction || filterText || activeReviewGroup || focusWarning ? 'matching' : 'all'}
                         </Button>
                       </div>
+                    )}
+                      </>
                     )}
                   </div>
                 )}
@@ -3008,7 +2935,6 @@ export function JobDetail(): React.ReactElement {
                     }}
                     filterAction={filterAction}
                     filterText={filterText}
-                    filterFlaggedOnly={filterFlaggedOnly}
                     focusNodeIds={focusVisibleIds}
                     reasonByLocalId={reasonByLocalId}
                     onToggleExclude={handleToggleExclude}
@@ -3159,6 +3085,11 @@ export function JobDetail(): React.ReactElement {
                     </span>
                   );
                 })()
+              ) : status === 'failed' && failureCause ? (
+                <span className="flex flex-col gap-1 text-left">
+                  <span>{failureCause.summary}</span>
+                  {failureCause.detail && <span className="font-mono text-xs text-ink-3 [overflow-wrap:anywhere]">{failureCause.detail}</span>}
+                </span>
               ) : status === 'failed' ? (
                 'This job failed before completing analysis. Check the audit trail for details.'
               ) : (
@@ -3182,6 +3113,351 @@ export function JobDetail(): React.ReactElement {
           />
         </Card>
       )}
+    </>
+  );
+
+  return (
+    // px-2 lives on this one outer container -- every child below relies on
+    // it for its horizontal inset instead of re-declaring its own mx-2/px-2
+    // (previously scattered per-element and inconsistently: header had
+    // px-2, the mutation-error alert had mx-2, CollapsibleWarnings had its
+    // own mx-2, and the Tabs block had none at all -- content visibly
+    // didn't line up down the page).
+    <div className="flex flex-col gap-3 px-2">
+      {status === 'diff_ready' && (
+        // First in the tab order: Write and Reject sit above a tree of hundreds of rows, and a keyboard user should not have to cross them.
+        <a
+          href="#proposed-tree"
+          onClick={(event) => {
+            event.preventDefault();
+            setTab('tree');
+            goAndFocus('proposed-tree');
+          }}
+          className="sr-only rounded-sm bg-surface px-3 py-1.5 text-sm font-semibold text-action focus:not-sr-only focus:self-start focus:border focus:border-field-border"
+        >
+          Skip to proposed items
+        </a>
+      )}
+      {/* Present from the start so the later text is announced; focus is never moved. */}
+      <LiveStatusRegion message={arrival?.message ?? ''} />
+      <div className="flex flex-col gap-1 border-b border-hairline pb-2 pt-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex min-w-0 flex-wrap items-baseline gap-2">
+            <h1 className="truncate text-display">{sourceFilename || 'Job'}</h1>
+            {status && <StatusChip status={status} />}
+            {mode && <ModeBadge mode={mode as 'baseline' | 'survey'} />}
+            {startedAt && (
+              <Tooltip content={formatDateTime(startedAt)}>
+                <span className="text-xs text-ink-3">{formatDate(startedAt)}</span>
+              </Tooltip>
+            )}
+          </div>
+          {/* Three tiers, not five equal buttons (DESIGN.md §5): the primary action and its counterpart decision carry text and colour; everything
+              else is a labelled icon (name + tooltip). The DOM order is the visual order at every width (decisions, then tools, Delete last, a
+              divider away from the decisions); below md the decisions take the first, full-width row and the tools sit under them. */}
+          <div className="flex max-w-full flex-wrap items-center gap-x-3 gap-y-2 max-md:w-full">
+            {(status === 'pending' || status === 'running' || status === 'diff_ready') && (
+              <div className="flex items-center gap-2 max-md:w-full">
+                {(status === 'pending' || status === 'running') && (
+                  <Button variant="danger" onClick={() => setCancelDialogOpen(true)} disabled={isMutating} className="max-md:min-h-11">
+                    <X className="h-3.5 w-3.5" />
+                    Cancel run
+                  </Button>
+                )}
+                {status === 'diff_ready' && (
+                  <>
+                    <Button variant="danger" onClick={() => setRejectDialogOpen(true)} disabled={isMutating} className="max-md:min-h-11">
+                      <X className="h-3.5 w-3.5" />
+                      Reject
+                    </Button>
+                    <Tooltip content={canWriteToAdo ? 'Write the reviewed items to Azure DevOps' : 'Sign in with an Azure DevOps org URL and PAT to write'}>
+                      <span className="max-md:flex-1">
+                        <Button variant="cta" onClick={handleWriteClick} softDisabled={writeGate.blocked} aria-describedby={writeGate.blocked ? 'write-blocked-reason' : undefined} disabled={isMutating || !canWriteToAdo} className="max-md:min-h-11 max-md:w-full">
+                          <Upload className="h-3.5 w-3.5" />
+                          Write to Azure DevOps
+                        </Button>
+                      </span>
+                    </Tooltip>
+                  </>
+                )}
+                {/* a divider between the decisions and the tools at desktop widths; the phone puts the tools on their own row instead */}
+                <span aria-hidden="true" className="ml-1 hidden h-5 w-px bg-hairline-strong md:block" />
+              </div>
+            )}
+            <div role="group" aria-label="Job tools" className="flex items-center gap-0.5 max-md:w-full">
+              <IconButton label="Download summary" compactLabel="Download" icon={Download} onClick={handleDownloadSummary} />
+              {status !== 'pending' && status !== 'running' && status !== 'writing' && createdItemCount > 0 && (
+                <IconButton label={isValidating ? 'Validating…' : 'Validate'} compactLabel={isValidating ? 'Validating…' : 'Validate'} icon={ShieldCheck} onClick={handleValidate} loading={isValidating} />
+              )}
+              {status !== 'pending' && status !== 'running' && status !== 'writing' && (
+                <>
+                  <IconButton label="Resubmit" compactLabel="Resubmit" icon={RotateCw} onClick={() => setResubmitDialogOpen(true)} disabled={isMutating} />
+                  <span aria-hidden="true" className="mx-1 h-5 w-px bg-hairline-strong max-md:hidden" />
+                  <span className="max-md:ml-auto">
+                    <IconButton label="Delete" compactLabel="Delete" icon={Trash2} tone="danger" onClick={() => setDeleteDialogOpen(true)} disabled={isMutating} />
+                  </span>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+        {writeGate.blocked && (
+          <p id="write-blocked-reason" className="text-right text-xs text-danger max-md:text-left">
+            {writeGate.remaining.toLocaleString()} {writeGate.remaining === 1 ? 'item' : 'items'} to fix before writing
+          </p>
+        )}
+        {(teamProject || areaPath) && (
+          <div className="mt-1">
+            <DestinationBar compact teamProject={teamProject} areaPath={areaPath} iterationPath={iterationPath} state={workItemState} />
+          </div>
+        )}
+        {shouldShowNothingWrittenLine(status, Math.max(createdItemCount, writtenLocalIds.length)) && (
+          <div className="mt-1.5">
+            <SafetyLine variant="running" />
+          </div>
+        )}
+      </div>
+      <ConfirmDialog
+        open={confirmDialogOpen}
+        onOpenChange={setConfirmDialogOpen}
+        title={figuresOnlyWrite ? 'Attach figures to Azure DevOps items?' : 'Write these items to Azure DevOps?'}
+        description={
+          <>
+            {figuresOnlyWrite ? (
+              <>This attaches the figures to their items under{' '}</>
+            ) : finishingLinks ? (
+              figuresToAttach > 0 ? <>This adds the remaining links and attaches the figures under{' '}</> : <>This finishes writing the remaining links under{' '}</>
+            ) : (
+              <>This creates{previewedTotal !== null ? ` ${previewedTotal.toLocaleString()} new work item${previewedTotal === 1 ? '' : 's'}` : summary ? ` ${summary.created} new work item${summary.created === 1 ? '' : 's'}` : ' the reviewed work items'} under{' '}</>
+            )}
+            <strong><bdi className="[overflow-wrap:anywhere]">{areaPath ?? 'the configured area path'}</bdi></strong>.{' '}
+            {figuresOnlyWrite
+              ? 'This cannot be undone from req2ado. Attachments must be removed directly in Azure DevOps afterward.'
+              : 'This cannot be undone from req2ado — items must be deleted directly in Azure DevOps afterward.'}
+          </>
+        }
+        confirmLabel={figuresOnlyWrite && teamProject ? `Attach ${figuresToAttach.toLocaleString()} ${figuresToAttach === 1 ? 'figure' : 'figures'} to ${teamProject}` : finishingLinks && teamProject ? `Finish writing to ${teamProject}` : previewedTotal !== null && teamProject ? `Write ${previewedTotal.toLocaleString()} ${previewedTotal === 1 ? 'item' : 'items'} to ${teamProject}` : 'Write to Azure DevOps'}
+        confirmDisabled={writeLoading || nothingToWrite || writeGate.blocked}
+        confirmDisabledReason={writeGate.blocked ? 'Fix the items marked "Fix before writing" first.' : writeLoading ? 'Checking what will be written.' : 'Nothing will be created, so there is nothing to write.'}
+        onConfirm={handleConfirm}
+        isConfirming={isMutating}
+        variant="irreversible"
+        cancelVariant="outline"
+        restoreFocus={!writeHandOver}
+      >
+        <WriteSummary
+          state={writeSummary}
+          teamProject={teamProject}
+          areaPath={areaPath}
+          warnings={writeWarningCounts}
+          onReviewUnreviewed={handleWriteReviewUnreviewed}
+          onShowWarnings={handleWriteShowWarnings}
+          onShowExcluded={handleWriteShowExcluded}
+        />
+      </ConfirmDialog>
+      <BulkApproveDialog
+        open={bulkOpen}
+        onOpenChange={setBulkOpen}
+        count={bulk.items.length}
+        lowestScore={bulk.lowestScore}
+        highestScore={bulk.highestScore}
+        leftOut={{ flagged: bulk.flagged, unscored: bulk.unscored, stale: bulk.stale }}
+        sampleSize={spotCheckSampleItems.length}
+        checkedCount={spotCheckCheckedCount}
+        notice={bulkNotice}
+        onStartSpotCheck={handleStartSpotCheck}
+        onShowList={handleShowCleanList}
+        onApprove={() => void handleApproveClean()}
+        returnFocusRef={approveCleanButtonRef}
+        restoreFocus={!bulkHandOver}
+      />
+      <ConfirmDialog
+        open={rejectDialogOpen}
+        onOpenChange={setRejectDialogOpen}
+        title="Reject this job?"
+        description="Nothing has been written to Azure DevOps yet, so nothing is undone -- this only marks the job as rejected and closes review."
+        confirmLabel="Reject job"
+        onConfirm={handleReject}
+        isConfirming={isMutating}
+        variant="destructive"
+      />
+      <ConfirmDialog
+        open={cancelDialogOpen}
+        onOpenChange={setCancelDialogOpen}
+        title="Cancel this run?"
+        description="Nothing has been written to Azure DevOps yet. If the job is still actively parsing or analyzing the document, cancelling may take effect at its next checkpoint rather than instantly."
+        confirmLabel="Cancel run"
+        onConfirm={handleCancel}
+        isConfirming={isMutating}
+        variant="destructive"
+      />
+      <ConfirmDialog
+        open={resubmitDialogOpen}
+        onOpenChange={setResubmitDialogOpen}
+        title="Resubmit this job?"
+        description="Runs the same source document again as a new job, using the same settings. If nothing in the document or destination has changed, Confirm on the new job will reuse the same Azure DevOps items rather than creating duplicates."
+        confirmLabel="Resubmit"
+        onConfirm={handleResubmit}
+        isConfirming={isMutating}
+      />
+      <ConfirmDialog
+        open={reindexDialogOpen}
+        onOpenChange={setReindexDialogOpen}
+        title="Rebuild the duplicate index?"
+        description="Only do this if these items still exist in Azure DevOps. If any were deleted there, they will still be treated as duplicates until you remove them from the index."
+        confirmLabel="Rebuild index"
+        onConfirm={handleReindexDedup}
+        isConfirming={isReindexing}
+      />
+      <ConfirmDialog
+        open={deleteDialogOpen}
+        onOpenChange={setDeleteDialogOpen}
+        title="Delete this job?"
+        description={
+          status === 'succeeded'
+            ? 'This removes the job and its history from req2ado only -- any work items already written to Azure DevOps are NOT deleted and must be removed there directly, if wanted. This cannot be undone.'
+            : 'This permanently removes the job and its history from req2ado. This cannot be undone.'
+        }
+        confirmLabel="Delete job"
+        onConfirm={handleDelete}
+        isConfirming={isMutating}
+        variant="destructive"
+      />
+      {mutationError && (
+        <Alert severity="error" onClose={() => setMutationError(null)}>
+          {mutationError}
+        </Alert>
+      )}
+      {/* Resume-safe partial write (300577) -- confirm()'s own resume
+          machinery already makes clicking Confirm again safe (see its
+          CreatedItemMapping-backed skip logic), but a reviewer had no way
+          to tell "confirm never ran" apart from "confirm ran, partly
+          wrote, then failed" before this banner. Shown only for a
+          diff_ready job with a nonzero createdItemCount -- a fresh,
+          never-confirmed job has none. */}
+      {status === 'diff_ready' && createdItemCount > 0 && (
+        <Alert severity="info">
+          {createdItemCount} work item{createdItemCount === 1 ? '' : 's'} from a previous attempt{' '}
+          {createdItemCount === 1 ? 'was' : 'were'} already written to Azure DevOps. Clicking Confirm resumes
+          safely — it will not create duplicates.
+        </Alert>
+      )}
+      {/* WID 300578: real-ADO-state validation result, shown until the
+          reviewer navigates away or runs it again. `field: 'existence'`
+          (JobsService.validateCreatedTree's own synthetic value) means the
+          ADO item itself is gone, not a field-content mismatch --
+          expected/actual are then plain sentences, not field values, so
+          they render as-is rather than truncated code. */}
+      {validationResult && (
+        <Alert severity={validationResult.valid ? 'success' : 'warning'} onClose={() => setValidationResult(null)}>
+          {validationResult.valid ? (
+            <>All {validationResult.checkedCount} checked work item{validationResult.checkedCount === 1 ? '' : 's'} match what was confirmed.</>
+          ) : (
+            <div className="flex flex-col gap-2">
+              <span>
+                {validationResult.mismatches.length} mismatch{validationResult.mismatches.length === 1 ? '' : 'es'} found across{' '}
+                {validationResult.checkedCount} checked work item{validationResult.checkedCount === 1 ? '' : 's'}:
+              </span>
+              <ul className="flex flex-col gap-1 text-xs">
+                {validationResult.mismatches.map((m, i) => (
+                  <li key={`${m.localId}-${m.field}-${i}`} className="font-mono">
+                    WI-{m.adoWorkItemId} ({m.field}): expected{' '}
+                    {m.field === 'existence' ? m.expected : `"${truncateForDisplay(m.expected)}"`}, got{' '}
+                    {m.field === 'existence' ? m.actual : `"${truncateForDisplay(m.actual)}"`}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </Alert>
+      )}
+      {liveLayout && phaseModel && viewKey && (
+        <div className="mb-4 grid grid-cols-1 gap-4 lg:grid-cols-[17.5rem_minmax(0,1fr)]">
+          <PhaseRail
+            rows={phaseRailRows}
+            selectedKey={viewKey}
+            liveKey={phaseModel.liveKey}
+            onSelect={(key) => setPickedPhase(key === phaseModel.liveKey ? null : key)}
+          />
+          <div id="phase-view" role="tabpanel" tabIndex={0} aria-labelledby={`phase-tab-${viewKey}`} className="flex min-w-0 flex-col gap-4 outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus">
+            {viewKey === phaseModel.liveKey ? (
+              <>
+                {status === 'pending' && (
+                  <Alert severity="info">
+                    <span className="flex items-center gap-2">
+                      <Spinner /> Queued — waiting for a pipeline worker to pick this job up.
+                    </span>
+                  </Alert>
+                )}
+                {isRunDetailStatus(status) && stage && mode && startedAt && (
+                  <ProgressBanner
+                    stage={stage}
+                    startedAt={startedAt}
+                    mode={mode as 'baseline' | 'survey'}
+                    narrations={mergedNarrations}
+                    completedSectionIndices={completedSectionIndices}
+                    jobId={id}
+                  />
+                )}
+                {phaseBody(viewKey)}
+              </>
+            ) : (
+              (() => {
+                const phase = phaseModel.phases.find((p) => p.key === viewKey)!;
+                return (
+                  <PhaseSummary
+                    label={phase.label}
+                    state={phase.state}
+                    purpose={phase.purpose}
+                    produced={phaseProducedByKey[phase.key] ?? null}
+                    onBackToLive={() => setPickedPhase(null)}
+                  >
+                    {phaseBody(viewKey)}
+                  </PhaseSummary>
+                );
+              })()
+            )}
+          </div>
+        </div>
+      )}
+      {reviewLayout && phaseModel && viewKey ? (
+        <div className="mb-4 grid grid-cols-1 gap-4 lg:grid-cols-[17.5rem_minmax(0,1fr)]">
+          {/* Sticky: the review list is long, and the phases stay beside it. */}
+          <div className="lg:sticky lg:top-4 lg:self-start">
+            <PhaseRail
+              rows={phaseRailRows}
+              selectedKey={viewKey}
+              liveKey={phaseModel.liveKey}
+              onSelect={(key) => setPickedPhase(key === phaseModel.liveKey ? null : key)}
+            />
+          </div>
+          <div id="phase-view" role="tabpanel" tabIndex={0} aria-labelledby={`phase-tab-${viewKey}`} className="flex min-w-0 flex-col gap-4 outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus">
+            {viewKey !== phaseModel.liveKey &&
+              (() => {
+                const phase = phaseModel.phases.find((p) => p.key === viewKey)!;
+                const main = phaseModel.phases.find((p) => p.key === phaseModel.liveKey)!;
+                return (
+                  <PhaseSummary
+                    label={phase.label}
+                    state={phase.state}
+                    purpose={phase.purpose}
+                    produced={phaseProducedByKey[phase.key] ?? null}
+                    onBackToLive={() => setPickedPhase(null)}
+                    backLabel={`Back to ${main.label.toLowerCase()}`}
+                  >
+                    {phaseBody(viewKey)}
+                  </PhaseSummary>
+                );
+              })()}
+            {/* Hidden, not unmounted, while another phase is read: the tree keeps its scroll, filters and open rows. */}
+            <div className={cn('flex min-w-0 flex-col gap-4', viewKey !== phaseModel.liveKey && 'hidden')}>
+              {reviewMain}
+            </div>
+          </div>
+        </div>
+      ) : (
+        reviewMain
+      )}
     </div>
   );
 }
@@ -3192,7 +3468,7 @@ function AuditEntryList({ entries, className }: { entries: AuditEntry[]; classNa
     <div className={className ?? 'flex flex-col gap-1'}>
       {entries.map((entry) => (
         <p key={entry.id} className="flex gap-2.5 text-xs">
-          <span className="flex-none font-mono text-ink-3">{new Date(entry.createdAt).toLocaleString()}</span>
+          <span className="flex-none text-ink-3">{formatDateTime(entry.createdAt)}</span>
           <span className="font-mono text-ink-2">{entry.message}</span>
         </p>
       ))}

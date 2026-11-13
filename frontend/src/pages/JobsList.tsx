@@ -19,10 +19,16 @@ import { Chip } from '../ui/Chip';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { TableHeaderCell } from '../ui/TableHeaderCell';
 import { useToast } from '../components/ToastProvider';
+import { usePageTitle } from '../hooks/usePageTitle';
 import { formatRelativeTime } from '../utils/relativeTime';
 import { useDenseView, useAutoSyncLedgers } from '../store/uiPreferencesStore';
 import { cn } from '../lib/cn';
 import { ARRIVE } from '../ui/motion';
+import { formatDateTime } from '../utils/formatDateTime';
+import { IconButton } from '../ui/IconButton';
+import { groupJobs, isStaleJob, shortJobId } from '../utils/jobGroups';
+import { useUserId } from '../store/authStore';
+import { jobStatusLabel } from '../utils/labels';
 
 // Curated buckets, not the raw seven-value backend enum -- "review" and
 // "run" each cover more than one Job.status (JOB_STATUS_LABELS,
@@ -53,21 +59,47 @@ interface JobTileCounts {
   rejected: number;
 }
 
-function computeTileCounts(jobs: JobSummary[]): JobTileCounts {
+// The tiles. "Diff ready" counts the proposals still worth acting on, the same ones "Needs you" holds: a stale one is not counted here (it has
+// its own label and the Hide stale checkbox), so the tile and the first group agree.
+export function computeTileCounts(jobs: JobSummary[], now: Date): JobTileCounts {
   return {
-    awaitingReview: jobs.filter((j) => j.status === 'diff_ready').length,
+    awaitingReview: jobs.filter((j) => j.status === 'diff_ready' && !isStaleJob(j, now)).length,
     running: jobs.filter((j) => matchesBucket(j.status, 'run')).length,
     rejected: jobs.filter((j) => j.status === 'rejected').length,
   };
 }
 
+// "Hide stale" is a per-viewer convenience (DESIGN.md §11.1b): off unless the person turned it on, remembered per user, every access guarded.
+const HIDE_STALE_KEY = 'req2ado-hide-stale-jobs:';
+
+function readHideStale(userId: string | null): boolean {
+  if (!userId) return false;
+  try {
+    return localStorage.getItem(HIDE_STALE_KEY + userId) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function writeHideStale(userId: string | null, hidden: boolean): void {
+  if (!userId) return;
+  try {
+    localStorage.setItem(HIDE_STALE_KEY + userId, String(hidden));
+  } catch {
+    // Best effort.
+  }
+}
+
 export function JobsList(): React.ReactElement {
+  usePageTitle('Jobs');
   const jobs = useJobs();
   const setJobs = useJobsStore((state) => state.setJobs);
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusBucket>('all');
+  const userId = useUserId();
+  const [hideStale, setHideStale] = useState(() => readHideStale(userId));
   const [deleteTarget, setDeleteTarget] = useState<JobSummary | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [resubmitTarget, setResubmitTarget] = useState<JobSummary | null>(null);
@@ -137,16 +169,27 @@ export function JobsList(): React.ReactElement {
     }
   }
 
-  const filteredJobs = useMemo(() => {
+  // One clock for staleness, grouping and the tile, read once per change of the list: they cannot disagree on a page left open.
+  const now = useMemo(() => new Date(), [jobs]); // eslint-disable-line react-hooks/exhaustive-deps -- re-read when the list changes, not every render
+  // What the search and the status filter leave, before "Hide stale": the stale count offered below is of THESE, so it never promises jobs
+  // that the other filters already hide.
+  const inView = useMemo(() => {
     const query = search.trim().toLowerCase();
     return jobs.filter((job) => {
       const matchesStatus = matchesBucket(job.status, statusFilter);
-      const matchesQuery = !query || job.areaPath.toLowerCase().includes(query) || job.id.toLowerCase().includes(query);
+      const matchesQuery =
+        !query ||
+        job.originalFilename.toLowerCase().includes(query) ||
+        job.areaPath.toLowerCase().includes(query) ||
+        job.id.toLowerCase().includes(query);
       return matchesStatus && matchesQuery;
     });
   }, [jobs, search, statusFilter]);
-
-  const tileCounts = useMemo(() => computeTileCounts(jobs), [jobs]);
+  const staleCount = useMemo(() => inView.filter((job) => isStaleJob(job, now)).length, [inView, now]);
+  const filteredJobs = useMemo(() => (hideStale ? inView.filter((job) => !isStaleJob(job, now)) : inView), [inView, hideStale, now]);
+  // Needs-you first, then by local day.
+  const jobGroups = useMemo(() => groupJobs(filteredJobs, now), [filteredJobs, now]);
+  const tileCounts = useMemo(() => computeTileCounts(jobs, now), [jobs, now]);
   const itemsWritten = useMemo(() => jobs.reduce((sum, job) => sum + job.createdItemCount, 0), [jobs]);
 
   return (
@@ -173,7 +216,7 @@ export function JobsList(): React.ReactElement {
             value={tileCounts.awaitingReview}
             label={
               <span className="inline-flex items-center gap-1">
-                Awaiting review
+                Diff ready
                 <InfoTip content="The document has been analyzed and a hierarchy is proposed. Nothing is written to Azure DevOps until you open the job and confirm it." />
               </span>
             }
@@ -216,7 +259,7 @@ export function JobsList(): React.ReactElement {
           <div className="flex flex-wrap items-end gap-2.5">
             <TextField
               label="Search"
-              placeholder="Area path or job id…"
+              placeholder="File name, area path or job id…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="max-w-[280px]"
@@ -225,7 +268,7 @@ export function JobsList(): React.ReactElement {
               {(
                 [
                   ['all', 'All'],
-                  ['review', 'Awaiting review'],
+                  ['review', 'Diff ready'],
                   ['run', 'Running'],
                   ['done', 'Done'],
                 ] as [StatusBucket, string][]
@@ -244,6 +287,21 @@ export function JobsList(): React.ReactElement {
                 </button>
               ))}
             </div>
+            {staleCount > 0 && (
+              <label className="flex cursor-pointer items-center gap-1.5 text-xs text-ink-2">
+                <input
+                  type="checkbox"
+                  checked={hideStale}
+                  onChange={(event) => {
+                    setHideStale(event.target.checked);
+                    writeHideStale(userId, event.target.checked);
+                  }}
+                  className="h-3.5 w-3.5 accent-accent"
+                />
+                Hide stale ({staleCount.toLocaleString()})
+              </label>
+            )}
+            {hideStale && staleCount > 0 && <span className="text-xs text-ink-3">{staleCount.toLocaleString()} stale hidden</span>}
           </div>
           {filteredJobs.length === 0 ? (
             <Card>
@@ -269,20 +327,30 @@ export function JobsList(): React.ReactElement {
                         matching the row below it -- sticky rows scroll over
                         body content and must not show it through. */}
                     <tr className="sticky top-0 z-10 border-b border-hairline-strong bg-surface">
+                      {/* Columns drop as the width shrinks, least useful first, so Document and Status (what it is, what state) always stay and
+                          "Created" and the row never clip: area below 1400 px, mode and items below 1100 px, id, created and actions below md. */}
+                      <TableHeaderCell className={cn('whitespace-nowrap max-md:hidden', cellPaddingY)}>Job</TableHeaderCell>
                       <TableHeaderCell className={cn('whitespace-nowrap', cellPaddingY)}>Document</TableHeaderCell>
-                      <TableHeaderCell className={cn('whitespace-nowrap', cellPaddingY)}>Mode</TableHeaderCell>
+                      <TableHeaderCell className={cn('whitespace-nowrap max-[1099px]:hidden', cellPaddingY)}>Mode</TableHeaderCell>
                       <TableHeaderCell className={cn('whitespace-nowrap', cellPaddingY)}>Status</TableHeaderCell>
-                      <TableHeaderCell className={cn('whitespace-nowrap', cellPaddingY)}>Items</TableHeaderCell>
-                      <TableHeaderCell className={cn('whitespace-nowrap', cellPaddingY)}>Area Path</TableHeaderCell>
-                      <TableHeaderCell className={cn('whitespace-nowrap', cellPaddingY)}>Created</TableHeaderCell>
-                      <TableHeaderCell align="right" className={cn('whitespace-nowrap', cellPaddingY)}>
+                      <TableHeaderCell className={cn('whitespace-nowrap max-[1099px]:hidden', cellPaddingY)}>Items</TableHeaderCell>
+                      <TableHeaderCell className={cn('whitespace-nowrap max-[1399px]:hidden', cellPaddingY)}>Area Path</TableHeaderCell>
+                      <TableHeaderCell className={cn('whitespace-nowrap max-md:hidden', cellPaddingY)}>Created</TableHeaderCell>
+                      <TableHeaderCell align="right" className={cn('whitespace-nowrap max-md:hidden', cellPaddingY)}>
                         <span className="sr-only">Actions</span>
                       </TableHeaderCell>
                     </tr>
                   </thead>
                   {/* One fade for the whole block, once, when the table first appears (DESIGN.md section 8.3): no per-row stagger, so every row behaves the same and nothing replays on sort, filter or refresh. */}
-                  <tbody className={ARRIVE.fade}>
-                    {filteredJobs.map((job) => (
+                  {/* One tbody per group, headed by a row group header: assistive technology reads "Today, 3 rows" as a group. */}
+                    {jobGroups.map((group) => (
+                      <tbody key={group.id} className={ARRIVE.fade}>
+                        <tr className="border-t border-hairline-strong bg-surface-alt">
+                          <th scope="rowgroup" colSpan={8} className="px-3.5 py-1.5 text-left text-xs font-semibold text-ink-2">
+                            {group.title} · {group.jobs.length.toLocaleString()}
+                          </th>
+                        </tr>
+                    {group.jobs.map((job) => (
                       <tr
                         key={job.id}
                         onClick={() => navigate(`/jobs/${job.id}`)}
@@ -294,7 +362,7 @@ export function JobsList(): React.ReactElement {
                         }}
                         tabIndex={0}
                         role="link"
-                        aria-label={`View job ${job.id}`}
+                        aria-label={`View job ${job.id}: ${job.originalFilename}, ${jobStatusLabel(job.status).label}`}
                         // DESIGN.md §7 names "JobsList rows" as a
                         // .hoverable-row consumer -- but that class's
                         // ::before rail is an absolutely-positioned pseudo-
@@ -312,9 +380,12 @@ export function JobsList(): React.ReactElement {
                         // so it cannot confuse column layout the same way.
                         className={cn('group border-t border-hairline transition-colors duration-micro hover:bg-surface-alt cursor-pointer')}
                       >
-                        <td className={cn('border-l-2 border-transparent px-3.5 transition-colors duration-fast group-hover:border-accent', cellPaddingY)}>
+                        <td className={cn('border-l-2 border-transparent px-3.5 transition-colors duration-fast group-hover:border-accent max-md:hidden', cellPaddingY)}>
+                          <span className="font-mono text-xs text-ink-2">{shortJobId(job.id)}</span>
+                        </td>
+                        <td className={cn('px-3.5', cellPaddingY)}>
                           <span className="flex min-w-0 items-center gap-1.5">
-                            <span className="block truncate text-sm font-medium">{job.originalFilename}</span>
+                            <span className="block max-w-[14rem] truncate text-sm font-medium max-md:max-w-[7rem]">{job.originalFilename}</span>
                             {job.batchId && (
                               <Tooltip content="Part of a batch upload -- click to view the whole batch">
                                 <Chip
@@ -334,24 +405,33 @@ export function JobsList(): React.ReactElement {
                             )}
                           </span>
                         </td>
-                        <td className={cn('px-3.5', cellPaddingY)}>
+                        <td className={cn('px-3.5 max-[1099px]:hidden', cellPaddingY)}>
                           <ModeBadge mode={job.mode as 'baseline' | 'survey'} />
                         </td>
                         <td className={cn('px-3.5', cellPaddingY)}>
-                          <StatusChip status={job.status} />
+                          <span className="flex flex-wrap items-center gap-1.5">
+                            <StatusChip status={job.status} />
+                            {isStaleJob(job, now) && (
+                              <Tooltip content="Waiting for review for over a week. The proposal was computed against Azure DevOps as it was then.">
+                                <Chip bg="var(--color-warning-soft)" color="var(--color-warning-ink)" className="border border-warning-border">
+                                  Stale · {Math.floor((now.getTime() - Date.parse(job.createdAt)) / 86_400_000)} days
+                                </Chip>
+                              </Tooltip>
+                            )}
+                          </span>
                         </td>
-                        <td className={cn('px-3.5 font-mono tabular-nums', cellPaddingY)}>{job.itemCount}</td>
-                        <td className={cn('px-3.5 font-mono text-xs', cellPaddingY)}>
+                        <td className={cn('px-3.5 font-mono tabular-nums max-[1099px]:hidden', cellPaddingY)}>{job.itemCount}</td>
+                        <td className={cn('px-3.5 font-mono text-xs max-[1399px]:hidden', cellPaddingY)}>
                           <Tooltip content={job.areaPath}>
-                            <span className="block truncate">{job.areaPath}</span>
+                            <span className="block max-w-[14rem] truncate">{job.areaPath.split('\\').pop() || job.areaPath}</span>
                           </Tooltip>
                         </td>
-                        <td className={cn('whitespace-nowrap px-3.5 font-mono text-xs', cellPaddingY)}>
-                          <Tooltip content={new Date(job.createdAt).toLocaleString()}>
+                        <td className={cn('whitespace-nowrap px-3.5 text-xs max-md:hidden', cellPaddingY)}>
+                          <Tooltip content={formatDateTime(job.createdAt)}>
                             <span>{formatRelativeTime(job.createdAt)}</span>
                           </Tooltip>
                         </td>
-                        <td className={cn('whitespace-nowrap px-3.5 text-right', cellPaddingY)}>
+                        <td className={cn('whitespace-nowrap px-3.5 text-right max-md:hidden', cellPaddingY)}>
                           {!RUNNING_STATUSES.has(job.status) && (
                             // Revealed on hover/focus, not always-on -- a row of
                             // permanently-visible icon buttons on every row read
@@ -360,21 +440,18 @@ export function JobsList(): React.ReactElement {
                             // order) while visually quiet until you're pointed at
                             // that specific row.
                             <span className="inline-flex gap-1 opacity-0 transition-opacity duration-instant group-hover:opacity-100 group-focus-within:opacity-100">
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                aria-label={`Resubmit job ${job.id}`}
+                              <IconButton
+                                label={`Resubmit job ${job.id}`}
+                                icon={RotateCw}
                                 onClick={(event) => {
                                   event.stopPropagation();
                                   setResubmitTarget(job);
                                 }}
-                              >
-                                <RotateCw className="h-3.5 w-3.5" />
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                aria-label={`Delete job ${job.id}`}
+                              />
+                              <IconButton
+                                label={`Delete job ${job.id}`}
+                                icon={Trash2}
+                                tone="danger"
                                 onClick={(event) => {
                                   // The row itself navigates on click -- without
                                   // this, clicking Delete would also navigate to
@@ -382,15 +459,14 @@ export function JobsList(): React.ReactElement {
                                   event.stopPropagation();
                                   setDeleteTarget(job);
                                 }}
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </Button>
+                              />
                             </span>
                           )}
                         </td>
                       </tr>
                     ))}
-                  </tbody>
+                      </tbody>
+                    ))}
                 </table>
               </div>
             </Card>

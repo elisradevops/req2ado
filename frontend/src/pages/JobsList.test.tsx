@@ -1,8 +1,9 @@
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/react';
+import { useAuthStore } from '../store/authStore';
 import { MemoryRouter } from 'react-router-dom';
 import * as React from 'react';
-import { JobsList } from './JobsList';
+import { JobsList, computeTileCounts } from './JobsList';
 import { ToastProvider } from '../components/ToastProvider';
 import * as jobsApi from '../api/jobs';
 import * as reactRouterDom from 'react-router-dom';
@@ -22,7 +23,7 @@ describe('JobsList', () => {
       { id: 'j1', mode: 'survey', status: 'diff_ready', areaPath: 'Proj\\A', originalFilename: 'spec.docx', itemCount: 12, createdItemCount: 0, createdAt: '2026-07-09T00:00:00Z' },
     ]);
     render(<ToastProvider><MemoryRouter><JobsList /></MemoryRouter></ToastProvider>);
-    await waitFor(() => expect(screen.getByText('Proj\\A')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('A')).toBeInTheDocument());
     expect(screen.getByText('12')).toBeInTheDocument();
   });
 
@@ -58,7 +59,7 @@ describe('JobsList', () => {
       { id: 'j1', mode: 'survey', status: 'diff_ready', areaPath: 'Proj\\A', originalFilename: 'spec.docx', itemCount: 12, createdItemCount: 0, createdAt: '2026-07-09T00:00:00Z' },
     ]);
     render(<ToastProvider><MemoryRouter><JobsList /></MemoryRouter></ToastProvider>);
-    await waitFor(() => expect(screen.getByText('Proj\\A')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('A')).toBeInTheDocument());
     const row = screen.getByRole('link', { name: /View job j1/i });
     row.focus();
     fireEvent.keyDown(row, { key: 'Enter' });
@@ -81,7 +82,7 @@ describe('JobsList', () => {
       { id: 'j4', mode: 'baseline', status: 'rejected', areaPath: 'Proj\\D', originalFilename: 'd.docx', itemCount: 2, createdItemCount: 0, createdAt: '2026-07-09T00:00:00Z' },
     ]);
     render(<ToastProvider><MemoryRouter><JobsList /></MemoryRouter></ToastProvider>);
-    await waitFor(() => expect(screen.getAllByText(/awaiting review/i).length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getAllByText(/^diff ready$/i).length).toBeGreaterThan(0));
 
     expect(screen.getAllByText('Running').length).toBeGreaterThan(0);
     const itemsWrittenLabel = screen.getByText('Items written');
@@ -90,7 +91,7 @@ describe('JobsList', () => {
     expect(screen.getAllByText('Rejected').length).toBeGreaterThan(0);
   });
 
-  it('filters to Awaiting review via the curated status filter, not the raw enum', async () => {
+  it('filters to Diff ready via the curated status filter, not the raw enum', async () => {
     vi.spyOn(jobsApi, 'listJobs').mockResolvedValue([
       { id: 'j1', mode: 'survey', status: 'diff_ready', areaPath: 'Proj\\A', originalFilename: 'a.docx', itemCount: 5, createdItemCount: 0, createdAt: '2026-07-09T00:00:00Z' },
       { id: 'j2', mode: 'baseline', status: 'succeeded', areaPath: 'Proj\\B', originalFilename: 'b.docx', itemCount: 4, createdItemCount: 4, createdAt: '2026-07-09T00:00:00Z' },
@@ -99,7 +100,7 @@ describe('JobsList', () => {
     await waitFor(() => expect(screen.getByText('a.docx')).toBeInTheDocument());
     expect(screen.getByText('b.docx')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Awaiting review' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Diff ready' }));
 
     expect(screen.getByText('a.docx')).toBeInTheDocument();
     expect(screen.queryByText('b.docx')).not.toBeInTheDocument();
@@ -202,8 +203,10 @@ describe('JobsList', () => {
     render(<ToastProvider><MemoryRouter><JobsList /></MemoryRouter></ToastProvider>);
     await waitFor(() => expect(screen.getByText('a.docx')).toBeInTheDocument());
     const deleteButton = screen.getByRole('button', { name: /delete job j1/i });
-    expect(deleteButton.parentElement?.className).toContain('opacity-0');
-    expect(deleteButton.parentElement?.className).toContain('group-hover:opacity-100');
+    // The reveal sits on the actions wrapper (the icon button adds its own tooltip wrapper inside it).
+    const reveal = deleteButton.closest('[class*="opacity-0"]');
+    expect(reveal).not.toBeNull();
+    expect(reveal!.className).toContain('group-hover:opacity-100');
   });
 
   it('New batch button navigates to the batch wizard (NEW-05)', async () => {
@@ -233,4 +236,226 @@ describe('JobsList', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/jobs/batch/batch-1');
     expect(mockNavigate).not.toHaveBeenCalledWith('/jobs/j1');
   });
+
+  describe('findability and type (DESIGN.md §0.1)', () => {
+    const jobAt = (id: string, name: string, createdAt: string) => ({
+      id, mode: 'survey', status: 'diff_ready', areaPath: `Proj\\${id}`, originalFilename: name, itemCount: 3, createdItemCount: 0, createdAt,
+    });
+
+    it('finds a job by its file name, not only by area path or id', async () => {
+      vi.spyOn(jobsApi, 'listJobs').mockResolvedValue([
+        jobAt('j1', 'radar-icd.docx', new Date().toISOString()),
+        jobAt('j2', 'power-spec.docx', new Date().toISOString()),
+      ] as never);
+      render(<ToastProvider><MemoryRouter><JobsList /></MemoryRouter></ToastProvider>);
+      await waitFor(() => expect(screen.getByText('radar-icd.docx')).toBeInTheDocument());
+      fireEvent.change(screen.getByRole('textbox', { name: /search/i }), { target: { value: 'POWER' } });
+      expect(screen.getByText('power-spec.docx')).toBeInTheDocument();
+      expect(screen.queryByText('radar-icd.docx')).not.toBeInTheDocument();
+    });
+
+    it('names the page in the browser tab (WCAG 2.4.2)', async () => {
+      vi.spyOn(jobsApi, 'listJobs').mockResolvedValue([jobAt('j1', 'a.docx', new Date().toISOString())] as never);
+      render(<ToastProvider><MemoryRouter><JobsList /></MemoryRouter></ToastProvider>);
+      await waitFor(() => expect(screen.getByText('a.docx')).toBeInTheDocument());
+      expect(document.title).toBe('Jobs - req2ado');
+    });
+
+    it('says what the search covers', async () => {
+      vi.spyOn(jobsApi, 'listJobs').mockResolvedValue([jobAt('j1', 'a.docx', new Date().toISOString())] as never);
+      render(<ToastProvider><MemoryRouter><JobsList /></MemoryRouter></ToastProvider>);
+      await waitFor(() => expect(screen.getByText('a.docx')).toBeInTheDocument());
+      expect(screen.getByRole('textbox', { name: /search/i })).toHaveAttribute('placeholder', 'File name, area path or job id…');
+    });
+
+    it('makes the row actions 32 px icon buttons, not 22 px text-size buttons (WCAG 2.5.8, DESIGN.md §13)', async () => {
+      vi.spyOn(jobsApi, 'listJobs').mockResolvedValue([jobAt('j1', 'a.docx', new Date().toISOString())] as never);
+      render(<ToastProvider><MemoryRouter><JobsList /></MemoryRouter></ToastProvider>);
+      await waitFor(() => expect(screen.getByText('a.docx')).toBeInTheDocument());
+      for (const name of ['Resubmit job j1', 'Delete job j1']) {
+        const button = screen.getByRole('button', { name });
+        expect(button.className).toMatch(/(?<![\w-])h-8(?![\w-])/);
+        expect(button.className).toMatch(/(?<![\w-])w-8(?![\w-])/);
+      }
+    });
+
+    it('does not open the job when a row action is clicked', async () => {
+      const navigate = vi.fn();
+      vi.spyOn(reactRouterDom, 'useNavigate').mockReturnValue(navigate);
+      vi.spyOn(jobsApi, 'listJobs').mockResolvedValue([jobAt('j1', 'a.docx', new Date().toISOString())] as never);
+      render(<ToastProvider><MemoryRouter><JobsList /></MemoryRouter></ToastProvider>);
+      await waitFor(() => expect(screen.getByText('a.docx')).toBeInTheDocument());
+      fireEvent.click(screen.getByRole('button', { name: 'Delete job j1' }));
+      expect(navigate).not.toHaveBeenCalled();
+    });
+
+    it('sets the created time in the proportional face: only identifiers are mono', async () => {
+      vi.spyOn(jobsApi, 'listJobs').mockResolvedValue([jobAt('j1', 'a.docx', new Date(Date.now() - 3 * 3600_000).toISOString())] as never);
+      render(<ToastProvider><MemoryRouter><JobsList /></MemoryRouter></ToastProvider>);
+      const when = await screen.findByText(/hour/i);
+      expect(when.closest('td')!.className).not.toMatch(/(?<![\w-])font-mono(?![\w-])/);
+    });
+  });
+  describe('grouping, ids and stale labels (DESIGN.md §11.1b)', () => {
+    const NOW = new Date(2026, 10, 13, 10, 0, 0);
+    const at = (daysBack: number, hour = 9) => new Date(2026, 10, 13 - daysBack, hour, 0, 0).toISOString();
+    const row = (id: string, status: string, createdAt: string, name = `${id}.docx`) => ({
+      id, mode: 'survey', status, areaPath: 'Proj\\A', originalFilename: name, itemCount: 3, createdItemCount: status === 'succeeded' ? 3 : 0, createdAt,
+    });
+    function renderAtNow(jobs: unknown[]) {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(NOW);
+      vi.spyOn(jobsApi, 'listJobs').mockResolvedValue(jobs as never);
+      render(<ToastProvider><MemoryRouter><JobsList /></MemoryRouter></ToastProvider>);
+    }
+    afterEach(() => vi.useRealTimers());
+
+    it('puts jobs that need the user first, then the rest by day, each group headed with its count', async () => {
+      renderAtNow([
+        row('aaaaaaaa-1', 'diff_ready', at(0)),
+        row('bbbbbbbb-2', 'failed', at(1)),
+        row('cccccccc-3', 'succeeded', at(0, 8)),
+        row('dddddddd-4', 'succeeded', at(1, 8)),
+        row('eeeeeeee-5', 'rejected', at(4)),
+        row('ffffffff-6', 'succeeded', at(30)),
+      ]);
+      await waitFor(() => expect(screen.getByText('aaaaaaaa-1.docx')).toBeInTheDocument());
+      const headings = screen.getAllByRole('rowheader').map((h) => h.textContent);
+      expect(headings).toEqual(['Needs you · 2', 'Today · 1', 'Yesterday · 1', 'This week · 1', 'Earlier · 1']);
+    });
+
+    it('shows the short job id in mono, the text the job page address starts with', async () => {
+      renderAtNow([row('129e4ca3-8973-4887-b4e9-d7c16dbb7fae', 'succeeded', at(0))]);
+      await waitFor(() => expect(screen.getByText('129e4ca3')).toBeInTheDocument());
+      expect(screen.getByText('129e4ca3')).toHaveClass('font-mono');
+      expect(screen.getByRole('columnheader', { name: 'Job' })).toBeInTheDocument();
+    });
+
+    it('labels a proposal left waiting for over a week as stale, and keeps it out of "Needs you"', async () => {
+      renderAtNow([row('fresh111-1', 'diff_ready', at(0)), row('stale222-2', 'diff_ready', at(14))]);
+      await waitFor(() => expect(screen.getByText('stale222-2.docx')).toBeInTheDocument());
+      expect(screen.getByText('Stale · 14 days')).toBeInTheDocument();
+      expect(screen.getAllByText(/^Stale/)).toHaveLength(1);
+      expect(screen.getAllByRole('rowheader').map((h) => h.textContent)).toEqual(['Needs you · 1', 'Earlier · 1']);
+    });
+
+    it('says "Diff ready" for the state everywhere: the tile, the filter and the chip', async () => {
+      renderAtNow([row('fresh111-1', 'diff_ready', at(0))]);
+      await waitFor(() => expect(screen.getByText('fresh111-1.docx')).toBeInTheDocument());
+      expect(screen.queryByText(/awaiting review/i)).not.toBeInTheDocument();
+      expect(screen.getAllByText('Diff ready').length).toBeGreaterThanOrEqual(3);
+    });
+
+    it('caps the document and area path cells so the table fits its card (auto layout cannot shrink a truncated cell with no cap)', async () => {
+      renderAtNow([row('fresh111-1', 'diff_ready', at(0))]);
+      await waitFor(() => expect(screen.getByText('fresh111-1.docx')).toBeInTheDocument());
+      expect(screen.getByText('A').className).toMatch(/max-w-/);
+      expect(screen.getByText('fresh111-1.docx').className).toMatch(/max-w-/);
+      // On a phone only Document and Status remain, and both must fit a 354 px card: the filename gets a much tighter cap there.
+      expect(screen.getByText('fresh111-1.docx').className).toContain('max-md:max-w-[7rem]');
+    });
+
+    it('offers "Hide stale" only when some proposal is stale, off by default, and hides them without deleting anything (F4)', async () => {
+      vi.mocked(jobsApi.deleteJob).mockClear();
+      renderAtNow([row('fresh111-1', 'diff_ready', at(0)), row('stale222-2', 'diff_ready', at(14)), row('stale333-3', 'diff_ready', at(20))]);
+      await waitFor(() => expect(screen.getByText('stale222-2.docx')).toBeInTheDocument());
+      const toggle = screen.getByRole('checkbox', { name: /hide stale \(2\)/i });
+      expect(toggle).not.toBeChecked();
+
+      fireEvent.click(toggle);
+      expect(screen.queryByText('stale222-2.docx')).not.toBeInTheDocument();
+      expect(screen.queryByText('stale333-3.docx')).not.toBeInTheDocument();
+      expect(screen.getByText('fresh111-1.docx')).toBeInTheDocument();
+      expect(screen.getByText('2 stale hidden')).toBeInTheDocument();
+      // Hidden from the list, never removed: nothing was sent to the server.
+      expect(jobsApi.deleteJob).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole('checkbox', { name: /hide stale \(2\)/i }));
+      expect(screen.getByText('stale222-2.docx')).toBeInTheDocument();
+    });
+
+    it('offers no "Hide stale" when nothing is stale', async () => {
+      renderAtNow([row('fresh111-1', 'diff_ready', at(0)), row('done2222-2', 'succeeded', at(30))]);
+      await waitFor(() => expect(screen.getByText('fresh111-1.docx')).toBeInTheDocument());
+      expect(screen.queryByRole('checkbox', { name: /hide stale/i })).not.toBeInTheDocument();
+    });
+
+    it('remembers the choice for the signed-in user, and not for another', async () => {
+      localStorage.clear();
+      useAuthStore.getState().login('https://ado.example', 'Jane', 'user-descriptor-1');
+      renderAtNow([row('fresh111-1', 'diff_ready', at(0)), row('stale222-2', 'diff_ready', at(14))]);
+      await waitFor(() => expect(screen.getByText('stale222-2.docx')).toBeInTheDocument());
+      fireEvent.click(screen.getByRole('checkbox', { name: /hide stale/i }));
+      expect(localStorage.getItem('req2ado-hide-stale-jobs:user-descriptor-1')).toBe('true');
+      cleanup();
+
+      renderAtNow([row('fresh111-1', 'diff_ready', at(0)), row('stale222-2', 'diff_ready', at(14))]);
+      await waitFor(() => expect(screen.getByText('fresh111-1.docx')).toBeInTheDocument());
+      expect(screen.queryByText('stale222-2.docx')).not.toBeInTheDocument();
+      cleanup();
+
+      useAuthStore.getState().login('https://ado.example', 'Joe', 'someone-else');
+      renderAtNow([row('fresh111-1', 'diff_ready', at(0)), row('stale222-2', 'diff_ready', at(14))]);
+      await waitFor(() => expect(screen.getByText('stale222-2.docx')).toBeInTheDocument());
+      useAuthStore.getState().logout();
+    });
+
+    it('drops columns as the width shrinks so Status and Created stay reachable: area below 1400 px, mode and items below 1100 px, id/created/actions below md', async () => {
+      renderAtNow([row('fresh111-1', 'diff_ready', at(0))]);
+      await waitFor(() => expect(screen.getByText('fresh111-1.docx')).toBeInTheDocument());
+      const header = (name: string) => screen.getByRole('columnheader', { name }).className;
+      expect(header('Area Path')).toContain('max-[1399px]:hidden');
+      expect(header('Mode')).toContain('max-[1099px]:hidden');
+      expect(header('Items')).toContain('max-[1099px]:hidden');
+      expect(header('Job')).toContain('max-md:hidden');
+      expect(header('Created')).toContain('max-md:hidden');
+      // The two columns that answer "what is it and what state" never drop.
+      expect(header('Document')).not.toMatch(/hidden/);
+      expect(header('Status')).not.toMatch(/hidden/);
+      // Cells follow their headers.
+      const statusCell = screen.getByText('fresh111-1.docx').closest('tr')!.querySelectorAll('td');
+      expect(statusCell[0].className).toContain('max-md:hidden'); // job id
+      expect(statusCell[5].className).toContain('max-[1399px]:hidden'); // area path
+    });
+
+    it('shows only the leaf of the area path, with the whole path in the tooltip, so the part that tells areas apart is not the part cut off', async () => {
+      renderAtNow([{ ...row('fresh111-1', 'diff_ready', at(0)), areaPath: 'elisradevops-project\\Customer Requirements' }]);
+      await waitFor(() => expect(screen.getByText('fresh111-1.docx')).toBeInTheDocument());
+      expect(screen.getByText('Customer Requirements')).toBeInTheDocument();
+      expect(screen.queryByText('elisradevops-project\\Customer Requirements')).not.toBeInTheDocument();
+    });
+
+    it('offers "Hide stale" for the stale jobs the other filters would show, and not under a filter that shows none of them', async () => {
+      renderAtNow([row('fresh111-1', 'diff_ready', at(0)), row('stale222-2', 'diff_ready', at(14)), row('done3333-3', 'succeeded', at(0, 8))]);
+      await waitFor(() => expect(screen.getByText('stale222-2.docx')).toBeInTheDocument());
+      expect(screen.getByRole('checkbox', { name: /hide stale \(1\)/i })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+      expect(screen.queryByRole('checkbox', { name: /hide stale/i })).not.toBeInTheDocument();
+      expect(screen.queryByText(/stale hidden/)).not.toBeInTheDocument();
+    });
+
+    it('counts only the proposals that still need review in the "Diff ready" tile, matching "Needs you"', () => {
+      const now = new Date(2026, 10, 13, 10, 0, 0);
+      const mk = (id: string, status: string, daysBack: number) => ({ id, status, createdAt: new Date(2026, 10, 13 - daysBack, 9, 0, 0).toISOString(), itemCount: 1, createdItemCount: 0 }) as any;
+      const counts = computeTileCounts([mk('a', 'diff_ready', 0), mk('b', 'diff_ready', 14), mk('c', 'diff_ready', 30), mk('d', 'running', 0), mk('e', 'rejected', 0)], now);
+      expect(counts.awaitingReview).toBe(1);
+      expect(counts.running).toBe(1);
+      expect(counts.rejected).toBe(1);
+    });
+
+    it('heads each day group as a row group, and names each row by its job, file and state for a screen reader', async () => {
+      renderAtNow([row('fresh111-1', 'diff_ready', at(0))]);
+      await waitFor(() => expect(screen.getByText('fresh111-1.docx')).toBeInTheDocument());
+      expect(document.querySelectorAll('th[scope="rowgroup"]')).toHaveLength(1);
+      expect(screen.getByRole('link', { name: /View job fresh111-1.*fresh111-1\.docx.*Diff ready/i })).toBeInTheDocument();
+    });
+
+    it('still filters, and groups only what the filter leaves', async () => {
+      renderAtNow([row('fresh111-1', 'diff_ready', at(0)), row('done2222-2', 'succeeded', at(0, 8))]);
+      await waitFor(() => expect(screen.getByText('fresh111-1.docx')).toBeInTheDocument());
+      fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+      expect(screen.getAllByRole('rowheader').map((h) => h.textContent)).toEqual(['Today · 1']);
+    });
+  });
 });
+
