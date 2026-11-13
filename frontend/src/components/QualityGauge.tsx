@@ -205,8 +205,10 @@ function CategoryRow({
             "Correct level", "Missing acceptance criteria") can run longer
             than the 5 generic fallback dimension names this width was
             originally sized for. */}
-        <span className="w-20 min-w-fit flex-none text-xs whitespace-nowrap text-ink-2">{label}</span>
-        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-surface-alt">
+        {/* On a phone the name wraps and takes the spare width, and the bar keeps a fixed one: a long KB-derived name
+            ("Owner, approver, status, baseline, and change history are present.") must not widen the whole dialog. */}
+        <span className="w-20 min-w-fit flex-none text-xs whitespace-nowrap text-ink-2 max-md:w-auto max-md:min-w-0 max-md:flex-1 max-md:whitespace-normal">{label}</span>
+        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-surface-alt max-md:w-16 max-md:flex-none">
           <div className="h-full rounded-full transition-[width] duration-300" style={{ width: `${clamped}%`, backgroundColor: color }} />
         </div>
         {previousValue !== undefined && previousValue !== clamped && (
@@ -330,7 +332,7 @@ export function QualityGauge({
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center gap-1.5">
         <span className="text-xs font-semibold text-ink-2">Quality</span>
-        <InfoTip content="req2ado's own read on this requirement's wording, from a single LLM judgment (0-100). Not an ADO field and not part of the work item." />
+        <InfoTip content="req2ado's own read on this requirement's wording, from a single LLM judgment (0-100). Not an Azure DevOps field and not part of the work item." />
         {/* Headline delta always renders (even "no change") when a
             previousScore was supplied at all -- DESIGN.md §11.4.4: the
             words "no change" beat a silent screen just as much as they

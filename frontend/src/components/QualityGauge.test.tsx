@@ -311,4 +311,11 @@ describe('QualityGauge', () => {
       expect(screen.queryByText(/^Cleared:/)).not.toBeInTheDocument();
     });
   });
+  it('lets a long criterion name wrap and shrink on a phone instead of widening the dialog (390 px overflow)', () => {
+    const longName = 'Owner, approver, status, baseline, and change history are present.';
+    render(<QualityGauge score={40} categoryScores={{ [longName]: 10, clarity: 80 }} />);
+    const label = screen.getByText(longName);
+    expect(label.className).toContain('max-md:whitespace-normal');
+    expect(label.className).toContain('max-md:min-w-0');
+  });
 });

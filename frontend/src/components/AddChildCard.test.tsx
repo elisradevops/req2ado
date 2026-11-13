@@ -22,12 +22,12 @@ describe('AddChildCard', () => {
   // housing orphaned Features.
   it('renders the trigger for a manually-added parent in a SURVEY job', () => {
     render(<AddChildCard parentEntry={{ ...PARENT, isManual: true }} jobMode="survey" allEntries={[PARENT]} onAdd={vi.fn()} />);
-    expect(screen.getByRole('button', { name: /^add direct child wi$/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^add direct child item$/i })).toBeInTheDocument();
   });
 
   it('is collapsed by default -- the form is not rendered until expanded', () => {
     render(<AddChildCard parentEntry={PARENT} jobMode="baseline" allEntries={[PARENT]} onAdd={vi.fn()} />);
-    expect(screen.getByRole('button', { name: /^add direct child wi$/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^add direct child item$/i })).toBeInTheDocument();
     expect(screen.queryByLabelText(/title/i)).not.toBeInTheDocument();
   });
 
@@ -35,7 +35,7 @@ describe('AddChildCard', () => {
     const onAdd = vi.fn();
     render(<AddChildCard parentEntry={PARENT} jobMode="baseline" allEntries={[PARENT]} onAdd={onAdd} />);
 
-    await userEvent.click(screen.getByRole('button', { name: /^add direct child wi$/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^add direct child item$/i }));
     expect(screen.getByLabelText(/title/i)).toBeInTheDocument();
 
     await userEvent.type(screen.getByLabelText(/title/i), 'New Req');
@@ -48,7 +48,7 @@ describe('AddChildCard', () => {
   it('swaps to a cancel affordance while expanded, and collapses the form on click', async () => {
     render(<AddChildCard parentEntry={PARENT} jobMode="baseline" allEntries={[PARENT]} onAdd={vi.fn()} />);
 
-    await userEvent.click(screen.getByRole('button', { name: /^add direct child wi$/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^add direct child item$/i }));
     expect(screen.getByLabelText(/title/i)).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
@@ -57,7 +57,7 @@ describe('AddChildCard', () => {
 
   it('collapses back to the header when the parentEntry changes', async () => {
     const { rerender } = render(<AddChildCard parentEntry={PARENT} jobMode="baseline" allEntries={[PARENT]} onAdd={vi.fn()} />);
-    await userEvent.click(screen.getByRole('button', { name: /^add direct child wi$/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^add direct child item$/i }));
     expect(screen.getByLabelText(/title/i)).toBeInTheDocument();
 
     const otherParent: DryRunDiffEntry = { ...PARENT, localId: 'n1' };
@@ -69,7 +69,7 @@ describe('AddChildCard', () => {
 // CR: reparent -- the tree toolbar's "+ New item" entry point has no
 // anchor node at all (JobDetail.tsx passes no parentEntry).
 describe('AddChildCard (no parentEntry -- toolbar "New item")', () => {
-  it('shows "New item" as the trigger label instead of "Add direct child WI"', () => {
+  it('shows "New item" as the trigger label instead of "Add direct child item"', () => {
     render(<AddChildCard jobMode="survey" allEntries={[]} onAdd={vi.fn()} />);
     expect(screen.getByRole('button', { name: /^new item$/i })).toBeInTheDocument();
   });
@@ -94,6 +94,6 @@ describe('AddChildCard (no parentEntry -- toolbar "New item")', () => {
 
   it('the default trigger stays full width', () => {
     render(<AddChildCard parentEntry={PARENT} jobMode="baseline" allEntries={[PARENT]} onAdd={vi.fn()} />);
-    expect(screen.getByRole('button', { name: /^add direct child wi$/i })).toHaveClass('w-full');
+    expect(screen.getByRole('button', { name: /^add direct child item$/i })).toHaveClass('w-full');
   });
 });

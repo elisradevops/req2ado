@@ -31,7 +31,8 @@ describe('KbReadinessStrip', () => {
     renderStrip();
     expect(await screen.findByText('3 files · 68 chunks')).toBeInTheDocument();
     expect(screen.getByText('SharePoint connected')).toBeInTheDocument();
-    expect(kbApi.listIngestedDocuments).toHaveBeenCalledWith('user-1');
+    // The session says whose documents: no identity goes in the request.
+    expect(kbApi.listIngestedDocuments).toHaveBeenCalledWith();
     expect(screen.queryByText(/no vectors/i)).toBeNull();
   });
 
@@ -40,7 +41,7 @@ describe('KbReadinessStrip', () => {
     renderStrip();
     expect(await screen.findByText('1 file · 5 chunks')).toBeInTheDocument();
     expect(
-      screen.getByText(/2 files have no stored chunk count, so they may not ground this run.*Re-ingest them in Knowledge Base/),
+      screen.getByText(/2 files have no stored chunk count, so they may not ground this run.*Re-ingest them in the knowledge base/),
     ).toBeInTheDocument();
   });
 
@@ -62,7 +63,7 @@ describe('KbReadinessStrip', () => {
     vi.spyOn(kbApi, 'listIngestedDocuments').mockResolvedValue([]);
     renderStrip();
     expect(await screen.findByText(/knowledge base is empty/i)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Fix in Knowledge Base' })).toHaveAttribute('href', '/knowledge-base');
+    expect(screen.getByRole('link', { name: 'Fix in the knowledge base' })).toHaveAttribute('href', '/knowledge-base');
     expect(screen.getByText('Your draft is kept.')).toBeInTheDocument();
   });
 
@@ -70,14 +71,14 @@ describe('KbReadinessStrip', () => {
     vi.spyOn(kbApi, 'listIngestedDocuments').mockResolvedValue([doc('a.pdf', 0), doc('b.pdf', null)]);
     renderStrip();
     expect(await screen.findByText(/1 file has no vectors and cannot ground this run\.$/)).toBeInTheDocument();
-    expect(screen.getByText(/1 file has no stored chunk count.*Re-ingest them in Knowledge Base/)).toBeInTheDocument();
+    expect(screen.getByText(/1 file has no stored chunk count.*Re-ingest them in the knowledge base/)).toBeInTheDocument();
     expect(screen.getAllByText(/Re-ingest/)).toHaveLength(1);
   });
 
   it('says "it" when exactly one file needs re-ingesting', async () => {
     vi.spyOn(kbApi, 'listIngestedDocuments').mockResolvedValue([doc('a.pdf', 5), doc('b.pdf', 0)]);
     renderStrip();
-    expect(await screen.findByText(/1 file has no vectors.*Re-ingest it in Knowledge Base/)).toBeInTheDocument();
+    expect(await screen.findByText(/1 file has no vectors.*Re-ingest it in the knowledge base/)).toBeInTheDocument();
   });
 
   it('offers no link when everything is healthy, since there is nothing to fix there', async () => {
@@ -87,18 +88,18 @@ describe('KbReadinessStrip', () => {
     expect(screen.queryByRole('link')).toBeNull();
   });
 
-  it('says to reconnect SharePoint in the Knowledge Base when its token expired', async () => {
+  it('says to reconnect SharePoint in the knowledge base when its token expired', async () => {
     vi.spyOn(kbApi, 'listIngestedDocuments').mockResolvedValue([doc('a.pdf', 5)]);
     vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'invalid', expiresInSeconds: null });
     renderStrip();
-    expect(await screen.findByText(/Reconnect SharePoint in Knowledge Base/)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: /fix in knowledge base/i })).toBeInTheDocument();
+    expect(await screen.findByText(/Reconnect SharePoint in the knowledge base/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /fix in the knowledge base/i })).toBeInTheDocument();
   });
 
   it('warns about ingested files that have no vectors', async () => {
     vi.spyOn(kbApi, 'listIngestedDocuments').mockResolvedValue([doc('a.pdf', 32), doc('b.pdf', 0), doc('c.pdf', 0)]);
     renderStrip();
-    expect(await screen.findByText(/2 files have no vectors and cannot ground this run.*Re-ingest them in Knowledge Base/)).toBeInTheDocument();
+    expect(await screen.findByText(/2 files have no vectors and cannot ground this run.*Re-ingest them in the knowledge base/)).toBeInTheDocument();
     expect(screen.getByText('1 file · 32 chunks')).toBeInTheDocument();
   });
 

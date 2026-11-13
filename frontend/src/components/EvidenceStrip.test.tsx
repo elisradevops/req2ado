@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { EvidenceStrip } from './EvidenceStrip';
 import type { DryRunDiffEntry } from './DiffTree';
 
@@ -14,13 +15,13 @@ describe('EvidenceStrip', () => {
     expect(screen.getByRole('region', { name: 'Evidence' })).toBeInTheDocument();
     expect(screen.getByText('spec.docx')).toBeInTheDocument();
     expect(screen.getByText('3 Power')).toBeInTheDocument();
-    expect(screen.getByText(/source text is not stored/i)).toBeInTheDocument();
+    expect(screen.getByText(/original wording is in the source file/i)).toBeInTheDocument();
   });
 
   it('says there is no recorded location when the entry has no sourceRef', () => {
     render(<EvidenceStrip entry={BASE} jobMode="baseline" />);
     expect(screen.getByText(/no source location recorded/i)).toBeInTheDocument();
-    expect(screen.queryByText(/source text is not stored/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/original wording is in the source file/i)).not.toBeInTheDocument();
   });
 
   it('names the weakest category with its score and the checklist text', () => {
@@ -151,5 +152,47 @@ describe('EvidenceStrip', () => {
     expect(checklist.tagName).toBe('P');
     expect(checklist).toHaveAttribute('dir', 'auto');
     expect(screen.getByText('דרישות הספק').closest('bdi')).not.toBeNull();
+  });
+  describe('collapsible (the item dialog): provenance stays, the scoring detail folds into "Why this verdict"', () => {
+    const scored = {
+      ...BASE,
+      sourceRef: REF,
+      qualityScore: 40,
+      qualityCategoryScores: { testability: 35, clarity: 80 },
+    };
+    const citations = [{ sourceFile: 'style-guide.pdf', similarity: 0.4, relevance: 'relevant' as const }];
+
+    it('keeps the file, the location and the source line in view, and hides the scoring detail until opened', async () => {
+      render(<EvidenceStrip entry={scored} jobMode="survey" kbCitations={citations} collapsible />);
+      expect(screen.getByText('spec.docx')).toBeInTheDocument();
+      expect(screen.getByText('3 Power')).toBeInTheDocument();
+      expect(screen.getByText(/original wording is in the source file/i)).toBeInTheDocument();
+      expect(screen.queryByText('Weakest area')).not.toBeInTheDocument();
+      expect(screen.queryByText('KB references')).not.toBeInTheDocument();
+      expect(screen.queryByText(/scored on wording only/i)).not.toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole('button', { name: /why this verdict/i }));
+      expect(screen.getByText('Weakest area')).toBeInTheDocument();
+      expect(screen.getByText('KB references')).toBeInTheDocument();
+      expect(screen.getByText(/scored on wording only/i)).toBeInTheDocument();
+    });
+
+    it('says the weakest area on the closed disclosure, so the reason is visible without opening it', () => {
+      render(<EvidenceStrip entry={scored} jobMode="survey" collapsible />);
+      expect(screen.getByRole('button', { name: /why this verdict/i })).toHaveTextContent('Testability');
+    });
+
+    it('is closed by default and shows no disclosure when there is nothing to explain', () => {
+      render(<EvidenceStrip entry={{ ...BASE, sourceRef: REF }} jobMode="baseline" collapsible />);
+      expect(screen.queryByRole('button', { name: /why this verdict/i })).not.toBeInTheDocument();
+      expect(screen.getByText('spec.docx')).toBeInTheDocument();
+    });
+
+    it('opens to the KB references alone when the item has citations but no scores', async () => {
+      render(<EvidenceStrip entry={{ ...BASE, sourceRef: REF }} jobMode="baseline" kbCitations={citations} collapsible />);
+      expect(screen.queryByText('KB references')).not.toBeInTheDocument();
+      await userEvent.click(screen.getByRole('button', { name: /why this verdict/i }));
+      expect(screen.getByText('KB references')).toBeInTheDocument();
+    });
   });
 });

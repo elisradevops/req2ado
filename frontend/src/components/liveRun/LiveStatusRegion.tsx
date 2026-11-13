@@ -9,15 +9,36 @@ export const ANNOUNCE_INTERVAL_MS = 15000;
 // markup from the first render, empty, because screen readers only announce
 // changes to a region that already exists. It says when the step changes
 // (throttled, latest wins). It never reads out items, excerpts or percentages.
-export function LiveStatusRegion(): React.ReactElement {
+const WAITING_ANNOUNCEMENT = 'No update for over a minute. The job is still working.';
+
+// DESIGN.md §13 / §11.3.5: the page has ONE polite status region. Besides step changes and warning notices it carries the
+// page's own arrival message (`message`) and the long-wait notice (fixed text, never the ticking time).
+export function LiveStatusRegion({ message = '' }: { message?: string }): React.ReactElement {
   const stage = useLiveRunStore((s) => s.progress?.stage ?? null);
   // The newest warning notice by kind and count, announced once when it first appears.
   const warning = useLiveRunStore((s) => {
     const warnings = s.notices.filter((n) => n.severity === 'warning');
     return warnings.length > 0 ? warnings[warnings.length - 1].kind : null;
   });
+  const waiting = useLiveRunStore((s) => s.waiting);
   const [text, setText] = useState('');
   const announcedWarning = useRef<string | null>(null);
+
+  // Latest wins, as for the step: the page's own message (a job that has just started, one that is now running).
+  const lastMessage = useRef('');
+  useEffect(() => {
+    const previous = lastMessage.current;
+    lastMessage.current = message;
+    if (message) setText(message);
+    // A message that goes away takes its own announcement with it (another job's arrival must not linger).
+    else if (previous) setText((current) => (current === previous ? '' : current));
+  }, [message]);
+
+  // The wait is spoken once, when it starts, and cleared when it ends so a later wait is spoken again.
+  useEffect(() => {
+    if (waiting) setText(WAITING_ANNOUNCEMENT);
+    else setText((current) => (current === WAITING_ANNOUNCEMENT ? '' : current));
+  }, [waiting]);
 
   useEffect(() => {
     if (!warning || warning === announcedWarning.current) return;

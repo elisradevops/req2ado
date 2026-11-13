@@ -2,6 +2,7 @@ import { Button } from '../ui/Button';
 import { Card } from '../ui/Card';
 import { Spinner } from '../ui/Spinner';
 import type { KbProfileRead } from '../hooks/useKbProfile';
+import { formatDateTime } from '../utils/formatDateTime';
 
 // One line about the knowledge base as the grading rubric sees it, with the two things to do about it: read the last ingestion
 // report, and customize the rubric. It says only what the profile says, and says nothing while that is still being read, rather
@@ -43,7 +44,7 @@ function line(rubric: KbProfileRead): React.ReactNode {
       return (
         <>
           The grading rubric draws on {profile.docsContributing} of {profile.docsInKb} {plural(profile.docsInKb, 'document', 'documents')}
-          {profile.builtAt ? ` · built ${new Date(profile.builtAt).toLocaleString()}` : ''}
+          {profile.builtAt ? ` · built ${formatDateTime(profile.builtAt)}` : ''}
         </>
       );
   }

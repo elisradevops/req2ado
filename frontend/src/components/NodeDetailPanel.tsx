@@ -24,6 +24,7 @@ import { DescriptionMarkdown, Markdown } from '../ui/Markdown';
 import { cn } from '../lib/cn';
 import { LABEL_MICRO } from '../utils/labelMicro';
 import { flaggedDiffEntryReason, isFlaggedDiffEntry } from '../utils/diffFlagging';
+import { formatDateTime } from '../utils/formatDateTime';
 
 // CR-7d rescore: the quality score/categoryScores from JUST BEFORE a
 // successful rescore -- held briefly so QualityGauge can render a real
@@ -92,6 +93,7 @@ export function NodeDetailPanel({
   parentEntry,
   addChildSlot,
   hideSources,
+  evidenceSlot,
   moveSlot,
   duplicateSlot,
   captionByFigureId,
@@ -148,6 +150,9 @@ export function NodeDetailPanel({
   // The caller shows this entry's provenance itself (NodeDetailDialog's EvidenceStrip owns it there), so the Sources block is left out.
   // A caller that renders this panel without an EvidenceStrip must not set it.
   hideSources?: boolean;
+  // The dialog's evidence strip (file, location, "Why this verdict"): drawn right after the item's text and any proposal or discussion, so
+  // the source is next to what it supports and the long score panel comes after it.
+  evidenceSlot?: React.ReactNode;
   // DESIGN.md §11.5 -- the keyboard-accessible "Move to..." control, owned/
   // wired by the caller (NodeDetailDialog builds the actual
   // MoveEntryControl) for the same reason addChildSlot is: this component
@@ -358,7 +363,10 @@ export function NodeDetailPanel({
   // not the separate quality-score gauge already shown above.
   const isLowGrounding = isFlaggedDiffEntry({ type: entry.type, groundingScore: entry.groundingScore, qualityScore: null });
   // The row's flag only carries this as a tooltip, so the same reason is written out here for keyboard and touch users.
-  const reviewReason = flaggedDiffEntryReason(entry);
+  // An Epic or Feature is not scored (quality scoring judges how a requirement is worded), so its score, and the model's confidence in
+  // that score, are never a reason to review it; loose wording against the source still is.
+  const isParentEntry = entry.type === 'Epic' || entry.type === 'Feature';
+  const reviewReason = flaggedDiffEntryReason(isParentEntry ? { ...entry, qualityScore: null, qualityConfidence: null } : entry);
 
   function startEditing(): void {
     setDraftTitle(entry!.title);
@@ -546,7 +554,7 @@ export function NodeDetailPanel({
                 onClick={() => handleAttachFigureClick(figureId)}
               >
                 {status === 'done' ? <Check className="h-3.5 w-3.5" /> : <Upload className="h-3.5 w-3.5" />}
-                {status === 'done' ? 'Uploaded' : `Upload to ADO (WI-${entry.existingAdoId})`}
+                {status === 'done' ? 'Uploaded' : `Upload to Azure DevOps (WI-${entry.existingAdoId})`}
               </Button>
             ) : (
               <p className="text-xs text-ink-3">
@@ -653,6 +661,15 @@ export function NodeDetailPanel({
           className="text-base font-semibold"
           fullWidth
         />
+        {/* The text a reviewer is correcting comes straight after its title; the reference fields and classification follow. */}
+        <TextArea
+          label="Description"
+          helperText="Markdown supported -- **bold**, *italic*, ~~strikethrough~~, and - / 1. lists."
+          value={draftDescription}
+          onChange={(e) => setDraftDescription(e.target.value)}
+          className="min-h-[300px] leading-relaxed"
+          fullWidth
+        />
         {/* Requirement-only -- Epic/Feature never carry a Customer ID (see
             WorkItemNode.customer_id's own docstring, ingestion side). */}
         {entry.type === 'Requirement' && (
@@ -708,21 +725,13 @@ export function NodeDetailPanel({
               {draftTags.length > 0 && (
                 <span className="text-xs text-ink-3">
                   {editWinningTag
-                    ? `"${REQUIREMENT_TAG_LABELS[editWinningTag].label}" (→) is what will be written to ADO's Requirement Type field.`
+                    ? `"${REQUIREMENT_TAG_LABELS[editWinningTag].label}" (→) is what will be written to the Requirement Type field in Azure DevOps.`
                     : "None of the selected categories map to this project's Requirement Type field -- it will be left at its default."}
                 </span>
               )}
             </div>
           );
         })()}
-        <TextArea
-          label="Description"
-          helperText="Markdown supported -- **bold**, *italic*, ~~strikethrough~~, and - / 1. lists."
-          value={draftDescription}
-          onChange={(e) => setDraftDescription(e.target.value)}
-          className="min-h-[300px] flex-1 leading-relaxed"
-          fullWidth
-        />
         <div className="sticky bottom-0 -mx-5 mt-auto flex items-center gap-2.5 border-t border-hairline bg-canvas px-5 py-3">
           <Button onClick={save} disabled={!draftTitle.trim()}>
             Save
@@ -761,8 +770,8 @@ export function NodeDetailPanel({
           {editability.reason === 'matched' &&
             !(duplicateSlot && entry.action === 'dedup_skip') &&
             (entry.existingAdoId != null
-              ? <>Read-only: this maps to an item that already exists in ADO (<span className="font-mono">WI-{entry.existingAdoId}</span>). Edit it in Azure DevOps.</>
-              : 'Read-only: this item maps to an existing ADO work item, not a new one.')}
+              ? <>Read-only: this maps to an item that already exists in Azure DevOps (<span className="font-mono">WI-{entry.existingAdoId}</span>). Edit it in Azure DevOps.</>
+              : 'Read-only: this item maps to an existing Azure DevOps work item, not a new one.')}
           {/* Real gap this closes: fields being read-only says nothing about
               POSITION -- a reviewer dragging this row to a new parent in
               DiffTree.tsx (DESIGN.md §11.5) sees the move persist and
@@ -773,7 +782,7 @@ export function NodeDetailPanel({
               re-adding one 400s with TF401349), so a matched item's real
               position is not this job's to re-assert. */}
           {editability.reason === 'matched' &&
-            `${duplicateSlot && entry.action === 'dedup_skip' ? '' : ' '}Its position in this tree is also read-only in ADO — moving it here only reorganizes your review, it never re-parents the real item.`}
+            `${duplicateSlot && entry.action === 'dedup_skip' ? '' : ' '}Its position in this tree is also read-only in Azure DevOps — moving it here only reorganizes your review, it never re-parents the real item.`}
           {editability.reason === 'written' && !entry.proposal && WRITTEN_NOTE}
           {editability.reason === 'job_locked' && `This job is no longer editable${jobStatus ? ` (status: ${jobStatus})` : ''}.`}
         </p>
@@ -792,15 +801,15 @@ export function NodeDetailPanel({
           <div className="flex items-start gap-2 rounded-sm border border-hairline bg-surface-alt p-2.5 text-xs text-ink-2">
             <Link2 className="mt-0.5 h-3.5 w-3.5 flex-none text-ink-3" />
             <span>
-              A similar parent item already exists in ADO as{' '}
+              A similar parent item already exists in Azure DevOps as{' '}
               <span className="font-mono">WI-{parentEntry.existingAdoId}</span> ({parentEntry.action === 'reuse' ? 'exact match' : 'near-duplicate'}
-              ) -- this item will be linked under it automatically on Confirm.
+              ) -- this item will be linked under it automatically when you write.
             </span>
           </div>
         )}
       {/* Real markdown, not whitespace-pre-line plain text -- descriptions
           are now authored (via Edit/chat) as markdown (**bold**, lists,
-          ~~strikethrough~~) and written to ADO as real HTML via the same
+          ~~strikethrough~~) and written to Azure DevOps as real HTML via the same
           conversion (see orchestrator's description-html.ts) -- this
           preview should show a reviewer the same structure that lands in
           ADO, not the raw ** and - characters. Max-width measure preserved
@@ -808,7 +817,7 @@ export function NodeDetailPanel({
       {/* The 68ch measure sits on each block, not the wrapper, so a right-to-left
           block (:dir(rtl), resolved from dir="auto") can anchor to the pane's
           right edge instead of the right edge of a 68ch box. */}
-      <div className="w-full text-sm leading-relaxed text-ink-2 [&>*]:max-w-[68ch] [&>*:dir(rtl)]:me-auto">
+      <div className="w-full text-read text-ink-2 [&>*]:max-w-[68ch] [&>*:dir(rtl)]:me-auto">
         <DescriptionMarkdown>{entry.description}</DescriptionMarkdown>
       </div>
       <ProposalCard
@@ -841,7 +850,7 @@ export function NodeDetailPanel({
                   </p>
                 )}
                 {d.proposedDescription && <DescriptionMarkdown>{d.proposedDescription}</DescriptionMarkdown>}
-                <p className="text-xs text-ink-3">{new Date(d.createdAt).toLocaleString()}</p>
+                <p className="text-xs text-ink-3">{formatDateTime(d.createdAt)}</p>
               </div>
               {canEdit && onRemoveDiscussion && (
                 <Button size="sm" variant="ghost" aria-label="Remove from discussion" onClick={() => void onRemoveDiscussion(entry.localId, d.id)}>
@@ -852,6 +861,7 @@ export function NodeDetailPanel({
           ))}
         </div>
       )}
+      {evidenceSlot}
       {/* Real bug fixed here (confirmed against the agreed mockup, which has
           no "Active Flags" block at all): this used to pair Classification
           with a second "Active Flags" chip cloud showing the SAME issue

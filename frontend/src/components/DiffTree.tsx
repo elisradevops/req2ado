@@ -762,7 +762,7 @@ export function DiffTree({
         <span>Item</span>
         <span className={cn('flex items-center gap-1', WIDE_ONLY)}>
           Status
-          <InfoTip content="What will happen to this item when you write to Azure DevOps. No pill means New (written to ADO for the first time). A pill means: Links to an existing WI-#### (reused, nothing new written, and it keeps its existing ADO parent regardless of where you place it in this tree), or Near-duplicate of an existing item (skipped, same parent-keeping rule)." />
+          <InfoTip content="What will happen to this item when you write to Azure DevOps. No pill means New (written to Azure DevOps for the first time). A pill means: Links to an existing WI-#### (reused, nothing new written, and it keeps its existing Azure DevOps parent regardless of where you place it in this tree), or Near-duplicate of an existing item (skipped, same parent-keeping rule)." />
         </span>
         <span className={cn('flex items-center justify-end gap-1', WIDE_ONLY)}>
           Flags
@@ -1040,9 +1040,9 @@ function DiffTreeRow({
         className="flex flex-none items-center text-ink-3 max-md:hidden"
         title={
           (entry.action === 'reuse'
-            ? `Already exists in ADO${entry.existingAdoId != null ? ` as WI-${entry.existingAdoId}` : ''}`
-            : `Matched to a probable duplicate in ADO${entry.existingAdoId != null ? ` (WI-${entry.existingAdoId})` : ''}`) +
-          ' and keeps its parent there. Moving it here only reorganizes this review tree -- writing to Azure DevOps never re-parents an existing item. New items you place under it will be linked to it in ADO.'
+            ? `Already exists in Azure DevOps${entry.existingAdoId != null ? ` as WI-${entry.existingAdoId}` : ''}`
+            : `Matched to a probable duplicate in Azure DevOps${entry.existingAdoId != null ? ` (WI-${entry.existingAdoId})` : ''}`) +
+          ' and keeps its parent there. Moving it here only reorganizes this review tree -- writing to Azure DevOps never re-parents an existing item. New items you place under it will be linked to it in Azure DevOps.'
         }
       >
         <Lock className="h-3.5 w-3.5" />
@@ -1050,11 +1050,14 @@ function DiffTreeRow({
     )}
     </>
   );
-  const sameTierTitle = `Parent is also a ${realTypeName(entry.type)}. This writes fine to Azure DevOps, but its native Backlogs hub can't reorder same-category links and only shows the leaf item on sprint backlogs/taskboards.`;
+  // A plain fact, not the jargon "same tier": it reads the same on a phone, where there is no hover to show the tooltip.
+  const sameTierLabel = `Nested ${realTypeName(entry.type)}`;
+  const typeName = realTypeName(entry.type);
+  const sameTierTitle = `Parent is also ${/^[aeiou]/i.test(typeName) ? 'an' : 'a'} ${typeName}. This writes fine to Azure DevOps, but its native Backlogs hub cannot reorder links between items of the same category, and sprint backlogs and taskboards show only the lowest item.`;
   // On the phone line the red pill is too wide to leave room for the status beside it, so it is plain red text there.
   const sameTierPhoneEl = isSameTierParent && (
     <span className="flex-none text-xs font-semibold text-danger-ink" title={sameTierTitle}>
-      Same tier
+      {sameTierLabel}
     </span>
   );
   const sameTierEl = (
@@ -1066,7 +1069,7 @@ function DiffTreeRow({
         className="flex-none border border-danger-border"
         title={sameTierTitle}
       >
-        same tier
+        {sameTierLabel}
       </Chip>
     )}
     </>
@@ -1221,7 +1224,7 @@ function DiffTreeRow({
               e.stopPropagation();
               toggleCollapsed(entry.localId);
             }}
-            className="-ml-1 flex-none rounded-sm p-0.5 text-ink-3 hover:bg-hairline-strong/40 hover:text-ink-1"
+            className="-ml-1 grid h-6 w-6 flex-none place-items-center rounded-sm text-ink-3 hover:bg-hairline-strong/40 hover:text-ink-1"
           >
             <ChevronRight className={cn('h-3.5 w-3.5 transition-transform duration-fast ease-out', !collapsedIds.has(entry.localId) && 'rotate-90')} />
           </button>
@@ -1362,7 +1365,7 @@ function DiffTreeRow({
             onSelect(entry.localId);
             openDetails(entry.localId);
           }}
-          className="rounded-sm p-1 text-ink-3 hover:bg-hairline-strong/40 hover:text-ink-1 max-md:grid max-md:h-11 max-md:w-11 max-md:place-items-center max-md:p-0"
+          className="grid h-6 w-6 place-items-center rounded-sm text-ink-3 hover:bg-hairline-strong/40 hover:text-ink-1 max-md:h-11 max-md:w-11"
         >
           {narrow ? <Info className="h-4 w-4" /> : <SquareArrowOutUpRight className="h-3.5 w-3.5" />}
         </button>

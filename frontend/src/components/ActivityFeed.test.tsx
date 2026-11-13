@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, renderHook, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { ActivityFeed, COLLAPSED_LINES, useActivityLog, type ActivityEvent } from './ActivityFeed';
+import { ActivityFeed, COLLAPSED_LINES, collapseRepeats, useActivityLog, type ActivityEvent } from './ActivityFeed';
 import type { NarrationEvent } from '../api/events';
 
 const narration = (n: number, message = `Step ${n}`): NarrationEvent =>
@@ -173,5 +173,103 @@ describe('useActivityLog', () => {
   it('uses the label function and the event message', () => {
     const { result } = renderHook(() => useActivityLog([narration(1, 'Hello')], (n) => `L:${n.phase}`));
     expect(result.current[0]).toMatchObject({ label: 'L:analyze_section', message: 'Hello' });
+  });
+});
+
+describe('ActivityFeed collapsed by default (DESIGN.md §11.3.5, the "Run log")', () => {
+  it('shows only a "Run log (n)" toggle and none of the lines until it is opened', async () => {
+    render(<ActivityFeed events={[event(1), event(2), event(3)]} collapsedByDefault />);
+    const toggle = screen.getByRole('button', { name: 'Run log (3)' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('log')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Line 3/)).not.toBeInTheDocument();
+
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(within(screen.getByRole('log')).getAllByRole('listitem')).toHaveLength(3);
+  });
+
+  it('is still a level-two heading, so the page outline does not skip a level', () => {
+    render(<ActivityFeed events={[event(1)]} collapsedByDefault />);
+    expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('Run log (1)');
+  });
+
+  it('keeps the existing always-open behaviour for callers that do not ask for it', () => {
+    render(<ActivityFeed events={[event(1), event(2)]} />);
+    expect(screen.getByRole('log')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Run log/ })).not.toBeInTheDocument();
+  });
+});
+
+
+describe('collapseRepeats (a burst of the same progress line is one line with a count)', () => {
+  const T = Date.UTC(2026, 10, 13, 10, 0, 0);
+  const dup = (id: number, n: number, seenAt: number | null = T, label = 'Checking for duplicates'): ActivityEvent => ({
+    id, label, message: `Checking for duplicates ${n} of 17`, seenAt,
+  });
+
+  it('folds consecutive lines that differ only in their numbers, within the same second, into one with a count', () => {
+    const folded = collapseRepeats(Array.from({ length: 17 }, (_, i) => dup(i + 1, i + 1, T + i * 20)));
+    expect(folded).toHaveLength(1);
+    expect(folded[0].repeat).toBe(17);
+    expect(folded[0].message).toBe('Checking for duplicates 17 of 17');
+    expect(folded[0].seenAt).toBe(T);
+    expect(folded[0].id).toBe(1);
+  });
+
+  it('does not fold lines seconds apart: that is a run making progress, and the times are the point', () => {
+    const folded = collapseRepeats([dup(1, 1, T), dup(2, 2, T + 4000), dup(3, 3, T + 9000)]);
+    expect(folded.map((line) => line.repeat)).toEqual([1, 1, 1]);
+  });
+
+  it('does not fold different labels or different wording, only numbers', () => {
+    const folded = collapseRepeats([dup(1, 1), dup(2, 2, T, 'Scoring'), { ...dup(3, 3), message: 'Found a near-duplicate of 3' }]);
+    expect(folded).toHaveLength(3);
+  });
+
+  it('never folds lines that carry no time (history from before the page opened), or lines with no number', () => {
+    expect(collapseRepeats([dup(1, 1, null), dup(2, 2, null)])).toHaveLength(2);
+    const plain: ActivityEvent[] = [1, 2].map((id) => ({ id, label: 'Parse', message: 'Reading the document', seenAt: T }));
+    expect(collapseRepeats(plain)).toHaveLength(2);
+  });
+
+  it('folds each burst on its own and keeps order, without changing its input', () => {
+    const input = [dup(1, 1), dup(2, 2), { ...dup(3, 3), label: 'Scoring', message: 'Scoring 1 of 2' }, dup(4, 4, T + 5000), dup(5, 5, T + 5100)];
+    const copy = input.map((line) => line.id);
+    expect(collapseRepeats(input).map((line) => [line.id, line.repeat])).toEqual([[1, 2], [3, 1], [4, 2]]);
+    expect(input.map((line) => line.id)).toEqual(copy);
+  });
+
+  it('does not fold distinct facts that merely share a template: five different tables stay five lines', () => {
+    const table = (id: number, n: number, name: string, rows: number): ActivityEvent => ({
+      id, label: 'Reading the document', message: `Detected a table ${name} (table ${n} of 5) -- ${rows} row(s)`, seenAt: T + id,
+    });
+    const folded = collapseRepeats([table(1, 1, 't1', 4), table(2, 2, 't2', 9), table(3, 3, 't3', 16), table(4, 4, 't4', 2), table(5, 5, 't5', 16)]);
+    expect(folded).toHaveLength(5);
+    expect(folded.every((line) => line.repeat === 1)).toBe(true);
+  });
+
+  it('still folds a pure "N of M" counter burst whose other words and numbers are identical', () => {
+    const counter = (id: number, n: number): ActivityEvent => ({ id, label: 'Scoring', message: `Scoring requirement ${n} of 40`, seenAt: T + id });
+    expect(collapseRepeats(Array.from({ length: 10 }, (_, i) => counter(i + 1, i + 1)))).toHaveLength(1);
+  });
+
+  it('is one pass: 50,000 lines fold in well under a second', () => {
+    const many = Array.from({ length: 50000 }, (_, i) => dup(i + 1, i + 1, T + (i % 3) * 10));
+    const started = performance.now();
+    collapseRepeats(many);
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+});
+
+describe('ActivityFeed: repeats', () => {
+  it('shows a folded burst as one line with its count, and counts lines (not raw events) in the toggle and heading', () => {
+    const T = Date.UTC(2026, 10, 13, 10, 0, 0);
+    const burst = Array.from({ length: 5 }, (_, i) => ({ id: i + 1, label: 'Checking for duplicates', message: `Checking for duplicates ${i + 1} of 5`, seenAt: T + i }));
+    render(<ActivityFeed events={burst} collapsedByDefault={false} />);
+    const lines = within(screen.getByRole('log')).getAllByRole('listitem');
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toHaveTextContent('Checking for duplicates 5 of 5');
+    expect(lines[0]).toHaveTextContent('×5');
   });
 });

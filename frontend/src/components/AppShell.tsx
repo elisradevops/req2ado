@@ -19,8 +19,8 @@ const RAIL_COLLAPSED_WIDTH = 64;
 
 const NAV_ITEMS = [
   { to: '/jobs', label: 'Jobs', icon: Briefcase },
-  { to: '/jobs/new', label: 'New Job', icon: Plus },
-  { to: '/knowledge-base', label: 'Knowledge Base', icon: Database },
+  { to: '/jobs/new', label: 'New job', icon: Plus },
+  { to: '/knowledge-base', label: 'Knowledge base', icon: Database },
   { to: '/help', label: 'Help', icon: HelpCircle },
 ];
 
@@ -41,13 +41,13 @@ interface Crumb {
 // there is no route `handle`/`useMatches` to read a param from here).
 type CrumbLabels = Record<string, string>;
 const ROUTE_CRUMBS: { prefix: string; crumbs: (pathname: string, jobLabels: CrumbLabels) => Crumb[] }[] = [
-  { prefix: '/jobs/new', crumbs: () => [{ label: 'New Job' }] },
+  { prefix: '/jobs/new', crumbs: () => [{ label: 'New job' }] },
   // Both NEW-05 batch routes must sit ABOVE the generic '/jobs/' catch-all
   // below -- that entry matches any '/jobs/...' path via startsWith, and
   // without these more-specific entries first, a batch path would render
   // its own second path segment ("batch/new" or "batch/<id>") as if it
   // were a job id.
-  { prefix: '/jobs/batch/new', crumbs: () => [{ label: 'New Batch' }] },
+  { prefix: '/jobs/batch/new', crumbs: () => [{ label: 'New batch' }] },
   {
     prefix: '/jobs/batch/',
     crumbs: (pathname) => [{ label: 'Jobs', to: '/jobs' }, { label: pathname.slice('/jobs/batch/'.length), mono: true }],
@@ -62,9 +62,9 @@ const ROUTE_CRUMBS: { prefix: string; crumbs: (pathname: string, jobLabels: Crum
     },
   },
   { prefix: '/jobs', crumbs: () => [{ label: 'Jobs' }] },
-  { prefix: '/knowledge-base', crumbs: () => [{ label: 'Knowledge Base' }] },
+  { prefix: '/knowledge-base', crumbs: () => [{ label: 'Knowledge base' }] },
   { prefix: '/help', crumbs: () => [{ label: 'Help' }] },
-  { prefix: '/settings', crumbs: () => [{ label: 'Profile & Connections' }] },
+  { prefix: '/settings', crumbs: () => [{ label: 'Profile and connections' }] },
 ];
 
 function crumbsForPath(pathname: string, jobLabels: CrumbLabels): Crumb[] {
@@ -271,7 +271,7 @@ export function AppShell({ children }: { children: ReactNode }): React.ReactElem
                     </span>
                   )}
                   {crumb.to ? (
-                    <Link to={crumb.to} className="font-medium text-ink-3 transition-colors duration-instant hover:text-ink-1 hover:underline">
+                    <Link to={crumb.to} className="-mx-1 inline-flex min-h-6 items-center px-1 font-medium text-ink-3 transition-colors duration-instant hover:text-ink-1 hover:underline">
                       {label}
                     </Link>
                   ) : (

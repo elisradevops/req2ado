@@ -323,3 +323,13 @@ describe('KbFileList selection', () => {
     expect(screen.getByRole('checkbox', { name: /^select all files$/i })).toBeInTheDocument();
   });
 });
+
+describe('KbFileList remove control (DESIGN.md §2)', () => {
+  it('rests in the quiet text colour, not the success green: a destructive control is never ambient-green', () => {
+    renderList([file('a', { alreadyIngested: true, ingestedDocumentId: 'doc-a' })]);
+    const remove = screen.getByRole('button', { name: /remove a\.pdf from the knowledge base/i });
+    expect(remove.className).not.toMatch(/(?<![\w-])text-ok(?![\w-])/);
+    expect(remove.className).toMatch(/hover:text-danger/);
+  });
+});
+

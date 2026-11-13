@@ -40,7 +40,7 @@ export function KbReadinessStrip(): React.ReactElement {
   useEffect(() => {
     let cancelled = false;
     setState({ kind: 'loading' });
-    listIngestedDocuments(userId ?? undefined)
+    listIngestedDocuments()
       .then((documents) => {
         if (!cancelled) setState({ kind: 'ready', documents });
       })
@@ -75,7 +75,7 @@ export function KbReadinessStrip(): React.ReactElement {
   // The Knowledge Base page is where all of these are fixed, so the link is offered only when there is something to fix there.
   const needsFix = documents.length === 0 || noVectors > 0 || unverified > 0 || sharePointBroken;
   // Said once, on the last file warning, and worded for however many files it covers in total.
-  const reingest = `Re-ingest ${plural(noVectors + unverified, 'it', 'them')} in Knowledge Base (SharePoint folder).`;
+  const reingest = `Re-ingest ${plural(noVectors + unverified, 'it', 'them')} in the knowledge base (SharePoint folder).`;
 
   return (
     <div className="flex flex-col gap-1.5" aria-live="polite">
@@ -105,7 +105,7 @@ export function KbReadinessStrip(): React.ReactElement {
         {needsFix && (
           <>
             <Link to="/knowledge-base" className="text-xs text-accent hover:underline">
-              Fix in Knowledge Base
+              Fix in the knowledge base
             </Link>
             <span className="text-xs text-ink-3">Your draft is kept.</span>
           </>
@@ -122,7 +122,7 @@ export function KbReadinessStrip(): React.ReactElement {
           (older ingests, or ones whose vectors were lost). {reingest}
         </p>
       )}
-      {sharePointBroken && <p className="text-xs text-warning-ink">Reconnect SharePoint in Knowledge Base before adding or re-ingesting files.</p>}
+      {sharePointBroken && <p className="text-xs text-warning-ink">Reconnect SharePoint in the knowledge base before adding or re-ingesting files.</p>}
     </div>
   );
 }

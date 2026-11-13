@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { JobLifecycleSteps } from './JobLifecycleSteps';
+import { JobLifecycleSteps, lifecyclePhases } from './JobLifecycleSteps';
 import type { JobStage, NarrationEvent } from '../api/events';
 
 function stateOf(label: string): string | null {
@@ -152,4 +152,29 @@ describe('JobLifecycleSteps', () => {
       expect(stateOf('Analyze')).toBe('done');
     },
   );
+});
+
+describe('lifecyclePhases', () => {
+  it('gives SURVEY six phases and BASELINE four, in order', () => {
+    expect(lifecyclePhases('survey', 'running', 'infer_hierarchy_start').phases.map((p) => p.key)).toEqual([
+      'parse', 'analyze', 'score', 'dedupCheck', 'review', 'write',
+    ]);
+    expect(lifecyclePhases('baseline', 'running', 'parse').phases.map((p) => p.key)).toEqual(['parse', 'dedupCheck', 'review', 'write']);
+  });
+
+  it('reports the same live key and states the horizontal stepper paints', () => {
+    const { liveKey, phases } = lifecyclePhases('survey', 'running', 'infer_hierarchy_start');
+    expect(liveKey).toBe('analyze');
+    expect(phases.map((p) => p.state)).toEqual(['done', 'current', 'pending', 'pending', 'pending', 'pending']);
+  });
+
+  it('keeps the whole-tree passes on Score, so the live phase never steps back to Analyze', () => {
+    expect(lifecyclePhases('survey', 'running', 'infer_hierarchy_start', 'infer_trace_links').liveKey).toBe('score');
+  });
+
+  it('paints a rejected run\'s Write phase skipped, and carries each phase\'s purpose sentence', () => {
+    const { phases } = lifecyclePhases('survey', 'rejected', 'diff_ready');
+    expect(phases.find((p) => p.key === 'write')?.state).toBe('skipped');
+    expect(phases.find((p) => p.key === 'review')?.purpose).toMatch(/nothing is written/i);
+  });
 });

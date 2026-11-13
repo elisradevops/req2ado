@@ -246,6 +246,8 @@ export function NodeDetailDialog({
     busy?: boolean;
     // Called instead of the action when it is pressed while busy (the page says "Still saving").
     onBusyAttempt?: () => void;
+    // Where the open item is in the list being worked through (the review queue): "3 of 17" in the note above the item.
+    position?: { index: number; total: number };
   } | null;
   // The single-key shortcuts (J K R A X). Off turns every one of them off
   // (WCAG 2.1.4); the buttons keep working.
@@ -381,7 +383,7 @@ export function NodeDetailDialog({
       />
     ) : undefined;
 
-  const evidenceStrip = <EvidenceStrip entry={entry} jobMode={jobMode} kbCitations={kbCitations} />;
+  const evidenceStrip = <EvidenceStrip entry={entry} jobMode={jobMode} kbCitations={kbCitations} collapsible />;
 
   const keyHints: Array<[string, string]> = [
     ['J', 'next'],
@@ -406,6 +408,7 @@ export function NodeDetailDialog({
       parentEntry={entry.parentLocalId != null ? diffByLocalId?.[entry.parentLocalId] : undefined}
       addChildSlot={addChildSlot}
       hideSources
+      evidenceSlot={evidenceStrip}
       moveSlot={moveSlot}
       duplicateSlot={duplicateSlot}
       captionByFigureId={captionByFigureId}
@@ -509,6 +512,11 @@ export function NodeDetailDialog({
           <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5">
             {/* basis-56: below that width the buttons wrap onto their own line instead of squeezing the text. */}
             <span className="min-w-0 flex-1 basis-56">
+              {review?.position && (
+                <span className="me-2 font-semibold tabular-nums">
+                  {review.position.index.toLocaleString()} of {review.position.total.toLocaleString()}
+                </span>
+              )}
               <span className="font-semibold">{reason.title}.</span> {reason.todo}
               {onNavigate && shortcutsEnabled && <KeyHints hints={keyHints} />}
             </span>
@@ -573,7 +581,7 @@ export function NodeDetailDialog({
         // `lg` and up: real two-pane layout, details left / chat right.
         <div className="flex min-h-0 flex-1">
           <div className="min-h-0 flex-1 overflow-y-auto">
-            <div ref={detailsScope}>{evidenceStrip}{detailsContent}</div>
+            <div ref={detailsScope}>{detailsContent}</div>
           </div>
           <div className="min-h-0 w-[400px] flex-none border-l border-hairline">{chatContent}</div>
         </div>
@@ -591,7 +599,7 @@ export function NodeDetailDialog({
             />
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto">
-            {mobileTab === 'details' ? <div ref={detailsScope}>{evidenceStrip}{detailsContent}</div> : chatContent}
+            {mobileTab === 'details' ? <div ref={detailsScope}>{detailsContent}</div> : chatContent}
           </div>
         </div>
       )}

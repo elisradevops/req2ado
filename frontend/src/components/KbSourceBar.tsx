@@ -1,3 +1,4 @@
+import { redactSharingUrl } from '../utils/redactSharingUrl';
 import { useEffect, useId, useState } from 'react';
 import { CircleAlert, CircleCheck, FolderOpen, FolderSearch, KeyRound, Pencil, RefreshCw, TriangleAlert, Unplug, X, type LucideIcon } from 'lucide-react';
 import type { SharePointStatus } from '../api/kb';
@@ -152,8 +153,9 @@ export function KbSourceBar({
           <StatusLine status={status} />
           <span className="flex min-w-0 flex-1 basis-48 items-center gap-1.5">
             <FolderOpen className="h-4 w-4 flex-none text-ink-3" aria-hidden="true" />
-            <Tooltip content={sourceUrl}>
-              <span className="min-w-0 truncate font-mono text-xs text-ink-2">{sourceUrl}</span>
+            {/* The link is the credential for the folder: only a redacted form is drawn, here and in the tooltip. Change edits the full one. */}
+            <Tooltip content={redactSharingUrl(sourceUrl)}>
+              <span className="min-w-0 truncate font-mono text-xs text-ink-2">{redactSharingUrl(sourceUrl)}</span>
             </Tooltip>
           </span>
           {lastBrowsedAt !== null && (

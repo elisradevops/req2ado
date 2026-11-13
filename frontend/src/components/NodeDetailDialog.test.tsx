@@ -53,6 +53,31 @@ describe('NodeDetailDialog', () => {
     expect(screen.queryByText('Sources')).not.toBeInTheDocument();
   });
 
+  it('puts the requirement text before the evidence, so the decision text is not buried under metadata (R3)', () => {
+    renderDialog({ entry: { ...ENTRY, sourceRef: { documentPath: 'spec.docx', startOffset: 0, endOffset: 5, page: 2 } } });
+    const text = screen.getByText('Req body');
+    const evidence = screen.getByRole('region', { name: 'Evidence' });
+    expect(text.compareDocumentPosition(evidence) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('puts the evidence before the Quality panel too: text, then where it came from, then the full scores (R3)', () => {
+    renderDialog({
+      entry: {
+        ...ENTRY,
+        sourceRef: { documentPath: 'spec.docx', startOffset: 0, endOffset: 5, page: 2 },
+        qualityScore: 40,
+        qualityCategoryScores: { testability: 35, clarity: 80 },
+      },
+      jobMode: 'survey',
+    });
+    const text = screen.getByText('Req body');
+    const evidence = screen.getByRole('region', { name: 'Evidence' });
+    const quality = screen.getByText('Quality');
+    const follows = (a: Element, b: Element) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(follows(text, evidence)).toBe(true);
+    expect(follows(evidence, quality)).toBe(true);
+  });
+
   it('renders nothing when entry is null', () => {
     const { container } = renderDialog({ entry: null });
     expect(container.querySelector('[role="dialog"]')).toBeNull();
@@ -135,7 +160,7 @@ describe('NodeDetailDialog', () => {
 
   it('shows the collapsed Add child card only once jobMode is set and the job is diff_ready', () => {
     const { rerender } = renderDialog({ jobMode: 'baseline', jobStatus: 'running' });
-    expect(screen.queryByRole('button', { name: /^add direct child wi$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^add direct child item$/i })).not.toBeInTheDocument();
 
     rerender(
       <ToastProvider>
@@ -150,7 +175,7 @@ describe('NodeDetailDialog', () => {
         />
       </ToastProvider>,
     );
-    expect(screen.getByRole('button', { name: /^add direct child wi$/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^add direct child item$/i })).toBeInTheDocument();
   });
 
   // class pin: jsdom has no layout
@@ -221,6 +246,15 @@ describe('NodeDetailDialog', () => {
       const note = screen.getByRole('note');
       expect(note).toHaveTextContent('Low grounding: possible fabrication.');
       expect(note).toHaveTextContent('Read each item against its source.');
+    });
+
+    it('says where the reviewer is in the queue: "3 of 17" in the note', () => {
+      renderDialog({
+        onNavigate: vi.fn(),
+        reason: { title: 'Low quality score', todo: 'Read it.', group: 'review' },
+        review: { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn(), position: { index: 3, total: 17 } },
+      });
+      expect(screen.getByRole('note')).toHaveTextContent('3 of 17');
     });
 
     it('offers Mark reviewed and next, and R does the same, while the item is unreviewed', async () => {
@@ -710,7 +744,7 @@ describe('NodeDetailDialog', () => {
       expect(screen.getByText('A block diagram showing power distribution.')).toBeInTheDocument();
     });
 
-    it('offers an enabled "Upload to ADO" action for a reuse entry with a resolved existingAdoId, and calls onAttachFigure on click', async () => {
+    it('offers an enabled "Upload to Azure DevOps" action for a reuse entry with a resolved existingAdoId, and calls onAttachFigure on click', async () => {
       const onAttachFigure = vi.fn().mockResolvedValue(undefined);
       renderDialog({
         entry: { ...ENTRY, action: 'reuse', existingAdoId: 555, figureIds: ['f0'] },
@@ -718,7 +752,7 @@ describe('NodeDetailDialog', () => {
       });
       const { default: userEvent } = await import('@testing-library/user-event');
 
-      const button = screen.getByRole('button', { name: /upload to ado \(wi-555\)/i });
+      const button = screen.getByRole('button', { name: /upload to azure devops \(wi-555\)/i });
       expect(button).toBeEnabled();
       await userEvent.click(button);
 
@@ -728,12 +762,12 @@ describe('NodeDetailDialog', () => {
 
     it('offers the action for a dedup_skip entry too (the case that never gets confirm()\'s automatic attachment)', () => {
       renderDialog({ entry: { ...ENTRY, action: 'dedup_skip', existingAdoId: 777, figureIds: ['f0'] }, onAttachFigure: vi.fn() });
-      expect(screen.getByRole('button', { name: /upload to ado \(wi-777\)/i })).toBeEnabled();
+      expect(screen.getByRole('button', { name: /upload to azure devops \(wi-777\)/i })).toBeEnabled();
     });
 
     it('does not offer the upload action for a "create" entry -- no resolved ADO id is available in this view', () => {
       renderDialog({ entry: { ...ENTRY, action: 'create', existingAdoId: null, figureIds: ['f0'] }, onAttachFigure: vi.fn() });
-      expect(screen.queryByRole('button', { name: /upload to ado/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /upload to azure devops/i })).not.toBeInTheDocument();
       expect(screen.getByText(/after the item is written to Azure DevOps/i)).toBeInTheDocument();
     });
 
@@ -742,9 +776,9 @@ describe('NodeDetailDialog', () => {
       renderDialog({ entry: { ...ENTRY, action: 'reuse', existingAdoId: 555, figureIds: ['f0'] }, onAttachFigure });
       const { default: userEvent } = await import('@testing-library/user-event');
 
-      await userEvent.click(screen.getByRole('button', { name: /upload to ado \(wi-555\)/i }));
+      await userEvent.click(screen.getByRole('button', { name: /upload to azure devops \(wi-555\)/i }));
 
-      await waitFor(() => expect(screen.getByRole('button', { name: /upload to ado \(wi-555\)/i })).toBeEnabled());
+      await waitFor(() => expect(screen.getByRole('button', { name: /upload to azure devops \(wi-555\)/i })).toBeEnabled());
     });
   });
 

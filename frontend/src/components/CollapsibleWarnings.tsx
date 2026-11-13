@@ -66,6 +66,7 @@ export function CollapsibleWarnings({
   project,
   gateCount,
   fixGroupTitle,
+  readOnly,
 }: {
   warnings: WarningRecord[];
   // Filters the proposed tree to a kind's affected items. Omitted: rows
@@ -100,22 +101,33 @@ export function CollapsibleWarnings({
   gateCount?: number;
   // Replaces the fix group's heading when nothing is left to fix before confirming (a finished job).
   fixGroupTitle?: string;
+  // The job is no longer awaiting review: a record of what was flagged at write time. No review counters, no Done chip, "Show in tree".
+  readOnly?: boolean;
 }): React.ReactElement | null {
   const kindGroups = useMemo(() => buildKindGroups(warnings), [warnings]);
   const hasActionable = kindGroups.some((entry) => entry.group !== 'info');
   const [openKind, setOpenKind] = useState('');
   // Below md the card starts folded to its group headings, so a phone reaches the diff tree without scrolling past every row; each heading shows
-  // its count and opens its rows. At md and up "Fix before confirming" and "Review" start open as before. For your information stays collapsed
-  // unless it's all there is.
+  // its count and opens its rows. At md and up "Fix before confirming" and "Review" start open as before. For your information always starts
+  // collapsed: there is nothing to do there, so even when it is all there is it must not push the work down.
   const narrow = useMediaQuery(BELOW_MD);
   // Only what the reader has toggled is stored; every other group's default is derived here, so warnings that arrive after mount and a
   // breakpoint change both get the right default.
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
-  const isGroupOpen = (group: string): boolean => openGroups[group] ?? (group === 'info' ? !hasActionable : !narrow);
+  // Informational warnings have nothing to do, with one exception: a failed enhancement the reviewer can retry. That action must not
+  // sit hidden inside a closed group, so such a group starts open.
+  const infoHasRetry =
+    !!onRetryEnhancement && kindGroups.some((entry) => entry.group === 'info' && retryableEnhancementBatches(entry).length > 0);
+  const isGroupOpen = (group: string): boolean => openGroups[group] ?? (group === 'info' ? infoHasRetry : !narrow);
 
   if (kindGroups.length === 0) return null;
 
-  const summary = GROUP_ORDER.map((group) => ({ group, count: kindGroups.filter((entry) => entry.group === group).length }))
+  // What is still open: a fix or review kind the reviewer has finished (every item reviewed or excluded, or the kind accepted) is not
+  // counted, so the line agrees with the rows, the chips and the Write gate. Information kinds are never "open", so they all count.
+  const summary = GROUP_ORDER.map((group) => ({
+    group,
+    count: kindGroups.filter((entry) => entry.group === group && (group === 'info' || !kindProgress(entry, reviewedIds).complete)).length,
+  }))
     .filter(({ count }) => count > 0)
     .map(({ group, count }) =>
       group === 'fix' ? `${count} to fix` : group === 'review' ? `${count} to review` : `${count} for your information`,
@@ -124,15 +136,15 @@ export function CollapsibleWarnings({
 
   return (
     <section aria-label="Integrity warnings" className="overflow-hidden rounded-sm border border-hairline bg-surface">
-      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 border-b border-hairline px-3.5 py-2.5">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 border-b border-hairline px-3.5 py-2">
         <h2 className="text-sm font-semibold text-ink-1">Integrity warnings</h2>
-        <span className="text-xs text-ink-3">{summary}</span>
         {gateCount != null && gateCount > 0 && (
-          <p data-testid="approval-gate" role="status" className="flex w-full items-center gap-1.5 text-sm font-medium text-warning-ink">
+          <p data-testid="approval-gate" role="status" className="flex items-center gap-1.5 text-sm font-medium text-warning-ink">
             <TriangleAlert aria-hidden="true" className="h-3.5 w-3.5 flex-none" />
             <span><AnimatedNumber value={gateCount} /> warning{gateCount === 1 ? '' : 's'} need{gateCount === 1 ? 's' : ''} your attention before you approve.</span>
           </p>
         )}
+        <span className="ml-auto text-xs text-ink-3">{summary}</span>
       </div>
       <Accordion value={openKind} onValueChange={setOpenKind}>
         {GROUP_ORDER.map((group) => {
@@ -182,6 +194,7 @@ export function CollapsibleWarnings({
                     titleByLocalId={titleByLocalId}
                     orgUrl={orgUrl}
                     project={project}
+                    readOnly={readOnly}
                   />
                 ))}
             </div>
@@ -206,6 +219,7 @@ function KindRow({
   titleByLocalId,
   orgUrl,
   project,
+  readOnly,
 }: {
   entry: WarningKindGroup;
   focused: boolean;
@@ -220,24 +234,25 @@ function KindRow({
   titleByLocalId?: Record<string, string>;
   orgUrl?: string | null;
   project?: string | null;
+  readOnly?: boolean;
 }): React.ReactElement {
   const { meta } = entry;
   const { count, label } = kindGroupCount(entry);
   const canFocus = !!onFocusKind && entry.nodeIds.length > 0;
-  const actionLabel = meta.actionLabel ?? GROUP_META[entry.group].actionLabel;
+  const actionLabel = readOnly ? 'Show in tree' : (meta.actionLabel ?? GROUP_META[entry.group].actionLabel);
   const progress = kindProgress(entry, reviewedIds);
-  const showProgress = progress.trackable && progress.total > 1 && !progress.complete;
+  const showProgress = !readOnly && progress.trackable && progress.total > 1 && !progress.complete;
   const retryBatches = onRetryEnhancement ? retryableEnhancementBatches(entry) : [];
   const retrying = retryProgress?.kind === entry.kind ? retryProgress : null;
 
   return (
-    <AccordionItem value={entry.kind} className="hoverable-row grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-3.5 py-2.5 sm:grid-cols-[minmax(0,1fr)_auto_auto]">
+    <AccordionItem value={entry.kind} className="hoverable-row grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-3.5 py-2 sm:grid-cols-[minmax(0,1fr)_auto_auto]">
       <AccordionTrigger>
         <span className={cn('block font-semibold', progress.complete ? 'text-ink-3' : 'text-ink-1')}>
           {meta.title}
-          {progress.complete && <DoneChip className="ml-2" />}
+          {progress.complete && !readOnly && <DoneChip className="ml-2" />}
         </span>
-        <span className="block text-xs text-ink-3">{meta.short}</span>
+        <span className="text-xs text-ink-3">{meta.short}</span>
         {retrying && (
           <span className="mt-1.5 flex items-center gap-2 text-xs text-ink-3">
             <span className="w-20 flex-none">
@@ -249,7 +264,7 @@ function KindRow({
           </span>
         )}
         {showProgress && (
-          <span className="mt-1.5 flex items-center gap-2 text-xs text-ink-3">
+          <span className="ml-3 inline-flex items-center gap-2 align-middle text-xs text-ink-3">
             <span className="w-20 flex-none">
               <ProgressBar value={(progress.reviewed / progress.total) * 100} label={`Review progress: ${meta.title}`} />
             </span>
@@ -282,7 +297,7 @@ function KindRow({
           {canFocus && (
             <Button
               size="sm"
-              variant={entry.group === 'info' ? 'outline' : 'primary'}
+              variant="outline"
               aria-pressed={focused}
               onClick={() => onFocusKind(entry.kind, entry.nodeIds, meta.title)}
             >
@@ -296,7 +311,9 @@ function KindRow({
         // Offered for a completed kind only to undo an acknowledgement that
         // was actually made (not one completed through item reviews).
         <>
-          {!progress.complete && (
+          {/* A Fix kind with several notices is decided notice by notice (the per-notice control in the details): one click for
+              all of them would be the bulk approval §11.3.6 rules out. A single notice, and every other group, keeps it. */}
+          {!progress.complete && !(entry.group === 'fix' && entry.records.length > 1) && (
             <Button
               size="sm"
               variant="outline"
@@ -317,6 +334,21 @@ function KindRow({
             </Button>
           )}
         </>
+      )}
+      {entry.group === 'fix' && meta.ackPolicy === 'kind_counted' && meta.countedAckLabel && progress.trackable && onAcknowledge && (
+        // The value is missing from the source (nothing to correct): one counted acknowledgement of the whole kind, never a per-item
+        // approval. Written to the audit trail by the server's acknowledge route; can be taken back.
+        <span className="col-span-2 justify-self-start sm:col-span-1">
+          {progress.complete && progress.allAcknowledged ? (
+            <Button size="sm" variant="ghost" onClick={() => onAcknowledge(entry.kind, undefined, false)}>
+              Undo acceptance
+            </Button>
+          ) : !progress.complete ? (
+            <Button size="sm" variant="outline" onClick={() => onAcknowledge(entry.kind, undefined, true)}>
+              Accept {(progress.total - progress.reviewed).toLocaleString()} {meta.countedAckLabel}
+            </Button>
+          ) : null}
+        </span>
       )}
       <AccordionContent className="col-span-full">
         <KindDetails
@@ -419,7 +451,7 @@ function KindDetails({
                     rel="noreferrer"
                     className="font-mono text-xs text-accent hover:underline"
                   >
-                    View WI #{adoId} in Azure DevOps ↗
+                    View work item #{adoId} in Azure DevOps ↗
                   </a>
                 )}
               </li>

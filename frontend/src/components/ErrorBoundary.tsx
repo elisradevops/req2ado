@@ -24,7 +24,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
               rendering threw, not why), so the honest version of "cause"
               is naming what's known: this page hit an error while
               rendering, and reloading is the real remedy. */}
-          <h1 className="text-lg font-semibold">This page hit an error while rendering</h1>
+          <h1 className="text-display">This page hit an error while rendering</h1>
           <p className="text-sm text-ink-3">Reloading usually fixes it. If it keeps happening, check the browser console for the real error.</p>
           <Button variant="outline" onClick={() => window.location.reload()}>
             Reload the page

@@ -97,7 +97,7 @@ describe('ConnectionStatusItem', () => {
       expect(items.map((item) => item.textContent)).toEqual([
         expect.stringMatching(/Azure DevOps.*Connected.*Checked 10:05/s),
         expect.stringMatching(/SharePoint.*Connected, expires in 47 minutes/s),
-        expect.stringMatching(/LLM Backend.*Connected, 42ms/s),
+        expect.stringMatching(/LLM backend.*Connected, 42ms/s),
       ]);
     });
 

@@ -10,6 +10,7 @@ import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { SectionCard } from '../ui/SectionCard';
 import { Skeleton } from '../ui/Skeleton';
 import { TextArea, TextField } from '../ui/TextField';
+import { formatDate } from '../utils/formatDateTime';
 
 interface Row {
   name: string;
@@ -135,7 +136,7 @@ export function RubricPanel(): React.ReactElement {
       {rubric && (
         <p className="mt-1 text-xs text-ink-3">
           {rubric.source === 'kb' ? 'From your knowledge base' : 'Built-in rubric'}
-          {rubric.builtAt ? ` · built ${new Date(rubric.builtAt).toLocaleDateString()}` : ''}
+          {rubric.builtAt ? ` · built ${formatDate(rubric.builtAt)}` : ''}
           {rubric.source === 'default' && ' · Add documents to your knowledge base to grade against your own standard. You can still pin, edit, add and remove categories here.'}
         </p>
       )}

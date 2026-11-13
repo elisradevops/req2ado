@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import { Check, Circle } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { formatStepRemaining } from '../utils/stepEta';
@@ -14,7 +14,6 @@ import { Chip } from '../ui/Chip';
 import { InfoTip } from '../ui/Tooltip';
 import { describeStepKbGrounding } from '../utils/kbCoverage';
 import { LiveRunPanel } from './liveRun/LiveRunPanel';
-import { LiveStatusRegion } from './liveRun/LiveStatusRegion';
 import { useLiveRunStore } from '../store/liveRunStore';
 import { COUNTED_EXPLANATION, describeCountedProgress, describeCountedValueText } from '../utils/liveCopy';
 import { Stepper } from '../ui/Stepper';
@@ -36,7 +35,7 @@ import type { JobStage, NarrationEvent } from '../api/events';
 // duplicates,' never dedup_check"): reused directly rather than
 // duplicating a second near-identical Record for the same concept in the
 // same file.
-const PHASE_SUBLABEL: Record<NarrationEvent['phase'], string> = {
+export const PHASE_SUBLABEL: Record<NarrationEvent['phase'], string> = {
   describe_figure: 'Describing figures',
   primer: 'Reading the whole document',
   parse_done: 'Parsing complete',
@@ -142,8 +141,18 @@ const PHASE_START_WEIGHT: Record<NarrationEvent['phase'], number> = {
 
 /** No update for this long and the run is called out as waiting: calm and neutral, never a warning, because one large request can take many minutes. */
 const WAITING_AFTER_SECONDS = 60;
-/** Spoken once when the wait starts; deliberately without the ticking time, so it is not read out again every second. */
-const WAITING_ANNOUNCEMENT = 'No update for over a minute. The job is still working.';
+
+// SURVEY's structure step (the job's `infer_hierarchy_start` stage) can run for minutes after the last line the
+// parse step narrated, and reports nothing while it does (seen live: a stale "Detected a table" line for 2.5 minutes).
+// Once the latest line is one of these parse-time phases and has been quiet this long, the banner says what is
+// actually happening instead of keeping the old line.
+const STRUCTURE_PASS_QUIET_AFTER_SECONDS = 10;
+const PARSE_TIME_PHASES: ReadonlySet<NarrationEvent['phase']> = new Set<NarrationEvent['phase']>([
+  'describe_figure',
+  'parse_done',
+  'table_detected',
+  'page_alignment',
+]);
 
 function formatDuration(ms: number): string {
   const totalSeconds = Math.max(0, Math.round(ms / 1000));
@@ -336,6 +345,11 @@ export function ProgressBanner({
   const liveActivityAt = useLiveRunStore((s) => s.activityAt);
   const secondsSinceUpdate = useSecondsSinceLastUpdate(latest, tickingNow, liveActivityAt);
   const waitingLong = secondsSinceUpdate >= WAITING_AFTER_SECONDS;
+  // The page's one status region announces the wait; this only says whether one is under way, and stops when the banner goes.
+  useEffect(() => {
+    useLiveRunStore.getState().setWaiting(waitingLong);
+    return () => useLiveRunStore.getState().setWaiting(false);
+  }, [waitingLong]);
   const activityEvents = useActivityLog(narrations, (event) => PHASE_SUBLABEL[event.phase] ?? event.phase);
   // Changes whenever the server really reports something, so the live dot beats once per genuine update.
   const beatKey = `${narrations?.length ?? 0}:${latest?.message ?? ''}:${latest?.blocksDone ?? ''}:${liveActivityAt ?? ''}`;
@@ -375,26 +389,36 @@ export function ProgressBanner({
   // deterministic_subtree above (only counts real elapsed time, never a
   // fabricated percentage), keyed per phase/branch/chunk so it restarts at
   // every new call and survives a reload of the same job.
-  const modelCallInFlight =
+  const structurePassSilent =
+    mode === 'survey' &&
+    stage === 'infer_hierarchy_start' &&
     latest !== null &&
+    PARSE_TIME_PHASES.has(latest.phase) &&
+    secondsSinceUpdate >= STRUCTURE_PASS_QUIET_AFTER_SECONDS;
+  const modelCallInFlight =
+    structurePassSilent ||
+    (latest !== null &&
     (latest.phase === 'build_skeleton' ||
       latest.phase === 'analyze_section' ||
       latest.phase === 'map_scope' ||
       latest.phase === 'score_requirements' ||
       latest.phase === 'detect_conflicts' ||
       latest.phase === 'regroup_roots' ||
-      latest.phase === 'infer_trace_links');
+      latest.phase === 'infer_trace_links'));
   // Inside one large request that has reported nothing yet (a whole-section model call, or one deterministic-subtree chunk): the
   // honest reading is "no result yet", not a bar and a "0%" that look dead for the many minutes the request takes.
   // Not when the server counts real units itself (countedProgress): a 0% there is a real count, and the panel below shows it.
   const awaitingFirstResult = !countedProgress && Math.round(shownProgress ?? 0) === 0 && (modelCallInFlight || detSubtreeChunk !== null);
-  const modelCallKey = modelCallInFlight
-    ? `modelcall:${latest.phase}:${latest.branchIndex ?? 'x'}:${latest.chunkIndex ?? 'x'}`
-    : undefined;
+  // The structure step starts right after the last line the parse step narrated, so its clock is the quiet time since that
+  // line (below), not a window that would only start once the 10 s threshold was crossed.
+  const modelCallKey =
+    modelCallInFlight && !structurePassSilent
+      ? `modelcall:${latest.phase}:${latest.branchIndex ?? 'x'}:${latest.chunkIndex ?? 'x'}`
+      : undefined;
   const modelCallStorageKey = modelCallKey && jobId ? `progress-window:${jobId}:${modelCallKey}` : undefined;
   const modelCallStartedAt = useWindowStartedAt(modelCallKey, tickingNow, modelCallStorageKey);
-  const modelCallElapsedMs = modelCallKey ? tickingNow - modelCallStartedAt : undefined;
-  const modelCallTarget = latest ? describeModelCallTarget(latest) : null;
+  const modelCallElapsedMs = structurePassSilent ? secondsSinceUpdate * 1000 : modelCallKey ? tickingNow - modelCallStartedAt : undefined;
+  const modelCallTarget = structurePassSilent ? 'deciding the structure of the document' : latest ? describeModelCallTarget(latest) : null;
   // "Time left in THIS step", from progress observed during the step only (see utils/stepEta.ts).
   // It used to be (time since the job started) / (units done) * (units remaining), recomputed every
   // second: the clock included upload, parsing and every earlier step, and because units only move
@@ -469,15 +493,11 @@ export function ProgressBanner({
   // it stays accurate through the brief window before the first
   // writing-phase narration lands, the same gap the old stage-based chip
   // label covered.
-  const headline = stage === 'writing' ? 'Writing to Azure DevOps' : latest ? PHASE_SUBLABEL[latest.phase] : 'Running';
+  const headline =
+    stage === 'writing' ? 'Writing to Azure DevOps' : structurePassSilent ? PHASE_SUBLABEL.infer_hierarchy : latest ? PHASE_SUBLABEL[latest.phase] : 'Running';
 
   return (
     <div className='rounded-md border border-hairline bg-surface shadow-card'>
-      <LiveStatusRegion />
-      {/* Present from the first render so the change is announced. The text is fixed (no ticking time), so it is spoken once. */}
-      <div role='status' aria-live='polite' className='sr-only' data-testid='waiting-status'>
-        {waitingLong ? WAITING_ANNOUNCEMENT : ''}
-      </div>
       {/* DESIGN.md §11.3 -- "the loud element": live pulse dot, the phase
           headline in text-title, one sentence of what that phase is doing
           (the same real, backend-generated narration text the old Activity
@@ -489,7 +509,7 @@ export function ProgressBanner({
         <LivenessDot beatKey={beatKey} waiting={waitingLong} />
         <div className='min-w-0 flex-1'>
           <p className='text-title'>{headline}</p>
-          {latest?.message && <p className='truncate text-xs text-ink-3' title={latest.message}>{latest.message}</p>}
+          {latest?.message && !structurePassSilent && <p className='truncate text-xs text-ink-3' title={latest.message}>{latest.message}</p>}
           {waitingLong && (
             <p data-testid='waiting-note' className='mt-1 w-fit rounded-sm bg-surface-alt px-2 py-0.5 text-xs text-ink-2'>
               No update for {formatDuration(secondsSinceUpdate * 1000)}. The job is still working: one large request can take many minutes. You can close this page; the run continues on the server.
@@ -556,7 +576,7 @@ export function ProgressBanner({
         )}
       </div>
 
-      <ActivityFeed events={activityEvents} />
+      <ActivityFeed events={activityEvents} collapsedByDefault />
 
       <div className='p-5'>
         {/* Real bug fixed here (found in the "Wizard UX Options" decision
@@ -677,7 +697,8 @@ export function ProgressBanner({
               ) : clampedProgress !== undefined ? (
                 `~${Math.round(clampedProgress)}% of this section (est.)`
               ) : isPrimerStep ? (
-                latest?.message || 'Reading the whole document to understand it.'
+                // The header already says what is being read, and for how long; this line says what the bar can't.
+                'One pass over the whole document. There is no step count to measure against.'
               ) : isTailPhase || isPreparingAnalysis ? (
                 'A single whole-document pass -- no fixed step count to measure against.'
               ) : (
@@ -756,7 +777,6 @@ export function ProgressBanner({
         <RunDetail
           latest={latest}
           narrations={narrations ?? []}
-          activeSectionProgress={clampedProgress}
           completedSectionIndices={completedSectionIndices}
         />
         {/* DESIGN.md §11.3's own audit note: the raw scrolling activity log
@@ -781,12 +801,10 @@ export function ProgressBanner({
 function RunDetail({
   latest,
   narrations,
-  activeSectionProgress,
   completedSectionIndices,
 }: {
   latest: NarrationEvent | null;
   narrations: NarrationEvent[];
-  activeSectionProgress?: number;
   completedSectionIndices?: number[];
 }): React.ReactElement | null {
   if (!latest) return null;
@@ -795,7 +813,6 @@ function RunDetail({
       <SectionStepList
         latest={latest}
         narrations={narrations}
-        activeSectionProgress={activeSectionProgress}
         completedSectionIndices={completedSectionIndices}
       />
     );
@@ -894,7 +911,6 @@ function DoneTick({ testId, settled }: { testId: string; settled: boolean }): Re
 function SectionStepList({
   latest,
   narrations,
-  activeSectionProgress,
   completedSectionIndices,
 }: {
   latest: NarrationEvent;
@@ -903,7 +919,6 @@ function SectionStepList({
   // completedUnits calc) -- reused here so the CURRENTLY active row shows
   // its own real progress inline, not just a spinner with no sense of how
   // far along it actually is.
-  activeSectionProgress?: number;
   // Branch indices with a durable, uncapped section_complete record (see
   // JobDetail's sectionResultsByIndex) -- union'd into completedSections
   // below. See that Set's own comment for why.
@@ -1088,7 +1103,6 @@ function SectionStepList({
                 {label && `: ${label}`}
                 {isActive && ` — ${PHASE_SUBLABEL[latest.phase]}`}
               </p>
-              {isActive && <MiniProgress value={activeSectionProgress} />}
             </div>
           </div>
         );
@@ -1118,7 +1132,6 @@ function SectionStepList({
             Scoring requirement quality
             {scoringActive && latest.draftCount != null && ` — scoring ${latest.draftCount} requirement(s)`}
           </p>
-          {scoringActive && <MiniProgress value={activeSectionProgress} />}
         </div>
       </div>
       <div className={rowClass} aria-selected={conflictsActive}>
@@ -1155,25 +1168,6 @@ function SectionStepList({
           Resolving trace links
         </p>
       </div>
-    </div>
-  );
-}
-
-// A slim inline progress bar for whichever step is currently active -- the
-// same estimate driving the top-level bar, repeated here so the step
-// itself shows real progress instead of just a spinner with no sense of
-// how far along it is.
-function MiniProgress({ value }: { value?: number }): React.ReactElement | null {
-  if (value === undefined) return null;
-  return (
-    <div className='mt-1 h-1 w-full max-w-52 overflow-hidden rounded-full bg-canvas'>
-      <span
-        className='block h-full rounded-full bg-gradient-to-r from-accent-active to-accent'
-        style={{
-          width: `${Math.min(Math.max(value, 0), 100)}%`,
-          transition: 'width 900ms var(--ease-in-out)',
-        }}
-      />
     </div>
   );
 }

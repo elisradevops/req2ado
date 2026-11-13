@@ -99,10 +99,16 @@ describe('WriteSummary', () => {
     expect(screen.queryByText(/will be attached/)).not.toBeInTheDocument();
   });
 
-  it('warns when blocking or review warnings are still open', () => {
+  it('says to fix blocking warnings before writing, and does not say the write is allowed', () => {
     render(<WriteSummary {...props} warnings={{ open: { fix: 2, review: 1, info: 4 }, handled: 3 }} state={{ status: 'ready', preview, review }} />);
-    expect(screen.getByText(/2 warnings to fix and 1 to check are still open\. You can still write\./)).toBeInTheDocument();
+    expect(screen.getByText(/2 warnings to fix and 1 to check are still open\. Fix them before you write\./)).toBeInTheDocument();
+    expect(screen.queryByText(/You can still write/)).not.toBeInTheDocument();
     expect(screen.getByText(/3 marked handled/)).toBeInTheDocument();
+  });
+
+  it('still allows the write when only review warnings are open', () => {
+    render(<WriteSummary {...props} warnings={{ open: { fix: 0, review: 1, info: 0 }, handled: 0 }} state={{ status: 'ready', preview, review }} />);
+    expect(screen.getByText(/1 to check is still open\. You can still write\./)).toBeInTheDocument();
   });
 
   describe('shortcut actions', () => {

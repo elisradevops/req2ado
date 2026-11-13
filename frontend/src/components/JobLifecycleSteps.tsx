@@ -254,3 +254,28 @@ export function JobLifecycleSteps({
     </div>
   );
 }
+
+export interface LifecyclePhase {
+  key: LifecycleKey;
+  label: string;
+  /** The step's one-sentence purpose (its tooltip text), for a phase view that has not started yet. */
+  purpose: string;
+  state: StepState;
+}
+
+/**
+ * The phases of a run with their paint states and the key the run has reached. One source for the horizontal stepper and the
+ * phase rail, so the two can never disagree about where a job is.
+ */
+export function lifecyclePhases(
+  mode: 'baseline' | 'survey',
+  status: string,
+  stage: JobStage | null,
+  latestNarrationPhase?: string | null,
+): { liveKey: LifecycleKey; phases: LifecyclePhase[] } {
+  const defs = stepsFor(mode);
+  const keys = defs.map((def) => def.key);
+  const liveKey = reachedKeyFor(mode, status, stage, latestNarrationPhase);
+  const states = statesFor(keys, liveKey, status);
+  return { liveKey, phases: defs.map((def, index) => ({ key: def.key, label: def.label, purpose: def.tip, state: states[index] })) };
+}

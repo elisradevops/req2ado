@@ -98,6 +98,9 @@ describe('AppShell breadcrumbs', () => {
 
     const breadcrumb = within(await screen.findByRole('navigation', { name: 'Breadcrumb' }));
     const jobsLink = breadcrumb.getByRole('link', { name: 'Jobs' });
+    // A hit area of at least 24 px tall (WCAG 2.5.8; DESIGN.md §5): a 20 px text link was under the floor.
+    expect(jobsLink.className).toMatch(/min-h-6/);
+    expect(jobsLink.className).toMatch(/inline-flex/);
     expect(jobsLink).toHaveAttribute('href', '/jobs');
     // The full id is truncated on-screen (mono, 8 chars + ellipsis) and
     // carried in full inside the Tooltip for the "needs to actually match"
@@ -116,7 +119,7 @@ describe('AppShell breadcrumbs', () => {
     );
 
     const breadcrumb = within(await screen.findByRole('navigation', { name: 'Breadcrumb' }));
-    expect(breadcrumb.getByText('New Job')).toBeInTheDocument();
+    expect(breadcrumb.getByText('New job')).toBeInTheDocument();
     expect(breadcrumb.queryByRole('link', { name: 'Jobs' })).not.toBeInTheDocument();
   });
 
@@ -130,7 +133,7 @@ describe('AppShell breadcrumbs', () => {
     );
 
     const breadcrumb = within(await screen.findByRole('navigation', { name: 'Breadcrumb' }));
-    expect(breadcrumb.getByText('New Batch')).toBeInTheDocument();
+    expect(breadcrumb.getByText('New batch')).toBeInTheDocument();
     // Must not render as "Jobs / batch/new" (the generic /jobs/ catch-all
     // misreading the second path segment as a job id) -- neither a "batch"
     // nor a "batch/new" crumb should appear.
@@ -190,8 +193,8 @@ describe('AppShell breadcrumbs', () => {
     );
 
     const breadcrumb = within(await screen.findByRole('navigation', { name: 'Breadcrumb' }));
-    expect(breadcrumb.getByText('Knowledge Base')).toBeInTheDocument();
-    expect(breadcrumb.queryByRole('link', { name: 'Knowledge Base' })).not.toBeInTheDocument();
+    expect(breadcrumb.getByText('Knowledge base')).toBeInTheDocument();
+    expect(breadcrumb.queryByRole('link', { name: 'Knowledge base' })).not.toBeInTheDocument();
   });
 });
 
@@ -402,15 +405,15 @@ describe('AppShell below the md breakpoint', () => {
     try {
       renderShell();
       await userEvent.click(screen.getByRole('button', { name: 'Collapse navigation' }));
-      expect(screen.getByText('Knowledge Base')).toHaveClass('opacity-0');
+      expect(screen.getByText('Knowledge base')).toHaveClass('opacity-0');
 
       setNarrow(true);
-      expect(screen.getByText('Knowledge Base')).not.toHaveClass('opacity-0');
+      expect(screen.getByText('Knowledge base')).not.toHaveClass('opacity-0');
       expect(screen.getByRole('button', { name: /^system status:/i })).toBeInTheDocument();
       expect(screen.getByText(/all systems ok|checking connections/i)).toBeVisible();
 
       setNarrow(false);
-      expect(screen.getByText('Knowledge Base')).toHaveClass('opacity-0');
+      expect(screen.getByText('Knowledge base')).toHaveClass('opacity-0');
       expect(screen.getByRole('button', { name: 'Expand navigation' })).toBeInTheDocument();
 
       // a focused nav link keeps focus across the flip, because it is not remounted
@@ -537,10 +540,10 @@ describe('AppShell rail layout', () => {
     renderRail();
     await userEvent.click(screen.getByRole('button', { name: 'Collapse navigation' }));
 
-    expect(screen.getByText('Knowledge Base')).toHaveClass('opacity-0');
-    expect(screen.getByRole('link', { name: 'Knowledge Base' })).toBeInTheDocument();
+    expect(screen.getByText('Knowledge base')).toHaveClass('opacity-0');
+    expect(screen.getByRole('link', { name: 'Knowledge base' })).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Expand navigation' }));
-    expect(screen.getByText('Knowledge Base')).not.toHaveClass('opacity-0');
+    expect(screen.getByText('Knowledge base')).not.toHaveClass('opacity-0');
   });
 
   it('keeps the icons on one vertical line whether the rail is open or closed', async () => {
@@ -593,6 +596,6 @@ describe('AppShell rail layout', () => {
     renderRail();
 
     expect(screen.getByRole('button', { name: 'Expand navigation' })).toBeInTheDocument();
-    expect(screen.getByText('Knowledge Base')).toHaveClass('opacity-0');
+    expect(screen.getByText('Knowledge base')).toHaveClass('opacity-0');
   });
 });

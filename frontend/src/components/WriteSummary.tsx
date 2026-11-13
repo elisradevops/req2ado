@@ -16,7 +16,7 @@ function warningSentence(counts: WarningCounts): string | null {
   const handled = counts.handled > 0 ? `${counts.handled.toLocaleString()} marked handled` : null;
   if (open.length === 0 && !handled) return null;
   const openCount = counts.open.fix + counts.open.review;
-  const openText = open.length > 0 ? `${open.join(' and ')} ${openCount === 1 ? 'is' : 'are'} still open. You can still write.` : '';
+  const openText = open.length > 0 ? `${open.join(' and ')} ${openCount === 1 ? 'is' : 'are'} still open. ${counts.open.fix > 0 ? 'Fix them before you write.' : 'You can still write.'}` : '';
   return [openText, handled ? `${handled}.` : ''].filter(Boolean).join(' ');
 }
 

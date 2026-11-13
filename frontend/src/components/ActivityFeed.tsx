@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { NarrationEvent } from '../api/events';
 import { cn } from '../lib/cn';
 import { ARRIVE, useArrivedLate, useSettled } from '../ui/motion';
@@ -52,7 +52,46 @@ export function useActivityLog(narrations: NarrationEvent[] | undefined, labelFo
   return events;
 }
 
-function Line({ event, settled }: { event: ActivityEvent; settled: boolean }): React.ReactElement {
+export interface ActivityLine extends ActivityEvent {
+  /** How many consecutive lines this one stands for (1 for an ordinary line). */
+  repeat: number;
+}
+
+/** Lines closer together than this, saying the same thing, are one burst. */
+const REPEAT_GAP_MS = 1000;
+
+// A burst of the same progress line ("Checking for duplicates 1 of 17" ... "17 of 17", all in one second) is one line with a count: the
+// newest wording, the first time, "x17". Consecutive only, both lines must carry a time (history from before the page opened has none, and
+// folding it would hide how long things took), and the wording must be identical once a counter ("N of M") is ignored: only the counter may
+// differ. Any other number that differs is a different fact (five tables with five row counts are five lines), and a line with no counter
+// is a plain event, never folded. One pass.
+export function collapseRepeats(events: ActivityEvent[]): ActivityLine[] {
+  const lines: ActivityLine[] = [];
+  let lastShape: string | null = null;
+  let lastSeenAt: number | null = null;
+  for (const event of events) {
+    const shape = /\d+ of \d+/.test(event.message) ? `${event.label}|${event.message.replace(/\d+ of \d+/, '# of #')}` : null;
+    const previous = lines.at(-1);
+    if (
+      previous &&
+      shape !== null &&
+      shape === lastShape &&
+      event.seenAt !== null &&
+      lastSeenAt !== null &&
+      Math.abs(event.seenAt - lastSeenAt) < REPEAT_GAP_MS
+    ) {
+      previous.repeat += 1;
+      previous.message = event.message;
+    } else {
+      lines.push({ ...event, repeat: 1 });
+    }
+    lastShape = shape;
+    lastSeenAt = event.seenAt;
+  }
+  return lines;
+}
+
+function Line({ event, settled }: { event: ActivityLine; settled: boolean }): React.ReactElement {
   const arrivedLate = useArrivedLate(settled);
   return (
     <li className={cn('flex items-baseline gap-2 px-4 py-1 text-xs max-md:flex-wrap', arrivedLate && ARRIVE.fade)}>
@@ -69,6 +108,7 @@ function Line({ event, settled }: { event: ActivityEvent; settled: boolean }): R
           {event.message}
         </span>
       )}
+      {event.repeat > 1 && <span className="flex-none font-mono tabular-nums text-ink-3">×{event.repeat.toLocaleString()}</span>}
     </li>
   );
 }
@@ -76,7 +116,16 @@ function Line({ event, settled }: { event: ActivityEvent; settled: boolean }): R
 // A compact record of what the run has reported, so a long wait shows what already happened and when. It is a log:
 // oldest first, newest at the bottom. It does not announce each line (that would bury a screen reader in routine
 // updates); the run's milestones go through one status region instead.
-export function ActivityFeed({ events }: { events: ActivityEvent[] }): React.ReactElement {
+export function ActivityFeed({
+  events: rawEvents,
+  collapsedByDefault = false,
+}: {
+  events: ActivityEvent[];
+  /** DESIGN.md §11.3.5: a "Run log (n)" disclosure, closed until opened, so the record is not one more place that says what is happening now. */
+  collapsedByDefault?: boolean;
+}): React.ReactElement {
+  const events = useMemo(() => collapseRepeats(rawEvents), [rawEvents]);
+  const [logOpen, setLogOpen] = useState(!collapsedByDefault);
   const [expanded, setExpanded] = useState(false);
   const settled = useSettled();
   const canExpand = events.length > COLLAPSED_LINES;
@@ -90,15 +139,26 @@ export function ActivityFeed({ events }: { events: ActivityEvent[] }): React.Rea
   useEffect(() => {
     const el = scroller.current;
     if (expanded && el && nearBottom.current) el.scrollTop = el.scrollHeight;
-  }, [expanded, newestId]);
+  }, [expanded, logOpen, newestId]);
 
   return (
     <section aria-labelledby="activity-heading" className="border-b border-hairline">
-      <div className="flex items-center justify-between gap-2 px-4 pt-2">
+      <div className={cn('flex items-center justify-between gap-2 px-4 pt-2', !logOpen && 'pb-2')}>
         <h2 id="activity-heading" className="text-meta font-semibold text-ink-3">
-          Activity
+          {collapsedByDefault ? (
+            <button
+              type="button"
+              aria-expanded={logOpen}
+              onClick={() => setLogOpen((open) => !open)}
+              className="rounded-sm hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+            >
+              {`Run log (${events.length})`}
+            </button>
+          ) : (
+            'Activity'
+          )}
         </h2>
-        {canExpand && (
+        {logOpen && canExpand && (
           <button
             type="button"
             onClick={() => {
@@ -112,6 +172,7 @@ export function ActivityFeed({ events }: { events: ActivityEvent[] }): React.Rea
           </button>
         )}
       </div>
+      {logOpen && (
       <div
         ref={scroller}
         // once open it scrolls, so it is a named region the keyboard can reach
@@ -134,6 +195,7 @@ export function ActivityFeed({ events }: { events: ActivityEvent[] }): React.Rea
           </ol>
         )}
       </div>
+      )}
     </section>
   );
 }

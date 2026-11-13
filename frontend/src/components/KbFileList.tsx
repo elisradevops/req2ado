@@ -307,7 +307,7 @@ export function KbFileList({
                                 type="button"
                                 aria-label={`Remove ${entry.name} from the knowledge base`}
                                 onClick={() => onRequestRemove(entry)}
-                                className="grid h-6 w-6 cursor-pointer place-items-center rounded-sm text-ok transition-colors duration-instant hover:bg-danger-soft hover:text-danger"
+                                className="grid h-6 w-6 cursor-pointer place-items-center rounded-sm text-ink-3 transition-colors duration-instant hover:bg-danger-soft hover:text-danger"
                               >
                                 <Trash2 className="h-3.5 w-3.5" />
                               </button>
