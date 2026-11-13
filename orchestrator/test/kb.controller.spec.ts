@@ -1,4 +1,7 @@
-import { HttpException } from '@nestjs/common';
+import 'reflect-metadata';
+import { HttpException, RequestMethod } from '@nestjs/common';
+import { METHOD_METADATA, PATH_METADATA, ROUTE_ARGS_METADATA } from '@nestjs/common/constants';
+import { RouteParamtypes } from '@nestjs/common/enums/route-paramtypes.enum';
 import { KbController } from '../src/modules/kb/kb.controller';
 import { IngestionHttpError } from '../src/modules/pipeline/ingestion-http.client';
 import type { SessionUser } from '../src/modules/auth/session.service';
@@ -252,5 +255,41 @@ describe('KbController', () => {
 
     expect(kbService.switchDrive).toHaveBeenCalledWith(TEST_USER.userId, 'drive-NEW');
     expect(result).toEqual({ removed: 2, failed: [] });
+  });
+
+  describe('browseFolder() -- the sharing link travels in a POST body, never a query string', () => {
+    it('is routed as POST /kb/browse-folder, so the link never lands in proxy or access logs', () => {
+      const handler = KbController.prototype.browseFolder;
+      expect(Reflect.getMetadata(PATH_METADATA, handler)).toBe('browse-folder');
+      expect(Reflect.getMetadata(METHOD_METADATA, handler)).toBe(RequestMethod.POST);
+    });
+
+    it('takes url and path from the body (route params bound with @Body, not @Query)', () => {
+      const args = Reflect.getMetadata(ROUTE_ARGS_METADATA, KbController, 'browseFolder') as Record<string, { index: number; data?: string }>;
+      const bound = Object.entries(args).map(([key, v]) => ({ type: Number(key.split(':')[0]), index: v.index, data: v.data }));
+      const bodyFields = bound.filter((b) => b.type === RouteParamtypes.BODY).map((b) => b.data).sort();
+      expect(bodyFields).toEqual(['path', 'url']);
+      expect(bound.some((b) => b.type === RouteParamtypes.QUERY)).toBe(false);
+    });
+
+    it('delegates with the session userId, never one the client put in the body', async () => {
+      const entries = [{ id: 'f1', name: 'a.docx' }];
+      const kbService = { browseFolder: jest.fn().mockResolvedValue(entries) };
+      const controller = new KbController(kbService as any);
+
+      const result = await controller.browseFolder(TEST_USER, 'https://contoso.sharepoint.com/:f:/s/x/abc', undefined);
+
+      expect(kbService.browseFolder).toHaveBeenCalledWith('https://contoso.sharepoint.com/:f:/s/x/abc', TEST_USER.userId, '');
+      expect(result).toBe(entries);
+    });
+
+    it('400s when url is missing, and on a host that is not SharePoint/OneDrive, without calling the service', async () => {
+      const kbService = { browseFolder: jest.fn() };
+      const controller = new KbController(kbService as any);
+
+      await expect(controller.browseFolder(TEST_USER, undefined, undefined)).rejects.toThrow(/url/i);
+      await expect(controller.browseFolder(TEST_USER, 'https://evil.com/x', undefined)).rejects.toThrow(/SharePoint/);
+      expect(kbService.browseFolder).not.toHaveBeenCalled();
+    });
   });
 });

@@ -202,11 +202,15 @@ describe('browseSubfolder', () => {
 });
 
 describe('browseSharedFolder', () => {
-  it('does not put the user id in the URL: the server knows the user from the session', async () => {
-    const get = vi.mocked(httpClient.get).mockResolvedValue({ data: [] });
+  it('sends the sharing link in a POST body, never a query string that lands in access logs, and no user id', async () => {
+    const get = vi.mocked(httpClient.get).mockClear().mockResolvedValue({ data: [] });
+    const post = vi.mocked(httpClient.post).mockClear().mockResolvedValue({ data: [{ id: 'f1' }] });
 
-    await browseSharedFolder('https://share.example/f', 'Microsoft.IdentityModel.Claims.ClaimsIdentity;0003');
+    const result = await browseSharedFolder('https://share.example/:f:/s/x/TOKEN', 'Microsoft.IdentityModel.Claims.ClaimsIdentity;0003');
 
-    expect(get).toHaveBeenCalledWith('/kb/browse-folder', { params: { url: 'https://share.example/f' } });
+    expect(post).toHaveBeenCalledWith('/kb/browse-folder', { url: 'https://share.example/:f:/s/x/TOKEN' });
+    expect(get).not.toHaveBeenCalled();
+    expect(JSON.stringify(post.mock.calls[0])).not.toContain('Microsoft.IdentityModel');
+    expect(result).toEqual([{ id: 'f1' }]);
   });
 });

@@ -103,10 +103,10 @@ export interface FolderTreeEntry {
   downloadUrl: string | null;
 }
 
-// The user id is not sent: the server takes the user from the session, and a query string ends up in access logs. The parameter stays so
-// callers need not change.
+// A POST body, not a query string: the sharing link opens the folder (DESIGN.md §11.7.1) and a query string ends up in proxy and access
+// logs. The user id is not sent either: the server takes the user from the session. The parameter stays so callers need not change.
 export async function browseSharedFolder(url: string, _userId: string): Promise<FolderTreeEntry[]> {
-  const response = await httpClient.get<FolderTreeEntry[]>('/kb/browse-folder', { params: { url } });
+  const response = await httpClient.post<FolderTreeEntry[]>('/kb/browse-folder', { url });
   return response.data;
 }
 

@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Delete, Get, HttpException, NotFoundException, Param, Post, Put, Query } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, HttpCode, HttpException, NotFoundException, Param, Post, Put, Query } from '@nestjs/common';
 import { BrowseFolderEntry, FolderIngestUrlResult, IngestedDocumentSummary, IngestUrlResult, KbProfileView, KbService } from './kb.service';
 import { IngestionHttpError, Rubric, SharePointStatus } from '../pipeline/ingestion-http.client';
 import { CurrentUser } from '../auth/current-user.decorator';
@@ -216,11 +216,14 @@ export class KbController {
     }
   }
 
-  @Get('browse-folder')
+  // POST, not GET: the sharing link opens the folder (DESIGN.md §11.7.1), and a query string lands in proxy and access logs. The user
+  // comes from the session like every other route here; a userId in the body is never read.
+  @Post('browse-folder')
+  @HttpCode(200)
   async browseFolder(
     @CurrentUser() user: SessionUser,
-    @Query('url') url: string | undefined,
-    @Query('path') path: string | undefined,
+    @Body('url') url: string | undefined,
+    @Body('path') path: string | undefined,
   ): Promise<BrowseFolderEntry[]> {
     if (!url) {
       throw new BadRequestException('url is required');
