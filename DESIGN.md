@@ -556,6 +556,7 @@ focus indicator — it must be `--color-field-border` instead.
   you approve" line is the first line of this card at every width (there is no
   separate banner or jump button, so the message is said once). At
   `md` and up every group starts open as before.
+- **The diff tree also takes the two-line row when the *tree* is narrower than 800px** (the details pane can leave it 696px on a 1280px screen), measured on the tree itself, not the viewport; an unmeasured width is never narrow. At 696px the one-line row cut a Customer ID to "P…"; 856px fits it. Row height stays uniform, so virtualization is unchanged.
 - **Dense lists become two-line rows below `md`** (diff tree: 64px rows, grip,
   Index, Flags and Status columns dropped; the details dialog still carries them).
   Line 1 is the type glyph and the title. Line 2 starts at the *title's* left edge

@@ -1345,3 +1345,36 @@ describe('DiffTree written items', () => {
     expect(screen.queryByRole('link', { name: /#\d+/ })).toBeNull();
   });
 });
+
+describe('DiffTree in a narrow tree (the details pane takes the width)', () => {
+  const entries = [
+    { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Epic one', action: 'create', existingAdoId: null, quality: null },
+    { localId: 'r1', parentLocalId: 'e1', type: 'Requirement', title: 'Time sync source', action: 'create', existingAdoId: null, customerId: 'P-SENSOR-0001', quality: null },
+  ] as unknown as DryRunDiffEntry[];
+
+  function renderAtTreeWidth(width: number) {
+    const original = HTMLElement.prototype.getBoundingClientRect;
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      if (this.getAttribute('role') === 'tree') return { width, height: 400, top: 0, left: 0, right: width, bottom: 400, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+      return original.call(this);
+    });
+    return render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+  }
+  const itemSize = (container: HTMLElement) => container.querySelector('[data-item-size]')?.getAttribute('data-item-size');
+  afterEach(() => vi.restoreAllMocks());
+
+  it('uses the two-line row below 800px of tree width, so the Customer ID is readable instead of "P…"', () => {
+    const { container } = renderAtTreeWidth(696);
+    const row = screen.getByText('Time sync source').closest('[role="treeitem"]') as HTMLElement;
+    expect(itemSize(container)).toBe('64');
+    expect(within(row).getByText('P-SENSOR-0001')).toBeInTheDocument();
+    expect(row.querySelector('[data-col="status"]')).toBeNull();
+  });
+
+  it('keeps the one-line 40px row when the tree is wide enough', () => {
+    const { container } = renderAtTreeWidth(856);
+    const row = screen.getByText('Time sync source').closest('[role="treeitem"]') as HTMLElement;
+    expect(itemSize(container)).toBe('40');
+    expect(row.querySelector('[data-col="status"]')).not.toBeNull();
+  });
+});

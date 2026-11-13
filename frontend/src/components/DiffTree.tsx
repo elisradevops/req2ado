@@ -55,6 +55,9 @@ import type { WorkItemTypeCatalogEntry } from '../api/ado';
 const ROW_HEIGHT = 40;
 // Below md a row has two lines (title above, what-it-will-do beneath, both starting at the title's left edge).
 const ROW_HEIGHT_NARROW_REM = 4;
+// The details pane can leave the tree narrower than the screen is. Below this tree width the one-line row cannot show a Customer ID
+// (it was cut to "P…" at 696px; 856px fits), so the two-line row is used, the same layout as below md.
+const TWO_LINE_BELOW_TREE_PX = 800;
 
 // The two-line row is 4rem, not 64px, so it grows with the reader's own text size setting (a fixed height would clip larger text).
 function narrowRowHeight(): number {
@@ -78,21 +81,27 @@ const FALLBACK_LIST_HEIGHT = 600;
 // a tall monitor or gets clipped on a short one. Measures the wrapping
 // container (which gets a CSS viewport-relative height) via ResizeObserver
 // and feeds that real number to FixedSizeList.
-function useContainerHeight(): [React.RefObject<HTMLDivElement | null>, number] {
+function useContainerHeight(): [React.RefObject<HTMLDivElement | null>, number, number] {
   const ref = useRef<HTMLDivElement>(null);
   const [height, setHeight] = useState(FALLBACK_LIST_HEIGHT);
+  // 0 until measured (and in jsdom): callers treat 0 as "unknown", never as "narrow".
+  const [width, setWidth] = useState(0);
 
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const report = (): void => setHeight(el.getBoundingClientRect().height);
+    const report = (): void => {
+      const box = el.getBoundingClientRect();
+      setHeight(box.height);
+      setWidth(box.width);
+    };
     report();
     const observer = new ResizeObserver(report);
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
 
-  return [ref, height];
+  return [ref, height, width];
 }
 
 // Mirrors the orchestrator's DiscussionEntry (writeback/dry-run.service.ts): a rewrite parked as "To be discussed".
@@ -511,7 +520,9 @@ export function DiffTree({
   // wall of leaf text -- Epics stay expanded so their Features are
   // visible immediately. Computed once, from the entries this component
   // mounted with; toggling never re-derives it.
-  const narrow = useMediaQuery(BELOW_MD);
+  const belowMd = useMediaQuery(BELOW_MD);
+  const [heightRef, listHeight, treeWidth] = useContainerHeight();
+  const narrow = belowMd || (treeWidth > 0 && treeWidth < TWO_LINE_BELOW_TREE_PX);
   // Read once per breakpoint change, not on every render (drag-move re-renders would each force a style read).
   const rowHeight = useMemo(() => (narrow ? narrowRowHeight() : ROW_HEIGHT), [narrow]);
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(() => {
@@ -559,7 +570,6 @@ export function DiffTree({
 
   const listRef = useRef<FixedSizeList>(null);
 
-  const [heightRef, listHeight] = useContainerHeight();
 
   function openDetails(localId: string): void {
     (onOpenDetails ?? onSelect)(localId);
