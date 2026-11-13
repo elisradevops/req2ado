@@ -13,9 +13,10 @@ import { deleteDecisionsOlderThan } from './dedup-decision-log';
 // succeeded/failed/rejected/cancelled. pending/running are always active;
 // diff_ready is excluded even past the age threshold -- it's still awaiting
 // a real confirm/reject decision, not something safe to silently discard.
-// Age is measured from `createdAt` -- the only timestamp every job row
-// reliably has (`completedAt` is only ever set on confirm(), i.e.
-// succeeded-only -- see jobs.service.ts).
+// Age is measured from `completedAt` when there is one (it is set only on
+// confirm(), i.e. succeeded-only -- see jobs.service.ts), so a proposal that
+// waited days for review is not swept hours after it is written; every other
+// terminal job has none and ages from `createdAt`, which every row has.
 //
 // Deliberately does NOT touch IdempotencyMapping or the dedup vector store
 // (Chroma): both exist specifically to prevent duplicate ADO writes
@@ -85,7 +86,11 @@ export class JobRetentionService implements OnModuleInit, OnModuleDestroy {
   async sweep(): Promise<void> {
     const cutoff = new Date(Date.now() - this.maxAgeMs);
     const candidates = await this.prisma.job.findMany({
-      where: { status: { in: _TERMINAL_RETENTION_STATUSES }, createdAt: { lt: cutoff } },
+      // A written job ages from when it was written; one that never completed (failed, rejected, cancelled) from creation.
+      where: {
+        status: { in: _TERMINAL_RETENTION_STATUSES },
+        OR: [{ completedAt: { lt: cutoff } }, { completedAt: null, createdAt: { lt: cutoff } }],
+      },
       select: { id: true },
       // Each run takes the next batch; deleted jobs drop out of the query,
       // so every eligible job is still swept eventually.

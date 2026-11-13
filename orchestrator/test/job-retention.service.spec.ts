@@ -27,7 +27,10 @@ describe('JobRetentionService', () => {
     await service.sweep();
 
     expect(prisma.job.findMany).toHaveBeenCalledWith({
-      where: { status: { in: ['succeeded', 'failed', 'rejected', 'cancelled'] }, createdAt: { lt: expect.any(Date) } },
+      where: {
+        status: { in: ['succeeded', 'failed', 'rejected', 'cancelled'] },
+        OR: [{ completedAt: { lt: expect.any(Date) } }, { completedAt: null, createdAt: { lt: expect.any(Date) } }],
+      },
       select: { id: true },
       take: 100,
     });
@@ -36,6 +39,17 @@ describe('JobRetentionService', () => {
       expect((prisma as any)[table].deleteMany).toHaveBeenCalledWith({ where: { jobId: { in: ['job-old'] } } });
     }
     expect(prisma.job.deleteMany).toHaveBeenCalledWith({ where: { id: { in: ['job-old'] } } });
+  });
+
+  it('ages a written job from when it was written, so one confirmed late is not deleted within hours; one with no completion time still ages from creation', async () => {
+    const prisma = fakePrisma([]);
+    const service = new JobRetentionService(prisma as any, CHECK_INTERVAL_MS, MAX_AGE_MS);
+
+    await service.sweep();
+
+    const { OR } = prisma.job.findMany.mock.calls[0][0].where;
+    expect(OR).toEqual([{ completedAt: { lt: expect.any(Date) } }, { completedAt: null, createdAt: { lt: expect.any(Date) } }]);
+    expect(OR[0].completedAt.lt.getTime()).toBe(OR[1].createdAt.lt.getTime());
   });
 
   it('never queries for pending/running/diff_ready jobs -- only the four terminal statuses', async () => {

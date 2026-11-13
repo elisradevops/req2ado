@@ -1681,7 +1681,7 @@ describe('JobsService.reject', () => {
     const result = await service.reject('job-1');
 
     expect(result).toEqual({ status: 'rejected' });
-    expect(prisma.job.update).toHaveBeenCalledWith({ where: { id: 'job-1' }, data: { status: 'rejected' } });
+    expect(prisma.job.updateMany).toHaveBeenCalledWith({ where: { id: 'job-1', status: 'diff_ready' }, data: { status: 'rejected' } });
     expect(prisma.auditEntry.create).toHaveBeenCalledWith({
       data: { jobId: 'job-1', message: 'Job rejected: no work items written' },
     });
@@ -1696,14 +1696,14 @@ describe('JobsService.reject', () => {
     };
     const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
 
-    await expect(service.reject('job-1')).rejects.toThrow('is not in a rejectable state');
+    await expect(service.reject('job-1')).rejects.toThrow('cannot be rejected');
   });
 
   it('throws for an unknown job id', async () => {
     const prisma = { job: { findUnique: jest.fn().mockResolvedValue(null), update: jest.fn() }, auditEntry: { create: jest.fn() } };
     const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
 
-    await expect(service.reject('unknown')).rejects.toThrow('is not in a rejectable state');
+    await expect(service.reject('unknown')).rejects.toThrow(ConflictException);
   });
 });
 
@@ -7686,5 +7686,38 @@ describe('JobsService.confirm: the Write gate (server side)', () => {
     const review = { kind: 'low_grounding', severity: 'needs_review', nodeIds: ['n1'], detail: {}, raw: 'x' };
     const { service } = build({ warnings: [review] });
     await expect(service.confirm('job-g')).resolves.toMatchObject({ status: 'succeeded' });
+  });
+});
+
+describe('JobsService.reject (status-guarded)', () => {
+  function makeService(job: unknown, updateMany = jest.fn().mockResolvedValue({ count: 1 })) {
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue(job), updateMany },
+      auditEntry: { create: jest.fn().mockResolvedValue({}) },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+    return { service, prisma, updateMany };
+  }
+
+  it('moves a diff_ready job to rejected with a status-guarded update, and records it', async () => {
+    const { service, prisma, updateMany } = makeService({ id: 'job-1', status: 'diff_ready' });
+
+    await expect(service.reject('job-1')).resolves.toEqual({ status: 'rejected' });
+
+    expect(updateMany).toHaveBeenCalledWith({ where: { id: 'job-1', status: 'diff_ready' }, data: { status: 'rejected' } });
+    expect(prisma.auditEntry.create).toHaveBeenCalledWith({ data: { jobId: 'job-1', message: 'Job rejected: no work items written' } });
+  });
+
+  it('answers 409, not a plain error, for a job that is not waiting for review', async () => {
+    const { service } = makeService({ id: 'job-1', status: 'writing' });
+    await expect(service.reject('job-1')).rejects.toThrow(ConflictException);
+  });
+
+  it('answers 409 and writes no audit line when the job was claimed for writing between the read and the update', async () => {
+    const { service, prisma } = makeService({ id: 'job-1', status: 'diff_ready' }, jest.fn().mockResolvedValue({ count: 0 }));
+
+    await expect(service.reject('job-1')).rejects.toThrow(ConflictException);
+
+    expect(prisma.auditEntry.create).not.toHaveBeenCalled();
   });
 });

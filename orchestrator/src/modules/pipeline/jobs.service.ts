@@ -2298,9 +2298,14 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
   async reject(id: string): Promise<{ status: string }> {
     const job = await this.prisma.job.findUnique({ where: { id } });
     if (!job || job.status !== 'diff_ready') {
-      throw new Error(`Job ${id} is not in a rejectable state`);
+      throw new ConflictException(`Job ${id} is not waiting for review, so it cannot be rejected.`);
     }
-    await this.prisma.job.update({ where: { id }, data: { status: 'rejected' } });
+    // Guarded on the status, not just the id: a confirm in another tab may have claimed the job for writing since the read above,
+    // and an unguarded update would mark a job "rejected" while its items are being written.
+    const { count } = await this.prisma.job.updateMany({ where: { id, status: 'diff_ready' }, data: { status: 'rejected' } });
+    if (count === 0) {
+      throw new ConflictException(`Job ${id} changed state while it was being rejected (it may be writing now).`);
+    }
     await this.prisma.auditEntry.create({ data: { jobId: id, message: 'Job rejected: no work items written' } });
     return { status: 'rejected' };
   }
