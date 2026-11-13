@@ -1,6 +1,6 @@
 import { flaggedDiffEntryReason, isFlaggedDiffEntry, isLowQualityEntry } from './diffFlagging';
 import { orderLikeTree } from './diffTreeOrder';
-import { kindProgress, type WarningGroup, type WarningKindGroup } from './warningKinds';
+import { acknowledgementClears, kindProgress, type WarningGroup, type WarningKindGroup } from './warningKinds';
 
 // The risk-ordered review queue (P17): what a reviewer should look at first.
 // Pure, so the ordering is testable apart from the page. "Flagged" and "low
@@ -62,9 +62,10 @@ export interface ReviewQueueEntry {
 }
 
 // A kind the reviewer has accepted (every record acknowledged) no longer ranks or blocks its items: the queue, the group chips, the
-// write gate and the warning rows all read the same handled state.
+// write gate and the warning rows all read the same handled state. A per-item Fix kind is never accepted this way, even with
+// acknowledged records (§11.3.6): its items stay blocking until each is decided.
 function isAcknowledgedKind(entry: WarningKindGroup): boolean {
-  return kindProgress(entry).allAcknowledged;
+  return kindProgress(entry).allAcknowledged && acknowledgementClears(entry);
 }
 
 function nodeIdsInGroup(kindGroups: WarningKindGroup[], group: WarningKindGroup['group']): Set<string> {

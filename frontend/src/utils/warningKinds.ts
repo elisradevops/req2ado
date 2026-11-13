@@ -588,8 +588,10 @@ export function kindGroupCount(entry: WarningKindGroup): { count: number; label:
 // an info kind asks nothing of the reviewer, so there is nothing to finish.
 // A kind with affected items is complete when every one is marked reviewed;
 // a kind without items (e.g. zero_nodes, dropped_blocks) tracks its own
-// records via `acknowledged`. Either way, acknowledging every record also
-// completes it, which is how a "Mark handled" on an items kind works.
+// records via `acknowledged`. Acknowledging every record also completes an
+// items kind, but only where acknowledgement may clear it
+// (`acknowledgementClears`): never a per-item Fix kind (DESIGN.md §11.3.6),
+// even when its records carry `acknowledged` from before the write gate.
 export interface KindProgress {
   trackable: boolean;
   reviewed: number;
@@ -599,6 +601,14 @@ export interface KindProgress {
   allAcknowledged: boolean;
 }
 
+// Whether acknowledging a kind's records may clear it. A Fix kind with affected items is cleared only by item decisions, unless it is
+// `kind_counted` (the value is missing from the source, so one counted acknowledgement is allowed); an item-less kind is decided notice
+// by notice; Review kinds may be accepted. The queue, the write gate and the warning rows all read this one answer.
+export function acknowledgementClears(entry: WarningKindGroup): boolean {
+  if (entry.group !== 'fix' || entry.nodeIds.length === 0) return true;
+  return entry.meta.ackPolicy === 'kind_counted';
+}
+
 export function kindProgress(entry: WarningKindGroup, reviewedIds?: ReadonlySet<string>): KindProgress {
   const allAcknowledged = entry.records.length > 0 && entry.records.every((record) => record.acknowledged === true);
   if (entry.group === 'info') {
@@ -606,7 +616,8 @@ export function kindProgress(entry: WarningKindGroup, reviewedIds?: ReadonlySet<
   }
   if (entry.nodeIds.length > 0) {
     const reviewed = reviewedIds ? entry.nodeIds.filter((nodeId) => reviewedIds.has(nodeId)).length : 0;
-    return { trackable: true, reviewed, total: entry.nodeIds.length, complete: reviewed === entry.nodeIds.length || allAcknowledged, allAcknowledged };
+    const acknowledgedAway = allAcknowledged && acknowledgementClears(entry);
+    return { trackable: true, reviewed, total: entry.nodeIds.length, complete: reviewed === entry.nodeIds.length || acknowledgedAway, allAcknowledged };
   }
   const reviewed = entry.records.filter((record) => record.acknowledged === true).length;
   return { trackable: true, reviewed, total: entry.records.length, complete: reviewed === entry.records.length, allAcknowledged };

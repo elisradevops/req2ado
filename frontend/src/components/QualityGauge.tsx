@@ -23,7 +23,7 @@ function bandFor(score: number): (typeof BANDS)[number] {
 // with a NaN operand always returns NaN, rendering a literal "NaN" in the
 // UI and an invalid `width: NaN%` inline style. Falls back to 0 (the
 // bottom of the scale) rather than guessing a more "average" default.
-function clampScore(value: number): number {
+export function clampScore(value: number): number {
   return Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
 }
 
@@ -147,6 +147,7 @@ function CategoryRow({
   clearedCodes,
   expanded,
   onToggle,
+  flat = false,
 }: {
   label: string;
   description: string;
@@ -172,10 +173,50 @@ function CategoryRow({
   clearedCodes: string[];
   expanded: boolean;
   onToggle: () => void;
+  // Inside the dialog's "Why this verdict" disclosure (DESIGN.md §11.4): no second level of open/close, so the row is not a button and
+  // its definition and fixes are always shown.
+  flat?: boolean;
 }): React.ReactElement {
   const clamped = clampScore(value);
   const color = categoryColor(clamped);
   const crossing = previousValue !== undefined ? bandCrossingText(clamped, previousValue) : null;
+  if (flat) {
+    return (
+      <div className="flex flex-col">
+        <div className="flex w-full items-center gap-2 px-1 py-0.5">
+          <span className="w-20 min-w-fit flex-none text-xs whitespace-nowrap text-ink-2 max-md:w-auto max-md:min-w-0 max-md:flex-1 max-md:whitespace-normal">{label}</span>
+          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-surface-alt max-md:w-16 max-md:flex-none">
+            <div className="h-full rounded-full transition-[width] duration-300" style={{ width: `${clamped}%`, backgroundColor: color }} />
+          </div>
+          {previousValue !== undefined && previousValue !== clamped && (
+            <span className="flex-none font-mono text-micro" style={{ color: formatDelta(clamped, previousValue).color }}>
+              {formatDelta(clamped, previousValue).text}
+            </span>
+          )}
+          <span className="w-7 flex-none text-right font-mono text-xs font-semibold tabular-nums" style={{ color }}>
+            {clamped}
+          </span>
+        </div>
+        <div className="flex flex-col gap-1 pl-1 pt-0.5 pb-0.5">
+          {crossing && <p className="text-micro text-ink-2">{crossing}</p>}
+          <ClearedList codes={clearedCodes} />
+          <p className="text-xs text-ink-3">{description}</p>
+          {issueCodes.length > 0 && (
+            <ul className="flex flex-col gap-1">
+              {issueCodes.map((code) => {
+                const { label: issueLabel, description: remedy } = qualityIssueLabel(code);
+                return (
+                  <li key={code} className="text-xs text-ink-2">
+                    <span className="font-medium text-ink-1">{issueLabel}.</span> {remedy}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="flex flex-col">
       {/* DESIGN.md §11.4.3 -- the category's plain-language definition used
@@ -261,6 +302,7 @@ export function QualityGauge({
   previousScore,
   previousCategoryScores,
   previousIssues,
+  flat = false,
 }: {
   score: number;
   categoryScores?: QualityCategoryScores | null;
@@ -289,6 +331,8 @@ export function QualityGauge({
   // actually helped (the rescore already returns the new issues list, no
   // extra call needed).
   previousIssues?: string[];
+  // Rendered inside a disclosure: category rows do not open and close (one disclosure level), they show everything.
+  flat?: boolean;
 }): React.ReactElement {
   const clamped = clampScore(score);
   const band = bandFor(clamped);
@@ -392,6 +436,7 @@ export function QualityGauge({
               clearedCodes={clearedByCategory.get(key) ?? []}
               expanded={expandedCategories.has(key)}
               onToggle={() => toggleCategory(key)}
+              flat={flat}
             />
           ))}
         </div>

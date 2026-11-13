@@ -2,6 +2,7 @@ import { categoryLabel, weakestCategory } from '../utils/qualityCategories';
 import type { DryRunDiffEntry } from './DiffTree';
 import { SourceProvenance } from './SourceProvenance';
 import { Disclosure } from '../ui/Disclosure';
+import { clampScore } from './QualityGauge';
 import type { KbCitation } from './KbCitationChips';
 
 // What a reviewer needs to judge an item without leaving the dialog: where it came from, which
@@ -17,6 +18,7 @@ export function EvidenceStrip({
   jobMode,
   kbCitations,
   collapsible = false,
+  quality,
 }: {
   entry: DryRunDiffEntry;
   jobMode?: 'baseline' | 'survey' | null;
@@ -24,6 +26,9 @@ export function EvidenceStrip({
   // The item dialog: the file, the location and the source line stay in view; the weakest area, the scoring note and the KB references
   // fold into one closed "Why this verdict" disclosure (one level, nothing nested), so they do not push the requirement text down.
   collapsible?: boolean;
+  // The item's Quality panel (gauge, score explanation, grounding line), folded into the same disclosure after the weakest area. Its
+  // actions that change state (Re-check quality, Score this item) are the caller's to keep outside, in view.
+  quality?: React.ReactNode;
 }): React.ReactElement {
   const weakest = entry.qualityStale ? null : weakestCategory(entry.qualityCategoryScores, entry.qualityCategoryChecklist);
   const hasCitations = !!kbCitations && kbCitations.length > 0;
@@ -58,7 +63,13 @@ export function EvidenceStrip({
   ) : null;
 
   if (collapsible) {
-    const hasWhy = !!weakest || hasCitations || noteApplies;
+    const hasWhy = !!weakest || hasCitations || noteApplies || !!quality;
+    // The closed line says what is worth knowing without opening it: the score (marked when it predates an edit) and the weakest area.
+    const summaryParts: string[] = [];
+    if (quality && entry.qualityScore != null) {
+      summaryParts.push(`Quality ${clampScore(entry.qualityScore)} of 100${entry.qualityStale ? ', from before your edit' : ''}`);
+    }
+    if (weakest) summaryParts.push(`Weakest area: ${categoryLabel(weakest.key)}, ${weakest.score} of 100`);
     return (
       <section aria-label="Evidence" className="flex flex-col gap-2 rounded-sm border border-hairline bg-surface-alt p-3 text-sm">
         {entry.sourceRef && <SourceProvenance sourceRef={entry.sourceRef} showScoringNote={false} />}
@@ -67,11 +78,12 @@ export function EvidenceStrip({
         {hasWhy && (
           <Disclosure
             title="Why this verdict"
-            summary={weakest ? <span dir="auto">Weakest area: {categoryLabel(weakest.key)}, {weakest.score} of 100</span> : undefined}
+            summary={summaryParts.length > 0 ? <span dir="auto">{summaryParts.join(' · ')}</span> : undefined}
             className="bg-surface"
           >
             {(noteApplies || hasCitations) && <SourceProvenance sourceRef={null} showScoringNote={noteApplies} kbCitations={kbCitations} />}
             {weakestRow}
+            {quality}
           </Disclosure>
         )}
       </section>

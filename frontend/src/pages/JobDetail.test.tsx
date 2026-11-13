@@ -1914,7 +1914,7 @@ describe('JobDetail', () => {
     await waitFor(() => expect(screen.getByText(/stopped after updating 1 of 2 item/i)).toBeInTheDocument());
   });
 
-  it('lays the header actions out in tiers: Reject and Write as text buttons, the rest as labelled icons in a tools group, Delete last', async () => {
+  it('lays the header out as tools only for a job in review: Reject and Write live in the write bar, the rest are labelled icons, Delete last', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
     vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-8', status: 'diff_ready', dryRunDiff: [] } as any);
 
@@ -1923,18 +1923,23 @@ describe('JobDetail', () => {
     const names = within(tools).getAllByRole('button').map((button) => button.getAttribute('aria-label'));
     expect(names).toEqual(['Download summary', 'Resubmit', 'Delete']);
     expect(within(tools).queryByRole('button', { name: /reject|write to azure/i })).toBeNull();
-    expect(screen.getByRole('button', { name: /^reject$/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /write to azure devops/i })).toBeInTheDocument();
+    const bar = screen.getByRole('region', { name: 'Review decision' });
+    expect(within(bar).getByRole('button', { name: /^reject$/i })).toBeInTheDocument();
+    expect(within(bar).getByRole('button', { name: /write to azure devops/i })).toBeInTheDocument();
   });
 
-  it('puts the decisions before the tools in the DOM, so keyboard and screen-reader order matches the phone layout', async () => {
+  it('puts the tools first and the decisions last in the DOM: the write bar follows the review, so a keyboard user meets the items before Write', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
     vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-10', status: 'diff_ready', dryRunDiff: [] } as any);
 
     renderAt('job-10');
     const tools = await screen.findByRole('group', { name: 'Job tools' });
     const write = screen.getByRole('button', { name: /write to azure devops/i });
-    expect(write.compareDocumentPosition(tools) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const reject = screen.getByRole('button', { name: /^reject$/i });
+    expect(tools.compareDocumentPosition(write) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // the counterpart decision sits beside Write, before it
+    expect(reject.compareDocumentPosition(write) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: /write to azure devops/i })).toHaveLength(1);
   });
 
   it('shows no Resubmit or Delete while a job is running, only Download summary and Cancel run', async () => {
@@ -4718,12 +4723,59 @@ describe('JobDetail: the write gate is a hard block (DESIGN.md §11.3.5, review 
     expect(screen.getByText('Healthy one')).toBeInTheDocument();
   });
 
-  it('puts a "Skip to proposed items" link before the header actions, which moves focus to the tree (WCAG 2.4.1)', async () => {
-    const write = await mount({ id: 'gate-skip', dryRunDiff: [req('r1'), req('r2')], warnings: [] });
+  it('keeps a "Skip to proposed items" link first in the page, which moves focus to the tree (WCAG 2.4.1)', async () => {
+    await mount({ id: 'gate-skip', dryRunDiff: [req('r1'), req('r2')], warnings: [] });
     const skip = screen.getByRole('link', { name: 'Skip to proposed items' });
-    expect(skip.compareDocumentPosition(write) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const tools = screen.getByRole('group', { name: 'Job tools' });
+    expect(skip.compareDocumentPosition(tools) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     await userEvent.click(skip);
     await waitFor(() => expect(document.activeElement).toBe(document.getElementById('proposed-tree')));
+  });
+
+  describe('the sticky write bar (W3)', () => {
+    it('comes after the tree in the DOM and stays at the bottom of the review view', async () => {
+      const write = await mount({ id: 'bar-1', dryRunDiff: [req('r1'), req('r2')], warnings: [] });
+      const bar = screen.getByRole('region', { name: 'Review decision' });
+      expect(bar).toContainElement(write);
+      expect(bar).toHaveClass('sticky', 'bottom-0');
+      const tree = document.getElementById('proposed-tree')!;
+      expect(tree.compareDocumentPosition(bar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(screen.getAllByRole('button', { name: /write to azure devops/i })).toHaveLength(1);
+    });
+
+    it('carries the blocker count in text, linked to Write, and a blocked Write still jumps to the first blocker', async () => {
+      const write = await mount({ id: 'bar-2', dryRunDiff: [req('r1'), req('r2')], warnings: [duplicateIds(['r1', 'r2'])] });
+      const bar = screen.getByRole('region', { name: 'Review decision' });
+      const reason = within(bar).getByText('2 items to fix before writing');
+      expect(write.getAttribute('aria-describedby')).toBe(reason.id);
+      expect(write).toHaveAttribute('aria-disabled', 'true');
+      await userEvent.click(write);
+      expect(await screen.findByRole('checkbox', { name: /hide reviewed/i })).toBeInTheDocument();
+    });
+
+    it('keeps Write the only signal-yellow control on the page', async () => {
+      await mount({ id: 'bar-3', dryRunDiff: [req('r1')], warnings: [] });
+      const write = screen.getByRole('button', { name: /write to azure devops/i });
+      const yellow = Array.from(document.querySelectorAll('button')).filter((b) => /\bbg-cta\b|\bbg-signal\b/.test(b.className));
+      expect(yellow).toEqual([write]);
+    });
+
+    it('gives the bar 44 px targets below md', async () => {
+      await mount({ id: 'bar-4', dryRunDiff: [req('r1')], warnings: [] });
+      expect(screen.getByRole('button', { name: /write to azure devops/i })).toHaveClass('max-md:min-h-11');
+      expect(screen.getByRole('button', { name: /^reject$/i })).toHaveClass('max-md:min-h-11');
+    });
+
+    it.each(['running', 'failed', 'succeeded'])('is not drawn for a %s job', async (status) => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+        id: `bar-${status}`, status, mode: 'survey', createdAt: new Date().toISOString(), dryRunDiff: status === 'running' ? null : [req('r1')], warnings: [],
+      } as any);
+      renderAt(`bar-${status}`);
+      await screen.findByRole('group', { name: 'Job tools' });
+      expect(screen.queryByRole('region', { name: 'Review decision' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /write to azure devops/i })).not.toBeInTheDocument();
+    });
   });
 
   it('offers no skip link when the job is not awaiting review', async () => {

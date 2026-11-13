@@ -152,7 +152,9 @@ export function NodeDetailPanel({
   hideSources?: boolean;
   // The dialog's evidence strip (file, location, "Why this verdict"): drawn right after the item's text and any proposal or discussion, so
   // the source is next to what it supports and the long score panel comes after it.
-  evidenceSlot?: React.ReactNode;
+  // A function receives the Quality panel's read-only body (gauge, score explanation, grounding line) so the strip can fold it into its
+  // "Why this verdict" disclosure; the Re-check / Score this item line then stays outside it, in view.
+  evidenceSlot?: React.ReactNode | ((quality: React.ReactNode) => React.ReactNode);
   // DESIGN.md §11.5 -- the keyboard-accessible "Move to..." control, owned/
   // wired by the caller (NodeDetailDialog builds the actual
   // MoveEntryControl) for the same reason addChildSlot is: this component
@@ -744,6 +746,94 @@ export function NodeDetailPanel({
     );
   }
 
+
+  // The Quality panel in pieces, so the dialog can fold its read-only body into "Why this verdict" (DESIGN.md §11.4) and keep the line that
+  // changes state (stale notice + Re-check quality, Not scored yet + Score this item, Rescored.) outside it, in view and in tab order.
+  // An item that maps to one that already exists is not created, so "Not scored yet" would invite a score for nothing.
+  const foldQuality = typeof evidenceSlot === 'function';
+  const showQualityPanel = entry.type === 'Requirement' && !(entry.qualityScore == null && (entry.action === 'reuse' || entry.action === 'dedup_skip'));
+  // Stale (edited since last scored): dimmed, never zeroed -- the last-known numbers stay on screen, only their freshness is in question.
+  // See DryRunDiffEntry.qualityStale's own doc comment. The key forces a remount on node switch: QualityGauge owns its own
+  // expandedCategories state, which would otherwise bleed from entry A into entry B's identical-looking row.
+  const qualityGauge =
+    showQualityPanel && entry.qualityScore != null ? (
+      <div className={cn(entry.qualityStale && 'opacity-50')}>
+        <QualityGauge
+          key={entry.localId}
+          score={entry.qualityScore}
+          categoryScores={entry.qualityCategoryScores}
+          categoryChecklist={entry.qualityCategoryChecklist}
+          qualityIssues={entry.qualityIssues}
+          previousScore={preRescoreSnapshot?.score}
+          previousCategoryScores={preRescoreSnapshot?.categoryScores}
+          previousIssues={preRescoreSnapshot?.issues}
+          flat={foldQuality}
+        />
+      </div>
+    ) : null;
+  // Why each low category got its score, on demand: only for a score that still describes the current text.
+  const qualityExplanation =
+    showQualityPanel && entry.qualityScore != null && jobId && !entry.qualityStale && entry.qualityCategoryScores && Object.keys(entry.qualityCategoryScores).length > 0 ? (
+      <ScoreExplanationPanel
+        load={() => explainScore(jobId, entry.localId)}
+        resetKey={`${jobId}:${entry.localId}:${entry.qualityScore}:${JSON.stringify(entry.qualityCategoryScores)}`}
+      />
+    ) : null;
+  const qualityActions = !showQualityPanel ? null : entry.qualityScore != null ? (
+    entry.qualityStale ? (
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs text-ink-3">
+          {rescoring
+            ? 'Re-scoring against the current wording. This takes a few seconds.'
+            : foldQuality
+              ? 'Edited since this was scored. The scores under "Why this verdict" are from before your change.'
+              : 'Edited since this was scored. The numbers above are from before your change.'}
+        </p>
+        {onRescore && (
+          <Button variant="outline" size="sm" onClick={handleRescoreClick} loading={rescoring} className="flex-none">
+            {!rescoring && <RefreshCw className="h-3 w-3" />}
+            {rescoring ? 'Re-checking…' : 'Re-check quality'}
+          </Button>
+        )}
+      </div>
+    ) : (
+      preRescoreSnapshot && <p className="text-xs font-medium text-ok">Rescored.</p>
+    )
+  ) : (
+    <div className="flex items-center justify-between gap-2">
+      <p className="text-sm text-ink-3">Not scored yet.</p>
+      {/* Reuses the exact same rescore action/backend route as the Stale state -- addDiffEntry hardcodes qualityScore: null for a
+          manually-added item (jobs.service.ts), and rescoreDiffEntry's own guards (diff_ready, action === 'create', type ===
+          'Requirement') never required a PRIOR score to exist, so a first-time score is additive, not a new backend capability. */}
+      {onRescore && canEdit && (
+        <Button variant="outline" size="sm" onClick={handleRescoreClick} loading={rescoring} className="flex-none">
+          {!rescoring && <RefreshCw className="h-3 w-3" />}
+          {rescoring ? 'Scoring…' : 'Score this item'}
+        </Button>
+      )}
+    </div>
+  );
+  const groundingLine =
+    entry.groundingScore != null ? (
+      <div className={cn('flex items-center gap-1.5 text-sm', !foldQuality && 'rounded-sm border border-hairline bg-surface-alt p-2.5')}>
+        <Tooltip content="How closely this item's wording follows the original document text.">
+          <span className="text-ink-3">Matches source wording:</span>
+        </Tooltip>
+        <span className={cn('font-semibold', isLowGrounding ? 'text-warning' : 'text-ink-1')}>
+          {isLowGrounding ? 'Loosely' : entry.groundingScore >= 0.7 ? 'Closely' : 'Partly'}
+        </span>
+        {isLowGrounding && <span className="text-ink-3">— worth checking against the source</span>}
+      </div>
+    ) : null;
+  const qualityBody =
+    qualityGauge || qualityExplanation || groundingLine ? (
+      <>
+        {qualityGauge}
+        {qualityExplanation}
+        {groundingLine}
+      </>
+    ) : null;
+
   return (
     <div ref={panelRootRef} tabIndex={-1} data-node-detail-panel className="flex flex-col gap-3 p-5 outline-none">
       {/* Edit sits right next to the title it edits -- it used to be a lone
@@ -861,7 +951,14 @@ export function NodeDetailPanel({
           ))}
         </div>
       )}
-      {evidenceSlot}
+      {foldQuality ? (
+        <>
+          {(evidenceSlot as (quality: React.ReactNode) => React.ReactNode)(qualityBody)}
+          {qualityActions}
+        </>
+      ) : (
+        evidenceSlot
+      )}
       {/* Real bug fixed here (confirmed against the agreed mockup, which has
           no "Active Flags" block at all): this used to pair Classification
           with a second "Active Flags" chip cloud showing the SAME issue
@@ -887,97 +984,18 @@ export function NodeDetailPanel({
           <TagChips tags={entry.tags} winningTag={resolveWinningTag(entry.tags, requirementClassificationField?.allowedValues)} />
         </div>
       )}
-      {/* DESIGN.md §11.4.1 -- gated on the item's real ADO work-item type,
-          explicitly, not on qualityScore presence. The two are NOT the same
-          check: scoring is server-side-scoped to Requirement nodes today
-          (so they happen to agree), but qualityScore==null on a
-          Requirement is a DIFFERENT case (a scoring pass that failed) from
-          an Epic/Feature never having a rubric to begin with -- the former
-          must show the gauge's own empty/failed state, not silently
-          disappear like the latter. */}
-      {/* An item that maps to one that already exists is not created, so "Not scored yet" would invite a score for nothing. */}
-      {entry.type === 'Requirement' && !(entry.qualityScore == null && (entry.action === 'reuse' || entry.action === 'dedup_skip')) && (
+      {!foldQuality && showQualityPanel && (
         <div className="flex flex-col gap-1.5 rounded-sm border border-hairline bg-surface-alt p-2.5">
           {entry.qualityScore != null ? (
             <>
-              {/* Stale (edited since last scored): dimmed, never zeroed --
-                  the last-known numbers stay on screen, only their
-                  freshness is in question. See DryRunDiffEntry.qualityStale's
-                  own doc comment. */}
-              <div className={cn(entry.qualityStale && 'opacity-50')}>
-                {/* key forces a remount on node switch -- QualityGauge owns
-                    its own expandedCategories state internally (which
-                    category disclosures are open); without a key, React
-                    reuses the same instance across different selected
-                    nodes and a category left expanded on entry A bleeds
-                    into entry B's identical-looking row. */}
-                <QualityGauge
-                  key={entry.localId}
-                  score={entry.qualityScore}
-                  categoryScores={entry.qualityCategoryScores}
-                  categoryChecklist={entry.qualityCategoryChecklist}
-                  qualityIssues={entry.qualityIssues}
-                  previousScore={preRescoreSnapshot?.score}
-                  previousCategoryScores={preRescoreSnapshot?.categoryScores}
-                  previousIssues={preRescoreSnapshot?.issues}
-                />
-              </div>
-              {/* Why each low category got its score, on demand: only for a score that still describes the current text. */}
-              {jobId && !entry.qualityStale && entry.qualityCategoryScores && Object.keys(entry.qualityCategoryScores).length > 0 && (
-                <ScoreExplanationPanel
-                  load={() => explainScore(jobId, entry.localId)}
-                  resetKey={`${jobId}:${entry.localId}:${entry.qualityScore}:${JSON.stringify(entry.qualityCategoryScores)}`}
-                />
-              )}
-              {entry.qualityStale ? (
-                <div className="flex items-center justify-between gap-2">
-                  <p className="text-xs text-ink-3">
-                    {rescoring
-                      ? 'Re-scoring against the current wording. This takes a few seconds.'
-                      : 'Edited since this was scored. The numbers above are from before your change.'}
-                  </p>
-                  {onRescore && (
-                    <Button variant="outline" size="sm" onClick={handleRescoreClick} loading={rescoring} className="flex-none">
-                      {!rescoring && <RefreshCw className="h-3 w-3" />}
-                      {rescoring ? 'Re-checking…' : 'Re-check quality'}
-                    </Button>
-                  )}
-                </div>
-              ) : (
-                preRescoreSnapshot && <p className="text-xs font-medium text-ok">Rescored.</p>
-              )}
+              {qualityGauge}
+              {qualityExplanation}
             </>
-          ) : (
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-sm text-ink-3">Not scored yet.</p>
-              {/* Reuses the exact same rescore action/backend route as the
-                  Stale state -- addDiffEntry hardcodes qualityScore: null
-                  for a manually-added item (jobs.service.ts), and
-                  rescoreDiffEntry's own guards (diff_ready, action ===
-                  'create', type === 'Requirement') never required a PRIOR
-                  score to exist, so a first-time score is additive, not a
-                  new backend capability. */}
-              {onRescore && canEdit && (
-                <Button variant="outline" size="sm" onClick={handleRescoreClick} loading={rescoring} className="flex-none">
-                  {!rescoring && <RefreshCw className="h-3 w-3" />}
-                  {rescoring ? 'Scoring…' : 'Score this item'}
-                </Button>
-              )}
-            </div>
-          )}
+          ) : null}
+          {qualityActions}
         </div>
       )}
-      {entry.groundingScore != null && (
-        <div className="flex items-center gap-1.5 rounded-sm border border-hairline bg-surface-alt p-2.5 text-sm">
-          <Tooltip content="How closely this item's wording follows the original document text.">
-            <span className="text-ink-3">Matches source wording:</span>
-          </Tooltip>
-          <span className={cn('font-semibold', isLowGrounding ? 'text-warning' : 'text-ink-1')}>
-            {isLowGrounding ? 'Loosely' : entry.groundingScore >= 0.7 ? 'Closely' : 'Partly'}
-          </span>
-          {isLowGrounding && <span className="text-ink-3">— worth checking against the source</span>}
-        </div>
-      )}
+      {!foldQuality && groundingLine}
       {/* DESIGN.md §11.4.1 -- in place of the absent gauge, an Epic/Feature
           shows what it covers (real descendant counts from the diff tree,
           computed by the caller) and states plainly why there is no score,

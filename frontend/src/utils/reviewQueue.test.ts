@@ -537,6 +537,13 @@ describe('a kind the reviewer has accepted no longer blocks or ranks its items (
     expect(riskTier(entry('a', { qualityScore: 95, groundingScore: 0.9 }), groups)).toBe('clean');
   });
 
+  it('keeps the items of a per-item Fix kind blocking even when its records were acknowledged (only item decisions clear it)', () => {
+    const groups = buildKindGroups([acked('duplicate_customer_id', ['a'])]);
+    expect(riskTier(entry('a', { qualityScore: 95, groundingScore: 0.9 }), groups)).toBe('blocking');
+    expect(riskReason(entry('a', { qualityScore: 95 }), groups).title).toContain('Blocking warning');
+    expect(groupReviewQueue([entry('a', { qualityScore: 95 })], groups).fix).toHaveLength(1);
+  });
+
   it('does not explain an item by a warning that was accepted', () => {
     const groups = buildKindGroups([acked('missing_source_reference', ['a'])]);
     expect(riskReason(entry('a', { qualityScore: 30 }), groups).title).toBe('Low quality score');

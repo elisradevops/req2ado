@@ -71,6 +71,17 @@ describe('computeWriteGate', () => {
     expect(computeWriteGate(handled, none).blocked).toBe(false);
   });
 
+  it('keeps blocking on a per-item Fix kind whose records were acknowledged before the gate existed, until its items are decided', () => {
+    const legacy = buildKindGroups([
+      warning({ kind: 'duplicate_customer_id', severity: 'needs_review', raw: 'a', nodeIds: ['n1', 'n2'], acknowledged: true }),
+    ]);
+    const gate = computeWriteGate(legacy, none);
+    expect(gate.blocked).toBe(true);
+    expect(gate.remaining).toBe(2);
+    expect(gate.firstBlocker?.nodeIds).toEqual(['n1', 'n2']);
+    expect(computeWriteGate(legacy, new Set(['n1', 'n2'])).blocked).toBe(false);
+  });
+
   it('orders blockers as the groups are ordered and sums remaining across kinds', () => {
     const groups = buildKindGroups([
       warning({ kind: 'duplicate_customer_id', severity: 'needs_review', raw: 'a', nodeIds: ['n1', 'n2'] }),

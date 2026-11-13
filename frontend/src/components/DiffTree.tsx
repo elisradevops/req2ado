@@ -345,12 +345,28 @@ function useStatusColumnWidth(entries: DryRunDiffEntry[]): number {
     let widest = 0;
     for (const entry of entries) {
       widest = Math.max(widest, measureTextWidth(actionLabel(entry), font));
+      // R7: a new item's criteria chip sits in this column (it is about what the write will carry), and it is the only mark there on
+      // such a row, so the column is as wide as the widest of the two, measured from this job's rows only.
+      const criteria = criteriaChipLabel(entry);
+      if (criteria && criteriaInStatusColumn(entry)) widest = Math.max(widest, measureTextWidth(criteria, font));
     }
     // Chip's own horizontal padding+border (px-2 + 1px border each side =
     // 18px) plus a small buffer so text never sits flush against the
     // pill's edge.
     return widest > 0 ? Math.ceil(widest) + 18 + 8 : FALLBACK_STATUS_WIDTH;
   }, [entries]);
+}
+
+// The criteria chip's text, or null when the row has no criteria proposal (a "needs input" note is not one).
+function criteriaChipLabel(entry: DryRunDiffEntry): string | null {
+  if (entry.action !== 'create' || entry.proposal?.kind !== 'criteria') return null;
+  return entry.proposalAccepted ? 'criteria accepted' : 'criteria to review';
+}
+
+// Desktop (R7): a new item's Status cell is otherwise empty ("New" is not drawn), so its criteria chip moves there instead of squeezing the
+// title. A matched new item already shows "New, matched WI-n" in Status, so its chip stays on the title line: one mark per Status cell.
+function criteriaInStatusColumn(entry: DryRunDiffEntry): boolean {
+  return entry.action === 'create' && entry.duplicateOf?.existingAdoId == null;
 }
 
 // Shared grid template for both the sticky header and every data row --
@@ -762,7 +778,7 @@ export function DiffTree({
         <span>Item</span>
         <span className={cn('flex items-center gap-1', WIDE_ONLY)}>
           Status
-          <InfoTip content="What will happen to this item when you write to Azure DevOps. No pill means New (written to Azure DevOps for the first time). A pill means: Links to an existing WI-#### (reused, nothing new written, and it keeps its existing Azure DevOps parent regardless of where you place it in this tree), or Near-duplicate of an existing item (skipped, same parent-keeping rule)." />
+          <InfoTip content="What will happen to this item when you write to Azure DevOps. No pill means New (written to Azure DevOps for the first time). A pill means: Links to an existing WI-#### (reused, nothing new written, and it keeps its existing Azure DevOps parent regardless of where you place it in this tree), or Near-duplicate of an existing item (skipped, same parent-keeping rule). On a new item, 'criteria to review' or 'criteria accepted' says whether its proposed acceptance criteria will be written with it." />
         </span>
         <span className={cn('flex items-center justify-end gap-1', WIDE_ONLY)}>
           Flags
@@ -1076,7 +1092,7 @@ function DiffTreeRow({
   );
   const criteriaEl = (
     <>
-    {entry.action === 'create' && entry.proposal?.kind === 'criteria' && (
+    {criteriaChipLabel(entry) && (
       <Tooltip
         content={entry.proposalAccepted ? 'Proposed acceptance criteria accepted: written to Azure DevOps with this item.' : 'Proposed acceptance criteria are waiting for review: not written to Azure DevOps unless accepted.'}
       >
@@ -1085,9 +1101,10 @@ function DiffTreeRow({
           tabIndex={narrow ? -1 : 0}
           bg={entry.proposalAccepted ? 'var(--color-accent-soft)' : 'var(--color-surface-alt)'}
           color={entry.proposalAccepted ? 'var(--color-accent)' : 'var(--color-ink-2)'}
-          className="flex-none border border-hairline"
+          // inset focus ring: the Status cell and the title's trailing group clip their overflow, which would cut an outer ring
+          className="flex-none border border-hairline focus-visible:outline-offset-[-2px]"
         >
-          {entry.proposalAccepted ? 'criteria accepted' : 'criteria to review'}
+          {criteriaChipLabel(entry)}
         </Chip>
       </Tooltip>
     )}
@@ -1101,7 +1118,7 @@ function DiffTreeRow({
           tabIndex={narrow ? -1 : 0}
           bg={REASON_CHIP_COLORS[reason.group].bg}
           color={REASON_CHIP_COLORS[reason.group].color}
-          className={cn('flex-none border', REASON_CHIP_COLORS[reason.group].borderClass)}
+          className={cn('flex-none border focus-visible:outline-offset-[-2px]', REASON_CHIP_COLORS[reason.group].borderClass)}
         >
           {reason.chip}
         </Chip>
@@ -1267,7 +1284,7 @@ function DiffTreeRow({
             </div>
           </>
         ) : (
-        <span className="ml-1 flex min-w-0 flex-1 items-center gap-2">
+        <span data-testid="title-line" className="ml-1 flex min-w-0 flex-1 items-center gap-2">
           {/* Pre-existing bug fixed here: typeCatalog is keyed by the
               project's REAL ADO type name (e.g. 'User Story'), but
               entry.type is always the internal category ('Requirement') --
@@ -1275,15 +1292,23 @@ function DiffTreeRow({
               badge fell back to hardcoded colors/icons. realTypeName()
               resolves the real name first. */}
           <WorkItemTypeBadge type={entry.type} catalogEntry={typeCatalog?.[realTypeName(entry.type)]} />
-          <p dir="auto" className={cn('min-w-0 flex-1 truncate text-start text-sm font-medium leading-snug', entry.excluded && 'line-through text-ink-3')}>
+          {/* R7: the title keeps a minimum (rem, so it grows with text size; capped by the cell so it never paints past it) and takes the
+              free space; what follows it shrinks first. */}
+          <p dir="auto" className={cn('min-w-[min(12rem,50%)] flex-1 truncate text-start text-sm font-medium leading-snug', entry.excluded && 'line-through text-ink-3')}>
             {entry.title}
           </p>
-          {customerIdEl}
-          {lockEl}
-          {sameTierEl}
-          {criteriaEl}
-          {reasonEl}
-          {excludedEl}
+          {/* The marks after the title wrap whole onto a second line that is cut away, the same "never half-clipped" rule as the phone
+              row's line 2: a mark that does not fit drops out of sight whole (the Details dialog has every one). Bounded in rem, not px.
+              Order is by what must never be lost, since wrapping hides the LAST: the hazard, the focused warning's reason, the excluded
+              ancestor, the criteria chip (only for a matched new item; otherwise it is in Status), the lock, then the customer id. */}
+          <span data-testid="title-trailing" className="flex max-h-6 min-w-0 flex-[0_1_auto] flex-wrap empty:hidden items-center justify-end gap-x-2 overflow-hidden">
+            {sameTierEl}
+            {reasonEl}
+            {excludedEl}
+            {!criteriaInStatusColumn(entry) && criteriaEl}
+            {lockEl}
+            {customerIdEl}
+          </span>
         </span>
         )}
       </div>
@@ -1297,8 +1322,9 @@ function DiffTreeRow({
           painted past the column boundary into the Signals column next to
           it. */}
       {!narrow && (
-        <span className="flex flex-none items-center justify-end overflow-hidden">
+        <span data-col="status" className="flex flex-none items-center justify-end overflow-hidden">
           <ActionBadge action={entry.action} existingAdoId={entry.existingAdoId} matchedWi={entry.duplicateOf?.existingAdoId} orgUrl={orgUrl} project={project} hideNew />
+          {criteriaInStatusColumn(entry) && criteriaEl}
         </span>
       )}
 

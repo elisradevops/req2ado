@@ -611,6 +611,17 @@ describe('CollapsibleWarnings', () => {
       expect(screen.getByText('1 for your information')).toBeInTheDocument();
     });
 
+    it('keeps counting a per-item fix kind whose records were acknowledged before the gate existed, with no Done chip and no Undo', () => {
+      renderWarnings(
+        [warning({ kind: 'duplicate_customer_id', severity: 'needs_review', raw: 'a', nodeIds: ['n1', 'n2'], acknowledged: true })],
+        { reviewedIds: new Set(['n1']), onAcknowledge: vi.fn(), onFocusKind: vi.fn() },
+      );
+      expect(screen.getByText('1 to fix')).toBeInTheDocument();
+      expect(screen.queryByText('Done')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /undo/i })).not.toBeInTheDocument();
+      expect(screen.getByText('1 of 2 reviewed')).toBeInTheDocument();
+    });
+
     it('still counts an open fix kind', () => {
       renderWarnings([warning({ kind: 'duplicate_customer_id', severity: 'needs_review', raw: 'a', nodeIds: ['n1', 'n2'] })], { reviewedIds: new Set(['n1']) });
       expect(screen.getByText('1 to fix')).toBeInTheDocument();

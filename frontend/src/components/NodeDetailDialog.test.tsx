@@ -60,22 +60,60 @@ describe('NodeDetailDialog', () => {
     expect(text.compareDocumentPosition(evidence) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it('puts the evidence before the Quality panel too: text, then where it came from, then the full scores (R3)', () => {
-    renderDialog({
-      entry: {
-        ...ENTRY,
-        sourceRef: { documentPath: 'spec.docx', startOffset: 0, endOffset: 5, page: 2 },
-        qualityScore: 40,
-        qualityCategoryScores: { testability: 35, clarity: 80 },
-      },
-      jobMode: 'survey',
+  describe('the Quality panel folds into "Why this verdict" (one closed disclosure, one level)', () => {
+    const scored: DryRunDiffEntry = {
+      ...ENTRY,
+      sourceRef: { documentPath: 'spec.docx', startOffset: 0, endOffset: 5, page: 2 },
+      qualityScore: 40,
+      qualityCategoryScores: { testability: 35, clarity: 80 },
+      qualityIssues: ['not_testable'],
+      groundingScore: 0.9,
+    };
+
+    it('starts closed: no gauge, no grounding line, no score explanation in the dialog until it is opened', () => {
+      renderDialog({ entry: scored, jobMode: 'survey' });
+      expect(screen.getByRole('button', { name: /why this verdict/i })).toHaveAttribute('aria-expanded', 'false');
+      expect(screen.queryByText('Quality')).not.toBeInTheDocument();
+      expect(screen.queryByText(/matches source wording/i)).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /why this score/i })).not.toBeInTheDocument();
     });
-    const text = screen.getByText('Req body');
-    const evidence = screen.getByRole('region', { name: 'Evidence' });
-    const quality = screen.getByText('Quality');
-    const follows = (a: Element, b: Element) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
-    expect(follows(text, evidence)).toBe(true);
-    expect(follows(evidence, quality)).toBe(true);
+
+    it('says the score and the weakest area in its closed summary line', () => {
+      renderDialog({ entry: scored, jobMode: 'survey' });
+      const toggle = screen.getByRole('button', { name: /why this verdict/i });
+      expect(toggle).toHaveTextContent('Quality 40 of 100');
+      expect(toggle).toHaveTextContent(/weakest area: .*35 of 100/i);
+    });
+
+    it('holds the whole Quality panel once opened, after the evidence, with no disclosure nested inside it', () => {
+      renderDialog({ entry: scored, jobMode: 'survey' });
+      fireEvent.click(screen.getByRole('button', { name: /why this verdict/i }));
+      const region = screen.getByRole('region', { name: /why this verdict/i });
+      expect(within(region).getByText('Quality')).toBeInTheDocument();
+      expect(within(region).getByText(/matches source wording/i)).toBeInTheDocument();
+      expect(within(region).getByRole('button', { name: /why this score/i })).toBeInTheDocument();
+      // nothing inside opens and closes: every category's definition and fixes are shown flat
+      expect(region.querySelectorAll('[aria-expanded]')).toHaveLength(0);
+      expect(within(region).getAllByText(/testab/i).length).toBeGreaterThan(0);
+      const text = screen.getByText('Req body');
+      expect(text.compareDocumentPosition(region) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('keeps the stale notice and Re-check quality outside the closed disclosure, as a reachable button', () => {
+      renderDialog({ entry: { ...scored, qualityStale: true }, jobMode: 'survey', jobStatus: 'diff_ready', onRescore: vi.fn() } as any);
+      expect(screen.getByRole('button', { name: /why this verdict/i })).toHaveAttribute('aria-expanded', 'false');
+      expect(screen.getByText(/edited since this was scored/i)).toBeInTheDocument();
+      const recheck = screen.getByRole('button', { name: /re-check quality/i });
+      recheck.focus();
+      expect(recheck).toHaveFocus();
+      expect(screen.getByRole('button', { name: /why this verdict/i })).toHaveTextContent(/from before your edit/i);
+    });
+
+    it('keeps "Score this item" outside the disclosure for an item that has no score', () => {
+      renderDialog({ entry: { ...ENTRY, qualityScore: null }, jobMode: 'survey', jobStatus: 'diff_ready', onRescore: vi.fn() } as any);
+      expect(screen.getByText('Not scored yet.')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /score this item/i })).toBeInTheDocument();
+    });
   });
 
   it('renders nothing when entry is null', () => {

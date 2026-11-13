@@ -629,7 +629,7 @@ describe('DiffTree signal counts', () => {
       { ...baseEntry, localId: 'c', parentLocalId: 'p', title: 'Child req' },
     ];
     render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
-    expect(within(screen.getByText('Child req').parentElement as HTMLElement).getByText('Nested Requirement')).toBeInTheDocument();
+    expect(within(screen.getByText('Child req').closest('[data-testid="title-line"]') as HTMLElement).getByText('Nested Requirement')).toBeInTheDocument();
   });
 
   it('exposes the real depth to assistive technology on every row', () => {
@@ -648,21 +648,40 @@ describe('DiffTree signal counts', () => {
     expect(screen.getByText('criteria to review')).toHaveAttribute('tabindex', '0');
   });
 
-  it('keeps the desktop order after the title: customer id, same tier, then the criteria chip, all on the title line', () => {
+  it('puts a new item\'s criteria chip in the Status column at desktop widths, not after the title (R7)', () => {
+    const entries: DryRunDiffEntry[] = [{ ...baseEntry, localId: 'a', title: 'Has criteria', proposal: { kind: 'criteria' } as any, proposalAccepted: false }];
+    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+    const chip = screen.getByText('criteria to review');
+    expect(chip.closest('[data-col="status"]')).not.toBeNull();
+    expect(chip.closest('[data-testid="title-line"]')).toBeNull();
+  });
+
+  it('keeps a matched new item\'s criteria chip on the title line, so the Status column only ever holds one mark', () => {
+    const entries: DryRunDiffEntry[] = [
+      { ...baseEntry, localId: 'a', title: 'Matched', proposal: { kind: 'criteria' } as any, proposalAccepted: false, duplicateOf: { existingAdoId: 7 } as any },
+    ];
+    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+    expect(screen.getByText('criteria to review').closest('[data-testid="title-trailing"]')).not.toBeNull();
+  });
+
+  it('gives the desktop title a minimum and puts what follows it in a group that drops whole marks instead of squeezing the title (R7)', () => {
     const entries: DryRunDiffEntry[] = [
       { ...baseEntry, localId: 'p', title: 'Parent req' },
-      { ...baseEntry, localId: 'c', parentLocalId: 'p', title: 'Child req', customerId: 'REQ-1', proposal: { kind: 'criteria' } as any, proposalAccepted: false },
+      { ...baseEntry, localId: 'c', parentLocalId: 'p', title: 'Child req', customerId: 'REQ-1' },
     ];
     render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
     const title = screen.getByText('Child req');
-    const after = (el: Element): number => title.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING;
-    const id = screen.getByText('REQ-1');
-    const tier = screen.getByText('Nested Requirement');
-    const criteria = screen.getByText('criteria to review');
-    expect(after(id) && after(tier) && after(criteria)).toBeTruthy();
-    expect(id.compareDocumentPosition(tier) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(tier.compareDocumentPosition(criteria) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(id.parentElement).not.toHaveClass('flex-wrap');
+    // a minimum in rem, capped by the cell, so it scales with text size and never pushes past a narrow cell
+    expect(title.className).toMatch(/min-w-\[min\(\d+rem,\d+%\)\]/);
+    const trailing = screen.getByText('REQ-1').closest('[data-testid="title-trailing"]') as HTMLElement;
+    expect(trailing).not.toBeNull();
+    // whole marks wrap onto a line that is cut away (never half a chip), bounded in rem, not px
+    expect(trailing).toHaveClass('flex-wrap', 'overflow-hidden', 'min-w-0');
+    expect(trailing.className).not.toMatch(/h-\[\d+px\]/);
+    // the hazard first and the customer id last: wrapping hides the LAST marks
+    const tier = within(trailing).getByText('Nested Requirement');
+    expect(tier.compareDocumentPosition(screen.getByText('REQ-1')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(title.compareDocumentPosition(trailing) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('keeps the external-link glyph on the details button at desktop widths, and no review triangle on line 2', () => {

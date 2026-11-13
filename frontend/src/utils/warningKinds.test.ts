@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { WarningRecord } from './warnings';
-import { KIND_META, RETRY_ENHANCEMENT_BATCH_SIZE, buildKindGroups, isActionableWarning, kindGroupCount, kindMeta, kindProgress, retryableEnhancementBatches, warningGroup } from './warningKinds';
+import { KIND_META, RETRY_ENHANCEMENT_BATCH_SIZE, acknowledgementClears, buildKindGroups, isActionableWarning, kindGroupCount, kindMeta, kindProgress, retryableEnhancementBatches, warningGroup } from './warningKinds';
 
 function warning(kind: string, severity: WarningRecord['severity'], nodeIds: string[] = []): WarningRecord {
   return { kind, severity, nodeIds, detail: {}, raw: `${kind} raw` };
@@ -122,6 +122,36 @@ describe('warningKinds', () => {
       const entry = one('low_grounding', 'needs_review', ['a', 'b'], { acknowledged: true });
 
       expect(kindProgress(entry, new Set())).toMatchObject({ complete: true, allAcknowledged: true });
+    });
+
+    it('never completes a per-item Fix kind with affected items through acknowledgement: only item decisions clear it (§11.3.6)', () => {
+      // Records acknowledged before the write gate existed (or by any old client) carry acknowledged: true on a per-item Fix kind.
+      const legacy = one('duplicate_customer_id', 'needs_review', ['a', 'b'], { acknowledged: true });
+
+      expect(kindProgress(legacy, new Set())).toMatchObject({ trackable: true, reviewed: 0, total: 2, complete: false, allAcknowledged: true });
+      expect(kindProgress(legacy, new Set(['a']))).toMatchObject({ reviewed: 1, complete: false });
+      expect(kindProgress(legacy, new Set(['a', 'b']))).toMatchObject({ reviewed: 2, complete: true });
+    });
+
+    it('lets a kind_counted Fix kind be cleared by its one counted acknowledgement', () => {
+      const counted = one('missing_source_reference', 'needs_review', ['a', 'b'], { acknowledged: true });
+      expect(kindProgress(counted, new Set())).toMatchObject({ complete: true, allAcknowledged: true });
+    });
+
+    it('lets an item-less Fix kind be cleared notice by notice', () => {
+      const entry = buildKindGroups([
+        { ...warning('zero_nodes', 'pipeline_issue'), raw: 'a', acknowledged: true },
+        { ...warning('zero_nodes', 'pipeline_issue'), raw: 'b', acknowledged: true },
+      ])[0];
+      expect(entry.group).toBe('fix');
+      expect(kindProgress(entry)).toMatchObject({ reviewed: 2, total: 2, complete: true });
+    });
+
+    it('says which kinds acknowledgement may clear', () => {
+      expect(acknowledgementClears(one('duplicate_customer_id', 'needs_review', ['a']))).toBe(false);
+      expect(acknowledgementClears(one('missing_source_reference', 'needs_review', ['a']))).toBe(true);
+      expect(acknowledgementClears(one('low_grounding', 'needs_review', ['a']))).toBe(true);
+      expect(acknowledgementClears(buildKindGroups([warning('zero_nodes', 'pipeline_issue')])[0])).toBe(true);
     });
 
     it('tracks a kind without items through its own records\' acknowledged flag', () => {

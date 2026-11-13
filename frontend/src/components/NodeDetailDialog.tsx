@@ -383,7 +383,11 @@ export function NodeDetailDialog({
       />
     ) : undefined;
 
-  const evidenceStrip = <EvidenceStrip entry={entry} jobMode={jobMode} kbCitations={kbCitations} collapsible />;
+  // The Quality panel's read-only body folds into the strip's one closed "Why this verdict" disclosure (DESIGN.md §11.4), so the
+  // dialog is short by default; NodeDetailPanel keeps Re-check quality / Score this item outside it.
+  const evidenceStrip = (quality: React.ReactNode) => (
+    <EvidenceStrip entry={entry} jobMode={jobMode} kbCitations={kbCitations} collapsible quality={quality} />
+  );
 
   const keyHints: Array<[string, string]> = [
     ['J', 'next'],

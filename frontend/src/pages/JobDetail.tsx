@@ -88,7 +88,7 @@ import type { TraceLinkFailure } from '../store/jobsStore';
 import { Button } from '../ui/Button';
 import { Alert } from '../ui/Alert';
 import { Tabs } from '../ui/Tabs';
-import { Skeleton } from '../ui/Skeleton';
+import { Skeleton, useSkeletonCrossfade } from '../ui/Skeleton';
 import { Spinner } from '../ui/Spinner';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { Tooltip } from '../ui/Tooltip';
@@ -115,6 +115,7 @@ import { isRunDetailStatus, shouldShowTiles, shouldShowTabs, shouldShowFilterBar
 import { SafetyLine } from '../components/SafetyLine';
 import { Download, FileX2, RotateCw, ShieldCheck, Trash2, TriangleAlert, Upload, X } from 'lucide-react';
 import { IconButton } from '../ui/IconButton';
+import { WriteBar } from '../components/WriteBar';
 import { EmptyState } from '../ui/EmptyState';
 import { DocumentOverviewCard } from '../components/DocumentOverviewCard';
 
@@ -2519,6 +2520,8 @@ export function JobDetail(): React.ReactElement {
   const navIndex = navList.findIndex((entry) => entry.localId === selectedId);
   const hasPrevEntry = navIndex > 0;
   const hasNextEntry = navIndex !== -1 && navIndex < navList.length - 1;
+  // Research #7: when the page's placeholder was drawn (a load over a second), the page cross-fades in instead of snapping.
+  const contentFade = useSkeletonCrossfade(!loaded);
 
   if (loadError) {
     return (
@@ -2857,7 +2860,8 @@ export function JobDetail(): React.ReactElement {
                             )}
                           >
                             <GroupIcon className="h-3.5 w-3.5 flex-none" aria-hidden="true" />
-                            {meta.title} · {reviewGroups[group].length}
+                            {/* the count ticks as items are decided (research #2); the button's name carries the number as text */}
+                            {meta.title} · <AnimatedNumber value={reviewGroups[group].length} />
                           </button>
                         </Tooltip>
                       );
@@ -3116,6 +3120,18 @@ export function JobDetail(): React.ReactElement {
     </>
   );
 
+  // DESIGN.md §5 / §11.3.6: after the tree in DOM and tab order, sticky at the bottom of the review view. Only a job in review has one.
+  const writeBar =
+    status === 'diff_ready' ? (
+      <WriteBar
+        blockedCount={writeGate.blocked ? writeGate.remaining : 0}
+        onWrite={handleWriteClick}
+        onReject={() => setRejectDialogOpen(true)}
+        busy={isMutating}
+        canWriteToAdo={canWriteToAdo}
+      />
+    ) : null;
+
   return (
     // px-2 lives on this one outer container -- every child below relies on
     // it for its horizontal inset instead of re-declaring its own mx-2/px-2
@@ -3123,9 +3139,10 @@ export function JobDetail(): React.ReactElement {
     // px-2, the mutation-error alert had mx-2, CollapsibleWarnings had its
     // own mx-2, and the Tabs block had none at all -- content visibly
     // didn't line up down the page).
-    <div className="flex flex-col gap-3 px-2">
+    <div className={cn('flex flex-col gap-3 px-2', contentFade)}>
       {status === 'diff_ready' && (
-        // First in the tab order: Write and Reject sit above a tree of hundreds of rows, and a keyboard user should not have to cross them.
+        // First in the tab order: the tools, the run details and the warnings sit above the tree, and a keyboard user should not have to
+        // cross them. Write and Reject come after the tree, in the sticky write bar.
         <a
           href="#proposed-tree"
           onClick={(event) => {
@@ -3144,7 +3161,7 @@ export function JobDetail(): React.ReactElement {
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex min-w-0 flex-wrap items-baseline gap-2">
             <h1 className="truncate text-display">{sourceFilename || 'Job'}</h1>
-            {status && <StatusChip status={status} />}
+            {status && <StatusChip status={status} partial={status === 'diff_ready' && createdItemCount > 0} />}
             {mode && <ModeBadge mode={mode as 'baseline' | 'survey'} />}
             {startedAt && (
               <Tooltip content={formatDateTime(startedAt)}>
@@ -3156,31 +3173,15 @@ export function JobDetail(): React.ReactElement {
               else is a labelled icon (name + tooltip). The DOM order is the visual order at every width (decisions, then tools, Delete last, a
               divider away from the decisions); below md the decisions take the first, full-width row and the tools sit under them. */}
           <div className="flex max-w-full flex-wrap items-center gap-x-3 gap-y-2 max-md:w-full">
-            {(status === 'pending' || status === 'running' || status === 'diff_ready') && (
+            {/* The review's decisions (Reject, Write) are in the sticky write bar after the tree (W3); the header keeps the running
+                job's one decision, Cancel run, then a divider, then the tools. */}
+            {(status === 'pending' || status === 'running') && (
               <div className="flex items-center gap-2 max-md:w-full">
-                {(status === 'pending' || status === 'running') && (
-                  <Button variant="danger" onClick={() => setCancelDialogOpen(true)} disabled={isMutating} className="max-md:min-h-11">
-                    <X className="h-3.5 w-3.5" />
-                    Cancel run
-                  </Button>
-                )}
-                {status === 'diff_ready' && (
-                  <>
-                    <Button variant="danger" onClick={() => setRejectDialogOpen(true)} disabled={isMutating} className="max-md:min-h-11">
-                      <X className="h-3.5 w-3.5" />
-                      Reject
-                    </Button>
-                    <Tooltip content={canWriteToAdo ? 'Write the reviewed items to Azure DevOps' : 'Sign in with an Azure DevOps org URL and PAT to write'}>
-                      <span className="max-md:flex-1">
-                        <Button variant="cta" onClick={handleWriteClick} softDisabled={writeGate.blocked} aria-describedby={writeGate.blocked ? 'write-blocked-reason' : undefined} disabled={isMutating || !canWriteToAdo} className="max-md:min-h-11 max-md:w-full">
-                          <Upload className="h-3.5 w-3.5" />
-                          Write to Azure DevOps
-                        </Button>
-                      </span>
-                    </Tooltip>
-                  </>
-                )}
-                {/* a divider between the decisions and the tools at desktop widths; the phone puts the tools on their own row instead */}
+                <Button variant="danger" onClick={() => setCancelDialogOpen(true)} disabled={isMutating} className="max-md:min-h-11">
+                  <X className="h-3.5 w-3.5" />
+                  Cancel run
+                </Button>
+                {/* a divider between the decision and the tools at desktop widths; the phone puts the tools on their own row instead */}
                 <span aria-hidden="true" className="ml-1 hidden h-5 w-px bg-hairline-strong md:block" />
               </div>
             )}
@@ -3201,14 +3202,16 @@ export function JobDetail(): React.ReactElement {
             </div>
           </div>
         </div>
-        {writeGate.blocked && (
-          <p id="write-blocked-reason" className="text-right text-xs text-danger max-md:text-left">
-            {writeGate.remaining.toLocaleString()} {writeGate.remaining === 1 ? 'item' : 'items'} to fix before writing
-          </p>
-        )}
         {(teamProject || areaPath) && (
           <div className="mt-1">
-            <DestinationBar compact teamProject={teamProject} areaPath={areaPath} iterationPath={iterationPath} state={workItemState} />
+            <DestinationBar
+              compact
+              teamProject={teamProject}
+              areaPath={areaPath}
+              iterationPath={iterationPath}
+              state={workItemState}
+              writeState={status === 'succeeded' ? 'written' : status === 'diff_ready' ? (createdItemCount > 0 ? 'partial' : 'proposed') : undefined}
+            />
           </div>
         )}
         {shouldShowNothingWrittenLine(status, Math.max(createdItemCount, writtenLocalIds.length)) && (
@@ -3453,10 +3456,14 @@ export function JobDetail(): React.ReactElement {
             <div className={cn('flex min-w-0 flex-col gap-4', viewKey !== phaseModel.liveKey && 'hidden')}>
               {reviewMain}
             </div>
+            {writeBar}
           </div>
         </div>
       ) : (
-        reviewMain
+        <>
+          {reviewMain}
+          {writeBar}
+        </>
       )}
     </div>
   );
