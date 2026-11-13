@@ -197,6 +197,11 @@
   --text-metric--letter-spacing: -0.02em;
   --text-metric--font-weight: 600;
 
+  /* Reading prose (DESIGN.md §4): requirement text, source excerpts, summaries. 1.6 leading meets WCAG 1.4.8; the 14px/20px of chrome,
+     tables and metadata is too tight to read a sentence at length. Never for the tree or the tables. */
+  --text-read: 15px;
+  --text-read--line-height: 24px;
+
   /* ------------------------------------------------------------------
    * 14. SPACING — Tailwind's dynamic scale, no named tokens
    *     (DESIGN.md §2.3: permitted rungs 0-4.5 step .5, then 5/6/8/10/12/16).

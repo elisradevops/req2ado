@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { Card } from './Card';
+import { Card, CardHeader } from './Card';
 
 describe('Card', () => {
   it('does not apply the hover-lift class by default', () => {
@@ -16,3 +16,12 @@ describe('Card', () => {
     expect(screen.getByTestId('card').className).toContain('liftable');
   });
 });
+
+describe('CardHeader', () => {
+  it('is a real heading, so a screen-reader user can move between sections (WCAG 1.3.1)', () => {
+    render(<CardHeader title="Destination in Azure DevOps" />);
+    const heading = screen.getByRole('heading', { level: 2, name: 'Destination in Azure DevOps' });
+    expect(heading.className).toMatch(/(^| )text-title( |$)/);
+  });
+});
+

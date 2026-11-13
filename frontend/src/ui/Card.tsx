@@ -31,7 +31,7 @@ export function CardHeader({ title, action, className }: { title: ReactNode; act
           text-sm (matching body copy), making every SectionCard title
           (5 of them on the wizard) visually indistinguishable from the
           content below it. */}
-      <span className="text-title">{title}</span>
+      <h2 className="text-title">{title}</h2>
       {action && <span className="ml-auto flex items-center gap-2">{action}</span>}
     </div>
   );

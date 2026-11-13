@@ -9,7 +9,7 @@ describe('cn', () => {
   // The type-scale tokens (index.css section 13) are font SIZES, not colours.
   // Without telling tailwind-merge so, `text-ink-3` / `text-ok` look like a
   // later conflicting `text-*` and silently delete the size.
-  it.each(['text-micro', 'text-meta', 'text-title', 'text-display', 'text-metric'])(
+  it.each(['text-micro', 'text-meta', 'text-title', 'text-display', 'text-metric', 'text-read'])(
     'keeps the %s size next to a text colour',
     (size) => {
       expect(cn(size, 'text-ink-3')).toBe(`${size} text-ink-3`);

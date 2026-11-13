@@ -61,17 +61,15 @@ function countBannedPatterns(content: string): number {
 // debt: replace the arbitrary value with a token from index.css's @theme
 // block, then lower this file's count here in the SAME change -- never
 // lower it without actually removing the usage.
-// The three entries below are false positives from the bare-`transition`
+// The two entries below are false positives from the bare-`transition`
 // pattern, not Tailwind utility debt: each is either an inline style
-// object's real CSS `transition: 'width 900ms ...'` property (ui/ProgressBar.tsx,
-// components/ProgressBanner.tsx's MiniProgress) or the English word
+// object's real CSS `transition: 'width 900ms ...'` property (ui/ProgressBar.tsx) or the English word
 // "transition" inside a code comment (pages/JobDetail.tsx). Recorded here
 // rather than refining the regex to exclude them, since a genuinely NEW
 // bare-transition class added to any of these three files still pushes
 // the count past baseline and fails correctly.
 const BASELINE_COUNTS: Record<string, number> = {
   'ui/ProgressBar.tsx': 1,
-  'components/ProgressBanner.tsx': 1,
   'pages/JobDetail.tsx': 1,
 };
 
