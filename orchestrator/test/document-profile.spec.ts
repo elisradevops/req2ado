@@ -156,13 +156,18 @@ describe('summarizeBaselineTree', () => {
     expect(summarizeBaselineTree(tree).depth).toBe(2); // the two nodes, each seen once
   });
 
-  it('is told to the user as one line, labelled as what the deterministic parser will build', () => {
+  it('is told to the user as one line, labelled as what the headings alone give without AI', () => {
     const profile = { ...buildDocumentProfile(doc([h(1, '1', 'Scope'), p(SCOPE)])), baselineTree: { epics: 3, features: 12, requirements: 140, depth: 4, roots: 3 } };
     const lines = composeProfileLines(profile);
-    const line = lines.find((l) => /baseline/i.test(l))!;
+    const line = lines.find((l) => /headings alone/i.test(l))!;
     expect(line).toMatch(/3 Epics, 12 Features and 140 Requirements/);
+    // Shown in SURVEY too, where "the baseline parser will build" read as a promise about the run: it says what the headings alone
+    // give, and that SURVEY decides its own structure.
+    expect(line).not.toMatch(/baseline parser/i);
+    expect(line).toMatch(/headings alone/);
+    expect(line).toMatch(/SURVEY decides its own structure/);
     expect(line).toMatch(/4 levels/);
-    expect(line).toMatch(/no AI/i);
+    expect(line).toMatch(/without AI/i);
   });
 
   it('adds no tree line when the baseline tree was not available', () => {

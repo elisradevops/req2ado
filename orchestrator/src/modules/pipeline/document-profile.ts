@@ -377,7 +377,7 @@ export function composeProfileLines(profile: DocumentProfile): string[] {
   for (const note of s.notes) lines.push(note);
   if (profile.baselineTree) {
     const t = profile.baselineTree;
-    lines.push(`The baseline parser (deterministic, no AI) will build ${t.epics} Epics, ${t.features} Features and ${t.requirements} Requirements from this structure, nested up to ${t.depth} levels.`);
+    lines.push(`Without AI, the headings alone give ${t.epics} Epics, ${t.features} Features and ${t.requirements} Requirements, nested up to ${t.depth} levels. SURVEY decides its own structure.`);
   }
   if (profile.outline.length > 0) {
     const shown = profile.outline.slice(0, MAX_LISTED).map((entry) => `${`${entry.number ?? ''} ${entry.title}`.trim()} (${entry.subsections} ${entry.subsections === 1 ? 'subsection' : 'subsections'}, ${entry.requirements} requirement ${entry.requirements === 1 ? 'statement' : 'statements'})`);
