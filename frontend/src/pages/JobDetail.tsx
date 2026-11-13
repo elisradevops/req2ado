@@ -71,7 +71,7 @@ import { cn } from '../lib/cn';
 import { ARRIVE, MOTION, scrollBehavior } from '../ui/motion';
 import { describeJobKbCoverage, type KbCoverage } from '../utils/kbCoverage';
 import { getServerMessage } from '../lib/errorDetails';
-import { computeWriteGate } from '../utils/writeGate';
+import { computeWriteGate, openReviewRecordCount } from '../utils/writeGate';
 import { describeFailureCause, describeStoredFailure, failureAuditMessage } from '../utils/failureCause';
 import { REVIEW_GROUP_META } from '../components/reviewGroupMeta';
 import { buildReviewQueue, cleanApproval, groupReviewQueue, isExcludedWithAncestors, nextInQueue, REVIEW_GROUP_ORDER, reviewQueueModeReducer, type ReviewGroup, riskReason, spotCheckSample } from '../utils/reviewQueue';
@@ -2325,8 +2325,8 @@ export function JobDetail(): React.ReactElement {
   // and the Write button never disagree.
   const writeWarningCounts = useMemo(() => {
     const counts = countWarningsForWrite(mergedWarnings);
-    return { ...counts, open: { ...counts.open, fix: writeGate.blockers.length } };
-  }, [mergedWarnings, writeGate]);
+    return { ...counts, open: { ...counts.open, fix: writeGate.blockers.length, review: openReviewRecordCount(warningKindGroups, handledIds) } };
+  }, [mergedWarnings, writeGate, warningKindGroups, handledIds]);
 
   // Whether the focused warning is one the reviewer works through (fix or
   // review) rather than an informational one with nothing to mark.
@@ -3036,7 +3036,7 @@ export function JobDetail(): React.ReactElement {
             </div>
           )}
         </Tabs>
-      ) : isRunDetailStatus(status) ? (
+      ) : isRunDetailStatus(status) || status === 'pending' ? (
         // Real bug this fixes (confirmed live): shouldShowTabs also returns
         // false for a genuinely RUNNING job before its first diff/audit
         // fetch (diff.length and audit.length both still 0 at that point) --

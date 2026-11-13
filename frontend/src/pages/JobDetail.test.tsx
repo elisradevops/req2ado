@@ -2667,6 +2667,15 @@ describe('JobDetail', () => {
       expect(screen.queryByText('New')).not.toBeInTheDocument();
     });
 
+    it('does not call a queued job cancelled: no "Cancelled before a diff was produced" or "No diff was produced" while it waits for a worker', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-queued', status: 'pending', mode: 'survey', dryRunDiff: null } as any);
+      renderAt('job-queued');
+      await waitFor(() => expect(screen.getAllByText(/queued/i).length).toBeGreaterThan(0));
+      expect(screen.queryByText('Cancelled before a diff was produced')).not.toBeInTheDocument();
+      expect(screen.queryByText('No diff was produced')).not.toBeInTheDocument();
+      expect(screen.queryByText(/was cancelled before parsing/i)).not.toBeInTheDocument();
+    });
+
     it('does not render the "Cancelled before a diff was produced" panel while a job is actually running', async () => {
       // Real bug this guards against (confirmed live): shouldShowTabs
       // returns false for a running job too, before its first diff/audit
