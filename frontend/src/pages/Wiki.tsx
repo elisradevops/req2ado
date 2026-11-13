@@ -1,6 +1,7 @@
 import { usePageTitle } from '../hooks/usePageTitle';
 import { useEffect, useState, type JSX } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { httpClient } from '../api/httpClient.js';
 import { PageHeader } from '../ui/PageHeader';
 import { Card } from '../ui/Card';
@@ -82,7 +83,7 @@ export function Wiki(): JSX.Element {
         ) : (
           <Card>
             <div className="p-4">
-              <ReactMarkdown components={MARKDOWN_COMPONENTS}>{content}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>{content}</ReactMarkdown>
             </div>
           </Card>
         )}
