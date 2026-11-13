@@ -192,7 +192,13 @@ hex, a pixel size, a radius, a shadow, or a duration outside it.
   --color-live: #06b6d4;             /* streaming / in-flight ONLY */
   --color-live-soft: #ecfeff;
 
-  --color-shimmer-highlight: #e6ebf4;
+  /* 10b. JOB STATES — proposed / written / partly written / failed. Aliases of
+   *     the status families above (no new hex), each always drawn with its own
+   *     icon and words (§2, §13). Not ADO's work-item states (`state-*`). */
+  --color-job-proposed: var(--color-info-ink);      /* + -soft, -border */
+  --color-job-written: var(--color-ok-ink);         /* + -soft, -border */
+  --color-job-partial: var(--color-warning-ink);    /* + -soft, -border */
+  --color-job-failed: var(--color-danger-ink);      /* + -soft, -border */
 
   /* 11. DATA PALETTES — real ADO values, fallback only; the app fetches them
    *     live per project. Allowlisted for raw hex in exactly four files. */
@@ -340,6 +346,11 @@ right.
   --duration-ambient: 1500ms;    /* skeleton shimmer, indeterminate loop */
   --duration-breathe: 2600ms;    /* confirm-CTA attention cycle */
 
+  /* Motion by intent: aliases on the rungs above, no new values (§8.3). */
+  --motion-feedback: var(--duration-instant);   /* a chip changing state */
+  --motion-reveal: var(--duration-base);        /* a disclosure opening */
+  --motion-milestone: var(--duration-medium);   /* a phase advancing */
+
   --ease-out:     cubic-bezier(0.22, 0.61, 0.36, 1);   /* entrances, presses */
   --ease-in:      cubic-bezier(0.4, 0, 1, 1);          /* exits */
   --ease-in-out:  cubic-bezier(0.4, 0, 0.2, 1);        /* layout, bidirectional */
@@ -385,6 +396,10 @@ easing value above matches `index.css` exactly.
 | Caution | `warning` family | Risk flags, quality categories below the passing band, non-blocking parse notes | Errors (use danger) |
 | Informational | `info` family | Neutral system messages, the file-type badge, the ETA scope chip | Success or caution |
 | ADO type/state colours | `wt-*`, `state-*` | Badges that mirror real ADO metadata | Anything not sourced from ADO data |
+| Job state: proposed | `job-proposed` (+ `-soft`, `-border`); alias of `info` | A job in review: `StatusChip` "Diff ready" with `CircleDashed`, the job page's destination label "Writes to" | Without its icon and word; for a single item's ADO state |
+| Job state: written | `job-written` (+ `-soft`, `-border`); alias of `ok` | A written job: `StatusChip` "Written" with `CircleCheck`, destination "Written to" | Without its icon and word; never `signal` (yellow means the write to come, not the written record) |
+| Job state: partly written | `job-partial` (+ `-soft`, `-border`); alias of `warning` | A job in review that wrote some items in an earlier attempt (`createdItemCount > 0`): `StatusChip` "Partly written" with `CircleDotDashed` (job page and Jobs list), destination "Partly written to" | Without its icon and word; never `signal` |
+| Job state: failed | `job-failed` (+ `-soft`, `-border`); alias of `danger` | A failed run: `StatusChip` "Failed" with `CircleX` | Without its icon and word |
 
 **The dark-surface exception, corrected.** An earlier revision of this document
 claimed the running-job **activity log** sat on `rail-900` as the one permitted
@@ -446,6 +461,10 @@ here with its computed ratio **before merge**.
 | `ink-on-dark-dim` / `rail-900` | 9.9:1 | yes — on-dark secondary text in the nav rail. |
 | `white` / `ink-1` | 18.4:1 | yes — `NarrationTicker`'s sentence (§2 dark-surface exception). |
 | `ink-on-dark-dim` / `ink-1` | 11.6:1 | yes — `NarrationTicker`'s elapsed timer. `ink-1` is darker than `rail-900`, so every on-dark pair measured above `rail-900` also passes here. |
+| `job-proposed` / `job-proposed-soft` (`info-ink` / `info-soft`) | 6.02:1 | yes — the "Diff ready" chip's word and icon (icon floor 3:1). On `surface-alt` (destination bar): 6.30:1. |
+| `job-written` / `job-written-soft` (`ok-ink` / `ok-soft`) | 6.92:1 | yes — the "Written" chip's word and icon. On `surface-alt`: 7.14:1. |
+| `job-partial` / `job-partial-soft` (`warning-ink` / `warning-soft`) | 6.63:1 | yes — the "Partly written" chip's word and icon. On `surface-alt`: 6.69:1. |
+| `job-failed` / `job-failed-soft` (`danger-ink` / `danger-soft`) | 7.66:1 | yes — the "Failed" chip's word and icon. |
 
 `--color-hairline` is exempt from the 3:1 floor: it is a decorative divider, not
 a control boundary. The moment a hairline is load-bearing — an input edge, a
@@ -508,17 +527,29 @@ focus indicator — it must be `--color-field-border` instead.
   connection dots sit in one labelled **Connections** group; that group, with
   its visible heading and slightly tighter spacing, is the one change that also
   shows at `md` and up.
-- **A page's actions come in three tiers, not N equal buttons** (job header: up
+- **A page's actions come in three tiers, not N equal buttons** (job page: up
   to six actions by state). One primary (`cta`: "Write to Azure DevOps") with its
-  counterpart decision beside it (Reject, or Cancel run while running): text,
+  counterpart decision beside it, before it (Reject, or Cancel run while running): text,
   icon and colour. Everything else is an **icon button** (`ui/IconButton`): the
   label is its accessible name and tooltip, 32px at desktop widths and 44px below
   `md`. The destructive one (Delete) is last in the tools. The DOM order is the
-  visual order at every width (decisions, a divider, then the tools), so keyboard
-  and screen-reader order match what is seen. All stay visible; below `md` the
-  decisions take the first, full-width row and the tools sit under them, each
-  with a short visible label beside its icon (there is no hover to show the
-  tooltip).
+  visual order at every width, so keyboard and screen-reader order match what is
+  seen. All stay visible; below `md` the tools sit on their own row, each with a
+  short visible label beside its icon (there is no hover to show the tooltip).
+  - **Where the decisions sit (W3, built 2026-11-13).** While a job is in review
+    (`diff_ready`) its decisions are in the **write bar** (`components/WriteBar.tsx`):
+    a bar sticky at the bottom of the review view that comes **after the tree** in
+    DOM and tab order, so the order is tools (header), then the review, then the
+    decisions. It carries the blocker count in text ("N items to fix before writing",
+    `id="write-blocked-reason"`, the Write button's `aria-describedby`), Reject, then
+    Write, the one signal-yellow control and the only "Write to Azure DevOps" button
+    in the DOM, `softDisabled` while blocked; pressing it then takes the reviewer to
+    the first blocker (§11.3.6). Below `md` it is a bottom bar: the count on its own
+    line, then Reject and a full-width Write, each 44px tall. The "Skip to proposed
+    items" link stays first in the page. A running job keeps its one decision,
+    Cancel run, in the header before the tools; every other status has no decisions
+    and no write bar. Category (§7): a Surface (`surface`, `hairline-strong` top edge,
+    radius `md` on its top corners) holding Actions at their own geometry.
 - **Long grouped lists fold below `md`.** The Integrity warnings card starts as
   its three group headings with counts (the red "Fix before confirming" count
   still shows), each opening its rows. The "N warnings need your attention before
@@ -548,6 +579,21 @@ focus indicator — it must be `--color-field-border` instead.
     always fits.
   - *Sized in rem.* The two-line row is 4rem, not 64px, so it grows with the
   reader's text-size setting instead of clipping.
+- **At `md` and up the title keeps its room (R7, built 2026-11-13).** The desktop
+  row is one 40px line; what follows the title used to squeeze it ("Operat…")
+  while the Status cell of a New item sat empty. Now: (1) a new item's criteria
+  chip ("criteria to review" / "criteria accepted") sits in the **Status** track,
+  which is otherwise empty for a New item; the track is measured from this job's
+  rows (action labels and criteria labels), never a global reserve, and holds one
+  mark per row (a matched new item keeps its chip on the title line, since Status
+  already says "New, matched WI-n"). (2) The title has a minimum,
+  `min(12rem, 50%)` of its cell, so it scales with text size and never paints past
+  a narrow cell. (3) Everything else after the title (the "Nested" hazard, the
+  focused warning's reason chip, the excluded-ancestor eye, the lock, the customer
+  id, in that order) sits in one group that wraps whole marks onto a second line
+  that is cut away, bounded in rem (`max-h-6`), the same *never half-clipped* rule
+  as the phone row: a mark that does not fit drops out of sight whole and is in the
+  details dialog. Flags keep their 100px track.
 - *Targets.* The matched-item link has a 24px-tall hit area. The details button is 44px (info glyph, not the external-link glyph
     that desktop uses), indent guides cap at three levels.
 - **Card nesting cap:** a `Card` may never contain another `Card`. Depth beyond
@@ -868,14 +914,14 @@ Five named roles. Every animation in the app is exactly one of them. A new
 | **Entrance** | An element that did not exist now exists | `--duration-fast` (140ms) for frequent arrivals: a route change fades `<main>`, a wizard step fades its container, a table's `<tbody>` fades once on first arrival. `--duration-base` (190ms) for dialogs and popovers, `--duration-medium` (240ms) for a rare arrival (a finished result). No per-row stagger. | `--ease-out` | `opacity`, `translateY(≤4px)`, `scale(0.97→1)`; a route, step or table fade is opacity only | On anything already on screen. On a whole-page route change, anything but opacity (no slide, no scale). On virtualised rows. On a step the person has already seen, on sort, filter or refresh. More than one nesting level animating at once. |
 | **Exit** | An element ceases to exist | `--duration-exit` (120ms) — always shorter than its entrance | `--ease-in` | `opacity`, `scale(1→0.97)`, `translateY(≤4px)` | On unmount without user intent (an SSE data replacement is not an exit). On list items removed by a filter change — those disappear instantly. |
 | **State-change** | The same element becomes different | `--duration-micro` (`.hoverable-row` tint) / `--duration-instant` (colour-only, and a button press) / `--duration-fast` (colour + shadow + `.liftable` + a disclosure chevron) / `--duration-medium` (the stepper sweep) / `--duration-slow` (layout) / `--duration-progress` (determinate bar fill, `transform: scaleX`) | `--ease-out` (pointer-driven) / `--ease-in-out` (layout) | `color`, `background-color`, `border-color`, `box-shadow`, `opacity`, `translateY(≤2px)`, `scaleY` on the row rail, `scaleX` on the progress fill and the stepper connector, `rotate(90deg)` on a disclosure chevron, `scale(0.97–1.09)`, `width` / `height` / `grid-template-rows` for disclosure | On a virtual-scrolled row's background. On any unenumerated property. Via bare `transition`. Never `filter` / `backdrop-filter`. |
-| **Ambient / live** | Something is genuinely happening on a server right now | `--duration-ambient` (skeleton shimmer, indeterminate), `--duration-typedot` (typedot), `--duration-spin` (spin) | `--ease-linear` (spin, shimmer) / `--ease-in-out` (typedot, indeterminate) | `translateX`, `rotate` (Spinner only), `scale`, `opacity`, `background-position`, `box-shadow` (`pulse-ring` only) | **Whenever nothing is actually in flight** — an outliving spinner or shimmer is a correctness bug. No ambient decoration: no idle pulsing, no breathing outside Attention. |
+| **Ambient / live** | Something is genuinely happening on a server right now | `--duration-ambient` (indeterminate progress), `--duration-typedot` (typedot), `--duration-spin` (spin) | `--ease-linear` (spin) / `--ease-in-out` (typedot, indeterminate) | `translateX`, `rotate` (Spinner only), `scale`, `opacity` | **Whenever nothing is actually in flight** — an outliving spinner is a correctness bug. On a loading placeholder (the skeleton is static since 2026-11-13). On reading prose. No ambient decoration: no idle pulsing, no breathing outside Attention. |
 | **Attention** | The app is blocked on an irreversible human decision | `--duration-breathe` (2600ms), once, settling on the attention state | `--ease-in-out` | `box-shadow` only — `--shadow-cta` ↔ `--shadow-cta-attention` | Everywhere except the confirm-to-ADO CTA post-acknowledgement. Never more than one element at a time. Never on reversible-destructive actions (delete, cancel). Never on a toast. |
 
 Existing keyframes, mapped: `fadeIn` / `dialogIn` / `popIn` →
-Entrance. `fadeOut` / `dialogOut` / `popOut` → Exit. `shimmer` / `spin` /
+Entrance. `fadeOut` / `dialogOut` / `popOut` → Exit. `spin` /
 `typedot` / `indeterminate-progress` → Ambient. `ctaBreathe` →
-Attention. `animate-pulse` (Tailwind's builtin) is removed — it double-animates
-alongside the inline `shimmer`.
+Attention. `animate-pulse` (Tailwind's builtin) is removed, and the skeleton's
+`shimmer` keyframe was removed on 2026-11-13 (research #7: a placeholder is static).
 
 `popIn` / `popOut` are `dialogIn` / `dialogOut`'s scale-only counterparts for
 Radix-anchored popovers, which carry their own `translate()` from Radix's popper
@@ -960,7 +1006,12 @@ and a rare arrival.
 | Overview card | The chevron turns | The text appears and leaves at once. |
 | Stat tiles | None | The number is there in the first frame. A count-up shows the wrong number for most of a second on every visit. Tiles do not lift on hover unless they are clickable. |
 | "Diff ready" | The review area fades in once, `--duration-medium`; a polite status line announces it | Only when a job that was running on the page finishes; a job opened already finished stays still and silent. Focus is never moved. |
-| Skeleton placeholder | Drawn only after `SKELETON_DELAY_MS` (1000ms) | It is laid out at once (no jump) but `invisible` until the delay, so a load under a second shows nothing instead of a flash (Primer loading pattern, NN/g). One constant in `ui/Skeleton.tsx` covers every skeleton. Where the placeholder is the only content (job page, wiki), a `role="status" aria-busy` region with visually hidden "Loading…" text exists from the first moment, so assistive technology is not left in silence. |
+| Skeleton placeholder | Drawn only after `SKELETON_DELAY_MS` (1000ms), static | It is laid out at once (no jump) but `invisible` until the delay, so a load under a second shows nothing instead of a flash (Primer loading pattern, NN/g). One constant in `ui/Skeleton.tsx` covers every skeleton. No shimmer loop (research #7). Where the placeholder is the only content (job page, wiki), a `role="status" aria-busy` region with visually hidden "Loading…" text exists from the first moment, so assistive technology is not left in silence. |
+| Skeleton to content | The job page cross-fades in, `ARRIVE.fade` (`--duration-fast`) | `useSkeletonCrossfade(loading)`: only when the placeholder was actually drawn (the load outlasted the delay); a fast load neither shows a placeholder nor fades. The Jobs list already fades its table once on first arrival (row above). The swap itself, and the "Loading…" status leaving, is the text equivalent. |
+| Disclosure open | The region fades in, `--motion-reveal` (190ms), opacity only | Research #6. Only when the reader opens it, not for one open on first paint. Closing is instant (the content leaves the page at once); no height animation (row "Considered and not done" below). The chevron turn is unchanged. |
+| Phase advance | The finished phase's glyph and name, and the new current one's, fade in once, `--motion-milestone` (240ms) | Research #4. `PhaseRail` compares each row with the previous commit, so nothing animates on first paint. The rail has no connector line, so there is no fill. The page's one polite region already announces the step change (§13), so the rail adds none. |
+| Count tick | The review group counters ("Check · 10") and the write bar's "N items to fix before writing" roll to their new value (`AnimatedNumber`) | Research #2. The number is the button's or sentence's text, so the change is announced with it; number-flow snaps under reduced motion. Never on scores in the dialog (the reviewer is reading them). |
+| Job state chip | Colour eases at `--motion-feedback` (90ms) when a status changes on the page (Diff ready, Writing, Written) | The word and icon change with it, so colour is never the only cue. |
 | Confirm-to-ADO attention | The shadow eases from rest to the attention shadow once, 2600ms, and stays | The rule itself holds the attention shadow and the animation uses a `backwards` fill, so the end state is the resting state and the button's own hover and press shadows still apply. The reduced-motion fallback shows the same state, so both modes end alike. Not a loop (WCAG 2.2.2). |
 | Running job: live dot | A halo around the dot fades out once per real server update (`BEAT`, `--duration-slow`), at most one per 2 seconds | Opacity only, never a loop. A hollow ring with a neutral plain-text note after 60 seconds of silence (§11.3.2). Replaces an endless ping. |
 | Running job: activity feed | A line fades in once, `--duration-fast`, when it arrives after first paint | Lines already there on first paint do not animate. A labelled `role="log"`, `aria-live="off"`. |
@@ -990,7 +1041,20 @@ pulsing motions"). WCAG 2.2.2 is not documented as satisfied by honouring `prefe
 so a loop beside usable content is bounded under five seconds instead (the
 current-step spinner, the confirm-button attention).
 
-**Loops that remain, and why.** A skeleton shimmer is a loading placeholder, the
+**Rules from the daily-review research (P18, enforced in `design/motionContract.test.ts`).**
+Motion aliases `--motion-feedback`, `--motion-reveal` and `--motion-milestone` sit on existing rungs
+(no new values), and each has a consumer; there is no `--motion-dismiss` or stagger token, because nothing
+uses one. No `animate-`, `transition` or `ARRIVE` on an element carrying `text-read` (the prose a reviewer
+is reading never moves). The ambient tokens (`--duration-ambient`, `--duration-breathe`) appear only in
+`LivenessDot`, `ui/ProgressBar` and `ProgressBanner` (indeterminate wait), and `--duration-breathe` only on
+`.cta-attention`; an `infinite` loop only in those and in `Spinner` and the chat typing dots. The research
+asked for ambient loops on `LivenessDot` alone; the wait indicators listed below are kept as §8.3 already
+justified them. No per-row stagger: a delay is either a loop's phase offset (the typing dots) or at most
+200ms, and never multiplied by an index. Every animated state change above has a text or live-region
+equivalent. Not supported by a fetched source, and so not cited as fact: that a stagger or a FLIP improves
+task performance (the research says so itself).
+
+**Loops that remain, and why.** The
 indeterminate progress segment appears only when a step has no estimate, the chat
 typing dots live only while a reply is pending, and a spinner inside a button
 marks the control that is busy. Each is a wait indicator, not decoration, and
@@ -1746,9 +1810,14 @@ bounded model multiplier.
 E = max(SURVEY_MIN_MINUTES, estimate(b, f) × adjusted_m)
 ```
 
-`SURVEY_MIN_MINUTES = 15` is retained, and the floor is still applied **last**,
-so a `0.5×` model adjustment cannot drag a small document below it. There is
-still no last operation ceiling, and there never will be.
+`SURVEY_MIN_MINUTES` is still applied **last**, so a `0.5×` model adjustment
+cannot drag a small document to nothing. It was 15 until 2026-11-13 and is now
+**2**: at 15 the estimator returned the same 15 minutes (11-19) for 8, 50 and 200
+blocks, hiding the fit's own answer, while an 8-block file ran in about 5. The 2
+is a judgement (a run always parses and makes at least one model call), not a
+measured value, and sits well below anything the fit produces for a real
+document. It is a floor, never a ceiling: there is still no last operation
+ceiling, and there never will be.
 
 ##### §11.2.3.d — This is a server computation with an API in front of it
 
@@ -2584,15 +2653,18 @@ per-phase notices in a phase's own summary; removing `MiniProgress`.
 #### §11.3.6 — The write gate is a hard block (built 2026-11-13)
 
 **Rule (owner decision, 2026-11-12).** While any **Fix before writing** kind is open, Write is not available. It stays
-visible, `softDisabled` (§7), with the reason in text beside it ("N items to fix before writing", linked to the button by
-`aria-describedby`), and pressing it takes the reviewer to the first blocker, in the same narrowed tree "Fix in tree" gives. The
+visible, `softDisabled` (§7), with the reason in text beside it in the write bar (§5; "N items to fix before writing", linked to
+the button by `aria-describedby`), and pressing it takes the reviewer to the first blocker, in the same narrowed tree "Fix in tree" gives. The
 confirm dialog cannot be opened while blocked; if a blocker appears while it is open, its Write button is disabled and its
 warning line says "Fix them before you write."
 
 **What counts as open.** One pure module (`utils/writeGate.ts`) answers it for the header, the dialog and the tests. A kind is
 open until each affected item is *handled*: marked reviewed, or left out of the write (directly or through an excluded ancestor).
 The warning rows, the banner count and the gate share one handled set. Check, Review and Info kinds never block, and neither does
-an `auto_fixed` warning.
+an `auto_fixed` warning. **Acknowledgement never clears a per-item Fix kind** (`acknowledgementClears` in `utils/warningKinds.ts`,
+read by `kindProgress`, the queue's `isAcknowledgedKind`, the gate, the warning rows and the summary line): records of such a kind
+that carry `acknowledged` (from before the gate, or from an old client) leave it open and its items blocking until each is decided.
+Acknowledgement may clear only a `kind_counted` kind, an item-less kind (decided notice by notice) and a Review kind.
 
 **One exception, counted.** A Fix kind whose value is *missing from the source document*, with nothing to correct (`ackPolicy:
 'kind_counted'`; today only "Requirement has no Customer ID"), can be cleared by one counted acknowledgement, "Accept 433
@@ -2698,7 +2770,12 @@ usability traded against each other on every viewport. See §11.4.2.
 
 **Reading order (built 2026-11-13).** The requirement text comes first. In the details pane: the item's own text and actions, then the
 evidence strip (file and location, and a line saying the original wording is in the source file), then one closed **Why this verdict**
-disclosure holding the weakest area, the scoring note and the KB references. One disclosure level, nothing nested. Before this the strip
+disclosure holding the weakest area, the scoring note and the KB references, and since 2026-11-13 the whole Quality panel: the gauge
+(its category rows flat, each with its definition and fixes shown, so there is no second level of open and close), the on-demand
+"Why this score?" explanation and the "Matches source wording" line. Its closed line says "Quality N of 100" (", from before your
+edit" when stale) and the weakest area. The lines that change state stay outside it, right after it, in view and in tab order: the
+stale notice with **Re-check quality**, "Not scored yet." with **Score this item**, and "Rescored.". Edit stays in the title row. One
+disclosure level, nothing nested. Before this the strip
 sat above everything and the statement started about 440 px down. An Epic or Feature never says "Needs review: Low quality score": parents
 are not scored (§11.4.1); loose wording against the source still shows.
 
@@ -3706,6 +3783,9 @@ The sharing link names a folder and, with its token, opens it. The page therefor
 requests use it. The last browsed folder is remembered per user (`utils/kbBrowseUrl.ts`, localStorage key `req2ado-kb-browse-url:<userId>`),
 cleared with the user on sign-out; the old global key is never read, since it belonged to whoever browsed last. `GET /kb/documents` and
 `DELETE /kb/documents/:id` send no `userId`: the session says whose documents they are, and an identity claim in a URL ends up in logs.
+Listing a shared folder is `POST /kb/browse-folder` with `{ url }` in the body (since 2026-11-13; the `GET ?url=` route is removed), so
+the link never lands in proxy or access logs; the server takes the user from the session and never reads a `userId` from the body.
+`GET /kb/browse-children` carries only drive and item ids, not the link.
 
 ## §12 — Content and voice
 
@@ -3878,7 +3958,11 @@ the relevant allowlist — silent baseline bumps are not permitted.**
    `design/signalColour.test.ts` (only `ui/Button.tsx` may use signal-colour
    utilities or the raw custom property), `design/terminology.test.ts` (§12
    glossary: "ADO", "WI" as prose, "Confirm" for the write), and
-   `design/scale.test.ts` (no `text-lg/xl/2xl/3xl`, no `rounded-xl/2xl`).
+   `design/scale.test.ts` (no `text-lg/xl/2xl/3xl`, no `rounded-xl/2xl`), and
+   `design/textSpacing.test.tsx` (WCAG 1.4.12: in the rendered item dialog no prose
+   sits under a fixed-height box that clips, and no line clamp; the prose-bearing
+   dialog sources carry no `h-[Npx]` / `max-h-[Npx]`; jsdom measures no layout, so
+   this guards the cause, not the effect).
    Note: the palette allowlist above names four files; the test is the authority
    if the two differ.
 
@@ -3893,6 +3977,7 @@ obligation, not a follow-up:
 | Mode/ETA copy stops carrying hardcoded times (§11.2.3) | **Add a pattern** matching a time-range literal in `.tsx`/`.ts` — e.g. `/\d+\s*[–-]\s*\d+\+?\s*min/g` — with an initial baseline of **seven** offenders (`ModeCards.tsx:11,15,16`, `NewJobWizard.tsx:312,347`, `ProgressBanner.tsx:208`, `labels.ts:122`), so the count can only go down. Note the pattern must cover `.ts`, not just `.tsx` — one offender is in `utils/labels.ts`. This is the mechanical guard against the 40-minute cap creeping back in as prose. |
 | Custom inline icon SVG is banned (§10) | **Add a pattern** matching `<svg` in `.tsx` outside an allowlist. Today the only legitimate inline SVG is whatever `QualityGauge` and `Spinner` draw; record their baselines, ban new ones. Do **not** pair this with a ban on `react-bootstrap-icons` imports — that package is in scoped, intentional use (§10); the correct ratchet is a pattern allowing it **only** in `FileTypeIcon.tsx` and `WorkItemTypeBadge.tsx`. |
 | Plex migration (§1.8 row A) | No new ratchet. Close the row, move it to §18. |
+| Job-state tokens, motion aliases, research motion rules (2026-11-13) | The `job-*` tokens are aliases, so `palette.test.ts` is unchanged (no new hex anywhere). `motionContract.test.ts` gains four rules: no motion on `text-read` prose; ambient tokens and `infinite` loops only in a named allowlist; no stagger over 200ms or multiplied by an index; every `--motion-*` alias sits on a rung and has a consumer. New zero-tolerance guard `textSpacing.test.tsx` (§15 item 4). |
 
 ---
 
@@ -4070,6 +4155,13 @@ Append-only. Every renamed or removed token, and every closed §1.8 divergence.
 | **Reading text, 2026-11-13** (slice 6, part 1) | `text-read` (15/24) added to §1.3 and `lib/cn.ts`; the item dialog's requirement text uses it | `index.css`, `lib/cn.ts`, `components/NodeDetailPanel.tsx` | Not built from slice 6: state colours (proposed/written/partial/failed, each needs §2/§3 rows), `--color-mark-source`, motion aliases (no consumer yet), micro-interactions #1-#8, the WCAG 1.4.12 text-spacing check. The delayed skeleton already exists (`ui/Skeleton`, 1 s). |
 | **Reviewer pass 2, 2026-11-13** (slices 3-7) | Jobs table responsive columns, leaf area path, one clock, filter-aware stale count, tile = Needs you, row groups and row labels; neutral failure-cause wording and strict status-code match; stale cause cleared on job change; log folding only for a pure "N of M" counter; token hidden by position; rail "Not chosen yet"; phone destination line; help page and legacy KB key cleanup | `pages/JobsList.tsx`, `utils/failureCause.ts`, `components/ActivityFeed.tsx`, `utils/redactSharingUrl.ts`, `pages/NewJobWizard.tsx`, `pages/JobDetail.tsx`, `docs/user-guide.md`, `utils/kbBrowseUrl.ts` | Not fixed: `api/kb.ts` sends the full sharing link as a GET query (`/kb/browse-folder?url=`), so it reaches proxy logs (a POST needs a server route; plan, server); remembered wizard defaults are not seeded from existing history; the "Jobs" id column is hidden on phones. |
 | **Write gate, 2026-11-13** (slice 1, part 1) | soft "You can still write" → hard block (§11.3.6); `Button softDisabled` (§7); iteration "hatched when unset" → "Project default" (§11.2.2, §16.9); state chip "Work item state"; job chip "Succeeded" → "Written" (§12); read-only warnings on a finished job | `utils/writeGate.ts` (+ test), `utils/warningKinds.ts` (`ackPolicy`, `countedAckLabel`), `ui/Button.tsx`, `pages/JobDetail.tsx`, `components/CollapsibleWarnings.tsx`, `WriteSummary.tsx`, `DestinationBar.tsx`, `StatusChip.tsx`, `utils/labels.ts` | UI-only: the server still accepts `confirm` with open Fix warnings (plan S1). Not yet built from slice 1: sticky write bar and tab order (W3/W4), Azure DevOps ids on rows (needs plan S2). |
+| **Review screen, 2026-11-13** (R7) | the desktop title no longer squeezed by its chips: a new item's criteria chip moves to the Status track (measured per job, one mark per cell); the title keeps `min(12rem,50%)`; the other marks wrap whole into a rem-bounded group (§5) | `components/DiffTree.tsx` (+ tests) | The row stays 40px (react-window); no new px height. Not verified in a browser (stack not rebuilt). |
+| **Write bar, 2026-11-13** (W3) | Write and Reject leave the page header for a sticky bar after the tree (§5, §11.3.6); the blocker count ticks | new `components/WriteBar.tsx`, `pages/JobDetail.tsx` (+ tests) | Reject chosen to sit beside Write in the bar (both are job-ending decisions; the header keeps only tools, or Cancel run while running). |
+| **Item dialog, 2026-11-13** | the Quality panel folds into "Why this verdict" (§11.4); Re-check / Score this item stay outside it | `components/NodeDetailPanel.tsx`, `EvidenceStrip.tsx`, `NodeDetailDialog.tsx`, `QualityGauge.tsx` (`flat`) (+ tests) | Inside the disclosure the gauge's category rows no longer open and close: definitions and fixes are always shown there (no nested disclosure). |
+| **Write gate, 2026-11-13** (part 2) | `kindProgress` no longer completes a per-item Fix kind through acknowledgement (§11.3.6); one `acknowledgementClears` rule read by the queue, the gate, the warning rows and the summary | `utils/warningKinds.ts`, `utils/reviewQueue.ts` (+ tests in both, `writeGate.test.ts`, `CollapsibleWarnings.test.tsx`) | Covers records acknowledged before the gate existed. `writeSummary.countWarningsForWrite` still counts such records as handled (advisory text only; the gate blocks first). |
+| **Slice 6, 2026-11-13** (part 2) | job-state tokens with icon and word (§1.1, §2, §3); motion aliases (§1.7); disclosure fade, phase advance, count tick, skeleton crossfade (§8.3); research motion rules and the text-spacing guard (§15) | `index.css`, `components/StatusChip.tsx`, `DestinationBar.tsx`, `jobPhase/PhaseRail.tsx`, `ui/Disclosure.tsx`, `ui/Skeleton.tsx`, `pages/JobDetail.tsx`, `pages/JobsList.tsx`, `design/motionContract.test.ts`, new `design/textSpacing.test.tsx` | `--color-mark-source` not added: the evidence strip shows no source sentence (only offsets are stored), so it has no consumer. New-event fade (#8) was already built (§8.3 activity feed row). Real layout under text-spacing overrides was not measured. |
+| `--color-shimmer-highlight`, `@keyframes shimmer` | **removed** | Only `ui/Skeleton.tsx` used them; the skeleton is a static `bg-hairline` block now (research #7). |
+| `GET /kb/browse-folder?url=` | `POST /kb/browse-folder` `{ url }` (§11.7.1) | `orchestrator/src/modules/kb/kb.controller.ts`, `frontend/src/api/kb.ts` (+ `kb.controller.spec.ts`, `kb.test.ts`). The GET route is removed: nothing else called it. Closes the "Not fixed" note in the reviewer-pass-2 row. |
 
 ### §18.1 — Open migrations
 
