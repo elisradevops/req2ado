@@ -17,6 +17,8 @@ export interface JobSummary {
   // Set only for a job submitted as part of a batch (NEW-05) -- lets
   // JobsList render a "Batch" chip linking back to the batch's status page.
   batchId?: string | null;
+  // Why a failed run stopped (the server's failure class); null for a job that failed before it was recorded.
+  failureClass?: string | null;
 }
 
 export interface JobDetail {

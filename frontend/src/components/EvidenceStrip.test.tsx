@@ -53,6 +53,20 @@ describe('EvidenceStrip', () => {
     expect(Array.from(container.querySelectorAll('.sr-only')).map((e) => e.textContent)).toEqual([': ', ', ']);
   });
 
+  it('does not double the punctuation in the closed summary when the criterion already ends in a full stop', () => {
+    render(
+      <EvidenceStrip
+        entry={{ ...BASE, qualityScore: 45, qualityCategoryScores: { 'Owner is present.': 10, clarity: 80 } }}
+        jobMode="survey"
+        collapsible
+        quality={<div>panel</div>}
+      />,
+    );
+    const summary = screen.getByText(/Weakest area:/).textContent ?? '';
+    expect(summary).toContain('Weakest area: Owner is present, 10 of 100');
+    expect(summary).not.toContain('.,');
+  });
+
   it('shows a weakest category of 0 rather than treating it as missing', () => {
     render(<EvidenceStrip entry={{ ...BASE, qualityCategoryScores: { style: 0, clarity: 90 } }} jobMode="survey" />);
     expect(screen.getByText('Style')).toBeInTheDocument();

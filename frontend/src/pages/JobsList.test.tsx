@@ -324,6 +324,17 @@ describe('JobsList', () => {
       expect(headings).toEqual(['Needs you · 2', 'Today · 1', 'Yesterday · 1', 'This week · 1', 'Earlier · 1']);
     });
 
+    it('says why a failed run stopped, in plain words, from the stored failure class', async () => {
+      renderAtNow([
+        { ...row('bbbbbbbb-2', 'failed', at(1)), failureClass: 'connection_reset' },
+        { ...row('cccccccc-3', 'failed', at(1)), failureClass: null },
+        row('dddddddd-4', 'succeeded', at(0)),
+      ]);
+      await waitFor(() => expect(screen.getByText('bbbbbbbb-2.docx')).toBeInTheDocument());
+      expect(screen.getAllByText('The connection was cut during the run.')).toHaveLength(1);
+      expect(screen.queryByText('The run stopped with an error.')).toBeNull();
+    });
+
     it('shows the short job id in mono, the text the job page address starts with', async () => {
       renderAtNow([row('129e4ca3-8973-4887-b4e9-d7c16dbb7fae', 'succeeded', at(0))]);
       await waitFor(() => expect(screen.getByText('129e4ca3')).toBeInTheDocument());

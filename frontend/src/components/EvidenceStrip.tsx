@@ -69,7 +69,7 @@ export function EvidenceStrip({
     if (quality && entry.qualityScore != null) {
       summaryParts.push(`Quality ${clampScore(entry.qualityScore)} of 100${entry.qualityStale ? ', from before your edit' : ''}`);
     }
-    if (weakest) summaryParts.push(`Weakest area: ${categoryLabel(weakest.key)}, ${weakest.score} of 100`);
+    if (weakest) summaryParts.push(`Weakest area: ${categoryLabel(weakest.key).replace(/[.。]$/, '')}, ${weakest.score} of 100`);
     return (
       <section aria-label="Evidence" className="flex flex-col gap-2 rounded-sm border border-hairline bg-surface-alt p-3 text-sm">
         {entry.sourceRef && <SourceProvenance sourceRef={entry.sourceRef} showScoringNote={false} />}

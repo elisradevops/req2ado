@@ -4,6 +4,7 @@ import { Briefcase, Plus, RefreshCw, Trash2, RotateCw, Layers } from 'lucide-rea
 import { listJobs, deleteJob, resubmitJob } from '../api/jobs';
 import { useJobsStore, useJobs, type JobSummary } from '../store/jobsStore';
 import { StatusChip } from '../components/StatusChip';
+import { describeStoredFailure } from '../utils/failureCause';
 import { ModeBadge } from '../components/ModeBadge';
 import { PageHeader } from '../ui/PageHeader';
 import { Button } from '../ui/Button';
@@ -404,6 +405,11 @@ export function JobsList(): React.ReactElement {
                               </Tooltip>
                             )}
                           </span>
+                          {job.status === 'failed' && job.failureClass && (
+                            <span className="block max-w-[14rem] truncate text-xs text-ink-3 max-md:max-w-[7rem]">
+                              {describeStoredFailure({ failureClass: job.failureClass })?.summary}
+                            </span>
+                          )}
                         </td>
                         <td className={cn('px-3.5 max-[1099px]:hidden', cellPaddingY)}>
                           <ModeBadge mode={job.mode as 'baseline' | 'survey'} />
