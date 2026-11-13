@@ -4,6 +4,14 @@
 
 Converts a requirements document (contract, survey, or engineering spec) into a structured Epic → Feature → Requirement hierarchy in Azure DevOps.
 
+## First-day setup
+
+Three connections feed the app. The status line at the bottom of the navigation reads **All systems OK** when they work; click it to see which one needs attention.
+
+1. **Azure DevOps.** Connected when you sign in. If it lapses, open the account menu (your name, top right), choose **Profile & connections** (the page is titled Profile and connections), and reconnect there.
+2. **AI model (Open WebUI).** Needed before your first job. In **Profile and connections**, open **Configure** on the Open WebUI row, paste an API key from your Open WebUI account, press **Load models**, pick a model and save. The app cannot create the key for you.
+3. **SharePoint (knowledge base only).** Skip this if you do not use a knowledge base. On **Knowledge base**, press **Reconnect**. The dialog links to Graph Explorer and lists the three steps: sign in there, copy the access token, paste it back. The page then shows when the connection expires; reconnect when it does. One token serves everyone who uses the knowledge base.
+
 ## Modes
 
 - **Baseline** — verbatim extraction. The tool never rewrites your text; titles are truncated (not summarized) from the source, and every requirement's description is byte-for-byte traceable back to the source document via a fidelity hash. Use this for signed contracts and formal specs where wording must not change.
@@ -35,7 +43,7 @@ Open an item (or start **Review in risk order**), then:
 | **U** | undo the last review action |
 | **Esc** | close the item |
 
-The single-key shortcuts can be switched off under **Settings**. The first link on a job page, **Skip to proposed items**, jumps straight to the list.
+The single-key shortcuts can be switched off under **Profile and connections** (account menu, top right). The first link on a job page, **Skip to proposed items**, jumps straight to the list.
 
 ## The Jobs list
 

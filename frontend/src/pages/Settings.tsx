@@ -1,3 +1,4 @@
+import { SharePointTokenHelp, SHAREPOINT_TOKEN_DIALOG_DESCRIPTION } from '../components/SharePointTokenHelp';
 import { useEffect, useRef, useState } from 'react';
 import { httpClient } from '../api/httpClient';
 import { reconnectSharePoint, type SharePointStatus } from '../api/kb';
@@ -577,7 +578,7 @@ export function Settings(): React.ReactElement {
         open={sharePointReconnectOpen}
         onOpenChange={setSharePointReconnectOpen}
         title="Reconnect SharePoint"
-        description="Paste a fresh access token. This is checked against SharePoint before saving, and one token is shared by everyone using the knowledge base."
+        description={SHAREPOINT_TOKEN_DIALOG_DESCRIPTION}
         footer={
           <>
             <span className="ml-auto" />
@@ -591,6 +592,7 @@ export function Settings(): React.ReactElement {
           </>
         }
       >
+        <SharePointTokenHelp />
         <TextField label="SharePoint access token" type="password" value={sharePointToken} onChange={(e) => setSharePointToken(e.target.value)} fullWidth />
         {sharePointReconnectError && <p className="text-sm text-danger">{sharePointReconnectError}</p>}
       </Dialog>

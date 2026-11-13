@@ -1,3 +1,4 @@
+import { SharePointTokenHelp, SHAREPOINT_TOKEN_DIALOG_DESCRIPTION } from '../components/SharePointTokenHelp';
 import { readKbBrowseUrl, removeLegacyKbBrowseUrl, writeKbBrowseUrl } from '../utils/kbBrowseUrl';
 import { useEffect, useRef, useState } from 'react';
 import { isAxiosError } from 'axios';
@@ -738,7 +739,7 @@ export function KnowledgeBase(): React.ReactElement {
 
   return (
     <div className="flex flex-col gap-4">
-      <PageHeader title="Knowledge base" description="Documents your SURVEY jobs are judged against. Only visible to your own jobs." />
+      <PageHeader title="Knowledge base" description="Your reference documents. SURVEY jobs you start use them for context. Other users do not see them." />
       <KbSourceBar
         sourceUrl={sourceUrl}
         draftUrl={browseUrl}
@@ -885,7 +886,7 @@ export function KnowledgeBase(): React.ReactElement {
         open={reconnectOpen}
         onOpenChange={setReconnectOpen}
         title="Reconnect SharePoint"
-        description="Paste a fresh access token. This is checked against SharePoint before saving, and one token is shared by everyone using the knowledge base."
+        description={SHAREPOINT_TOKEN_DIALOG_DESCRIPTION}
         footer={
           <>
             <span className="ml-auto" />
@@ -899,6 +900,7 @@ export function KnowledgeBase(): React.ReactElement {
           </>
         }
       >
+        <SharePointTokenHelp />
         <TextField
           label="SharePoint access token"
           type="password"
