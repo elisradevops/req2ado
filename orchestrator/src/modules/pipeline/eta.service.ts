@@ -8,7 +8,11 @@ import type { PrismaClient } from '@prisma/client';
 // 682 blocks, 39 figures) -- see DESIGN.md §18's ledger. This is not a
 // better guess; it is a different technique.
 
-export const SURVEY_MIN_MINUTES = 15;
+// A lower bound only: a SURVEY run always parses the document and makes at least one model call, so its estimate never reads as instant. It was
+// 15 minutes, which is far above what small documents take (an 8-block file ran in about 5) and made 8, 50 and 200 blocks all read "15 min",
+// hiding the fit's own answer. It is a judgement, not a measured value, and is deliberately well below anything the fit produces for a real
+// document, so the estimate comes from the data. It is a floor, never a ceiling (DESIGN.md §16.21).
+export const SURVEY_MIN_MINUTES = 2;
 export const BASELINE_FLAT_MINUTES = 1;
 
 // Bootstrap default -- used when there is no real history to fit against

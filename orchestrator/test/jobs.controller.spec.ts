@@ -76,7 +76,7 @@ describe('JobsController.preview', () => {
     expect(level).toHaveBeenCalledWith(doc, 'baseline', undefined, undefined, undefined, undefined, undefined, undefined, expect.any(AbortSignal)); // abortable: a slow ingestion is not left running
     expect(ok.overview.profile.baselineTree).toEqual({ epics: 1, features: 1, requirements: 0, depth: 2, roots: 1 });
     expect(ok.overview.structureHint).toMatch(/context only/i);
-    expect((ok.overview.lines ?? []).join(' ')).toMatch(/1 Epics, 1 Features and 0 Requirements/);
+    expect((ok.overview.lines ?? []).join(' ')).toMatch(/1 Epic, 1 Feature and 0 Requirements/);
 
     // a hung ingestion: the preview answers after the short bound and cancels the call
     jest.useFakeTimers();

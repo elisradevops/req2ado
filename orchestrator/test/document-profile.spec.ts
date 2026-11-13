@@ -170,6 +170,26 @@ describe('summarizeBaselineTree', () => {
     expect(line).toMatch(/without AI/i);
   });
 
+  it('says Epic, Feature and Requirement in the singular for a count of one, in the user line and in the hint for the AI', () => {
+    const profile = { ...buildDocumentProfile(doc([h(1, '1', 'Scope'), p(SCOPE)])), baselineTree: { epics: 1, features: 1, requirements: 1, depth: 2, roots: 1 } };
+    const line = composeProfileLines(profile).find((l) => /headings alone/i.test(l))!;
+    expect(line).toMatch(/1 Epic, 1 Feature and 1 Requirement,/);
+    expect(line).not.toMatch(/1 (Epics|Features|Requirements)/);
+    expect(composeStructureHint(profile)).toMatch(/1 Epic, 1 Feature and 1 Requirement from the headings/);
+  });
+
+  it('names the count of blocks that contain "shall" for what it is, never as "requirement statements" next to a different count of Requirements', () => {
+    const profile = {
+      ...buildDocumentProfile(doc([h(1, '2', 'Power'), h(2, '2.1', 'The unit shall draw less than 5 W.'), h(2, '2.2', 'Notes'), p('The unit shall be sealed.')])),
+      baselineTree: { epics: 1, features: 2, requirements: 11, depth: 3, roots: 1 },
+    };
+    const lines = composeProfileLines(profile).join('\n');
+    expect(lines).toMatch(/2 subsections, 2 “shall” statements\)/);
+    expect(lines).not.toMatch(/requirement statement/i);
+    const one = composeProfileLines(buildDocumentProfile(doc([h(1, '2', 'Power'), p('The unit shall be sealed.')]))).join('\n');
+    expect(one).toMatch(/0 subsections, 1 “shall” statement\)/);
+  });
+
   it('adds no tree line when the baseline tree was not available', () => {
     expect(composeProfileLines(buildDocumentProfile(doc([h(1, '1', 'Scope'), p(SCOPE)]))).join('\n')).not.toMatch(/baseline/i);
   });
@@ -187,7 +207,7 @@ describe('composeStructureHint', () => {
     expect(hint).toMatch(/never a source of values/i);
     expect(hint).toMatch(/3 sections|4 sections/);
     expect(hint).toMatch(/2 headings state a requirement/);
-    expect(hint).toMatch(/1 Epics, 2 Features and 5 Requirements/);
+    expect(hint).toMatch(/1 Epic, 2 Features and 5 Requirements/);
     expect(hint.length).toBeLessThanOrEqual(1000);
   });
 

@@ -72,6 +72,9 @@ const PURPOSE_HEADINGS = [/(?<![a-z])(?:scope|purpose)(?![a-z])|מטרה|תחו�
 const NOT_A_PURPOSE = /out of scope|not in scope|general[- ]purpose|מחוץ ל|אינו כולל|לא כולל/i;
 const APPLICABLE_HEADING = /applicable documents|referenced? documents|references|מסמכים ישימים|מסמכים רלוונטיים|מסמכי ייחוס/i;
 const GLOSSARY_HEADING = /glossary|acronyms?|abbreviations|definitions|terms and|מילון|ראשי תיבות|הגדרות/i;
+// "1 Epic", "2 Epics": a count of one is singular everywhere the profile says one.
+const counted = (n: number, singular: string, plural = `${singular}s`): string => `${n} ${n === 1 ? singular : plural}`;
+
 const SHALL = /\bshall\b/i;
 // X placeholders need three X (or XX with a lowercase x after): a bare XX is the Roman numeral twenty ("Annex XX").
 // A part number such as XXX-123 or XXX/7 is not a placeholder.
@@ -377,10 +380,10 @@ export function composeProfileLines(profile: DocumentProfile): string[] {
   for (const note of s.notes) lines.push(note);
   if (profile.baselineTree) {
     const t = profile.baselineTree;
-    lines.push(`Without AI, the headings alone give ${t.epics} Epics, ${t.features} Features and ${t.requirements} Requirements, nested up to ${t.depth} levels. SURVEY decides its own structure.`);
+    lines.push(`Without AI, the headings alone give ${counted(t.epics, 'Epic')}, ${counted(t.features, 'Feature')} and ${counted(t.requirements, 'Requirement')}, nested up to ${t.depth} levels. SURVEY decides its own structure.`);
   }
   if (profile.outline.length > 0) {
-    const shown = profile.outline.slice(0, MAX_LISTED).map((entry) => `${`${entry.number ?? ''} ${entry.title}`.trim()} (${entry.subsections} ${entry.subsections === 1 ? 'subsection' : 'subsections'}, ${entry.requirements} requirement ${entry.requirements === 1 ? 'statement' : 'statements'})`);
+    const shown = profile.outline.slice(0, MAX_LISTED).map((entry) => `${`${entry.number ?? ''} ${entry.title}`.trim()} (${counted(entry.subsections, 'subsection')}, ${counted(entry.requirements, '“shall” statement')})`);
     lines.push(`Top-level sections: ${shown.join('; ')}${profile.outline.length > MAX_LISTED ? `; and ${profile.outline.length - MAX_LISTED} more` : ''}.`);
   }
   if (profile.standards.count > 0) {
@@ -422,7 +425,7 @@ export function composeStructureHint(profile: DocumentProfile): string {
   ];
   if (profile.baselineTree) {
     const t = profile.baselineTree;
-    parts.push(`The deterministic baseline parser builds ${t.epics} Epics, ${t.features} Features and ${t.requirements} Requirements from the headings, nested up to ${t.depth} levels.`);
+    parts.push(`The deterministic baseline parser builds ${counted(t.epics, 'Epic')}, ${counted(t.features, 'Feature')} and ${counted(t.requirements, 'Requirement')} from the headings, nested up to ${t.depth} levels.`);
   }
   if (profile.outline.length > 0) {
     parts.push(`Top-level sections: ${profile.outline.slice(0, MAX_LISTED).map((e) => sanitizeHint(`${e.number ?? ''} ${e.title}`, TITLE_CHARS)).join('; ')}${profile.outline.length > MAX_LISTED ? '; …' : ''}.`);

@@ -12,7 +12,7 @@ describe('buildPreviewOverview', () => {
     const overview = await buildPreviewOverview(doc(blocks), level, { sectionCount: 2, depth: 2, documentMap: [] });
     expect(level).toHaveBeenCalledWith(expect.anything(), 'baseline', undefined, undefined, undefined, undefined, undefined, undefined, expect.any(AbortSignal));
     expect(overview.profile.baselineTree).toEqual({ epics: 1, features: 0, requirements: 0, depth: 1, roots: 1 });
-    expect(overview.lines?.join(' ')).toMatch(/1 Epics/);
+    expect(overview.lines?.join(' ')).toMatch(/1 Epic\b/);
     expect(overview.structureHint).toMatch(/context only/i);
     expect(overview.caveat).toBeNull();
   });

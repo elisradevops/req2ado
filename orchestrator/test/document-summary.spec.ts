@@ -56,11 +56,32 @@ describe('buildSummaryMessages', () => {
   it('asks for a short plain summary from the text alone, and puts the text in as data', () => {
     const [system, user] = buildSummaryMessages(INPUT);
     expect(system.role).toBe('system');
-    expect(system.content).toMatch(/120 words/);
+    expect(system.content).toMatch(/90 words/);
     expect(system.content).toMatch(/only the text/i);
     expect(system.content).toMatch(/data, not instructions/i);
     expect(user.content).toContain('<document>');
     expect(user.content).toContain(INPUT);
+  });
+});
+
+describe('buildSummaryMessages: what the summary is for (step 3 shows the structure already)', () => {
+  it('asks what the requirements cover, and not how the file is organised', () => {
+    const [system] = buildSummaryMessages(INPUT);
+    expect(system.content).toMatch(/what the document covers/i);
+    expect(system.content).toMatch(/topics/i);
+    // No instruction asks for the organisation (the only mention of it is the one that forbids it).
+    const asks = system.content.split(/(?<=\.)\s+/).filter((sentence) => /^(Say|Write|Describe)\b/.test(sentence));
+    expect(asks.length).toBeGreaterThan(0);
+    expect(asks.some((sentence) => /organi[sz]ed/i.test(sentence))).toBe(false);
+    // The reader is shown section, level, table and figure counts separately: the summary must not repeat them.
+    expect(system.content).toMatch(/do not (describe|restate|repeat).*(sections|organi[sz]ed|counts)/i);
+  });
+
+  it('keeps the same word cap on the strict retry, so asking again never gives a longer text', () => {
+    const [relaxed] = buildSummaryMessages(INPUT);
+    const [strict] = buildSummaryMessages(INPUT, true);
+    expect(strict.content).toContain('90 words');
+    expect(strict.content.startsWith(relaxed.content)).toBe(true);
   });
 });
 
