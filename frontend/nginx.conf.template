@@ -39,6 +39,15 @@ server {
     # the orchestrator.
     client_max_body_size 50m;
 
+    # Compression for the text this server sends: the API's JSON (a job of 556 items is a 1.7 MB document) and the built JavaScript and CSS. Not
+    # the job event stream (text/event-stream is deliberately absent: SSE must stay unbuffered and uncompressed) and not images, which are
+    # already compressed. gzip_proxied any, because a response from the API upstream is otherwise skipped when the request came through a proxy.
+    gzip on;
+    gzip_vary on;
+    gzip_min_length 1024;
+    gzip_proxied any;
+    gzip_types application/json application/javascript text/javascript text/css text/plain image/svg+xml;
+
     # Same-origin API proxy. /api/foo -> upstream's /foo (the orchestrator
     # itself has no /api prefix on its routes).
     location /api/ {
