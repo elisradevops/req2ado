@@ -303,3 +303,51 @@ def test_adopted_baseline_warnings_point_at_ids_that_exist_after_the_bl_renaming
             for item in value if isinstance(value, list) else [value]:
                 if isinstance(item, str) and ("synth_" in item or item.startswith("n")):
                     assert item in ids, f"stale id in warning detail: {item}"
+
+
+class RippleSummarizer:
+    """A parent-summary model that, like prod did in job 0c5d877e, writes each Epic/Feature's title and description only
+    from the requirements under it -- a normative heading's own statement is not part of what it summarizes."""
+
+    def summarize_parent_nodes(self, nodes_by_id, user_id=None):
+        return {
+            node_id: {
+                "title": f"Output Voltage Stability {node_id}",
+                "description": "Summary of: " + " ".join(payload["requirement_titles"]),
+            }
+            for node_id, payload in nodes_by_id.items()
+        }
+
+
+@pytest.mark.parametrize("mode", ["baseline", "survey"])
+def test_a_requirement_heading_with_sub_sections_keeps_its_statement_in_the_tree(mode: str) -> None:
+    """No normative heading may vanish from the tree without a warning: one with sub-sections becomes a container, and
+    that container must still carry the heading's own statement verbatim even after the parent summary rewrites it."""
+    from app.leveling.hierarchy_rules import states_a_requirement
+
+    doc = _load("mock_airpro_shape.docx")
+    if mode == "baseline":
+        tree = build_baseline_tree(doc)
+    else:
+        tree = build_survey_tree(
+            doc,
+            StructureRefusingClient(),
+            grouping_client=SimulatedGrouper(1),
+            embed_client=TitleHashEmbedder(),
+            structure_mode="baseline",
+            root_regroup_mode="deterministic",
+            parent_summary_client=RippleSummarizer(),
+        )
+    statements = [
+        b.text for b in doc.blocks if b.kind.value == "heading" and states_a_requirement(b.text)
+    ]
+    assert "The unit must report an undervoltage fault." in statements
+    warned = " ".join(f"{w.raw} {w.detail}" for w in tree.warnings)
+    for statement in statements:
+        assert (
+            any(
+                statement in (n.title or "") or statement in (n.description or "")
+                for n in tree.nodes
+            )
+            or statement in warned
+        ), f"{mode}: {statement!r} is in no item and no warning"
