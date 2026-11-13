@@ -44,3 +44,13 @@ export function computeWriteGate(kindGroups: WarningKindGroup[], handledIds: Rea
   }
   return { blocked: blockers.length > 0, remaining, blockers, firstBlocker: blockers[0] ?? null };
 }
+
+// Records of "Check" kinds the reviewer has not finished: the dialog's "N to check", read from the same progress the page banner uses, so
+// deciding every item of a kind clears it in both places (a record's own `acknowledged` flag is only set by "Mark handled").
+export function openReviewRecordCount(groups: ReadonlyArray<WarningKindGroup>, handledIds: ReadonlySet<string>): number {
+  let open = 0;
+  for (const group of groups) {
+    if (group.group === 'review' && !kindProgress(group, handledIds).complete) open += group.records.length;
+  }
+  return open;
+}

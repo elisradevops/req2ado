@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildKindGroups } from './warningKinds';
-import { computeWriteGate } from './writeGate';
+import { computeWriteGate, openReviewRecordCount } from './writeGate';
 import type { WarningRecord } from './warnings';
 
 function warning(overrides: Partial<WarningRecord> & Pick<WarningRecord, 'kind' | 'severity' | 'raw'>): WarningRecord {
@@ -100,5 +100,28 @@ describe('computeWriteGate', () => {
     const gate = computeWriteGate(groups, handled);
     expect(performance.now() - started).toBeLessThan(200);
     expect(gate.remaining).toBe(10);
+  });
+});
+
+describe('openReviewRecordCount', () => {
+  const review = (nodeIds: string[], acknowledged = false) =>
+    warning({ kind: 'criteria_value_ungrounded', severity: 'needs_review', raw: 'r', nodeIds, acknowledged });
+
+  it('counts the records of a Check kind whose items are not all decided', () => {
+    const groups = buildKindGroups([review(['n1', 'n2'])]);
+    expect(openReviewRecordCount(groups, new Set(['n1']))).toBe(1);
+  });
+
+  it('is zero once every item of the kind is decided, even though the records themselves were never marked', () => {
+    const groups = buildKindGroups([review(['n1', 'n2'])]);
+    expect(openReviewRecordCount(groups, new Set(['n1', 'n2']))).toBe(0);
+  });
+
+  it('ignores Fix and info kinds', () => {
+    const groups = buildKindGroups([
+      warning({ kind: 'duplicate_customer_id', severity: 'needs_review', raw: 'a', nodeIds: ['n1'] }),
+      warning({ kind: 'enhancement_call_failed', severity: 'info', raw: 'i', nodeIds: ['n2'] }),
+    ]);
+    expect(openReviewRecordCount(groups, none)).toBe(0);
   });
 });
