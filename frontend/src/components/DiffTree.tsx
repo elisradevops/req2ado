@@ -30,6 +30,7 @@ import { matchesDiffFilter } from '../utils/diffFilterMatch';
 import { groupByParent } from '../utils/diffTreeOrder';
 import { flaggedDiffEntryReason, isFlaggedDiffEntry } from '../utils/diffFlagging';
 import { LABEL_MICRO } from '../utils/labelMicro';
+import { buildWorkItemUrl } from '../utils/adoLinks';
 import { ActionBadge } from './ActionBadge';
 import { WorkItemTypeBadge } from './WorkItemTypeBadge';
 import { BELOW_MD, useMediaQuery } from '../hooks/useMediaQuery';
@@ -446,8 +447,11 @@ export function DiffTree({
   project,
   onMove,
   canMove,
+  writtenAdoIds,
 }: {
   entries: DryRunDiffEntry[];
+  // Azure DevOps id of each item already written, by localId (a finished or partly written job). Shown as a link in the Status column.
+  writtenAdoIds?: Record<string, number>;
   selectedId: string | null;
   onSelect: (localId: string) => void;
   // Opens the details dialog for a node -- distinct from onSelect (which
@@ -839,6 +843,7 @@ export function DiffTree({
               realTypeName,
               orgUrl,
               project,
+              writtenAdoIds,
               canMove: !!canMove,
               isFiltering,
               collapsedIds,
@@ -892,6 +897,7 @@ function DiffTreeRow({
   realTypeName,
   orgUrl,
   project,
+  writtenAdoIds,
   canMove,
   narrow,
   isFiltering,
@@ -915,6 +921,7 @@ function DiffTreeRow({
   realTypeName: (category: string) => string;
   orgUrl?: string | null;
   project?: string | null;
+  writtenAdoIds?: Record<string, number>;
   canMove: boolean;
   // below md (one query in DiffTree, so header, rows and row height always flip together)
   narrow: boolean;
@@ -1325,6 +1332,21 @@ function DiffTreeRow({
         <span data-col="status" className="flex flex-none items-center justify-end overflow-hidden">
           <ActionBadge action={entry.action} existingAdoId={entry.existingAdoId} matchedWi={entry.duplicateOf?.existingAdoId} orgUrl={orgUrl} project={project} hideNew />
           {criteriaInStatusColumn(entry) && criteriaEl}
+          {writtenAdoIds?.[entry.localId] != null && (
+            orgUrl ? (
+              <a
+                href={buildWorkItemUrl(orgUrl, project, writtenAdoIds[entry.localId])}
+                target="_blank"
+                rel="noreferrer"
+                draggable={false}
+                className="ml-1 flex-none font-mono text-xs tabular-nums text-ink-2 underline decoration-hairline underline-offset-2 hover:text-ink-1"
+              >
+                #{writtenAdoIds[entry.localId]}
+              </a>
+            ) : (
+              <span className="ml-1 flex-none font-mono text-xs tabular-nums text-ink-2">#{writtenAdoIds[entry.localId]}</span>
+            )
+          )}
         </span>
       )}
 

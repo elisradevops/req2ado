@@ -25,3 +25,22 @@ export function describeFailureCause(raw: string): { summary: string; detail: st
   const match = CAUSES.find((cause) => cause.test.test(detail));
   return { summary: match?.summary ?? 'The run stopped with an error.', detail };
 }
+
+// The server stores the class of a failure (orchestrator failure-reason.ts); a stored class is trusted over a guess from text.
+const STORED_SUMMARIES: Record<string, string> = {
+  connection_reset: 'The connection was cut during the run.',
+  timeout: 'A step took too long to answer.',
+  refused: 'A request was refused: a sign-in or permission problem.',
+  unreadable_response: 'A response could not be read.',
+  unknown: 'The run stopped with an error.',
+};
+
+export function describeStoredFailure(job: {
+  failureClass?: string | null;
+  failureMessage?: string | null;
+  failedStage?: string | null;
+}): { summary: string; detail: string } | null {
+  if (!job.failureClass && !job.failureMessage) return null;
+  const summary = (job.failureClass && STORED_SUMMARIES[job.failureClass]) || 'The run stopped with an error.';
+  return { summary, detail: (job.failureMessage ?? '').trim() };
+}

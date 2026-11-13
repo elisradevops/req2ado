@@ -23,6 +23,12 @@ export interface JobDetail {
   id: string;
   // localIds already written to Azure DevOps by an earlier failed attempt; the server refuses changes to their proposal acceptance or text.
   writtenLocalIds?: string[];
+  // The Azure DevOps id of each item already written (null before the field existed or when nothing is written).
+  writtenItems?: { localId: string; adoId: number }[];
+  // Why and where a failed run stopped, stored by the server; null for a job that failed before these were recorded.
+  failedStage?: string | null;
+  failureClass?: string | null;
+  failureMessage?: string | null;
   status: string;
   mode: string;
   dryRunDiff: unknown;

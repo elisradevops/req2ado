@@ -1323,3 +1323,25 @@ describe('DiffTree row control target sizes (DESIGN.md §5 24px floor)', () => {
     expect(src).toContain('grid h-6 w-6 place-items-center rounded-sm text-ink-3');
   });
 });
+
+describe('DiffTree written items', () => {
+  const entries = [
+    { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Epic one', action: 'create', existingAdoId: null, quality: null },
+    { localId: 'r1', parentLocalId: 'e1', type: 'Requirement', title: 'Written req', action: 'create', existingAdoId: null, quality: null },
+  ] as unknown as DryRunDiffEntry[];
+
+  it('shows the Azure DevOps id of a written item as a link in the Status column', () => {
+    render(
+      <DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}}
+        orgUrl="https://ado.example/tfs/col" project="Proj" writtenAdoIds={{ r1: 4821 }} />,
+    );
+    const link = screen.getByRole('link', { name: /4821/ });
+    expect(link).toHaveAttribute('href', expect.stringContaining('/_workitems/edit/4821'));
+    expect(link.closest('[data-col="status"]')).not.toBeNull();
+  });
+
+  it('shows no id for items that were not written', () => {
+    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} writtenAdoIds={{}} />);
+    expect(screen.queryByRole('link', { name: /#\d+/ })).toBeNull();
+  });
+});

@@ -255,3 +255,9 @@ describe('retryableEnhancementBatches stays linear', () => {
     expect(batches[0].localIds.at(-1)).toBe('n29999');
   });
 });
+
+describe('overview_reused', () => {
+  it('is information only: it never blocks a write', () => {
+    expect(KIND_META.overview_reused.group).toBe('info');
+  });
+});

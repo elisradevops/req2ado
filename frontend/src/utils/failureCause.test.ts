@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { describeFailureCause, failureAuditMessage } from './failureCause';
+import { describeFailureCause, describeStoredFailure, failureAuditMessage } from './failureCause';
 
 describe('failureAuditMessage', () => {
   it('takes the newest "Pipeline failed:" audit line and strips the prefix', () => {
@@ -55,5 +55,24 @@ describe('describeFailureCause', () => {
     for (const raw of ['ETIMEDOUT', 'UND_ERR_SOCKET', 'status code 403', 'Unexpected token < in JSON']) {
       expect(describeFailureCause(raw).summary).not.toMatch(/model/i);
     }
+  });
+});
+
+describe('describeStoredFailure', () => {
+  it('names the cause from the stored class and keeps the stored message as the detail', () => {
+    const cause = describeStoredFailure({ failureClass: 'timeout', failureMessage: 'ETIMEDOUT', failedStage: 'score' });
+    expect(cause?.summary).toBe('A step took too long to answer.');
+    expect(cause?.detail).toBe('ETIMEDOUT');
+  });
+
+  it('says the run stopped with an error when the class is unknown, still showing the message', () => {
+    const cause = describeStoredFailure({ failureClass: 'unknown', failureMessage: 'boom', failedStage: null });
+    expect(cause?.summary).toBe('The run stopped with an error.');
+    expect(cause?.detail).toBe('boom');
+  });
+
+  it('is null for a job that failed before the cause was stored, so the audit text is used', () => {
+    expect(describeStoredFailure({ failureClass: null, failureMessage: null, failedStage: null })).toBeNull();
+    expect(describeStoredFailure({})).toBeNull();
   });
 });

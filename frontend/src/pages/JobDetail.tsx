@@ -72,7 +72,7 @@ import { ARRIVE, MOTION, scrollBehavior } from '../ui/motion';
 import { describeJobKbCoverage, type KbCoverage } from '../utils/kbCoverage';
 import { getServerMessage } from '../lib/errorDetails';
 import { computeWriteGate } from '../utils/writeGate';
-import { describeFailureCause, failureAuditMessage } from '../utils/failureCause';
+import { describeFailureCause, describeStoredFailure, failureAuditMessage } from '../utils/failureCause';
 import { REVIEW_GROUP_META } from '../components/reviewGroupMeta';
 import { buildReviewQueue, cleanApproval, groupReviewQueue, isExcludedWithAncestors, nextInQueue, REVIEW_GROUP_ORDER, reviewQueueModeReducer, type ReviewGroup, riskReason, spotCheckSample } from '../utils/reviewQueue';
 import { BulkApproveDialog } from '../components/BulkApproveDialog';
@@ -173,6 +173,9 @@ export function JobDetail(): React.ReactElement {
   const [excludedFigureIds, setExcludedFigureIds] = useState<string[]>([]);
   // Items an earlier failed write already created in Azure DevOps (the server refuses changes to them): locks them in the details dialog.
   const [writtenLocalIds, setWrittenLocalIds] = useState<string[]>([]);
+  const [writtenItems, setWrittenItems] = useState<{ localId: string; adoId: number }[]>([]);
+  const writtenAdoIds = useMemo(() => Object.fromEntries(writtenItems.map((item) => [item.localId, item.adoId])), [writtenItems]);
+  const [storedFailure, setStoredFailure] = useState<{ failureClass?: string | null; failureMessage?: string | null; failedStage?: string | null } | null>(null);
   // DESIGN.md §11.3.5: null = follow the live phase; a key = the user is reading that phase and nothing moves the view.
   const [pickedPhase, setPickedPhase] = useState<LifecycleKey | null>(null);
   const [excludedTableIds, setExcludedTableIds] = useState<string[]>([]);
@@ -425,6 +428,8 @@ export function JobDetail(): React.ReactElement {
         setExcludedFigureIds(job.excludedFigureIds ?? []);
         setExcludedTableIds(job.excludedTableIds ?? []);
         setWrittenLocalIds(job.writtenLocalIds ?? []);
+        setWrittenItems(job.writtenItems ?? []);
+        setStoredFailure({ failureClass: job.failureClass, failureMessage: job.failureMessage, failedStage: job.failedStage });
         setWarnings(job.warnings ?? []);
         setTraceLinkFailures(job.traceLinkFailures ?? []);
         setCreatedItemCount(job.createdItemCount ?? 0);
@@ -508,6 +513,8 @@ export function JobDetail(): React.ReactElement {
     setDocumentOverview(null);
     // The previous job's failure cause must not show on this one while its own audit loads, or if it cannot be read.
     setFailureAudit([]);
+    setStoredFailure(null);
+    setWrittenItems([]);
   }, [id]);
 
   useEffect(loadJob, [id]);
@@ -2513,9 +2520,11 @@ export function JobDetail(): React.ReactElement {
     };
   }, [status, hasFailedEvent, id]);
   const failureCause = useMemo(() => {
+    const stored = describeStoredFailure(storedFailure ?? {});
+    if (stored) return stored;
     const message = failureAuditMessage(failureAudit.length > 0 ? failureAudit : audit);
     return message === null ? null : describeFailureCause(message);
-  }, [failureAudit, audit]);
+  }, [storedFailure, failureAudit, audit]);
 
   const navIndex = navList.findIndex((entry) => entry.localId === selectedId);
   const hasPrevEntry = navIndex > 0;
@@ -2946,6 +2955,7 @@ export function JobDetail(): React.ReactElement {
                     categoryLabels={categoryLabels ?? undefined}
                     orgUrl={orgUrl}
                     project={teamProject}
+                    writtenAdoIds={writtenAdoIds}
                     onMove={handleMoveEntry}
                     canMove={status === 'diff_ready'}
                   />

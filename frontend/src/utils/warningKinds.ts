@@ -288,6 +288,15 @@ export const KIND_META: Record<string, KindMeta> = {
     chip: 'Original wording',
     unit: ['item', 'items'],
   },
+  overview_reused: {
+    title: 'Saved overview reused',
+    group: 'info',
+    short: 'This run reused a saved overview of the same file instead of reading it again.',
+    means: 'The overview was built by an earlier run on identical content. Nothing is missing.',
+    todo: 'Nothing required.',
+    chip: 'Reused overview',
+    unit: ['notice', 'notices'],
+  },
   // Not a warning the pipeline emits: the label the tree filter wears when "Approve clean items" shows its
   // list. "info", so the filter offers no mark-all-reviewed of its own (that would skip the spot-check).
   // Never put a pipeline warning under this kind: it would take this entry's wording.
