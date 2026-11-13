@@ -21,7 +21,7 @@ describe('connectionRows', () => {
     expect(rows.map((r) => [r.label, r.state, r.word])).toEqual([
       ['Azure DevOps', 'ok', 'Connected'],
       ['SharePoint', 'ok', 'Connected, expires in 47 minutes'],
-      ['LLM Backend', 'ok', 'Connected, 42ms'],
+      ['LLM backend', 'ok', 'Connected, 42ms'],
     ]);
   });
 

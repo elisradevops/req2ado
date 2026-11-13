@@ -1,6 +1,6 @@
 import { flaggedDiffEntryReason, isFlaggedDiffEntry, isLowQualityEntry } from './diffFlagging';
 import { orderLikeTree } from './diffTreeOrder';
-import type { WarningGroup, WarningKindGroup } from './warningKinds';
+import { kindProgress, type WarningGroup, type WarningKindGroup } from './warningKinds';
 
 // The risk-ordered review queue (P17): what a reviewer should look at first.
 // Pure, so the ordering is testable apart from the page. "Flagged" and "low
@@ -38,9 +38,16 @@ export function reviewQueueModeReducer(mode: ReviewQueueMode, action: ReviewQueu
   }
 }
 
-export type RiskTier = 'blocking' | 'low_score' | 'flagged' | 'clean';
+// `structure`: an Epic or Feature with nothing blocking or flagged. Quality scoring judges how a requirement is worded, not what a
+// parent contains, so a parent's score is never a reason to review it first. They queue last.
+export type RiskTier = 'blocking' | 'low_score' | 'flagged' | 'clean' | 'structure';
 
-const TIER_RANK: Record<RiskTier, number> = { blocking: 0, low_score: 1, flagged: 2, clean: 3 };
+const TIER_RANK: Record<RiskTier, number> = { blocking: 0, low_score: 1, flagged: 2, clean: 3, structure: 4 };
+
+// The same Epic/Feature test diffFlagging uses for its per-type grounding cutoff.
+function isStructureEntry(entry: { type?: string }): boolean {
+  return entry.type === 'Epic' || entry.type === 'Feature';
+}
 
 export interface ReviewQueueEntry {
   localId: string;
@@ -54,11 +61,17 @@ export interface ReviewQueueEntry {
   qualityConfidence?: string | null;
 }
 
-function nodeIdsInGroup(kindGroups: WarningKindGroup[], group: WarningKindGroup['group']): Set<string> {
-  return new Set(kindGroups.filter((entry) => entry.group === group).flatMap((entry) => entry.nodeIds));
+// A kind the reviewer has accepted (every record acknowledged) no longer ranks or blocks its items: the queue, the group chips, the
+// write gate and the warning rows all read the same handled state.
+function isAcknowledgedKind(entry: WarningKindGroup): boolean {
+  return kindProgress(entry).allAcknowledged;
 }
 
-// Blocking = named by a "fix before confirming" warning. A "review" warning is
+function nodeIdsInGroup(kindGroups: WarningKindGroup[], group: WarningKindGroup['group']): Set<string> {
+  return new Set(kindGroups.filter((entry) => entry.group === group && !isAcknowledgedKind(entry)).flatMap((entry) => entry.nodeIds));
+}
+
+// Blocking = named by a "Fix before writing" warning. A "review" warning is
 // a judgment call, so it ranks with the flagged items. Info warnings never count.
 export function riskTier(entry: ReviewQueueEntry, kindGroups: WarningKindGroup[]): RiskTier {
   return tierOf(entry, nodeIdsInGroup(kindGroups, 'fix'), nodeIdsInGroup(kindGroups, 'review'));
@@ -66,6 +79,11 @@ export function riskTier(entry: ReviewQueueEntry, kindGroups: WarningKindGroup[]
 
 function tierOf(entry: ReviewQueueEntry, blockingIds: ReadonlySet<string>, reviewIds: ReadonlySet<string>): RiskTier {
   if (blockingIds.has(entry.localId)) return 'blocking';
+  if (isStructureEntry(entry)) {
+    // A parent keeps its real signals (a review warning, low grounding: a sign of invention). Everything about its score is ignored,
+    // including the model's "low confidence", which is confidence in that score.
+    return reviewIds.has(entry.localId) || isFlaggedDiffEntry({ ...entry, qualityScore: null, qualityConfidence: null }) ? 'flagged' : 'structure';
+  }
   if (isLowQualityEntry(entry)) return 'low_score';
   if (isFlaggedDiffEntry(entry) || reviewIds.has(entry.localId)) return 'flagged';
   return 'clean';
@@ -92,6 +110,12 @@ export function isExcludedWithAncestors(
 // reviewed, excluded (or under an excluded ancestor, which confirm drops too) and
 // items that are not written (reuse / near-duplicate).
 export function buildReviewQueue<T extends ReviewQueueEntry>(entries: T[], kindGroups: WarningKindGroup[]): T[] {
+  return buildTieredQueue(entries, kindGroups).map(({ entry }) => entry);
+}
+
+// The queue with each item's tier, computed in the same pass that orders it: the warning sets are built once, so classifying N items
+// against kinds naming M of them costs O(N + M), not O(N x M) as calling riskTier() per item would.
+function buildTieredQueue<T extends ReviewQueueEntry>(entries: T[], kindGroups: WarningKindGroup[]): Array<{ entry: T; tier: RiskTier }> {
   const blockingIds = nodeIdsInGroup(kindGroups, 'fix');
   const reviewIds = nodeIdsInGroup(kindGroups, 'review');
   const byId = new Map(entries.map((entry) => [entry.localId, entry]));
@@ -104,15 +128,58 @@ export function buildReviewQueue<T extends ReviewQueueEntry>(entries: T[], kindG
   return entries
     .map((entry) => ({ entry, index: displayPosition.get(entry.localId) ?? 0 }))
     .filter(({ entry }) => !entry.reviewed && entry.action === 'create' && !isExcluded(entry))
-    .map((item) => ({ ...item, tier: TIER_RANK[tierOf(item.entry, blockingIds, reviewIds)] }))
+    .map((item) => {
+      const tier = tierOf(item.entry, blockingIds, reviewIds);
+      return { ...item, tier, rank: TIER_RANK[tier] };
+    })
     .sort((a, b) => {
-      if (a.tier !== b.tier) return a.tier - b.tier;
+      if (a.rank !== b.rank) return a.rank - b.rank;
       const aScore = a.entry.qualityScore ?? Number.POSITIVE_INFINITY;
       const bScore = b.entry.qualityScore ?? Number.POSITIVE_INFINITY;
       if (aScore !== bScore) return aScore - bScore;
       return a.index - b.index;
     })
-    .map(({ entry }) => entry);
+    .map(({ entry, tier }) => ({ entry, tier }));
+}
+
+// The owner's four review groups (2026-11-12): Fix before writing, Check, Clean, Structure. Check is the low-score and flagged tiers.
+export type ReviewGroup = 'fix' | 'check' | 'clean' | 'structure';
+export const REVIEW_GROUP_ORDER: ReviewGroup[] = ['fix', 'check', 'clean', 'structure'];
+
+export function reviewGroupOf(tier: RiskTier): ReviewGroup {
+  switch (tier) {
+    case 'blocking':
+      return 'fix';
+    case 'low_score':
+    case 'flagged':
+      return 'check';
+    case 'clean':
+      return 'clean';
+    case 'structure':
+      return 'structure';
+  }
+}
+
+// What is still to review, by group, each in queue order.
+export function groupReviewQueue<T extends ReviewQueueEntry>(entries: T[], kindGroups: WarningKindGroup[]): Record<ReviewGroup, T[]> {
+  const grouped: Record<ReviewGroup, T[]> = { fix: [], check: [], clean: [], structure: [] };
+  for (const { entry, tier } of buildTieredQueue(entries, kindGroups)) grouped[reviewGroupOf(tier)].push(entry);
+  return grouped;
+}
+
+// Where the queue steps after the current item is dealt with: the first item still in the queue that came AFTER it, wrapping to the
+// top only when it was the last. (The first of what is left would send a reviewer who stepped on with J back to the start.) One
+// pass: a Set of what remains, then a forward scan from the current position.
+export function nextInQueue<T extends { localId: string }>(before: T[], currentId: string, rest: T[]): T | undefined {
+  if (rest.length === 0) return undefined;
+  const currentIndex = before.findIndex((entry) => entry.localId === currentId);
+  if (currentIndex === -1) return rest[0];
+  const remaining = new Map(rest.map((entry) => [entry.localId, entry]));
+  for (let index = currentIndex + 1; index < before.length; index += 1) {
+    const found = remaining.get(before[index].localId);
+    if (found) return found;
+  }
+  return rest[0];
 }
 
 export interface CleanApproval<T> {
@@ -138,8 +205,9 @@ export function cleanApproval<T extends ReviewQueueEntry & { qualityStale?: bool
   let flagged = 0;
   let unscored = 0;
   let stale = 0;
-  for (const entry of buildReviewQueue(entries, kindGroups)) {
-    if (riskTier(entry, kindGroups) !== 'clean') flagged += 1;
+  for (const { entry, tier } of buildTieredQueue(entries, kindGroups)) {
+    if (tier === 'structure') unscored += 1;
+    else if (tier !== 'clean') flagged += 1;
     else if (entry.qualityScore == null) unscored += 1;
     else if (entry.qualityStale) stale += 1;
     else items.push(entry);
@@ -173,21 +241,22 @@ export function riskReason(
   kindGroups: WarningKindGroup[],
 ): { title: string; todo: string; group: WarningGroup } {
   const firstKind = (group: WarningGroup): WarningKindGroup | undefined =>
-    kindGroups.find((kind) => kind.group === group && kind.nodeIds.includes(entry.localId));
+    kindGroups.find((kind) => kind.group === group && !isAcknowledgedKind(kind) && kind.nodeIds.includes(entry.localId));
   const check = 'Check it against its source, then mark it reviewed.';
   switch (riskTier(entry, kindGroups)) {
     case 'blocking': {
       const kind = firstKind('fix');
       return {
         title: `Blocking warning: ${kind?.meta.title ?? 'needs a fix'}`,
-        todo: kind?.meta.todo ?? 'Fix this before you confirm.',
+        todo: kind?.meta.todo ?? 'Fix this before you write.',
         group: 'fix',
       };
     }
     case 'low_score':
       return { title: 'Low quality score', todo: check, group: 'review' };
     case 'flagged': {
-      const flagReason = flaggedDiffEntryReason(entry);
+      // A parent's score, and the model's confidence in it, are never a reason (the tier ignores them too).
+      const flagReason = flaggedDiffEntryReason(isStructureEntry(entry) ? { ...entry, qualityScore: null, qualityConfidence: null } : entry);
       const kind = firstKind('review');
       return {
         title: flagReason ?? kind?.meta.title ?? 'Flagged for review',
@@ -195,8 +264,14 @@ export function riskReason(
         group: 'review',
       };
     }
+    case 'structure':
+      return {
+        title: 'Not scored',
+        todo: 'Epics and Features are not scored. Check the title and where it sits in the tree, then mark it reviewed.',
+        group: 'info',
+      };
     default:
-      // Epics, Features and BASELINE items carry no score at all; "nothing was
+      // BASELINE items carry no score at all; "nothing was
       // flagged" would imply they were scored and passed.
       if (entry.qualityScore == null && entry.groundingScore == null) {
         return {

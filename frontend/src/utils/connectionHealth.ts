@@ -72,7 +72,7 @@ function sharePointRow(entry: StatusEntry<SharePointStatus>): ConnectionRow {
 }
 
 function llmRow(entry: StatusEntry<LlmStatus>): ConnectionRow {
-  const base = { kind: 'llm' as const, label: 'LLM Backend', checkedAt: entry.checkedAt };
+  const base = { kind: 'llm' as const, label: 'LLM backend', checkedAt: entry.checkedAt };
   if (entry.error) return { ...base, state: 'attention', word: "Can't reach the LLM backend" };
   const data = entry.data;
   switch (data?.status) {

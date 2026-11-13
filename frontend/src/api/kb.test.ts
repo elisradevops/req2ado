@@ -5,6 +5,7 @@ import {
   browseSubfolder,
   cancelKbIngestBatch,
   createKbIngestBatch,
+  deleteIngestedDocument,
   getKbIngestBatch,
   getKbProfile,
   ingestFolderItem,
@@ -51,14 +52,20 @@ describe('kb api', () => {
     expect(result).toEqual(docs);
   });
 
-  it('listIngestedDocuments("Area1") GETs /kb/documents with params: { userId: "Area1" }', async () => {
-    const docs: any[] = [];
-    (httpClient.get as any).mockResolvedValue({ data: docs });
+  it('listIngestedDocuments() sends no userId: the session already says whose documents these are', async () => {
+    (httpClient.get as any).mockResolvedValue({ data: [] });
 
-    const result = await listIngestedDocuments('Area1');
+    await listIngestedDocuments();
 
-    expect(httpClient.get).toHaveBeenCalledWith('/kb/documents', { params: { userId: 'Area1' } });
-    expect(result).toEqual(docs);
+    expect(httpClient.get).toHaveBeenCalledWith('/kb/documents', { params: {} });
+  });
+
+  it('deleteIngestedDocument(id) sends no userId in the query string', async () => {
+    (httpClient.delete as any).mockResolvedValue({ data: { ok: true } });
+
+    await deleteIngestedDocument('doc-1');
+
+    expect(httpClient.delete).toHaveBeenCalledWith('/kb/documents/doc-1');
   });
 
   it('ingestFolderUrl POSTs the url, userId, and docType to /kb/ingest-folder-url', async () => {

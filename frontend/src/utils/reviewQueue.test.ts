@@ -4,7 +4,10 @@ import { buildKindGroups, kindMeta } from './warningKinds';
 import {
   buildReviewQueue,
   isExcludedWithAncestors,
+  nextInQueue,
   cleanApproval,
+  groupReviewQueue,
+  reviewGroupOf,
   reviewQueueModeReducer,
   riskReason,
   riskTier,
@@ -113,7 +116,8 @@ describe('buildReviewQueue', () => {
       ],
       NO_WARNINGS,
     );
-    expect(queue.map((item) => item.localId)).toEqual(['epic', 'f1', 'r1', 'f2', 'r2']);
+    // Requirements first (in tree order), then the structure tier (in tree order).
+    expect(queue.map((item) => item.localId)).toEqual(['r1', 'r2', 'epic', 'f1', 'f2']);
   });
 
   it('is empty when nothing is left to review', () => {
@@ -378,5 +382,177 @@ describe('isExcludedWithAncestors', () => {
     expect(isExcludedWithAncestors(byId.get('child')!, byId)).toBe(true);
     expect(isExcludedWithAncestors(byId.get('free')!, byId)).toBe(false);
     expect(isExcludedWithAncestors(byId.get('loopA')!, byId)).toBe(false);
+  });
+});
+
+describe('the structure tier (Epics and Features are not scored, so they never lead the queue)', () => {
+  it('puts an Epic or Feature with a low score in the structure tier, not low_score', () => {
+    expect(riskTier(entry('e', { type: 'Epic', qualityScore: 15 }), NO_WARNINGS)).toBe('structure');
+    expect(riskTier(entry('f', { type: 'Feature', qualityScore: 25, qualityConfidence: 'low' }), NO_WARNINGS)).toBe('structure');
+    expect(riskTier(entry('r', { qualityScore: 15 }), NO_WARNINGS)).toBe('low_score');
+  });
+
+  it('keeps a blocking or review warning on a parent: only the score is ignored', () => {
+    const fix = buildKindGroups([warning('parent_title_collision', 'needs_review', ['e'])]);
+    expect(riskTier(entry('e', { type: 'Epic', qualityScore: 15 }), fix)).toBe('blocking');
+    const review = buildKindGroups([warning('low_grounding', 'needs_review', ['f'])]);
+    expect(riskTier(entry('f', { type: 'Feature', qualityScore: 15 }), review)).toBe('flagged');
+  });
+
+  it('queues every Requirement before any Epic or Feature, however the scores compare', () => {
+    const queue = buildReviewQueue(
+      [
+        entry('epic', { type: 'Epic', qualityScore: 5 }),
+        entry('feature', { type: 'Feature', qualityScore: 10 }),
+        entry('req-clean', { qualityScore: 90, groundingScore: 0.9 }),
+        entry('req-low', { qualityScore: 40 }),
+      ],
+      NO_WARNINGS,
+    );
+    expect(queue.map((item) => item.localId)).toEqual(['req-low', 'req-clean', 'epic', 'feature']);
+  });
+
+  it('never offers an Epic or Feature for bulk approval, and counts it as unscored, not as flagged', () => {
+    const result = cleanApproval(
+      [entry('epic', { type: 'Epic', qualityScore: 80, groundingScore: 0.9 }), entry('req', { qualityScore: 80, groundingScore: 0.9 })],
+      NO_WARNINGS,
+    );
+    expect(result.items.map((item) => item.localId)).toEqual(['req']);
+    expect(result).toMatchObject({ flagged: 0, unscored: 1 });
+  });
+
+  it('explains a structure item as not scored, with no score claim', () => {
+    const reason = riskReason(entry('e', { type: 'Epic', qualityScore: 15 }), NO_WARNINGS);
+    expect(reason.title).toBe('Not scored');
+    expect(reason.group).toBe('info');
+    expect(reason.todo).not.toMatch(/quality score|\d/i);
+  });
+
+  it('stays linear: 20,000 entries order in well under a second', () => {
+    const entries = Array.from({ length: 20000 }, (_, i) => entry(`n${i}`, { type: i % 10 === 0 ? 'Feature' : 'Requirement', qualityScore: i % 100 }));
+    const started = performance.now();
+    const queue = buildReviewQueue(entries, NO_WARNINGS);
+    expect(performance.now() - started).toBeLessThan(1500);
+    expect(queue).toHaveLength(20000);
+  });
+});
+
+describe('nextInQueue', () => {
+  const q = ['a', 'b', 'c', 'd'].map((localId) => entry(localId));
+  const ids = (list: ReviewQueueEntry[]) => list.map((item) => item.localId);
+
+  it('steps to the first remaining item after the current one, not back to the top', () => {
+    expect(nextInQueue(q, 'b', q.filter((item) => item.localId !== 'b'))?.localId).toBe('c');
+  });
+
+  it('skips items that left the queue with the current one (an excluded subtree)', () => {
+    expect(nextInQueue(q, 'a', q.filter((item) => !['a', 'b', 'c'].includes(item.localId)))?.localId).toBe('d');
+  });
+
+  it('wraps to the top when the current item was last', () => {
+    expect(nextInQueue(q, 'd', q.filter((item) => item.localId !== 'd'))?.localId).toBe('a');
+  });
+
+  it('falls back to the first remaining item when the current one is not in the queue', () => {
+    expect(nextInQueue(q, 'zzz', q)?.localId).toBe('a');
+  });
+
+  it('is undefined when nothing remains', () => {
+    expect(nextInQueue(q, 'a', [])).toBeUndefined();
+  });
+
+  it('does not mutate its inputs and stays linear on a long queue', () => {
+    const big = Array.from({ length: 20000 }, (_, i) => entry(`n${i}`));
+    const rest = big.filter((item) => item.localId !== 'n10000');
+    const before = ids(big).join();
+    const started = performance.now();
+    expect(nextInQueue(big, 'n10000', rest)?.localId).toBe('n10001');
+    expect(performance.now() - started).toBeLessThan(200);
+    expect(ids(big).join()).toBe(before);
+  });
+});
+
+describe('the four review groups', () => {
+  it('maps the tiers onto Fix before writing, Check, Clean and Structure (Check is low score plus flagged)', () => {
+    expect(reviewGroupOf('blocking')).toBe('fix');
+    expect(reviewGroupOf('low_score')).toBe('check');
+    expect(reviewGroupOf('flagged')).toBe('check');
+    expect(reviewGroupOf('clean')).toBe('clean');
+    expect(reviewGroupOf('structure')).toBe('structure');
+  });
+
+  it('groups what is still to review, in queue order, and leaves reviewed and excluded items out', () => {
+    const groups = buildKindGroups([warning('missing_source_reference', 'needs_review', ['blocked'])]);
+    const grouped = groupReviewQueue(
+      [
+        entry('clean', { qualityScore: 90, groundingScore: 0.9 }),
+        entry('low', { qualityScore: 30 }),
+        entry('flag', { qualityScore: 80, qualityConfidence: 'low' }),
+        entry('blocked', { qualityScore: 99 }),
+        entry('epic', { type: 'Epic' }),
+        entry('done', { reviewed: true }),
+        entry('out', { excluded: true }),
+      ],
+      groups,
+    );
+    expect(grouped.fix.map((item) => item.localId)).toEqual(['blocked']);
+    expect(grouped.check.map((item) => item.localId)).toEqual(['low', 'flag']);
+    expect(grouped.clean.map((item) => item.localId)).toEqual(['clean']);
+    expect(grouped.structure.map((item) => item.localId)).toEqual(['epic']);
+  });
+
+  it('classifies 20,000 entries against a kind naming 10,000 of them in linear time (the warning sets are built once)', () => {
+    const entries = Array.from({ length: 20000 }, (_, i) => entry(`n${i}`, { qualityScore: 80, groundingScore: 0.9 }));
+    const groups = buildKindGroups([warning('missing_source_reference', 'needs_review', entries.slice(0, 10000).map((item) => item.localId))]);
+    const started = performance.now();
+    const grouped = groupReviewQueue(entries, groups);
+    const approval = cleanApproval(entries, groups);
+    expect(performance.now() - started).toBeLessThan(1500);
+    expect(grouped.fix).toHaveLength(10000);
+    expect(grouped.clean).toHaveLength(10000);
+    expect(approval.items).toHaveLength(10000);
+    expect(approval.flagged).toBe(10000);
+  });
+});
+
+describe('a kind the reviewer has accepted no longer blocks or ranks its items (one handled state)', () => {
+  const acked = (kind: string, nodeIds: string[]): WarningRecord => ({ kind, severity: 'needs_review', nodeIds, detail: {}, raw: `${kind} raw`, acknowledged: true });
+
+  it('moves the items of a fully acknowledged fix kind out of "blocking" into the tier their own signals give them', () => {
+    const groups = buildKindGroups([acked('missing_source_reference', ['a', 'b'])]);
+    expect(riskTier(entry('a', { qualityScore: 95, groundingScore: 0.9 }), groups)).toBe('clean');
+    expect(riskTier(entry('b', { qualityScore: 30 }), groups)).toBe('low_score');
+    const grouped = groupReviewQueue([entry('a', { qualityScore: 95, groundingScore: 0.9 }), entry('b', { qualityScore: 30 })], groups);
+    expect(grouped.fix).toHaveLength(0);
+  });
+
+  it('keeps a kind that is only partly acknowledged blocking', () => {
+    const open: WarningRecord = { kind: 'missing_source_reference', severity: 'needs_review', nodeIds: ['b'], detail: {}, raw: 'other raw' };
+    const groups = buildKindGroups([acked('missing_source_reference', ['a']), open]);
+    expect(riskTier(entry('b', { qualityScore: 95 }), groups)).toBe('blocking');
+  });
+
+  it('treats an acknowledged review kind the same way', () => {
+    const groups = buildKindGroups([acked('low_grounding', ['a'])]);
+    expect(riskTier(entry('a', { qualityScore: 95, groundingScore: 0.9 }), groups)).toBe('clean');
+  });
+
+  it('does not explain an item by a warning that was accepted', () => {
+    const groups = buildKindGroups([acked('missing_source_reference', ['a'])]);
+    expect(riskReason(entry('a', { qualityScore: 30 }), groups).title).toBe('Low quality score');
+  });
+});
+
+describe('riskReason for a parent ignores its score, as the tier does', () => {
+  it('does not give a flagged Epic or Feature a quality-score reason', () => {
+    const groups = buildKindGroups([warning('low_grounding', 'needs_review', ['f'])]);
+    const reason = riskReason(entry('f', { type: 'Feature', qualityScore: 15, qualityConfidence: 'low', groundingScore: 0.9 }), groups);
+    expect(reason.title).not.toMatch(/quality|score|unsure/i);
+  });
+
+  it('still explains a parent with loose wording by the wording', () => {
+    const reason = riskReason(entry('f', { type: 'Feature', qualityScore: 15, groundingScore: 0.1 }), NO_WARNINGS);
+    expect(reason.title).toMatch(/grounding|wording|source/i);
+    expect(reason.title).not.toMatch(/quality score/i);
   });
 });

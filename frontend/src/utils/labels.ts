@@ -122,7 +122,7 @@ export const JOB_STATUS_LABELS: Record<string, { label: string; description: str
     description: 'Confirmed -- creating and linking work items in Azure DevOps now. This step cannot be interrupted.',
   },
   succeeded: {
-    label: 'Succeeded',
+    label: 'Written',
     description: 'All confirmed work items were created in Azure DevOps.',
   },
   failed: {

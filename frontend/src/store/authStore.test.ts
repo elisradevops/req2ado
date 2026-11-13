@@ -30,6 +30,17 @@ describe('authStore', () => {
     expect(usePageLabelStore.getState().jobLabels).toEqual({});
   });
 
+  it('logout forgets the signed-in user\'s last SharePoint folder and the old global one, but not another user\'s', () => {
+    localStorage.setItem('req2ado-kb-browse-url:user-descriptor-1', 'https://share.example/mine');
+    localStorage.setItem('req2ado-kb-browse-url:someone-else', 'https://share.example/theirs');
+    localStorage.setItem('req2ado-kb-browse-url', 'https://share.example/old-global');
+    useAuthStore.getState().login('https://ado.example', 'Jane Doe', 'user-descriptor-1');
+    useAuthStore.getState().logout();
+    expect(localStorage.getItem('req2ado-kb-browse-url:user-descriptor-1')).toBeNull();
+    expect(localStorage.getItem('req2ado-kb-browse-url')).toBeNull();
+    expect(localStorage.getItem('req2ado-kb-browse-url:someone-else')).toBe('https://share.example/theirs');
+  });
+
   it('logout clears state and sessionStorage', () => {
     useAuthStore.getState().login('https://ado.example', 'Jane Doe', 'user-descriptor-1');
     useAuthStore.getState().logout();

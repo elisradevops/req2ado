@@ -12,7 +12,7 @@ export const GROUP_ORDER: WarningGroup[] = ['fix', 'review', 'info'];
 
 export const GROUP_META: Record<WarningGroup, { title: string; line: string; actionLabel: string }> = {
   fix: {
-    title: 'Fix before confirming',
+    title: 'Fix before writing',
     line: 'These would reach Azure DevOps wrong or incomplete.',
     actionLabel: 'Fix in tree',
   },
@@ -49,28 +49,37 @@ export interface KindMeta {
   unit: [singular: string, plural: string];
   // Overrides GROUP_META's action label for the row's tree button.
   actionLabel?: string;
+  // How a `fix` kind is cleared before the write. `per_item` (the default): every affected item gets its own decision. `kind_counted`:
+  // the value is missing from the source document (nothing to correct), so one counted acknowledgement of the whole kind is allowed.
+  ackPolicy?: AckPolicy;
+  // The tail of the counted action's label: "Accept 7 <countedAckLabel>". Required for a `kind_counted` kind.
+  countedAckLabel?: string;
 }
+
+export type AckPolicy = 'per_item' | 'kind_counted';
 
 // Closed vocabulary (ingestion's app.workitem.model.WarningKind). `kind` on
 // WarningRecord is `string` on purpose -- ingestion can add one without a
 // matching frontend release; kindMeta()'s fallback renders those sanely.
 export const KIND_META: Record<string, KindMeta> = {
-  // -- Fix before confirming -------------------------------------------------
+  // -- Fix before writing -------------------------------------------------
   missing_source_reference: {
     title: 'Requirement has no Customer ID',
     group: 'fix',
     short: 'The document had no ID to use as the source reference. None was invented.',
     means: 'These requirements will be created in Azure DevOps without a Customer ID.',
-    todo: 'If the source document has an ID for them, open each item and add it before you confirm.',
+    todo: 'If the source document has an ID for them, open each item and add it before you write.',
     chip: 'No Customer ID',
     unit: ['requirement', 'requirements'],
+    ackPolicy: 'kind_counted',
+    countedAckLabel: 'without a Customer ID',
   },
   duplicate_customer_id: {
     title: 'Customer ID removed: reported on several requirements',
     group: 'fix',
     short: 'The same Customer ID appeared on more than one requirement, so it was removed from all of them.',
     means: 'These requirements will be created without a Customer ID rather than with a wrong one.',
-    todo: 'Check the source document and add the real ID to the right requirement before you confirm.',
+    todo: 'Check the source document and add the real ID to the right requirement before you write.',
     chip: 'ID removed',
     unit: ['requirement', 'requirements'],
   },
@@ -79,7 +88,7 @@ export const KIND_META: Record<string, KindMeta> = {
     group: 'fix',
     short: "An Epic or Feature was given the same title as one of the requirements under it, so its original heading was kept.",
     means: 'The parent and child may still read the same in Azure DevOps if the heading is identical too.',
-    todo: 'Open the parent item and give it a title that names the broader capability before you confirm.',
+    todo: 'Open the parent item and give it a title that names the broader capability before you write.',
     chip: 'Same title',
     unit: ['item', 'items'],
   },
@@ -88,7 +97,7 @@ export const KIND_META: Record<string, KindMeta> = {
     group: 'review',
     short: 'Some proposed acceptance criteria were left out because they named values not found in the document.',
     means: 'Nothing wrong was written. These items have no proposed criteria, or fewer than the model suggested.',
-    todo: 'If the item needs acceptance criteria, write them by hand before you confirm.',
+    todo: 'If the item needs acceptance criteria, write them by hand before you write.',
     chip: 'Criteria left out',
     unit: ['item', 'items'],
   },
@@ -97,7 +106,7 @@ export const KIND_META: Record<string, KindMeta> = {
     group: 'fix',
     short: 'A section with real content produced no work items.',
     means: 'Requirements from this section are missing from the tree.',
-    todo: 'Resubmit the job (the button at the top of this page), or add the items manually after you confirm.',
+    todo: 'Resubmit the job (the button at the top of this page), or add the items manually after you write.',
     chip: 'No items',
     unit: ['section', 'sections'],
   },
@@ -352,7 +361,7 @@ export const KIND_META: Record<string, KindMeta> = {
     group: 'info',
     short: 'Whole-document trace-link inference failed for this run.',
     means: 'Every proposed item is complete. None of them has suggested trace links.',
-    todo: 'Add links in Azure DevOps after you confirm, or resubmit the job to retry.',
+    todo: 'Add links in Azure DevOps after you write, or resubmit the job to retry.',
     chip: 'No links',
     unit: ['run', 'runs'],
   },
@@ -370,7 +379,7 @@ export const KIND_META: Record<string, KindMeta> = {
     group: 'review',
     short: 'Link inference failed for part of the document.',
     means: 'The listed items have no suggested trace links. All other items were processed normally.',
-    todo: 'Add the missing links in Azure DevOps after you confirm.',
+    todo: 'Add the missing links in Azure DevOps after you write.',
     chip: 'Links missing',
     unit: ['group', 'groups'],
   },
@@ -624,13 +633,18 @@ export const RETRY_ENHANCEMENT_BATCH_SIZE: Record<RetryablePass, number> = {
 
 export function retryableEnhancementBatches(entry: WarningKindGroup): { pass: RetryablePass; localIds: string[] }[] {
   if (entry.kind !== 'enhancement_call_failed' && entry.kind !== 'enhancement_response_incomplete') return [];
-  const byPass = new Map<RetryablePass, string[]>();
+  // A Set beside each list keeps the dedupe linear (first-seen order is the list's own), however many records name the same items.
+  const byPass = new Map<RetryablePass, { ids: string[]; seen: Set<string> }>();
   for (const record of entry.records) {
     const pass = record.detail?.pass;
     if (pass !== 'title_tag' && pass !== 'synthesis' && pass !== 'parent_summary') continue;
-    const ids = byPass.get(pass) ?? [];
-    for (const nodeId of record.nodeIds) if (!ids.includes(nodeId)) ids.push(nodeId);
-    byPass.set(pass, ids);
+    const bucket = byPass.get(pass) ?? { ids: [], seen: new Set<string>() };
+    for (const nodeId of record.nodeIds) {
+      if (bucket.seen.has(nodeId)) continue;
+      bucket.seen.add(nodeId);
+      bucket.ids.push(nodeId);
+    }
+    byPass.set(pass, bucket);
   }
-  return [...byPass].filter(([, localIds]) => localIds.length > 0).map(([pass, localIds]) => ({ pass, localIds }));
+  return [...byPass].filter(([, { ids }]) => ids.length > 0).map(([pass, { ids }]) => ({ pass, localIds: ids }));
 }

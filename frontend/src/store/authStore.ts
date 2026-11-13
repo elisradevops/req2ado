@@ -3,6 +3,7 @@ import { useLlmConnectionStore } from './llmConnectionStore';
 import { usePageLabelStore } from './pageLabelStore';
 import { useNewJobDraftStore } from './newJobDraftStore';
 import { useBatchJobDraftStore } from './batchJobDraftStore';
+import { clearKbBrowseUrl } from '../utils/kbBrowseUrl';
 
 // v2: the PAT is no longer held here at all -- the orchestrator vaults it
 // server-side (credential-vault.service.ts) at login/reconnect time and
@@ -51,6 +52,8 @@ export const useAuthStore = create<AuthState>((set) => ({
     set({ orgUrl, displayName, userId, email, accountName });
   },
   logout: () => {
+    // Read before the state is cleared: the folder the signed-in user last browsed is theirs, and goes with them.
+    clearKbBrowseUrl(useAuthStore.getState().userId);
     sessionStorage.removeItem(STORAGE_KEY);
     set({ orgUrl: null, displayName: null, userId: null, email: null, accountName: null });
     // A different user logging into the same tab must not inherit the

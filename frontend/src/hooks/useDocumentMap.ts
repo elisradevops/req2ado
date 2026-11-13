@@ -9,11 +9,24 @@ import type { DocumentMap } from '../api/liveTypes';
 //    server with the feature off answers 404 every time, so asking again only
 //    fills the console and the access log);
 //  - once it has (the first progress or live event), ask again at once and then
-//    every 8 s, a few times, because the map is about to exist.
+//    keep asking, with growing gaps (8 s, then 15 s, then 30 s), until the run
+//    ends: a figure-heavy document can still be parsing for many minutes, and a
+//    fixed number of tries ran out before the map existed.
 const cache = new Map<string, DocumentMap>();
 export const RETRY_MS = 8000;
-export const MAX_ATTEMPTS_AFTER_LIVE = 6;
+export const MAX_RETRY_MS = 30000;
 
+/** The wait before the next ask, after `misses` misses in a row: 8 s for the first three, then 15 s twice, then 30 s. */
+export function retryDelay(misses: number): number {
+  if (misses <= 3) return RETRY_MS;
+  if (misses <= 5) return 15000;
+  return MAX_RETRY_MS;
+}
+
+/**
+ * 'loading' lasts for the whole run once the live stream has shown the feature is on and no map exists yet (and, with a request
+ * that keeps failing, for the whole run too: failures are retried like misses). A consumer must not show a spinner for it.
+ */
 export type DocumentMapState = 'loading' | 'ready' | 'off';
 
 export function useDocumentMap(
@@ -49,11 +62,7 @@ export function useDocumentMap(
           }
           misses += 1;
           if (liveSeen) {
-            if (misses >= MAX_ATTEMPTS_AFTER_LIVE) {
-              setGaveUp(true);
-              return;
-            }
-            timer = setTimeout(attempt, RETRY_MS);
+            timer = setTimeout(attempt, retryDelay(misses));
           } else {
             // The one early ask missed; the effect restarts when the live stream shows the feature.
             setGaveUp(true);

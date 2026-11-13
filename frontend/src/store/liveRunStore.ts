@@ -83,6 +83,8 @@ interface LiveRunState {
   activityAt: number | null;
   /** Browser clock of the last stream error, if no event has arrived since. */
   errorAt: number | null;
+  /** The run has reported nothing for a long while (set by the banner, announced once by the page's one status region). */
+  waiting: boolean;
 
   begin: (jobId: string) => void;
   ingestProgress: (event: ProgressEvent) => void;
@@ -94,6 +96,7 @@ interface LiveRunState {
   /** Any event at all (stage, narration, ...) proves the connection is alive. */
   touch: () => void;
   markError: () => void;
+  setWaiting: (waiting: boolean) => void;
   flush: () => void;
   reset: () => void;
 }
@@ -112,6 +115,7 @@ const EMPTY = {
   lastEventAt: null,
   activityAt: null,
   errorAt: null,
+  waiting: false,
 } satisfies Partial<LiveRunState>;
 
 let queue: Queued[] = [];
@@ -258,6 +262,8 @@ export const useLiveRunStore = create<LiveRunState>((set, get) => ({
       errorAt: null,
     });
   },
+
+  setWaiting: (waiting) => set((state) => (state.waiting === waiting ? state : { waiting })),
 
   reset: () => {
     queue = [];

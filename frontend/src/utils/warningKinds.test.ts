@@ -199,3 +199,29 @@ describe('dedup_check_failed', () => {
   });
 });
 
+
+describe('KIND_META wording (DESIGN.md §12)', () => {
+  it('never tells the reviewer to "confirm": the write is "Write to Azure DevOps"', () => {
+    for (const [kind, meta] of Object.entries(KIND_META)) {
+      for (const text of [meta.title, meta.short, meta.means, meta.todo, meta.chip]) {
+        expect(text, `${kind}: ${text}`).not.toMatch(/\bconfirm\b/i);
+      }
+    }
+  });
+});
+
+describe('retryableEnhancementBatches stays linear', () => {
+  it('dedupes 30,000 ids across records in well under a second, keeping first-seen order', () => {
+    const rec = (ids: string[]): WarningRecord => ({ kind: 'enhancement_call_failed', severity: 'pipeline_issue', nodeIds: ids, detail: { pass: 'title_tag' }, raw: 'x' });
+    const a = Array.from({ length: 20000 }, (_, i) => `n${i}`);
+    const b = Array.from({ length: 20000 }, (_, i) => `n${i + 10000}`); // overlaps the last 10,000 of `a`
+    const group = buildKindGroups([rec(a), rec(b)])[0];
+    const started = performance.now();
+    const batches = retryableEnhancementBatches(group);
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(batches).toHaveLength(1);
+    expect(batches[0].localIds).toHaveLength(30000);
+    expect(batches[0].localIds.slice(0, 3)).toEqual(['n0', 'n1', 'n2']);
+    expect(batches[0].localIds.at(-1)).toBe('n29999');
+  });
+});

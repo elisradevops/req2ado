@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
-import { clearDocumentMapCache, MAX_ATTEMPTS_AFTER_LIVE, RETRY_MS, useDocumentMap } from './useDocumentMap';
+import { clearDocumentMapCache, MAX_RETRY_MS, RETRY_MS, retryDelay, useDocumentMap } from './useDocumentMap';
 import { getRunMap } from '../api/runMap';
 import type { DocumentMap } from '../api/liveTypes';
 
@@ -56,19 +56,39 @@ describe('useDocumentMap', () => {
     expect(result.current).toEqual({ map: null, state: 'off' });
   });
 
-  it('asks again at once when the live stream shows the feature is on, then gives up after a few tries', async () => {
+  it('asks again at once when the live stream shows the feature is on, and then keeps asking with growing gaps while the run goes on', async () => {
+    // A figure-heavy document can take many minutes to parse, and the map only exists after that. Giving up after a fixed
+    // 48 s (the old rule) lost the outline for that page view, so the live run asks until the run ends, backing off.
     mocked.mockResolvedValue(null);
-    const { result, rerender } = renderHook(({ live }) => useDocumentMap('job-1', live, true), {
-      initialProps: { live: false },
+    const { result, rerender } = renderHook(({ live, running }) => useDocumentMap('job-1', live, running), {
+      initialProps: { live: false, running: true },
     });
     await settle();
     const before = mocked.mock.calls.length;
-    rerender({ live: true });
+    rerender({ live: true, running: true });
     await settle();
     expect(mocked.mock.calls.length).toBe(before + 1);
-    await settle(RETRY_MS * (MAX_ATTEMPTS_AFTER_LIVE + 2));
-    expect(mocked.mock.calls.length).toBe(before + MAX_ATTEMPTS_AFTER_LIVE);
+
+    await settle(10 * 60_000);
+    const asked = mocked.mock.calls.length - before;
+    expect(asked).toBeGreaterThan(8); // far past the old six tries
+    expect(asked).toBeLessThan(30); // but backed off, not one every 8 s for ten minutes (that would be about 75)
+    expect(result.current).toEqual({ map: null, state: 'loading' });
+
+    rerender({ live: true, running: false });
+    await settle();
+    const stopped = mocked.mock.calls.length;
+    await settle(5 * 60_000);
+    expect(mocked.mock.calls.length).toBe(stopped);
     expect(result.current).toEqual({ map: null, state: 'off' });
+  });
+
+  it('backs off from 8 s to 30 s and no further', () => {
+    expect(retryDelay(1)).toBe(RETRY_MS);
+    expect(retryDelay(3)).toBe(RETRY_MS);
+    expect(retryDelay(4)).toBeGreaterThan(RETRY_MS);
+    expect(retryDelay(50)).toBe(MAX_RETRY_MS);
+    for (let n = 2; n < 60; n += 1) expect(retryDelay(n)).toBeGreaterThanOrEqual(retryDelay(n - 1));
   });
 
   it('finds the map when it appears after a miss', async () => {
@@ -87,7 +107,7 @@ describe('useDocumentMap', () => {
     expect(finished.result.current).toEqual({ map: null, state: 'off' });
 
     mocked.mockRejectedValue(new Error('network'));
-    const failing = renderHook(() => useDocumentMap('job-2', true, true));
+    const failing = renderHook(() => useDocumentMap('job-2', false, true));
     await settle(RETRY_MS * 10);
     expect(failing.result.current).toEqual({ map: null, state: 'off' });
   });

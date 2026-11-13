@@ -59,13 +59,15 @@ export async function ingestFolderUrl(
   return response.data;
 }
 
-export async function listIngestedDocuments(userId?: string): Promise<IngestedDocument[]> {
-  const response = await httpClient.get<IngestedDocument[]>('/kb/documents', { params: userId ? { userId } : {} });
+// No userId on either call: the session already says whose documents these are (the server reads it from there and ignores a query value),
+// and an identity claim in a URL ends up in logs and history.
+export async function listIngestedDocuments(): Promise<IngestedDocument[]> {
+  const response = await httpClient.get<IngestedDocument[]>('/kb/documents', { params: {} });
   return response.data;
 }
 
-export async function deleteIngestedDocument(id: string, userId: string): Promise<void> {
-  await httpClient.delete(`/kb/documents/${id}`, { params: { userId } });
+export async function deleteIngestedDocument(id: string): Promise<void> {
+  await httpClient.delete(`/kb/documents/${id}`);
 }
 
 // Switches an already-ingested file between similarity-gated retrieval and full-context injection (no re-ingest).
