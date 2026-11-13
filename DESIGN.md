@@ -2674,17 +2674,19 @@ reviewed" is not offered on a Fix kind at all. No bulk approval inside Fix befor
 **Written jobs are read-only records.** A job past review shows its warnings as "flagged at write time": no review counters, no
 Done chip, "Show in tree" instead of "Fix in tree". The job chip says **Written**.
 
-**Not yet enforced on the server.** The API's `POST /jobs/:id/confirm` still checks only the job's status and that there is
-something to write. The gate is UI-only until the server change (plan section S1) is approved.
+**Enforced on the server (2026-11-13).** `POST /jobs/:id/confirm` answers 409 `fix_before_writing` (with `remaining` and `blockers`) for
+a first write while a Fix kind is open. The rules live in `orchestrator/src/modules/pipeline/write-gate.ts` and mirror this section, so
+`utils/warningKinds.ts` and the server read the same list of Fix kinds (a contract test compares them). A retry that already has
+written items is not blocked. Accepting the missing-Customer-ID kind writes an audit line, and undoing it writes another.
 
 #### §11.3.6b — A failed run says why (built 2026-11-13)
 
 A failed job's "No diff was produced" card leads with the cause in plain words, then the raw error text beneath it in mono, never instead of
-it. Until the server stores a structured failure (plan S3) the cause is read from the audit line "Pipeline failed: <error>"
+it. The server stores the failure class and message (`failureClass`, `failureMessage`, `failedStage`), and the card and the Jobs list read them (`describeStoredFailure`). For a job that failed before they were recorded, the cause is read from the audit line "Pipeline failed: <error>"
 (`utils/failureCause.ts`); only causes the text clearly shows are named (a cut connection, a timeout, a refused request, an answer that could
 not be read). Anything else says "The run stopped with an error." and shows the raw text: a guess would send the reader the wrong way. The summaries say "a step" or "a request", never "the model": the failing call may be Azure DevOps or SharePoint. A bare number is not a status code ("item 403"). A
 durable `job_failed` event, when there is one, still takes precedence. Reading the cause changes nothing else on screen (the card's
-"View audit" button and the audit list are untouched). Not built: the failed stage and "what was kept", and a Retry that resumes from a chunk.
+"View audit" button and the audit list are untouched). Not built: showing the failed stage, "what was kept", and a Retry that resumes from a chunk (not known to be possible).
 
 ### §11.4 — The work-item detail dialog
 
@@ -4162,6 +4164,8 @@ Append-only. Every renamed or removed token, and every closed §1.8 divergence.
 | **Slice 6, 2026-11-13** (part 2) | job-state tokens with icon and word (§1.1, §2, §3); motion aliases (§1.7); disclosure fade, phase advance, count tick, skeleton crossfade (§8.3); research motion rules and the text-spacing guard (§15) | `index.css`, `components/StatusChip.tsx`, `DestinationBar.tsx`, `jobPhase/PhaseRail.tsx`, `ui/Disclosure.tsx`, `ui/Skeleton.tsx`, `pages/JobDetail.tsx`, `pages/JobsList.tsx`, `design/motionContract.test.ts`, new `design/textSpacing.test.tsx` | `--color-mark-source` not added: the evidence strip shows no source sentence (only offsets are stored), so it has no consumer. New-event fade (#8) was already built (§8.3 activity feed row). Real layout under text-spacing overrides was not measured. |
 | `--color-shimmer-highlight`, `@keyframes shimmer` | **removed** | Only `ui/Skeleton.tsx` used them; the skeleton is a static `bg-hairline` block now (research #7). |
 | `GET /kb/browse-folder?url=` | `POST /kb/browse-folder` `{ url }` (§11.7.1) | `orchestrator/src/modules/kb/kb.controller.ts`, `frontend/src/api/kb.ts` (+ `kb.controller.spec.ts`, `kb.test.ts`). The GET route is removed: nothing else called it. Closes the "Not fixed" note in the reviewer-pass-2 row. |
+| **Server work, 2026-11-13** | Write gate enforced in `confirm()` (409 `fix_before_writing`); counted acceptance audited; failure stored on the job (`failedStage`, `failureClass`, `failureMessage`, migration `20261116090000_add_job_failure_details`); `writtenItems` (`localId`, `adoId`) on `GET /jobs/:id`; survey estimate floor 15 → 2 minutes; plainer step 3 overview; drafted requirements scored without document-level criteria; gzip on text responses | `orchestrator/src/modules/pipeline/*`, `jobs.service.ts`, `eta.service.ts`, `document-profile.ts`, `document-summary.ts`, `ingestion/app/kb/profile.py`, `frontend/nginx.conf.template`. Not done: ingestion version bump (cached results for an identical file keep their old scores), resume from a chunk. |
+| **Frontend use of the server work, 2026-11-13** | failure card and Jobs list name the stored cause (§11.3.6b); written rows show `#id` as a link in the Status column; `overview_reused` is an info-only warning kind; the dialog's closed summary no longer doubles the full stop of a criterion | `utils/failureCause.ts`, `pages/JobsList.tsx`, `components/DiffTree.tsx`, `utils/warningKinds.ts`, `components/EvidenceStrip.tsx`. |
 
 ### §18.1 — Open migrations
 
