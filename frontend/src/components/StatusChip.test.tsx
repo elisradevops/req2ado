@@ -29,8 +29,8 @@ describe('StatusChip', () => {
   // DESIGN.md §7, Chip / Badge: soft fill, tinted ink, no solid fill with white text. The Knowledge Base chips already follow this; the
   // Jobs list and the job header used solid fills, so one status looked different in different places.
   describe('tone', () => {
-    const toneOf = (status: string) => {
-      const { container, unmount } = render(<StatusChip status={status} />);
+    const toneOf = (status: string, partial = false) => {
+      const { container, unmount } = render(<StatusChip status={status} partial={partial} />);
       const chip = container.querySelector('span[style]') as HTMLElement;
       const tone = { bg: chip.style.backgroundColor, ink: chip.style.color };
       unmount();
@@ -38,9 +38,9 @@ describe('StatusChip', () => {
     };
 
     it.each([
-      ['diff_ready', 'var(--color-info-soft)', 'var(--color-info-ink)'],
-      ['succeeded', 'var(--color-ok-soft)', 'var(--color-ok-ink)'],
-      ['failed', 'var(--color-danger-soft)', 'var(--color-danger-ink)'],
+      ['diff_ready', 'var(--color-job-proposed-soft)', 'var(--color-job-proposed)'],
+      ['succeeded', 'var(--color-job-written-soft)', 'var(--color-job-written)'],
+      ['failed', 'var(--color-job-failed-soft)', 'var(--color-job-failed)'],
       ['pending', 'var(--color-surface-alt)', 'var(--color-ink-2)'],
       ['rejected', 'var(--color-surface-alt)', 'var(--color-ink-2)'],
     ])('draws %s as a soft chip with tinted ink', (status, bg, ink) => {
@@ -53,5 +53,33 @@ describe('StatusChip', () => {
       }
     });
   });
-});
 
+  // DESIGN.md §2 job states: proposed, written, partly written and failed each carry an icon and words, never colour alone.
+  describe('job states', () => {
+    it.each([
+      ['diff_ready', false, 'Diff ready', 'lucide-circle-dashed'],
+      ['diff_ready', true, 'Partly written', 'lucide-circle-dot-dashed'],
+      ['succeeded', false, 'Written', 'lucide-circle-check'],
+      ['failed', false, 'Failed', 'lucide-circle-x'],
+    ])('draws %s (partial: %s) as "%s" with its own icon', (status, partial, label, icon) => {
+      const { container } = render(<StatusChip status={status} partial={partial} />);
+      expect(screen.getByText(label)).toBeInTheDocument();
+      const svg = container.querySelector('svg');
+      expect(svg).not.toBeNull();
+      expect(svg!.getAttribute('class')).toContain(icon);
+      expect(svg).toHaveAttribute('aria-hidden', 'true');
+    });
+
+    it('draws a partly written job in the partial colours, not the proposed ones', () => {
+      const { container } = render(<StatusChip status="diff_ready" partial />);
+      const chip = container.querySelector('span[style]') as HTMLElement;
+      expect(chip.style.backgroundColor).toBe('var(--color-job-partial-soft)');
+      expect(chip.style.color).toBe('var(--color-job-partial)');
+    });
+
+    it('keeps other statuses as they were, without an icon', () => {
+      const { container } = render(<StatusChip status="running" />);
+      expect(container.querySelector('svg')).toBeNull();
+    });
+  });
+});

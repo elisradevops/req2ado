@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { Check, Circle, Minus, X } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { Spinner } from '../../ui/Spinner';
@@ -27,6 +27,13 @@ export function PhaseRail({
   onSelect: (key: LifecycleKey) => void;
 }): React.ReactElement {
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  // Research #4 (DESIGN.md §8.3): a phase whose state changed after first paint (the run finished it, or it became current) cross-fades
+  // its glyph and name in once at --motion-milestone. Read from the states of the previous commit; nothing animates on first paint. The
+  // page's one polite status region (LiveStatusRegion) already announces the step change, so this is decoration on top of a fact.
+  const previousStates = useRef<Record<string, StepState> | null>(null);
+  useEffect(() => {
+    previousStates.current = Object.fromEntries(rows.map((row) => [row.key, row.state]));
+  });
 
   function move(fromIndex: number, delta: number): void {
     const next = (fromIndex + delta + rows.length) % rows.length;
@@ -40,6 +47,8 @@ export function PhaseRail({
     className="flex flex-row overflow-x-auto rounded-md border border-hairline bg-surface lg:flex-col lg:overflow-visible">
       {rows.map((row, index) => {
         const selected = row.key === selectedKey;
+        const before = previousStates.current?.[row.key];
+        const advanced = before !== undefined && before !== row.state && (row.state === 'done' || row.state === 'current');
         return (
           <button
             key={row.key}
@@ -71,6 +80,12 @@ export function PhaseRail({
             // `.hoverable-row` (§6) paints hover, the selected fill and the hairline between rows.
             className="hoverable-row flex min-w-[7.5rem] flex-none items-start gap-3 px-3.5 py-3 text-left first:border-t-0 lg:min-w-0"
           >
+            {/* keyed by state, so a change remounts the glyph and name and the one-shot fade plays once */}
+            <span
+              key={row.state}
+              data-phase-advance={advanced ? row.key : undefined}
+              className={cn('flex min-w-0 flex-1 items-start gap-3', advanced && 'animate-[fadeIn_var(--motion-milestone)_var(--ease-out)_backwards]')}
+            >
             <PhaseGlyph state={row.state} />
             <span className="flex min-w-0 flex-1 flex-col gap-0.5">
               <span className="flex items-center gap-2">
@@ -79,6 +94,7 @@ export function PhaseRail({
               </span>
               {/* Below lg the strip is compact, but the state line stays in the accessible name. */}
               <span className="sr-only text-xs text-ink-3 lg:not-sr-only lg:block">{row.line}</span>
+            </span>
             </span>
           </button>
         );

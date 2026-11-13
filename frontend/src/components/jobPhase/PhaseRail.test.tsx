@@ -77,5 +77,20 @@ describe('PhaseRail', () => {
     await userEvent.keyboard('{ArrowLeft}');
     expect(onSelect).toHaveBeenLastCalledWith('analyze');
   });
+
+  // Research #4 (DESIGN.md §8.3): when the run moves on, the finished phase's check and the new current phase cross-fade in once
+  // (--motion-milestone). The page's one polite status region already says the step changed, so the rail adds no second one.
+  it('fades in the glyph of a phase that changed state after first paint, and nothing on first paint', () => {
+    const { container, rerender } = render(<PhaseRail rows={ROWS} selectedKey="analyze" liveKey="analyze" onSelect={vi.fn()} />);
+    expect(container.querySelectorAll('[data-phase-advance]')).toHaveLength(0);
+    const next: PhaseRailRow[] = ROWS.map((row) =>
+      row.key === 'analyze' ? { ...row, state: 'done' } : row.key === 'score' ? { ...row, state: 'current' } : row,
+    );
+    rerender(<PhaseRail rows={next} selectedKey="score" liveKey="score" onSelect={vi.fn()} />);
+    const advanced = Array.from(container.querySelectorAll('[data-phase-advance]'));
+    expect(advanced.map((el) => el.getAttribute('data-phase-advance'))).toEqual(['analyze', 'score']);
+    for (const el of advanced) expect(el.className).toContain('animate-[fadeIn_var(--motion-milestone)_var(--ease-out)_backwards]');
+    expect(container.querySelector('[role="status"]')).toBeNull();
+  });
 });
 

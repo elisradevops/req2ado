@@ -130,7 +130,21 @@
   --color-brand-blue: #1b4a8f;
   --color-brand-yellow: #fde134;
 
-  --color-shimmer-highlight: #e6ebf4;
+  /* Job states (DESIGN.md §2): proposed, written, partly written, failed. Aliases of the status families, so no new hex, and each is
+     always drawn with its own icon and words (StatusChip, DestinationBar), never colour alone. The bare name is the ink (text and icon),
+     -soft the chip fill, -border its edge. `--color-state-*` below is ADO's own work-item states and is a different thing. */
+  --color-job-proposed: var(--color-info-ink);
+  --color-job-proposed-soft: var(--color-info-soft);
+  --color-job-proposed-border: var(--color-info-border);
+  --color-job-written: var(--color-ok-ink);
+  --color-job-written-soft: var(--color-ok-soft);
+  --color-job-written-border: var(--color-ok-border);
+  --color-job-partial: var(--color-warning-ink);
+  --color-job-partial-soft: var(--color-warning-soft);
+  --color-job-partial-border: var(--color-warning-border);
+  --color-job-failed: var(--color-danger-ink);
+  --color-job-failed-soft: var(--color-danger-soft);
+  --color-job-failed-border: var(--color-danger-border);
 
   /* ------------------------------------------------------------------
    * 11. DATA PALETTES — real ADO values, fallback only. Never hardcode
@@ -243,6 +257,11 @@
   --duration-ambient: 1500ms;
   --duration-breathe: 2600ms;
 
+  /* Motion by intent (DESIGN.md §1.7, §8.3): aliases on the rungs above, so code reads by what the motion is for. No new values. */
+  --motion-feedback: var(--duration-instant); /* a chip changing state, a press */
+  --motion-reveal: var(--duration-base); /* a disclosure opening */
+  --motion-milestone: var(--duration-medium); /* a phase advancing, a count ticking */
+
   /* ------------------------------------------------------------------
    * 18. EASING — 4, never inline a cubic-bezier (DESIGN.md §2.7).
    * ------------------------------------------------------------------ */
@@ -280,15 +299,6 @@
   transition-duration: var(--duration-progress);
 }
 
-
-@keyframes shimmer {
-  from {
-    background-position: 100% 0;
-  }
-  to {
-    background-position: 0 0;
-  }
-}
 
 @keyframes spin {
   to {

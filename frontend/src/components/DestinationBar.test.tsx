@@ -186,5 +186,21 @@ describe('formatDestinationPreview', () => {
     const { container } = render(<DestinationBar teamProject="Proj" areaPath="Proj\\Area" />);
     expect(container.querySelectorAll('[data-destination-row]')).toHaveLength(0);
   });
+
+  // DESIGN.md §2 job states: the job page's destination says whether the items are still proposed there, partly written or written,
+  // in words with the state's icon, never colour alone.
+  it.each([
+    ['proposed', 'Writes to', 'lucide-circle-dashed', 'var(--color-job-proposed)'],
+    ['partial', 'Partly written to', 'lucide-circle-dot-dashed', 'var(--color-job-partial)'],
+    ['written', 'Written to', 'lucide-circle-check', 'var(--color-job-written)'],
+  ] as const)('labels a %s destination "%s" with its icon', (writeState, label, icon, colour) => {
+    const { container } = render(<DestinationBar compact teamProject="Proj" areaPath="Proj\\Area" writeState={writeState} />);
+    const labelEl = screen.getByText(label);
+    const svg = container.querySelector(`svg.${icon}`) as SVGElement;
+    expect(svg).not.toBeNull();
+    expect(svg).toHaveAttribute('aria-hidden', 'true');
+    expect(svg.getAttribute('style') ?? '').toContain(colour);
+    expect(labelEl).toBeInTheDocument();
+  });
 });
 

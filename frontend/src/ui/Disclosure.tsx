@@ -19,6 +19,9 @@ export function Disclosure({
   children: React.ReactNode;
 }): React.ReactElement {
   const [open, setOpen] = useState(defaultOpen);
+  // Research #6 (DESIGN.md §8.3): a region the reader opens fades in (Entrance, opacity only, --motion-reveal); one that was open on first
+  // paint does not. Closing is instant: the content leaves the page at once, as every exit from a list here does. No height animation.
+  const [openedByUser, setOpenedByUser] = useState(false);
   const regionId = useId();
   return (
     <section className={cn('rounded-md border border-hairline bg-surface', className)}>
@@ -27,7 +30,10 @@ export function Disclosure({
           type="button"
           aria-expanded={open}
           aria-controls={open ? regionId : undefined}
-          onClick={() => setOpen((value) => !value)}
+          onClick={() => {
+            setOpenedByUser(true);
+            setOpen((value) => !value);
+          }}
           className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 rounded-md px-3.5 py-2.5 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
         >
           <ChevronRight
@@ -39,7 +45,12 @@ export function Disclosure({
         </button>
       </h2>
       {open && (
-        <div id={regionId} role="region" aria-label={title} className="flex flex-col gap-3 border-t border-hairline p-3.5">
+        <div
+          id={regionId}
+          role="region"
+          aria-label={title}
+          className={cn('flex flex-col gap-3 border-t border-hairline p-3.5', openedByUser && 'animate-[fadeIn_var(--motion-reveal)_var(--ease-out)_backwards]')}
+        >
           {children}
         </div>
       )}

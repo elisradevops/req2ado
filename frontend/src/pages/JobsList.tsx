@@ -410,7 +410,7 @@ export function JobsList(): React.ReactElement {
                         </td>
                         <td className={cn('px-3.5', cellPaddingY)}>
                           <span className="flex flex-wrap items-center gap-1.5">
-                            <StatusChip status={job.status} />
+                            <StatusChip status={job.status} partial={job.status === 'diff_ready' && job.createdItemCount > 0} />
                             {isStaleJob(job, now) && (
                               <Tooltip content="Waiting for review for over a week. The proposal was computed against Azure DevOps as it was then.">
                                 <Chip bg="var(--color-warning-soft)" color="var(--color-warning-ink)" className="border border-warning-border">

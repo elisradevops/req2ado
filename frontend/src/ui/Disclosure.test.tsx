@@ -47,4 +47,20 @@ describe('Disclosure (DESIGN.md §7, §11.3.2b: one chevron, one set of mechanic
     expect(screen.getByRole('button', { name: /Run details/ })).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByText('the stepper')).toBeInTheDocument();
   });
+
+  // Research #6 (DESIGN.md §8.3): the region fades in on open (Entrance, opacity only, --motion-reveal) and leaves at once on close.
+  // No height animation (layout work every frame); the kill-switch clamps the fade under reduced motion.
+  it('fades the region in on open with the reveal alias, opacity only', async () => {
+    render(<Disclosure title="Run details"><p>the stepper</p></Disclosure>);
+    await userEvent.click(screen.getByRole('button', { name: /Run details/ }));
+    const region = screen.getByRole('region', { name: /Run details/ });
+    expect(region.className).toContain('animate-[fadeIn_var(--motion-reveal)_var(--ease-out)_backwards]');
+    expect(region.className).not.toMatch(/height|translate|scale/);
+  });
+
+  it('does not fade a disclosure that starts open (it was there on first paint)', () => {
+    render(<Disclosure title="Run details" defaultOpen><p>the stepper</p></Disclosure>);
+    expect(screen.getByRole('region', { name: /Run details/ }).className).not.toContain('fadeIn');
+  });
 });
+

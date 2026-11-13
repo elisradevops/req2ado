@@ -1,4 +1,4 @@
-import { Briefcase, MapPin, CalendarRange, CircleDot, ChevronRight } from 'lucide-react';
+import { Briefcase, MapPin, CalendarRange, CircleCheck, CircleDashed, CircleDot, CircleDotDashed, ChevronRight, type LucideIcon } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { InfoTip, Tooltip } from '../ui/Tooltip';
 import { LABEL_MICRO } from '../utils/labelMicro';
@@ -123,6 +123,12 @@ export function formatDestinationPreview(
   return path ? `${path} · state ${state}` : `state ${state}`;
 }
 
+const WRITE_STATE: Record<'proposed' | 'partial' | 'written', { label: string; icon: LucideIcon; color: string }> = {
+  proposed: { label: 'Writes to', icon: CircleDashed, color: 'var(--color-job-proposed)' },
+  partial: { label: 'Partly written to', icon: CircleDotDashed, color: 'var(--color-job-partial)' },
+  written: { label: 'Written to', icon: CircleCheck, color: 'var(--color-job-written)' },
+};
+
 export function DestinationBar({
   label = 'Destination',
   compact = false,
@@ -130,8 +136,12 @@ export function DestinationBar({
   areaPath,
   iterationPath,
   state,
+  writeState,
 }: {
   label?: string;
+  // The job page (DESIGN.md §2 job states): whether the items are still proposed for this destination, partly written or written. Replaces
+  // the label with words and the state's icon.
+  writeState?: 'proposed' | 'partial' | 'written';
   /** One row: the label, the path and the state together (the job page). The default keeps the label above the path. */
   compact?: boolean;
   teamProject?: string | null;
@@ -155,9 +165,11 @@ export function DestinationBar({
   // given at all," not "did stripping happen to leave nothing."
   const areaDisplay = areaPath == null ? areaPath : stripProjectPrefix(teamProject, areaPath) ?? areaPath;
   const iterationDisplay = iterationPath == null ? iterationPath : stripProjectPrefix(teamProject, iterationPath) ?? iterationPath;
+  const write = writeState ? WRITE_STATE[writeState] : null;
   const labelRow = (
     <div className="flex flex-none items-center gap-1">
-      <span className={LABEL_MICRO}>{label}</span>
+      {write && <write.icon className="h-3 w-3 flex-none" style={{ color: write.color }} aria-hidden="true" />}
+      <span className={LABEL_MICRO}>{write ? write.label : label}</span>
       <InfoTip content="Where Write to Azure DevOps puts new work items. Existing items are only matched for reuse inside this exact area path." />
     </div>
   );
