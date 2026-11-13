@@ -133,6 +133,9 @@ const CLEANUP_CAP_MS = 10_000;
 
 const clock = (seconds: number): string => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 
+/** The one primer warning that reports a healthy run (a saved overview was reused): it must never count as the run being degraded. */
+export const OVERVIEW_REUSED_KIND = 'overview_reused';
+
 function warning(reason: string, raw: string, extra: Record<string, unknown> = {}): WarningRecord {
   return { kind: 'primer_unavailable', severity: 'pipeline_issue', nodeIds: [], detail: { reason, ...extra }, raw };
 }
@@ -177,6 +180,15 @@ export async function runPrimerStep(input: PrimerStepInput): Promise<PrimerStepR
     const cached = await raceAbort(cache.get(cacheKey), signal);
     if (cached !== null) {
       say('cached', 'Reused a saved overview of this document.');
+      // On the job too (an informational warning), not only a line in the run log: a run that finishes in seconds explains itself, and a
+      // reviewer can tell the overview was reused rather than re-read. The cache keeps only the text, so it cannot say from which job or when.
+      warnings.push({
+        kind: OVERVIEW_REUSED_KIND,
+        severity: 'pipeline_issue',
+        nodeIds: [],
+        detail: { reason: 'cache_hit' },
+        raw: 'Reused a saved overview of this document, so it was not read again for this run.',
+      });
       return { primerContext: cached, warnings };
     }
     if (options.skipMemorySeconds > 0 && Boolean(await raceAbort(cache.get(skipKey), signal))) {

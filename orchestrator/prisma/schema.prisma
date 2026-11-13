@@ -206,6 +206,13 @@ model Job {
   // fit trains on the identical quantity it predicts against.
   blockCount       Int?
   figureCount      Int?
+  // Why a failed job failed, stored when the pipeline marks it failed (null for every other job, and for a job that failed before this existed:
+  // its cause is then only in the audit trail). failedStage is the last pipeline stage that was reached ('parse', 'infer_hierarchy_start',
+  // 'generate_requirements_done', 'dedup_check'), failureClass one of failure-reason.ts's FAILURE_CLASSES, failureMessage the one-line
+  // description (describeFailure) that the audit trail also carries.
+  failedStage      String?
+  failureClass     String?
+  failureMessage   String?
   tableCount       Int?
   cellCount        Int?
   // The EFFECTIVE model this job ran under (job.model ?? the orchestrator's

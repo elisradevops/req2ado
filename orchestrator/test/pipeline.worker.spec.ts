@@ -397,7 +397,7 @@ describe('runPipelineJob', () => {
 
     expect(fakePrisma.job.updateMany).toHaveBeenCalledWith({
       where: { id: 'job-1', status: { not: 'cancelled' } },
-      data: { status: 'failed' },
+      data: expect.objectContaining({ status: 'failed' }),
     });
   });
 
@@ -424,6 +424,53 @@ describe('runPipelineJob', () => {
 
     expect(fakePrisma.auditEntry.create).toHaveBeenCalledWith({
       data: { jobId: 'job-1', message: 'Pipeline failed: fetch failed (UND_ERR_HEADERS_TIMEOUT: Headers Timeout Error)' },
+    });
+  });
+
+  describe('a failed job records why (S3)', () => {
+    const run = (jobExtra: object = {}) =>
+      runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt', ...jobExtra } as any,
+        {
+          ingestionClient: fakeIngestionClient as any,
+          dryRunService: fakeDryRunService as any,
+          idempotencyService: fakeIdempotencyService as any,
+          prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
+          backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          defaultLlmModel: 'gemma4:12b',
+        },
+      );
+    const failureWrite = () => fakePrisma.job.updateMany.mock.calls.map((c: any[]) => c[0]).find((c: any) => c?.data?.status === 'failed');
+
+    it('stores the class, the one-line message and the last stage reached, in the same write that marks it failed', async () => {
+      const cause = Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' });
+      fakeIngestionClient.ingest.mockRejectedValue(Object.assign(new TypeError('terminated'), { cause }));
+      await expect(run()).rejects.toThrow('terminated');
+      const write = failureWrite();
+      expect(write.data).toMatchObject({
+        status: 'failed',
+        failureClass: 'connection_reset',
+        failedStage: 'parse',
+        failureMessage: 'terminated (UND_ERR_SOCKET: other side closed)',
+      });
+      // Still guarded: a job that was cancelled meanwhile is never turned into a failure.
+      expect(write.where).toEqual({ id: 'job-1', status: { not: 'cancelled' } });
+    });
+
+    it('says "unknown" for an error it does not recognise, rather than guessing', async () => {
+      fakeIngestionClient.ingest.mockRejectedValue(new Error('something odd'));
+      await expect(run()).rejects.toThrow('something odd');
+      expect(failureWrite().data).toMatchObject({ failureClass: 'unknown', failedStage: 'parse', failureMessage: 'something odd' });
+    });
+
+    it('records the later stage when the failure happens after the structure step', async () => {
+      fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+      fakeIngestionClient.level.mockRejectedValue(new Error('level exploded'));
+      await expect(run({ mode: 'survey' })).rejects.toThrow('level exploded');
+      expect(failureWrite().data.failedStage).toBe('infer_hierarchy_start');
     });
   });
 
@@ -2420,6 +2467,23 @@ describe('runPipelineJob', () => {
       expect(fakeIngestionClient.level).toHaveBeenCalledTimes(2);
     });
 
+    it('a run that reused a saved overview still stores its own result, so reusing an overview is never mistaken for a degraded run', async () => {
+      const cache = new JobResultCache(cacheStore(), 'code-1');
+      fakePrimerCacheRedis.get.mockResolvedValue('saved overview');
+      const withPrimer = () => ({
+        ...deps(cache),
+        openWebUiClientFactory: { getClientFor: jest.fn().mockResolvedValue(fakeOpenWebUiClient) } as any,
+        primerCacheRedis: fakePrimerCacheRedis as any,
+      });
+      await runPipelineJob(survey('job-1'), withPrimer());
+      // The overview was reused (the informational warning is on the job)...
+      const written = fakePrisma.job.update.mock.calls.map((c: any[]) => c[0]?.data?.warnings).filter(Boolean).flat();
+      expect(written.some((w: any) => w.kind === 'overview_reused')).toBe(true);
+      // ...and that did not stop the result being stored: an identical job is served without ingesting or levelling again.
+      await runPipelineJob(survey('job-2'), withPrimer());
+      expect(fakeIngestionClient.level).toHaveBeenCalledTimes(1);
+    });
+
     it('does not cache or reuse a BASELINE job (it has no model variance to remove)', async () => {
       const cache = new JobResultCache(cacheStore(), 'code-1');
       await runPipelineJob({ ...survey('job-1'), mode: 'baseline' as const }, deps(cache));
@@ -2727,7 +2791,7 @@ describe('runPipelineJob', () => {
       expect(result).toEqual([]);
       expect(fakePrisma.job.updateMany).toHaveBeenCalledWith({
         where: { id: 'job-1', status: { not: 'cancelled' } },
-        data: { status: 'failed' },
+        data: expect.objectContaining({ status: 'failed' }),
       });
       // The status must never be force-set to 'failed' via the unconditional
       // job.update -- only the conditional updateMany above is allowed to

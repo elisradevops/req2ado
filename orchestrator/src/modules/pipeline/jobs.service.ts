@@ -21,6 +21,7 @@ import type { DiscussionEntry, DryRunDiffEntry, TraceLink, WarningRecord } from 
 import { mapWithConcurrency, type SettledResult } from './map-with-concurrency';
 import { buildExclusionChecker, filterExcludedDiffEntries, summarizeDiffEntries } from './diff-summary';
 import { attachableFigureIds, buildWritePreview, findOrphanedSelections, findUnknownSelections, planHasWork, selectEntriesToCreate, selectEntriesToLink, selectTraceLinks, type WritePlanEntry, type WritePreview } from './write-plan';
+import { COUNTED_ACK_KINDS, openFixItems } from './write-gate';
 import { DEFAULT_CUSTOMER_ID_FIELD_CANDIDATES } from '../../config/customer-id-fields';
 import {
   DEFAULT_REQUIREMENT_TYPE_FIELD_CANDIDATES,
@@ -108,6 +109,9 @@ export interface JobSummary {
   // JobsList render a "Batch" chip linking back to the batch's own status
   // page. null/undefined for the overwhelming majority of jobs.
   batchId: string | null;
+  // The class of a failed job's failure (failure-reason.ts FAILURE_CLASSES), so a failed row can say why; null for any other job and for a job
+  // that failed before it was recorded.
+  failureClass: string | null;
 }
 
 // Read-time decoration of diff entries: `attachFigureIds` is the figures confirm() would attach for the entry (the server owns that rule, so the
@@ -198,6 +202,12 @@ export interface JobDetail {
   // text can no longer change -- setProposalAccepted/editDiffEntry 400 on it,
   // and the client uses this list to lock those controls up front.
   writtenLocalIds: string[];
+  // The Azure DevOps id of each written item (from the write's own record), so a written job can show #12000 on its rows. Empty until a write.
+  writtenItems: { localId: string; adoId: number }[];
+  // Why a failed job failed (null for any other job, and for a job that failed before this was recorded: its cause is then only in the audit trail).
+  failedStage: string | null;
+  failureClass: string | null;
+  failureMessage: string | null;
   documentOverview: DocumentOverview | null;
 }
 
@@ -209,6 +219,11 @@ function buildDedupUpsertItem(adoWorkItemId: number, entry: { title: string; des
   // `type` is the kind (Epic / Feature / Requirement): a later check compares an item only with items of its own kind.
   return { itemId: String(adoWorkItemId), text: entry.description, title: entry.title, areaPath, ...(entry.type ? { typeCategory: entry.type } : {}) };
 }
+
+// How a counted acceptance reads on the audit trail, per kind (the kinds are write-gate's COUNTED_ACK_KINDS).
+const COUNTED_ACCEPTANCE_LABELS: Record<string, { singular: string; plural: string; without: string }> = {
+  missing_source_reference: { singular: 'requirement', plural: 'requirements', without: 'without a Customer ID' },
+};
 
 @Injectable()
 export class JobsService implements OnModuleInit, OnModuleDestroy {
@@ -629,11 +644,12 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       include: {
         traceLinkFailures: true,
         _count: { select: { createdItemMappings: true } },
-        createdItemMappings: { select: { localId: true } },
+        createdItemMappings: { select: { localId: true, adoWorkItemId: true } },
       },
     });
     if (!job) return null;
     const writtenLocalIds = (job.createdItemMappings ?? []).map((m) => m.localId);
+    const writtenItems = (job.createdItemMappings ?? []).map((m) => ({ localId: m.localId, adoId: m.adoWorkItemId }));
     return {
       id: job.id,
       status: job.status,
@@ -663,6 +679,10 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       })),
       createdItemCount: job._count.createdItemMappings,
       writtenLocalIds,
+      writtenItems,
+      failedStage: job.failedStage ?? null,
+      failureClass: job.failureClass ?? null,
+      failureMessage: job.failureMessage ?? null,
       documentOverview: job.documentOverview as DocumentOverview | null,
     };
   }
@@ -690,6 +710,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         originalFilename: true,
         createdAt: true,
         batchId: true,
+        failureClass: true,
         _count: { select: { createdItemMappings: true } },
       },
     });
@@ -718,6 +739,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       createdItemCount: row._count.createdItemMappings,
       createdAt: row.createdAt,
       batchId: row.batchId,
+      failureClass: row.failureClass ?? null,
     }));
   }
 
@@ -1257,22 +1279,47 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       const warnings = (job.warnings as (WarningRecord | string)[] | null) ?? [];
       const rawFilter = input.raws ? new Set(input.raws) : null;
       let matched = 0;
+      // The items whose record actually flipped, for the audit line of a counted acceptance.
+      const changedNodeIds = new Set<string>();
+      let changedRecords = 0;
       const next = warnings.map((warning) => {
         if (typeof warning === 'string' || warning.kind !== input.kind) return warning;
         if (rawFilter && !rawFilter.has(warning.raw)) return warning;
         matched += 1;
-        return !!warning.acknowledged === input.acknowledged ? warning : { ...warning, acknowledged: input.acknowledged };
+        if (!!warning.acknowledged === input.acknowledged) return warning;
+        changedRecords += 1;
+        for (const nodeId of warning.nodeIds ?? []) changedNodeIds.add(nodeId);
+        return { ...warning, acknowledged: input.acknowledged };
       });
       if (matched === 0) throw new NotFoundException(`No ${input.kind} warning found on job ${id}`);
       const written = await this.prisma.job.updateMany({
         where: { id, status: 'diff_ready', diffVersion: job.diffVersion },
         data: { warnings: next as any, diffVersion: { increment: 1 } },
       });
-      if (written.count === 1) return next;
+      if (written.count === 1) {
+        if (changedRecords > 0) await this.auditCountedAcceptance(id, input.kind, input.acknowledged, changedNodeIds.size || changedRecords);
+        return next;
+      }
     }
     throw new ConflictException(
       `Job ${id}'s warnings were changed by another request while this edit was being applied -- please retry.`,
     );
+  }
+
+  // A counted acceptance ("write these without a Customer ID") is a decision about many items at once, so it is on the audit trail: how many, and
+  // whether it was taken back. Best effort: the acknowledgement is already stored, and a missing audit line must not undo or fail it.
+  private async auditCountedAcceptance(id: string, kind: string, accepted: boolean, count: number): Promise<void> {
+    const label = COUNTED_ACK_KINDS.has(kind) ? COUNTED_ACCEPTANCE_LABELS[kind] : undefined;
+    if (!label) return;
+    const noun = count === 1 ? label.singular : label.plural;
+    const message = accepted
+      ? `Accepted ${count} ${noun} ${label.without}: they will be written without one.`
+      : `Acceptance undone: ${count} ${noun} ${label.without} (open again).`;
+    try {
+      await this.prisma.auditEntry.create({ data: { jobId: id, message } });
+    } catch {
+      // Best effort, as described above.
+    }
   }
 
   async editDiffEntry(
@@ -2293,6 +2340,21 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     const alreadyLinkedLocalIds = new Set(existingMappings.filter((m) => m.linked).map((m) => m.localId));
     const plannedDiff = (toConfirm.dryRunDiff as unknown as WritePlanEntry[] | null) ?? [];
     this.assertValidSelection(plannedDiff, resumedAdoIdByLocalId, selectedLocalIds);
+    // The Write gate, where it cannot be bypassed (DESIGN.md §11.3.6): a first write is refused while a "Fix before writing" item is open.
+    // Before the claim below, so a refusal leaves the job untouched. Not applied once part of the job is written: a resume finishes what was
+    // already approved, and its warnings were weighed at the first write.
+    if (existingMappings.length === 0) {
+      const gate = openFixItems((toConfirm.warnings as unknown as (WarningRecord | string)[] | null) ?? [], plannedDiff, selectedLocalIds);
+      if (gate.remaining > 0) {
+        throw new ConflictException({
+          statusCode: 409,
+          code: 'fix_before_writing',
+          message: `${gate.remaining} ${gate.remaining === 1 ? 'item' : 'items'} to fix before writing.`,
+          remaining: gate.remaining,
+          blockers: gate.blockers,
+        });
+      }
+    }
     let plan = buildWritePreview(plannedDiff, { resumedAdoIdByLocalId, alreadyLinkedLocalIds }, selectedLocalIds);
     // Nothing to create or link, and nothing written before (a resume that only has to finish is allowed): the figure files are the last thing
     // that can still make this a real write, so they are only read when everything else comes up empty.

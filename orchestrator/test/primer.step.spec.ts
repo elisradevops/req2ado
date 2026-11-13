@@ -64,6 +64,28 @@ describe('primer step: what the user sees', () => {
     expect(client.uploadFile).not.toHaveBeenCalled();
   });
 
+  it('puts a cache hit on the job itself as an informational warning, not only as a narration line, so a fast run explains itself', async () => {
+    const { run, cache } = setup();
+    cache.get.mockResolvedValueOnce('saved overview');
+    const result = await run();
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toMatchObject({
+      kind: 'overview_reused',
+      severity: 'pipeline_issue',
+      nodeIds: [],
+      detail: { reason: 'cache_hit' },
+    });
+    // What it says: the overview was saved, not re-read, so this run did not re-think the whole document.
+    expect(result.warnings[0].raw).toMatch(/saved overview/i);
+    expect(result.warnings[0].raw).toMatch(/not read again|not re-read|reused/i);
+  });
+
+  it('adds no such warning when the overview was freshly read', async () => {
+    const { run } = setup();
+    const result = await run();
+    expect(result.warnings.filter((w) => w.kind === 'overview_reused')).toEqual([]);
+  });
+
   it('keeps the timer moving while the model reads: a heartbeat every few seconds with a growing elapsed time', async () => {
     let finish!: (v: { content: string }) => void;
     const { run, narrations } = setup({ chatWithFullFileContext: jest.fn(() => new Promise((resolve) => (finish = resolve as typeof finish))) });

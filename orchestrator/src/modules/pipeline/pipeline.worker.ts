@@ -1,8 +1,8 @@
-import { describeFailure } from './failure-reason';
+import { classifyFailure, describeFailure } from './failure-reason';
 import { joinContexts } from './document-profile';
 import { JobResultCache, hashCatalog, isDegradedResult, kbVersionFor, type CachedResult } from './result-cache';
 import crypto from 'crypto';
-import { DEFAULT_PRIMER_OPTIONS, runPrimerStep, type PrimerCache, type PrimerStepOptions } from './primer.step';
+import { DEFAULT_PRIMER_OPTIONS, OVERVIEW_REUSED_KIND, runPrimerStep, type PrimerCache, type PrimerStepOptions } from './primer.step';
 import { Prisma } from '@prisma/client';
 import type { PrismaClient } from '@prisma/client';
 import type { IngestionHttpClient } from './ingestion-http.client';
@@ -512,6 +512,8 @@ export async function runPipelineJob(
   job: PipelineJobInput,
   deps: PipelineWorkerDeps,
 ): Promise<ReturnType<DryRunService['diff']> extends Promise<infer T> ? T : never> {
+  // The last pipeline stage that was reached, kept for a failure record: where a run stopped is the first thing to know about it.
+  let reachedStage: string | null = null;
   try {
     // Narrow but real race: cancel() couldn't remove the BullMQ job because
     // the worker had already picked it up (state 'active') the instant
@@ -543,6 +545,7 @@ export async function runPipelineJob(
     // model it never used.
     await updateUnlessCancelled(deps.prisma, job.id, { status: 'running', startedAt: new Date(), model: job.mode === 'survey' ? model : null });
     await deps.jobEventsPublisher.publish(job.id, 'parse');
+    reachedStage = 'parse';
     // Resolved BEFORE ingest (rather than after, as before) so it's ready
     // for maybeBackfillAreaPath below without a second, redundant vault
     // lookup -- see PipelineWorkerDeps.adoCredentialResolver's doc comment.
@@ -860,6 +863,7 @@ export async function runPipelineJob(
     // members would imply.
 
     await deps.jobEventsPublisher.publish(job.id, 'infer_hierarchy_start');
+    reachedStage = 'infer_hierarchy_start';
     // job.userId (KB scope), NOT job.areaPath (ADO write-back destination --
     // see diffInputs[].areaPath and checkDuplicate below, both correctly
     // still using job.areaPath).
@@ -889,7 +893,8 @@ export async function runPipelineJob(
         console.info(`Job ${job.id}: /level finished in ${Date.now() - levelStartedAt} ms, ${(levelResult as { nodes?: unknown[] })?.nodes?.length ?? 0} nodes`);
         const leveled = levelResult as { warnings?: { kind: string }[] };
         const degraded =
-          primerWarnings.length > 0 || scored.degraded === true || isDegradedResult(leveled?.warnings, doc.figures as { caption_status?: string }[] | undefined);
+          // A reused overview is a healthy run (it only explains why the run was fast); every other primer warning means the overview was missing.
+          primerWarnings.some((w) => w.kind !== OVERVIEW_REUSED_KIND) || scored.degraded === true || isDegradedResult(leveled?.warnings, doc.figures as { caption_status?: string }[] | undefined);
         if (deps.resultCache && cacheKey && !degraded) {
           // Under the rubric the job was scored with (an older ingestion that does not say: the scope read before the job).
           const storeKey = keyFor(scored.rubricVersion !== undefined ? scored.rubricVersion : (cacheScope?.profile ?? null));
@@ -913,6 +918,7 @@ export async function runPipelineJob(
       excluded_table_ids?: string[];
     };
     await deps.jobEventsPublisher.publish(job.id, 'generate_requirements_done');
+    reachedStage = 'generate_requirements_done';
     // The dominant wall-clock cost (15-40+ min for SURVEY) just finished --
     // this is the most valuable checkpoint to notice a cancel() request
     // that arrived while it was running.
@@ -1104,6 +1110,7 @@ export async function runPipelineJob(
     // silent for however long the idempotency/dedup-check burst took with
     // no way to tell it from a stall.
     await deps.jobEventsPublisher.publish(job.id, 'dedup_check');
+    reachedStage = 'dedup_check';
     // Fetched once per job, not per node -- a live-editable value read
     // hundreds of times in a tight loop would be needless DB load for a
     // number that can't meaningfully change mid-job. Fail-open (same
@@ -1391,7 +1398,9 @@ export async function runPipelineJob(
     // 'cancelled' when this ran.
     const failureWrite = await deps.prisma.job.updateMany({
       where: { id: job.id, status: { not: 'cancelled' } },
-      data: { status: 'failed' },
+      // Why it failed, stored with the status in one write: the cause, its class and the stage reached. The audit line below says the same in
+      // text; these are what the job page and the Jobs list read without parsing it.
+      data: { status: 'failed', failedStage: reachedStage, failureClass: classifyFailure(error), failureMessage: describeFailure(error) },
     });
     if (failureWrite.count === 0) {
       // Do not rethrow: this runs inside a BullMQ sandboxed processor
