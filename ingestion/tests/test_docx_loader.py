@@ -1615,6 +1615,39 @@ def test_load_docx_synthesizes_heading_numbers_for_unnumbered_headings() -> None
     assert headings["Connectors"] == "2.1.1"
 
 
+def test_load_docx_numbers_from_1_when_the_document_has_no_heading_1() -> None:
+    # P4: the AirPro-shaped ICD starts at Heading 2 (no Heading 1 anywhere). The missing level-1 counter was padded with 0,
+    # so every synthesized number started "0." ("0.1 Power Interface") in the wizard's document map. Leading zero
+    # levels (an ancestor the document never has) are dropped; numbering starts at 1.
+    result = load_docx(str(FIXTURES / "mock_airpro_shape.docx"))
+
+    headings = {b.text: b.number_label for b in result.blocks if b.kind == BlockKind.HEADING}
+    assert headings["Power Interface"] == "1"
+    assert headings["Input Voltage"] == "1.1"
+    assert headings["The unit shall accept 24V DC input."] == "1.1.1"
+    assert headings["Ripple shall stay below 50 mV."] == "1.2.1.1"
+    assert headings["Data Interface"] == "2"
+    assert headings["The unit shall operate from -20 to 60 C."] == "3.1"
+
+
+def test_load_docx_keeps_a_zero_for_a_skipped_middle_level() -> None:
+    # Only LEADING zeros are dropped: a heading that skips a level under a real parent keeps the gap visible ("1.0.1").
+    from docx import Document as DocxDocument
+
+    doc = DocxDocument()
+    doc.add_heading("Power", level=1)
+    doc.add_heading("Connectors", level=3)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        out_path = Path(tmp_dir) / "skipped_level.docx"
+        doc.save(str(out_path))
+        result = load_docx(str(out_path))
+
+    headings = {b.text: b.number_label for b in result.blocks if b.kind == BlockKind.HEADING}
+    assert headings["Power"] == "1"
+    assert headings["Connectors"] == "1.0.1"
+
+
 def test_load_docx_does_not_double_number_a_heading_that_already_has_its_own_number() -> None:
     from docx import Document as DocxDocument
 

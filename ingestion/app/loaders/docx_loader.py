@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import itertools
 import logging
 import re
 from collections.abc import Callable
@@ -981,7 +982,11 @@ def load_docx(
                     number_label = None
                     if existing_label is None:
                         heading_counters[heading_level - 1] += 1
-                        number_label = ".".join(str(n) for n in heading_counters)
+                        # Leading zeros are ancestor levels this document never has (no Heading 1 at all): drop them so
+                        # numbering starts at "1", not "0.1". A zero under a real parent ("1.0.1") stays.
+                        number_label = ".".join(
+                            str(n) for n in itertools.dropwhile(lambda n: n == 0, heading_counters)
+                        )
                     else:
                         parts = existing_label.split(".")
                         if len(parts) == heading_level and all(p.isdigit() for p in parts):
