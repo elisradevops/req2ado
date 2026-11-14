@@ -242,6 +242,10 @@ export function NodeDetailDialog({
     // Wording for the mark when it is not "mark reviewed" (the spot-check's "Looks right and next").
     markLabel?: string;
     markHint?: string;
+    // The open item is a "Fix before writing" item: keeping it as it is must be a deliberate click, so A and R do nothing (a held key could
+    // clear every blocker in seconds) and `onKeyBlocked` says why.
+    keepAsWritten?: boolean;
+    onKeyBlocked?: () => void;
     // A review save is in flight: the mode buttons and keys do nothing (aria-disabled, never `disabled`, so focus stays put).
     busy?: boolean;
     // Called instead of the action when it is pressed while busy (the page says "Still saving").
@@ -322,7 +326,8 @@ export function NodeDetailDialog({
         onNavigate?.('prev');
       } else if ((is('r') || is('a')) && review && !review.reviewed) {
         event.preventDefault();
-        if (review.busy) review.onBusyAttempt?.();
+        if (review.keepAsWritten) review.onKeyBlocked?.();
+        else if (review.busy) review.onBusyAttempt?.();
         else review.onMark();
       } else if (is('x') && review?.onReject && !review.reviewed) {
         event.preventDefault();
@@ -392,7 +397,7 @@ export function NodeDetailDialog({
   const keyHints: Array<[string, string]> = [
     ['J', 'next'],
     ['K', 'previous'],
-    ...(review && !review.reviewed ? ([['A/R', review.markHint ?? 'mark reviewed']] as Array<[string, string]>) : []),
+    ...(review && !review.reviewed && !review.keepAsWritten ? ([['A/R', review.markHint ?? 'mark reviewed']] as Array<[string, string]>) : []),
     ...(review && !review.reviewed && review.onReject ? ([['X', 'exclude']] as Array<[string, string]>) : []),
     ...(review?.onUndo ? ([['U', 'undo']] as Array<[string, string]>) : []),
     ...(entryEditable ? ([['E', 'edit']] as Array<[string, string]>) : []),
@@ -563,7 +568,7 @@ export function NodeDetailDialog({
                     className={cn(review.busy && BUSY_BUTTON_CLASS)}
                     aria-busy={review.busy || undefined}
                     aria-disabled={review.busy || undefined}
-                    aria-keyshortcuts={onNavigate && shortcutsEnabled ? 'A R' : undefined}
+                    aria-keyshortcuts={onNavigate && shortcutsEnabled && !review.keepAsWritten ? 'A R' : undefined}
                     onClick={() => {
                       if (review.busy) review.onBusyAttempt?.();
                       else review.onMark();

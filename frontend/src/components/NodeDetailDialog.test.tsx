@@ -311,6 +311,28 @@ describe('NodeDetailDialog', () => {
       expect(onMark).toHaveBeenCalledTimes(2);
     });
 
+    it('on a Fix item, A and R do nothing and say why; only the deliberate "Keep as written and next" button decides it', async () => {
+      const onMark = vi.fn();
+      const onKeyBlocked = vi.fn();
+      renderDialog({
+        onNavigate: vi.fn(),
+        reason: { title: 'Requirement has no Customer ID', todo: 'Add one, or keep it as written.', group: 'fix' },
+        review: { reviewed: false, onMark, onUnmark: vi.fn(), markLabel: 'Keep as written and next', keepAsWritten: true, onKeyBlocked },
+      });
+      const { default: userEvent } = await import('@testing-library/user-event');
+
+      await userEvent.keyboard('a');
+      await userEvent.keyboard('r');
+      expect(onMark).not.toHaveBeenCalled();
+      expect(onKeyBlocked).toHaveBeenCalledTimes(2);
+
+      expect(screen.getByRole('note')).not.toHaveTextContent(/A\/R/);
+      const button = screen.getByRole('button', { name: 'Keep as written and next' });
+      expect(button).not.toHaveAttribute('aria-keyshortcuts');
+      await userEvent.click(button);
+      expect(onMark).toHaveBeenCalledTimes(1);
+    });
+
     it('words the mark as "Looks right and next" for a spot-check, on the button, the key hint and A or R', async () => {
       const onMark = vi.fn();
       renderDialog({

@@ -37,7 +37,7 @@ Open an item. **J**, **K** and **E** work on any open item; **A**, **R**, **X** 
 |---|---|
 | **J** | next item |
 | **K** | previous item |
-| **A** or **R** | mark the item reviewed and go to the next |
+| **A** or **R** | mark the item reviewed and go to the next (not on a **Fix before writing** item: use its **Keep as written and next** button, or edit it) |
 | **X** | exclude the item and go to the next |
 | **E** | edit the item |
 | **U** | undo the last review action |

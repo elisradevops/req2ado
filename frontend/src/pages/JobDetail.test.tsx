@@ -8,6 +8,14 @@ import { ToastProvider } from '../components/ToastProvider';
 import * as jobsApi from '../api/jobs';
 import { useAuthStore } from '../store/authStore';
 
+// An item that still blocks the write is decided by the deliberate "Keep as written and next" button (A and R do nothing on it, DESIGN.md
+// §11.3.6); any other item is decided with the key. One helper, so a test says "mark the open item" and gets the right gesture.
+async function pressMark(user: { click: (el: Element) => Promise<void>; keyboard: (keys: string) => Promise<void> }): Promise<void> {
+  const keep = screen.queryByRole('button', { name: 'Keep as written and next' });
+  if (keep) await user.click(keep);
+  else await user.keyboard('a');
+}
+
 vi.mock('../api/jobs');
 vi.mock('../api/chat');
 vi.mock('../api/events', async () => {
@@ -2894,11 +2902,23 @@ describe('JobDetail', () => {
       expect(within(dialog).getByRole('note')).toHaveTextContent(/blocking warning/i);
     });
 
+    it('A does nothing on an item that blocks the write, and says why; the Keep as written button decides it', async () => {
+      const userEvent = await startQueue();
+      const dialog = await screen.findByRole('dialog');
+
+      await userEvent.keyboard('a');
+
+      expect(jobsApi.setDiffEntriesReviewed).not.toHaveBeenCalled();
+      expect(screen.getByTestId('review-queue-status')).toHaveTextContent(/kept as written/i);
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Keep as written and next' }));
+      expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledWith('job-70', ['blocked'], true);
+    });
+
     it('A accepts the item, steps to the next riskiest and announces what is left', async () => {
       const userEvent = await startQueue();
       await screen.findByRole('dialog');
 
-      await userEvent.keyboard('a');
+      await pressMark(userEvent);
 
       expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledWith('job-70', ['blocked'], true);
       const dialog = await screen.findByRole('dialog');
@@ -2910,7 +2930,7 @@ describe('JobDetail', () => {
       const userEvent = await startQueue();
       const dialog = await screen.findByRole('dialog');
       expect(within(dialog).getByRole('note')).toHaveTextContent('1 of 3');
-      await userEvent.keyboard('a');
+      await pressMark(userEvent);
       await waitFor(() => expect(within(dialog).getByRole('note')).toHaveTextContent('1 of 2'));
     });
 
@@ -3006,9 +3026,9 @@ describe('JobDetail', () => {
       const userEvent = await startQueue();
       await screen.findByRole('dialog');
 
-      await userEvent.keyboard('a');
-      await userEvent.keyboard('a');
-      await userEvent.keyboard('a');
+      await pressMark(userEvent);
+      await pressMark(userEvent);
+      await pressMark(userEvent);
 
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
       expect(jobsApi.setDiffEntriesReviewed).toHaveBeenLastCalledWith('job-70', ['clean'], true);
@@ -3019,9 +3039,9 @@ describe('JobDetail', () => {
       const userEvent = await startQueue();
       await screen.findByRole('dialog');
 
-      await userEvent.keyboard('a');
-      await userEvent.keyboard('a');
-      await userEvent.keyboard('a');
+      await pressMark(userEvent);
+      await pressMark(userEvent);
+      await pressMark(userEvent);
 
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
       await waitFor(() => expect(screen.getByText('Review queue done.')).toHaveFocus());
@@ -3031,9 +3051,9 @@ describe('JobDetail', () => {
     it('brings the queue button back, and drops the done row, when an accept is undone', async () => {
       const userEvent = await startQueue();
       await screen.findByRole('dialog');
-      await userEvent.keyboard('a');
-      await userEvent.keyboard('a');
-      await userEvent.keyboard('a');
+      await pressMark(userEvent);
+      await pressMark(userEvent);
+      await pressMark(userEvent);
       await waitFor(() => expect(screen.getByText('Review queue done.')).toBeInTheDocument());
 
       await userEvent.click((await screen.findAllByRole('button', { name: 'Undo' })).at(-1)!);
@@ -3073,9 +3093,9 @@ describe('JobDetail', () => {
         .mockResolvedValueOnce({ dryRunDiff: [] })
         .mockRejectedValueOnce(new Error('network'));
 
-      await userEvent.keyboard('a');
-      await userEvent.keyboard('a');
-      await userEvent.keyboard('a');
+      await pressMark(userEvent);
+      await pressMark(userEvent);
+      await pressMark(userEvent);
 
       await waitFor(() =>
         expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Couldn\'t mark "Clean item" reviewed. Try again.'),
@@ -3092,7 +3112,7 @@ describe('JobDetail', () => {
       await screen.findByRole('dialog');
       vi.mocked(jobsApi.setDiffEntriesReviewed).mockRejectedValueOnce(new Error('network'));
 
-      await userEvent.keyboard('a');
+      await pressMark(userEvent);
 
       await waitFor(() =>
         expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Couldn\'t mark "Blocked item" reviewed. Try again.'),
@@ -3105,7 +3125,7 @@ describe('JobDetail', () => {
       const userEvent = await startQueue();
       const dialog = await screen.findByRole('dialog');
 
-      await userEvent.keyboard('a');
+      await pressMark(userEvent);
 
       await waitFor(() => expect(within(dialog).getByRole('status')).toHaveTextContent('Marked reviewed. 2 left.'));
     });
@@ -3118,7 +3138,7 @@ describe('JobDetail', () => {
 
       await userEvent.keyboard('x');
 
-      const mark = within(dialog).getByRole('button', { name: 'Mark reviewed and next' });
+      const mark = within(dialog).getByRole('button', { name: 'Keep as written and next' });
       await waitFor(() => expect(mark).toHaveAttribute('aria-busy', 'true'));
       expect(mark).toHaveAttribute('aria-disabled', 'true');
       expect(mark).not.toBeDisabled();
@@ -3157,8 +3177,8 @@ describe('JobDetail', () => {
       let reply: (value: unknown) => void = () => {};
       vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockImplementation(() => new Promise((resolve) => { reply = resolve; }));
 
-      await userEvent.keyboard('a'); // 'blocked' reviewed
-      await userEvent.keyboard('a'); // 'low' reviewed, now on 'clean'
+      await pressMark(userEvent); // 'blocked' reviewed
+      await pressMark(userEvent); // 'low' reviewed, now on 'clean'
       await userEvent.keyboard('x'); // exclude the last item, pending
       // The queue is empty the moment the reply lands, a render before the queue steps on.
       reply({
@@ -3181,7 +3201,7 @@ describe('JobDetail', () => {
       let reply: (value: unknown) => void = () => {};
       vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockImplementation(() => new Promise((resolve) => { reply = resolve; }));
 
-      await userEvent.keyboard('a'); // 'blocked' reviewed, now on 'low'
+      await pressMark(userEvent); // 'blocked' reviewed, now on 'low'
       await userEvent.keyboard('x'); // exclude 'low', pending
       reply({
         dryRunDiff: [
@@ -3201,7 +3221,7 @@ describe('JobDetail', () => {
       const dialog = await screen.findByRole('dialog');
       expect(within(dialog).getByRole('note')).not.toHaveTextContent(/U\s*undo/);
 
-      await userEvent.keyboard('a');
+      await pressMark(userEvent);
       await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Marked reviewed. 2 left.'));
       await waitFor(() => expect(within(screen.getByRole('dialog')).getByRole('note')).toHaveTextContent(/U\s*undo/));
       await userEvent.keyboard('u');
@@ -3230,7 +3250,7 @@ describe('JobDetail', () => {
     it('says so, and keeps the undo, when U is pressed while another save is running', async () => {
       const userEvent = await startQueue();
       await screen.findByRole('dialog');
-      await userEvent.keyboard('a');
+      await pressMark(userEvent);
       await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Marked reviewed. 2 left.'));
       // The next item's exclude never answers, so a save is running.
       vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockReturnValue(new Promise(() => {}));
@@ -3280,7 +3300,7 @@ describe('JobDetail', () => {
     it('does not undo a second time with U after the toast Undo of an accept already did', async () => {
       const userEvent = await startQueue();
       await screen.findByRole('dialog');
-      await userEvent.keyboard('a');
+      await pressMark(userEvent);
       await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Marked reviewed. 2 left.'));
 
       await userEvent.click(screen.getByRole('button', { name: 'Undo', hidden: true }));
@@ -3295,7 +3315,7 @@ describe('JobDetail', () => {
     it('speaks a repeated "Still saving" again, since the text is identical', async () => {
       const userEvent = await startQueue();
       await screen.findByRole('dialog');
-      await userEvent.keyboard('a');
+      await pressMark(userEvent);
       await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Marked reviewed. 2 left.'));
       vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockReturnValue(new Promise(() => {}));
       await userEvent.keyboard('x');
@@ -3349,7 +3369,7 @@ describe('JobDetail', () => {
         await screen.findByRole('dialog');
         await userEvent.keyboard('a');
         expect(jobsApi.setDiffEntriesReviewed).not.toHaveBeenCalled();
-        await userEvent.click(screen.getByRole('button', { name: 'Mark reviewed and next' }));
+        await userEvent.click(screen.getByRole('button', { name: 'Keep as written and next' }));
         expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledWith('job-70', ['blocked'], true);
       } finally {
         useUiPreferencesStore.getState().setKeyboardShortcuts(true);
@@ -3381,8 +3401,8 @@ describe('JobDetail', () => {
           .mockImplementationOnce(() => first.promise as never)
           .mockImplementationOnce(() => second.promise as never);
 
-        await userEvent.keyboard('a');
-        await userEvent.keyboard('a');
+        await pressMark(userEvent);
+        await pressMark(userEvent);
         // Saves are sent one at a time, so the second goes out once the first has finished.
         await act(async () => first.resolve({ dryRunDiff: [] }));
         await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledTimes(2));
@@ -3402,7 +3422,7 @@ describe('JobDetail', () => {
         const first = deferred<{ dryRunDiff: never[] }>();
         vi.mocked(jobsApi.setDiffEntriesReviewed).mockImplementationOnce(() => first.promise as never);
 
-        await userEvent.keyboard('a');
+        await pressMark(userEvent);
         await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledTimes(1));
         await userEvent.keyboard('u');
         // Give the Undo every chance to go out early.
@@ -3422,9 +3442,9 @@ describe('JobDetail', () => {
         const first = deferred<{ dryRunDiff: never[] }>();
         vi.mocked(jobsApi.setDiffEntriesReviewed).mockImplementationOnce(() => first.promise as never);
 
-        await userEvent.keyboard('a');
+        await pressMark(userEvent);
         await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledTimes(1));
-        await userEvent.keyboard('a');
+        await pressMark(userEvent);
         expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledTimes(1);
         await act(async () => first.reject(new Error('network')));
 
@@ -3443,7 +3463,7 @@ describe('JobDetail', () => {
           .mockImplementationOnce(() => first.promise as never)
           .mockImplementationOnce(() => second.promise as never);
 
-        await userEvent.keyboard('a');
+        await pressMark(userEvent);
         await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledTimes(1));
         await userEvent.keyboard('u');
         await act(async () => first.reject(new Error('network')));
@@ -3463,13 +3483,13 @@ describe('JobDetail', () => {
         const first = deferred<{ dryRunDiff: never[] }>();
         vi.mocked(jobsApi.setDiffEntriesReviewed).mockImplementationOnce(() => first.promise as never);
 
-        await userEvent.keyboard('a');
+        await pressMark(userEvent);
         await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledTimes(1));
         await userEvent.keyboard('u');
         await waitFor(() => expect(within(screen.getByRole('dialog')).getAllByText('Low item').length).toBeGreaterThan(0));
         await userEvent.keyboard('k');
         await waitFor(() => expect(within(screen.getByRole('dialog')).getAllByText('Blocked item').length).toBeGreaterThan(0));
-        await userEvent.keyboard('a');
+        await pressMark(userEvent);
         await act(async () => first.reject(new Error('network')));
         await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledTimes(3));
         expect(jobsApi.setDiffEntriesReviewed).toHaveBeenNthCalledWith(3, 'job-70', ['blocked'], true);
@@ -3487,7 +3507,7 @@ describe('JobDetail', () => {
         await screen.findByRole('dialog');
         vi.mocked(jobsApi.setDiffEntriesReviewed).mockRejectedValueOnce(new Error('network'));
 
-        await userEvent.keyboard('a');
+        await pressMark(userEvent);
         await screen.findAllByText(/failed to update review state/i);
 
         // An error toast has focus by now, so Escape would go to it; the close button is used instead.
@@ -3499,7 +3519,7 @@ describe('JobDetail', () => {
       it('the toast Undo of a mark that is no longer in force says there is nothing left to undo, and sends nothing', async () => {
         const userEvent = await startQueue();
         await screen.findByRole('dialog');
-        await userEvent.keyboard('a');
+        await pressMark(userEvent);
         await waitFor(() => expect(screen.getAllByText('Undo').length).toBeGreaterThan(0));
         const olderToastUndo = screen.getAllByText('Undo')[0].closest('button')!;
         // U takes the mark back first, so the older toast's Undo has nothing to do.
@@ -3534,7 +3554,7 @@ describe('JobDetail', () => {
           </ToastProvider>,
         );
         await userEvent.click(await screen.findByRole('button', { name: /review in risk order/i }));
-        await userEvent.keyboard('a');
+        await pressMark(userEvent);
         await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledTimes(1));
         await userEvent.keyboard('{Escape}');
         await userEvent.click(await screen.findByRole('link', { name: 'go to the other job' }));
@@ -3607,7 +3627,7 @@ describe('JobDetail', () => {
         await screen.findByRole('dialog');
         const first = deferred<{ dryRunDiff: never[] }>();
         vi.mocked(jobsApi.setDiffEntriesReviewed).mockImplementationOnce(() => first.promise as never);
-        await userEvent.keyboard('a');
+        await pressMark(userEvent);
         await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledTimes(1));
         await userEvent.keyboard('{Escape}');
         await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
@@ -3653,13 +3673,13 @@ describe('JobDetail', () => {
         const first = deferred<{ dryRunDiff: never[] }>();
         vi.mocked(jobsApi.setDiffEntriesReviewed).mockImplementationOnce(() => first.promise as never);
 
-        await userEvent.keyboard('a'); // 'blocked', pending
+        await pressMark(userEvent); // 'blocked', pending
         await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledTimes(1));
         await userEvent.keyboard('u'); // takes it back: a newer write on the same item
         await waitFor(() => expect(within(screen.getByRole('dialog')).getAllByText('Low item').length).toBeGreaterThan(0));
         await userEvent.keyboard('k');
         await waitFor(() => expect(within(screen.getByRole('dialog')).getAllByText('Blocked item').length).toBeGreaterThan(0));
-        await userEvent.keyboard('a'); // and marks it again
+        await pressMark(userEvent); // and marks it again
         await waitFor(() => expect(within(screen.getByRole('dialog')).queryAllByText('Blocked item')).toHaveLength(0));
 
         await act(async () => first.reject(new Error('network')));
@@ -3690,7 +3710,7 @@ describe('JobDetail', () => {
           </ToastProvider>,
         );
         await userEvent.click(await screen.findByRole('button', { name: /review in risk order/i }));
-        await userEvent.keyboard('a');
+        await pressMark(userEvent);
         await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledTimes(1));
         await userEvent.keyboard('{Escape}');
         await userEvent.click(await screen.findByRole('link', { name: 'leave' }));
@@ -3827,9 +3847,9 @@ describe('JobDetail', () => {
       await userEvent.click(within(first).getByRole('button', { name: 'Looks right and next' }));
       await waitFor(() => expect(within(screen.getByRole('dialog')).getAllByText('Clean three').length).toBeGreaterThan(0));
       expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Looks right. 1 of 3 checked.');
-      await userEvent.keyboard('a');
+      await pressMark(userEvent);
       await waitFor(() => expect(within(screen.getByRole('dialog')).getAllByText('Clean five').length).toBeGreaterThan(0));
-      await userEvent.keyboard('a');
+      await pressMark(userEvent);
 
       const confirmation = await screen.findByRole('dialog', { name: 'Approve 5 clean items?' });
       expect(confirmation).toHaveTextContent('3 of 3 checked');
@@ -3864,7 +3884,7 @@ describe('JobDetail', () => {
       await openConfirmation(userEvent);
       await userEvent.click(screen.getByRole('button', { name: 'Start spot-check' }));
       await screen.findByRole('dialog');
-      await userEvent.keyboard('a');
+      await pressMark(userEvent);
       await userEvent.keyboard('{Escape}');
 
       const confirmation = await screen.findByRole('dialog', { name: 'Approve 5 clean items?' });
@@ -3920,7 +3940,7 @@ describe('JobDetail', () => {
       await waitFor(() => expect(within(screen.getByRole('dialog')).getAllByText('Clean two').length).toBeGreaterThan(0));
       for (const title of ['Clean two', 'Clean four', 'Clean five']) {
         await waitFor(() => expect(within(screen.getByRole('dialog')).getAllByText(title).length).toBeGreaterThan(0));
-        await userEvent.keyboard('a');
+        await pressMark(userEvent);
       }
       const confirmation = await screen.findByRole('dialog', { name: 'Approve 4 clean items?' });
       await userEvent.click(within(confirmation).getByRole('button', { name: 'Approve 4 clean items' }));
@@ -3937,7 +3957,7 @@ describe('JobDetail', () => {
       await userEvent.keyboard('x');
       await waitFor(() => expect(jobsApi.setDiffEntryExcluded).toHaveBeenCalledTimes(1));
 
-      await userEvent.keyboard('a');
+      await pressMark(userEvent);
 
       await waitFor(() => expect(within(dialog).getByRole('status')).toHaveTextContent('Still saving. Try again.'));
       await act(async () => save.resolve({ dryRunDiff: diffRows('c1') }));
@@ -4075,7 +4095,7 @@ describe('JobDetail', () => {
         await userEvent.click(screen.getByRole('button', { name: 'Start spot-check' }));
         await screen.findByRole('dialog');
         // Look at Clean one (checked), step on, step back to it and exclude it.
-        await userEvent.keyboard('a');
+        await pressMark(userEvent);
         await waitFor(() => expect(within(screen.getByRole('dialog')).getAllByText('Clean three').length).toBeGreaterThan(0));
         await userEvent.keyboard('k');
         await waitFor(() => expect(within(screen.getByRole('dialog')).getAllByText('Clean one').length).toBeGreaterThan(0));
@@ -4084,7 +4104,7 @@ describe('JobDetail', () => {
         // The sample for the four left is Clean two, four and five.
         for (const title of ['Clean two', 'Clean four', 'Clean five']) {
           await waitFor(() => expect(within(screen.getByRole('dialog')).getAllByText(title).length).toBeGreaterThan(0));
-          await userEvent.keyboard('a');
+          await pressMark(userEvent);
         }
         await screen.findByRole('dialog', { name: 'Approve 4 clean items?' });
 

@@ -2667,6 +2667,12 @@ read by `kindProgress`, the queue's `isAcknowledgedKind`, the gate, the warning 
 that carry `acknowledged` (from before the gate, or from an old client) leave it open and its items blocking until each is decided.
 Acknowledgement may clear only a `kind_counted` kind, an item-less kind (decided notice by notice) and a Review kind.
 
+**A Fix item is decided on purpose.** While an item is still blocking the write, **A** and **R** do nothing and the dialog says so
+("This item has to be fixed or kept as written."); the dialog's primary button reads **Keep as written and next**, and clicking it is
+the decision. The key hint and `aria-keyshortcuts` for A/R are withheld on such an item. This stops a held or repeated key from clearing
+every blocker in seconds. It is a frontend rule: the server gate still treats a reviewed item as decided (`write-gate.ts`), so a client
+that marks items directly is unaffected. Check and Clean items keep A and R.
+
 **One exception, counted.** A Fix kind whose value is *missing from the source document*, with nothing to correct (`ackPolicy:
 'kind_counted'`; today only "Requirement has no Customer ID"), can be cleared by one counted acknowledgement, "Accept 433
 without a Customer ID", which can be undone ("Undo acceptance"). Every other Fix kind needs per-item decisions, and "Mark all

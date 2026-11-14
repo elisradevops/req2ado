@@ -2650,9 +2650,20 @@ export function JobDetail(): React.ReactElement {
   // focused, the item belongs to it, and the job still accepts marking.
   // 1-based place of the open item in the review queue (0 when it is not in it).
   const queuePosition = queueMode && selectedId ? reviewQueue.findIndex((entry) => entry.localId === selectedId) + 1 : 0;
+  // An item still blocking the write: keeping it as it is has to be a deliberate click, never the A or R key (DESIGN.md §11.3.6).
+  const openFixIds = new Set(writeGate.blockers.flatMap((blocker) => blocker.nodeIds));
+  const keepAsWrittenProps = (localId: string) =>
+    openFixIds.has(localId)
+      ? {
+          keepAsWritten: true,
+          markLabel: 'Keep as written and next',
+          onKeyBlocked: () => announceAgain('This item has to be fixed or kept as written. Press the Keep as written button, or edit it.'),
+        }
+      : {};
   const dialogReview =
     queueMode && selectedId && status === 'diff_ready'
       ? {
+          ...keepAsWrittenProps(selectedId),
           reviewed: reviewedIds.has(selectedId),
           busy: isDiffMutating,
           onBusyAttempt: () => announceAgain('Still saving. Try again.'),
@@ -2676,6 +2687,7 @@ export function JobDetail(): React.ReactElement {
         }
       : focusReviewable && focusWarning && selectedId && focusWarning.nodeIds.has(selectedId) && status === 'diff_ready'
       ? {
+          ...keepAsWrittenProps(selectedId),
           reviewed: reviewedIds.has(selectedId),
           busy: isDiffMutating,
           onBusyAttempt: () => announceAgain('Still saving. Try again.'),
