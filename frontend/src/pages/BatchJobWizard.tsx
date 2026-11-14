@@ -1,3 +1,4 @@
+import { plural } from '../utils/plural';
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Lock, Activity } from 'lucide-react';
@@ -195,8 +196,7 @@ export function BatchJobWizard(): React.ReactElement {
           </SectionCard>
           {mode === 'survey' && (
             <Alert severity="warning">
-              This deployment runs at most {SURVEY_BATCH_THROTTLE_HINT} SURVEY file(s) from a batch at a time. With {files.length} file
-              {files.length === 1 ? '' : 's'} selected, some will wait in queue while earlier ones finish.
+              This deployment runs at most {plural(SURVEY_BATCH_THROTTLE_HINT, 'SURVEY file')} from a batch at a time. With {plural(files.length, 'file')} selected, some will wait in queue while earlier ones finish.
             </Alert>
           )}
           <div className="flex flex-wrap items-center gap-3">

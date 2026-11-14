@@ -820,7 +820,7 @@ describe('ProgressBanner', () => {
       />,
     );
     expect(screen.getAllByTestId('section-check-icon')).toHaveLength(4);
-    expect(screen.getByText(/Scoring requirement quality.*scoring 150 requirement\(s\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Scoring requirement quality.*scoring 150 requirements/)).toBeInTheDocument();
   });
 
   it('shows a persistent reassurance that the run continues if the page is closed', () => {

@@ -17,6 +17,13 @@ const BANNED: Array<[RegExp, string]> = [
   [/embedding service/g, 'internal jargon in user copy (say the duplicate check)'],
   [/BASELINE finishes in seconds/g, 'a BASELINE time that contradicts the one-minute estimate'],
   [/were created as new without/g, '"created" before anything is written (say proposed)'],
+  // §12: the write is "Written", a job waiting for review is "Diff ready", and the third review group is "Check".
+  [/Confirmed (—|--) |Confirmed work items/g, '"Confirmed" for a write (say Written / Wrote)'],
+  [/label="Succeeded"|label="Awaiting review"/g, 'retired job-status names (say Written / Diff ready)'],
+  [/All confirmed work items|match what was confirmed/g, '"confirmed" for what was written (say written)'],
+  [/audit trail/gi, '"audit trail" (the tab is Audit; the failure cause is under Run details)'],
+  [/\w\(s\)(?=[\s.,'`])/g, 'a "(s)" plural in user copy (use the plural helper)'],
+  [/aria-label="Needs review"|title="Needs review/g, '"Needs review" for the Check flag on a row (say Check)'],
 ];
 
 function stripComments(text: string): string {

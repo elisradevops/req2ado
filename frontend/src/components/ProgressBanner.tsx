@@ -1,3 +1,4 @@
+import { plural } from '../utils/plural';
 import { useEffect, useMemo } from 'react';
 import { Check, Circle } from 'lucide-react';
 import { cn } from '../lib/cn';
@@ -1130,7 +1131,7 @@ function SectionStepList({
             )}
           >
             Scoring requirement quality
-            {scoringActive && latest.draftCount != null && ` — scoring ${latest.draftCount} requirement(s)`}
+            {scoringActive && latest.draftCount != null && ` — scoring ${plural(latest.draftCount, 'requirement')}`}
           </p>
         </div>
       </div>

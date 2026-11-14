@@ -1295,7 +1295,7 @@ describe('NodeDetailPanel', () => {
       action: 'create', customerId: null, groundingScore: 0.9, qualityScore: 95, qualityConfidence: 'low',
     };
     const { unmount } = renderPanel(<NodeDetailPanel entry={flagged} />);
-    expect(screen.getByTestId('review-reason')).toHaveTextContent('Needs review: Model was unsure about this score');
+    expect(screen.getByTestId('review-reason')).toHaveTextContent('Check: Model was unsure about this score');
     unmount();
     renderPanel(<NodeDetailPanel entry={{ ...flagged, qualityConfidence: 'high' }} />);
     expect(screen.queryByTestId('review-reason')).not.toBeInTheDocument();

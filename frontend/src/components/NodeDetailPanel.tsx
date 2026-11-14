@@ -975,7 +975,7 @@ export function NodeDetailPanel({
       {reviewReason && (
         <p data-testid="review-reason" className="flex items-start gap-1.5 text-sm text-warning-ink">
           <Flag aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 flex-none" />
-          <span>Needs review: {reviewReason}</span>
+          <span>Check: {reviewReason}</span>
         </p>
       )}
       {entry.tags && entry.tags.length > 0 && (

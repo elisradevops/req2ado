@@ -1,3 +1,4 @@
+import { plural } from '../utils/plural';
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
@@ -1039,7 +1040,7 @@ export function JobDetail(): React.ReactElement {
       setStatus(job.status);
       setCreatedItemCount(job.createdItemCount ?? 0);
       setWrittenLocalIds(job.writtenLocalIds ?? []);
-      showToast(`Confirmed — ${result.createdCount} work item(s) written to Azure DevOps.`, 'success');
+      showToast(`Wrote ${plural(result.createdCount, 'work item')} to Azure DevOps.`, 'success');
     } catch {
       setMutationError('Confirm failed — the job may be safe to retry. Check the Audit tab for details.');
       // Re-sync with the server's actual status rather than leaving the
@@ -1835,7 +1836,7 @@ export function JobDetail(): React.ReactElement {
       showToast(`${excluded ? 'Excluded' : 'Included'} ${succeeded} item${succeeded === 1 ? '' : 's'}.`, 'success');
     } catch (err) {
       showErrorToast(
-        `Stopped after updating ${succeeded} of ${targets.length} item(s) — ${getServerMessage(err) ?? 'please retry.'}`,
+        `Stopped after updating ${succeeded} of ${plural(targets.length, 'item')} — ${getServerMessage(err) ?? 'please retry.'}`,
         err,
       );
     } finally {
@@ -3105,7 +3106,7 @@ export function JobDetail(): React.ReactElement {
                   {failureCause.detail && <span className="font-mono text-xs text-ink-3 [overflow-wrap:anywhere]">{failureCause.detail}</span>}
                 </span>
               ) : status === 'failed' ? (
-                'This job failed before completing analysis. Check the audit trail for details.'
+                'This job failed before completing analysis. Open Run details for the cause.'
               ) : (
                 'This run was cancelled before parsing/analysis finished, so there is nothing to review.'
               )
@@ -3364,7 +3365,7 @@ export function JobDetail(): React.ReactElement {
       {validationResult && (
         <Alert severity={validationResult.valid ? 'success' : 'warning'} onClose={() => setValidationResult(null)}>
           {validationResult.valid ? (
-            <>All {validationResult.checkedCount} checked work item{validationResult.checkedCount === 1 ? '' : 's'} match what was confirmed.</>
+            <>All {validationResult.checkedCount} checked work item{validationResult.checkedCount === 1 ? '' : 's'} match what was written.</>
           ) : (
             <div className="flex flex-col gap-2">
               <span>

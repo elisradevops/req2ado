@@ -2051,7 +2051,7 @@ describe('JobDetail', () => {
     await waitFor(() => expect(screen.getByText(/queued/i)).toBeInTheDocument());
   });
 
-  it('shows a success toast with the created count after Confirm succeeds', async () => {
+  it('shows a success toast with the created count after the write succeeds', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
     vi.spyOn(jobsApi, 'getJob')
       .mockResolvedValueOnce({ id: 'job-10', status: 'diff_ready', dryRunDiff: [], areaPath: 'Project\\Area1' } as any)
@@ -2069,7 +2069,7 @@ describe('JobDetail', () => {
     await userEvent.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
     await userEvent.click(screen.getByRole('button', { name: /^write to azure devops$/i }));
 
-    await waitFor(() => expect(screen.getByText(/confirmed — 3 work item\(s\) written/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/wrote 3 work items to azure devops/i)).toBeInTheDocument());
   });
 
   describe('final write summary', () => {

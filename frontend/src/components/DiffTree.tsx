@@ -1,3 +1,4 @@
+import { plural } from '../utils/plural';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FixedSizeList, type ListChildComponentProps } from 'react-window';
 import {
@@ -1283,7 +1284,7 @@ function DiffTreeRow({
                 {/* Needs-review triangle at the end of the title line: the same right edge on every row, so flagged rows line up down the list, and
                     it can never push the status off line 2. The tint and this glyph together carry it. */}
                 {(isFlaggedDiffEntry(entry) || issueCount > 0) && (
-                  <span data-testid="narrow-flag" role="img" aria-label="Needs review" title="Needs review: open Details for why" className="flex flex-none items-center text-warning-ink">
+                  <span data-testid="narrow-flag" role="img" aria-label="Check" title="Check: open Details for why" className="flex flex-none items-center text-warning-ink">
                     <TriangleAlert className="h-3.5 w-3.5" />
                   </span>
                 )}
@@ -1377,24 +1378,24 @@ function DiffTreeRow({
       <span className={cn('flex flex-none items-center justify-end gap-2 text-xs', WIDE_ONLY)}>
         {isFlaggedDiffEntry(entry) && (
           // A flag, not the issue triangle: two different signals no longer share one glyph. Named for assistive tech; the reason is the tooltip.
-          <span role="img" aria-label="Needs review" className="flex items-center text-warning" title={flaggedDiffEntryReason(entry) ?? 'Needs review'}>
+          <span role="img" aria-label="Check" className="flex items-center text-warning" title={flaggedDiffEntryReason(entry) ?? 'Check'}>
             <Flag className="h-3.5 w-3.5" />
           </span>
         )}
         {issueCount > 0 && (
-          <span role="img" aria-label={`${issueCount} quality ${issueCount === 1 ? 'issue' : 'issues'}`} className="flex items-center gap-0.5 text-warning" title={`${issueCount} quality issue(s)`}>
+          <span role="img" aria-label={`${issueCount} quality ${issueCount === 1 ? 'issue' : 'issues'}`} className="flex items-center gap-0.5 text-warning" title={plural(issueCount, 'quality issue')}>
             <TriangleAlert className="h-3.5 w-3.5" />
             {issueCount}
           </span>
         )}
         {traceLinkCount > 0 && (
-          <span className="flex items-center gap-0.5 text-ink-3" title={`${traceLinkCount} trace link(s)`}>
+          <span className="flex items-center gap-0.5 text-ink-3" title={plural(traceLinkCount, 'trace link')}>
             <Link2 className="h-3.5 w-3.5" />
             {traceLinkCount}
           </span>
         )}
         {tableCount > 0 && (
-          <span className="flex items-center gap-0.5 text-ink-3" title={`${tableCount} table(s)`}>
+          <span className="flex items-center gap-0.5 text-ink-3" title={plural(tableCount, 'table')}>
             <Table className="h-3.5 w-3.5" />
             {tableCount}
           </span>
@@ -1404,8 +1405,8 @@ function DiffTreeRow({
             className={cn('flex items-center gap-0.5', uncaptionedFigureCount > 0 ? 'text-warning' : 'text-ink-3')}
             title={
               uncaptionedFigureCount > 0
-                ? `${figureCount} figure(s), ${uncaptionedFigureCount} without a description`
-                : `${figureCount} figure(s)`
+                ? `${plural(figureCount, 'figure')}, ${uncaptionedFigureCount} without a description`
+                : plural(figureCount, 'figure')
             }
           >
             <Image className="h-3.5 w-3.5" />

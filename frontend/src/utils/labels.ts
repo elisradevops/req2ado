@@ -119,15 +119,15 @@ export const JOB_STATUS_LABELS: Record<string, { label: string; description: str
   },
   writing: {
     label: 'Writing',
-    description: 'Confirmed -- creating and linking work items in Azure DevOps now. This step cannot be interrupted.',
+    description: 'Writing the reviewed items to Azure DevOps now. This step cannot be interrupted.',
   },
   succeeded: {
     label: 'Written',
-    description: 'All confirmed work items were created in Azure DevOps.',
+    description: 'Every included item was written to Azure DevOps.',
   },
   failed: {
     label: 'Failed',
-    description: 'The job did not complete -- check the audit trail for what went wrong.',
+    description: 'The job did not complete. Open Run details for the cause.',
   },
   rejected: {
     label: 'Rejected',

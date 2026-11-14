@@ -332,7 +332,7 @@ describe('DiffTree', () => {
       { localId: 'r1', parentLocalId: 'f1', type: 'Requirement', title: 'Flagged req', description: '', action: 'create', customerId: null, groundingScore: 0.1 },
     ];
     render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
-    const flag = screen.getByRole('img', { name: /needs review/i, hidden: false });
+    const flag = screen.getByRole('img', { name: /^check$/i, hidden: false });
     expect(flag).toHaveAttribute('title', expect.stringMatching(/low grounding/i));
   });
 
@@ -608,7 +608,7 @@ describe('DiffTree signal counts', () => {
 
     render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
 
-    expect(screen.getByTitle('1 trace link(s)')).toBeInTheDocument();
+    expect(screen.getByTitle('1 trace link')).toBeInTheDocument();
     expect(screen.queryByText(/Covered by/i)).not.toBeInTheDocument();
   });
 
@@ -619,7 +619,7 @@ describe('DiffTree signal counts', () => {
 
     render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
 
-    expect(screen.getByTitle('2 quality issue(s)')).toBeInTheDocument();
+    expect(screen.getByTitle('2 quality issues')).toBeInTheDocument();
     expect(screen.queryByText(/Ambiguous/i)).not.toBeInTheDocument();
   });
 
@@ -783,7 +783,7 @@ describe('DiffTree signal counts', () => {
       const rowOf = (title: string): HTMLElement => screen.getByText(title).closest('[role=treeitem]') as HTMLElement;
       expect(rowOf('Clean one')).not.toHaveClass('max-md:bg-warning-soft');
       expect(rowOf('Clean one')).not.toHaveClass('max-md:bg-danger-soft');
-      expect(within(rowOf('Issue one')).getByTestId('narrow-flag')).toHaveAttribute('aria-label', 'Needs review');
+      expect(within(rowOf('Issue one')).getByTestId('narrow-flag')).toHaveAttribute('aria-label', 'Check');
       expect(rowOf('Issue one')).toHaveClass('max-md:bg-warning-soft');
       expect(rowOf('Tier one')).toHaveClass('max-md:bg-danger-soft');
       expect(within(rowOf('Clean one')).queryByTestId('narrow-flag')).toBeNull();
@@ -866,7 +866,7 @@ describe('DiffTree signal counts', () => {
 
     render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
 
-    expect(screen.getByTitle('2 table(s)')).toBeInTheDocument();
+    expect(screen.getByTitle('2 tables')).toBeInTheDocument();
   });
 
   it('shows a single combined figure-count badge (captioned + uncaptioned), neutral-tinted when every figure has a caption', () => {
@@ -874,7 +874,7 @@ describe('DiffTree signal counts', () => {
 
     render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
 
-    const badge = screen.getByTitle('2 figure(s)');
+    const badge = screen.getByTitle('2 figures');
     expect(badge).toBeInTheDocument();
     expect(badge.className).not.toContain('text-warning');
   });
@@ -884,7 +884,7 @@ describe('DiffTree signal counts', () => {
 
     render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
 
-    const badge = screen.getByTitle('2 figure(s), 1 without a description');
+    const badge = screen.getByTitle('2 figures, 1 without a description');
     expect(badge).toBeInTheDocument();
     expect(badge.className).toContain('text-warning');
   });
@@ -898,7 +898,7 @@ describe('DiffTree signal counts', () => {
 
     // 1 captioned (f0) + 1 genuinely-uncaptioned (f1) = 2, NOT 4 (which
     // would include the 2 insignificant figures nobody will ever see).
-    const badge = screen.getByTitle('2 figure(s), 1 without a description');
+    const badge = screen.getByTitle('2 figures, 1 without a description');
     expect(badge).toBeInTheDocument();
   });
 
@@ -910,7 +910,7 @@ describe('DiffTree signal counts', () => {
     render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
 
     // The server list wins: f2 is not marked insignificant, but the server did not list it.
-    expect(screen.getByTitle('2 figure(s), 1 without a description')).toBeInTheDocument();
+    expect(screen.getByTitle('2 figures, 1 without a description')).toBeInTheDocument();
   });
 
   it('hides the figure-count badge entirely when every uncaptioned figure is insignificant and none are captioned', () => {
