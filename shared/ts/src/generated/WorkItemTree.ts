@@ -66,11 +66,11 @@ export interface WorkItemNode {
    */
   identity_hash?: string | null;
   /**
-   * W1 content-aware identity: sha256 of the section path titles without numbering, the node type, the anchor text (source heading or first sentence) and the ordinal among nodes sharing those. No filename, no offsets. Null for a node shape predating this field.
+   * W1 content-aware identity: sha256 of the section path titles without numbering, the node type, the anchor text (source heading or first sentence) and the ordinal among nodes sharing those. No filename, no offsets. Null for a node shape predating this field, and for a SURVEY node that shares its source block with another node (it cannot be told apart by anchor or span), which keeps the position lookup.
    */
   identity_hash_v2?: string | null;
   /**
-   * What the item says, to tell an edited item from an unchanged one under the same identity_hash_v2: fidelity_hash in BASELINE, sha256 of the normalized source span in SURVEY. Null when the node has no content of its own to compare.
+   * What the item says, to tell an edited item from an unchanged one under the same identity_hash_v2: sha256 of the normalized source span (the node's source block up to the next node's), in both modes, so a follow-up in the other mode does not flag everything; a BASELINE node with no source block of its own uses fidelity_hash. Null when the node has no content of its own to compare.
    */
   content_hash?: string | null;
   tags?: (

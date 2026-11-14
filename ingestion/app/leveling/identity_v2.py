@@ -14,8 +14,8 @@ hash and was created again. v2 identifies a node by what it is instead:
   requirements stay two distinct items (see test_two_byte_identical_requirement_lines_get_distinct_v2_identity_hashes).
 
 No filename and no offsets are hashed. content_hash tells an edited item from an unchanged one under the same v2 identity:
-fidelity_hash for BASELINE (its description is verbatim); for SURVEY, sha256 of the normalized source span (the node's source block up to
-the next node's source block), since the wording is the model's and changes run to run.
+sha256 of the normalized source span (the node's source block up to the next node's source block) in BOTH modes, so a file written in one
+mode and followed up in the other does not flag every item (a BASELINE node with no source block of its own falls back to fidelity_hash).
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ import unicodedata
 from collections import Counter
 
 from app.canonical.model import CanonicalDoc, SourceRef, Table
-from app.workitem.model import WorkItemMode, WorkItemTree
+from app.workitem.model import WorkItemMode, WorkItemNode, WorkItemTree
 
 # A leading section number: "3", "3.2", "3.2.1.", "A.1", "2)" followed by whitespace.
 _NUMBERING = re.compile(r"^\s*(?:\d+(?:\.\d+)*|[A-Za-z](?:\.\d+)+)[.)]?\s+")
@@ -79,9 +79,25 @@ def assign_identity_v2(tree: WorkItemTree, doc: CanonicalDoc) -> WorkItemTree:
     )
     filename_title = _derive_doc_title(doc)
 
+    # A model-structured (SURVEY) run gives every node of a branch the branch's own source block ("section analysis has no per-node source
+    # attribution"). Such nodes cannot be told apart by anchor or span, only by order, so a reorder would swap them and an edit anywhere would
+    # flag all of them: they get no v2 identity and keep the position lookup they had before.
+    # Grouping nodes the pipeline adds (a bridge Feature, a regrouped or wrapping Epic: local ids with "synth_") copy a member's source ref on
+    # purpose and say nothing about what is shared, so they are left out of the count.
+    def _shares_branch_source(node: WorkItemNode) -> bool:
+        return node.mode == WorkItemMode.SURVEY and "synth_" not in node.local_id
+
+    survey_nodes_per_key: Counter[tuple[int, int, int | None]] = Counter(
+        _unit_key(node.source_ref) for node in tree.nodes if _shares_branch_source(node)
+    )
+
     seen: Counter[str] = Counter()
     for node in tree.nodes:
         key = _unit_key(node.source_ref)
+        if _shares_branch_source(node) and survey_nodes_per_key[key] > 1:
+            node.identity_hash_v2 = None
+            node.content_hash = None
+            continue
         start = block_index.get(key)
         if start is not None:
             anchor_source = doc.blocks[start].text
@@ -90,7 +106,9 @@ def assign_identity_v2(tree: WorkItemTree, doc: CanonicalDoc) -> WorkItemTree:
         else:
             anchor_source = node.source_title or table_text.get(key) or ""
         section = "\x1f".join(_normalise(_without_numbering(title)) for title in node.source_ref.section_path)
-        base = f"v2\x00{section}\x00{node.type}\x00{_anchor(anchor_source)}"
+        # A Customer ID is stable across text edits and renumbering, the wording of a one-sentence requirement is not: the ID anchors when there is one.
+        anchor = f"id:{_normalise(node.customer_id)}"[:_ANCHOR_MAX_CHARS] if node.customer_id else _anchor(anchor_source)
+        base = f"v2\x00{section}\x00{node.type}\x00{anchor}"
         ordinal = seen[base]
         seen[base] += 1
         node.identity_hash_v2 = _sha256(f"{base}\x00{ordinal}")
@@ -98,12 +116,12 @@ def assign_identity_v2(tree: WorkItemTree, doc: CanonicalDoc) -> WorkItemTree:
         if node.title == filename_title and node.description == filename_title:
             # A title made from the filename (the document Epic of a document without one): nothing of the document to compare.
             node.content_hash = None
-        elif node.mode == WorkItemMode.BASELINE:
-            node.content_hash = node.fidelity_hash
         elif start is not None:
             following = bisect.bisect_right(span_starts, start)
             end = span_starts[following] if following < len(span_starts) else len(doc.blocks)
             node.content_hash = _sha256(_normalise("\n".join(block.text for block in doc.blocks[start:end])))
+        elif node.mode == WorkItemMode.BASELINE:
+            node.content_hash = node.fidelity_hash
         else:
             node.content_hash = None
     return tree

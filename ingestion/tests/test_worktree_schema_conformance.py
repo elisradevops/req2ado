@@ -366,7 +366,12 @@ def test_v2_identity_and_content_hash_match_work_item_tree_schema(schema) -> Non
     assert all(node.identity_hash_v2 for node in tree.nodes)
     jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
     survey = build_survey_tree(_survey_doc(), FakeSectionAnalysisClient())
-    assert all(node.identity_hash_v2 for node in survey.nodes)
+    # A SURVEY node that shares its source block with another real node has no identity of its own (null); every other one has one.
+    keys = [(n.source_ref.start_offset, n.source_ref.end_offset, n.source_ref.page) for n in survey.nodes if "synth_" not in n.local_id]
+    for node in survey.nodes:
+        key = (node.source_ref.start_offset, node.source_ref.end_offset, node.source_ref.page)
+        shares = "synth_" not in node.local_id and keys.count(key) > 1
+        assert (node.identity_hash_v2 is None) == shares, node.local_id
     jsonschema.validate(instance=survey.model_dump(mode="json"), schema=schema)
 
 

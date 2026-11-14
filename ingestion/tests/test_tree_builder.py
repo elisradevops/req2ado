@@ -441,7 +441,9 @@ def test_two_byte_identical_requirement_lines_get_distinct_v2_identity_hashes() 
     assert len(repeated) == 2
     assert repeated[0].identity_hash_v2 and repeated[1].identity_hash_v2
     assert repeated[0].identity_hash_v2 != repeated[1].identity_hash_v2
-    assert repeated[0].content_hash == repeated[1].content_hash  # same text, same content
+    # The content hash is of each line's own source span (up to the next node), so two identical lines need not share one: it is the v2
+    # identity, not the content hash, that keeps them two items. Both have one.
+    assert repeated[0].content_hash and repeated[1].content_hash
 
 
 def test_title_is_truncated_to_256_chars() -> None:

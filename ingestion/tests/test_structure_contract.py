@@ -479,3 +479,94 @@ def test_every_node_gets_a_distinct_v2_identity(tmp_path: Path) -> None:
         nodes = _follow_up_nodes(tmp_path, _FOLLOW_UP.format(intro="Overview.", ms="100"), mode=mode)
         identities = [node.identity_hash_v2 for node in nodes.values()]
         assert all(identities) and len(set(identities)) == len(identities), mode
+
+
+# W1 review fixes. Identity must separate documents, must not pretend to know items it cannot tell apart, and must read the same in both modes.
+_CUSTOMER_DOC = "# {title}\n\n## Performance\n\nThe system shall be available 99.9% of the time.\n"
+
+
+def test_two_documents_with_different_titles_do_not_share_a_requirement_identity(tmp_path: Path) -> None:
+    a = _follow_up_nodes(tmp_path, _CUSTOMER_DOC.format(title="Customer A requirements"), filename="a.md")
+    b = _follow_up_nodes(tmp_path, _CUSTOMER_DOC.format(title="Customer B requirements"), filename="b.md")
+    a_reqs = {n.identity_hash_v2 for n in a.values() if n.type.value == "Requirement"}
+    b_reqs = {n.identity_hash_v2 for n in b.values() if n.type.value == "Requirement"}
+    assert a_reqs and b_reqs and a_reqs.isdisjoint(b_reqs)
+
+
+def test_a_survey_node_that_shares_its_source_block_with_another_has_no_v2_identity() -> None:
+    # In a model-structured run every node of a branch is given the branch's source block ("section analysis has no per-node source
+    # attribution"): the anchor, the span and so the content hash are the branch's, and only the order tells the nodes apart. A reorder would
+    # swap them and an edit anywhere would flag all of them, so such a node keeps the position lookup it had before W1.
+    from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat
+    from app.canonical.model import SourceRef as Ref
+    from app.leveling.identity_v2 import assign_identity_v2
+    from app.workitem.model import WorkItemMode, WorkItemTree
+
+    text_a, text_b = "Power interface.", "The unit shall report a fault."
+    doc = CanonicalDoc(
+        document=Document(path="x.docx", format=DocumentFormat.DOCX, sha256="x"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.PARAGRAPH, text=text_a, source_ref=Ref(document_path="x.docx", start_offset=0, end_offset=16)),
+            Block(id="b1", kind=BlockKind.PARAGRAPH, text=text_b, source_ref=Ref(document_path="x.docx", start_offset=16, end_offset=46)),
+        ],
+    )
+
+    def node(local_id: str, ref: Ref):
+        n = _section(local_id, f"Item {local_id}", "Requirement")
+        n.mode = WorkItemMode.SURVEY
+        n.source_ref = ref
+        return n
+
+    shared = Ref(document_path="x.docx", start_offset=0, end_offset=16)
+    own = Ref(document_path="x.docx", start_offset=16, end_offset=46)
+    tree = assign_identity_v2(WorkItemTree(nodes=[node("a", shared), node("b", shared), node("c", own)]), doc)
+    by = {n.local_id: n for n in tree.nodes}
+    assert by["a"].identity_hash_v2 is None and by["a"].content_hash is None
+    assert by["b"].identity_hash_v2 is None and by["b"].content_hash is None
+    assert by["c"].identity_hash_v2 is not None and by["c"].content_hash is not None
+
+
+def test_a_requirement_with_a_customer_id_keeps_its_identity_when_its_text_is_edited() -> None:
+    # The first sentence of a one-sentence requirement IS its text, so an edit changed the anchor and the item looked new. A Customer ID is
+    # stable across text edits and renumbering, so it is the anchor when there is one (a table row with an ID column is the common case).
+    from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat
+    from app.canonical.model import SourceRef as Ref
+    from app.leveling.identity_v2 import assign_identity_v2
+    from app.workitem.model import WorkItemTree
+
+    def tree_for(text: str, customer_id: str | None):
+        ref = Ref(document_path="x.docx", start_offset=0, end_offset=len(text), section_path=["Spec", "Power"])
+        doc = CanonicalDoc(
+            document=Document(path="x.docx", format=DocumentFormat.DOCX, sha256="x"),
+            blocks=[Block(id="b0", kind=BlockKind.PARAGRAPH, text=text, source_ref=ref)],
+        )
+        node = _section("r", "Power", "Requirement")
+        node.source_ref = ref
+        node.customer_id = customer_id
+        node.description = text
+        return assign_identity_v2(WorkItemTree(nodes=[node]), doc).nodes[0]
+
+    before = tree_for("The unit shall respond within 100 ms.", "REQ-12")
+    after = tree_for("The unit shall respond within 1000 ms.", "REQ-12")
+    other = tree_for("The unit shall respond within 100 ms.", "REQ-13")
+    assert before.identity_hash_v2 == after.identity_hash_v2
+    assert before.content_hash != after.content_hash
+    assert before.identity_hash_v2 != other.identity_hash_v2
+    # Without an ID the wording is all there is to go on, as before.
+    no_id_before = tree_for("The unit shall respond within 100 ms.", None)
+    no_id_after = tree_for("The unit shall respond within 1000 ms.", None)
+    assert no_id_before.identity_hash_v2 != no_id_after.identity_hash_v2
+
+
+def test_the_content_hash_is_the_same_whether_the_file_ran_as_baseline_or_survey(tmp_path: Path) -> None:
+    # A file written in one mode and followed up in the other must not flag every reused item as changed.
+    text = _FOLLOW_UP.format(intro="Overview.", ms="100")
+    baseline = _follow_up_nodes(tmp_path, text, mode="baseline")
+    survey = _follow_up_nodes(tmp_path, text, mode="survey")
+    # The two modes name nodes differently, so match them by identity, which is what a follow-up run does.
+    baseline_by_identity = {n.identity_hash_v2: n for n in baseline.values() if n.identity_hash_v2 and n.type.value == "Requirement"}
+    survey_by_identity = {n.identity_hash_v2: n for n in survey.values() if n.identity_hash_v2 and n.type.value == "Requirement"}
+    shared = baseline_by_identity.keys() & survey_by_identity.keys()
+    assert shared
+    for identity in shared:
+        assert baseline_by_identity[identity].content_hash == survey_by_identity[identity].content_hash, identity
