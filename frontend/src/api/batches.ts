@@ -8,6 +8,8 @@ export interface SubmitBatchParams {
   state?: string;
   iterationPath?: string;
   model?: string;
+  // Where each file's proposed items are compared with existing ones; omitted means the server default (the area path and below).
+  dedupScope?: 'area_path' | 'project';
 }
 
 export interface SubmitBatchResult {
@@ -27,6 +29,7 @@ export async function submitBatch(params: SubmitBatchParams): Promise<SubmitBatc
   if (params.state) form.append('state', params.state);
   if (params.iterationPath) form.append('iterationPath', params.iterationPath);
   if (params.model) form.append('model', params.model);
+  if (params.dedupScope) form.append('dedupScope', params.dedupScope);
   const response = await httpClient.post('/batches', form);
   return response.data;
 }

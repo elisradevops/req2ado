@@ -44,6 +44,16 @@ describe('batches api', () => {
     expect(form.get('state')).toBeNull();
     expect(form.get('iterationPath')).toBeNull();
     expect(form.get('model')).toBeNull();
+    expect(form.get('dedupScope')).toBeNull();
+  });
+
+  it('submitBatch sends where to search for duplicates when it is given (B4)', async () => {
+    (httpClient.post as any).mockResolvedValue({ data: { batchId: 'batch-1', filesAccepted: 1, filesRejected: 0 } });
+
+    await submitBatch({ files: [new File(['a'], 'a.txt')], areaPath: 'Project\\Area1', mode: 'survey', dedupScope: 'project' });
+
+    const form = (httpClient.post as any).mock.calls[0][1] as FormData;
+    expect(form.get('dedupScope')).toBe('project');
   });
 
   it('getBatch GETs the batch detail route', async () => {

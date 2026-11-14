@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { LayoutGrid, AlignLeft, Image, Layers, Table2, TriangleAlert, ArrowRight, Activity, Cpu, Info } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { restorableDraft, useNewJobDraftStore } from '../store/newJobDraftStore';
-import { loadLastJobChoices, rememberJobChoices, withRememberedChoices } from '../utils/lastJobChoices';
+import { isUntouchedChoices, loadLastJobChoices, loadProjectChoices, rememberJobChoices, withRememberedChoices } from '../utils/lastJobChoices';
 import { FileTypeIcon } from '../components/FileTypeIcon';
 import { FileDropzone, type FileDropzoneStatus } from '../components/FileDropzone';
 import { ModeCards } from '../components/ModeCards';
@@ -13,6 +13,7 @@ import { StatePicker } from '../components/StatePicker';
 import { ProjectPicker } from '../components/ProjectPicker';
 import { formatDestinationPreview } from '../components/DestinationBar';
 import { SafetyLine } from '../components/SafetyLine';
+import { DedupScopeSelect } from '../components/DedupScopeSelect';
 import {
   listJobs,
   previewJob,
@@ -46,7 +47,6 @@ import { StatTile } from '../ui/StatTile';
 import { ARRIVE, useReplayOnChange } from '../ui/motion';
 import { Stepper, type StepState } from '../ui/Stepper';
 import { InfoTip } from '../ui/Tooltip';
-import { Select } from '../ui/Select';
 
 // The flow is genuinely two screens (upload, then configure+review) -- a
 // 4-label stepper (Source/Target/Options/Review) would claim stages that
@@ -311,7 +311,10 @@ export function NewJobWizard(): React.ReactElement {
   // What the user had done before leaving this page and coming back (see newJobDraftStore); empty on a first visit.
   // A tab nobody has chosen anything in starts from the last job's mode and destination (per user, a convenience only).
   const userId = useUserId();
-  const [initial] = useState(() => withRememberedChoices(restorableDraft(), loadLastJobChoices(userId)));
+  const [initial] = useState(() => {
+    const draft = restorableDraft();
+    return { ...withRememberedChoices(draft, loadLastJobChoices(userId)), modeChosen: !isUntouchedChoices(draft) };
+  });
   const [step, setStep] = useState<1 | 2 | 3>(initial.step);
   // The three steps share one container, so a step change replays a fade on it rather than remounting (focus survives; DESIGN.md section 8).
   const stepRootRef = useRef<HTMLDivElement>(null);
@@ -386,6 +389,12 @@ export function NewJobWizard(): React.ReactElement {
   const [iterationPath, setIterationPath] = useState(initial.iterationPath);
   const [dedupScope, setDedupScope] = useState<'area_path' | 'project'>(initial.dedupScope);
   const [model, setModel] = useState(initial.model);
+  // Whether the person picked the mode themselves (or came back to a draft they had started): a project's remembered mode never replaces it.
+  const modeChosen = useRef(initial.modeChosen);
+  function handleModeChange(next: 'baseline' | 'survey'): void {
+    modeChosen.current = true;
+    setMode(next);
+  }
   // Mirror the user's work into the draft store so it survives a visit to another page (cleared on submit, replace and logout).
   useEffect(() => {
     useNewJobDraftStore.getState().patch({ step, file, preview, parseStatus, mode, model, project, areaPath, state, iterationPath, dedupScope });
@@ -488,12 +497,15 @@ export function NewJobWizard(): React.ReactElement {
   // coherent (browsing project X's area paths then writing to project Y
   // would be silently wrong).
   // Only on a real change: a project restored from the draft must keep its restored area path.
+  // The new project's own last area path (and its mode, unless the person chose one) is offered instead of an empty one (B6).
   const lastProject = useRef(project);
   useEffect(() => {
     if (lastProject.current === project) return;
     lastProject.current = project;
-    setAreaPath('');
-  }, [project]);
+    const remembered = loadProjectChoices(userId, project);
+    setAreaPath(remembered?.areaPath ?? '');
+    if (remembered && !modeChosen.current) setMode(remembered.mode);
+  }, [project, userId]);
 
   // DESIGN.md §11.2.3.d -- both mode cards show a real server-computed
   // range side by side, so both are fetched together whenever the document
@@ -870,7 +882,7 @@ export function NewJobWizard(): React.ReactElement {
             </h2>
           <ModeCards
             value={mode}
-            onChange={setMode}
+            onChange={handleModeChange}
             baselineEstimate={baselineEstimate}
             surveyEstimate={surveyEstimate}
             model={model}
@@ -956,19 +968,7 @@ export function NewJobWizard(): React.ReactElement {
                   />
                 )}
               </div>
-              <Select
-                label="Search for duplicates in"
-                labelExtra={
-                  <InfoTip content="Each proposed item is compared with items of the same kind (Epic, Feature or Requirement) that already exist in Azure DevOps, and one that is almost the same as an existing item is flagged with a link to it instead of being created again. Closed items count; Removed items do not." />
-                }
-                value={dedupScope}
-                onChange={(event) => setDedupScope(event.target.value === 'project' ? 'project' : 'area_path')}
-                helperText="Items of the same kind (Epic, Feature or Requirement) that already exist in the place you choose."
-                fullWidth
-              >
-                <option value="area_path">This area path and everything under it</option>
-                <option value="project">The whole project</option>
-              </Select>
+              <DedupScopeSelect value={dedupScope} onChange={setDedupScope} />
             </div>
           </details>
         </div>

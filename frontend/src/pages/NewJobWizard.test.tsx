@@ -1158,6 +1158,30 @@ describe('NewJobWizard: remembers the last job\'s mode and destination (J2)', ()
     expect(await screen.findByLabelText(/area path/i)).toHaveValue('Project\\Customer Requirements');
   });
 
+  it('picking a team project fills that project\'s own last area path and mode (B6), and keeps a mode the user chose', async () => {
+    mockApis();
+    vi.spyOn(adoApi, 'getProjects').mockResolvedValue([{ id: '1', name: 'Project' }, { id: '2', name: 'Other' }]);
+    localStorage.setItem('req2ado-last-job-by-project:user-descriptor-1', JSON.stringify({
+      Project: { mode: 'survey', areaPath: 'Project\\Customer Requirements' },
+      Other: { mode: 'baseline', areaPath: 'Other\\Imports' },
+    }));
+    renderWizard();
+    await uploadAndConfigure();
+
+    await userEvent.click(screen.getByLabelText(/team project/i));
+    await userEvent.click(await screen.findByRole('option', { name: 'Project' }));
+    expect(await screen.findByLabelText(/area path/i)).toHaveValue('Project\\Customer Requirements');
+    expect(screen.getByRole('radio', { name: /SURVEY/ })).toBeChecked();
+
+    // Now the user chooses the mode; another project's remembered mode does not replace it, but its area path is offered.
+    await userEvent.click(screen.getByRole('radio', { name: /BASELINE/ }));
+    await userEvent.click(screen.getByRole('radio', { name: /SURVEY/ }));
+    await userEvent.clear(screen.getByLabelText(/team project/i));
+    await userEvent.type(screen.getByLabelText(/team project/i), 'Other');
+    await waitFor(() => expect(screen.getByLabelText(/area path/i)).toHaveValue('Other\\Imports'));
+    expect(screen.getByRole('radio', { name: /SURVEY/ })).toBeChecked();
+  });
+
   it('does not start from another user\'s choices', async () => {
     mockApis();
     localStorage.setItem('req2ado-last-job:someone-else', JSON.stringify({ mode: 'survey', project: 'Project', areaPath: 'Project\\X' }));

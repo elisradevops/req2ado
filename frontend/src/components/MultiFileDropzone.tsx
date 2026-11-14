@@ -79,11 +79,14 @@ export function MultiFileDropzone({
   onFilesAdded,
   onFileRemoved,
   disabled,
+  renderFileDetail,
 }: {
   files: File[];
   onFilesAdded: (files: File[]) => void;
   onFileRemoved: (index: number) => void;
   disabled?: boolean;
+  // A second line under a file's name (the batch page puts each file's check there).
+  renderFileDetail?: (file: File) => React.ReactNode;
 }): React.ReactElement {
   const [isDragging, setIsDragging] = useState(false);
   const [skippedCount, setSkippedCount] = useState(0);
@@ -158,15 +161,18 @@ export function MultiFileDropzone({
         </p>
       )}
       {files.length > 0 && (
-        <ul className="flex flex-col gap-1">
+        <ul aria-label="Chosen files" className="flex flex-col gap-1">
           {files.map((file, index) => (
-            <li key={`${file.name}-${index}`} className="flex items-center gap-2 rounded-sm border border-hairline bg-surface px-2.5 py-1.5">
-              <FileTypeIcon extension={extensionOf(file.name)} className="h-5 w-5 flex-none" />
-              <span className="min-w-0 flex-1 truncate text-sm">{file.name}</span>
-              <span className="flex-none font-mono text-meta text-ink-3">{formatFileSize(file.size)}</span>
-              <Button size="sm" variant="ghost" aria-label={`Remove ${file.name}`} onClick={() => onFileRemoved(index)} disabled={disabled}>
-                <X className="h-3.5 w-3.5" />
-              </Button>
+            <li key={`${file.name}-${index}`} className="flex min-w-0 flex-col gap-0.5 rounded-sm border border-hairline bg-surface px-2.5 py-1.5">
+              <div className="flex min-w-0 items-center gap-2">
+                <FileTypeIcon extension={extensionOf(file.name)} className="h-5 w-5 flex-none" />
+                <span className="min-w-0 flex-1 truncate text-sm">{file.name}</span>
+                <span className="flex-none font-mono text-meta text-ink-3">{formatFileSize(file.size)}</span>
+                <Button size="sm" variant="ghost" aria-label={`Remove ${file.name}`} onClick={() => onFileRemoved(index)} disabled={disabled}>
+                  <X className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+              {renderFileDetail?.(file)}
             </li>
           ))}
         </ul>
