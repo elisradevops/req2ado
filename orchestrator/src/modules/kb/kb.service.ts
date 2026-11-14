@@ -106,6 +106,18 @@ export interface BrowseFolderEntry {
 
 const logger = new Logger('KbService');
 
+// A token is pasted from somewhere: a Graph Explorer tab, a curl example, a chat. Take off what is not part of it so a real token is not
+// rejected for how it was copied: an "Authorization: Bearer " prefix, surrounding quotes, and the spaces and line breaks a wrapped copy adds
+// (a token has none inside). The cleaned value is what is checked and what is stored.
+export function cleanPastedToken(pasted: string): string {
+  return pasted
+    .trim()
+    .replace(/^authorization\s*:\s*/i, '')
+    .replace(/^bearer\s+/i, '')
+    .replace(/^["'`]+|["'`]+$/g, '')
+    .replace(/\s+/g, '');
+}
+
 @Injectable()
 export class KbService {
   constructor(
@@ -151,7 +163,8 @@ export class KbService {
    * rather than a separate plaintext column, since the vault only stores
    * one opaque ciphertext blob per ownerKey/kind.
    */
-  async reconnectSharePointToken(token: string, rotatedByUserId: string): Promise<SharePointStatus> {
+  async reconnectSharePointToken(pastedToken: string, rotatedByUserId: string): Promise<SharePointStatus> {
+    const token = cleanPastedToken(pastedToken);
     const status = await this.ingestionClient.getSharePointStatus(token);
     if (status.status !== 'valid') {
       return status;

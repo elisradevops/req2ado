@@ -275,6 +275,22 @@ describe('KbService', () => {
     expect(result).toEqual({ status: 'invalid', expiresInSeconds: null });
   });
 
+  it.each([
+    ['a "Bearer " prefix, as copied from an Authorization header', 'Bearer eyJ0.abc.def', 'eyJ0.abc.def'],
+    ['the whole Authorization header', 'Authorization: Bearer eyJ0.abc.def', 'eyJ0.abc.def'],
+    ['surrounding quotes', '"eyJ0.abc.def"', 'eyJ0.abc.def'],
+    ['line breaks and spaces from a wrapped copy', '  eyJ0.abc\n.def \r\n', 'eyJ0.abc.def'],
+  ])('reconnectSharePointToken() cleans a token pasted with %s before checking and storing it', async (_label, pasted, expected) => {
+    const ingestionClient = { getSharePointStatus: jest.fn().mockResolvedValue({ status: 'valid', expiresInSeconds: 3600 }) };
+    const credentialVault = { get: jest.fn(), set: jest.fn() };
+    const service = new KbService({} as any, ingestionClient as any, credentialVault as any);
+
+    await service.reconnectSharePointToken(pasted, 'user-1');
+
+    expect(ingestionClient.getSharePointStatus).toHaveBeenCalledWith(expected);
+    expect(JSON.parse(credentialVault.set.mock.calls[0][2]).token).toBe(expected);
+  });
+
   it('reconnectSharePointToken() resumes the batches that were waiting for a fresh token, once the token is stored', async () => {
     const ingestionClient = { getSharePointStatus: jest.fn().mockResolvedValue({ status: 'valid', expiresInSeconds: 3600 }) };
     const order: string[] = [];
