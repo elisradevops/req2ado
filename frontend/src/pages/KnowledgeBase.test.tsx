@@ -37,17 +37,29 @@ beforeEach(() => {
   // The status store is shared by every test: a status read by an earlier one must not look like this page's first check.
   useConnectionStatusStore.getState().reset();
   vi.mocked(kbApi.getKbProfile).mockResolvedValue(READY_PROFILE);
+  vi.mocked(kbApi.listIngestedDocuments).mockResolvedValue([]);
 });
 
 describe('KnowledgeBase', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(kbApi.listIngestedDocuments).mockResolvedValue([]);
     vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'valid', expiresInSeconds: 2820 });
     vi.spyOn(kbApi, 'getRubric').mockResolvedValue({
       version: 'v1', source: 'kb', builtAt: null, removed: [],
       categories: [{ name: 'Testable', passCondition: 'Can be verified', guidance: null, pinned: false, origin: 'kb', sources: ['A.pptx'], mergedFrom: ['Testable'] }],
     });
     localStorage.clear();
+  });
+
+  it('lists what is already in the knowledge base even when SharePoint cannot be reached', async () => {
+    vi.mocked(kbApi.getSharePointStatus).mockResolvedValue({ status: 'invalid', expiresInSeconds: null });
+    vi.mocked(kbApi.listIngestedDocuments).mockResolvedValue([
+      { id: 'd1', userId: 'u', driveItemId: 'i1', name: 'Standard.pdf', sizeBytes: 1, mimeType: null, docType: null, retrievalMode: 'retrieve', ingestedAt: '2026-11-12T17:53:00Z', chunkCount: 32 },
+    ]);
+    renderPage();
+    const list = await screen.findByRole('list', { name: /in your knowledge base/i });
+    expect(within(list).getByText('Standard.pdf')).toBeInTheDocument();
   });
 
   it('keeps the rubric off the page: it opens from the health summary, unchanged, in a dialog', async () => {

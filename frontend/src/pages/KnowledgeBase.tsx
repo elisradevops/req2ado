@@ -22,6 +22,7 @@ import { KbAddBatchDialog } from '../components/KbAddBatchDialog';
 import { KbSwitchLibraryDialog } from '../components/KbSwitchLibraryDialog';
 import { KbIngestQueue } from '../components/KbIngestQueue';
 import { KbFileList } from '../components/KbFileList';
+import { KbIngestedList } from '../components/KbIngestedList';
 import { KbFileDetailPane } from '../components/KbFileDetailPane';
 import { RubricDialog } from '../components/RubricDialog';
 import { KbHealthSummary } from '../components/KbHealthSummary';
@@ -740,6 +741,7 @@ export function KnowledgeBase(): React.ReactElement {
   return (
     <div className="flex flex-col gap-4">
       <PageHeader title="Knowledge base" description="Your reference documents. SURVEY jobs you start use them for context. Other users do not see them." />
+      <KbIngestedList />
       <KbSourceBar
         sourceUrl={sourceUrl}
         draftUrl={browseUrl}
