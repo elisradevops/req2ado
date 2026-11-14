@@ -70,6 +70,8 @@ export interface PreviewResult {
   documentMap: DocumentMapSection[];
   /** The step-3 overview, made from the parsed text and structure alone. Absent from a server that predates it. */
   overview?: DocumentOverview & { profile?: { summaryInput?: string } };
+  /** The result-cache hash of the file's bytes (not its name), for getCachedResult. Absent from a server that predates it. */
+  fileHash?: string;
 }
 
 /** The wizard's overview of a document: `lines` is what step 3 shows, each read off the document's text and structure. */
@@ -87,12 +89,26 @@ export interface DocumentOverview {
  * The optional AI summary of the document: written by the server from the small prepared input the preview returned, and checked against it.
  * Null when there is none, and also when the call fails or is cancelled: the summary is a bonus, never a reason to show an error.
  */
-export async function previewSummary(params: { summaryInput: string; model?: string }, signal?: AbortSignal): Promise<string | null> {
+// fresh: "Write it again" -- the server asks the model even when it already holds a summary for this input.
+export async function previewSummary(params: { summaryInput: string; model?: string; fresh?: boolean }, signal?: AbortSignal): Promise<string | null> {
   try {
     const response = await httpClient.post<{ summary: string | null }>('/jobs/preview/summary', params, { signal });
     return response.data?.summary ?? null;
   } catch {
     return null;
+  }
+}
+
+/** Whether a SURVEY job of this file (by preview's fileHash) would be served from the result cache. False on any failure: a courtesy note. */
+export async function getCachedResult(
+  params: { fileHash: string; mode: 'baseline' | 'survey'; model?: string },
+  signal?: AbortSignal,
+): Promise<boolean> {
+  try {
+    const response = await httpClient.get<{ cachedResult?: boolean }>('/jobs/cached-result', { params, signal });
+    return response.data?.cachedResult === true;
+  } catch {
+    return false;
   }
 }
 

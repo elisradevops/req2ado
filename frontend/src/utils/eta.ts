@@ -32,3 +32,17 @@ export function formatEtaMinutes(minutes: number): string {
 export function formatEtaRange(lowerMinutes: number, upperMinutes: number): { lower: string; upper: string } {
   return { lower: formatEtaMinutes(lowerMinutes), upper: formatEtaMinutes(upperMinutes) };
 }
+
+/**
+ * The estimate line beside Start: the server range with "typically", or, when a SURVEY job of this very file would be served from the
+ * result cache (P5), "A few seconds: this file was already processed". Null while there is neither.
+ */
+export function estimateLine(
+  estimate: { lowerMinutes: number; upperMinutes: number } | undefined,
+  cachedResult: boolean,
+): { value: string; note: string } | null {
+  if (cachedResult) return { value: 'A few seconds', note: 'this file was already processed' };
+  if (!estimate) return null;
+  const { lower, upper } = formatEtaRange(estimate.lowerMinutes, estimate.upperMinutes);
+  return { value: lower === upper ? lower : `${lower} – ${upper}`, note: 'typically, once it starts' };
+}

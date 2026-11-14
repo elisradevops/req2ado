@@ -140,6 +140,27 @@ describe('NewJobWizard Step 1', () => {
     expect(screen.getByText('12')).toBeInTheDocument();
   });
 
+  // P4: a deep section number ("1.2.1.1.1") ran into its title in the fixed-width column.
+  it('gives a deep section number its own room instead of a fixed width, and keeps the full number and title on hover', async () => {
+    vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({
+      blockCount: 3, sectionCount: 1, figureCount: 0, depth: 5, fileType: 'docx', tableCount: 0, openTbdCount: 0,
+      documentMap: [{ number: '1.2.1.1.1', title: 'Ripple shall stay below 50 mV.', blockCount: 1, figureCount: 0 }],
+    } as any);
+    render(
+      <ToastProvider>
+        <MemoryRouter>
+          <NewJobWizard />
+        </MemoryRouter>
+      </ToastProvider>,
+    );
+    await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'req.docx'));
+    const number = await screen.findByText('1.2.1.1.1');
+    expect(number).not.toHaveClass('w-10');
+    expect(number).toHaveClass('min-w-10', 'truncate');
+    expect(number).toHaveAttribute('title', '1.2.1.1.1');
+    expect(screen.getByText('Ripple shall stay below 50 mV.')).toHaveAttribute('title', 'Ripple shall stay below 50 mV.');
+  });
+
   it('shows the empty-state hint for "Worth knowing" before a file lands, never a blank card', () => {
     render(
       <ToastProvider>
@@ -1263,5 +1284,73 @@ describe('NewJobWizard step 1: a file with a name that was processed before (J3)
     await uploadNamed('spec.docx', undefined);
     await waitFor(() => expect(screen.getByRole('button', { name: /configure/i })).toBeEnabled());
     expect(screen.queryByText(/already ran a file with this name/i)).not.toBeInTheDocument();
+  });
+});
+
+describe('NewJobWizard re-run of a file (P5)', () => {
+  const HASH = 'f'.repeat(64);
+  const earlier = { id: '4270e8be-1979-4cd3-94ea-a0a0d5ef6ed0', mode: 'survey', status: 'diff_ready', areaPath: 'P\\A', originalFilename: 'spec.docx', itemCount: 5, createdItemCount: 0, createdAt: new Date(Date.now() - 3600 * 1000).toISOString() };
+  async function toStep2(cached: boolean): Promise<void> {
+    useAuthStore.getState().logout(); // free-text area path: no ADO pickers to drive
+    vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({
+      blockCount: 20, sectionCount: 3, figureCount: 0, depth: 2, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [], fileHash: HASH,
+      overview: { synopsis: 'A spec.', caveat: null, profile: { summaryInput: 'Sections: 1 Scope' } },
+    } as any);
+    vi.spyOn(jobsApi, 'listJobs').mockResolvedValue([earlier] as any);
+    vi.spyOn(jobsApi, 'getEstimate').mockResolvedValue({ mode: 'survey', lowerMinutes: 20, upperMinutes: 35, basis: 'blended', sampleCount: 4 } as any);
+    vi.spyOn(jobsApi, 'getCachedResult').mockResolvedValue(cached);
+    vi.spyOn(jobsApi, 'previewSummary').mockResolvedValue(null);
+    vi.spyOn(jobsApi, 'listModels').mockResolvedValue({ models: ['m1'], recommended: null, details: [] });
+    render(
+      <ToastProvider>
+        <MemoryRouter>
+          <NewJobWizard />
+        </MemoryRouter>
+      </ToastProvider>,
+    );
+    await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'spec.docx'));
+    await screen.findByText(/already ran a file with this name/i);
+    await userEvent.click(screen.getByRole('button', { name: /configure/i }));
+    await userEvent.click(screen.getByText('SURVEY'));
+  }
+
+  it('keeps the "already ran a file with this name" note on steps 2 and 3 as one compact line', async () => {
+    await toStep2(false);
+    const rail = screen.getByRole('complementary', { name: 'This run' });
+    expect(within(rail).getByText(/already ran a file with this name/i)).toBeInTheDocument();
+    expect(within(rail).getByRole('link', { name: /4270e8be/ })).toHaveAttribute('href', '/jobs/4270e8be-1979-4cd3-94ea-a0a0d5ef6ed0');
+    await userEvent.type(screen.getByLabelText(/area path/i), 'Project');
+    await userEvent.click(screen.getByRole('button', { name: /continue/i }));
+    await screen.findByRole('button', { name: /looks right/i });
+    const rail3 = screen.getByRole('complementary', { name: 'This run' });
+    expect(within(rail3).getByText(/already ran a file with this name/i)).toBeInTheDocument();
+  });
+
+  it('says a few seconds when a SURVEY job of this file would come from the result cache', async () => {
+    await toStep2(true);
+    await waitFor(() => expect(jobsApi.getCachedResult).toHaveBeenCalledWith({ fileHash: HASH, mode: 'survey', model: undefined }, expect.anything()));
+    const rail = screen.getByRole('complementary', { name: 'This run' });
+    expect(await within(rail).findByText('A few seconds')).toBeInTheDocument();
+    expect(within(rail).getByText('this file was already processed')).toBeInTheDocument();
+    expect(within(rail).queryByText('typically, once it starts')).not.toBeInTheDocument();
+  });
+
+  it('keeps the measured range when the file is not in the cache', async () => {
+    await toStep2(false);
+    const rail = screen.getByRole('complementary', { name: 'This run' });
+    expect(await within(rail).findByText('20 min – 35 min')).toBeInTheDocument();
+    expect(within(rail).queryByText('A few seconds')).not.toBeInTheDocument();
+  });
+
+  it('asks the model afresh on "Write it again", and lets the server answer from its cache the first time', async () => {
+    await toStep2(false);
+    vi.mocked(jobsApi.previewSummary).mockResolvedValue('A summary of the file.');
+    await userEvent.type(screen.getByLabelText(/area path/i), 'Project');
+    await userEvent.click(screen.getByRole('button', { name: /continue/i }));
+    await screen.findByText('A summary of the file.');
+    expect(vi.mocked(jobsApi.previewSummary).mock.calls[0][0]).not.toHaveProperty('fresh');
+    await userEvent.click(screen.getByRole('button', { name: /write it again/i }));
+    await waitFor(() => expect(vi.mocked(jobsApi.previewSummary).mock.calls.length).toBe(2));
+    expect(vi.mocked(jobsApi.previewSummary).mock.calls[1][0]).toMatchObject({ fresh: true });
   });
 });

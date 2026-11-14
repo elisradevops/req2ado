@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import axios from 'axios';
 import { httpClient } from './httpClient';
-import { overrideDuplicate, undoDuplicateOverride, explainScore, listJobs, submitJob, confirmJob, editDiffEntry, addDiscussionEntry, removeDiscussionEntry, setDiffEntryExcluded, setProposalAccepted, setDiffEntriesReviewed, setWarningsAcknowledged, retryEnhancement, addDiffEntry, rescoreDiffEntry, getFigureFile, attachFigureToAdo, moveFigure, retryTraceLinkWrite, validateCreatedTree, previewSummary } from './jobs';
+import { overrideDuplicate, undoDuplicateOverride, explainScore, listJobs, submitJob, confirmJob, editDiffEntry, addDiscussionEntry, removeDiscussionEntry, setDiffEntryExcluded, setProposalAccepted, setDiffEntriesReviewed, setWarningsAcknowledged, retryEnhancement, addDiffEntry, rescoreDiffEntry, getFigureFile, attachFigureToAdo, moveFigure, retryTraceLinkWrite, validateCreatedTree, previewSummary, getCachedResult } from './jobs';
 
 vi.mock('./httpClient');
 vi.mock('./config', () => ({ loadRuntimeConfig: vi.fn().mockResolvedValue({ apiBaseUrl: '/api' }) }));
@@ -180,6 +180,30 @@ describe('jobs api', () => {
       expect(await previewSummary({ summaryInput: 'INPUT' })).toBeNull();
       (httpClient.post as any).mockRejectedValue(new Error('timeout'));
       expect(await previewSummary({ summaryInput: 'INPUT' })).toBeNull();
+    });
+  });
+
+  describe('previewSummary fresh (Write it again)', () => {
+    it('sends fresh only when asked', async () => {
+      (httpClient.post as any).mockResolvedValue({ data: { summary: 'A summary.' } });
+      await previewSummary({ summaryInput: 'INPUT', fresh: true });
+      expect(httpClient.post).toHaveBeenLastCalledWith('/jobs/preview/summary', { summaryInput: 'INPUT', fresh: true }, { signal: undefined });
+    });
+  });
+
+  // P5: whether a SURVEY job of this file would come from the result cache, asked once mode and model are chosen.
+  describe('getCachedResult', () => {
+    it('asks with the file hash, mode and model, and returns the answer', async () => {
+      (httpClient.get as any).mockResolvedValue({ data: { cachedResult: true } });
+      expect(await getCachedResult({ fileHash: 'abc', mode: 'survey', model: 'm1' })).toBe(true);
+      expect(httpClient.get).toHaveBeenLastCalledWith('/jobs/cached-result', { params: { fileHash: 'abc', mode: 'survey', model: 'm1' }, signal: undefined });
+    });
+
+    it('is false when the call fails or the server does not know the route: the note is a courtesy', async () => {
+      (httpClient.get as any).mockRejectedValue(new Error('404'));
+      expect(await getCachedResult({ fileHash: 'abc', mode: 'survey' })).toBe(false);
+      (httpClient.get as any).mockResolvedValue({ data: {} });
+      expect(await getCachedResult({ fileHash: 'abc', mode: 'survey' })).toBe(false);
     });
   });
 

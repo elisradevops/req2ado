@@ -17,6 +17,7 @@ import {
   listJobs,
   previewJob,
   previewSummary,
+  getCachedResult,
   submitJob,
   listModels,
   type ModelListing,
@@ -25,7 +26,7 @@ import {
   type PreviewResult,
   type DocumentOverview,
 } from '../api/jobs';
-import { formatEtaRange } from '../utils/eta';
+import { estimateLine } from '../utils/eta';
 import { findPreviousRuns, type PreviousRuns } from '../utils/previousRuns';
 import { jobStatusLabel } from '../utils/labels';
 import { formatRelativeTime } from '../utils/relativeTime';
@@ -85,8 +86,13 @@ function DocumentMapList({ sections }: { sections: PreviewResult['documentMap'] 
     <div className="flex max-h-[420px] flex-col overflow-y-auto">
       {sections.map((section, index) => (
         <div key={`${section.number ?? 'unnumbered'}-${index}`} className="hoverable-row flex items-center gap-2 px-1 py-1.5">
-          <span className="w-10 flex-none font-mono text-meta text-ink-3">{section.number ?? '—'}</span>
-          <span className="min-w-0 flex-1 truncate text-xs text-ink-2">{section.title}</span>
+          {/* min-w, not a fixed w-10: a deep number ("1.2.1.1.1") ran into the title. It grows to fit, capped, and the title truncates. */}
+          <span className="min-w-10 max-w-[40%] flex-none truncate font-mono text-meta text-ink-3" title={section.number ?? undefined}>
+            {section.number ?? '—'}
+          </span>
+          <span className="min-w-0 flex-1 truncate text-xs text-ink-2" title={section.title}>
+            {section.title}
+          </span>
           <div className="h-[7px] w-16 flex-none overflow-hidden rounded-full bg-surface-sunken">
             <div
               className="h-full rounded-full bg-accent/72"
@@ -101,6 +107,24 @@ function DocumentMapList({ sections }: { sections: PreviewResult['documentMap'] 
         </div>
       ))}
     </div>
+  );
+}
+
+// Step 1's "already ran a file with this name" note, kept on steps 2 and 3 as one line in the "This run" rail (P5).
+function PreviousRunLine({ previousRuns }: { previousRuns: PreviousRuns | null }): React.ReactElement | null {
+  if (!previousRuns) return null;
+  const { latest } = previousRuns;
+  return (
+    <p className="flex items-start gap-1.5 border-t border-hairline pt-3 text-xs text-ink-2">
+      <Info className="mt-0.5 h-3.5 w-3.5 flex-none text-ink-3" />
+      <span className="min-w-0">
+        You already ran a file with this name: job{' '}
+        <Link to={`/jobs/${latest.id}`} className="font-mono text-accent-ink underline">
+          {latest.id.slice(0, 8)}
+        </Link>
+        , {jobStatusLabel(latest.status).label}, {formatRelativeTime(latest.createdAt)}.
+      </span>
+    </p>
   );
 }
 
@@ -399,7 +423,8 @@ export function NewJobWizard(): React.ReactElement {
       controller.abort();
     }, AI_SUMMARY_WAIT_MS);
     setAiSummary({ status: 'pending' });
-    previewSummary({ summaryInput, model: model || undefined }, controller.signal).then((text) => {
+    // "Write it again" asks the model afresh; the first request may be answered from the server's summary cache.
+    previewSummary({ summaryInput, model: model || undefined, ...(summaryRun > 0 ? { fresh: true } : {}) }, controller.signal).then((text) => {
       if (controller.signal.aborted) return;
       // The result is in: the give-up timer must not outlive it, or it later turns a summary that is already on screen into "none".
       window.clearTimeout(giveUp);
@@ -497,6 +522,20 @@ export function NewJobWizard(): React.ReactElement {
         // previous value, or show nothing").
       });
   }, [preview?.blockCount, preview?.figureCount, model]);
+
+  // P5: whether a SURVEY job of this file would be served from the result cache. Asked once mode and model are known (preview runs on upload,
+  // before either is chosen); best effort, and a stale answer for an earlier choice is dropped.
+  const [cachedResult, setCachedResult] = useState(false);
+  const fileHash = preview?.fileHash;
+  useEffect(() => {
+    setCachedResult(false);
+    if (!fileHash || mode !== 'survey') return undefined;
+    const controller = new AbortController();
+    void getCachedResult({ fileHash, mode, model: model || undefined }, controller.signal).then((cached) => {
+      if (!controller.signal.aborted) setCachedResult(cached);
+    });
+    return () => controller.abort();
+  }, [fileHash, mode, model]);
 
   async function handleFileSelected(selected: File): Promise<void> {
     const seq = ++previewRequestSeq.current;
@@ -709,6 +748,7 @@ export function NewJobWizard(): React.ReactElement {
   // estimate; the OTHER mode's is still fetched (see the effect above) so
   // ModeCards can show both side by side, but the footer only needs one.
   const selectedEstimate = mode === 'baseline' ? baselineEstimate : surveyEstimate;
+  const selectedEstimateLine = estimateLine(selectedEstimate, mode === 'survey' && cachedResult);
 
   if (step === 3) {
     return (
@@ -799,15 +839,11 @@ export function NewJobWizard(): React.ReactElement {
                 state={state}
                 onChangeDocument={handleBack}
               />
-              {selectedEstimate && (
+              <PreviousRunLine previousRuns={previousRuns} />
+              {selectedEstimateLine && (
                 <div className="flex flex-wrap items-baseline gap-2.5 border-t border-hairline pt-3">
-                  <span className="font-mono text-metric font-semibold tabular-nums text-ink-1">
-                    {(() => {
-                      const { lower, upper } = formatEtaRange(selectedEstimate.lowerMinutes, selectedEstimate.upperMinutes);
-                      return lower === upper ? lower : `${lower} – ${upper}`;
-                    })()}
-                  </span>
-                  <span className="text-xs text-ink-3">typically, once it starts</span>
+                  <span className="font-mono text-metric font-semibold tabular-nums text-ink-1">{selectedEstimateLine.value}</span>
+                  <span className="text-xs text-ink-3">{selectedEstimateLine.note}</span>
                 </div>
               )}
             </div>
@@ -955,19 +991,11 @@ export function NewJobWizard(): React.ReactElement {
                 state={state}
                 onChangeDocument={handleBack}
               />
+              <PreviousRunLine previousRuns={previousRuns} />
               <div className="flex flex-col gap-2 border-t border-hairline pt-3">
                 <div className="flex flex-wrap items-baseline gap-2.5">
-                  <span className="font-mono text-metric font-semibold tabular-nums text-ink-1">
-                    {selectedEstimate ? (
-                      (() => {
-                        const { lower, upper } = formatEtaRange(selectedEstimate.lowerMinutes, selectedEstimate.upperMinutes);
-                        return lower === upper ? lower : `${lower} – ${upper}`;
-                      })()
-                    ) : (
-                      '--'
-                    )}
-                  </span>
-                  <span className="text-xs text-ink-3">typically, once it starts</span>
+                  <span className="font-mono text-metric font-semibold tabular-nums text-ink-1">{selectedEstimateLine?.value ?? '--'}</span>
+                  <span className="text-xs text-ink-3">{selectedEstimateLine?.note ?? 'typically, once it starts'}</span>
                   <span className="ml-auto flex items-center gap-1">
                     <Chip className="border border-info-border bg-info-soft font-mono text-micro font-normal normal-case tabular-nums text-info-ink">
                       <Cpu className="h-3 w-3 flex-none" />
