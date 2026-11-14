@@ -85,6 +85,7 @@ from app.request_identity import (
     resolve_primer_context,
     resolve_user_id,
 )
+from app.source_excerpt import SourceExcerpt, excerpt_for_span, parse_cached
 from app.survey.llm_cache import LlmResponseCache
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 from app.vision.emf_converter import convert_vector_image_to_png, sniff_vector_image_extension
@@ -1950,6 +1951,46 @@ async def document_map(doc: CanonicalDoc, job_id: str) -> dict[str, bool]:
     return {
         "published": await run_in_threadpool(publish_document_map, _narration_redis, job_id, doc)
     }
+
+
+@app.post("/source-excerpt", response_model=SourceExcerpt)
+async def source_excerpt(
+    file: UploadFile,
+    start_offset: int,
+    end_offset: int,
+    page: int | None = None,
+    extent: Literal["span", "section"] = "span",
+    row_hint: str | None = None,
+    languages: str = "eng",
+) -> SourceExcerpt:
+    """The original wording a stored item's SourceRef points at (the review dialog's evidence strip). Re-parses the uploaded
+    original with the pipeline's own loader path, since the offsets index extracted text, not file bytes. Read-only, no model
+    call; an empty or unmatched span answers kind "unavailable", never invented text. See app/source_excerpt.py."""
+    # Same bounded streaming upload as /ingest, hashing as it goes so the parsed document can be reused by content.
+    max_bytes = settings.max_upload_size_mb * 1024 * 1024
+    filename = file.filename or ""
+    digest = hashlib.sha256()
+    total_bytes = 0
+    with tempfile.NamedTemporaryFile(suffix=Path(filename).suffix, delete=False) as tmp:
+        tmp_path = tmp.name
+        while chunk := await file.read(_UPLOAD_READ_CHUNK_BYTES):
+            total_bytes += len(chunk)
+            if total_bytes > max_bytes:
+                Path(tmp_path).unlink(missing_ok=True)
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"file exceeds the {settings.max_upload_size_mb}MB upload limit",
+                )
+            digest.update(chunk)
+            tmp.write(chunk)
+    cache_key = f"{digest.hexdigest()}\x00{Path(filename).suffix.lower()}\x00{languages}"
+    try:
+        doc = await run_in_threadpool(parse_cached, cache_key, filename, tmp_path, languages)
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+    return excerpt_for_span(
+        doc, start_offset, end_offset, page=page, extent=extent, row_hint=row_hint
+    )
 
 
 _VISION_SKIP_EXPLANATIONS = {
