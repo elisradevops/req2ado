@@ -1,6 +1,7 @@
 # ingestion/tests/test_source_excerpt.py
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app import source_excerpt as source_excerpt_module
@@ -209,3 +210,72 @@ def test_a_short_excerpt_is_not_marked_truncated() -> None:
     result = excerpt_for_span(_doc_with("The unit shall start."), 0, 21)
 
     assert (result.text, result.truncated, result.kind) == ("The unit shall start.", False, "text")
+
+
+def _tmp_file(tmp_path, name: str = "x.txt"):
+    path = tmp_path / name
+    path.write_text("The unit shall report a fault.")
+    return str(path)
+
+
+def test_the_parse_removes_its_own_temp_file_after_it_has_filled_the_cache(monkeypatch, tmp_path) -> None:
+    # The request that asked for the parse may be abandoned by its caller (a timeout) while the parse thread is still reading the file; the
+    # file is therefore removed by the parse itself, when it is done, never by the request from under it.
+    source_excerpt_module.clear_parsed_cache()
+    path = _tmp_file(tmp_path)
+    seen: dict[str, bool] = {}
+
+    def checking_dispatch(filename: str, tmp: str, **kwargs: object) -> CanonicalDoc:
+        seen["exists_while_parsing"] = Path(tmp).exists()
+        return _doc_with("The unit shall report a fault.")
+
+    monkeypatch.setattr(source_excerpt_module, "dispatch_by_extension", checking_dispatch)
+
+    doc = source_excerpt_module.parse_cached("k1", "x.txt", path, "eng", cleanup=True)
+
+    assert seen["exists_while_parsing"] is True
+    assert not Path(path).exists()
+    assert source_excerpt_module.parse_cached("k1", "x.txt", "/gone", "eng") is doc  # served from the cache, no file needed
+
+
+def test_the_temp_file_is_removed_even_when_the_parse_fails(monkeypatch, tmp_path) -> None:
+    source_excerpt_module.clear_parsed_cache()
+    path = _tmp_file(tmp_path)
+
+    def failing_dispatch(filename: str, tmp: str, **kwargs: object) -> CanonicalDoc:
+        raise ValueError("unreadable")
+
+    monkeypatch.setattr(source_excerpt_module, "dispatch_by_extension", failing_dispatch)
+
+    with pytest.raises(ValueError):
+        source_excerpt_module.parse_cached("k2", "x.txt", path, "eng", cleanup=True)
+    assert not Path(path).exists()
+
+
+def test_two_requests_for_the_same_file_share_one_parse(monkeypatch, tmp_path) -> None:
+    # A first open that times out must not make the next open start a second parse of the same file next to the first.
+    import threading
+    import time
+
+    source_excerpt_module.clear_parsed_cache()
+    calls: list[str] = []
+
+    def slow_dispatch(filename: str, tmp: str, **kwargs: object) -> CanonicalDoc:
+        calls.append(filename)
+        time.sleep(0.3)
+        return _doc_with("The unit shall report a fault.")
+
+    monkeypatch.setattr(source_excerpt_module, "dispatch_by_extension", slow_dispatch)
+    results: list[CanonicalDoc] = []
+
+    def run(name: str) -> None:
+        results.append(source_excerpt_module.parse_cached("k3", "x.txt", _tmp_file(tmp_path, name), "eng", cleanup=True))
+
+    threads = [threading.Thread(target=run, args=(f"f{i}.txt",)) for i in range(3)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert calls == ["x.txt"]
+    assert len(results) == 3 and all(r is results[0] for r in results)

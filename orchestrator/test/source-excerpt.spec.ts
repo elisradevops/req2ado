@@ -1,4 +1,4 @@
-import { EntrySourceReader, ENTRY_SOURCE_CACHE_MAX_ENTRIES, ENTRY_SOURCE_CACHE_TTL_MS } from '../src/modules/pipeline/source-excerpt';
+import { EntrySourceReader, ENTRY_SOURCE_CACHE_MAX_ENTRIES, ENTRY_SOURCE_CACHE_TTL_MS, ENTRY_SOURCE_TIMEOUT_MS } from '../src/modules/pipeline/source-excerpt';
 
 const REF = { documentPath: 'spec.docx', startOffset: 108, endOffset: 151, page: 3 };
 const entry = (over: Record<string, unknown> = {}) => ({ localId: 'n4', type: 'Requirement', customerId: null, sourceRef: REF, ...over });
@@ -126,5 +126,11 @@ describe('EntrySourceReader', () => {
     expect(fetchExcerpt).toHaveBeenCalledTimes(ENTRY_SOURCE_CACHE_MAX_ENTRIES + 2);
     await reader.read(job({ dryRunDiff: many }), `n${ENTRY_SOURCE_CACHE_MAX_ENTRIES}`); // the newest is still held
     expect(fetchExcerpt).toHaveBeenCalledTimes(ENTRY_SOURCE_CACHE_MAX_ENTRIES + 2);
+  });
+});
+
+describe('the wait for a re-parse', () => {
+  it('is long enough for a first parse of a large PDF (about 10 s for 89 pages), which a 10 s limit failed on every open', () => {
+    expect(ENTRY_SOURCE_TIMEOUT_MS).toBeGreaterThanOrEqual(30_000);
   });
 });

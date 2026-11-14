@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import threading
 from collections import OrderedDict
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel
@@ -56,20 +57,41 @@ def clear_parsed_cache() -> None:
         _parsed_cache.clear()
 
 
-def parse_cached(cache_key: str, filename: str, tmp_path: str, languages: str) -> CanonicalDoc:
-    with _parsed_cache_lock:
-        cached = _parsed_cache.get(cache_key)
-        if cached is not None:
-            _parsed_cache.move_to_end(cache_key)
-            return cached
-    # No figure callbacks: captions are not source wording, and without them no model is ever called.
-    doc = dispatch_by_extension(filename, tmp_path, languages=languages)
-    with _parsed_cache_lock:
-        _parsed_cache[cache_key] = doc
-        _parsed_cache.move_to_end(cache_key)
-        while len(_parsed_cache) > _PARSED_CACHE_MAX:
-            _parsed_cache.popitem(last=False)
-    return doc
+_parse_locks: dict[str, threading.Lock] = {}
+_parse_locks_guard = threading.Lock()
+
+
+def _lock_for(cache_key: str) -> threading.Lock:
+    with _parse_locks_guard:
+        return _parse_locks.setdefault(cache_key, threading.Lock())
+
+
+def parse_cached(
+    cache_key: str, filename: str, tmp_path: str, languages: str, *, cleanup: bool = False
+) -> CanonicalDoc:
+    """The parsed original, parsed once per content. Two things a slow parse needs:
+    - one parse per file at a time: a second request for the same content waits for the first and reads its result, so an
+      open that gave up (the caller's timeout) does not make the next open start a second parse beside it;
+    - the temp file belongs to the parse, not to the request: with `cleanup` the parse removes it when it is done, so a request that
+      is abandoned mid-parse cannot delete the file from under the thread that is still reading it."""
+    try:
+        with _lock_for(cache_key):
+            with _parsed_cache_lock:
+                cached = _parsed_cache.get(cache_key)
+                if cached is not None:
+                    _parsed_cache.move_to_end(cache_key)
+                    return cached
+            # No figure callbacks: captions are not source wording, and without them no model is ever called.
+            doc = dispatch_by_extension(filename, tmp_path, languages=languages)
+            with _parsed_cache_lock:
+                _parsed_cache[cache_key] = doc
+                _parsed_cache.move_to_end(cache_key)
+                while len(_parsed_cache) > _PARSED_CACHE_MAX:
+                    _parsed_cache.popitem(last=False)
+            return doc
+    finally:
+        if cleanup:
+            Path(tmp_path).unlink(missing_ok=True)
 
 
 def _same_page(ref: SourceRef, page: int | None) -> bool:

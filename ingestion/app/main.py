@@ -1984,10 +1984,9 @@ async def source_excerpt(
             digest.update(chunk)
             tmp.write(chunk)
     cache_key = f"{digest.hexdigest()}\x00{Path(filename).suffix.lower()}\x00{languages}"
-    try:
-        doc = await run_in_threadpool(parse_cached, cache_key, filename, tmp_path, languages)
-    finally:
-        Path(tmp_path).unlink(missing_ok=True)
+    # The parse owns the temp file (it removes it when done): if the caller gives up on a slow parse, this request is cancelled, but the
+    # parse thread keeps running and must still have its file, so it finishes, fills the cache and the next open is instant.
+    doc = await run_in_threadpool(parse_cached, cache_key, filename, tmp_path, languages, cleanup=True)
     return excerpt_for_span(
         doc, start_offset, end_offset, page=page, extent=extent, row_hint=row_hint
     )

@@ -31,9 +31,10 @@ export interface IngestionSourceExcerpt {
 
 export const ENTRY_SOURCE_CACHE_MAX_ENTRIES = 100;
 export const ENTRY_SOURCE_CACHE_TTL_MS = 10 * 60 * 1000;
-// A re-parse of a big or scanned PDF can be slow; the dialog never waits longer than this. Ingestion keeps the parse it
-// finishes anyway, so a later open of the same file is quick.
-export const ENTRY_SOURCE_TIMEOUT_MS = 10_000;
+// A re-parse of a big or scanned PDF is slow: the 89-page NASA directive takes about 10 seconds with nothing else running, so the first
+// open of an item needs well over that (10 seconds made every open of it fail). The dialog shows a calm placeholder meanwhile and never
+// waits longer than this; ingestion shares one parse per file and keeps it, so the next open of the same file is quick.
+export const ENTRY_SOURCE_TIMEOUT_MS = 45_000;
 
 interface StoredJob {
   id: string;
