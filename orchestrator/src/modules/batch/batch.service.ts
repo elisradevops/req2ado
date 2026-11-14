@@ -5,6 +5,11 @@ import { ALLOWED_EXTENSIONS } from '../pipeline/jobs.controller';
 import type { JobsService } from '../pipeline/jobs.service';
 import { mapWithConcurrency } from '../pipeline/map-with-concurrency';
 import { filterExcludedDiffEntries, summarizeDiffEntries, type DiffSummary } from '../pipeline/diff-summary';
+import type { DocumentOverview } from '../pipeline/document-overview.service';
+
+// The single wizard's overview of a file (document-preview.ts buildPreviewOverview, on the stored bytes), which is where a SURVEY job's
+// structure hint comes from: the worker builds none of its own. Null or a throw means "submit without one".
+export type BatchOverviewBuilder = (fileBuffer: Buffer, filename: string) => Promise<(DocumentOverview & { profile?: unknown }) | null>;
 
 // A batch file's externally-reported status: the underlying Job's own
 // status once one exists and still resolves, 'deleted' if the Job was
@@ -104,6 +109,8 @@ export interface SubmitBatchInput {
   state?: string | null;
   iterationPath?: string | null;
   model?: string | null;
+  // How wide each file's duplicate check looks; omitted means the column default ('area_path').
+  dedupScope?: 'area_path' | 'project';
   files: SubmitBatchFileInput[];
 }
 
@@ -131,6 +138,8 @@ export class BatchService {
     private readonly maxUploadSizeBytes: number,
     private readonly batchSurveyConcurrency: number,
     private readonly batchSubmitStuckMs: number,
+    // Optional so a deployment (or spec) without it still submits SURVEY files, only without an overview.
+    private readonly buildOverview?: BatchOverviewBuilder,
   ) {}
 
   // Validates each file independently against the exact same rules
@@ -184,6 +193,7 @@ export class BatchService {
           state: input.state ?? null,
           iterationPath: input.iterationPath ?? null,
           model: input.model ?? null,
+          ...(input.dedupScope ? { dedupScope: input.dedupScope } : {}),
         },
       });
       for (const file of validated) {
@@ -420,6 +430,22 @@ export class BatchService {
     }
   }
 
+  // Fail-open: an overview is context for the AI stage, never a reason to fail a file, so any failure submits the file without one.
+  // The bulky profile stays out of what is submitted, as in the single wizard.
+  private async overviewFor(fileBuffer: Buffer, filename: string): Promise<DocumentOverview | null> {
+    if (!this.buildOverview) return null;
+    try {
+      const built = await this.buildOverview(fileBuffer, filename);
+      if (!built) return null;
+      const { profile: _profile, ...overview } = built;
+      return overview;
+    } catch (error) {
+      // eslint-disable-next-line no-console -- no structured logger in this module yet
+      console.error(`BatchService: no document overview for a batch SURVEY file, submitting without one (${error instanceof Error ? error.name : 'failed'})`);
+      return null;
+    }
+  }
+
   private async pumpOnceInner(): Promise<{ submitted: number; failed: number }> {
     // Reclaim any file stuck in 'submitting' (claimed, then the process
     // died before JobsService.submit() finished) back to 'queued' so it
@@ -478,18 +504,24 @@ export class BatchService {
         if (!blob) {
           throw new Error('batch file blob missing (already submitted or never stored)');
         }
+        const fileBuffer = Buffer.from(blob.bytes);
+        // Only for a SURVEY file, and only here: this file already holds one of the throttled SURVEY slots, so the extra parse runs under the
+        // same cap.
+        const documentOverview = file.batch.mode === 'survey' ? await this.overviewFor(fileBuffer, file.filename) : null;
         const { jobId } = await this.jobsService.submit({
           areaPath: file.batch.areaPath,
           adoProject: file.batch.adoProject,
           userId: file.batch.userId,
           mode: file.batch.mode as 'baseline' | 'survey',
-          fileBuffer: Buffer.from(blob.bytes),
+          fileBuffer,
           filename: file.filename,
           sourceHash: file.sourceHash,
           state: file.batch.state ?? undefined,
           iterationPath: file.batch.iterationPath,
           model: file.batch.model ?? undefined,
           batchId: file.batchId,
+          dedupScope: file.batch.dedupScope === 'project' ? 'project' : 'area_path',
+          ...(documentOverview ? { documentOverview } : {}),
         });
         await this.prisma.$transaction([
           this.prisma.jobBatchFile.update({

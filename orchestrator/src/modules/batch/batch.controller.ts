@@ -57,6 +57,7 @@ export class BatchController {
     @Body('state') state: string | undefined,
     @Body('iterationPath') iterationPath: string | undefined,
     @Body('model') model: string | undefined,
+    @Body('dedupScope') dedupScope?: string,
   ): Promise<SubmitBatchResult> {
     if (!files || files.length === 0) {
       throw new BadRequestException('at least one file is required');
@@ -77,6 +78,10 @@ export class BatchController {
     if (mode !== undefined && mode !== 'baseline' && mode !== 'survey') {
       throw new BadRequestException(`mode must be 'baseline' or 'survey', got: ${mode}`);
     }
+    // Same rule as JobsController.submit: one scope for the whole batch, passed to every file's job.
+    if (dedupScope !== undefined && dedupScope !== 'area_path' && dedupScope !== 'project') {
+      throw new BadRequestException(`dedupScope must be 'area_path' or 'project', got: ${dedupScope}`);
+    }
     // Per-file extension/size validation happens in BatchService.submitBatch
     // (a bad file there becomes status:'invalid', not a whole-request 400) --
     // this route only rejects conditions that make the WHOLE request
@@ -89,6 +94,7 @@ export class BatchController {
       state,
       iterationPath: iterationPath ?? null,
       model,
+      ...(dedupScope ? { dedupScope: dedupScope as 'area_path' | 'project' } : {}),
       files: files.map((file) => ({ buffer: file.buffer, filename: file.originalname })),
     });
   }

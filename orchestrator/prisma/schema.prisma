@@ -618,6 +618,8 @@ model JobBatch {
   // own doc comment.
   customerId    String?
   mode          String // "baseline" | "survey"
+  // Same as Job.dedupScope, chosen once for the whole batch and passed to every file's job: "area_path" (the default) or "project".
+  dedupScope    String   @default("area_path")
   state         String?
   iterationPath String?
   model         String?

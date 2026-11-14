@@ -20,6 +20,7 @@ import { JobsService } from './jobs.service';
 import { McpClient } from './mcp.client';
 import { WorkItemTypeCatalogService } from './work-item-type-catalog.service';
 import { IngestionHttpClient } from './ingestion-http.client';
+import { buildFileOverview } from './document-preview';
 import { IdempotencyService } from '../writeback/idempotency.service';
 import { JobEventsPublisher } from './job-events.publisher';
 import { BackfillService } from '../writeback/backfill.service';
@@ -301,14 +302,23 @@ import { BatchPumpService } from '../batch/batch-pump.service';
       // treatment. Reuses the SAME 'MAX_UPLOAD_SIZE_BYTES' token
       // JobsController already relies on -- one config knob, not two.
       provide: BatchService,
-      inject: [PrismaClient, JobsService, 'MAX_UPLOAD_SIZE_BYTES', ConfigService],
-      useFactory: (prisma: PrismaClient, jobsService: JobsService, maxUploadSizeBytes: number, config: ConfigService) =>
+      inject: [PrismaClient, JobsService, 'MAX_UPLOAD_SIZE_BYTES', ConfigService, IngestionHttpClient],
+      useFactory: (prisma: PrismaClient, jobsService: JobsService, maxUploadSizeBytes: number, config: ConfigService, ingestionClient: IngestionHttpClient) =>
         new BatchService(
           prisma,
           jobsService,
           maxUploadSizeBytes,
           config.get<number>('BATCH_SURVEY_CONCURRENCY')!,
           config.get<number>('BATCH_SUBMIT_STUCK_MS')!,
+          // A batch SURVEY file gets the overview the single wizard sends (its structure hint), built the way /jobs/preview builds it:
+          // the same skip-vision parse, then buildPreviewOverview.
+          (fileBuffer, filename) =>
+            buildFileOverview(
+              fileBuffer,
+              filename,
+              (buffer, name, signal) => ingestionClient.ingest(buffer, name, true, 'baseline', undefined, undefined, undefined, undefined, undefined, undefined, signal),
+              (...args) => ingestionClient.level(...args),
+            ),
         ),
     },
     {

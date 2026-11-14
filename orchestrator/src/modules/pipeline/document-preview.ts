@@ -1,5 +1,5 @@
 import type { CanonicalDoc, WorkItemTree } from '@req2ado/shared-ts';
-import type { DocumentMapSection } from './document-map';
+import { buildDocumentMap, type DocumentMapSection } from './document-map';
 import { computeDeterministicCaveat, type DocumentOverview } from './document-overview.service';
 import {
   buildDocumentProfile,
@@ -68,4 +68,31 @@ export async function buildPreviewOverview(
     structureHint: composeStructureHint(profile),
     profile,
   };
+}
+
+/** How long a batch SURVEY file's overview parse may take: well inside BATCH_SUBMIT_STUCK_MS, so a claimed file is never reclaimed meanwhile. */
+export const FILE_OVERVIEW_PARSE_MS = 60_000;
+
+/**
+ * The same overview for a file that had no wizard (a batch SURVEY file): one bounded parse of its bytes (vision skipped, as in /jobs/preview),
+ * the counts read the way /jobs/preview reads them, then buildPreviewOverview. Throws on a failed or timed-out parse; the caller fails open.
+ */
+export async function buildFileOverview(
+  fileBuffer: Buffer,
+  filename: string,
+  ingest: (fileBuffer: Buffer, filename: string, signal: AbortSignal) => Promise<CanonicalDoc>,
+  level: LevelCall,
+  log?: Warn,
+): Promise<DocumentOverview & { profile: DocumentProfile }> {
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), FILE_OVERVIEW_PARSE_MS);
+  let doc: CanonicalDoc;
+  try {
+    doc = await ingest(fileBuffer, filename, abort.signal);
+  } finally {
+    clearTimeout(timer);
+  }
+  const headings = doc.blocks.filter((b) => b.kind === 'heading');
+  const depth = headings.reduce((most, b) => (typeof b.heading_level === 'number' ? Math.max(most, b.heading_level) : most), 0);
+  return buildPreviewOverview(doc, level, { sectionCount: headings.length, depth, documentMap: buildDocumentMap(doc.blocks) }, log);
 }
