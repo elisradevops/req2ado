@@ -57,7 +57,12 @@ from app.leveling.heading_outline import (
     entries_for_blocks,
     heading_outline_entries,
 )
-from app.leveling.hierarchy_rules import ensure_ladder, scope_with_ancestors, type_headings_by_shape
+from app.leveling.hierarchy_rules import (
+    ensure_ladder,
+    requirement_heading_warning,
+    scope_with_ancestors,
+    type_headings_by_shape,
+)
 from app.leveling.id_hierarchy import (
     rows_from_heading_structure,
     rows_from_id_headings,
@@ -2233,6 +2238,9 @@ def _build_survey_tree(
             limiter=criteria_limiter,
             model=model,
         )
+        section_notice = requirement_heading_warning(all_nodes)
+        if section_notice is not None:
+            all_warnings.append(section_notice)
         return WorkItemTree(
             nodes=all_nodes,
             warnings=finalize_warnings(all_warnings),
@@ -3066,6 +3074,9 @@ def _build_survey_tree(
         limiter=criteria_limiter,
         model=model,
     )
+    section_notice = requirement_heading_warning(all_nodes)
+    if section_notice is not None:
+        all_warnings.append(section_notice)
     return WorkItemTree(
         nodes=all_nodes,
         warnings=finalize_warnings(all_warnings),

@@ -11,7 +11,11 @@ from app.distillation.title import extract_baseline_title
 from app.leveling.autodetect import classify_numbering_branch, is_heading_style_branch
 from app.leveling.customer_id import extract_customer_requirement_code
 from app.leveling.depth import authored_numbering_label, resolve_block_depth
-from app.leveling.hierarchy_rules import ensure_ladder, type_headings_by_shape
+from app.leveling.hierarchy_rules import (
+    ensure_ladder,
+    requirement_heading_warning,
+    type_headings_by_shape,
+)
 from app.leveling.profiles import heading_style_type_for_depth
 from app.leveling.requirement_rows import atomizable_requirement_rows, row_title_and_description
 from app.leveling.table_color import colgroup_html, resolve_cell_style_colors, table_style_attr
@@ -1455,5 +1459,8 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
                         block.text
                     ) or authored_numbering_label(block)
     ensure_ladder(nodes, _derive_doc_title(doc), warnings)
+    section_notice = requirement_heading_warning(nodes)
+    if section_notice is not None:
+        warnings.append(section_notice)
 
     return WorkItemTree(nodes=nodes, warnings=finalize_warnings(warnings))

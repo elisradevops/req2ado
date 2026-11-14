@@ -351,3 +351,31 @@ def test_a_requirement_heading_with_sub_sections_keeps_its_statement_in_the_tree
             )
             or statement in warned
         ), f"{mode}: {statement!r} is in no item and no warning"
+
+
+@pytest.mark.parametrize("mode", ["baseline", "survey"])
+def test_a_statement_heading_that_became_a_section_says_so_in_one_notice(mode: str) -> None:
+    """The tree has fewer Requirements than the source has statements when a normative heading has sub-sections. One
+    non-blocking notice names those headings so the reviewer can see why, in both modes."""
+    doc = _load("mock_airpro_shape.docx")
+    if mode == "baseline":
+        tree = build_baseline_tree(doc)
+    else:
+        tree = build_survey_tree(
+            doc,
+            StructureRefusingClient(),
+            grouping_client=SimulatedGrouper(1),
+            embed_client=TitleHashEmbedder(),
+            structure_mode="baseline",
+            root_regroup_mode="deterministic",
+            parent_summary_client=RippleSummarizer(),
+        )
+    notices = [w for w in tree.warnings if w.kind.value == "requirement_heading_is_section"]
+    assert len(notices) == 1, f"{mode}: expected one notice, got {len(notices)}"
+    notice = notices[0]
+    assert notice.severity.value == "needs_review"
+    by_id = {n.local_id: n for n in tree.nodes}
+    named = [by_id[i] for i in notice.node_ids]
+    assert [n.type.value for n in named] == ["Feature"]
+    assert any("undervoltage" in (n.description or "") for n in named)
+    assert "undervoltage fault" in notice.raw

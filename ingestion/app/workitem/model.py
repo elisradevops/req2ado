@@ -496,6 +496,10 @@ class WarningKind(StrEnum):
     # the document does not contain. No model call failed; `detail["pass"]` is "acceptance_criteria", `dropped` counts criteria, `assumptionOnly` counts
     # items affected only by an assumption.
     CRITERIA_VALUE_UNGROUNDED = "criteria_value_ungrounded"
+    # A heading that states a requirement (an obligation word in its own text) has sub-sections, so it was typed a section (Epic or Feature), not a
+    # Requirement: its statement is kept at the top of that section's description, but the tree has one Requirement fewer than the source has statements.
+    # Informational: nothing is lost and nothing needs fixing; `node_ids` are the sections, `detail["headings"]` the heading texts.
+    REQUIREMENT_HEADING_IS_SECTION = "requirement_heading_is_section"
 
 
 WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
@@ -543,6 +547,7 @@ WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
     WarningKind.DUPLICATE_CUSTOMER_ID: WarningSeverity.NEEDS_REVIEW,
     WarningKind.PARENT_TITLE_COLLISION: WarningSeverity.NEEDS_REVIEW,
     WarningKind.CRITERIA_VALUE_UNGROUNDED: WarningSeverity.NEEDS_REVIEW,
+    WarningKind.REQUIREMENT_HEADING_IS_SECTION: WarningSeverity.NEEDS_REVIEW,
 }
 
 

@@ -85,6 +85,32 @@ def type_headings_by_shape(
         n.type = new_type
 
 
+def requirement_heading_warning(nodes: list[WorkItemNode]) -> IntegrityWarning | None:
+    """One notice for the headings that state a requirement yet became sections (they have sub-sections), or None.
+    Read from the final tree, once per run: a section node (Epic or Feature) built from a heading whose own text carries
+    an obligation word. Synthesized nodes (bridge Features, regrouped or wrapped Epics) are not headings of the source."""
+    flagged: list[WorkItemNode] = []
+    for n in nodes:
+        if n.type == R or "synth_" in n.local_id:
+            continue
+        heading = n.source_title or n.title
+        if heading and states_a_requirement(heading):
+            flagged.append(n)
+    if not flagged:
+        return None
+    headings = [(n.source_title or n.title) for n in flagged]
+    shown = "; ".join(f"“{h}”" for h in headings[:3]) + ("; …" if len(headings) > 3 else "")
+    return IntegrityWarning.make(
+        WarningKind.REQUIREMENT_HEADING_IS_SECTION,
+        f"{len(flagged)} heading{' states' if len(flagged) == 1 else 's state'} a requirement but "
+        f"{'has' if len(flagged) == 1 else 'have'} sub-sections, so {'it is' if len(flagged) == 1 else 'they are'} kept "
+        f"as {'a section' if len(flagged) == 1 else 'sections'} with the statement at the top of the description, not as "
+        f"{'a Requirement' if len(flagged) == 1 else 'Requirements'}: {shown}.",
+        node_ids=[n.local_id for n in flagged],
+        detail={"headings": headings},
+    )
+
+
 def _synthetic(
     node_id: str, node_type: WorkItemType, parent: str | None, title: str, like: WorkItemNode
 ) -> WorkItemNode:

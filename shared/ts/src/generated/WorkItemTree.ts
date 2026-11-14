@@ -185,7 +185,8 @@ export interface IntegrityWarning {
     | 'missing_requirement_row_coverage'
     | 'duplicate_customer_id'
     | 'parent_title_collision'
-    | 'criteria_value_ungrounded';
+    | 'criteria_value_ungrounded'
+    | 'requirement_heading_is_section';
   /**
    * auto_fixed: deterministic code already resolved it, no action needed. needs_review: an AI/heuristic judgment call a human should verify. pipeline_issue: something broke or was incomplete for this run.
    */

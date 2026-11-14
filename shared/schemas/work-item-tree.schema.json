@@ -211,7 +211,7 @@
             "vision_captioning_disabled", "invalid_mapping_target", "mapping_call_failed",
             "ocr_recovered_table_text", "missing_source_reference", "survey_title_distilled",
             "missing_requirement_row_coverage", "duplicate_customer_id", "parent_title_collision",
-            "criteria_value_ungrounded"
+            "criteria_value_ungrounded", "requirement_heading_is_section"
           ]
         },
         "severity": {
