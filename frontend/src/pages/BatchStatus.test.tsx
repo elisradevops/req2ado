@@ -39,6 +39,19 @@ const BASE_SUMMARY = {
   warningKinds: {},
 };
 
+describe('BatchStatus title', () => {
+  it('is titled as the batch, not the generic app title, so a browser tab or history entry says which page it is', async () => {
+    vi.spyOn(batchesApi, 'getBatch').mockResolvedValue({
+      id: 'batch-1', createdAt: '2026-08-25T00:00:00Z', areaPath: 'Project\\Area1', customerId: null, mode: 'baseline', state: null, iterationPath: null, model: null,
+      files: [{ id: 'f1', ordinal: 0, filename: 'a.docx', sizeBytes: 1024, status: 'diff_ready', jobId: 'job-1', error: null, queuePosition: null }],
+      summary: BASE_SUMMARY, notes: [],
+    });
+    renderAt('batch-1');
+    await waitFor(() => expect(screen.getByText('a.docx')).toBeInTheDocument());
+    expect(document.title).toBe('Batch - req2ado');
+  });
+});
+
 describe('BatchStatus', () => {
   it('renders per-file rows with status and a link to the job detail page', async () => {
     vi.spyOn(batchesApi, 'getBatch').mockResolvedValue({

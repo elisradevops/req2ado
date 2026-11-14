@@ -1,4 +1,5 @@
 import { plural } from '../utils/plural';
+import { usePageTitle } from '../hooks/usePageTitle';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { Layers, CircleCheck, TriangleAlert, Clock } from 'lucide-react';
@@ -42,6 +43,7 @@ const SETTLED_STATUSES = new Set(['succeeded', 'failed', 'rejected', 'cancelled'
 const NOTE_SEVERITY_MAP: Record<'info' | 'warning', 'info' | 'warning'> = { info: 'info', warning: 'warning' };
 
 export function BatchStatus(): React.ReactElement {
+  usePageTitle('Batch');
   const { batchId } = useParams<{ batchId: string }>();
   const { showToast, showErrorToast } = useToast();
   const [batch, setBatch] = useState<BatchDetail | null>(null);
