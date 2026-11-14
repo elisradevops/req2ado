@@ -77,6 +77,14 @@
           "type": ["string", "null"],
           "description": "Idempotency key input (orchestrator's sourceHash): description + this node's own fixed source position. Distinct from fidelity_hash (drift detection). Null for a node shape predating this field."
         },
+        "identity_hash_v2": {
+          "type": ["string", "null"],
+          "description": "W1 content-aware identity: sha256 of the section path titles without numbering, the node type, the anchor text (source heading or first sentence) and the ordinal among nodes sharing those. No filename, no offsets. Null for a node shape predating this field."
+        },
+        "content_hash": {
+          "type": ["string", "null"],
+          "description": "What the item says, to tell an edited item from an unchanged one under the same identity_hash_v2: fidelity_hash in BASELINE, sha256 of the normalized source span in SURVEY. Null when the node has no content of its own to compare."
+        },
         "tags": {
           "type": "array",
           "items": {
@@ -211,7 +219,7 @@
             "vision_captioning_disabled", "invalid_mapping_target", "mapping_call_failed",
             "ocr_recovered_table_text", "missing_source_reference", "survey_title_distilled",
             "missing_requirement_row_coverage", "duplicate_customer_id", "parent_title_collision",
-            "criteria_value_ungrounded", "requirement_heading_is_section"
+            "criteria_value_ungrounded", "requirement_heading_is_section", "changed_since_written"
           ]
         },
         "severity": {

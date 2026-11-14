@@ -359,3 +359,26 @@ def test_schema_rejects_a_stray_top_level_field(schema) -> None:
     instance["unexpected_top_level_field"] = "should not validate"
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(instance=instance, schema=schema)
+
+
+def test_v2_identity_and_content_hash_match_work_item_tree_schema(schema) -> None:
+    tree = build_baseline_tree(_baseline_doc())
+    assert all(node.identity_hash_v2 for node in tree.nodes)
+    jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
+    survey = build_survey_tree(_survey_doc(), FakeSectionAnalysisClient())
+    assert all(node.identity_hash_v2 for node in survey.nodes)
+    jsonschema.validate(instance=survey.model_dump(mode="json"), schema=schema)
+
+
+def test_changed_since_written_warning_matches_work_item_tree_schema(schema) -> None:
+    tree = build_baseline_tree(_baseline_doc())
+    tree.warnings = [
+        IntegrityWarning.make(
+            WarningKind.CHANGED_SINCE_WRITTEN,
+            "1 item matches one already in Azure DevOps whose text differs.",
+            node_ids=["n1"],
+            detail={"count": 1},
+        )
+    ]
+    assert tree.warnings[0].severity == "needs_review"
+    jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)

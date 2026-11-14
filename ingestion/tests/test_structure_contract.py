@@ -414,3 +414,68 @@ def test_the_section_notice_names_only_sections_that_have_sub_sections_and_state
     will_call = _section("e", "Will-call interfaces", "Feature", parent="d")
     under = _section("f", "Ports", "Requirement", parent="e")
     assert requirement_heading_warning([month, will_call, under]) is None
+
+
+# W1: a follow-up file is matched by WHAT an item is (its section, type and anchor text), not by WHERE it sits in the file. Ported from the
+# repro: the same small Markdown file, loaded through the real loader, with one line changed, a grown intro, and a new filename.
+_FOLLOW_UP = (
+    "# Spec\n\n## Intro\n\n{intro}\n\n## Power\n\nThe unit shall respond within {ms} ms.\n\n"
+    "## Logging\n\nThe unit shall log every fault.\n"
+)
+
+
+def _follow_up_nodes(tmp_path: Path, text: str, filename: str = "spec.md", mode: str = "baseline") -> dict:
+    path = tmp_path / filename
+    path.write_text(text)
+    doc = dispatch_by_extension(filename, str(path))
+    tree = build_baseline_tree(doc) if mode == "baseline" else _survey(doc, seed=1)
+    return {node.local_id: node for node in tree.nodes}
+
+
+@pytest.mark.parametrize("mode", ["baseline", "survey"])
+def test_a_changed_requirement_line_keeps_its_v2_identity_and_changes_its_content_hash(
+    tmp_path: Path, mode: str
+) -> None:
+    text = _FOLLOW_UP.format(intro="Overview.", ms="100")
+    before = _follow_up_nodes(tmp_path, text, mode=mode)
+    after = _follow_up_nodes(tmp_path, _FOLLOW_UP.format(intro="Overview.", ms="1000"), mode=mode)
+    assert before.keys() == after.keys()
+    for key, node in before.items():
+        assert node.identity_hash_v2 and node.identity_hash_v2 == after[key].identity_hash_v2, key
+    # Only the Power requirement (built from the "## Power" heading) has new content.
+    changed = [key for key, node in before.items() if node.content_hash != after[key].content_hash]
+    assert len(changed) == 1
+    assert before[changed[0]].source_ref.start_offset == text.index("## Power") + len("## ")
+    assert before[changed[0]].content_hash and after[changed[0]].content_hash
+
+
+@pytest.mark.parametrize("mode", ["baseline", "survey"])
+def test_an_intro_that_grows_leaves_every_v2_identity_unchanged(tmp_path: Path, mode: str) -> None:
+    before = _follow_up_nodes(tmp_path, _FOLLOW_UP.format(intro="Overview.", ms="100"), mode=mode)
+    after = _follow_up_nodes(
+        tmp_path, _FOLLOW_UP.format(intro="Overview of the full system scope.", ms="100"), mode=mode
+    )
+    assert before.keys() == after.keys()
+    # The position identity (v1) of the items after the intro moved: that is the bug v2 fixes.
+    assert any(node.identity_hash != after[key].identity_hash for key, node in before.items())
+    for key, node in before.items():
+        assert node.identity_hash_v2 == after[key].identity_hash_v2, key
+
+
+@pytest.mark.parametrize("mode", ["baseline", "survey"])
+def test_a_renamed_file_leaves_every_v2_identity_and_content_hash_unchanged(tmp_path: Path, mode: str) -> None:
+    text = _FOLLOW_UP.format(intro="Overview.", ms="100")
+    before = _follow_up_nodes(tmp_path, text, mode=mode)
+    after = _follow_up_nodes(tmp_path, text, filename="spec_v2.md", mode=mode)
+    assert before.keys() == after.keys()
+    for key, node in before.items():
+        assert node.identity_hash_v2 == after[key].identity_hash_v2, key
+        # The document Epic's title comes from the filename: it has no content of its own to compare, so it has no content hash.
+        assert node.content_hash == after[key].content_hash, key
+
+
+def test_every_node_gets_a_distinct_v2_identity(tmp_path: Path) -> None:
+    for mode in ("baseline", "survey"):
+        nodes = _follow_up_nodes(tmp_path, _FOLLOW_UP.format(intro="Overview.", ms="100"), mode=mode)
+        identities = [node.identity_hash_v2 for node in nodes.values()]
+        assert all(identities) and len(set(identities)) == len(identities), mode

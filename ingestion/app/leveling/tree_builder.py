@@ -16,6 +16,7 @@ from app.leveling.hierarchy_rules import (
     requirement_heading_warning,
     type_headings_by_shape,
 )
+from app.leveling.identity_v2 import assign_identity_v2
 from app.leveling.profiles import heading_style_type_for_depth
 from app.leveling.requirement_rows import atomizable_requirement_rows, row_title_and_description
 from app.leveling.table_color import colgroup_html, resolve_cell_style_colors, table_style_attr
@@ -979,6 +980,11 @@ def _build_flat_list_tree(doc: CanonicalDoc, branches: list[list[Block]]) -> Wor
 
 
 def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
+    """See _build_baseline_tree; also sets every node's W1 identity_hash_v2/content_hash (identity_v2.assign_identity_v2)."""
+    return assign_identity_v2(_build_baseline_tree(doc), doc)
+
+
+def _build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
     """Deterministic BASELINE-mode leveling: no LLM involved. Splits the
     document into top-level branches, auto-detects a profile per branch
     (see autodetect.py), then walks each branch's blocks maintaining a

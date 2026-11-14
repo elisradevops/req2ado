@@ -65,6 +65,14 @@ export interface WorkItemNode {
    * Idempotency key input (orchestrator's sourceHash): description + this node's own fixed source position. Distinct from fidelity_hash (drift detection). Null for a node shape predating this field.
    */
   identity_hash?: string | null;
+  /**
+   * W1 content-aware identity: sha256 of the section path titles without numbering, the node type, the anchor text (source heading or first sentence) and the ordinal among nodes sharing those. No filename, no offsets. Null for a node shape predating this field.
+   */
+  identity_hash_v2?: string | null;
+  /**
+   * What the item says, to tell an edited item from an unchanged one under the same identity_hash_v2: fidelity_hash in BASELINE, sha256 of the normalized source span in SURVEY. Null when the node has no content of its own to compare.
+   */
+  content_hash?: string | null;
   tags?: (
     | 'functional'
     | 'non_functional'
@@ -186,7 +194,8 @@ export interface IntegrityWarning {
     | 'duplicate_customer_id'
     | 'parent_title_collision'
     | 'criteria_value_ungrounded'
-    | 'requirement_heading_is_section';
+    | 'requirement_heading_is_section'
+    | 'changed_since_written';
   /**
    * auto_fixed: deterministic code already resolved it, no action needed. needs_review: an AI/heuristic judgment call a human should verify. pipeline_issue: something broke or was incomplete for this run.
    */

@@ -225,6 +225,15 @@ class WorkItemNode(BaseModel):
     # does). None for a node shape that predates this field (e.g. an older
     # fixture) -- optional so this is purely additive.
     identity_hash: str | None = None
+    # W1 content-aware identity (see app/leveling/identity_v2.py): sha256 of the node's section path (titles without numbering), type,
+    # anchor text (its source heading or first sentence) and ordinal among nodes sharing those. No filename, no offsets, so an unchanged
+    # item still matches after an inserted paragraph or a renamed file, and an edited one keeps its identity. Additive: identity_hash (v1)
+    # is kept, unchanged, for one release. None for a node shape predating this field.
+    identity_hash_v2: str | None = None
+    # What the item says, to tell an edited item from an unchanged one under the same v2 identity: fidelity_hash for BASELINE, sha256 of
+    # the normalized source span for SURVEY (its wording is the model's, so the wording cannot be compared). None when the node has no
+    # content of its own to compare (a title made from the filename, a SURVEY node with no source block).
+    content_hash: str | None = None
     tags: list[RequirementTag] = Field(default_factory=list)
     # Populated by ALL FOUR node-building paths (BASELINE, the deterministic
     # heading/ID-tree path, the deterministic span-fold, and SURVEY's LLM
@@ -501,6 +510,11 @@ class WarningKind(StrEnum):
     # Shown in the Check group (needs_review) but never blocks a write: nothing is lost and nothing has to be fixed. `node_ids` are the sections,
     # `detail["headings"]` the heading texts.
     REQUIREMENT_HEADING_IS_SECTION = "requirement_heading_is_section"
+    # W1: a follow-up item matched an item already written to Azure DevOps (same v2 identity), but its content differs from what was
+    # written. Nothing is updated automatically (D-W1b): the item stays `reuse` and the reviewer compares by hand. Emitted by the
+    # orchestrator's dry run (one warning per job, `node_ids` the changed items), never by ingestion -- listed for parity, like
+    # ADO_VERIFICATION_FAILED. A Check notice: it never blocks the write.
+    CHANGED_SINCE_WRITTEN = "changed_since_written"
 
 
 WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
@@ -549,6 +563,7 @@ WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
     WarningKind.PARENT_TITLE_COLLISION: WarningSeverity.NEEDS_REVIEW,
     WarningKind.CRITERIA_VALUE_UNGROUNDED: WarningSeverity.NEEDS_REVIEW,
     WarningKind.REQUIREMENT_HEADING_IS_SECTION: WarningSeverity.NEEDS_REVIEW,
+    WarningKind.CHANGED_SINCE_WRITTEN: WarningSeverity.NEEDS_REVIEW,
 }
 
 

@@ -76,6 +76,7 @@ from app.leveling.id_tree_builder import (
     build_hierarchy_subtree,
     recompute_child_types,
 )
+from app.leveling.identity_v2 import assign_identity_v2
 from app.leveling.live_context import current_stage_counter
 from app.leveling.llm_lease_limiter import LeaseLimiter
 from app.leveling.model_caps import _resolve_caps
@@ -3308,7 +3309,7 @@ def build_survey_tree(
         raise
     if handle is not None:
         handle.close()  # a finished job keeps the study's windows as the re-run cache; a study still running is stopped and cleaned up
-    return tree
+    return assign_identity_v2(tree, doc)
 
 
 def _propose_criteria_step(
