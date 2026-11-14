@@ -1,4 +1,4 @@
-import { BadRequestException, Controller, Get, Optional, Post, Body, Query } from '@nestjs/common';
+import { BadRequestException, Controller, Get, Optional, Post, Body } from '@nestjs/common';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { SessionUser } from '../auth/session.service';
 import { CredentialVaultService, userOwnerKey } from '../auth/credential-vault.service';
@@ -50,19 +50,25 @@ export class LlmConnectionController {
   // back to the caller's already-stored token when omitted, for refreshing
   // the dropdowns on an existing connection.
   @Get('models')
-  async getModels(
-    @CurrentUser() user: SessionUser,
-    @Query('token') token: string | undefined,
-  ): Promise<{ models: { id: string; name: string; vision: boolean }[] }> {
-    if (token) {
-      const models = await this.clientFactory.listModelsForToken(token);
-      return { models: (await this.modelHealth?.filterVisible(user.userId, models)) ?? models };
-    }
+  async getModels(@CurrentUser() user: SessionUser): Promise<{ models: { id: string; name: string; vision: boolean }[] }> {
     const profile = await this.llmConfigResolver.resolve(user.userId);
     if (!profile) {
-      throw new BadRequestException('No Open WebUI connection configured -- pass a token to preview models before saving one');
+      throw new BadRequestException('No Open WebUI connection configured -- preview a token with POST /llm/connection/models/preview before saving one');
     }
     const models = await this.clientFactory.listModelsForToken(profile.apiKey);
+    return { models: (await this.modelHealth?.filterVisible(user.userId, models)) ?? models };
+  }
+
+  // The model list for a token the user has pasted but not saved yet. POST with the token in the body, never GET with it in the URL: a
+  // query string is written to every access log on the way, and this is an API key.
+  @Post('models/preview')
+  async previewModels(
+    @CurrentUser() user: SessionUser,
+    @Body('token') token: string | undefined,
+  ): Promise<{ models: { id: string; name: string; vision: boolean }[] }> {
+    const candidate = typeof token === 'string' ? token.trim() : '';
+    if (!candidate) throw new BadRequestException('token is required');
+    const models = await this.clientFactory.listModelsForToken(candidate);
     return { models: (await this.modelHealth?.filterVisible(user.userId, models)) ?? models };
   }
 

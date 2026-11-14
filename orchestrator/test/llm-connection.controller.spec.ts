@@ -50,26 +50,45 @@ describe('LlmConnectionController', () => {
   });
 
   describe('GET /llm/connection/models', () => {
-    it('previews a candidate token via the query param without touching the vault', async () => {
-      const { controller, clientFactory, llmConfigResolver } = makeController();
-      const result = await controller.getModels(USER, 'candidate-token');
-      expect(clientFactory.listModelsForToken).toHaveBeenCalledWith('candidate-token');
-      expect(llmConfigResolver.resolve).not.toHaveBeenCalled();
-      expect(result).toEqual({ models: CATALOG });
-    });
-
-    it("lists models for the caller's already-stored token when no query token is given", async () => {
+    it("lists models for the caller's already-stored token", async () => {
       const { controller, clientFactory } = makeController({
         llmConfigResolver: { resolve: jest.fn().mockResolvedValue({ apiKey: 'sk-stored', chatModel: 'qwen2.5:14b' }) },
       });
-      const result = await controller.getModels(USER, undefined);
+      const result = await controller.getModels(USER);
       expect(clientFactory.listModelsForToken).toHaveBeenCalledWith('sk-stored');
       expect(result).toEqual({ models: CATALOG });
     });
 
-    it('throws BadRequestException when no token is given and none is stored yet', async () => {
+    it('throws BadRequestException when none is stored yet', async () => {
       const { controller } = makeController();
-      await expect(controller.getModels(USER, undefined)).rejects.toThrow(BadRequestException);
+      await expect(controller.getModels(USER)).rejects.toThrow(BadRequestException);
+    });
+
+    it('takes no token from the URL: an API key in a query string would be written to every access log', () => {
+      const { controller } = makeController();
+      expect(controller.getModels.length).toBe(1);
+    });
+  });
+
+  describe('POST /llm/connection/models/preview', () => {
+    it('previews a candidate token sent in the body, without touching the vault or the stored connection', async () => {
+      const { controller, clientFactory, llmConfigResolver, vault } = makeController();
+      const result = await controller.previewModels(USER, 'candidate-token');
+      expect(clientFactory.listModelsForToken).toHaveBeenCalledWith('candidate-token');
+      expect(llmConfigResolver.resolve).not.toHaveBeenCalled();
+      expect(vault.set).not.toHaveBeenCalled();
+      expect(result).toEqual({ models: CATALOG });
+    });
+
+    it('trims the token it was given', async () => {
+      const { controller, clientFactory } = makeController();
+      await controller.previewModels(USER, '  candidate-token \n');
+      expect(clientFactory.listModelsForToken).toHaveBeenCalledWith('candidate-token');
+    });
+
+    it.each([undefined, '', '   '])('refuses a missing token (%j)', async (token) => {
+      const { controller } = makeController();
+      await expect(controller.previewModels(USER, token as any)).rejects.toThrow(BadRequestException);
     });
   });
 
