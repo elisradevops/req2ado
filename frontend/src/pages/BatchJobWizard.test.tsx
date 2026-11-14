@@ -177,3 +177,53 @@ describe('BatchJobWizard', () => {
     });
   });
 });
+
+describe('BatchJobWizard setup the way the single wizard does it', () => {
+  function renderAs(userId: string | null, draft?: Parameters<ReturnType<typeof useBatchJobDraftStore.getState>['patch']>[0]) {
+    useAuthStore.getState().logout(); // logging out clears the draft, so a draft under test is set after it
+    if (userId) useAuthStore.getState().login('https://ado.example', 'Jane', userId);
+    if (draft) useBatchJobDraftStore.getState().patch(draft);
+    return render(
+      <ToastProvider>
+        <MemoryRouter>
+          <BatchJobWizard />
+        </MemoryRouter>
+      </ToastProvider>,
+    );
+  }
+
+  it('starts from the mode and destination the user chose last time, on a batch nobody has touched', () => {
+    localStorage.setItem('req2ado-last-job:user-7', JSON.stringify({ mode: 'survey', project: 'Proj', areaPath: 'Proj\\Customer Requirements' }));
+    useBatchJobDraftStore.getState().reset();
+    renderAs('user-7');
+    expect(screen.getByRole('radio', { name: /survey/i })).toBeChecked();
+    expect(screen.getByRole('radio', { name: /baseline/i })).not.toBeChecked();
+  });
+
+  it('never replaces a draft the user already started with the remembered choices', () => {
+    localStorage.setItem('req2ado-last-job:user-7', JSON.stringify({ mode: 'survey', project: 'Proj', areaPath: 'Proj\\A' }));
+    renderAs('user-7', { mode: 'baseline', project: 'Other', areaPath: 'Other\\B' });
+    expect(screen.getByRole('radio', { name: /baseline/i })).toBeChecked();
+  });
+
+  it('says why Start is unavailable, beside the button, and follows what is still missing', async () => {
+    useBatchJobDraftStore.getState().reset();
+    renderAs(null);
+    const start = screen.getByRole('button', { name: /start batch/i });
+    const reason = () => document.getElementById(start.getAttribute('aria-describedby') ?? '');
+    expect(reason()).toHaveTextContent(/add at least one file/i);
+
+    await userEvent.upload(screen.getByLabelText(/upload requirements documents/i), new File(['x'], 'req.docx'));
+    expect(reason()).toHaveTextContent(/area path/i);
+
+    await userEvent.type(screen.getByLabelText(/area path/i), 'Project\\Area1');
+    expect(start).not.toBeDisabled();
+    expect(start.getAttribute('aria-describedby')).toBeNull();
+  });
+
+  it('is titled as the batch page, not the generic app title', () => {
+    useBatchJobDraftStore.getState().reset();
+    renderAs(null);
+    expect(document.title).toBe('New batch - req2ado');
+  });
+});

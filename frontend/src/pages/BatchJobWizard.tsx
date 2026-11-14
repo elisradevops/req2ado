@@ -12,7 +12,9 @@ import { formatDestinationPreview } from '../components/DestinationBar';
 import { submitBatch } from '../api/batches';
 import { useBatchJobDraftStore } from '../store/batchJobDraftStore';
 import { listModels, type ModelListing } from '../api/jobs';
-import { useOrgUrl } from '../store/authStore';
+import { useOrgUrl, useUserId } from '../store/authStore';
+import { usePageTitle } from '../hooks/usePageTitle';
+import { loadLastJobChoices, rememberJobChoices, withRememberedChoices } from '../utils/lastJobChoices';
 import { useToast } from '../components/ToastProvider';
 import { PageHeader } from '../ui/PageHeader';
 import { SectionCard } from '../ui/SectionCard';
@@ -33,9 +35,12 @@ const SURVEY_BATCH_THROTTLE_HINT = 2;
 export function BatchJobWizard(): React.ReactElement {
   const navigate = useNavigate();
   const { showToast, showErrorToast } = useToast();
+  usePageTitle('New batch');
   const orgUrl = useOrgUrl();
-  // What the user had done before leaving this page and coming back (see batchJobDraftStore); empty on a first visit.
-  const [initial] = useState(() => useBatchJobDraftStore.getState().draft);
+  const userId = useUserId();
+  // What the user had done before leaving this page and coming back (see batchJobDraftStore); on a first visit, the mode and destination of the
+  // last job they started (the single-file wizard does the same), so a SURVEY team is not opened on BASELINE.
+  const [initial] = useState(() => withRememberedChoices(useBatchJobDraftStore.getState().draft, loadLastJobChoices(userId)));
   const [files, setFiles] = useState<File[]>(initial.files);
   const [mode, setMode] = useState<'baseline' | 'survey'>(initial.mode);
   const [project, setProject] = useState(initial.project);
@@ -106,6 +111,7 @@ export function BatchJobWizard(): React.ReactElement {
         iterationPath: iterationPath || undefined,
         model: mode === 'survey' ? model || undefined : undefined,
       });
+      rememberJobChoices(userId, { mode, project, areaPath });
       // The batch exists now: the next visit starts from nothing, not from this draft.
       useBatchJobDraftStore.getState().reset();
       navigate(`/jobs/batch/${batchId}`);
@@ -117,6 +123,8 @@ export function BatchJobWizard(): React.ReactElement {
   }
 
   const canSubmit = files.length > 0 && !!areaPath && (!hasAdoSession || !!project) && !isSubmitting;
+  // What is still missing, in the order the page asks for it, so a disabled Start never leaves the user guessing.
+  const startBlockedReason = files.length === 0 ? 'Add at least one file.' : hasAdoSession && !project ? 'Choose a team project.' : !areaPath ? 'Choose an area path.' : null;
 
   return (
     <div className="flex flex-col gap-4">
@@ -204,7 +212,17 @@ export function BatchJobWizard(): React.ReactElement {
               <Lock className="h-3.5 w-3.5 flex-none" />
               Nothing is written to Azure DevOps until you confirm each file's own diff.
             </span>
-            <Button onClick={handleSubmit} disabled={!canSubmit} className="ml-auto">
+            {!canSubmit && !isSubmitting && startBlockedReason && (
+              <span id="batch-start-reason" className="ml-auto text-xs text-ink-3">
+                {startBlockedReason}
+              </span>
+            )}
+            <Button
+              onClick={handleSubmit}
+              disabled={!canSubmit}
+              aria-describedby={!canSubmit && !isSubmitting && startBlockedReason ? 'batch-start-reason' : undefined}
+              className={startBlockedReason && !canSubmit && !isSubmitting ? undefined : 'ml-auto'}
+            >
               {isSubmitting ? <Spinner /> : <Activity className="h-3.5 w-3.5" />}
               {isSubmitting ? 'Starting…' : `Start batch (${files.length} file${files.length === 1 ? '' : 's'})`}
             </Button>

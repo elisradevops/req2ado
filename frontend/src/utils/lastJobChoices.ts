@@ -41,7 +41,7 @@ export function rememberJobChoices(userId: string | null, choices: LastJobChoice
 
 // Applied only to a wizard nobody has touched in this tab (the empty defaults), so a person who is part-way through, or who came back
 // from another page, never has their own choices replaced.
-export function withRememberedChoices(draft: NewJobDraft, remembered: LastJobChoices | null): NewJobDraft {
+export function withRememberedChoices<T extends Pick<NewJobDraft, 'mode' | 'project' | 'areaPath'>>(draft: T, remembered: LastJobChoices | null): T {
   if (!remembered) return draft;
   const untouched = draft.mode === 'baseline' && draft.project === '' && draft.areaPath === '';
   return untouched ? { ...draft, mode: remembered.mode, project: remembered.project, areaPath: remembered.areaPath } : draft;
