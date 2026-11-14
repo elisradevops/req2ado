@@ -178,16 +178,17 @@ describe('summarizeBaselineTree', () => {
     expect(composeStructureHint(profile)).toMatch(/1 Epic, 1 Feature and 1 Requirement from the headings/);
   });
 
-  it('names the count of blocks that contain "shall" for what it is, never as "requirement statements" next to a different count of Requirements', () => {
+  it('names the count of blocks that contain an obligation word for what it is, never as "requirement statements" next to a different count of Requirements', () => {
     const profile = {
       ...buildDocumentProfile(doc([h(1, '2', 'Power'), h(2, '2.1', 'The unit shall draw less than 5 W.'), h(2, '2.2', 'Notes'), p('The unit shall be sealed.')])),
       baselineTree: { epics: 1, features: 2, requirements: 11, depth: 3, roots: 1 },
     };
     const lines = composeProfileLines(profile).join('\n');
-    expect(lines).toMatch(/2 subsections, 2 “shall” statements\)/);
+    expect(lines).toMatch(/2 subsections, 2 statements\)/);
+    expect(lines).toMatch(/Statements are sentences with “shall”, “must”, “should” or “will”\./);
     expect(lines).not.toMatch(/requirement statement/i);
     const one = composeProfileLines(buildDocumentProfile(doc([h(1, '2', 'Power'), p('The unit shall be sealed.')]))).join('\n');
-    expect(one).toMatch(/0 subsections, 1 “shall” statement\)/);
+    expect(one).toMatch(/0 subsections, 1 statement\)/);
   });
 
   it('adds no tree line when the baseline tree was not available', () => {
@@ -385,5 +386,40 @@ describe('second review findings', () => {
     const joined = joinContexts('p'.repeat(1000), 'h'.repeat(1000))!;
     expect(joined).toContain('h'.repeat(1000));
     expect(joinContexts('p'.repeat(3000), 'h'.repeat(3000))!.length).toBeLessThanOrEqual(2100);
+  });
+});
+
+
+describe('what counts as a requirement statement (step 3 overview)', () => {
+  const hAt = (level: number, label: string, text: string, start: number) => ({ kind: 'heading', heading_level: level, number_label: label, text, source_ref: { start_offset: start } }) as any;
+  const table = (start: number, rows: string[][]) => ({ source_ref: { start_offset: start }, cells: rows.map((row) => row.map((text) => ({ text }))) }) as any;
+
+  it('counts "must", "should" and "will" as well as "shall", not only "shall"', () => {
+    const profile = buildDocumentProfile(
+      doc([h(1, '2', 'Power'), p('The unit shall be sealed.'), p('The unit must report a fault.'), p('It should be light.'), p('It will be tested.'), p('Plain description.')]),
+    );
+    expect(profile.outline[0].requirements).toBe(4);
+  });
+
+  it('counts a requirement written as a table row, once per row, in the section the table sits in', () => {
+    const profile = buildDocumentProfile(
+      doc([hAt(1, '2', 'Interfaces', 0), p('Intro text.')], {
+        tables: [table(50, [['ID', 'Requirement'], ['R1', 'The unit must report a fault.'], ['R2', 'Not normative.'], ['R3', 'The port shall be sealed and it must be labelled.']])],
+      }),
+    );
+    expect(profile.outline[0].requirements).toBe(2);
+  });
+
+  it('counts a heading that states a requirement with any of the obligation words', () => {
+    const profile = buildDocumentProfile(doc([h(1, '3', 'Faults'), h(2, '3.1', 'The unit must report an undervoltage fault.'), h(2, '3.2', 'Notes')]));
+    expect(profile.structure.requirementHeadings).toBe(1);
+    expect(profile.structure.notes.join(' ')).toMatch(/1 heading states a requirement \(they contain “shall”, “must”, “should” or “will”\)/);
+  });
+
+  it('says one of something in the singular everywhere', () => {
+    const lines = composeProfileLines(
+      buildDocumentProfile(doc([h(1, '1', 'Scope'), h(3, '1.1.1', 'Detail'), p('Value TBD'), tbl()], { tables: [table(5, [['a']])] })),
+    ).join('\n');
+    expect(lines).not.toMatch(/\b1 (sections|levels|tables|figures|headings|entries|standards)\b/);
   });
 });

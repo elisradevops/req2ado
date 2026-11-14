@@ -75,7 +75,9 @@ const GLOSSARY_HEADING = /glossary|acronyms?|abbreviations|definitions|terms and
 // "1 Epic", "2 Epics": a count of one is singular everywhere the profile says one.
 const counted = (n: number, singular: string, plural = `${singular}s`): string => `${n} ${n === 1 ? singular : plural}`;
 
-const SHALL = /\bshall\b/i;
+// A sentence that carries an obligation. Ingestion reads the same words (hierarchy_rules.py), so the overview counts what the run will treat as a
+// requirement, not only the word "shall".
+const OBLIGATION = /\b(?:shall|must|should|will)\b/i;
 // X placeholders need three X (or XX with a lowercase x after): a bare XX is the Roman numeral twenty ("Annex XX").
 // A part number such as XXX-123 or XXX/7 is not a placeholder.
 const MARKER = /\b(?:TBD|TBC|TBR|TBS)\b|\bX{3,}[xX]*\b(?![-/]\d)|\bXX[xX]+\b(?![-/]\d)/g;
@@ -122,7 +124,7 @@ function findPurpose(blocks: Block[]): ProfilePurpose | null {
     for (let i = 0; i < blocks.length; i += 1) {
       // A purpose heading is short: a long heading that mentions "scope" is a requirement or a note, not the section that says what the document is for.
       if (blocks[i].kind !== 'heading' || !pattern.test(textOf(blocks[i])) || NOT_A_PURPOSE.test(textOf(blocks[i]))) continue;
-      if (textOf(blocks[i]).trim().length > PURPOSE_HEADING_CHARS || SHALL.test(textOf(blocks[i]))) continue;
+      if (textOf(blocks[i]).trim().length > PURPOSE_HEADING_CHARS || OBLIGATION.test(textOf(blocks[i]))) continue;
       // Only the text directly under the heading (up to the next heading of any level), so a quote never wanders into another section.
       const own: string[] = [];
       for (let j = i + 1; j < blocks.length && blocks[j].kind !== 'heading'; j += 1) if (isBody(blocks[j]) && visible(textOf(blocks[j]))) own.push(visible(textOf(blocks[j])));
@@ -228,13 +230,13 @@ function buildOutline(blocks: Block[], entryOf: Map<Block, ProfileOutlineEntry>)
       if (current) {
         entryOf.set(block, current);
         // A heading that states a requirement is one (a source file may write its requirements as headings).
-        if (SHALL.test(textOf(block))) current.requirements += 1;
+        if (OBLIGATION.test(textOf(block))) current.requirements += 1;
         current.unresolved += markersIn(textOf(block)).length;
       }
       continue;
     }
     if (!current) continue;
-    if (isBody(block) && SHALL.test(textOf(block))) current.requirements += 1;
+    if (isBody(block) && OBLIGATION.test(textOf(block))) current.requirements += 1;
     if (block.kind === 'table') current.tables += 1;
     if (block.kind === 'figure') current.figures += 1;
     current.unresolved += markersIn(textOf(block)).length;
@@ -246,7 +248,7 @@ function describeStructure(doc: CanonicalDoc, blocks: Block[]): DocumentProfile[
   const headings = blocks.filter((block) => block.kind === 'heading');
   const levels = headings.map(levelOf);
   const numberedHeadings = headings.filter((heading) => Boolean(heading.number_label)).length;
-  const requirementHeadings = headings.filter((heading) => SHALL.test(textOf(heading))).length;
+  const requirementHeadings = headings.filter((heading) => OBLIGATION.test(textOf(heading))).length;
   let levelJumps = 0;
   for (let i = 1; i < levels.length; i += 1) if (levels[i] - levels[i - 1] > 1) levelJumps += 1;
   const format = doc.document?.format ?? 'unknown';
@@ -256,11 +258,11 @@ function describeStructure(doc: CanonicalDoc, blocks: Block[]): DocumentProfile[
     headings.length === 0 ? 'none' : numberedHeadings / headings.length >= 0.8 && requirementHeadings / headings.length < 0.1 && levelJumps === 0 ? 'reliable' : 'partial';
   const notes: string[] = [];
   if (headings.length === 0) notes.push('No headings were found, so the document has no section structure to build a tree from.');
-  if (requirementHeadings > 0) notes.push(`${requirementHeadings} headings state a requirement (they contain "shall"); they are headings in the source file, so they are kept as section headings.`);
-  if (headings.length > 0 && numberedHeadings < headings.length) notes.push(`${headings.length - numberedHeadings} of ${headings.length} headings carry no clause number.`);
-  if (levelJumps > 0) notes.push(`${levelJumps} headings skip a level (for example from level 1 straight to level 3).`);
+  if (requirementHeadings > 0) notes.push(`${counted(requirementHeadings, 'heading')} ${requirementHeadings === 1 ? 'states' : 'state'} a requirement (they contain “shall”, “must”, “should” or “will”); they are headings in the source file, so they are kept as section headings.`);
+  if (headings.length > 0 && numberedHeadings < headings.length) notes.push(`${headings.length - numberedHeadings} of ${counted(headings.length, 'heading')} ${headings.length - numberedHeadings === 1 ? 'carries' : 'carry'} no clause number.`);
+  if (levelJumps > 0) notes.push(`${counted(levelJumps, 'heading')} ${levelJumps === 1 ? 'skips' : 'skip'} a level (for example from level 1 straight to level 3).`);
   if (ocr === 'scanned') notes.push('Scanned PDF: the text was recovered by OCR, so wording may contain recognition errors.');
-  if (ocr === 'partial') notes.push(`${ocrCells} table cells were recovered by OCR.`);
+  if (ocr === 'partial') notes.push(`${counted(ocrCells, 'table cell')} ${ocrCells === 1 ? 'was' : 'were'} recovered by OCR.`);
   return {
     sectionCount: headings.length,
     depth: levels.reduce((most, level) => Math.max(most, level), 0),
@@ -318,7 +320,7 @@ function composeSummaryInput(blocks: Block[], purpose: ProfilePurpose | null, ou
     lines.push(`Sections: ${outline.slice(0, SUMMARY_SECTIONS).map((e) => sanitizeHint(`${e.number ?? ''} ${e.title}`, 80)).join('; ')}`);
     const top = blocks.filter((b) => b.kind === 'heading').reduce((least, b) => Math.min(least, levelOf(b)), Infinity);
     let current: ProfileOutlineEntry | undefined;
-    let opened = new Set<ProfileOutlineEntry>();
+    const opened = new Set<ProfileOutlineEntry>();
     let index = -1;
     for (const block of blocks) {
       if (block.kind === 'heading' && levelOf(block) === top) {
@@ -329,7 +331,7 @@ function composeSummaryInput(blocks: Block[], purpose: ProfilePurpose | null, ou
       if (!current || opened.has(current) || opened.size >= SUMMARY_OPENINGS || !isBody(block)) continue;
       const sentence = firstSentence(textOf(block));
       if (sentence.length < 20) continue;
-      opened = opened.add(current);
+      opened.add(current);
       lines.push(`${sanitizeHint(`${current.number ?? ''} ${current.title}`, 60)}: ${sentence}`);
     }
   }
@@ -349,7 +351,11 @@ export function buildDocumentProfile(doc: CanonicalDoc): DocumentProfile {
   for (const { table, entry } of placed) {
     if (!entry) continue;
     entry.tables += 1;
-    for (const row of table.cells) for (const cell of row) if (cell) entry.unresolved += markersIn(cell.text ?? '').length;
+    for (const row of table.cells) {
+      // A requirement written as a table row counts once, however many of its cells carry an obligation word.
+      if (row.some((cell) => cell && OBLIGATION.test(cell.text ?? ''))) entry.requirements += 1;
+      for (const cell of row) if (cell) entry.unresolved += markersIn(cell.text ?? '').length;
+    }
   }
   const purpose = findPurpose(blocks);
   const structure = describeStructure(doc, blocks);
@@ -375,7 +381,7 @@ export function composeProfileLines(profile: DocumentProfile): string[] {
   }
   const s = profile.structure;
   lines.push(
-    `Structure: ${s.sectionCount} sections, ${s.depth} levels deep, ${s.tables} tables, ${s.figures} figures. Heading detection looks ${s.headingDetection === 'reliable' ? 'reliable' : s.headingDetection === 'partial' ? 'partly reliable' : 'absent'}.`,
+    `Structure: ${counted(s.sectionCount, 'section')}, ${counted(s.depth, 'level')} deep, ${counted(s.tables, 'table')}, ${counted(s.figures, 'figure')}. Heading detection looks ${s.headingDetection === 'reliable' ? 'reliable' : s.headingDetection === 'partial' ? 'partly reliable' : 'absent'}.`,
   );
   for (const note of s.notes) lines.push(note);
   if (profile.baselineTree) {
@@ -383,17 +389,18 @@ export function composeProfileLines(profile: DocumentProfile): string[] {
     lines.push(`Without AI, the headings alone give ${counted(t.epics, 'Epic')}, ${counted(t.features, 'Feature')} and ${counted(t.requirements, 'Requirement')}, nested up to ${t.depth} levels. SURVEY decides its own structure.`);
   }
   if (profile.outline.length > 0) {
-    const shown = profile.outline.slice(0, MAX_LISTED).map((entry) => `${`${entry.number ?? ''} ${entry.title}`.trim()} (${counted(entry.subsections, 'subsection')}, ${counted(entry.requirements, '“shall” statement')})`);
+    const shown = profile.outline.slice(0, MAX_LISTED).map((entry) => `${`${entry.number ?? ''} ${entry.title}`.trim()} (${counted(entry.subsections, 'subsection')}, ${counted(entry.requirements, 'statement')})`);
     lines.push(`Top-level sections: ${shown.join('; ')}${profile.outline.length > MAX_LISTED ? `; and ${profile.outline.length - MAX_LISTED} more` : ''}.`);
+    lines.push('Statements are sentences with “shall”, “must”, “should” or “will”.');
   }
   if (profile.standards.count > 0) {
     const listed = profile.standards.applicableDocuments;
-    const applicable = listed && listed.entries > 0 ? ` ${listed.entries} entries are listed under “${listed.section}”.` : '';
-    lines.push(`Cites ${profile.standards.count} standards by name: ${profile.standards.examples.join(', ')}${profile.standards.count > profile.standards.examples.length ? ', …' : ''}.${applicable}`);
+    const applicable = listed && listed.entries > 0 ? ` ${counted(listed.entries, 'entry', 'entries')} ${listed.entries === 1 ? 'is' : 'are'} listed under “${listed.section}”.` : '';
+    lines.push(`Cites ${counted(profile.standards.count, 'standard')} by name: ${profile.standards.examples.join(', ')}${profile.standards.count > profile.standards.examples.length ? ', …' : ''}.${applicable}`);
   } else if (profile.standards.applicableDocuments && profile.standards.applicableDocuments.entries > 0) {
-    lines.push(`${profile.standards.applicableDocuments.entries} entries are listed under “${profile.standards.applicableDocuments.section}”.`);
+    lines.push(`${counted(profile.standards.applicableDocuments.entries, 'entry', 'entries')} ${profile.standards.applicableDocuments.entries === 1 ? 'is' : 'are'} listed under “${profile.standards.applicableDocuments.section}”.`);
   }
-  if (profile.glossary && profile.glossary.entries > 0) lines.push(`Glossary: ${profile.glossary.entries} entries under “${profile.glossary.section}”.`);
+  if (profile.glossary && profile.glossary.entries > 0) lines.push(`Glossary: ${counted(profile.glossary.entries, 'entry', 'entries')} under “${profile.glossary.section}”.`);
   if (profile.unresolved.length > 0) {
     lines.push(`Unresolved values: ${profile.unresolved.map((u) => `${u.marker} ×${u.count}${u.sections.length > 0 ? ` (${u.sections.join(', ')})` : ''}`).join('; ')}.`);
   }
