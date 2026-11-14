@@ -3,7 +3,9 @@ import { fireEvent, render, screen, within } from '@testing-library/react';
 import { act } from 'react';
 import userEvent from '@testing-library/user-event';
 import { ProgressBanner } from './ProgressBanner';
-import type { NarrationEvent } from '../api/events';
+import type { JobStage, NarrationEvent } from '../api/events';
+import type { ProgressEvent } from '../api/liveTypes';
+import { LIVE_RUN_SEQUENCE, NEXT_SCORE_BATCH, SCORE_BATCH } from '../test/fixtures/liveRunSequence';
 import { FLUSH_INTERVAL_MS, useLiveRunStore } from '../store/liveRunStore';
 import { clearDocumentMapCache } from '../hooks/useDocumentMap';
 import { getRunMap } from '../api/runMap';
@@ -1576,6 +1578,8 @@ describe('ProgressBanner: structure pass that reports nothing', () => {
   // The activity record lists the same label and line (correctly: it is the record), so look at the headline and the
   // banner's own sub-line only.
   const headline = (): string | undefined => document.querySelector('p.text-title')?.textContent ?? undefined;
+  // QA P2: the headline is the phase rail's stage name; the finer wording is the line under it.
+  const stageLine = (): string | null => screen.queryByTestId('stage-line')?.textContent ?? null;
   const subLine = (): Element | null => document.querySelector(`p[title="${tableLine.message}"]`);
 
   it('keeps the table line while it is still fresh', () => {
@@ -1584,7 +1588,9 @@ describe('ProgressBanner: structure pass that reports nothing', () => {
     act(() => {
       vi.advanceTimersByTime(3_000);
     });
-    expect(headline()).toBe('Detecting tables');
+    // The rail already calls this moment Analyze, so the parse-time "Detecting tables" is not a second stage name.
+    expect(headline()).toBe('Analyze');
+    expect(stageLine()).toBeNull();
     expect(subLine()).not.toBeNull();
     expect(screen.queryByTestId('model-call-clock')).not.toBeInTheDocument();
   });
@@ -1595,7 +1601,8 @@ describe('ProgressBanner: structure pass that reports nothing', () => {
     act(() => {
       vi.advanceTimersByTime(20_000);
     });
-    expect(headline()).toBe('Analyzing structure');
+    expect(headline()).toBe('Analyze');
+    expect(stageLine()).toBe('Analyzing structure');
     expect(subLine()).toBeNull();
     const clock = screen.getByTestId('model-call-clock');
     expect(clock).toHaveTextContent(/deciding the structure of the document/);
@@ -1614,7 +1621,8 @@ describe('ProgressBanner: structure pass that reports nothing', () => {
       act(() => {
         vi.advanceTimersByTime(20_000);
       });
-      expect(headline()).toBe('Analyzing structure');
+      expect(headline()).toBe('Analyze');
+      expect(stageLine()).toBe('Analyzing structure');
     },
   );
 
@@ -1626,7 +1634,9 @@ describe('ProgressBanner: structure pass that reports nothing', () => {
     act(() => {
       vi.advanceTimersByTime(20_000);
     });
-    expect(headline()).toBe('Reading the whole document');
+    expect(headline()).toBe('Analyze');
+    expect(stageLine()).not.toBe('Analyzing structure');
+    expect(screen.queryByTestId('model-call-clock')).not.toBeInTheDocument();
   });
 
   it('goes back to the normal headline and line as soon as a real analysis narration arrives', () => {
@@ -1637,7 +1647,8 @@ describe('ProgressBanner: structure pass that reports nothing', () => {
     act(() => {
       vi.advanceTimersByTime(20_000);
     });
-    expect(headline()).toBe('Analyzing structure');
+    expect(headline()).toBe('Analyze');
+    expect(stageLine()).toBe('Analyzing structure');
     const analysis: NarrationEvent = {
       phase: 'build_skeleton', branchIndex: 0, branchCount: 2, blocksDone: 0, blocksTotal: 4,
       kbGrounded: false, kbCitations: [], message: 'Deciding the structure of section 1',
@@ -1645,7 +1656,8 @@ describe('ProgressBanner: structure pass that reports nothing', () => {
     view.rerender(
       <ProgressBanner stage="infer_hierarchy_start" startedAt="2026-11-12T15:50:00Z" mode="survey" narrations={[tableLine, analysis]} />,
     );
-    expect(headline()).toBe('Building document structure');
+    expect(headline()).toBe('Analyze');
+    expect(stageLine()).toBe('Building document structure');
     expect(subLine()).toBeNull(); // the sub-line belongs to the old table line, which is no longer the latest
     expect(document.querySelector('p[title="Deciding the structure of section 1"]')).not.toBeNull();
   });
@@ -1656,7 +1668,8 @@ describe('ProgressBanner: structure pass that reports nothing', () => {
     act(() => {
       vi.advanceTimersByTime(20_000);
     });
-    expect(headline()).toBe('Detecting tables');
+    expect(headline()).toBe('Parse');
+    expect(stageLine()).toBe('Detecting tables');
     expect(screen.queryByTestId('model-call-clock')).not.toBeInTheDocument();
   });
 
@@ -1667,5 +1680,138 @@ describe('ProgressBanner: structure pass that reports nothing', () => {
       vi.advanceTimersByTime(20_000);
     });
     expect(screen.queryByTestId('model-call-clock')).not.toBeInTheDocument();
+  });
+});
+
+describe('ProgressBanner: one stage name while a run is live (QA P2)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-13T09:00:00Z'));
+    useLiveRunStore.getState().reset();
+    useLiveRunStore.getState().begin('job-1');
+    clearDocumentMapCache();
+    vi.mocked(getRunMap).mockReset();
+    vi.mocked(getRunMap).mockResolvedValue(null);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    useLiveRunStore.getState().reset();
+  });
+
+  const headlines = (): string[] => Array.from(document.querySelectorAll('p.text-title'), (el) => el.textContent ?? '');
+  const pushProgress = (event: ProgressEvent): void => {
+    act(() => {
+      useLiveRunStore.getState().ingestProgress(event);
+      vi.advanceTimersByTime(FLUSH_INTERVAL_MS);
+    });
+  };
+
+  it('replays a recorded live run and states exactly one stage name, the rail\'s, at every step', () => {
+    let stage: JobStage = 'parse';
+    let status: 'running' | 'writing' = 'running';
+    let narrations: NarrationEvent[] = [];
+    const banner = () => (
+      <ProgressBanner stage={stage} status={status} startedAt="2026-11-13T09:00:00Z" mode="survey" narrations={narrations} />
+    );
+    const view = render(banner());
+    for (const { step, expect: want } of LIVE_RUN_SEQUENCE) {
+      if (step.kind === 'stage') {
+        stage = step.stage;
+        status = step.status ?? status;
+      } else if (step.kind === 'narration') narrations = [...narrations, step.event];
+      else pushProgress(step.event);
+      view.rerender(banner());
+
+      expect(headlines()).toEqual([want.label]);
+      if (want.line) expect(screen.getByTestId('stage-line')).toHaveTextContent(want.line);
+      // No competing stage name anywhere on the card (the activity record is collapsed and is the record, not a headline).
+      expect(screen.queryByText('Extracting deterministic hierarchy')).not.toBeInTheDocument();
+      const ownsReadout = narrations.at(-1)?.phase === 'dedup_check';
+      const bar = screen.queryByRole('progressbar', { name: 'Run progress' });
+      if (!want.countedBar || ownsReadout) expect(bar).not.toBeInTheDocument();
+      else expect(bar).toBeInTheDocument();
+      if (want.chunkBar) expect(screen.getByTestId('chunk-track')).toBeInTheDocument();
+      else expect(screen.queryByTestId('chunk-track')).not.toBeInTheDocument();
+    }
+  });
+
+  it('keeps the counted run percentage in words when the bar is withheld for another step', () => {
+    pushProgress({ type: 'progress', seq: 1, pct: 2, stage: 'parse', unit: 'pages', done: 3, total: 3, estimated: true, emittedAt: 'x' });
+    render(
+      <ProgressBanner stage="infer_hierarchy_start" status="running" startedAt="2026-11-13T09:00:00Z" mode="survey" narrations={[SCORE_BATCH]} />,
+    );
+    expect(headlines()).toEqual(['Score']);
+    expect(screen.queryByRole('progressbar', { name: 'Run progress' })).not.toBeInTheDocument();
+    expect(screen.getByText(/2% of the run \(est\.\)/)).toBeInTheDocument();
+    expect(screen.queryByText(/3 of 3 pages/)).not.toBeInTheDocument();
+  });
+
+  describe('a stage that has gone quiet', () => {
+    const mount = (narrations: NarrationEvent[]) =>
+      render(<ProgressBanner stage="generate_requirements_start" status="running" startedAt="2026-11-13T09:00:00Z" mode="survey" narrations={narrations} />);
+    const advance = (ms: number) => act(() => vi.advanceTimersByTime(ms));
+
+    it('says "Still working on <stage>" at 20 s with no new event, and not before', () => {
+      mount([SCORE_BATCH]);
+      advance(19_000);
+      expect(screen.queryByTestId('still-working-note')).not.toBeInTheDocument();
+      expect(useLiveRunStore.getState().stillWorkingOn).toBeNull();
+      advance(1_000);
+      expect(screen.getByTestId('still-working-note')).toHaveTextContent('Still working on Score');
+      // The same name the headline (and the rail) uses.
+      expect(headlines()).toEqual(['Score']);
+      // The page's one polite region speaks it once; the note itself is silent to assistive tech.
+      expect(useLiveRunStore.getState().stillWorkingOn).toBe('Score');
+      expect(screen.getByTestId('still-working-note').closest('[aria-live], [role="status"], [role="alert"]')).toBeNull();
+      // The freshness stamp is still there, just no longer the only signal.
+      expect(screen.getByText(/updated 20s ago/)).toBeInTheDocument();
+    });
+
+    it('clears on the next narration event', () => {
+      const view = mount([SCORE_BATCH]);
+      advance(25_000);
+      expect(screen.getByTestId('still-working-note')).toBeInTheDocument();
+      view.rerender(
+        <ProgressBanner stage="generate_requirements_start" status="running" startedAt="2026-11-13T09:00:00Z" mode="survey" narrations={[SCORE_BATCH, NEXT_SCORE_BATCH]} />,
+      );
+      expect(screen.queryByTestId('still-working-note')).not.toBeInTheDocument();
+      expect(useLiveRunStore.getState().stillWorkingOn).toBeNull();
+    });
+
+    it('clears on the next live progress event too', () => {
+      mount([SCORE_BATCH]);
+      advance(25_000);
+      expect(screen.getByTestId('still-working-note')).toBeInTheDocument();
+      pushProgress({ type: 'progress', seq: 1, pct: 41, stage: 'score', unit: 'requirements', done: 49, total: 120, estimated: true, emittedAt: 'x' });
+      expect(screen.queryByTestId('still-working-note')).not.toBeInTheDocument();
+    });
+
+    it('hands over to the one long-wait note at 60 s instead of stacking two notes', () => {
+      mount([SCORE_BATCH]);
+      advance(60_000);
+      expect(screen.getByTestId('waiting-note')).toBeInTheDocument();
+      expect(screen.queryByTestId('still-working-note')).not.toBeInTheDocument();
+      expect(useLiveRunStore.getState().stillWorkingOn).toBeNull();
+    });
+
+    it('is unaffected by reduced motion: the same words at the same time, and no motion of its own', () => {
+      const original = window.matchMedia;
+      window.matchMedia = ((query: string) => ({
+        matches: query.includes('prefers-reduced-motion'), media: query, onchange: null,
+        addListener: () => undefined, removeListener: () => undefined,
+        addEventListener: () => undefined, removeEventListener: () => undefined, dispatchEvent: () => false,
+      })) as typeof window.matchMedia;
+      try {
+        mount([SCORE_BATCH]);
+        advance(19_000);
+        expect(screen.queryByTestId('still-working-note')).not.toBeInTheDocument();
+        advance(1_000);
+        const note = screen.getByTestId('still-working-note');
+        expect(note).toHaveTextContent('Still working on Score');
+        expect(note.className).not.toMatch(/animate/);
+      } finally {
+        window.matchMedia = original;
+      }
+    });
   });
 });

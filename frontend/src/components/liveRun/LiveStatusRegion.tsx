@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useLiveRunStore } from '../../store/liveRunStore';
-import { noticeCopy, STAGE_COPY } from '../../utils/liveCopy';
+import { noticeCopy, STAGE_COPY, STILL_WORKING_COPY } from '../../utils/liveCopy';
 
 /** Phase changes are announced at most this often; the latest one wins. */
 export const ANNOUNCE_INTERVAL_MS = 15000;
@@ -21,6 +21,7 @@ export function LiveStatusRegion({ message = '' }: { message?: string }): React.
     return warnings.length > 0 ? warnings[warnings.length - 1].kind : null;
   });
   const waiting = useLiveRunStore((s) => s.waiting);
+  const stillWorkingOn = useLiveRunStore((s) => s.stillWorkingOn);
   const [text, setText] = useState('');
   const announcedWarning = useRef<string | null>(null);
 
@@ -39,6 +40,16 @@ export function LiveStatusRegion({ message = '' }: { message?: string }): React.
     if (waiting) setText(WAITING_ANNOUNCEMENT);
     else setText((current) => (current === WAITING_ANNOUNCEMENT ? '' : current));
   }, [waiting]);
+
+  // A stage gone quiet (20 s, QA P2) is spoken once, when the threshold is crossed, and cleared by the next event. Declared
+  // after the wait so the one-minute wait, which replaces it, is not cleared by it.
+  const quietText = useRef('');
+  useEffect(() => {
+    const previous = quietText.current;
+    quietText.current = stillWorkingOn ? STILL_WORKING_COPY(stillWorkingOn) : '';
+    if (quietText.current) setText(quietText.current);
+    else if (previous) setText((current) => (current === previous ? '' : current));
+  }, [stillWorkingOn]);
 
   useEffect(() => {
     if (!warning || warning === announcedWarning.current) return;

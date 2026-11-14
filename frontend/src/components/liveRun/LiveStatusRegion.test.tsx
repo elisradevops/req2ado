@@ -99,5 +99,25 @@ describe('LiveStatusRegion', () => {
     act(() => useLiveRunStore.getState().reset());
     expect(screen.getByTestId('live-status-region')).toHaveTextContent('');
   });
-});
 
+  it('says a stage has gone quiet once, at the 20 s threshold, with no ticking number, and clears it on the next event', () => {
+    render(<LiveStatusRegion />);
+    const region = screen.getByTestId('live-status-region');
+    act(() => useLiveRunStore.getState().setStillWorkingOn('Score'));
+    expect(region).toHaveTextContent('Still working on Score');
+    expect(region.textContent).not.toMatch(/\d/);
+    act(() => useLiveRunStore.getState().setStillWorkingOn(null));
+    expect(region).toHaveTextContent('');
+  });
+
+  it('lets the one-minute wait take over from the quiet-stage line', () => {
+    render(<LiveStatusRegion />);
+    const region = screen.getByTestId('live-status-region');
+    act(() => useLiveRunStore.getState().setStillWorkingOn('Score'));
+    act(() => {
+      useLiveRunStore.getState().setWaiting(true);
+      useLiveRunStore.getState().setStillWorkingOn(null);
+    });
+    expect(region).toHaveTextContent('No update for over a minute. The job is still working.');
+  });
+});

@@ -60,10 +60,7 @@ import { formatDate, formatDateTime } from '../utils/formatDateTime';
 import { lifecyclePhases, type LifecycleKey } from '../components/JobLifecycleSteps';
 import { PhaseRail, type PhaseRailRow } from '../components/jobPhase/PhaseRail';
 import { PhaseSummary } from '../components/jobPhase/PhaseSummary';
-import {
-  parseDeterministicSubtreeChunk,
-  formatDeterministicSubtreePassSubLabel,
-} from '../utils/deterministicSubtreeChunk';
+import { stepSubLabelsFor } from '../utils/liveStage';
 import { DiffTree, type DryRunDiffEntry } from '../components/DiffTree';
 import { NodeDetailDialog } from '../components/NodeDetailDialog';
 import { AddChildCard } from '../components/AddChildCard';
@@ -2587,17 +2584,8 @@ export function JobDetail(): React.ReactElement {
   // between either. Sourced entirely from data the backend already emits
   // -- nothing invented.
   const latestNarrationForSteps = mergedNarrations.at(-1) ?? null;
-  const stepSubLabelByKey: Partial<Record<LifecycleKey, string>> = {};
-  if (latestNarrationForSteps?.phase === 'describe_figure' && latestNarrationForSteps.figureIndex != null && latestNarrationForSteps.figureCount != null) {
-    stepSubLabelByKey.parse = `figures ${latestNarrationForSteps.figureIndex}/${latestNarrationForSteps.figureCount}`;
-  }
-  // The whole-document read is one long model call inside the Parse step; without a word under the step it looks like
-  // a parser that has stopped.
-  if (latestNarrationForSteps?.phase === 'primer') stepSubLabelByKey.parse = 'reading whole document';
-  if (latestNarrationForSteps?.phase === 'deterministic_subtree') {
-    const chunk = parseDeterministicSubtreeChunk(latestNarrationForSteps.subtreeLabel);
-    if (chunk) stepSubLabelByKey.analyze = formatDeterministicSubtreePassSubLabel(chunk);
-  }
+  // The same source ProgressBanner names its stage from (utils/liveStage), so the rail and the card never disagree (QA P2).
+  const stepSubLabelByKey = stepSubLabelsFor(latestNarrationForSteps);
 
   // DESIGN.md §11.3.5: while a run is in progress the phases are a rail beside one phase view; once it stops, the stepper returns.
   const liveLayout = isLive && !!mode && !!status;
@@ -3420,6 +3408,7 @@ export function JobDetail(): React.ReactElement {
                 {isRunDetailStatus(status) && stage && mode && startedAt && (
                   <ProgressBanner
                     stage={stage}
+                    status={status}
                     startedAt={startedAt}
                     mode={mode as 'baseline' | 'survey'}
                     narrations={mergedNarrations}

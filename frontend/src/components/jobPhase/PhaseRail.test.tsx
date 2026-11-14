@@ -1,7 +1,16 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { act } from 'react';
 import { PhaseRail, type PhaseRailRow } from './PhaseRail';
+import { ProgressBanner } from '../ProgressBanner';
+import { lifecyclePhases } from '../JobLifecycleSteps';
+import { stepSubLabelsFor } from '../../utils/liveStage';
+import { FLUSH_INTERVAL_MS, useLiveRunStore } from '../../store/liveRunStore';
+import { LIVE_RUN_SEQUENCE } from '../../test/fixtures/liveRunSequence';
+import type { JobStage, NarrationEvent } from '../../api/events';
+
+vi.mock('../../api/runMap', () => ({ getRunMap: vi.fn().mockResolvedValue(null), getRunDone: vi.fn().mockResolvedValue(null) }));
 
 const ROWS: PhaseRailRow[] = [
   { key: 'parse', label: 'Parse', state: 'done', line: '12 blocks · 0 figures' },
@@ -92,5 +101,54 @@ describe('PhaseRail', () => {
     for (const el of advanced) expect(el.className).toContain('animate-[fadeIn_var(--motion-milestone)_var(--ease-out)_backwards]');
     expect(container.querySelector('[role="status"]')).toBeNull();
   });
-});
 
+  // QA P2: the rail and the banner card are fed the same replayed events and must name the same stage at every step. The rows
+  // are built the way JobDetail builds them (lifecyclePhases + stepSubLabelsFor, current row: its line or "In progress").
+  it('names the same stage as the banner card at every step of a replayed live run', () => {
+    vi.useFakeTimers();
+    useLiveRunStore.getState().reset();
+    useLiveRunStore.getState().begin('job-1');
+    try {
+      let stage: JobStage = 'parse';
+      let narrations: NarrationEvent[] = [];
+      const page = () => {
+        const latest = narrations.at(-1) ?? null;
+        const model = lifecyclePhases('survey', 'running', stage, latest?.phase ?? null);
+        const lines = stepSubLabelsFor(latest);
+        const rows: PhaseRailRow[] = model.phases.map((phase) => ({
+          key: phase.key, label: phase.label, state: phase.state,
+          line: phase.state === 'current' ? (lines[phase.key] ?? 'In progress') : phase.purpose,
+        }));
+        return (
+          <>
+            <PhaseRail rows={rows} selectedKey={model.liveKey} liveKey={model.liveKey} onSelect={vi.fn()} />
+            <ProgressBanner stage={stage} status="running" startedAt="2026-11-13T09:00:00Z" mode="survey" narrations={narrations} />
+          </>
+        );
+      };
+      const view = render(page());
+      for (const { step, expect: want } of LIVE_RUN_SEQUENCE) {
+        if (step.kind === 'stage') stage = step.stage;
+        else if (step.kind === 'narration') narrations = [...narrations, step.event];
+        else {
+          act(() => {
+            useLiveRunStore.getState().ingestProgress(step.event);
+            vi.advanceTimersByTime(FLUSH_INTERVAL_MS);
+          });
+        }
+        view.rerender(page());
+        const live = screen.getAllByRole('tab').find((tab) => tab.textContent?.includes('Live'))!;
+        const headline = document.querySelector('p.text-title')?.textContent;
+        expect(headline).toBe(want.label);
+        expect(live).toHaveTextContent(new RegExp(`^${want.label}`));
+        if (want.line) {
+          expect(live).toHaveTextContent(want.line);
+          expect(screen.getByTestId('stage-line')).toHaveTextContent(want.line);
+        }
+      }
+    } finally {
+      useLiveRunStore.getState().reset();
+      vi.useRealTimers();
+    }
+  });
+});
