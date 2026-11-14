@@ -1,3 +1,4 @@
+import { reconnectFailureMessage } from '../utils/sharePointReconnect';
 import { SharePointTokenHelp, SHAREPOINT_TOKEN_DIALOG_DESCRIPTION } from '../components/SharePointTokenHelp';
 import { readKbBrowseUrl, removeLegacyKbBrowseUrl, writeKbBrowseUrl } from '../utils/kbBrowseUrl';
 import { useEffect, useRef, useState } from 'react';
@@ -717,7 +718,7 @@ export function KnowledgeBase(): React.ReactElement {
     try {
       const status = await reconnectSharePoint(reconnectToken);
       if (status.status !== 'valid') {
-        setReconnectError('SharePoint rejected that token. Check you copied the whole value — they are long.');
+        setReconnectError(reconnectFailureMessage(status.status));
         return;
       }
       showToast('SharePoint reconnected.', 'success');
@@ -728,7 +729,7 @@ export function KnowledgeBase(): React.ReactElement {
       setBrowseError(null);
       await reloadKeepingFolder();
     } catch {
-      setReconnectError('SharePoint rejected that token. Check you copied the whole value — they are long.');
+      setReconnectError(reconnectFailureMessage('error'));
     } finally {
       isReconnectingRef.current = false;
       setIsReconnecting(false);

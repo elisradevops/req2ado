@@ -1,5 +1,7 @@
+import { reconnectFailureMessage } from '../utils/sharePointReconnect';
 import { SharePointTokenHelp, SHAREPOINT_TOKEN_DIALOG_DESCRIPTION } from '../components/SharePointTokenHelp';
 import { useEffect, useRef, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { httpClient } from '../api/httpClient';
 import { reconnectSharePoint, type SharePointStatus } from '../api/kb';
 import { isAxiosError } from 'axios';
@@ -112,6 +114,7 @@ function IntegrationRow({
   // split which genuinely depends on whether a token was ever set.
   actionLabel,
   onAction,
+  focusAction = false,
 }: {
   icon: React.ReactNode;
   name: string;
@@ -120,7 +123,13 @@ function IntegrationRow({
   reason?: string | null;
   actionLabel?: string;
   onAction: () => void;
+  // The user was sent here to do exactly this (the Open WebUI gate): focus the action so the next key press is the one that matters.
+  focusAction?: boolean;
 }): React.ReactElement {
+  const actionRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (focusAction) actionRef.current?.focus();
+  }, [focusAction]);
   return (
     <div className={cn('flex items-center gap-3 rounded-md border p-3', TONE_CARD_CLASSES[tone])}>
       <span className="grid h-8 w-8 flex-none place-items-center rounded-md bg-surface-alt text-ink-3">{icon}</span>
@@ -132,7 +141,7 @@ function IntegrationRow({
         </p>
         {reason && <p className="mt-0.5 text-xs text-danger-ink">{reason}</p>}
       </div>
-      <Button size="sm" variant={tone === 'ok' || tone === 'dim' ? 'outline' : 'primary'} onClick={onAction}>
+      <Button ref={actionRef} size="sm" variant={focusAction || (tone !== 'ok' && tone !== 'dim') ? 'primary' : 'outline'} onClick={onAction}>
         {actionLabel ?? TONE_ACTION_LABEL[tone]}
       </Button>
     </div>
@@ -178,6 +187,8 @@ function DisplayPreferenceRow({
  */
 export function Settings(): React.ReactElement {
   usePageTitle('Profile and connections');
+  // Set by RouteGuard when it sent the user here because Open WebUI is not configured yet.
+  const sentByLlmGate = (useLocation().state as { llmGate?: boolean } | null)?.llmGate === true;
   const displayName = useDisplayName();
   const orgUrl = useOrgUrl();
   const userId = useUserId();
@@ -297,14 +308,14 @@ export function Settings(): React.ReactElement {
     try {
       const status = await reconnectSharePoint(sharePointToken);
       if (status.status !== 'valid') {
-        setSharePointReconnectError('SharePoint rejected that token. Check you copied the whole value — they are long.');
+        setSharePointReconnectError(reconnectFailureMessage(status.status));
         return;
       }
       useConnectionStatusStore.getState().record('sharePoint', status);
       showToast('SharePoint reconnected.', 'success');
       setSharePointReconnectOpen(false);
     } catch {
-      setSharePointReconnectError('SharePoint rejected that token. Check you copied the whole value — they are long.');
+      setSharePointReconnectError(reconnectFailureMessage('error'));
     } finally {
       isSharePointReconnectingRef.current = false;
       setIsSharePointReconnecting(false);
@@ -465,6 +476,7 @@ export function Settings(): React.ReactElement {
                   detail={llmConnection.configured ? `Connected · ${llmConnection.chatModel}` : 'Not configured'}
                   tone={llmConnection.configured ? 'ok' : 'dim'}
                   onAction={openLlmDialog}
+                  focusAction={!llmConnection.configured && sentByLlmGate}
                 />
               )}
             </div>

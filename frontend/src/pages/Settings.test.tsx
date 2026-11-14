@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, act, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { Settings } from './Settings';
 import { ToastProvider } from '../components/ToastProvider';
 import { useAuthStore } from '../store/authStore';
@@ -15,14 +16,40 @@ vi.mock('../api/kb');
 vi.mock('../api/settings');
 vi.mock('../api/llmConnection');
 
-function renderPage(): void {
+function renderPage(state?: { llmGate?: boolean }): void {
   useAuthStore.getState().login('https://ado.example', 'Jane Doe', 'user-descriptor-1');
   render(
     <ToastProvider>
-      <Settings />
+      <MemoryRouter initialEntries={[{ pathname: '/settings', state }]}>
+        <Settings />
+      </MemoryRouter>
     </ToastProvider>,
   );
 }
+
+describe('Settings after the Open WebUI gate sent the user here', () => {
+  beforeEach(() => {
+    vi.mocked(httpClient.post).mockReset();
+    vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'valid', expiresInSeconds: 2820 });
+    vi.spyOn(settingsApi, 'getAppSettings').mockResolvedValue({ dedupThreshold: 0.9 });
+    vi.spyOn(llmConnectionApi, 'getLlmConnection').mockResolvedValue({ configured: false });
+  });
+
+  it('puts focus on the Open WebUI Configure button, so the user is pointed at the one thing to do', async () => {
+    renderPage({ llmGate: true });
+    const row = (await screen.findByText('Not configured')).closest('div.flex.items-center') as HTMLElement;
+    const configure = within(row).getByRole('button', { name: 'Configure' });
+    await waitFor(() => expect(configure).toHaveFocus());
+  });
+
+  it('leaves focus alone when the user came here on their own', async () => {
+    renderPage();
+    const row = (await screen.findByText('Not configured')).closest('div.flex.items-center') as HTMLElement;
+    const configure = within(row).getByRole('button', { name: 'Configure' });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(configure).not.toHaveFocus();
+  });
+});
 
 describe('Settings', () => {
   beforeEach(() => {
@@ -124,6 +151,24 @@ describe('Settings', () => {
 
       await waitFor(() => expect(kbApi.reconnectSharePoint).toHaveBeenCalledWith('new-token'));
       await waitFor(() => expect(screen.getByText(/sharepoint reconnected/i)).toBeInTheDocument());
+    });
+
+    it.each([
+      ['a token SharePoint refused', () => vi.spyOn(kbApi, 'reconnectSharePoint').mockResolvedValue({ status: 'invalid', expiresInSeconds: null }), /rejected that token/i],
+      ['SharePoint not answering', () => vi.spyOn(kbApi, 'reconnectSharePoint').mockResolvedValue({ status: 'unreachable', expiresInSeconds: null }), /couldn.t reach SharePoint.*nothing was saved/i],
+      ['the app server not answering', () => vi.spyOn(kbApi, 'reconnectSharePoint').mockRejectedValue(new Error('network')), /couldn.t check the token.*nothing was saved/i],
+    ])('says what went wrong, not always "rejected", for %s', async (_label, arrange, expected) => {
+      vi.mocked(kbApi.getSharePointStatus).mockResolvedValue({ status: 'invalid', expiresInSeconds: null });
+      arrange();
+      renderPage();
+
+      await waitFor(() => expect(screen.getByRole('button', { name: /^reconnect$/i })).toBeInTheDocument());
+      const reconnectButtons = screen.getAllByRole('button', { name: /^reconnect$/i });
+      await userEvent.click(reconnectButtons[reconnectButtons.length - 1]);
+      await userEvent.type(screen.getByLabelText(/sharepoint access token/i), 'dummy');
+      await userEvent.click(screen.getAllByRole('button', { name: /^reconnect$/i }).at(-1)!);
+
+      expect(await screen.findByText(expected)).toBeInTheDocument();
     });
 
     // isSharePointReconnectingRef guard -- fireEvent.click, same technique
@@ -450,7 +495,9 @@ describe('Settings', () => {
       useAuthStore.getState().login('https://tfs.corp.example/tfs/DefaultCollection', 'Jane Doe', 'user-descriptor-1', { email: 'jane@corp.example', accountName: 'CORP\\jane' });
       render(
         <ToastProvider>
-          <Settings />
+          <MemoryRouter>
+            <Settings />
+          </MemoryRouter>
         </ToastProvider>,
       );
     }
