@@ -1432,3 +1432,70 @@ describe('JobsController duplicate override routes', () => {
   });
 });
 
+
+describe('JobsController.getEntrySource', () => {
+  const TEST_USER = { userId: 'user-descriptor-1', displayName: 'Jane Doe' } as any;
+  const STORED_JOB = {
+    id: 'job-1',
+    userId: 'user-descriptor-1',
+    mode: 'baseline',
+    originalFilename: 'spec.docx',
+    dryRunDiff: [{ localId: 'n4', customerId: null, sourceRef: { documentPath: 'spec.docx', startOffset: 108, endOffset: 151, page: null } }],
+  };
+
+  it("returns the item's original wording from the stored source file, read again through ingestion", async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue(STORED_JOB), getSourceFileBytes: jest.fn().mockResolvedValue(Buffer.from('docx bytes')) };
+    const ingestionClient = { sourceExcerpt: jest.fn().mockResolvedValue({ text: 'The unit must report an undervoltage fault.', truncated: false, kind: 'text' }) };
+    const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+    await expect(controller.getEntrySource('job-1', 'n4', TEST_USER)).resolves.toEqual({
+      text: 'The unit must report an undervoltage fault.',
+      truncated: false,
+      kind: 'text',
+    });
+    expect(jobsService.getSourceFileBytes).toHaveBeenCalledWith('job-1');
+    expect(ingestionClient.sourceExcerpt).toHaveBeenCalledWith(
+      Buffer.from('docx bytes'),
+      'spec.docx',
+      expect.objectContaining({ startOffset: 108, endOffset: 151, extent: 'span' }),
+      expect.any(AbortSignal),
+    );
+  });
+
+  it('answers unavailable (not an error) for a job whose original was not kept', async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue(STORED_JOB), getSourceFileBytes: jest.fn().mockResolvedValue(null) };
+    const ingestionClient = { sourceExcerpt: jest.fn() };
+    const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+    await expect(controller.getEntrySource('job-1', 'n4', TEST_USER)).resolves.toEqual({ kind: 'unavailable', reason: 'no_original' });
+    expect(ingestionClient.sourceExcerpt).not.toHaveBeenCalled();
+  });
+
+  it('sends the deployment OCR languages, so a scanned PDF reads back the same text it was cut from', async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue(STORED_JOB), getSourceFileBytes: jest.fn().mockResolvedValue(Buffer.from('pdf')) };
+    const ingestionClient = { sourceExcerpt: jest.fn().mockResolvedValue({ text: 'x', truncated: false, kind: 'text' }) };
+    const controller = new JobsController(
+      jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024,
+      undefined, undefined, undefined, 'heb+eng',
+    );
+
+    await controller.getEntrySource('job-1', 'n4', TEST_USER);
+
+    expect(ingestionClient.sourceExcerpt.mock.calls[0][2]).toMatchObject({ languages: 'heb+eng' });
+  });
+
+  it('404s for an item the job does not have', async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue(STORED_JOB), getSourceFileBytes: jest.fn() };
+    const controller = new JobsController(jobsService as any, { sourceExcerpt: jest.fn() } as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+    await expect(controller.getEntrySource('job-1', 'n99', TEST_USER)).rejects.toThrow('not found');
+  });
+
+  it('404s for a job that does not belong to the caller, before reading any file', async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue({ ...STORED_JOB, userId: 'someone-else' }), getSourceFileBytes: jest.fn() };
+    const controller = new JobsController(jobsService as any, { sourceExcerpt: jest.fn() } as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+    await expect(controller.getEntrySource('job-1', 'n4', TEST_USER)).rejects.toThrow('not found');
+    expect(jobsService.getSourceFileBytes).not.toHaveBeenCalled();
+  });
+});

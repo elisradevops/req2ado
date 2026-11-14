@@ -363,6 +363,39 @@ describe('IngestionHttpClient', () => {
     await expect(client.publishDocumentMap(MINIMAL_DOC, 'job-1')).resolves.toBe(false);
   });
 
+  it('sourceExcerpt POSTs the original and the span to /source-excerpt and returns the wording', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ text: 'The unit shall start.', truncated: false, kind: 'table' }) });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+    const signal = new AbortController().signal;
+
+    const result = await client.sourceExcerpt(
+      Buffer.from('docx'),
+      'spec.docx',
+      { startOffset: 80, endOffset: 81, page: 2, extent: 'section', rowHint: 'PWR-7', languages: 'heb+eng' },
+      signal,
+    );
+
+    expect(result).toEqual({ text: 'The unit shall start.', truncated: false, kind: 'table' });
+    const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toBe('http://ingestion.internal/source-excerpt?start_offset=80&end_offset=81&extent=section&page=2&row_hint=PWR-7&languages=heb%2Beng');
+    expect(options.method).toBe('POST');
+    expect(options.body).toBeInstanceOf(FormData);
+    expect(options.signal).toBe(signal);
+  });
+
+  it('sourceExcerpt leaves out what is not set, and throws on a failed request', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ text: '', truncated: false, kind: 'unavailable' }) });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+
+    await client.sourceExcerpt(Buffer.from('x'), 'x.txt', { startOffset: 0, endOffset: 5, page: null, extent: 'span', rowHint: null });
+    expect((global.fetch as jest.Mock).mock.calls[0][0]).toBe('http://ingestion.internal/source-excerpt?start_offset=0&end_offset=5&extent=span');
+
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 500, text: async () => 'boom' });
+    await expect(client.sourceExcerpt(Buffer.from('x'), 'x.txt', { startOffset: 0, endOffset: 5, page: null, extent: 'span', rowHint: null })).rejects.toThrow(
+      /source-excerpt/,
+    );
+  });
+
   it('checkDuplicate POSTs text, title, and area_path to /dedup/check', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({
       ok: true,

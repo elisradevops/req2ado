@@ -5196,6 +5196,23 @@ describe('JobsService.getFigureFile', () => {
   });
 });
 
+describe('JobsService.getSourceFileBytes', () => {
+  it('returns the stored original upload of a job', async () => {
+    const prisma = { jobSourceFile: { findUnique: jest.fn().mockResolvedValue({ jobId: 'job-1', bytes: Buffer.from('docx bytes') }) } };
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    await expect(service.getSourceFileBytes('job-1')).resolves.toEqual(Buffer.from('docx bytes'));
+    expect(prisma.jobSourceFile.findUnique).toHaveBeenCalledWith({ where: { jobId: 'job-1' }, select: { bytes: true } });
+  });
+
+  it('returns null (not a thrown error) when the original was never kept', async () => {
+    const prisma = { jobSourceFile: { findUnique: jest.fn().mockResolvedValue(null) } };
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    await expect(service.getSourceFileBytes('job-1')).resolves.toBeNull();
+  });
+});
+
 describe('JobsService.attachFigureToAdo', () => {
   it('attaches using existingAdoId for a reuse entry and deletes the JobFigureFile row on success', async () => {
     const uploadAttachment = jest.fn().mockResolvedValue(undefined);

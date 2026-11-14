@@ -35,6 +35,7 @@ import { parseDocumentOverview, type DocumentOverview } from './document-overvie
 import { buildPreviewOverview } from './document-preview';
 import { generateSummary, MAX_SUMMARY_INPUT_CHARS, SummaryCache } from './document-summary';
 import { fileHashOf, type ResultCacheProbe } from './result-cache';
+import { EntrySourceReader, type EntrySourceAnswer } from './source-excerpt';
 import type { WritePreview } from './write-plan';
 import type { DocumentProfile } from './document-profile';
 import { createHash } from 'crypto';
@@ -154,10 +155,20 @@ export class JobsController {
     @Optional() @Inject('SUMMARY_MAX_TOKENS') private readonly summaryMaxTokens: number = 4000,
     // Whether a SURVEY job of an uploaded file would be served from the result cache (GET cached-result); absent, the answer is always no.
     @Optional() @Inject(RESULT_CACHE_PROBE) private readonly resultCacheProbe?: ResultCacheProbe,
+    // The OCR language packs the pipeline parsed with (config OCR_LANGUAGES): a scanned PDF must be read back the same way, or
+    // its text, and so its offsets, would differ. Absent: ingestion's own default, as for the pipeline.
+    @Optional() @Inject('OCR_LANGUAGES') private readonly ocrLanguages?: string,
   ) {}
 
   // The AI summaries already written in this process (P6): a re-upload of the same file gets its summary at once.
   private readonly summaryCache = new SummaryCache();
+
+  // The evidence strip's source wording: the kept original re-read through ingestion, answers remembered briefly (source-excerpt.ts).
+  private readonly entrySourceReader = new EntrySourceReader(
+    (jobId) => this.jobsService.getSourceFileBytes(jobId),
+    (bytes, filename, request, signal) =>
+      this.ingestionClient.sourceExcerpt(bytes, filename, { ...request, ...(this.ocrLanguages ? { languages: this.ocrLanguages } : {}) }, signal),
+  );
 
   @Get()
   async list(@CurrentUser() user: SessionUser, @Query() rawQuery: unknown): Promise<JobSummary[]> {
@@ -1043,6 +1054,23 @@ export class JobsController {
     await this.ownedJob(id, user);
     const credential = await this.adoCredentialResolver.resolve(user.userId);
     return this.jobsService.retryTraceLinkWrite(id, failureId, credential);
+  }
+
+  // The original wording of one item, read from the job's kept upload (DESIGN.md §11.6, the evidence strip). Owner-only like
+  // every per-job route. A missing original or span is a normal answer ({kind: 'unavailable', reason}), never a 5xx; 404 only
+  // for a job that is not the caller's or an item the job does not have.
+  @Get(':id/diff/:localId/source')
+  async getEntrySource(
+    @Param('id') id: string,
+    @Param('localId') localId: string,
+    @CurrentUser() user: SessionUser,
+  ): Promise<EntrySourceAnswer> {
+    const job = await this.ownedJob(id, user);
+    const answer = await this.entrySourceReader.read(job, localId);
+    if (!answer) {
+      throw new NotFoundException(`Item ${localId} not found in job ${id}`);
+    }
+    return answer;
   }
 
   @Get(':id/audit')

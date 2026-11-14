@@ -163,6 +163,12 @@ import { BatchPumpService } from '../batch/batch-pump.service';
       useFactory: (config: ConfigService) => config.get<number>('MAX_UPLOAD_SIZE_MB')! * 1024 * 1024,
     },
     {
+      // The same OCR_LANGUAGES the pipeline worker parses with (pipeline.processor.ts), for re-reading an item's source wording.
+      provide: 'OCR_LANGUAGES',
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => config.get<string>('OCR_LANGUAGES') ?? '',
+    },
+    {
       // Constructed with `import type Redis` erased at runtime the same way
       // IdempotencyService's `prisma` param is (see the comment above) — a
       // concrete `new Redis(...)` instance is provided via useFactory rather

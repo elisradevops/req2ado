@@ -2148,6 +2148,13 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
   // attached to ADO (deleted on success, see attachFigureToAdo/confirm()'s
   // own attach phase) or never stored is a normal outcome here, not a
   // service-layer failure -- the controller decides the HTTP shape.
+  // The job's kept original upload (JobSourceFile), or null when it was not kept: over the size cap, a swallowed save in
+  // submit(), or a job from before retention. Read by the evidence strip's source-wording route.
+  async getSourceFileBytes(jobId: string): Promise<Buffer | null> {
+    const sourceFile = await this.prisma.jobSourceFile.findUnique({ where: { jobId }, select: { bytes: true } });
+    return sourceFile ? Buffer.from(sourceFile.bytes) : null;
+  }
+
   async getFigureFile(jobId: string, figureId: string): Promise<{ bytes: Buffer; mimeType: string } | null> {
     const figureFile = await this.prisma.jobFigureFile.findUnique({ where: { jobId_figureId: { jobId, figureId } } });
     if (!figureFile) return null;

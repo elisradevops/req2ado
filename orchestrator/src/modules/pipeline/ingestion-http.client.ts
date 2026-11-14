@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Agent } from 'undici';
 import type { CanonicalDoc, WorkItemTree } from '@req2ado/shared-ts';
 import type { FolderIngestFile } from '../kb/kb.service';
+import type { IngestionSourceExcerpt, SourceExcerptRequest } from './source-excerpt';
 
 // undici's default headersTimeout (300s) is shorter than a real local LLM
 // can take for SURVEY mode's two sequential calls (infer_hierarchy +
@@ -499,6 +500,30 @@ export class IngestionHttpClient {
     });
     if (!response.ok) throw await _ingestionError(response, `Ingestion /score-explain request failed: `);
     return (await response.json()) as ScoreExplanation;
+  }
+
+  // The original wording at one item's stored span (the review dialog's evidence strip): ingestion re-parses the job's kept
+  // upload with the pipeline's loader, since the offsets index extracted text, not file bytes. No model call. Throws on a
+  // failed request; the caller turns that into an "unavailable" answer.
+  async sourceExcerpt(
+    fileBuffer: Buffer,
+    filename: string,
+    request: SourceExcerptRequest & { languages?: string },
+    signal?: AbortSignal,
+  ): Promise<IngestionSourceExcerpt> {
+    const form = new FormData();
+    form.append('file', new Blob([fileBuffer]), filename);
+    const params = new URLSearchParams({ start_offset: String(request.startOffset), end_offset: String(request.endOffset), extent: request.extent });
+    if (request.page != null) params.set('page', String(request.page));
+    if (request.rowHint) params.set('row_hint', request.rowHint);
+    if (request.languages) params.set('languages', request.languages);
+    const response = await fetch(`${this.baseUrl}/source-excerpt?${params.toString()}`, {
+      method: 'POST',
+      body: form,
+      ...(signal ? { signal } : {}),
+    });
+    if (!response.ok) throw await _ingestionError(response, `Ingestion /source-excerpt request failed: `);
+    return (await response.json()) as IngestionSourceExcerpt;
   }
 
   // A job served from the result cache skips /ingest and /level, which is where ingestion writes the run map: this asks it to publish
