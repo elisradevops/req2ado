@@ -2312,32 +2312,60 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
   }
 
   // Write-time re-check. Another job's confirm may have written an item between the moment this diff was built and now (two proposals of the same
-  // file waiting for review side by side, which is what a batch produces), and the diff cannot know. For a first write, every entry still marked
-  // `create` is looked up by its source hash; a hit is turned into a `reuse` of the item that exists, so it is linked and not created twice.
-  // Best effort and fail-open, like the similarity check: a lookup error is logged and the write goes on as planned. Returns how many were linked.
+  // file waiting for review side by side, which is what a batch produces), and the diff cannot know. Every entry still marked `create` is looked up
+  // by its source hash; a hit whose Azure DevOps item still exists becomes a `reuse` of it, so it is linked and not created twice. Skipped: an item
+  // this job already wrote (a retry after a partial write), and one the reviewer chose to create anyway. A hit is never trusted blindly: the dry run
+  // verifies its matches against Azure DevOps, so this does too, and a mapping whose item was deleted is forgotten, not linked. Best effort and
+  // fail-open in every step (a lookup or verification error means "create as planned"). Returns how many were linked.
   private async linkItemsWrittenByAnotherJob(
-    diff: { localId: string; action: string; existingAdoId: number | null; sourceHash: string }[],
+    diff: { localId: string; action: string; existingAdoId: number | null; sourceHash: string; duplicateOf?: unknown }[],
     isExcluded: (entry: never) => boolean,
     areaPath: string,
     selectedLocalIds: string[] | undefined,
+    alreadyWrittenLocalIds: ReadonlySet<string>,
+    credential: { orgUrl: string; pat: string } | undefined,
   ): Promise<number> {
     const selected = selectedLocalIds ? new Set(selectedLocalIds) : null;
     const candidates = diff.filter(
-      (entry) => entry.action === 'create' && !!entry.sourceHash && !isExcluded(entry as never) && (selected === null || selected.has(entry.localId)),
+      (entry) =>
+        entry.action === 'create' &&
+        !!entry.sourceHash &&
+        entry.duplicateOf === undefined &&
+        !alreadyWrittenLocalIds.has(entry.localId) &&
+        !isExcluded(entry as never) &&
+        (selected === null || selected.has(entry.localId)),
     );
     if (candidates.length === 0) return 0;
+    const warn = (message: string, error: unknown): void => {
+      // eslint-disable-next-line no-console -- no structured logger in this service
+      console.warn(`${message}: ${error instanceof Error ? error.message : String(error)}`);
+    };
     let found: Map<string, number>;
     try {
       found = await this.idempotencyService.lookupMany(candidates.map((entry) => ({ sourceHash: entry.sourceHash, areaPath })));
     } catch (error) {
-      // eslint-disable-next-line no-console -- no structured logger in this service
-      console.warn(`Write-time duplicate re-check skipped: ${error instanceof Error ? error.message : String(error)}`);
+      warn('Write-time duplicate re-check skipped', error);
       return 0;
     }
+    const hits = candidates.filter((entry) => found.has(idempotencyMapKey(entry.sourceHash, areaPath)));
+    if (hits.length === 0) return 0;
+    const ids = [...new Set(hits.map((entry) => found.get(idempotencyMapKey(entry.sourceHash, areaPath)) as number))];
+    let stillExisting: Set<number>;
+    try {
+      stillExisting = new Set((await this.mcpClient.getWorkItemsBatch(ids, credential)).map((item) => item.id));
+    } catch (error) {
+      warn('Write-time duplicate re-check could not confirm the matched items still exist, so it created them as planned', error);
+      return 0;
+    }
+    for (const id of ids) {
+      if (stillExisting.has(id)) continue;
+      // The mapping points at an item that was deleted in Azure DevOps: forget it, as the dry run does, so it never matches again.
+      await this.idempotencyService.deleteByAdoWorkItemId(id).catch((error) => warn('Could not forget a stale mapping', error));
+    }
     let linked = 0;
-    for (const entry of candidates) {
-      const existing = found.get(idempotencyMapKey(entry.sourceHash, areaPath));
-      if (existing === undefined) continue;
+    for (const entry of hits) {
+      const existing = found.get(idempotencyMapKey(entry.sourceHash, areaPath)) as number;
+      if (!stillExisting.has(existing)) continue;
       entry.action = 'reuse';
       entry.existingAdoId = existing;
       linked += 1;
@@ -2621,9 +2649,14 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       // 'needs a real create' -- the two are handled by completely
       // different phases below.
       // The rules live in write-plan.ts so the pre-write preview uses the same ones.
-      if (existingMappings.length === 0) {
-        linkedInsteadCount = await this.linkItemsWrittenByAnotherJob(diff, isExcluded, job.areaPath, selectedLocalIds);
-      }
+      linkedInsteadCount = await this.linkItemsWrittenByAnotherJob(
+        diff,
+        isExcluded,
+        job.areaPath,
+        selectedLocalIds,
+        new Set(resumedAdoIdByLocalId.keys()),
+        credential,
+      );
       const { toCreate, resolvedAdoIdByLocalId } = selectEntriesToCreate(diff, isExcluded, { resumedAdoIdByLocalId, selectedLocalIds });
       for (const [localId, adoId] of resolvedAdoIdByLocalId) adoIdByLocalId.set(localId, adoId);
 

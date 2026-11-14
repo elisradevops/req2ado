@@ -7723,39 +7723,45 @@ describe('JobsService.reject (status-guarded)', () => {
 });
 
 describe('JobsService.confirm write-time duplicate re-check', () => {
-  const entry = (localId: string, sourceHash: string) => ({
-    localId, parentLocalId: null, type: 'Feature', title: localId, description: `d${localId}`, action: 'create', existingAdoId: null, sourceHash, customerId: null, sourceRef: null, tags: [],
+  const entry = (localId: string, sourceHash: string, extra: Record<string, unknown> = {}) => ({
+    localId, parentLocalId: null, type: 'Feature', title: localId, description: `d${localId}`, action: 'create', existingAdoId: null, sourceHash, customerId: null, sourceRef: null, tags: [], ...extra,
   });
-  const build = (idempotency: Record<string, jest.Mock>) => {
+  const build = (
+    idempotency: Record<string, jest.Mock>,
+    options: { getWorkItemsBatch?: jest.Mock; mappings?: unknown[]; diff?: unknown[] } = {},
+  ) => {
     const createWorkItem = jest.fn().mockResolvedValue({ id: 100 });
+    const getWorkItemsBatch = options.getWorkItemsBatch ?? jest.fn().mockResolvedValue([{ id: 555 }]);
     const prisma = {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project', dryRunDiff: [entry('n0', 'h0'), entry('n1', 'h1')],
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project', dryRunDiff: options.diff ?? [entry('n0', 'h0'), entry('n1', 'h1')],
         }),
         update: jest.fn().mockResolvedValue(undefined),
       },
       auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
       jobFigureFile: { findMany: jest.fn().mockResolvedValue([]) },
-      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue(options.mappings ?? []), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
     };
     const record = jest.fn().mockResolvedValue(undefined);
+    const deleteByAdoWorkItemId = jest.fn().mockResolvedValue(undefined);
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild: jest.fn(), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
-      { record, ...idempotency } as any,
+      { createWorkItem, getWorkItemsBatch, linkParentChild: jest.fn(), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record, deleteByAdoWorkItemId, ...idempotency } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
       undefined, undefined, undefined, undefined,
       { publish: jest.fn().mockResolvedValue(undefined), publishNarration: jest.fn().mockResolvedValue(undefined) } as any,
     );
-    return { service, prisma, createWorkItem, record };
+    return { service, prisma, createWorkItem, record, getWorkItemsBatch, deleteByAdoWorkItemId };
   };
+  const hit = (hash: string, id: number) => jest.fn().mockResolvedValue(new Map([[idempotencyKeyFor(hash, 'Project\\Area1'), id]]));
 
   it('links, instead of creating again, an item that another job wrote after this diff was built, and says so in the audit', async () => {
-    const lookupMany = jest.fn().mockResolvedValue(new Map([[idempotencyKeyFor('h0', 'Project\\Area1'), 555]]));
-    const { service, prisma, createWorkItem, record } = build({ lookupMany });
+    const lookupMany = hit('h0', 555);
+    const { service, prisma, createWorkItem, record, getWorkItemsBatch } = build({ lookupMany });
 
     const result = await service.confirm('job-1');
 
@@ -7763,6 +7769,7 @@ describe('JobsService.confirm write-time duplicate re-check', () => {
       { sourceHash: 'h0', areaPath: 'Project\\Area1' },
       { sourceHash: 'h1', areaPath: 'Project\\Area1' },
     ]);
+    expect(getWorkItemsBatch.mock.calls[0][0]).toEqual([555]);
     expect(createWorkItem).toHaveBeenCalledTimes(1);
     expect(createWorkItem.mock.calls[0][1]).toMatchObject({ 'System.Title': 'n1' });
     expect(record).toHaveBeenCalledTimes(1);
@@ -7773,6 +7780,27 @@ describe('JobsService.confirm write-time duplicate re-check', () => {
     });
   });
 
+  it('does not link to an item that no longer exists in Azure DevOps: it creates it, and forgets the stale mapping', async () => {
+    const lookupMany = hit('h0', 555);
+    const { service, createWorkItem, deleteByAdoWorkItemId } = build({ lookupMany }, { getWorkItemsBatch: jest.fn().mockResolvedValue([]) });
+
+    const result = await service.confirm('job-1');
+
+    expect(createWorkItem).toHaveBeenCalledTimes(2);
+    expect(deleteByAdoWorkItemId).toHaveBeenCalledWith(555);
+    expect(result).toEqual({ status: 'succeeded', createdCount: 2 });
+  });
+
+  it('creates as planned when it cannot tell whether the matched item still exists', async () => {
+    const lookupMany = hit('h0', 555);
+    const { service, createWorkItem } = build({ lookupMany }, { getWorkItemsBatch: jest.fn().mockRejectedValue(new Error('ado down')) });
+
+    const result = await service.confirm('job-1');
+
+    expect(createWorkItem).toHaveBeenCalledTimes(2);
+    expect(result).toEqual({ status: 'succeeded', createdCount: 2 });
+  });
+
   it('writes everything as before when the re-check itself fails: a lookup error must not block a write', async () => {
     const lookupMany = jest.fn().mockRejectedValue(new Error('db blip'));
     const { service, createWorkItem } = build({ lookupMany });
@@ -7781,6 +7809,29 @@ describe('JobsService.confirm write-time duplicate re-check', () => {
 
     expect(createWorkItem).toHaveBeenCalledTimes(2);
     expect(result).toEqual({ status: 'succeeded', createdCount: 2 });
+  });
+
+  it('leaves alone an item the reviewer chose to create anyway', async () => {
+    const lookupMany = hit('h0', 555);
+    const diff = [entry('n0', 'h0', { duplicateOf: { existingAdoId: 9, similarity: 0.9 }, duplicateOverride: { linkTree: false, relateToExisting: false } }), entry('n1', 'h1')];
+    const { service, createWorkItem } = build({ lookupMany }, { diff });
+
+    await service.confirm('job-1');
+
+    expect(lookupMany).toHaveBeenCalledWith([{ sourceHash: 'h1', areaPath: 'Project\\Area1' }]);
+    expect(createWorkItem).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps checking on a retry after a partial write, but never an item this job already wrote', async () => {
+    const lookupMany = hit('h1', 555);
+    const mappings = [{ localId: 'n0', adoWorkItemId: 90, linked: true }];
+    const { service, createWorkItem } = build({ lookupMany }, { mappings });
+
+    await service.confirm('job-1');
+
+    expect(lookupMany).toHaveBeenCalledWith([{ sourceHash: 'h1', areaPath: 'Project\\Area1' }]);
+    // n0 was written by this job already (resumed), n1 matched another job's item: nothing is created at all.
+    expect(createWorkItem.mock.calls.map((call) => (call[1] as Record<string, string>)['System.Title'])).toEqual([]);
   });
 });
 
