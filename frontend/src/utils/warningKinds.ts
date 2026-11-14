@@ -110,6 +110,15 @@ export const KIND_META: Record<string, KindMeta> = {
     chip: 'Kept as a section',
     unit: ['section', 'sections'],
   },
+  changed_since_written: {
+    title: 'Changed since it was written',
+    group: 'review',
+    short: 'An item matches one already in Azure DevOps, but its text is different now.',
+    means: 'The item matches one already in Azure DevOps whose text differs from this file. It is linked to that item as it is: nothing is updated automatically.',
+    todo: 'Open the item in Azure DevOps and compare. Update the Azure DevOps item by hand, or leave it.',
+    chip: 'Changed since written',
+    unit: ['item', 'items'],
+  },
   zero_nodes: {
     title: 'A section produced no items',
     group: 'fix',

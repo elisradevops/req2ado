@@ -275,3 +275,19 @@ describe('requirement_heading_is_section', () => {
     expect(meta.means).toMatch(/top of/i);
   });
 });
+
+describe('changed_since_written', () => {
+  it('is a Check notice that never blocks the write', () => {
+    const meta = KIND_META.changed_since_written;
+    expect(meta.group).toBe('review');
+    expect(warningGroup(warning('changed_since_written', 'needs_review', ['a']))).toBe('review');
+  });
+
+  it('says the item matches one already in Azure DevOps whose text differs, that nothing is updated, and what to do', () => {
+    const meta = KIND_META.changed_since_written;
+    expect(meta.title).toBe('Changed since it was written');
+    expect(meta.means).toMatch(/already in Azure DevOps/i);
+    expect(meta.means).toMatch(/nothing is updated automatically/i);
+    expect(meta.todo).toMatch(/by hand|leave it/i);
+  });
+});
