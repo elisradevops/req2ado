@@ -479,8 +479,8 @@ export function Settings(): React.ReactElement {
                 onCheckedChange={(value) => useUiPreferencesStore.getState().setDenseView(value)}
               />
               <DisplayPreferenceRow
-                label="Auto-sync ledgers"
-                description="Periodically fetch updates from Azure DevOps"
+                label="Refresh the Jobs list"
+                description="Check for job status changes every few seconds"
                 checked={autoSyncLedgers}
                 onCheckedChange={(value) => useUiPreferencesStore.getState().setAutoSyncLedgers(value)}
               />

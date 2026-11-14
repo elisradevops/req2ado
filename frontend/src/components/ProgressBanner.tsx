@@ -522,7 +522,7 @@ export function ProgressBanner({
           ) : (
             <span className='flex-none font-mono text-metric tabular-nums text-ink-1'>{Math.round(shownProgress)}%</span>
           ))}
-        <InfoTip content='BASELINE finishes in seconds. SURVEY reads the whole document, merges near-duplicates, infers missing parents, and scores each requirement -- time scales with document size, figures most of all.' />
+        <InfoTip content='BASELINE typically takes about a minute. SURVEY reads the whole document, merges near-duplicates, infers missing parents, and scores each requirement -- time scales with document size, figures most of all.' />
       </div>
 
       {/* DESIGN.md §11.3 -- "one meta line replaces the pill row": elapsed,

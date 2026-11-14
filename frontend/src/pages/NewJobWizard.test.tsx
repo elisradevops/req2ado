@@ -977,6 +977,15 @@ describe('NewJobWizard step 2 layout (DESIGN.md §11.2.5)', () => {
     await screen.findByText(/typically, once it starts/i);
   }
 
+  it('does not tell a BASELINE user that its estimate is still learning: BASELINE is a flat figure that never changes', async () => {
+    await reachStep2();
+    await userEvent.click(screen.getByRole('radio', { name: /baseline/i }));
+    const rail = screen.getByRole('complementary', { name: 'This run' });
+    expect(rail).toHaveTextContent('BASELINE');
+    expect(rail).not.toHaveTextContent(/no completed runs yet/i);
+    expect(rail).not.toHaveTextContent(/feeds the fit|sharpens on its own|conservative default/i);
+  });
+
   it('shows the uploaded document in the summary rail, with its counts', async () => {
     await reachStep2();
     const rail = screen.getByRole('complementary', { name: 'This run' });

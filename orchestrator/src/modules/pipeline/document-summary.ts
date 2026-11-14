@@ -2,7 +2,7 @@ import type { LlmChatOptions, LlmChatResult } from '../llm/llm-client.interface'
 
 // The optional AI summary of a document, shown beside the deterministic overview when it is ready in time. One bounded model call, written from
 // a small deterministic input (document-profile.ts: summaryInput) and checked against that same input: a summary that names a number, an acronym
-// or a standard the input does not contain is dropped, so what is shown can only restate what the file says. Every failure is "no summary".
+// or a standard the input does not contain is dropped. That check catches invented figures and codes, not invented wording, so the page still tells the reader to check the summary against the file. Every failure is "no summary".
 
 /** How long the model gets: the wizard never waits on it, and a summary that arrives later is not worth showing. */
 export const SUMMARY_DEADLINE_MS = 75_000;

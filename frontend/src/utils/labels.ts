@@ -109,7 +109,7 @@ export const JOB_STATUS_LABELS: Record<string, { label: string; description: str
   },
   running: {
     label: 'Running',
-    description: 'Parsing and (in SURVEY mode) analyzing the document. BASELINE finishes in seconds; SURVEY scales with document size.',
+    description: 'Parsing and (in SURVEY mode) analyzing the document. BASELINE typically takes about a minute; SURVEY scales with document size.',
   },
   diff_ready: {
     // DESIGN.md §12: sentence case everywhere -- same fix as

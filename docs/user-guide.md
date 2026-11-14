@@ -21,7 +21,7 @@ Three connections feed the app. The status line at the bottom of the navigation 
 
 1. **Upload** a document and specify the target Azure DevOps area path.
 2. The tool ingests the document, infers a hierarchy, and computes a **dry-run diff** — a preview of what would be created or reused, without writing anything to Azure DevOps yet.
-3. Review the diff. Each row shows whether that item would be newly created or would reuse an existing Azure DevOps work item (re-running the same document never creates duplicates).
+3. Review the diff. Each row shows whether that item would be newly created or would reuse an existing Azure DevOps work item (re-running the same document reuses the items it already wrote; if the duplicate check could not run for an item, the job warns you).
 4. Deal with everything under **Fix before writing**: **Write to Azure DevOps** stays greyed out, with the reason beside it ("7 items to fix before writing"), until each of those items is reviewed or excluded. Pressing the greyed button takes you to what is blocking it. One exception: if the document simply has no Customer IDs, you can accept all of those requirements at once ("Accept 7 without a Customer ID"), and take it back with **Undo acceptance**.
 5. Click **Write to Azure DevOps** to perform the actual write — this cannot be undone from req2ado; items must be deleted directly in Azure DevOps afterward.
 
@@ -31,7 +31,7 @@ The toolbar groups what is left to decide: **Fix before writing** (must be dealt
 
 ### Keyboard shortcuts while reviewing
 
-Open an item (or start **Review in risk order**), then:
+Open an item. **J**, **K** and **E** work on any open item; **A**, **R**, **X** and **U** work while you step through **Review in risk order**:
 
 | Key | Does |
 |---|---|
@@ -47,7 +47,7 @@ The single-key shortcuts can be switched off under **Profile and connections** (
 
 ## The Jobs list
 
-Jobs are grouped: **Needs you** first (a job waiting for review, or one that failed, in the last week), then **Today**, **Yesterday**, **This week** and **Earlier**. A proposal that has waited more than a week is labelled **Stale**: the proposal was worked out against Azure DevOps as it was then, so look again before you write it. Nothing is deleted for being old. If the list is long, tick **Hide stale** to take them out of view (untick it to bring them back); the choice is remembered for you. On a narrow screen the less useful columns drop away (area path first, then mode and items), and on a phone only the document and its state are shown. Each job shows its short id (the start of its address), so two uploads of the same file name can be told apart.
+Jobs are grouped: **Needs you** first (a job waiting for review, or one that failed, in the last week), then **Today**, **Yesterday**, **This week** and **Earlier**. A job started more than a week ago that is still waiting for review is labelled **Stale**: the proposal was worked out against Azure DevOps as it was then, so look again before you write it. Nothing is deleted for being old. If the list is long, tick **Hide stale** to take them out of view (untick it to bring them back); the choice is remembered for you. On a narrow screen the less useful columns drop away (area path first, then mode and items), and on a phone only the document and its state are shown. Each job shows its short id (the start of its address), so two uploads of the same file name can be told apart.
 
 ## Customer ID
 
@@ -55,5 +55,5 @@ If your Azure DevOps project has a custom "Customer ID" field, the tool automati
 
 ## Troubleshooting
 
-- **"Upload failed"** — check that the file format is supported (txt, md, docx, pdf, scanned PDF, xlsx) and that the Area Path field is filled in.
+- **"Failed to parse the uploaded file"** — check that the file format is supported (txt, md, docx, pdf, scanned PDF, xlsx), then upload it again.
 - **Diff never becomes ready** — the ingestion service may be unreachable; contact your administrator.

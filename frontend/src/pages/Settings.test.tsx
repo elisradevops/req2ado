@@ -186,9 +186,9 @@ describe('Settings', () => {
       });
     });
 
-    it('toggles Auto-sync ledgers, defaulting to on', async () => {
+    it('toggles the Jobs list refresh, defaulting to on', async () => {
       renderPage();
-      const toggle = screen.getByRole('switch', { name: /auto-sync ledgers/i });
+      const toggle = screen.getByRole('switch', { name: /refresh the jobs list/i });
       expect(toggle).toHaveAttribute('aria-checked', 'true');
 
       await userEvent.click(toggle);

@@ -10,6 +10,13 @@ const BANNED: Array<[RegExp, string]> = [
   [/(?<![\w-])ADO(?![\w-])/g, '"ADO" (say Azure DevOps)'],
   [/(?<![\w-])WI(?![\w-])/g, '"WI" as prose (say work item; WI-12345 as an id is fine)'],
   [/Confirm and write|before confirming|on Confirm(?![\w])/g, '"Confirm" for the write (say Write to Azure DevOps)'],
+  // Copy the final QA audit found to be false or misleading; each names what the app cannot back up.
+  [/Auto-sync ledgers/g, '"Auto-sync ledgers" (the switch refreshes this app\'s Jobs list; it never contacts Azure DevOps)'],
+  [/feeds the fit|sharpens on its own/g, 'a claim that the BASELINE estimate learns (it is a flat figure)'],
+  [/Raise the output limit/g, 'a setting the app does not have (output limit)'],
+  [/embedding service/g, 'internal jargon in user copy (say the duplicate check)'],
+  [/BASELINE finishes in seconds/g, 'a BASELINE time that contradicts the one-minute estimate'],
+  [/were created as new without/g, '"created" before anything is written (say proposed)'],
 ];
 
 function stripComments(text: string): string {
@@ -44,5 +51,19 @@ describe('terminology ratchet (DESIGN.md §12)', () => {
     expect('process.env.ADO_BACKEND'.match(BANNED[0][0])).toBeNull();
     expect('Add direct child WI'.match(BANNED[1][0])).not.toBeNull();
     expect('written to ADO'.match(BANNED[0][0])).not.toBeNull();
+  });
+});
+
+describe('the user guide (docs/user-guide.md)', () => {
+  const guide = readFileSync(join(SRC_DIR, '..', '..', 'docs', 'user-guide.md'), 'utf8');
+
+  it('makes no promise the app cannot keep and names no message it never shows', () => {
+    expect(guide).not.toMatch(/never creates duplicates/i);
+    expect(guide).not.toMatch(/"Upload failed"/);
+    expect(guide).not.toMatch(/under \*\*Settings\*\*/);
+  });
+
+  it('says where the review shortcuts work: A, R, X and U need Review in risk order', () => {
+    expect(guide).toMatch(/\*\*J\*\*, \*\*K\*\* and \*\*E\*\* work on any open item/);
   });
 });
