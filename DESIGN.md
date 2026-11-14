@@ -1292,7 +1292,7 @@ gates on the same precondition a safety line would have named.
 ### §11.1b — The Jobs list (built 2026-11-13)
 
 The list answers "what is today's?" before "what is every job?". Rows are grouped, each group headed `Title · count`:
-**Needs you** (a Diff ready or Failed job from the last 7 days), then **Today**, **Yesterday**, **This week**, **Earlier** by the
+**Running now** (a job that is queued, running or writing, whatever day it started: the one the user is waiting on), then **Needs you** (a Diff ready or Failed job from the last 7 days), then **Today**, **Yesterday**, **This week**, **Earlier** by the
 reader's local day, newest first. A job is in exactly one group; empty groups are not drawn. Pure logic in `utils/jobGroups.ts`
 (`now` injected; one pass plus one sort, so 20,000 jobs group in well under a second).
 
@@ -4178,6 +4178,7 @@ Append-only. Every renamed or removed token, and every closed §1.8 divergence.
 | **Server safety, 2026-11-14** | `reject()` is status-guarded and answers 409; written jobs age from `completedAt` (the 2-day window is unchanged) | `orchestrator/src/modules/pipeline/{jobs.service,job-retention.service}.ts`. The final `confirm()` update was left unguarded: nothing but `reject()` changed a `writing` job, and a guarded update would drop the written-state diff if it ever missed. |
 | **Ingestion, 2026-11-14** | A requirement heading with sub-sections keeps its statement at the top of the summarized description (`keep_heading_statement`); a trace link between an item and any ancestor or descendant is dropped; new Check notice `requirement_heading_is_section` explains the count gap (shared schema enum, Python `WarningKind`, `KIND_META`, never a Fix kind) | `ingestion/app/leveling/{id_tree_builder,trace_links,hierarchy_rules,tree_builder,llm_leveling}.py`, `ingestion/app/workitem/model.py`, `shared/schemas/work-item-tree.schema.json`, `shared/ts/src/generated/WorkItemTree.ts`, `frontend/src/utils/warningKinds.ts`. |
 | **Step 3 overview counts, 2026-11-14** | Statements are sentences with shall, must, should or will, counted once per table row; every count agrees in number | `orchestrator/src/modules/pipeline/document-profile.ts` (+ spec). "The headings alone give N Epics…" was left as is: its accuracy against the baseline parser's full tree is unconfirmed. |
+| **Jobs list, 2026-11-14** | a "Running now" group above "Needs you"; "Re-run of <short id>" under a file name already run (matched by name, nearest earlier job); the 20 s refresh ignores a slower, older response and says it failed once per outage, not every 20 s | `utils/jobGroups.ts` (`rerunOf`), `pages/JobsList.tsx` (+ tests). `take` was not sent: the server's cap of 200 would hide older jobs without saying so. |
 
 ### §18.1 — Open migrations
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Briefcase, Plus, RefreshCw, Trash2, RotateCw, Layers } from 'lucide-react';
 import { listJobs, deleteJob, resubmitJob } from '../api/jobs';
@@ -27,7 +27,7 @@ import { cn } from '../lib/cn';
 import { ARRIVE } from '../ui/motion';
 import { formatDateTime } from '../utils/formatDateTime';
 import { IconButton } from '../ui/IconButton';
-import { groupJobs, isStaleJob, shortJobId } from '../utils/jobGroups';
+import { groupJobs, isStaleJob, rerunOf, shortJobId } from '../utils/jobGroups';
 import { useUserId } from '../store/authStore';
 import { jobStatusLabel } from '../utils/labels';
 
@@ -110,16 +110,27 @@ export function JobsList(): React.ReactElement {
   const denseView = useDenseView();
   const autoSyncLedgers = useAutoSyncLedgers();
 
+  // Each refresh gets a number. A slow response that was started before a newer one must not overwrite it, and a list that keeps failing says
+  // so once, not every 20 seconds, until a refresh works again.
+  const loadSeq = useRef(0);
+  const failureShown = useRef(false);
+
   function load(): void {
     setLoadError(false);
+    const seq = ++loadSeq.current;
     listJobs()
       .then((result) => {
+        if (seq !== loadSeq.current) return;
+        failureShown.current = false;
         setJobs(result);
         setLoaded(true);
       })
       .catch((err) => {
+        if (seq !== loadSeq.current) return;
         setLoaded(true);
         setLoadError(true);
+        if (failureShown.current) return;
+        failureShown.current = true;
         showErrorToast('Failed to load jobs.', err);
       });
   }
@@ -191,6 +202,7 @@ export function JobsList(): React.ReactElement {
   // Needs-you first, then by local day.
   const jobGroups = useMemo(() => groupJobs(filteredJobs, now), [filteredJobs, now]);
   const tileCounts = useMemo(() => computeTileCounts(jobs, now), [jobs, now]);
+  const reruns = useMemo(() => rerunOf(jobs), [jobs]);
   const itemsWritten = useMemo(() => jobs.reduce((sum, job) => sum + job.createdItemCount, 0), [jobs]);
 
   return (
@@ -405,6 +417,7 @@ export function JobsList(): React.ReactElement {
                               </Tooltip>
                             )}
                           </span>
+                          {reruns.has(job.id) && <span className="block text-xs text-ink-3">Re-run of {reruns.get(job.id)}</span>}
                           {job.status === 'failed' && job.failureClass && (
                             <span className="block max-w-[14rem] truncate text-xs text-ink-3 max-md:max-w-[7rem]">
                               {describeStoredFailure({ failureClass: job.failureClass })?.summary}

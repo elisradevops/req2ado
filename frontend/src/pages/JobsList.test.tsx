@@ -470,3 +470,73 @@ describe('JobsList', () => {
   });
 });
 
+
+describe('JobsList background refresh', () => {
+  const row = (id: string, name: string) => ({
+    id, mode: 'survey', status: 'succeeded', areaPath: 'Proj\\A', originalFilename: name, itemCount: 1, createdItemCount: 1, createdAt: new Date().toISOString(),
+  });
+
+  // The page refreshes on a 20 s interval. Capture that callback and call it by hand: no fake timers, so waitFor keeps working.
+  function captureRefresh(): () => void {
+    const spy = vi.spyOn(window, 'setInterval');
+    render(<ToastProvider><MemoryRouter><JobsList /></MemoryRouter></ToastProvider>);
+    const call = spy.mock.calls.find((args) => args[1] === 20_000);
+    if (!call) throw new Error('the page did not start its 20 s refresh');
+    return call[0] as () => void;
+  }
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it('says once that the list could not be refreshed, not on every failing refresh, and again after it recovers', async () => {
+    const list = vi.spyOn(jobsApi, 'listJobs').mockResolvedValueOnce([row('a1', 'first.docx')] as never);
+    const refresh = captureRefresh();
+    await waitFor(() => expect(screen.getByText('first.docx')).toBeInTheDocument());
+
+    list.mockRejectedValue(new Error('down'));
+    refresh();
+    await waitFor(() => expect(screen.getAllByText('Failed to load jobs.')).toHaveLength(1));
+    refresh();
+    refresh();
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(4));
+    expect(screen.getAllByText('Failed to load jobs.')).toHaveLength(1);
+
+    list.mockResolvedValue([row('a1', 'first.docx')] as never);
+    refresh();
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(5));
+    list.mockRejectedValue(new Error('down again'));
+    refresh();
+    await waitFor(() => expect(screen.getAllByText('Failed to load jobs.').length).toBeGreaterThanOrEqual(1));
+    expect(list).toHaveBeenCalledTimes(6);
+  });
+
+  it('pins a running job above "Needs you", and marks a re-run of the same file with the earlier job\'s id', async () => {
+    const now = Date.now();
+    vi.spyOn(jobsApi, 'listJobs').mockResolvedValue([
+      { ...row('aaaaaaaa-1', 'AirPro.docx'), status: 'diff_ready', createdAt: new Date(now - 3_600_000).toISOString() },
+      { ...row('bbbbbbbb-2', 'AirPro.docx'), status: 'running', createdAt: new Date(now - 60_000).toISOString() },
+    ] as never);
+    render(<ToastProvider><MemoryRouter><JobsList /></MemoryRouter></ToastProvider>);
+    await waitFor(() => expect(screen.getAllByText('AirPro.docx')).toHaveLength(2));
+    expect(screen.getAllByRole('rowheader').map((h) => h.textContent)).toEqual(['Running now · 1', 'Needs you · 1']);
+    expect(screen.getByText('Re-run of aaaaaaaa')).toBeInTheDocument();
+    expect(screen.getAllByText(/^Re-run of /)).toHaveLength(1);
+  });
+
+  it('does not let a slow, older response overwrite a newer one', async () => {
+    let releaseOld: (value: unknown) => void = () => {};
+    const list = vi.spyOn(jobsApi, 'listJobs').mockResolvedValueOnce([row('a1', 'first.docx')] as never);
+    const refresh = captureRefresh();
+    await waitFor(() => expect(screen.getByText('first.docx')).toBeInTheDocument());
+
+    list.mockImplementationOnce(() => new Promise((resolve) => { releaseOld = resolve; }) as never);
+    refresh(); // the slow one, started first
+    list.mockResolvedValueOnce([row('a2', 'newer.docx')] as never);
+    refresh(); // the fast one, started second
+    await waitFor(() => expect(screen.getByText('newer.docx')).toBeInTheDocument());
+
+    releaseOld([row('a3', 'older.docx')]);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(screen.getByText('newer.docx')).toBeInTheDocument();
+    expect(screen.queryByText('older.docx')).not.toBeInTheDocument();
+  });
+});

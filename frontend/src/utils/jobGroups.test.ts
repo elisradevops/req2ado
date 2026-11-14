@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { groupJobs, isStaleJob, shortJobId, STALE_AFTER_DAYS, type JobGroupable } from './jobGroups';
+import { groupJobs, isStaleJob, rerunOf, shortJobId, STALE_AFTER_DAYS, type JobGroupable } from './jobGroups';
 
 // "Now" is Fri 13 Nov 2026, 10:00 local, so the day boundaries do not depend on when the suite runs.
 const NOW = new Date(2026, 10, 13, 10, 0, 0);
@@ -93,5 +93,56 @@ describe('groupJobs', () => {
     const groups = groupJobs(jobs, NOW);
     expect(performance.now() - started).toBeLessThan(1000);
     expect(groups.reduce((n, g) => n + g.jobs.length, 0)).toBe(20000);
+  });
+});
+
+describe('running jobs', () => {
+  it('pins pending, running and writing jobs in "Running now", above "Needs you", whatever day they started', () => {
+    const groups = groupJobs(
+      [
+        job('review', 'diff_ready', daysAgo(0)),
+        job('queued', 'pending', daysAgo(0, 8)),
+        job('going', 'running', daysAgo(0, 9)),
+        job('writing', 'writing', daysAgo(2)),
+        job('done', 'succeeded', daysAgo(0)),
+      ],
+      NOW,
+    );
+    expect(groups.map((g) => g.id)).toEqual(['running', 'needs_you', 'today']);
+    expect(groups[0].title).toBe('Running now');
+    expect(groups[0].jobs.map((j) => j.id)).toEqual(['going', 'queued', 'writing']);
+  });
+
+  it('keeps every job in exactly one group with the new one in place', () => {
+    const jobs = [job('a', 'running', daysAgo(0)), job('b', 'diff_ready', daysAgo(0)), job('c', 'failed', daysAgo(0)), job('d', 'succeeded', daysAgo(40))];
+    const placed = groupJobs(jobs, NOW).flatMap((g) => g.jobs.map((j) => j.id));
+    expect(placed.sort()).toEqual(['a', 'b', 'c', 'd']);
+  });
+});
+
+describe('rerunOf', () => {
+  const named = (id: string, createdAt: string, originalFilename: string, status = 'diff_ready') => ({ id, status, createdAt, originalFilename });
+
+  it('names the earlier job that had the same file name, for each later one', () => {
+    const jobs = [named('bbbbbbbb-2', daysAgo(0), 'AirPro.docx'), named('aaaaaaaa-1', daysAgo(1), 'AirPro.docx'), named('cccccccc-3', daysAgo(0), 'Other.docx')];
+    const map = rerunOf(jobs);
+    expect(map.get('bbbbbbbb-2')).toBe('aaaaaaaa');
+    expect(map.has('aaaaaaaa-1')).toBe(false);
+    expect(map.has('cccccccc-3')).toBe(false);
+  });
+
+  it('points at the nearest earlier job, not the first one ever', () => {
+    const jobs = [named('3333', daysAgo(0), 'F.docx'), named('2222', daysAgo(1), 'F.docx'), named('1111', daysAgo(2), 'F.docx')];
+    const map = rerunOf(jobs);
+    expect(map.get('3333')).toBe('2222');
+    expect(map.get('2222')).toBe('1111');
+  });
+
+  it('matches names without regard to case, and is one pass for 20,000 jobs', () => {
+    const jobs = Array.from({ length: 20000 }, (_, i) => named(`job-${i}`, new Date(2026, 0, 1, 0, 0, i).toISOString(), i % 2 ? 'A.DOCX' : 'a.docx'));
+    const started = performance.now();
+    const map = rerunOf(jobs);
+    expect(performance.now() - started).toBeLessThan(500);
+    expect(map.size).toBe(19999);
   });
 });

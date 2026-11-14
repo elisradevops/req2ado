@@ -8,9 +8,10 @@ export interface JobGroupable {
   createdAt: string;
 }
 
-export type JobGroupId = 'needs_you' | 'today' | 'yesterday' | 'this_week' | 'earlier';
+export type JobGroupId = 'running' | 'needs_you' | 'today' | 'yesterday' | 'this_week' | 'earlier';
 
 export const JOB_GROUP_TITLES: Record<JobGroupId, string> = {
+  running: 'Running now',
   needs_you: 'Needs you',
   today: 'Today',
   yesterday: 'Yesterday',
@@ -18,7 +19,7 @@ export const JOB_GROUP_TITLES: Record<JobGroupId, string> = {
   earlier: 'Earlier',
 };
 
-const GROUP_ORDER: JobGroupId[] = ['needs_you', 'today', 'yesterday', 'this_week', 'earlier'];
+const GROUP_ORDER: JobGroupId[] = ['running', 'needs_you', 'today', 'yesterday', 'this_week', 'earlier'];
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 // The first 8 characters of the job id: what the job's URL starts with, so a row can be matched to its page.
@@ -56,13 +57,17 @@ function needsYou(job: JobGroupable, now: Date): boolean {
   return job.status === 'diff_ready' && !isStaleJob(job, now);
 }
 
-// "Needs you" first: a Diff ready or Failed job from the last week. Everything else by local day, newest first. A stale job falls to
+// A job that is waiting for a worker, running, or writing. Pinned above everything, whatever day it started: it is the job the user is
+// waiting on, and it would otherwise sit under 17 proposals.
+const RUNNING_STATUSES = new Set(['pending', 'running', 'writing']);
+
+// "Running now" first, then "Needs you": a Diff ready or Failed job from the last week. Everything else by local day, newest first. A stale job falls to
 // its day group, so 60 old proposals do not bury today's. Each job is in exactly one group; empty groups are dropped.
 export function groupJobs<T extends JobGroupable>(jobs: T[], now: Date): Array<{ id: JobGroupId; title: string; jobs: T[] }> {
   const today = startOfLocalDay(now);
-  const buckets: Record<JobGroupId, T[]> = { needs_you: [], today: [], yesterday: [], this_week: [], earlier: [] };
+  const buckets: Record<JobGroupId, T[]> = { running: [], needs_you: [], today: [], yesterday: [], this_week: [], earlier: [] };
   for (const job of jobs) {
-    buckets[needsYou(job, now) ? 'needs_you' : dayGroupOf(job.createdAt, today)].push(job);
+    buckets[RUNNING_STATUSES.has(job.status) ? 'running' : needsYou(job, now) ? 'needs_you' : dayGroupOf(job.createdAt, today)].push(job);
   }
   const time = (job: T): number => {
     const parsed = Date.parse(job.createdAt);
@@ -73,4 +78,23 @@ export function groupJobs<T extends JobGroupable>(jobs: T[], now: Date): Array<{
     title: JOB_GROUP_TITLES[id],
     jobs: [...buckets[id]].sort((a, b) => time(b) - time(a)),
   }));
+}
+
+// For each job that has an earlier job with the same file name (case aside), the short id of the nearest earlier one: "Re-run of 0c5d877e".
+// The name is the only link the list has between two runs of one file. One sort and one pass.
+export function rerunOf(jobs: ReadonlyArray<{ id: string; createdAt: string; originalFilename: string }>): Map<string, string> {
+  const time = (createdAt: string): number => {
+    const parsed = Date.parse(createdAt);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+  const oldestFirst = [...jobs].sort((a, b) => time(a.createdAt) - time(b.createdAt));
+  const lastIdByName = new Map<string, string>();
+  const out = new Map<string, string>();
+  for (const job of oldestFirst) {
+    const name = job.originalFilename.toLowerCase();
+    const earlier = lastIdByName.get(name);
+    if (earlier !== undefined) out.set(job.id, shortJobId(earlier));
+    lastIdByName.set(name, job.id);
+  }
+  return out;
 }
