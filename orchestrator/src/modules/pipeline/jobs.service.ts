@@ -16,6 +16,7 @@ import { createHash, randomUUID } from 'crypto';
 import type { McpClient } from './mcp.client';
 import { IngestionHttpError, type IngestionHttpClient, type RewriteComparison, type ScoreExplanation } from './ingestion-http.client';
 import { buildChatContext } from '../chat/chat-context';
+import { idempotencyMapKey } from '../writeback/idempotency.service';
 import type { IdempotencyService } from '../writeback/idempotency.service';
 import type { DiscussionEntry, DryRunDiffEntry, TraceLink, WarningRecord } from '../writeback/dry-run.service';
 import { mapWithConcurrency, type SettledResult } from './map-with-concurrency';
@@ -2310,6 +2311,40 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     return { status: 'rejected' };
   }
 
+  // Write-time re-check. Another job's confirm may have written an item between the moment this diff was built and now (two proposals of the same
+  // file waiting for review side by side, which is what a batch produces), and the diff cannot know. For a first write, every entry still marked
+  // `create` is looked up by its source hash; a hit is turned into a `reuse` of the item that exists, so it is linked and not created twice.
+  // Best effort and fail-open, like the similarity check: a lookup error is logged and the write goes on as planned. Returns how many were linked.
+  private async linkItemsWrittenByAnotherJob(
+    diff: { localId: string; action: string; existingAdoId: number | null; sourceHash: string }[],
+    isExcluded: (entry: never) => boolean,
+    areaPath: string,
+    selectedLocalIds: string[] | undefined,
+  ): Promise<number> {
+    const selected = selectedLocalIds ? new Set(selectedLocalIds) : null;
+    const candidates = diff.filter(
+      (entry) => entry.action === 'create' && !!entry.sourceHash && !isExcluded(entry as never) && (selected === null || selected.has(entry.localId)),
+    );
+    if (candidates.length === 0) return 0;
+    let found: Map<string, number>;
+    try {
+      found = await this.idempotencyService.lookupMany(candidates.map((entry) => ({ sourceHash: entry.sourceHash, areaPath })));
+    } catch (error) {
+      // eslint-disable-next-line no-console -- no structured logger in this service
+      console.warn(`Write-time duplicate re-check skipped: ${error instanceof Error ? error.message : String(error)}`);
+      return 0;
+    }
+    let linked = 0;
+    for (const entry of candidates) {
+      const existing = found.get(idempotencyMapKey(entry.sourceHash, areaPath));
+      if (existing === undefined) continue;
+      entry.action = 'reuse';
+      entry.existingAdoId = existing;
+      linked += 1;
+    }
+    return linked;
+  }
+
   private static sameMappingSnapshot(
     a: { localId: string; adoWorkItemId: number; linked: boolean }[],
     b: { localId: string; adoWorkItemId: number; linked: boolean }[],
@@ -2558,6 +2593,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     // most one ADO round-trip total, not one per field concept.
     const fieldsByType = new Map<string, Promise<{ referenceName: string; allowedValues: string[]; alwaysRequired: boolean }[]>>();
     let createdCount = 0;
+    let linkedInsteadCount = 0;
 
     // A failure anywhere below previously left the job stuck in 'writing'
     // forever -- confirm()'s own guard requires 'diff_ready', so no retry
@@ -2585,6 +2621,9 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       // 'needs a real create' -- the two are handled by completely
       // different phases below.
       // The rules live in write-plan.ts so the pre-write preview uses the same ones.
+      if (existingMappings.length === 0) {
+        linkedInsteadCount = await this.linkItemsWrittenByAnotherJob(diff, isExcluded, job.areaPath, selectedLocalIds);
+      }
       const { toCreate, resolvedAdoIdByLocalId } = selectEntriesToCreate(diff, isExcluded, { resumedAdoIdByLocalId, selectedLocalIds });
       for (const [localId, adoId] of resolvedAdoIdByLocalId) adoIdByLocalId.set(localId, adoId);
 
@@ -3224,6 +3263,14 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     await this.prisma.auditEntry.create({
       data: { jobId: id, message: `Job confirmed: ${createdCount} work item(s) created` },
     });
+    if (linkedInsteadCount > 0) {
+      await this.prisma.auditEntry.create({
+        data: {
+          jobId: id,
+          message: `${linkedInsteadCount} ${linkedInsteadCount === 1 ? 'item was' : 'items were'} already written by another job and ${linkedInsteadCount === 1 ? 'was' : 'were'} linked instead of created again.`,
+        },
+      });
+    }
     return { status: 'succeeded', createdCount };
   }
 }

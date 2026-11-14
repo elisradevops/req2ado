@@ -7721,3 +7721,67 @@ describe('JobsService.reject (status-guarded)', () => {
     expect(prisma.auditEntry.create).not.toHaveBeenCalled();
   });
 });
+
+describe('JobsService.confirm write-time duplicate re-check', () => {
+  const entry = (localId: string, sourceHash: string) => ({
+    localId, parentLocalId: null, type: 'Feature', title: localId, description: `d${localId}`, action: 'create', existingAdoId: null, sourceHash, customerId: null, sourceRef: null, tags: [],
+  });
+  const build = (idempotency: Record<string, jest.Mock>) => {
+    const createWorkItem = jest.fn().mockResolvedValue({ id: 100 });
+    const prisma = {
+      job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project', dryRunDiff: [entry('n0', 'h0'), entry('n1', 'h1')],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      jobFigureFile: { findMany: jest.fn().mockResolvedValue([]) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+    };
+    const record = jest.fn().mockResolvedValue(undefined);
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record, ...idempotency } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+      undefined, undefined, undefined, undefined,
+      { publish: jest.fn().mockResolvedValue(undefined), publishNarration: jest.fn().mockResolvedValue(undefined) } as any,
+    );
+    return { service, prisma, createWorkItem, record };
+  };
+
+  it('links, instead of creating again, an item that another job wrote after this diff was built, and says so in the audit', async () => {
+    const lookupMany = jest.fn().mockResolvedValue(new Map([[idempotencyKeyFor('h0', 'Project\\Area1'), 555]]));
+    const { service, prisma, createWorkItem, record } = build({ lookupMany });
+
+    const result = await service.confirm('job-1');
+
+    expect(lookupMany).toHaveBeenCalledWith([
+      { sourceHash: 'h0', areaPath: 'Project\\Area1' },
+      { sourceHash: 'h1', areaPath: 'Project\\Area1' },
+    ]);
+    expect(createWorkItem).toHaveBeenCalledTimes(1);
+    expect(createWorkItem.mock.calls[0][1]).toMatchObject({ 'System.Title': 'n1' });
+    expect(record).toHaveBeenCalledTimes(1);
+    expect(record).toHaveBeenCalledWith('h1', 'Project\\Area1', 100);
+    expect(result).toEqual({ status: 'succeeded', createdCount: 1 });
+    expect(prisma.auditEntry.create).toHaveBeenCalledWith({
+      data: { jobId: 'job-1', message: '1 item was already written by another job and was linked instead of created again.' },
+    });
+  });
+
+  it('writes everything as before when the re-check itself fails: a lookup error must not block a write', async () => {
+    const lookupMany = jest.fn().mockRejectedValue(new Error('db blip'));
+    const { service, createWorkItem } = build({ lookupMany });
+
+    const result = await service.confirm('job-1');
+
+    expect(createWorkItem).toHaveBeenCalledTimes(2);
+    expect(result).toEqual({ status: 'succeeded', createdCount: 2 });
+  });
+});
+
+import { idempotencyMapKey as idempotencyKeyFor } from '../src/modules/writeback/idempotency.service';
