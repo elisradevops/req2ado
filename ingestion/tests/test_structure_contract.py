@@ -379,3 +379,38 @@ def test_a_statement_heading_that_became_a_section_says_so_in_one_notice(mode: s
     assert [n.type.value for n in named] == ["Feature"]
     assert any("undervoltage" in (n.description or "") for n in named)
     assert "undervoltage fault" in notice.raw
+
+
+def _section(local_id: str, title: str, node_type: str, parent: str | None = None):
+    from app.canonical.model import SourceRef
+    from app.workitem.model import WorkItemMode, WorkItemNode, WorkItemType
+
+    return WorkItemNode(
+        local_id=local_id,
+        type=WorkItemType(node_type),
+        parent_local_id=parent,
+        title=title,
+        description=title,
+        source_ref=SourceRef(document_path="x.docx", start_offset=0, end_offset=1),
+        mode=WorkItemMode.BASELINE,
+    )
+
+
+def test_the_section_notice_names_only_sections_that_have_sub_sections_and_state_a_requirement() -> None:
+    from app.leveling.hierarchy_rules import requirement_heading_warning
+
+    # A statement with sub-sections: flagged.
+    parent = _section("a", "The unit must report an undervoltage fault.", "Feature")
+    child = _section("b", "Ripple limit applies", "Requirement", parent="a")
+    notice = requirement_heading_warning([parent, child])
+    assert notice is not None and notice.node_ids == ["a"]
+
+    # A statement with no sub-section is a Requirement or a leaf: nothing was turned into a section, so nothing to say.
+    leaf = _section("c", "The unit must report an undervoltage fault.", "Feature")
+    assert requirement_heading_warning([leaf]) is None
+
+    # Titles that only look like an obligation: a month, a "will-call" interface. The notice reads shall, must and should.
+    month = _section("d", "Release notes - May 2025", "Epic")
+    will_call = _section("e", "Will-call interfaces", "Feature", parent="d")
+    under = _section("f", "Ports", "Requirement", parent="e")
+    assert requirement_heading_warning([month, will_call, under]) is None

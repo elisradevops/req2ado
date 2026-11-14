@@ -498,7 +498,8 @@ class WarningKind(StrEnum):
     CRITERIA_VALUE_UNGROUNDED = "criteria_value_ungrounded"
     # A heading that states a requirement (an obligation word in its own text) has sub-sections, so it was typed a section (Epic or Feature), not a
     # Requirement: its statement is kept at the top of that section's description, but the tree has one Requirement fewer than the source has statements.
-    # Informational: nothing is lost and nothing needs fixing; `node_ids` are the sections, `detail["headings"]` the heading texts.
+    # Shown in the Check group (needs_review) but never blocks a write: nothing is lost and nothing has to be fixed. `node_ids` are the sections,
+    # `detail["headings"]` the heading texts.
     REQUIREMENT_HEADING_IS_SECTION = "requirement_heading_is_section"
 
 

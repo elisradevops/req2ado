@@ -75,8 +75,9 @@ const GLOSSARY_HEADING = /glossary|acronyms?|abbreviations|definitions|terms and
 // "1 Epic", "2 Epics": a count of one is singular everywhere the profile says one.
 const counted = (n: number, singular: string, plural = `${singular}s`): string => `${n} ${n === 1 ? singular : plural}`;
 
-// A sentence that carries an obligation. Ingestion reads the same words (hierarchy_rules.py), so the overview counts what the run will treat as a
-// requirement, not only the word "shall".
+// A sentence that carries an obligation. This is the core of what ingestion reads (hierarchy_rules.py reads a few more: may, needs to, is required),
+// so the overview counts close to what the run will treat as a requirement, not only the word "shall". The overview deliberately leaves the weaker
+// words out; the counts are a guide to the document, not a promise about the tree.
 const OBLIGATION = /\b(?:shall|must|should|will)\b/i;
 // X placeholders need three X (or XX with a lowercase x after): a bare XX is the Roman numeral twenty ("Annex XX").
 // A part number such as XXX-123 or XXX/7 is not a placeholder.

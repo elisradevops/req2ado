@@ -20,6 +20,10 @@ _OBLIGATION = re.compile(
 
 E, F, R = WorkItemType.EPIC, WorkItemType.FEATURE, WorkItemType.REQUIREMENT
 
+# The notice reads only the three words a requirement is written with. The typing rule above is wider (it also reads may, will, needs to), which
+# is right for deciding a shape but would name "Release notes - May 2025" or "Will-call interfaces" in a message that says "states a requirement".
+_STATES_A_REQUIREMENT_NOTICE = re.compile(r"\b(shall|must|should)\b", re.IGNORECASE)
+
 # (child type, parent type) pairs the ladder allows. Same-type nesting is allowed (Epic under Epic, Feature under
 # Feature, Requirement under Requirement); a root can only be an Epic.
 _VALID_PARENT = {E: {E}, F: {E, F}, R: {F, R}}
@@ -87,14 +91,15 @@ def type_headings_by_shape(
 
 def requirement_heading_warning(nodes: list[WorkItemNode]) -> IntegrityWarning | None:
     """One notice for the headings that state a requirement yet became sections (they have sub-sections), or None.
-    Read from the final tree, once per run: a section node (Epic or Feature) built from a heading whose own text carries
-    an obligation word. Synthesized nodes (bridge Features, regrouped or wrapped Epics) are not headings of the source."""
+    Read from the final tree, once per run: a section node (Epic or Feature) that has children, built from a heading whose own
+    text says shall, must or should. Synthesized nodes (bridge Features, regrouped or wrapped Epics) are not headings of the source."""
+    has_children = {n.parent_local_id for n in nodes if n.parent_local_id}
     flagged: list[WorkItemNode] = []
     for n in nodes:
-        if n.type == R or "synth_" in n.local_id:
+        if n.type == R or "synth_" in n.local_id or n.local_id not in has_children:
             continue
         heading = n.source_title or n.title
-        if heading and states_a_requirement(heading):
+        if heading and _STATES_A_REQUIREMENT_NOTICE.search(heading):
             flagged.append(n)
     if not flagged:
         return None
