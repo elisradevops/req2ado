@@ -261,3 +261,17 @@ describe('overview_reused', () => {
     expect(KIND_META.overview_reused.group).toBe('info');
   });
 });
+
+describe('requirement_heading_is_section', () => {
+  it('is a Check notice: it explains a count, it never blocks the write', () => {
+    expect(KIND_META.requirement_heading_is_section.group).toBe('review');
+    expect(KIND_META.requirement_heading_is_section.ackPolicy ?? 'per_item').toBe('per_item');
+  });
+
+  it('says in plain words why the tree has fewer Requirements than the document has statements', () => {
+    const meta = KIND_META.requirement_heading_is_section;
+    expect(meta.title).toBe('Statement kept as a section');
+    expect(meta.short).toMatch(/sub-sections/i);
+    expect(meta.means).toMatch(/top of/i);
+  });
+});

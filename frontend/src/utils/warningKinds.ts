@@ -101,6 +101,15 @@ export const KIND_META: Record<string, KindMeta> = {
     chip: 'Criteria left out',
     unit: ['item', 'items'],
   },
+  requirement_heading_is_section: {
+    title: 'Statement kept as a section',
+    group: 'review',
+    short: 'A heading that states a requirement has sub-sections, so it is a section, not a Requirement.',
+    means: 'The statement is at the top of the section\'s description, so nothing is lost. The tree has one Requirement fewer than the document has statements.',
+    todo: 'Open the section and check its statement. Add a Requirement under it if the statement should be tracked on its own.',
+    chip: 'Kept as a section',
+    unit: ['section', 'sections'],
+  },
   zero_nodes: {
     title: 'A section produced no items',
     group: 'fix',
