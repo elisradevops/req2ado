@@ -186,4 +186,49 @@ describe('IdempotencyService', () => {
       expect(result.get(idempotencyMapKey('hash1', 'Project\\Area3'))).toBeUndefined();
     });
   });
+
+  // W1 content-aware identity: confirm() writes a v2 row beside the v1 row, both carrying the content hash of what was written.
+  it('record stores the content hash and identity version when given (the dual write confirm() makes)', async () => {
+    // @ts-expect-error -- fake Prisma client for the test
+    const service = new IdempotencyService(fakePrisma);
+    await service.record('v1-hash', 'Project\\Area1', 42, { contentHash: 'c1', identityVersion: 1 });
+    await service.record('v2-hash', 'Project\\Area1', 42, { contentHash: 'c1', identityVersion: 2 });
+    expect(fakePrisma.idempotencyMapping.upsert).toHaveBeenNthCalledWith(1, {
+      where: { sourceHash_areaPath: { sourceHash: 'v1-hash', areaPath: 'Project\\Area1' } },
+      create: { sourceHash: 'v1-hash', areaPath: 'Project\\Area1', adoWorkItemId: 42, contentHash: 'c1', identityVersion: 1 },
+      update: { adoWorkItemId: 42, contentHash: 'c1', identityVersion: 1 },
+    });
+    expect(fakePrisma.idempotencyMapping.upsert).toHaveBeenNthCalledWith(2, {
+      where: { sourceHash_areaPath: { sourceHash: 'v2-hash', areaPath: 'Project\\Area1' } },
+      create: { sourceHash: 'v2-hash', areaPath: 'Project\\Area1', adoWorkItemId: 42, contentHash: 'c1', identityVersion: 2 },
+      update: { adoWorkItemId: 42, contentHash: 'c1', identityVersion: 2 },
+    });
+  });
+
+  it('a lazy v2 backfill only adds a missing row: it never moves or rewrites one that exists', async () => {
+    // @ts-expect-error -- fake Prisma client for the test
+    const service = new IdempotencyService(fakePrisma);
+    await service.record('v2-hash', 'Project\\Area1', 42, { contentHash: null, identityVersion: 2, onlyIfMissing: true });
+    expect(fakePrisma.idempotencyMapping.upsert).toHaveBeenCalledWith({
+      where: { sourceHash_areaPath: { sourceHash: 'v2-hash', areaPath: 'Project\\Area1' } },
+      create: { sourceHash: 'v2-hash', areaPath: 'Project\\Area1', adoWorkItemId: 42, contentHash: null, identityVersion: 2 },
+      update: {},
+    });
+  });
+
+  it('lookupMappings returns each matched row with its stored content hash (null for a row written before W1)', async () => {
+    fakePrisma.idempotencyMapping.findMany.mockResolvedValue([
+      { sourceHash: 'v2-hash', areaPath: 'Project\\Area1', adoWorkItemId: 7, contentHash: 'c1', identityVersion: 2 },
+      { sourceHash: 'v1-hash', areaPath: 'Project\\Area1', adoWorkItemId: 8, contentHash: null, identityVersion: 1 },
+    ]);
+    // @ts-expect-error -- fake Prisma client for the test
+    const service = new IdempotencyService(fakePrisma);
+    const result = await service.lookupMappings([
+      { sourceHash: 'v2-hash', areaPath: 'Project\\Area1' },
+      { sourceHash: 'v1-hash', areaPath: 'Project\\Area1' },
+    ]);
+    expect(fakePrisma.idempotencyMapping.findMany).toHaveBeenCalledWith({ where: { sourceHash: { in: ['v2-hash', 'v1-hash'] } } });
+    expect(result.get(idempotencyMapKey('v2-hash', 'Project\\Area1'))).toEqual({ adoWorkItemId: 7, contentHash: 'c1' });
+    expect(result.get(idempotencyMapKey('v1-hash', 'Project\\Area1'))).toEqual({ adoWorkItemId: 8, contentHash: null });
+  });
 });

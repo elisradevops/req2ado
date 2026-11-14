@@ -47,6 +47,13 @@ export const configSchema = z.object({
   // value as ingestion's KB_PROFILE_MODEL so the background build and a job's lazy build agree.
   KB_PROFILE_MODEL: z.string().optional(),
   RESULT_CACHE_VERSION: z.string().default('1'),
+  // W1 content-aware identity: a follow-up file is matched by identity_hash_v2 first (so a renamed or shifted file still matches) and a
+  // reused item whose content changed is flagged. 'false' restores the v1 position lookup exactly, with no code change; confirm() keeps
+  // writing the v2 rows either way, so turning it back on loses nothing.
+  IDENTITY_V2_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
   MODEL_HEALTH_ENABLED: z
     .enum(['true', 'false'])
     .default('true')

@@ -49,7 +49,7 @@ const ingestionClient = new IngestionHttpClient(process.env.INGESTION_BASE_URL ?
   idleTimeoutMs: config.INGESTION_IDLE_TIMEOUT_MS,
   maxDurationMs: config.LEVEL_MAX_DURATION_MS,
 });
-const dryRunService = new DryRunService();
+const dryRunService = new DryRunService(undefined, config.IDENTITY_V2_ENABLED);
 const idempotencyService = new IdempotencyService(prisma);
 const jobEventsPublisherRedis = new Redis(config.REDIS_URL);
 jobEventsPublisherRedis.on('error', (err) => {

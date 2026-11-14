@@ -7853,3 +7853,73 @@ describe('JobsService.confirm write-time duplicate re-check', () => {
 });
 
 import { idempotencyMapKey as idempotencyKeyFor } from '../src/modules/writeback/idempotency.service';
+
+describe('JobsService.confirm identity v2 (W1)', () => {
+  const area = 'Project\\Area1';
+  const build = (diff: unknown[]) => {
+    const prisma = {
+      job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: area, adoProject: 'Project', dryRunDiff: diff }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      jobFigureFile: { findMany: jest.fn().mockResolvedValue([]) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+    };
+    const record = jest.fn().mockResolvedValue(undefined);
+    const service = new JobsService(
+      prisma as any,
+      {
+        createWorkItem: jest.fn().mockResolvedValue({ id: 100 }),
+        getWorkItemsBatch: jest.fn().mockResolvedValue([]),
+        linkParentChild: jest.fn(),
+        discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }),
+      } as any,
+      { record, deleteByAdoWorkItemId: jest.fn(), lookupMany: jest.fn().mockResolvedValue(new Map()) } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+      undefined, undefined, undefined, undefined,
+      { publish: jest.fn().mockResolvedValue(undefined), publishNarration: jest.fn().mockResolvedValue(undefined) } as any,
+    );
+    return { service, record };
+  };
+  const entry = (extra: Record<string, unknown>) => ({
+    localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Power', description: 'd', action: 'create', existingAdoId: null,
+    sourceHash: 'v1', customerId: null, sourceRef: null, tags: [], ...extra,
+  });
+
+  it('records only the v1 row for a created Epic or Feature: a heading is not an identity another document may adopt', async () => {
+    const { service, record } = build([entry({ type: 'Feature', identityHashV2: 'v2', contentHash: 'c1' })]);
+    await service.confirm('job-1');
+    expect(record).toHaveBeenCalledTimes(1);
+    expect(record).toHaveBeenCalledWith('v1', area, 100, { contentHash: 'c1', identityVersion: 1 });
+  });
+
+  it('records both the v1 and the v2 row for a created Requirement, each with the content hash', async () => {
+    const { service, record } = build([entry({ type: 'Requirement', identityHashV2: 'v2', contentHash: 'c1' })]);
+    await service.confirm('job-1');
+    expect(record).toHaveBeenCalledTimes(2);
+    expect(record).toHaveBeenCalledWith('v1', area, 100, { contentHash: 'c1', identityVersion: 1 });
+    expect(record).toHaveBeenCalledWith('v2', area, 100, { contentHash: 'c1', identityVersion: 2 });
+  });
+
+  it('lazily adds the v2 row for an item reused through its v1 row, without moving an existing one', async () => {
+    const { service, record } = build([
+      entry({}), // one item to create, so there is something to write
+      entry({ localId: 'r0', type: 'Requirement', action: 'reuse', existingAdoId: 55, identityHashV2: 'v2-r', contentHash: 'c2', backfillIdentityV2: true, writtenContentHash: 'c2' }),
+      entry({ localId: 'r1', action: 'reuse', existingAdoId: 56, sourceHash: 'v1-b', identityHashV2: 'v2-b', contentHash: 'c3' }),
+    ]);
+    await service.confirm('job-1');
+    expect(record).toHaveBeenCalledTimes(2);
+    expect(record).toHaveBeenCalledWith('v1', area, 100);
+    expect(record).toHaveBeenCalledWith('v2-r', area, 55, { contentHash: 'c2', identityVersion: 2, onlyIfMissing: true });
+  });
+
+  it('an entry from before W1 (no v2, no content hash) is recorded exactly as before', async () => {
+    const { service, record } = build([entry({})]);
+    await service.confirm('job-1');
+    expect(record).toHaveBeenCalledTimes(1);
+    expect(record).toHaveBeenCalledWith('v1', area, 100);
+  });
+});

@@ -7,7 +7,7 @@ import type { PrismaClient } from '@prisma/client';
 import type { IngestionHttpClient } from './ingestion-http.client';
 import type { CanonicalDoc } from '@req2ado/shared-ts';
 import type { OpenWebUiClientFactory } from '../llm/openwebui-client.factory';
-import { resolveCrossJobTraceLinks, verifyExistingAdoIdsStillExist, type WarningRecord } from '../writeback/dry-run.service';
+import { changedSinceWrittenWarning, resolveCrossJobTraceLinks, verifyExistingAdoIdsStillExist, type WarningRecord } from '../writeback/dry-run.service';
 import type { DryRunService, DryRunTreeNode } from '../writeback/dry-run.service';
 import type { IdempotencyService } from '../writeback/idempotency.service';
 import type { BackfillService } from '../writeback/backfill.service';
@@ -359,6 +359,10 @@ interface LeveledNode {
   // the mapping -- falls back to fidelity_hash at the diffInputs mapping
   // below, i.e. the pre-identity_hash behavior exactly.
   identity_hash?: string | null;
+  // W1 content-aware identity and content hash (see ingestion/app/leveling/identity_v2.py, DryRunTreeNode.identityHashV2). Optional for
+  // the same backward-compat reason as identity_hash: an older or cached ingestion result predating them keeps the v1 lookup.
+  identity_hash_v2?: string | null;
+  content_hash?: string | null;
   customer_id: string | null;
   // Optional, same backward-compat reason as the scoring fields below --
   // an older/mocked ingestion response predating this field must not crash
@@ -971,6 +975,8 @@ export async function runPipelineJob(
         // fidelity_hash; dry-run.service.ts's `?? undefined` handles the
         // null case for an older/mocked node shape.
         legacySourceHash: node.fidelity_hash,
+        identityHashV2: node.identity_hash_v2 ?? undefined,
+        contentHash: node.identity_hash_v2 ? (node.content_hash ?? null) : undefined,
         customerId: node.customer_id,
         // Always null coming out of ingestion (see WorkItemNode.
         // se_coverage_ref's own docstring) -- carried through purely so a
@@ -1220,7 +1226,12 @@ export async function runPipelineJob(
         console.error(`verifyExistingAdoIdsStillExist failed for job ${job.id}:`, message);
         verificationWarnings.push({ kind: 'ado_verification_failed', severity: 'pipeline_issue', nodeIds: [], detail: {}, raw: message });
       },
+      // W1: an old mapping has no content hash, so the text in ADO is compared instead -- only for verbatim BASELINE text.
+      { compareText: job.mode === 'baseline' },
     );
+    // W1: one Check notice listing every reused item whose content changed since it was written (nothing is updated in ADO, D-W1b).
+    const changedWarning = changedSinceWrittenWarning(verifiedDiff);
+    if (changedWarning) verificationWarnings.push(changedWarning);
     // Best-effort cleanup: a 'reuse' (exact-hash IdempotencyMapping) match
     // that just got downgraded means that row now points at a dead ADO
     // id -- delete it so this SAME node doesn't match the same stale id

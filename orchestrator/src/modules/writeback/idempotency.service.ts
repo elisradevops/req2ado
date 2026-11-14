@@ -73,6 +73,23 @@ export class IdempotencyService {
     return result;
   }
 
+  // W1: lookupMany with each matched row's stored content hash (null for a row written before W1), for DryRunService's identity-v2
+  // lookup, which flags a reused item whose content changed since it was written. Same single findMany as lookupMany.
+  async lookupMappings(
+    keys: { sourceHash: string; areaPath: string }[],
+  ): Promise<Map<string, { adoWorkItemId: number; contentHash: string | null }>> {
+    const result = new Map<string, { adoWorkItemId: number; contentHash: string | null }>();
+    if (keys.length === 0) return result;
+    const sourceHashes = [...new Set(keys.map((key) => key.sourceHash))];
+    const rows = await this.prisma.idempotencyMapping.findMany({
+      where: { sourceHash: { in: sourceHashes } },
+    });
+    for (const row of rows) {
+      result.set(idempotencyMapKey(row.sourceHash, row.areaPath), { adoWorkItemId: row.adoWorkItemId, contentHash: row.contentHash ?? null });
+    }
+    return result;
+  }
+
   // upsert, not create: a plain create raced a resubmit of the same
   // document confirming concurrently (both computing the same sourceHash
   // before either recorded it) and threw the @@unique([sourceHash, areaPath])
@@ -80,11 +97,29 @@ export class IdempotencyService {
   // JobsService#confirm -- with CreatedItemMapping now written first (see
   // confirm()'s own comment), that failure left an orphaned ADO item with
   // no idempotency row, so every retry re-created it again, unbounded.
-  async record(sourceHash: string, areaPath: string, adoWorkItemId: number): Promise<void> {
+  //
+  // `identity` (W1, optional): the content hash of what was written and which hash `sourceHash` is (1 position, 2 identity v2) --
+  // confirm() records a created item under both. `onlyIfMissing` is the lazy v2 backfill for an item reused through its v1 row: it adds
+  // the row when absent and never moves or rewrites one that exists. Omitted: exactly the write this method always made.
+  async record(
+    sourceHash: string,
+    areaPath: string,
+    adoWorkItemId: number,
+    identity?: { contentHash: string | null; identityVersion: 1 | 2; onlyIfMissing?: boolean },
+  ): Promise<void> {
+    if (!identity) {
+      await this.prisma.idempotencyMapping.upsert({
+        where: { sourceHash_areaPath: { sourceHash, areaPath } },
+        create: { sourceHash, areaPath, adoWorkItemId },
+        update: { adoWorkItemId },
+      });
+      return;
+    }
+    const { contentHash, identityVersion } = identity;
     await this.prisma.idempotencyMapping.upsert({
       where: { sourceHash_areaPath: { sourceHash, areaPath } },
-      create: { sourceHash, areaPath, adoWorkItemId },
-      update: { adoWorkItemId },
+      create: { sourceHash, areaPath, adoWorkItemId, contentHash, identityVersion },
+      update: identity.onlyIfMissing ? {} : { adoWorkItemId, contentHash, identityVersion },
     });
   }
 

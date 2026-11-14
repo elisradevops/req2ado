@@ -449,6 +449,11 @@ model IdempotencyMapping {
   customerId   String?
   areaPath     String
   adoWorkItemId Int
+  // W1 content-aware identity. contentHash: what the item said when it was written (ingestion's content_hash), so a follow-up run can
+  // flag an item whose text changed since (it is never updated automatically). Null for every row written before W1.
+  // identityVersion: which hash sourceHash is -- 1 the position hash (identity_hash, or the legacy text hash before it), 2 identity_hash_v2.
+  contentHash     String?
+  identityVersion Int     @default(1)
 
   @@unique([sourceHash, areaPath])
 }

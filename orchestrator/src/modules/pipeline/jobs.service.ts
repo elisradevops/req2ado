@@ -2560,6 +2560,11 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       tableIds?: string[];
       uncaptionedFigureIds?: string[];
       discussion?: DiscussionEntry[];
+      // W1 (see DryRunDiffEntry): recorded beside sourceHash so a follow-up file matches by identity v2 and can tell a changed item.
+      identityHashV2?: string | null;
+      contentHash?: string | null;
+      backfillIdentityV2?: boolean;
+      writtenContentHash?: string | null;
     }[];
 
     // Excluding an entry excludes its whole subtree too, even if a descendant itself isn't marked excluded. One walker (diff-summary.ts), shared
@@ -2871,7 +2876,17 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
           create: { jobId: id, localId: entry.localId, adoWorkItemId: created.id },
           update: { adoWorkItemId: created.id },
         });
-        await this.idempotencyService.record(entry.sourceHash, job.areaPath, created.id);
+        // W1 dual write: the v1 row and, when ingestion gave one, the v2 row, both with the content hash of what was written. An entry
+        // from before W1 (no v2, no content hash) is recorded exactly as before.
+        if (entry.identityHashV2 || entry.contentHash !== undefined) {
+          const contentHash = entry.contentHash ?? null;
+          await this.idempotencyService.record(entry.sourceHash, job.areaPath, created.id, { contentHash, identityVersion: 1 });
+          if (entry.identityHashV2 && entry.type === 'Requirement') {
+            await this.idempotencyService.record(entry.identityHashV2, job.areaPath, created.id, { contentHash, identityVersion: 2 });
+          }
+        } else {
+          await this.idempotencyService.record(entry.sourceHash, job.areaPath, created.id);
+        }
         createProgress += 1;
         void this.jobEventsPublisher?.publishNarration(id, {
           phase: 'writing',
@@ -2953,6 +2968,24 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       }
       if (firstCreateError !== null) {
         throw firstCreateError;
+      }
+
+      // W1 lazy backfill: an item reused through its v1 (or legacy) row gets its v2 row now, so the next follow-up file matches it by
+      // identity v2 even when it moved or the file was renamed. Never a bulk rewrite, and never moves an existing row. Its content hash
+      // is what is known to be in ADO (the stored one, or the verified text), so a change stays flagged until ADO is updated.
+      // Best-effort: the reuse itself needs no write, so a failure here is logged and the write goes on.
+      for (const entry of diff) {
+        if (entry.action !== 'reuse' || entry.type !== 'Requirement' || !entry.backfillIdentityV2 || !entry.identityHashV2 || entry.existingAdoId === null) continue;
+        try {
+          await this.idempotencyService.record(entry.identityHashV2, job.areaPath, entry.existingAdoId, {
+            contentHash: entry.writtenContentHash ?? null,
+            identityVersion: 2,
+            onlyIfMissing: true,
+          });
+        } catch (error) {
+          // eslint-disable-next-line no-console -- operational visibility for a best-effort path, not app logging
+          console.error(`Could not add the identity v2 mapping for reused item ${entry.existingAdoId}:`, error);
+        }
       }
 
       // Best-effort, same as the per-item version it replaces: a batch

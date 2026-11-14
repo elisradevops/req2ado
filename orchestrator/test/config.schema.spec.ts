@@ -38,6 +38,12 @@ describe('configSchema LLM fields', () => {
     expect(() => configSchema.parse({ ...BASE_ENV, DEDUP_DECISION_LOG_RETENTION_MS: '-1' })).toThrow();
   });
 
+  it('matches follow-up files by identity v2 unless IDENTITY_V2_ENABLED=false (W1 rollback switch)', () => {
+    expect(configSchema.parse(BASE_ENV).IDENTITY_V2_ENABLED).toBe(true);
+    expect(configSchema.parse({ ...BASE_ENV, IDENTITY_V2_ENABLED: 'false' }).IDENTITY_V2_ENABLED).toBe(false);
+    expect(() => configSchema.parse({ ...BASE_ENV, IDENTITY_V2_ENABLED: 'no' })).toThrow();
+  });
+
   it('redacts the text it embeds unless EMBED_REDACT=false', () => {
     expect(configSchema.parse(BASE_ENV).EMBED_REDACT).toBe(true);
     expect(configSchema.parse({ ...BASE_ENV, EMBED_REDACT: 'false' }).EMBED_REDACT).toBe(false);
