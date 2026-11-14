@@ -551,6 +551,32 @@ describe('JobDetail', () => {
     });
 
     describe('reviewing', () => {
+      it('"Mark all reviewed" on a Check kind never decides an item that also blocks the write', async () => {
+        vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+          id: 'job-60',
+          status: 'diff_ready',
+          mode: 'survey',
+          dryRunDiff: [epic('e1', 'Affected one'), epic('e2', 'Affected two'), epic('e3', 'Untouched')],
+          warnings: [
+            { kind: 'low_grounding', severity: 'needs_review', nodeIds: ['e1', 'e2'], detail: {}, raw: '2 nodes have low grounding.' },
+            { kind: 'duplicate_customer_id', severity: 'needs_review', nodeIds: ['e2'], detail: {}, raw: 'e2 repeats a Customer ID.' },
+          ],
+        } as any);
+        vi.mocked(jobsApi.setDiffEntriesReviewed).mockClear();
+        vi.mocked(jobsApi.setDiffEntriesReviewed).mockResolvedValue({ dryRunDiff: [] });
+        renderAt('job-60');
+        await waitFor(() => expect(screen.getByText('Untouched')).toBeInTheDocument());
+        const { default: userEvent } = await import('@testing-library/user-event');
+        await userEvent.click(screen.getByRole('button', { name: 'Review in tree' }));
+
+        await userEvent.click(screen.getByRole('button', { name: 'Mark all reviewed' }));
+
+        // e2 still blocks the write (duplicate Customer ID): it is left for a deliberate decision.
+        expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledTimes(1);
+        expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledWith('job-60', ['e1'], true);
+        vi.mocked(jobsApi.setDiffEntriesReviewed).mockClear(); // the next test counts its own calls
+      });
+
       it('marks every item of the focused warning reviewed in one request, empties the tree and clears the banner, and Undo restores it', async () => {
         mockJobWithWarnings();
         vi.mocked(jobsApi.setDiffEntriesReviewed).mockResolvedValue({ dryRunDiff: [] });

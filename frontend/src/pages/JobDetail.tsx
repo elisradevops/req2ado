@@ -2925,7 +2925,8 @@ export function JobDetail(): React.ReactElement {
                       <Button
                         size="sm"
                         variant="outline"
-                        onClick={() => void handleSetReviewed([...focusWarning.nodeIds], true, { method: 'group' })}
+                        // Items that still block the write are left out: each needs its own deliberate decision, even when it also carries this Check.
+                        onClick={() => void handleSetReviewed([...focusWarning.nodeIds].filter((nodeId) => !openFixIds.has(nodeId)), true, { method: 'group' })}
                       >
                         Mark all reviewed
                       </Button>
