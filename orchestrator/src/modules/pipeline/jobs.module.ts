@@ -2,7 +2,8 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { PrismaClient } from '@prisma/client';
 import Redis from 'ioredis';
-import { JobsController } from './jobs.controller';
+import { JobsController, RESULT_CACHE_PROBE } from './jobs.controller';
+import { JobResultCache, ResultCacheProbe, kbVersionFor, releaseVersion, type ResultCacheStore } from './result-cache';
 import { DedupDecisionsController } from './dedup-decisions.controller';
 import { AdoController } from './ado.controller';
 import {
@@ -137,6 +138,24 @@ import { BatchPumpService } from '../batch/batch-pump.service';
       provide: 'SUMMARY_MAX_TOKENS',
       inject: [ConfigService],
       useFactory: (config: ConfigService) => config.get<number>('DOCUMENT_OVERVIEW_MAX_TOKENS') ?? 4000,
+    },
+    {
+      // P5: the wizard's "this file was already processed" probe. The same store, code version and on/off switch the worker's result
+      // cache is built with (pipeline.processor.ts), so the probe reads exactly the entries the worker would.
+      provide: RESULT_CACHE_PROBE,
+      inject: [ConfigService, PrismaClient, IngestionHttpClient],
+      useFactory: (config: ConfigService, prisma: PrismaClient, ingestionClient: IngestionHttpClient) => {
+        const redis = new Redis(config.get<string>('REDIS_URL')!);
+        // eslint-disable-next-line no-console -- no structured logger in this module yet
+        redis.on('error', (err) => console.error('ResultCacheProbe Redis error:', err));
+        const release = releaseVersion();
+        const cache = new JobResultCache(
+          redis as unknown as ResultCacheStore,
+          `${release ?? 'unknown'}+${config.get<string>('RESULT_CACHE_VERSION')}`,
+          config.get<boolean>('RESULT_CACHE_ENABLED') === true && release !== null,
+        );
+        return new ResultCacheProbe(cache, (userId) => kbVersionFor(prisma, userId), (userId) => ingestionClient.cacheScope(userId));
+      },
     },
     {
       provide: 'MAX_UPLOAD_SIZE_BYTES',

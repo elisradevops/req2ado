@@ -1,4 +1,4 @@
-import { buildSummaryMessages, checkSummary, generateSummary, isGrounded } from '../src/modules/pipeline/document-summary';
+import { buildSummaryMessages, checkSummary, generateSummary, isGrounded, SummaryCache, SUMMARY_CACHE_MAX_ENTRIES, SUMMARY_CACHE_TTL_MS } from '../src/modules/pipeline/document-summary';
 import { buildDocumentProfile } from '../src/modules/pipeline/document-profile';
 
 const h = (level: number, number_label: string, text: string) => ({ kind: 'heading', heading_level: level, number_label, text }) as any;
@@ -205,5 +205,44 @@ describe('a summary may cite what the file really is made of', () => {
     const base = 'This document is an ICD that describes the backplane, its power sections and the standards it cites, in about as many words as a short summary needs.';
     expect(isGrounded(base, input)).toBe(true);
     expect(isGrounded(base.replace('ICD', 'CAN bus'), input)).toBe(false);
+  });
+});
+
+// P6: a re-run of the same file asked the model again for the same summary (~58 s). Kept in memory only, bounded, and short-lived.
+describe('SummaryCache', () => {
+  it('defaults to 200 entries for 24 hours', () => {
+    expect(SUMMARY_CACHE_MAX_ENTRIES).toBe(200);
+    expect(SUMMARY_CACHE_TTL_MS).toBe(24 * 60 * 60 * 1000);
+  });
+
+  it('keys on the input, the model and the scope, never on the raw text alone', () => {
+    const key = SummaryCache.keyFor('the input', 'm1', 'u1');
+    expect(key).toMatch(/^[0-9a-f]{64}$/);
+    expect(key).not.toContain('the input');
+    expect(SummaryCache.keyFor('the input', 'm1', 'u1')).toBe(key);
+    expect(SummaryCache.keyFor('another input', 'm1', 'u1')).not.toBe(key);
+    expect(SummaryCache.keyFor('the input', 'm2', 'u1')).not.toBe(key);
+    expect(SummaryCache.keyFor('the input', 'm1', 'u2')).not.toBe(key);
+  });
+
+  it('returns a stored summary until it expires', () => {
+    let now = 1_000;
+    const cache = new SummaryCache(10, 5_000, () => now);
+    cache.set('k', 'a summary');
+    now += 4_999;
+    expect(cache.get('k')).toBe('a summary');
+    now += 1;
+    expect(cache.get('k')).toBeUndefined();
+  });
+
+  it('drops the least recently used entry when full', () => {
+    const cache = new SummaryCache(2, 60_000, () => 0);
+    cache.set('a', 'A');
+    cache.set('b', 'B');
+    expect(cache.get('a')).toBe('A'); // a is now the most recently used
+    cache.set('c', 'C');
+    expect(cache.get('b')).toBeUndefined();
+    expect(cache.get('a')).toBe('A');
+    expect(cache.get('c')).toBe('C');
   });
 });

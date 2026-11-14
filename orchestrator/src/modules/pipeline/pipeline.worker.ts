@@ -1,7 +1,6 @@
 import { classifyFailure, describeFailure } from './failure-reason';
 import { joinContexts } from './document-profile';
-import { JobResultCache, hashCatalog, isDegradedResult, kbVersionFor, type CachedResult } from './result-cache';
-import crypto from 'crypto';
+import { JobResultCache, fileHashOf, hashCatalog, isDegradedResult, kbVersionFor, type CachedResult } from './result-cache';
 import { DEFAULT_PRIMER_OPTIONS, OVERVIEW_REUSED_KIND, runPrimerStep, type PrimerCache, type PrimerStepOptions } from './primer.step';
 import { Prisma } from '@prisma/client';
 import type { PrismaClient } from '@prisma/client';
@@ -680,7 +679,7 @@ export async function runPipelineJob(
     const keyFor = (profileVersion: string | null): string | null =>
       deps.resultCache && cacheScope && cacheKbVersion !== null && job.userId
         ? deps.resultCache.keyFor({
-            fileHash: crypto.createHash('sha256').update(job.fileBuffer).digest('hex'),
+            fileHash: fileHashOf(job.fileBuffer),
             userId: job.userId,
             model,
             mode: job.mode,

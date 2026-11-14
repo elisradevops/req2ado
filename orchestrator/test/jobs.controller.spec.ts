@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { JobsController } from '../src/modules/pipeline/jobs.controller';
 import { BadRequestException } from '@nestjs/common';
 
@@ -28,6 +29,9 @@ describe('JobsController.preview', () => {
     const file = { buffer: Buffer.from('x'), originalname: 'req.docx', size: 4 } as Express.Multer.File;
     const result = await controller.preview(file, undefined, undefined);
 
+    // P5: the content hash the result cache keys on, so the wizard can ask GET /jobs/cached-result once mode and model are chosen.
+    expect(result.fileHash).toBe(createHash('sha256').update(file.buffer).digest('hex'));
+
     // skipVision=true: preview only needs blockCount/sectionCount/fileType,
     // never figure captions -- must not pay the per-image vision-LLM cost
     // (confirmed live: 28s instead of ~30ms for one small embedded image).
@@ -49,6 +53,7 @@ describe('JobsController.preview', () => {
       figureCount: 2,
       depth: 2,
       fileType: 'docx',
+      fileHash: expect.any(String),
       estimate: { mode: 'baseline', estimateMinutes: 1 },
       tableCount: 1,
       openTbdCount: 0,
@@ -126,6 +131,7 @@ describe('JobsController.preview', () => {
       figureCount: 0,
       depth: 0,
       fileType: 'docx',
+      fileHash: expect.any(String),
       estimate: { mode: 'baseline', estimateMinutes: 1 },
       tableCount: 0,
       openTbdCount: 0,
@@ -1131,6 +1137,122 @@ describe('JobsController.previewSummary', () => {
     await controller.previewSummary(USER, { summaryInput: INPUT }, res);
     listeners.close();
     expect(signal?.aborted).toBe(true);
+  });
+});
+
+describe('JobsController.previewSummary cache (P6)', () => {
+  const INPUT = ['§1 Scope: This ICD defines the electrical interfaces of the SOSA backplane for the AirPro LRU.', 'Sections: 1 Scope; 2 Power; 3 Thermal', 'Cited: VITA 46.0, MIL-STD-704'].join('\n');
+  const GOOD = 'This document defines the electrical interfaces of the SOSA backplane for the AirPro unit, covering power and thermal limits, and cites VITA 46.0 and MIL-STD-704 as its references.';
+  const USER = { userId: 'user-1', displayName: 'U' } as any;
+  const make = (chat: jest.Mock) =>
+    new JobsController({} as any, {} as any, { isModelHidden: () => false, getClientFor: jest.fn().mockResolvedValue({ chat, chatModel: 'default-m' }) } as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+  it('answers a second identical request without calling the model again', async () => {
+    const chat = jest.fn().mockResolvedValue({ content: GOOD });
+    const controller = make(chat);
+    expect(await controller.previewSummary(USER, { summaryInput: INPUT, model: 'm1' })).toEqual({ summary: GOOD });
+    expect(await controller.previewSummary(USER, { summaryInput: INPUT, model: 'm1' })).toEqual({ summary: GOOD });
+    expect(chat).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks the model again for a different input or a different model', async () => {
+    const chat = jest.fn().mockResolvedValue({ content: GOOD });
+    const controller = make(chat);
+    await controller.previewSummary(USER, { summaryInput: INPUT, model: 'm1' });
+    await controller.previewSummary(USER, { summaryInput: `${INPUT}\nSections: 4 EMC`, model: 'm1' });
+    await controller.previewSummary(USER, { summaryInput: INPUT, model: 'm2' });
+    expect(chat).toHaveBeenCalledTimes(3);
+  });
+
+  it('asks the model again once the entry has expired', async () => {
+    const now = jest.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      const chat = jest.fn().mockResolvedValue({ content: GOOD });
+      const controller = make(chat);
+      await controller.previewSummary(USER, { summaryInput: INPUT });
+      now.mockReturnValue(1_000_000 + 24 * 60 * 60 * 1000);
+      await controller.previewSummary(USER, { summaryInput: INPUT });
+      expect(chat).toHaveBeenCalledTimes(2);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('does not keep a failure: the next request asks the model again', async () => {
+    const chat = jest.fn().mockRejectedValueOnce(new Error('down')).mockResolvedValue({ content: GOOD });
+    const controller = make(chat);
+    expect(await controller.previewSummary(USER, { summaryInput: INPUT })).toEqual({ summary: null });
+    expect(await controller.previewSummary(USER, { summaryInput: INPUT })).toEqual({ summary: GOOD });
+    expect(chat).toHaveBeenCalledTimes(2);
+  });
+
+  it('"Write it again" (fresh) asks the model even when a summary is kept, and keeps the new one', async () => {
+    const OTHER = GOOD.replace('covering power and thermal limits', 'covering its power and thermal limits');
+    const chat = jest.fn().mockResolvedValueOnce({ content: GOOD }).mockResolvedValue({ content: OTHER });
+    const controller = make(chat);
+    await controller.previewSummary(USER, { summaryInput: INPUT });
+    expect(await controller.previewSummary(USER, { summaryInput: INPUT, fresh: true })).toEqual({ summary: OTHER });
+    expect(await controller.previewSummary(USER, { summaryInput: INPUT })).toEqual({ summary: OTHER });
+    expect(chat).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('JobsController.cachedResult (P5)', () => {
+  const USER = { userId: 'user-1', displayName: 'U' } as any;
+  const HASH = 'a'.repeat(64);
+  const make = (probe?: { has: jest.Mock }, hidden = false, chatModel = 'default-m') => {
+    const getClientFor = jest.fn().mockResolvedValue({ chatModel });
+    const controller = new JobsController({} as any, {} as any, { isModelHidden: () => hidden, getClientFor } as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, undefined, undefined, probe as any);
+    return { controller, getClientFor };
+  };
+
+  it('asks the probe with the file hash, the caller, the mode and the chosen model', async () => {
+    const probe = { has: jest.fn().mockResolvedValue(true) };
+    expect(await make(probe).controller.cachedResult(USER, { fileHash: HASH, mode: 'survey', model: 'm1' })).toEqual({ cachedResult: true });
+    expect(probe.has).toHaveBeenCalledWith({ fileHash: HASH, userId: 'user-1', mode: 'survey', model: 'm1' });
+  });
+
+  it('resolves "Default" to the model the job would run on (the user\'s connection), as the worker does', async () => {
+    const probe = { has: jest.fn().mockResolvedValue(false) };
+    const { controller, getClientFor } = make(probe, false, 'conn-model');
+    expect(await controller.cachedResult(USER, { fileHash: HASH, mode: 'survey' })).toEqual({ cachedResult: false });
+    expect(getClientFor).toHaveBeenCalledWith('user-1');
+    expect(probe.has).toHaveBeenCalledWith(expect.objectContaining({ model: 'conn-model' }));
+  });
+
+  it('is false for BASELINE (never cached) and when no probe is wired, without asking anything', async () => {
+    const probe = { has: jest.fn().mockResolvedValue(true) };
+    expect(await make(probe).controller.cachedResult(USER, { fileHash: HASH, mode: 'baseline' })).toEqual({ cachedResult: false });
+    expect(probe.has).not.toHaveBeenCalled();
+    expect(await make(undefined).controller.cachedResult(USER, { fileHash: HASH, mode: 'survey', model: 'm1' })).toEqual({ cachedResult: false });
+  });
+
+  it('is false, never an error, when the probe or the model lookup fails', async () => {
+    const probe = { has: jest.fn().mockRejectedValue(new Error('redis down')) };
+    expect(await make(probe).controller.cachedResult(USER, { fileHash: HASH, mode: 'survey', model: 'm1' })).toEqual({ cachedResult: false });
+    const controller = new JobsController({} as any, {} as any, { isModelHidden: () => false, getClientFor: jest.fn().mockRejectedValue(new Error('no conn')) } as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, undefined, undefined, { has: jest.fn() } as any);
+    expect(await controller.cachedResult(USER, { fileHash: HASH, mode: 'survey' })).toEqual({ cachedResult: false });
+  });
+
+  it.each([
+    ['a missing hash', { mode: 'survey' }],
+    ['a hash that is not sha256 hex', { fileHash: 'xyz', mode: 'survey' }],
+    ['an unknown mode', { fileHash: HASH, mode: 'other' }],
+  ])('rejects %s', async (_label, query) => {
+    const probe = { has: jest.fn() };
+    await expect(make(probe).controller.cachedResult(USER, query as any)).rejects.toBeInstanceOf(BadRequestException);
+    expect(probe.has).not.toHaveBeenCalled();
+  });
+
+  it('refuses a model that is not available', async () => {
+    const probe = { has: jest.fn() };
+    await expect(make(probe, true).controller.cachedResult(USER, { fileHash: HASH, mode: 'survey', model: 'hidden' })).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('is routed as GET /jobs/cached-result, declared before GET /jobs/:id', () => {
+    const names = Object.getOwnPropertyNames(JobsController.prototype);
+    expect(Reflect.getMetadata('path', JobsController.prototype.cachedResult)).toBe('cached-result');
+    expect(names.indexOf('cachedResult')).toBeLessThan(names.indexOf('getById'));
   });
 });
 
