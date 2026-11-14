@@ -24,6 +24,7 @@ const BANNED: Array<[RegExp, string]> = [
   [/\bLLM\b|distillation|pipeline worker|A chunk of work|cosine/g, 'jargon in user copy (say AI model, rewriting, a slot, or name the part that failed)'],
   [/ -- /g, 'a literal double hyphen (it renders as two hyphens; use a full stop or a dash)'],
   [/outline items written/g, '"written" for outline items a run has only analysed (nothing is written to Azure DevOps during a run; say done)'],
+  [/Confirm on the (new )?job|Confirm on the /g, '"Confirm" for the write (say writing, or Write to Azure DevOps)'],
   [/audit trail/gi, '"audit trail" (the tab is Audit; the failure cause is under Run details)'],
   [/\w\(s\)(?=[\s.,'`])/g, 'a "(s)" plural in user copy (use the plural helper)'],
   [/aria-label="Needs review"|title="Needs review/g, '"Needs review" for the Check flag on a row (say Check)'],

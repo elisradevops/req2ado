@@ -496,7 +496,7 @@ export function JobsList(): React.ReactElement {
         open={resubmitTarget != null}
         onOpenChange={(open) => !open && setResubmitTarget(null)}
         title="Resubmit this job?"
-        description="Runs the same source document again as a new job, using the same settings. If nothing in the document or destination has changed, Confirm on the new job will reuse the same Azure DevOps items rather than creating duplicates."
+        description="Runs the same source document again as a new job, using the same settings. If nothing in the document or destination has changed, writing the new job will link to the same Azure DevOps items instead of creating them again."
         confirmLabel="Resubmit"
         onConfirm={handleResubmit}
         isConfirming={isResubmitting}
