@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { loadLastJobChoices, rememberJobChoices, withRememberedChoices } from './lastJobChoices';
+import { isUntouchedChoices, loadLastJobChoices, loadProjectChoices, rememberJobChoices, withRememberedChoices } from './lastJobChoices';
 import { EMPTY_DRAFT, type NewJobDraft } from '../store/newJobDraftStore';
 
 beforeEach(() => {
@@ -34,6 +34,66 @@ describe('lastJobChoices', () => {
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked'); });
     expect(loadLastJobChoices('user-a')).toBeNull();
     expect(() => rememberJobChoices('user-a', { mode: 'survey', project: 'p', areaPath: 'p\\a' })).not.toThrow();
+  });
+});
+
+describe('lastJobChoices per Team Project (B6)', () => {
+  it('keeps the last mode and area path of each project, not only of the last job', () => {
+    rememberJobChoices('user-a', { mode: 'survey', project: 'Alpha', areaPath: 'Alpha\\Reqs' });
+    rememberJobChoices('user-a', { mode: 'baseline', project: 'Beta', areaPath: 'Beta\\Imports' });
+    expect(loadProjectChoices('user-a', 'Alpha')).toEqual({ mode: 'survey', areaPath: 'Alpha\\Reqs' });
+    expect(loadProjectChoices('user-a', 'Beta')).toEqual({ mode: 'baseline', areaPath: 'Beta\\Imports' });
+    // The last job overall is still the one a fresh wizard starts from.
+    expect(loadLastJobChoices('user-a')).toEqual({ mode: 'baseline', project: 'Beta', areaPath: 'Beta\\Imports' });
+  });
+
+  it('a later job in the same project replaces that project\'s record only', () => {
+    rememberJobChoices('user-a', { mode: 'survey', project: 'Alpha', areaPath: 'Alpha\\Reqs' });
+    rememberJobChoices('user-a', { mode: 'baseline', project: 'Beta', areaPath: 'Beta\\Imports' });
+    rememberJobChoices('user-a', { mode: 'baseline', project: 'Alpha', areaPath: 'Alpha\\Other' });
+    expect(loadProjectChoices('user-a', 'Alpha')).toEqual({ mode: 'baseline', areaPath: 'Alpha\\Other' });
+    expect(loadProjectChoices('user-a', 'Beta')).toEqual({ mode: 'baseline', areaPath: 'Beta\\Imports' });
+  });
+
+  it('is per user', () => {
+    rememberJobChoices('user-a', { mode: 'survey', project: 'Alpha', areaPath: 'Alpha\\Reqs' });
+    expect(loadProjectChoices('user-b', 'Alpha')).toBeNull();
+    expect(loadProjectChoices(null, 'Alpha')).toBeNull();
+  });
+
+  it('has nothing for a project never used, or for no project', () => {
+    rememberJobChoices('user-a', { mode: 'survey', project: 'Alpha', areaPath: 'Alpha\\Reqs' });
+    expect(loadProjectChoices('user-a', 'Gamma')).toBeNull();
+    expect(loadProjectChoices('user-a', '')).toBeNull();
+  });
+
+  it('reads the record saved before per-project memory existed as the record of its own project (no data loss)', () => {
+    localStorage.setItem('req2ado-last-job:user-a', JSON.stringify({ mode: 'survey', project: 'Alpha', areaPath: 'Alpha\\Reqs' }));
+    expect(loadProjectChoices('user-a', 'Alpha')).toEqual({ mode: 'survey', areaPath: 'Alpha\\Reqs' });
+    expect(loadProjectChoices('user-a', 'Beta')).toBeNull();
+  });
+
+  it('ignores a per-project record that is not the expected shape', () => {
+    localStorage.setItem('req2ado-last-job-by-project:user-a', JSON.stringify({ Alpha: { mode: 'nonsense', areaPath: 3 } }));
+    expect(loadProjectChoices('user-a', 'Alpha')).toBeNull();
+    localStorage.setItem('req2ado-last-job-by-project:user-a', 'not json');
+    expect(loadProjectChoices('user-a', 'Alpha')).toBeNull();
+    // A broken map does not stop the next job from being remembered.
+    rememberJobChoices('user-a', { mode: 'survey', project: 'Alpha', areaPath: 'Alpha\\Reqs' });
+    expect(loadProjectChoices('user-a', 'Alpha')).toEqual({ mode: 'survey', areaPath: 'Alpha\\Reqs' });
+  });
+
+  it('survives storage that throws', () => {
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked'); });
+    expect(loadProjectChoices('user-a', 'Alpha')).toBeNull();
+  });
+});
+
+describe('isUntouchedChoices', () => {
+  it('is true only for the empty defaults', () => {
+    expect(isUntouchedChoices({ mode: 'baseline', project: '', areaPath: '' })).toBe(true);
+    expect(isUntouchedChoices({ mode: 'survey', project: '', areaPath: '' })).toBe(false);
+    expect(isUntouchedChoices({ mode: 'baseline', project: 'p', areaPath: '' })).toBe(false);
   });
 });
 
