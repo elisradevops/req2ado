@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import axios from 'axios';
 import { httpClient } from './httpClient';
-import { overrideDuplicate, undoDuplicateOverride, explainScore, listJobs, submitJob, confirmJob, editDiffEntry, addDiscussionEntry, removeDiscussionEntry, setDiffEntryExcluded, setProposalAccepted, setDiffEntriesReviewed, setWarningsAcknowledged, retryEnhancement, addDiffEntry, rescoreDiffEntry, getFigureFile, attachFigureToAdo, moveFigure, retryTraceLinkWrite, validateCreatedTree, previewSummary, getCachedResult } from './jobs';
+import { overrideDuplicate, undoDuplicateOverride, explainScore, listJobs, submitJob, confirmJob, editDiffEntry, addDiscussionEntry, removeDiscussionEntry, setDiffEntryExcluded, setProposalAccepted, setDiffEntriesReviewed, setWarningsAcknowledged, retryEnhancement, addDiffEntry, rescoreDiffEntry, getFigureFile, attachFigureToAdo, moveFigure, retryTraceLinkWrite, validateCreatedTree, previewSummary, getCachedResult, getEntrySource } from './jobs';
 
 vi.mock('./httpClient');
 vi.mock('./config', () => ({ loadRuntimeConfig: vi.fn().mockResolvedValue({ apiBaseUrl: '/api' }) }));
@@ -109,6 +109,24 @@ describe('jobs api', () => {
     (httpClient.post as any).mockResolvedValue({ data: { dryRunDiff: [] } });
     await rescoreDiffEntry('job-1', 'n0');
     expect(httpClient.post).toHaveBeenCalledWith('/jobs/job-1/diff/n0/rescore');
+  });
+
+  it("getEntrySource GETs the item's source wording with the caller's abort signal", async () => {
+    (httpClient.get as any).mockResolvedValue({ data: { kind: 'text', text: 'The unit shall start.', truncated: false } });
+    const signal = new AbortController().signal;
+
+    const result = await getEntrySource('job-1', 'n4', signal);
+
+    expect(httpClient.get).toHaveBeenCalledWith('/jobs/job-1/diff/n4/source', { signal });
+    expect(result).toEqual({ kind: 'text', text: 'The unit shall start.', truncated: false });
+  });
+
+  it('getEntrySource reads an answer it does not recognise as unavailable, never as wording', async () => {
+    (httpClient.get as any).mockResolvedValue({ data: { kind: 'text', text: 42 } });
+    await expect(getEntrySource('job-1', 'n4')).resolves.toEqual({ kind: 'unavailable' });
+
+    (httpClient.get as any).mockResolvedValue({ data: { kind: 'unavailable', reason: 'no_original' } });
+    await expect(getEntrySource('job-1', 'n4')).resolves.toEqual({ kind: 'unavailable', reason: 'no_original' });
   });
 
   it('getFigureFile GETs the figure route as a blob', async () => {

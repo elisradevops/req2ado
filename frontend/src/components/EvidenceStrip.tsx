@@ -4,23 +4,68 @@ import { SourceProvenance } from './SourceProvenance';
 import { Disclosure } from '../ui/Disclosure';
 import { clampScore } from './QualityGauge';
 import type { KbCitation } from './KbCitationChips';
+import { useEffect, useState } from 'react';
+import { getEntrySource, type EntrySource } from '../api/jobs';
+import { Skeleton, useSkeletonCrossfade } from '../ui/Skeleton';
+import { cn } from '../lib/cn';
+
+const SOURCE_KIND_LABEL: Record<'text' | 'table' | 'section', string> = {
+  text: 'Source wording',
+  table: 'From a table in the source',
+  // A SURVEY item is written from its section, not copied from one sentence of it.
+  section: 'Written from this part of the source',
+};
+
+// The item's original wording, fetched when the dialog shows the item. undefined while loading, null when there is none to show
+// (unavailable, or the request failed). Keyed by job and item: when J/K moves on before an answer arrives, the late answer is
+// dropped twice over (the effect's cleanup flag, and the key check), so item A's words never appear under item B.
+function useEntrySource(jobId: string | undefined, entry: DryRunDiffEntry): Extract<EntrySource, { text: string }> | null | undefined {
+  const key = jobId && entry.sourceRef ? `${jobId}\u0000${entry.localId}` : null;
+  const [answer, setAnswer] = useState<{ key: string; source: Extract<EntrySource, { text: string }> | null } | null>(null);
+  useEffect(() => {
+    if (!key || !jobId) return;
+    const controller = new AbortController();
+    let current = true;
+    // Through a resolved promise, so even a synchronous throw lands in the failure branch and never breaks the dialog.
+    Promise.resolve()
+      .then(() => getEntrySource(jobId, entry.localId, controller.signal))
+      .then(
+        (source) => {
+          if (current) setAnswer({ key, source: source && source.kind !== 'unavailable' ? source : null });
+        },
+        () => {
+          if (current) setAnswer({ key, source: null });
+        },
+      );
+    return () => {
+      current = false;
+      controller.abort();
+    };
+  }, [key, jobId, entry.localId]);
+  if (!key) return null;
+  return answer && answer.key === key ? answer.source : undefined;
+}
 
 // What a reviewer needs to judge an item without leaving the dialog: where it came from, which
 // KB documents informed its score, and where it scored worst. Shown for every item, clean ones
 // included. Whether an item is scored, or its scores are stale, is the details pane's to say, so
 // the strip stays silent about both in its own text. The wording-only scoring note describes a score,
 // so it needs a fresh one: a SURVEY "create" Requirement with a score that is not stale, with or without
-// a source location (the weakest-area row likewise needs fresh category scores). The source TEXT is not part of it: only offsets are stored
-// with an item, so the strip says where the original wording is instead of implying an excerpt. Every free-text block carries dir="auto" and inline
-// names sit in <bdi>, so Hebrew content does not reorder the surrounding English.
+// a source location (the weakest-area row likewise needs fresh category scores). Only offsets are stored with an item, so with a jobId the
+// strip asks the server to read the wording again from the job's kept upload and quotes it; when there is none (no kept original, no span of
+// its own, a failed read) it says where the original wording is instead of implying an excerpt. Every free-text block carries dir="auto" and
+// inline names sit in <bdi>, so Hebrew content does not reorder the surrounding English.
 export function EvidenceStrip({
   entry,
+  jobId,
   jobMode,
   kbCitations,
   collapsible = false,
   quality,
 }: {
   entry: DryRunDiffEntry;
+  // The item's job: with it, the strip quotes the item's original wording (GET /jobs/:id/diff/:localId/source). Without it, the plain line.
+  jobId?: string;
   jobMode?: 'baseline' | 'survey' | null;
   kbCitations?: KbCitation[];
   // The item dialog: the file, the location and the source line stay in view; the weakest area, the scoring note and the KB references
@@ -58,9 +103,31 @@ export function EvidenceStrip({
     </div>
   ) : null;
 
-  const sourceLine = entry.sourceRef ? (
-    <p className="text-xs text-ink-3">The original wording is in the source file, at the location above.</p>
-  ) : null;
+  const source = useEntrySource(jobId, entry);
+  const sourceFade = useSkeletonCrossfade(source === undefined);
+  let sourceLine: React.ReactNode = null;
+  if (entry.sourceRef && source === undefined) {
+    // Two text lines' worth of space, drawn only after the shared skeleton delay: a fast answer shows nothing, then the quote.
+    sourceLine = (
+      <div data-testid="source-wording-loading" role="status" aria-busy="true" className="flex max-w-[68ch] flex-col gap-1.5 py-0.5">
+        <span className="sr-only">Loading the source wording…</span>
+        <Skeleton className="h-3 w-full" />
+        <Skeleton className="h-3 w-2/3" />
+      </div>
+    );
+  } else if (entry.sourceRef && source) {
+    sourceLine = (
+      <figure className={cn('flex flex-col gap-1', sourceFade)}>
+        <figcaption className="text-xs text-ink-3">{SOURCE_KIND_LABEL[source.kind]}</figcaption>
+        <blockquote dir="auto" className="max-w-[68ch] whitespace-pre-line border-s-2 border-hairline ps-3 text-sm text-ink-1">
+          {source.text}
+        </blockquote>
+        {source.truncated && <p className="text-xs text-ink-3">Shortened.</p>}
+      </figure>
+    );
+  } else if (entry.sourceRef) {
+    sourceLine = <p className="text-xs text-ink-3">The original wording is in the source file, at the location above.</p>;
+  }
 
   if (collapsible) {
     const hasWhy = !!weakest || hasCitations || noteApplies || !!quality;

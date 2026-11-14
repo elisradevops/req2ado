@@ -496,6 +496,24 @@ export async function getDedupSkips(id: string): Promise<DedupSkipEntry[]> {
 // the figure was never stored, or was already attached to ADO and deleted
 // server-side (see attachFigureToAdo below) -- both are normal states the
 // caller renders a quiet placeholder for, not application errors.
+// The original wording behind one item, read again from the job's kept upload (the evidence strip). 'section' is a SURVEY
+// item's whole source section (its words are written from it, not copied); 'table' is the table, or the row, it came from.
+// 'unavailable' is a normal answer (no kept original, no span of its own, a parse that failed or timed out).
+export type EntrySource =
+  | { kind: 'text' | 'table' | 'section'; text: string; truncated: boolean }
+  | { kind: 'unavailable'; reason?: 'no_original' | 'no_span' | 'parse_failed' };
+
+export async function getEntrySource(jobId: string, localId: string, signal?: AbortSignal): Promise<EntrySource> {
+  const response = await httpClient.get<EntrySource>(`/jobs/${jobId}/diff/${localId}/source`, { signal });
+  const data = response.data as Partial<{ kind: unknown; text: unknown; truncated: unknown; reason: unknown }> | undefined;
+  if ((data?.kind === 'text' || data?.kind === 'table' || data?.kind === 'section') && typeof data.text === 'string' && data.text) {
+    return { kind: data.kind, text: data.text, truncated: data.truncated === true };
+  }
+  // Anything else is shown as "no wording", never as a quote.
+  if (data?.reason === 'no_original' || data?.reason === 'no_span' || data?.reason === 'parse_failed') return { kind: 'unavailable', reason: data.reason };
+  return { kind: 'unavailable' };
+}
+
 export async function getFigureFile(jobId: string, figureId: string): Promise<Blob | null> {
   try {
     const response = await httpClient.get(`/jobs/${jobId}/figures/${figureId}`, { responseType: 'blob' });
