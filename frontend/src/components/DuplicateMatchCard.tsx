@@ -22,7 +22,9 @@ interface EntryLike {
   action: 'create' | 'reuse' | 'dedup_skip';
   existingAdoId: number | null;
   similarity: number | null;
-  duplicateOf?: { existingAdoId: number; similarity: number | null };
+  // A reuse whose text differs from the item it matched (W1): offered the same way, because it may be a different requirement.
+  changedSinceWritten?: boolean;
+  duplicateOf?: { existingAdoId: number; similarity: number | null; source?: 'changed_since_written' };
   duplicateOverride?: DuplicateOverrideOptions;
 }
 
@@ -57,7 +59,8 @@ export function DuplicateMatchCard({ entry, orgUrl, project, canDecide, onOverri
   const [error, setError] = useState<string | null>(null);
 
   const overridden = entry.duplicateOf !== undefined;
-  const skipped = entry.action === 'dedup_skip' && entry.existingAdoId !== null;
+  const changed = entry.action === 'reuse' && entry.changedSinceWritten === true && entry.existingAdoId !== null;
+  const skipped = (entry.action === 'dedup_skip' && entry.existingAdoId !== null) || changed;
   if (!overridden && !skipped) return null;
 
   const matchId = overridden ? entry.duplicateOf!.existingAdoId : entry.existingAdoId!;
@@ -91,13 +94,17 @@ export function DuplicateMatchCard({ entry, orgUrl, project, canDecide, onOverri
     <div className="flex flex-col gap-2 rounded-md border border-hairline-strong bg-surface-alt p-3 text-sm">
       <p className="flex items-center gap-2 font-semibold text-ink-1">
         <Layers className="h-4 w-4 flex-none text-ink-2" aria-hidden="true" />
-        {overridden ? 'Will be created as a new item' : 'Already exists in Azure DevOps'}
+        {overridden ? 'Will be created as a new item' : changed ? 'Already in Azure DevOps, with different text' : 'Already exists in Azure DevOps'}
       </p>
       <p className="text-ink-2">
         {overridden ? 'It matched ' : 'This matches '}
         <ExistingLink id={matchId} orgUrl={orgUrl} project={project} />
         {alike ? ` (${alike})` : ''}.
-        {overridden ? ' The existing item is not changed.' : ' It will not be created, and the existing item is not changed.'}
+        {overridden
+          ? ' The existing item is not changed.'
+          : changed
+            ? ' What it says here differs from what was written there. It will not be created, and the existing item is not changed. If this is a different requirement, create it as a new item.'
+            : ' It will not be created, and the existing item is not changed.'}
       </p>
 
       {overridden && entry.duplicateOverride && (

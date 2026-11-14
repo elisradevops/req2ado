@@ -12,6 +12,29 @@ function renderCard(entry: Parameters<typeof DuplicateMatchCard>[0]['entry'], pr
   return handlers;
 }
 
+describe('DuplicateMatchCard for an item that changed since it was written', () => {
+  const changed = { action: 'reuse' as const, existingAdoId: 41, similarity: null, changedSinceWritten: true };
+
+  it('says the match says something else now, links to it, and offers to create the item as a new one', async () => {
+    const handlers = renderCard(changed);
+    expect(screen.getByText(/already in azure devops, with different text/i)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /work item 41/i })).toHaveAttribute('href', 'https://dev.azure.com/org/Proj/_workitems/edit/41');
+    expect(screen.getByText(/if this is a different requirement/i)).toBeInTheDocument();
+    expect(screen.getByText(/existing item is not changed/i)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: /create as new item/i }));
+    await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Create as new item' }));
+    expect(handlers.onOverride).toHaveBeenCalledWith({ linkTree: true, relateToExisting: false });
+  });
+
+  it('says nothing for an exact reuse that did not change', () => {
+    const { container } = render(
+      <DuplicateMatchCard entry={{ action: 'reuse', existingAdoId: 41, similarity: null }} orgUrl="https://dev.azure.com/org" project="Proj" canDecide onOverride={vi.fn()} onUndo={vi.fn()} />,
+    );
+    expect(container).toBeEmptyDOMElement();
+  });
+});
+
 describe('DuplicateMatchCard', () => {
   describe('an item skipped because it already exists', () => {
     it('says it already exists, links to the existing item, and says how alike they are', () => {

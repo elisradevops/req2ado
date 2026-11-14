@@ -124,8 +124,10 @@ export interface DryRunDiffEntry {
   // How alike the matched existing item is (a skipped near-duplicate only), 0 to 1.
   similarity?: number | null;
   // Set when the reviewer chose "Create as new item" for something that matched: what it matched, and what they chose with it.
-  duplicateOf?: { existingAdoId: number; similarity: number | null };
+  duplicateOf?: { existingAdoId: number; similarity: number | null; source?: 'changed_since_written' };
   duplicateOverride?: { linkTree: boolean; relateToExisting: boolean };
+  // A reuse whose text differs from the item it matched in Azure DevOps (content-aware identity). Nothing there is updated automatically.
+  changedSinceWritten?: boolean;
   customerId: string | null;
   // Manually-entered forward reference to a Systems Engineering
   // requirements-layer artifact, never auto-populated -- see ingestion's

@@ -377,7 +377,7 @@ export function NodeDetailDialog({
     ) : undefined;
 
   const duplicateSlot =
-    entry.action === 'dedup_skip' || entry.duplicateOf ? (
+    entry.action === 'dedup_skip' || entry.duplicateOf || (entry.action === 'reuse' && entry.changedSinceWritten) ? (
       <DuplicateMatchCard
         entry={{ ...entry, existingAdoId: entry.existingAdoId ?? null, similarity: entry.similarity ?? null }}
         orgUrl={orgUrl}
