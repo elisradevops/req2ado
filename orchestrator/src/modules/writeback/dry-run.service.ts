@@ -180,7 +180,9 @@ export interface DryRunDiffEntry {
   existingAdoId: number | null;
   // Set when the reviewer chose to create an item that had matched an existing one ("Create as new item"). The entry is then a plain
   // 'create' (existingAdoId and similarity are cleared) that remembers what it matched, so the choice can be undone.
-  duplicateOf?: { existingAdoId: number; similarity: number | null };
+  // `source` says what it was before the choice, so undo restores it: a skipped near-duplicate (absent) or an item flagged as changed
+  // since it was written ('changed_since_written': a reuse whose text differs from the one in Azure DevOps).
+  duplicateOf?: { existingAdoId: number; similarity: number | null; source?: 'changed_since_written' };
   // What the reviewer chose with it: whether the new item is linked into this job's tree (to its parent, and its children to it), and
   // whether it also gets a Related link to the item it matched (kept as a resolved trace link on the entry).
   duplicateOverride?: { linkTree: boolean; relateToExisting: boolean };
@@ -395,8 +397,9 @@ export async function verifyExistingAdoIdsStillExist(
     }
     const writtenText = stripHtmlTags(adoDescription);
     const currentText = normaliseText(stripHtmlTags(toAdoDescriptionHtml(entry.description)));
-    // Contained, not equal: an accepted acceptance-criteria section is written after the description.
-    if (currentText === '' || normaliseText(writtenText).includes(currentText)) {
+    // A prefix, not equal and not merely contained: an accepted acceptance-criteria section is written AFTER the description, so what was
+    // written starts with the current text. Words cut from it, or text before it, mean the item says something else now.
+    if (currentText === '' || normaliseText(writtenText).startsWith(currentText)) {
       return { ...checked, writtenContentHash: entry.contentHash ?? null };
     }
     return { ...checked, changedSinceWritten: true, writtenText: writtenText.slice(0, WRITTEN_TEXT_MAX_CHARS) };

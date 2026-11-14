@@ -1387,6 +1387,17 @@ describe('verifyExistingAdoIdsStillExist text check (W1, mappings with no conten
     expect(entry.contentCheckPending).toBeUndefined();
   });
 
+  it('accepts an accepted-criteria section added after the description, but nothing added before it or cut from it', async () => {
+    const appended = await verifyExistingAdoIdsStillExist([reuse()], ado('<p>The unit shall respond within 1000 ms.</p><h4>Acceptance criteria</h4><ul><li>Measured on the bench.</li></ul>'), undefined, { compareText: true });
+    expect(appended[0].changedSinceWritten).toBeUndefined();
+    // The current text only appears inside a longer, different one: the written item says something else, so it is flagged.
+    const surrounded = await verifyExistingAdoIdsStillExist([reuse()], ado('<p>Under no load, the unit shall respond within 1000 ms. Otherwise it may take longer.</p>'), undefined, { compareText: true });
+    expect(surrounded[0].changedSinceWritten).toBe(true);
+    // Words were cut from what was written: the new text is shorter, so it is not a prefix of the old.
+    const cut = await verifyExistingAdoIdsStillExist([reuse({ description: 'The unit shall respond within 1000 ms.' })], ado('<p>The unit shall respond within 1000 ms under load.</p>'), undefined, { compareText: true });
+    expect(cut[0].changedSinceWritten).toBe(true);
+  });
+
   it('never compares generated (SURVEY) text: the marker is dropped and nothing is flagged', async () => {
     const [entry] = await verifyExistingAdoIdsStillExist([reuse()], ado('<p>Other words</p>'), undefined, { compareText: false });
     expect(entry.changedSinceWritten).toBeUndefined();

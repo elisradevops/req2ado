@@ -7563,6 +7563,19 @@ describe('JobsService duplicate override', () => {
     expect(updateMany).not.toHaveBeenCalled();
   });
 
+  it('lets the reviewer create a reuse flagged as changed since it was written as a new item, and undo returns it to that flagged reuse', async () => {
+    const changed = skipped({ action: 'reuse', similarity: null, changedSinceWritten: true, writtenContentHash: 'c-old' });
+    const { service } = build([parent, changed]);
+
+    const result = await service.overrideDuplicate('job-1', 'n1', { linkTree: true, relateToExisting: false });
+
+    expect(result[1]).toMatchObject({ action: 'create', existingAdoId: null, duplicateOf: { existingAdoId: 123, similarity: null, source: 'changed_since_written' } });
+    const { service: again } = build(result as unknown as Record<string, unknown>[]);
+    const undone = await again.undoDuplicateOverride('job-1', 'n1');
+    expect(undone[1]).toMatchObject({ action: 'reuse', existingAdoId: 123, changedSinceWritten: true, writtenContentHash: 'c-old' });
+    expect(undone[1]).not.toHaveProperty('duplicateOf');
+  });
+
   it('404s for an entry that is not in the diff', async () => {
     const { service } = build([parent]);
 
@@ -7797,6 +7810,19 @@ describe('JobsService.confirm write-time duplicate re-check', () => {
     });
   });
 
+  it('also looks a Requirement up by its v2 identity, so a renamed or shifted file is not created again by a second job', async () => {
+    const diff = [entry('n0', 'h0', { type: 'Requirement', identityHashV2: 'v2-n0' }), entry('n1', 'h1', { type: 'Requirement', identityHashV2: 'v2-n1' })];
+    const lookupMany = jest.fn().mockResolvedValue(new Map([[idempotencyKeyFor('v2-n0', 'Project\\Area1'), 555]]));
+    const { service, createWorkItem } = build({ lookupMany }, { diff });
+
+    await service.confirm('job-1');
+
+    const keys = lookupMany.mock.calls[0][0].map((k: { sourceHash: string }) => k.sourceHash);
+    expect(keys).toEqual(['h0', 'v2-n0', 'h1', 'v2-n1']);
+    expect(createWorkItem).toHaveBeenCalledTimes(1);
+    expect(createWorkItem.mock.calls[0][1]).toMatchObject({ 'System.Title': 'n1' });
+  });
+
   it('does not link to an item that no longer exists in Azure DevOps: it creates it, and forgets the stale mapping', async () => {
     const lookupMany = hit('h0', 555);
     const { service, createWorkItem, deleteByAdoWorkItemId } = build({ lookupMany }, { getWorkItemsBatch: jest.fn().mockResolvedValue([]) });
@@ -7889,6 +7915,19 @@ describe('JobsService.confirm identity v2 (W1)', () => {
     sourceHash: 'v1', customerId: null, sourceRef: null, tags: [], ...extra,
   });
 
+  it('never repoints an existing v2 row when it creates an item: the v2 row is written only if missing', async () => {
+    const { service, record } = build([entry({ type: 'Requirement', identityHashV2: 'v2', contentHash: 'c1' })]);
+    await service.confirm('job-1');
+    expect(record).toHaveBeenCalledWith('v2', area, 100, { contentHash: 'c1', identityVersion: 2, onlyIfMissing: true });
+  });
+
+  it('does not repoint the mapping of the item an entry was created apart from: a create-as-new choice writes its rows only if missing', async () => {
+    const { service, record } = build([entry({ type: 'Requirement', identityHashV2: 'v2', contentHash: 'c1', duplicateOf: { existingAdoId: 41, similarity: null, source: 'changed_since_written' } })]);
+    await service.confirm('job-1');
+    expect(record).toHaveBeenCalledWith('v1', area, 100, { contentHash: 'c1', identityVersion: 1, onlyIfMissing: true });
+    expect(record).toHaveBeenCalledWith('v2', area, 100, { contentHash: 'c1', identityVersion: 2, onlyIfMissing: true });
+  });
+
   it('records only the v1 row for a created Epic or Feature: a heading is not an identity another document may adopt', async () => {
     const { service, record } = build([entry({ type: 'Feature', identityHashV2: 'v2', contentHash: 'c1' })]);
     await service.confirm('job-1');
@@ -7901,7 +7940,7 @@ describe('JobsService.confirm identity v2 (W1)', () => {
     await service.confirm('job-1');
     expect(record).toHaveBeenCalledTimes(2);
     expect(record).toHaveBeenCalledWith('v1', area, 100, { contentHash: 'c1', identityVersion: 1 });
-    expect(record).toHaveBeenCalledWith('v2', area, 100, { contentHash: 'c1', identityVersion: 2 });
+    expect(record).toHaveBeenCalledWith('v2', area, 100, { contentHash: 'c1', identityVersion: 2, onlyIfMissing: true });
   });
 
   it('lazily adds the v2 row for an item reused through its v1 row, without moving an existing one', async () => {

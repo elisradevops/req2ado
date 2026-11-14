@@ -848,8 +848,11 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       const index = diff.findIndex((entry) => entry.localId === localId);
       if (index === -1) throw new NotFoundException(`Diff entry ${localId} not found`);
       const entry = diff[index];
-      if (entry.action !== 'dedup_skip' || entry.existingAdoId === null) {
-        throw new BadRequestException('only an item skipped as a near-duplicate can be created anyway');
+      // A skipped near-duplicate, or a reuse flagged as changed since it was written (it matched an item by identity, but says something else
+      // now: if it is really a different requirement, the reviewer can create it). A plain exact reuse is not offered.
+      const changedMatch = entry.action === 'reuse' && entry.changedSinceWritten === true;
+      if ((entry.action !== 'dedup_skip' && !changedMatch) || entry.existingAdoId === null) {
+        throw new BadRequestException('only an item skipped as a near-duplicate, or one that changed since it was written, can be created anyway');
       }
       const alreadyRelated = (entry.traceLinks ?? []).some(
         (link) => link.referenceName === 'System.LinkTypes.Related' && link.targetKind === 'crossJob' && link.resolvedAdoId === entry.existingAdoId,
@@ -862,7 +865,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         action: 'create',
         existingAdoId: null,
         similarity: null,
-        duplicateOf: { existingAdoId: entry.existingAdoId, similarity: entry.similarity },
+        duplicateOf: { existingAdoId: entry.existingAdoId, similarity: entry.similarity, ...(changedMatch ? { source: 'changed_since_written' as const } : {}) },
         duplicateOverride: { linkTree: options.linkTree, relateToExisting: options.relateToExisting },
         traceLinks: [...(entry.traceLinks ?? []), ...related],
       };
@@ -882,7 +885,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       if (!duplicateOf || !duplicateOverride) throw new BadRequestException('this item was not created anyway');
       diff[index] = {
         ...entry,
-        action: 'dedup_skip',
+        action: duplicateOf.source === 'changed_since_written' ? 'reuse' : 'dedup_skip',
         existingAdoId: duplicateOf.existingAdoId,
         similarity: duplicateOf.similarity,
         // Only the Related link the override added goes (none when it was not asked for); every other link on the entry stays.
@@ -2325,7 +2328,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
   // verifies its matches against Azure DevOps, so this does too, and a mapping whose item was deleted is forgotten, not linked. Best effort and
   // fail-open in every step (a lookup or verification error means "create as planned"). Returns how many were linked.
   private async linkItemsWrittenByAnotherJob(
-    diff: { localId: string; action: string; existingAdoId: number | null; sourceHash: string; duplicateOf?: unknown }[],
+    diff: { localId: string; type?: string; action: string; existingAdoId: number | null; sourceHash: string; identityHashV2?: string | null; duplicateOf?: unknown }[],
     isExcluded: (entry: never) => boolean,
     areaPath: string,
     selectedLocalIds: string[] | undefined,
@@ -2349,14 +2352,25 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     };
     let found: Map<string, number>;
     try {
-      found = await this.idempotencyService.lookupMany(candidates.map((entry) => ({ sourceHash: entry.sourceHash, areaPath })));
+      // Both identities, as the dry run does: the position hash, and for a Requirement the v2 hash, so a renamed or shifted copy of the same
+      // file confirmed by another job is found too.
+      found = await this.idempotencyService.lookupMany(
+        candidates.flatMap((entry) => [
+          { sourceHash: entry.sourceHash, areaPath },
+          ...(entry.type === 'Requirement' && entry.identityHashV2 ? [{ sourceHash: entry.identityHashV2, areaPath }] : []),
+        ]),
+      );
     } catch (error) {
       warn('Write-time duplicate re-check skipped', error);
       return 0;
     }
-    const hits = candidates.filter((entry) => found.has(idempotencyMapKey(entry.sourceHash, areaPath)));
+    // The item another job wrote for this entry: by its position hash first, then (a Requirement) by its v2 identity.
+    const matchOf = (entry: (typeof candidates)[number]): number | undefined =>
+      found.get(idempotencyMapKey(entry.sourceHash, areaPath)) ??
+      (entry.type === 'Requirement' && entry.identityHashV2 ? found.get(idempotencyMapKey(entry.identityHashV2, areaPath)) : undefined);
+    const hits = candidates.filter((entry) => matchOf(entry) !== undefined);
     if (hits.length === 0) return 0;
-    const ids = [...new Set(hits.map((entry) => found.get(idempotencyMapKey(entry.sourceHash, areaPath)) as number))];
+    const ids = [...new Set(hits.map((entry) => matchOf(entry) as number))];
     let stillExisting: Set<number>;
     try {
       stillExisting = new Set((await this.mcpClient.getWorkItemsBatch(ids, credential)).map((item) => item.id));
@@ -2371,7 +2385,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     }
     let linked = 0;
     for (const entry of hits) {
-      const existing = found.get(idempotencyMapKey(entry.sourceHash, areaPath)) as number;
+      const existing = matchOf(entry) as number;
       if (!stillExisting.has(existing)) continue;
       entry.action = 'reuse';
       entry.existingAdoId = existing;
@@ -2564,6 +2578,8 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       identityHashV2?: string | null;
       contentHash?: string | null;
       backfillIdentityV2?: boolean;
+      // Set when the reviewer chose "Create as new item" for an entry that matched an existing one: it is a plain create apart from that item.
+      duplicateOf?: { existingAdoId: number; similarity: number | null; source?: 'changed_since_written' };
       writtenContentHash?: string | null;
     }[];
 
@@ -2880,10 +2896,14 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         // from before W1 (no v2, no content hash) is recorded exactly as before.
         if (entry.identityHashV2 || entry.contentHash !== undefined) {
           const contentHash = entry.contentHash ?? null;
-          await this.idempotencyService.record(entry.sourceHash, job.areaPath, created.id, { contentHash, identityVersion: 1 });
+          // A "create as new item" choice (duplicateOf) made this item apart from the one it matched: it must not repoint that item's mapping.
+          await this.idempotencyService.record(entry.sourceHash, job.areaPath, created.id, { contentHash, identityVersion: 1, ...(entry.duplicateOf ? { onlyIfMissing: true } : {}) });
           if (entry.identityHashV2 && entry.type === 'Requirement') {
-            await this.idempotencyService.record(entry.identityHashV2, job.areaPath, created.id, { contentHash, identityVersion: 2 });
+            // Only if missing: a second job that created its own copy must not repoint the row the first job's item already owns.
+            await this.idempotencyService.record(entry.identityHashV2, job.areaPath, created.id, { contentHash, identityVersion: 2, onlyIfMissing: true });
           }
+        } else if (entry.duplicateOf) {
+          await this.idempotencyService.record(entry.sourceHash, job.areaPath, created.id, { contentHash: null, identityVersion: 1, onlyIfMissing: true });
         } else {
           await this.idempotencyService.record(entry.sourceHash, job.areaPath, created.id);
         }
