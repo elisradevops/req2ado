@@ -388,7 +388,7 @@ export function JobsList(): React.ReactElement {
                           <span className="flex min-w-0 items-center gap-1.5">
                             <span className="block max-w-[14rem] truncate text-sm font-medium max-md:max-w-[7rem]">{job.originalFilename}</span>
                             {job.batchId && (
-                              <Tooltip content="Part of a batch upload -- click to view the whole batch">
+                              <Tooltip content="Part of a batch upload — click to view the whole batch">
                                 <Chip
                                   className="flex-none cursor-pointer border border-hairline-strong bg-surface-alt text-ink-2 hover:bg-canvas"
                                   onClick={(event) => {
@@ -494,7 +494,7 @@ export function JobsList(): React.ReactElement {
         title="Delete this job?"
         description={
           deleteTarget?.status === 'succeeded'
-            ? 'This removes the job and its history from req2ado only -- any work items already written to Azure DevOps are NOT deleted and must be removed there directly, if wanted. This cannot be undone.'
+            ? 'This removes the job and its history from req2ado only — any work items already written to Azure DevOps are NOT deleted and must be removed there directly, if wanted. This cannot be undone.'
             : 'This permanently removes the job and its history from req2ado. This cannot be undone.'
         }
         confirmLabel="Delete job"

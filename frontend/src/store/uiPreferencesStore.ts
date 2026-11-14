@@ -12,7 +12,7 @@ const STORAGE_KEY = 'req2ado-ui-preferences';
 interface StoredPreferences {
   denseView: boolean;
   autoSyncLedgers: boolean;
-  // The single-key review shortcuts (J K R A X). WCAG 2.1.4 asks for a way to turn them off.
+  // The single-key review shortcuts (J K A R X U E). WCAG 2.1.4 asks for a way to turn them off.
   keyboardShortcuts: boolean;
   // The desktop navigation rail is icon-only. A choice the user made, so it is remembered.
   railCollapsed: boolean;

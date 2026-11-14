@@ -97,7 +97,7 @@ describe('ConnectionStatusItem', () => {
       expect(items.map((item) => item.textContent)).toEqual([
         expect.stringMatching(/Azure DevOps.*Connected.*Checked 10:05/s),
         expect.stringMatching(/SharePoint.*Connected, expires in 47 minutes/s),
-        expect.stringMatching(/LLM backend.*Connected, 42ms/s),
+        expect.stringMatching(/Open WebUI.*Connected, 42ms/s),
       ]);
     });
 
@@ -108,7 +108,7 @@ describe('ConnectionStatusItem', () => {
       const dialog = await open();
 
       expect(within(dialog).getByText('Token invalid').closest('li')).toHaveTextContent(/needs attention|action needed/i);
-      expect(within(dialog).getByText("Can't reach the LLM backend")).toBeInTheDocument();
+      expect(within(dialog).getByText("Can't reach Open WebUI")).toBeInTheDocument();
     });
 
     it('lists a connection that is not set up without counting it as a fault', async () => {

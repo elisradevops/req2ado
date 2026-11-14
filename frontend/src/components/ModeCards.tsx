@@ -32,7 +32,7 @@ import type { EtaEstimate, ModelDetail } from '../api/jobs';
 export const MODE_COPY = {
   baseline: {
     title: 'BASELINE',
-    description: 'Deterministic, verbatim extraction. No LLM. Fast.',
+    description: 'Deterministic, verbatim extraction. No AI model. Fast.',
     costNote: 'no model cost',
     sample: {
       kind: 'verbatim' as const,
@@ -41,7 +41,7 @@ export const MODE_COPY = {
   },
   survey: {
     title: 'SURVEY',
-    description: 'LLM-driven distillation into formal "shall" requirements.',
+    description: 'An AI model rewrites the text into formal "shall" requirements.',
     costNote: 'uses your model quota',
     sample: {
       kind: 'structured' as const,
@@ -216,7 +216,7 @@ export function ModeCards({
                   <Cpu className="h-3.5 w-3.5 flex-none text-ink-3" />
                   Model
                 </span>
-                <Select value={model ?? ''} onChange={(event) => onModelChange(event.target.value)} aria-label="LLM Model" loading={modelsLoading}>
+                <Select value={model ?? ''} onChange={(event) => onModelChange(event.target.value)} aria-label="AI model" loading={modelsLoading}>
                   <option value="">{recommendedModel ? `Default (${recommendedModel})` : 'Default'}</option>
                   {(availableModels ?? []).map((m) => (
                     <option key={m} value={m}>

@@ -21,6 +21,8 @@ const BANNED: Array<[RegExp, string]> = [
   [/Confirmed (—|--) |Confirmed work items/g, '"Confirmed" for a write (say Written / Wrote)'],
   [/label="Succeeded"|label="Awaiting review"/g, 'retired job-status names (say Written / Diff ready)'],
   [/All confirmed work items|match what was confirmed/g, '"confirmed" for what was written (say written)'],
+  [/\bLLM\b|distillation|pipeline worker|A chunk of work|cosine/g, 'jargon in user copy (say AI model, rewriting, a slot, or name the part that failed)'],
+  [/ -- /g, 'a literal double hyphen (it renders as two hyphens; use a full stop or a dash)'],
   [/audit trail/gi, '"audit trail" (the tab is Audit; the failure cause is under Run details)'],
   [/\w\(s\)(?=[\s.,'`])/g, 'a "(s)" plural in user copy (use the plural helper)'],
   [/aria-label="Needs review"|title="Needs review/g, '"Needs review" for the Check flag on a row (say Check)'],

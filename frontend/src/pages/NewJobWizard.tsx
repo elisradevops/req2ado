@@ -881,14 +881,14 @@ export function NewJobWizard(): React.ReactElement {
                     workItemType="Requirement"
                     project={project}
                     labelExtra={
-                      <InfoTip content="The workflow state each new item starts in, fetched from this project's Requirement workflow -- it varies by process template. Proposed keeps items out of active sprint metrics until someone triages them." />
+                      <InfoTip content="The workflow state each new item starts in, fetched from this project's Requirement workflow — it varies by process template. Proposed keeps items out of active sprint metrics until someone triages them." />
                     }
                   />
                 ) : (
                   <TextField
                     label="State (optional)"
                     labelExtra={
-                      <InfoTip content="The workflow state each new item starts in, fetched from this project's Requirement workflow -- it varies by process template. Proposed keeps items out of active sprint metrics until someone triages them." />
+                      <InfoTip content="The workflow state each new item starts in, fetched from this project's Requirement workflow — it varies by process template. Proposed keeps items out of active sprint metrics until someone triages them." />
                     }
                     value={state}
                     onChange={(event) => setState(event.target.value)}
@@ -979,8 +979,8 @@ export function NewJobWizard(): React.ReactElement {
                         mode === 'baseline'
                           ? 'BASELINE reads the document structure only, with no AI model, and typically takes about a minute.'
                           : (selectedEstimate?.basis === 'blended'
-                          ? `Based on ${selectedEstimate.sampleCount} previous SURVEY run${selectedEstimate.sampleCount === 1 ? '' : 's'} on this deployment. BASELINE parses structure only; SURVEY additionally runs an LLM quality/dedup pass per clause -- figures cost the most, since each triggers a separate vision call.`
-                          : 'No completed SURVEY runs on this deployment yet -- this is a conservative starting estimate based on document size, not a measured one. BASELINE parses structure only; SURVEY additionally runs an LLM quality/dedup pass per clause.') +
+                          ? `Based on ${selectedEstimate.sampleCount} previous SURVEY run${selectedEstimate.sampleCount === 1 ? '' : 's'} on this deployment. BASELINE parses structure only; SURVEY also runs an AI quality and duplicate check on each clause. Figures cost the most, since each one needs a separate vision call.`
+                          : 'No completed SURVEY runs on this deployment yet, so this is a starting estimate from document size, not a measured one. BASELINE parses structure only; SURVEY also runs an AI quality and duplicate check on each clause.') +
                         (mode === 'survey' ? ' SURVEY time scales with document size. You will see progress on the job page once it starts.' : '')
                       }
                     />

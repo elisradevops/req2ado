@@ -63,7 +63,7 @@ describe('ModeCards', () => {
     render(
       <ModeCards value="baseline" onChange={onChange} model="" onModelChange={vi.fn()} availableModels={['qwen2.5:32b']} />,
     );
-    const modelTrigger = screen.getByRole('combobox', { name: 'LLM Model' });
+    const modelTrigger = screen.getByRole('combobox', { name: 'AI model' });
     modelTrigger.focus();
     await userEvent.keyboard('{Enter}');
     expect(onChange).not.toHaveBeenCalled();
@@ -84,7 +84,7 @@ describe('ModeCards', () => {
       );
 
     const openPicker = async () => {
-      screen.getByRole('combobox', { name: 'LLM Model' }).focus();
+      screen.getByRole('combobox', { name: 'AI model' }).focus();
       await userEvent.keyboard('{Enter}');
     };
 

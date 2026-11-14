@@ -58,7 +58,7 @@ export function SectionResults({ items }: { items: SectionResultEntry[] }): Reac
         {expanded ? <ChevronDown className="h-4 w-4 flex-none" /> : <ChevronRight className="h-4 w-4 flex-none" />}
         <FileText className="h-4 w-4 flex-none" aria-hidden="true" />
         <span className="font-medium">
-          {items.length} section{items.length === 1 ? '' : 's'} analyzed -- {totalNodes} item{totalNodes === 1 ? '' : 's'} drafted
+          {items.length} section{items.length === 1 ? '' : 's'} analyzed — {totalNodes} item{totalNodes === 1 ? '' : 's'} drafted
         </span>
       </button>
       <div className={cn('grid min-h-0 transition-[grid-template-rows] duration-200 ease-out', expanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]')}>

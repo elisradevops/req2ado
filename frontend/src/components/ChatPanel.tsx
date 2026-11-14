@@ -87,7 +87,7 @@ function suggestedPrompts(noun: string, scored: boolean): { label: string; effec
     {
       label: 'Tighten the wording',
       effect: 'remove ambiguity and vague terms',
-      prompt: 'Tighten the wording -- remove ambiguity and vague terms.',
+      prompt: 'Tighten the wording — remove ambiguity and vague terms.',
     },
     {
       label: 'Suggest a better title',
@@ -414,7 +414,7 @@ export function ChatPanel({
       // actually ends.
     } catch (err) {
       setStopping(false);
-      showErrorToast('Failed to stop -- the reply may still be generating.', err);
+      showErrorToast('Failed to stop — the reply may still be generating.', err);
     } finally {
       isStoppingRef.current = false;
     }
@@ -673,7 +673,7 @@ export function ChatPanel({
               </option>
             ))}
           </Select>
-          <InfoTip content="Fetched live from the LLM backend. Leave on Default to use the orchestrator's configured model. This applies to this conversation only -- it does not change the model the job was analysed with." />
+          <InfoTip content="Fetched live from Open WebUI. Leave on Default to use the orchestrator's configured model. This applies to this conversation only — it does not change the model the job was analysed with." />
         </div>
         {/* CR-8 ("Wizard UX Options" Take B) -- the composer holds the
             state instead of swapping one icon next to a fixed input: while

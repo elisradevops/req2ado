@@ -249,7 +249,7 @@ export function NodeDetailDialog({
     // Where the open item is in the list being worked through (the review queue): "3 of 17" in the note above the item.
     position?: { index: number; total: number };
   } | null;
-  // The single-key shortcuts (J K R A X). Off turns every one of them off
+  // The single-key shortcuts (J K A R X U E). Off turns every one of them off
   // (WCAG 2.1.4); the buttons keep working.
   shortcutsEnabled?: boolean;
   // What the review queue just did ("Marked reviewed. 2 left."). Spoken from inside the dialog:
@@ -345,7 +345,7 @@ export function NodeDetailDialog({
   const canEdit = canEditEntry(entry, jobStatus, written);
   const chatDisabledReason =
     jobStatus != null && jobStatus !== 'diff_ready'
-      ? "This job's review is closed -- chat is only available while it's awaiting review."
+      ? "This job's review is closed — chat is only available while it's awaiting review."
       : undefined;
 
   const addChildSlot =

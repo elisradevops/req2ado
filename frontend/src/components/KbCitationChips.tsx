@@ -77,7 +77,7 @@ export function KbCitationChips({ citations }: { citations: KbCitation[] | undef
         const chipLabel = always ? 'Always included' : presentation.chipLabel;
         const tooltip = always
           ? 'Included in full in every survey (Full Context mode); not scored against this section.'
-          : `${presentation.tooltipLabel} -- closest-passage match: ${similarityPercent}`;
+          : `${presentation.tooltipLabel} — closest-passage match: ${similarityPercent}`;
         return (
           <Tooltip key={citation.sourceFile} content={tooltip}>
             <Chip bg={presentation.bg} color={presentation.color} className="border" style={{ borderColor: presentation.border }}>

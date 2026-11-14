@@ -22,18 +22,18 @@ const SURVEY_STEPS: StepDef[] = [
     label: 'Dedup check',
     tip: 'Checking whether a near-identical work item already exists under this area path, to avoid creating duplicates.',
   },
-  { key: 'review', label: 'Review', tip: 'Awaiting your review of the proposed diff -- nothing is written to Azure DevOps yet.' },
+  { key: 'review', label: 'Review', tip: 'Awaiting your review of the proposed diff — nothing is written to Azure DevOps yet.' },
   { key: 'write', label: 'Write', tip: 'Writing the reviewed work items to Azure DevOps. This step cannot be undone.' },
 ];
 
 const BASELINE_STEPS: StepDef[] = [
-  { key: 'parse', label: 'Parse', tip: 'Reading the document verbatim -- deterministic, no LLM, no distillation.' },
+  { key: 'parse', label: 'Parse', tip: 'Reading the document verbatim: no AI model, no rewriting.' },
   {
     key: 'dedupCheck',
     label: 'Dedup check',
     tip: 'Checking whether a near-identical work item already exists under this area path, to avoid creating duplicates.',
   },
-  { key: 'review', label: 'Review', tip: 'Awaiting your review of the proposed diff -- nothing is written to Azure DevOps yet.' },
+  { key: 'review', label: 'Review', tip: 'Awaiting your review of the proposed diff — nothing is written to Azure DevOps yet.' },
   { key: 'write', label: 'Write', tip: 'Writing the reviewed work items to Azure DevOps. This step cannot be undone.' },
 ];
 
@@ -219,7 +219,7 @@ export function JobLifecycleSteps({
   if (reached === 'score' && latestNarrationPhase === 'detect_conflicts') {
     tip = 'Checking newly-drafted requirements against each other for near-duplicate/conflicting values.';
   } else if (reached === 'score' && latestNarrationPhase === 'regroup_roots') {
-    tip = 'Grouping disconnected sections under a shared topic before dedup check.';
+    tip = 'Grouping disconnected sections under a shared topic before the duplicate check.';
   } else if (reached === 'score' && latestNarrationPhase === 'infer_trace_links') {
     tip = 'Resolving trace/coverage links between requirements.';
   }

@@ -152,7 +152,7 @@ export function Combobox({
           >
             {showLoadingRow && <div className="px-2.5 py-1.5 text-sm text-ink-3">Loading…</div>}
             {showEmptyRow && (
-              <div className="px-2.5 py-1.5 text-sm text-ink-3">{emptyText ?? 'No suggestions -- type to enter one manually.'}</div>
+              <div className="px-2.5 py-1.5 text-sm text-ink-3">{emptyText ?? 'No suggestions — type to enter one manually.'}</div>
             )}
             {filtered.map((option, index) => (
               <div

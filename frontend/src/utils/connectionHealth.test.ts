@@ -21,7 +21,7 @@ describe('connectionRows', () => {
     expect(rows.map((r) => [r.label, r.state, r.word])).toEqual([
       ['Azure DevOps', 'ok', 'Connected'],
       ['SharePoint', 'ok', 'Connected, expires in 47 minutes'],
-      ['LLM backend', 'ok', 'Connected, 42ms'],
+      ['Open WebUI', 'ok', 'Connected, 42ms'],
     ]);
   });
 
@@ -35,7 +35,7 @@ describe('connectionRows', () => {
       expect(row(entries({ sharePoint: entry({ status: 'unreachable' as const, expiresInSeconds: null }) }), 'sharePoint')).toMatchObject({ state: 'attention', word: "Can't reach Microsoft Graph" });
       expect(row(entries({ ado: entry({ status: 'unreachable' as const }) }), 'ado')).toMatchObject({ state: 'attention', word: "Can't reach Azure DevOps" });
       expect(row(entries({ ado: entry({ status: 'invalid' as const }) }), 'ado')).toMatchObject({ state: 'danger', word: 'Token rejected' });
-      expect(row(entries({ llm: entry({ status: 'unreachable' as const, latencyMs: null }) }), 'llm')).toMatchObject({ state: 'attention', word: "Can't reach the LLM backend" });
+      expect(row(entries({ llm: entry({ status: 'unreachable' as const, latencyMs: null }) }), 'llm')).toMatchObject({ state: 'attention', word: "Can't reach Open WebUI" });
     });
 
     it('a check that could not be completed reads as unreachable, whatever was known before', () => {

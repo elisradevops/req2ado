@@ -666,7 +666,7 @@ export function NodeDetailPanel({
         {/* The text a reviewer is correcting comes straight after its title; the reference fields and classification follow. */}
         <TextArea
           label="Description"
-          helperText="Markdown supported -- **bold**, *italic*, ~~strikethrough~~, and - / 1. lists."
+          helperText="Markdown supported — **bold**, *italic*, ~~strikethrough~~, and - / 1. lists."
           value={draftDescription}
           onChange={(e) => setDraftDescription(e.target.value)}
           className="min-h-[300px] leading-relaxed"
@@ -677,7 +677,7 @@ export function NodeDetailPanel({
         {entry.type === 'Requirement' && (
           <TextField
             label="Customer ID"
-            helperText="This requirement's own source reference (e.g. a clause number like 1.1.2.2) -- leave blank if the source document has none."
+            helperText="This requirement's own source reference (e.g. a clause number like 1.1.2.2) — leave blank if the source document has none."
             value={draftCustomerId}
             onChange={(e) => setDraftCustomerId(e.target.value)}
             className="font-mono text-sm"
@@ -691,7 +691,7 @@ export function NodeDetailPanel({
         {entry.type === 'Requirement' && (
           <TextField
             label="SE Coverage Reference"
-            helperText="A manual forward reference to a Systems Engineering requirements-layer artifact this requirement is a basis for coverage of -- entered by hand, never auto-detected or linked. Leave blank if not applicable."
+            helperText="A manual forward reference to a Systems Engineering requirements-layer artifact this requirement is a basis for coverage of — entered by hand, never auto-detected or linked. Leave blank if not applicable."
             value={draftSeCoverageRef}
             onChange={(e) => setDraftSeCoverageRef(e.target.value)}
             className="font-mono text-sm"
@@ -728,7 +728,7 @@ export function NodeDetailPanel({
                 <span className="text-xs text-ink-3">
                   {editWinningTag
                     ? `"${REQUIREMENT_TAG_LABELS[editWinningTag].label}" (→) is what will be written to the Requirement Type field in Azure DevOps.`
-                    : "None of the selected categories map to this project's Requirement Type field -- it will be left at its default."}
+                    : "None of the selected categories map to this project's Requirement Type field — it will be left at its default."}
                 </span>
               )}
             </div>
@@ -893,7 +893,7 @@ export function NodeDetailPanel({
             <span>
               A similar parent item already exists in Azure DevOps as{' '}
               <span className="font-mono">WI-{parentEntry.existingAdoId}</span> ({parentEntry.action === 'reuse' ? 'exact match' : 'near-duplicate'}
-              ) -- this item will be linked under it automatically when you write.
+              ) — this item will be linked under it automatically when you write.
             </span>
           </div>
         )}

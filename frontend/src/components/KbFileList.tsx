@@ -289,7 +289,7 @@ export function KbFileList({
                       {!entry.isFolder && (
                         <span onClick={(e) => e.stopPropagation()} className="inline-flex gap-1">
                           {hasNoVectors(ingested, chunkCountOf(entry)) && entry.downloadUrl && (
-                            <Tooltip content="No vectors are stored for this file -- re-ingest it so grounding can use it">
+                            <Tooltip content="No vectors are stored for this file — re-ingest it so grounding can use it">
                               <button
                                 type="button"
                                 aria-label={`Re-ingest ${entry.name}`}

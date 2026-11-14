@@ -68,7 +68,7 @@ describe('KbCitationChips', () => {
   it('shows the closest-passage match score, without an excuse, for a retrieved citation', async () => {
     render(<KbCitationChips citations={[{ sourceFile: 'doc-b.pdf', similarity: 0.33, relevance: 'not_relevant', inclusion: 'retrieved' }]} />);
     await userEvent.hover(screen.getByText('Not relevant · doc-b.pdf'));
-    const tips = await screen.findAllByText('Judged not relevant -- closest-passage match: 33%');
+    const tips = await screen.findAllByText('Judged not relevant — closest-passage match: 33%');
     expect(tips.length).toBeGreaterThan(0);
     expect(document.body.textContent).not.toMatch(/process\/style guide/);
   });

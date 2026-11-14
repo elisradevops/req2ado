@@ -134,7 +134,7 @@ export function AddChildForm({
     <div className="flex flex-col gap-3 p-4">
       <div>
         <p className={LABEL_MICRO}>{parentEntry ? 'Add child item' : 'New item'}</p>
-        <p className="text-xs text-ink-3">Manually add another item -- it's written to Azure DevOps with the rest when you write.</p>
+        <p className="text-xs text-ink-3">Manually add another item — it's written to Azure DevOps with the rest when you write.</p>
       </div>
       {jobMode === 'baseline' ? (
         <TextField label="Type" value={type} disabled fullWidth />

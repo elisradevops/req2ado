@@ -1,3 +1,4 @@
+import { QUEUED_COPY } from './labels';
 import type { JobStage, NarrationEvent } from '../api/events';
 
 export interface TickerResult {
@@ -57,7 +58,7 @@ const PHASE_FALLBACK_SENTENCES: Record<NarrationEvent['phase'], string> = {
   // chunk_warning from the `narrations` array tickerFor reads (see its own
   // comment), so it can never become `latest` here. Present only so this
   // Record stays exhaustive over NarrationEvent['phase'].
-  chunk_warning: 'A chunk of work failed.',
+  chunk_warning: 'One part of the run failed.',
 };
 
 // Used only when no narration has arrived yet for the job's current stage
@@ -79,7 +80,7 @@ const STAGE_FALLBACK_SENTENCES: Record<JobStage, string> = {
 // i.e. status alone is all that's known (pending, or a terminal status
 // reached before any stage/narration was recorded).
 const STATUS_FALLBACK_SENTENCES: Record<string, string> = {
-  pending: 'Queued — waiting for a pipeline worker to pick this job up.',
+  pending: QUEUED_COPY,
   succeeded: 'Wrote the reviewed work items to Azure DevOps.',
   rejected: 'Rejected — nothing was written to Azure DevOps.',
   cancelled: 'Job cancelled.',

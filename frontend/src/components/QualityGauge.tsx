@@ -376,7 +376,7 @@ export function QualityGauge({
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center gap-1.5">
         <span className="text-xs font-semibold text-ink-2">Quality</span>
-        <InfoTip content="req2ado's own read on this requirement's wording, from a single LLM judgment (0-100). Not an Azure DevOps field and not part of the work item." />
+        <InfoTip content="req2ado's own read on this requirement's wording, from a single AI-model judgment (0-100). Not an Azure DevOps field and not part of the work item." />
         {/* Headline delta always renders (even "no change") when a
             previousScore was supplied at all -- DESIGN.md §11.4.4: the
             words "no change" beat a silent screen just as much as they

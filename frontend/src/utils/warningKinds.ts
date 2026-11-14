@@ -62,7 +62,7 @@ export type AckPolicy = 'per_item' | 'kind_counted';
 // WarningRecord is `string` on purpose -- ingestion can add one without a
 // matching frontend release; kindMeta()'s fallback renders those sanely.
 export const KIND_META: Record<string, KindMeta> = {
-  // -- Fix before writing -------------------------------------------------
+  // The groups below are not in group order: each entry carries its own `group`, which is what the app reads.
   missing_source_reference: {
     title: 'Requirement has no Customer ID',
     group: 'fix',
@@ -97,7 +97,7 @@ export const KIND_META: Record<string, KindMeta> = {
     group: 'review',
     short: 'Some proposed acceptance criteria were left out because they named values not found in the document.',
     means: 'Nothing wrong was written. These items have no proposed criteria, or fewer than the model suggested.',
-    todo: 'If the item needs acceptance criteria, write them by hand before you write.',
+    todo: 'If the item needs acceptance criteria, add them by hand before writing to Azure DevOps.',
     chip: 'Criteria left out',
     unit: ['item', 'items'],
   },
@@ -138,7 +138,6 @@ export const KIND_META: Record<string, KindMeta> = {
     unit: ['link', 'links'],
   },
 
-  // -- Review ----------------------------------------------------------------
   near_duplicate_conflict: {
     title: 'Near-duplicates with conflicting values',
     group: 'review',
@@ -278,7 +277,6 @@ export const KIND_META: Record<string, KindMeta> = {
     unit: ['notice', 'notices'],
   },
 
-  // -- For your information --------------------------------------------------
   enhancement_call_failed: {
     title: 'Enhanced wording unavailable',
     group: 'info',

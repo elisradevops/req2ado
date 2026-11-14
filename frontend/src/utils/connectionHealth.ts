@@ -72,14 +72,14 @@ function sharePointRow(entry: StatusEntry<SharePointStatus>): ConnectionRow {
 }
 
 function llmRow(entry: StatusEntry<LlmStatus>): ConnectionRow {
-  const base = { kind: 'llm' as const, label: 'LLM backend', checkedAt: entry.checkedAt };
-  if (entry.error) return { ...base, state: 'attention', word: "Can't reach the LLM backend" };
+  const base = { kind: 'llm' as const, label: 'Open WebUI', checkedAt: entry.checkedAt };
+  if (entry.error) return { ...base, state: 'attention', word: "Can't reach Open WebUI" };
   const data = entry.data;
   switch (data?.status) {
     case 'reachable':
       return { ...base, state: 'ok', word: data.latencyMs !== null ? `Connected, ${data.latencyMs}ms` : 'Connected' };
     case 'unreachable':
-      return { ...base, state: 'attention', word: "Can't reach the LLM backend" };
+      return { ...base, state: 'attention', word: "Can't reach Open WebUI" };
     case 'not_configured':
       return { ...base, state: 'off', word: 'Not configured' };
     default:

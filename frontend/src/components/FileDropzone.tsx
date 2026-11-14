@@ -80,13 +80,13 @@ export function FileDropzone({
         <>
           <Spinner className="h-6 w-6 text-accent" />
           <span className="text-sm font-semibold">Parsing {fileName ?? 'document'}…</span>
-          <span className="text-xs text-ink-3">This only reads the document's structure -- no analysis yet.</span>
+          <span className="text-xs text-ink-3">This only reads the document's structure — no analysis yet.</span>
         </>
       ) : status === 'parsed' ? (
         <>
           <CircleCheck className="h-6 w-6 text-ok" />
           <span className="text-sm font-semibold">{fileName}</span>
-          <span className="text-xs text-ink-3">Parsed -- drop another file here to replace it</span>
+          <span className="text-xs text-ink-3">Parsed — drop another file here to replace it</span>
         </>
       ) : status === 'error' ? (
         <>

@@ -73,7 +73,7 @@ export const PHASE_SUBLABEL: Record<NarrationEvent['phase'], string> = {
   // Never actually looked up (a chunk_warning never becomes `latest` in a
   // way that reads this map -- it's surfaced via CollapsibleWarnings, not
   // the section step sublabel), present only so this Record stays exhaustive.
-  chunk_warning: 'A chunk of work failed',
+  chunk_warning: 'One part of the run failed',
 };
 
 // Fraction of a branch's OWN total work that stage 1 (its skeleton call)
@@ -523,7 +523,7 @@ export function ProgressBanner({
           ) : (
             <span className='flex-none font-mono text-metric tabular-nums text-ink-1'>{Math.round(shownProgress)}%</span>
           ))}
-        <InfoTip content='BASELINE typically takes about a minute. SURVEY reads the whole document, merges near-duplicates, infers missing parents, and scores each requirement -- time scales with document size, figures most of all.' />
+        <InfoTip content='BASELINE typically takes about a minute. SURVEY reads the whole document, merges near-duplicates, infers missing parents, and scores each requirement — time scales with document size, figures most of all.' />
       </div>
 
       {/* DESIGN.md §11.3 -- "one meta line replaces the pill row": elapsed,
@@ -569,7 +569,7 @@ export function ProgressBanner({
                 point the way a projected progress-bar segment would. */}
             <span
               className='rounded-full border border-dashed border-hairline-strong px-1.5 py-0.5 font-mono text-ink-3'
-              title="Calculated from this job's own elapsed time and progress so far -- not a fixed estimate."
+              title="Calculated from this job's own elapsed time and progress so far — not a fixed estimate."
             >
               {etaText}
             </span>
@@ -701,7 +701,7 @@ export function ProgressBanner({
                 // The header already says what is being read, and for how long; this line says what the bar can't.
                 'One pass over the whole document. There is no step count to measure against.'
               ) : isTailPhase || isPreparingAnalysis ? (
-                'A single whole-document pass -- no fixed step count to measure against.'
+                'A single whole-document pass — no fixed step count to measure against.'
               ) : (
                 'Working — no progress estimate for this step yet.'
               )}

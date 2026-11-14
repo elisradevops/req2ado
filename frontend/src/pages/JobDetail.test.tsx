@@ -4286,13 +4286,13 @@ describe('JobDetail: the phase rail while a run is in progress (DESIGN.md §11.3
 
   it('shows a queued job in the live layout, with the queue notice in the panel and "Queued" under its phase', async () => {
     await mountRunning({ status: 'pending', stage: null });
-    expect(await screen.findByText(/Queued — waiting for a pipeline worker/)).toBeInTheDocument();
+    expect(await screen.findByText(/Queued\. It starts when a slot is free/)).toBeInTheDocument();
     expect(within(screen.getByRole('tab', { name: /Parse/ })).getByText('Queued')).toBeInTheDocument();
     // Reading another phase hides the queue notice; Back to live brings it back.
     await userEvent.click(screen.getByRole('tab', { name: /Review/ }));
-    expect(screen.queryByText(/Queued — waiting for a pipeline worker/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Queued\. It starts when a slot is free/)).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Back to live' }));
-    expect(await screen.findByText(/Queued — waiting for a pipeline worker/)).toBeInTheDocument();
+    expect(await screen.findByText(/Queued\. It starts when a slot is free/)).toBeInTheDocument();
   });
 
   it('puts a writing job on the Write phase', async () => {

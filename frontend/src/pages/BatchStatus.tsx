@@ -87,7 +87,7 @@ export function BatchStatus(): React.ReactElement {
       showToast('Stopped queueing the remaining files.', 'success');
       load();
     } catch (err) {
-      showErrorToast('Failed to stop queueing -- please try again.', err);
+      showErrorToast('Failed to stop queueing — please try again.', err);
     } finally {
       isCancellingRef.current = false;
       setIsCancelling(false);

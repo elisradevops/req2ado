@@ -474,7 +474,7 @@ export function Settings(): React.ReactElement {
             <div className="flex flex-col gap-3">
               <DisplayPreferenceRow
                 label="Dense view"
-                description="Reduce padding for data tables"
+                description="Tighter rows in the Jobs list"
                 checked={denseView}
                 onCheckedChange={(value) => useUiPreferencesStore.getState().setDenseView(value)}
               />
@@ -502,7 +502,7 @@ export function Settings(): React.ReactElement {
                   <div className="min-w-0">
                     <p className="flex items-center gap-1.5 text-sm font-medium text-ink-1">
                       Similarity threshold
-                      <InfoTip content="Raise it and the system gets more conservative about calling two items duplicates: fewer items are skipped by mistake, but a real near-duplicate is likelier to slip through and be created a second time in Azure DevOps. Lower it and more items are skipped as duplicates, including ones you wanted created. Compared as a cosine similarity against work items already in the project." />
+                      <InfoTip content="Raise it and the system gets more conservative about calling two items duplicates: fewer items are skipped by mistake, but a real near-duplicate is likelier to slip through and be created a second time in Azure DevOps. Lower it and more items are skipped as duplicates, including ones you wanted created. Measured against the work items already in the project." />
                     </p>
                     <p className="text-xs text-ink-3">
                       How alike two items must be to count as duplicates. A proposed item scoring at or above this against an existing work item is skipped instead of created.
@@ -601,7 +601,7 @@ export function Settings(): React.ReactElement {
         open={llmDialogOpen}
         onOpenChange={setLlmDialogOpen}
         title="Configure Open WebUI"
-        description="Your own API token and default models -- used for every job you submit and for chat. Never shared with other users."
+        description="Your own API token and default models — used for every job you submit and for chat. Never shared with other users."
         footer={
           <>
             <span className="ml-auto" />

@@ -73,6 +73,7 @@ import { ARRIVE, MOTION, scrollBehavior } from '../ui/motion';
 import { describeJobKbCoverage, type KbCoverage } from '../utils/kbCoverage';
 import { getServerMessage } from '../lib/errorDetails';
 import { computeWriteGate, openReviewRecordCount } from '../utils/writeGate';
+import { QUEUED_COPY } from '../utils/labels';
 import { describeFailureCause, describeStoredFailure, failureAuditMessage } from '../utils/failureCause';
 import { REVIEW_GROUP_META } from '../components/reviewGroupMeta';
 import { buildReviewQueue, cleanApproval, groupReviewQueue, isExcludedWithAncestors, nextInQueue, REVIEW_GROUP_ORDER, reviewQueueModeReducer, type ReviewGroup, riskReason, spotCheckSample } from '../utils/reviewQueue';
@@ -649,7 +650,7 @@ export function JobDetail(): React.ReactElement {
               // showing a stale "running" view forever with zero signal
               // that anything went wrong.
               if (cancelled) return;
-              showErrorToast('Lost connection while finishing up -- reload the page to see the final result.', err);
+              showErrorToast('Lost connection while finishing up — reload the page to see the final result.', err);
             });
           }
         },
@@ -723,7 +724,7 @@ export function JobDetail(): React.ReactElement {
           live.markError();
           if (cancelled || hasShownSseErrorRef.current) return;
           hasShownSseErrorRef.current = true;
-          showToast('Lost the live connection to this job -- reconnecting...', 'error');
+          showToast('Lost the live connection to this job — reconnecting...', 'error');
         },
         {
           onProgress: live.ingestProgress,
@@ -1727,7 +1728,7 @@ export function JobDetail(): React.ReactElement {
       );
     } catch {
       showToast(
-        `Retry stopped after ${enhanced.toLocaleString()} enhanced -- the model call failed. Try again, or resubmit the job.`,
+        `Retry stopped after ${enhanced.toLocaleString()} enhanced — the model call failed. Try again, or resubmit the job.`,
         'error',
       );
     } finally {
@@ -2729,7 +2730,7 @@ export function JobDetail(): React.ReactElement {
       {status === 'pending' && !liveLayout && (
         <Alert severity="info">
           <span className="flex items-center gap-2">
-            <Spinner /> Queued — waiting for a pipeline worker to pick this job up.
+            <Spinner /> {QUEUED_COPY}
           </span>
         </Alert>
       )}
@@ -3289,7 +3290,7 @@ export function JobDetail(): React.ReactElement {
         open={rejectDialogOpen}
         onOpenChange={setRejectDialogOpen}
         title="Reject this job?"
-        description="Nothing has been written to Azure DevOps yet, so nothing is undone -- this only marks the job as rejected and closes review."
+        description="Nothing has been written to Azure DevOps yet, so nothing is undone — this only marks the job as rejected and closes review."
         confirmLabel="Reject job"
         onConfirm={handleReject}
         isConfirming={isMutating}
@@ -3329,7 +3330,7 @@ export function JobDetail(): React.ReactElement {
         title="Delete this job?"
         description={
           status === 'succeeded'
-            ? 'This removes the job and its history from req2ado only -- any work items already written to Azure DevOps are NOT deleted and must be removed there directly, if wanted. This cannot be undone.'
+            ? 'This removes the job and its history from req2ado only — any work items already written to Azure DevOps are NOT deleted and must be removed there directly, if wanted. This cannot be undone.'
             : 'This permanently removes the job and its history from req2ado. This cannot be undone.'
         }
         confirmLabel="Delete job"
@@ -3399,7 +3400,7 @@ export function JobDetail(): React.ReactElement {
                 {status === 'pending' && (
                   <Alert severity="info">
                     <span className="flex items-center gap-2">
-                      <Spinner /> Queued — waiting for a pipeline worker to pick this job up.
+                      <Spinner /> {QUEUED_COPY}
                     </span>
                   </Alert>
                 )}

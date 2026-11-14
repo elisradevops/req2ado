@@ -1076,7 +1076,7 @@ function DiffTreeRow({
           (entry.action === 'reuse'
             ? `Already exists in Azure DevOps${entry.existingAdoId != null ? ` as WI-${entry.existingAdoId}` : ''}`
             : `Matched to a probable duplicate in Azure DevOps${entry.existingAdoId != null ? ` (WI-${entry.existingAdoId})` : ''}`) +
-          ' and keeps its parent there. Moving it here only reorganizes this review tree -- writing to Azure DevOps never re-parents an existing item. New items you place under it will be linked to it in Azure DevOps.'
+          ' and keeps its parent there. Moving it here only reorganizes this review tree — writing to Azure DevOps never re-parents an existing item. New items you place under it will be linked to it in Azure DevOps.'
         }
       >
         <Lock className="h-3.5 w-3.5" />
@@ -1149,7 +1149,7 @@ function DiffTreeRow({
     {parentIsExcluded && !entry.excluded && (
       <span
         className="flex flex-none items-center gap-0.5 text-warning"
-        title="An ancestor of this item is excluded -- this item's whole subtree will be dropped from the write along with it, unless you exclude something else instead."
+        title="An ancestor of this item is excluded — this item's whole subtree will be dropped from the write along with it, unless you exclude something else instead."
       >
         <EyeOff className="h-3.5 w-3.5" />
       </span>

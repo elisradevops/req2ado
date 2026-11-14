@@ -843,7 +843,7 @@ export function KnowledgeBase(): React.ReactElement {
         <EmptyState
           icon={FolderTree}
           title="No folder browsed yet"
-          description="Paste a SharePoint or OneDrive folder link above to see its contents -- add or remove any file directly from the tree."
+          description="Paste a SharePoint or OneDrive folder link above to see its contents — add or remove any file directly from the tree."
         />
       )}
       {driveSwitch && (
@@ -920,7 +920,7 @@ export function KnowledgeBase(): React.ReactElement {
               <bdi dir="auto">{documentPendingRemoval?.name}</bdi>
             </strong>{' '}
             will no longer be judged against or cited by SURVEY jobs. This deletes its
-            stored content and cannot be undone -- add it again from the tree if you need it back.
+            stored content and cannot be undone — add it again from the tree if you need it back.
           </>
         }
         confirmLabel="Remove document"
