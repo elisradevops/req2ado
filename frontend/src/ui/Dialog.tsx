@@ -123,7 +123,7 @@ export function Dialog({
           // Falls back to 50%/50% (the box's own center) whenever no real
           // click anchored this open -- keyboard-triggered opens, or the
           // very first render before any pointerdown has ever fired.
-          className={`fixed left-1/2 top-1/2 z-50 flex w-[calc(100%-36px)] -translate-x-1/2 -translate-y-1/2 flex-col rounded-md bg-surface shadow-dialog [transform-origin:var(--dialog-origin-x,50%)_var(--dialog-origin-y,50%)] focus:outline-none focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2 data-[state=open]:animate-[dialogIn_var(--duration-base)_var(--ease-out)] data-[state=closed]:animate-[dialogOut_var(--duration-exit)_var(--ease-in)] ${maxWidthClassName} ${maxHeightClassName ?? ''}`}
+          className={`fixed left-1/2 top-1/2 z-50 flex w-[calc(100%-36px)] -translate-x-1/2 -translate-y-1/2 flex-col rounded-md bg-surface shadow-dialog [transform-origin:var(--dialog-origin-x,50%)_var(--dialog-origin-y,50%)] focus:outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-accent focus-visible:outline-offset-2 data-[state=open]:animate-[dialogIn_var(--duration-base)_var(--ease-out)] data-[state=closed]:animate-[dialogOut_var(--duration-exit)_var(--ease-in)] ${maxWidthClassName} ${maxHeightClassName ?? ''}`}
         >
           <div className="flex flex-none flex-col gap-1 px-5 pt-4 pb-3">
             <div className="flex items-start justify-between gap-3">
