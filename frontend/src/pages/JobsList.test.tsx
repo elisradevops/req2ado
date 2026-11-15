@@ -61,6 +61,18 @@ describe('JobsList', () => {
     await waitFor(() => expect(screen.queryByText(/couldn't load jobs/i)).toBeNull());
   });
 
+  it('does not say "No jobs yet" while the list failed to load, and says it once a retry loads an empty list', async () => {
+    vi.spyOn(jobsApi, 'listJobs').mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce([]);
+    render(<ToastProvider><MemoryRouter><JobsList /></MemoryRouter></ToastProvider>);
+    await waitFor(() => expect(screen.getByText(/couldn't load jobs/i)).toBeInTheDocument());
+    expect(screen.queryByText('No jobs yet')).toBeNull();
+    expect(screen.queryByRole('button', { name: /create your first job/i })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /retry/i }));
+    await waitFor(() => expect(screen.getByText('No jobs yet')).toBeInTheDocument());
+    expect(screen.queryByText(/couldn't load jobs/i)).toBeNull();
+  });
+
   it('renders an empty-state CTA when there are no jobs', async () => {
     vi.spyOn(jobsApi, 'listJobs').mockResolvedValue([]);
     render(<ToastProvider><MemoryRouter><JobsList /></MemoryRouter></ToastProvider>);

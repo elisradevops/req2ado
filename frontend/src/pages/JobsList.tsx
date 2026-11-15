@@ -259,14 +259,17 @@ export function JobsList(): React.ReactElement {
           </div>
         </Card>
       ) : jobs.length === 0 ? (
-        <Card>
-          <EmptyState
-            icon={Briefcase}
-            title="No jobs yet"
-            description="Upload a requirements document to get started."
-            action={<Button onClick={() => navigate('/jobs/new')}>Create your first job</Button>}
-          />
-        </Card>
+        // A failed load is not "no jobs": the error banner above carries it, with Retry.
+        loadError ? null : (
+          <Card>
+            <EmptyState
+              icon={Briefcase}
+              title="No jobs yet"
+              description="Upload a requirements document to get started."
+              action={<Button onClick={() => navigate('/jobs/new')}>Create your first job</Button>}
+            />
+          </Card>
+        )
       ) : (
         <>
           <div className="flex flex-wrap items-end gap-2.5">
