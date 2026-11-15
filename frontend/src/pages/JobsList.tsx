@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Briefcase, Plus, RefreshCw, Trash2, RotateCw, Layers } from 'lucide-react';
 import { listJobs, deleteJob, resubmitJob } from '../api/jobs';
 import { useJobsStore, useJobs, type JobSummary } from '../store/jobsStore';
@@ -369,16 +369,13 @@ export function JobsList(): React.ReactElement {
                     {group.jobs.map((job) => (
                       <tr
                         key={job.id}
-                        onClick={() => navigate(`/jobs/${job.id}`)}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter' || event.key === ' ') {
-                            event.preventDefault();
-                            navigate(`/jobs/${job.id}`);
-                          }
+                        // A pointer convenience only: the keyboard and assistive tech use the document name's link below. The row is
+                        // not itself a link or a tab stop, since it also holds the Resubmit and Delete buttons. A click on the link or a
+                        // button is theirs, not the row's.
+                        onClick={(event) => {
+                          if ((event.target as HTMLElement).closest('a, button')) return;
+                          navigate(`/jobs/${job.id}`);
                         }}
-                        tabIndex={0}
-                        role="link"
-                        aria-label={`View job ${job.id}: ${job.originalFilename}, ${jobStatusLabel(job.status).label}`}
                         // DESIGN.md §7 names "JobsList rows" as a
                         // .hoverable-row consumer -- but that class's
                         // ::before rail is an absolutely-positioned pseudo-
@@ -401,7 +398,13 @@ export function JobsList(): React.ReactElement {
                         </td>
                         <td className={cn('px-3.5', cellPaddingY)}>
                           <span className="flex min-w-0 items-center gap-1.5">
-                            <span className="block max-w-[14rem] truncate text-sm font-medium max-md:max-w-[7rem]">{job.originalFilename}</span>
+                            <Link
+                              to={`/jobs/${job.id}`}
+                              aria-label={`View job ${job.id}: ${job.originalFilename}, ${jobStatusLabel(job.status).label}`}
+                              className="block max-w-[14rem] truncate text-sm font-medium text-ink-1 hover:underline max-md:max-w-[7rem]"
+                            >
+                              {job.originalFilename}
+                            </Link>
                             {job.batchId && (
                               <Tooltip content="Part of a batch upload — click to view the whole batch">
                                 <Chip

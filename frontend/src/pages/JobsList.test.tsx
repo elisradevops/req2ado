@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, cleanup, within } from '@testing-library/react';
 import { useAuthStore } from '../store/authStore';
 import { MemoryRouter } from 'react-router-dom';
 import * as React from 'react';
@@ -35,8 +35,9 @@ describe('JobsList', () => {
     render(<ToastProvider><MemoryRouter><JobsList /></MemoryRouter></ToastProvider>);
     await waitFor(() => expect(screen.getByText('f0.docx')).toBeInTheDocument());
 
-    const rows = screen.getAllByRole('link', { name: /View job/i });
-    expect(rows).toHaveLength(12);
+    const links = screen.getAllByRole('link', { name: /View job/i });
+    expect(links).toHaveLength(12);
+    const rows = links.map((link) => link.closest('tr') as HTMLElement);
     expect(rows[0].closest('tbody')!.className).toContain('fadeIn');
     for (const row of rows) {
       expect(row.className).not.toContain('animate-');
@@ -79,17 +80,46 @@ describe('JobsList', () => {
     await waitFor(() => expect(screen.getByText(/create your first job/i)).toBeInTheDocument());
   });
 
-  it('navigates to job detail when Enter key is pressed on a focused row', async () => {
+  it('opens the job from the keyboard: the document name is a focusable link to it', async () => {
+    vi.spyOn(jobsApi, 'listJobs').mockResolvedValue([
+      { id: 'j1', mode: 'survey', status: 'diff_ready', areaPath: 'Proj\\A', originalFilename: 'spec.docx', itemCount: 12, createdItemCount: 0, createdAt: '2026-07-09T00:00:00Z' },
+    ]);
+    render(<ToastProvider><MemoryRouter><JobsList /></MemoryRouter></ToastProvider>);
+    const link = await screen.findByRole('link', { name: /View job j1/i });
+    link.focus();
+    expect(link).toHaveFocus();
+    expect(link).toHaveAttribute('href', '/jobs/j1');
+  });
+
+  it('makes the document name the row\'s link; the row itself is not a link and is not a tab stop, so Resubmit and Delete are not nested in one', async () => {
+    vi.spyOn(jobsApi, 'listJobs').mockResolvedValue([
+      { id: 'j1', mode: 'survey', status: 'failed', areaPath: 'Proj\\A', originalFilename: 'spec.docx', itemCount: 0, createdItemCount: 0, createdAt: '2026-07-09T00:00:00Z' },
+    ]);
+    render(<ToastProvider><MemoryRouter><JobsList /></MemoryRouter></ToastProvider>);
+    const link = await screen.findByRole('link', { name: /View job j1/i });
+    expect(link.tagName).toBe('A');
+    expect(link).toHaveAttribute('href', '/jobs/j1');
+    expect(link).toHaveTextContent('spec.docx');
+    const row = link.closest('tr') as HTMLElement;
+    expect(row).not.toHaveAttribute('role');
+    expect(row).not.toHaveAttribute('tabindex');
+    expect(within(row).getAllByRole('link')).toHaveLength(1);
+    expect(link.querySelector('button')).toBeNull();
+    expect(within(row).getAllByRole('button').length).toBeGreaterThan(0);
+  });
+
+  it('still opens the job when the row is clicked outside the link and the buttons, and does not navigate twice for a click on the link', async () => {
     const mockNavigate = vi.fn();
     vi.mocked(reactRouterDom.useNavigate).mockReturnValue(mockNavigate);
     vi.spyOn(jobsApi, 'listJobs').mockResolvedValue([
       { id: 'j1', mode: 'survey', status: 'diff_ready', areaPath: 'Proj\\A', originalFilename: 'spec.docx', itemCount: 12, createdItemCount: 0, createdAt: '2026-07-09T00:00:00Z' },
     ]);
     render(<ToastProvider><MemoryRouter><JobsList /></MemoryRouter></ToastProvider>);
-    await waitFor(() => expect(screen.getByText('A')).toBeInTheDocument());
-    const row = screen.getByRole('link', { name: /View job j1/i });
-    row.focus();
-    fireEvent.keyDown(row, { key: 'Enter' });
+    const link = await screen.findByRole('link', { name: /View job j1/i });
+    fireEvent.click(link);
+    expect(mockNavigate).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText('12'));
+    expect(mockNavigate).toHaveBeenCalledTimes(1);
     expect(mockNavigate).toHaveBeenCalledWith('/jobs/j1');
   });
 
