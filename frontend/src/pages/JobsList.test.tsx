@@ -325,6 +325,16 @@ describe('JobsList', () => {
       expect(screen.getByRole('textbox', { name: /search/i })).toHaveAttribute('placeholder', 'File name, area path or job id…');
     });
 
+    it('gives the search field a width of its own, so its placeholder is not cut off (a bare field shrinks to the browser\'s default of about 170 px)', async () => {
+      vi.spyOn(jobsApi, 'listJobs').mockResolvedValue([jobAt('j1', 'a.docx', new Date().toISOString())] as never);
+      render(<ToastProvider><MemoryRouter><JobsList /></MemoryRouter></ToastProvider>);
+      await waitFor(() => expect(screen.getByText('a.docx')).toBeInTheDocument());
+      const classes = screen.getByRole('textbox', { name: /search/i }).className.split(/\s+/);
+      expect(classes).toContain('w-[280px]');
+      expect(classes).toContain('max-w-full');
+      expect(classes).not.toContain('w-full');
+    });
+
     it('makes the row actions 32 px icon buttons, not 22 px text-size buttons (WCAG 2.5.8, DESIGN.md §13)', async () => {
       vi.spyOn(jobsApi, 'listJobs').mockResolvedValue([jobAt('j1', 'a.docx', new Date().toISOString())] as never);
       render(<ToastProvider><MemoryRouter><JobsList /></MemoryRouter></ToastProvider>);

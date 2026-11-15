@@ -278,7 +278,8 @@ export function JobsList(): React.ReactElement {
               placeholder="File name, area path or job id…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="max-w-[280px]"
+              // A bare field in this wrapping row shrinks to the browser's default width (about 170 px) and cuts the placeholder off.
+              className="w-[280px] max-w-full"
             />
             <div className="inline-flex overflow-hidden rounded-sm border border-hairline-strong" role="group" aria-label="Filter by status">
               {(
