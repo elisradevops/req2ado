@@ -13,6 +13,7 @@ import {
   kindGroupCount,
   kindProgress,
   retryableEnhancementBatches,
+  warningRecordText,
   type RetryablePass,
   type WarningGroup,
   type WarningKindGroup,
@@ -406,7 +407,7 @@ function KindDetails({
         {shownRecords.map((record, index) => (
           <li key={index} className="flex items-start gap-2 border-l-2 border-hairline pl-2.5 text-ink-2">
             <span className={cn('min-w-0 flex-1', record.acknowledged && 'text-ink-3 line-through decoration-hairline-strong')}>
-              {record.raw}
+              {warningRecordText(record)}
               {record.legacy && <span className="ml-1.5 text-xs opacity-60">(from an older run)</span>}
             </span>
             {canAckRecords && (

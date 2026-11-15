@@ -546,6 +546,17 @@ function groupFromSeverity(severity: WarningSeverity | undefined): WarningGroup 
   return severity === 'auto_fixed' ? 'info' : 'review';
 }
 
+// The sentence shown for one record. The record's own text (`raw`) is the pipeline's, kept as it is because "mark handled" matches on it; for the
+// missing Customer ID record the pipeline's sentence is written for engineers, so the panel says the same thing in plain words, from the items
+// the record names. A record that names none, and every other kind, shows its own text.
+export function warningRecordText(record: WarningRecord): string {
+  if (record.kind === 'missing_source_reference' && record.nodeIds.length > 0) {
+    const count = record.nodeIds.length;
+    return `${count.toLocaleString()} ${count === 1 ? 'requirement has' : 'requirements have'} no Customer ID. None was invented.`;
+  }
+  return record.raw;
+}
+
 export function kindMeta(kind: string, severity?: WarningSeverity): KindMeta {
   const known = KIND_META[kind];
   if (known) return known;

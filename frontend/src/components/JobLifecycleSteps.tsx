@@ -23,7 +23,7 @@ const SURVEY_STEPS: StepDef[] = [
     tip: 'Checking whether a near-identical work item already exists under this area path, to avoid creating duplicates.',
   },
   { key: 'review', label: 'Review', tip: 'Awaiting your review of the proposed diff — nothing is written to Azure DevOps yet.' },
-  { key: 'write', label: 'Write', tip: 'Writing the reviewed work items to Azure DevOps. This step cannot be undone.' },
+  { key: 'write', label: 'Write', tip: 'Writes the reviewed work items to Azure DevOps. Nothing is written until you confirm, and it cannot be undone.' },
 ];
 
 const BASELINE_STEPS: StepDef[] = [
@@ -34,7 +34,7 @@ const BASELINE_STEPS: StepDef[] = [
     tip: 'Checking whether a near-identical work item already exists under this area path, to avoid creating duplicates.',
   },
   { key: 'review', label: 'Review', tip: 'Awaiting your review of the proposed diff — nothing is written to Azure DevOps yet.' },
-  { key: 'write', label: 'Write', tip: 'Writing the reviewed work items to Azure DevOps. This step cannot be undone.' },
+  { key: 'write', label: 'Write', tip: 'Writes the reviewed work items to Azure DevOps. Nothing is written until you confirm, and it cannot be undone.' },
 ];
 
 function stepsFor(mode: 'baseline' | 'survey'): StepDef[] {

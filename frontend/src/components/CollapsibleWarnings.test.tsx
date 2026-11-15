@@ -150,6 +150,19 @@ describe('CollapsibleWarnings', () => {
     expect(screen.queryByText('Enhanced wording unavailable')).not.toBeInTheDocument();
   });
 
+  it('shows the missing Customer ID record in plain words, not the pipeline\'s sentence', async () => {
+    renderWarnings([
+      warning({
+        kind: 'missing_source_reference', severity: 'needs_review', nodeIds: ['a', 'b'],
+        raw: '2 Requirement(s) have no document-authored Customer ID / source-requirement-number -- none was invented; review and add one manually.',
+      }),
+    ]);
+    await userEvent.click(screen.getByText('Requirement has no Customer ID'));
+    expect(await screen.findByText('2 requirements have no Customer ID. None was invented.')).toBeInTheDocument();
+    expect(screen.queryByText(/Requirement\(s\)/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/document-authored/)).not.toBeInTheDocument();
+  });
+
   it('starts every group open at desktop widths', () => {
     renderWarnings([
       warning({ kind: 'missing_source_reference', severity: 'needs_review', raw: '14 requirements have no source reference.' }),

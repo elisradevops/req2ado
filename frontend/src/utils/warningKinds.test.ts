@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { WarningRecord } from './warnings';
-import { KIND_META, RETRY_ENHANCEMENT_BATCH_SIZE, acknowledgementClears, buildKindGroups, isActionableWarning, kindGroupCount, kindMeta, kindProgress, retryableEnhancementBatches, warningGroup } from './warningKinds';
+import { warningRecordText, KIND_META, RETRY_ENHANCEMENT_BATCH_SIZE, acknowledgementClears, buildKindGroups, isActionableWarning, kindGroupCount, kindMeta, kindProgress, retryableEnhancementBatches, warningGroup } from './warningKinds';
 
 function warning(kind: string, severity: WarningRecord['severity'], nodeIds: string[] = []): WarningRecord {
   return { kind, severity, nodeIds, detail: {}, raw: `${kind} raw` };
@@ -296,5 +296,24 @@ describe('changed_since_written', () => {
     expect(meta.group).toBe('info');
     expect(meta.title).toBe('Notices left out');
     expect(meta.todo).toMatch(/include/i);
+  });
+});
+
+describe('warningRecordText', () => {
+  const missingId = (nodeIds: string[]): WarningRecord => ({
+    kind: 'missing_source_reference', severity: 'needs_review', nodeIds, detail: {},
+    raw: `${nodeIds.length} Requirement(s) have no document-authored Customer ID / source-requirement-number -- none was invented; review and add one manually.`,
+  });
+
+  it('says in plain words how many requirements have no Customer ID, from the items the record names', () => {
+    expect(warningRecordText(missingId(['a']))).toBe('1 requirement has no Customer ID. None was invented.');
+    expect(warningRecordText(missingId(['a', 'b', 'c']))).toBe('3 requirements have no Customer ID. None was invented.');
+  });
+
+  it("keeps the record's own text when it names no items, and for every other kind", () => {
+    const none = missingId([]);
+    expect(warningRecordText(none)).toBe(none.raw);
+    const other = warning('low_grounding', 'needs_review', ['a']);
+    expect(warningRecordText(other)).toBe(other.raw);
   });
 });
