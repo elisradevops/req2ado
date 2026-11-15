@@ -32,7 +32,7 @@ import type { EtaEstimate, ModelDetail } from '../api/jobs';
 export const MODE_COPY = {
   baseline: {
     title: 'BASELINE',
-    description: 'Deterministic, verbatim extraction. No LLM. Fast.',
+    description: 'Deterministic, verbatim extraction. No AI model. Fast.',
     costNote: 'no model cost',
     sample: {
       kind: 'verbatim' as const,
@@ -41,7 +41,7 @@ export const MODE_COPY = {
   },
   survey: {
     title: 'SURVEY',
-    description: 'LLM-driven distillation into formal "shall" requirements.',
+    description: 'An AI model rewrites the text into formal "shall" requirements.',
     costNote: 'uses your model quota',
     sample: {
       kind: 'structured' as const,
@@ -52,7 +52,16 @@ export const MODE_COPY = {
   },
 } as const;
 
-function EstimateLine({ estimate }: { estimate: EtaEstimate | undefined }): React.ReactElement {
+function EstimateLine({ estimate, cached }: { estimate: EtaEstimate | undefined; cached?: boolean }): React.ReactElement {
+  // A file the result cache already holds is served in seconds, whatever the measured range says; the side panel says the same.
+  if (cached) {
+    return (
+      <>
+        <span className="font-mono text-meta text-ink-3">A few seconds</span>
+        <span className="basis-full text-meta text-ink-3">this file was already processed</span>
+      </>
+    );
+  }
   if (!estimate) {
     // '--' placeholder (not a blank/0) while the estimate hasn't resolved
     // yet -- same "never silently fall through to 0" convention StatTile
@@ -99,6 +108,7 @@ export function ModeCards({
   onChange,
   baselineEstimate,
   surveyEstimate,
+  surveyCached,
   model,
   onModelChange,
   availableModels,
@@ -116,6 +126,8 @@ export function ModeCards({
   // currently-selected mode's.
   baselineEstimate?: EtaEstimate;
   surveyEstimate?: EtaEstimate;
+  // A SURVEY job of this very file would come from the result cache: the SURVEY card says so instead of quoting the measured range.
+  surveyCached?: boolean;
   // DESIGN.md §11.2 -- the model picker lives INSIDE the SURVEY card now
   // (was a separate, always-nearly-empty "Options" card below this one --
   // its only content, ever, was this same picker for survey mode; BASELINE
@@ -191,7 +203,7 @@ export function ModeCards({
             <span className="text-xs text-ink-3">{MODE_COPY[mode].description}</span>
             <SamplePreview sample={MODE_COPY[mode].sample} />
             <span className="flex items-center gap-1.5">
-              <EstimateLine estimate={estimate} />
+              <EstimateLine estimate={estimate} cached={mode === 'survey' && surveyCached} />
               <span className="text-meta text-ink-3">· {MODE_COPY[mode].costNote}</span>
             </span>
             {mode === 'survey' && onModelChange && (
@@ -216,7 +228,7 @@ export function ModeCards({
                   <Cpu className="h-3.5 w-3.5 flex-none text-ink-3" />
                   Model
                 </span>
-                <Select value={model ?? ''} onChange={(event) => onModelChange(event.target.value)} aria-label="LLM Model" loading={modelsLoading}>
+                <Select value={model ?? ''} onChange={(event) => onModelChange(event.target.value)} aria-label="AI model" loading={modelsLoading}>
                   <option value="">{recommendedModel ? `Default (${recommendedModel})` : 'Default'}</option>
                   {(availableModels ?? []).map((m) => (
                     <option key={m} value={m}>

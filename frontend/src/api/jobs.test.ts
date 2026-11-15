@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import axios from 'axios';
 import { httpClient } from './httpClient';
-import { explainScore, listJobs, submitJob, confirmJob, editDiffEntry, addDiscussionEntry, removeDiscussionEntry, setDiffEntryExcluded, setProposalAccepted, setDiffEntriesReviewed, setWarningsAcknowledged, retryEnhancement, addDiffEntry, rescoreDiffEntry, getFigureFile, attachFigureToAdo, moveFigure, retryTraceLinkWrite, validateCreatedTree, previewSummary } from './jobs';
+import { overrideDuplicate, undoDuplicateOverride, explainScore, listJobs, submitJob, confirmJob, editDiffEntry, addDiscussionEntry, removeDiscussionEntry, setDiffEntryExcluded, setProposalAccepted, setDiffEntriesReviewed, setWarningsAcknowledged, retryEnhancement, addDiffEntry, rescoreDiffEntry, getFigureFile, attachFigureToAdo, moveFigure, retryTraceLinkWrite, validateCreatedTree, previewSummary, getCachedResult, getEntrySource } from './jobs';
 
 vi.mock('./httpClient');
 vi.mock('./config', () => ({ loadRuntimeConfig: vi.fn().mockResolvedValue({ apiBaseUrl: '/api' }) }));
@@ -12,6 +12,19 @@ describe('jobs api', () => {
     const result = await listJobs();
     expect(httpClient.get).toHaveBeenCalledWith('/jobs');
     expect(result).toEqual([{ id: 'j1' }]);
+  });
+
+  it('submitJob says how wide the duplicate check looks only when it is not the default', async () => {
+    const post = vi.mocked(httpClient.post).mockResolvedValue({ data: { jobId: 'job-1' } });
+
+    await submitJob({ file: new File(['x'], 'req.docx'), areaPath: 'Project\\Area1', mode: 'baseline', dedupScope: 'project' });
+    await submitJob({ file: new File(['x'], 'req.docx'), areaPath: 'Project\\Area1', mode: 'baseline', dedupScope: 'area_path' });
+    await submitJob({ file: new File(['x'], 'req.docx'), areaPath: 'Project\\Area1', mode: 'baseline' });
+
+    const [first, second, third] = post.mock.calls.map((call) => call[1] as FormData);
+    expect(first.get('dedupScope')).toBe('project');
+    expect(second.get('dedupScope')).toBeNull();
+    expect(third.get('dedupScope')).toBeNull();
   });
 
   it('submitJob appends file/areaPath/mode to the form data', async () => {
@@ -98,6 +111,24 @@ describe('jobs api', () => {
     expect(httpClient.post).toHaveBeenCalledWith('/jobs/job-1/diff/n0/rescore');
   });
 
+  it("getEntrySource GETs the item's source wording with the caller's abort signal", async () => {
+    (httpClient.get as any).mockResolvedValue({ data: { kind: 'text', text: 'The unit shall start.', truncated: false } });
+    const signal = new AbortController().signal;
+
+    const result = await getEntrySource('job-1', 'n4', signal);
+
+    expect(httpClient.get).toHaveBeenCalledWith('/jobs/job-1/diff/n4/source', { signal });
+    expect(result).toEqual({ kind: 'text', text: 'The unit shall start.', truncated: false });
+  });
+
+  it('getEntrySource reads an answer it does not recognise as unavailable, never as wording', async () => {
+    (httpClient.get as any).mockResolvedValue({ data: { kind: 'text', text: 42 } });
+    await expect(getEntrySource('job-1', 'n4')).resolves.toEqual({ kind: 'unavailable' });
+
+    (httpClient.get as any).mockResolvedValue({ data: { kind: 'unavailable', reason: 'no_original' } });
+    await expect(getEntrySource('job-1', 'n4')).resolves.toEqual({ kind: 'unavailable', reason: 'no_original' });
+  });
+
   it('getFigureFile GETs the figure route as a blob', async () => {
     const blob = new Blob(['png bytes'], { type: 'image/png' });
     (httpClient.get as any).mockResolvedValue({ data: blob });
@@ -170,6 +201,30 @@ describe('jobs api', () => {
     });
   });
 
+  describe('previewSummary fresh (Write it again)', () => {
+    it('sends fresh only when asked', async () => {
+      (httpClient.post as any).mockResolvedValue({ data: { summary: 'A summary.' } });
+      await previewSummary({ summaryInput: 'INPUT', fresh: true });
+      expect(httpClient.post).toHaveBeenLastCalledWith('/jobs/preview/summary', { summaryInput: 'INPUT', fresh: true }, { signal: undefined });
+    });
+  });
+
+  // P5: whether a SURVEY job of this file would come from the result cache, asked once mode and model are chosen.
+  describe('getCachedResult', () => {
+    it('asks with the file hash, mode and model, and returns the answer', async () => {
+      (httpClient.get as any).mockResolvedValue({ data: { cachedResult: true } });
+      expect(await getCachedResult({ fileHash: 'abc', mode: 'survey', model: 'm1' })).toBe(true);
+      expect(httpClient.get).toHaveBeenLastCalledWith('/jobs/cached-result', { params: { fileHash: 'abc', mode: 'survey', model: 'm1' }, signal: undefined });
+    });
+
+    it('is false when the call fails or the server does not know the route: the note is a courtesy', async () => {
+      (httpClient.get as any).mockRejectedValue(new Error('404'));
+      expect(await getCachedResult({ fileHash: 'abc', mode: 'survey' })).toBe(false);
+      (httpClient.get as any).mockResolvedValue({ data: {} });
+      expect(await getCachedResult({ fileHash: 'abc', mode: 'survey' })).toBe(false);
+    });
+  });
+
   describe('submitJob with documentOverview', () => {
     beforeEach(() => {
       vi.clearAllMocks();
@@ -209,3 +264,23 @@ describe('jobs api', () => {
     expect(httpClient.post).toHaveBeenLastCalledWith('/jobs/job-1/diff/n0/score-explain', { categories: ['Verifiable'] });
   });
 });
+
+describe('duplicate override calls', () => {
+  it('overrideDuplicate posts the reviewer\'s two choices to the entry', async () => {
+    const post = vi.mocked(httpClient.post).mockResolvedValue({ data: { dryRunDiff: [] } });
+
+    const result = await overrideDuplicate('job-1', 'n1', { linkTree: false, relateToExisting: true });
+
+    expect(post).toHaveBeenCalledWith('/jobs/job-1/diff/n1/duplicate-override', { linkTree: false, relateToExisting: true });
+    expect(result).toEqual({ dryRunDiff: [] });
+  });
+
+  it('undoDuplicateOverride deletes it', async () => {
+    const del = vi.mocked(httpClient.delete).mockResolvedValue({ data: { dryRunDiff: [] } });
+
+    await undoDuplicateOverride('job-1', 'n1');
+
+    expect(del).toHaveBeenCalledWith('/jobs/job-1/diff/n1/duplicate-override');
+  });
+});
+

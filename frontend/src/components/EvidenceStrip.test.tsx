@@ -1,7 +1,11 @@
-import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { act, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { EvidenceStrip } from './EvidenceStrip';
 import type { DryRunDiffEntry } from './DiffTree';
+import { getEntrySource, type EntrySource } from '../api/jobs';
+
+vi.mock('../api/jobs', async (importOriginal) => ({ ...(await importOriginal<typeof import('../api/jobs')>()), getEntrySource: vi.fn() }));
 
 const BASE: DryRunDiffEntry = {
   localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D', action: 'create', customerId: null,
@@ -14,13 +18,13 @@ describe('EvidenceStrip', () => {
     expect(screen.getByRole('region', { name: 'Evidence' })).toBeInTheDocument();
     expect(screen.getByText('spec.docx')).toBeInTheDocument();
     expect(screen.getByText('3 Power')).toBeInTheDocument();
-    expect(screen.getByText(/source text is not stored/i)).toBeInTheDocument();
+    expect(screen.getByText(/original wording is in the source file/i)).toBeInTheDocument();
   });
 
   it('says there is no recorded location when the entry has no sourceRef', () => {
     render(<EvidenceStrip entry={BASE} jobMode="baseline" />);
     expect(screen.getByText(/no source location recorded/i)).toBeInTheDocument();
-    expect(screen.queryByText(/source text is not stored/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/original wording is in the source file/i)).not.toBeInTheDocument();
   });
 
   it('names the weakest category with its score and the checklist text', () => {
@@ -50,6 +54,20 @@ describe('EvidenceStrip', () => {
     expect(row.textContent).toBe('Weakest area: Testability, 35 of 100');
     // The punctuation is for assistive tech only: it must not show.
     expect(Array.from(container.querySelectorAll('.sr-only')).map((e) => e.textContent)).toEqual([': ', ', ']);
+  });
+
+  it('does not double the punctuation in the closed summary when the criterion already ends in a full stop', () => {
+    render(
+      <EvidenceStrip
+        entry={{ ...BASE, qualityScore: 45, qualityCategoryScores: { 'Owner is present.': 10, clarity: 80 } }}
+        jobMode="survey"
+        collapsible
+        quality={<div>panel</div>}
+      />,
+    );
+    const summary = screen.getByText(/Weakest area:/).textContent ?? '';
+    expect(summary).toContain('Weakest area: Owner is present, 10 of 100');
+    expect(summary).not.toContain('.,');
   });
 
   it('shows a weakest category of 0 rather than treating it as missing', () => {
@@ -151,5 +169,145 @@ describe('EvidenceStrip', () => {
     expect(checklist.tagName).toBe('P');
     expect(checklist).toHaveAttribute('dir', 'auto');
     expect(screen.getByText('דרישות הספק').closest('bdi')).not.toBeNull();
+  });
+  describe('collapsible (the item dialog): provenance stays, the scoring detail folds into "Why this verdict"', () => {
+    const scored = {
+      ...BASE,
+      sourceRef: REF,
+      qualityScore: 40,
+      qualityCategoryScores: { testability: 35, clarity: 80 },
+    };
+    const citations = [{ sourceFile: 'style-guide.pdf', similarity: 0.4, relevance: 'relevant' as const }];
+
+    it('keeps the file, the location and the source line in view, and hides the scoring detail until opened', async () => {
+      render(<EvidenceStrip entry={scored} jobMode="survey" kbCitations={citations} collapsible />);
+      expect(screen.getByText('spec.docx')).toBeInTheDocument();
+      expect(screen.getByText('3 Power')).toBeInTheDocument();
+      expect(screen.getByText(/original wording is in the source file/i)).toBeInTheDocument();
+      expect(screen.queryByText('Weakest area')).not.toBeInTheDocument();
+      expect(screen.queryByText('KB references')).not.toBeInTheDocument();
+      expect(screen.queryByText(/scored on wording only/i)).not.toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole('button', { name: /why this verdict/i }));
+      expect(screen.getByText('Weakest area')).toBeInTheDocument();
+      expect(screen.getByText('KB references')).toBeInTheDocument();
+      expect(screen.getByText(/scored on wording only/i)).toBeInTheDocument();
+    });
+
+    it('says the weakest area on the closed disclosure, so the reason is visible without opening it', () => {
+      render(<EvidenceStrip entry={scored} jobMode="survey" collapsible />);
+      expect(screen.getByRole('button', { name: /why this verdict/i })).toHaveTextContent('Testability');
+    });
+
+    it('is closed by default and shows no disclosure when there is nothing to explain', () => {
+      render(<EvidenceStrip entry={{ ...BASE, sourceRef: REF }} jobMode="baseline" collapsible />);
+      expect(screen.queryByRole('button', { name: /why this verdict/i })).not.toBeInTheDocument();
+      expect(screen.getByText('spec.docx')).toBeInTheDocument();
+    });
+
+    it('opens to the KB references alone when the item has citations but no scores', async () => {
+      render(<EvidenceStrip entry={{ ...BASE, sourceRef: REF }} jobMode="baseline" kbCitations={citations} collapsible />);
+      expect(screen.queryByText('KB references')).not.toBeInTheDocument();
+      await userEvent.click(screen.getByRole('button', { name: /why this verdict/i }));
+      expect(screen.getByText('KB references')).toBeInTheDocument();
+    });
+  });
+});
+
+describe('EvidenceStrip source wording', () => {
+  const FALLBACK = /original wording is in the source file/i;
+  const itemA = { ...BASE, localId: 'a', sourceRef: REF };
+  const itemB = { ...BASE, localId: 'b', sourceRef: { ...REF, startOffset: 20, endOffset: 40 } };
+
+  function deferred() {
+    let resolve!: (value: EntrySource) => void;
+    let reject!: (reason: unknown) => void;
+    const promise = new Promise<EntrySource>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  beforeEach(() => {
+    vi.mocked(getEntrySource).mockReset();
+  });
+
+  it("quotes the item's original wording, keeping its paragraph breaks and letting the text set its own direction", async () => {
+    vi.mocked(getEntrySource).mockResolvedValue({ kind: 'text', text: 'The unit shall start.\n\nIt shall stop on command.', truncated: false });
+
+    render(<EvidenceStrip entry={itemA} jobMode="baseline" jobId="job-1" collapsible />);
+
+    const quote = await screen.findByText(/The unit shall start\./);
+    expect(quote.tagName).toBe('BLOCKQUOTE');
+    expect(quote).toHaveAttribute('dir', 'auto');
+    expect(quote.textContent).toBe('The unit shall start.\n\nIt shall stop on command.');
+    expect(quote.className).toContain('whitespace-pre-line');
+    expect(quote.className).toContain('max-w-[68ch]');
+    expect(screen.getByText('Source wording')).toBeInTheDocument();
+    expect(screen.queryByText(FALLBACK)).not.toBeInTheDocument();
+    expect(screen.queryByText('Shortened.')).not.toBeInTheDocument();
+    expect(getEntrySource).toHaveBeenCalledWith('job-1', 'a', expect.any(AbortSignal));
+  });
+
+  it('says when the quote was shortened', async () => {
+    vi.mocked(getEntrySource).mockResolvedValue({ kind: 'text', text: 'A long passage', truncated: true });
+    render(<EvidenceStrip entry={itemA} jobMode="baseline" jobId="job-1" collapsible />);
+    expect(await screen.findByText('Shortened.')).toBeInTheDocument();
+  });
+
+  it('names a table excerpt and a SURVEY section excerpt for what they are', async () => {
+    vi.mocked(getEntrySource).mockResolvedValue({ kind: 'table', text: 'ID | Text\nPWR-7 | The unit shall start.', truncated: false });
+    const { unmount } = render(<EvidenceStrip entry={itemA} jobMode="baseline" jobId="job-1" collapsible />);
+    expect(await screen.findByText('From a table in the source')).toBeInTheDocument();
+    unmount();
+
+    vi.mocked(getEntrySource).mockResolvedValue({ kind: 'section', text: 'Input Voltage\n\nThe unit shall accept 24V.', truncated: false });
+    render(<EvidenceStrip entry={itemA} jobMode="survey" jobId="job-1" collapsible />);
+    expect(await screen.findByText('Written from this part of the source')).toBeInTheDocument();
+  });
+
+  it('keeps the plain line when the wording is unavailable, for example a finished job whose original is gone', async () => {
+    vi.mocked(getEntrySource).mockResolvedValue({ kind: 'unavailable', reason: 'no_original' });
+    render(<EvidenceStrip entry={itemA} jobMode="baseline" jobId="job-1" collapsible />);
+    expect(await screen.findByText(FALLBACK)).toBeInTheDocument();
+    expect(screen.queryByRole('blockquote')).not.toBeInTheDocument();
+  });
+
+  it('keeps the plain line when the request fails', async () => {
+    vi.mocked(getEntrySource).mockRejectedValue(new Error('Network Error'));
+    render(<EvidenceStrip entry={itemA} jobMode="baseline" jobId="job-1" collapsible />);
+    expect(await screen.findByText(FALLBACK)).toBeInTheDocument();
+  });
+
+  it('shows a quiet placeholder while loading, not the fallback line and not a quote', () => {
+    vi.mocked(getEntrySource).mockReturnValue(new Promise(() => {}));
+    render(<EvidenceStrip entry={itemA} jobMode="baseline" jobId="job-1" collapsible />);
+    expect(screen.getByTestId('source-wording-loading')).toHaveAttribute('aria-busy', 'true');
+    expect(screen.queryByText(FALLBACK)).not.toBeInTheDocument();
+  });
+
+  it("never shows the previous item's wording under the next one when its answer arrives late", async () => {
+    const forA = deferred();
+    const forB = deferred();
+    vi.mocked(getEntrySource).mockImplementation((_jobId, localId) => (localId === 'a' ? forA.promise : forB.promise));
+
+    const { rerender } = render(<EvidenceStrip entry={itemA} jobMode="baseline" jobId="job-1" collapsible />);
+    rerender(<EvidenceStrip entry={itemB} jobMode="baseline" jobId="job-1" collapsible />); // J pressed before A answered
+
+    await act(async () => forA.resolve({ kind: 'text', text: 'Wording of item A.', truncated: false }));
+    expect(screen.queryByText('Wording of item A.')).not.toBeInTheDocument();
+    expect(screen.getByTestId('source-wording-loading')).toBeInTheDocument();
+
+    await act(async () => forB.resolve({ kind: 'text', text: 'Wording of item B.', truncated: false }));
+    expect(screen.getByText('Wording of item B.')).toBeInTheDocument();
+    expect(screen.queryByText('Wording of item A.')).not.toBeInTheDocument();
+  });
+
+  it('asks for nothing without a job id or a source location', () => {
+    render(<EvidenceStrip entry={itemA} jobMode="baseline" collapsible />);
+    render(<EvidenceStrip entry={BASE} jobMode="baseline" jobId="job-1" collapsible />);
+    expect(getEntrySource).not.toHaveBeenCalled();
+    expect(screen.getByText(FALLBACK)).toBeInTheDocument();
   });
 });

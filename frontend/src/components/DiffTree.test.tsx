@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { BELOW_MD } from '../hooks/useMediaQuery';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, within, fireEvent } from '@testing-library/react';
@@ -330,7 +332,7 @@ describe('DiffTree', () => {
       { localId: 'r1', parentLocalId: 'f1', type: 'Requirement', title: 'Flagged req', description: '', action: 'create', customerId: null, groundingScore: 0.1 },
     ];
     render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
-    const flag = screen.getByRole('img', { name: /needs review/i, hidden: false });
+    const flag = screen.getByRole('img', { name: /^check$/i, hidden: false });
     expect(flag).toHaveAttribute('title', expect.stringMatching(/low grounding/i));
   });
 
@@ -606,7 +608,7 @@ describe('DiffTree signal counts', () => {
 
     render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
 
-    expect(screen.getByTitle('1 trace link(s)')).toBeInTheDocument();
+    expect(screen.getByTitle('1 trace link')).toBeInTheDocument();
     expect(screen.queryByText(/Covered by/i)).not.toBeInTheDocument();
   });
 
@@ -617,7 +619,7 @@ describe('DiffTree signal counts', () => {
 
     render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
 
-    expect(screen.getByTitle('2 quality issue(s)')).toBeInTheDocument();
+    expect(screen.getByTitle('2 quality issues')).toBeInTheDocument();
     expect(screen.queryByText(/Ambiguous/i)).not.toBeInTheDocument();
   });
 
@@ -627,7 +629,7 @@ describe('DiffTree signal counts', () => {
       { ...baseEntry, localId: 'c', parentLocalId: 'p', title: 'Child req' },
     ];
     render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
-    expect(within(screen.getByText('Child req').parentElement as HTMLElement).getByText('same tier')).toBeInTheDocument();
+    expect(within(screen.getByText('Child req').closest('[data-testid="title-line"]') as HTMLElement).getByText('Nested Requirement')).toBeInTheDocument();
   });
 
   it('exposes the real depth to assistive technology on every row', () => {
@@ -640,27 +642,61 @@ describe('DiffTree signal counts', () => {
     expect(screen.getByText('Child').closest('[role=treeitem]')).toHaveAttribute('aria-level', '2');
   });
 
-  it('keeps the criteria chip a tab stop at desktop widths', () => {
+  it('keeps the criteria chip a tab stop at desktop widths on the selected row, and out of the tab order on the others', () => {
     const entries: DryRunDiffEntry[] = [{ ...baseEntry, localId: 'a', title: 'Has criteria', proposal: { kind: 'criteria' } as any, proposalAccepted: false }];
-    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+    const view = (selectedId: string | null) => (
+      <DiffTree entries={entries} selectedId={selectedId} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />
+    );
+    const { rerender } = render(view('a'));
     expect(screen.getByText('criteria to review')).toHaveAttribute('tabindex', '0');
+    rerender(view(null));
+    expect(screen.getByText('criteria to review')).toHaveAttribute('tabindex', '-1');
   });
 
-  it('keeps the desktop order after the title: customer id, same tier, then the criteria chip, all on the title line', () => {
+  it('puts a new item\'s criteria chip in the Status column at desktop widths, not after the title (R7)', () => {
+    const entries: DryRunDiffEntry[] = [{ ...baseEntry, localId: 'a', title: 'Has criteria', proposal: { kind: 'criteria' } as any, proposalAccepted: false }];
+    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+    const chip = screen.getByText('criteria to review');
+    expect(chip.closest('[data-col="status"]')).not.toBeNull();
+    expect(chip.closest('[data-testid="title-line"]')).toBeNull();
+  });
+
+  it('keeps a matched new item\'s criteria chip on the title line, so the Status column only ever holds one mark', () => {
+    const entries: DryRunDiffEntry[] = [
+      { ...baseEntry, localId: 'a', title: 'Matched', proposal: { kind: 'criteria' } as any, proposalAccepted: false, duplicateOf: { existingAdoId: 7 } as any },
+    ];
+    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+    expect(screen.getByText('criteria to review').closest('[data-testid="title-trailing"]')).not.toBeNull();
+  });
+
+  it('gives the desktop title a minimum and puts what follows it in a group that drops whole marks instead of squeezing the title (R7)', () => {
     const entries: DryRunDiffEntry[] = [
       { ...baseEntry, localId: 'p', title: 'Parent req' },
-      { ...baseEntry, localId: 'c', parentLocalId: 'p', title: 'Child req', customerId: 'REQ-1', proposal: { kind: 'criteria' } as any, proposalAccepted: false },
+      { ...baseEntry, localId: 'c', parentLocalId: 'p', title: 'Child req', customerId: 'REQ-1' },
     ];
     render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
     const title = screen.getByText('Child req');
-    const after = (el: Element): number => title.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING;
-    const id = screen.getByText('REQ-1');
-    const tier = screen.getByText('same tier');
-    const criteria = screen.getByText('criteria to review');
-    expect(after(id) && after(tier) && after(criteria)).toBeTruthy();
-    expect(id.compareDocumentPosition(tier) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(tier.compareDocumentPosition(criteria) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(id.parentElement).not.toHaveClass('flex-wrap');
+    // a minimum in rem, capped by the cell, so it scales with text size and never pushes past a narrow cell
+    expect(title.className).toMatch(/min-w-\[min\(\d+rem,\d+%\)\]/);
+    const trailing = screen.getByText('REQ-1').closest('[data-testid="title-trailing"]') as HTMLElement;
+    expect(trailing).not.toBeNull();
+    // whole marks wrap onto a line that is cut away (never half a chip), bounded in rem, not px
+    expect(trailing).toHaveClass('flex-wrap', 'overflow-hidden', 'min-w-0');
+    expect(trailing.className).not.toMatch(/h-\[\d+px\]/);
+    // the hazard first and the customer id last: wrapping hides the LAST marks
+    const tier = within(trailing).getByText('Nested Requirement');
+    expect(tier.compareDocumentPosition(screen.getByText('REQ-1')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(title.compareDocumentPosition(trailing) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('lets a mark that is wider than the group drop out whole: a first-line placeholder gives even the first mark a line to wrap away from (it was cut in half, "o Customer ID")', () => {
+    const entries: DryRunDiffEntry[] = [{ ...baseEntry, localId: 'c', title: 'Child req', customerId: 'REQ-1' }];
+    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+    const trailing = screen.getByText('REQ-1').closest('[data-testid="title-trailing"]') as HTMLElement;
+    // a zero-width, full-height pseudo item on line 1, pulled back over the gap so it costs no width
+    expect(trailing).toHaveClass('before:h-6', 'before:w-0', 'before:flex-none', 'before:-mr-2');
+    // the group is still removed from layout when it has no marks (the pseudo item does not make it non-empty)
+    expect(trailing).toHaveClass('empty:hidden');
   });
 
   it('keeps the external-link glyph on the details button at desktop widths, and no review triangle on line 2', () => {
@@ -746,7 +782,7 @@ describe('DiffTree signal counts', () => {
         { ...baseEntry, localId: 'c', parentLocalId: 'p', title: 'Child req' },
       ];
       render(<DiffTree entries={entries} {...props} />);
-      const chip = screen.getByText('Same tier');
+      const chip = screen.getByText('Nested Requirement');
       expect(chip.parentElement).toHaveClass('flex-wrap');
       expect(within(chip.parentElement as HTMLElement).getByText('New')).toBeInTheDocument();
       expect(screen.getByText('Child req')).not.toContainElement(chip);
@@ -762,7 +798,7 @@ describe('DiffTree signal counts', () => {
       const rowOf = (title: string): HTMLElement => screen.getByText(title).closest('[role=treeitem]') as HTMLElement;
       expect(rowOf('Clean one')).not.toHaveClass('max-md:bg-warning-soft');
       expect(rowOf('Clean one')).not.toHaveClass('max-md:bg-danger-soft');
-      expect(within(rowOf('Issue one')).getByTestId('narrow-flag')).toHaveAttribute('aria-label', 'Needs review');
+      expect(within(rowOf('Issue one')).getByTestId('narrow-flag')).toHaveAttribute('aria-label', 'Check');
       expect(rowOf('Issue one')).toHaveClass('max-md:bg-warning-soft');
       expect(rowOf('Tier one')).toHaveClass('max-md:bg-danger-soft');
       expect(within(rowOf('Clean one')).queryByTestId('narrow-flag')).toBeNull();
@@ -845,7 +881,7 @@ describe('DiffTree signal counts', () => {
 
     render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
 
-    expect(screen.getByTitle('2 table(s)')).toBeInTheDocument();
+    expect(screen.getByTitle('2 tables')).toBeInTheDocument();
   });
 
   it('shows a single combined figure-count badge (captioned + uncaptioned), neutral-tinted when every figure has a caption', () => {
@@ -853,7 +889,7 @@ describe('DiffTree signal counts', () => {
 
     render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
 
-    const badge = screen.getByTitle('2 figure(s)');
+    const badge = screen.getByTitle('2 figures');
     expect(badge).toBeInTheDocument();
     expect(badge.className).not.toContain('text-warning');
   });
@@ -863,7 +899,7 @@ describe('DiffTree signal counts', () => {
 
     render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
 
-    const badge = screen.getByTitle('2 figure(s), 1 without a description');
+    const badge = screen.getByTitle('2 figures, 1 without a description');
     expect(badge).toBeInTheDocument();
     expect(badge.className).toContain('text-warning');
   });
@@ -877,7 +913,7 @@ describe('DiffTree signal counts', () => {
 
     // 1 captioned (f0) + 1 genuinely-uncaptioned (f1) = 2, NOT 4 (which
     // would include the 2 insignificant figures nobody will ever see).
-    const badge = screen.getByTitle('2 figure(s), 1 without a description');
+    const badge = screen.getByTitle('2 figures, 1 without a description');
     expect(badge).toBeInTheDocument();
   });
 
@@ -889,7 +925,7 @@ describe('DiffTree signal counts', () => {
     render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
 
     // The server list wins: f2 is not marked insignificant, but the server did not list it.
-    expect(screen.getByTitle('2 figure(s), 1 without a description')).toBeInTheDocument();
+    expect(screen.getByTitle('2 figures, 1 without a description')).toBeInTheDocument();
   });
 
   it('hides the figure-count badge entirely when every uncaptioned figure is insignificant and none are captioned', () => {
@@ -1203,13 +1239,19 @@ describe('DiffTree drag-and-drop (reparent/reorder)', () => {
     const sameTier = [...MOVE_ENTRIES, { localId: 'e3', parentLocalId: 'e1', type: 'Epic', title: 'Epic 3', description: '', action: 'create' as const, customerId: null }];
     render(<DiffTree entries={sameTier} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} />);
 
-    expect(screen.getByText('same tier')).toBeInTheDocument();
+    // Said as a plain fact, not as the jargon "same tier": a nested Epic under an Epic.
+    expect(screen.getByText('Nested Epic')).toBeInTheDocument();
+    // The tooltip reads as a sentence: "an Epic", no contraction, no slash.
+    const tip = screen.getByText('Nested Epic').closest('[title]')?.getAttribute('title') ?? '';
+    expect(tip).toMatch(/^Parent is also an Epic\./);
+    expect(tip).not.toMatch(/can't|\/|a Epic/);
+    expect(screen.queryByText(/same tier/i)).not.toBeInTheDocument();
   });
 
   it('does not show a "same tier" badge when the parent is a different category', () => {
     render(<DiffTree entries={MOVE_ENTRIES} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} />);
 
-    expect(screen.queryByText('same tier')).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Nested /)).not.toBeInTheDocument();
   });
 
   it('warns when a non-excluded node has an excluded ancestor', () => {
@@ -1239,20 +1281,20 @@ describe('DiffTree drag-and-drop (reparent/reorder)', () => {
     const reuseEntries = [{ ...MOVE_ENTRIES[0] }, { ...MOVE_ENTRIES[2], action: 'reuse' as const, existingAdoId: 777 }];
     render(<DiffTree entries={reuseEntries} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} />);
 
-    expect(rowFor('Feature 1').querySelector('[title*="Already exists in ADO as WI-777"]')).not.toBeNull();
+    expect(rowFor('Feature 1').querySelector('[title*="Already exists in Azure DevOps as WI-777"]')).not.toBeNull();
   });
 
   it('shows an "already in ADO" badge on a dedup_skip row, worded as a probable match rather than a certainty', () => {
     const dedupEntries = [{ ...MOVE_ENTRIES[0] }, { ...MOVE_ENTRIES[2], action: 'dedup_skip' as const, existingAdoId: 888 }];
     render(<DiffTree entries={dedupEntries} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} />);
 
-    expect(rowFor('Feature 1').querySelector('[title*="Matched to a probable duplicate in ADO (WI-888)"]')).not.toBeNull();
+    expect(rowFor('Feature 1').querySelector('[title*="Matched to a probable duplicate in Azure DevOps (WI-888)"]')).not.toBeNull();
   });
 
   it('does not show the "already in ADO" badge on a create row', () => {
     render(<DiffTree entries={MOVE_ENTRIES} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} />);
 
-    expect(rowFor('Feature 1').querySelector('[title*="Already exists in ADO"]')).toBeNull();
+    expect(rowFor('Feature 1').querySelector('[title*="Already exists in Azure DevOps"]')).toBeNull();
     expect(rowFor('Feature 1').querySelector('[title*="Matched to a probable duplicate"]')).toBeNull();
   });
 });
@@ -1286,5 +1328,85 @@ describe('DiffTree disclosure motion (DESIGN.md section 8.3)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Collapse Feature 1' }));
     expect(screen.queryByText('Opened req')).not.toBeInTheDocument();
     expect(document.querySelector('[role="treeitem"][class*="animate-"]')).toBeNull();
+  });
+});
+
+describe('DiffTree row control target sizes (DESIGN.md §5 24px floor)', () => {
+  it('gives the collapse and details buttons a 24px box', () => {
+    const src = readFileSync(join(__dirname, 'DiffTree.tsx'), 'utf8');
+    expect(src).toContain('-ml-1 grid h-6 w-6 flex-none place-items-center');
+    expect(src).toContain('grid h-6 w-6 place-items-center rounded-sm text-ink-3');
+  });
+});
+
+describe('DiffTree written items', () => {
+  const entries = [
+    { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Epic one', action: 'create', existingAdoId: null, quality: null },
+    { localId: 'r1', parentLocalId: 'e1', type: 'Requirement', title: 'Written req', action: 'create', existingAdoId: null, quality: null },
+  ] as unknown as DryRunDiffEntry[];
+
+  it('shows the Azure DevOps id of a written item as a link in the Status column', () => {
+    render(
+      <DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}}
+        orgUrl="https://ado.example/tfs/col" project="Proj" writtenAdoIds={{ r1: 4821 }} />,
+    );
+    const link = screen.getByRole('link', { name: /4821/ });
+    expect(link).toHaveAttribute('href', expect.stringContaining('/_workitems/edit/4821'));
+    expect(link.closest('[data-col="status"]')).not.toBeNull();
+  });
+
+  it('shows no id for items that were not written', () => {
+    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} writtenAdoIds={{}} />);
+    expect(screen.queryByRole('link', { name: /#\d+/ })).toBeNull();
+  });
+});
+
+describe('DiffTree in a narrow tree (the details pane takes the width)', () => {
+  const entries = [
+    { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Epic one', action: 'create', existingAdoId: null, quality: null },
+    { localId: 'r1', parentLocalId: 'e1', type: 'Requirement', title: 'Time sync source', action: 'create', existingAdoId: null, customerId: 'P-SENSOR-0001', quality: null },
+  ] as unknown as DryRunDiffEntry[];
+
+  function renderAtTreeWidth(width: number) {
+    const original = HTMLElement.prototype.getBoundingClientRect;
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      if (this.getAttribute('role') === 'tree') return { width, height: 400, top: 0, left: 0, right: width, bottom: 400, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+      return original.call(this);
+    });
+    return render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+  }
+  const itemSize = (container: HTMLElement) => container.querySelector('[data-item-size]')?.getAttribute('data-item-size');
+  afterEach(() => vi.restoreAllMocks());
+
+  it('uses the two-line row below 800px of tree width, so the Customer ID is readable instead of "P…"', () => {
+    const { container } = renderAtTreeWidth(696);
+    const row = screen.getByText('Time sync source').closest('[role="treeitem"]') as HTMLElement;
+    expect(itemSize(container)).toBe('64');
+    expect(within(row).getByText('P-SENSOR-0001')).toBeInTheDocument();
+    expect(row.querySelector('[data-col="status"]')).toBeNull();
+  });
+
+  it('also switches the column template and hides the wide-only cells, so the title keeps its width on a window wider than md', () => {
+    const { container } = renderAtTreeWidth(696);
+    const wrapper = container.firstElementChild as HTMLElement;
+    expect(wrapper.className).toContain('[--diff-cols:32px_minmax(0,1fr)_44px]');
+    expect(wrapper.className).not.toContain('--index-w');
+    for (const label of ['Index', 'Status', 'Flags']) expect(screen.getByText(label).className).toMatch(/(^| )hidden( |$)/);
+    const row = screen.getByText('Time sync source').closest('[role="treeitem"]') as HTMLElement;
+    expect(row.firstElementChild!.className).toMatch(/(^| )hidden( |$)/);
+  });
+
+  it('keeps the seven-column template and the wide cells when the tree is wide enough', () => {
+    const { container } = renderAtTreeWidth(856);
+    const wrapper = container.firstElementChild as HTMLElement;
+    expect(wrapper.className).toContain('--index-w');
+    expect(screen.getByText('Index').className).not.toMatch(/(^| )hidden( |$)/);
+  });
+
+  it('keeps the one-line 40px row when the tree is wide enough', () => {
+    const { container } = renderAtTreeWidth(856);
+    const row = screen.getByText('Time sync source').closest('[role="treeitem"]') as HTMLElement;
+    expect(itemSize(container)).toBe('40');
+    expect(row.querySelector('[data-col="status"]')).not.toBeNull();
   });
 });

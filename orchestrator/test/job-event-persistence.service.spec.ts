@@ -250,6 +250,31 @@ describe('JobEventPersistenceService.backfillMissedEvents', () => {
   // narration-log LIST and `:current` key, written directly by the
   // publisher regardless of whether anyone was subscribed.
 
+
+  it('skips the narration of a job that no longer exists: its Redis log outlives the deleted job and would fail the foreign key on every start', async () => {
+    const subscriber = makeSubscriber();
+    const entry = JSON.stringify({ type: 'narration', phase: 'parse_done', message: 'Finished parsing the document' });
+    const commandClient = {
+      on: jest.fn(),
+      scanStream: fakeScanStream((pattern) =>
+        pattern.endsWith('narration-log') ? ['job-events:gone-1:narration-log', 'job-events:live-1:narration-log'] : pattern.endsWith(':current') ? ['job-events:gone-1:current'] : [],
+      ),
+      lrange: jest.fn().mockResolvedValue([entry]),
+      get: jest.fn().mockResolvedValue(entry),
+    };
+    const prisma = {
+      job: { findMany: jest.fn().mockResolvedValue([{ id: 'live-1' }]) },
+      jobEvent: { create: jest.fn().mockResolvedValue(undefined), findMany: jest.fn().mockResolvedValue([]) },
+    };
+    const service = new JobEventPersistenceService(subscriber as any, commandClient as any, prisma as any);
+
+    await service.backfillMissedEvents();
+
+    expect(prisma.job.findMany).toHaveBeenCalledTimes(1); // one query for every key, not one per job
+    expect(prisma.jobEvent.create).toHaveBeenCalledTimes(1);
+    expect(prisma.jobEvent.create).toHaveBeenCalledWith({ data: expect.objectContaining({ jobId: 'live-1' }) });
+    expect(commandClient.lrange).not.toHaveBeenCalledWith('job-events:gone-1:narration-log', 0, -1);
+  });
   it('persists narration-log entries that are missing from Postgres', async () => {
     const subscriber = makeSubscriber();
     const missed = JSON.stringify({ type: 'narration', phase: 'describe_figure', message: 'Figure 1: no useful caption returned' });
@@ -260,6 +285,7 @@ describe('JobEventPersistenceService.backfillMissedEvents', () => {
       get: jest.fn(),
     };
     const prisma = {
+      job: { findMany: jest.fn().mockResolvedValue([{ id: 'job-1' }]) },
       jobEvent: {
         create: jest.fn().mockResolvedValue(undefined),
         findMany: jest.fn().mockResolvedValue([]), // nothing already persisted for this job
@@ -291,6 +317,7 @@ describe('JobEventPersistenceService.backfillMissedEvents', () => {
       get: jest.fn(),
     };
     const prisma = {
+      job: { findMany: jest.fn().mockResolvedValue([{ id: 'job-2' }]) },
       jobEvent: {
         create: jest.fn(),
         findMany: jest.fn().mockResolvedValue([{ phase: 'parse_done', message: 'Finished parsing the document' }]),
@@ -312,6 +339,7 @@ describe('JobEventPersistenceService.backfillMissedEvents', () => {
       get: jest.fn().mockResolvedValue(JSON.stringify({ stage: 'diff_ready' })),
     };
     const prisma = {
+      job: { findMany: jest.fn().mockResolvedValue([{ id: 'job-3' }]) },
       jobEvent: { create: jest.fn().mockResolvedValue(undefined), findMany: jest.fn().mockResolvedValue([]) },
     };
     const service = new JobEventPersistenceService(subscriber as any, commandClient as any, prisma as any);
@@ -338,6 +366,7 @@ describe('JobEventPersistenceService.backfillMissedEvents', () => {
       get: jest.fn().mockResolvedValue(JSON.stringify({ stage: 'running', emittedAt: '2026-08-04 14:21:34.187' })),
     };
     const prisma = {
+      job: { findMany: jest.fn().mockResolvedValue([{ id: 'job-current-emitted-at' }]) },
       jobEvent: { create: jest.fn().mockResolvedValue(undefined), findMany: jest.fn().mockResolvedValue([]) },
     };
     const service = new JobEventPersistenceService(subscriber as any, commandClient as any, prisma as any);
@@ -362,6 +391,7 @@ describe('JobEventPersistenceService.backfillMissedEvents', () => {
       get: jest.fn(),
     };
     const prisma = {
+      job: { findMany: jest.fn().mockResolvedValue([{ id: 'job-4' }]) },
       jobEvent: { create: jest.fn().mockResolvedValue(undefined), findMany: jest.fn().mockResolvedValue([]) },
     };
     const service = new JobEventPersistenceService(subscriber as any, commandClient as any, prisma as any);

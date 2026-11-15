@@ -125,7 +125,26 @@
   --color-live: #06b6d4;
   --color-live-soft: #ecfeff;
 
-  --color-shimmer-highlight: #e6ebf4;
+  /* Brand colours (DESIGN.md §2, brand colours): for the non-interactive brand panel of the sign-in page only. Never on a control,
+     a status, a chip or a focus ring; signal yellow keeps meaning "irreversible write". brandTokens.test.ts enforces the scope. */
+  --color-brand-blue: #1b4a8f;
+  --color-brand-yellow: #fde134;
+
+  /* Job states (DESIGN.md §2): proposed, written, partly written, failed. Aliases of the status families, so no new hex, and each is
+     always drawn with its own icon and words (StatusChip, DestinationBar), never colour alone. The bare name is the ink (text and icon),
+     -soft the chip fill, -border its edge. `--color-state-*` below is ADO's own work-item states and is a different thing. */
+  --color-job-proposed: var(--color-info-ink);
+  --color-job-proposed-soft: var(--color-info-soft);
+  --color-job-proposed-border: var(--color-info-border);
+  --color-job-written: var(--color-ok-ink);
+  --color-job-written-soft: var(--color-ok-soft);
+  --color-job-written-border: var(--color-ok-border);
+  --color-job-partial: var(--color-warning-ink);
+  --color-job-partial-soft: var(--color-warning-soft);
+  --color-job-partial-border: var(--color-warning-border);
+  --color-job-failed: var(--color-danger-ink);
+  --color-job-failed-soft: var(--color-danger-soft);
+  --color-job-failed-border: var(--color-danger-border);
 
   /* ------------------------------------------------------------------
    * 11. DATA PALETTES — real ADO values, fallback only. Never hardcode
@@ -192,6 +211,11 @@
   --text-metric--letter-spacing: -0.02em;
   --text-metric--font-weight: 600;
 
+  /* Reading prose (DESIGN.md §4): requirement text, source excerpts, summaries. 1.6 leading meets WCAG 1.4.8; the 14px/20px of chrome,
+     tables and metadata is too tight to read a sentence at length. Never for the tree or the tables. */
+  --text-read: 15px;
+  --text-read--line-height: 24px;
+
   /* ------------------------------------------------------------------
    * 14. SPACING — Tailwind's dynamic scale, no named tokens
    *     (DESIGN.md §2.3: permitted rungs 0-4.5 step .5, then 5/6/8/10/12/16).
@@ -213,6 +237,9 @@
   --shadow-raised: 0px 2px 4px rgba(15, 27, 61, 0.07), 0px 12px 26px rgba(15, 27, 61, 0.09);
   --shadow-popover: 0px 2px 4px rgba(15, 27, 61, 0.07), 0px 16px 34px rgba(15, 27, 61, 0.1);
   --shadow-dialog: 0px 24px 64px rgba(11, 18, 32, 0.32);
+  /* A surface floating at the scroll edge, inset from the content and above what scrolls under it (the review's Write bar). Falls both up and
+     down, since it floats. */
+  --shadow-dock: 0px -2px 6px rgba(15, 27, 61, 0.06), 0px 12px 28px rgba(15, 27, 61, 0.14);
   --shadow-cta: 0px 1px 0px rgba(122, 92, 0, 0.22);
   --shadow-cta-attention:
     0px 2px 8px rgba(200, 164, 0, 0.34), 0px 0px 0px 4px rgba(253, 225, 52, 0.28);
@@ -232,6 +259,11 @@
   --duration-typedot: 1100ms;
   --duration-ambient: 1500ms;
   --duration-breathe: 2600ms;
+
+  /* Motion by intent (DESIGN.md §1.7, §8.3): aliases on the rungs above, so code reads by what the motion is for. No new values. */
+  --motion-feedback: var(--duration-instant); /* a chip changing state, a press */
+  --motion-reveal: var(--duration-base); /* a disclosure opening */
+  --motion-milestone: var(--duration-medium); /* a phase advancing, a count ticking */
 
   /* ------------------------------------------------------------------
    * 18. EASING — 4, never inline a cubic-bezier (DESIGN.md §2.7).
@@ -270,15 +302,6 @@
   transition-duration: var(--duration-progress);
 }
 
-
-@keyframes shimmer {
-  from {
-    background-position: 100% 0;
-  }
-  to {
-    background-position: 0 0;
-  }
-}
 
 @keyframes spin {
   to {

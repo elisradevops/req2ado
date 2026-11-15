@@ -6,7 +6,18 @@ import type { SessionUser } from '../auth/session.service';
 import { AdoCredentialResolver } from '../auth/ado-credential.resolver';
 
 export interface AdoStatus {
-  status: 'not_configured' | 'valid' | 'unreachable';
+  // `invalid`: Azure DevOps answered and refused the saved credential (401/403), so only a new PAT helps. `unreachable`: no usable answer
+  // (network, certificate, timeout, a server error), where retrying or fixing the connection helps and a new PAT does not.
+  status: 'not_configured' | 'valid' | 'invalid' | 'unreachable';
+}
+
+// The status code does not survive the MCP round trip as a field, but the error text carries it ("... probe failed: 401 at <url>", "...
+// failed with status 401"). Only a whole 401 or 403 counts, so a network or certificate message is never taken for a bad credential.
+const REJECTED_CREDENTIAL = /(?:failed: |status(?: code)? )(?:401|403)\b(?!\d)/;
+
+export function classifyAdoFailure(error: unknown): 'invalid' | 'unreachable' {
+  const message = error instanceof Error ? error.message : String(error);
+  return REJECTED_CREDENTIAL.test(message) ? 'invalid' : 'unreachable';
 }
 
 @Controller('ado')
@@ -16,14 +27,11 @@ export class AdoController {
     private readonly adoCredentialResolver: AdoCredentialResolver,
   ) {}
 
-  // Cheap reachability check for the shell's connection-status LED --
-  // reuses discoverProjects (already the lightest real ADO call this
-  // controller makes) rather than adding a dedicated ping tool. Unlike
-  // SharePointStatus, this can't distinguish "credential invalid" from
-  // "ADO unreachable" -- mcp.client.ts's parseToolTextResult only ever
-  // throws a plain Error(message), no structured status code survives the
-  // MCP round trip -- so both collapse to "unreachable" rather than
-  // guessing at a distinction the data doesn't support.
+  // Cheap check for the shell's connection status -- reuses discoverProjects
+  // (already the lightest real ADO call this controller makes) rather than
+  // adding a dedicated ping tool. A rejected credential (401/403, read from
+  // the error text, see classifyAdoFailure) is told apart from an unreachable
+  // server, as SharePointStatus does.
   @Get('status')
   async getStatus(@CurrentUser() user: SessionUser): Promise<AdoStatus> {
     const credential = await this.adoCredentialResolver.resolve(user.userId);
@@ -33,8 +41,8 @@ export class AdoController {
     try {
       await this.mcpClient.discoverProjects(credential);
       return { status: 'valid' };
-    } catch {
-      return { status: 'unreachable' };
+    } catch (error) {
+      return { status: classifyAdoFailure(error) };
     }
   }
 

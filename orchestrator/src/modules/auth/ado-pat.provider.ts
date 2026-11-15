@@ -9,6 +9,18 @@ import { Injectable } from '@nestjs/common';
 export interface AdoIdentity {
   identity: string;
   displayName: string;
+  // What ADO also says about the person, each only when it said it: shown on the Profile page, never used as a key.
+  email?: string;
+  accountName?: string;
+  adoUserGuid?: string;
+}
+
+type AdoProperty = { $value?: unknown } | undefined;
+
+// ADO sends properties as { Name: { $type, $value } }. Only a non-empty string counts; anything else is ignored rather than failing sign-in.
+function propertyText(property: AdoProperty): string | undefined {
+  const value = property?.$value;
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
 function buildBasicAuthHeader(pat: string): string {
@@ -60,15 +72,23 @@ export class AdoPatProvider {
 
       if (response.ok) {
         const body = (await response.json()) as {
-          authenticatedUser?: { descriptor?: string; providerDisplayName?: string };
+          authenticatedUser?: { descriptor?: string; providerDisplayName?: string; id?: unknown; properties?: Record<string, AdoProperty> };
         };
         const descriptor = body.authenticatedUser?.descriptor;
         if (!descriptor) {
           throw new Error('ADO connectionData response missing authenticatedUser.descriptor');
         }
+        const properties = body.authenticatedUser?.properties;
+        const accountName = propertyText(properties?.Account);
+        // The account name is an address on some servers (user@corp) and DOMAIN\\user on others: only an address is an e-mail.
+        const email = propertyText(properties?.Mail) ?? (accountName?.includes('@') ? accountName : undefined);
+        const guid = body.authenticatedUser?.id;
         return {
           identity: descriptor,
           displayName: body.authenticatedUser?.providerDisplayName ?? descriptor,
+          ...(email ? { email } : {}),
+          ...(accountName ? { accountName } : {}),
+          ...(typeof guid === 'string' && guid ? { adoUserGuid: guid } : {}),
         };
       }
 

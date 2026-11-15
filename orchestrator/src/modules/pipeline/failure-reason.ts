@@ -34,3 +34,26 @@ export function describeFailure(error: unknown): string {
   const text = causes.length ? `${head} (${causes.join(' <- ')})` : head;
   return text.slice(0, MAX_LENGTH);
 }
+
+/** What kind of failure it was, in a closed vocabulary the page can name in plain words and the Jobs list can show in short. */
+export const FAILURE_CLASSES = ['connection_reset', 'timeout', 'refused', 'unreadable_response', 'unknown'] as const;
+export type FailureClass = (typeof FAILURE_CLASSES)[number];
+
+const CLASS_PATTERNS: Array<{ failureClass: FailureClass; test: RegExp }> = [
+  { failureClass: 'connection_reset', test: /UND_ERR_SOCKET|ECONNRESET|other side closed|socket hang up/i },
+  { failureClass: 'timeout', test: /timeout|timed out|ETIMEDOUT|UND_ERR_HEADERS_TIMEOUT|UND_ERR_BODY_TIMEOUT/i },
+  // A refusal needs the status or the words: a bare 401 or 403 inside other text (an item number) is not one.
+  { failureClass: 'refused', test: /status code 40[13]\b|HTTP 40[13]\b|unauthori[sz]ed|forbidden/i },
+  { failureClass: 'unreadable_response', test: /unexpected token|unexpected end of JSON|JSON\.parse|invalid JSON|could not be parsed|schema validation/i },
+];
+
+/** The class of a failure, read from the same text `describeFailure` stores (message plus the causes Node hides). Never throws: unknown if unsure. */
+export function classifyFailure(error: unknown): FailureClass {
+  let text: string;
+  try {
+    text = describeFailure(error);
+  } catch {
+    return 'unknown';
+  }
+  return CLASS_PATTERNS.find((entry) => entry.test.test(text))?.failureClass ?? 'unknown';
+}

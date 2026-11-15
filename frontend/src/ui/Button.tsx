@@ -20,17 +20,25 @@ const SIZE_CLASSES: Record<ButtonSize, string> = {
 
 export const Button = forwardRef<
   HTMLButtonElement,
-  ButtonHTMLAttributes<HTMLButtonElement> & { variant?: ButtonVariant; size?: ButtonSize; loading?: boolean }
->(function Button({ variant = 'primary', size = 'md', className, disabled, loading, children, ...props }, ref) {
+  ButtonHTMLAttributes<HTMLButtonElement> & {
+    variant?: ButtonVariant;
+    size?: ButtonSize;
+    loading?: boolean;
+    // Not available yet, but still focusable and clickable so the click can say why or take the user to what blocks it (the write gate).
+    // Drawn as disabled, without the variant's colour: a blocked Write is not the one yellow control.
+    softDisabled?: boolean;
+  }
+>(function Button({ variant = 'primary', size = 'md', className, disabled, loading, softDisabled, children, ...props }, ref) {
   return (
     <button
       ref={ref}
       type="button"
       disabled={disabled || loading}
       aria-busy={loading || undefined}
+      aria-disabled={softDisabled || undefined}
       className={cn(
         'inline-flex items-center justify-center rounded-sm font-semibold whitespace-nowrap transition-[color,background-color,border-color,box-shadow,transform,scale] duration-instant ease-out active:scale-[0.98]',
-        VARIANT_CLASSES[variant],
+        softDisabled && !disabled && !loading ? 'bg-canvas text-ink-3 border border-hairline shadow-none' : VARIANT_CLASSES[variant],
         SIZE_CLASSES[size],
         // Native <button> defaults to cursor:default per the UA stylesheet
         // (only <a href> gets pointer for free) -- confirmed real complaint
@@ -38,7 +46,7 @@ export const Button = forwardRef<
         // conditional branch (not merged into the base classes above) so it
         // never fights the disabled branch's own cursor-not-allowed for
         // which utility wins.
-        disabled || loading ? 'cursor-not-allowed pointer-events-none bg-canvas text-ink-3 border border-hairline shadow-none' : 'cursor-pointer',
+        disabled || loading ? 'cursor-not-allowed pointer-events-none bg-canvas text-ink-3 border border-hairline shadow-none' : softDisabled ? 'cursor-not-allowed' : 'cursor-pointer',
         className,
       )}
       {...props}

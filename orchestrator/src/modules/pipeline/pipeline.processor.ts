@@ -49,7 +49,7 @@ const ingestionClient = new IngestionHttpClient(process.env.INGESTION_BASE_URL ?
   idleTimeoutMs: config.INGESTION_IDLE_TIMEOUT_MS,
   maxDurationMs: config.LEVEL_MAX_DURATION_MS,
 });
-const dryRunService = new DryRunService();
+const dryRunService = new DryRunService(undefined, config.IDENTITY_V2_ENABLED);
 const idempotencyService = new IdempotencyService(prisma);
 const jobEventsPublisherRedis = new Redis(config.REDIS_URL);
 jobEventsPublisherRedis.on('error', (err) => {
@@ -97,6 +97,7 @@ const openWebUiGlobalConfig: OpenWebUiGlobalConfig = {
   EMBED_TRANSPORT: config.EMBED_TRANSPORT,
   EMBED_BASE_URL: config.EMBED_BASE_URL,
   EMBED_MODEL: config.EMBED_MODEL,
+  EMBED_REDACT: config.EMBED_REDACT,
   EMBED_PATH: config.EMBED_PATH,
   EMBED_OPENAI_PATH: config.EMBED_OPENAI_PATH,
   EMBED_OPENAI_FALLBACK_ROUTES: config.EMBED_OPENAI_FALLBACK_ROUTES,
@@ -141,6 +142,7 @@ export default async function processPipelineJob(job: SandboxedJob<QueuedJobData
     progressService,
     mcpClient,
     backfillService,
+    embedModel: config.EMBED_MODEL,
     adoCredentialResolver,
     defaultLlmModel: config.LLM_CHAT_MODEL,
     openWebUiClientFactory,

@@ -33,7 +33,9 @@ import { EtaService, type EtaEstimate, type ModelStats } from './eta.service';
 import { buildDocumentMap, type DocumentMapSection } from './document-map';
 import { parseDocumentOverview, type DocumentOverview } from './document-overview.service';
 import { buildPreviewOverview } from './document-preview';
-import { generateSummary, MAX_SUMMARY_INPUT_CHARS } from './document-summary';
+import { generateSummary, MAX_SUMMARY_INPUT_CHARS, SummaryCache } from './document-summary';
+import { fileHashOf, type ResultCacheProbe } from './result-cache';
+import { EntrySourceReader, type EntrySourceAnswer } from './source-excerpt';
 import type { WritePreview } from './write-plan';
 import type { DocumentProfile } from './document-profile';
 import { createHash } from 'crypto';
@@ -62,6 +64,9 @@ import { VALID_REQUIREMENT_TAGS } from '../../config/requirement-type-fields';
 // BatchController/BatchService (NEW-05) -- a batch file must be validated
 // against the exact same rules as a single-file submit(), not a second
 // hand-maintained copy of them.
+/** DI token of the ResultCacheProbe JobsController asks for GET cached-result (wired in jobs.module.ts). */
+export const RESULT_CACHE_PROBE = 'RESULT_CACHE_PROBE';
+
 export const ALLOWED_EXTENSIONS = new Set(['.txt', '.md', '.docx', '.pdf', '.xlsx']);
 
 // Customer ID (per-Requirement source reference, e.g. "1.1.2.2") stays a
@@ -148,7 +153,22 @@ export class JobsController {
     @Optional() private readonly modelHealth?: ModelHealthService,
     // The output budget of the AI summary call (config DOCUMENT_OVERVIEW_MAX_TOKENS); a reasoning model can spend a small one thinking.
     @Optional() @Inject('SUMMARY_MAX_TOKENS') private readonly summaryMaxTokens: number = 4000,
+    // Whether a SURVEY job of an uploaded file would be served from the result cache (GET cached-result); absent, the answer is always no.
+    @Optional() @Inject(RESULT_CACHE_PROBE) private readonly resultCacheProbe?: ResultCacheProbe,
+    // The OCR language packs the pipeline parsed with (config OCR_LANGUAGES): a scanned PDF must be read back the same way, or
+    // its text, and so its offsets, would differ. Absent: ingestion's own default, as for the pipeline.
+    @Optional() @Inject('OCR_LANGUAGES') private readonly ocrLanguages?: string,
   ) {}
+
+  // The AI summaries already written in this process (P6): a re-upload of the same file gets its summary at once.
+  private readonly summaryCache = new SummaryCache();
+
+  // The evidence strip's source wording: the kept original re-read through ingestion, answers remembered briefly (source-excerpt.ts).
+  private readonly entrySourceReader = new EntrySourceReader(
+    (jobId) => this.jobsService.getSourceFileBytes(jobId),
+    (bytes, filename, request, signal) =>
+      this.ingestionClient.sourceExcerpt(bytes, filename, { ...request, ...(this.ocrLanguages ? { languages: this.ocrLanguages } : {}) }, signal),
+  );
 
   @Get()
   async list(@CurrentUser() user: SessionUser, @Query() rawQuery: unknown): Promise<JobSummary[]> {
@@ -241,6 +261,8 @@ export class JobsController {
     @Body('iterationPath') iterationPath: string | undefined,
     @Body('model') model: string | undefined,
     @Body('documentOverview') documentOverviewRaw: string | undefined,
+    // How wide the duplicate check looks: the area path and the ones under it (the default), or the whole project.
+    @Body('dedupScope') dedupScope?: string,
   ): Promise<{ jobId: string }> {
     await this.assertModelAllowed(model);
     if (!file) {
@@ -272,6 +294,9 @@ export class JobsController {
     if (mode !== undefined && mode !== 'baseline' && mode !== 'survey') {
       throw new BadRequestException(`mode must be 'baseline' or 'survey', got: ${mode}`);
     }
+    if (dedupScope !== undefined && dedupScope !== 'area_path' && dedupScope !== 'project') {
+      throw new BadRequestException(`dedupScope must be 'area_path' or 'project', got: ${dedupScope}`);
+    }
     const sourceHash = createHash('sha256').update(file.buffer).digest('hex');
     // Parsed defensively: a malformed overview is no overview, and never fails job creation.
     const documentOverview = parseDocumentOverview(documentOverviewRaw);
@@ -292,6 +317,7 @@ export class JobsController {
       iterationPath: iterationPath ?? null,
       model,
       documentOverview,
+      ...(dedupScope ? { dedupScope } : {}),
     });
   }
 
@@ -326,6 +352,8 @@ export class JobsController {
     documentMap: DocumentMapSection[];
     // The step-3 overview and the document profile, from the parsed document alone.
     overview: DocumentOverview & { profile: DocumentProfile };
+    // The result-cache file hash (content only, not the name): the wizard asks GET cached-result with it once mode and model are chosen.
+    fileHash: string;
   }> {
     await this.assertModelAllowed(model);
     if (!file) {
@@ -388,6 +416,7 @@ export class JobsController {
       documentMap,
       // What the wizard's "does this look right?" step shows: made from the parsed text and structure alone, at once, with no model.
       overview: await buildPreviewOverview(doc, (...args) => this.ingestionClient.level(...args), { sectionCount, depth, documentMap }, this.logger),
+      fileHash: fileHashOf(file.buffer),
     };
   }
 
@@ -399,7 +428,8 @@ export class JobsController {
   @Post('preview/summary')
   async previewSummary(
     @CurrentUser() user: SessionUser,
-    @Body() body: { summaryInput?: unknown; model?: unknown },
+    // fresh: "Write it again" -- asks the model even when a summary is kept, and keeps the new one.
+    @Body() body: { summaryInput?: unknown; model?: unknown; fresh?: unknown },
     @Res({ passthrough: true }) res?: Response,
   ): Promise<{ summary: string | null }> {
     const input = body?.summaryInput;
@@ -413,7 +443,43 @@ export class JobsController {
       if (!res.writableEnded) abort.abort(); // the browser left: stop the model call too
     });
     const client = await this.clientFactory.getClientFor(user.userId);
-    return { summary: await generateSummary(client, input, { maxTokens: this.summaryMaxTokens, ...(model ? { model } : {}), signal: abort.signal, log: this.logger }) };
+    // "Default" is keyed by the model it resolves to on this user's connection, so a changed default is not served the old summary.
+    const cacheKey = SummaryCache.keyFor(input, model ?? client.chatModel ?? '', user.userId);
+    if (body.fresh !== true) {
+      const kept = this.summaryCache.get(cacheKey);
+      if (kept !== undefined) return { summary: kept };
+    }
+    const summary = await generateSummary(client, input, { maxTokens: this.summaryMaxTokens, ...(model ? { model } : {}), signal: abort.signal, log: this.logger });
+    if (summary) this.summaryCache.set(cacheKey, summary); // a failure is not kept: the next request tries again
+    return { summary };
+  }
+
+  // P5: whether a SURVEY job of an uploaded file would be served from the result cache, so the wizard's estimate can say so. Asked once mode
+  // and model are chosen (preview runs on upload, before either is), with the fileHash preview returned. Reads the cache only, never runs
+  // anything, and only ever looks at the caller's own entries (the key includes the user). Any failure is "no".
+  @Get('cached-result')
+  async cachedResult(
+    @CurrentUser() user: SessionUser,
+    @Query() query: { fileHash?: unknown; mode?: unknown; model?: unknown },
+  ): Promise<{ cachedResult: boolean }> {
+    const fileHash = query?.fileHash;
+    if (typeof fileHash !== 'string' || !/^[0-9a-f]{64}$/.test(fileHash)) {
+      throw new BadRequestException('fileHash must be the sha256 hex that preview returned');
+    }
+    if (query.mode !== 'baseline' && query.mode !== 'survey') {
+      throw new BadRequestException(`mode must be 'baseline' or 'survey'`);
+    }
+    const model = typeof query.model === 'string' && query.model ? query.model : undefined;
+    await this.assertModelAllowed(model);
+    if (query.mode !== 'survey' || !this.resultCacheProbe) return { cachedResult: false };
+    try {
+      // The model the job would run on: the chosen one, or "Default" resolved on the user's connection as the worker does.
+      const resolved = model ?? (await this.clientFactory.getClientFor(user.userId)).chatModel;
+      if (!resolved) return { cachedResult: false };
+      return { cachedResult: await this.resultCacheProbe.has({ fileHash, userId: user.userId, mode: 'survey', model: resolved }) };
+    } catch {
+      return { cachedResult: false };
+    }
   }
 
   // Re-pricing without re-uploading: the reviewer changing mode/model on
@@ -659,6 +725,34 @@ export class JobsController {
     }
     const { writtenLocalIds } = await this.ownedJob(id, user);
     const dryRunDiff = await this.jobsService.setDiffEntryExcluded(id, localId, excluded);
+    return { dryRunDiff: decorateStoredDiff(dryRunDiff, writtenLocalIds) };
+  }
+
+  // Creates a skipped near-duplicate as a new item anyway. Both choices are optional: the new item is linked into this job's tree unless
+  // `linkTree` is false, and gets a Related link to the item it matched only when `relateToExisting` is true.
+  @Post(':id/diff/:localId/duplicate-override')
+  async overrideDuplicate(
+    @Param('id') id: string,
+    @Param('localId') localId: string,
+    @CurrentUser() user: SessionUser,
+    @Body('linkTree') linkTree: boolean | undefined,
+    @Body('relateToExisting') relateToExisting: boolean | undefined,
+  ): Promise<{ dryRunDiff: unknown }> {
+    if (linkTree !== undefined && typeof linkTree !== 'boolean') throw new BadRequestException('linkTree must be a boolean');
+    if (relateToExisting !== undefined && typeof relateToExisting !== 'boolean') throw new BadRequestException('relateToExisting must be a boolean');
+    const { writtenLocalIds } = await this.ownedJob(id, user);
+    const dryRunDiff = await this.jobsService.overrideDuplicate(id, localId, { linkTree: linkTree ?? true, relateToExisting: relateToExisting ?? false });
+    return { dryRunDiff: decorateStoredDiff(dryRunDiff, writtenLocalIds) };
+  }
+
+  @Delete(':id/diff/:localId/duplicate-override')
+  async undoDuplicateOverride(
+    @Param('id') id: string,
+    @Param('localId') localId: string,
+    @CurrentUser() user: SessionUser,
+  ): Promise<{ dryRunDiff: unknown }> {
+    const { writtenLocalIds } = await this.ownedJob(id, user);
+    const dryRunDiff = await this.jobsService.undoDuplicateOverride(id, localId);
     return { dryRunDiff: decorateStoredDiff(dryRunDiff, writtenLocalIds) };
   }
 
@@ -960,6 +1054,23 @@ export class JobsController {
     await this.ownedJob(id, user);
     const credential = await this.adoCredentialResolver.resolve(user.userId);
     return this.jobsService.retryTraceLinkWrite(id, failureId, credential);
+  }
+
+  // The original wording of one item, read from the job's kept upload (DESIGN.md §11.6, the evidence strip). Owner-only like
+  // every per-job route. A missing original or span is a normal answer ({kind: 'unavailable', reason}), never a 5xx; 404 only
+  // for a job that is not the caller's or an item the job does not have.
+  @Get(':id/diff/:localId/source')
+  async getEntrySource(
+    @Param('id') id: string,
+    @Param('localId') localId: string,
+    @CurrentUser() user: SessionUser,
+  ): Promise<EntrySourceAnswer> {
+    const job = await this.ownedJob(id, user);
+    const answer = await this.entrySourceReader.read(job, localId);
+    if (!answer) {
+      throw new NotFoundException(`Item ${localId} not found in job ${id}`);
+    }
+    return answer;
   }
 
   @Get(':id/audit')

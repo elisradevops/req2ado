@@ -18,7 +18,7 @@ describe('StatePicker', () => {
   it('shows a loading dropdown (not a text box) while states are being fetched', () => {
     vi.spyOn(adoApi, 'getStates').mockReturnValue(new Promise(() => undefined));
     renderPicker();
-    expect(screen.getByRole('combobox', { name: /initial state/i })).toHaveTextContent('Loading…');
+    expect(screen.getByRole('combobox', { name: 'Initial state (optional)' })).toHaveTextContent('Loading…');
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
   });
 

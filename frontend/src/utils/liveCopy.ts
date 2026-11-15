@@ -113,6 +113,8 @@ export function formatIdle(seconds: number): string {
 export const CONNECTION_LOST_COPY = 'Connection lost — reconnecting. The run keeps going on the server.';
 export const WAITING_ON_MODEL_COPY = (idleSeconds: number): string =>
   `Still working — the model has been answering one long request for ${formatIdle(idleSeconds)}.`;
+/** A stage with no new event for a while, named exactly as the phase rail names it (QA P2). No number, so it never ticks. */
+export const STILL_WORKING_COPY = (stage: string): string => `Still working on ${stage}`;
 export const NO_ACTIVE_WORK_COPY = "Waiting for the model's next answer.";
 export const STALE_WORK_COPY = 'Still waiting on the model for this step.';
 export const OUTLINE_TRUNCATED_COPY = 'Showing the first part of the outline. The run still covers the whole document.';

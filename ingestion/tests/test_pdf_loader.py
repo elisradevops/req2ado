@@ -6,6 +6,7 @@ from pypdf import PdfReader
 
 from app.canonical.model import BlockKind, plain_text_rows
 from app.loaders.pdf_loader import (
+    _advance_heading_counter,
     _cell_background_color,
     _cell_ocr_recovery,
     _fontname_is_bold,
@@ -943,6 +944,17 @@ def test_load_pdf_synthesizes_a_number_for_an_unnumbered_heading() -> None:
 
     headings = [b for b in result.blocks if b.kind == BlockKind.HEADING]
     assert [h.number_label for h in headings] == ["1", "2"]
+
+
+def test_advance_heading_counter_numbers_from_1_when_the_first_heading_is_below_level_1() -> None:
+    # P4, same as docx_loader: a document whose shallowest heading is level 2 used to synthesize "0.1", "0.1.1", ...
+    counters: list[int] = []
+    assert _advance_heading_counter(counters, 2, None) == "1"
+    assert _advance_heading_counter(counters, 3, None) == "1.1"
+    assert _advance_heading_counter(counters, 2, None) == "2"
+    # A skipped middle level under a real parent keeps its zero.
+    assert _advance_heading_counter(counters, 1, None) == "1"
+    assert _advance_heading_counter(counters, 3, None) == "1.0.1"
 
 
 def test_load_pdf_watermark_sized_text_is_not_classified_as_heading() -> None:

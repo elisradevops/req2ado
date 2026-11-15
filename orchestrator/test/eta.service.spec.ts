@@ -377,7 +377,33 @@ describe('EtaService', () => {
     expect(result.modelSampleCount).toBe(0);
   });
 
-  it('SURVEY floor (15 min) is applied last, after the model adjustment, and never as a ceiling', async () => {
+  it('does not flatten small documents to one number: 8, 50, 200 and 800 blocks each get their own, growing, estimate', async () => {
+    const service = new EtaService(fakePrisma([]), 'model-a');
+    const minutes: number[] = [];
+    for (const blockCount of [8, 50, 200, 800]) {
+      minutes.push((await service.estimate({ mode: 'survey', blockCount, figureCount: 0 })).estimateMinutes);
+    }
+    // The floor used to be 15 minutes, which hid the fit's own answer for every document under about 200 blocks.
+    expect(minutes[0]).toBeLessThan(15);
+    for (let i = 1; i < minutes.length; i += 1) expect(minutes[i]).toBeGreaterThan(minutes[i - 1]);
+    expect(new Set(minutes).size).toBe(4);
+  });
+
+  it('says how many finished runs are near the document\'s size (within half to double its blocks), so a far-off fit can be called what it is', async () => {
+    const rows = [100, 150, 200, 220, 900].map((blockCount, i) => row({ blockCount, figureCount: i }));
+    const service = new EtaService(fakePrisma(rows), 'model-a');
+
+    expect((await service.estimate({ mode: 'survey', blockCount: 180, figureCount: 2 })).nearSizeSampleCount).toBe(4); // 90..360: 100, 150, 200, 220
+    expect((await service.estimate({ mode: 'survey', blockCount: 5000, figureCount: 2 })).nearSizeSampleCount).toBe(0);
+    expect((await new EtaService(fakePrisma([]), 'model-a').estimate({ mode: 'survey', blockCount: 180, figureCount: 2 })).nearSizeSampleCount).toBe(0);
+  });
+
+  it('keeps the floor low: it only stops an estimate reading as instant, and is never what a real document\'s estimate comes from', () => {
+    expect(SURVEY_MIN_MINUTES).toBeGreaterThan(0);
+    expect(SURVEY_MIN_MINUTES).toBeLessThanOrEqual(3);
+  });
+
+  it('SURVEY floor is applied last, after the model adjustment, and never as a ceiling', async () => {
     const prisma = fakePrisma([]);
     const service = new EtaService(prisma, 'model-a');
 

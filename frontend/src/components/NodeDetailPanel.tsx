@@ -24,6 +24,7 @@ import { DescriptionMarkdown, Markdown } from '../ui/Markdown';
 import { cn } from '../lib/cn';
 import { LABEL_MICRO } from '../utils/labelMicro';
 import { flaggedDiffEntryReason, isFlaggedDiffEntry } from '../utils/diffFlagging';
+import { formatDateTime } from '../utils/formatDateTime';
 
 // CR-7d rescore: the quality score/categoryScores from JUST BEFORE a
 // successful rescore -- held briefly so QualityGauge can render a real
@@ -92,7 +93,9 @@ export function NodeDetailPanel({
   parentEntry,
   addChildSlot,
   hideSources,
+  evidenceSlot,
   moveSlot,
+  duplicateSlot,
   captionByFigureId,
   nameByFigureId,
   captionByTableId,
@@ -147,6 +150,11 @@ export function NodeDetailPanel({
   // The caller shows this entry's provenance itself (NodeDetailDialog's EvidenceStrip owns it there), so the Sources block is left out.
   // A caller that renders this panel without an EvidenceStrip must not set it.
   hideSources?: boolean;
+  // The dialog's evidence strip (file, location, "Why this verdict"): drawn right after the item's text and any proposal or discussion, so
+  // the source is next to what it supports and the long score panel comes after it.
+  // A function receives the Quality panel's read-only body (gauge, score explanation, grounding line) so the strip can fold it into its
+  // "Why this verdict" disclosure; the Re-check / Score this item line then stays outside it, in view.
+  evidenceSlot?: React.ReactNode | ((quality: React.ReactNode) => React.ReactNode);
   // DESIGN.md §11.5 -- the keyboard-accessible "Move to..." control, owned/
   // wired by the caller (NodeDetailDialog builds the actual
   // MoveEntryControl) for the same reason addChildSlot is: this component
@@ -155,6 +163,8 @@ export function NodeDetailPanel({
   // editability message -- visible without scrolling, the same reasoning
   // addChildSlot's own doc comment gives for not burying it at the bottom.
   moveSlot?: React.ReactNode;
+  // The "already exists" card for a skipped near-duplicate (or one created anyway), built by the caller for the same reason moveSlot is.
+  duplicateSlot?: React.ReactNode;
   onSave?: (
     localId: string,
     patch: { title: string; description: string; customerId?: string | null; tags?: string[]; seCoverageRef?: string | null },
@@ -355,7 +365,10 @@ export function NodeDetailPanel({
   // not the separate quality-score gauge already shown above.
   const isLowGrounding = isFlaggedDiffEntry({ type: entry.type, groundingScore: entry.groundingScore, qualityScore: null });
   // The row's flag only carries this as a tooltip, so the same reason is written out here for keyboard and touch users.
-  const reviewReason = flaggedDiffEntryReason(entry);
+  // An Epic or Feature is not scored (quality scoring judges how a requirement is worded), so its score, and the model's confidence in
+  // that score, are never a reason to review it; loose wording against the source still is.
+  const isParentEntry = entry.type === 'Epic' || entry.type === 'Feature';
+  const reviewReason = flaggedDiffEntryReason(isParentEntry ? { ...entry, qualityScore: null, qualityConfidence: null } : entry);
 
   function startEditing(): void {
     setDraftTitle(entry!.title);
@@ -543,7 +556,7 @@ export function NodeDetailPanel({
                 onClick={() => handleAttachFigureClick(figureId)}
               >
                 {status === 'done' ? <Check className="h-3.5 w-3.5" /> : <Upload className="h-3.5 w-3.5" />}
-                {status === 'done' ? 'Uploaded' : `Upload to ADO (WI-${entry.existingAdoId})`}
+                {status === 'done' ? 'Uploaded' : `Upload to Azure DevOps (WI-${entry.existingAdoId})`}
               </Button>
             ) : (
               <p className="text-xs text-ink-3">
@@ -650,12 +663,21 @@ export function NodeDetailPanel({
           className="text-base font-semibold"
           fullWidth
         />
+        {/* The text a reviewer is correcting comes straight after its title; the reference fields and classification follow. */}
+        <TextArea
+          label="Description"
+          helperText="Markdown supported — **bold**, *italic*, ~~strikethrough~~, and - / 1. lists."
+          value={draftDescription}
+          onChange={(e) => setDraftDescription(e.target.value)}
+          className="min-h-[300px] leading-relaxed"
+          fullWidth
+        />
         {/* Requirement-only -- Epic/Feature never carry a Customer ID (see
             WorkItemNode.customer_id's own docstring, ingestion side). */}
         {entry.type === 'Requirement' && (
           <TextField
             label="Customer ID"
-            helperText="This requirement's own source reference (e.g. a clause number like 1.1.2.2) -- leave blank if the source document has none."
+            helperText="This requirement's own source reference (e.g. a clause number like 1.1.2.2) — leave blank if the source document has none."
             value={draftCustomerId}
             onChange={(e) => setDraftCustomerId(e.target.value)}
             className="font-mono text-sm"
@@ -669,7 +691,7 @@ export function NodeDetailPanel({
         {entry.type === 'Requirement' && (
           <TextField
             label="SE Coverage Reference"
-            helperText="A manual forward reference to a Systems Engineering requirements-layer artifact this requirement is a basis for coverage of -- entered by hand, never auto-detected or linked. Leave blank if not applicable."
+            helperText="A manual forward reference to a Systems Engineering requirements-layer artifact this requirement is a basis for coverage of — entered by hand, never auto-detected or linked. Leave blank if not applicable."
             value={draftSeCoverageRef}
             onChange={(e) => setDraftSeCoverageRef(e.target.value)}
             className="font-mono text-sm"
@@ -705,21 +727,13 @@ export function NodeDetailPanel({
               {draftTags.length > 0 && (
                 <span className="text-xs text-ink-3">
                   {editWinningTag
-                    ? `"${REQUIREMENT_TAG_LABELS[editWinningTag].label}" (→) is what will be written to ADO's Requirement Type field.`
-                    : "None of the selected categories map to this project's Requirement Type field -- it will be left at its default."}
+                    ? `"${REQUIREMENT_TAG_LABELS[editWinningTag].label}" (→) is what will be written to the Requirement Type field in Azure DevOps.`
+                    : "None of the selected categories map to this project's Requirement Type field — it will be left at its default."}
                 </span>
               )}
             </div>
           );
         })()}
-        <TextArea
-          label="Description"
-          helperText="Markdown supported -- **bold**, *italic*, ~~strikethrough~~, and - / 1. lists."
-          value={draftDescription}
-          onChange={(e) => setDraftDescription(e.target.value)}
-          className="min-h-[300px] flex-1 leading-relaxed"
-          fullWidth
-        />
         <div className="sticky bottom-0 -mx-5 mt-auto flex items-center gap-2.5 border-t border-hairline bg-canvas px-5 py-3">
           <Button onClick={save} disabled={!draftTitle.trim()}>
             Save
@@ -731,6 +745,94 @@ export function NodeDetailPanel({
       </div>
     );
   }
+
+
+  // The Quality panel in pieces, so the dialog can fold its read-only body into "Why this verdict" (DESIGN.md §11.4) and keep the line that
+  // changes state (stale notice + Re-check quality, Not scored yet + Score this item, Rescored.) outside it, in view and in tab order.
+  // An item that maps to one that already exists is not created, so "Not scored yet" would invite a score for nothing.
+  const foldQuality = typeof evidenceSlot === 'function';
+  const showQualityPanel = entry.type === 'Requirement' && !(entry.qualityScore == null && (entry.action === 'reuse' || entry.action === 'dedup_skip'));
+  // Stale (edited since last scored): dimmed, never zeroed -- the last-known numbers stay on screen, only their freshness is in question.
+  // See DryRunDiffEntry.qualityStale's own doc comment. The key forces a remount on node switch: QualityGauge owns its own
+  // expandedCategories state, which would otherwise bleed from entry A into entry B's identical-looking row.
+  const qualityGauge =
+    showQualityPanel && entry.qualityScore != null ? (
+      <div className={cn(entry.qualityStale && 'opacity-50')}>
+        <QualityGauge
+          key={entry.localId}
+          score={entry.qualityScore}
+          categoryScores={entry.qualityCategoryScores}
+          categoryChecklist={entry.qualityCategoryChecklist}
+          qualityIssues={entry.qualityIssues}
+          previousScore={preRescoreSnapshot?.score}
+          previousCategoryScores={preRescoreSnapshot?.categoryScores}
+          previousIssues={preRescoreSnapshot?.issues}
+          flat={foldQuality}
+        />
+      </div>
+    ) : null;
+  // Why each low category got its score, on demand: only for a score that still describes the current text.
+  const qualityExplanation =
+    showQualityPanel && entry.qualityScore != null && jobId && !entry.qualityStale && entry.qualityCategoryScores && Object.keys(entry.qualityCategoryScores).length > 0 ? (
+      <ScoreExplanationPanel
+        load={() => explainScore(jobId, entry.localId)}
+        resetKey={`${jobId}:${entry.localId}:${entry.qualityScore}:${JSON.stringify(entry.qualityCategoryScores)}`}
+      />
+    ) : null;
+  const qualityActions = !showQualityPanel ? null : entry.qualityScore != null ? (
+    entry.qualityStale ? (
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs text-ink-3">
+          {rescoring
+            ? 'Re-scoring against the current wording. This takes a few seconds.'
+            : foldQuality
+              ? 'Edited since this was scored. The scores under "Why this verdict" are from before your change.'
+              : 'Edited since this was scored. The numbers above are from before your change.'}
+        </p>
+        {onRescore && (
+          <Button variant="outline" size="sm" onClick={handleRescoreClick} loading={rescoring} className="flex-none">
+            {!rescoring && <RefreshCw className="h-3 w-3" />}
+            {rescoring ? 'Re-checking…' : 'Re-check quality'}
+          </Button>
+        )}
+      </div>
+    ) : (
+      preRescoreSnapshot && <p className="text-xs font-medium text-ok">Rescored.</p>
+    )
+  ) : (
+    <div className="flex items-center justify-between gap-2">
+      <p className="text-sm text-ink-3">Not scored yet.</p>
+      {/* Reuses the exact same rescore action/backend route as the Stale state -- addDiffEntry hardcodes qualityScore: null for a
+          manually-added item (jobs.service.ts), and rescoreDiffEntry's own guards (diff_ready, action === 'create', type ===
+          'Requirement') never required a PRIOR score to exist, so a first-time score is additive, not a new backend capability. */}
+      {onRescore && canEdit && (
+        <Button variant="outline" size="sm" onClick={handleRescoreClick} loading={rescoring} className="flex-none">
+          {!rescoring && <RefreshCw className="h-3 w-3" />}
+          {rescoring ? 'Scoring…' : 'Score this item'}
+        </Button>
+      )}
+    </div>
+  );
+  const groundingLine =
+    entry.groundingScore != null ? (
+      <div className={cn('flex items-center gap-1.5 text-sm', !foldQuality && 'rounded-sm border border-hairline bg-surface-alt p-2.5')}>
+        <Tooltip content="How closely this item's wording follows the original document text.">
+          <span className="text-ink-3">Matches source wording:</span>
+        </Tooltip>
+        <span className={cn('font-semibold', isLowGrounding ? 'text-warning' : 'text-ink-1')}>
+          {isLowGrounding ? 'Loosely' : entry.groundingScore >= 0.7 ? 'Closely' : 'Partly'}
+        </span>
+        {isLowGrounding && <span className="text-ink-3">— worth checking against the source</span>}
+      </div>
+    ) : null;
+  const qualityBody =
+    qualityGauge || qualityExplanation || groundingLine ? (
+      <>
+        {qualityGauge}
+        {qualityExplanation}
+        {groundingLine}
+      </>
+    ) : null;
 
   return (
     <div ref={panelRootRef} tabIndex={-1} data-node-detail-panel className="flex flex-col gap-3 p-5 outline-none">
@@ -745,6 +847,7 @@ export function NodeDetailPanel({
           </Button>
         </div>
       )}
+      {duplicateSlot}
       {moveSlot}
       {/* 'excluded' has no message of its own here -- the dialog header
           already shows a dedicated "Excluded from this run" badge right
@@ -753,10 +856,12 @@ export function NodeDetailPanel({
           no such coverage anywhere else, so they get one here. */}
       {!editability.editable && editability.reason !== 'excluded' && (
         <p className="text-xs text-ink-3">
+          {/* The duplicate card already says a near-duplicate exists (and links it), so it is not repeated here. */}
           {editability.reason === 'matched' &&
+            !(duplicateSlot && entry.action === 'dedup_skip') &&
             (entry.existingAdoId != null
-              ? <>Read-only: this maps to an item that already exists in ADO (<span className="font-mono">WI-{entry.existingAdoId}</span>). Edit it in Azure DevOps.</>
-              : 'Read-only: this item maps to an existing ADO work item, not a new one.')}
+              ? <>Read-only: this maps to an item that already exists in Azure DevOps (<span className="font-mono">WI-{entry.existingAdoId}</span>). Edit it in Azure DevOps.</>
+              : 'Read-only: this item maps to an existing Azure DevOps work item, not a new one.')}
           {/* Real gap this closes: fields being read-only says nothing about
               POSITION -- a reviewer dragging this row to a new parent in
               DiffTree.tsx (DESIGN.md §11.5) sees the move persist and
@@ -766,7 +871,8 @@ export function NodeDetailPanel({
               at most one Parent relation per work item (confirmed live:
               re-adding one 400s with TF401349), so a matched item's real
               position is not this job's to re-assert. */}
-          {editability.reason === 'matched' && ' Its position in this tree is also read-only in ADO — moving it here only reorganizes your review, it never re-parents the real item.'}
+          {editability.reason === 'matched' &&
+            `${duplicateSlot && entry.action === 'dedup_skip' ? '' : ' '}Its position in this tree is also read-only in Azure DevOps — moving it here only reorganizes your review, it never re-parents the real item.`}
           {editability.reason === 'written' && !entry.proposal && WRITTEN_NOTE}
           {editability.reason === 'job_locked' && `This job is no longer editable${jobStatus ? ` (status: ${jobStatus})` : ''}.`}
         </p>
@@ -785,15 +891,15 @@ export function NodeDetailPanel({
           <div className="flex items-start gap-2 rounded-sm border border-hairline bg-surface-alt p-2.5 text-xs text-ink-2">
             <Link2 className="mt-0.5 h-3.5 w-3.5 flex-none text-ink-3" />
             <span>
-              A similar parent item already exists in ADO as{' '}
+              A similar parent item already exists in Azure DevOps as{' '}
               <span className="font-mono">WI-{parentEntry.existingAdoId}</span> ({parentEntry.action === 'reuse' ? 'exact match' : 'near-duplicate'}
-              ) -- this item will be linked under it automatically on Confirm.
+              ) — this item will be linked under it automatically when you write.
             </span>
           </div>
         )}
       {/* Real markdown, not whitespace-pre-line plain text -- descriptions
           are now authored (via Edit/chat) as markdown (**bold**, lists,
-          ~~strikethrough~~) and written to ADO as real HTML via the same
+          ~~strikethrough~~) and written to Azure DevOps as real HTML via the same
           conversion (see orchestrator's description-html.ts) -- this
           preview should show a reviewer the same structure that lands in
           ADO, not the raw ** and - characters. Max-width measure preserved
@@ -801,7 +907,7 @@ export function NodeDetailPanel({
       {/* The 68ch measure sits on each block, not the wrapper, so a right-to-left
           block (:dir(rtl), resolved from dir="auto") can anchor to the pane's
           right edge instead of the right edge of a 68ch box. */}
-      <div className="w-full text-sm leading-relaxed text-ink-2 [&>*]:max-w-[68ch] [&>*:dir(rtl)]:me-auto">
+      <div className="w-full text-read text-ink-2 [&>*]:max-w-[68ch] [&>*:dir(rtl)]:me-auto">
         <DescriptionMarkdown>{entry.description}</DescriptionMarkdown>
       </div>
       <ProposalCard
@@ -834,7 +940,7 @@ export function NodeDetailPanel({
                   </p>
                 )}
                 {d.proposedDescription && <DescriptionMarkdown>{d.proposedDescription}</DescriptionMarkdown>}
-                <p className="text-xs text-ink-3">{new Date(d.createdAt).toLocaleString()}</p>
+                <p className="text-xs text-ink-3">{formatDateTime(d.createdAt)}</p>
               </div>
               {canEdit && onRemoveDiscussion && (
                 <Button size="sm" variant="ghost" aria-label="Remove from discussion" onClick={() => void onRemoveDiscussion(entry.localId, d.id)}>
@@ -844,6 +950,14 @@ export function NodeDetailPanel({
             </div>
           ))}
         </div>
+      )}
+      {foldQuality ? (
+        <>
+          {(evidenceSlot as (quality: React.ReactNode) => React.ReactNode)(qualityBody)}
+          {qualityActions}
+        </>
+      ) : (
+        evidenceSlot
       )}
       {/* Real bug fixed here (confirmed against the agreed mockup, which has
           no "Active Flags" block at all): this used to pair Classification
@@ -861,7 +975,7 @@ export function NodeDetailPanel({
       {reviewReason && (
         <p data-testid="review-reason" className="flex items-start gap-1.5 text-sm text-warning-ink">
           <Flag aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 flex-none" />
-          <span>Needs review: {reviewReason}</span>
+          <span>Check: {reviewReason}</span>
         </p>
       )}
       {entry.tags && entry.tags.length > 0 && (
@@ -870,96 +984,18 @@ export function NodeDetailPanel({
           <TagChips tags={entry.tags} winningTag={resolveWinningTag(entry.tags, requirementClassificationField?.allowedValues)} />
         </div>
       )}
-      {/* DESIGN.md §11.4.1 -- gated on the item's real ADO work-item type,
-          explicitly, not on qualityScore presence. The two are NOT the same
-          check: scoring is server-side-scoped to Requirement nodes today
-          (so they happen to agree), but qualityScore==null on a
-          Requirement is a DIFFERENT case (a scoring pass that failed) from
-          an Epic/Feature never having a rubric to begin with -- the former
-          must show the gauge's own empty/failed state, not silently
-          disappear like the latter. */}
-      {entry.type === 'Requirement' && (
+      {!foldQuality && showQualityPanel && (
         <div className="flex flex-col gap-1.5 rounded-sm border border-hairline bg-surface-alt p-2.5">
           {entry.qualityScore != null ? (
             <>
-              {/* Stale (edited since last scored): dimmed, never zeroed --
-                  the last-known numbers stay on screen, only their
-                  freshness is in question. See DryRunDiffEntry.qualityStale's
-                  own doc comment. */}
-              <div className={cn(entry.qualityStale && 'opacity-50')}>
-                {/* key forces a remount on node switch -- QualityGauge owns
-                    its own expandedCategories state internally (which
-                    category disclosures are open); without a key, React
-                    reuses the same instance across different selected
-                    nodes and a category left expanded on entry A bleeds
-                    into entry B's identical-looking row. */}
-                <QualityGauge
-                  key={entry.localId}
-                  score={entry.qualityScore}
-                  categoryScores={entry.qualityCategoryScores}
-                  categoryChecklist={entry.qualityCategoryChecklist}
-                  qualityIssues={entry.qualityIssues}
-                  previousScore={preRescoreSnapshot?.score}
-                  previousCategoryScores={preRescoreSnapshot?.categoryScores}
-                  previousIssues={preRescoreSnapshot?.issues}
-                />
-              </div>
-              {/* Why each low category got its score, on demand: only for a score that still describes the current text. */}
-              {jobId && !entry.qualityStale && entry.qualityCategoryScores && Object.keys(entry.qualityCategoryScores).length > 0 && (
-                <ScoreExplanationPanel
-                  load={() => explainScore(jobId, entry.localId)}
-                  resetKey={`${jobId}:${entry.localId}:${entry.qualityScore}:${JSON.stringify(entry.qualityCategoryScores)}`}
-                />
-              )}
-              {entry.qualityStale ? (
-                <div className="flex items-center justify-between gap-2">
-                  <p className="text-xs text-ink-3">
-                    {rescoring
-                      ? 'Re-scoring against the current wording. This takes a few seconds.'
-                      : 'Edited since this was scored. The numbers above are from before your change.'}
-                  </p>
-                  {onRescore && (
-                    <Button variant="outline" size="sm" onClick={handleRescoreClick} loading={rescoring} className="flex-none">
-                      {!rescoring && <RefreshCw className="h-3 w-3" />}
-                      {rescoring ? 'Re-checking…' : 'Re-check quality'}
-                    </Button>
-                  )}
-                </div>
-              ) : (
-                preRescoreSnapshot && <p className="text-xs font-medium text-ok">Rescored.</p>
-              )}
+              {qualityGauge}
+              {qualityExplanation}
             </>
-          ) : (
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-sm text-ink-3">Not scored yet.</p>
-              {/* Reuses the exact same rescore action/backend route as the
-                  Stale state -- addDiffEntry hardcodes qualityScore: null
-                  for a manually-added item (jobs.service.ts), and
-                  rescoreDiffEntry's own guards (diff_ready, action ===
-                  'create', type === 'Requirement') never required a PRIOR
-                  score to exist, so a first-time score is additive, not a
-                  new backend capability. */}
-              {onRescore && canEdit && (
-                <Button variant="outline" size="sm" onClick={handleRescoreClick} loading={rescoring} className="flex-none">
-                  {!rescoring && <RefreshCw className="h-3 w-3" />}
-                  {rescoring ? 'Scoring…' : 'Score this item'}
-                </Button>
-              )}
-            </div>
-          )}
+          ) : null}
+          {qualityActions}
         </div>
       )}
-      {entry.groundingScore != null && (
-        <div className="flex items-center gap-1.5 rounded-sm border border-hairline bg-surface-alt p-2.5 text-sm">
-          <Tooltip content="How closely this item's wording follows the original document text.">
-            <span className="text-ink-3">Matches source wording:</span>
-          </Tooltip>
-          <span className={cn('font-semibold', isLowGrounding ? 'text-warning' : 'text-ink-1')}>
-            {isLowGrounding ? 'Loosely' : entry.groundingScore >= 0.7 ? 'Closely' : 'Partly'}
-          </span>
-          {isLowGrounding && <span className="text-ink-3">— worth checking against the source</span>}
-        </div>
-      )}
+      {!foldQuality && groundingLine}
       {/* DESIGN.md §11.4.1 -- in place of the absent gauge, an Epic/Feature
           shows what it covers (real descendant counts from the diff tree,
           computed by the caller) and states plainly why there is no score,

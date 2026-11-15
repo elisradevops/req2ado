@@ -1,5 +1,7 @@
+import { usePageTitle } from '../hooks/usePageTitle';
 import { useEffect, useState, type JSX } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { httpClient } from '../api/httpClient.js';
 import { PageHeader } from '../ui/PageHeader';
 import { Card } from '../ui/Card';
@@ -12,12 +14,12 @@ import { Button } from '../ui/Button';
 // served pre-migration, expressed as Tailwind utility classes.
 const MARKDOWN_COMPONENTS: Components = {
   // The page title is the PageHeader's h1, so a markdown "#" renders as an h2 (same look) to keep one h1 per page.
-  h1: ({ children }) => <h2 className="mb-2 mt-6 text-2xl font-bold tracking-tight first:mt-0">{children}</h2>,
-  h2: ({ children }) => <h2 className="mb-2 mt-6 text-lg font-bold tracking-tight">{children}</h2>,
+  h1: ({ children }) => <h2 className="mb-2 mt-6 text-title font-bold tracking-tight first:mt-0">{children}</h2>,
+  h2: ({ children }) => <h2 className="mb-2 mt-6 text-title font-bold tracking-tight">{children}</h2>,
   h3: ({ children }) => <h3 className="mb-1.5 mt-5 text-base font-semibold">{children}</h3>,
-  p: ({ children }) => <p className="mb-3 text-sm leading-relaxed text-ink-2">{children}</p>,
-  ul: ({ children }) => <ul className="mb-3 flex list-disc flex-col gap-1 pl-5 text-sm text-ink-2">{children}</ul>,
-  ol: ({ children }) => <ol className="mb-3 flex list-decimal flex-col gap-1 pl-5 text-sm text-ink-2">{children}</ol>,
+  p: ({ children }) => <p className="mb-3 text-base leading-relaxed text-ink-2">{children}</p>,
+  ul: ({ children }) => <ul className="mb-3 flex list-disc flex-col gap-1 pl-5 text-base text-ink-2">{children}</ul>,
+  ol: ({ children }) => <ol className="mb-3 flex list-decimal flex-col gap-1 pl-5 text-base text-ink-2">{children}</ol>,
   li: ({ children }) => <li>{children}</li>,
   a: ({ children, href }) => (
     <a href={href} target="_blank" rel="noreferrer" className="text-accent underline underline-offset-2 hover:text-accent-hover">
@@ -26,7 +28,7 @@ const MARKDOWN_COMPONENTS: Components = {
   ),
   code: ({ children }) => <code className="rounded-sm bg-surface-alt px-1 py-0.5 font-mono text-xs text-ink-1">{children}</code>,
   pre: ({ children }) => <pre className="mb-3 overflow-x-auto rounded-sm bg-surface-alt p-3 font-mono text-xs text-ink-1">{children}</pre>,
-  blockquote: ({ children }) => <blockquote className="mb-3 border-l-2 border-hairline-strong pl-3 text-sm text-ink-2 italic">{children}</blockquote>,
+  blockquote: ({ children }) => <blockquote className="mb-3 border-l-2 border-hairline-strong pl-3 text-base text-ink-2 italic">{children}</blockquote>,
   hr: () => <hr className="my-4 border-hairline" />,
   table: ({ children }) => (
     <div className="mb-3 overflow-x-auto">
@@ -38,6 +40,7 @@ const MARKDOWN_COMPONENTS: Components = {
 };
 
 export function Wiki(): JSX.Element {
+  usePageTitle('Help');
   const [content, setContent] = useState<string | null>(null);
   const [error, setError] = useState(false);
 
@@ -55,7 +58,7 @@ export function Wiki(): JSX.Element {
 
   return (
     <div className="flex flex-col gap-4">
-      <PageHeader title="Wiki" description="Guidance for using req2ado" />
+      <PageHeader title="Help" description="Guidance for using req2ado" />
       <div className="mx-auto w-full max-w-[720px]">
         {error ? (
           <Alert severity="error">
@@ -80,7 +83,7 @@ export function Wiki(): JSX.Element {
         ) : (
           <Card>
             <div className="p-4">
-              <ReactMarkdown components={MARKDOWN_COMPONENTS}>{content}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>{content}</ReactMarkdown>
             </div>
           </Card>
         )}

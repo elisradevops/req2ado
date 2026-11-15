@@ -13,6 +13,7 @@ export interface BatchJobDraft {
   areaPath: string;
   state: string;
   iterationPath: string;
+  dedupScope: 'area_path' | 'project';
 }
 
 export const EMPTY_BATCH_DRAFT: BatchJobDraft = {
@@ -23,6 +24,7 @@ export const EMPTY_BATCH_DRAFT: BatchJobDraft = {
   areaPath: '',
   state: '',
   iterationPath: '',
+  dedupScope: 'area_path',
 };
 
 interface BatchJobDraftStore {

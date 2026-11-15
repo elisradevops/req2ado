@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatEtaMinutes, formatEtaRange } from './eta';
+import { formatEtaMinutes, formatEtaRange, estimateLine } from './eta';
 
 // computeEtaMinutes was deleted from this file (DESIGN.md §18's ledger) --
 // the ETA is now computed server-side from real completed-job history, not
@@ -40,5 +40,22 @@ describe('formatEtaRange', () => {
 
   it('handles an equal lower/upper bound (e.g. the SURVEY floor with no real history yet)', () => {
     expect(formatEtaRange(15, 15)).toEqual({ lower: '15 min', upper: '15 min' });
+  });
+});
+
+// P5: a SURVEY job of a file the result cache already holds is served from it in seconds, not the history-based range.
+describe('estimateLine', () => {
+  it('says a few seconds when this file was already processed, whatever the range says', () => {
+    expect(estimateLine({ lowerMinutes: 20, upperMinutes: 35 }, true)).toEqual({ value: 'A few seconds', note: 'this file was already processed' });
+    expect(estimateLine(undefined, true)).toEqual({ value: 'A few seconds', note: 'this file was already processed' });
+  });
+
+  it('shows the server range, typically, otherwise', () => {
+    expect(estimateLine({ lowerMinutes: 20, upperMinutes: 35 }, false)).toEqual({ value: '20 min – 35 min', note: 'typically, once it starts' });
+    expect(estimateLine({ lowerMinutes: 1, upperMinutes: 1 }, false)).toEqual({ value: '1 min', note: 'typically, once it starts' });
+  });
+
+  it('is null with no estimate yet and no cached result', () => {
+    expect(estimateLine(undefined, false)).toBeNull();
   });
 });

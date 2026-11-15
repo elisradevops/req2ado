@@ -1,4 +1,5 @@
 import { OpenWebUiClientFactory, type OpenWebUiGlobalConfig } from '../src/modules/llm/openwebui-client.factory';
+import { OpenWebUiClient } from '../src/modules/llm/openwebui.client';
 
 const GLOBAL_CONFIG: OpenWebUiGlobalConfig = {
   LLM_BASE_URL: 'http://openwebui.internal/api/v1',
@@ -103,4 +104,27 @@ describe('OpenWebUiClientFactory', () => {
     expect(llmConfigResolver.resolve).not.toHaveBeenCalled();
     fetchSpy.mockRestore();
   });
+
+  describe('embeddingsWorkForToken', () => {
+    const build = () => new OpenWebUiClientFactory(GLOBAL_CONFIG, { resolve: jest.fn() } as any);
+
+    it('is true when the account gets a vector back for a sample text', async () => {
+      jest.spyOn(OpenWebUiClient.prototype, 'embed').mockResolvedValue([[0.1, 0.2, 0.3]]);
+
+      expect(await build().embeddingsWorkForToken('sk-candidate-token')).toBe(true);
+    });
+
+    it('is false when the embedding call fails, instead of throwing', async () => {
+      jest.spyOn(OpenWebUiClient.prototype, 'embed').mockRejectedValue(new Error('403 model not available'));
+
+      expect(await build().embeddingsWorkForToken('sk-candidate-token')).toBe(false);
+    });
+
+    it('is false when no vector comes back', async () => {
+      jest.spyOn(OpenWebUiClient.prototype, 'embed').mockResolvedValue([]);
+
+      expect(await build().embeddingsWorkForToken('sk-candidate-token')).toBe(false);
+    });
+  });
 });
+

@@ -118,6 +118,8 @@ export interface OpenWebUiClientConfig {
   LLM_CHAT_MODEL: string;
   LLM_VISION_MODEL?: string;
   LLM_TRUSTED_LOCAL: boolean;
+  // Redact the text that is embedded (default true). See config.schema.ts.
+  EMBED_REDACT?: boolean;
   /** When false (default), seed is never sent in chat/vision/file-context requests.
    * Azure-backed models via LiteLLM reject it with a 400. Set true only for
    * Ollama/compatible backends that accept it. */
@@ -554,7 +556,7 @@ export class OpenWebUiClient implements LlmClient {
       );
     }
     const model = opts?.model ?? this.config.EMBED_MODEL;
-    const outboundTexts = this.config.LLM_TRUSTED_LOCAL ? texts : texts.map(redactText);
+    const outboundTexts = this.config.LLM_TRUSTED_LOCAL || this.config.EMBED_REDACT === false ? texts : texts.map(redactText);
     const stats: EmbedStats = { attempts: 0, route: transport === 'openai' ? '' : this.config.EMBED_PATH, batches: 0, halvings: 0 };
     // Ollama: one vector per text, no splitting (as before). OpenAI: split any text above the per-input token limit
     // first. chunkMap[i] = [start, end) in the flat chunks array for original text i, so we can reconstruct one vector per

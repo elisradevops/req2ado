@@ -63,11 +63,14 @@ deleted.
    orchestrator and ingestion consume the same one; setting it on only one
    service silently splits them. `ingestion/tests/test_embed_model_drift.py`
    guards the plumbing that makes this true.
-2. Re-backfill dedup for every area path, using the procedure in the section
-   above (list `AreaPathBackfill`, then `POST /backfill` for each). Until an
-   area path is re-backfilled, its pre-swap entries are simply absent — a
-   dedup check behaves as if that area path had never been ingested, so
-   nothing is *wrongly* matched, but real duplicates stop being caught.
+2. Re-backfill dedup. This now happens by itself: each area path's scan
+   records the embedding model (and the layout of the index), so the next job
+   against that area path scans it again under the new model, and a
+   whole-project job scans the project's root. To do it ahead of time, list
+   `AreaPathBackfill` and `POST /backfill` for each area path. Until an area
+   path is re-scanned, its pre-swap entries are simply absent — a dedup check
+   behaves as if that area path had never been ingested, so nothing is
+   *wrongly* matched, but real duplicates stop being caught.
 3. Re-ingest each user's KB sources (`POST /kb/ingest-url` per source).
    Nothing needs purging first: `existing_file_hash` reads from inside the
    collection, so under the new model it reports "never ingested" and the
@@ -82,6 +85,64 @@ deleted.
    `req2ado_kb_<32 hex>` — the same shape as the new ones, so identify the
    live set first (re-run step 2/3, then re-list and diff) before deleting
    anything. When in doubt, leave them; they cost only disk.
+
+### The duplicate decision log
+
+A finished job is deleted after a couple of days, so without a record nobody could answer "why was this requirement never created?". The decision log keeps
+that answer: for every proposed item whose closest match scored at or above the threshold (skipped, or a close match the judge did not confirm) it stores
+both texts as written, the work item it matched, the score, the threshold in force and the judge's verdict. What the reviewer then did is added: "kept
+skipped" (confirmed with the skip left alone) or "created anyway" ("Create as new item"). Undo clears it.
+
+- **What is stored:** text only. Never attachments, source files or figures, so it adds nothing to file storage. Each text is cut at 2,000 characters, and
+  at most the 500 closest matches of a job are kept.
+- **How long:** 30 days by default, `DEDUP_DECISION_LOG_RETENTION_MS` in `.env`. A sweep every 6 hours removes older rows. The log has no link to the job,
+  so deleting a job does not delete it, and it does not keep a job alive.
+- **Who can read it:** every signed-in user, like the job results (the texts are the same ones anyone with access to Azure DevOps can read).
+  `GET /api/dedup/decisions` takes `since`, `until` (dates), `jobId`, `outcome` (`kept_skipped`, `created_anyway`, `undecided`), `limit` (default 200, at
+  most 1,000) and `format=json|csv`.
+- **Best-effort:** a failure to write it is logged and never fails a job or a review action.
+- **Using it to check the threshold:** export the decided rows and turn them into labelled pairs, then score them with the model in use:
+
+  ```
+  curl -s -b <session cookie> 'http://localhost:4082/api/dedup/decisions?outcome=kept_skipped&limit=1000' > skipped.json
+  curl -s -b <session cookie> 'http://localhost:4082/api/dedup/decisions?outcome=created_anyway&limit=1000' > created.json
+  cd ingestion && .venv/bin/python scripts/dedup_export_pairs.py ../skipped.json ../created.json --out pairs.jsonl
+  .venv/bin/python scripts/dedup_score_pairs.py pairs.jsonl --env-file ../.env
+  ```
+
+  The log keeps no title for the matched item, so these pairs are scored on the texts alone, close to but not the same as the real check's scores.
+  The export is what lasts: save it before the 30 days are up.
+
+### Who can change the duplicate threshold
+
+By default every signed-in user can change the similarity threshold in Settings (the app has no roles). To limit it, set `REQ2ADO_ADMIN_USER_IDS` in
+`.env` to a comma-separated list of user ids and recreate `orchestrator`. Each person's id is under Profile & Connections > Technical ID (copy the full
+value; it is long and contains a semicolon and an at sign). Everyone not on the list sees the threshold read-only with the reason, and a save from them is
+refused (HTTP 403, code `settings_forbidden`). Unset or empty means everyone, as before. Match is exact, so a mistyped id locks that person out until fixed.
+The Helm chart does not pass this variable yet.
+
+### Local development: bge-m3
+
+Local development reaches Ollama through Open WebUI. For Hebrew, use `bge-m3`
+(1.2 GB, 1,024 dimensions, 8,192-token input, "more than 100 working
+languages", MIT licence); the previous local default `all-minilm` is
+English-only and cuts input at 256 word pieces.
+
+1. On the machine running Ollama behind Open WebUI: `ollama pull bge-m3`.
+2. In `.env`: `EMBED_TRANSPORT=ollama`, `EMBED_PATH=/ollama/api/embed`,
+   `EMBED_MODEL=bge-m3:latest`. Recreate `orchestrator`, `pipeline-worker` and
+   `ingestion` (`bash scripts/rebuild-app-services.sh`).
+3. Re-add each user's Knowledge Base documents (the batch add on the
+   Knowledge Base page). The duplicate index rebuilds on the next job.
+4. Set `EMBED_REDACT=false` in `.env` so text is not masked before it reaches
+   this local model (masking strips real content and lowers match scores). Leave
+   it unset, which means `true`, for any model that is not local to the machine.
+5. Check Hebrew before trusting the threshold: label text pairs and run
+   `ingestion/scripts/dedup_score_pairs.py <pairs.jsonl> --env-file ../.env`
+   (the script runs on the host, so use `EMBED_BASE_URL=http://localhost:3000`
+   instead of `host.docker.internal`). See `docs/dedup-evaluation.md`.
+   Scores are not comparable with production's `text-embedding-3-small`, so
+   the threshold needs its own check.
 
 **Do not** try to "fix" a mid-swap state by reverting `EMBED_MODEL` to make the
 old collections reachable again unless you are *certain* which model wrote

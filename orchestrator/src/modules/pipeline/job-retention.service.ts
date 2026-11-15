@@ -1,5 +1,6 @@
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
+import { deleteDecisionsOlderThan } from './dedup-decision-log';
 
 // Real gap this closes: nothing in this system ever ages out old job
 // records -- a long-running dev/prod instance accumulates every job's full
@@ -12,9 +13,10 @@ import { PrismaClient } from '@prisma/client';
 // succeeded/failed/rejected/cancelled. pending/running are always active;
 // diff_ready is excluded even past the age threshold -- it's still awaiting
 // a real confirm/reject decision, not something safe to silently discard.
-// Age is measured from `createdAt` -- the only timestamp every job row
-// reliably has (`completedAt` is only ever set on confirm(), i.e.
-// succeeded-only -- see jobs.service.ts).
+// Age is measured from `completedAt` when there is one (it is set only on
+// confirm(), i.e. succeeded-only -- see jobs.service.ts), so a proposal that
+// waited days for review is not swept hours after it is written; every other
+// terminal job has none and ages from `createdAt`, which every row has.
 //
 // Deliberately does NOT touch IdempotencyMapping or the dedup vector store
 // (Chroma): both exist specifically to prevent duplicate ADO writes
@@ -41,6 +43,9 @@ const _TERMINAL_RETENTION_STATUSES = ['succeeded', 'failed', 'rejected', 'cancel
 const _DEFAULT_FIGURE_MAX_AGE_MS = 30 * 24 * 60 * 60_000;
 const _TERMINAL_SWEEP_BATCH = 100;
 const _FIGURE_SWEEP_BATCH = 20;
+// The duplicate decision log (why an item was skipped) outlives its job, which is gone after a couple of days: it has its own age. 30 days
+// unless DEDUP_DECISION_LOG_RETENTION_MS says otherwise.
+const _DEFAULT_DECISION_LOG_MAX_AGE_MS = 30 * 24 * 60 * 60_000;
 
 @Injectable()
 export class JobRetentionService implements OnModuleInit, OnModuleDestroy {
@@ -51,6 +56,7 @@ export class JobRetentionService implements OnModuleInit, OnModuleDestroy {
     private readonly checkIntervalMs: number,
     private readonly maxAgeMs: number,
     private readonly figureMaxAgeMs: number = _DEFAULT_FIGURE_MAX_AGE_MS,
+    private readonly decisionLogMaxAgeMs: number = _DEFAULT_DECISION_LOG_MAX_AGE_MS,
   ) {}
 
   onModuleInit(): void {
@@ -66,6 +72,10 @@ export class JobRetentionService implements OnModuleInit, OnModuleDestroy {
         // eslint-disable-next-line no-console -- no structured logger in this module yet
         console.error('JobRetentionService figure sweep failed, will retry next interval:', err);
       });
+      this.sweepDecisionLog().catch((err) => {
+        // eslint-disable-next-line no-console -- no structured logger in this module yet
+        console.error('JobRetentionService decision log sweep failed, will retry next interval:', err);
+      });
     }, this.checkIntervalMs);
   }
 
@@ -76,7 +86,11 @@ export class JobRetentionService implements OnModuleInit, OnModuleDestroy {
   async sweep(): Promise<void> {
     const cutoff = new Date(Date.now() - this.maxAgeMs);
     const candidates = await this.prisma.job.findMany({
-      where: { status: { in: _TERMINAL_RETENTION_STATUSES }, createdAt: { lt: cutoff } },
+      // A written job ages from when it was written; one that never completed (failed, rejected, cancelled) from creation.
+      where: {
+        status: { in: _TERMINAL_RETENTION_STATUSES },
+        OR: [{ completedAt: { lt: cutoff } }, { completedAt: null, createdAt: { lt: cutoff } }],
+      },
       select: { id: true },
       // Each run takes the next batch; deleted jobs drop out of the query,
       // so every eligible job is still swept eventually.
@@ -103,6 +117,11 @@ export class JobRetentionService implements OnModuleInit, OnModuleDestroy {
         // eslint-disable-next-line no-console -- no structured logger in this module yet
         console.error('JobRetentionService terminal sweep transaction failed, will retry next interval:', err);
       });
+  }
+
+  // Rows of the duplicate decision log past their own age. Independent of the jobs (the log has no relation to them).
+  async sweepDecisionLog(): Promise<void> {
+    await deleteDecisionsOlderThan(this.prisma, new Date(Date.now() - this.decisionLogMaxAgeMs));
   }
 
   // diff_ready jobs are still awaiting a decision so the job row stays, but

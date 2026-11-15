@@ -27,6 +27,13 @@ describe('writeSummaryLines', () => {
     expect(lines.find((l) => l.id === 'parent-links')?.text).toBe('3 parent links will be added.');
   });
 
+  it('says a notice left out by default is a notice, not something the reviewer excluded', () => {
+    const only = writeSummaryLines(preview({ excluded: { direct: 1, viaAncestor: 0 } }), noBreakdown, 1);
+    expect(only.find((l) => l.id === 'excluded')?.text).toBe('1 item left out: 1 left out as a notice.');
+    const mixed = writeSummaryLines(preview({ excluded: { direct: 3, viaAncestor: 2 } }), noBreakdown, 1);
+    expect(mixed.find((l) => l.id === 'excluded')?.text).toBe('5 items left out: 1 left out as a notice, 2 excluded by you, 2 under an excluded parent.');
+  });
+
   it('says excluded items, including those dropped through an excluded parent', () => {
     const lines = writeSummaryLines(preview({ excluded: { direct: 2, viaAncestor: 5 } }), noBreakdown);
     expect(lines.find((l) => l.id === 'excluded')?.text).toBe('7 items left out: 2 excluded by you, 5 under an excluded parent.');

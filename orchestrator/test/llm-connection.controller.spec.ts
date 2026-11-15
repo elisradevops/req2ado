@@ -16,6 +16,7 @@ function makeController(overrides: {
   const llmConfigResolver = overrides.llmConfigResolver ?? { resolve: jest.fn().mockResolvedValue(undefined) };
   const clientFactory = overrides.clientFactory ?? {
     listModelsForToken: jest.fn().mockResolvedValue(CATALOG),
+    embeddingsWorkForToken: jest.fn().mockResolvedValue(true),
     invalidate: jest.fn(),
   };
   const controller = new LlmConnectionController(vault, llmConfigResolver, clientFactory);
@@ -49,30 +50,83 @@ describe('LlmConnectionController', () => {
   });
 
   describe('GET /llm/connection/models', () => {
-    it('previews a candidate token via the query param without touching the vault', async () => {
-      const { controller, clientFactory, llmConfigResolver } = makeController();
-      const result = await controller.getModels(USER, 'candidate-token');
-      expect(clientFactory.listModelsForToken).toHaveBeenCalledWith('candidate-token');
-      expect(llmConfigResolver.resolve).not.toHaveBeenCalled();
-      expect(result).toEqual({ models: CATALOG });
-    });
-
-    it("lists models for the caller's already-stored token when no query token is given", async () => {
+    it("lists models for the caller's already-stored token", async () => {
       const { controller, clientFactory } = makeController({
         llmConfigResolver: { resolve: jest.fn().mockResolvedValue({ apiKey: 'sk-stored', chatModel: 'qwen2.5:14b' }) },
       });
-      const result = await controller.getModels(USER, undefined);
+      const result = await controller.getModels(USER);
       expect(clientFactory.listModelsForToken).toHaveBeenCalledWith('sk-stored');
       expect(result).toEqual({ models: CATALOG });
     });
 
-    it('throws BadRequestException when no token is given and none is stored yet', async () => {
+    it('throws BadRequestException when none is stored yet', async () => {
       const { controller } = makeController();
-      await expect(controller.getModels(USER, undefined)).rejects.toThrow(BadRequestException);
+      await expect(controller.getModels(USER)).rejects.toThrow(BadRequestException);
+    });
+
+    it('takes no token from the URL: an API key in a query string would be written to every access log', () => {
+      const { controller } = makeController();
+      expect(controller.getModels.length).toBe(1);
+    });
+  });
+
+  describe('POST /llm/connection/models/preview', () => {
+    it('previews a candidate token sent in the body, without touching the vault or the stored connection', async () => {
+      const { controller, clientFactory, llmConfigResolver, vault } = makeController();
+      const result = await controller.previewModels(USER, 'candidate-token');
+      expect(clientFactory.listModelsForToken).toHaveBeenCalledWith('candidate-token');
+      expect(llmConfigResolver.resolve).not.toHaveBeenCalled();
+      expect(vault.set).not.toHaveBeenCalled();
+      expect(result).toEqual({ models: CATALOG });
+    });
+
+    it('trims the token it was given', async () => {
+      const { controller, clientFactory } = makeController();
+      await controller.previewModels(USER, '  candidate-token \n');
+      expect(clientFactory.listModelsForToken).toHaveBeenCalledWith('candidate-token');
+    });
+
+    it.each([undefined, '', '   '])('refuses a missing token (%j)', async (token) => {
+      const { controller } = makeController();
+      await expect(controller.previewModels(USER, token as any)).rejects.toThrow(BadRequestException);
     });
   });
 
   describe('POST /llm/connection', () => {
+    describe('the embedding check made when a token is saved', () => {
+      const body = { apiKey: 'sk-new', chatModel: 'qwen2.5:14b' };
+
+      it('tries one embedding with the token being saved, and says nothing more when it works', async () => {
+        const { controller, clientFactory } = makeController();
+
+        const result = await controller.setConnection(USER, body);
+
+        expect(clientFactory.embeddingsWorkForToken).toHaveBeenCalledWith('sk-new');
+        expect(result).toEqual({ ok: true });
+      });
+
+      it('still saves a connection whose account cannot embed, and says duplicate detection cannot use it', async () => {
+        const { controller, vault } = makeController({
+          clientFactory: { listModelsForToken: jest.fn().mockResolvedValue(CATALOG), embeddingsWorkForToken: jest.fn().mockResolvedValue(false), invalidate: jest.fn() },
+        });
+
+        const result = await controller.setConnection(USER, body);
+
+        expect(vault.set).toHaveBeenCalled();
+        expect(result).toEqual({ ok: true, embeddings: 'unavailable' });
+      });
+
+      it('does not try to embed with a token that failed validation', async () => {
+        const embeddingsWorkForToken = jest.fn();
+        const { controller } = makeController({
+          clientFactory: { listModelsForToken: jest.fn().mockRejectedValue(new Error('401')), embeddingsWorkForToken, invalidate: jest.fn() },
+        });
+
+        await expect(controller.setConnection(USER, body)).rejects.toThrow(BadRequestException);
+        expect(embeddingsWorkForToken).not.toHaveBeenCalled();
+      });
+    });
+
     it('validates the token live before storing, and rejects with 400 on an invalid body', async () => {
       const { controller } = makeController();
       await expect(controller.setConnection(USER, {})).rejects.toThrow(BadRequestException);

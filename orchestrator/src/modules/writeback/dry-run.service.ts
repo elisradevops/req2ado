@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { idempotencyMapKey, type IdempotencyService } from './idempotency.service';
 import { mapWithConcurrency } from '../pipeline/map-with-concurrency';
 import { stripHtmlTags } from './backfill.service';
-import type { DiffProposal } from '../pipeline/description-html';
+import { toAdoDescriptionHtml, type DiffProposal } from '../pipeline/description-html';
 
 export interface DryRunSourceRef {
   documentPath: string;
@@ -72,6 +72,11 @@ export interface DryRunTreeNode {
   // instead of duplicating the whole tree in ADO. Never written to by
   // record() -- only ever read as a fallback.
   legacySourceHash?: string | null;
+  // W1 content-aware identity (ingestion's identity_hash_v2 / content_hash, see ingestion/app/leveling/identity_v2.py): looked up
+  // before sourceHash when IDENTITY_V2_ENABLED, so a renamed or shifted file still matches; the content hash tells an edited item from an
+  // unchanged one under the same identity. Absent for an older ingestion result -- the lookup is then exactly the v1 one.
+  identityHashV2?: string | null;
+  contentHash?: string | null;
   customerId: string | null;
   // Per-Requirement, like customerId -- but NEVER auto-populated by
   // ingestion (always null coming from there). A manually-entered forward
@@ -173,6 +178,14 @@ export interface DryRunDiffEntry {
   description: string;
   action: 'create' | 'reuse' | 'dedup_skip';
   existingAdoId: number | null;
+  // Set when the reviewer chose to create an item that had matched an existing one ("Create as new item"). The entry is then a plain
+  // 'create' (existingAdoId and similarity are cleared) that remembers what it matched, so the choice can be undone.
+  // `source` says what it was before the choice, so undo restores it: a skipped near-duplicate (absent) or an item flagged as changed
+  // since it was written ('changed_since_written': a reuse whose text differs from the one in Azure DevOps).
+  duplicateOf?: { existingAdoId: number; similarity: number | null; source?: 'changed_since_written' };
+  // What the reviewer chose with it: whether the new item is linked into this job's tree (to its parent, and its children to it), and
+  // whether it also gets a Related link to the item it matched (kept as a resolved trace link on the entry).
+  duplicateOverride?: { linkTree: boolean; relateToExisting: boolean };
   // Distinct from 'reuse': an exact-hash match (idempotency lookup) is a
   // certain fact, while a 'dedup_skip' match comes from the embedding
   // service's probabilistic similarity judgment. similarity is populated
@@ -186,6 +199,20 @@ export interface DryRunDiffEntry {
   // without this, a re-run always showed 'create' since confirm() had no
   // way to record the mapping using the same key diff() looks it up by.
   sourceHash: string;
+  // W1, carried from DryRunTreeNode on every branch so confirm() can record the v2 row and the content hash beside the v1 row.
+  identityHashV2?: string | null;
+  contentHash?: string | null;
+  // W1, set on a 'reuse' only. changedSinceWritten: the item matches one already written to ADO, but its content differs from what was
+  // written; the action stays 'reuse' -- nothing is updated in ADO (D-W1b) -- and the job carries one changed_since_written warning.
+  // writtenContentHash: the content hash stored with the matched row (null when the row predates W1). writtenText: the item's text as
+  // it is in ADO, when the text check below fetched it. backfillIdentityV2: matched through a v1/legacy row, so confirm() adds the
+  // missing v2 row (lazy backfill). contentCheckPending: transient, the matched row has no content hash, so
+  // verifyExistingAdoIdsStillExist compares the text in ADO instead; it never survives that step.
+  changedSinceWritten?: boolean;
+  writtenContentHash?: string | null;
+  writtenText?: string;
+  backfillIdentityV2?: boolean;
+  contentCheckPending?: boolean;
   customerId: string | null;
   seCoverageRef: string | null;
   tags: string[];
@@ -328,8 +355,11 @@ export async function resolveCrossJobTraceLinks(
  */
 export async function verifyExistingAdoIdsStillExist(
   diff: DryRunDiffEntry[],
-  getWorkItemsBatch: (ids: number[]) => Promise<{ id: number }[]>,
+  getWorkItemsBatch: (ids: number[]) => Promise<{ id: number; fields?: Record<string, string> }[]>,
   onError?: (message: string) => void,
+  // W1: compare the text in ADO for a 'reuse' whose mapping has no content hash (contentCheckPending), in the same batched call. Only
+  // for verbatim (BASELINE) text: a SURVEY description is the model's wording and differs run to run, so it is never compared.
+  options: { compareText?: boolean } = {},
 ): Promise<DryRunDiffEntry[]> {
   const idsToVerify = [
     ...new Set(diff.filter((e) => e.existingAdoId !== null).map((e) => e.existingAdoId as number)),
@@ -338,22 +368,91 @@ export async function verifyExistingAdoIdsStillExist(
     return diff;
   }
   let stillExisting: Set<number>;
+  let descriptionById: Map<number, string | undefined>;
   try {
     const items = await getWorkItemsBatch(idsToVerify);
     stillExisting = new Set(items.map((item) => item.id));
+    descriptionById = new Map(items.map((item) => [item.id, item.fields?.['System.Description']]));
   } catch (error) {
     onError?.(
       `Could not verify whether ${idsToVerify.length} matched ADO work item(s) still exist -- ` +
         `showing them unverified. (${error instanceof Error ? error.message : String(error)})`,
     );
-    return diff;
+    return diff.map((entry) => (entry.contentCheckPending ? withoutKeys(entry, ['contentCheckPending']) : entry));
   }
   return diff.map((entry) => {
-    if (entry.existingAdoId === null || stillExisting.has(entry.existingAdoId)) {
+    if (entry.existingAdoId === null) {
       return entry;
     }
-    return { ...entry, action: 'create' as const, existingAdoId: null, similarity: null };
+    if (!stillExisting.has(entry.existingAdoId)) {
+      return { ...withoutKeys(entry, IDENTITY_MATCH_KEYS), action: 'create' as const, existingAdoId: null, similarity: null };
+    }
+    if (!entry.contentCheckPending) {
+      return entry;
+    }
+    const checked = withoutKeys(entry, ['contentCheckPending']);
+    const adoDescription = descriptionById.get(entry.existingAdoId);
+    if (!options.compareText || typeof adoDescription !== 'string') {
+      return checked;
+    }
+    const writtenText = stripHtmlTags(adoDescription);
+    const currentText = normaliseText(stripHtmlTags(toAdoDescriptionHtml(entry.description)));
+    // A prefix, not equal and not merely contained: an accepted acceptance-criteria section is written AFTER the description, so what was
+    // written starts with the current text. Words cut from it, or text before it, mean the item says something else now.
+    if (currentText === '' || normaliseText(writtenText).startsWith(currentText)) {
+      return { ...checked, writtenContentHash: entry.contentHash ?? null };
+    }
+    return { ...checked, changedSinceWritten: true, writtenText: writtenText.slice(0, WRITTEN_TEXT_MAX_CHARS) };
   });
+}
+
+// What a 'reuse' match set on an entry (W1); dropped with the match when its ADO item no longer exists.
+const IDENTITY_MATCH_KEYS = ['changedSinceWritten', 'writtenContentHash', 'writtenText', 'backfillIdentityV2', 'contentCheckPending'] as const;
+// Kept on the entry for the reviewer to compare; long enough for a requirement, bounded so the stored diff stays small.
+const WRITTEN_TEXT_MAX_CHARS = 4000;
+
+function withoutKeys(entry: DryRunDiffEntry, keys: readonly (keyof DryRunDiffEntry)[]): DryRunDiffEntry {
+  const copy = { ...entry };
+  for (const key of keys) delete copy[key];
+  return copy;
+}
+
+function normaliseText(text: string): string {
+  return text.normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+/**
+ * W1: the job's one changed_since_written warning (a Check notice, never in the write gate's Fix list), listing every item that matches
+ * one already in ADO whose content differs. Null when nothing changed.
+ */
+export function changedSinceWrittenWarning(diff: DryRunDiffEntry[]): WarningRecord | null {
+  const nodeIds = diff.filter((entry) => entry.changedSinceWritten === true).map((entry) => entry.localId);
+  if (nodeIds.length === 0) return null;
+  const matches =
+    nodeIds.length === 1
+      ? '1 item matches an item already in Azure DevOps whose text differs.'
+      : `${nodeIds.length} items match items already in Azure DevOps whose text differs.`;
+  return {
+    kind: 'changed_since_written',
+    severity: 'needs_review',
+    nodeIds,
+    detail: { count: nodeIds.length },
+    raw: `${matches} Nothing was updated in Azure DevOps.`,
+  };
+}
+
+// A node's idempotency match: the ADO id it reuses, plus the W1 fields the match sets on its entry.
+interface IdentityMatch {
+  existingAdoId: number;
+  fields: Partial<DryRunDiffEntry>;
+}
+
+// Only the W1 fields a node actually has, so an entry from an older ingestion result keeps exactly its previous shape.
+function identityFieldsOf(node: DryRunTreeNode): Pick<DryRunDiffEntry, 'identityHashV2' | 'contentHash'> {
+  return {
+    ...(node.identityHashV2 !== undefined ? { identityHashV2: node.identityHashV2 } : {}),
+    ...(node.contentHash !== undefined ? { contentHash: node.contentHash } : {}),
+  };
 }
 
 /**
@@ -369,12 +468,19 @@ export class DryRunService {
   // is independent of every other node's, so bounding concurrency instead
   // of running them one at a time cuts wall time roughly proportionally
   // for a document with hundreds of leveled nodes.
-  constructor(private readonly concurrency: number = 8) {}
+  //
+  // identityV2Enabled (IDENTITY_V2_ENABLED, W1): look nodes up by identity_hash_v2 first and flag a reuse whose content changed. False
+  // restores the v1 lookup exactly; it is also what a node without a v2 identity (an older ingestion result) gets either way.
+  constructor(
+    private readonly concurrency: number = 8,
+    private readonly identityV2Enabled: boolean = true,
+  ) {}
 
   async diff(
     nodes: DryRunTreeNode[],
     idempotencyService: IdempotencyService,
-    dedupCheck?: (text: string, title: string, areaPath: string) => Promise<{ isDuplicate: boolean; matchedItemId: string | null; similarity: number | null }>,
+    // localId: which item is being checked (the decision log keys on it); the first four are what is compared.
+    dedupCheck?: (text: string, title: string, areaPath: string, typeCategory: string, localId: string) => Promise<{ isDuplicate: boolean; matchedItemId: string | null; similarity: number | null }>,
     // Optional -- previously this burst (confirmed live: ~543 calls on a
     // real job) published NO progress signal at all, so the UI showed
     // nothing for however long it took. `completed`/`total` (not a
@@ -396,20 +502,32 @@ export class DryRunService {
     // its legacy-hash fallback when present and different, is prefetched
     // here; diffOneNode below reads this map synchronously instead of
     // awaiting a per-node DB call.
-    const idempotencyKeys: { sourceHash: string; areaPath: string }[] = [];
-    for (const node of nodes) {
-      idempotencyKeys.push({ sourceHash: node.sourceHash, areaPath: node.areaPath });
-      const legacyHash = node.legacySourceHash ?? undefined;
-      if (legacyHash !== undefined && legacyHash !== node.sourceHash) {
-        idempotencyKeys.push({ sourceHash: legacyHash, areaPath: node.areaPath });
+    let match: (node: DryRunTreeNode) => IdentityMatch | null;
+    if (this.identityV2Enabled && nodes.some((node) => node.identityHashV2)) {
+      const rows = await idempotencyService.lookupMappings(
+        nodes.flatMap((node) => this.candidateHashes(node).map(({ hash }) => ({ sourceHash: hash, areaPath: node.areaPath }))),
+      );
+      match = (node) => this.matchByIdentity(node, rows);
+    } else {
+      const idempotencyKeys: { sourceHash: string; areaPath: string }[] = [];
+      for (const node of nodes) {
+        idempotencyKeys.push({ sourceHash: node.sourceHash, areaPath: node.areaPath });
+        const legacyHash = node.legacySourceHash ?? undefined;
+        if (legacyHash !== undefined && legacyHash !== node.sourceHash) {
+          idempotencyKeys.push({ sourceHash: legacyHash, areaPath: node.areaPath });
+        }
       }
+      const idempotencyMap = await idempotencyService.lookupMany(idempotencyKeys);
+      match = (node) => {
+        const existingAdoId = this.resolveExistingAdoId(node, idempotencyMap);
+        return existingAdoId === null ? null : { existingAdoId, fields: {} };
+      };
     }
-    const idempotencyMap = await idempotencyService.lookupMany(idempotencyKeys);
 
     let completedCount = 0;
     const settled = await mapWithConcurrency(nodes, this.concurrency, async (node) => {
       try {
-        return await this.diffOneNode(node, idempotencyMap, dedupCheck);
+        return await this.diffOneNode(node, match, dedupCheck);
       } finally {
         completedCount += 1;
         onProgress?.(completedCount, nodes.length, node.title);
@@ -445,15 +563,49 @@ export class DryRunService {
     return idempotencyMap.get(idempotencyMapKey(legacyHash, node.areaPath)) ?? null;
   }
 
+  // W1 lookup order (the generalised legacySourceHash fallback): identity v2, then the v1 position hash, then the legacy text hash.
+  private candidateHashes(node: DryRunTreeNode): { hash: string; version: 1 | 2 }[] {
+    const hashes: { hash: string; version: 1 | 2 }[] = [];
+    // Only a Requirement is matched by identity v2: its identity is its own wording, which is what a follow-up file is about. An Epic or a
+    // Feature is identified by its heading, and "Introduction" or "Scope" is the same heading in unrelated documents, so a v2 match would let
+    // one document adopt another's sections. They keep matching by the v1 hash (which includes the file name), as before.
+    if (node.identityHashV2 && node.type === 'Requirement') hashes.push({ hash: node.identityHashV2, version: 2 });
+    for (const hash of [node.sourceHash, node.legacySourceHash]) {
+      if (hash && !hashes.some((candidate) => candidate.hash === hash)) hashes.push({ hash, version: 1 });
+    }
+    return hashes;
+  }
+
+  private matchByIdentity(
+    node: DryRunTreeNode,
+    rows: Map<string, { adoWorkItemId: number; contentHash: string | null }>,
+  ): IdentityMatch | null {
+    for (const { hash, version } of this.candidateHashes(node)) {
+      const row = rows.get(idempotencyMapKey(hash, node.areaPath));
+      if (!row) continue;
+      const fields: Partial<DryRunDiffEntry> = { writtenContentHash: row.contentHash };
+      if (version === 1 && node.identityHashV2 && node.type === 'Requirement') fields.backfillIdentityV2 = true;
+      if (node.contentHash && row.contentHash && node.contentHash !== row.contentHash) fields.changedSinceWritten = true;
+      else if (node.contentHash && !row.contentHash) fields.contentCheckPending = true;
+      return { existingAdoId: row.adoWorkItemId, fields };
+    }
+    return null;
+  }
+
   private async diffOneNode(
     node: DryRunTreeNode,
-    idempotencyMap: Map<string, number>,
-    dedupCheck?: (text: string, title: string, areaPath: string) => Promise<{ isDuplicate: boolean; matchedItemId: string | null; similarity: number | null }>,
+    match: (node: DryRunTreeNode) => IdentityMatch | null,
+    // localId: which item is being checked (the decision log keys on it); the first four are what is compared.
+    dedupCheck?: (text: string, title: string, areaPath: string, typeCategory: string, localId: string) => Promise<{ isDuplicate: boolean; matchedItemId: string | null; similarity: number | null }>,
   ): Promise<DryRunDiffEntry> {
     {
-      const existingAdoId = this.resolveExistingAdoId(node, idempotencyMap);
-      if (existingAdoId !== null) {
+      const identity = identityFieldsOf(node);
+      const matched = match(node);
+      if (matched !== null) {
+        const { existingAdoId } = matched;
         return {
+          ...identity,
+          ...matched.fields,
           localId: node.localId, parentLocalId: node.parentLocalId, type: node.type,
           title: node.title, description: node.description, action: 'reuse' as const,
           existingAdoId, similarity: null, sourceHash: node.sourceHash, customerId: node.customerId,
@@ -492,7 +644,7 @@ export class DryRunService {
           // ever did, so the same asymmetry left unfixed here would widen
           // sharply and risk real duplicate ADO item creation for exactly
           // the requirements this feature touches.
-          const dedupResult = await dedupCheck(stripHtmlTags(node.description), node.title, node.areaPath);
+          const dedupResult = await dedupCheck(stripHtmlTags(node.description), node.title, node.areaPath, node.type, node.localId);
           const matchedAdoId = dedupResult.matchedItemId !== null ? Number(dedupResult.matchedItemId) : null;
           // A bad dedup-store record (matchedItemId not a real numeric ADO
           // id) must fall through to 'create' below, same "creating a
@@ -502,6 +654,7 @@ export class DryRunService {
           // call (confirm()'s adoIdByLocalId map) and a NaN audit-table write.
           if (dedupResult.isDuplicate && matchedAdoId !== null && Number.isFinite(matchedAdoId)) {
             return {
+              ...identity,
               localId: node.localId, parentLocalId: node.parentLocalId, type: node.type,
               title: node.title, description: node.description, action: 'dedup_skip' as const,
               existingAdoId: matchedAdoId, similarity: dedupResult.similarity,
@@ -521,6 +674,7 @@ export class DryRunService {
         }
       }
       return {
+        ...identity,
         localId: node.localId, parentLocalId: node.parentLocalId, type: node.type,
         title: node.title, description: node.description, action: 'create' as const,
         existingAdoId: null, similarity: null, sourceHash: node.sourceHash, customerId: node.customerId,

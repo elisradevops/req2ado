@@ -52,7 +52,7 @@ async function resolveBackfillableRealTypes(
   mcpClient: McpClient,
   project: string,
   credential: AdoRequestCredential | undefined,
-): Promise<Set<string>> {
+): Promise<Map<string, string>> {
   // Fail OPEN, never closed: this used to be a pure/static Set with zero
   // network dependency -- discoverWorkItemTypeCategories throwing (custom
   // process template, transient ADO/network blip) must not abort the whole
@@ -62,11 +62,12 @@ async function resolveBackfillableRealTypes(
   // behavior.
   try {
     const categories = await mcpClient.discoverWorkItemTypeCategories(project, credential);
-    return new Set(Object.values(categories));
+    // real type name -> the kind it is a category of (Epic / Feature / Requirement)
+    return new Map(Object.entries(categories).map(([category, realName]) => [realName, category]));
   } catch (error) {
     // eslint-disable-next-line no-console -- operational visibility for a best-effort path, not app logging
     console.error(`Backfill: discoverWorkItemTypeCategories failed for project ${project}, falling back to CMMI-shaped defaults:`, error);
-    return new Set(['Epic', 'Feature', 'Requirement']);
+    return new Map([['Epic', 'Epic'], ['Feature', 'Feature'], ['Requirement', 'Requirement']]);
   }
 }
 
@@ -118,7 +119,7 @@ function decodeHtmlEntities(text: string): string {
 // over the settled (order-preserved) results.
 type ItemOutcome =
   | { kind: 'skipped'; reason: string }
-  | { kind: 'seeded'; itemId: string; text: string; title: string; areaPath: string };
+  | { kind: 'seeded'; itemId: string; text: string; title: string; areaPath: string; typeCategory: string };
 
 @Injectable()
 export class BackfillService {
@@ -151,8 +152,14 @@ export class BackfillService {
     const backfillableRealTypes = await resolveBackfillableRealTypes(this.mcpClient, project, credential);
 
     const settled = await mapWithConcurrency(items, this.concurrency, async (item): Promise<ItemOutcome> => {
-      if (!backfillableRealTypes.has(item.type)) {
+      const typeCategory = backfillableRealTypes.get(item.type);
+      if (typeCategory === undefined) {
         return { kind: 'skipped', reason: 'unsupported type' };
+      }
+      // A Removed item is gone from the user's point of view; a Closed one is not (it still exists, and a new requirement that
+      // restates it is a duplicate of it like any other).
+      if (item.fields['System.State']?.toLowerCase() === 'removed') {
+        return { kind: 'skipped', reason: 'removed' };
       }
       // Prefer Description (matches what confirm() actually writes as the
       // hashed/embedded content for a req2ado-created item); a manually
@@ -209,7 +216,7 @@ export class BackfillService {
         }
       }
 
-      return { kind: 'seeded', itemId: String(item.id), text: strippedDescription, title, areaPath: itemAreaPath };
+      return { kind: 'seeded', itemId: String(item.id), text: strippedDescription, title, areaPath: itemAreaPath, typeCategory };
     });
 
     // Preserve the exact pre-parallelization failure semantics: an
@@ -224,7 +231,7 @@ export class BackfillService {
       throw firstError.reason;
     }
 
-    const dedupUpsertItems: { itemId: string; text: string; title: string; areaPath: string }[] = [];
+    const dedupUpsertItems: { itemId: string; text: string; title: string; areaPath: string; typeCategory: string }[] = [];
     for (const r of settled as { status: 'fulfilled'; value: ItemOutcome }[]) {
       const outcome = r.value;
       if (outcome.kind === 'skipped') {
@@ -232,7 +239,7 @@ export class BackfillService {
         result.skippedReasons[outcome.reason] = (result.skippedReasons[outcome.reason] ?? 0) + 1;
       } else {
         result.seeded += 1;
-        dedupUpsertItems.push({ itemId: outcome.itemId, text: outcome.text, title: outcome.title, areaPath: outcome.areaPath });
+        dedupUpsertItems.push({ itemId: outcome.itemId, text: outcome.text, title: outcome.title, areaPath: outcome.areaPath, typeCategory: outcome.typeCategory });
       }
     }
 

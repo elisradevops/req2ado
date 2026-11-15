@@ -31,6 +31,7 @@ function renderWarnings(
     project?: string | null;
     gateCount?: number;
     fixGroupTitle?: string;
+    readOnly?: boolean;
   },
 ) {
   return render(
@@ -51,6 +52,7 @@ function renderWarnings(
         project={opts?.project}
         gateCount={opts?.gateCount}
         fixGroupTitle={opts?.fixGroupTitle}
+        readOnly={opts?.readOnly}
       />
     </MemoryRouter>,
   );
@@ -70,7 +72,7 @@ describe('CollapsibleWarnings', () => {
       warning({ kind: 'enhancement_call_failed', severity: 'pipeline_issue', raw: 'Enhancement failed.' }),
     ]);
 
-    expect(screen.getByText('Fix before confirming (1)')).toBeInTheDocument();
+    expect(screen.getByText('Fix before writing (1)')).toBeInTheDocument();
     expect(screen.getByText('Review (1)')).toBeInTheDocument();
     expect(screen.getByText('For your information (1)')).toBeInTheDocument();
     expect(screen.getByText('1 to fix, 1 to review, 1 for your information')).toBeInTheDocument();
@@ -104,19 +106,19 @@ describe('CollapsibleWarnings', () => {
 
     it('starts folded to the group headings, each showing its count, so the diff tree is not pushed screens down', () => {
       renderWarnings(sample);
-      expect(screen.getByText('Fix before confirming (1)')).toBeInTheDocument();
+      expect(screen.getByText('Fix before writing (1)')).toBeInTheDocument();
       expect(screen.getByText('Review (1)')).toBeInTheDocument();
       expect(screen.queryByText('Requirement has no Customer ID')).not.toBeInTheDocument();
       expect(screen.queryByText('Low grounding: possible fabrication')).not.toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /fix before confirming/i })).toHaveAttribute('aria-expanded', 'false');
+      expect(screen.getByRole('button', { name: /fix before writing/i })).toHaveAttribute('aria-expanded', 'false');
     });
 
     it('opens and closes a group from its heading, leaving the others as they were', async () => {
       renderWarnings(sample);
-      await userEvent.click(screen.getByRole('button', { name: /fix before confirming/i }));
+      await userEvent.click(screen.getByRole('button', { name: /fix before writing/i }));
       expect(screen.getByText('Requirement has no Customer ID')).toBeInTheDocument();
       expect(screen.queryByText('Low grounding: possible fabrication')).not.toBeInTheDocument();
-      await userEvent.click(screen.getByRole('button', { name: /fix before confirming/i }));
+      await userEvent.click(screen.getByRole('button', { name: /fix before writing/i }));
       expect(screen.queryByText('Requirement has no Customer ID')).not.toBeInTheDocument();
     });
   });
@@ -124,12 +126,12 @@ describe('CollapsibleWarnings', () => {
   it('relabels only the fix group when a fix title is given (a finished job), keeping the default otherwise', () => {
     const warnings = [warning({ kind: 'missing_source_reference', severity: 'needs_review', raw: '14 requirements have no source reference.' })];
     const { unmount } = renderWarnings(warnings);
-    expect(screen.getByText('Fix before confirming (1)')).toBeInTheDocument();
+    expect(screen.getByText('Fix before writing (1)')).toBeInTheDocument();
     unmount();
 
     renderWarnings(warnings, { fixGroupTitle: 'Flagged before writing' });
     expect(screen.getByText('Flagged before writing (1)')).toBeInTheDocument();
-    expect(screen.queryByText(/fix before confirming/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/fix before writing/i)).not.toBeInTheDocument();
   });
 
   it('derives the defaults from the warnings it has now, so warnings that arrive after mount do not leave the info group open', () => {
@@ -148,6 +150,19 @@ describe('CollapsibleWarnings', () => {
     expect(screen.queryByText('Enhanced wording unavailable')).not.toBeInTheDocument();
   });
 
+  it('shows the missing Customer ID record in plain words, not the pipeline\'s sentence', async () => {
+    renderWarnings([
+      warning({
+        kind: 'missing_source_reference', severity: 'needs_review', nodeIds: ['a', 'b'],
+        raw: '2 Requirement(s) have no document-authored Customer ID / source-requirement-number -- none was invented; review and add one manually.',
+      }),
+    ]);
+    await userEvent.click(screen.getByText('Requirement has no Customer ID'));
+    expect(await screen.findByText('2 requirements have no Customer ID. None was invented.')).toBeInTheDocument();
+    expect(screen.queryByText(/Requirement\(s\)/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/document-authored/)).not.toBeInTheDocument();
+  });
+
   it('starts every group open at desktop widths', () => {
     renderWarnings([
       warning({ kind: 'missing_source_reference', severity: 'needs_review', raw: '14 requirements have no source reference.' }),
@@ -157,10 +172,24 @@ describe('CollapsibleWarnings', () => {
     expect(screen.getByText('Low grounding: possible fabrication')).toBeInTheDocument();
   });
 
-  it('opens the informational group by default when it is the only group', () => {
+  it('opens the informational group when it holds a failure the reviewer can retry, so the action is not hidden', () => {
+    const onRetryEnhancement = vi.fn();
+    renderWarnings(
+      [warning({ kind: 'enhancement_call_failed', severity: 'pipeline_issue', raw: 'synthesis failed', nodeIds: ['a'], detail: { pass: 'synthesis' } })],
+      { onRetryEnhancement },
+    );
+    expect(screen.getByRole('button', { name: /for your information/i })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('button', { name: 'Retry enhancement' })).toBeInTheDocument();
+  });
+
+  it('keeps the informational group collapsed even when it is the only group: there is nothing to do, so it must not push the work down', async () => {
     renderWarnings([
       warning({ kind: 'reparented_to_feature', severity: 'auto_fixed', raw: '3 Requirement(s) were re-parented under Feature f0.' }),
     ]);
+    const group = screen.getByRole('button', { name: /for your information/i });
+    expect(group).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('Re-parented under a Feature')).not.toBeInTheDocument();
+    await userEvent.click(group);
     expect(screen.getByText('Re-parented under a Feature')).toBeInTheDocument();
   });
 
@@ -198,6 +227,11 @@ describe('CollapsibleWarnings', () => {
     expect(screen.getByRole('button', { name: 'Fix in tree' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Review in tree' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Compare' })).toBeInTheDocument();
+    // DESIGN.md §2: the page's one action-coloured fill is the Write control. A work-list row's way in is an outline button,
+    // so three rows are not three competing primary buttons beside it.
+    for (const name of ['Fix in tree', 'Review in tree', 'Compare']) {
+      expect(screen.getByRole('button', { name }).className).not.toMatch(/(?<![\w-])bg-action(?![\w-])/);
+    }
   });
 
   it('offers no tree button when the kind has no affected items or no handler is given', () => {
@@ -342,7 +376,7 @@ describe('CollapsibleWarnings', () => {
       await userEvent.click(screen.getByText('Near-duplicates with conflicting values'));
 
       expect(screen.getAllByRole('button', { name: /^open /i })).toHaveLength(2);
-      expect(screen.getByRole('link', { name: /view wi #604 in azure devops/i })).toHaveAttribute(
+      expect(screen.getByRole('link', { name: /view work item #604 in azure devops/i })).toHaveAttribute(
         'href',
         'https://dev.azure.com/example-org/_workitems/edit/604',
       );
@@ -355,7 +389,7 @@ describe('CollapsibleWarnings', () => {
       );
       await userEvent.click(screen.getByText('Near-duplicates with conflicting values'));
 
-      expect(screen.getByRole('link', { name: /view wi #604/i })).toHaveAttribute(
+      expect(screen.getByRole('link', { name: /view work item #604/i })).toHaveAttribute(
         'href',
         'https://dev.azure.com/example-org/elisradevops-project/_workitems/edit/604',
       );
@@ -432,6 +466,26 @@ describe('CollapsibleWarnings', () => {
       expect(screen.queryByRole('button', { name: /mark handled|undo|fine as is/i })).not.toBeInTheDocument();
     });
 
+    it('offers no one-click Mark handled on a Fix kind that has several notices: each is decided on its own (§11.3.6)', async () => {
+      const onAcknowledge = vi.fn();
+      renderWarnings(
+        [
+          warning({ kind: 'zero_nodes', severity: 'pipeline_issue', raw: 'Section 3 produced 0 work items.' }),
+          warning({ kind: 'zero_nodes', severity: 'pipeline_issue', raw: 'Section 7 produced 0 work items.' }),
+        ],
+        { onAcknowledge },
+      );
+      expect(screen.queryByRole('button', { name: 'Mark handled' })).not.toBeInTheDocument();
+      // Each notice still has its own control, in the details.
+      await userEvent.click(screen.getByRole('button', { name: /produced no items|no work items|section/i }));
+      expect(screen.getAllByRole('button', { name: 'Fine as is' })).toHaveLength(2);
+    });
+
+    it('still offers Mark handled for a Fix kind with a single notice, and for a Review kind with several', () => {
+      renderWarnings([warning({ kind: 'zero_nodes', severity: 'pipeline_issue', raw: 'only one' })], { onAcknowledge: vi.fn() });
+      expect(screen.getByRole('button', { name: 'Mark handled' })).toBeInTheDocument();
+    });
+
     it('never offers Mark handled on an informational kind', () => {
       renderWarnings([warning({ kind: 'trace_link_inference_failed', severity: 'pipeline_issue', raw: 'x' })], { onAcknowledge: vi.fn() });
 
@@ -485,7 +539,7 @@ describe('CollapsibleWarnings', () => {
       ]);
     });
 
-    it('offers no retry for another kind, an unknown pass, or without a handler', () => {
+    it('offers no retry for another kind, an unknown pass, or without a handler', async () => {
       const { unmount } = renderWarnings([failed('scoring', ['a'])], { onRetryEnhancement: vi.fn() });
       expect(screen.queryByRole('button', { name: 'Retry enhancement' })).not.toBeInTheDocument();
       unmount();
@@ -515,7 +569,7 @@ describe('CollapsibleWarnings', () => {
       expect(onCancelRetry).toHaveBeenCalledTimes(1);
     });
 
-    it('disables the Retry button on a different kind while another retry is running', () => {
+    it('disables the Retry button on a different kind while another retry is running', async () => {
       renderWarnings(
         [
           failed('synthesis', ['a']),
@@ -555,6 +609,57 @@ describe('CollapsibleWarnings', () => {
       unmount();
       renderWarnings([fix], { gateCount: 0 });
       expect(screen.queryByTestId('approval-gate')).not.toBeInTheDocument();
+    });
+  });
+  describe('the summary line counts what is still open', () => {
+    it('drops a fix kind the reviewer has accepted, and a review kind that is fully reviewed, from the "N to fix" count', () => {
+      renderWarnings(
+        [
+          warning({ kind: 'missing_source_reference', severity: 'needs_review', raw: 'a', nodeIds: ['n1'], acknowledged: true }),
+          warning({ kind: 'low_grounding', severity: 'needs_review', raw: 'b', nodeIds: ['n2'] }),
+          warning({ kind: 'enhancement_call_failed', severity: 'pipeline_issue', raw: 'c' }),
+        ],
+        { reviewedIds: new Set(['n2']), onAcknowledge: vi.fn() },
+      );
+      expect(screen.getByText('1 for your information')).toBeInTheDocument();
+    });
+
+    it('keeps counting a per-item fix kind whose records were acknowledged before the gate existed, with no Done chip and no Undo', () => {
+      renderWarnings(
+        [warning({ kind: 'duplicate_customer_id', severity: 'needs_review', raw: 'a', nodeIds: ['n1', 'n2'], acknowledged: true })],
+        { reviewedIds: new Set(['n1']), onAcknowledge: vi.fn(), onFocusKind: vi.fn() },
+      );
+      expect(screen.getByText('1 to fix')).toBeInTheDocument();
+      expect(screen.queryByText('Done')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /undo/i })).not.toBeInTheDocument();
+      expect(screen.getByText('1 of 2 reviewed')).toBeInTheDocument();
+    });
+
+    it('still counts an open fix kind', () => {
+      renderWarnings([warning({ kind: 'duplicate_customer_id', severity: 'needs_review', raw: 'a', nodeIds: ['n1', 'n2'] })], { reviewedIds: new Set(['n1']) });
+      expect(screen.getByText('1 to fix')).toBeInTheDocument();
+    });
+  });
+
+  describe('read-only (the job is no longer awaiting review)', () => {
+    const fixWarning = warning({ kind: 'duplicate_customer_id', severity: 'needs_review', raw: 'a', nodeIds: ids(3) });
+
+    it('shows no review counters and no "Fix in tree": it is a record of what was flagged, not a to-do list', () => {
+      renderWarnings([fixWarning], { readOnly: true, onFocusKind: vi.fn(), reviewedIds: new Set() });
+      expect(screen.queryByText(/reviewed/i)).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Fix in tree' })).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Show in tree' })).toBeInTheDocument();
+    });
+
+    it('shows no Done chip, since nothing is left to finish', () => {
+      renderWarnings([fixWarning], { readOnly: true, reviewedIds: new Set(ids(3)) });
+      expect(screen.queryByText('Done')).not.toBeInTheDocument();
+    });
+
+    it('keeps the review counters while the job is awaiting review', () => {
+      renderWarnings([fixWarning], { onFocusKind: vi.fn(), reviewedIds: new Set() });
+      expect(screen.getByRole('button', { name: 'Fix in tree' })).toBeInTheDocument();
+      expect(screen.getByText(/of 3 reviewed/)).toBeInTheDocument();
     });
   });
 });

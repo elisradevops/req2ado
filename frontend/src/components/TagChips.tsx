@@ -20,7 +20,7 @@ export function TagChips({ tags, winningTag }: { tags: string[] | undefined; win
         const { label, description } = requirementTagLabel(tag);
         const isWinner = tag === winningTag;
         return (
-          <Tooltip key={tag} content={isWinner ? `${description || label} -- written to ADO's Requirement Type field` : description || label}>
+          <Tooltip key={tag} content={isWinner ? `${description || label} — written to the Requirement Type field in Azure DevOps` : description || label}>
             <Chip bg={tagColor(tag)} color="#fff" className={isWinner ? 'ring-2 ring-offset-1 ring-ink-1' : undefined}>
               {label}
               {isWinner ? ' →' : ''}

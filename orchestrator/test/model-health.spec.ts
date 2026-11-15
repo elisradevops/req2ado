@@ -247,7 +247,7 @@ describe('model pickers use the health filter', () => {
     const clientFactory = { listModelsForToken: jest.fn(async () => [{ id: 'good', name: 'good', vision: false }, { id: 'bad', name: 'bad', vision: false }]) };
     const modelHealth = { filterVisible: jest.fn(async (_u: string, models: { id: string }[]) => models.filter((m) => m.id !== 'bad')) };
     const controller = new LlmConnectionController({} as never, {} as never, clientFactory as never, modelHealth as never);
-    const result = await controller.getModels({ userId: 'u1' } as never, 'tok');
+    const result = await controller.previewModels({ userId: 'u1' } as never, 'tok');
     expect(result.models.map((m) => m.id)).toEqual(['good']);
     expect(modelHealth.filterVisible).toHaveBeenCalledWith('u1', expect.any(Array));
   });

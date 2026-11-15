@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useState } from 'react';
 
 // A live "last update Ns ago" ticker -- distinct from a real stall-detection
 // heuristic (which would need a judgment call about what counts as "too
@@ -28,13 +28,16 @@ function startOf(latestNarration: unknown): number {
 }
 
 export function useSecondsSinceLastUpdate(latestNarration: unknown, now: number, activityStamp?: unknown): number {
-  const lastUpdateAtRef = useRef<number>(startOf(latestNarration));
+  const [mark, setMark] = useState(() => ({ latestNarration, activityStamp, at: startOf(latestNarration) }));
 
-  useEffect(() => {
-    lastUpdateAtRef.current = startOf(latestNarration);
-    // Deliberately re-runs only when a NEW narration (or activity stamp)
-    // actually arrives, not on every parent re-render.
-  }, [latestNarration, activityStamp]);
+  // Restarts only when a NEW narration (or activity stamp) actually arrives, not on every parent re-render -- and in the
+  // same render it arrives in (React's "information from previous renders" pattern), so anything keyed on this count
+  // (the "Still working on <stage>" note, QA P2) clears with the event instead of a tick later.
+  let at = mark.at;
+  if (mark.latestNarration !== latestNarration || mark.activityStamp !== activityStamp) {
+    at = startOf(latestNarration);
+    setMark({ latestNarration, activityStamp, at });
+  }
 
-  return Math.max(0, Math.floor((now - lastUpdateAtRef.current) / 1000));
+  return Math.max(0, Math.floor((now - at) / 1000));
 }

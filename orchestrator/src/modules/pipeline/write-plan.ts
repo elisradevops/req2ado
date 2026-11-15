@@ -19,6 +19,8 @@ export interface WritePlanEntry extends DiffEntryForExclusion {
   type: string;
   action: 'create' | 'reuse' | 'dedup_skip' | string;
   existingAdoId: number | null;
+  // The reviewer created this item although it matched an existing one; `linkTree: false` leaves it out of this job's parent/child links.
+  duplicateOverride?: { linkTree: boolean };
   traceLinks?: WritePlanTraceLink[];
   // Figures cited by this entry, attached to its work item after the write.
   figureIds?: string[];
@@ -98,8 +100,12 @@ export function selectEntriesToLink<T extends WritePlanEntry>(
   adoIdByLocalId: Map<string, number>,
   alreadyLinkedLocalIds: Set<string>,
 ): T[] {
+  // Items the reviewer created on purpose although they matched an existing one, and chose not to link into this tree: they take no parent
+  // link, and their children take no link to them.
+  const standalone = new Set(diff.filter((entry) => entry.duplicateOverride?.linkTree === false).map((entry) => entry.localId));
   return diff.filter((entry) => {
     if (entry.parentLocalId === null) return false;
+    if (standalone.has(entry.localId) || standalone.has(entry.parentLocalId)) return false;
     if (isExcluded(entry)) return false;
     // Never re-parent an existing ADO item. A dedup_skip match is a similarity guess, and a 'reuse' item already has its own parent: ADO allows
     // at most one Parent relation per item and a second `add` fails with TF401349 (confirmed live). A NEW child may link UP to either.

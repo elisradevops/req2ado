@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { HelpCircle } from 'lucide-react';
 import type { ScoreExplanation } from '../api/jobs';
 import { Button } from '../ui/Button';
+import { RubricDialog } from './RubricDialog';
 
 type State = { status: 'idle' } | { status: 'loading' } | { status: 'error' } | { status: 'ready'; data: ScoreExplanation };
 
@@ -13,6 +14,7 @@ export function ScoreExplanationPanel({ load, resetKey }: { load: () => Promise<
   const [state, setState] = useState<State>({ status: 'idle' });
   const [seconds, setSeconds] = useState(0);
   const requestRef = useRef(0);
+  const [rubricOpen, setRubricOpen] = useState(false);
 
   // The model can take a minute or two; the count is the evidence that something is happening. It starts again with each try: `ask` zeroes
   // it in the same render that starts loading (an effect would let one frame show the last try's count).
@@ -58,6 +60,12 @@ export function ScoreExplanationPanel({ load, resetKey }: { load: () => Promise<
             {e.passCondition && <p className="text-micro text-ink-3">Held to: {e.passCondition}</p>}
           </div>
         ))}
+        <div>
+          <Button variant="ghost" size="sm" onClick={() => setRubricOpen(true)}>
+            Customize the rubric
+          </Button>
+        </div>
+        <RubricDialog open={rubricOpen} onOpenChange={setRubricOpen} />
       </div>
     );
   }

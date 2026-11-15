@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { LayoutGrid, AlignLeft, Image, Layers, Table2, TriangleAlert, Lock, ArrowRight, Activity, Cpu, Info } from 'lucide-react';
+import { Link, useNavigate } from 'react-router-dom';
+import { LayoutGrid, AlignLeft, Image, Layers, Table2, TriangleAlert, ArrowRight, Activity, Cpu, Info } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { restorableDraft, useNewJobDraftStore } from '../store/newJobDraftStore';
+import { isUntouchedChoices, loadLastJobChoices, loadProjectChoices, rememberJobChoices, withRememberedChoices } from '../utils/lastJobChoices';
 import { FileTypeIcon } from '../components/FileTypeIcon';
 import { FileDropzone, type FileDropzoneStatus } from '../components/FileDropzone';
 import { ModeCards } from '../components/ModeCards';
@@ -11,9 +12,13 @@ import { IterationPathPicker } from '../components/IterationPathPicker';
 import { StatePicker } from '../components/StatePicker';
 import { ProjectPicker } from '../components/ProjectPicker';
 import { formatDestinationPreview } from '../components/DestinationBar';
+import { SafetyLine } from '../components/SafetyLine';
+import { DedupScopeSelect } from '../components/DedupScopeSelect';
 import {
+  listJobs,
   previewJob,
   previewSummary,
+  getCachedResult,
   submitJob,
   listModels,
   type ModelListing,
@@ -22,9 +27,12 @@ import {
   type PreviewResult,
   type DocumentOverview,
 } from '../api/jobs';
-import { formatEtaRange } from '../utils/eta';
+import { estimateLine } from '../utils/eta';
+import { findPreviousRuns, type PreviousRuns } from '../utils/previousRuns';
+import { jobStatusLabel } from '../utils/labels';
+import { formatRelativeTime } from '../utils/relativeTime';
 import { formatFileSize } from '../utils/fileSize';
-import { useOrgUrl } from '../store/authStore';
+import { useOrgUrl, useUserId } from '../store/authStore';
 import { useToast } from '../components/ToastProvider';
 import { PageHeader } from '../ui/PageHeader';
 import { SectionCard } from '../ui/SectionCard';
@@ -78,8 +86,13 @@ function DocumentMapList({ sections }: { sections: PreviewResult['documentMap'] 
     <div className="flex max-h-[420px] flex-col overflow-y-auto">
       {sections.map((section, index) => (
         <div key={`${section.number ?? 'unnumbered'}-${index}`} className="hoverable-row flex items-center gap-2 px-1 py-1.5">
-          <span className="w-10 flex-none font-mono text-meta text-ink-3">{section.number ?? '—'}</span>
-          <span className="min-w-0 flex-1 truncate text-xs text-ink-2">{section.title}</span>
+          {/* min-w, not a fixed w-10: a deep number ("1.2.1.1.1") ran into the title. It grows to fit, capped, and the title truncates. */}
+          <span className="min-w-10 max-w-[40%] flex-none truncate font-mono text-meta text-ink-3" title={section.number ?? undefined}>
+            {section.number ?? '—'}
+          </span>
+          <span className="min-w-0 flex-1 truncate text-xs text-ink-2" title={section.title}>
+            {section.title}
+          </span>
           <div className="h-[7px] w-16 flex-none overflow-hidden rounded-full bg-surface-sunken">
             <div
               className="h-full rounded-full bg-accent/72"
@@ -97,11 +110,29 @@ function DocumentMapList({ sections }: { sections: PreviewResult['documentMap'] 
   );
 }
 
+// Step 1's "already ran a file with this name" note, kept on steps 2 and 3 as one line in the "This run" rail (P5).
+function PreviousRunLine({ previousRuns }: { previousRuns: PreviousRuns | null }): React.ReactElement | null {
+  if (!previousRuns) return null;
+  const { latest } = previousRuns;
+  return (
+    <p className="flex items-start gap-1.5 border-t border-hairline pt-3 text-xs text-ink-2">
+      <Info className="mt-0.5 h-3.5 w-3.5 flex-none text-ink-3" />
+      <span className="min-w-0">
+        You already ran a file with this name: job{' '}
+        <Link to={`/jobs/${latest.id}`} className="font-mono text-accent-ink underline">
+          {latest.id.slice(0, 8)}
+        </Link>
+        , {jobStatusLabel(latest.status).label}, {formatRelativeTime(latest.createdAt)}.
+      </span>
+    </p>
+  );
+}
+
 // DESIGN.md §11.1 -- derived facts, not raw counts, and never empty: with
 // no file it shows what will eventually fill this space. Every note here is
 // a real, current-parse fact (table/figure/open-TBD counts already
 // returned by preview()) -- never an invented risk to fill space.
-function WorthKnowingCard({ preview, parsing }: { preview: PreviewResult | null; parsing: boolean }): React.ReactElement {
+function WorthKnowingCard({ preview, parsing, previousRuns }: { preview: PreviewResult | null; parsing: boolean; previousRuns: PreviousRuns | null }): React.ReactElement {
   if (!preview && parsing) {
     return <p className="text-xs text-ink-3">Parsing the document… this fills in when it finishes.</p>;
   }
@@ -109,6 +140,37 @@ function WorthKnowingCard({ preview, parsing }: { preview: PreviewResult | null;
     return <p className="text-xs text-ink-3">Drop a document and this fills with what the parser found in it.</p>;
   }
   const notes: { icon: typeof Table2; tone: 'warning' | 'neutral'; text: React.ReactNode }[] = [];
+  // Said first, and never blocking: the job list only carries the name, so this is "a file with this name", not "this file".
+  if (previousRuns) {
+    const { latest, others } = previousRuns;
+    notes.push({
+      icon: Info,
+      tone: 'neutral',
+      text: (
+        <>
+          <span className="font-semibold text-ink-1">You already ran a file with this name:</span> job{' '}
+          <Link to={`/jobs/${latest.id}`} className="font-mono text-accent-ink underline">
+            {latest.id.slice(0, 8)}
+          </Link>
+          , {jobStatusLabel(latest.status).label}, {formatRelativeTime(latest.createdAt)}
+          {others > 0 ? ` (and ${others} other ${others === 1 ? 'time' : 'times'})` : ''}. If it is the same file, open that job instead of starting another.
+        </>
+      ),
+    });
+  }
+  // Not a defect, just how the document is built: without headings there is no section structure to turn into a tree.
+  if (preview.sectionCount === 0 && preview.blockCount > 0) {
+    notes.push({
+      icon: AlignLeft,
+      tone: 'neutral',
+      text: (
+        <>
+          <span className="font-semibold text-ink-1">No headings found.</span> Baseline uses clause numbering (such as 3.2.1) where the text
+          has it; with none, it groups everything under one Epic and one Feature.
+        </>
+      ),
+    });
+  }
   if (preview.tableCount > 0) {
     notes.push({
       icon: Table2,
@@ -174,12 +236,85 @@ function WorthKnowingCard({ preview, parsing }: { preview: PreviewResult | null;
 /** How long the optional AI summary may take before it is given up on: later than this it is not worth showing. */
 const AI_SUMMARY_WAIT_MS = 90_000;
 
+// The facts a run is about to act on: the file and what was found in it, the mode and model, and where it lands. The first thing in the
+// "This run" rail on steps 2 and 3, so the reviewer sees the same summary beside the control that moves them on.
+function RunFacts({
+  file,
+  preview,
+  mode,
+  model,
+  project,
+  areaPath,
+  iterationPath,
+  state,
+  onChangeDocument,
+}: {
+  file: File | null;
+  preview: PreviewResult | null;
+  mode: 'baseline' | 'survey';
+  model: string;
+  project: string;
+  areaPath: string;
+  iterationPath: string;
+  state: string;
+  onChangeDocument: () => void;
+}): React.ReactElement {
+  return (
+    <>
+              <div className="flex items-start gap-3">
+                <FileTypeIcon extension={preview?.fileType ?? file?.name.split('.').pop() ?? ''} className="h-8 w-8 flex-none" />
+                <div className="min-w-0 flex-1">
+                  {file && (
+                    <p className="truncate text-sm font-semibold text-ink-1" title={file.name}>
+                      {file.name}
+                    </p>
+                  )}
+                  <p className="font-mono text-meta text-ink-3">
+                    {preview ? `${preview.blockCount} blocks · ${preview.sectionCount} sections · ${preview.figureCount} figures` : '--'}
+                  </p>
+                </div>
+                <Button variant="ghost" size="sm" onClick={onChangeDocument}>
+                  Change document
+                </Button>
+              </div>
+              <dl className="flex flex-col gap-1 border-t border-hairline pt-3 text-xs">
+                <div className="flex gap-2">
+                  <dt className="w-12 flex-none text-ink-3">Mode</dt>
+                  <dd className="min-w-0 text-ink-1">
+                    {mode.toUpperCase()}
+                    {mode === 'survey' && (
+                      <>
+                        {' · '}
+                        <span className="font-mono">{model || 'default model'}</span>
+                      </>
+                    )}
+                  </dd>
+                </div>
+                {(project || areaPath) && (
+                  <div className="flex gap-2">
+                    <dt className="w-12 flex-none text-ink-3">Lands</dt>
+                    {/* A project alone is not a destination: the form still asks for an area path, so the rail must not say it lands anywhere. */}
+                    <dd className={cn('min-w-0 break-words', areaPath ? 'font-mono text-ink-1' : 'text-ink-3')}>
+                      {areaPath ? formatDestinationPreview(project, areaPath, iterationPath, state) : 'Not chosen yet'}
+                    </dd>
+                  </div>
+                )}
+              </dl>
+    </>
+  );
+}
+
 export function NewJobWizard(): React.ReactElement {
   const navigate = useNavigate();
   const { showToast, showErrorToast } = useToast();
   const orgUrl = useOrgUrl();
   // What the user had done before leaving this page and coming back (see newJobDraftStore); empty on a first visit.
-  const [initial] = useState(restorableDraft);
+  // A tab nobody has chosen anything in starts from the last job's mode and destination (per user, a convenience only).
+  const userId = useUserId();
+  const [initial] = useState(() => {
+    const draft = restorableDraft();
+    return { ...withRememberedChoices(draft, loadLastJobChoices(userId)), modeChosen: !isUntouchedChoices(draft) };
+  });
   const [step, setStep] = useState<1 | 2 | 3>(initial.step);
   // The three steps share one container, so a step change replays a fade on it rather than remounting (focus survives; DESIGN.md section 8).
   const stepRootRef = useRef<HTMLDivElement>(null);
@@ -208,14 +343,14 @@ export function NewJobWizard(): React.ReactElement {
   }, [step]);
   useEffect(() => {
     const previousTitle = document.title;
-    document.title = `Step ${step} of ${WIZARD_STEPS.length}: ${WIZARD_STEPS[step - 1]} - New Job`;
+    document.title = `Step ${step} of ${WIZARD_STEPS.length}: ${WIZARD_STEPS[step - 1]} - New job`;
     return () => {
       document.title = previousTitle;
     };
   }, [step]);
   const stepTitle = (
     <>
-      New Job<span className="sr-only">, step {step} of {WIZARD_STEPS.length}</span>
+      New job<span className="sr-only">, step {step} of {WIZARD_STEPS.length}</span>
     </>
   );
   const [file, setFile] = useState<File | null>(initial.file);
@@ -228,16 +363,42 @@ export function NewJobWizard(): React.ReactElement {
   // fill-in requires the tiles to exist on the SAME screen as the dropzone.
   const [parseStatus, setParseStatus] = useState<FileDropzoneStatus>(initial.parseStatus);
   const [parseError, setParseError] = useState<string | null>(null);
+  // An earlier job of a file with this name, read once per parsed file from the job list. Best effort: nothing is shown if it cannot be read.
+  const [previousRuns, setPreviousRuns] = useState<PreviousRuns | null>(null);
+  const parsedFileName = preview && file ? file.name : null;
+  useEffect(() => {
+    setPreviousRuns(null);
+    if (!parsedFileName) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const jobs = await listJobs();
+        if (!cancelled && Array.isArray(jobs)) setPreviousRuns(findPreviousRuns(jobs, parsedFileName));
+      } catch {
+        // The warning is a courtesy; without the list there is simply none.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [parsedFileName]);
   const [mode, setMode] = useState<'baseline' | 'survey'>(initial.mode);
   const [project, setProject] = useState(initial.project);
   const [areaPath, setAreaPath] = useState(initial.areaPath);
   const [state, setState] = useState(initial.state);
   const [iterationPath, setIterationPath] = useState(initial.iterationPath);
+  const [dedupScope, setDedupScope] = useState<'area_path' | 'project'>(initial.dedupScope);
   const [model, setModel] = useState(initial.model);
+  // Whether the person picked the mode themselves (or came back to a draft they had started): a project's remembered mode never replaces it.
+  const modeChosen = useRef(initial.modeChosen);
+  function handleModeChange(next: 'baseline' | 'survey'): void {
+    modeChosen.current = true;
+    setMode(next);
+  }
   // Mirror the user's work into the draft store so it survives a visit to another page (cleared on submit, replace and logout).
   useEffect(() => {
-    useNewJobDraftStore.getState().patch({ step, file, preview, parseStatus, mode, model, project, areaPath, state, iterationPath });
-  }, [step, file, preview, parseStatus, mode, model, project, areaPath, state, iterationPath]);
+    useNewJobDraftStore.getState().patch({ step, file, preview, parseStatus, mode, model, project, areaPath, state, iterationPath, dedupScope });
+  }, [step, file, preview, parseStatus, mode, model, project, areaPath, state, iterationPath, dedupScope]);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [modelListing, setModelListing] = useState<ModelListing | null>(null);
   const [modelsLoading, setModelsLoading] = useState(false);
@@ -271,8 +432,11 @@ export function NewJobWizard(): React.ReactElement {
       controller.abort();
     }, AI_SUMMARY_WAIT_MS);
     setAiSummary({ status: 'pending' });
-    previewSummary({ summaryInput, model: model || undefined }, controller.signal).then((text) => {
+    // "Write it again" asks the model afresh; the first request may be answered from the server's summary cache.
+    previewSummary({ summaryInput, model: model || undefined, ...(summaryRun > 0 ? { fresh: true } : {}) }, controller.signal).then((text) => {
       if (controller.signal.aborted) return;
+      // The result is in: the give-up timer must not outlive it, or it later turns a summary that is already on screen into "none".
+      window.clearTimeout(giveUp);
       setAiSummary(text ? { status: 'ready', text } : { status: 'none' });
     });
     return () => {
@@ -333,12 +497,15 @@ export function NewJobWizard(): React.ReactElement {
   // coherent (browsing project X's area paths then writing to project Y
   // would be silently wrong).
   // Only on a real change: a project restored from the draft must keep its restored area path.
+  // The new project's own last area path (and its mode, unless the person chose one) is offered instead of an empty one (B6).
   const lastProject = useRef(project);
   useEffect(() => {
     if (lastProject.current === project) return;
     lastProject.current = project;
-    setAreaPath('');
-  }, [project]);
+    const remembered = loadProjectChoices(userId, project);
+    setAreaPath(remembered?.areaPath ?? '');
+    if (remembered && !modeChosen.current) setMode(remembered.mode);
+  }, [project, userId]);
 
   // DESIGN.md §11.2.3.d -- both mode cards show a real server-computed
   // range side by side, so both are fetched together whenever the document
@@ -367,6 +534,20 @@ export function NewJobWizard(): React.ReactElement {
         // previous value, or show nothing").
       });
   }, [preview?.blockCount, preview?.figureCount, model]);
+
+  // P5: whether a SURVEY job of this file would be served from the result cache. Asked once mode and model are known (preview runs on upload,
+  // before either is chosen); best effort, and a stale answer for an earlier choice is dropped.
+  const [cachedResult, setCachedResult] = useState(false);
+  const fileHash = preview?.fileHash;
+  useEffect(() => {
+    setCachedResult(false);
+    if (!fileHash || mode !== 'survey') return undefined;
+    const controller = new AbortController();
+    void getCachedResult({ fileHash, mode, model: model || undefined }, controller.signal).then((cached) => {
+      if (!controller.signal.aborted) setCachedResult(cached);
+    });
+    return () => controller.abort();
+  }, [fileHash, mode, model]);
 
   async function handleFileSelected(selected: File): Promise<void> {
     const seq = ++previewRequestSeq.current;
@@ -417,11 +598,13 @@ export function NewJobWizard(): React.ReactElement {
         mode,
         state: state || undefined,
         iterationPath: iterationPath || undefined,
+        dedupScope: dedupScope === 'project' ? 'project' : undefined,
         model: mode === 'survey' ? model || undefined : undefined,
         // The AI summary goes with the job only if it was ready: the start button never waits for it.
         documentOverview: mode === 'survey' ? (documentOverview && aiSummary.status === 'ready' && aiSummary.text ? { ...documentOverview, aiSummary: aiSummary.text } : documentOverview) : undefined,
       });
-      // The job exists now: the next visit to this page starts from nothing, not from this draft.
+      // Remembered for the next one; then the next visit starts from those choices, not from this draft.
+      rememberJobChoices(userId, { mode, project, areaPath });
       useNewJobDraftStore.getState().reset();
       navigate(`/jobs/${jobId}`);
     } catch (err) {
@@ -556,14 +739,11 @@ export function NewJobWizard(): React.ReactElement {
             {/* Never renders empty -- with no file it states what will
                 eventually fill this space, never a blank card. */}
             <SectionCard title="Worth knowing before you run it">
-              <WorthKnowingCard preview={preview} parsing={parseStatus === 'parsing'} />
+              <WorthKnowingCard preview={preview} parsing={parseStatus === 'parsing'} previousRuns={previousRuns} />
             </SectionCard>
             {file && (
               <div className="mt-auto flex flex-wrap items-center gap-3">
-                <span className="flex items-center gap-1.5 text-xs text-ink-3">
-                  <Lock className="h-3.5 w-3.5 flex-none" />
-                  Nothing is written to Azure DevOps until you approve the diff.
-                </span>
+                <SafetyLine variant="wizard" />
                 <Button onClick={() => setStep(2)} disabled={!preview} className="ml-auto">
                   Configure
                   <ArrowRight className="h-3.5 w-3.5" />
@@ -576,11 +756,21 @@ export function NewJobWizard(): React.ReactElement {
     );
   }
 
+  // DESIGN.md §11.2.3.d -- the currently-selected mode's server-computed
+  // estimate; the OTHER mode's is still fetched (see the effect above) so
+  // ModeCards can show both side by side, but the footer only needs one.
+  const selectedEstimate = mode === 'baseline' ? baselineEstimate : surveyEstimate;
+  const selectedEstimateLine = estimateLine(selectedEstimate, mode === 'survey' && cachedResult);
+
   if (step === 3) {
     return (
       <div ref={stepRootRef} data-testid="wizard-step" className="flex flex-col gap-4">
         <PageHeader title={stepTitle} description="Check what was read from the file before it runs" />
         <Stepper steps={WIZARD_STEPS} states={wizardStepStates(2)} />
+        {/* Same two columns as step 2 (DESIGN.md §11.2.5): the question and its action on the left, the "This run" rail kept on the right so
+            the file, the mode, where it lands and the estimate are beside Start (owner decision, 2026-11-12). */}
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
+        <div className="flex min-w-0 flex-col gap-4">
         <SectionCard title="Does this look right?">
           <div className="flex flex-col gap-3">
             {documentOverview?.lines && documentOverview.lines.length > 0 ? (
@@ -634,36 +824,77 @@ export function NewJobWizard(): React.ReactElement {
           <Button variant="outline" onClick={() => setStep(2)}>
             ← Back to configure
           </Button>
-          <span className="flex items-center gap-1.5 text-xs text-ink-3">
-            <Lock className="h-3.5 w-3.5 flex-none" />
-            Starting a job writes nothing. You approve the diff first.
-          </span>
+          {/* Below lg the rail comes after this bar, so Start would be pressed without the destination in view: say it here. */}
+          {areaPath && (
+            <p className="w-full min-w-0 break-words font-mono text-xs text-ink-2 lg:hidden">
+              Lands in {formatDestinationPreview(project, areaPath, iterationPath, state)}
+            </p>
+          )}
+          <SafetyLine variant="wizard" />
           <Button onClick={handleSubmit} disabled={isSubmitting} className="ml-auto">
             {isSubmitting ? <Spinner /> : <Activity className="h-3.5 w-3.5" />}
             {isSubmitting ? 'Starting…' : 'Looks right — start job'}
           </Button>
         </div>
+        </div>
+        <aside aria-label="This run" className="flex min-w-0 flex-col gap-4 lg:self-start">
+          <SectionCard title="This run">
+            <div className="flex flex-col gap-3">
+              <RunFacts
+                file={file}
+                preview={preview}
+                mode={mode}
+                model={model}
+                project={project}
+                areaPath={areaPath}
+                iterationPath={iterationPath}
+                state={state}
+                onChangeDocument={handleBack}
+              />
+              <PreviousRunLine previousRuns={previousRuns} />
+              {selectedEstimateLine && (
+                <div className="flex flex-wrap items-baseline gap-2.5 border-t border-hairline pt-3">
+                  <span className="font-mono text-metric font-semibold tabular-nums text-ink-1">{selectedEstimateLine.value}</span>
+                  <span className="text-xs text-ink-3">{selectedEstimateLine.note}</span>
+                </div>
+              )}
+            </div>
+          </SectionCard>
+        </aside>
+        </div>
       </div>
     );
   }
-
-  // DESIGN.md §11.2.3.d -- the currently-selected mode's server-computed
-  // estimate; the OTHER mode's is still fetched (see the effect above) so
-  // ModeCards can show both side by side, but the footer only needs one.
-  const selectedEstimate = mode === 'baseline' ? baselineEstimate : surveyEstimate;
 
   return (
     <div ref={stepRootRef} data-testid="wizard-step" className="flex flex-col gap-4">
       <PageHeader title={stepTitle} description="Review the parsed document and set where it writes to" />
       <Stepper steps={WIZARD_STEPS} states={wizardStepStates(1)} subLabels={wizardSubLabels(mode)} />
-      {/* Two-column split (prototype's `.split`, ~1.6:1) -- left column is
-          document identity + destination, right column is how-to-read +
-          options + the submit action. Previously one full-width vertical
-          stack; this was the single biggest layout deviation from the
-          approved prototype. */}
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.6fr_1fr]">
-        {/* The right column is far taller than this one: keep Destination in view beside it instead of leaving a blank column. Only on a viewport tall enough to hold the card, so a short window never pins its bottom out of reach. */}
-        <div className="flex min-w-0 flex-col gap-4 lg:self-start lg:[@media(min-height:640px)]:sticky lg:[@media(min-height:640px)]:top-4">
+      {/* DESIGN.md §11.2.5. Left: the decision path, in the order an engineer decides (how to read it, where it lands, then
+          the folded options). Right: a quiet summary rail that reads the choices back and holds the action, so the primary
+          button is in view without scrolling past the mode cards. */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
+        <div className="flex min-w-0 flex-col gap-4">
+          {/* DESIGN.md §11.2.5, §16.15: the question sits on the canvas, so the two mode cards are the only cards here. */}
+          <section aria-labelledby="wizard-mode-heading" className="flex flex-col gap-2.5">
+            <h2 id="wizard-mode-heading" className="text-title">
+              How should it read the document?
+            </h2>
+          <ModeCards
+            value={mode}
+            onChange={handleModeChange}
+            baselineEstimate={baselineEstimate}
+            surveyEstimate={surveyEstimate}
+            surveyCached={cachedResult}
+            model={model}
+            onModelChange={setModel}
+            availableModels={availableModels}
+            modelDetails={modelListing?.details}
+            recommendedModel={modelListing?.recommended}
+            modelsLoading={modelsLoading}
+            modelsError={modelsError}
+          />
+          </section>
           <SectionCard title="Destination in Azure DevOps">
             <div className="flex flex-col gap-3">
               {hasAdoSession ? (
@@ -672,25 +903,26 @@ export function NewJobWizard(): React.ReactElement {
                   {project ? (
                     <AreaPathPicker value={areaPath} onChange={setAreaPath} project={project} />
                   ) : (
-                    <TextField label="Area Path" value={areaPath} disabled helperText="Select a team project first" fullWidth />
+                    <TextField label="Area path" value={areaPath} disabled helperText="Select a team project first" fullWidth />
                   )}
                 </>
               ) : (
-                <TextField label="Area Path" value={areaPath} onChange={(event) => setAreaPath(event.target.value)} fullWidth />
+                <TextField label="Area path" value={areaPath} onChange={(event) => setAreaPath(event.target.value)} fullWidth />
               )}
-              {/* labelExtra puts each InfoTip inline with its own label
-                  (see TextField/Select's labelExtra prop) instead of an
-                  external items-end wrapper -- that previously tracked
-                  whichever sibling's helper text made it tallest, so State's
-                  icon (has helper text) and Iteration Path's icon (none)
-                  landed at visibly different heights side by side. */}
-              <div className="grid grid-cols-2 gap-2.5">
-                {/* Gated on `project`, same reasoning/fix as Iteration Path
-                    below -- StatePicker previously fetched unconditionally
-                    with no project scoping at all (getStates had no project
-                    param anywhere in the stack), so it silently showed the
-                    backend's single default project's workflow states
-                    regardless of which team project was actually selected. */}
+            </div>
+          </SectionCard>
+          {/* Folded, but never unknown: the summary line states what each folded choice currently is. */}
+          <details className="rounded-md border border-hairline bg-surface">
+            <summary className="flex cursor-pointer flex-wrap items-baseline gap-x-3 gap-y-1 px-4 py-3">
+              <span className="text-sm font-semibold text-ink-1">More options</span>
+              <span className="font-mono text-meta text-ink-3">
+                Iteration: {iterationPath || 'project default'} · State: {state || 'default'} · Duplicates: {dedupScope === 'project' ? 'the whole project' : 'this area path and below'}
+              </span>
+            </summary>
+            <div className="flex flex-col gap-3 border-t border-hairline p-4">
+              {/* labelExtra puts each InfoTip inline with its own label (see TextField/Select's labelExtra prop). */}
+              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                {/* Gated on `project`: these pickers fetch per project, and without one they would show the backend's default project's data. */}
                 {hasAdoSession && project ? (
                   <StatePicker
                     value={state}
@@ -698,14 +930,14 @@ export function NewJobWizard(): React.ReactElement {
                     workItemType="Requirement"
                     project={project}
                     labelExtra={
-                      <InfoTip content="The workflow state each new item starts in, fetched from this project's Requirement workflow -- it varies by process template. Proposed keeps items out of active sprint metrics until someone triages them." />
+                      <InfoTip content="The workflow state each new item starts in, fetched from this project's Requirement workflow — it varies by process template. Proposed keeps items out of active sprint metrics until someone triages them." />
                     }
                   />
                 ) : (
                   <TextField
                     label="State (optional)"
                     labelExtra={
-                      <InfoTip content="The workflow state each new item starts in, fetched from this project's Requirement workflow -- it varies by process template. Proposed keeps items out of active sprint metrics until someone triages them." />
+                      <InfoTip content="The workflow state each new item starts in, fetched from this project's Requirement workflow — it varies by process template. Proposed keeps items out of active sprint metrics until someone triages them." />
                     }
                     value={state}
                     onChange={(event) => setState(event.target.value)}
@@ -714,14 +946,6 @@ export function NewJobWizard(): React.ReactElement {
                     fullWidth
                   />
                 )}
-                {/* Gated on `project` the same way AreaPathPicker above is --
-                    previously this rendered the real picker unconditionally
-                    with project={project || undefined}, so an undefined
-                    project silently fell back to the backend's own
-                    configured default and showed real iteration data before
-                    the user had picked a team project at all (confirmed:
-                    reported live as "why are these fields loaded before I
-                    selected a project"). */}
                 {hasAdoSession && project ? (
                   <IterationPathPicker
                     value={iterationPath}
@@ -733,7 +957,7 @@ export function NewJobWizard(): React.ReactElement {
                   />
                 ) : (
                   <TextField
-                    label="Iteration Path (optional)"
+                    label="Iteration path (optional)"
                     labelExtra={
                       <InfoTip content="Every created item is assigned to this iteration. Leave it blank to use the project default if you plan to sort the backlog later." />
                     }
@@ -745,109 +969,91 @@ export function NewJobWizard(): React.ReactElement {
                   />
                 )}
               </div>
-              {/* One compact mono line, not JobDetail's full 4-box
-                  DestinationBar -- the agreed design (§11.2.2) wants a
-                  live "read it back" restatement here, but this card's 4
-                  fields above already show every one of these values once;
-                  a second set of 4 boxed segments would be showing the
-                  exact same facts twice for no new information. This line
-                  earns its place: it's the ONE place the resolved path
-                  reads as a single sentence instead of 4 separate field
-                  values, which is the actual point of "can you read the
-                  destination back" -- JobDetail's boxed version stays full
-                  there because that screen has no editable form to read
-                  values off of at all. */}
-              {(project || areaPath) && (
-                <p className="font-mono text-xs text-ink-3">{formatDestinationPreview(project, areaPath, iterationPath, state)}</p>
-              )}
+              <DedupScopeSelect value={dedupScope} onChange={setDedupScope} />
             </div>
-          </SectionCard>
+          </details>
         </div>
 
-        <div className="flex min-w-0 flex-col gap-4">
-          <SectionCard title="How should it read the document?">
-            {/* Model picker now lives INSIDE the SURVEY card (ModeCards) --
-                the standalone "Options" card below this used to exist for
-                exactly one control, which only ever rendered for one of the
-                two modes; the other mode saw an empty card. Removed rather
-                than left as a sometimes-empty box. */}
-            <ModeCards
-              value={mode}
-              onChange={setMode}
-              baselineEstimate={baselineEstimate}
-              surveyEstimate={surveyEstimate}
-              model={model}
-              onModelChange={setModel}
-              availableModels={availableModels}
-              modelDetails={modelListing?.details}
-              recommendedModel={modelListing?.recommended}
-              modelsLoading={modelsLoading}
-              modelsError={modelsError}
-            />
-          </SectionCard>
-          {mode === 'survey' && (
-            <SectionCard title="Knowledge base">
-              <KbReadinessStrip />
-            </SectionCard>
-          )}
-          {mode === 'survey' && (
-            <Alert severity="warning">
-              SURVEY mode scales with document size -- figures cost the most, since each triggers a separate vision-model call. You'll
-              see progress on the job page once it starts.
-            </Alert>
-          )}
-          <SectionCard title="What will it cost you?">
-            <div className="flex flex-col gap-2">
-              <div className="flex flex-wrap items-baseline gap-2.5">
-                <span className="font-mono text-metric font-semibold tabular-nums text-ink-1">
-                  {selectedEstimate ? (
-                    (() => {
-                      const { lower, upper } = formatEtaRange(selectedEstimate.lowerMinutes, selectedEstimate.upperMinutes);
-                      return lower === upper ? lower : `${lower} – ${upper}`;
-                    })()
-                  ) : (
-                    '--'
-                  )}
-                </span>
-                <span className="text-xs text-ink-3">typically, once it starts</span>
-                <span className="ml-auto flex items-center gap-1">
-                  <Chip className="border border-info-border bg-info-soft font-mono text-micro font-normal normal-case tabular-nums text-info-ink">
-                    <Cpu className="h-3 w-3 flex-none" />
-                    {mode.toUpperCase()}
-                    {preview && ` · ${preview.blockCount} blocks, ${preview.figureCount} figures`}
-                    {selectedEstimate && ` · ${selectedEstimate.basis === 'blended' ? `n=${selectedEstimate.sampleCount}` : 'no completed runs yet'}`}
-                  </Chip>
-                  <InfoTip
-                    content={
-                      selectedEstimate?.basis === 'blended'
-                        ? `Based on ${selectedEstimate.sampleCount} previous SURVEY run${selectedEstimate.sampleCount === 1 ? '' : 's'} on this deployment. BASELINE parses structure only; SURVEY additionally runs an LLM quality/dedup pass per clause -- figures cost the most, since each triggers a separate vision call.`
-                        : 'No completed SURVEY runs on this deployment yet -- this is a conservative starting estimate based on document size, not a measured one. BASELINE parses structure only; SURVEY additionally runs an LLM quality/dedup pass per clause.'
-                    }
-                  />
-                </span>
+        {/* Sticky only on a viewport tall enough to hold it, so a short window never pins its bottom out of reach. */}
+        <aside
+          aria-label="This run"
+          className="flex min-w-0 flex-col gap-4 lg:self-start lg:[@media(min-height:640px)]:sticky lg:[@media(min-height:640px)]:top-4"
+        >
+          <SectionCard title="This run">
+            <div className="flex flex-col gap-3">
+              <RunFacts
+                file={file}
+                preview={preview}
+                mode={mode}
+                model={model}
+                project={project}
+                areaPath={areaPath}
+                iterationPath={iterationPath}
+                state={state}
+                onChangeDocument={handleBack}
+              />
+              <PreviousRunLine previousRuns={previousRuns} />
+              <div className="flex flex-col gap-2 border-t border-hairline pt-3">
+                <div className="flex flex-wrap items-baseline gap-2.5">
+                  <span className="font-mono text-metric font-semibold tabular-nums text-ink-1">{selectedEstimateLine?.value ?? '--'}</span>
+                  <span className="text-xs text-ink-3">{selectedEstimateLine?.note ?? 'typically, once it starts'}</span>
+                  <span className="ml-auto flex items-center gap-1">
+                    <Chip className="border border-info-border bg-info-soft font-mono text-micro font-normal normal-case tabular-nums text-info-ink">
+                      <Cpu className="h-3 w-3 flex-none" />
+                      {mode.toUpperCase()}
+                      {mode === 'survey' && selectedEstimate && !cachedResult && ` · ${selectedEstimate.basis === 'blended' ? `n=${selectedEstimate.sampleCount}${selectedEstimate.nearSizeSampleCount === 0 ? ' · none near this size' : ''}` : 'no completed runs yet'}`}
+                    </Chip>
+                    <InfoTip
+                      content={
+                        mode === 'baseline'
+                          ? 'BASELINE reads the document structure only, with no AI model, and typically takes about a minute.'
+                          : (selectedEstimate?.basis === 'blended'
+                          ? `Based on ${selectedEstimate.sampleCount} previous SURVEY run${selectedEstimate.sampleCount === 1 ? '' : 's'} on this deployment. BASELINE parses structure only; SURVEY also runs an AI quality and duplicate check on each clause. Figures cost the most, since each one needs a separate vision call.`
+                          : 'No completed SURVEY runs on this deployment yet, so this is a starting estimate from document size, not a measured one. BASELINE parses structure only; SURVEY also runs an AI quality and duplicate check on each clause.') +
+                        (mode === 'survey' ? ' SURVEY time scales with document size. You will see progress on the job page once it starts.' : '')
+                      }
+                    />
+                  </span>
+                </div>
+                {mode === 'survey' && selectedEstimate?.basis === 'blended' && selectedEstimate.nearSizeSampleCount === 0 && (
+                  <p className="flex items-start gap-1.5 rounded-sm border border-info-border bg-info-soft px-2 py-1.5 text-xs text-info-ink">
+                    <Info className="mt-0.5 h-3.5 w-3.5 flex-none" />
+                    No finished SURVEY run is near this document's size, so this estimate stretches the fit past what it has seen. Treat the range as rough.
+                  </p>
+                )}
+                {mode === 'survey' && selectedEstimate?.basis === 'bootstrap' && (
+                  <p className="flex items-start gap-1.5 rounded-sm border border-info-border bg-info-soft px-2 py-1.5 text-xs text-info-ink">
+                    <Info className="mt-0.5 h-3.5 w-3.5 flex-none" />
+                    No SURVEY runs have finished here yet, so this is a starting estimate from the document's size. It becomes a measured range as SURVEY jobs finish.
+                  </p>
+                )}
               </div>
-              {selectedEstimate?.basis === 'bootstrap' && (
-                <p className="flex items-start gap-1.5 rounded-sm border border-info-border bg-info-soft px-2 py-1.5 text-xs text-info-ink">
-                  <Info className="mt-0.5 h-3.5 w-3.5 flex-none" />
-                  The first few runs use a conservative default. Every completed job feeds the fit, and this number sharpens on its own.
-                </p>
+              {mode === 'survey' && (
+                <div className="border-t border-hairline pt-3">
+                  <KbReadinessStrip />
+                </div>
               )}
+              <div className="flex flex-col gap-3 border-t border-hairline pt-3">
+                <SafetyLine variant="wizard" />
+                {/* The destination can sit below the fold on the left; say what the disabled action is waiting for. */}
+                {(!areaPath || (hasAdoSession && !project)) && (
+                  <p className="text-xs text-ink-2">
+                    {hasAdoSession && !project ? 'Choose a team project and an area path to continue.' : 'Choose an area path to continue.'}
+                  </p>
+                )}
+                <div className="flex items-center gap-3">
+                  <Button variant="outline" onClick={handleBack}>
+                    Back
+                  </Button>
+                  <Button onClick={handleContinueFromConfigure} disabled={!areaPath || (hasAdoSession && !project) || isSubmitting} className="ml-auto">
+                    {isSubmitting ? <Spinner /> : mode === 'survey' ? <ArrowRight className="h-3.5 w-3.5" /> : <Activity className="h-3.5 w-3.5" />}
+                    {isSubmitting ? 'Starting…' : mode === 'survey' ? 'Continue' : 'Start job'}
+                  </Button>
+                </div>
+              </div>
             </div>
           </SectionCard>
-          <div className="flex flex-wrap items-center gap-3">
-            <Button variant="outline" onClick={handleBack}>
-              Back
-            </Button>
-            <span className="flex items-center gap-1.5 text-xs text-ink-3">
-              <Lock className="h-3.5 w-3.5 flex-none" />
-              Starting a job writes nothing. You approve the diff first.
-            </span>
-            <Button onClick={handleContinueFromConfigure} disabled={!areaPath || (hasAdoSession && !project) || isSubmitting} className="ml-auto">
-              {isSubmitting ? <Spinner /> : mode === 'survey' ? <ArrowRight className="h-3.5 w-3.5" /> : <Activity className="h-3.5 w-3.5" />}
-              {isSubmitting ? 'Starting…' : mode === 'survey' ? 'Continue' : 'Start job'}
-            </Button>
-          </div>
-        </div>
+        </aside>
       </div>
     </div>
   );

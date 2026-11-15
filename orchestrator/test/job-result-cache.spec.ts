@@ -1,4 +1,5 @@
-import { JobResultCache, hashCatalog, kbVersionFor, type ResultCacheStore } from '../src/modules/pipeline/result-cache';
+import { createHash } from 'node:crypto';
+import { JobResultCache, ResultCacheProbe, fileHashOf, hashCatalog, kbVersionFor, type ResultCacheStore } from '../src/modules/pipeline/result-cache';
 
 const memoryStore = (): ResultCacheStore & { data: Map<string, string>; sets: number } => {
   const data = new Map<string, string>();
@@ -99,6 +100,58 @@ describe('JobResultCache', () => {
     const cache = new JobResultCache(store, 'c', true, 1000);
     await cache.save(cache.keyFor(parts), { ...result, doc: { blob: 'x'.repeat(5000) } });
     expect(store.sets).toBe(0);
+  });
+});
+
+// P5: the wizard asks, before anything runs, whether a SURVEY job of this file would be served from the cache. It must build the
+// exact key the worker looks up (pipeline.worker.ts), from the same parts.
+describe('ResultCacheProbe', () => {
+  const scope = { ingestion: '0.3.15', profile: 'p1' as string | null };
+  const setup = async (stored: Partial<typeof parts> = {}) => {
+    const cache = new JobResultCache(memoryStore(), 'code-1');
+    await cache.save(cache.keyFor({ ...parts, ...stored }), result);
+    const kbVersion = jest.fn().mockResolvedValue('kb1');
+    const cacheScope = jest.fn().mockResolvedValue(scope);
+    return { probe: new ResultCacheProbe(cache, kbVersion, cacheScope), kbVersion, cacheScope };
+  };
+  const ask = { fileHash: 'f1', userId: 'u1', model: 'claude-opus-4-8', mode: 'survey' };
+
+  it('finds the entry the worker stored for the same file, user, model, KB, ingestion build and profile', async () => {
+    const { probe, kbVersion, cacheScope } = await setup();
+    expect(await probe.has(ask)).toBe(true);
+    expect(kbVersion).toHaveBeenCalledWith('u1');
+    expect(cacheScope).toHaveBeenCalledWith('u1');
+  });
+
+  it.each([
+    ['another file', { fileHash: 'f2' }],
+    ['another user', { userId: 'u2' }],
+    ['another model', { model: 'OpenAI/gpt-5.6-terra' }],
+  ])('misses for %s', async (_label, change) => {
+    const { probe } = await setup();
+    expect(await probe.has({ ...ask, ...change })).toBe(false);
+  });
+
+  it('is false for BASELINE, which the worker never caches, without reading anything', async () => {
+    const { probe, kbVersion } = await setup({ mode: 'baseline' });
+    expect(await probe.has({ ...ask, mode: 'baseline' })).toBe(false);
+    expect(kbVersion).not.toHaveBeenCalled();
+  });
+
+  it('is false when the KB version or the ingestion scope cannot be read (the worker then does not consult the cache either)', async () => {
+    const cache = new JobResultCache(memoryStore(), 'code-1');
+    await cache.save(cache.keyFor(parts), result);
+    expect(await new ResultCacheProbe(cache, jest.fn().mockResolvedValue(null), jest.fn().mockResolvedValue(scope)).has(ask)).toBe(false);
+    expect(await new ResultCacheProbe(cache, jest.fn().mockResolvedValue('kb1'), jest.fn().mockResolvedValue(null)).has(ask)).toBe(false);
+  });
+});
+
+describe('fileHashOf', () => {
+  it('is the sha256 of the file bytes alone: the file name is not part of it', () => {
+    const bytes = Buffer.from('same bytes');
+    expect(fileHashOf(bytes)).toBe(createHash('sha256').update(bytes).digest('hex'));
+    expect(fileHashOf(Buffer.from('same bytes'))).toBe(fileHashOf(bytes));
+    expect(fileHashOf(Buffer.from('other bytes'))).not.toBe(fileHashOf(bytes));
   });
 });
 

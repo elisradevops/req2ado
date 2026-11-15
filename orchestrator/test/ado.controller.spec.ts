@@ -101,13 +101,46 @@ describe('AdoController.getStatus', () => {
     expect(result).toEqual({ status: 'valid' });
   });
 
-  it('returns unreachable when discoverProjects rejects, for any reason', async () => {
+  it('returns unreachable when discoverProjects rejects for a reason that is not a rejected credential', async () => {
     const mcpClient = { discoverProjects: jest.fn().mockRejectedValue(new Error('boom')) };
     const controller = new AdoController(mcpClient as any, fakeResolver() as any);
 
     const result = await controller.getStatus(TEST_USER);
 
     expect(result).toEqual({ status: 'unreachable' });
+  });
+
+  describe('tells a rejected credential from an unreachable server', () => {
+    const statusFor = async (message: string) => {
+      const mcpClient = { discoverProjects: jest.fn().mockRejectedValue(new Error(message)) };
+      return new AdoController(mcpClient as any, fakeResolver() as any).getStatus(TEST_USER);
+    };
+
+    it.each([
+      'ADO wit/fields api-version probe failed: 401 at https://dev.azure.com/org/_apis/wit/fields',
+      'ADO wit/fields api-version probe failed: 403 at https://dev.azure.com/org/_apis/wit/fields',
+      'ADO REST request to ado_discover_projects failed with status 401',
+      'Request failed with status code 403',
+    ])('a 401 or 403 means the saved credential is not accepted: %s', async (message) => {
+      expect(await statusFor(message)).toEqual({ status: 'invalid' });
+    });
+
+    it.each([
+      'ADO wit/fields api-version probe failed: 500 at https://dev.azure.com/org/_apis/wit/fields',
+      'ADO wit/fields api-version probe failed: getaddrinfo ENOTFOUND dev.azure.com at https://dev.azure.com/org/_apis/wit/fields',
+      'ADO wit/fields api-version probe failed: unable to verify the first certificate at https://ado.example/_apis/wit/fields',
+      'connect ECONNREFUSED 127.0.0.1:3000',
+      'ADO wit/fields api-version probe failed: 4011 at https://x',
+      'ADO wit/fields api-version probe failed: 404 at https://x',
+    ])('anything else stays unreachable, so a network or certificate problem is never called a bad credential: %s', async (message) => {
+      expect(await statusFor(message)).toEqual({ status: 'unreachable' });
+    });
+
+    it('a timeout is unreachable', async () => {
+      const mcpClient = { discoverProjects: jest.fn().mockRejectedValue(Object.assign(new Error('timed out after 30000ms'), { name: 'McpRequestTimeoutError' })) };
+
+      expect(await new AdoController(mcpClient as any, fakeResolver() as any).getStatus(TEST_USER)).toEqual({ status: 'unreachable' });
+    });
   });
 });
 

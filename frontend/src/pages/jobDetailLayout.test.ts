@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isRunDetailStatus, shouldShowTiles, shouldShowTabs, shouldShowFilterBar } from './jobDetailLayout';
+import { isRunDetailStatus, shouldShowTiles, shouldShowTabs, shouldShowFilterBar, shouldShowNothingWrittenLine } from './jobDetailLayout';
 
 describe('isRunDetailStatus', () => {
   it('is true only for running and writing', () => {
@@ -46,5 +46,27 @@ describe('shouldShowFilterBar', () => {
   it('follows diff length alone, independent of audit', () => {
     expect(shouldShowFilterBar(0)).toBe(false);
     expect(shouldShowFilterBar(1)).toBe(true);
+  });
+});
+
+describe('shouldShowNothingWrittenLine', () => {
+  it('is true only while nothing can have been written yet', () => {
+    for (const status of ['pending', 'running', 'diff_ready']) expect(shouldShowNothingWrittenLine(status)).toBe(true);
+  });
+
+  it('is false once a write has begun or ended, and for an unknown status', () => {
+    // writing, succeeded, and failed/cancelled (which can follow a partial write) make "nothing has been written" untrue or unknown.
+    for (const status of ['writing', 'succeeded', 'rejected', 'cancelled', 'failed', null]) {
+      expect(shouldShowNothingWrittenLine(status)).toBe(false);
+    }
+  });
+});
+
+describe('shouldShowNothingWrittenLine and a partial write', () => {
+  it('is false when anything has already been written, even though the status went back to diff_ready', () => {
+    // A failed confirm reverts the job to diff_ready after a partial write (runbook, "P4b"); "nothing has been written" is then false.
+    expect(shouldShowNothingWrittenLine('diff_ready', 3)).toBe(false);
+    expect(shouldShowNothingWrittenLine('diff_ready', 0)).toBe(true);
+    expect(shouldShowNothingWrittenLine('diff_ready')).toBe(true);
   });
 });

@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { plural } from '../utils/plural';
+import { forwardRef, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { FixedSizeList, type ListChildComponentProps } from 'react-window';
 import {
   DndContext,
@@ -30,6 +31,7 @@ import { matchesDiffFilter } from '../utils/diffFilterMatch';
 import { groupByParent } from '../utils/diffTreeOrder';
 import { flaggedDiffEntryReason, isFlaggedDiffEntry } from '../utils/diffFlagging';
 import { LABEL_MICRO } from '../utils/labelMicro';
+import { buildWorkItemUrl } from '../utils/adoLinks';
 import { ActionBadge } from './ActionBadge';
 import { WorkItemTypeBadge } from './WorkItemTypeBadge';
 import { BELOW_MD, useMediaQuery } from '../hooks/useMediaQuery';
@@ -54,6 +56,9 @@ import type { WorkItemTypeCatalogEntry } from '../api/ado';
 const ROW_HEIGHT = 40;
 // Below md a row has two lines (title above, what-it-will-do beneath, both starting at the title's left edge).
 const ROW_HEIGHT_NARROW_REM = 4;
+// The details pane can leave the tree narrower than the screen is. Below this tree width the one-line row cannot show a Customer ID
+// (it was cut to "P…" at 696px; 856px fits), so the two-line row is used, the same layout as below md.
+const TWO_LINE_BELOW_TREE_PX = 800;
 
 // The two-line row is 4rem, not 64px, so it grows with the reader's own text size setting (a fixed height would clip larger text).
 function narrowRowHeight(): number {
@@ -77,21 +82,27 @@ const FALLBACK_LIST_HEIGHT = 600;
 // a tall monitor or gets clipped on a short one. Measures the wrapping
 // container (which gets a CSS viewport-relative height) via ResizeObserver
 // and feeds that real number to FixedSizeList.
-function useContainerHeight(): [React.RefObject<HTMLDivElement | null>, number] {
+function useContainerHeight(): [React.RefObject<HTMLDivElement | null>, number, number] {
   const ref = useRef<HTMLDivElement>(null);
   const [height, setHeight] = useState(FALLBACK_LIST_HEIGHT);
+  // 0 until measured (and in jsdom): callers treat 0 as "unknown", never as "narrow".
+  const [width, setWidth] = useState(0);
 
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const report = (): void => setHeight(el.getBoundingClientRect().height);
+    const report = (): void => {
+      const box = el.getBoundingClientRect();
+      setHeight(box.height);
+      setWidth(box.width);
+    };
     report();
     const observer = new ResizeObserver(report);
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
 
-  return [ref, height];
+  return [ref, height, width];
 }
 
 // Mirrors the orchestrator's DiscussionEntry (writeback/dry-run.service.ts): a rewrite parked as "To be discussed".
@@ -110,6 +121,13 @@ export interface DryRunDiffEntry {
   description: string;
   action: 'create' | 'reuse' | 'dedup_skip';
   existingAdoId?: number | null;
+  // How alike the matched existing item is (a skipped near-duplicate only), 0 to 1.
+  similarity?: number | null;
+  // Set when the reviewer chose "Create as new item" for something that matched: what it matched, and what they chose with it.
+  duplicateOf?: { existingAdoId: number; similarity: number | null; source?: 'changed_since_written' };
+  duplicateOverride?: { linkTree: boolean; relateToExisting: boolean };
+  // A reuse whose text differs from the item it matched in Azure DevOps (content-aware identity). Nothing there is updated automatically.
+  changedSinceWritten?: boolean;
   customerId: string | null;
   // Manually-entered forward reference to a Systems Engineering
   // requirements-layer artifact, never auto-populated -- see ingestion's
@@ -340,12 +358,28 @@ function useStatusColumnWidth(entries: DryRunDiffEntry[]): number {
     let widest = 0;
     for (const entry of entries) {
       widest = Math.max(widest, measureTextWidth(actionLabel(entry), font));
+      // R7: a new item's criteria chip sits in this column (it is about what the write will carry), and it is the only mark there on
+      // such a row, so the column is as wide as the widest of the two, measured from this job's rows only.
+      const criteria = criteriaChipLabel(entry);
+      if (criteria && criteriaInStatusColumn(entry)) widest = Math.max(widest, measureTextWidth(criteria, font));
     }
     // Chip's own horizontal padding+border (px-2 + 1px border each side =
     // 18px) plus a small buffer so text never sits flush against the
     // pill's edge.
     return widest > 0 ? Math.ceil(widest) + 18 + 8 : FALLBACK_STATUS_WIDTH;
   }, [entries]);
+}
+
+// The criteria chip's text, or null when the row has no criteria proposal (a "needs input" note is not one).
+function criteriaChipLabel(entry: DryRunDiffEntry): string | null {
+  if (entry.action !== 'create' || entry.proposal?.kind !== 'criteria') return null;
+  return entry.proposalAccepted ? 'criteria accepted' : 'criteria to review';
+}
+
+// Desktop (R7): a new item's Status cell is otherwise empty ("New" is not drawn), so its criteria chip moves there instead of squeezing the
+// title. A matched new item already shows "New, matched WI-n" in Status, so its chip stays on the title line: one mark per Status cell.
+function criteriaInStatusColumn(entry: DryRunDiffEntry): boolean {
+  return entry.action === 'create' && entry.duplicateOf?.existingAdoId == null;
 }
 
 // Shared grid template for both the sticky header and every data row --
@@ -367,8 +401,19 @@ const GRID_TEMPLATE_COLUMNS = 'var(--diff-cols)';
 // (pointer-only), Index and Flags columns are dropped outright; the details dialog still carries their facts. The wrapper's tailwind class
 // picks which template `--diff-cols` holds.
 const WIDE_COLUMNS = '[--diff-cols:var(--grip-w,20px)_32px_var(--index-w,44px)_minmax(0,1fr)_var(--status-w,108px)_100px_36px]';
-const NARROW_COLUMNS = 'max-md:[--diff-cols:32px_minmax(0,1fr)_44px]';
+const NARROW_TEMPLATE = '[--diff-cols:32px_minmax(0,1fr)_44px]';
+const NARROW_COLUMNS = `max-md:${NARROW_TEMPLATE}`;
 const WIDE_ONLY = 'max-md:hidden';
+// A tree narrower than TWO_LINE_BELOW_TREE_PX is laid out like a phone whatever the window is, so the template and the dropped cells follow `narrow`, not only the md breakpoint.
+const columnsFor = (narrow: boolean): string => (narrow ? NARROW_TEMPLATE : `${WIDE_COLUMNS} ${NARROW_COLUMNS}`);
+const wideOnly = (narrow: boolean): string => (narrow ? 'hidden' : WIDE_ONLY);
+// react-window's scrolling element. A browser makes a scrollable region a keyboard stop of its own; the tree container already is the one stop
+// (it moves the selection with the arrow keys and scrolls the list), so this one is taken out. Module level, so its identity never changes.
+const ListScroller = forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(function ListScroller(props, ref) {
+  return <div ref={ref} tabIndex={-1} {...props} />;
+});
+// The DOM id of a row, which the tree names in aria-activedescendant (focus stays on the tree while the arrow keys move the selection).
+const rowDomId = (prefix: string, localId: string): string => `${prefix}-row-${encodeURIComponent(localId)}`;
 
 // DESIGN.md §11.5 -- drag-and-drop is scoped to short, in-viewport moves;
 // MoveToPicker (a separate component, not part of this file) is the stated
@@ -425,8 +470,11 @@ export function DiffTree({
   project,
   onMove,
   canMove,
+  writtenAdoIds,
 }: {
   entries: DryRunDiffEntry[];
+  // Azure DevOps id of each item already written, by localId (a finished or partly written job). Shown as a link in the Status column.
+  writtenAdoIds?: Record<string, number>;
   selectedId: string | null;
   onSelect: (localId: string) => void;
   // Opens the details dialog for a node -- distinct from onSelect (which
@@ -486,7 +534,10 @@ export function DiffTree({
   // wall of leaf text -- Epics stay expanded so their Features are
   // visible immediately. Computed once, from the entries this component
   // mounted with; toggling never re-derives it.
-  const narrow = useMediaQuery(BELOW_MD);
+  const belowMd = useMediaQuery(BELOW_MD);
+  const [heightRef, listHeight, treeWidth] = useContainerHeight();
+  const narrow = belowMd || (treeWidth > 0 && treeWidth < TWO_LINE_BELOW_TREE_PX);
+  const treeDomId = useId();
   // Read once per breakpoint change, not on every render (drag-move re-renders would each force a style read).
   const rowHeight = useMemo(() => (narrow ? narrowRowHeight() : ROW_HEIGHT), [narrow]);
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(() => {
@@ -534,7 +585,6 @@ export function DiffTree({
 
   const listRef = useRef<FixedSizeList>(null);
 
-  const [heightRef, listHeight] = useContainerHeight();
 
   function openDetails(localId: string): void {
     (onOpenDetails ?? onSelect)(localId);
@@ -736,7 +786,7 @@ export function DiffTree({
 
   return (
     <div
-      className={`${WIDE_COLUMNS} ${NARROW_COLUMNS}`}
+      className={columnsFor(narrow)}
       style={
         {
           '--index-w': `${indexColumnWidth}px`,
@@ -751,15 +801,15 @@ export function DiffTree({
         className={cn('grid items-center gap-2.5 border-b border-hairline bg-surface-alt px-3.5 py-1.5 max-md:gap-1.5', LABEL_MICRO, 'text-ink-2')}
         style={{ gridTemplateColumns: GRID_TEMPLATE_COLUMNS }}
       >
-        <span className={WIDE_ONLY} />
+        <span className={wideOnly(narrow)} />
         <span />
-        <span className={cn('text-right', WIDE_ONLY)}>Index</span>
+        <span className={cn('text-right', wideOnly(narrow))}>Index</span>
         <span>Item</span>
-        <span className={cn('flex items-center gap-1', WIDE_ONLY)}>
+        <span className={cn('flex items-center gap-1', wideOnly(narrow))}>
           Status
-          <InfoTip content="What will happen to this item when you write to Azure DevOps. No pill means New (written to ADO for the first time). A pill means: Links to an existing WI-#### (reused, nothing new written, and it keeps its existing ADO parent regardless of where you place it in this tree), or Near-duplicate of an existing item (skipped, same parent-keeping rule)." />
+          <InfoTip content="What will happen to this item when you write to Azure DevOps. No pill means New (written to Azure DevOps for the first time). A pill means: Links to an existing WI-#### (reused, nothing new written, and it keeps its existing Azure DevOps parent regardless of where you place it in this tree), or Near-duplicate of an existing item (skipped, same parent-keeping rule). On a new item, 'criteria to review' or 'criteria accepted' says whether its proposed acceptance criteria will be written with it." />
         </span>
-        <span className={cn('flex items-center justify-end gap-1', WIDE_ONLY)}>
+        <span className={cn('flex items-center justify-end gap-1', wideOnly(narrow))}>
           Flags
           <InfoTip content="Quick counts for this item: a flag means the item needs your review (hover for why), a triangle shows how many quality issues were found (open the item for details), a link icon shows how many trace links it has, a table icon shows how many tables fed it, and an image icon shows how many figures fed it (amber when one or more of those figures got no description)." />
         </span>
@@ -778,12 +828,15 @@ export function DiffTree({
           tabIndex={0}
           onKeyDown={handleKeyDown}
           role="tree"
+          aria-activedescendant={selectedId && rows.some((row) => row.entry.localId === selectedId) ? rowDomId(treeDomId, selectedId) : undefined}
           // As tall as the job's rows (at least 3, so a near-empty tree is still a card), up to the viewport-based cap that used to be the fixed height. Counted from ALL entries, not the visible rows, so filtering or collapsing a branch never makes the card jump.
           style={{ height: `min(max(calc(100vh - 400px), 280px), ${Math.max(entries.length, 3) * rowHeight}px)` }}
-          className="focus:outline-none"
+          // The universal focus ring (index.css), inset so the list's own overflow does not clip it; focus:outline-none would remove it.
+          className="focus-visible:outline-offset-[-2px]"
         >
           <FixedSizeList
             ref={listRef}
+            outerElementType={ListScroller}
             height={listHeight}
             width="100%"
             itemCount={rows.length}
@@ -810,6 +863,7 @@ export function DiffTree({
               rows,
               reasonByLocalId,
               narrow,
+              rowIdPrefix: treeDomId,
               selectedId,
               onSelect,
               openDetails,
@@ -818,6 +872,7 @@ export function DiffTree({
               realTypeName,
               orgUrl,
               project,
+              writtenAdoIds,
               canMove: !!canMove,
               isFiltering,
               collapsedIds,
@@ -871,8 +926,10 @@ function DiffTreeRow({
   realTypeName,
   orgUrl,
   project,
+  writtenAdoIds,
   canMove,
   narrow,
+  rowIdPrefix,
   isFiltering,
   collapsedIds,
   toggleCollapsed,
@@ -894,9 +951,11 @@ function DiffTreeRow({
   realTypeName: (category: string) => string;
   orgUrl?: string | null;
   project?: string | null;
+  writtenAdoIds?: Record<string, number>;
   canMove: boolean;
   // below md (one query in DiffTree, so header, rows and row height always flip together)
   narrow: boolean;
+  rowIdPrefix: string;
   isFiltering: boolean;
   collapsedIds: Set<string>;
   toggleCollapsed: (localId: string) => void;
@@ -1035,9 +1094,9 @@ function DiffTreeRow({
         className="flex flex-none items-center text-ink-3 max-md:hidden"
         title={
           (entry.action === 'reuse'
-            ? `Already exists in ADO${entry.existingAdoId != null ? ` as WI-${entry.existingAdoId}` : ''}`
-            : `Matched to a probable duplicate in ADO${entry.existingAdoId != null ? ` (WI-${entry.existingAdoId})` : ''}`) +
-          ' and keeps its parent there. Moving it here only reorganizes this review tree -- writing to Azure DevOps never re-parents an existing item. New items you place under it will be linked to it in ADO.'
+            ? `Already exists in Azure DevOps${entry.existingAdoId != null ? ` as WI-${entry.existingAdoId}` : ''}`
+            : `Matched to a probable duplicate in Azure DevOps${entry.existingAdoId != null ? ` (WI-${entry.existingAdoId})` : ''}`) +
+          ' and keeps its parent there. Moving it here only reorganizes this review tree — writing to Azure DevOps never re-parents an existing item. New items you place under it will be linked to it in Azure DevOps.'
         }
       >
         <Lock className="h-3.5 w-3.5" />
@@ -1045,11 +1104,19 @@ function DiffTreeRow({
     )}
     </>
   );
-  const sameTierTitle = `Parent is also a ${realTypeName(entry.type)}. This writes fine to Azure DevOps, but its native Backlogs hub can't reorder same-category links and only shows the leaf item on sprint backlogs/taskboards.`;
+  // One tab stop for the whole tree: only the selected row's controls are in the tab order (roving tabindex); the others stay clickable.
+  // Arrow keys move the selection, so Tab lands on the row the reader is on. Chips and the work-item link are further left out on a phone row.
+  const isTabStop = entry.localId === selectedId;
+  const controlTab = isTabStop ? 0 : -1;
+  const chipTab = isTabStop && !narrow ? 0 : -1;
+  // A plain fact, not the jargon "same tier": it reads the same on a phone, where there is no hover to show the tooltip.
+  const sameTierLabel = `Nested ${realTypeName(entry.type)}`;
+  const typeName = realTypeName(entry.type);
+  const sameTierTitle = `Parent is also ${/^[aeiou]/i.test(typeName) ? 'an' : 'a'} ${typeName}. This writes fine to Azure DevOps, but its native Backlogs hub cannot reorder links between items of the same category, and sprint backlogs and taskboards show only the lowest item.`;
   // On the phone line the red pill is too wide to leave room for the status beside it, so it is plain red text there.
   const sameTierPhoneEl = isSameTierParent && (
     <span className="flex-none text-xs font-semibold text-danger-ink" title={sameTierTitle}>
-      Same tier
+      {sameTierLabel}
     </span>
   );
   const sameTierEl = (
@@ -1061,25 +1128,26 @@ function DiffTreeRow({
         className="flex-none border border-danger-border"
         title={sameTierTitle}
       >
-        same tier
+        {sameTierLabel}
       </Chip>
     )}
     </>
   );
   const criteriaEl = (
     <>
-    {entry.action === 'create' && entry.proposal?.kind === 'criteria' && (
+    {criteriaChipLabel(entry) && (
       <Tooltip
         content={entry.proposalAccepted ? 'Proposed acceptance criteria accepted: written to Azure DevOps with this item.' : 'Proposed acceptance criteria are waiting for review: not written to Azure DevOps unless accepted.'}
       >
         <Chip
           // a chip that may sit on the hidden wrapped line of a phone row is not a tab stop there (the Details dialog has it)
-          tabIndex={narrow ? -1 : 0}
+          tabIndex={chipTab}
           bg={entry.proposalAccepted ? 'var(--color-accent-soft)' : 'var(--color-surface-alt)'}
           color={entry.proposalAccepted ? 'var(--color-accent)' : 'var(--color-ink-2)'}
-          className="flex-none border border-hairline"
+          // inset focus ring: the Status cell and the title's trailing group clip their overflow, which would cut an outer ring
+          className="flex-none border border-hairline focus-visible:outline-offset-[-2px]"
         >
-          {entry.proposalAccepted ? 'criteria accepted' : 'criteria to review'}
+          {criteriaChipLabel(entry)}
         </Chip>
       </Tooltip>
     )}
@@ -1090,10 +1158,10 @@ function DiffTreeRow({
     {reason && (
       <Tooltip content={reason.tip}>
         <Chip
-          tabIndex={narrow ? -1 : 0}
+          tabIndex={chipTab}
           bg={REASON_CHIP_COLORS[reason.group].bg}
           color={REASON_CHIP_COLORS[reason.group].color}
-          className={cn('flex-none border', REASON_CHIP_COLORS[reason.group].borderClass)}
+          className={cn('flex-none border focus-visible:outline-offset-[-2px]', REASON_CHIP_COLORS[reason.group].borderClass)}
         >
           {reason.chip}
         </Chip>
@@ -1106,7 +1174,7 @@ function DiffTreeRow({
     {parentIsExcluded && !entry.excluded && (
       <span
         className="flex flex-none items-center gap-0.5 text-warning"
-        title="An ancestor of this item is excluded -- this item's whole subtree will be dropped from the write along with it, unless you exclude something else instead."
+        title="An ancestor of this item is excluded — this item's whole subtree will be dropped from the write along with it, unless you exclude something else instead."
       >
         <EyeOff className="h-3.5 w-3.5" />
       </span>
@@ -1131,6 +1199,7 @@ function DiffTreeRow({
         zIndex: isDragging ? 1 : undefined,
       }}
       role="treeitem"
+      id={rowDomId(rowIdPrefix, entry.localId)}
       // the real depth, even where the phone row draws at most three indent guides
       aria-level={row.depth + 1}
       aria-selected={entry.localId === selectedId}
@@ -1179,7 +1248,7 @@ function DiffTreeRow({
       <span
         className={cn(
           'flex items-center justify-center text-ink-3',
-          WIDE_ONLY,
+          wideOnly(narrow),
           canMove && 'cursor-grab opacity-0 transition-opacity duration-instant group-hover:opacity-100 group-focus-within:opacity-100',
         )}
         title={canMove ? 'Drag to move' : undefined}
@@ -1188,6 +1257,7 @@ function DiffTreeRow({
       </span>
       <span onClick={(e) => e.stopPropagation()} className="flex justify-center">
         <Checkbox
+          tabIndex={controlTab}
           ariaLabel={`Exclude ${entry.title}`}
           checked={!!entry.excluded}
           onCheckedChange={(checked) => onToggleExclude(entry.localId, checked)}
@@ -1196,7 +1266,7 @@ function DiffTreeRow({
 
       {/* Generic per-row index (see FlatRow.index's own doc comment) -- width
           scales to the widest index actually present (see useIndexColumnWidth). */}
-      <span className={cn('text-right font-mono text-xs tabular-nums tracking-tight text-ink-3', WIDE_ONLY)}>{row.index}</span>
+      <span className={cn('text-right font-mono text-xs tabular-nums tracking-tight text-ink-3', wideOnly(narrow))}>{row.index}</span>
 
       {/* Item column: indent guides -> chevron -> type badge -> title, all single-line (truncated, not
           wrapped -- fixed row height demands it; full title/description is one click away in the
@@ -1210,13 +1280,14 @@ function DiffTreeRow({
         {row.hasChildren && !isFiltering && (
           <button
             type="button"
+            tabIndex={controlTab}
             aria-label={collapsedIds.has(entry.localId) ? `Expand ${entry.title}` : `Collapse ${entry.title}`}
             aria-expanded={!collapsedIds.has(entry.localId)}
             onClick={(e) => {
               e.stopPropagation();
               toggleCollapsed(entry.localId);
             }}
-            className="-ml-1 flex-none rounded-sm p-0.5 text-ink-3 hover:bg-hairline-strong/40 hover:text-ink-1"
+            className="-ml-1 grid h-6 w-6 flex-none place-items-center rounded-sm text-ink-3 hover:bg-hairline-strong/40 hover:text-ink-1"
           >
             <ChevronRight className={cn('h-3.5 w-3.5 transition-transform duration-fast ease-out', !collapsedIds.has(entry.localId) && 'rotate-90')} />
           </button>
@@ -1241,7 +1312,7 @@ function DiffTreeRow({
                 {/* Needs-review triangle at the end of the title line: the same right edge on every row, so flagged rows line up down the list, and
                     it can never push the status off line 2. The tint and this glyph together carry it. */}
                 {(isFlaggedDiffEntry(entry) || issueCount > 0) && (
-                  <span data-testid="narrow-flag" role="img" aria-label="Needs review" title="Needs review: open Details for why" className="flex flex-none items-center text-warning-ink">
+                  <span data-testid="narrow-flag" role="img" aria-label="Check" title="Check: open Details for why" className="flex flex-none items-center text-warning-ink">
                     <TriangleAlert className="h-3.5 w-3.5" />
                   </span>
                 )}
@@ -1249,7 +1320,7 @@ function DiffTreeRow({
               {/* Line 2, starting at the title's left edge. Order is by what must never be lost: what it will do first (wrapping hides the LAST chips, and the red tint still marks a same-tier row), then the hazard text,
                   then the rest. Whole chips wrap out of sight rather than being cut in half; the Details dialog has all of them. */}
               <span className="flex h-6 min-w-0 flex-wrap content-start items-center gap-x-1 overflow-hidden">
-                <ActionBadge action={entry.action} existingAdoId={entry.existingAdoId} orgUrl={orgUrl} project={project} quiet />
+                <ActionBadge action={entry.action} existingAdoId={entry.existingAdoId} matchedWi={entry.duplicateOf?.existingAdoId} linkTabIndex={controlTab} orgUrl={orgUrl} project={project} quiet />
                 {sameTierPhoneEl}
                 {criteriaEl}
                 {reasonEl}
@@ -1259,7 +1330,7 @@ function DiffTreeRow({
             </div>
           </>
         ) : (
-        <span className="ml-1 flex min-w-0 flex-1 items-center gap-2">
+        <span data-testid="title-line" className="ml-1 flex min-w-0 flex-1 items-center gap-2">
           {/* Pre-existing bug fixed here: typeCatalog is keyed by the
               project's REAL ADO type name (e.g. 'User Story'), but
               entry.type is always the internal category ('Requirement') --
@@ -1267,15 +1338,28 @@ function DiffTreeRow({
               badge fell back to hardcoded colors/icons. realTypeName()
               resolves the real name first. */}
           <WorkItemTypeBadge type={entry.type} catalogEntry={typeCatalog?.[realTypeName(entry.type)]} />
-          <p dir="auto" className={cn('min-w-0 flex-1 truncate text-start text-sm font-medium leading-snug', entry.excluded && 'line-through text-ink-3')}>
+          {/* R7: the title keeps a minimum (rem, so it grows with text size; capped by the cell so it never paints past it) and takes the
+              free space; what follows it shrinks first. */}
+          <p dir="auto" className={cn('min-w-[min(12rem,50%)] flex-1 truncate text-start text-sm font-medium leading-snug', entry.excluded && 'line-through text-ink-3')}>
             {entry.title}
           </p>
-          {customerIdEl}
-          {lockEl}
-          {sameTierEl}
-          {criteriaEl}
-          {reasonEl}
-          {excludedEl}
+          {/* The marks after the title wrap whole onto a second line that is cut away, the same "never half-clipped" rule as the phone
+              row's line 2: a mark that does not fit drops out of sight whole (the Details dialog has every one). Bounded in rem, not px.
+              Order is by what must never be lost, since wrapping hides the LAST: the hazard, the focused warning's reason, the excluded
+              ancestor, the criteria chip (only for a matched new item; otherwise it is in Status), the lock, then the customer id. */}
+          {/* before:*: a zero-width, line-high placeholder as the first item of line 1, pulled back over the gap (-mr-2 = the gap) so it
+              costs no width. A mark wider than the group cannot wrap away when it is the first item on its line, so it was drawn
+              half outside the end-aligned group and cut ("o Customer ID"); behind the placeholder even the first mark has a line to
+              wrap away from, and it drops out whole. A pseudo item does not count for :empty, so the group still leaves layout when
+              it has no marks. */}
+          <span data-testid="title-trailing" className="flex max-h-6 min-w-0 flex-[0_1_auto] flex-wrap empty:hidden items-center justify-end gap-x-2 overflow-hidden before:h-6 before:w-0 before:flex-none before:-mr-2 before:content-['']">
+            {sameTierEl}
+            {reasonEl}
+            {excludedEl}
+            {!criteriaInStatusColumn(entry) && criteriaEl}
+            {lockEl}
+            {customerIdEl}
+          </span>
         </span>
         )}
       </div>
@@ -1289,8 +1373,24 @@ function DiffTreeRow({
           painted past the column boundary into the Signals column next to
           it. */}
       {!narrow && (
-        <span className="flex flex-none items-center justify-end overflow-hidden">
-          <ActionBadge action={entry.action} existingAdoId={entry.existingAdoId} orgUrl={orgUrl} project={project} hideNew />
+        <span data-col="status" className="flex flex-none items-center justify-end overflow-hidden">
+          <ActionBadge action={entry.action} existingAdoId={entry.existingAdoId} matchedWi={entry.duplicateOf?.existingAdoId} linkTabIndex={controlTab} orgUrl={orgUrl} project={project} hideNew />
+          {criteriaInStatusColumn(entry) && criteriaEl}
+          {writtenAdoIds?.[entry.localId] != null && (
+            orgUrl ? (
+              <a
+                href={buildWorkItemUrl(orgUrl, project, writtenAdoIds[entry.localId])}
+                target="_blank"
+                rel="noreferrer"
+                draggable={false}
+                className="ml-1 flex-none font-mono text-xs tabular-nums text-ink-2 underline decoration-hairline underline-offset-2 hover:text-ink-1"
+              >
+                #{writtenAdoIds[entry.localId]}
+              </a>
+            ) : (
+              <span className="ml-1 flex-none font-mono text-xs tabular-nums text-ink-2">#{writtenAdoIds[entry.localId]}</span>
+            )
+          )}
         </span>
       )}
 
@@ -1308,27 +1408,27 @@ function DiffTreeRow({
           forced useStatusColumnWidth to reserve icon width GLOBALLY for
           every row, even unflagged ones with a short "New" label -- a
           visible gap before the action chip on every row. Confirmed live. */}
-      <span className={cn('flex flex-none items-center justify-end gap-2 text-xs', WIDE_ONLY)}>
+      <span className={cn('flex flex-none items-center justify-end gap-2 text-xs', wideOnly(narrow))}>
         {isFlaggedDiffEntry(entry) && (
           // A flag, not the issue triangle: two different signals no longer share one glyph. Named for assistive tech; the reason is the tooltip.
-          <span role="img" aria-label="Needs review" className="flex items-center text-warning" title={flaggedDiffEntryReason(entry) ?? 'Needs review'}>
+          <span role="img" aria-label="Check" className="flex items-center text-warning" title={flaggedDiffEntryReason(entry) ?? 'Check'}>
             <Flag className="h-3.5 w-3.5" />
           </span>
         )}
         {issueCount > 0 && (
-          <span role="img" aria-label={`${issueCount} quality ${issueCount === 1 ? 'issue' : 'issues'}`} className="flex items-center gap-0.5 text-warning" title={`${issueCount} quality issue(s)`}>
+          <span role="img" aria-label={`${issueCount} quality ${issueCount === 1 ? 'issue' : 'issues'}`} className="flex items-center gap-0.5 text-warning" title={plural(issueCount, 'quality issue')}>
             <TriangleAlert className="h-3.5 w-3.5" />
             {issueCount}
           </span>
         )}
         {traceLinkCount > 0 && (
-          <span className="flex items-center gap-0.5 text-ink-3" title={`${traceLinkCount} trace link(s)`}>
+          <span className="flex items-center gap-0.5 text-ink-3" title={plural(traceLinkCount, 'trace link')}>
             <Link2 className="h-3.5 w-3.5" />
             {traceLinkCount}
           </span>
         )}
         {tableCount > 0 && (
-          <span className="flex items-center gap-0.5 text-ink-3" title={`${tableCount} table(s)`}>
+          <span className="flex items-center gap-0.5 text-ink-3" title={plural(tableCount, 'table')}>
             <Table className="h-3.5 w-3.5" />
             {tableCount}
           </span>
@@ -1338,8 +1438,8 @@ function DiffTreeRow({
             className={cn('flex items-center gap-0.5', uncaptionedFigureCount > 0 ? 'text-warning' : 'text-ink-3')}
             title={
               uncaptionedFigureCount > 0
-                ? `${figureCount} figure(s), ${uncaptionedFigureCount} without a description`
-                : `${figureCount} figure(s)`
+                ? `${plural(figureCount, 'figure')}, ${uncaptionedFigureCount} without a description`
+                : plural(figureCount, 'figure')
             }
           >
             <Image className="h-3.5 w-3.5" />
@@ -1351,13 +1451,14 @@ function DiffTreeRow({
       <span className="flex justify-center">
         <button
           type="button"
+          tabIndex={controlTab}
           aria-label={`Details for ${entry.title}`}
           onClick={(e) => {
             e.stopPropagation();
             onSelect(entry.localId);
             openDetails(entry.localId);
           }}
-          className="rounded-sm p-1 text-ink-3 hover:bg-hairline-strong/40 hover:text-ink-1 max-md:grid max-md:h-11 max-md:w-11 max-md:place-items-center max-md:p-0"
+          className="grid h-6 w-6 place-items-center rounded-sm text-ink-3 hover:bg-hairline-strong/40 hover:text-ink-1 max-md:h-11 max-md:w-11"
         >
           {narrow ? <Info className="h-4 w-4" /> : <SquareArrowOutUpRight className="h-3.5 w-3.5" />}
         </button>

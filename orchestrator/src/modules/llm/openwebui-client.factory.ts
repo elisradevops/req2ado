@@ -87,4 +87,17 @@ export class OpenWebUiClientFactory {
     const client = new OpenWebUiClient({ ...this.globalConfig, LLM_API_KEY: token, LLM_CHAT_MODEL: '' });
     return client.listSelectableModels(token);
   }
+
+  // Whether this token can get an embedding at all, tried with one short sample text. Duplicate detection embeds with the user's own
+  // token, and an account that cannot reach the embedding model would otherwise find out only when every item of a job quietly skipped
+  // the check. A failure is an answer here, never an error.
+  async embeddingsWorkForToken(token: string): Promise<boolean> {
+    const client = new OpenWebUiClient({ ...this.globalConfig, LLM_API_KEY: token, LLM_CHAT_MODEL: '' });
+    try {
+      const vectors = await client.embed(['connection check']);
+      return vectors.length > 0 && vectors[0].length > 0;
+    } catch {
+      return false;
+    }
+  }
 }

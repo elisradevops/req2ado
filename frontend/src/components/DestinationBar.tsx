@@ -1,4 +1,4 @@
-import { Briefcase, MapPin, CalendarRange, CircleDot, ChevronRight } from 'lucide-react';
+import { Briefcase, MapPin, CalendarRange, CircleCheck, CircleDashed, CircleDot, CircleDotDashed, ChevronRight, type LucideIcon } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { InfoTip, Tooltip } from '../ui/Tooltip';
 import { LABEL_MICRO } from '../utils/labelMicro';
@@ -41,15 +41,14 @@ function PathSegment({
   icon: Icon,
   label,
   value,
-  hatchWhenUnset,
+  unsetText,
 }: {
   icon: typeof Briefcase;
   label: string;
   value: string | null | undefined;
-  // DESIGN.md §11.2.2 -- an OPTIONAL segment (iteration path) renders a
-  // repeating-gradient fill instead of going blank when unset, so an
-  // optional gap reads as "not set," not as a missing/broken answer.
-  hatchWhenUnset?: boolean;
+  // DESIGN.md §11.2.2 -- an OPTIONAL segment (iteration path) says what an unset value means in words ("Project default"). It used to
+  // draw a hatched fill; both daily-user reviews read that as a stuck loader.
+  unsetText?: string;
 }): React.ReactElement {
   const isUnset = !value;
   return (
@@ -68,15 +67,8 @@ function PathSegment({
     <span className="hoverable-row flex min-w-0 items-center gap-1.5 rounded-sm px-1.5 py-1">
       <Icon className="h-3.5 w-3.5 flex-none text-ink-3" />
       <span className={cn('flex-none', LABEL_MICRO)}>{label}</span>
-      {isUnset && hatchWhenUnset ? (
-        <span
-          className="h-3.5 w-12 flex-none rounded-sm border border-accent-soft-border"
-          style={{
-            backgroundImage: 'repeating-linear-gradient(45deg, var(--color-accent-soft) 0 4px, transparent 4px 8px)',
-          }}
-          role="img"
-          aria-label={`${label} not set`}
-        />
+      {isUnset && unsetText ? (
+        <span className="min-w-0 flex-1 truncate text-sm text-ink-3">{unsetText}</span>
       ) : value ? (
         // Native `title` has a real, noticeable OS-level show delay
         // (confirmed live, reported as "taking too much time to load") --
@@ -131,14 +123,30 @@ export function formatDestinationPreview(
   return path ? `${path} · state ${state}` : `state ${state}`;
 }
 
+const WRITE_STATE: Record<'proposed' | 'partial' | 'written', { label: string; icon: LucideIcon; color: string }> = {
+  proposed: { label: 'Writes to', icon: CircleDashed, color: 'var(--color-job-proposed)' },
+  partial: { label: 'Partly written to', icon: CircleDotDashed, color: 'var(--color-job-partial)' },
+  written: { label: 'Written to', icon: CircleCheck, color: 'var(--color-job-written)' },
+};
+
 export function DestinationBar({
   label = 'Destination',
+  compact = false,
   teamProject,
   areaPath,
   iterationPath,
   state,
+  writeState,
+  dedupScope,
 }: {
   label?: string;
+  // The job page (DESIGN.md §2 job states): whether the items are still proposed for this destination, partly written or written. Replaces
+  // the label with words and the state's icon.
+  writeState?: 'proposed' | 'partial' | 'written';
+  // How wide the duplicate check looked (the job page); omitted where it is not known.
+  dedupScope?: 'area_path' | 'project';
+  /** One row: the label, the path and the state together (the job page). The default keeps the label above the path. */
+  compact?: boolean;
   teamProject?: string | null;
   areaPath?: string | null;
   // DESIGN.md §11.2.2 -- the two segments DestinationBar was missing before
@@ -160,18 +168,24 @@ export function DestinationBar({
   // given at all," not "did stripping happen to leave nothing."
   const areaDisplay = areaPath == null ? areaPath : stripProjectPrefix(teamProject, areaPath) ?? areaPath;
   const iterationDisplay = iterationPath == null ? iterationPath : stripProjectPrefix(teamProject, iterationPath) ?? iterationPath;
+  const write = writeState ? WRITE_STATE[writeState] : null;
+  const labelRow = (
+    <div className="flex flex-none items-center gap-1">
+      {write && <write.icon className="h-3 w-3 flex-none" style={{ color: write.color }} aria-hidden="true" />}
+      <span className={LABEL_MICRO}>{write ? write.label : label}</span>
+      <InfoTip content="Where Write to Azure DevOps puts new work items. Existing items are only matched for reuse inside this exact area path." />
+    </div>
+  );
   return (
-    <div className="flex flex-col gap-1.5 rounded-sm border border-hairline-strong bg-surface-alt px-3 py-2 text-sm">
-      <div className="flex items-center gap-1">
-        <span className={LABEL_MICRO}>{label}</span>
-        <InfoTip content="Where Write to Azure DevOps puts new work items. Existing items are only matched for reuse inside this exact area path." />
-      </div>
-      <div className="flex flex-wrap items-center gap-0.5">
+    <div className={cn('rounded-sm border border-hairline-strong bg-surface-alt px-3 text-sm', compact ? 'py-1' : 'flex flex-col gap-1.5 py-2')}>
+      {!compact && labelRow}
+      <div className="flex flex-wrap items-center gap-0.5" {...(compact ? { 'data-destination-row': '' } : {})}>
+        {compact && <div className="mr-1.5 flex flex-none">{labelRow}</div>}
         <PathSegment icon={Briefcase} label="Project" value={teamProject} />
         <ChevronRight className="h-3 w-3 flex-none text-accent" aria-hidden="true" />
         <PathSegment icon={MapPin} label="Area" value={areaDisplay} />
         <ChevronRight className="h-3 w-3 flex-none text-accent" aria-hidden="true" />
-        <PathSegment icon={CalendarRange} label="Iteration" value={iterationDisplay} hatchWhenUnset />
+        <PathSegment icon={CalendarRange} label="Iteration" value={iterationDisplay} unsetText="Project default" />
         {/* State is a workflow status, not a location -- set apart behind a
             divider and rendered as a filled chip (not another path
             segment) so it reads as a stamp on the route, never a fourth
@@ -182,11 +196,17 @@ export function DestinationBar({
             'inline-flex flex-none items-center gap-1 rounded-full border border-accent-soft-border bg-accent-soft px-2 py-0.5',
             !state && 'border-hairline-strong bg-transparent',
           )}
-          aria-label={`State: ${state || 'not set'}`}
+          aria-label={`Work item state: ${state || 'not set'}`}
         >
           <CircleDot className="h-3 w-3 flex-none text-accent-ink" />
+          <span className="text-xs text-accent-ink">Work item state</span>
           <span className="text-xs font-semibold text-accent-ink">{state || '—'}</span>
         </span>
+        {dedupScope && (
+          <span className="text-xs text-ink-3">
+            {dedupScope === 'project' ? 'Duplicates checked across the whole project' : 'Duplicates checked in this area path'}
+          </span>
+        )}
       </div>
     </div>
   );

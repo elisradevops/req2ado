@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import { vi } from 'vitest';
 import { Wiki } from './Wiki';
 import { httpClient } from '../api/httpClient';
@@ -17,6 +17,15 @@ describe('Wiki', () => {
     render(<Wiki />);
     await screen.findByRole('heading', { level: 2, name: /req2ado user guide/i });
     expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
+  });
+
+  it('renders a markdown table as a table, not as pipes in a paragraph', async () => {
+    (httpClient.get as any).mockResolvedValue({ data: '## Keys\n\n| Key | Does |\n|---|---|\n| J | next item |\n| K | previous item |\n' });
+    render(<Wiki />);
+    const table = await screen.findByRole('table');
+    expect(within(table).getAllByRole('row')).toHaveLength(3);
+    expect(within(table).getByRole('columnheader', { name: 'Key' })).toBeInTheDocument();
+    expect(screen.queryByText(/\|---\|/)).not.toBeInTheDocument();
   });
 
   it('says it is loading to assistive technology from the first moment, while the placeholder is still undrawn', () => {

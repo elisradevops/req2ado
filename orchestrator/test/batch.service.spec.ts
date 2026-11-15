@@ -69,6 +69,20 @@ describe('BatchService.submitBatch', () => {
     });
   });
 
+  it('stores the chosen duplicate scope on the batch, and leaves it to the column default when none was chosen', async () => {
+    const prisma = makePrisma();
+    prisma.jobBatch.create.mockResolvedValue({ id: 'batch-1' });
+    prisma.jobBatchFile.create.mockResolvedValue({ id: 'file-0' });
+    const service = new BatchService(prisma, { submit: jest.fn() } as any, 25 * 1024 * 1024, 2, 5 * 60_000);
+    jest.spyOn(service, 'pumpOnce').mockResolvedValue({ submitted: 0, failed: 0 });
+
+    await service.submitBatch({ userId: 'user-1', areaPath: 'Project\\Area1', mode: 'survey', dedupScope: 'project', files: [makeFile()] });
+    expect(prisma.jobBatch.create).toHaveBeenLastCalledWith({ data: expect.objectContaining({ dedupScope: 'project' }) });
+
+    await service.submitBatch({ userId: 'user-1', areaPath: 'Project\\Area1', mode: 'survey', files: [makeFile()] });
+    expect(prisma.jobBatch.create.mock.calls[1][0].data).not.toHaveProperty('dedupScope');
+  });
+
   it('marks a bad-extension file invalid without rejecting its siblings', async () => {
     const prisma = makePrisma();
     prisma.jobBatch.create.mockResolvedValue({ id: 'batch-1' });
@@ -192,6 +206,99 @@ describe('BatchService.pumpOnce', () => {
     expect(result).toEqual({ submitted: 2, failed: 0 });
     expect(jobsService.submit).toHaveBeenCalledTimes(2);
     expect(jobsService.submit).toHaveBeenCalledWith(expect.objectContaining({ batchId: 'batch-1', mode: 'baseline' }));
+  });
+
+  it("passes the batch's duplicate scope to each submitted job, and the default for a batch stored before the column existed", async () => {
+    const prisma = makePrisma();
+    const files = [
+      makeQueuedFile({ id: 'f1', ordinal: 0, batch: { ...makeQueuedFile().batch, dedupScope: 'project' } }),
+      makeQueuedFile({ id: 'f2', ordinal: 1, batchId: 'batch-2', batch: { ...makeQueuedFile().batch, id: 'batch-2' } }),
+    ];
+    prisma.jobBatchFile.findMany.mockResolvedValue(files);
+    prisma.jobBatchFile.updateMany.mockResolvedValue({ count: 1 });
+    prisma.jobBatchFileBlob.findUnique.mockResolvedValue({ bytes: Buffer.from('hello') });
+    const jobsService = { submit: jest.fn().mockResolvedValue({ jobId: 'job-x' }) };
+    const service = new BatchService(prisma, jobsService as any, 25 * 1024 * 1024, 2, 5 * 60_000);
+
+    await service.pumpOnce();
+
+    expect(jobsService.submit).toHaveBeenCalledWith(expect.objectContaining({ batchId: 'batch-1', dedupScope: 'project' }));
+    expect(jobsService.submit).toHaveBeenCalledWith(expect.objectContaining({ batchId: 'batch-2', dedupScope: 'area_path' }));
+  });
+
+  describe('the document overview a SURVEY file is submitted with', () => {
+    const surveyBatch = () => ({ ...makeQueuedFile().batch, mode: 'survey' });
+    const overview = { synopsis: 'Two chapters.', caveat: null, lines: ['Two chapters.'], structureHint: 'numbered clauses', profile: { big: true } };
+
+    function setUp(files: any[], buildOverview?: jest.Mock) {
+      const prisma = makePrisma();
+      prisma.jobBatchFile.findMany.mockResolvedValue(files);
+      prisma.jobBatchFile.updateMany.mockResolvedValue({ count: 1 });
+      prisma.jobBatchFileBlob.findUnique.mockResolvedValue({ bytes: Buffer.from('hello') });
+      const jobsService = { submit: jest.fn().mockResolvedValue({ jobId: 'job-x' }) };
+      const service = new BatchService(prisma, jobsService as any, 25 * 1024 * 1024, 2, 5 * 60_000, buildOverview);
+      return { prisma, jobsService, service };
+    }
+
+    it("builds one from the stored file's bytes and submits it, without the bulky profile, as the single wizard does", async () => {
+      const buildOverview = jest.fn().mockResolvedValue(overview);
+      const { jobsService, service } = setUp([makeQueuedFile({ batch: surveyBatch() })], buildOverview);
+
+      await service.pumpOnce();
+
+      expect(buildOverview).toHaveBeenCalledWith(Buffer.from('hello'), 'a.txt');
+      expect(jobsService.submit).toHaveBeenCalledWith(
+        expect.objectContaining({ documentOverview: { synopsis: 'Two chapters.', caveat: null, lines: ['Two chapters.'], structureHint: 'numbered clauses' } }),
+      );
+    });
+
+    it('builds none for a BASELINE file, which makes no model call', async () => {
+      const buildOverview = jest.fn().mockResolvedValue(overview);
+      const { jobsService, service } = setUp([makeQueuedFile()], buildOverview);
+
+      await service.pumpOnce();
+
+      expect(buildOverview).not.toHaveBeenCalled();
+      expect(jobsService.submit.mock.calls[0][0]).not.toHaveProperty('documentOverview');
+    });
+
+    it('builds one only for the SURVEY files the throttle lets through this tick', async () => {
+      const buildOverview = jest.fn().mockResolvedValue(overview);
+      const files = [
+        makeQueuedFile({ id: 'f1', ordinal: 0, batch: surveyBatch() }),
+        makeQueuedFile({ id: 'f2', ordinal: 1, batch: surveyBatch() }),
+        makeQueuedFile({ id: 'f3', ordinal: 2, batch: surveyBatch() }),
+      ];
+      const { service } = setUp(files, buildOverview);
+
+      await service.pumpOnce();
+
+      expect(buildOverview).toHaveBeenCalledTimes(2); // batchSurveyConcurrency = 2, none active
+    });
+
+    it('fails open: a failed overview submits the file without one and logs once, never failing the file', async () => {
+      const error = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      const buildOverview = jest.fn().mockRejectedValue(new Error('ingestion down'));
+      const { prisma, jobsService, service } = setUp([makeQueuedFile({ batch: surveyBatch() })], buildOverview);
+
+      const result = await service.pumpOnce();
+
+      expect(result).toEqual({ submitted: 1, failed: 0 });
+      expect(jobsService.submit.mock.calls[0][0]).not.toHaveProperty('documentOverview');
+      expect(prisma.jobBatchFile.update).not.toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: 'submit_failed' }) }));
+      expect(error).toHaveBeenCalledTimes(1);
+      error.mockRestore();
+    });
+
+    it('submits without one when no overview builder is wired (or it finds none)', async () => {
+      const { jobsService, service } = setUp([makeQueuedFile({ batch: surveyBatch() })], jest.fn().mockResolvedValue(null));
+      await service.pumpOnce();
+      expect(jobsService.submit.mock.calls[0][0]).not.toHaveProperty('documentOverview');
+
+      const bare = setUp([makeQueuedFile({ batch: surveyBatch() })]);
+      await bare.service.pumpOnce();
+      expect(bare.jobsService.submit).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('submits only cap-minus-active SURVEY files and leaves the rest queued', async () => {

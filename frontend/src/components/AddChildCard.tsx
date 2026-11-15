@@ -72,7 +72,7 @@ export function AddChildCard({
         ) : (
           <>
             <Plus className="h-3.5 w-3.5" />
-            {parentEntry ? 'Add direct child WI' : 'New item'}
+            {parentEntry ? 'Add direct child item' : 'New item'}
           </>
         )}
       </Button>

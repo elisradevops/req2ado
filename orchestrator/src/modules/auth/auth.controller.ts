@@ -49,7 +49,7 @@ export class AuthController {
   async login(
     @Body() rawBody: unknown,
     @Res({ passthrough: true }) res: Response,
-  ): Promise<{ displayName: string; userId: string }> {
+  ): Promise<{ displayName: string; userId: string; email?: string; accountName?: string }> {
     const parseResult = loginRequestSchema.safeParse(rawBody);
     if (!parseResult.success) {
       throw new BadRequestException('Invalid request body: adoOrgUrl must be a valid URL, pat must be non-empty');
@@ -67,11 +67,16 @@ export class AuthController {
     }
 
     try {
-      const token = await this.sessionService.create(identity.identity, identity.displayName);
+      const { email, accountName, adoUserGuid } = identity;
+      const token = await this.sessionService.create(identity.identity, identity.displayName, {
+        ...(email ? { email } : {}),
+        ...(accountName ? { accountName } : {}),
+        ...(adoUserGuid ? { adoUserGuid } : {}),
+      });
       const ownerKey = userOwnerKey(identity.identity);
       await this.credentialVault.set(ownerKey, 'ado_pat', JSON.stringify({ orgUrl: body.adoOrgUrl, pat: body.pat }));
       res.cookie(SESSION_COOKIE_NAME, token, cookieOptions());
-      return { displayName: identity.displayName, userId: identity.identity };
+      return { displayName: identity.displayName, userId: identity.identity, ...(email ? { email } : {}), ...(accountName ? { accountName } : {}) };
     } catch (err) {
       // The PAT was proven valid above -- a failure here is an internal
       // fault (DB/session/vault), not a bad credential. Conflating it with
@@ -126,12 +131,18 @@ export class AuthController {
    */
   @Public()
   @Get('me')
-  async me(@Req() req: Request): Promise<{ authenticated: boolean; userId?: string; displayName?: string }> {
+  async me(@Req() req: Request): Promise<{ authenticated: boolean; userId?: string; displayName?: string; email?: string; accountName?: string }> {
     const token = req.cookies?.[SESSION_COOKIE_NAME] as string | undefined;
     if (!token) return { authenticated: false };
     const user = await this.sessionService.validate(token);
     if (!user) return { authenticated: false };
-    return { authenticated: true, userId: user.userId, displayName: user.displayName };
+    return {
+      authenticated: true,
+      userId: user.userId,
+      displayName: user.displayName,
+      ...(user.email ? { email: user.email } : {}),
+      ...(user.accountName ? { accountName: user.accountName } : {}),
+    };
   }
 
   /**

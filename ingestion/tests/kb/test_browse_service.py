@@ -70,3 +70,43 @@ def test_browse_subfolder_addresses_by_drive_and_item_id() -> None:
     assert result[0].name == "nested.pdf"
     assert result[0].is_folder is False
     graph_client.list_children_by_id.assert_called_once_with("drive-1", "item-1")
+
+
+def _child(item_id: str, is_folder: bool, drive_id: str | None = "drive-1") -> GraphFolderChild:
+    return GraphFolderChild(
+        id=item_id,
+        name=item_id,
+        mime_type=None,
+        size=1,
+        is_folder=is_folder,
+        download_url=None if is_folder else "https://x",
+        drive_id=drive_id,
+    )
+
+
+def test_every_child_reports_the_drive_it_lives_in_even_a_file() -> None:
+    # A file's own `drive_id` stays unset (that field means "descend into this folder with it"), but a batch ingest
+    # addresses a file by drive + item id, so each child also carries the drive it lives in.
+    graph_client = MagicMock()
+    graph_client.list_folder_children.return_value = [_child("f1", False), _child("d1", True)]
+
+    result = browse_shared_folder(VALID_URL, graph_client)
+
+    assert [c.parent_drive_id for c in result] == ["drive-1", "drive-1"]
+    assert result[0].drive_id is None
+
+
+def test_a_subfolder_listing_reports_the_parent_drive_too() -> None:
+    graph_client = MagicMock()
+    graph_client.list_children_by_id.return_value = [_child("f2", False, drive_id="drive-9")]
+
+    result = browse_subfolder("drive-9", "item-1", graph_client)
+
+    assert result[0].parent_drive_id == "drive-9"
+
+
+def test_a_child_whose_drive_graph_did_not_report_has_no_parent_drive() -> None:
+    graph_client = MagicMock()
+    graph_client.list_folder_children.return_value = [_child("f1", False, drive_id=None)]
+
+    assert browse_shared_folder(VALID_URL, graph_client)[0].parent_drive_id is None

@@ -104,3 +104,32 @@ def test_open_tbd_classification_applies_to_any_loaders_paragraph_blocks() -> No
     # A HEADING matching the same text pattern is never reclassified --
     # only PARAGRAPH blocks are in scope, matching ocr.py's own rule.
     assert result.blocks[1].kind == BlockKind.HEADING
+
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "text, is_marker",
+    [
+        # Ordinary prose that happens to contain the word is not a placeholder.
+        ("The Backplane shall comply as possible with SOSA Open VPX standard [1].", False),
+        ("Open the access hatch before servicing.", False),
+        ("The valve stays open until the pressure drops.", False),
+        # The markers themselves.
+        ("OPEN: confirm the vendor part number.", True),
+        ("TBD: finalize the thermal budget before release.", True),
+        ("tbd: lower-case marker still counts.", True),
+        ("Open: pending the customer's decision.", True),
+        ("open: lower-case label with a colon still counts.", True),
+        ("Latency shall not exceed TBD ms.", True),
+    ],
+)
+def test_open_tbd_marker_is_not_triggered_by_the_ordinary_word_open(text, is_marker) -> None:
+    from app.canonical.model import BlockKind
+    from app.dispatch import _OPEN_TBD_PATTERN as dispatch_pattern
+    from app.loaders.ocr import _OPEN_TBD_PATTERN as ocr_pattern
+
+    assert bool(dispatch_pattern.search(text)) is is_marker
+    assert bool(ocr_pattern.search(text)) is is_marker
+    assert BlockKind.OPEN_TBD  # the kind both patterns decide on

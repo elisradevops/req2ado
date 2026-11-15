@@ -43,6 +43,8 @@ export interface EtaEstimate {
   upperMinutes: number;
   basis: 'bootstrap' | 'blended';
   sampleCount: number;
+  // Finished runs of about this document's size (half to double its blocks) behind the fit; 0 means the number is extrapolated. Absent on an older server.
+  nearSizeSampleCount?: number;
   modelSampleCount: number;
   modelAdjustment: number;
   windowDays: number;
@@ -70,6 +72,8 @@ export interface PreviewResult {
   documentMap: DocumentMapSection[];
   /** The step-3 overview, made from the parsed text and structure alone. Absent from a server that predates it. */
   overview?: DocumentOverview & { profile?: { summaryInput?: string } };
+  /** The result-cache hash of the file's bytes (not its name), for getCachedResult. Absent from a server that predates it. */
+  fileHash?: string;
 }
 
 /** The wizard's overview of a document: `lines` is what step 3 shows, each read off the document's text and structure. */
@@ -87,12 +91,26 @@ export interface DocumentOverview {
  * The optional AI summary of the document: written by the server from the small prepared input the preview returned, and checked against it.
  * Null when there is none, and also when the call fails or is cancelled: the summary is a bonus, never a reason to show an error.
  */
-export async function previewSummary(params: { summaryInput: string; model?: string }, signal?: AbortSignal): Promise<string | null> {
+// fresh: "Write it again" -- the server asks the model even when it already holds a summary for this input.
+export async function previewSummary(params: { summaryInput: string; model?: string; fresh?: boolean }, signal?: AbortSignal): Promise<string | null> {
   try {
     const response = await httpClient.post<{ summary: string | null }>('/jobs/preview/summary', params, { signal });
     return response.data?.summary ?? null;
   } catch {
     return null;
+  }
+}
+
+/** Whether a SURVEY job of this file (by preview's fileHash) would be served from the result cache. False on any failure: a courtesy note. */
+export async function getCachedResult(
+  params: { fileHash: string; mode: 'baseline' | 'survey'; model?: string },
+  signal?: AbortSignal,
+): Promise<boolean> {
+  try {
+    const response = await httpClient.get<{ cachedResult?: boolean }>('/jobs/cached-result', { params, signal });
+    return response.data?.cachedResult === true;
+  } catch {
+    return false;
   }
 }
 
@@ -136,6 +154,8 @@ export interface SubmitJobParams {
   mode: 'baseline' | 'survey';
   state?: string;
   iterationPath?: string;
+  // How wide the duplicate check looks: the area path and everything under it (the default; not sent) or the whole project.
+  dedupScope?: 'area_path' | 'project';
   // SURVEY-only LLM model override (BASELINE never calls an LLM). Unset
   // means "use whatever the orchestrator is configured with".
   model?: string;
@@ -153,6 +173,7 @@ export async function submitJob(params: SubmitJobParams): Promise<{ jobId: strin
   form.append('mode', params.mode);
   if (params.state) form.append('state', params.state);
   if (params.iterationPath) form.append('iterationPath', params.iterationPath);
+  if (params.dedupScope === 'project') form.append('dedupScope', params.dedupScope);
   if (params.model) form.append('model', params.model);
   if (params.documentOverview) form.append('documentOverview', JSON.stringify(params.documentOverview));
   const response = await httpClient.post('/jobs', form);
@@ -186,7 +207,7 @@ export async function getJob(id: string): Promise<JobDetail> {
   return response.data;
 }
 
-export async function confirmJob(id: string): Promise<{ status: string; createdCount: number }> {
+export async function confirmJob(id: string): Promise<{ status: string; createdCount: number; linkedInsteadCount?: number }> {
   const response = await httpClient.post(`/jobs/${id}/confirm`);
   return response.data;
 }
@@ -244,6 +265,18 @@ export async function addDiscussionEntry(
 
 export async function removeDiscussionEntry(jobId: string, localId: string, entryId: string): Promise<{ dryRunDiff: unknown }> {
   const response = await httpClient.delete(`/jobs/${jobId}/diff/${localId}/discussion/${entryId}`);
+  return response.data;
+}
+
+// "Create as new item" on a skipped near-duplicate: it becomes a new item that remembers what it matched, optionally linked into the job's tree
+// and optionally Related to the item it matched. The existing item is never changed. See JobsService.overrideDuplicate.
+export async function overrideDuplicate(jobId: string, localId: string, options: { linkTree: boolean; relateToExisting: boolean }): Promise<{ dryRunDiff: unknown }> {
+  const response = await httpClient.post(`/jobs/${jobId}/diff/${localId}/duplicate-override`, options);
+  return response.data;
+}
+
+export async function undoDuplicateOverride(jobId: string, localId: string): Promise<{ dryRunDiff: unknown }> {
+  const response = await httpClient.delete(`/jobs/${jobId}/diff/${localId}/duplicate-override`);
   return response.data;
 }
 
@@ -465,6 +498,24 @@ export async function getDedupSkips(id: string): Promise<DedupSkipEntry[]> {
 // the figure was never stored, or was already attached to ADO and deleted
 // server-side (see attachFigureToAdo below) -- both are normal states the
 // caller renders a quiet placeholder for, not application errors.
+// The original wording behind one item, read again from the job's kept upload (the evidence strip). 'section' is a SURVEY
+// item's whole source section (its words are written from it, not copied); 'table' is the table, or the row, it came from.
+// 'unavailable' is a normal answer (no kept original, no span of its own, a parse that failed or timed out).
+export type EntrySource =
+  | { kind: 'text' | 'table' | 'section'; text: string; truncated: boolean }
+  | { kind: 'unavailable'; reason?: 'no_original' | 'no_span' | 'parse_failed' };
+
+export async function getEntrySource(jobId: string, localId: string, signal?: AbortSignal): Promise<EntrySource> {
+  const response = await httpClient.get<EntrySource>(`/jobs/${jobId}/diff/${localId}/source`, { signal });
+  const data = response.data as Partial<{ kind: unknown; text: unknown; truncated: unknown; reason: unknown }> | undefined;
+  if ((data?.kind === 'text' || data?.kind === 'table' || data?.kind === 'section') && typeof data.text === 'string' && data.text) {
+    return { kind: data.kind, text: data.text, truncated: data.truncated === true };
+  }
+  // Anything else is shown as "no wording", never as a quote.
+  if (data?.reason === 'no_original' || data?.reason === 'no_span' || data?.reason === 'parse_failed') return { kind: 'unavailable', reason: data.reason };
+  return { kind: 'unavailable' };
+}
+
 export async function getFigureFile(jobId: string, figureId: string): Promise<Blob | null> {
   try {
     const response = await httpClient.get(`/jobs/${jobId}/figures/${figureId}`, { responseType: 'blob' });

@@ -414,6 +414,38 @@ def test_two_byte_identical_requirement_lines_get_distinct_identity_hashes() -> 
     )  # different position, distinct identity
 
 
+def test_two_byte_identical_requirement_lines_get_distinct_v2_identity_hashes() -> None:
+    # The v2 twin of the test above: v2 holds no position, so the two identical lines (their numbering is not part of the anchor) are told
+    # apart by their ordinal among nodes with the same section, type and anchor -- never collapsed into one ADO item.
+    path = "repeats.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="repeatshash"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Power Sequencing", source_ref=_sr(path, 0, 18)),
+            Block(
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
+                text="1.1 GA2 shall be replaced to signal PS_INPUT_FAIL_L.",
+                source_ref=_sr(path, 19, 72),
+            ),
+            Block(
+                id="b2",
+                kind=BlockKind.PARAGRAPH,
+                text="1.2 GA2 shall be replaced to signal PS_INPUT_FAIL_L.",
+                source_ref=_sr(path, 73, 126),
+            ),
+        ],
+    )
+    tree = build_baseline_tree(doc)
+    repeated = [n for n in tree.nodes if "GA2 shall be replaced" in n.description]
+    assert len(repeated) == 2
+    assert repeated[0].identity_hash_v2 and repeated[1].identity_hash_v2
+    assert repeated[0].identity_hash_v2 != repeated[1].identity_hash_v2
+    # The content hash is of each line's own source span (up to the next node), so two identical lines need not share one: it is the v2
+    # identity, not the content hash, that keeps them two items. Both have one.
+    assert repeated[0].content_hash and repeated[1].content_hash
+
+
 def test_title_is_truncated_to_256_chars() -> None:
     long_text_doc = CanonicalDoc(
         document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),

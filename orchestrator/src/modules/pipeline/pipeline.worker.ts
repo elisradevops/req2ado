@@ -1,17 +1,18 @@
-import { describeFailure } from './failure-reason';
+import { dropNoticeIdsFromMissingIdWarning, excludeBoilerplate } from './document-boilerplate';
+import { classifyFailure, describeFailure } from './failure-reason';
 import { joinContexts } from './document-profile';
-import { JobResultCache, hashCatalog, isDegradedResult, kbVersionFor, type CachedResult } from './result-cache';
-import crypto from 'crypto';
-import { DEFAULT_PRIMER_OPTIONS, runPrimerStep, type PrimerCache, type PrimerStepOptions } from './primer.step';
+import { JobResultCache, fileHashOf, hashCatalog, isDegradedResult, kbVersionFor, type CachedResult } from './result-cache';
+import { DEFAULT_PRIMER_OPTIONS, OVERVIEW_REUSED_KIND, runPrimerStep, type PrimerCache, type PrimerStepOptions } from './primer.step';
 import { Prisma } from '@prisma/client';
 import type { PrismaClient } from '@prisma/client';
 import type { IngestionHttpClient } from './ingestion-http.client';
 import type { CanonicalDoc } from '@req2ado/shared-ts';
 import type { OpenWebUiClientFactory } from '../llm/openwebui-client.factory';
-import { resolveCrossJobTraceLinks, verifyExistingAdoIdsStillExist, type WarningRecord } from '../writeback/dry-run.service';
+import { changedSinceWrittenWarning, resolveCrossJobTraceLinks, verifyExistingAdoIdsStillExist, type WarningRecord } from '../writeback/dry-run.service';
 import type { DryRunService, DryRunTreeNode } from '../writeback/dry-run.service';
 import type { IdempotencyService } from '../writeback/idempotency.service';
 import type { BackfillService } from '../writeback/backfill.service';
+import { recordDecisions, selectRowsToLog, type DedupCheckObservation } from './dedup-decision-log';
 import type { JobEventsPublisher } from './job-events.publisher';
 import type { ProgressService } from './progress.service';
 import type { McpClient, AdoRequestCredential } from './mcp.client';
@@ -28,6 +29,10 @@ import { splitProposal, type DiffProposal } from './description-html';
 // workflow, short enough that a stale scan self-heals within a day with
 // zero manual action.
 const AREA_PATH_BACKFILL_STALE_AFTER_MS = 24 * 60 * 60 * 1000;
+
+// The layout of what the backfill puts in the similarity index. Bump it when that changes (this one: each entry carries its kind, and
+// the index knows which area paths exist), so every area path is scanned again at once instead of after up to 24 hours.
+export const DEDUP_INDEX_VERSION = 2;
 
 /**
  * Closes the "manually-created ADO items are invisible to dedup" gap for
@@ -49,22 +54,40 @@ async function maybeBackfillAreaPath(
   areaPath: string,
   credential: AdoRequestCredential | undefined,
   userId?: string,
+  // The embedding model the index is built with: a different model starts with an empty index, so a scan made under another one
+  // does not count.
+  embedModel = '',
 ): Promise<void> {
   try {
     const existing = await prisma.areaPathBackfill.findUnique({ where: { areaPath } });
-    const isStale = !existing || Date.now() - existing.lastBackfilledAt.getTime() > AREA_PATH_BACKFILL_STALE_AFTER_MS;
+    const isStale =
+      !existing ||
+      existing.indexVersion !== DEDUP_INDEX_VERSION ||
+      existing.embedModel !== embedModel ||
+      Date.now() - existing.lastBackfilledAt.getTime() > AREA_PATH_BACKFILL_STALE_AFTER_MS;
     if (!isStale) return;
     const result = await backfillService.backfillAreaPath(areaPath, credential, userId);
-    if (result?.dedupUpsertFailed) {
+    if (result?.dedupUpsertFailed || result?.dedupUpsertRefused) {
       // The similarity index was not updated: do not record the area path as done, the next job tries again.
       // eslint-disable-next-line no-console -- worker process logging, not app logging
       console.error(`Area-path backfill for ${areaPath} could not update the dedup index; it will be retried by the next job`);
       return;
     }
+    // What it found, so an area path with no items (or a wrong one) can be told apart from "no duplicates".
+    if (result) {
+      const reasons = Object.entries(result.skippedReasons ?? {})
+        .map(([reason, count]) => `${reason}: ${count}`)
+        .join(', ');
+      // eslint-disable-next-line no-console -- worker process logging, not app logging
+      console.info(
+        `Area-path backfill for ${areaPath}: scanned ${result.scanned}, seeded ${result.seeded}, skipped ${result.skipped}${reasons ? ` (${reasons})` : ''}` +
+          (result.scanned === 0 ? '; no work items were found in this area path, so there is nothing to match against there yet' : ''),
+      );
+    }
     await prisma.areaPathBackfill.upsert({
       where: { areaPath },
-      create: { areaPath, lastBackfilledAt: new Date() },
-      update: { lastBackfilledAt: new Date() },
+      create: { areaPath, lastBackfilledAt: new Date(), indexVersion: DEDUP_INDEX_VERSION, embedModel },
+      update: { lastBackfilledAt: new Date(), indexVersion: DEDUP_INDEX_VERSION, embedModel },
     });
   } catch (error) {
     // eslint-disable-next-line no-console -- worker process logging, not app logging
@@ -86,6 +109,8 @@ export interface PipelineJobInput {
   // areaPath (ADO write-back destination + dedup key only). Nullable: an
   // older/mocked job predating this field simply gets no KB grounding.
   userId: string | null;
+  // How wide the duplicate check looks: the area path and the ones under it (the default), or the whole project.
+  dedupScope?: 'area_path' | 'project' | null;
   mode: 'baseline' | 'survey';
   fileBuffer: Buffer;
   filename: string;
@@ -113,6 +138,8 @@ export interface PipelineWorkerDeps {
   mcpClient: McpClient;
   // See maybeBackfillAreaPath's own doc comment.
   backfillService: BackfillService;
+  // The embedding model of the similarity index, so a scan made under another model is not trusted. Absent: ''.
+  embedModel?: string;
   // Resolves the submitting user's vaulted ADO credential (by job.userId)
   // for the real-ADO-backend discovery calls below (discoverLinkTypes,
   // discoverFields) -- previously these ran with NO credential at all
@@ -333,6 +360,10 @@ interface LeveledNode {
   // the mapping -- falls back to fidelity_hash at the diffInputs mapping
   // below, i.e. the pre-identity_hash behavior exactly.
   identity_hash?: string | null;
+  // W1 content-aware identity and content hash (see ingestion/app/leveling/identity_v2.py, DryRunTreeNode.identityHashV2). Optional for
+  // the same backward-compat reason as identity_hash: an older or cached ingestion result predating them keeps the v1 lookup.
+  identity_hash_v2?: string | null;
+  content_hash?: string | null;
   customer_id: string | null;
   // Optional, same backward-compat reason as the scoring fields below --
   // an older/mocked ingestion response predating this field must not crash
@@ -485,6 +516,8 @@ export async function runPipelineJob(
   job: PipelineJobInput,
   deps: PipelineWorkerDeps,
 ): Promise<ReturnType<DryRunService['diff']> extends Promise<infer T> ? T : never> {
+  // The last pipeline stage that was reached, kept for a failure record: where a run stopped is the first thing to know about it.
+  let reachedStage: string | null = null;
   try {
     // Narrow but real race: cancel() couldn't remove the BullMQ job because
     // the worker had already picked it up (state 'active') the instant
@@ -516,6 +549,7 @@ export async function runPipelineJob(
     // model it never used.
     await updateUnlessCancelled(deps.prisma, job.id, { status: 'running', startedAt: new Date(), model: job.mode === 'survey' ? model : null });
     await deps.jobEventsPublisher.publish(job.id, 'parse');
+    reachedStage = 'parse';
     // Resolved BEFORE ingest (rather than after, as before) so it's ready
     // for maybeBackfillAreaPath below without a second, redundant vault
     // lookup -- see PipelineWorkerDeps.adoCredentialResolver's doc comment.
@@ -650,7 +684,7 @@ export async function runPipelineJob(
     const keyFor = (profileVersion: string | null): string | null =>
       deps.resultCache && cacheScope && cacheKbVersion !== null && job.userId
         ? deps.resultCache.keyFor({
-            fileHash: crypto.createHash('sha256').update(job.fileBuffer).digest('hex'),
+            fileHash: fileHashOf(job.fileBuffer),
             userId: job.userId,
             model,
             mode: job.mode,
@@ -724,7 +758,12 @@ export async function runPipelineJob(
               visionPlan?.skipReason,
               cancelSignal,
             ),
-        maybeBackfillAreaPath(deps.prisma, deps.backfillService, job.areaPath, credential, job.userId ?? undefined),
+        maybeBackfillAreaPath(deps.prisma, deps.backfillService, job.areaPath, credential, job.userId ?? undefined, deps.embedModel ?? ''),
+        // A job that searches the whole project needs every area of it in the index, not only the ones an earlier job happened to scan:
+        // the project's root area path covers all of them.
+        ...(job.dedupScope === 'project' && job.areaPath.includes('\\')
+          ? [maybeBackfillAreaPath(deps.prisma, deps.backfillService, job.areaPath.split('\\')[0], credential, job.userId ?? undefined, deps.embedModel ?? '')]
+          : []),
       ]),
     );
 
@@ -828,6 +867,7 @@ export async function runPipelineJob(
     // members would imply.
 
     await deps.jobEventsPublisher.publish(job.id, 'infer_hierarchy_start');
+    reachedStage = 'infer_hierarchy_start';
     // job.userId (KB scope), NOT job.areaPath (ADO write-back destination --
     // see diffInputs[].areaPath and checkDuplicate below, both correctly
     // still using job.areaPath).
@@ -857,7 +897,8 @@ export async function runPipelineJob(
         console.info(`Job ${job.id}: /level finished in ${Date.now() - levelStartedAt} ms, ${(levelResult as { nodes?: unknown[] })?.nodes?.length ?? 0} nodes`);
         const leveled = levelResult as { warnings?: { kind: string }[] };
         const degraded =
-          primerWarnings.length > 0 || scored.degraded === true || isDegradedResult(leveled?.warnings, doc.figures as { caption_status?: string }[] | undefined);
+          // A reused overview is a healthy run (it only explains why the run was fast); every other primer warning means the overview was missing.
+          primerWarnings.some((w) => w.kind !== OVERVIEW_REUSED_KIND) || scored.degraded === true || isDegradedResult(leveled?.warnings, doc.figures as { caption_status?: string }[] | undefined);
         if (deps.resultCache && cacheKey && !degraded) {
           // Under the rubric the job was scored with (an older ingestion that does not say: the scope read before the job).
           const storeKey = keyFor(scored.rubricVersion !== undefined ? scored.rubricVersion : (cacheScope?.profile ?? null));
@@ -874,13 +915,14 @@ export async function runPipelineJob(
     const tree = levelResult as {
       nodes: LeveledNode[];
       warnings?: LeveledWarning[];
-      kb_citations?: { source_file: string; similarity: number; relevance: string }[];
+      kb_citations?: { source_file: string; similarity: number; relevance: string; inclusion?: string }[];
       kb_coverage?: { files_available: number; files_cited: number } | null;
       trace_links?: LeveledTraceLink[];
       excluded_figure_ids?: string[];
       excluded_table_ids?: string[];
     };
     await deps.jobEventsPublisher.publish(job.id, 'generate_requirements_done');
+    reachedStage = 'generate_requirements_done';
     // The dominant wall-clock cost (15-40+ min for SURVEY) just finished --
     // this is the most valuable checkpoint to notice a cancel() request
     // that arrived while it was running.
@@ -934,6 +976,8 @@ export async function runPipelineJob(
         // fidelity_hash; dry-run.service.ts's `?? undefined` handles the
         // null case for an older/mocked node shape.
         legacySourceHash: node.fidelity_hash,
+        identityHashV2: node.identity_hash_v2 ?? undefined,
+        contentHash: node.identity_hash_v2 ? (node.content_hash ?? null) : undefined,
         customerId: node.customer_id,
         // Always null coming out of ingestion (see WorkItemNode.
         // se_coverage_ref's own docstring) -- carried through purely so a
@@ -1072,6 +1116,7 @@ export async function runPipelineJob(
     // silent for however long the idempotency/dedup-check burst took with
     // no way to tell it from a stall.
     await deps.jobEventsPublisher.publish(job.id, 'dedup_check');
+    reachedStage = 'dedup_check';
     // Fetched once per job, not per node -- a live-editable value read
     // hundreds of times in a tight loop would be needless DB load for a
     // number that can't meaningfully change mid-job. Fail-open (same
@@ -1085,18 +1130,36 @@ export async function runPipelineJob(
     );
     // Job transparency (B9b): passed only when live progress is configured, so
     // every existing call keeps exactly its previous arguments.
-    const liveJobIdArg: [string] | [] = deps.progressService ? [job.id] : [];
+    const liveJobId: string | undefined = deps.progressService ? job.id : undefined;
+    const dedupScope = job.dedupScope === 'project' ? 'project' : 'area_path';
+    // How many checks could not run (the embedding service was down or refused): each such item is created as if there were no
+    // duplicate check, so the reviewer is told rather than left to assume none were found.
+    let dedupChecksFailed = 0;
     // Timed per call: the duplicate check is one embed (and sometimes one judge call) per node, and a slow rerun cannot be explained without
     // knowing how long each took. One counts-only summary line below.
     const dedupDurations: number[] = [];
+    const dedupObservations: DedupCheckObservation[] = [];
     const dedupStartedAt = Date.now();
     const diff = await deps.dryRunService.diff(
       diffInputs,
       deps.idempotencyService,
-      async (text, title, areaPath) => {
+      async (text, title, areaPath, typeCategory, localId) => {
         const startedAt = Date.now();
         try {
-          return await deps.ingestionClient.checkDuplicate(text, title, areaPath, dedupThreshold, job.userId ?? undefined, ...liveJobIdArg);
+          const checked = await deps.ingestionClient.checkDuplicate(text, title, areaPath, dedupThreshold, job.userId ?? undefined, liveJobId, {
+            typeCategory,
+            scope: dedupScope,
+          });
+          // What each check found, for the decision log below (which keeps only the ones that reached the threshold).
+          dedupObservations.push({
+            localId, itemType: typeCategory, areaPath, title, text,
+            isDuplicate: checked.isDuplicate, matchedItemId: checked.matchedItemId, matchedText: checked.matchedText ?? null,
+            similarity: checked.similarity, judgeVerdict: checked.judgeVerdict ?? null,
+          });
+          return checked;
+        } catch (error) {
+          dedupChecksFailed += 1;
+          throw error;
         } finally {
           dedupDurations.push(Date.now() - startedAt);
         }
@@ -1112,6 +1175,9 @@ export async function runPipelineJob(
         });
       },
     );
+
+    // Why items were skipped, kept for a while after this job is gone. Best-effort: never fails the job.
+    await recordDecisions(deps.prisma, selectRowsToLog(job.id, dedupScope, dedupThreshold, dedupObservations));
 
     // Generated sections (proposed acceptance criteria, "Needs author input") were held out of the description above, so the dedup check and
     // the reviewer's text never contain them; they travel on the entry and reach ADO only when the reviewer accepts them (confirm()).
@@ -1144,6 +1210,15 @@ export async function runPipelineJob(
     // so a stale match is already downgraded to 'create' in what that step
     // (and the Prisma write after it) both operate on.
     const verificationWarnings: WarningRecord[] = [];
+    if (dedupChecksFailed > 0) {
+      verificationWarnings.push({
+        kind: 'dedup_check_failed',
+        severity: 'pipeline_issue',
+        nodeIds: [],
+        detail: { failed: dedupChecksFailed, total: dedupDurations.length },
+        raw: `${dedupChecksFailed} of ${dedupDurations.length} duplicate checks could not run`,
+      });
+    }
     const verifiedDiff = await verifyExistingAdoIdsStillExist(
       diff,
       (ids) => deps.mcpClient.getWorkItemsBatch(ids, credential),
@@ -1152,7 +1227,12 @@ export async function runPipelineJob(
         console.error(`verifyExistingAdoIdsStillExist failed for job ${job.id}:`, message);
         verificationWarnings.push({ kind: 'ado_verification_failed', severity: 'pipeline_issue', nodeIds: [], detail: {}, raw: message });
       },
+      // W1: an old mapping has no content hash, so the text in ADO is compared instead -- only for verbatim BASELINE text.
+      { compareText: job.mode === 'baseline' },
     );
+    // W1: one Check notice listing every reused item whose content changed since it was written (nothing is updated in ADO, D-W1b).
+    const changedWarning = changedSinceWrittenWarning(verifiedDiff);
+    if (changedWarning) verificationWarnings.push(changedWarning);
     // Best-effort cleanup: a 'reuse' (exact-hash IdempotencyMapping) match
     // that just got downgraded means that row now points at a dead ADO
     // id -- delete it so this SAME node doesn't match the same stale id
@@ -1188,7 +1268,7 @@ export async function runPipelineJob(
       }
     }
 
-    const resolvedDiff =
+    const resolvedDiffBeforeNotices =
       resolvedCustomerIdField !== null
         ? await Promise.all(
             verifiedDiff.map(async (entry) => ({
@@ -1201,6 +1281,8 @@ export async function runPipelineJob(
             })),
           )
         : verifiedDiff;
+    // SURVEY drafts a document's own notices (a disclaimer, a revision table) as Requirements; they are left out by default, with one Info warning.
+    const { diff: resolvedDiff, warning: boilerplateWarning } = excludeBoilerplate(resolvedDiffBeforeNotices, job.mode);
 
     // Third and final cooperative-cancellation checkpoint. The two earlier
     // checkpoints (before ingest(), right after level()) do not cover the
@@ -1226,18 +1308,23 @@ export async function runPipelineJob(
         status: 'diff_ready',
         dryRunDiff: resolvedDiff as any,
         warnings: [
-          ...(tree.warnings ?? []).map(
-            (w): WarningRecord => ({ kind: w.kind, severity: w.severity, nodeIds: w.node_ids, detail: w.detail, raw: w.raw }),
+          ...dropNoticeIdsFromMissingIdWarning(
+            (tree.warnings ?? []).map(
+              (w): WarningRecord => ({ kind: w.kind, severity: w.severity, nodeIds: w.node_ids, detail: w.detail, raw: w.raw }),
+            ),
+            boilerplateWarning?.nodeIds ?? [],
           ),
           ...verificationWarnings,
           ...figureStorageWarnings,
           ...figureCaptionWarnings,
           ...primerWarnings,
+          ...(boilerplateWarning ? [boilerplateWarning] : []),
         ] as any,
         kbCitations: (tree.kb_citations ?? []).map((c) => ({
           sourceFile: c.source_file,
           similarity: c.similarity,
           relevance: c.relevance,
+          inclusion: c.inclusion,
         })) as any,
         // Explicit NULL when ingestion reported no coverage (BASELINE, SURVEY
         // without KB grounding, listing failure) so a re-run never keeps a
@@ -1328,7 +1415,9 @@ export async function runPipelineJob(
     // 'cancelled' when this ran.
     const failureWrite = await deps.prisma.job.updateMany({
       where: { id: job.id, status: { not: 'cancelled' } },
-      data: { status: 'failed' },
+      // Why it failed, stored with the status in one write: the cause, its class and the stage reached. The audit line below says the same in
+      // text; these are what the job page and the Jobs list read without parsing it.
+      data: { status: 'failed', failedStage: reachedStage, failureClass: classifyFailure(error), failureMessage: describeFailure(error) },
     });
     if (failureWrite.count === 0) {
       // Do not rethrow: this runs inside a BullMQ sandboxed processor

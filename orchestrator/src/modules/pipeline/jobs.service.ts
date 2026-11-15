@@ -16,11 +16,13 @@ import { createHash, randomUUID } from 'crypto';
 import type { McpClient } from './mcp.client';
 import { IngestionHttpError, type IngestionHttpClient, type RewriteComparison, type ScoreExplanation } from './ingestion-http.client';
 import { buildChatContext } from '../chat/chat-context';
+import { idempotencyMapKey } from '../writeback/idempotency.service';
 import type { IdempotencyService } from '../writeback/idempotency.service';
-import type { DiscussionEntry, DryRunDiffEntry, WarningRecord } from '../writeback/dry-run.service';
+import type { DiscussionEntry, DryRunDiffEntry, TraceLink, WarningRecord } from '../writeback/dry-run.service';
 import { mapWithConcurrency, type SettledResult } from './map-with-concurrency';
 import { buildExclusionChecker, filterExcludedDiffEntries, summarizeDiffEntries } from './diff-summary';
 import { attachableFigureIds, buildWritePreview, findOrphanedSelections, findUnknownSelections, planHasWork, selectEntriesToCreate, selectEntriesToLink, selectTraceLinks, type WritePlanEntry, type WritePreview } from './write-plan';
+import { COUNTED_ACK_KINDS, openFixItems } from './write-gate';
 import { DEFAULT_CUSTOMER_ID_FIELD_CANDIDATES } from '../../config/customer-id-fields';
 import {
   DEFAULT_REQUIREMENT_TYPE_FIELD_CANDIDATES,
@@ -32,6 +34,7 @@ import { canonicalizeForCompare, composeAdoDescriptionHtml, composeAdoDiscussion
 import type { JobEventsPublisher } from './job-events.publisher';
 import { canNest, canBeRoot } from './canNest';
 import { attachFigures, buildFigureAttachmentFilename, sanitizeFigureError } from './figure-attach';
+import { setReviewerOutcomes } from './dedup-decision-log';
 
 export { buildFigureAttachmentFilename };
 
@@ -59,6 +62,8 @@ export interface SubmitJobInput {
   // KB grounding simply stays off for a job with no resolved identity.
   userId: string | null;
   mode: 'baseline' | 'survey';
+  // How wide the duplicate check looks: the area path and the ones under it (the default), or the whole project.
+  dedupScope?: 'area_path' | 'project';
   fileBuffer: Buffer;
   filename: string;
   sourceHash: string;
@@ -105,6 +110,9 @@ export interface JobSummary {
   // JobsList render a "Batch" chip linking back to the batch's own status
   // page. null/undefined for the overwhelming majority of jobs.
   batchId: string | null;
+  // The class of a failed job's failure (failure-reason.ts FAILURE_CLASSES), so a failed row can say why; null for any other job and for a job
+  // that failed before it was recorded.
+  failureClass: string | null;
 }
 
 // Read-time decoration of diff entries: `attachFigureIds` is the figures confirm() would attach for the entry (the server owns that rule, so the
@@ -195,16 +203,30 @@ export interface JobDetail {
   // text can no longer change -- setProposalAccepted/editDiffEntry 400 on it,
   // and the client uses this list to lock those controls up front.
   writtenLocalIds: string[];
+  // The Azure DevOps id of each written item (from the write's own record), so a written job can show #12000 on its rows. Empty until a write.
+  writtenItems: { localId: string; adoId: number }[];
+  // Why a failed job failed (null for any other job, and for a job that failed before this was recorded: its cause is then only in the audit trail).
+  // How wide the duplicate check looked: this area path only, or the whole project.
+  dedupScope: 'area_path' | 'project';
+  failedStage: string | null;
+  failureClass: string | null;
+  failureMessage: string | null;
   documentOverview: DocumentOverview | null;
 }
 
-type DedupUpsertItem = { itemId: string; text: string; title: string; areaPath: string };
+type DedupUpsertItem = { itemId: string; text: string; title: string; areaPath: string; typeCategory?: string };
 const DEDUP_REINDEX_CHUNK_SIZE = 200;
 
 // One definition of what a created item contributes to the duplicate index, shared by confirm() and reindexDedup() so they cannot drift.
-function buildDedupUpsertItem(adoWorkItemId: number, entry: { title: string; description: string }, areaPath: string): DedupUpsertItem {
-  return { itemId: String(adoWorkItemId), text: entry.description, title: entry.title, areaPath };
+function buildDedupUpsertItem(adoWorkItemId: number, entry: { title: string; description: string; type?: string }, areaPath: string): DedupUpsertItem {
+  // `type` is the kind (Epic / Feature / Requirement): a later check compares an item only with items of its own kind.
+  return { itemId: String(adoWorkItemId), text: entry.description, title: entry.title, areaPath, ...(entry.type ? { typeCategory: entry.type } : {}) };
 }
+
+// How a counted acceptance reads on the audit trail, per kind (the kinds are write-gate's COUNTED_ACK_KINDS).
+const COUNTED_ACCEPTANCE_LABELS: Record<string, { singular: string; plural: string; without: string }> = {
+  missing_source_reference: { singular: 'requirement', plural: 'requirements', without: 'without a Customer ID' },
+};
 
 @Injectable()
 export class JobsService implements OnModuleInit, OnModuleDestroy {
@@ -341,6 +363,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         areaPath: input.areaPath,
         adoProject: input.adoProject ?? null,
         userId: input.userId,
+        dedupScope: input.dedupScope ?? 'area_path',
         state: input.state ?? this.initialState,
         iterationPath: input.iterationPath ?? null,
         originalFilename: input.filename,
@@ -367,6 +390,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         areaPath: input.areaPath,
         adoProject: input.adoProject ?? null,
         userId: input.userId,
+        dedupScope: input.dedupScope ?? 'area_path',
         mode: input.mode,
         fileBufferBase64: input.fileBuffer.toString('base64'),
         filename: input.filename,
@@ -385,8 +409,10 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     if (input.fileBuffer.length <= this.maxStoredSourceBytes) {
       try {
         await this.prisma.jobSourceFile.create({ data: { jobId: job.id, bytes: input.fileBuffer } });
-      } catch {
-        // Swallowed deliberately -- see comment above.
+      } catch (error) {
+        // Not fatal (see comment above), but a job whose upload was not kept cannot be re-run from it: say so.
+        // eslint-disable-next-line no-console -- operational visibility for a best-effort path, not app logging
+        console.error(`Could not store the uploaded file for job ${job.id}; it cannot be re-run from the original:`, error);
       }
     }
     return { jobId: job.id };
@@ -412,6 +438,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       areaPath: job.areaPath,
       adoProject: job.adoProject,
       userId: job.userId,
+      dedupScope: job.dedupScope === 'project' ? 'project' : 'area_path',
       mode: job.mode as 'baseline' | 'survey',
       fileBuffer: Buffer.from(sourceFile.bytes),
       filename: job.originalFilename,
@@ -622,11 +649,12 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       include: {
         traceLinkFailures: true,
         _count: { select: { createdItemMappings: true } },
-        createdItemMappings: { select: { localId: true } },
+        createdItemMappings: { select: { localId: true, adoWorkItemId: true } },
       },
     });
     if (!job) return null;
     const writtenLocalIds = (job.createdItemMappings ?? []).map((m) => m.localId);
+    const writtenItems = (job.createdItemMappings ?? []).map((m) => ({ localId: m.localId, adoId: m.adoWorkItemId }));
     return {
       id: job.id,
       status: job.status,
@@ -656,6 +684,11 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       })),
       createdItemCount: job._count.createdItemMappings,
       writtenLocalIds,
+      writtenItems,
+      dedupScope: job.dedupScope === 'project' ? 'project' : 'area_path',
+      failedStage: job.failedStage ?? null,
+      failureClass: job.failureClass ?? null,
+      failureMessage: job.failureMessage ?? null,
       documentOverview: job.documentOverview as DocumentOverview | null,
     };
   }
@@ -683,6 +716,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         originalFilename: true,
         createdAt: true,
         batchId: true,
+        failureClass: true,
         _count: { select: { createdItemMappings: true } },
       },
     });
@@ -711,6 +745,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       createdItemCount: row._count.createdItemMappings,
       createdAt: row.createdAt,
       batchId: row.batchId,
+      failureClass: row.failureClass ?? null,
     }));
   }
 
@@ -806,6 +841,67 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       diff[index] = { ...diff[index], excluded };
       return diff;
     });
+  }
+
+  // "Create as new item" on a skipped near-duplicate: the item becomes a plain create that remembers what it matched, so the choice can be
+  // undone. The existing item is never touched. `relateToExisting` adds a Related link to it, kept as a resolved trace link on the entry so the
+  // write, its retries and the write preview treat it like every other link; `linkTree: false` leaves the new item out of this job's
+  // parent/child links (see selectEntriesToLink).
+  async overrideDuplicate(id: string, localId: string, options: { linkTree: boolean; relateToExisting: boolean }): Promise<DryRunDiffEntry[]> {
+    await this.assertNotWritten(id, localId);
+    const updated = await this.mutateDiffVersioned(id, (diff) => {
+      const index = diff.findIndex((entry) => entry.localId === localId);
+      if (index === -1) throw new NotFoundException(`Diff entry ${localId} not found`);
+      const entry = diff[index];
+      // A skipped near-duplicate, or a reuse flagged as changed since it was written (it matched an item by identity, but says something else
+      // now: if it is really a different requirement, the reviewer can create it). A plain exact reuse is not offered.
+      const changedMatch = entry.action === 'reuse' && entry.changedSinceWritten === true;
+      if ((entry.action !== 'dedup_skip' && !changedMatch) || entry.existingAdoId === null) {
+        throw new BadRequestException('only an item skipped as a near-duplicate, or one that changed since it was written, can be created anyway');
+      }
+      const alreadyRelated = (entry.traceLinks ?? []).some(
+        (link) => link.referenceName === 'System.LinkTypes.Related' && link.targetKind === 'crossJob' && link.resolvedAdoId === entry.existingAdoId,
+      );
+      const related: TraceLink[] = options.relateToExisting && !alreadyRelated
+        ? [{ sourceLocalId: entry.localId, referenceName: 'System.LinkTypes.Related', displayName: 'Related', targetKind: 'crossJob', resolvedAdoId: entry.existingAdoId, resolutionStatus: 'resolved' }]
+        : [];
+      diff[index] = {
+        ...entry,
+        action: 'create',
+        existingAdoId: null,
+        similarity: null,
+        duplicateOf: { existingAdoId: entry.existingAdoId, similarity: entry.similarity, ...(changedMatch ? { source: 'changed_since_written' as const } : {}) },
+        duplicateOverride: { linkTree: options.linkTree, relateToExisting: options.relateToExisting },
+        traceLinks: [...(entry.traceLinks ?? []), ...related],
+      };
+      return diff;
+    });
+    // The decision log learns what the reviewer chose (best-effort: never fails the action).
+    await setReviewerOutcomes(this.prisma, id, { createdAnyway: [localId] });
+    return updated;
+  }
+
+  async undoDuplicateOverride(id: string, localId: string): Promise<DryRunDiffEntry[]> {
+    await this.assertNotWritten(id, localId);
+    const updated = await this.mutateDiffVersioned(id, (diff) => {
+      const index = diff.findIndex((entry) => entry.localId === localId);
+      if (index === -1) throw new NotFoundException(`Diff entry ${localId} not found`);
+      const { duplicateOf, duplicateOverride, ...entry } = diff[index];
+      if (!duplicateOf || !duplicateOverride) throw new BadRequestException('this item was not created anyway');
+      diff[index] = {
+        ...entry,
+        action: duplicateOf.source === 'changed_since_written' ? 'reuse' : 'dedup_skip',
+        existingAdoId: duplicateOf.existingAdoId,
+        similarity: duplicateOf.similarity,
+        // Only the Related link the override added goes (none when it was not asked for); every other link on the entry stays.
+        traceLinks: (entry.traceLinks ?? []).filter(
+          (link) => !(duplicateOverride.relateToExisting && link.referenceName === 'System.LinkTypes.Related' && link.targetKind === 'crossJob' && link.resolvedAdoId === duplicateOf.existingAdoId),
+        ),
+      };
+      return diff;
+    });
+    await setReviewerOutcomes(this.prisma, id, { undone: [localId] });
+    return updated;
   }
 
   // Reviewer correction of figure placement before the write. The figure keeps its list kind (captioned stays captioned, an uncaptioned one
@@ -1192,22 +1288,47 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       const warnings = (job.warnings as (WarningRecord | string)[] | null) ?? [];
       const rawFilter = input.raws ? new Set(input.raws) : null;
       let matched = 0;
+      // The items whose record actually flipped, for the audit line of a counted acceptance.
+      const changedNodeIds = new Set<string>();
+      let changedRecords = 0;
       const next = warnings.map((warning) => {
         if (typeof warning === 'string' || warning.kind !== input.kind) return warning;
         if (rawFilter && !rawFilter.has(warning.raw)) return warning;
         matched += 1;
-        return !!warning.acknowledged === input.acknowledged ? warning : { ...warning, acknowledged: input.acknowledged };
+        if (!!warning.acknowledged === input.acknowledged) return warning;
+        changedRecords += 1;
+        for (const nodeId of warning.nodeIds ?? []) changedNodeIds.add(nodeId);
+        return { ...warning, acknowledged: input.acknowledged };
       });
       if (matched === 0) throw new NotFoundException(`No ${input.kind} warning found on job ${id}`);
       const written = await this.prisma.job.updateMany({
         where: { id, status: 'diff_ready', diffVersion: job.diffVersion },
         data: { warnings: next as any, diffVersion: { increment: 1 } },
       });
-      if (written.count === 1) return next;
+      if (written.count === 1) {
+        if (changedRecords > 0) await this.auditCountedAcceptance(id, input.kind, input.acknowledged, changedNodeIds.size || changedRecords);
+        return next;
+      }
     }
     throw new ConflictException(
       `Job ${id}'s warnings were changed by another request while this edit was being applied -- please retry.`,
     );
+  }
+
+  // A counted acceptance ("write these without a Customer ID") is a decision about many items at once, so it is on the audit trail: how many, and
+  // whether it was taken back. Best effort: the acknowledgement is already stored, and a missing audit line must not undo or fail it.
+  private async auditCountedAcceptance(id: string, kind: string, accepted: boolean, count: number): Promise<void> {
+    const label = COUNTED_ACK_KINDS.has(kind) ? COUNTED_ACCEPTANCE_LABELS[kind] : undefined;
+    if (!label) return;
+    const noun = count === 1 ? label.singular : label.plural;
+    const message = accepted
+      ? `Accepted ${count} ${noun} ${label.without}: they will be written without one.`
+      : `Acceptance undone: ${count} ${noun} ${label.without} (open again).`;
+    try {
+      await this.prisma.auditEntry.create({ data: { jobId: id, message } });
+    } catch {
+      // Best effort, as described above.
+    }
   }
 
   async editDiffEntry(
@@ -2035,6 +2156,13 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
   // attached to ADO (deleted on success, see attachFigureToAdo/confirm()'s
   // own attach phase) or never stored is a normal outcome here, not a
   // service-layer failure -- the controller decides the HTTP shape.
+  // The job's kept original upload (JobSourceFile), or null when it was not kept: over the size cap, a swallowed save in
+  // submit(), or a job from before retention. Read by the evidence strip's source-wording route.
+  async getSourceFileBytes(jobId: string): Promise<Buffer | null> {
+    const sourceFile = await this.prisma.jobSourceFile.findUnique({ where: { jobId }, select: { bytes: true } });
+    return sourceFile ? Buffer.from(sourceFile.bytes) : null;
+  }
+
   async getFigureFile(jobId: string, figureId: string): Promise<{ bytes: Buffer; mimeType: string } | null> {
     const figureFile = await this.prisma.jobFigureFile.findUnique({ where: { jobId_figureId: { jobId, figureId } } });
     if (!figureFile) return null;
@@ -2186,11 +2314,89 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
   async reject(id: string): Promise<{ status: string }> {
     const job = await this.prisma.job.findUnique({ where: { id } });
     if (!job || job.status !== 'diff_ready') {
-      throw new Error(`Job ${id} is not in a rejectable state`);
+      throw new ConflictException(`Job ${id} is not waiting for review, so it cannot be rejected.`);
     }
-    await this.prisma.job.update({ where: { id }, data: { status: 'rejected' } });
+    // Guarded on the status, not just the id: a confirm in another tab may have claimed the job for writing since the read above,
+    // and an unguarded update would mark a job "rejected" while its items are being written.
+    const { count } = await this.prisma.job.updateMany({ where: { id, status: 'diff_ready' }, data: { status: 'rejected' } });
+    if (count === 0) {
+      throw new ConflictException(`Job ${id} changed state while it was being rejected (it may be writing now).`);
+    }
     await this.prisma.auditEntry.create({ data: { jobId: id, message: 'Job rejected: no work items written' } });
     return { status: 'rejected' };
+  }
+
+  // Write-time re-check. Another job's confirm may have written an item between the moment this diff was built and now (two proposals of the same
+  // file waiting for review side by side, which is what a batch produces), and the diff cannot know. Every entry still marked `create` is looked up
+  // by its source hash; a hit whose Azure DevOps item still exists becomes a `reuse` of it, so it is linked and not created twice. Skipped: an item
+  // this job already wrote (a retry after a partial write), and one the reviewer chose to create anyway. A hit is never trusted blindly: the dry run
+  // verifies its matches against Azure DevOps, so this does too, and a mapping whose item was deleted is forgotten, not linked. Best effort and
+  // fail-open in every step (a lookup or verification error means "create as planned"). Returns how many were linked.
+  private async linkItemsWrittenByAnotherJob(
+    diff: { localId: string; type?: string; action: string; existingAdoId: number | null; sourceHash: string; identityHashV2?: string | null; duplicateOf?: unknown }[],
+    isExcluded: (entry: never) => boolean,
+    areaPath: string,
+    selectedLocalIds: string[] | undefined,
+    alreadyWrittenLocalIds: ReadonlySet<string>,
+    credential: { orgUrl: string; pat: string } | undefined,
+  ): Promise<number> {
+    const selected = selectedLocalIds ? new Set(selectedLocalIds) : null;
+    const candidates = diff.filter(
+      (entry) =>
+        entry.action === 'create' &&
+        !!entry.sourceHash &&
+        entry.duplicateOf === undefined &&
+        !alreadyWrittenLocalIds.has(entry.localId) &&
+        !isExcluded(entry as never) &&
+        (selected === null || selected.has(entry.localId)),
+    );
+    if (candidates.length === 0) return 0;
+    const warn = (message: string, error: unknown): void => {
+      // eslint-disable-next-line no-console -- no structured logger in this service
+      console.warn(`${message}: ${error instanceof Error ? error.message : String(error)}`);
+    };
+    let found: Map<string, number>;
+    try {
+      // Both identities, as the dry run does: the position hash, and for a Requirement the v2 hash, so a renamed or shifted copy of the same
+      // file confirmed by another job is found too.
+      found = await this.idempotencyService.lookupMany(
+        candidates.flatMap((entry) => [
+          { sourceHash: entry.sourceHash, areaPath },
+          ...(entry.type === 'Requirement' && entry.identityHashV2 ? [{ sourceHash: entry.identityHashV2, areaPath }] : []),
+        ]),
+      );
+    } catch (error) {
+      warn('Write-time duplicate re-check skipped', error);
+      return 0;
+    }
+    // The item another job wrote for this entry: by its position hash first, then (a Requirement) by its v2 identity.
+    const matchOf = (entry: (typeof candidates)[number]): number | undefined =>
+      found.get(idempotencyMapKey(entry.sourceHash, areaPath)) ??
+      (entry.type === 'Requirement' && entry.identityHashV2 ? found.get(idempotencyMapKey(entry.identityHashV2, areaPath)) : undefined);
+    const hits = candidates.filter((entry) => matchOf(entry) !== undefined);
+    if (hits.length === 0) return 0;
+    const ids = [...new Set(hits.map((entry) => matchOf(entry) as number))];
+    let stillExisting: Set<number>;
+    try {
+      stillExisting = new Set((await this.mcpClient.getWorkItemsBatch(ids, credential)).map((item) => item.id));
+    } catch (error) {
+      warn('Write-time duplicate re-check could not confirm the matched items still exist, so it created them as planned', error);
+      return 0;
+    }
+    for (const id of ids) {
+      if (stillExisting.has(id)) continue;
+      // The mapping points at an item that was deleted in Azure DevOps: forget it, as the dry run does, so it never matches again.
+      await this.idempotencyService.deleteByAdoWorkItemId(id).catch((error) => warn('Could not forget a stale mapping', error));
+    }
+    let linked = 0;
+    for (const entry of hits) {
+      const existing = matchOf(entry) as number;
+      if (!stillExisting.has(existing)) continue;
+      entry.action = 'reuse';
+      entry.existingAdoId = existing;
+      linked += 1;
+    }
+    return linked;
   }
 
   private static sameMappingSnapshot(
@@ -2228,6 +2434,21 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     const alreadyLinkedLocalIds = new Set(existingMappings.filter((m) => m.linked).map((m) => m.localId));
     const plannedDiff = (toConfirm.dryRunDiff as unknown as WritePlanEntry[] | null) ?? [];
     this.assertValidSelection(plannedDiff, resumedAdoIdByLocalId, selectedLocalIds);
+    // The Write gate, where it cannot be bypassed (DESIGN.md §11.3.6): a first write is refused while a "Fix before writing" item is open.
+    // Before the claim below, so a refusal leaves the job untouched. Not applied once part of the job is written: a resume finishes what was
+    // already approved, and its warnings were weighed at the first write.
+    if (existingMappings.length === 0) {
+      const gate = openFixItems((toConfirm.warnings as unknown as (WarningRecord | string)[] | null) ?? [], plannedDiff, selectedLocalIds);
+      if (gate.remaining > 0) {
+        throw new ConflictException({
+          statusCode: 409,
+          code: 'fix_before_writing',
+          message: `${gate.remaining} ${gate.remaining === 1 ? 'item' : 'items'} to fix before writing.`,
+          remaining: gate.remaining,
+          blockers: gate.blockers,
+        });
+      }
+    }
     let plan = buildWritePreview(plannedDiff, { resumedAdoIdByLocalId, alreadyLinkedLocalIds }, selectedLocalIds);
     // Nothing to create or link, and nothing written before (a resume that only has to finish is allowed): the figure files are the last thing
     // that can still make this a real write, so they are only read when everything else comes up empty.
@@ -2253,6 +2474,12 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     if (claim.count === 0) {
       throw new ConflictException(`Job ${id} changed or is no longer confirmable; review the diff and confirm again`);
     }
+    // The diff is final from here: tell the decision log what the reviewer did with each skip (left alone, or created anyway). Best-effort.
+    const reviewed = plannedDiff as unknown as { localId: string; action: string; duplicateOf?: unknown }[];
+    await setReviewerOutcomes(this.prisma, id, {
+      keptSkipped: reviewed.filter((entry) => entry.action === 'dedup_skip').map((entry) => entry.localId),
+      createdAnyway: reviewed.filter((entry) => entry.action === 'create' && entry.duplicateOf !== undefined).map((entry) => entry.localId),
+    });
     // The mappings validated above were read BEFORE the claim: a concurrent confirm that wrote some items, failed and reset the job to diff_ready
     // (the failure path does not bump diffVersion) would still let this claim succeed on a stale snapshot and re-create those items in ADO.
     // Re-read after the claim and bail out (back to diff_ready, no audit entry, no 'writing' event) if anything differs; any error here also reverts.
@@ -2352,6 +2579,13 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       tableIds?: string[];
       uncaptionedFigureIds?: string[];
       discussion?: DiscussionEntry[];
+      // W1 (see DryRunDiffEntry): recorded beside sourceHash so a follow-up file matches by identity v2 and can tell a changed item.
+      identityHashV2?: string | null;
+      contentHash?: string | null;
+      backfillIdentityV2?: boolean;
+      // Set when the reviewer chose "Create as new item" for an entry that matched an existing one: it is a plain create apart from that item.
+      duplicateOf?: { existingAdoId: number; similarity: number | null; source?: 'changed_since_written' };
+      writtenContentHash?: string | null;
     }[];
 
     // Excluding an entry excludes its whole subtree too, even if a descendant itself isn't marked excluded. One walker (diff-summary.ts), shared
@@ -2420,6 +2654,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     // most one ADO round-trip total, not one per field concept.
     const fieldsByType = new Map<string, Promise<{ referenceName: string; allowedValues: string[]; alwaysRequired: boolean }[]>>();
     let createdCount = 0;
+    let linkedInsteadCount = 0;
 
     // A failure anywhere below previously left the job stuck in 'writing'
     // forever -- confirm()'s own guard requires 'diff_ready', so no retry
@@ -2447,6 +2682,14 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       // 'needs a real create' -- the two are handled by completely
       // different phases below.
       // The rules live in write-plan.ts so the pre-write preview uses the same ones.
+      linkedInsteadCount = await this.linkItemsWrittenByAnotherJob(
+        diff,
+        isExcluded,
+        job.areaPath,
+        selectedLocalIds,
+        new Set(resumedAdoIdByLocalId.keys()),
+        credential,
+      );
       const { toCreate, resolvedAdoIdByLocalId } = selectEntriesToCreate(diff, isExcluded, { resumedAdoIdByLocalId, selectedLocalIds });
       for (const [localId, adoId] of resolvedAdoIdByLocalId) adoIdByLocalId.set(localId, adoId);
 
@@ -2654,7 +2897,21 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
           create: { jobId: id, localId: entry.localId, adoWorkItemId: created.id },
           update: { adoWorkItemId: created.id },
         });
-        await this.idempotencyService.record(entry.sourceHash, job.areaPath, created.id);
+        // W1 dual write: the v1 row and, when ingestion gave one, the v2 row, both with the content hash of what was written. An entry
+        // from before W1 (no v2, no content hash) is recorded exactly as before.
+        if (entry.identityHashV2 || entry.contentHash !== undefined) {
+          const contentHash = entry.contentHash ?? null;
+          // A "create as new item" choice (duplicateOf) made this item apart from the one it matched: it must not repoint that item's mapping.
+          await this.idempotencyService.record(entry.sourceHash, job.areaPath, created.id, { contentHash, identityVersion: 1, ...(entry.duplicateOf ? { onlyIfMissing: true } : {}) });
+          if (entry.identityHashV2 && entry.type === 'Requirement') {
+            // Only if missing: a second job that created its own copy must not repoint the row the first job's item already owns.
+            await this.idempotencyService.record(entry.identityHashV2, job.areaPath, created.id, { contentHash, identityVersion: 2, onlyIfMissing: true });
+          }
+        } else if (entry.duplicateOf) {
+          await this.idempotencyService.record(entry.sourceHash, job.areaPath, created.id, { contentHash: null, identityVersion: 1, onlyIfMissing: true });
+        } else {
+          await this.idempotencyService.record(entry.sourceHash, job.areaPath, created.id);
+        }
         createProgress += 1;
         void this.jobEventsPublisher?.publishNarration(id, {
           phase: 'writing',
@@ -2736,6 +2993,33 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       }
       if (firstCreateError !== null) {
         throw firstCreateError;
+      }
+
+      // W1 lazy backfill: an item reused through its v1 (or legacy) row gets its v2 row now, so the next follow-up file matches it by
+      // identity v2 even when it moved or the file was renamed. Never a bulk rewrite, and never moves an existing row. Its content hash
+      // is what is known to be in ADO (the stored one, or the verified text), so a change stays flagged until ADO is updated.
+      // Best-effort: the reuse itself needs no write, so a failure here is logged and the write goes on.
+      // One batched insert-if-missing for the whole job. It also covers a Requirement written by an interrupted earlier attempt, which
+      // may have stopped between its v1 and its v2 record.
+      const backfillRows: { sourceHash: string; areaPath: string; adoWorkItemId: number; contentHash: string | null; identityVersion: 2 }[] = [];
+      for (const entry of diff) {
+        if (entry.type !== 'Requirement' || !entry.identityHashV2) continue;
+        if (entry.action === 'reuse' && entry.backfillIdentityV2 && entry.existingAdoId !== null) {
+          backfillRows.push({ sourceHash: entry.identityHashV2, areaPath: job.areaPath, adoWorkItemId: entry.existingAdoId, contentHash: entry.writtenContentHash ?? null, identityVersion: 2 });
+          continue;
+        }
+        const resumedAdoId = resumedAdoIdByLocalId.get(entry.localId);
+        if (entry.action === 'create' && resumedAdoId !== undefined) {
+          backfillRows.push({ sourceHash: entry.identityHashV2, areaPath: job.areaPath, adoWorkItemId: resumedAdoId, contentHash: entry.contentHash ?? null, identityVersion: 2 });
+        }
+      }
+      if (backfillRows.length > 0) {
+        try {
+          await this.idempotencyService.recordManyIfMissing(backfillRows);
+        } catch (error) {
+          // eslint-disable-next-line no-console -- operational visibility for a best-effort path, not app logging
+          console.error(`Could not add ${backfillRows.length} identity v2 mapping(s):`, error);
+        }
       }
 
       // Best-effort, same as the per-item version it replaces: a batch
@@ -3086,6 +3370,14 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     await this.prisma.auditEntry.create({
       data: { jobId: id, message: `Job confirmed: ${createdCount} work item(s) created` },
     });
-    return { status: 'succeeded', createdCount };
+    if (linkedInsteadCount > 0) {
+      await this.prisma.auditEntry.create({
+        data: {
+          jobId: id,
+          message: `${linkedInsteadCount} ${linkedInsteadCount === 1 ? 'item was' : 'items were'} already written by another job and ${linkedInsteadCount === 1 ? 'was' : 'were'} linked instead of created again.`,
+        },
+      });
+    }
+    return { status: 'succeeded', createdCount, ...(linkedInsteadCount > 0 ? { linkedInsteadCount } : {}) };
   }
 }

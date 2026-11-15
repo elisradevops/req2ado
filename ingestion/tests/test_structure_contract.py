@@ -303,3 +303,270 @@ def test_adopted_baseline_warnings_point_at_ids_that_exist_after_the_bl_renaming
             for item in value if isinstance(value, list) else [value]:
                 if isinstance(item, str) and ("synth_" in item or item.startswith("n")):
                     assert item in ids, f"stale id in warning detail: {item}"
+
+
+class RippleSummarizer:
+    """A parent-summary model that, like prod did in job 0c5d877e, writes each Epic/Feature's title and description only
+    from the requirements under it -- a normative heading's own statement is not part of what it summarizes."""
+
+    def summarize_parent_nodes(self, nodes_by_id, user_id=None):
+        return {
+            node_id: {
+                "title": f"Output Voltage Stability {node_id}",
+                "description": "Summary of: " + " ".join(payload["requirement_titles"]),
+            }
+            for node_id, payload in nodes_by_id.items()
+        }
+
+
+@pytest.mark.parametrize("mode", ["baseline", "survey"])
+def test_a_requirement_heading_with_sub_sections_keeps_its_statement_in_the_tree(mode: str) -> None:
+    """No normative heading may vanish from the tree without a warning: one with sub-sections becomes a container, and
+    that container must still carry the heading's own statement verbatim even after the parent summary rewrites it."""
+    from app.leveling.hierarchy_rules import states_a_requirement
+
+    doc = _load("mock_airpro_shape.docx")
+    if mode == "baseline":
+        tree = build_baseline_tree(doc)
+    else:
+        tree = build_survey_tree(
+            doc,
+            StructureRefusingClient(),
+            grouping_client=SimulatedGrouper(1),
+            embed_client=TitleHashEmbedder(),
+            structure_mode="baseline",
+            root_regroup_mode="deterministic",
+            parent_summary_client=RippleSummarizer(),
+        )
+    statements = [
+        b.text for b in doc.blocks if b.kind.value == "heading" and states_a_requirement(b.text)
+    ]
+    assert "The unit must report an undervoltage fault." in statements
+    warned = " ".join(f"{w.raw} {w.detail}" for w in tree.warnings)
+    for statement in statements:
+        assert (
+            any(
+                statement in (n.title or "") or statement in (n.description or "")
+                for n in tree.nodes
+            )
+            or statement in warned
+        ), f"{mode}: {statement!r} is in no item and no warning"
+
+
+@pytest.mark.parametrize("mode", ["baseline", "survey"])
+def test_a_statement_heading_that_became_a_section_says_so_in_one_notice(mode: str) -> None:
+    """The tree has fewer Requirements than the source has statements when a normative heading has sub-sections. One
+    non-blocking notice names those headings so the reviewer can see why, in both modes."""
+    doc = _load("mock_airpro_shape.docx")
+    if mode == "baseline":
+        tree = build_baseline_tree(doc)
+    else:
+        tree = build_survey_tree(
+            doc,
+            StructureRefusingClient(),
+            grouping_client=SimulatedGrouper(1),
+            embed_client=TitleHashEmbedder(),
+            structure_mode="baseline",
+            root_regroup_mode="deterministic",
+            parent_summary_client=RippleSummarizer(),
+        )
+    notices = [w for w in tree.warnings if w.kind.value == "requirement_heading_is_section"]
+    assert len(notices) == 1, f"{mode}: expected one notice, got {len(notices)}"
+    notice = notices[0]
+    assert notice.severity.value == "needs_review"
+    by_id = {n.local_id: n for n in tree.nodes}
+    named = [by_id[i] for i in notice.node_ids]
+    assert [n.type.value for n in named] == ["Feature"]
+    assert any("undervoltage" in (n.description or "") for n in named)
+    assert "undervoltage fault" in notice.raw
+
+
+def _section(local_id: str, title: str, node_type: str, parent: str | None = None):
+    from app.canonical.model import SourceRef
+    from app.workitem.model import WorkItemMode, WorkItemNode, WorkItemType
+
+    return WorkItemNode(
+        local_id=local_id,
+        type=WorkItemType(node_type),
+        parent_local_id=parent,
+        title=title,
+        description=title,
+        source_ref=SourceRef(document_path="x.docx", start_offset=0, end_offset=1),
+        mode=WorkItemMode.BASELINE,
+    )
+
+
+def test_the_section_notice_names_only_sections_that_have_sub_sections_and_state_a_requirement() -> None:
+    from app.leveling.hierarchy_rules import requirement_heading_warning
+
+    # A statement with sub-sections: flagged.
+    parent = _section("a", "The unit must report an undervoltage fault.", "Feature")
+    child = _section("b", "Ripple limit applies", "Requirement", parent="a")
+    notice = requirement_heading_warning([parent, child])
+    assert notice is not None and notice.node_ids == ["a"]
+
+    # A statement with no sub-section is a Requirement or a leaf: nothing was turned into a section, so nothing to say.
+    leaf = _section("c", "The unit must report an undervoltage fault.", "Feature")
+    assert requirement_heading_warning([leaf]) is None
+
+    # Titles that only look like an obligation: a month, a "will-call" interface. The notice reads shall, must and should.
+    month = _section("d", "Release notes - May 2025", "Epic")
+    will_call = _section("e", "Will-call interfaces", "Feature", parent="d")
+    under = _section("f", "Ports", "Requirement", parent="e")
+    assert requirement_heading_warning([month, will_call, under]) is None
+
+
+# W1: a follow-up file is matched by WHAT an item is (its section, type and anchor text), not by WHERE it sits in the file. Ported from the
+# repro: the same small Markdown file, loaded through the real loader, with one line changed, a grown intro, and a new filename.
+_FOLLOW_UP = (
+    "# Spec\n\n## Intro\n\n{intro}\n\n## Power\n\nThe unit shall respond within {ms} ms.\n\n"
+    "## Logging\n\nThe unit shall log every fault.\n"
+)
+
+
+def _follow_up_nodes(tmp_path: Path, text: str, filename: str = "spec.md", mode: str = "baseline") -> dict:
+    path = tmp_path / filename
+    path.write_text(text)
+    doc = dispatch_by_extension(filename, str(path))
+    tree = build_baseline_tree(doc) if mode == "baseline" else _survey(doc, seed=1)
+    return {node.local_id: node for node in tree.nodes}
+
+
+@pytest.mark.parametrize("mode", ["baseline", "survey"])
+def test_a_changed_requirement_line_keeps_its_v2_identity_and_changes_its_content_hash(
+    tmp_path: Path, mode: str
+) -> None:
+    text = _FOLLOW_UP.format(intro="Overview.", ms="100")
+    before = _follow_up_nodes(tmp_path, text, mode=mode)
+    after = _follow_up_nodes(tmp_path, _FOLLOW_UP.format(intro="Overview.", ms="1000"), mode=mode)
+    assert before.keys() == after.keys()
+    for key, node in before.items():
+        assert node.identity_hash_v2 and node.identity_hash_v2 == after[key].identity_hash_v2, key
+    # Only the Power requirement (built from the "## Power" heading) has new content.
+    changed = [key for key, node in before.items() if node.content_hash != after[key].content_hash]
+    assert len(changed) == 1
+    assert before[changed[0]].source_ref.start_offset == text.index("## Power") + len("## ")
+    assert before[changed[0]].content_hash and after[changed[0]].content_hash
+
+
+@pytest.mark.parametrize("mode", ["baseline", "survey"])
+def test_an_intro_that_grows_leaves_every_v2_identity_unchanged(tmp_path: Path, mode: str) -> None:
+    before = _follow_up_nodes(tmp_path, _FOLLOW_UP.format(intro="Overview.", ms="100"), mode=mode)
+    after = _follow_up_nodes(
+        tmp_path, _FOLLOW_UP.format(intro="Overview of the full system scope.", ms="100"), mode=mode
+    )
+    assert before.keys() == after.keys()
+    # The position identity (v1) of the items after the intro moved: that is the bug v2 fixes.
+    assert any(node.identity_hash != after[key].identity_hash for key, node in before.items())
+    for key, node in before.items():
+        assert node.identity_hash_v2 == after[key].identity_hash_v2, key
+
+
+@pytest.mark.parametrize("mode", ["baseline", "survey"])
+def test_a_renamed_file_leaves_every_v2_identity_and_content_hash_unchanged(tmp_path: Path, mode: str) -> None:
+    text = _FOLLOW_UP.format(intro="Overview.", ms="100")
+    before = _follow_up_nodes(tmp_path, text, mode=mode)
+    after = _follow_up_nodes(tmp_path, text, filename="spec_v2.md", mode=mode)
+    assert before.keys() == after.keys()
+    for key, node in before.items():
+        assert node.identity_hash_v2 == after[key].identity_hash_v2, key
+        # The document Epic's title comes from the filename: it has no content of its own to compare, so it has no content hash.
+        assert node.content_hash == after[key].content_hash, key
+
+
+def test_every_node_gets_a_distinct_v2_identity(tmp_path: Path) -> None:
+    for mode in ("baseline", "survey"):
+        nodes = _follow_up_nodes(tmp_path, _FOLLOW_UP.format(intro="Overview.", ms="100"), mode=mode)
+        identities = [node.identity_hash_v2 for node in nodes.values()]
+        assert all(identities) and len(set(identities)) == len(identities), mode
+
+
+# W1 review fixes. Identity must separate documents, must not pretend to know items it cannot tell apart, and must read the same in both modes.
+_CUSTOMER_DOC = "# {title}\n\n## Performance\n\nThe system shall be available 99.9% of the time.\n"
+
+
+def test_two_documents_with_different_titles_do_not_share_a_requirement_identity(tmp_path: Path) -> None:
+    a = _follow_up_nodes(tmp_path, _CUSTOMER_DOC.format(title="Customer A requirements"), filename="a.md")
+    b = _follow_up_nodes(tmp_path, _CUSTOMER_DOC.format(title="Customer B requirements"), filename="b.md")
+    a_reqs = {n.identity_hash_v2 for n in a.values() if n.type.value == "Requirement"}
+    b_reqs = {n.identity_hash_v2 for n in b.values() if n.type.value == "Requirement"}
+    assert a_reqs and b_reqs and a_reqs.isdisjoint(b_reqs)
+
+
+def test_a_survey_node_that_shares_its_source_block_with_another_has_no_v2_identity() -> None:
+    # In a model-structured run every node of a branch is given the branch's source block ("section analysis has no per-node source
+    # attribution"): the anchor, the span and so the content hash are the branch's, and only the order tells the nodes apart. A reorder would
+    # swap them and an edit anywhere would flag all of them, so such a node keeps the position lookup it had before W1.
+    from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat
+    from app.canonical.model import SourceRef as Ref
+    from app.leveling.identity_v2 import assign_identity_v2
+    from app.workitem.model import WorkItemMode, WorkItemTree
+
+    text_a, text_b = "Power interface.", "The unit shall report a fault."
+    doc = CanonicalDoc(
+        document=Document(path="x.docx", format=DocumentFormat.DOCX, sha256="x"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.PARAGRAPH, text=text_a, source_ref=Ref(document_path="x.docx", start_offset=0, end_offset=16)),
+            Block(id="b1", kind=BlockKind.PARAGRAPH, text=text_b, source_ref=Ref(document_path="x.docx", start_offset=16, end_offset=46)),
+        ],
+    )
+
+    def node(local_id: str, ref: Ref):
+        n = _section(local_id, f"Item {local_id}", "Requirement")
+        n.mode = WorkItemMode.SURVEY
+        n.source_ref = ref
+        return n
+
+    shared = Ref(document_path="x.docx", start_offset=0, end_offset=16)
+    own = Ref(document_path="x.docx", start_offset=16, end_offset=46)
+    tree = assign_identity_v2(WorkItemTree(nodes=[node("a", shared), node("b", shared), node("c", own)]), doc)
+    by = {n.local_id: n for n in tree.nodes}
+    assert by["a"].identity_hash_v2 is None and by["a"].content_hash is None
+    assert by["b"].identity_hash_v2 is None and by["b"].content_hash is None
+    assert by["c"].identity_hash_v2 is not None and by["c"].content_hash is not None
+
+
+def test_a_requirement_with_a_customer_id_keeps_its_identity_when_its_text_is_edited() -> None:
+    # The first sentence of a one-sentence requirement IS its text, so an edit changed the anchor and the item looked new. A Customer ID is
+    # stable across text edits and renumbering, so it is the anchor when there is one (a table row with an ID column is the common case).
+    from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat
+    from app.canonical.model import SourceRef as Ref
+    from app.leveling.identity_v2 import assign_identity_v2
+    from app.workitem.model import WorkItemTree
+
+    def tree_for(text: str, customer_id: str | None):
+        ref = Ref(document_path="x.docx", start_offset=0, end_offset=len(text), section_path=["Spec", "Power"])
+        doc = CanonicalDoc(
+            document=Document(path="x.docx", format=DocumentFormat.DOCX, sha256="x"),
+            blocks=[Block(id="b0", kind=BlockKind.PARAGRAPH, text=text, source_ref=ref)],
+        )
+        node = _section("r", "Power", "Requirement")
+        node.source_ref = ref
+        node.customer_id = customer_id
+        node.description = text
+        return assign_identity_v2(WorkItemTree(nodes=[node]), doc).nodes[0]
+
+    before = tree_for("The unit shall respond within 100 ms.", "REQ-12")
+    after = tree_for("The unit shall respond within 1000 ms.", "REQ-12")
+    other = tree_for("The unit shall respond within 100 ms.", "REQ-13")
+    assert before.identity_hash_v2 == after.identity_hash_v2
+    assert before.content_hash != after.content_hash
+    assert before.identity_hash_v2 != other.identity_hash_v2
+    # Without an ID the wording is all there is to go on, as before.
+    no_id_before = tree_for("The unit shall respond within 100 ms.", None)
+    no_id_after = tree_for("The unit shall respond within 1000 ms.", None)
+    assert no_id_before.identity_hash_v2 != no_id_after.identity_hash_v2
+
+
+def test_the_content_hash_is_the_same_whether_the_file_ran_as_baseline_or_survey(tmp_path: Path) -> None:
+    # A file written in one mode and followed up in the other must not flag every reused item as changed.
+    text = _FOLLOW_UP.format(intro="Overview.", ms="100")
+    baseline = _follow_up_nodes(tmp_path, text, mode="baseline")
+    survey = _follow_up_nodes(tmp_path, text, mode="survey")
+    # The two modes name nodes differently, so match them by identity, which is what a follow-up run does.
+    baseline_by_identity = {n.identity_hash_v2: n for n in baseline.values() if n.identity_hash_v2 and n.type.value == "Requirement"}
+    survey_by_identity = {n.identity_hash_v2: n for n in survey.values() if n.identity_hash_v2 and n.type.value == "Requirement"}
+    shared = baseline_by_identity.keys() & survey_by_identity.keys()
+    assert shared
+    for identity in shared:
+        assert baseline_by_identity[identity].content_hash == survey_by_identity[identity].content_hash, identity

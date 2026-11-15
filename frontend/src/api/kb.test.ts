@@ -1,6 +1,22 @@
 import { describe, it, expect, vi } from 'vitest';
 import { httpClient } from './httpClient';
-import { ingestFolderUrl, ingestUrl, listIngestedDocuments } from './kb';
+import {
+  browseSharedFolder,
+  browseSubfolder,
+  cancelKbIngestBatch,
+  createKbIngestBatch,
+  deleteIngestedDocument,
+  getKbIngestBatch,
+  getKbProfile,
+  ingestFolderItem,
+  ingestFolderUrl,
+  ingestUrl,
+  listIngestedDocuments,
+  listKbIngestBatches,
+  resumeKbIngestBatch,
+  retryFailedKbIngestBatch,
+  switchKbSource,
+} from './kb';
 
 vi.mock('./httpClient');
 
@@ -36,14 +52,20 @@ describe('kb api', () => {
     expect(result).toEqual(docs);
   });
 
-  it('listIngestedDocuments("Area1") GETs /kb/documents with params: { userId: "Area1" }', async () => {
-    const docs: any[] = [];
-    (httpClient.get as any).mockResolvedValue({ data: docs });
+  it('listIngestedDocuments() sends no userId: the session already says whose documents these are', async () => {
+    (httpClient.get as any).mockResolvedValue({ data: [] });
 
-    const result = await listIngestedDocuments('Area1');
+    await listIngestedDocuments();
 
-    expect(httpClient.get).toHaveBeenCalledWith('/kb/documents', { params: { userId: 'Area1' } });
-    expect(result).toEqual(docs);
+    expect(httpClient.get).toHaveBeenCalledWith('/kb/documents', { params: {} });
+  });
+
+  it('deleteIngestedDocument(id) sends no userId in the query string', async () => {
+    (httpClient.delete as any).mockResolvedValue({ data: { ok: true } });
+
+    await deleteIngestedDocument('doc-1');
+
+    expect(httpClient.delete).toHaveBeenCalledWith('/kb/documents/doc-1');
   });
 
   it('ingestFolderUrl POSTs the url, userId, and docType to /kb/ingest-folder-url', async () => {
@@ -80,5 +102,115 @@ describe('the rubric', () => {
     const input = { pinned: [{ name: 'Testable', passCondition: 'Pinned' }], removed: ['Essential'] };
     expect(await putRubric(input)).toEqual(rubric);
     expect(httpClient.put).toHaveBeenCalledWith('/kb/rubric', input);
+  });
+
+  describe('batch ingest', () => {
+    const batch = { id: 'b1', status: 'queued' };
+
+    it('createKbIngestBatch POSTs the files and where they came from to /kb/ingest-batches', async () => {
+      (httpClient.post as any).mockResolvedValue({ data: batch });
+      const input = {
+        driveId: 'drive-1', folderItemId: 'folder-1', folderPath: 'Sub', docType: null,
+        items: [{ itemId: 'i1', name: 'a.pdf', relativePath: 'Sub/a.pdf', sizeBytes: 10, retrievalMode: 'retrieve' as const }],
+      };
+
+      expect(await createKbIngestBatch(input)).toEqual(batch);
+      expect(httpClient.post).toHaveBeenCalledWith('/kb/ingest-batches', input);
+    });
+
+    it('listKbIngestBatches asks only for active batches when told to, with the limit', async () => {
+      (httpClient.get as any).mockResolvedValue({ data: [batch] });
+
+      expect(await listKbIngestBatches({ active: true, limit: 3 })).toEqual([batch]);
+      expect(httpClient.get).toHaveBeenCalledWith('/kb/ingest-batches', { params: { active: 'true', limit: 3 } });
+    });
+
+    it('listKbIngestBatches sends no params when none are given', async () => {
+      (httpClient.get as any).mockResolvedValue({ data: [] });
+
+      await listKbIngestBatches();
+
+      expect(httpClient.get).toHaveBeenCalledWith('/kb/ingest-batches', { params: {} });
+    });
+
+    it('getKbIngestBatch GETs one batch by id', async () => {
+      (httpClient.get as any).mockResolvedValue({ data: batch });
+
+      expect(await getKbIngestBatch('b1')).toEqual(batch);
+      expect(httpClient.get).toHaveBeenCalledWith('/kb/ingest-batches/b1');
+    });
+
+    it.each([
+      ['cancel', cancelKbIngestBatch],
+      ['retry-failed', retryFailedKbIngestBatch],
+      ['resume', resumeKbIngestBatch],
+    ])('%s POSTs to the batch\'s own action', async (action, call) => {
+      (httpClient.post as any).mockResolvedValue({ data: batch });
+
+      expect(await call('b1')).toEqual(batch);
+      expect(httpClient.post).toHaveBeenCalledWith(`/kb/ingest-batches/b1/${action}`);
+    });
+
+    it('getKbProfile GETs the grading rubric state', async () => {
+      const view = { state: 'ready', docs: [] };
+      (httpClient.get as any).mockResolvedValue({ data: view });
+
+      expect(await getKbProfile()).toEqual(view);
+      expect(httpClient.get).toHaveBeenCalledWith('/kb/profile');
+    });
+  });
+});
+
+describe('one library per knowledge base', () => {
+  it('ingestFolderItem sends the library the file is in', async () => {
+    const post = vi.mocked(httpClient.post).mockResolvedValue({ data: { ingestedDocumentId: 'doc-1' } });
+
+    await ingestFolderItem('a.pdf', 'item-1', 'https://dl', 'Sub/a.pdf', 'user-1', 'always_include', 'drive-9');
+
+    expect(post).toHaveBeenCalledWith('/kb/ingest-item', {
+      name: 'a.pdf', itemId: 'item-1', downloadUrl: 'https://dl', relativePath: 'Sub/a.pdf', userId: 'user-1', retrievalMode: 'always_include', driveId: 'drive-9',
+    });
+  });
+
+  it('switchKbSource POSTs the library to keep and returns what was removed and what could not be', async () => {
+    const post = vi.mocked(httpClient.post).mockResolvedValue({ data: { removed: 2, failed: [{ id: 'x', name: 'old.pdf' }] } });
+
+    const result = await switchKbSource('drive-9');
+
+    expect(post).toHaveBeenCalledWith('/kb/source/switch', { driveId: 'drive-9' });
+    expect(result).toEqual({ removed: 2, failed: [{ id: 'x', name: 'old.pdf' }] });
+  });
+});
+
+describe('browseSubfolder', () => {
+  it('lists a subfolder by drive and item id, and can be cancelled with an abort signal', async () => {
+    const get = vi.mocked(httpClient.get).mockResolvedValue({ data: [] });
+    const controller = new AbortController();
+
+    await browseSubfolder('drive-1', 'item-1', 'user-1', 'Sub', controller.signal);
+
+    expect(get).toHaveBeenCalledWith('/kb/browse-children', { params: { driveId: 'drive-1', itemId: 'item-1', path: 'Sub' }, signal: controller.signal });
+  });
+
+  it('does not put the user id in the URL: the server knows the user from the session', async () => {
+    const get = vi.mocked(httpClient.get).mockResolvedValue({ data: [] });
+
+    await browseSubfolder('drive-1', 'item-1', 'Microsoft.IdentityModel.Claims.ClaimsIdentity;0003', 'Sub');
+
+    expect(JSON.stringify(get.mock.calls[0])).not.toContain('Microsoft.IdentityModel');
+  });
+});
+
+describe('browseSharedFolder', () => {
+  it('sends the sharing link in a POST body, never a query string that lands in access logs, and no user id', async () => {
+    const get = vi.mocked(httpClient.get).mockClear().mockResolvedValue({ data: [] });
+    const post = vi.mocked(httpClient.post).mockClear().mockResolvedValue({ data: [{ id: 'f1' }] });
+
+    const result = await browseSharedFolder('https://share.example/:f:/s/x/TOKEN', 'Microsoft.IdentityModel.Claims.ClaimsIdentity;0003');
+
+    expect(post).toHaveBeenCalledWith('/kb/browse-folder', { url: 'https://share.example/:f:/s/x/TOKEN' });
+    expect(get).not.toHaveBeenCalled();
+    expect(JSON.stringify(post.mock.calls[0])).not.toContain('Microsoft.IdentityModel');
+    expect(result).toEqual([{ id: 'f1' }]);
   });
 });

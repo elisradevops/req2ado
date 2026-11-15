@@ -1107,6 +1107,31 @@ describe('OpenWebUiClient.embed (ollama transport)', () => {
     );
   });
 
+  describe('redaction of the text that is embedded', () => {
+    const text = 'Contact jane@example.com about https://internal.corp.example/spec for details.';
+    const sent = async (extra: Record<string, unknown>) => {
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ embeddings: [[0.1]] }) });
+      await new OpenWebUiClient({ ...config, ...extra }).embed([text]);
+      return JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body).input[0] as string;
+    };
+
+    it('redacts addresses and links before embedding, as it always has, unless told otherwise', async () => {
+      expect(await sent({})).toBe('Contact <redacted> about <redacted> for details.');
+    });
+
+    it('sends the text as it is when embeddings are set not to redact: only the embedding connection ever sees it', async () => {
+      expect(await sent({ EMBED_REDACT: false })).toBe(text);
+    });
+
+    it('still redacts when the setting is on explicitly', async () => {
+      expect(await sent({ EMBED_REDACT: true })).toBe('Contact <redacted> about <redacted> for details.');
+    });
+
+    it('sends it as it is for a trusted local backend, whatever the setting says', async () => {
+      expect(await sent({ LLM_TRUSTED_LOCAL: true })).toBe(text);
+    });
+  });
+
   it('falls back to LLM_BASE_URL host when EMBED_BASE_URL is unset, stripping /v1', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ embeddings: [[0.1]] }) });
     const client = new OpenWebUiClient(config);

@@ -180,6 +180,16 @@ def test_judge_kb_relevance_prompt_loads() -> None:
     assert len(result) > 0
 
 
+def test_judge_kb_relevance_prompt_counts_writing_guidance_as_relevant() -> None:
+    # A requirements-writing guide (rules, templates, quality criteria) shares
+    # little vocabulary with a technical section yet applies to all of them;
+    # the judge must not mark it not_relevant for a differing subject.
+    result = load_prompt("judge_kb_relevance", output_format="OUT")
+    assert "HOW requirements should be written" in result
+    assert "regardless of topic" in result
+    assert "OUT" in result and "__OUTPUT_FORMAT__" not in result
+
+
 def test_extract_quality_checklist_prompt_loads() -> None:
     result = load_prompt("extract_quality_checklist")
     assert len(result) > 0

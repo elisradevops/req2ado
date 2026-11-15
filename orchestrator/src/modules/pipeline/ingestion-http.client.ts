@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Agent } from 'undici';
 import type { CanonicalDoc, WorkItemTree } from '@req2ado/shared-ts';
 import type { FolderIngestFile } from '../kb/kb.service';
+import type { IngestionSourceExcerpt, SourceExcerptRequest } from './source-excerpt';
 
 // undici's default headersTimeout (300s) is shorter than a real local LLM
 // can take for SURVEY mode's two sequential calls (infer_hierarchy +
@@ -68,6 +69,20 @@ export interface ScoreExplanation {
   explanations: { category: string; score: number | null; reason: string | null; passCondition: string | null }[];
   basis: 'knowledge_base' | 'built_in';
   rubric: { source: string; version: string | null };
+}
+
+/** GET /kb/profile as ingestion returns it (only the parts the knowledge-base page reads are typed). */
+export interface StoredKbProfile {
+  version: string;
+  builtWith: string;
+  docsInKb: number;
+  docsContributing: number;
+  profile: {
+    built_at?: string | null;
+    truncated?: boolean;
+    docs?: { file: string; status: string; reason: string | null; categories: number; rules: number; type_definitions: number; glossary: number }[];
+    conflicts?: { kind: string; key: string; variants: unknown[] }[];
+  };
 }
 
 export class IngestionHttpError extends Error {
@@ -487,6 +502,30 @@ export class IngestionHttpClient {
     return (await response.json()) as ScoreExplanation;
   }
 
+  // The original wording at one item's stored span (the review dialog's evidence strip): ingestion re-parses the job's kept
+  // upload with the pipeline's loader, since the offsets index extracted text, not file bytes. No model call. Throws on a
+  // failed request; the caller turns that into an "unavailable" answer.
+  async sourceExcerpt(
+    fileBuffer: Buffer,
+    filename: string,
+    request: SourceExcerptRequest & { languages?: string },
+    signal?: AbortSignal,
+  ): Promise<IngestionSourceExcerpt> {
+    const form = new FormData();
+    form.append('file', new Blob([fileBuffer]), filename);
+    const params = new URLSearchParams({ start_offset: String(request.startOffset), end_offset: String(request.endOffset), extent: request.extent });
+    if (request.page != null) params.set('page', String(request.page));
+    if (request.rowHint) params.set('row_hint', request.rowHint);
+    if (request.languages) params.set('languages', request.languages);
+    const response = await fetch(`${this.baseUrl}/source-excerpt?${params.toString()}`, {
+      method: 'POST',
+      body: form,
+      ...(signal ? { signal } : {}),
+    });
+    if (!response.ok) throw await _ingestionError(response, `Ingestion /source-excerpt request failed: `);
+    return (await response.json()) as IngestionSourceExcerpt;
+  }
+
   // A job served from the result cache skips /ingest and /level, which is where ingestion writes the run map: this asks it to publish
   // the map from the cached document. Display only: false (never an error) when it could not.
   async publishDocumentMap(doc: CanonicalDoc, jobId: string): Promise<boolean> {
@@ -636,7 +675,10 @@ export class IngestionHttpClient {
     // Job transparency (B9b): lets ingestion show a confirmed duplicate side by
     // side on this job's running screen. Display only, optional.
     jobId?: string,
-  ): Promise<{ isDuplicate: boolean; matchedItemId: string | null; similarity: number | null }> {
+    // What the item is compared against: its own kind (Epic / Feature / Requirement) and how wide to look (the area path and the
+    // ones under it, or the whole project). Both omitted: as before.
+    options?: { typeCategory?: string; scope?: 'area_path' | 'project' },
+  ): Promise<{ isDuplicate: boolean; matchedItemId: string | null; similarity: number | null; judgeVerdict: string | null; matchedText: string | null }> {
     const response = await fetch(`${this.baseUrl}/dedup/check`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -647,20 +689,35 @@ export class IngestionHttpClient {
         ...(threshold !== undefined ? { threshold } : {}),
         ...(userId ? { user_id: userId } : {}),
         ...(jobId ? { job_id: jobId } : {}),
+        ...(options?.typeCategory ? { type_category: options.typeCategory } : {}),
+        ...(options?.scope ? { scope: options.scope } : {}),
       }),
     });
     if (!response.ok) {
       throw await _ingestionError(response, `Ingestion /dedup/check request failed: `);
     }
-    const body = (await response.json()) as { is_duplicate: boolean; matched_item_id: string | null; similarity: number | null };
-    return { isDuplicate: body.is_duplicate, matchedItemId: body.matched_item_id, similarity: body.similarity };
+    const body = (await response.json()) as {
+      is_duplicate: boolean;
+      matched_item_id: string | null;
+      similarity: number | null;
+      judge_verdict?: string | null;
+      matched_text?: string | null;
+    };
+    // The verdict and the matched item's text are only for the decision log (why was this item skipped?); the check itself needs neither.
+    return {
+      isDuplicate: body.is_duplicate,
+      matchedItemId: body.matched_item_id,
+      similarity: body.similarity,
+      judgeVerdict: body.judge_verdict ?? null,
+      matchedText: body.matched_text ?? null,
+    };
   }
 
-  async upsertDedupEntry(itemId: string, text: string, title: string, areaPath: string, userId?: string): Promise<void> {
+  async upsertDedupEntry(itemId: string, text: string, title: string, areaPath: string, userId?: string, typeCategory?: string): Promise<void> {
     const response = await fetch(`${this.baseUrl}/dedup/upsert`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ item_id: itemId, text, title, area_path: areaPath, ...(userId ? { user_id: userId } : {}) }),
+      body: JSON.stringify({ item_id: itemId, text, title, area_path: areaPath, ...(userId ? { user_id: userId } : {}), ...(typeCategory ? { type_category: typeCategory } : {}) }),
     });
     if (!response.ok) {
       throw await _ingestionError(response, `Ingestion /dedup/upsert request failed: `);
@@ -676,13 +733,13 @@ export class IngestionHttpClient {
    * run) -- needed so ingestion's /llm/embed call can resolve the
    * submitting user's own Open WebUI connection.
    */
-  async upsertDedupEntriesBatch(items: { itemId: string; text: string; title: string; areaPath: string }[], userId?: string): Promise<void> {
+  async upsertDedupEntriesBatch(items: { itemId: string; text: string; title: string; areaPath: string; typeCategory?: string }[], userId?: string): Promise<void> {
     if (items.length === 0) return;
     const response = await fetch(`${this.baseUrl}/dedup/upsert-batch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        items: items.map((item) => ({ item_id: item.itemId, text: item.text, title: item.title, area_path: item.areaPath })),
+        items: items.map((item) => ({ item_id: item.itemId, text: item.text, title: item.title, area_path: item.areaPath, ...(item.typeCategory ? { type_category: item.typeCategory } : {}) })),
         ...(userId ? { user_id: userId } : {}),
       }),
     });
@@ -746,6 +803,19 @@ export class IngestionHttpClient {
     return (await response.json()) as { version: string; builtWith: string; docsInKb: number; docsContributing: number };
   }
 
+  /**
+   * The stored KB profile for the user (what each document contributed to the grading rubric, and the conflicts between
+   * documents), exactly as ingestion holds it. null: none is stored yet (no build has finished, or the user has no documents).
+   */
+  async getKbProfile(userId: string): Promise<StoredKbProfile | null> {
+    const response = await fetch(`${this.baseUrl}/kb/profile?${new URLSearchParams({ user_id: userId }).toString()}`);
+    if (response.status === 404) return null;
+    if (!response.ok) {
+      throw await _ingestionError(response, `Ingestion GET /kb/profile request failed: `);
+    }
+    return (await response.json()) as StoredKbProfile;
+  }
+
   async ingestUrl(
     url: string,
     userId: string,
@@ -763,6 +833,8 @@ export class IngestionHttpClient {
     // ingestion service that does not report it.
     chunksInStore: number | null;
     skippedUnchanged: boolean;
+    // The SharePoint library the file is in, when the ingestion service says (absent from an older one).
+    driveId?: string;
   }> {
     const response = await fetch(`${this.baseUrl}/kb/ingest-url`, {
       method: 'POST',
@@ -787,6 +859,7 @@ export class IngestionHttpClient {
       chunks_stored: number;
       chunks_in_store?: number | null;
       skipped_unchanged: boolean;
+      drive_id?: string | null;
     };
     return {
       documentName: body.document_name,
@@ -796,6 +869,7 @@ export class IngestionHttpClient {
       chunksStored: body.chunks_stored,
       chunksInStore: body.chunks_in_store ?? null,
       skippedUnchanged: body.skipped_unchanged,
+      ...(body.drive_id ? { driveId: body.drive_id } : {}),
     };
   }
 
@@ -826,6 +900,7 @@ export class IngestionHttpClient {
         size_bytes: number | null;
         reason: string | null;
         relative_path: string | null;
+        drive_id?: string | null;
       }[];
     };
     return {
@@ -839,6 +914,7 @@ export class IngestionHttpClient {
         sizeBytes: f.size_bytes,
         reason: f.reason,
         relativePath: f.relative_path,
+        ...(f.drive_id ? { driveId: f.drive_id } : {}),
       })),
     };
   }
@@ -911,6 +987,78 @@ export class IngestionHttpClient {
     }
   }
 
+  async setRetrievalMode(userId: string, sourceId: string, retrievalMode: 'retrieve' | 'always_include'): Promise<void> {
+    const response = await fetch(`${this.baseUrl}/kb/documents/retrieval-mode`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId, source_id: sourceId, retrieval_mode: retrievalMode }),
+    });
+    if (!response.ok) {
+      throw await _ingestionError(response, `Ingestion PUT /kb/documents/retrieval-mode request failed: `);
+    }
+  }
+
+  /**
+   * Ingests one file addressed by drive + item id. Unlike ingestItem, no download URL is passed: ingestion looks the item up
+   * and downloads it when called, so a file queued long ago is not at the mercy of a link that has since expired. `signal`
+   * lets the caller stop waiting for a slow file.
+   */
+  async ingestDriveItem(
+    driveId: string,
+    itemId: string,
+    userId: string,
+    docType: string | null,
+    graphToken?: string | null,
+    retrievalMode?: 'retrieve' | 'always_include' | null,
+    signal?: AbortSignal,
+  ): Promise<{
+    documentName: string;
+    driveitemId: string;
+    mimeType: string | null;
+    sizeBytes: number;
+    chunksStored: number;
+    // Chunks the vector store really holds for the file after the call (the existing count on a skip-unchanged); null from
+    // an older ingestion service that does not report it.
+    chunksInStore: number | null;
+    skippedUnchanged: boolean;
+  }> {
+    const response = await fetch(`${this.baseUrl}/kb/ingest-drive-item`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        drive_id: driveId,
+        item_id: itemId,
+        user_id: userId,
+        doc_type: docType,
+        graph_token: graphToken ?? null,
+        retrieval_mode: retrievalMode ?? null,
+      }),
+      dispatcher: this.longRunningAgent,
+      ...(signal ? { signal } : {}),
+    });
+    if (!response.ok) {
+      throw await _ingestionError(response, `Ingestion /kb/ingest-drive-item request failed: `);
+    }
+    const body = (await response.json()) as {
+      document_name: string;
+      driveitem_id: string;
+      mime_type: string | null;
+      size_bytes: number;
+      chunks_stored: number;
+      chunks_in_store?: number | null;
+      skipped_unchanged: boolean;
+    };
+    return {
+      documentName: body.document_name,
+      driveitemId: body.driveitem_id,
+      mimeType: body.mime_type,
+      sizeBytes: body.size_bytes,
+      chunksStored: body.chunks_stored,
+      chunksInStore: body.chunks_in_store ?? null,
+      skippedUnchanged: body.skipped_unchanged,
+    };
+  }
+
   async browseFolder(url: string, graphToken?: string | null): Promise<FolderChild[]> {
     const response = await fetch(`${this.baseUrl}/kb/browse-folder`, {
       method: 'POST',
@@ -978,6 +1126,9 @@ export interface FolderChild {
   sizeBytes: number;
   isFolder: boolean;
   driveId: string | null;
+  // The drive this item lives in, for files and folders alike. `driveId` is only for descending into a folder; a batch ingest
+  // addresses a FILE by drive + item id. Null from an older ingestion service that does not send it.
+  parentDriveId: string | null;
   // Files only -- Graph's pre-signed download URL, needed to ingest this
   // exact item via /kb/ingest-item without its own sharing link.
   downloadUrl: string | null;
@@ -991,6 +1142,7 @@ function mapFolderChildren(
     size_bytes: number;
     is_folder: boolean;
     drive_id: string | null;
+    parent_drive_id?: string | null;
     download_url: string | null;
   }[],
 ): FolderChild[] {
@@ -1001,6 +1153,7 @@ function mapFolderChildren(
     sizeBytes: item.size_bytes,
     isFolder: item.is_folder,
     driveId: item.drive_id,
+    parentDriveId: item.parent_drive_id ?? null,
     downloadUrl: item.download_url,
   }));
 }

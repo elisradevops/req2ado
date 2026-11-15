@@ -46,6 +46,9 @@ export function useWindowStartedAt(key: string | undefined, now: number, storage
   // immediately -- no need to wait for the effect below to ever run.
   const startedAtRef = useRef<number>(storageKey ? (readStored(storageKey) ?? now) : now);
   const prevIdentityRef = useRef<string | undefined>(undefined);
+  // Whether a real window was already known on the very first render. When it was not, `startedAtRef`
+  // holds the MOUNT time, which says nothing about when the window that appears later began.
+  const hadIdentityAtMountRef = useRef<boolean>(identity !== undefined);
 
   useEffect(() => {
     if (identity === undefined) return;
@@ -61,6 +64,9 @@ export function useWindowStartedAt(key: string | undefined, now: number, storage
         startedAtRef.current = stored;
         return;
       }
+      // A window that first appears after mount began when it appeared, not when the page opened: the page
+      // may have been open for minutes with no window at all (seen live: "4m 13s so far" seconds into scoring).
+      if (!hadIdentityAtMountRef.current) startedAtRef.current = Date.now();
       if (storageKey) sessionStorage.setItem(storageKey, String(startedAtRef.current));
       return;
     }
@@ -79,5 +85,13 @@ export function useWindowStartedAt(key: string | undefined, now: number, storage
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [identity, storageKey]);
 
+  // The effect above fixes `startedAtRef` AFTER this render commits, and a ref write schedules no render of its own. So on
+  // the render where a window first appears, answer here what the effect is about to settle: the stored start when one
+  // exists, otherwise `now` (a window that appears late began when it appeared). Without this the first frame carried the
+  // mount time ("4m 13s so far" for one tick).
+  if (identity !== undefined && prevIdentityRef.current === undefined && !hadIdentityAtMountRef.current) {
+    const stored = storageKey ? readStored(storageKey) : null;
+    return stored ?? now;
+  }
   return startedAtRef.current;
 }

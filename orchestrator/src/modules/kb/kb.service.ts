@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
-import { Injectable, Logger } from '@nestjs/common';
+import { ConflictException, Injectable, Logger } from '@nestjs/common';
 import type { PrismaClient } from '@prisma/client';
 import type { FolderChild, IngestionHttpClient, Rubric, SharePointStatus } from '../pipeline/ingestion-http.client';
 import { CredentialVaultService, SHARED_OWNER_KEY } from '../auth/credential-vault.service';
+import { KbDriveMismatchException, findDriveConflict } from './kb-drive';
 
 interface VaultedSharePointToken {
   token: string;
@@ -21,6 +22,22 @@ export interface IngestUrlResult {
   skippedUnchanged: boolean;
 }
 
+export type KbProfileState = 'none' | 'queued' | 'building' | 'ready' | 'no_model';
+
+/** What the page shows about the grading rubric the knowledge base builds: whether it is ready, and what each document gave it. */
+export interface KbProfileView {
+  state: KbProfileState;
+  // When the stored profile was built; null when none is stored.
+  builtAt: string | null;
+  version: string | null;
+  builtWith: string | null;
+  docsInKb: number;
+  docsContributing: number;
+  truncated: boolean;
+  docs: { file: string; status: string; reason: string | null; categories: number; rules: number; typeDefinitions: number; glossary: number }[];
+  conflicts: { kind: string; key: string; variantCount: number }[];
+}
+
 export interface IngestedDocumentSummary {
   id: string;
   userId: string;
@@ -32,6 +49,8 @@ export interface IngestedDocumentSummary {
   retrievalMode: string | null;
   // Chunks the vector store held for this file at its last successful ingest (a snapshot); null = unknown (older rows, or the count was unavailable).
   chunkCount: number | null;
+  // The SharePoint library the file came from; null = recorded before this was tracked.
+  driveId: string | null;
   ingestedAt: Date;
 }
 
@@ -45,6 +64,8 @@ export interface FolderIngestFile {
   sizeBytes: number | null;
   reason: string | null;
   relativePath: string | null;
+  // The SharePoint library the file is in, when ingestion says.
+  driveId?: string;
 }
 
 export interface FolderIngestUrlResult {
@@ -85,6 +106,18 @@ export interface BrowseFolderEntry {
 
 const logger = new Logger('KbService');
 
+// A token is pasted from somewhere: a Graph Explorer tab, a curl example, a chat. Take off what is not part of it so a real token is not
+// rejected for how it was copied: an "Authorization: Bearer " prefix, surrounding quotes, and the spaces and line breaks a wrapped copy adds
+// (a token has none inside). The cleaned value is what is checked and what is stored.
+export function cleanPastedToken(pasted: string): string {
+  return pasted
+    .trim()
+    .replace(/^authorization\s*:\s*/i, '')
+    .replace(/^bearer\s+/i, '')
+    .replace(/^["'`]+|["'`]+$/g, '')
+    .replace(/\s+/g, '');
+}
+
 @Injectable()
 export class KbService {
   constructor(
@@ -92,7 +125,13 @@ export class KbService {
     private readonly ingestionClient: IngestionHttpClient,
     private readonly credentialVault: CredentialVaultService,
     // Rebuilds the user's KB profile in the background after a change of their knowledge base (never fails the action).
-    private readonly profileScheduler?: { schedule(userId: string): Promise<void> },
+    private readonly profileScheduler?: {
+      schedule(userId: string): Promise<void>;
+      activity?(userId: string): Promise<'idle' | 'queued' | 'building'>;
+      hasModel?(userId: string): Promise<boolean>;
+    },
+    // Continues batch ingests that paused for want of a valid SharePoint token once a new one is saved.
+    private readonly batchResumer?: { resumePausedBy(reason: string): Promise<number> },
   ) {}
 
   /**
@@ -124,13 +163,21 @@ export class KbService {
    * rather than a separate plaintext column, since the vault only stores
    * one opaque ciphertext blob per ownerKey/kind.
    */
-  async reconnectSharePointToken(token: string, rotatedByUserId: string): Promise<SharePointStatus> {
+  async reconnectSharePointToken(pastedToken: string, rotatedByUserId: string): Promise<SharePointStatus> {
+    const token = cleanPastedToken(pastedToken);
     const status = await this.ingestionClient.getSharePointStatus(token);
     if (status.status !== 'valid') {
       return status;
     }
     const payload: VaultedSharePointToken = { token, rotatedByUserId, rotatedAt: new Date().toISOString() };
     await this.credentialVault.set(SHARED_OWNER_KEY, 'sharepoint_token', JSON.stringify(payload));
+    // The token is shared, so every batch that stopped for want of a valid one can go on now. Not part of the reconnect: if
+    // this fails the new token is saved all the same, and a batch can be resumed by hand.
+    try {
+      await this.batchResumer?.resumePausedBy('sharepoint_token');
+    } catch (error) {
+      logger.warn(`Could not resume the knowledge-base batches waiting for a SharePoint token: ${error instanceof Error ? error.message : String(error)}`);
+    }
     return status;
   }
 
@@ -153,6 +200,7 @@ export class KbService {
         docType,
         retrievalMode,
         chunkCount: result.chunksInStore,
+        ...(result.driveId ? { driveId: result.driveId } : {}),
       },
       update: {
         name: result.documentName,
@@ -161,6 +209,7 @@ export class KbService {
         docType,
         retrievalMode,
         chunkCount: result.chunksInStore,
+        ...(result.driveId ? { driveId: result.driveId } : {}),
         ingestedAt: new Date(),
       },
     });
@@ -205,6 +254,22 @@ export class KbService {
     logger.log(`KB document removed: user=${createHash('sha256').update(document.userId).digest('hex').slice(0, 10)} file="${document.name}" id=${id}`);
     await this.profileScheduler?.schedule(document.userId);
     return document;
+  }
+
+  /**
+   * Switches an already-ingested file between similarity-gated retrieval and
+   * full-context injection by retagging its stored chunks (no re-ingest). The
+   * index is updated first so the row never claims a mode the index doesn't
+   * have. Scoped like deleteDocument: null (caller maps to 404) for a missing
+   * row or another user's.
+   */
+  async setRetrievalMode(id: string, expectedUserId: string, retrievalMode: 'retrieve' | 'always_include'): Promise<IngestedDocumentSummary | null> {
+    const document = await this.prisma.ingestedDocument.findUnique({ where: { id } });
+    if (!document || document.userId !== expectedUserId) {
+      return null;
+    }
+    await this.ingestionClient.setRetrievalMode(document.userId, document.driveItemId, retrievalMode);
+    return this.prisma.ingestedDocument.update({ where: { id }, data: { retrievalMode } });
   }
 
   /**
@@ -256,6 +321,120 @@ export class KbService {
   }
 
   /**
+   * The grading rubric's state for the page's ingestion report. The profile is built in the background after an ingest (a
+   * debounce, then a run of LLM calls), so `state` says whether a build is queued or running, and the stored profile, if any,
+   * is returned either way (the previous one while a new one builds). With none stored: `none` when a build could start,
+   * `no_model` when the user has no model connection to build it with (the first job builds it then, with its own).
+   */
+  async getProfile(userId: string): Promise<KbProfileView> {
+    const activityPromise: Promise<'idle' | 'queued' | 'building'> = this.profileScheduler?.activity?.(userId) ?? Promise.resolve('idle');
+    const [stored, activity] = await Promise.all([this.ingestionClient.getKbProfile(userId), activityPromise]);
+    if (!stored) {
+      const hasModel = (await this.profileScheduler?.hasModel?.(userId)) ?? true;
+      return {
+        state: activity !== 'idle' ? activity : hasModel ? 'none' : 'no_model',
+        builtAt: null,
+        version: null,
+        builtWith: null,
+        docsInKb: 0,
+        docsContributing: 0,
+        truncated: false,
+        docs: [],
+        conflicts: [],
+      };
+    }
+    const profile = stored.profile ?? {};
+    return {
+      state: activity !== 'idle' ? activity : 'ready',
+      builtAt: profile.built_at ?? null,
+      version: stored.version,
+      builtWith: stored.builtWith,
+      docsInKb: stored.docsInKb,
+      docsContributing: stored.docsContributing,
+      truncated: profile.truncated ?? false,
+      docs: (profile.docs ?? []).map((d) => ({
+        file: d.file,
+        status: d.status,
+        reason: d.reason,
+        categories: d.categories,
+        rules: d.rules,
+        typeDefinitions: d.type_definitions,
+        glossary: d.glossary,
+      })),
+      conflicts: (profile.conflicts ?? []).map((c) => ({ kind: c.kind, key: c.key, variantCount: c.variants.length })),
+    };
+  }
+
+  /**
+   * Records an ingested file in the user's document list (the row the tree's alreadyIngested cross-reference and the
+   * remove action use), under its relative path, and returns the row's id. The one place a file's row is written after
+   * ingestion, shared by the single-file and the batch paths.
+   */
+  async recordIngestedDocument(
+    userId: string,
+    result: IngestUrlResult,
+    options: { relativePath: string; docType: string | null; retrievalMode: string | null; driveId?: string },
+  ): Promise<string> {
+    const { relativePath, docType, retrievalMode, driveId } = options;
+    // Left out when unknown, so an ingest path that does not know the library never blanks one that was recorded.
+    const drive = driveId ? { driveId } : {};
+    const row = await this.prisma.ingestedDocument.upsert({
+      where: { userId_driveItemId: { userId, driveItemId: result.driveitemId } },
+      create: {
+        userId,
+        driveItemId: result.driveitemId,
+        name: relativePath,
+        sizeBytes: result.sizeBytes,
+        mimeType: result.mimeType,
+        docType,
+        retrievalMode,
+        chunkCount: result.chunksInStore,
+        ...drive,
+      },
+      update: {
+        name: relativePath,
+        sizeBytes: result.sizeBytes,
+        mimeType: result.mimeType,
+        docType,
+        retrievalMode,
+        chunkCount: result.chunksInStore,
+        ...drive,
+        ingestedAt: new Date(),
+      },
+    });
+    return row.id;
+  }
+
+  /**
+   * Ingests one file addressed by drive + item id and records it. Used by the batch runner: the SharePoint token is read
+   * fresh from the vault for every file (so one rotated mid-batch is picked up), ingestion looks the item up itself (no
+   * download link to expire), and the profile build is left to the caller (`scheduleProfile: false`), because a batch
+   * schedules it once at the end: a build per file would start between files and compete with the next one for the LLM.
+   * Nothing is recorded when the ingestion fails.
+   */
+  async ingestDriveItem(input: {
+    userId: string;
+    driveId: string;
+    itemId: string;
+    relativePath: string;
+    docType: string | null;
+    retrievalMode: 'retrieve' | 'always_include' | null;
+    scheduleProfile?: boolean;
+    signal?: AbortSignal;
+  }): Promise<IngestUrlResult & { ingestedDocumentId: string }> {
+    const { userId, driveId, itemId, relativePath, docType, retrievalMode, scheduleProfile = true, signal } = input;
+    // The one-library rule, checked per file as ingestItem does: the knowledge base may have taken files of another library since
+    // this batch was queued (a single file added meanwhile), and nothing here would stop this one landing beside them.
+    const conflict = await findDriveConflict(this.prisma, userId, driveId);
+    if (conflict) throw new KbDriveMismatchException(conflict);
+    const graphToken = await this.resolveGraphTokenOverride();
+    const result = await this.ingestionClient.ingestDriveItem(driveId, itemId, userId, docType, graphToken, retrievalMode, signal);
+    const ingestedDocumentId = await this.recordIngestedDocument(userId, result, { relativePath, docType, retrievalMode, driveId });
+    if (scheduleProfile) await this.profileScheduler?.schedule(userId);
+    return { ...result, ingestedDocumentId };
+  }
+
+  /**
    * Ingests exactly one file from an already-browsed tree row -- addressed
    * by its Graph download URL (no sharing link needed), so a reviewer can
    * pull in a single file without leaving the tree view. `relativePath` is
@@ -271,37 +450,54 @@ export class KbService {
     userId: string,
     docType: string | null,
     retrievalMode: string | null = null,
+    driveId?: string,
   ): Promise<IngestUrlResult & { ingestedDocumentId: string }> {
+    if (driveId) {
+      const conflict = await findDriveConflict(this.prisma, userId, driveId);
+      if (conflict) throw new KbDriveMismatchException(conflict);
+    }
     const graphToken = await this.resolveGraphTokenOverride();
     const result = await this.ingestionClient.ingestItem(name, itemId, downloadUrl, userId, docType, graphToken, retrievalMode);
-    const row = await this.prisma.ingestedDocument.upsert({
-      where: { userId_driveItemId: { userId, driveItemId: result.driveitemId } },
-      create: {
-        userId,
-        driveItemId: result.driveitemId,
-        name: relativePath,
-        sizeBytes: result.sizeBytes,
-        mimeType: result.mimeType,
-        docType,
-        retrievalMode,
-        chunkCount: result.chunksInStore,
-      },
-      update: {
-        name: relativePath,
-        sizeBytes: result.sizeBytes,
-        mimeType: result.mimeType,
-        docType,
-        retrievalMode,
-        chunkCount: result.chunksInStore,
-        ingestedAt: new Date(),
-      },
-    });
     // Returned so the tree row that triggered this can immediately offer a
     // remove action -- IngestUrlResult alone only carries the Graph
     // driveitemId, not the Prisma row's own id that DELETE
     // /kb/documents/:id needs.
+    const ingestedDocumentId = await this.recordIngestedDocument(userId, result, { relativePath, docType, retrievalMode, driveId });
     await this.profileScheduler?.schedule(userId);
-    return { ...result, ingestedDocumentId: row.id };
+    return { ...result, ingestedDocumentId };
+  }
+
+  /**
+   * Makes the user's knowledge base hold only files of `driveId`: removes every document that came from another library, or
+   * whose library was never recorded, the same way deleteDocument does (its chunks first, then its row, so a failure leaves
+   * the file listed instead of orphaning vectors). Refused while a batch is still going, or it would add files back behind
+   * the cleanup. A file that could not be removed is reported, not hidden, and the rest carry on; running it again finishes
+   * the job. The profile is rebuilt once at the end.
+   */
+  async switchDrive(userId: string, driveId: string): Promise<{ removed: number; failed: { id: string; name: string }[] }> {
+    const active = await this.prisma.kbIngestBatch.count({ where: { userId, status: { in: ['queued', 'running', 'paused'] } } });
+    if (active > 0) {
+      throw new ConflictException({ code: 'kb_batch_active', message: 'Files are still being added. Wait for them to finish, or cancel them, then switch.' });
+    }
+    const documents = await this.prisma.ingestedDocument.findMany({ where: { userId } });
+    const doomed = documents.filter((document) => document.driveId !== driveId);
+    let removed = 0;
+    const failed: { id: string; name: string }[] = [];
+    for (const document of doomed) {
+      try {
+        await this.ingestionClient.deleteDocument(document.userId, document.name, document.driveItemId);
+        await this.prisma.ingestedDocument.delete({ where: { id: document.id } });
+        removed += 1;
+      } catch (error) {
+        logger.warn(`KB switch: could not remove "${document.name}" (id=${document.id}): ${error instanceof Error ? error.message : String(error)}`);
+        failed.push({ id: document.id, name: document.name });
+      }
+    }
+    if (removed > 0) {
+      logger.log(`KB library switch: user=${createHash('sha256').update(userId).digest('hex').slice(0, 10)} removed=${removed} failed=${failed.length}`);
+      await this.profileScheduler?.schedule(userId);
+    }
+    return { removed, failed };
   }
 
   async ingestFolderUrl(
@@ -328,6 +524,7 @@ export class KbService {
             mimeType: f.mimeType,
             docType,
             chunkCount: f.chunksInStore,
+            ...(f.driveId ? { driveId: f.driveId } : {}),
           },
           update: {
             name: f.relativePath ?? f.file,
@@ -335,6 +532,7 @@ export class KbService {
             mimeType: f.mimeType,
             docType,
             chunkCount: f.chunksInStore,
+            ...(f.driveId ? { driveId: f.driveId } : {}),
             ingestedAt: new Date(),
           },
         }),

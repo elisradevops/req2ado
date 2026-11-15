@@ -71,7 +71,7 @@ describe('LiveRunPanel', () => {
     expect(rows[0]).toHaveTextContent('Written: Chassis size');
     expect(rows[1]).toHaveTextContent('In progress: Ripple');
     expect(rows[2]).toHaveTextContent('Waiting: Faults');
-    expect(screen.getByTestId('document-metrics')).toHaveTextContent('1 of 3 outline items written');
+    expect(screen.getByTestId('document-metrics')).toHaveTextContent('1 of 3 outline items done');
     expect(screen.getByTestId('just-finished')).toHaveTextContent('Chassis size');
   });
 
@@ -86,7 +86,7 @@ describe('LiveRunPanel', () => {
     expect(rows[0]).toHaveTextContent('Written: Chassis size');
     expect(rows[1]).toHaveTextContent('Written: Ripple');
     expect(rows[2]).toHaveTextContent('Waiting: Faults');
-    expect(screen.getByTestId('document-metrics')).toHaveTextContent('2 of 3 outline items written');
+    expect(screen.getByTestId('document-metrics')).toHaveTextContent('2 of 3 outline items done');
   });
 
   it('does not ask for finished items when there is no map or the run is over', async () => {

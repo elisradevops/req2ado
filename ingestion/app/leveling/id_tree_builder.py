@@ -45,6 +45,7 @@ from app.leveling.customer_id import extract_customer_requirement_code
 # create. Aliased under the original private names so every call site below
 # needs no change.
 from app.leveling.grounding import grounding_score as _grounding_score
+from app.leveling.hierarchy_rules import states_a_requirement
 from app.leveling.id_hierarchy import HierarchyRow
 from app.leveling.live_context import current_stage_counter
 from app.leveling.narration_publisher import LevelingProgress, ProgressCallback
@@ -627,6 +628,16 @@ def parent_collision_warning(node_id: str, collision: dict) -> IntegrityWarning:
     )
 
 
+def keep_heading_statement(description: str, heading: str) -> str:
+    """A summarized Epic/Feature description that still carries its heading's own statement. A heading that states a
+    requirement but has sub-sections becomes a container (hierarchy_rules.type_headings_by_shape), and the parent
+    summary is written only from the requirements UNDER it -- so without this, the heading's own requirement vanished
+    from the tree with no warning. The verbatim heading leads the description; any other description is unchanged."""
+    if not states_a_requirement(heading) or heading in description:
+        return description
+    return assemble_description(heading, description)
+
+
 def parent_summary_updates(
     entry: dict,
     current_title: str,
@@ -648,7 +659,7 @@ def parent_summary_updates(
     raw_description = entry.get("description")
     if isinstance(raw_description, str) and raw_description.strip():
         description = raw_description.strip()
-        updates["description"] = description
+        updates["description"] = keep_heading_statement(description, current_title)
         updates["grounding_score"] = _grounding_score(
             description, "\n\n".join(requirement_descriptions)
         )
@@ -843,6 +854,7 @@ def _apply_parent_summary_pass(
             if not entry:
                 continue
             node = by_id[node_id]
+            heading = node.source_title or node.title
             raw_title = entry.get("title")
             raw_description = entry.get("description")
             if isinstance(raw_title, str) and raw_title.strip():
@@ -875,6 +887,7 @@ def _apply_parent_summary_pass(
                 # pre-embed scoring (that function scores the raw LLM text
                 # before any later mutation too).
                 summary_text = description
+                description = keep_heading_statement(description, heading)
                 # This pass replaces the whole description with a fresh
                 # synthesized summary -- but any table already folded into
                 # this node's span (see _detect_deterministic_subtrees'

@@ -31,6 +31,25 @@ describe('configSchema LLM fields', () => {
     expect(() => configSchema.parse(rest)).toThrow();
   });
 
+  it('keeps the duplicate decision log for 30 days unless DEDUP_DECISION_LOG_RETENTION_MS says otherwise, and refuses a non-positive age', () => {
+    expect(configSchema.parse(BASE_ENV).DEDUP_DECISION_LOG_RETENTION_MS).toBe(30 * 24 * 60 * 60_000);
+    expect(configSchema.parse({ ...BASE_ENV, DEDUP_DECISION_LOG_RETENTION_MS: '7776000000' }).DEDUP_DECISION_LOG_RETENTION_MS).toBe(7_776_000_000);
+    expect(() => configSchema.parse({ ...BASE_ENV, DEDUP_DECISION_LOG_RETENTION_MS: '0' })).toThrow();
+    expect(() => configSchema.parse({ ...BASE_ENV, DEDUP_DECISION_LOG_RETENTION_MS: '-1' })).toThrow();
+  });
+
+  it('matches follow-up files by identity v2 unless IDENTITY_V2_ENABLED=false (W1 rollback switch)', () => {
+    expect(configSchema.parse(BASE_ENV).IDENTITY_V2_ENABLED).toBe(true);
+    expect(configSchema.parse({ ...BASE_ENV, IDENTITY_V2_ENABLED: 'false' }).IDENTITY_V2_ENABLED).toBe(false);
+    expect(() => configSchema.parse({ ...BASE_ENV, IDENTITY_V2_ENABLED: 'no' })).toThrow();
+  });
+
+  it('redacts the text it embeds unless EMBED_REDACT=false', () => {
+    expect(configSchema.parse(BASE_ENV).EMBED_REDACT).toBe(true);
+    expect(configSchema.parse({ ...BASE_ENV, EMBED_REDACT: 'false' }).EMBED_REDACT).toBe(false);
+    expect(configSchema.parse({ ...BASE_ENV, EMBED_REDACT: 'true' }).EMBED_REDACT).toBe(true);
+  });
+
   it('coerces LLM_TRUSTED_LOCAL=true from a string env value', () => {
     const result = configSchema.parse({ ...BASE_ENV, LLM_TRUSTED_LOCAL: 'true' });
     expect(result.LLM_TRUSTED_LOCAL).toBe(true);
@@ -127,6 +146,19 @@ describe('configSchema batch/folder ingestion fields (NEW-05)', () => {
   it('defaults BATCH_PUMP_INTERVAL_MS to 10000ms when unset', () => {
     const result = configSchema.parse(BASE_ENV);
     expect(result.BATCH_PUMP_INTERVAL_MS).toBe(10_000);
+  });
+
+  it('defaults the knowledge-base batch ingest settings', () => {
+    const result = configSchema.parse(BASE_ENV);
+    expect(result.KB_INGEST_TICK_MS).toBe(2_000);
+    expect(result.KB_INGEST_ITEM_TIMEOUT_MS).toBe(30 * 60_000);
+    expect(result.KB_INGEST_MAX_ATTEMPTS).toBe(3);
+    expect(result.KB_INGEST_RETENTION_MS).toBe(30 * 24 * 60 * 60_000);
+  });
+
+  it('coerces knowledge-base batch ingest overrides from string env values', () => {
+    const result = configSchema.parse({ ...BASE_ENV, KB_INGEST_TICK_MS: '500', KB_INGEST_ITEM_TIMEOUT_MS: '60000', KB_INGEST_MAX_ATTEMPTS: '5' });
+    expect([result.KB_INGEST_TICK_MS, result.KB_INGEST_ITEM_TIMEOUT_MS, result.KB_INGEST_MAX_ATTEMPTS]).toEqual([500, 60_000, 5]);
   });
 
   it('defaults MAX_BATCH_FILES to 25 when unset', () => {

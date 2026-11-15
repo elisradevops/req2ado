@@ -16,7 +16,7 @@ function warningSentence(counts: WarningCounts): string | null {
   const handled = counts.handled > 0 ? `${counts.handled.toLocaleString()} marked handled` : null;
   if (open.length === 0 && !handled) return null;
   const openCount = counts.open.fix + counts.open.review;
-  const openText = open.length > 0 ? `${open.join(' and ')} ${openCount === 1 ? 'is' : 'are'} still open. You can still write.` : '';
+  const openText = open.length > 0 ? `${open.join(' and ')} ${openCount === 1 ? 'is' : 'are'} still open. ${counts.open.fix > 0 ? 'Fix them before you write.' : 'You can still write.'}` : '';
   return [openText, handled ? `${handled}.` : ''].filter(Boolean).join(' ');
 }
 
@@ -43,6 +43,7 @@ export function WriteSummary({
   teamProject,
   areaPath,
   warnings,
+  noticeCount,
   onReviewUnreviewed,
   onShowWarnings,
   onShowExcluded,
@@ -51,6 +52,8 @@ export function WriteSummary({
   teamProject: string | null;
   areaPath: string | null;
   warnings: WarningCounts;
+  // Directly excluded items that were left out by default as a document notice (worded apart from the reviewer's own exclusions).
+  noticeCount?: number;
   // Shortcuts that take the reviewer to the thing to deal with first; each shows only when it applies and its callback is given.
   onReviewUnreviewed?: () => void;
   onShowWarnings?: () => void;
@@ -91,7 +94,7 @@ export function WriteSummary({
       )}
       {state.status === 'ready' && (
         <ul className="flex flex-col gap-1.5 rounded-md border border-hairline bg-surface-alt p-2.5">
-          {writeSummaryLines(state.preview, state.review).map((line) => (
+          {writeSummaryLines(state.preview, state.review, noticeCount).map((line) => (
             <li key={line.id} className={line.tone === 'notice' ? 'text-warning-ink' : 'text-ink-1'}>
               {line.text}
             </li>

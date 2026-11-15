@@ -87,6 +87,32 @@ export class JobResultCache {
   }
 }
 
+/** The `fileHash` of a result-cache key: the file's bytes only. The file name is not part of it, so the same content under another name
+ *  is the same file, and a changed file under the same name is not. One function for the worker and the wizard's probe. */
+export function fileHashOf(buffer: Buffer): string {
+  return createHash('sha256').update(buffer).digest('hex');
+}
+
+/** Whether an identical SURVEY job would be served from the result cache, asked before anything runs (the wizard's estimate, P5). Builds
+ *  the key the worker looks up first (pipeline.worker.ts: the KB version, the ingestion scope and its current profile) and reads it; it
+ *  never runs or stores anything. The worker can still run in full on a hit: a changed link-type catalog or a source job whose figure rows
+ *  are gone are checked only when the job runs, because they need ADO and the database copy. */
+export class ResultCacheProbe {
+  constructor(
+    private readonly cache: JobResultCache,
+    private readonly kbVersion: (userId: string) => Promise<string | null>,
+    private readonly cacheScope: (userId: string) => Promise<{ ingestion: string; profile: string | null } | null>,
+  ) {}
+
+  async has(parts: { fileHash: string; userId: string; model: string; mode: string }): Promise<boolean> {
+    if (parts.mode !== 'survey') return false; // the worker caches SURVEY results only
+    const [kbVersion, scope] = await Promise.all([this.kbVersion(parts.userId), this.cacheScope(parts.userId)]);
+    if (kbVersion === null || !scope) return false;
+    const key = this.cache.keyFor({ ...parts, kbVersion, ingestionVersion: scope.ingestion, profileVersion: scope.profile });
+    return (await this.cache.lookup(key)) !== undefined;
+  }
+}
+
 export function hashCatalog(catalog: { referenceName: string; name: string; semanticHint?: string }[]): string {
   const normal = catalog.map((t) => `${t.referenceName}|${t.name}|${t.semanticHint ?? ''}`).sort();
   return createHash('sha256').update(JSON.stringify(normal)).digest('hex').slice(0, 24);

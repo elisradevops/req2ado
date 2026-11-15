@@ -47,6 +47,13 @@ export const configSchema = z.object({
   // value as ingestion's KB_PROFILE_MODEL so the background build and a job's lazy build agree.
   KB_PROFILE_MODEL: z.string().optional(),
   RESULT_CACHE_VERSION: z.string().default('1'),
+  // W1 content-aware identity: a follow-up file is matched by identity_hash_v2 first (so a renamed or shifted file still matches) and a
+  // reused item whose content changed is flagged. 'false' restores the v1 position lookup exactly, with no code change; confirm() keeps
+  // writing the v2 rows either way, so turning it back on loses nothing.
+  IDENTITY_V2_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
   MODEL_HEALTH_ENABLED: z
     .enum(['true', 'false'])
     .default('true')
@@ -116,6 +123,15 @@ export const configSchema = z.object({
   EMBED_TRANSPORT: z.enum(['ollama', 'openai']).default('ollama'),
   EMBED_BASE_URL: z.string().optional(),
   EMBED_MODEL: z.string().min(1),
+  // Redact e-mail addresses and links from the text before it is embedded. On by default; set to false when the embedding connection is the
+  // only thing that sees the text (a local Open WebUI): the placeholder every redacted item shares makes unrelated items look alike.
+  EMBED_REDACT: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
+  // Who may change the duplicate threshold in Settings: user ids, comma-separated, exactly as the app knows them (Profile > Technical ID). Empty or
+  // unset = every signed-in user may, as before this setting existed. The app has no roles; this is the one place that tells people apart.
+  REQ2ADO_ADMIN_USER_IDS: z.string().optional(),
   EMBED_PATH: z.string().default('/api/embed'),
   // Embedding request-size limits (modules/llm/embed-batching.ts). Unset: the limits come from the model-family table, then
   // from what the upstream's rejections taught the client. Set only to pin a deployment whose limits differ from its family.
@@ -200,6 +216,8 @@ export const configSchema = z.object({
   // (JobFigureFile bytes); the job row is kept. 30 days matches the
   // result-cache lifetime in result-cache.ts.
   JOB_FIGURE_RETENTION_MAX_AGE_MS: z.coerce.number().default(2_592_000_000),
+  // How long the duplicate decision log (why an item was skipped: both texts, the score, the verdict) is kept, in ms. Text only, no files. 30 days.
+  DEDUP_DECISION_LOG_RETENTION_MS: z.coerce.number().int().positive().default(30 * 24 * 60 * 60_000),
   // How many BullMQ pipeline jobs pipeline-worker.main.ts processes
   // concurrently -- previously unset (bullmq's own implicit default is 1),
   // a real horizontal-scaling throughput blocker even before considering
@@ -257,6 +275,15 @@ export const configSchema = z.object({
   // one Postgres write), well below BATCH_PUMP_INTERVAL_MS's own
   // many-tick horizon.
   BATCH_SUBMIT_STUCK_MS: z.coerce.number().default(5 * 60_000),
+  // Knowledge-base batch ingest (KbIngestRunner): how often it looks for a file that is ready, how long one file may take
+  // before the attempt is given up on (large decks with many figures can run long), and how many attempts a file gets
+  // before a transient failure becomes final.
+  KB_INGEST_TICK_MS: z.coerce.number().default(2_000),
+  KB_INGEST_ITEM_TIMEOUT_MS: z.coerce.number().default(30 * 60_000),
+  KB_INGEST_MAX_ATTEMPTS: z.coerce.number().int().min(1).default(3),
+  // How long a finished knowledge-base batch is kept (its per-file outcomes feed the ingestion report), then forgotten. The
+  // documents it added are not affected.
+  KB_INGEST_RETENTION_MS: z.coerce.number().default(30 * 24 * 60 * 60_000),
 });
 
 export type AppConfig = z.infer<typeof configSchema>;

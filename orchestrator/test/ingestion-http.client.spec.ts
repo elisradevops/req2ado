@@ -363,6 +363,39 @@ describe('IngestionHttpClient', () => {
     await expect(client.publishDocumentMap(MINIMAL_DOC, 'job-1')).resolves.toBe(false);
   });
 
+  it('sourceExcerpt POSTs the original and the span to /source-excerpt and returns the wording', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ text: 'The unit shall start.', truncated: false, kind: 'table' }) });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+    const signal = new AbortController().signal;
+
+    const result = await client.sourceExcerpt(
+      Buffer.from('docx'),
+      'spec.docx',
+      { startOffset: 80, endOffset: 81, page: 2, extent: 'section', rowHint: 'PWR-7', languages: 'heb+eng' },
+      signal,
+    );
+
+    expect(result).toEqual({ text: 'The unit shall start.', truncated: false, kind: 'table' });
+    const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toBe('http://ingestion.internal/source-excerpt?start_offset=80&end_offset=81&extent=section&page=2&row_hint=PWR-7&languages=heb%2Beng');
+    expect(options.method).toBe('POST');
+    expect(options.body).toBeInstanceOf(FormData);
+    expect(options.signal).toBe(signal);
+  });
+
+  it('sourceExcerpt leaves out what is not set, and throws on a failed request', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ text: '', truncated: false, kind: 'unavailable' }) });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+
+    await client.sourceExcerpt(Buffer.from('x'), 'x.txt', { startOffset: 0, endOffset: 5, page: null, extent: 'span', rowHint: null });
+    expect((global.fetch as jest.Mock).mock.calls[0][0]).toBe('http://ingestion.internal/source-excerpt?start_offset=0&end_offset=5&extent=span');
+
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 500, text: async () => 'boom' });
+    await expect(client.sourceExcerpt(Buffer.from('x'), 'x.txt', { startOffset: 0, endOffset: 5, page: null, extent: 'span', rowHint: null })).rejects.toThrow(
+      /source-excerpt/,
+    );
+  });
+
   it('checkDuplicate POSTs text, title, and area_path to /dedup/check', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({
       ok: true,
@@ -371,10 +404,48 @@ describe('IngestionHttpClient', () => {
     const client = new IngestionHttpClient('http://ingestion.internal');
     const result = await client.checkDuplicate('a description', 'a title', 'Proj\\Area');
 
-    expect(result).toEqual({ isDuplicate: true, matchedItemId: '649', similarity: 0.92 });
+    expect(result).toEqual({ isDuplicate: true, matchedItemId: '649', similarity: 0.92, judgeVerdict: null, matchedText: null });
     const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
     expect(url).toBe('http://ingestion.internal/dedup/check');
     expect(JSON.parse(options.body)).toEqual({ text: 'a description', title: 'a title', area_path: 'Proj\\Area' });
+  });
+
+  it('checkDuplicate passes on the judge verdict and the matched item text, for the decision log', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      json: async () => ({ is_duplicate: false, matched_item_id: '649', similarity: 0.93, judge_verdict: 'distinct', matched_text: 'The existing requirement.' }),
+    });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+
+    const result = await client.checkDuplicate('a description', 'a title', 'Proj\\Area');
+
+    expect(result).toEqual({ isDuplicate: false, matchedItemId: '649', similarity: 0.93, judgeVerdict: 'distinct', matchedText: 'The existing requirement.' });
+  });
+
+  it('checkDuplicate says what kind of item it is and how wide to search, and leaves both out when not given', async () => {
+    global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ is_duplicate: false, matched_item_id: null, similarity: null }) }) as any;
+    const client = new IngestionHttpClient('http://ingestion:8000');
+
+    await client.checkDuplicate('d', 't', 'Proj\\Area', undefined, undefined, undefined, { typeCategory: 'Requirement', scope: 'project' });
+    await client.checkDuplicate('d', 't', 'Proj\\Area');
+
+    const [first, second] = (global.fetch as jest.Mock).mock.calls.map((call) => JSON.parse(call[1].body));
+    expect(first).toMatchObject({ type_category: 'Requirement', scope: 'project' });
+    expect(second).not.toHaveProperty('type_category');
+    expect(second).not.toHaveProperty('scope');
+  });
+
+  it('upsertDedupEntry and the batch carry the kind of each item', async () => {
+    global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true }) }) as any;
+    const client = new IngestionHttpClient('http://ingestion:8000');
+
+    await client.upsertDedupEntry('1', 'a', 'A', 'Proj\\Area', undefined, 'Feature');
+    await client.upsertDedupEntriesBatch([{ itemId: '2', text: 'b', title: 'B', areaPath: 'Proj\\Area', typeCategory: 'Epic' }, { itemId: '3', text: 'c', title: 'C', areaPath: 'Proj\\Area' }]);
+
+    const [single, batch] = (global.fetch as jest.Mock).mock.calls.map((call) => JSON.parse(call[1].body));
+    expect(single.type_category).toBe('Feature');
+    expect(batch.items[0].type_category).toBe('Epic');
+    expect(batch.items[1]).not.toHaveProperty('type_category');
   });
 
   it('checkDuplicate includes threshold in the request body when provided', async () => {
@@ -506,6 +577,23 @@ describe('IngestionHttpClient.ingestUrl', () => {
       chunksInStore: 3,
       skippedUnchanged: false,
     });
+  });
+
+  it('maps the drive a file is in, for a single url and for each file of a folder, and leaves it out when not sent', async () => {
+    const body = { document_name: 'd.pdf', driveitem_id: 'item-1', mime_type: null, size_bytes: 1, chunks_stored: 1, skipped_unchanged: false };
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ...body, drive_id: 'drive-9' }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => body })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ files: [{ file: 'a.docx', status: 'ingested', chunks_stored: 1, driveitem_id: 'd', mime_type: null, size_bytes: 1, reason: null, relative_path: 'a.docx', drive_id: 'drive-9' }] }),
+      }) as any;
+
+    const client = new IngestionHttpClient('http://ingestion:8000');
+    expect((await client.ingestUrl('https://x/d.pdf', 'u', null)).driveId).toBe('drive-9');
+    expect((await client.ingestUrl('https://x/d.pdf', 'u', null)).driveId).toBeUndefined();
+    expect((await client.ingestFolderUrl('https://x/folder', 'u', null)).files[0].driveId).toBe('drive-9');
   });
 
   it('maps chunks_in_store, and null when an older ingestion service omits it (count unknown, not 0)', async () => {
@@ -801,4 +889,138 @@ describe('IngestionHttpClient.level: which rubric the job was scored with', () =
     await expect(new IngestionHttpClient('http://ingestion.internal').level(MINIMAL_DOC, 'survey')).resolves.toEqual({ nodes: [] });
   });
 
+
+  describe('ingestDriveItem()', () => {
+    const body = { document_name: 'guide.pptx', driveitem_id: 'item-1', mime_type: 'application/pdf', size_bytes: 10, chunks_stored: 3, chunks_in_store: 3, skipped_unchanged: false };
+
+    it('POSTs the drive and item ids (not a download URL) to /kb/ingest-drive-item and maps the result', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => body });
+      const client = new IngestionHttpClient('http://ingestion:8000');
+
+      const result = await client.ingestDriveItem('drive-1', 'item-1', 'user-1', 'SRD', 'vault-token', 'always_include');
+
+      const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
+      expect(url).toBe('http://ingestion:8000/kb/ingest-drive-item');
+      expect(options.method).toBe('POST');
+      expect(JSON.parse(options.body)).toEqual({
+        drive_id: 'drive-1',
+        item_id: 'item-1',
+        user_id: 'user-1',
+        doc_type: 'SRD',
+        graph_token: 'vault-token',
+        retrieval_mode: 'always_include',
+      });
+      expect(result).toEqual({
+        documentName: 'guide.pptx',
+        driveitemId: 'item-1',
+        mimeType: 'application/pdf',
+        sizeBytes: 10,
+        chunksStored: 3,
+        chunksInStore: 3,
+        skippedUnchanged: false,
+      });
+    });
+
+    it('sends nulls for an absent token, mode and doc type', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => body });
+
+      await new IngestionHttpClient('http://ingestion:8000').ingestDriveItem('drive-1', 'item-1', 'user-1', null);
+
+      expect(JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body)).toMatchObject({ doc_type: null, graph_token: null, retrieval_mode: null });
+    });
+
+    it('passes the abort signal, so a caller can stop waiting for a slow file', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => body });
+      const controller = new AbortController();
+
+      await new IngestionHttpClient('http://ingestion:8000').ingestDriveItem('d', 'i', 'u', null, null, null, controller.signal);
+
+      expect((global.fetch as jest.Mock).mock.calls[0][1].signal).toBe(controller.signal);
+    });
+
+    it('maps chunks_in_store to null when an older ingestion service omits it', async () => {
+      const { chunks_in_store: _omitted, ...withoutCount } = body;
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => withoutCount });
+
+      const result = await new IngestionHttpClient('http://ingestion:8000').ingestDriveItem('d', 'i', 'u', null);
+
+      expect(result.chunksInStore).toBeNull();
+    });
+
+    it.each([401, 404, 400, 502])('throws an IngestionHttpError carrying the status %s', async (status) => {
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status, json: async () => ({ detail: 'nope' }), text: async () => '{"detail":"nope"}' });
+
+      await expect(new IngestionHttpClient('http://ingestion:8000').ingestDriveItem('d', 'i', 'u', null)).rejects.toMatchObject({ status });
+    });
+  });
+
+  describe('browsing: the drive each child lives in', () => {
+    const child = (overrides: Record<string, unknown> = {}) => ({
+      id: 'f1', name: 'a.pdf', mime_type: 'application/pdf', size_bytes: 5, is_folder: false, drive_id: null, parent_drive_id: 'drive-1', download_url: 'https://dl', ...overrides,
+    });
+
+    it('browseFolder() maps parent_drive_id to parentDriveId for files and folders alike', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        json: async () => [child(), child({ id: 'd1', is_folder: true, drive_id: 'drive-1', download_url: null })],
+      });
+
+      const children = await new IngestionHttpClient('http://ingestion:8000').browseFolder('https://contoso.sharepoint.com/folder');
+
+      expect(children.map((c) => [c.id, c.driveId, c.parentDriveId])).toEqual([
+        ['f1', null, 'drive-1'],
+        ['d1', 'drive-1', 'drive-1'],
+      ]);
+    });
+
+    it('browseChildren() does too', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => [child({ parent_drive_id: 'drive-9' })] });
+
+      const children = await new IngestionHttpClient('http://ingestion:8000').browseChildren('drive-9', 'folder-1');
+
+      expect(children[0].parentDriveId).toBe('drive-9');
+    });
+
+    it('is null when an older ingestion service does not send it', async () => {
+      const { parent_drive_id: _omitted, ...older } = child();
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => [older] });
+
+      const children = await new IngestionHttpClient('http://ingestion:8000').browseFolder('https://contoso.sharepoint.com/folder');
+
+      expect(children[0].parentDriveId).toBeNull();
+    });
+  });
+
+  describe('getKbProfile()', () => {
+    const stored = {
+      version: 'v1', builtWith: 'm', docsInKb: 2, docsContributing: 1,
+      profile: {
+        built_at: '2026-11-11T10:00:00Z', truncated: false,
+        docs: [{ file: 'a.pptx', status: 'contributed', reason: null, categories: 3, rules: 5, type_definitions: 1, glossary: 2 }],
+        conflicts: [{ kind: 'type_definition', key: 'requirement', variants: [{ text: 'x', sources: ['a'] }, { text: 'y', sources: ['b'] }] }],
+        categories: [], rules: [], glossary: [], type_definitions: [],
+      },
+    };
+
+    it('GETs the stored profile for the user, encoding the id', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200, json: async () => stored });
+
+      const result = await new IngestionHttpClient('http://ingestion:8000').getKbProfile('Project\\Area 1');
+
+      expect((global.fetch as jest.Mock).mock.calls[0][0]).toBe('http://ingestion:8000/kb/profile?user_id=Project%5CArea+1');
+      expect(result).toEqual(stored);
+    });
+
+    it('is null when no profile is stored yet', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 404, json: async () => ({}), text: async () => '' });
+
+      expect(await new IngestionHttpClient('http://ingestion:8000').getKbProfile('u')).toBeNull();
+    });
+
+    it('throws an IngestionHttpError for any other failure', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 500, json: async () => ({ detail: 'boom' }), text: async () => '{"detail":"boom"}' });
+
+      await expect(new IngestionHttpClient('http://ingestion:8000').getKbProfile('u')).rejects.toMatchObject({ status: 500 });
+    });
+  });
 });

@@ -110,7 +110,7 @@ async def test_health_stays_responsive_during_dedup_upsert_batch(monkeypatch) ->
             return [[0.1, 0.2, 0.3] for _ in texts]
 
     class _NoopVectorStore:
-        def upsert_many(self, items, area_path):
+        def upsert_many(self, items, area_path, **kwargs):
             return None
 
     monkeypatch.setattr(main_module, "_embed_client", _BlockingEmbedClient())

@@ -28,7 +28,7 @@ function highlightMatch(text: string, query: string): ReactNode {
   return (
     <>
       {text.slice(0, at)}
-      <mark className="rounded-sm bg-signal px-0 text-signal-ink">{text.slice(at, at + query.length)}</mark>
+      <mark className="rounded-sm bg-accent-soft px-0 font-semibold text-ink-1">{text.slice(at, at + query.length)}</mark>
       {text.slice(at + query.length)}
     </>
   );

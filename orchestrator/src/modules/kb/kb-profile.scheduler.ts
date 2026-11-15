@@ -12,6 +12,8 @@ const DEBOUNCE_MS = 20_000;
 export interface ProfileQueue {
   add(name: string, data: { userId: string }, opts: { jobId: string; delay: number; removeOnComplete: boolean; removeOnFail: boolean }): Promise<unknown>;
   close?(): Promise<unknown>;
+  // BullMQ's Queue.getJob: lets the page ask whether a build is waiting or running.
+  getJob?(id: string): Promise<{ getState(): Promise<string> } | null | undefined>;
 }
 
 export interface ProfileModelResolver {
@@ -68,6 +70,34 @@ export class KbProfileScheduler implements OnModuleInit, OnModuleDestroy {
   async onModuleDestroy(): Promise<void> {
     await closeWhenReady(this.worker);
     await closeWhenReady(this.deps.queue);
+  }
+
+  /**
+   * What the profile build is doing for this user right now: `building` (running here, or an active job), `queued` (a delayed
+   * or waiting job, i.e. in its debounce), or `idle`. Best effort: a queue that cannot be asked reads as idle, never an error.
+   */
+  async activity(userId: string): Promise<'idle' | 'queued' | 'building'> {
+    if (this.running.has(userId)) return 'building';
+    try {
+      const job = await this.deps.queue.getJob?.(profileJobId(userId));
+      if (!job) return 'idle';
+      const state = await job.getState();
+      if (state === 'active') return 'building';
+      if (state === 'delayed' || state === 'waiting' || state === 'prioritized') return 'queued';
+    } catch {
+      // the queue could not be asked
+    }
+    return 'idle';
+  }
+
+  /** Whether a build could run for this user at all: a configured profile model, or a model connection of their own. */
+  async hasModel(userId: string): Promise<boolean> {
+    if (this.deps.profileModel) return true;
+    try {
+      return Boolean((await this.deps.resolver.resolve(userId))?.chatModel);
+    } catch {
+      return false;
+    }
   }
 
   async schedule(userId: string): Promise<void> {

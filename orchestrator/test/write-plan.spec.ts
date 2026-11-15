@@ -124,6 +124,22 @@ describe('selectEntriesToLink', () => {
     const diff = [entry({ localId: 'p' }), entry({ localId: 'c', parentLocalId: 'p' })];
     expect(selectEntriesToLink(diff, buildExclusionChecker(diff), ids(['c']), new Set())).toEqual([]);
   });
+
+  describe('an item the reviewer chose to create although it matched an existing one', () => {
+    const overridden = (linkTree: boolean) => ({ duplicateOverride: { linkTree, relateToExisting: false } });
+
+    it('is linked to its parent, and its children to it, like any new item, when the reviewer kept the tree links', () => {
+      const diff = [entry({ localId: 'p' }), entry({ localId: 'o', parentLocalId: 'p', ...overridden(true) }), entry({ localId: 'k', parentLocalId: 'o' })];
+      const result = selectEntriesToLink(diff, buildExclusionChecker(diff), ids(['p', 'o', 'k']), new Set());
+      expect(result.map((e) => e.localId)).toEqual(['o', 'k']);
+    });
+
+    it('gets no parent link, and its children get no link to it, when the reviewer turned the tree links off', () => {
+      const diff = [entry({ localId: 'p' }), entry({ localId: 'o', parentLocalId: 'p', ...overridden(false) }), entry({ localId: 'k', parentLocalId: 'o' }), entry({ localId: 'sibling', parentLocalId: 'p' })];
+      const result = selectEntriesToLink(diff, buildExclusionChecker(diff), ids(['p', 'o', 'k', 'sibling']), new Set());
+      expect(result.map((e) => e.localId)).toEqual(['sibling']);
+    });
+  });
 });
 
 describe('selectTraceLinks', () => {

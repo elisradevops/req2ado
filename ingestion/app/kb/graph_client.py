@@ -40,6 +40,8 @@ class GraphDriveItem(BaseModel):
     name: str
     mime_type: str | None
     size: int
+    # The SharePoint library (drive) the item is in; None when Graph does not say.
+    drive_id: str | None = None
 
 
 class GraphFolderChild(BaseModel):
@@ -120,6 +122,22 @@ def _error_for_status(status: int) -> GraphApiError:
     return GraphApiError(status, message)
 
 
+# A safety stop, not a limit anyone should meet: Graph pages hold ~200 children, so this is a folder of ~20,000 items.
+_MAX_CHILD_PAGES = 100
+
+
+def _child_from_item(item: dict) -> GraphFolderChild:
+    return GraphFolderChild(
+        id=item["id"],
+        name=item["name"],
+        mime_type=item.get("file", {}).get("mimeType"),
+        size=item.get("size", 0),
+        is_folder="folder" in item,
+        download_url=item.get("@microsoft.graph.downloadUrl"),
+        drive_id=item.get("parentReference", {}).get("driveId"),
+    )
+
+
 class GraphClient:
     """Fetches a single document from a SharePoint/OneDrive sharing URL via
     the Microsoft Graph /shares endpoint, using a bearer token supplied at
@@ -157,6 +175,7 @@ class GraphClient:
             name=body["name"],
             mime_type=body.get("file", {}).get("mimeType"),
             size=body.get("size", 0),
+            drive_id=body.get("parentReference", {}).get("driveId"),
         )
 
     def fetch_content(self, url: str) -> bytes:
@@ -186,6 +205,26 @@ class GraphClient:
             raise _error_for_status(fallback.status_code)
         raise _error_for_status(response.status_code)
 
+    def get_item_by_id(self, drive_id: str, item_id: str) -> GraphFolderChild:
+        """One drive item addressed by drive + item id, with a download link issued right now. Graph's pre-signed
+        `@microsoft.graph.downloadUrl` is short-lived (about an hour, sometimes minutes), so work that is queued and run
+        later (the batch ingest) must look the item up when it runs instead of keeping the link it was browsed with. An
+        expired link fails like an expired token (401/403), which looks the same to the caller; this call, authenticated
+        with the bearer token, tells the two apart."""
+        response = self._get(f"{self.base_url}/drives/{drive_id}/items/{item_id}")
+        if response.status_code != 200:
+            raise _error_for_status(response.status_code)
+        item = response.json()
+        return GraphFolderChild(
+            id=item["id"],
+            name=item["name"],
+            mime_type=item.get("file", {}).get("mimeType"),
+            size=item.get("size", 0),
+            is_folder="folder" in item,
+            download_url=item.get("@microsoft.graph.downloadUrl"),
+            drive_id=item.get("parentReference", {}).get("driveId"),
+        )
+
     def list_folder_children(self, url: str) -> list[GraphFolderChild]:
         """Lists the immediate children of a shared folder. Each file child
         carries Graph's own pre-signed `@microsoft.graph.downloadUrl` —
@@ -194,44 +233,34 @@ class GraphClient:
         token to that host. Subfolders are listed but not recursed into
         (single-level only, matching the plan's scope)."""
         share_id = encode_share_id(url)
-        request_url = f"{self.base_url}/shares/{share_id}/driveItem/children"
-        response = self._get(request_url)
-        if response.status_code != 200:
-            raise _error_for_status(response.status_code)
-        return [
-            GraphFolderChild(
-                id=item["id"],
-                name=item["name"],
-                mime_type=item.get("file", {}).get("mimeType"),
-                size=item.get("size", 0),
-                is_folder="folder" in item,
-                download_url=item.get("@microsoft.graph.downloadUrl"),
-                drive_id=item.get("parentReference", {}).get("driveId"),
-            )
-            for item in response.json().get("value", [])
-        ]
+        return self._list_children(f"{self.base_url}/shares/{share_id}/driveItem/children")
+
+    def _list_children(self, request_url: str) -> list[GraphFolderChild]:
+        """Every child of a folder, following Graph's `@odata.nextLink` until the last page (Graph returns about 200 per
+        page, so reading only the first would silently cut a big folder short). A failure on any page raises rather
+        than returning a short list. The next link is only followed on the Graph host we were configured with: the
+        bearer token is sent with it, so a link to anywhere else is refused."""
+        children: list[GraphFolderChild] = []
+        for _ in range(_MAX_CHILD_PAGES):
+            response = self._get(request_url)
+            if response.status_code != 200:
+                raise _error_for_status(response.status_code)
+            body = response.json()
+            children.extend(_child_from_item(item) for item in body.get("value", []))
+            next_link = body.get("@odata.nextLink")
+            if not next_link:
+                return children
+            if not next_link.startswith(f"{self.base_url}/"):
+                raise GraphApiError(502, "Graph returned a next page link to an unexpected host; the folder was not listed in full")
+            request_url = next_link
+        raise GraphApiError(502, f"Graph returned more than {_MAX_CHILD_PAGES} pages of children; the folder was not listed in full")
 
     def list_children_by_id(self, drive_id: str, item_id: str) -> list[GraphFolderChild]:
         """Lists the immediate children of a subfolder reached during
         recursive descent, addressed by drive+item id rather than a share
         link (the /shares/{shareId}/... path only resolves the shared
         root). Same mapping/error handling as list_folder_children."""
-        request_url = f"{self.base_url}/drives/{drive_id}/items/{item_id}/children"
-        response = self._get(request_url)
-        if response.status_code != 200:
-            raise _error_for_status(response.status_code)
-        return [
-            GraphFolderChild(
-                id=item["id"],
-                name=item["name"],
-                mime_type=item.get("file", {}).get("mimeType"),
-                size=item.get("size", 0),
-                is_folder="folder" in item,
-                download_url=item.get("@microsoft.graph.downloadUrl"),
-                drive_id=item.get("parentReference", {}).get("driveId"),
-            )
-            for item in response.json().get("value", [])
-        ]
+        return self._list_children(f"{self.base_url}/drives/{drive_id}/items/{item_id}/children")
 
     def fetch_child_content(self, download_url: str) -> bytes:
         # download_url is Graph's own pre-signed URL, already scoped to this

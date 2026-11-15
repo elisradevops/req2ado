@@ -165,6 +165,7 @@ class KbVectorStore:
         quality_checklist: list[str] | None = None,
         quality_checklist_definitions: dict[str, str] | None = None,
         retrieval_mode: str | None = None,
+        parse_version: int | None = None,
     ) -> None:
         collection = self._get_collection(user_id)
         metadata = {
@@ -188,6 +189,12 @@ class KbVectorStore:
         # similarity score can never legitimately gate it.
         if retrieval_mode is not None and retrieval_mode != "retrieve":
             metadata["retrieval_mode"] = retrieval_mode
+        # Which revision of the file-type parser produced these chunks (see
+        # ingest_service.parse_version_for). Same optional-metadata convention as doc_type:
+        # absent for formats that have no versioned parser, and for chunks stored before it
+        # existed -- which is how a re-ingest tells that a parser fix has not reached them yet.
+        if parse_version is not None:
+            metadata["parse_version"] = parse_version
         # Confirmed real determinism gap (user-reported): asking the scoring
         # LLM to "derive" quality-checklist category names live, per scoring
         # call, is not a hard cross-run guarantee even at temperature=0 --
@@ -252,6 +259,32 @@ class KbVectorStore:
             return None
         return metadatas[0].get("file_hash")
 
+    def existing_retrieval_mode(self, user_id: str, source_id: str) -> str | None:
+        """The retrieval_mode stored on any existing chunk of this source_id, or None when the
+        file was never ingested or is in the default similarity-gated mode (which is stored as
+        no key, see upsert_chunk). Matches by source_id alone, like existing_file_hash."""
+        collection = self._existing_collection(user_id)
+        if collection is None:
+            return None
+        result = collection.get(where={"source_id": source_id}, limit=1)
+        metadatas = result.get("metadatas") or []
+        if not metadatas:
+            return None
+        return metadatas[0].get("retrieval_mode")
+
+    def existing_parse_version(self, user_id: str, source_id: str) -> int | None:
+        """The parse_version stored on any existing chunk of this source_id, or None when the
+        file was never ingested or its chunks carry none (see upsert_chunk). Matches by
+        source_id alone, like existing_file_hash."""
+        collection = self._existing_collection(user_id)
+        if collection is None:
+            return None
+        result = collection.get(where={"source_id": source_id}, limit=1)
+        metadatas = result.get("metadatas") or []
+        if not metadatas:
+            return None
+        return metadatas[0].get("parse_version")
+
     def delete_file_chunks(self, user_id: str, source_file: str, source_id: str) -> None:
         """Deletes all previously-stored chunks for this source_id before
         re-ingesting a changed file, so stale chunks (e.g. from a
@@ -306,6 +339,42 @@ class KbVectorStore:
                 break  # real last page
             offset += _GET_PAGE_SIZE
         collection.update(ids=ids, metadatas=[{**m, "source_file": source_file} for m in metadatas])
+
+    def set_retrieval_mode(self, user_id: str, source_id: str, retrieval_mode: str) -> None:
+        """Retags every existing chunk of `source_id` with `retrieval_mode`
+        ("always_include" or "retrieve") without re-parsing/re-embedding, so an
+        already-ingested file can switch between similarity-gated retrieval and
+        full-context injection (see retrieval.fetch_always_include_context).
+        The mode is stored as given, "retrieve" included, rather than removing
+        the key: chromadb merges metadata on update, and
+        list_always_include_documents only matches "always_include". No-op
+        (not an error) if source_id was never ingested."""
+        collection = self._existing_collection(user_id)
+        if collection is None:
+            return None
+        ids: list[str] = []
+        metadatas: list[dict] = []
+        offset = 0
+        while True:
+            page = collection.get(
+                where={"source_id": source_id},
+                limit=_GET_PAGE_SIZE,
+                offset=offset,
+                include=["metadatas"],
+            )
+            page_ids = page.get("ids") or []
+            if not page_ids:
+                break
+            ids.extend(page_ids)
+            metadatas.extend(page.get("metadatas") or [])
+            if len(page_ids) < _GET_PAGE_SIZE:
+                break  # real last page
+            offset += _GET_PAGE_SIZE
+        if not ids:
+            return None
+        collection.update(
+            ids=ids, metadatas=[{**m, "retrieval_mode": retrieval_mode} for m in metadatas]
+        )
 
     def _profile_collection(self, user_id: str):
         return self._client.get_or_create_collection(

@@ -70,4 +70,54 @@ describe('LiveStatusRegion', () => {
     send('output_limit_reached', 'warning', 'c', 2);
     expect(screen.getByRole('status')).toHaveTextContent('The model reached its output limit');
   });
+
+  it('announces a message the page hands it, such as the arrival of a new job, and a changed one again', () => {
+    const { rerender } = render(<LiveStatusRegion message="" />);
+    expect(screen.getByTestId('live-status-region')).toHaveTextContent('');
+    rerender(<LiveStatusRegion message="Job started. It is queued." />);
+    expect(screen.getByTestId('live-status-region')).toHaveTextContent('Job started. It is queued.');
+    rerender(<LiveStatusRegion message="Job is now running." />);
+    expect(screen.getByTestId('live-status-region')).toHaveTextContent('Job is now running.');
+    // and a message that is withdrawn takes its announcement with it
+    rerender(<LiveStatusRegion message="" />);
+    expect(screen.getByTestId('live-status-region')).toHaveTextContent('');
+  });
+
+  it('announces a long wait once, with fixed text that never carries the ticking time, and clears it when the wait ends', () => {
+    render(<LiveStatusRegion />);
+    act(() => useLiveRunStore.getState().setWaiting(true));
+    const region = screen.getByTestId('live-status-region');
+    expect(region).toHaveTextContent('No update for over a minute. The job is still working.');
+    expect(region.textContent).not.toMatch(/\d+s/);
+    act(() => useLiveRunStore.getState().setWaiting(false));
+    expect(region).toHaveTextContent('');
+  });
+
+  it('forgets a wait when the store is reset for another job', () => {
+    render(<LiveStatusRegion />);
+    act(() => useLiveRunStore.getState().setWaiting(true));
+    act(() => useLiveRunStore.getState().reset());
+    expect(screen.getByTestId('live-status-region')).toHaveTextContent('');
+  });
+
+  it('says a stage has gone quiet once, at the 20 s threshold, with no ticking number, and clears it on the next event', () => {
+    render(<LiveStatusRegion />);
+    const region = screen.getByTestId('live-status-region');
+    act(() => useLiveRunStore.getState().setStillWorkingOn('Score'));
+    expect(region).toHaveTextContent('Still working on Score');
+    expect(region.textContent).not.toMatch(/\d/);
+    act(() => useLiveRunStore.getState().setStillWorkingOn(null));
+    expect(region).toHaveTextContent('');
+  });
+
+  it('lets the one-minute wait take over from the quiet-stage line', () => {
+    render(<LiveStatusRegion />);
+    const region = screen.getByTestId('live-status-region');
+    act(() => useLiveRunStore.getState().setStillWorkingOn('Score'));
+    act(() => {
+      useLiveRunStore.getState().setWaiting(true);
+      useLiveRunStore.getState().setStillWorkingOn(null);
+    });
+    expect(region).toHaveTextContent('No update for over a minute. The job is still working.');
+  });
 });

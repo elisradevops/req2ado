@@ -1,5 +1,5 @@
-import { BadRequestException, Body, Controller, Delete, Get, HttpException, NotFoundException, Param, Post, Put, Query } from '@nestjs/common';
-import { BrowseFolderEntry, FolderIngestUrlResult, IngestedDocumentSummary, IngestUrlResult, KbService } from './kb.service';
+import { BadRequestException, Body, Controller, Delete, Get, HttpCode, HttpException, NotFoundException, Param, Post, Put, Query } from '@nestjs/common';
+import { BrowseFolderEntry, FolderIngestUrlResult, IngestedDocumentSummary, IngestUrlResult, KbProfileView, KbService } from './kb.service';
 import { IngestionHttpError, Rubric, SharePointStatus } from '../pipeline/ingestion-http.client';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { SessionUser } from '../auth/session.service';
@@ -108,6 +108,13 @@ export class KbController {
 
   // The rubric the session user's jobs are graded against: the categories derived from their knowledge base (or the built-in ones), each with
   // its pass condition, whether it is pinned, and what was removed. Scoped to the session: no request shape can ask for someone else's.
+  // The grading rubric's state for the ingestion report: ready / building / queued, and what each document contributed. Scoped to
+  // the session: no request shape can ask for someone else's.
+  @Get('profile')
+  async profile(@CurrentUser() user: SessionUser): Promise<KbProfileView> {
+    return this.kbService.getProfile(user.userId);
+  }
+
   @Get('rubric')
   async getRubric(@CurrentUser() user: SessionUser): Promise<Rubric> {
     return this.kbService.getRubric(user.userId);
@@ -150,6 +157,36 @@ export class KbController {
     return { ok: true };
   }
 
+  // Switches an ingested file between "retrieve" (similarity-gated) and "always_include" (full text in every SURVEY prompt).
+  @Put('documents/:id/retrieval-mode')
+  async setRetrievalMode(
+    @Param('id') id: string,
+    @CurrentUser() user: SessionUser,
+    @Body() body: { retrievalMode?: unknown },
+  ): Promise<{ ok: true }> {
+    const mode = body?.retrievalMode;
+    if (mode !== 'retrieve' && mode !== 'always_include') {
+      throw new BadRequestException("retrievalMode must be 'retrieve' or 'always_include'");
+    }
+    const updated = await this.kbService.setRetrievalMode(id, user.userId, mode);
+    if (!updated) {
+      throw new NotFoundException(`Document ${id} not found`);
+    }
+    return { ok: true };
+  }
+
+  // The user agreed to swap libraries: removes the files of any other library (see KbService.switchDrive).
+  @Post('source/switch')
+  async switchSource(
+    @CurrentUser() user: SessionUser,
+    @Body('driveId') driveId: string | undefined,
+  ): Promise<{ removed: number; failed: { id: string; name: string }[] }> {
+    if (!driveId) {
+      throw new BadRequestException('driveId is required');
+    }
+    return this.kbService.switchDrive(user.userId, driveId);
+  }
+
   @Post('ingest-item')
   async ingestItem(
     @CurrentUser() user: SessionUser,
@@ -159,13 +196,17 @@ export class KbController {
     @Body('relativePath') relativePath: string | undefined,
     @Body('docType') docType: string | undefined,
     @Body('retrievalMode') retrievalMode?: string,
+    @Body('driveId') driveId?: string,
   ): Promise<IngestUrlResult> {
     if (!name || !itemId || !downloadUrl) {
       throw new BadRequestException('name, itemId, and downloadUrl are required');
     }
+    if (!driveId) {
+      throw new BadRequestException('driveId is required');
+    }
     try {
       return await this.kbService.ingestItem(
-        name, itemId, downloadUrl, relativePath ?? name, user.userId, docType ?? null, retrievalMode ?? null,
+        name, itemId, downloadUrl, relativePath ?? name, user.userId, docType ?? null, retrievalMode ?? null, driveId,
       );
     } catch (err) {
       if (err instanceof IngestionHttpError) {
@@ -175,11 +216,14 @@ export class KbController {
     }
   }
 
-  @Get('browse-folder')
+  // POST, not GET: the sharing link opens the folder (DESIGN.md §11.7.1), and a query string lands in proxy and access logs. The user
+  // comes from the session like every other route here; a userId in the body is never read.
+  @Post('browse-folder')
+  @HttpCode(200)
   async browseFolder(
     @CurrentUser() user: SessionUser,
-    @Query('url') url: string | undefined,
-    @Query('path') path: string | undefined,
+    @Body('url') url: string | undefined,
+    @Body('path') path: string | undefined,
   ): Promise<BrowseFolderEntry[]> {
     if (!url) {
       throw new BadRequestException('url is required');

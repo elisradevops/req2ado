@@ -22,19 +22,19 @@ const SURVEY_STEPS: StepDef[] = [
     label: 'Dedup check',
     tip: 'Checking whether a near-identical work item already exists under this area path, to avoid creating duplicates.',
   },
-  { key: 'review', label: 'Review', tip: 'Awaiting your review of the proposed diff -- nothing is written to Azure DevOps yet.' },
-  { key: 'write', label: 'Write', tip: 'Writing the reviewed work items to Azure DevOps. This step cannot be undone.' },
+  { key: 'review', label: 'Review', tip: 'Awaiting your review of the proposed diff — nothing is written to Azure DevOps yet.' },
+  { key: 'write', label: 'Write', tip: 'Writes the reviewed work items to Azure DevOps. Nothing is written until you confirm, and it cannot be undone.' },
 ];
 
 const BASELINE_STEPS: StepDef[] = [
-  { key: 'parse', label: 'Parse', tip: 'Reading the document verbatim -- deterministic, no LLM, no distillation.' },
+  { key: 'parse', label: 'Parse', tip: 'Reading the document verbatim: no AI model, no rewriting.' },
   {
     key: 'dedupCheck',
     label: 'Dedup check',
     tip: 'Checking whether a near-identical work item already exists under this area path, to avoid creating duplicates.',
   },
-  { key: 'review', label: 'Review', tip: 'Awaiting your review of the proposed diff -- nothing is written to Azure DevOps yet.' },
-  { key: 'write', label: 'Write', tip: 'Writing the reviewed work items to Azure DevOps. This step cannot be undone.' },
+  { key: 'review', label: 'Review', tip: 'Awaiting your review of the proposed diff — nothing is written to Azure DevOps yet.' },
+  { key: 'write', label: 'Write', tip: 'Writes the reviewed work items to Azure DevOps. Nothing is written until you confirm, and it cannot be undone.' },
 ];
 
 function stepsFor(mode: 'baseline' | 'survey'): StepDef[] {
@@ -219,7 +219,7 @@ export function JobLifecycleSteps({
   if (reached === 'score' && latestNarrationPhase === 'detect_conflicts') {
     tip = 'Checking newly-drafted requirements against each other for near-duplicate/conflicting values.';
   } else if (reached === 'score' && latestNarrationPhase === 'regroup_roots') {
-    tip = 'Grouping disconnected sections under a shared topic before dedup check.';
+    tip = 'Grouping disconnected sections under a shared topic before the duplicate check.';
   } else if (reached === 'score' && latestNarrationPhase === 'infer_trace_links') {
     tip = 'Resolving trace/coverage links between requirements.';
   }
@@ -253,4 +253,29 @@ export function JobLifecycleSteps({
       <InfoTip content={tip} />
     </div>
   );
+}
+
+export interface LifecyclePhase {
+  key: LifecycleKey;
+  label: string;
+  /** The step's one-sentence purpose (its tooltip text), for a phase view that has not started yet. */
+  purpose: string;
+  state: StepState;
+}
+
+/**
+ * The phases of a run with their paint states and the key the run has reached. One source for the horizontal stepper and the
+ * phase rail, so the two can never disagree about where a job is.
+ */
+export function lifecyclePhases(
+  mode: 'baseline' | 'survey',
+  status: string,
+  stage: JobStage | null,
+  latestNarrationPhase?: string | null,
+): { liveKey: LifecycleKey; phases: LifecyclePhase[] } {
+  const defs = stepsFor(mode);
+  const keys = defs.map((def) => def.key);
+  const liveKey = reachedKeyFor(mode, status, stage, latestNarrationPhase);
+  const states = statesFor(keys, liveKey, status);
+  return { liveKey, phases: defs.map((def, index) => ({ key: def.key, label: def.label, purpose: def.tip, state: states[index] })) };
 }

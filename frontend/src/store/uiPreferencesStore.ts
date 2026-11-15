@@ -12,11 +12,13 @@ const STORAGE_KEY = 'req2ado-ui-preferences';
 interface StoredPreferences {
   denseView: boolean;
   autoSyncLedgers: boolean;
-  // The single-key review shortcuts (J K R A X). WCAG 2.1.4 asks for a way to turn them off.
+  // The single-key review shortcuts (J K A R X U E). WCAG 2.1.4 asks for a way to turn them off.
   keyboardShortcuts: boolean;
+  // The desktop navigation rail is icon-only. A choice the user made, so it is remembered.
+  railCollapsed: boolean;
 }
 
-const DEFAULTS: StoredPreferences = { denseView: false, autoSyncLedgers: true, keyboardShortcuts: true };
+const DEFAULTS: StoredPreferences = { denseView: false, autoSyncLedgers: true, keyboardShortcuts: true, railCollapsed: false };
 
 function loadFromLocalStorage(): StoredPreferences {
   const raw = localStorage.getItem(STORAGE_KEY);
@@ -33,12 +35,13 @@ interface UiPreferencesState extends StoredPreferences {
   setDenseView: (value: boolean) => void;
   setAutoSyncLedgers: (value: boolean) => void;
   setKeyboardShortcuts: (value: boolean) => void;
+  setRailCollapsed: (value: boolean) => void;
 }
 
 function save(state: StoredPreferences): void {
   localStorage.setItem(
     STORAGE_KEY,
-    JSON.stringify({ denseView: state.denseView, autoSyncLedgers: state.autoSyncLedgers, keyboardShortcuts: state.keyboardShortcuts }),
+    JSON.stringify({ denseView: state.denseView, autoSyncLedgers: state.autoSyncLedgers, keyboardShortcuts: state.keyboardShortcuts, railCollapsed: state.railCollapsed }),
   );
 }
 
@@ -54,6 +57,10 @@ export const useUiPreferencesStore = create<UiPreferencesState>((set, get) => ({
   },
   setKeyboardShortcuts: (value) => {
     set({ keyboardShortcuts: value });
+    save(get());
+  },
+  setRailCollapsed: (value) => {
+    set({ railCollapsed: value });
     save(get());
   },
 }));

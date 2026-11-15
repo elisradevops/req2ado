@@ -1,4 +1,5 @@
-import { useMemo } from 'react';
+import { plural } from '../utils/plural';
+import { useEffect, useMemo } from 'react';
 import { Check, Circle } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { formatStepRemaining } from '../utils/stepEta';
@@ -14,9 +15,9 @@ import { Chip } from '../ui/Chip';
 import { InfoTip } from '../ui/Tooltip';
 import { describeStepKbGrounding } from '../utils/kbCoverage';
 import { LiveRunPanel } from './liveRun/LiveRunPanel';
-import { LiveStatusRegion } from './liveRun/LiveStatusRegion';
 import { useLiveRunStore } from '../store/liveRunStore';
-import { COUNTED_EXPLANATION, describeCountedProgress, describeCountedValueText } from '../utils/liveCopy';
+import { COUNTED_EXPLANATION, describeCountedProgress, describeCountedValueText, STILL_WORKING_COPY } from '../utils/liveCopy';
+import { countedBarMatches, liveStageFor, phaseKeyOfNarration } from '../utils/liveStage';
 import { Stepper } from '../ui/Stepper';
 import { LivenessDot } from './LivenessDot';
 import { ARRIVE, useArrivedLate, useSettled } from '../ui/motion';
@@ -36,7 +37,7 @@ import type { JobStage, NarrationEvent } from '../api/events';
 // duplicates,' never dedup_check"): reused directly rather than
 // duplicating a second near-identical Record for the same concept in the
 // same file.
-const PHASE_SUBLABEL: Record<NarrationEvent['phase'], string> = {
+export const PHASE_SUBLABEL: Record<NarrationEvent['phase'], string> = {
   describe_figure: 'Describing figures',
   primer: 'Reading the whole document',
   parse_done: 'Parsing complete',
@@ -73,7 +74,7 @@ const PHASE_SUBLABEL: Record<NarrationEvent['phase'], string> = {
   // Never actually looked up (a chunk_warning never becomes `latest` in a
   // way that reads this map -- it's surfaced via CollapsibleWarnings, not
   // the section step sublabel), present only so this Record stays exhaustive.
-  chunk_warning: 'A chunk of work failed',
+  chunk_warning: 'One part of the run failed',
 };
 
 // Fraction of a branch's OWN total work that stage 1 (its skeleton call)
@@ -142,8 +143,23 @@ const PHASE_START_WEIGHT: Record<NarrationEvent['phase'], number> = {
 
 /** No update for this long and the run is called out as waiting: calm and neutral, never a warning, because one large request can take many minutes. */
 const WAITING_AFTER_SECONDS = 60;
-/** Spoken once when the wait starts; deliberately without the ticking time, so it is not read out again every second. */
-const WAITING_ANNOUNCEMENT = 'No update for over a minute. The job is still working.';
+/**
+ * No new event for this long and the card says "Still working on <stage>" (QA P2): a Score batch sat at 40% for ~35 s with
+ * only a ticking "updated 39s ago" and looked frozen. Shorter than the one-minute wait above, which takes over from it.
+ */
+export const STILL_WORKING_AFTER_SECONDS = 20;
+
+// SURVEY's structure step (the job's `infer_hierarchy_start` stage) can run for minutes after the last line the
+// parse step narrated, and reports nothing while it does (seen live: a stale "Detected a table" line for 2.5 minutes).
+// Once the latest line is one of these parse-time phases and has been quiet this long, the banner says what is
+// actually happening instead of keeping the old line.
+const STRUCTURE_PASS_QUIET_AFTER_SECONDS = 10;
+const PARSE_TIME_PHASES: ReadonlySet<NarrationEvent['phase']> = new Set<NarrationEvent['phase']>([
+  'describe_figure',
+  'parse_done',
+  'table_detected',
+  'page_alignment',
+]);
 
 function formatDuration(ms: number): string {
   const totalSeconds = Math.max(0, Math.round(ms / 1000));
@@ -181,6 +197,7 @@ function describeModelCallTarget(latest: NarrationEvent): string {
 
 export function ProgressBanner({
   stage,
+  status,
   startedAt,
   mode,
   narrations,
@@ -188,6 +205,9 @@ export function ProgressBanner({
   jobId,
 }: {
   stage: JobStage;
+  // The job's status, the same value the phase rail is built from, so the card names the rail's current phase. Omitted, it is
+  // read from the stage (a banner only renders while a job is running or writing).
+  status?: string;
   startedAt: string;
   mode: 'baseline' | 'survey';
   // SURVEY-only, richer per-step narration (see NarrationEvent) -- undefined/
@@ -208,6 +228,9 @@ export function ProgressBanner({
   completedSectionIndices?: number[];
 }): React.ReactElement {
   const latest = narrations && narrations.length > 0 ? narrations[narrations.length - 1] : null;
+  // QA P2: the stage this card names comes from the same source as the phase rail's current row, so the page states one
+  // stage name at a time. Finer wording stays a secondary line under it.
+  const liveStage = liveStageFor(mode, status ?? (stage === 'writing' ? 'writing' : 'running'), stage, latest);
 
   // score_requirements/score_requirements_done are no longer part of
   // isTailPhase below -- unlike every other whole-document tail phase, the
@@ -336,6 +359,18 @@ export function ProgressBanner({
   const liveActivityAt = useLiveRunStore((s) => s.activityAt);
   const secondsSinceUpdate = useSecondsSinceLastUpdate(latest, tickingNow, liveActivityAt);
   const waitingLong = secondsSinceUpdate >= WAITING_AFTER_SECONDS;
+  // The page's one status region announces the wait; this only says whether one is under way, and stops when the banner goes.
+  useEffect(() => {
+    useLiveRunStore.getState().setWaiting(waitingLong);
+    return () => useLiveRunStore.getState().setWaiting(false);
+  }, [waitingLong]);
+  // Read from the same single clock as the "updated N s ago" stamp (no second interval). The note carries no number, so it
+  // never changes while it shows; the page's one status region speaks it once, when the threshold is crossed.
+  const stillWorkingOn = secondsSinceUpdate >= STILL_WORKING_AFTER_SECONDS && !waitingLong ? liveStage.label : null;
+  useEffect(() => {
+    useLiveRunStore.getState().setStillWorkingOn(stillWorkingOn);
+    return () => useLiveRunStore.getState().setStillWorkingOn(null);
+  }, [stillWorkingOn]);
   const activityEvents = useActivityLog(narrations, (event) => PHASE_SUBLABEL[event.phase] ?? event.phase);
   // Changes whenever the server really reports something, so the live dot beats once per genuine update.
   const beatKey = `${narrations?.length ?? 0}:${latest?.message ?? ''}:${latest?.blocksDone ?? ''}:${liveActivityAt ?? ''}`;
@@ -375,26 +410,36 @@ export function ProgressBanner({
   // deterministic_subtree above (only counts real elapsed time, never a
   // fabricated percentage), keyed per phase/branch/chunk so it restarts at
   // every new call and survives a reload of the same job.
-  const modelCallInFlight =
+  const structurePassSilent =
+    mode === 'survey' &&
+    stage === 'infer_hierarchy_start' &&
     latest !== null &&
+    PARSE_TIME_PHASES.has(latest.phase) &&
+    secondsSinceUpdate >= STRUCTURE_PASS_QUIET_AFTER_SECONDS;
+  const modelCallInFlight =
+    structurePassSilent ||
+    (latest !== null &&
     (latest.phase === 'build_skeleton' ||
       latest.phase === 'analyze_section' ||
       latest.phase === 'map_scope' ||
       latest.phase === 'score_requirements' ||
       latest.phase === 'detect_conflicts' ||
       latest.phase === 'regroup_roots' ||
-      latest.phase === 'infer_trace_links');
+      latest.phase === 'infer_trace_links'));
   // Inside one large request that has reported nothing yet (a whole-section model call, or one deterministic-subtree chunk): the
   // honest reading is "no result yet", not a bar and a "0%" that look dead for the many minutes the request takes.
   // Not when the server counts real units itself (countedProgress): a 0% there is a real count, and the panel below shows it.
   const awaitingFirstResult = !countedProgress && Math.round(shownProgress ?? 0) === 0 && (modelCallInFlight || detSubtreeChunk !== null);
-  const modelCallKey = modelCallInFlight
-    ? `modelcall:${latest.phase}:${latest.branchIndex ?? 'x'}:${latest.chunkIndex ?? 'x'}`
-    : undefined;
+  // The structure step starts right after the last line the parse step narrated, so its clock is the quiet time since that
+  // line (below), not a window that would only start once the 10 s threshold was crossed.
+  const modelCallKey =
+    modelCallInFlight && !structurePassSilent
+      ? `modelcall:${latest.phase}:${latest.branchIndex ?? 'x'}:${latest.chunkIndex ?? 'x'}`
+      : undefined;
   const modelCallStorageKey = modelCallKey && jobId ? `progress-window:${jobId}:${modelCallKey}` : undefined;
   const modelCallStartedAt = useWindowStartedAt(modelCallKey, tickingNow, modelCallStorageKey);
-  const modelCallElapsedMs = modelCallKey ? tickingNow - modelCallStartedAt : undefined;
-  const modelCallTarget = latest ? describeModelCallTarget(latest) : null;
+  const modelCallElapsedMs = structurePassSilent ? secondsSinceUpdate * 1000 : modelCallKey ? tickingNow - modelCallStartedAt : undefined;
+  const modelCallTarget = structurePassSilent ? 'deciding the structure of the document' : latest ? describeModelCallTarget(latest) : null;
   // "Time left in THIS step", from progress observed during the step only (see utils/stepEta.ts).
   // It used to be (time since the job started) / (units done) * (units remaining), recomputed every
   // second: the clock included upload, parsing and every earlier step, and because units only move
@@ -469,15 +514,27 @@ export function ProgressBanner({
   // it stays accurate through the brief window before the first
   // writing-phase narration lands, the same gap the old stage-based chip
   // label covered.
-  const headline = stage === 'writing' ? 'Writing to Azure DevOps' : latest ? PHASE_SUBLABEL[latest.phase] : 'Running';
+  // QA P2: the headline is the rail's name for the current phase. The rail's own line repeats under it when it has one; else
+  // the finer wording of the latest narration, but only when that narration belongs to the phase named (a stale parse line
+  // must not describe "Analyze").
+  const headline = liveStage.label;
+  const stageLine =
+    liveStage.line ??
+    (structurePassSilent
+      ? PHASE_SUBLABEL.infer_hierarchy
+      : latest && phaseKeyOfNarration(mode, latest.phase) === liveStage.key
+        ? PHASE_SUBLABEL[latest.phase]
+        : liveStage.key === 'write'
+          ? PHASE_SUBLABEL.writing
+          : null);
+  // A bar is drawn only when the step it counts is the stage named above; otherwise its number describes another moment.
+  const countedBarShown = countedBarMatches(mode, liveStage.key, countedProgress);
+  const chunkStage = detSubtreeChunk ? (detSubtreeChunk.passLabel === 'enhancing titles/tags' ? 'improve' : 'draft') : null;
+  const chunkBarShown =
+    detSubtreeChunk !== null && liveStage.key === 'analyze' && (countedProgress === null || countedProgress.stage === chunkStage);
 
   return (
     <div className='rounded-md border border-hairline bg-surface shadow-card'>
-      <LiveStatusRegion />
-      {/* Present from the first render so the change is announced. The text is fixed (no ticking time), so it is spoken once. */}
-      <div role='status' aria-live='polite' className='sr-only' data-testid='waiting-status'>
-        {waitingLong ? WAITING_ANNOUNCEMENT : ''}
-      </div>
       {/* DESIGN.md §11.3 -- "the loud element": live pulse dot, the phase
           headline in text-title, one sentence of what that phase is doing
           (the same real, backend-generated narration text the old Activity
@@ -489,7 +546,13 @@ export function ProgressBanner({
         <LivenessDot beatKey={beatKey} waiting={waitingLong} />
         <div className='min-w-0 flex-1'>
           <p className='text-title'>{headline}</p>
-          {latest?.message && <p className='truncate text-xs text-ink-3' title={latest.message}>{latest.message}</p>}
+          {stageLine && <p data-testid='stage-line' className='text-xs text-ink-2'>{stageLine}</p>}
+          {latest?.message && !structurePassSilent && <p className='truncate text-xs text-ink-3' title={latest.message}>{latest.message}</p>}
+          {stillWorkingOn && (
+            <p data-testid='still-working-note' className='mt-1 text-xs text-ink-2'>
+              {STILL_WORKING_COPY(stillWorkingOn)}
+            </p>
+          )}
           {waitingLong && (
             <p data-testid='waiting-note' className='mt-1 w-fit rounded-sm bg-surface-alt px-2 py-0.5 text-xs text-ink-2'>
               No update for {formatDuration(secondsSinceUpdate * 1000)}. The job is still working: one large request can take many minutes. You can close this page; the run continues on the server.
@@ -502,7 +565,7 @@ export function ProgressBanner({
           ) : (
             <span className='flex-none font-mono text-metric tabular-nums text-ink-1'>{Math.round(shownProgress)}%</span>
           ))}
-        <InfoTip content='BASELINE finishes in seconds. SURVEY reads the whole document, merges near-duplicates, infers missing parents, and scores each requirement -- time scales with document size, figures most of all.' />
+        <InfoTip content='BASELINE typically takes about a minute. SURVEY reads the whole document, merges near-duplicates, infers missing parents, and scores each requirement — time scales with document size, figures most of all.' />
       </div>
 
       {/* DESIGN.md §11.3 -- "one meta line replaces the pill row": elapsed,
@@ -548,7 +611,7 @@ export function ProgressBanner({
                 point the way a projected progress-bar segment would. */}
             <span
               className='rounded-full border border-dashed border-hairline-strong px-1.5 py-0.5 font-mono text-ink-3'
-              title="Calculated from this job's own elapsed time and progress so far -- not a fixed estimate."
+              title="Calculated from this job's own elapsed time and progress so far — not a fixed estimate."
             >
               {etaText}
             </span>
@@ -556,7 +619,7 @@ export function ProgressBanner({
         )}
       </div>
 
-      <ActivityFeed events={activityEvents} />
+      <ActivityFeed events={activityEvents} collapsedByDefault />
 
       <div className='p-5'>
         {/* Real bug fixed here (found in the "Wizard UX Options" decision
@@ -669,7 +732,8 @@ export function ProgressBanner({
                   percentage. */}
               {countedProgress ? (
                 <span className='inline-flex items-center gap-1.5'>
-                  {describeCountedProgress(countedProgress)}
+                  {/* Withheld bar: the run's share in words, without another step's "N of M". */}
+                  {describeCountedProgress(countedBarShown ? countedProgress : { ...countedProgress, total: 0 })}
                   <InfoTip content={COUNTED_EXPLANATION} label='How the percentage is counted' />
                 </span>
               ) : clampedProgress !== undefined && awaitingFirstResult ? (
@@ -677,13 +741,15 @@ export function ProgressBanner({
               ) : clampedProgress !== undefined ? (
                 `~${Math.round(clampedProgress)}% of this section (est.)`
               ) : isPrimerStep ? (
-                latest?.message || 'Reading the whole document to understand it.'
+                // The header already says what is being read, and for how long; this line says what the bar can't.
+                'One pass over the whole document. There is no step count to measure against.'
               ) : isTailPhase || isPreparingAnalysis ? (
-                'A single whole-document pass -- no fixed step count to measure against.'
+                'A single whole-document pass — no fixed step count to measure against.'
               ) : (
                 'Working — no progress estimate for this step yet.'
               )}
             </div>
+            {countedBarShown && (
             <ProgressBar
               value={shownProgress}
               label='Run progress'
@@ -695,11 +761,13 @@ export function ProgressBanner({
                     : 'No progress estimate for this step'
               }
             />
+            )}
           </div>
         </div>
         )}
 
-        <LiveRunPanel jobId={jobId} running />
+        {/* Only a SURVEY run publishes a document map; asking for one on a BASELINE run is a request that always fails. */}
+        <LiveRunPanel jobId={jobId} running={mode === 'survey'} />
 
         {modelCallInFlight && modelCallElapsedMs !== undefined && !detSubtreeChunk && !liveActive && (
           <p className='mt-2.5 rounded-md border border-hairline-strong bg-surface-alt p-3 text-xs text-ink-2' data-testid='model-call-clock'>
@@ -710,7 +778,8 @@ export function ProgressBanner({
 
         {detSubtreeChunk && (
           <div className='mt-2.5 flex flex-col gap-2.5 rounded-md border border-hairline-strong bg-surface-alt p-3.5'>
-            <div className='flex items-center gap-2.5'>
+            {chunkBarShown && (
+            <div className='flex items-center gap-2.5' data-testid='chunk-track'>
               <span className='text-meta font-semibold tracking-normal text-ink-3'>Chunk</span>
               <div className='flex flex-1 gap-1.5'>
                 {Array.from({ length: detSubtreeChunk.chunkCount }, (_, index) => {
@@ -734,6 +803,7 @@ export function ProgressBanner({
                 {detSubtreeChunk.chunkIndex} / {detSubtreeChunk.chunkCount}
               </span>
             </div>
+            )}
             <p className='text-xs text-ink-2'>
               {detSubtreeChunk.passLabel === 'enhancing titles/tags' ? 'Enhancing titles and tags for ' : 'Drafting requirement text for '}
               {detSubtreeChunk.nodeCount != null
@@ -755,7 +825,6 @@ export function ProgressBanner({
         <RunDetail
           latest={latest}
           narrations={narrations ?? []}
-          activeSectionProgress={clampedProgress}
           completedSectionIndices={completedSectionIndices}
         />
         {/* DESIGN.md §11.3's own audit note: the raw scrolling activity log
@@ -780,12 +849,10 @@ export function ProgressBanner({
 function RunDetail({
   latest,
   narrations,
-  activeSectionProgress,
   completedSectionIndices,
 }: {
   latest: NarrationEvent | null;
   narrations: NarrationEvent[];
-  activeSectionProgress?: number;
   completedSectionIndices?: number[];
 }): React.ReactElement | null {
   if (!latest) return null;
@@ -794,7 +861,6 @@ function RunDetail({
       <SectionStepList
         latest={latest}
         narrations={narrations}
-        activeSectionProgress={activeSectionProgress}
         completedSectionIndices={completedSectionIndices}
       />
     );
@@ -893,7 +959,6 @@ function DoneTick({ testId, settled }: { testId: string; settled: boolean }): Re
 function SectionStepList({
   latest,
   narrations,
-  activeSectionProgress,
   completedSectionIndices,
 }: {
   latest: NarrationEvent;
@@ -902,7 +967,6 @@ function SectionStepList({
   // completedUnits calc) -- reused here so the CURRENTLY active row shows
   // its own real progress inline, not just a spinner with no sense of how
   // far along it actually is.
-  activeSectionProgress?: number;
   // Branch indices with a durable, uncapped section_complete record (see
   // JobDetail's sectionResultsByIndex) -- union'd into completedSections
   // below. See that Set's own comment for why.
@@ -1087,7 +1151,6 @@ function SectionStepList({
                 {label && `: ${label}`}
                 {isActive && ` — ${PHASE_SUBLABEL[latest.phase]}`}
               </p>
-              {isActive && <MiniProgress value={activeSectionProgress} />}
             </div>
           </div>
         );
@@ -1115,9 +1178,8 @@ function SectionStepList({
             )}
           >
             Scoring requirement quality
-            {scoringActive && latest.draftCount != null && ` — scoring ${latest.draftCount} requirement(s)`}
+            {scoringActive && latest.draftCount != null && ` — scoring ${plural(latest.draftCount, 'requirement')}`}
           </p>
-          {scoringActive && <MiniProgress value={activeSectionProgress} />}
         </div>
       </div>
       <div className={rowClass} aria-selected={conflictsActive}>
@@ -1154,25 +1216,6 @@ function SectionStepList({
           Resolving trace links
         </p>
       </div>
-    </div>
-  );
-}
-
-// A slim inline progress bar for whichever step is currently active -- the
-// same estimate driving the top-level bar, repeated here so the step
-// itself shows real progress instead of just a spinner with no sense of
-// how far along it is.
-function MiniProgress({ value }: { value?: number }): React.ReactElement | null {
-  if (value === undefined) return null;
-  return (
-    <div className='mt-1 h-1 w-full max-w-52 overflow-hidden rounded-full bg-canvas'>
-      <span
-        className='block h-full rounded-full bg-gradient-to-r from-accent-active to-accent'
-        style={{
-          width: `${Math.min(Math.max(value, 0), 100)}%`,
-          transition: 'width 900ms var(--ease-in-out)',
-        }}
-      />
     </div>
   );
 }

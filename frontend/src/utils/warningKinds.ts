@@ -12,7 +12,7 @@ export const GROUP_ORDER: WarningGroup[] = ['fix', 'review', 'info'];
 
 export const GROUP_META: Record<WarningGroup, { title: string; line: string; actionLabel: string }> = {
   fix: {
-    title: 'Fix before confirming',
+    title: 'Fix before writing',
     line: 'These would reach Azure DevOps wrong or incomplete.',
     actionLabel: 'Fix in tree',
   },
@@ -49,28 +49,37 @@ export interface KindMeta {
   unit: [singular: string, plural: string];
   // Overrides GROUP_META's action label for the row's tree button.
   actionLabel?: string;
+  // How a `fix` kind is cleared before the write. `per_item` (the default): every affected item gets its own decision. `kind_counted`:
+  // the value is missing from the source document (nothing to correct), so one counted acknowledgement of the whole kind is allowed.
+  ackPolicy?: AckPolicy;
+  // The tail of the counted action's label: "Accept 7 <countedAckLabel>". Required for a `kind_counted` kind.
+  countedAckLabel?: string;
 }
+
+export type AckPolicy = 'per_item' | 'kind_counted';
 
 // Closed vocabulary (ingestion's app.workitem.model.WarningKind). `kind` on
 // WarningRecord is `string` on purpose -- ingestion can add one without a
 // matching frontend release; kindMeta()'s fallback renders those sanely.
 export const KIND_META: Record<string, KindMeta> = {
-  // -- Fix before confirming -------------------------------------------------
+  // The groups below are not in group order: each entry carries its own `group`, which is what the app reads.
   missing_source_reference: {
     title: 'Requirement has no Customer ID',
     group: 'fix',
     short: 'The document had no ID to use as the source reference. None was invented.',
     means: 'These requirements will be created in Azure DevOps without a Customer ID.',
-    todo: 'If the source document has an ID for them, open each item and add it before you confirm.',
+    todo: 'If the source document has an ID for them, open each item and add it before you write.',
     chip: 'No Customer ID',
     unit: ['requirement', 'requirements'],
+    ackPolicy: 'kind_counted',
+    countedAckLabel: 'without a Customer ID',
   },
   duplicate_customer_id: {
     title: 'Customer ID removed: reported on several requirements',
     group: 'fix',
     short: 'The same Customer ID appeared on more than one requirement, so it was removed from all of them.',
     means: 'These requirements will be created without a Customer ID rather than with a wrong one.',
-    todo: 'Check the source document and add the real ID to the right requirement before you confirm.',
+    todo: 'Check the source document and add the real ID to the right requirement before you write.',
     chip: 'ID removed',
     unit: ['requirement', 'requirements'],
   },
@@ -79,7 +88,7 @@ export const KIND_META: Record<string, KindMeta> = {
     group: 'fix',
     short: "An Epic or Feature was given the same title as one of the requirements under it, so its original heading was kept.",
     means: 'The parent and child may still read the same in Azure DevOps if the heading is identical too.',
-    todo: 'Open the parent item and give it a title that names the broader capability before you confirm.',
+    todo: 'Open the parent item and give it a title that names the broader capability before you write.',
     chip: 'Same title',
     unit: ['item', 'items'],
   },
@@ -88,8 +97,26 @@ export const KIND_META: Record<string, KindMeta> = {
     group: 'review',
     short: 'Some proposed acceptance criteria were left out because they named values not found in the document.',
     means: 'Nothing wrong was written. These items have no proposed criteria, or fewer than the model suggested.',
-    todo: 'If the item needs acceptance criteria, write them by hand before you confirm.',
+    todo: 'If the item needs acceptance criteria, add them by hand before writing to Azure DevOps.',
     chip: 'Criteria left out',
+    unit: ['item', 'items'],
+  },
+  requirement_heading_is_section: {
+    title: 'Statement kept as a section',
+    group: 'review',
+    short: 'A heading that states a requirement has sub-sections, so it is a section, not a Requirement.',
+    means: 'The statement is at the top of the section\'s description, so nothing is lost. The tree has one Requirement fewer than the document has statements.',
+    todo: 'Open the section and check its statement. Add a Requirement under it if the statement should be tracked on its own.',
+    chip: 'Kept as a section',
+    unit: ['section', 'sections'],
+  },
+  changed_since_written: {
+    title: 'Changed since it was written',
+    group: 'review',
+    short: 'An item matches one already in Azure DevOps, but its text is different now.',
+    means: 'The item matches one already in Azure DevOps whose text differs from this file. It is linked to that item as it is: nothing is updated automatically.',
+    todo: 'Open the item in Azure DevOps and compare. Update the Azure DevOps item by hand, or leave it.',
+    chip: 'Changed since written',
     unit: ['item', 'items'],
   },
   zero_nodes: {
@@ -97,7 +124,7 @@ export const KIND_META: Record<string, KindMeta> = {
     group: 'fix',
     short: 'A section with real content produced no work items.',
     means: 'Requirements from this section are missing from the tree.',
-    todo: 'Resubmit the job (the button at the top of this page), or add the items manually after you confirm.',
+    todo: 'Resubmit the job (the button at the top of this page), or add the items manually after you write.',
     chip: 'No items',
     unit: ['section', 'sections'],
   },
@@ -106,7 +133,7 @@ export const KIND_META: Record<string, KindMeta> = {
     group: 'fix',
     short: 'The model hit its output limit, so a section may be incomplete.',
     means: 'Results for this section may be missing items.',
-    todo: 'Raise the output limit and resubmit the job, or add any missing items by hand.',
+    todo: 'Resubmit the job, or add any missing items by hand. If it keeps happening, ask your administrator to raise the model\'s output limit.',
     chip: 'Possibly incomplete',
     unit: ['section', 'sections'],
   },
@@ -129,7 +156,6 @@ export const KIND_META: Record<string, KindMeta> = {
     unit: ['link', 'links'],
   },
 
-  // -- Review ----------------------------------------------------------------
   near_duplicate_conflict: {
     title: 'Near-duplicates with conflicting values',
     group: 'review',
@@ -269,7 +295,6 @@ export const KIND_META: Record<string, KindMeta> = {
     unit: ['notice', 'notices'],
   },
 
-  // -- For your information --------------------------------------------------
   enhancement_call_failed: {
     title: 'Enhanced wording unavailable',
     group: 'info',
@@ -277,6 +302,24 @@ export const KIND_META: Record<string, KindMeta> = {
     means: 'These items use their original extracted text. Nothing is missing from the tree.',
     todo: 'Nothing required. To get enhanced wording, resubmit the job.',
     chip: 'Original wording',
+    unit: ['item', 'items'],
+  },
+  overview_reused: {
+    title: 'Saved overview reused',
+    group: 'info',
+    short: 'This run reused a saved overview of the same file instead of reading it again.',
+    means: 'The overview was built by an earlier run on identical content. Nothing is missing.',
+    todo: 'Nothing required.',
+    chip: 'Reused overview',
+    unit: ['notice', 'notices'],
+  },
+  boilerplate_excluded: {
+    title: 'Notices left out',
+    group: 'info',
+    short: 'These items look like a notice (a disclaimer, copyright line or revision table), not a requirement, so they were left out.',
+    means: 'The text starts like document furniture and states no obligation. Nothing was deleted: each item is still in the tree, marked Excluded.',
+    todo: 'Nothing required. If one of them is a real requirement, Include it.',
+    chip: 'Left out as a notice',
     unit: ['item', 'items'],
   },
   // Not a warning the pipeline emits: the label the tree filter wears when "Approve clean items" shows its
@@ -352,7 +395,7 @@ export const KIND_META: Record<string, KindMeta> = {
     group: 'info',
     short: 'Whole-document trace-link inference failed for this run.',
     means: 'Every proposed item is complete. None of them has suggested trace links.',
-    todo: 'Add links in Azure DevOps after you confirm, or resubmit the job to retry.',
+    todo: 'Add links in Azure DevOps after you write, or resubmit the job to retry.',
     chip: 'No links',
     unit: ['run', 'runs'],
   },
@@ -370,7 +413,7 @@ export const KIND_META: Record<string, KindMeta> = {
     group: 'review',
     short: 'Link inference failed for part of the document.',
     means: 'The listed items have no suggested trace links. All other items were processed normally.',
-    todo: 'Add the missing links in Azure DevOps after you confirm.',
+    todo: 'Add the missing links in Azure DevOps after you write.',
     chip: 'Links missing',
     unit: ['group', 'groups'],
   },
@@ -382,6 +425,15 @@ export const KIND_META: Record<string, KindMeta> = {
     todo: 'Nothing required. Check the item in Azure DevOps if it matters.',
     chip: 'Unverified',
     unit: ['batch', 'batches'],
+  },
+  dedup_check_failed: {
+    title: 'Duplicate check did not run',
+    group: 'review',
+    short: 'Some items could not be compared with the items already in Azure DevOps.',
+    means: 'Those items are proposed as new without being checked, so one of them may already exist in Azure DevOps.',
+    todo: 'Search Azure DevOps for the affected items before you write, or resubmit the job later.',
+    chip: 'Not checked',
+    unit: ['check', 'checks'],
   },
   figure_caption_failed: {
     title: 'Figures without a description',
@@ -494,6 +546,17 @@ function groupFromSeverity(severity: WarningSeverity | undefined): WarningGroup 
   return severity === 'auto_fixed' ? 'info' : 'review';
 }
 
+// The sentence shown for one record. The record's own text (`raw`) is the pipeline's, kept as it is because "mark handled" matches on it; for the
+// missing Customer ID record the pipeline's sentence is written for engineers, so the panel says the same thing in plain words, from the items
+// the record names. A record that names none, and every other kind, shows its own text.
+export function warningRecordText(record: WarningRecord): string {
+  if (record.kind === 'missing_source_reference' && record.nodeIds.length > 0) {
+    const count = record.nodeIds.length;
+    return `${count.toLocaleString()} ${count === 1 ? 'requirement has' : 'requirements have'} no Customer ID. None was invented.`;
+  }
+  return record.raw;
+}
+
 export function kindMeta(kind: string, severity?: WarningSeverity): KindMeta {
   const known = KIND_META[kind];
   if (known) return known;
@@ -570,8 +633,10 @@ export function kindGroupCount(entry: WarningKindGroup): { count: number; label:
 // an info kind asks nothing of the reviewer, so there is nothing to finish.
 // A kind with affected items is complete when every one is marked reviewed;
 // a kind without items (e.g. zero_nodes, dropped_blocks) tracks its own
-// records via `acknowledged`. Either way, acknowledging every record also
-// completes it, which is how a "Mark handled" on an items kind works.
+// records via `acknowledged`. Acknowledging every record also completes an
+// items kind, but only where acknowledgement may clear it
+// (`acknowledgementClears`): never a per-item Fix kind (DESIGN.md §11.3.6),
+// even when its records carry `acknowledged` from before the write gate.
 export interface KindProgress {
   trackable: boolean;
   reviewed: number;
@@ -581,6 +646,14 @@ export interface KindProgress {
   allAcknowledged: boolean;
 }
 
+// Whether acknowledging a kind's records may clear it. A Fix kind with affected items is cleared only by item decisions, unless it is
+// `kind_counted` (the value is missing from the source, so one counted acknowledgement is allowed); an item-less kind is decided notice
+// by notice; Review kinds may be accepted. The queue, the write gate and the warning rows all read this one answer.
+export function acknowledgementClears(entry: WarningKindGroup): boolean {
+  if (entry.group !== 'fix' || entry.nodeIds.length === 0) return true;
+  return entry.meta.ackPolicy === 'kind_counted';
+}
+
 export function kindProgress(entry: WarningKindGroup, reviewedIds?: ReadonlySet<string>): KindProgress {
   const allAcknowledged = entry.records.length > 0 && entry.records.every((record) => record.acknowledged === true);
   if (entry.group === 'info') {
@@ -588,7 +661,8 @@ export function kindProgress(entry: WarningKindGroup, reviewedIds?: ReadonlySet<
   }
   if (entry.nodeIds.length > 0) {
     const reviewed = reviewedIds ? entry.nodeIds.filter((nodeId) => reviewedIds.has(nodeId)).length : 0;
-    return { trackable: true, reviewed, total: entry.nodeIds.length, complete: reviewed === entry.nodeIds.length || allAcknowledged, allAcknowledged };
+    const acknowledgedAway = allAcknowledged && acknowledgementClears(entry);
+    return { trackable: true, reviewed, total: entry.nodeIds.length, complete: reviewed === entry.nodeIds.length || acknowledgedAway, allAcknowledged };
   }
   const reviewed = entry.records.filter((record) => record.acknowledged === true).length;
   return { trackable: true, reviewed, total: entry.records.length, complete: reviewed === entry.records.length, allAcknowledged };
@@ -615,13 +689,18 @@ export const RETRY_ENHANCEMENT_BATCH_SIZE: Record<RetryablePass, number> = {
 
 export function retryableEnhancementBatches(entry: WarningKindGroup): { pass: RetryablePass; localIds: string[] }[] {
   if (entry.kind !== 'enhancement_call_failed' && entry.kind !== 'enhancement_response_incomplete') return [];
-  const byPass = new Map<RetryablePass, string[]>();
+  // A Set beside each list keeps the dedupe linear (first-seen order is the list's own), however many records name the same items.
+  const byPass = new Map<RetryablePass, { ids: string[]; seen: Set<string> }>();
   for (const record of entry.records) {
     const pass = record.detail?.pass;
     if (pass !== 'title_tag' && pass !== 'synthesis' && pass !== 'parent_summary') continue;
-    const ids = byPass.get(pass) ?? [];
-    for (const nodeId of record.nodeIds) if (!ids.includes(nodeId)) ids.push(nodeId);
-    byPass.set(pass, ids);
+    const bucket = byPass.get(pass) ?? { ids: [], seen: new Set<string>() };
+    for (const nodeId of record.nodeIds) {
+      if (bucket.seen.has(nodeId)) continue;
+      bucket.seen.add(nodeId);
+      bucket.ids.push(nodeId);
+    }
+    byPass.set(pass, bucket);
   }
-  return [...byPass].filter(([, localIds]) => localIds.length > 0).map(([pass, localIds]) => ({ pass, localIds }));
+  return [...byPass].filter(([, { ids }]) => ids.length > 0).map(([pass, { ids }]) => ({ pass, localIds: ids }));
 }

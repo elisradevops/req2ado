@@ -1,3 +1,5 @@
+import { plural } from '../utils/plural';
+import { usePageTitle } from '../hooks/usePageTitle';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { Layers, CircleCheck, TriangleAlert, Clock } from 'lucide-react';
@@ -41,6 +43,7 @@ const SETTLED_STATUSES = new Set(['succeeded', 'failed', 'rejected', 'cancelled'
 const NOTE_SEVERITY_MAP: Record<'info' | 'warning', 'info' | 'warning'> = { info: 'info', warning: 'warning' };
 
 export function BatchStatus(): React.ReactElement {
+  usePageTitle('Batch');
   const { batchId } = useParams<{ batchId: string }>();
   const { showToast, showErrorToast } = useToast();
   const [batch, setBatch] = useState<BatchDetail | null>(null);
@@ -86,7 +89,7 @@ export function BatchStatus(): React.ReactElement {
       showToast('Stopped queueing the remaining files.', 'success');
       load();
     } catch (err) {
-      showErrorToast('Failed to stop queueing -- please try again.', err);
+      showErrorToast('Failed to stop queueing — please try again.', err);
     } finally {
       isCancellingRef.current = false;
       setIsCancelling(false);
@@ -131,8 +134,8 @@ export function BatchStatus(): React.ReactElement {
       <PageHeader title="Batch" description={batch.areaPath} />
       <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
         <StatTile value={summary.filesTotal} label="Files" icon={Layers} />
-        <StatTile value={summary.filesAwaitingReview} label="Awaiting review" tone="default" accent />
-        <StatTile value={summary.filesSucceeded} label="Succeeded" tone="ok" icon={CircleCheck} />
+        <StatTile value={summary.filesAwaitingReview} label="Diff ready" tone="default" accent />
+        <StatTile value={summary.filesSucceeded} label="Written" tone="ok" icon={CircleCheck} />
         <StatTile value={summary.filesFailed} label="Failed" tone={summary.filesFailed > 0 ? 'warning' : 'dim'} icon={TriangleAlert} />
       </div>
 
@@ -145,7 +148,7 @@ export function BatchStatus(): React.ReactElement {
       {summary.filesQueued > 0 && (
         <div className="flex items-center gap-2">
           <Clock className="h-3.5 w-3.5 flex-none text-ink-3" />
-          <span className="text-xs text-ink-3">{summary.filesQueued} file(s) still queued</span>
+          <span className="text-xs text-ink-3">{plural(summary.filesQueued, 'file')} still queued</span>
           <Button size="sm" variant="outline" onClick={handleCancelQueued} disabled={isCancelling} className="ml-auto">
             {isCancelling ? 'Stopping…' : 'Stop queueing remaining files'}
           </Button>

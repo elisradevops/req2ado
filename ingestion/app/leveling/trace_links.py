@@ -187,6 +187,24 @@ def _infer_chunk_resilient(
     return answered, skipped
 
 
+def _is_ancestor(
+    ancestor_id: str, node_id: str, node_by_local_id: dict[str, WorkItemNode]
+) -> bool:
+    """True when `ancestor_id` is somewhere above `node_id` in the tree (its parent, grandparent, ...). Walks up one chain, and
+    stops on a repeated id so a malformed tree cannot loop it."""
+    seen: set[str] = set()
+    current = node_by_local_id.get(node_id)
+    while current is not None and current.parent_local_id is not None:
+        parent_id = current.parent_local_id
+        if parent_id == ancestor_id:
+            return True
+        if parent_id in seen:
+            return False
+        seen.add(parent_id)
+        current = node_by_local_id.get(parent_id)
+    return False
+
+
 def _infer_trace_links_for_nodes(
     all_nodes: list[WorkItemNode],
     link_type_client: TraceLinkInferenceClient,
@@ -347,11 +365,8 @@ def _infer_trace_links_for_nodes(
             # to itself.
             continue
         if target_ref in node_by_local_id:
-            target_node = node_by_local_id[target_ref]
-            source_node = node_by_local_id[source_node_id]
-            if (
-                target_node.parent_local_id == source_node_id
-                or source_node.parent_local_id == target_ref
+            if _is_ancestor(source_node_id, target_ref, node_by_local_id) or _is_ancestor(
+                target_ref, source_node_id, node_by_local_id
             ):
                 # CONFIRMED REAL BUG, found via live testing: this whole-tree
                 # call has no structural signal telling it two nodes are
@@ -362,10 +377,13 @@ def _infer_trace_links_for_nodes(
                 # its own child, which confirm() then writes as a SECOND,
                 # fully redundant ADO link alongside the real Parent/Child
                 # hierarchy link already covering the exact same pair.
-                # Direct parent/child (either direction) is dropped here,
-                # before it ever reaches confirm() -- a trace/coverage link
-                # is meant to capture relationships the hierarchy does NOT
-                # already express.
+                # Ancestor and descendant, at ANY depth and in either
+                # direction, are dropped here, before they ever reach
+                # confirm() -- a trace/coverage link is meant to capture
+                # relationships the hierarchy does NOT already express. A live
+                # run proposed an Epic -> the bridge Feature under its nested
+                # Epic (a grandparent, not the direct parent); the first
+                # version of this check only caught the direct parent.
                 continue
             links_per_source[source_node_id] = links_per_source.get(source_node_id, 0) + 1
             trace_links.append(

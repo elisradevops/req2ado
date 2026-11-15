@@ -16,7 +16,8 @@ export interface AdoProject {
 // httpClient already sends the session cookie (withCredentials: true).
 
 export interface AdoStatus {
-  status: 'not_configured' | 'valid' | 'unreachable';
+  // `invalid`: Azure DevOps refused the saved credential (only a new token helps); `unreachable`: no usable answer.
+  status: 'not_configured' | 'valid' | 'invalid' | 'unreachable';
 }
 
 export async function getAdoStatus(): Promise<AdoStatus> {

@@ -11,6 +11,7 @@ import { EvidenceStrip } from './EvidenceStrip';
 import { AddChildCard } from './AddChildCard';
 import { ChatPanel } from './ChatPanel';
 import { MoveToPicker, type MoveToPickerCandidate } from './MoveToPicker';
+import { DuplicateMatchCard, type DuplicateOverrideOptions } from './DuplicateMatchCard';
 import { cn } from '../lib/cn';
 import { canBeRoot } from '../lib/canNest';
 import type { WarningGroup } from '../utils/warningKinds';
@@ -122,6 +123,10 @@ export function NodeDetailDialog({
   onSave,
   onRescore,
   onSetProposalAccepted,
+  onOverrideDuplicate,
+  onUndoDuplicateOverride,
+  orgUrl,
+  project,
   onAddDiscussion,
   onRemoveDiscussion,
   onAttachFigure,
@@ -182,6 +187,12 @@ export function NodeDetailDialog({
   requirementClassificationField?: { referenceName: string; allowedValues: string[] } | null;
   onRescore?: (localId: string) => Promise<void>;
   onSetProposalAccepted?: (localId: string, accepted: boolean) => Promise<void> | void;
+  // "Create as new item" on a skipped near-duplicate, and its undo. Absent = the card only shows what the item matched.
+  onOverrideDuplicate?: (localId: string, options: DuplicateOverrideOptions) => Promise<void>;
+  onUndoDuplicateOverride?: (localId: string) => Promise<void>;
+  // The org and the job's team project, for the link to the matched item.
+  orgUrl?: string | null;
+  project?: string | null;
   // "To be discussed": park a chat proposal in the item's ADO Discussion instead of applying it; remove one later from the item's list.
   onAddDiscussion?: (localId: string, entry: { proposedTitle?: string; proposedDescription?: string }) => Promise<void> | void;
   onRemoveDiscussion?: (localId: string, entryId: string) => Promise<void> | void;
@@ -231,12 +242,18 @@ export function NodeDetailDialog({
     // Wording for the mark when it is not "mark reviewed" (the spot-check's "Looks right and next").
     markLabel?: string;
     markHint?: string;
+    // The open item is a "Fix before writing" item: keeping it as it is must be a deliberate click, so A and R do nothing (a held key could
+    // clear every blocker in seconds) and `onKeyBlocked` says why.
+    keepAsWritten?: boolean;
+    onKeyBlocked?: () => void;
     // A review save is in flight: the mode buttons and keys do nothing (aria-disabled, never `disabled`, so focus stays put).
     busy?: boolean;
     // Called instead of the action when it is pressed while busy (the page says "Still saving").
     onBusyAttempt?: () => void;
+    // Where the open item is in the list being worked through (the review queue): "3 of 17" in the note above the item.
+    position?: { index: number; total: number };
   } | null;
-  // The single-key shortcuts (J K R A X). Off turns every one of them off
+  // The single-key shortcuts (J K A R X U E). Off turns every one of them off
   // (WCAG 2.1.4); the buttons keep working.
   shortcutsEnabled?: boolean;
   // What the review queue just did ("Marked reviewed. 2 left."). Spoken from inside the dialog:
@@ -309,7 +326,8 @@ export function NodeDetailDialog({
         onNavigate?.('prev');
       } else if ((is('r') || is('a')) && review && !review.reviewed) {
         event.preventDefault();
-        if (review.busy) review.onBusyAttempt?.();
+        if (review.keepAsWritten) review.onKeyBlocked?.();
+        else if (review.busy) review.onBusyAttempt?.();
         else review.onMark();
       } else if (is('x') && review?.onReject && !review.reviewed) {
         event.preventDefault();
@@ -332,7 +350,7 @@ export function NodeDetailDialog({
   const canEdit = canEditEntry(entry, jobStatus, written);
   const chatDisabledReason =
     jobStatus != null && jobStatus !== 'diff_ready'
-      ? "This job's review is closed -- chat is only available while it's awaiting review."
+      ? "This job's review is closed — chat is only available while it's awaiting review."
       : undefined;
 
   const addChildSlot =
@@ -358,12 +376,28 @@ export function NodeDetailDialog({
       <MoveEntryControl entry={entry} allEntries={Object.values(diffByLocalId ?? {})} categoryLabels={categoryLabels} typeCatalog={typeCatalog} onMove={onMove} />
     ) : undefined;
 
-  const evidenceStrip = <EvidenceStrip entry={entry} jobMode={jobMode} kbCitations={kbCitations} />;
+  const duplicateSlot =
+    entry.action === 'dedup_skip' || entry.duplicateOf || (entry.action === 'reuse' && entry.changedSinceWritten) ? (
+      <DuplicateMatchCard
+        entry={{ ...entry, existingAdoId: entry.existingAdoId ?? null, similarity: entry.similarity ?? null }}
+        orgUrl={orgUrl}
+        project={project}
+        canDecide={jobStatus === 'diff_ready' && !written && !!onOverrideDuplicate && !!onUndoDuplicateOverride}
+        onOverride={(options) => onOverrideDuplicate?.(entry.localId, options) ?? Promise.resolve()}
+        onUndo={() => onUndoDuplicateOverride?.(entry.localId) ?? Promise.resolve()}
+      />
+    ) : undefined;
+
+  // The Quality panel's read-only body folds into the strip's one closed "Why this verdict" disclosure (DESIGN.md §11.4), so the
+  // dialog is short by default; NodeDetailPanel keeps Re-check quality / Score this item outside it.
+  const evidenceStrip = (quality: React.ReactNode) => (
+    <EvidenceStrip entry={entry} jobId={jobId} jobMode={jobMode} kbCitations={kbCitations} collapsible quality={quality} />
+  );
 
   const keyHints: Array<[string, string]> = [
     ['J', 'next'],
     ['K', 'previous'],
-    ...(review && !review.reviewed ? ([['A/R', review.markHint ?? 'mark reviewed']] as Array<[string, string]>) : []),
+    ...(review && !review.reviewed && !review.keepAsWritten ? ([['A/R', review.markHint ?? 'mark reviewed']] as Array<[string, string]>) : []),
     ...(review && !review.reviewed && review.onReject ? ([['X', 'exclude']] as Array<[string, string]>) : []),
     ...(review?.onUndo ? ([['U', 'undo']] as Array<[string, string]>) : []),
     ...(entryEditable ? ([['E', 'edit']] as Array<[string, string]>) : []),
@@ -383,7 +417,9 @@ export function NodeDetailDialog({
       parentEntry={entry.parentLocalId != null ? diffByLocalId?.[entry.parentLocalId] : undefined}
       addChildSlot={addChildSlot}
       hideSources
+      evidenceSlot={evidenceStrip}
       moveSlot={moveSlot}
+      duplicateSlot={duplicateSlot}
       captionByFigureId={captionByFigureId}
       nameByFigureId={nameByFigureId}
       captionByTableId={captionByTableId}
@@ -485,6 +521,11 @@ export function NodeDetailDialog({
           <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5">
             {/* basis-56: below that width the buttons wrap onto their own line instead of squeezing the text. */}
             <span className="min-w-0 flex-1 basis-56">
+              {review?.position && (
+                <span className="me-2 font-semibold tabular-nums">
+                  {review.position.index.toLocaleString()} of {review.position.total.toLocaleString()}
+                </span>
+              )}
               <span className="font-semibold">{reason.title}.</span> {reason.todo}
               {onNavigate && shortcutsEnabled && <KeyHints hints={keyHints} />}
             </span>
@@ -527,7 +568,7 @@ export function NodeDetailDialog({
                     className={cn(review.busy && BUSY_BUTTON_CLASS)}
                     aria-busy={review.busy || undefined}
                     aria-disabled={review.busy || undefined}
-                    aria-keyshortcuts={onNavigate && shortcutsEnabled ? 'A R' : undefined}
+                    aria-keyshortcuts={onNavigate && shortcutsEnabled && !review.keepAsWritten ? 'A R' : undefined}
                     onClick={() => {
                       if (review.busy) review.onBusyAttempt?.();
                       else review.onMark();
@@ -549,7 +590,7 @@ export function NodeDetailDialog({
         // `lg` and up: real two-pane layout, details left / chat right.
         <div className="flex min-h-0 flex-1">
           <div className="min-h-0 flex-1 overflow-y-auto">
-            <div ref={detailsScope}>{evidenceStrip}{detailsContent}</div>
+            <div ref={detailsScope}>{detailsContent}</div>
           </div>
           <div className="min-h-0 w-[400px] flex-none border-l border-hairline">{chatContent}</div>
         </div>
@@ -567,7 +608,7 @@ export function NodeDetailDialog({
             />
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto">
-            {mobileTab === 'details' ? <div ref={detailsScope}>{evidenceStrip}{detailsContent}</div> : chatContent}
+            {mobileTab === 'details' ? <div ref={detailsScope}>{detailsContent}</div> : chatContent}
           </div>
         </div>
       )}

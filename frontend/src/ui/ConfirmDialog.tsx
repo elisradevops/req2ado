@@ -72,7 +72,7 @@ export function ConfirmDialog({
     variant === 'destructive' && description ? (
       <div id={consequenceId} className="flex items-start gap-2 rounded-md border border-danger-border bg-danger-soft p-2.5 text-sm text-danger-ink">
         <TriangleAlert className="mt-0.5 h-4 w-4 flex-none" />
-        <div>{description}</div>
+        <div className="min-w-0 [overflow-wrap:anywhere]">{description}</div>
       </div>
     ) : null;
   // Dialog only renders its children wrapper (with its own padding) when

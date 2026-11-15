@@ -146,4 +146,74 @@ describe('motion contract', () => {
     expect(tokenMs('spin')).toBe(1000);
     expect(tokenMs('typedot')).toBe(1100);
   });
+
+  // docs/ux-research-daily-review-flow.md, "Proposed visual and motion language additions" (DESIGN.md §8.3, P18). These read the source
+  // text, so a new offender fails here before it ships.
+  const sourceFiles = (): Array<{ rel: string; text: string }> => {
+    const srcDir = join(__dirname, '..');
+    const out: Array<{ rel: string; text: string }> = [];
+    const walk = (dir: string): void => {
+      for (const name of readdirSync(dir)) {
+        const full = join(dir, name);
+        if (statSync(full).isDirectory()) walk(full);
+        else if (/\.tsx?$/.test(name) && !/\.test\./.test(name)) out.push({ rel: full.slice(srcDir.length + 1).split('\\').join('/'), text: readFileSync(full, 'utf8') });
+      }
+    };
+    walk(srcDir);
+    return out;
+  };
+
+  it('puts no animation or transition on reading prose (--text-read): the text a reviewer is reading never moves', () => {
+    const offenders: string[] = [];
+    for (const { rel, text } of sourceFiles()) {
+      for (const line of text.split('\n')) {
+        if (!/(?<![\w-])text-read(?![\w-])/.test(line)) continue;
+        if (/animate-|transition|ARRIVE\.|BEAT\b/.test(line)) offenders.push(`${rel}: ${line.trim()}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  // Ambient loop tokens belong to the liveness indicator and the few wait indicators §8.3 keeps ("Loops that remain, and why"); a loop
+  // anywhere else, or on a new component, fails. The skeleton is static since research #7.
+  it('keeps ambient loops to LivenessDot and the named wait indicators, and loops nothing else', () => {
+    const AMBIENT_ALLOWED = new Set(['components/LivenessDot.tsx', 'ui/ProgressBar.tsx', 'components/ProgressBanner.tsx']);
+    const LOOP_ALLOWED = new Set([...AMBIENT_ALLOWED, 'ui/Spinner.tsx', 'components/ChatPanel.tsx']);
+    const offenders: string[] = [];
+    for (const { rel, text } of sourceFiles()) {
+      const code = text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/.*$/gm, '$1');
+      if (/--duration-(ambient|breathe)/.test(code) && !AMBIENT_ALLOWED.has(rel)) offenders.push(`${rel}: ambient token`);
+      if (/(?<![a-z])infinite(?![a-z])/.test(code) && !LOOP_ALLOWED.has(rel)) offenders.push(`${rel}: infinite loop`);
+    }
+    expect(offenders).toEqual([]);
+    // In the stylesheet the breathe token drives only the one-shot attention on the Write button.
+    const breatheUses = [...css.matchAll(/var\(--duration-breathe\)/g)].length;
+    expect(breatheUses).toBe(1);
+    expect(css).toMatch(/\.cta-attention\s*\{[^}]*var\(--duration-breathe\)/);
+  });
+
+  // No per-row stagger (§8 Entrance). A delay is allowed only as the phase offset of a loop (the typing dots) or at most 200ms in total.
+  it('caps any stagger: no delay over 200ms outside a loop, and no delay multiplied by a row index', () => {
+    const offenders: string[] = [];
+    for (const { rel, text } of sourceFiles()) {
+      for (const line of text.split('\n')) {
+        if (!/(animation|transition)-?[dD]elay/.test(line) || /^\s*(\/\/|\*)/.test(line)) continue;
+        if (/infinite/.test(line)) continue; // the phase offset of a loop (the typing dots), not a stagger
+        if (/(animation|transition)-?[dD]elay[^\n]*\*\s*\w/.test(line)) offenders.push(`${rel}: index-multiplied delay: ${line.trim()}`);
+        for (const match of line.matchAll(/(\d+)\s*ms/g)) if (Number(match[1]) > 200) offenders.push(`${rel}: ${match[0]} delay: ${line.trim()}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('defines each motion alias on an existing duration rung, and every alias has a consumer', () => {
+    const aliases = [...css.matchAll(/--motion-([a-z-]+):\s*var\(--duration-([a-z]+)\)/g)];
+    expect(aliases.map((a) => a[1]).sort()).toEqual(['feedback', 'milestone', 'reveal']);
+    for (const [, , rung] of aliases) expect(Number.isFinite(tokenMs(rung))).toBe(true);
+    expect(css).not.toMatch(/--motion-[a-z-]+:\s*\d/); // aliases only, no new values
+    const all = sourceFiles().map((f) => f.text).join('\n');
+    for (const [, name] of aliases) expect(all).toContain(`var(--motion-${name})`);
+    expect(motionSection).toContain('--motion-reveal');
+  });
 });
+

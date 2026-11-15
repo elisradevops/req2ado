@@ -10,6 +10,12 @@ import os
 # entirely, no code-level branching needed in app.otel itself).
 os.environ.setdefault("OTEL_SDK_DISABLED", "true")
 
+# The app opens its Redis clients when it is imported. Pointed at the default (localhost:6379) they reach the Redis of a dev stack
+# that happens to be running, and the tests' fake jobs end up in it. A closed port refuses at once; anything that publishes to it
+# is best-effort, and the tests that look at published frames use their own fakes. Forced, not defaulted: a REDIS_URL exported in a
+# developer's shell must not win.
+os.environ["REDIS_URL"] = "redis://127.0.0.1:1/0"
+
 
 import pytest  # noqa: E402
 

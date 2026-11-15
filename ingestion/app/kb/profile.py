@@ -987,6 +987,43 @@ class _ChromaDocumentCache:
 SCORING_CONTEXT_MAX_CHARS = 7_500
 
 
+# Words of document lifecycle metadata: who owns, approves and versions a DOCUMENT. A criterion that is mostly about these ("Owner, approver, status,
+# baseline, and change history are present") describes the document, not a requirement's wording, and can never be met by drafted requirement text.
+_LIFECYCLE_TERMS = (
+    "owner",
+    "approver",
+    "approval",
+    "status",
+    "baseline",
+    "change history",
+    "revision history",
+    "version",
+    "author",
+    "sign-off",
+    "signoff",
+)
+_PINNED_SOURCE = "(pinned)"
+
+
+def is_document_level_category(category: Category) -> bool:
+    """Whether a rubric category is about the document itself (its owner, approver, status, baseline, history) rather than the wording of a
+    requirement. By name only, and only when at least two different lifecycle terms appear, so an ordinary quality that touches one word
+    ("Status transitions are defined") stays. A category the user added themselves (a pin with no source document) is never one: they asked
+    for it."""
+    if category.sources == [_PINNED_SOURCE]:
+        return False
+    name = category.name.casefold()
+    return sum(1 for term in _LIFECYCLE_TERMS if term in name) >= 2
+
+
+def _scored_categories(profile: KbProfile) -> list[Category]:
+    """The categories a drafted requirement is scored against: the rubric without its document-level criteria. Drafted text carries no owner,
+    approver or change history, so scoring against them dragged every item down and made one such criterion the "weakest area" of nearly all of
+    them. A rubric made only of such criteria keeps them rather than scoring nothing."""
+    kept = [category for category in profile.categories if not is_document_level_category(category)]
+    return kept or list(profile.categories)
+
+
 def scoring_inputs(
     profile: KbProfile | None,
 ) -> tuple[list[str] | None, dict[str, str] | None, str | None]:
@@ -996,8 +1033,9 @@ def scoring_inputs(
     there is no profile or it has no categories: scoring then behaves exactly as it did before profiles."""
     if profile is None or not profile.categories:
         return None, None, None
-    names = [c.name for c in profile.categories]
-    definitions = {c.name: c.pass_condition for c in profile.categories if c.pass_condition}
+    categories = _scored_categories(profile)
+    names = [c.name for c in categories]
+    definitions = {c.name: c.pass_condition for c in categories if c.pass_condition}
     header = (
         "The standard used to judge a requirement (the built-in rubric; the organization has no knowledge base):"
         if profile.source == "default"
@@ -1006,7 +1044,7 @@ def scoring_inputs(
     lines = [header]
     lines += [
         f"- {c.name}: {c.pass_condition}" if c.pass_condition else f"- {c.name}"
-        for c in profile.categories
+        for c in categories
     ]
     if profile.rules:
         lines.append("Mandatory writing rules:")

@@ -574,3 +574,158 @@ def test_decode_jwt_expiry_seconds_returns_none_when_exp_claim_is_missing() -> N
     token = f"{header}.{payload}.unsigned"
 
     assert decode_jwt_expiry_seconds(token) is None
+
+
+def test_get_item_by_id_requests_the_drive_item_and_maps_it_with_a_fresh_download_url(
+    monkeypatch,
+) -> None:
+    body = {
+        "id": "item-9",
+        "name": "Guide.pptx",
+        "size": 4096,
+        "file": {"mimeType": "application/vnd.pptx"},
+        "parentReference": {"driveId": "drive-1"},
+        "@microsoft.graph.downloadUrl": "https://download.example/fresh",
+    }
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["auth"] = request.headers["Authorization"]
+        return httpx.Response(200, json=body)
+
+    _patch_transport(monkeypatch, httpx.MockTransport(handler))
+    client = GraphClient("tok", "https://graph.microsoft.com/v1.0")
+
+    item = client.get_item_by_id("drive-1", "item-9")
+
+    assert captured["url"] == "https://graph.microsoft.com/v1.0/drives/drive-1/items/item-9"
+    assert captured["auth"] == "Bearer tok"
+    assert item == GraphFolderChild(
+        id="item-9",
+        name="Guide.pptx",
+        mime_type="application/vnd.pptx",
+        size=4096,
+        is_folder=False,
+        download_url="https://download.example/fresh",
+        drive_id="drive-1",
+    )
+
+
+def test_get_item_by_id_flags_a_folder(monkeypatch) -> None:
+    body = {"id": "d1", "name": "Sub Items", "size": 0, "folder": {"childCount": 2}}
+    _patch_transport(
+        monkeypatch, httpx.MockTransport(lambda request: httpx.Response(200, json=body))
+    )
+    client = GraphClient("tok", "https://graph.microsoft.com/v1.0")
+
+    item = client.get_item_by_id("drive-1", "d1")
+
+    assert item.is_folder is True
+    assert item.download_url is None
+
+
+@pytest.mark.parametrize("status", [401, 403, 404, 429, 503])
+def test_get_item_by_id_raises_graph_api_error_with_the_graph_status(monkeypatch, status) -> None:
+    _patch_transport(
+        monkeypatch, httpx.MockTransport(lambda request: httpx.Response(status, json={}))
+    )
+    client = GraphClient("tok", "https://graph.microsoft.com/v1.0")
+
+    with pytest.raises(GraphApiError) as exc:
+        client.get_item_by_id("drive-1", "item-9")
+
+    assert exc.value.status == status
+
+
+# --- paging: a folder with more children than one Graph page must not be cut off ---
+
+_GRAPH = "https://graph.microsoft.com/v1.0"
+
+
+def _file(n: int) -> dict:
+    return {"id": f"item-{n}", "name": f"f{n}.pdf", "size": 1, "file": {"mimeType": "application/pdf"}}
+
+
+def _paged_handler(pages: dict[str, dict], seen: list[str]):
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        body = pages.get(str(request.url))
+        return httpx.Response(200, json=body) if body is not None else httpx.Response(404)
+
+    return handler
+
+
+@pytest.mark.parametrize("call", ["share", "by_id"])
+def test_listing_follows_next_link_until_the_last_page(monkeypatch, call) -> None:
+    first = f"{_GRAPH}/shares/x/driveItem/children" if call == "share" else f"{_GRAPH}/drives/d/items/i/children"
+    page2 = f"{_GRAPH}/next?page=2"
+    page3 = f"{_GRAPH}/next?page=3"
+    pages = {
+        first: {"value": [_file(1), _file(2)], "@odata.nextLink": page2},
+        page2: {"value": [_file(3)], "@odata.nextLink": page3},
+        page3: {"value": [_file(4)]},
+    }
+    seen: list[str] = []
+    _patch_transport(monkeypatch, httpx.MockTransport(_paged_handler(pages, seen)))
+    client = GraphClient("tok", _GRAPH)
+    monkeypatch.setattr("app.kb.graph_client.encode_share_id", lambda url: "x")
+
+    children = (
+        client.list_folder_children("https://contoso.sharepoint.com/f")
+        if call == "share"
+        else client.list_children_by_id("d", "i")
+    )
+
+    assert [c.id for c in children] == ["item-1", "item-2", "item-3", "item-4"]
+    assert seen == [first, page2, page3]
+
+
+def test_a_next_link_to_another_host_is_refused_and_never_sent_the_token(monkeypatch) -> None:
+    first = f"{_GRAPH}/drives/d/items/i/children"
+    pages = {first: {"value": [_file(1)], "@odata.nextLink": "https://evil.example.com/steal"}}
+    seen: list[str] = []
+    _patch_transport(monkeypatch, httpx.MockTransport(_paged_handler(pages, seen)))
+
+    with pytest.raises(GraphApiError) as excinfo:
+        GraphClient("tok", _GRAPH).list_children_by_id("d", "i")
+
+    assert seen == [first]
+    assert "next page" in str(excinfo.value).lower()
+
+
+def test_a_failure_on_a_later_page_raises_rather_than_returning_a_short_list(monkeypatch) -> None:
+    first = f"{_GRAPH}/drives/d/items/i/children"
+    pages = {first: {"value": [_file(1)], "@odata.nextLink": f"{_GRAPH}/missing"}}
+    _patch_transport(monkeypatch, httpx.MockTransport(_paged_handler(pages, [])))
+
+    with pytest.raises(GraphApiError) as excinfo:
+        GraphClient("tok", _GRAPH).list_children_by_id("d", "i")
+
+    assert excinfo.value.status == 404
+
+
+def test_a_next_link_loop_is_stopped_with_an_error(monkeypatch) -> None:
+    first = f"{_GRAPH}/drives/d/items/i/children"
+    loop = f"{_GRAPH}/loop"
+    pages = {first: {"value": [_file(1)], "@odata.nextLink": loop}, loop: {"value": [_file(2)], "@odata.nextLink": loop}}
+    _patch_transport(monkeypatch, httpx.MockTransport(_paged_handler(pages, [])))
+
+    with pytest.raises(GraphApiError) as excinfo:
+        GraphClient("tok", _GRAPH).list_children_by_id("d", "i")
+
+    assert "pages" in str(excinfo.value).lower()
+
+
+def test_get_drive_item_reports_the_drive_it_lives_in(monkeypatch) -> None:
+    body = {
+        "id": "01ABC",
+        "name": "spec.docx",
+        "size": 5,
+        "parentReference": {"driveId": "b!drive-1"},
+    }
+    _patch_transport(monkeypatch, httpx.MockTransport(lambda request: httpx.Response(200, json=body)))
+
+    item = GraphClient("tok", "https://graph.microsoft.com/v1.0").get_drive_item("https://contoso.sharepoint.com/f")
+
+    assert item.drive_id == "b!drive-1"

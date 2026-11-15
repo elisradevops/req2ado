@@ -53,6 +53,69 @@ describe('NodeDetailDialog', () => {
     expect(screen.queryByText('Sources')).not.toBeInTheDocument();
   });
 
+  it('puts the requirement text before the evidence, so the decision text is not buried under metadata (R3)', () => {
+    renderDialog({ entry: { ...ENTRY, sourceRef: { documentPath: 'spec.docx', startOffset: 0, endOffset: 5, page: 2 } } });
+    const text = screen.getByText('Req body');
+    const evidence = screen.getByRole('region', { name: 'Evidence' });
+    expect(text.compareDocumentPosition(evidence) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  describe('the Quality panel folds into "Why this verdict" (one closed disclosure, one level)', () => {
+    const scored: DryRunDiffEntry = {
+      ...ENTRY,
+      sourceRef: { documentPath: 'spec.docx', startOffset: 0, endOffset: 5, page: 2 },
+      qualityScore: 40,
+      qualityCategoryScores: { testability: 35, clarity: 80 },
+      qualityIssues: ['not_testable'],
+      groundingScore: 0.9,
+    };
+
+    it('starts closed: no gauge, no grounding line, no score explanation in the dialog until it is opened', () => {
+      renderDialog({ entry: scored, jobMode: 'survey' });
+      expect(screen.getByRole('button', { name: /why this verdict/i })).toHaveAttribute('aria-expanded', 'false');
+      expect(screen.queryByText('Quality')).not.toBeInTheDocument();
+      expect(screen.queryByText(/matches source wording/i)).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /why this score/i })).not.toBeInTheDocument();
+    });
+
+    it('says the score and the weakest area in its closed summary line', () => {
+      renderDialog({ entry: scored, jobMode: 'survey' });
+      const toggle = screen.getByRole('button', { name: /why this verdict/i });
+      expect(toggle).toHaveTextContent('Quality 40 of 100');
+      expect(toggle).toHaveTextContent(/weakest area: .*35 of 100/i);
+    });
+
+    it('holds the whole Quality panel once opened, after the evidence, with no disclosure nested inside it', () => {
+      renderDialog({ entry: scored, jobMode: 'survey' });
+      fireEvent.click(screen.getByRole('button', { name: /why this verdict/i }));
+      const region = screen.getByRole('region', { name: /why this verdict/i });
+      expect(within(region).getByText('Quality')).toBeInTheDocument();
+      expect(within(region).getByText(/matches source wording/i)).toBeInTheDocument();
+      expect(within(region).getByRole('button', { name: /why this score/i })).toBeInTheDocument();
+      // nothing inside opens and closes: every category's definition and fixes are shown flat
+      expect(region.querySelectorAll('[aria-expanded]')).toHaveLength(0);
+      expect(within(region).getAllByText(/testab/i).length).toBeGreaterThan(0);
+      const text = screen.getByText('Req body');
+      expect(text.compareDocumentPosition(region) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('keeps the stale notice and Re-check quality outside the closed disclosure, as a reachable button', () => {
+      renderDialog({ entry: { ...scored, qualityStale: true }, jobMode: 'survey', jobStatus: 'diff_ready', onRescore: vi.fn() } as any);
+      expect(screen.getByRole('button', { name: /why this verdict/i })).toHaveAttribute('aria-expanded', 'false');
+      expect(screen.getByText(/edited since this was scored/i)).toBeInTheDocument();
+      const recheck = screen.getByRole('button', { name: /re-check quality/i });
+      recheck.focus();
+      expect(recheck).toHaveFocus();
+      expect(screen.getByRole('button', { name: /why this verdict/i })).toHaveTextContent(/from before your edit/i);
+    });
+
+    it('keeps "Score this item" outside the disclosure for an item that has no score', () => {
+      renderDialog({ entry: { ...ENTRY, qualityScore: null }, jobMode: 'survey', jobStatus: 'diff_ready', onRescore: vi.fn() } as any);
+      expect(screen.getByText('Not scored yet.')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /score this item/i })).toBeInTheDocument();
+    });
+  });
+
   it('renders nothing when entry is null', () => {
     const { container } = renderDialog({ entry: null });
     expect(container.querySelector('[role="dialog"]')).toBeNull();
@@ -135,7 +198,7 @@ describe('NodeDetailDialog', () => {
 
   it('shows the collapsed Add child card only once jobMode is set and the job is diff_ready', () => {
     const { rerender } = renderDialog({ jobMode: 'baseline', jobStatus: 'running' });
-    expect(screen.queryByRole('button', { name: /^add direct child wi$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^add direct child item$/i })).not.toBeInTheDocument();
 
     rerender(
       <ToastProvider>
@@ -150,7 +213,7 @@ describe('NodeDetailDialog', () => {
         />
       </ToastProvider>,
     );
-    expect(screen.getByRole('button', { name: /^add direct child wi$/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^add direct child item$/i })).toBeInTheDocument();
   });
 
   // class pin: jsdom has no layout
@@ -223,6 +286,15 @@ describe('NodeDetailDialog', () => {
       expect(note).toHaveTextContent('Read each item against its source.');
     });
 
+    it('says where the reviewer is in the queue: "3 of 17" in the note', () => {
+      renderDialog({
+        onNavigate: vi.fn(),
+        reason: { title: 'Low quality score', todo: 'Read it.', group: 'review' },
+        review: { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn(), position: { index: 3, total: 17 } },
+      });
+      expect(screen.getByRole('note')).toHaveTextContent('3 of 17');
+    });
+
     it('offers Mark reviewed and next, and R does the same, while the item is unreviewed', async () => {
       const onMark = vi.fn();
       renderDialog({
@@ -237,6 +309,28 @@ describe('NodeDetailDialog', () => {
 
       await userEvent.keyboard('r');
       expect(onMark).toHaveBeenCalledTimes(2);
+    });
+
+    it('on a Fix item, A and R do nothing and say why; only the deliberate "Keep as written and next" button decides it', async () => {
+      const onMark = vi.fn();
+      const onKeyBlocked = vi.fn();
+      renderDialog({
+        onNavigate: vi.fn(),
+        reason: { title: 'Requirement has no Customer ID', todo: 'Add one, or keep it as written.', group: 'fix' },
+        review: { reviewed: false, onMark, onUnmark: vi.fn(), markLabel: 'Keep as written and next', keepAsWritten: true, onKeyBlocked },
+      });
+      const { default: userEvent } = await import('@testing-library/user-event');
+
+      await userEvent.keyboard('a');
+      await userEvent.keyboard('r');
+      expect(onMark).not.toHaveBeenCalled();
+      expect(onKeyBlocked).toHaveBeenCalledTimes(2);
+
+      expect(screen.getByRole('note')).not.toHaveTextContent(/A\/R/);
+      const button = screen.getByRole('button', { name: 'Keep as written and next' });
+      expect(button).not.toHaveAttribute('aria-keyshortcuts');
+      await userEvent.click(button);
+      expect(onMark).toHaveBeenCalledTimes(1);
     });
 
     it('words the mark as "Looks right and next" for a spot-check, on the button, the key hint and A or R', async () => {
@@ -710,7 +804,7 @@ describe('NodeDetailDialog', () => {
       expect(screen.getByText('A block diagram showing power distribution.')).toBeInTheDocument();
     });
 
-    it('offers an enabled "Upload to ADO" action for a reuse entry with a resolved existingAdoId, and calls onAttachFigure on click', async () => {
+    it('offers an enabled "Upload to Azure DevOps" action for a reuse entry with a resolved existingAdoId, and calls onAttachFigure on click', async () => {
       const onAttachFigure = vi.fn().mockResolvedValue(undefined);
       renderDialog({
         entry: { ...ENTRY, action: 'reuse', existingAdoId: 555, figureIds: ['f0'] },
@@ -718,7 +812,7 @@ describe('NodeDetailDialog', () => {
       });
       const { default: userEvent } = await import('@testing-library/user-event');
 
-      const button = screen.getByRole('button', { name: /upload to ado \(wi-555\)/i });
+      const button = screen.getByRole('button', { name: /upload to azure devops \(wi-555\)/i });
       expect(button).toBeEnabled();
       await userEvent.click(button);
 
@@ -728,12 +822,12 @@ describe('NodeDetailDialog', () => {
 
     it('offers the action for a dedup_skip entry too (the case that never gets confirm()\'s automatic attachment)', () => {
       renderDialog({ entry: { ...ENTRY, action: 'dedup_skip', existingAdoId: 777, figureIds: ['f0'] }, onAttachFigure: vi.fn() });
-      expect(screen.getByRole('button', { name: /upload to ado \(wi-777\)/i })).toBeEnabled();
+      expect(screen.getByRole('button', { name: /upload to azure devops \(wi-777\)/i })).toBeEnabled();
     });
 
     it('does not offer the upload action for a "create" entry -- no resolved ADO id is available in this view', () => {
       renderDialog({ entry: { ...ENTRY, action: 'create', existingAdoId: null, figureIds: ['f0'] }, onAttachFigure: vi.fn() });
-      expect(screen.queryByRole('button', { name: /upload to ado/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /upload to azure devops/i })).not.toBeInTheDocument();
       expect(screen.getByText(/after the item is written to Azure DevOps/i)).toBeInTheDocument();
     });
 
@@ -742,9 +836,9 @@ describe('NodeDetailDialog', () => {
       renderDialog({ entry: { ...ENTRY, action: 'reuse', existingAdoId: 555, figureIds: ['f0'] }, onAttachFigure });
       const { default: userEvent } = await import('@testing-library/user-event');
 
-      await userEvent.click(screen.getByRole('button', { name: /upload to ado \(wi-555\)/i }));
+      await userEvent.click(screen.getByRole('button', { name: /upload to azure devops \(wi-555\)/i }));
 
-      await waitFor(() => expect(screen.getByRole('button', { name: /upload to ado \(wi-555\)/i })).toBeEnabled());
+      await waitFor(() => expect(screen.getByRole('button', { name: /upload to azure devops \(wi-555\)/i })).toBeEnabled());
     });
   });
 

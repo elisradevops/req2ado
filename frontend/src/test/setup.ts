@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom';
 import { configure } from '@testing-library/react';
-import { vi } from 'vitest';
+import { afterEach, vi } from 'vitest';
 
 // Default asyncUtilTimeout (1000ms) for findBy*/waitFor is tuned for a fast
 // local machine. This repo's own CI (first real run: 2026-08-31) surfaced
@@ -81,3 +81,13 @@ if (!window.matchMedia) {
 vi.mock('@number-flow/react', () => ({
   default: ({ value }: { value: number }) => Number(value).toLocaleString(),
 }));
+
+// The connection-status store is module-level state shared by every consumer: a test must not see the previous test's checks.
+// Imported lazily, not at the top: importing it here would load the real API modules before a test file's own vi.mock() applies.
+afterEach(async () => {
+  const { useConnectionStatusStore } = await import('../store/connectionStatusStore');
+  useConnectionStatusStore.getState().reset();
+  // Same for the knowledge-base batch: its polling must not outlive the test that started it.
+  const { useKbIngestStore } = await import('../store/kbIngestStore');
+  useKbIngestStore.getState().reset();
+});

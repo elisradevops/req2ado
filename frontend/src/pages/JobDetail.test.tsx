@@ -8,6 +8,14 @@ import { ToastProvider } from '../components/ToastProvider';
 import * as jobsApi from '../api/jobs';
 import { useAuthStore } from '../store/authStore';
 
+// An item that still blocks the write is decided by the deliberate "Keep as written and next" button (A and R do nothing on it, DESIGN.md
+// §11.3.6); any other item is decided with the key. One helper, so a test says "mark the open item" and gets the right gesture.
+async function pressMark(user: { click: (el: Element) => Promise<void>; keyboard: (keys: string) => Promise<void> }): Promise<void> {
+  const keep = screen.queryByRole('button', { name: 'Keep as written and next' });
+  if (keep) await user.click(keep);
+  else await user.keyboard('a');
+}
+
 vi.mock('../api/jobs');
 vi.mock('../api/chat');
 vi.mock('../api/events', async () => {
@@ -295,13 +303,13 @@ describe('JobDetail', () => {
     await waitFor(() => expect(screen.getByText(/another change is still saving/i)).toBeInTheDocument());
   });
 
-  it('shows a "Needs review" filter chip with the flagged count, and isolates flagged rows on click', async () => {
+  it('offers one filter chip per review group with its count, and isolates that group on click', async () => {
     vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
       id: 'job-40',
       status: 'diff_ready',
       dryRunDiff: [
         {
-          localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Flagged epic', description: '',
+          localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Loose epic', description: '',
           action: 'create', customerId: null, tags: [], groundingScore: 0.1,
         },
         {
@@ -311,17 +319,57 @@ describe('JobDetail', () => {
       ],
     } as any);
     renderAt('job-40');
-    await waitFor(() => expect(screen.getByText('Flagged epic')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Loose epic')).toBeInTheDocument());
 
-    expect(screen.getByRole('button', { name: /needs review/i })).toHaveTextContent('1');
-    // text-warning on warning-soft is 3.9:1; the -ink token is the readable one.
-    expect(screen.getByRole('button', { name: /needs review/i })).toHaveClass('text-warning-ink');
+    // A parent with loose wording is Check; a healthy one is Structure. Groups with nothing in them are not offered.
+    const check = screen.getByRole('button', { name: /^check · 1$/i });
+    const structure = screen.getByRole('button', { name: /^structure · 1$/i });
+    expect(screen.queryByRole('button', { name: /^fix before writing/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^clean/i })).not.toBeInTheDocument();
+    // A toggle says whether it is on without relying on colour (DESIGN.md §7, §13), and uses the icon set, not a text glyph (§10).
+    expect(check).toHaveAttribute('aria-pressed', 'false');
+    expect(check.textContent).not.toContain('⚠');
+    expect(check.querySelector('svg')).not.toBeNull();
+    expect(structure).toHaveAttribute('aria-pressed', 'false');
 
     const { default: userEvent } = await import('@testing-library/user-event');
-    await userEvent.click(screen.getByRole('button', { name: /needs review/i }));
-
-    expect(screen.getByText(/flagged/i)).toBeInTheDocument();
+    await userEvent.click(check);
+    expect(screen.getByRole('button', { name: /^check · 1$/i })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByText('Loose epic')).toBeInTheDocument();
     expect(screen.queryByText('Healthy epic')).not.toBeInTheDocument();
+
+    // Pressing it again clears the filter.
+    await userEvent.click(screen.getByRole('button', { name: /^check · 1$/i }));
+    expect(screen.getByText('Healthy epic')).toBeInTheDocument();
+  });
+
+  it('puts only one group filter on at a time', async () => {
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-40b', status: 'diff_ready',
+      dryRunDiff: [
+        { localId: 'r1', parentLocalId: null, type: 'Requirement', title: 'Loose req', description: '', action: 'create', customerId: null, tags: [], groundingScore: 0.1 },
+        { localId: 'r2', parentLocalId: null, type: 'Requirement', title: 'Fine req', description: '', action: 'create', customerId: null, tags: [], groundingScore: 0.9, qualityScore: 90 },
+      ],
+    } as any);
+    renderAt('job-40b');
+    await waitFor(() => expect(screen.getByText('Loose req')).toBeInTheDocument());
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await userEvent.click(screen.getByRole('button', { name: /^check · 1$/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^clean · 1$/i }));
+    expect(screen.getByRole('button', { name: /^check · 1$/i })).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByRole('button', { name: /^clean · 1$/i })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByText('Fine req')).toBeInTheDocument();
+    expect(screen.queryByText('Loose req')).not.toBeInTheDocument();
+  });
+
+  it('offers no group filter once the job is past review (the groups are about what is left to decide)', async () => {
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-40c', status: 'failed',
+      dryRunDiff: [{ localId: 'r1', parentLocalId: null, type: 'Requirement', title: 'Loose req', description: '', action: 'create', customerId: null, tags: [], groundingScore: 0.1 }],
+    } as any);
+    renderAt('job-40c');
+    await waitFor(() => expect(screen.getByText('Loose req')).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: /^(check|clean|structure|fix before writing)/i })).not.toBeInTheDocument();
   });
 
   it('names the action filter, which has no visible label', async () => {
@@ -339,6 +387,35 @@ describe('JobDetail', () => {
     await waitFor(() => expect(screen.getByText('Flagged epic')).toBeInTheDocument());
 
     expect(screen.getByRole('combobox', { name: 'Filter by action' })).toBeInTheDocument();
+  });
+
+  it('a failed job says why from the stored failure fields, trusting the stored class over the audit text', async () => {
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-fs', status: 'failed', mode: 'survey', dryRunDiff: null, createdAt: new Date().toISOString(),
+      failedStage: 'infer_hierarchy_start', failureClass: 'timeout', failureMessage: 'fetch failed (UND_ERR_HEADERS_TIMEOUT)',
+    } as any);
+    vi.spyOn(jobsApi, 'getAudit').mockResolvedValue([{ id: 'a1', message: 'Pipeline failed: ECONNRESET other side closed', createdAt: new Date().toISOString() }] as any);
+    renderAt('job-fs');
+
+    expect(await screen.findByText('A step took too long to answer.')).toBeInTheDocument();
+    expect(screen.getByText('fetch failed (UND_ERR_HEADERS_TIMEOUT)')).toBeInTheDocument();
+    expect(screen.queryByText('The connection was cut during the run.')).not.toBeInTheDocument();
+  });
+
+  it('a succeeded job has no review controls, counters or risk-order entry, and shows the written items', async () => {
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-ws', status: 'succeeded', mode: 'survey', createdItemCount: 1, writtenLocalIds: ['r1'], writtenItems: [{ localId: 'r1', adoId: 4242 }],
+      dryRunDiff: [{ localId: 'r1', parentLocalId: null, type: 'Requirement', title: 'Written req', description: '', action: 'create', customerId: null, tags: [], groundingScore: 0.1 }],
+    } as any);
+    renderAt('job-ws');
+
+    await waitFor(() => expect(screen.getByText('Written req')).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: /mark reviewed|mark all reviewed/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/needs review/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/\d+ of \d+ reviewed/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /review in risk order/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^(check|clean|structure|fix before writing)/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/4242/)).toBeInTheDocument();
   });
 
   describe('integrity warnings', () => {
@@ -380,7 +457,7 @@ describe('JobDetail', () => {
       await screen.findByRole('region', { name: /integrity warnings/i });
       expect(screen.queryByTestId('approval-gate')).not.toBeInTheDocument();
       expect(screen.queryByText(/before you approve/i)).not.toBeInTheDocument();
-      expect(screen.queryByText(/fix before confirming/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/fix before writing/i)).not.toBeInTheDocument();
       expect(screen.getByText('Flagged before writing (1)')).toBeInTheDocument();
     });
 
@@ -409,7 +486,7 @@ describe('JobDetail', () => {
       renderAt('job-62');
 
       expect(await screen.findByTestId('approval-gate')).toHaveTextContent(/1 warning needs your attention before you approve/i);
-      expect(screen.getByText('Fix before confirming (1)')).toBeInTheDocument();
+      expect(screen.getByText('Fix before writing (1)')).toBeInTheDocument();
     });
 
     it('says "before you approve" once, inside the Integrity warnings card, with no separate banner or jump button', async () => {
@@ -469,6 +546,7 @@ describe('JobDetail', () => {
         warnings: [{ kind: 'parent_title_collision', severity: 'auto_fixed', nodeIds: ['e1', 'e2'], detail: {}, raw: 'Fixed.' }],
       } as any);
       renderAt('job-62');
+      fireEvent.click(await screen.findByRole('button', { name: /for your information/i })); // an informational group starts collapsed
       const { default: userEvent } = await import('@testing-library/user-event');
       await screen.findByRole('region', { name: /integrity warnings/i });
       // The informational group is the only one, so it is open already.
@@ -502,6 +580,32 @@ describe('JobDetail', () => {
     });
 
     describe('reviewing', () => {
+      it('"Mark all reviewed" on a Check kind never decides an item that also blocks the write', async () => {
+        vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+          id: 'job-60',
+          status: 'diff_ready',
+          mode: 'survey',
+          dryRunDiff: [epic('e1', 'Affected one'), epic('e2', 'Affected two'), epic('e3', 'Untouched')],
+          warnings: [
+            { kind: 'low_grounding', severity: 'needs_review', nodeIds: ['e1', 'e2'], detail: {}, raw: '2 nodes have low grounding.' },
+            { kind: 'duplicate_customer_id', severity: 'needs_review', nodeIds: ['e2'], detail: {}, raw: 'e2 repeats a Customer ID.' },
+          ],
+        } as any);
+        vi.mocked(jobsApi.setDiffEntriesReviewed).mockClear();
+        vi.mocked(jobsApi.setDiffEntriesReviewed).mockResolvedValue({ dryRunDiff: [] });
+        renderAt('job-60');
+        await waitFor(() => expect(screen.getByText('Untouched')).toBeInTheDocument());
+        const { default: userEvent } = await import('@testing-library/user-event');
+        await userEvent.click(screen.getByRole('button', { name: 'Review in tree' }));
+
+        await userEvent.click(screen.getByRole('button', { name: 'Mark all reviewed' }));
+
+        // e2 still blocks the write (duplicate Customer ID): it is left for a deliberate decision.
+        expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledTimes(1);
+        expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledWith('job-60', ['e1'], true);
+        vi.mocked(jobsApi.setDiffEntriesReviewed).mockClear(); // the next test counts its own calls
+      });
+
       it('marks every item of the focused warning reviewed in one request, empties the tree and clears the banner, and Undo restores it', async () => {
         mockJobWithWarnings();
         vi.mocked(jobsApi.setDiffEntriesReviewed).mockResolvedValue({ dryRunDiff: [] });
@@ -623,7 +727,8 @@ describe('JobDetail', () => {
         await waitFor(() => expect(screen.getByText('Affected one')).toBeInTheDocument());
         const { default: userEvent } = await import('@testing-library/user-event');
 
-        await userEvent.click(screen.getByRole('button', { name: 'Review in tree' }));
+        // Read-only: the row opens the flagged items without calling it a review.
+        await userEvent.click(screen.getByRole('button', { name: 'Show in tree' }));
 
         expect(screen.queryByRole('button', { name: 'Mark all reviewed' })).not.toBeInTheDocument();
       });
@@ -720,6 +825,7 @@ describe('JobDetail', () => {
           warnings: [warningFor(['r0'])],
         } as any);
         renderAt('job-71');
+        fireEvent.click(await screen.findByRole('button', { name: /for your information/i })); // an informational group starts collapsed
         const { default: userEvent } = await import('@testing-library/user-event');
 
         await screen.findByText('Enhanced wording unavailable');
@@ -996,7 +1102,7 @@ describe('JobDetail', () => {
       checkedCount: 2,
       mismatches: [
         { localId: 'n0', adoWorkItemId: 100, field: 'System.Title', expected: 'Real title', actual: 'Wrong title' },
-        { localId: 'n1', adoWorkItemId: 101, field: 'existence', expected: 'work item exists in ADO', actual: 'not found' },
+        { localId: 'n1', adoWorkItemId: 101, field: 'existence', expected: 'work item exists in Azure DevOps', actual: 'not found' },
       ],
     });
 
@@ -1008,7 +1114,7 @@ describe('JobDetail', () => {
     await waitFor(() => expect(screen.getByText(/2 mismatches found/i)).toBeInTheDocument());
     expect(screen.getByText(/WI-100/)).toBeInTheDocument();
     expect(screen.getByText(/WI-101/)).toBeInTheDocument();
-    expect(screen.getByText(/work item exists in ADO/)).toBeInTheDocument();
+    expect(screen.getByText(/work item exists in Azure DevOps/)).toBeInTheDocument();
   });
 
   it('surfaces a toast and does not crash when validateCreatedTree rejects', async () => {
@@ -1181,6 +1287,7 @@ describe('JobDetail', () => {
     } as any);
 
     renderAt('job-24');
+    fireEvent.click(await screen.findByRole('tab', { name: /^Parse/ })); // figures and the overview belong to the Parse phase
 
     await waitFor(() => expect(screen.getByText(/1 figure description/i)).toBeInTheDocument());
     const userEvent = (await import('@testing-library/user-event')).default;
@@ -1204,6 +1311,7 @@ describe('JobDetail', () => {
     } as any);
 
     renderAt('job-outcomes');
+    fireEvent.click(await screen.findByRole('tab', { name: /^Parse/ })); // figures and the overview belong to the Parse phase
 
     await waitFor(() => expect(screen.getByText('1 described · 1 not significant · 1 failed')).toBeInTheDocument());
     const userEvent = (await import('@testing-library/user-event')).default;
@@ -1211,6 +1319,40 @@ describe('JobDetail', () => {
     expect(screen.getByText(/Judged by the vision model: A company logo\./)).toBeInTheDocument();
     // a figure with neither a description nor a name is not listed as if it were described
     expect(screen.queryByText(/2 figure description/)).not.toBeInTheDocument();
+  });
+
+  it('does not show job A\'s failure cause on job B when the page is reused and B\'s audit cannot be read', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob').mockImplementation(async (jobId: string) =>
+      ({ id: jobId, status: 'failed', mode: 'survey', dryRunDiff: null, createdAt: new Date().toISOString() }) as any,
+    );
+    vi.spyOn(jobsApi, 'getAudit').mockImplementation(async (jobId: string) => {
+      if (jobId === 'job-a') return [{ id: 'a1', jobId, message: 'Pipeline failed: terminated (UND_ERR_SOCKET: other side closed)', createdAt: '2026-11-12T21:48:00Z' }] as any;
+      throw new Error('audit unavailable');
+    });
+    const events = await import('../api/events');
+    vi.mocked(events.subscribeToJobEvents).mockImplementation(() => () => {});
+    const { useNavigate } = await import('react-router-dom');
+    function Switch() {
+      const navigate = useNavigate();
+      return <button onClick={() => navigate('/jobs/job-b')}>go to B</button>;
+    }
+    render(
+      <ToastProvider>
+        <MemoryRouter initialEntries={['/jobs/job-a']}>
+          <Switch />
+          <Routes>
+            <Route path="/jobs/:id" element={<JobDetail />} />
+          </Routes>
+        </MemoryRouter>
+      </ToastProvider>,
+    );
+    expect(await screen.findByText('The connection was cut during the run.')).toBeInTheDocument();
+    const userEvent = (await import('@testing-library/user-event')).default;
+    await userEvent.click(screen.getByText('go to B'));
+    await waitFor(() => expect(jobsApi.getAudit).toHaveBeenCalledWith('job-b'));
+    await waitFor(() => expect(screen.queryByText('The connection was cut during the run.')).not.toBeInTheDocument());
+    expect(await screen.findByText(/This job failed before completing analysis/)).toBeInTheDocument();
   });
 
   it('shows nothing of the previous job when the page is reused for another job id (figure outcomes and overview must not carry over)', async () => {
@@ -1245,6 +1387,7 @@ describe('JobDetail', () => {
         </MemoryRouter>
       </Toast>,
     );
+    fireEvent.click(await screen.findByRole('tab', { name: /^Parse/ })); // figures and the overview belong to the Parse phase
     await waitFor(() => expect(screen.getByText('1 described · 1 not significant')).toBeInTheDocument());
     expect(screen.getByText(/Structure: job A has 3 sections\./)).toBeInTheDocument();
 
@@ -1265,6 +1408,7 @@ describe('JobDetail', () => {
     } as any);
 
     renderAt('job-kbc');
+    fireEvent.click(await screen.findByRole('button', { name: /Run details/ })); // the run's record sits behind "Run details" in the review state
 
     await waitFor(() => expect(screen.getByText('1 of 3 knowledge-base files were surfaced for this job.')).toBeInTheDocument());
   });
@@ -1314,6 +1458,8 @@ describe('JobDetail', () => {
     });
 
     renderAt('job-27');
+    // The figure list belongs to the Parse phase; the run is on Analyze, so open Parse.
+    fireEvent.click(await screen.findByRole('tab', { name: /Parse/ }));
 
     await waitFor(() => expect(screen.getByText(/1 described · 1 not significant/i)).toBeInTheDocument());
     const userEvent = (await import('@testing-library/user-event')).default;
@@ -1369,6 +1515,8 @@ describe('JobDetail', () => {
     ] as any);
 
     renderAt('job-32');
+    // The figure list belongs to the Parse phase; the run is on Analyze, so open Parse.
+    fireEvent.click(await screen.findByRole('tab', { name: /Parse/ }));
 
     await waitFor(() => expect(screen.getByText(/1 described · 1 not significant/i)).toBeInTheDocument());
     const userEvent = (await import('@testing-library/user-event')).default;
@@ -1418,7 +1566,7 @@ describe('JobDetail', () => {
 
     renderAt('job-29');
 
-    await waitFor(() => expect(screen.getByText('Diff (0)')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Written items (0)')).toBeInTheDocument());
     expect(screen.queryByText(/excluded as decorative/i)).not.toBeInTheDocument();
   });
 
@@ -1500,12 +1648,14 @@ describe('JobDetail', () => {
     await waitFor(() => expect(jobsApi.getEventHistory).toHaveBeenCalledWith('job-31'));
     await screen.findAllByText(sharedMessage);
     // The activity log (DESIGN.md section 11.3.2) makes the duplicate check direct: the same event is exactly one line.
+    // The run log is collapsed until opened (§11.3.5).
+    fireEvent.click(await screen.findByRole('button', { name: /Run log/ }));
     const log = await screen.findByRole('log', { name: 'Job activity' });
     expect(within(log).getAllByRole('listitem')).toHaveLength(1);
     // and the line carries the time the server recorded, not the moment this page loaded
     expect(log.querySelector('time')).toHaveAttribute('datetime', recordedAt);
-    // and the sentence appears in at most the ticker, the headline and that one line
-    expect(screen.getAllByText(sharedMessage).length).toBeLessThanOrEqual(3);
+    // and the sentence appears in at most the banner's one sentence and that one log line (the ticker is gone)
+    expect(screen.getAllByText(sharedMessage).length).toBeLessThanOrEqual(2);
   });
 
   it('shows "How this run went" from the stored notices of a finished job and keeps them out of the audit list', async () => {
@@ -1527,6 +1677,7 @@ describe('JobDetail', () => {
     ] as any);
 
     renderAt('job-40');
+    fireEvent.click(await screen.findByRole('button', { name: /Run details/ })); // the run's record sits behind "Run details" in the review state
 
     const summary = await screen.findByTestId('run-notices');
     expect(summary).toHaveTextContent('How this run went');
@@ -1542,7 +1693,7 @@ describe('JobDetail', () => {
 
     renderAt('job-25');
 
-    await waitFor(() => expect(screen.getByRole('tab', { name: /diff/i })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('tab', { name: /(proposed|written) items/i })).toBeInTheDocument());
     expect(screen.queryByText(/figure description/i)).not.toBeInTheDocument();
   });
 
@@ -1654,7 +1805,7 @@ describe('JobDetail', () => {
     expect(excludeSpy).not.toHaveBeenCalledWith('job-6', 'c', true);
   });
 
-  it('bulk-excludes only flagged rows when the "Needs review" filter is active, ignoring the rest of the diff', async () => {
+  it('bulk-excludes only the rows of the active group filter, ignoring the rest of the diff', async () => {
     vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
       id: 'job-41',
       status: 'diff_ready',
@@ -1685,7 +1836,7 @@ describe('JobDetail', () => {
     await waitFor(() => expect(screen.getByText('Flagged one')).toBeInTheDocument());
 
     const { default: userEvent } = await import('@testing-library/user-event');
-    await userEvent.click(screen.getByRole('button', { name: /needs review/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^check · 2$/i }));
     await userEvent.click(screen.getByRole('button', { name: /^exclude matching$/i }));
 
     await waitFor(() => expect(excludeSpy).toHaveBeenCalledTimes(2));
@@ -1781,7 +1932,8 @@ describe('JobDetail', () => {
     // -- narrow to the StatTile's own <p> label (its value is the previous
     // sibling <p>, per StatTile.tsx's markup).
     function newTileValue(): string | null | undefined {
-      return screen.getAllByText('New').find((el) => el.tagName === 'P')?.previousElementSibling?.textContent;
+      // The counts are one summary line now (the closed "Run details" strip), not three tiles.
+      return /(\d+) new/.exec(screen.queryByTestId('review-header')?.textContent ?? '')?.[1];
     }
 
     renderAt('job-77');
@@ -1825,7 +1977,7 @@ describe('JobDetail', () => {
     await waitFor(() => expect(screen.getByText(/stopped after updating 1 of 2 item/i)).toBeInTheDocument());
   });
 
-  it('lays the header actions out in tiers: Reject and Write as text buttons, the rest as labelled icons in a tools group, Delete last', async () => {
+  it('lays the header out as tools only for a job in review: Reject and Write live in the write bar, the rest are labelled icons, Delete last', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
     vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-8', status: 'diff_ready', dryRunDiff: [] } as any);
 
@@ -1834,18 +1986,23 @@ describe('JobDetail', () => {
     const names = within(tools).getAllByRole('button').map((button) => button.getAttribute('aria-label'));
     expect(names).toEqual(['Download summary', 'Resubmit', 'Delete']);
     expect(within(tools).queryByRole('button', { name: /reject|write to azure/i })).toBeNull();
-    expect(screen.getByRole('button', { name: /^reject$/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /write to azure devops/i })).toBeInTheDocument();
+    const bar = screen.getByRole('region', { name: 'Review decision' });
+    expect(within(bar).getByRole('button', { name: /^reject$/i })).toBeInTheDocument();
+    expect(within(bar).getByRole('button', { name: /write to azure devops/i })).toBeInTheDocument();
   });
 
-  it('puts the decisions before the tools in the DOM, so keyboard and screen-reader order matches the phone layout', async () => {
+  it('puts the tools first and the decisions last in the DOM: the write bar follows the review, so a keyboard user meets the items before Write', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
     vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-10', status: 'diff_ready', dryRunDiff: [] } as any);
 
     renderAt('job-10');
     const tools = await screen.findByRole('group', { name: 'Job tools' });
     const write = screen.getByRole('button', { name: /write to azure devops/i });
-    expect(write.compareDocumentPosition(tools) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const reject = screen.getByRole('button', { name: /^reject$/i });
+    expect(tools.compareDocumentPosition(write) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // the counterpart decision sits beside Write, before it
+    expect(reject.compareDocumentPosition(write) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: /write to azure devops/i })).toHaveLength(1);
   });
 
   it('shows no Resubmit or Delete while a job is running, only Download summary and Cancel run', async () => {
@@ -1946,7 +2103,7 @@ describe('JobDetail', () => {
   it('does not show Cancel run once a job has reached diff_ready', async () => {
     vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-8', status: 'diff_ready', dryRunDiff: [] } as any);
     renderAt('job-8');
-    await waitFor(() => expect(screen.getByText(/diff \(0\)/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/(proposed|written) items \(0\)/i)).toBeInTheDocument());
     expect(screen.queryByRole('button', { name: /cancel run/i })).not.toBeInTheDocument();
   });
 
@@ -1957,7 +2114,7 @@ describe('JobDetail', () => {
     await waitFor(() => expect(screen.getByText(/queued/i)).toBeInTheDocument());
   });
 
-  it('shows a success toast with the created count after Confirm succeeds', async () => {
+  it('shows a success toast with the created count after the write succeeds', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
     vi.spyOn(jobsApi, 'getJob')
       .mockResolvedValueOnce({ id: 'job-10', status: 'diff_ready', dryRunDiff: [], areaPath: 'Project\\Area1' } as any)
@@ -1973,9 +2130,30 @@ describe('JobDetail', () => {
     // The confirm-to-ADO dialog is irreversible -- its Confirm button stays
     // disabled until the acknowledgement checkbox is ticked (DESIGN.md §7/§8).
     await userEvent.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
-    await userEvent.click(screen.getByRole('button', { name: /confirm and write/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^write to azure devops$/i }));
 
-    await waitFor(() => expect(screen.getByText(/confirmed — 3 work item\(s\) written/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/wrote 3 work items to azure devops/i)).toBeInTheDocument());
+  });
+
+  it('says how many items were linked to an existing work item instead of created', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob')
+      .mockResolvedValueOnce({ id: 'job-10b', status: 'diff_ready', dryRunDiff: [], areaPath: 'Project\\Area1' } as any)
+      .mockResolvedValueOnce({ id: 'job-10b', status: 'succeeded', dryRunDiff: [] } as any);
+    vi.spyOn(jobsApi, 'confirmJob').mockResolvedValue({ status: 'succeeded', createdCount: 3, linkedInsteadCount: 2 });
+    useAuthStore.getState().login('https://ado.example', 'Jane', 'user-descriptor-1');
+
+    renderAt('job-10b');
+    await waitFor(() => expect(screen.getByRole('button', { name: /^write to azure devops$/i })).toBeInTheDocument());
+
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await userEvent.click(screen.getByRole('button', { name: /^write to azure devops$/i }));
+    // The confirm-to-ADO dialog is irreversible -- its Confirm button stays
+    // disabled until the acknowledgement checkbox is ticked (DESIGN.md §7/§8).
+    await userEvent.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^write to azure devops$/i }));
+
+    await waitFor(() => expect(screen.getByText(/wrote 3 work items to azure devops, linked 2 that were already there/i)).toBeInTheDocument());
   });
 
   describe('final write summary', () => {
@@ -2019,7 +2197,24 @@ describe('JobDetail', () => {
       expect(await screen.findByText('2 new work items: 2 Requirements.')).toBeInTheDocument();
       expect(screen.getByText('1 item left out: 1 excluded by you.')).toBeInTheDocument();
       expect(screen.getByText('Review: 1 reviewed earlier, 1 not reviewed.')).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Write 2 items to Compliance' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Write 2 items to Compliance\\Auth' })).toBeInTheDocument();
+    });
+
+    it('gives the Write bar the counts and the destination, from the job as it stands (not from the preview, which only exists while the dialog is open)', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+        id: 'job-ws-bar', status: 'diff_ready', areaPath: 'Compliance\\Auth', adoProject: 'Compliance',
+        dryRunDiff: [entry('a'), entry('b'), entry('x', { excluded: true })],
+      } as any);
+      vi.spyOn(jobsApi, 'getWritePreview').mockResolvedValue(previewOf());
+      useAuthStore.getState().login('https://ado.example', 'Jane', 'user-descriptor-1');
+      renderAt('job-ws-bar');
+      const bar = await waitFor(() => {
+        const found = document.querySelector('section[aria-label="Review decision"]');
+        expect(found).not.toBeNull();
+        return found as HTMLElement;
+      });
+      expect(within(bar).getByText('2 included · 1 left out')).toBeInTheDocument();
+      expect(within(bar).getByText('Compliance\\Auth')).toBeInTheDocument();
     });
 
     it('disables the write when nothing would be created', async () => {
@@ -2033,7 +2228,7 @@ describe('JobDetail', () => {
 
       expect(await screen.findByText('Nothing will be created.')).toBeInTheDocument();
       await user.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
-      expect(screen.getByRole('button', { name: /^write 0 items to compliance$/i })).toBeDisabled();
+      expect(screen.getByRole('button', { name: /^write 0 items to compliance\\auth$/i })).toBeDisabled();
     });
 
     it('says it could not check, and still lets the reviewer write', async () => {
@@ -2045,7 +2240,7 @@ describe('JobDetail', () => {
 
       expect(await screen.findByText(/couldn't check what will be written/i)).toBeInTheDocument();
       await user.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
-      expect(screen.getByRole('button', { name: /confirm and write/i })).toBeEnabled();
+      expect(screen.getByRole('button', { name: /^write to azure devops$/i })).toBeEnabled();
     });
 
     const jobOf = (jobId: string, extra: Record<string, unknown> = {}) =>
@@ -2080,7 +2275,7 @@ describe('JobDetail', () => {
       expect(document.activeElement).not.toBe(headerButton);
     });
 
-    it('"Go to N warnings to fix" closes the confirmation, shows the tree tab and leaves focus off the header button', async () => {
+    it('does not offer "Go to N warnings to fix" once the gate has passed: an item the reviewer decided on is not an open fix', async () => {
       vi.spyOn(jobsApi, 'getJob').mockResolvedValue(
         jobOf('job-ws22', {
           dryRunDiff: [entry('a', { reviewed: true })],
@@ -2088,12 +2283,10 @@ describe('JobDetail', () => {
         }),
       );
       vi.spyOn(jobsApi, 'getWritePreview').mockResolvedValue(previewOf());
-      const user = await openWriteDialog('job-ws22');
-      await user.click(await screen.findByRole('button', { name: 'Go to 1 warning to fix' }));
-      await waitFor(() => expect(writeDialog()).toBeNull());
-      expect(screen.getByRole('tab', { name: /^diff/i })).toHaveAttribute('aria-selected', 'true');
-      await waitFor(() => expect(document.activeElement).toBe(document.getElementById('integrity-warnings')));
-      expect(document.activeElement).not.toBe(headerWriteButton());
+      await openWriteDialog('job-ws22');
+      expect(await screen.findByRole('dialog', { name: /write these items to azure devops/i })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /warnings? to fix/i })).not.toBeInTheDocument();
+      expect(screen.queryByText(/still open\. You can still write/i)).not.toBeInTheDocument();
     });
 
     it('"Show the N excluded items" closes the write dialog and filters the tree to excluded items', async () => {
@@ -2133,7 +2326,7 @@ describe('JobDetail', () => {
       }
       expect(await screen.findByText(/the check took too long/i)).toBeInTheDocument();
       await user.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
-      expect(screen.getByRole('button', { name: /confirm and write/i })).toBeEnabled();
+      expect(screen.getByRole('button', { name: /^write to azure devops$/i })).toBeEnabled();
     });
 
     it('a failed (non-timeout) preview keeps the generic message', async () => {
@@ -2150,7 +2343,7 @@ describe('JobDetail', () => {
       const user = await openWriteDialog('job-ws26');
       expect(await screen.findByText(/couldn't check what will be written/i)).toBeInTheDocument();
       await user.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
-      expect(screen.getByRole('button', { name: /confirm and write/i })).toBeEnabled();
+      expect(screen.getByRole('button', { name: /^write to azure devops$/i })).toBeEnabled();
     });
 
     it('entries the server reports as written get the written lock in the details dialog', async () => {
@@ -2173,7 +2366,7 @@ describe('JobDetail', () => {
       const user = await openWriteDialog('job-ws4');
 
       await user.click(await screen.findByRole('checkbox', { name: /cannot be undone from req2ado/i }));
-      const button = screen.getByRole('button', { name: /confirm and write/i });
+      const button = screen.getByRole('button', { name: /^write to azure devops$/i });
       expect(button).toBeDisabled();
       expect(button).toHaveAccessibleDescription(/checking what will be written/i);
     });
@@ -2188,7 +2381,7 @@ describe('JobDetail', () => {
       expect(await screen.findByText('Nothing new to create; 2 parent links remain. 3 items are already written.')).toBeInTheDocument();
       expect(screen.queryByText(/creates 0 new work items/i)).not.toBeInTheDocument();
       await user.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
-      expect(screen.getByRole('button', { name: 'Finish writing to Compliance' })).toBeEnabled();
+      expect(screen.getByRole('button', { name: 'Finish writing to Compliance\\Auth' })).toBeEnabled();
     });
 
     it('figures-only write dialog shows the attach copy and button label', async () => {
@@ -2209,7 +2402,7 @@ describe('JobDetail', () => {
       expect(screen.queryByText(/must be deleted directly/)).not.toBeInTheDocument();
       expect(screen.queryByText('Write these items to Azure DevOps?')).not.toBeInTheDocument();
       await user.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
-      expect(screen.getByRole('button', { name: 'Attach 36 figures to Compliance' })).toBeEnabled();
+      expect(screen.getByRole('button', { name: 'Attach 36 figures to Compliance\\Auth' })).toBeEnabled();
     });
 
     it('keeps the write disabled, with the reason, when there is nothing at all to do', async () => {
@@ -2221,7 +2414,7 @@ describe('JobDetail', () => {
 
       expect(await screen.findByText('Nothing will be created.')).toBeInTheDocument();
       await user.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
-      const button = screen.getByRole('button', { name: /^write 0 items to compliance$/i });
+      const button = screen.getByRole('button', { name: /^write 0 items to compliance\\auth$/i });
       expect(button).toBeDisabled();
       expect(button).toHaveAccessibleDescription(/nothing will be created, so there is nothing to write/i);
     });
@@ -2242,7 +2435,7 @@ describe('JobDetail', () => {
 
       expect(await screen.findByText(/the check took too long/i)).toBeInTheDocument();
       await user.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
-      expect(screen.getByRole('button', { name: /confirm and write/i })).toBeEnabled();
+      expect(screen.getByRole('button', { name: /^write to azure devops$/i })).toBeEnabled();
     });
 
     it('drops a late answer from an earlier opening of the dialog', async () => {
@@ -2321,7 +2514,7 @@ describe('JobDetail', () => {
       await screen.findByText('2 new work items: 2 Requirements.');
       await user.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
 
-      await user.click(screen.getByRole('button', { name: 'Write 2 items to Compliance' }));
+      await user.click(screen.getByRole('button', { name: 'Write 2 items to Compliance\\Auth' }));
 
       await waitFor(() => expect(writeDialog()).not.toBeInTheDocument());
       expect(jobsApi.confirmJob).toHaveBeenCalledTimes(1);
@@ -2378,7 +2571,7 @@ describe('JobDetail', () => {
     await userEvent.click(screen.getByRole('button', { name: /retry/i }));
 
     await waitFor(() => expect(screen.queryByText(/couldn't load this job/i)).not.toBeInTheDocument());
-    expect(screen.getByText(/diff \(0\)/i)).toBeInTheDocument();
+    expect(screen.getByText(/(proposed|written) items \(0\)/i)).toBeInTheDocument();
   });
 
   describe('Document overview', () => {
@@ -2391,17 +2584,19 @@ describe('JobDetail', () => {
         documentOverview: { synopsis: 'About a backplane.', caveat: null },
       } as any);
       renderAt('job-50');
+      fireEvent.click(await screen.findByRole('tab', { name: /^Parse/ })); // figures and the overview belong to the Parse phase
       // collapsed: it must not compete with the job's own progress; one click opens it
       await userEvent.click(await screen.findByRole('button', { name: /show/i }));
       expect(await screen.findByText('About a backplane.')).toBeInTheDocument();
     });
 
-    it('is collapsed below the live progress, so the job stays the focus of the page', async () => {
+    it('is collapsed and belongs to the Parse phase while the run is on another phase', async () => {
       vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
         id: 'job-52', status: 'running', mode: 'survey', stage: 'parse', startedAt: new Date().toISOString(), dryRunDiff: [],
         documentOverview: { synopsis: 'x', caveat: null, lines: ['Structure line.', 'Another line.'], aiSummary: 'An AI summary of the file. More.' },
       } as any);
       renderAt('job-52');
+      await userEvent.click(await screen.findByRole('tab', { name: /Parse/ }));
       await screen.findByText('Document overview');
       expect(screen.queryByText('Another line.')).not.toBeInTheDocument();
       const overview = screen.getByText('Document overview');
@@ -2418,6 +2613,7 @@ describe('JobDetail', () => {
         documentOverview: { synopsis: 'First line. Second line.', caveat: null, lines: ['First line.', 'Second line.'] },
       } as any);
       renderAt('job-51');
+      fireEvent.click(await screen.findByRole('tab', { name: /^Parse/ })); // figures and the overview belong to the Parse phase
       await userEvent.click(await screen.findByRole('button', { name: /show/i }));
       expect(await screen.findByText('First line.')).toBeInTheDocument();
       expect(screen.getByText('Second line.')).toBeInTheDocument();
@@ -2433,12 +2629,12 @@ describe('JobDetail', () => {
         documentOverview: null,
       } as any);
       renderAt('job-51');
-      await waitFor(() => expect(screen.getByRole('tablist')).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByRole('tab', { name: /Proposed items/ })).toBeInTheDocument());
       expect(screen.queryByText(/document overview/i)).not.toBeInTheDocument();
       expect(screen.queryByText(/isn.t produced for baseline/i)).not.toBeInTheDocument();
     });
 
-    it('renders an explicit absence note for a BASELINE job, never the card', async () => {
+    it('draws nothing for the document overview of a BASELINE job: no card and no placeholder box', async () => {
       vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
         id: 'job-52',
         status: 'diff_ready',
@@ -2447,7 +2643,10 @@ describe('JobDetail', () => {
         documentOverview: null,
       } as any);
       renderAt('job-52');
-      expect(await screen.findByText(/isn.t produced for baseline jobs/i)).toBeInTheDocument();
+      await screen.findByRole('button', { name: /Run details/ });
+      // Nothing is produced, so nothing is drawn: no placeholder box for something that does not exist (§16.22).
+      expect(screen.queryByText(/isn.t produced for baseline jobs/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Document overview/)).not.toBeInTheDocument();
     });
   });
 
@@ -2569,6 +2768,15 @@ describe('JobDetail', () => {
       expect(screen.queryByText('New')).not.toBeInTheDocument();
     });
 
+    it('does not call a queued job cancelled: no "Cancelled before a diff was produced" or "No diff was produced" while it waits for a worker', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-queued', status: 'pending', mode: 'survey', dryRunDiff: null } as any);
+      renderAt('job-queued');
+      await waitFor(() => expect(screen.getAllByText(/queued/i).length).toBeGreaterThan(0));
+      expect(screen.queryByText('Cancelled before a diff was produced')).not.toBeInTheDocument();
+      expect(screen.queryByText('No diff was produced')).not.toBeInTheDocument();
+      expect(screen.queryByText(/was cancelled before parsing/i)).not.toBeInTheDocument();
+    });
+
     it('does not render the "Cancelled before a diff was produced" panel while a job is actually running', async () => {
       // Real bug this guards against (confirmed live): shouldShowTabs
       // returns false for a running job too, before its first diff/audit
@@ -2587,7 +2795,7 @@ describe('JobDetail', () => {
       expect(screen.queryByText('No diff was produced')).not.toBeInTheDocument();
     });
 
-    it('renders tabs and tiles, but no run-detail panel, once diff_ready', async () => {
+    it('renders tabs and the summary line, but no run-detail panel, once diff_ready', async () => {
       vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
         id: 'job-22',
         status: 'diff_ready',
@@ -2604,7 +2812,7 @@ describe('JobDetail', () => {
       // gap where the tiles hadn't rendered yet, confirmed live (CI-only,
       // never reproduced locally): "New" matched only the Select option,
       // not yet the tile.
-      await waitFor(() => expect(screen.getAllByText('New').length).toBeGreaterThan(1));
+      await waitFor(() => expect(screen.getByTestId('review-header')).toHaveTextContent(/new ·/));
       // ProgressBanner (the RunDetail panel) only ever renders for
       // running/writing -- diff_ready is a human decision point, not a
       // running process.
@@ -2619,7 +2827,7 @@ describe('JobDetail', () => {
       // other status does, plus the no-diff EmptyState fallback (no tabs,
       // since a failed job never reached diff_ready).
       await waitFor(() => expect(screen.getByText('No diff was produced')).toBeInTheDocument());
-      expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
+      expect(screen.queryByRole('tab', { name: /items \(/i })).not.toBeInTheDocument();
       expect(screen.getByRole('button', { name: /view audit/i })).toBeInTheDocument();
     });
 
@@ -2631,9 +2839,8 @@ describe('JobDetail', () => {
         dryRunDiff: [{ localId: 'a', parentLocalId: null, type: 'Requirement', title: 'Row one', description: '', action: 'create', customerId: null, tags: [] }],
       } as any);
       renderAt('job-24');
-      await waitFor(() => expect(screen.getByRole('tablist')).toBeInTheDocument());
-      const writeStep = screen.getByText('Write').closest('li')?.querySelector('[data-state]');
-      expect(writeStep).toHaveAttribute('data-state', 'skipped');
+      // The phase rail carries the state: Write is skipped on a rejected job, not pending.
+      expect(await screen.findByRole('tab', { name: /^Write/ })).toHaveTextContent(/Skipped/);
     });
   });
 
@@ -2660,7 +2867,7 @@ describe('JobDetail', () => {
         return () => {};
       });
       renderAt('job-arrive');
-      const region = await screen.findByTestId('job-arrival-status');
+      const region = await screen.findByTestId('live-status-region');
       expect(region).toHaveAttribute('role', 'status');
       expect(region).toBeEmptyDOMElement();
       const focused = document.activeElement;
@@ -2685,7 +2892,7 @@ describe('JobDetail', () => {
         return () => {};
       });
       renderAt('job-once');
-      const region = await screen.findByTestId('job-arrival-status');
+      const region = await screen.findByTestId('live-status-region');
       await act(async () => emitStage('diff_ready'));
       await waitFor(() => expect(region).toHaveTextContent('The diff is ready to review: 1 item.'));
 
@@ -2721,13 +2928,13 @@ describe('JobDetail', () => {
           </MemoryRouter>
         </ToastProvider>,
       );
-      await screen.findByTestId('job-arrival-status');
+      await screen.findByTestId('live-status-region');
       await act(async () => emitStage('diff_ready'));
-      await waitFor(() => expect(screen.getByTestId('job-arrival-status')).toHaveTextContent(/ready to review/)); // A finished while watched
+      await waitFor(() => expect(screen.getByTestId('live-status-region')).toHaveTextContent(/ready to review/)); // A finished while watched
 
       await userEvent.click(screen.getByRole('link', { name: 'open b' }));
       await waitFor(() => expect(screen.getByText('Second')).toBeInTheDocument());
-      expect(screen.getByTestId('job-arrival-status')).toBeEmptyDOMElement();
+      expect(screen.getByTestId('live-status-region')).toBeEmptyDOMElement();
       expect(document.getElementById('proposed-tree')!.className).not.toContain('fadeIn');
     });
 
@@ -2735,7 +2942,7 @@ describe('JobDetail', () => {
       vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-done', status: 'diff_ready', mode: 'survey', dryRunDiff: [root], createdAt: new Date().toISOString() } as any);
       renderAt('job-done');
       await waitFor(() => expect(screen.getByText('Root')).toBeInTheDocument());
-      expect(screen.getByTestId('job-arrival-status')).toBeEmptyDOMElement();
+      expect(screen.getByTestId('live-status-region')).toBeEmptyDOMElement();
       expect(document.getElementById('proposed-tree')!.className).not.toContain('fadeIn');
     });
   });
@@ -2788,16 +2995,55 @@ describe('JobDetail', () => {
       expect(within(dialog).getByRole('note')).toHaveTextContent(/blocking warning/i);
     });
 
+    it('A does nothing on an item that blocks the write, and says why; the Keep as written button decides it', async () => {
+      const userEvent = await startQueue();
+      const dialog = await screen.findByRole('dialog');
+
+      await userEvent.keyboard('a');
+
+      expect(jobsApi.setDiffEntriesReviewed).not.toHaveBeenCalled();
+      expect(screen.getByTestId('review-queue-status')).toHaveTextContent(/kept as written/i);
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Keep as written and next' }));
+      expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledWith('job-70', ['blocked'], true);
+    });
+
     it('A accepts the item, steps to the next riskiest and announces what is left', async () => {
       const userEvent = await startQueue();
       await screen.findByRole('dialog');
 
-      await userEvent.keyboard('a');
+      await pressMark(userEvent);
 
       expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledWith('job-70', ['blocked'], true);
       const dialog = await screen.findByRole('dialog');
       await waitFor(() => expect(within(dialog).getAllByText('Low item').length).toBeGreaterThan(0));
       expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Marked reviewed. 2 left.');
+    });
+
+    it('keeps the screen-reader status inside its card: an absolutely placed box with no positioned ancestor can lie below a short window and make the page scroll', async () => {
+      await startQueue();
+      const status = screen.getByTestId('review-queue-status');
+      expect(status.className.split(/\s+/)).toContain('sr-only');
+      const card = status.closest('.relative');
+      expect(card).not.toBeNull();
+      expect(card!.className).toContain('overflow-hidden');
+    });
+
+    it('lets the Write bar rest on the bottom edge: the review grid carries no bottom margin while the bar is there', async () => {
+      await startQueue();
+      // queried by its label, not its role: the open queue dialog hides the rest of the page from the accessibility tree
+      const bar = document.querySelector('section[aria-label="Review decision"]');
+      expect(bar).not.toBeNull();
+      const grid = bar!.closest('.grid');
+      expect(grid).not.toBeNull();
+      expect(grid!.className.split(/\s+/)).not.toContain('mb-4');
+    });
+
+    it('says where the reviewer is: "1 of 3" on the first item, and "1 of 2" on the next after one is marked', async () => {
+      const userEvent = await startQueue();
+      const dialog = await screen.findByRole('dialog');
+      expect(within(dialog).getByRole('note')).toHaveTextContent('1 of 3');
+      await pressMark(userEvent);
+      await waitFor(() => expect(within(dialog).getByRole('note')).toHaveTextContent('1 of 2'));
     });
 
     it('X excludes the item, steps on and announces it', async () => {
@@ -2817,6 +3063,137 @@ describe('JobDetail', () => {
       const dialog = await screen.findByRole('dialog');
       await waitFor(() => expect(within(dialog).getAllByText('Low item').length).toBeGreaterThan(0));
       expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Excluded. 2 left.');
+    });
+
+    it('X and A step to the item after the current one, not back to the top of the queue (R5)', async () => {
+      const rq = (localId: string, title: string, extra: Record<string, unknown> = {}) => ({
+        localId, parentLocalId: null, type: 'Requirement', title, description: '', action: 'create', customerId: null, tags: [], ...extra,
+      });
+      const items = (excluded?: string) => [
+        rq('b1', 'Blocked one', { qualityScore: 99 }),
+        rq('l1', 'Low one', { qualityScore: 30, excluded: excluded === 'l1' }),
+        rq('l2', 'Low two', { qualityScore: 35 }),
+        rq('l3', 'Low three', { qualityScore: 40 }),
+      ];
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+        id: 'job-72', status: 'diff_ready', mode: 'survey', dryRunDiff: items(),
+        warnings: [{ kind: 'missing_source_reference', severity: 'needs_review', nodeIds: ['b1'], detail: {}, raw: 'x' }],
+      } as any);
+      vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockImplementation(async (_id, localId) => ({ dryRunDiff: items(localId) }) as any);
+      renderAt('job-72');
+      const { default: userEvent } = await import('@testing-library/user-event');
+      await userEvent.click(await screen.findByRole('button', { name: /review in risk order/i }));
+      const dialog = await screen.findByRole('dialog');
+      await waitFor(() => expect(within(dialog).getAllByText('Blocked one').length).toBeGreaterThan(0));
+
+      await userEvent.keyboard('j');
+      await waitFor(() => expect(within(dialog).getAllByText('Low one').length).toBeGreaterThan(0));
+      await userEvent.keyboard('x');
+
+      await waitFor(() => expect(jobsApi.setDiffEntryExcluded).toHaveBeenCalledWith('job-72', 'l1', true));
+      // The next in line, "Low two", not the top of the queue.
+      await waitFor(() => expect(within(dialog).getAllByText('Low two').length).toBeGreaterThan(0));
+      expect(within(dialog).queryAllByText('Blocked one')).toHaveLength(0);
+    });
+
+    it('with a group chip pressed the queue is that group: the counter counts it and J and K do not leave it', async () => {
+      const rq = (localId: string, title: string, extra: Record<string, unknown> = {}) => ({
+        localId, parentLocalId: null, type: 'Requirement', title, description: '', action: 'create', customerId: null, tags: [], ...extra,
+      });
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+        id: 'job-73', status: 'diff_ready', mode: 'survey',
+        dryRunDiff: [
+          rq('c1', 'Check one', { qualityScore: 30 }),
+          rq('c2', 'Check two', { qualityScore: 35 }),
+          rq('ok', 'Clean one', { qualityScore: 95, groundingScore: 0.9 }),
+        ],
+        warnings: [],
+      } as any);
+      renderAt('job-73');
+      const { default: userEvent } = await import('@testing-library/user-event');
+      await userEvent.click(await screen.findByRole('button', { name: /^check · 2$/i }));
+      await userEvent.click(screen.getByRole('button', { name: /^review in check · 2$/i }));
+      const dialog = await screen.findByRole('dialog');
+      await waitFor(() => expect(within(dialog).getByRole('note')).toHaveTextContent('1 of 2'));
+
+      await userEvent.keyboard('j');
+      await waitFor(() => expect(within(dialog).getByRole('note')).toHaveTextContent('2 of 2'));
+      await userEvent.keyboard('j'); // the end of the group: J does not step onto the clean item
+      await waitFor(() => expect(within(dialog).getByRole('note')).toHaveTextContent('2 of 2'));
+      expect(within(dialog).queryAllByText('Clean one')).toHaveLength(0);
+    });
+
+    it('with a group chip pressed, X counts what is left in that group, not in the whole queue', async () => {
+      const rq = (localId: string, title: string, extra: Record<string, unknown> = {}) => ({
+        localId, parentLocalId: null, type: 'Requirement', title, description: '', action: 'create', customerId: null, tags: [], ...extra,
+      });
+      const entries = (excludedId?: string) => [
+        rq('c1', 'Check one', { qualityScore: 30, excluded: excludedId === 'c1' }),
+        rq('c2', 'Check two', { qualityScore: 35 }),
+        rq('ok', 'Clean one', { qualityScore: 95, groundingScore: 0.9 }),
+        rq('ok2', 'Clean two', { qualityScore: 96, groundingScore: 0.9 }),
+      ];
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-74', status: 'diff_ready', mode: 'survey', dryRunDiff: entries(), warnings: [] } as any);
+      vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockImplementation(async (_id, localId) => ({ dryRunDiff: entries(localId) }) as any);
+      renderAt('job-74');
+      const { default: userEvent } = await import('@testing-library/user-event');
+      await userEvent.click(await screen.findByRole('button', { name: /^check · 2$/i }));
+      await userEvent.click(screen.getByRole('button', { name: /^review in check · 2$/i }));
+      const dialog = await screen.findByRole('dialog');
+      await waitFor(() => expect(within(dialog).getByRole('note')).toHaveTextContent('1 of 2'));
+
+      await userEvent.keyboard('x');
+
+      await waitFor(() => expect(jobsApi.setDiffEntryExcluded).toHaveBeenCalledWith('job-74', 'c1', true));
+      await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Excluded. 1 left.'));
+    });
+
+    it('with a group chip pressed, X on the last item of the group stays in the group', async () => {
+      const rq = (localId: string, title: string, extra: Record<string, unknown> = {}) => ({
+        localId, parentLocalId: null, type: 'Requirement', title, description: '', action: 'create', customerId: null, tags: [], ...extra,
+      });
+      const entries = (excludedId?: string) => [
+        rq('c1', 'Check one', { qualityScore: 30 }),
+        rq('c2', 'Check two', { qualityScore: 35, excluded: excludedId === 'c2' }),
+        rq('ok', 'Clean one', { qualityScore: 95, groundingScore: 0.9 }),
+      ];
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-75', status: 'diff_ready', mode: 'survey', dryRunDiff: entries(), warnings: [] } as any);
+      vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockImplementation(async (_id, localId) => ({ dryRunDiff: entries(localId) }) as any);
+      renderAt('job-75');
+      const { default: userEvent } = await import('@testing-library/user-event');
+      await userEvent.click(await screen.findByRole('button', { name: /^check · 2$/i }));
+      await userEvent.click(screen.getByRole('button', { name: /^review in check · 2$/i }));
+      const dialog = await screen.findByRole('dialog');
+      await userEvent.keyboard('j');
+      await waitFor(() => expect(within(dialog).getByRole('note')).toHaveTextContent('2 of 2'));
+
+      await userEvent.keyboard('x');
+
+      await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Excluded. 1 left.'));
+      await waitFor(() => expect(within(dialog).getByRole('note')).toHaveTextContent('1 of 1'));
+      expect(within(dialog).queryAllByText('Clean one')).toHaveLength(0);
+    });
+
+    it('with a group chip pressed, X on the only item of the group counts everything left, as the queue does once the group has emptied', async () => {
+      const rq = (localId: string, title: string, extra: Record<string, unknown> = {}) => ({
+        localId, parentLocalId: null, type: 'Requirement', title, description: '', action: 'create', customerId: null, tags: [], ...extra,
+      });
+      const entries = (excludedId?: string) => [
+        rq('c1', 'Check one', { qualityScore: 30, excluded: excludedId === 'c1' }),
+        rq('ok', 'Clean one', { qualityScore: 95, groundingScore: 0.9 }),
+        rq('ok2', 'Clean two', { qualityScore: 96, groundingScore: 0.9 }),
+      ];
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-76', status: 'diff_ready', mode: 'survey', dryRunDiff: entries(), warnings: [] } as any);
+      vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockImplementation(async (_id, localId) => ({ dryRunDiff: entries(localId) }) as any);
+      renderAt('job-76');
+      const { default: userEvent } = await import('@testing-library/user-event');
+      await userEvent.click(await screen.findByRole('button', { name: /^check · 1$/i }));
+      await userEvent.click(screen.getByRole('button', { name: /^review in check · 1$/i }));
+      await screen.findByRole('dialog');
+
+      await userEvent.keyboard('x');
+
+      await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Excluded. 2 left.'));
     });
 
     it('outside the queue, J and K follow the order the tree is drawn in, even when the diff lists a parent last', async () => {
@@ -2861,9 +3238,9 @@ describe('JobDetail', () => {
       const userEvent = await startQueue();
       await screen.findByRole('dialog');
 
-      await userEvent.keyboard('a');
-      await userEvent.keyboard('a');
-      await userEvent.keyboard('a');
+      await pressMark(userEvent);
+      await pressMark(userEvent);
+      await pressMark(userEvent);
 
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
       expect(jobsApi.setDiffEntriesReviewed).toHaveBeenLastCalledWith('job-70', ['clean'], true);
@@ -2874,9 +3251,9 @@ describe('JobDetail', () => {
       const userEvent = await startQueue();
       await screen.findByRole('dialog');
 
-      await userEvent.keyboard('a');
-      await userEvent.keyboard('a');
-      await userEvent.keyboard('a');
+      await pressMark(userEvent);
+      await pressMark(userEvent);
+      await pressMark(userEvent);
 
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
       await waitFor(() => expect(screen.getByText('Review queue done.')).toHaveFocus());
@@ -2886,9 +3263,9 @@ describe('JobDetail', () => {
     it('brings the queue button back, and drops the done row, when an accept is undone', async () => {
       const userEvent = await startQueue();
       await screen.findByRole('dialog');
-      await userEvent.keyboard('a');
-      await userEvent.keyboard('a');
-      await userEvent.keyboard('a');
+      await pressMark(userEvent);
+      await pressMark(userEvent);
+      await pressMark(userEvent);
       await waitFor(() => expect(screen.getByText('Review queue done.')).toBeInTheDocument());
 
       await userEvent.click((await screen.findAllByRole('button', { name: 'Undo' })).at(-1)!);
@@ -2928,9 +3305,9 @@ describe('JobDetail', () => {
         .mockResolvedValueOnce({ dryRunDiff: [] })
         .mockRejectedValueOnce(new Error('network'));
 
-      await userEvent.keyboard('a');
-      await userEvent.keyboard('a');
-      await userEvent.keyboard('a');
+      await pressMark(userEvent);
+      await pressMark(userEvent);
+      await pressMark(userEvent);
 
       await waitFor(() =>
         expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Couldn\'t mark "Clean item" reviewed. Try again.'),
@@ -2947,7 +3324,7 @@ describe('JobDetail', () => {
       await screen.findByRole('dialog');
       vi.mocked(jobsApi.setDiffEntriesReviewed).mockRejectedValueOnce(new Error('network'));
 
-      await userEvent.keyboard('a');
+      await pressMark(userEvent);
 
       await waitFor(() =>
         expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Couldn\'t mark "Blocked item" reviewed. Try again.'),
@@ -2960,7 +3337,7 @@ describe('JobDetail', () => {
       const userEvent = await startQueue();
       const dialog = await screen.findByRole('dialog');
 
-      await userEvent.keyboard('a');
+      await pressMark(userEvent);
 
       await waitFor(() => expect(within(dialog).getByRole('status')).toHaveTextContent('Marked reviewed. 2 left.'));
     });
@@ -2973,7 +3350,7 @@ describe('JobDetail', () => {
 
       await userEvent.keyboard('x');
 
-      const mark = within(dialog).getByRole('button', { name: 'Mark reviewed and next' });
+      const mark = within(dialog).getByRole('button', { name: 'Keep as written and next' });
       await waitFor(() => expect(mark).toHaveAttribute('aria-busy', 'true'));
       expect(mark).toHaveAttribute('aria-disabled', 'true');
       expect(mark).not.toBeDisabled();
@@ -3012,8 +3389,8 @@ describe('JobDetail', () => {
       let reply: (value: unknown) => void = () => {};
       vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockImplementation(() => new Promise((resolve) => { reply = resolve; }));
 
-      await userEvent.keyboard('a'); // 'blocked' reviewed
-      await userEvent.keyboard('a'); // 'low' reviewed, now on 'clean'
+      await pressMark(userEvent); // 'blocked' reviewed
+      await pressMark(userEvent); // 'low' reviewed, now on 'clean'
       await userEvent.keyboard('x'); // exclude the last item, pending
       // The queue is empty the moment the reply lands, a render before the queue steps on.
       reply({
@@ -3036,7 +3413,7 @@ describe('JobDetail', () => {
       let reply: (value: unknown) => void = () => {};
       vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockImplementation(() => new Promise((resolve) => { reply = resolve; }));
 
-      await userEvent.keyboard('a'); // 'blocked' reviewed, now on 'low'
+      await pressMark(userEvent); // 'blocked' reviewed, now on 'low'
       await userEvent.keyboard('x'); // exclude 'low', pending
       reply({
         dryRunDiff: [
@@ -3056,7 +3433,7 @@ describe('JobDetail', () => {
       const dialog = await screen.findByRole('dialog');
       expect(within(dialog).getByRole('note')).not.toHaveTextContent(/U\s*undo/);
 
-      await userEvent.keyboard('a');
+      await pressMark(userEvent);
       await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Marked reviewed. 2 left.'));
       await waitFor(() => expect(within(screen.getByRole('dialog')).getByRole('note')).toHaveTextContent(/U\s*undo/));
       await userEvent.keyboard('u');
@@ -3085,7 +3462,7 @@ describe('JobDetail', () => {
     it('says so, and keeps the undo, when U is pressed while another save is running', async () => {
       const userEvent = await startQueue();
       await screen.findByRole('dialog');
-      await userEvent.keyboard('a');
+      await pressMark(userEvent);
       await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Marked reviewed. 2 left.'));
       // The next item's exclude never answers, so a save is running.
       vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockReturnValue(new Promise(() => {}));
@@ -3135,7 +3512,7 @@ describe('JobDetail', () => {
     it('does not undo a second time with U after the toast Undo of an accept already did', async () => {
       const userEvent = await startQueue();
       await screen.findByRole('dialog');
-      await userEvent.keyboard('a');
+      await pressMark(userEvent);
       await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Marked reviewed. 2 left.'));
 
       await userEvent.click(screen.getByRole('button', { name: 'Undo', hidden: true }));
@@ -3150,7 +3527,7 @@ describe('JobDetail', () => {
     it('speaks a repeated "Still saving" again, since the text is identical', async () => {
       const userEvent = await startQueue();
       await screen.findByRole('dialog');
-      await userEvent.keyboard('a');
+      await pressMark(userEvent);
       await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Marked reviewed. 2 left.'));
       vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockReturnValue(new Promise(() => {}));
       await userEvent.keyboard('x');
@@ -3204,7 +3581,7 @@ describe('JobDetail', () => {
         await screen.findByRole('dialog');
         await userEvent.keyboard('a');
         expect(jobsApi.setDiffEntriesReviewed).not.toHaveBeenCalled();
-        await userEvent.click(screen.getByRole('button', { name: 'Mark reviewed and next' }));
+        await userEvent.click(screen.getByRole('button', { name: 'Keep as written and next' }));
         expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledWith('job-70', ['blocked'], true);
       } finally {
         useUiPreferencesStore.getState().setKeyboardShortcuts(true);
@@ -3236,8 +3613,8 @@ describe('JobDetail', () => {
           .mockImplementationOnce(() => first.promise as never)
           .mockImplementationOnce(() => second.promise as never);
 
-        await userEvent.keyboard('a');
-        await userEvent.keyboard('a');
+        await pressMark(userEvent);
+        await pressMark(userEvent);
         // Saves are sent one at a time, so the second goes out once the first has finished.
         await act(async () => first.resolve({ dryRunDiff: [] }));
         await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledTimes(2));
@@ -3257,7 +3634,7 @@ describe('JobDetail', () => {
         const first = deferred<{ dryRunDiff: never[] }>();
         vi.mocked(jobsApi.setDiffEntriesReviewed).mockImplementationOnce(() => first.promise as never);
 
-        await userEvent.keyboard('a');
+        await pressMark(userEvent);
         await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledTimes(1));
         await userEvent.keyboard('u');
         // Give the Undo every chance to go out early.
@@ -3277,9 +3654,9 @@ describe('JobDetail', () => {
         const first = deferred<{ dryRunDiff: never[] }>();
         vi.mocked(jobsApi.setDiffEntriesReviewed).mockImplementationOnce(() => first.promise as never);
 
-        await userEvent.keyboard('a');
+        await pressMark(userEvent);
         await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledTimes(1));
-        await userEvent.keyboard('a');
+        await pressMark(userEvent);
         expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledTimes(1);
         await act(async () => first.reject(new Error('network')));
 
@@ -3298,7 +3675,7 @@ describe('JobDetail', () => {
           .mockImplementationOnce(() => first.promise as never)
           .mockImplementationOnce(() => second.promise as never);
 
-        await userEvent.keyboard('a');
+        await pressMark(userEvent);
         await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledTimes(1));
         await userEvent.keyboard('u');
         await act(async () => first.reject(new Error('network')));
@@ -3318,13 +3695,13 @@ describe('JobDetail', () => {
         const first = deferred<{ dryRunDiff: never[] }>();
         vi.mocked(jobsApi.setDiffEntriesReviewed).mockImplementationOnce(() => first.promise as never);
 
-        await userEvent.keyboard('a');
+        await pressMark(userEvent);
         await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledTimes(1));
         await userEvent.keyboard('u');
         await waitFor(() => expect(within(screen.getByRole('dialog')).getAllByText('Low item').length).toBeGreaterThan(0));
         await userEvent.keyboard('k');
         await waitFor(() => expect(within(screen.getByRole('dialog')).getAllByText('Blocked item').length).toBeGreaterThan(0));
-        await userEvent.keyboard('a');
+        await pressMark(userEvent);
         await act(async () => first.reject(new Error('network')));
         await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledTimes(3));
         expect(jobsApi.setDiffEntriesReviewed).toHaveBeenNthCalledWith(3, 'job-70', ['blocked'], true);
@@ -3342,7 +3719,7 @@ describe('JobDetail', () => {
         await screen.findByRole('dialog');
         vi.mocked(jobsApi.setDiffEntriesReviewed).mockRejectedValueOnce(new Error('network'));
 
-        await userEvent.keyboard('a');
+        await pressMark(userEvent);
         await screen.findAllByText(/failed to update review state/i);
 
         // An error toast has focus by now, so Escape would go to it; the close button is used instead.
@@ -3354,7 +3731,7 @@ describe('JobDetail', () => {
       it('the toast Undo of a mark that is no longer in force says there is nothing left to undo, and sends nothing', async () => {
         const userEvent = await startQueue();
         await screen.findByRole('dialog');
-        await userEvent.keyboard('a');
+        await pressMark(userEvent);
         await waitFor(() => expect(screen.getAllByText('Undo').length).toBeGreaterThan(0));
         const olderToastUndo = screen.getAllByText('Undo')[0].closest('button')!;
         // U takes the mark back first, so the older toast's Undo has nothing to do.
@@ -3389,7 +3766,7 @@ describe('JobDetail', () => {
           </ToastProvider>,
         );
         await userEvent.click(await screen.findByRole('button', { name: /review in risk order/i }));
-        await userEvent.keyboard('a');
+        await pressMark(userEvent);
         await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledTimes(1));
         await userEvent.keyboard('{Escape}');
         await userEvent.click(await screen.findByRole('link', { name: 'go to the other job' }));
@@ -3462,7 +3839,7 @@ describe('JobDetail', () => {
         await screen.findByRole('dialog');
         const first = deferred<{ dryRunDiff: never[] }>();
         vi.mocked(jobsApi.setDiffEntriesReviewed).mockImplementationOnce(() => first.promise as never);
-        await userEvent.keyboard('a');
+        await pressMark(userEvent);
         await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledTimes(1));
         await userEvent.keyboard('{Escape}');
         await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
@@ -3508,13 +3885,13 @@ describe('JobDetail', () => {
         const first = deferred<{ dryRunDiff: never[] }>();
         vi.mocked(jobsApi.setDiffEntriesReviewed).mockImplementationOnce(() => first.promise as never);
 
-        await userEvent.keyboard('a'); // 'blocked', pending
+        await pressMark(userEvent); // 'blocked', pending
         await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledTimes(1));
         await userEvent.keyboard('u'); // takes it back: a newer write on the same item
         await waitFor(() => expect(within(screen.getByRole('dialog')).getAllByText('Low item').length).toBeGreaterThan(0));
         await userEvent.keyboard('k');
         await waitFor(() => expect(within(screen.getByRole('dialog')).getAllByText('Blocked item').length).toBeGreaterThan(0));
-        await userEvent.keyboard('a'); // and marks it again
+        await pressMark(userEvent); // and marks it again
         await waitFor(() => expect(within(screen.getByRole('dialog')).queryAllByText('Blocked item')).toHaveLength(0));
 
         await act(async () => first.reject(new Error('network')));
@@ -3545,7 +3922,7 @@ describe('JobDetail', () => {
           </ToastProvider>,
         );
         await userEvent.click(await screen.findByRole('button', { name: /review in risk order/i }));
-        await userEvent.keyboard('a');
+        await pressMark(userEvent);
         await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledTimes(1));
         await userEvent.keyboard('{Escape}');
         await userEvent.click(await screen.findByRole('link', { name: 'leave' }));
@@ -3682,9 +4059,9 @@ describe('JobDetail', () => {
       await userEvent.click(within(first).getByRole('button', { name: 'Looks right and next' }));
       await waitFor(() => expect(within(screen.getByRole('dialog')).getAllByText('Clean three').length).toBeGreaterThan(0));
       expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Looks right. 1 of 3 checked.');
-      await userEvent.keyboard('a');
+      await pressMark(userEvent);
       await waitFor(() => expect(within(screen.getByRole('dialog')).getAllByText('Clean five').length).toBeGreaterThan(0));
-      await userEvent.keyboard('a');
+      await pressMark(userEvent);
 
       const confirmation = await screen.findByRole('dialog', { name: 'Approve 5 clean items?' });
       expect(confirmation).toHaveTextContent('3 of 3 checked');
@@ -3719,7 +4096,7 @@ describe('JobDetail', () => {
       await openConfirmation(userEvent);
       await userEvent.click(screen.getByRole('button', { name: 'Start spot-check' }));
       await screen.findByRole('dialog');
-      await userEvent.keyboard('a');
+      await pressMark(userEvent);
       await userEvent.keyboard('{Escape}');
 
       const confirmation = await screen.findByRole('dialog', { name: 'Approve 5 clean items?' });
@@ -3775,7 +4152,7 @@ describe('JobDetail', () => {
       await waitFor(() => expect(within(screen.getByRole('dialog')).getAllByText('Clean two').length).toBeGreaterThan(0));
       for (const title of ['Clean two', 'Clean four', 'Clean five']) {
         await waitFor(() => expect(within(screen.getByRole('dialog')).getAllByText(title).length).toBeGreaterThan(0));
-        await userEvent.keyboard('a');
+        await pressMark(userEvent);
       }
       const confirmation = await screen.findByRole('dialog', { name: 'Approve 4 clean items?' });
       await userEvent.click(within(confirmation).getByRole('button', { name: 'Approve 4 clean items' }));
@@ -3792,7 +4169,7 @@ describe('JobDetail', () => {
       await userEvent.keyboard('x');
       await waitFor(() => expect(jobsApi.setDiffEntryExcluded).toHaveBeenCalledTimes(1));
 
-      await userEvent.keyboard('a');
+      await pressMark(userEvent);
 
       await waitFor(() => expect(within(dialog).getByRole('status')).toHaveTextContent('Still saving. Try again.'));
       await act(async () => save.resolve({ dryRunDiff: diffRows('c1') }));
@@ -3930,7 +4307,7 @@ describe('JobDetail', () => {
         await userEvent.click(screen.getByRole('button', { name: 'Start spot-check' }));
         await screen.findByRole('dialog');
         // Look at Clean one (checked), step on, step back to it and exclude it.
-        await userEvent.keyboard('a');
+        await pressMark(userEvent);
         await waitFor(() => expect(within(screen.getByRole('dialog')).getAllByText('Clean three').length).toBeGreaterThan(0));
         await userEvent.keyboard('k');
         await waitFor(() => expect(within(screen.getByRole('dialog')).getAllByText('Clean one').length).toBeGreaterThan(0));
@@ -3939,7 +4316,7 @@ describe('JobDetail', () => {
         // The sample for the four left is Clean two, four and five.
         for (const title of ['Clean two', 'Clean four', 'Clean five']) {
           await waitFor(() => expect(within(screen.getByRole('dialog')).getAllByText(title).length).toBeGreaterThan(0));
-          await userEvent.keyboard('a');
+          await pressMark(userEvent);
         }
         await screen.findByRole('dialog', { name: 'Approve 4 clean items?' });
 
@@ -3962,5 +4339,701 @@ describe('JobDetail', () => {
         await waitFor(() => expect(screen.getByText('Review queue done.')).toHaveFocus());
       });
     });
+  });
+});
+
+describe('JobDetail: the nothing-written line (DESIGN.md §0)', () => {
+  const LINE = 'Nothing has been written to Azure DevOps. Writing only starts after you approve the diff.';
+
+  beforeEach(() => {
+    // Same defaults the main describe sets: vi.mock('../api/jobs') above makes every export return undefined.
+    vi.spyOn(jobsApi, 'getSummary').mockResolvedValue({ created: 0, reused: 0, dedupSkipped: 0, flagged: 0, warnings: [] });
+    vi.spyOn(jobsApi, 'getEventHistory').mockResolvedValue([]);
+    vi.spyOn(jobsApi, 'getFigureFile').mockResolvedValue(null);
+  });
+
+  async function mountWithStatus(status: string): Promise<void> {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-safety', status, mode: 'survey', dryRunDiff: null, createdAt: new Date().toISOString(),
+    } as any);
+    const events = await import('../api/events');
+    vi.mocked(events.subscribeToJobEvents).mockImplementation(() => () => {});
+    renderAt('job-safety');
+  }
+
+  it('is visible while a job is running', async () => {
+    await mountWithStatus('running');
+    expect(await screen.findByText(LINE)).toBeInTheDocument();
+  });
+
+  it('is visible while a job awaits review', async () => {
+    await mountWithStatus('diff_ready');
+    expect(await screen.findByText(LINE)).toBeInTheDocument();
+  });
+
+  it('is not shown for a job that went back to diff_ready after a partial write', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-partial', status: 'diff_ready', mode: 'survey', createdAt: new Date().toISOString(),
+      createdItemCount: 1, writtenLocalIds: ['e1'],
+      dryRunDiff: [{ localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Root', description: '', action: 'create', customerId: null, tags: [] }],
+    } as any);
+    const events = await import('../api/events');
+    vi.mocked(events.subscribeToJobEvents).mockImplementation(() => () => {});
+    renderAt('job-partial');
+    await screen.findByText('Root');
+    expect(screen.queryByText(LINE)).not.toBeInTheDocument();
+  });
+
+  it('is not shown once the job is writing, because it would no longer be true', async () => {
+    await mountWithStatus('writing');
+    // Wait for the loaded page (its status chip), so the absence below is not a vacuous pre-render pass.
+    await screen.findByText('Writing');
+    expect(screen.queryByText(LINE)).not.toBeInTheDocument();
+  });
+});
+
+describe('JobDetail: the stepper while the model reads the whole document', () => {
+  beforeEach(() => {
+    vi.spyOn(jobsApi, 'getSummary').mockResolvedValue({ created: 0, reused: 0, dedupSkipped: 0, flagged: 0, warnings: [] });
+    vi.spyOn(jobsApi, 'getEventHistory').mockResolvedValue([]);
+    vi.spyOn(jobsApi, 'getFigureFile').mockResolvedValue(null);
+  });
+
+  it('labels the Parse step "reading whole document", so a minute and a half under Parse does not look like a stuck parser', async () => {
+    // Seen live (2026-11-12): the primer call ran for 1m34s with Parse as the only active step and no explanation under it.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-primer', status: 'running', mode: 'survey', dryRunDiff: null, createdAt: new Date().toISOString(),
+    } as any);
+    const events = await import('../api/events');
+    vi.mocked(events.subscribeToJobEvents).mockImplementation((_id, _base, _onStage, onNarration) => {
+      onNarration?.({
+        phase: 'primer', branchIndex: null, branchCount: 0, blocksDone: 0, blocksTotal: 0,
+        kbGrounded: false, kbCitations: [], message: 'Reading the whole document to understand it - 0:12',
+      } as any);
+      return () => {};
+    });
+    renderAt('job-primer');
+    expect(await screen.findByText('reading whole document')).toBeInTheDocument();
+  });
+});
+
+describe('JobDetail: the phase rail while a run is in progress (DESIGN.md §11.3.5)', () => {
+  beforeEach(() => {
+    vi.spyOn(jobsApi, 'getSummary').mockResolvedValue({ created: 0, reused: 0, dedupSkipped: 0, flagged: 0, warnings: [] });
+    vi.spyOn(jobsApi, 'getEventHistory').mockResolvedValue([]);
+    vi.spyOn(jobsApi, 'getFigureFile').mockResolvedValue(null);
+  });
+
+  let pushStage: (stage: string) => void = () => undefined;
+
+  async function mountRunning(opts: { status?: string; mode?: string; stage?: string | null } = {}): Promise<void> {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-rail', status: opts.status ?? 'running', mode: opts.mode ?? 'survey', dryRunDiff: opts.status === 'diff_ready' ? [] : null,
+      createdAt: new Date().toISOString(),
+    } as any);
+    const events = await import('../api/events');
+    vi.mocked(events.subscribeToJobEvents).mockImplementation((_id, _base, onStage) => {
+      pushStage = (stage) => onStage(stage as any);
+      // A queued job has no stage yet; a stage event would also start it running.
+      if (opts.stage !== null) onStage((opts.stage ?? 'infer_hierarchy_start') as any);
+      return () => {};
+    });
+    renderAt('job-rail');
+  }
+
+  it('shows the SURVEY phases as a vertical tab list with the live phase selected', async () => {
+    await mountRunning();
+    const tabs = await screen.findAllByRole('tab');
+    expect(tabs.map((t) => t.textContent)).toEqual([
+      expect.stringContaining('Parse'), expect.stringContaining('Analyze'), expect.stringContaining('Score'),
+      expect.stringContaining('Dedup check'), expect.stringContaining('Review'), expect.stringContaining('Write'),
+    ]);
+    expect(screen.getByRole('tab', { name: /Analyze/ })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tabpanel')).toHaveAttribute('aria-labelledby', 'phase-tab-analyze');
+  });
+
+  it('draws a ring on the phase panel when it is focus-visible (outline-none alone would hide it in Tailwind 4)', async () => {
+    await mountRunning();
+    const panel = await screen.findByRole('tabpanel');
+    const classes = panel.className.split(/\s+/);
+    expect(classes).toContain('focus-visible:outline-2');
+    expect(classes).toContain('focus-visible:outline-solid');
+  });
+
+  it('has exactly one polite status region while a run is in progress (DESIGN.md §13)', async () => {
+    await mountRunning({ stage: 'infer_hierarchy_start' });
+    await screen.findAllByRole('tab');
+    expect(document.querySelectorAll('[role="status"][aria-live="polite"]')).toHaveLength(1);
+    expect(screen.getByTestId('live-status-region')).toBeInTheDocument();
+    expect(screen.queryByTestId('waiting-status')).not.toBeInTheDocument();
+  });
+
+  it('shows four phases for BASELINE', async () => {
+    await mountRunning({ mode: 'baseline', stage: 'parse' });
+    expect(await screen.findAllByRole('tab')).toHaveLength(4);
+  });
+
+  it('has no dark narration strip: the ticker is gone while a run is in progress', async () => {
+    await mountRunning();
+    await screen.findAllByRole('tab');
+    expect(document.querySelector('.bg-ink-1')).toBeNull();
+  });
+
+  it('lets you read a finished phase and come back to the live one, and says what a pending phase is for', async () => {
+    await mountRunning();
+    await userEvent.click(await screen.findByRole('tab', { name: /Parse/ }));
+    expect(screen.getByRole('tab', { name: /Parse/ })).toHaveAttribute('aria-selected', 'true');
+    const panel = screen.getByRole('tabpanel');
+    expect(within(panel).getByRole('heading', { name: 'Parse' })).toBeInTheDocument();
+    expect(within(panel).getByText('Finished')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('tab', { name: /Score/ }));
+    expect(within(screen.getByRole('tabpanel')).getByText('Not started yet')).toBeInTheDocument();
+    expect(within(screen.getByRole('tabpanel')).getByText(/Judging each drafted requirement/)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Back to live' }));
+    expect(screen.getByRole('tab', { name: /Analyze/ })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByRole('button', { name: 'Back to live' })).not.toBeInTheDocument();
+  });
+
+  it('keeps showing the phase you chose, and keeps focus where it is, while the live phase moves on', async () => {
+    await mountRunning();
+    await userEvent.click(await screen.findByRole('tab', { name: /Parse/ }));
+    const focused = document.activeElement;
+    // The run really moves on: Analyze is done and Dedup check begins.
+    act(() => pushStage('dedup_check'));
+    expect(screen.getByRole('tab', { name: /Dedup check/ })).toHaveTextContent('Live');
+    expect(screen.getByRole('tab', { name: /Parse/ })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('button', { name: 'Back to live' })).toBeInTheDocument();
+    expect(document.activeElement).toBe(focused);
+  });
+
+  it('follows the live phase by default as the run moves on', async () => {
+    await mountRunning();
+    expect(await screen.findByRole('tab', { name: /Analyze/ })).toHaveAttribute('aria-selected', 'true');
+    act(() => pushStage('dedup_check'));
+    expect(screen.getByRole('tab', { name: /Dedup check/ })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('says in words that the Write phase cannot be undone, before it has started', async () => {
+    await mountRunning();
+    expect(await screen.findByRole('tab', { name: /Write/ })).toHaveTextContent(/cannot be undone/i);
+  });
+
+  it('shows a queued job in the live layout, with the queue notice in the panel and "Queued" under its phase', async () => {
+    await mountRunning({ status: 'pending', stage: null });
+    expect(await screen.findByText(/Queued\. It starts when a slot is free/)).toBeInTheDocument();
+    expect(within(screen.getByRole('tab', { name: /Parse/ })).getByText('Queued')).toBeInTheDocument();
+    // Reading another phase hides the queue notice; Back to live brings it back.
+    await userEvent.click(screen.getByRole('tab', { name: /Review/ }));
+    expect(screen.queryByText(/Queued\. It starts when a slot is free/)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Back to live' }));
+    expect(await screen.findByText(/Queued\. It starts when a slot is free/)).toBeInTheDocument();
+  });
+
+  it('puts a writing job on the Write phase', async () => {
+    await mountRunning({ status: 'writing', stage: 'writing' });
+    expect(await screen.findByRole('tab', { name: /Write/ })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('does not carry a phase you picked on one job over to the next job', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob').mockImplementation(async (id: string) =>
+      ({ id, status: 'running', mode: 'survey', dryRunDiff: null, createdAt: new Date().toISOString() }) as any,
+    );
+    const events = await import('../api/events');
+    vi.mocked(events.subscribeToJobEvents).mockImplementation((_id, _base, onStage) => {
+      onStage('infer_hierarchy_start');
+      return () => {};
+    });
+    render(
+      <ToastProvider>
+        <MemoryRouter initialEntries={['/jobs/job-one']}>
+          <Link to="/jobs/job-two">next job</Link>
+          <Routes>
+            <Route path="/jobs/:id" element={<JobDetail />} />
+          </Routes>
+        </MemoryRouter>
+      </ToastProvider>,
+    );
+    await userEvent.click(await screen.findByRole('tab', { name: /Parse/ }));
+    expect(screen.getByRole('button', { name: 'Back to live' })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('link', { name: 'next job' }));
+    await waitFor(() => expect(jobsApi.getJob).toHaveBeenCalledWith('job-two'));
+    expect(await screen.findByRole('tab', { name: /Analyze/ })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByRole('button', { name: 'Back to live' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the same phase rail once the run is no longer in progress, with Review in view and no live marker', async () => {
+    await mountRunning({ status: 'diff_ready', stage: 'diff_ready' });
+    expect(await screen.findByRole('tablist', { name: 'Run phases' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /^Review/ })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByText('● Live')).not.toBeInTheDocument();
+  });
+});
+
+describe('JobDetail: the run log outlives the run (DESIGN.md §11.3.5)', () => {
+  beforeEach(() => {
+    vi.spyOn(jobsApi, 'getSummary').mockResolvedValue({ created: 0, reused: 0, dedupSkipped: 0, flagged: 0, warnings: [] });
+    vi.spyOn(jobsApi, 'getFigureFile').mockResolvedValue(null);
+  });
+
+  it('offers a collapsed "Run log (n)" on a finished job, built from the stored event history', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-log', status: 'diff_ready', mode: 'survey', dryRunDiff: [], createdAt: new Date().toISOString() } as any);
+    const at = new Date().toISOString();
+    const entry = (id: string, phase: string, message: string) => ({
+      id, jobId: 'job-log', phase, severity: 'info', createdAt: at, message,
+      detail: { phase, branchIndex: null, branchCount: 0, blocksDone: 0, blocksTotal: 0, kbGrounded: false, kbCitations: [], message },
+    });
+    vi.spyOn(jobsApi, 'getEventHistory').mockResolvedValue([
+      entry('e1', 'table_detected', 'Detected a table t0'),
+      entry('e2', 'score_requirements', 'Scoring requirement batch 1 of 1'),
+    ] as any);
+    renderAt('job-log');
+
+    fireEvent.click(await screen.findByRole('button', { name: /Run details/ }));
+    const toggle = await screen.findByRole('button', { name: 'Run log (2)' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('Scoring requirement batch 1 of 1')).not.toBeInTheDocument();
+    fireEvent.click(toggle);
+    expect(await screen.findByText('Scoring requirement batch 1 of 1')).toBeInTheDocument();
+  });
+
+  it('shows no run log for a job whose history is empty', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-nolog', status: 'diff_ready', mode: 'survey', dryRunDiff: [], createdAt: new Date().toISOString() } as any);
+    vi.spyOn(jobsApi, 'getEventHistory').mockResolvedValue([]);
+    renderAt('job-nolog');
+    fireEvent.click(await screen.findByRole('button', { name: /Run details/ }));
+    await screen.findByText('Review');
+    expect(screen.queryByRole('button', { name: /Run log/ })).not.toBeInTheDocument();
+  });
+});
+
+describe('JobDetail: the browser tab names the job (WCAG 2.4.2)', () => {
+  it('shows the file name first, then the product', async () => {
+    vi.spyOn(jobsApi, 'getSummary').mockResolvedValue({ created: 0, reused: 0, dedupSkipped: 0, flagged: 0, warnings: [] });
+    vi.spyOn(jobsApi, 'getEventHistory').mockResolvedValue([]);
+    vi.spyOn(jobsApi, 'getFigureFile').mockResolvedValue(null);
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-title', status: 'diff_ready', mode: 'survey', dryRunDiff: [], originalFilename: 'radar-icd.docx', createdAt: new Date().toISOString(),
+    } as any);
+    renderAt('job-title');
+    await waitFor(() => expect(document.title).toBe('radar-icd.docx - req2ado'));
+  });
+});
+
+
+describe('JobDetail: the review state puts the task first (DESIGN.md §11.3.5, review state)', () => {
+  beforeEach(() => {
+    vi.spyOn(jobsApi, 'getEventHistory').mockResolvedValue([
+      {
+        id: 'e1', jobId: 'job-rv', phase: 'score_requirements', severity: 'info', createdAt: new Date().toISOString(), message: 'Scoring requirement batch 1 of 1',
+        detail: { phase: 'score_requirements', branchIndex: null, branchCount: 0, blocksDone: 0, blocksTotal: 0, kbGrounded: false, kbCitations: [], message: 'Scoring requirement batch 1 of 1' },
+      },
+    ] as any);
+    vi.spyOn(jobsApi, 'getFigureFile').mockResolvedValue(null);
+  });
+
+  async function mountReview(status = 'diff_ready'): Promise<void> {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getSummary').mockResolvedValue({ created: 17, reused: 2, dedupSkipped: 1, flagged: 0, warnings: [] });
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-rv', status, mode: 'survey', originalFilename: 'radar-icd.docx', createdAt: new Date().toISOString(),
+      documentOverview: { synopsis: 'About a radar.', caveat: null, lines: ['Structure: 6 sections.'] },
+      dryRunDiff: [{ localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Radar', description: '', action: 'create', customerId: null, tags: [] }],
+    } as any);
+    renderAt('job-rv');
+    await screen.findByText('Radar');
+  }
+
+  it('shows one summary line with the counts, instead of three tiles', async () => {
+    await mountReview();
+    const header = await screen.findByTestId('review-header');
+    expect(header).toHaveTextContent('Review the proposed items');
+    expect(header).toHaveTextContent('17 new · 2 reused · 1 skipped as duplicate');
+    expect(screen.queryByText('Duplicates skipped')).not.toBeInTheDocument();
+  });
+
+  it('keeps the run log and the knowledge-base note behind "Run details" until asked; the phases live in the rail', async () => {
+    await mountReview();
+    const strip = await screen.findByRole('button', { name: /Run details/ });
+    expect(strip).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('button', { name: /Run log/ })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Document overview/)).not.toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /Dedup check/ })).toBeInTheDocument(); // the rail is the stepper now
+
+    fireEvent.click(strip);
+    expect(await screen.findByRole('button', { name: /Run log \(1\)/ })).toBeInTheDocument();
+  });
+
+  it('shows the document overview with the Parse phase, and Back to review returns to the items', async () => {
+    await mountReview();
+    fireEvent.click(await screen.findByRole('tab', { name: /^Parse/ }));
+    expect(await screen.findByText(/Document overview/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Back to review' }));
+    expect(screen.queryByText(/Document overview/)).not.toBeInTheDocument();
+  });
+
+  it('titles the page with the file name at the page-title size, like every other page (DESIGN.md §4)', async () => {
+    await mountReview();
+    const title = await screen.findByRole('heading', { level: 1, name: 'radar-icd.docx' });
+    expect(title.className).toMatch(/(^| )text-display( |$)/);
+  });
+
+  it('calls the list "Proposed items" while it is a proposal and "Written items" once it has been written (DESIGN.md §0, item 3)', async () => {
+    await mountReview('diff_ready');
+    expect(await screen.findByRole('tab', { name: 'Proposed items (1)' })).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: /^Diff/ })).not.toBeInTheDocument();
+  });
+
+  it('never calls items that are already in Azure DevOps a proposal', async () => {
+    await mountReview('succeeded');
+    expect(await screen.findByRole('tab', { name: 'Written items (1)' })).toBeInTheDocument();
+  });
+
+  it('has no dark narration strip: the state is said once, by the status chip', async () => {
+    await mountReview();
+    await screen.findByRole('button', { name: /Run details/ });
+    expect(document.querySelector('.bg-ink-1')).toBeNull();
+    expect(screen.queryByText('Diff ready for your review.')).not.toBeInTheDocument();
+  });
+
+  it('is the same structure for a finished job, minus the counts that no longer apply to a decision', async () => {
+    await mountReview('rejected');
+    const strip = await screen.findByRole('button', { name: /Run details/ });
+    expect(strip).toBeInTheDocument();
+    expect(strip.textContent).not.toMatch(/new ·/);
+  });
+});
+
+describe('JobDetail: one toolbar row above the proposed items (DESIGN.md §11.3.5, review state)', () => {
+  beforeEach(() => {
+    vi.spyOn(jobsApi, 'getSummary').mockResolvedValue({ created: 2, reused: 0, dedupSkipped: 0, flagged: 1, warnings: [] });
+    vi.spyOn(jobsApi, 'getEventHistory').mockResolvedValue([]);
+    vi.spyOn(jobsApi, 'getFigureFile').mockResolvedValue(null);
+  });
+
+  it('puts the risk-order action, the filters and the bulk actions on the same row', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-tb', status: 'diff_ready', mode: 'survey', createdAt: new Date().toISOString(),
+      dryRunDiff: [
+        { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Flagged epic', description: '', action: 'create', customerId: null, tags: [], groundingScore: 0.1 },
+        { localId: 'e2', parentLocalId: null, type: 'Epic', title: 'Healthy epic', description: '', action: 'create', customerId: null, tags: [], groundingScore: 0.9 },
+      ],
+    } as any);
+    renderAt('job-tb');
+    await screen.findByText('Flagged epic');
+
+    const rowOf = (el: HTMLElement): Element | null => el.closest('.border-b');
+    const risk = await screen.findByRole('button', { name: /Review in risk order/ });
+    const filter = screen.getByPlaceholderText('Filter by title…');
+    const exclude = screen.getByRole('button', { name: /^Exclude/ });
+    expect(rowOf(risk)).not.toBeNull();
+    expect(rowOf(risk)).toBe(rowOf(filter));
+    expect(rowOf(risk)).toBe(rowOf(exclude));
+  });
+});
+
+describe('JobDetail: review-state follow-ups from the independent review', () => {
+  beforeEach(() => {
+    vi.spyOn(jobsApi, 'getSummary').mockResolvedValue({ created: 2, reused: 0, dedupSkipped: 0, flagged: 0, warnings: [] });
+    vi.spyOn(jobsApi, 'getEventHistory').mockResolvedValue([]);
+    vi.spyOn(jobsApi, 'getFigureFile').mockResolvedValue(null);
+  });
+  const entry = { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Radar', description: '', action: 'create', customerId: null, tags: [] };
+  async function mount(job: Record<string, unknown>): Promise<void> {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ mode: 'survey', createdAt: new Date().toISOString(), dryRunDiff: [entry], ...job } as any);
+    renderAt(String(job.id));
+    await screen.findByText('Radar');
+  }
+
+  async function mountFailedWithoutDiff(id: string): Promise<void> {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id, status: 'failed', mode: 'survey', dryRunDiff: null, createdAt: new Date().toISOString() } as any);
+    const events = await import('../api/events');
+    vi.mocked(events.subscribeToJobEvents).mockImplementation(() => () => {});
+    renderAt(id);
+  }
+
+  it('says why a failed run failed, at the top, in plain words, with the raw text beneath (E3)', async () => {
+    vi.spyOn(jobsApi, 'getAudit').mockResolvedValue([
+      { id: 'a1', jobId: 'job-f3', message: 'Job submitted: AirPro.docx', createdAt: '2026-11-12T21:39:00Z' },
+      { id: 'a2', jobId: 'job-f3', message: 'Pipeline failed: terminated (UND_ERR_SOCKET: other side closed)', createdAt: '2026-11-12T21:48:00Z' },
+    ] as any);
+    await mountFailedWithoutDiff('job-f3');
+    expect(await screen.findByText('The connection was cut during the run.')).toBeInTheDocument();
+    expect(screen.getByText('terminated (UND_ERR_SOCKET: other side closed)')).toBeInTheDocument();
+    expect(screen.queryByText(/Check the audit trail for details/)).not.toBeInTheDocument();
+  });
+
+  it('keeps the generic line for a failed run whose cause was never recorded', async () => {
+    vi.spyOn(jobsApi, 'getAudit').mockResolvedValue([{ id: 'a1', jobId: 'job-f4', message: 'Job submitted: a.docx', createdAt: '2026-11-12T21:39:00Z' }] as any);
+    await mountFailedWithoutDiff('job-f4');
+    expect(await screen.findByText(/This job failed before completing analysis/)).toBeInTheDocument();
+  });
+
+  it('opens "Run details" for a failed or cancelled job, where the stepper shows where it stopped', async () => {
+    await mount({ id: 'job-f1', status: 'failed' });
+    const strip = await screen.findByRole('button', { name: /Run details/ });
+    expect(strip).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText('Dedup check')).toBeInTheDocument();
+  });
+
+  it('leaves "Run details" closed for a job awaiting review', async () => {
+    await mount({ id: 'job-f2', status: 'diff_ready' });
+    expect(await screen.findByRole('button', { name: /Run details/ })).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('does not call a list "Proposed items" once some of it has been written (a partial write)', async () => {
+    await mount({ id: 'job-pw', status: 'diff_ready', createdItemCount: 1, writtenLocalIds: ['e1'] });
+    expect(await screen.findByRole('tab', { name: 'Items (1)' })).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: /^Proposed items/ })).not.toBeInTheDocument();
+  });
+
+  it('shows no "Run details" strip while the run is live: the phase rail owns that layout', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-lv', status: 'running', mode: 'survey', dryRunDiff: null, createdAt: new Date().toISOString() } as any);
+    const events = await import('../api/events');
+    vi.mocked(events.subscribeToJobEvents).mockImplementation((_id, _base, onStage) => {
+      onStage('infer_hierarchy_start');
+      return () => {};
+    });
+    renderAt('job-lv');
+    await screen.findAllByRole('tab');
+    expect(screen.queryByRole('button', { name: /Run details/ })).not.toBeInTheDocument();
+  });
+
+  it('keeps one toolbar row for the filters when there is no review queue to start', async () => {
+    await mount({ id: 'job-nq', status: 'succeeded' });
+    const filter = await screen.findByPlaceholderText('Filter by title…');
+    expect(filter.closest('.border-b')).not.toBeNull();
+    expect(screen.queryByRole('button', { name: /Review in risk order/ })).not.toBeInTheDocument();
+  });
+});
+
+
+describe('JobDetail: the write gate is a hard block (DESIGN.md §11.3.5, review state)', () => {
+  beforeEach(() => {
+    vi.spyOn(jobsApi, 'getSummary').mockResolvedValue({ created: 2, reused: 0, dedupSkipped: 0, flagged: 0, warnings: [] });
+    vi.spyOn(jobsApi, 'getEventHistory').mockResolvedValue([]);
+    vi.spyOn(jobsApi, 'getFigureFile').mockResolvedValue(null);
+    vi.spyOn(jobsApi, 'getWritePreview').mockResolvedValue(withServerFlags({
+      createdTotal: 2, createdLocalIds: ['r1', 'r2'], createdByType: { Requirement: 2 }, excluded: { direct: 0, viaAncestor: 0 },
+      parentLinks: 0, figuresToAttach: 0, figuresUnavailable: 0, existingGettingChildren: 0, existingWithoutNewParentLink: 0,
+      traceLinks: { planned: 0, skipped: 0 }, alreadyWritten: 0,
+    }) as any);
+    useAuthStore.getState().login('https://ado.example', 'Jane', 'user-descriptor-1');
+  });
+  const req = (localId: string, extra: Record<string, unknown> = {}) => ({
+    localId, parentLocalId: null, type: 'Requirement', title: `Title ${localId}`, description: '', action: 'create', customerId: null, tags: [], ...extra,
+  });
+  async function mount(job: Record<string, unknown>) {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      mode: 'survey', createdAt: new Date().toISOString(), status: 'diff_ready', adoProject: 'Compliance', areaPath: 'Compliance\\Auth', ...job,
+    } as any);
+    const events = await import('../api/events');
+    vi.mocked(events.subscribeToJobEvents).mockImplementation(() => () => {});
+    renderAt(String(job.id));
+    return screen.findByRole('button', { name: /write to azure devops/i });
+  }
+  const duplicateIds = (nodeIds: string[]) => ({
+    kind: 'duplicate_customer_id', severity: 'needs_review', nodeIds, detail: {}, raw: 'Customer ID reported on several requirements.',
+  });
+
+  it('keeps Write focusable but aria-disabled, states the reason in text, and does not open the dialog while a fix item is open', async () => {
+    const write = await mount({ id: 'gate-1', dryRunDiff: [req('r1'), req('r2')], warnings: [duplicateIds(['r1', 'r2'])] });
+    expect(write).toHaveAttribute('aria-disabled', 'true');
+    expect(write).not.toBeDisabled();
+    expect(screen.getByText('2 items to fix before writing')).toBeInTheDocument();
+
+    await userEvent.click(write);
+    expect(screen.queryByRole('dialog', { name: /write these items to azure devops/i })).not.toBeInTheDocument();
+  });
+
+  it('jumps to the first blocker when Write is pressed while blocked', async () => {
+    const write = await mount({ id: 'gate-2', dryRunDiff: [req('r1'), req('r2')], warnings: [duplicateIds(['r1', 'r2'])] });
+    expect(screen.queryByRole('checkbox', { name: /hide reviewed/i })).not.toBeInTheDocument();
+    await userEvent.click(write);
+    // The same focus the "Fix in tree" button gives: the tree narrows to the blocker and "Hide reviewed" appears.
+    expect(await screen.findByRole('checkbox', { name: /hide reviewed/i })).toBeInTheDocument();
+  });
+
+  it('opens the dialog once every fix item is decided (an excluded item counts as decided)', async () => {
+    const write = await mount({
+      id: 'gate-3', dryRunDiff: [req('r1', { reviewed: true }), req('r2', { excluded: true })], warnings: [duplicateIds(['r1', 'r2'])],
+    });
+    expect(write).not.toHaveAttribute('aria-disabled', 'true');
+    expect(screen.queryByText(/to fix before writing/i)).not.toBeInTheDocument();
+    await userEvent.click(write);
+    expect(await screen.findByRole('dialog', { name: /write these items to azure devops/i })).toBeInTheDocument();
+  });
+
+  it('never blocks on a review warning', async () => {
+    const write = await mount({
+      id: 'gate-4', dryRunDiff: [req('r1')],
+      warnings: [{ kind: 'criteria_value_ungrounded', severity: 'needs_review', nodeIds: ['r1'], detail: {}, raw: 'x' }],
+    });
+    expect(write).not.toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it('offers no "Mark all reviewed" on a fix kind, but does on a review kind', async () => {
+    await mount({ id: 'gate-5', dryRunDiff: [req('r1'), req('r2')], warnings: [duplicateIds(['r1', 'r2'])] });
+    await userEvent.click(await screen.findByRole('button', { name: 'Fix in tree' }));
+    expect(screen.queryByRole('button', { name: 'Mark all reviewed' })).not.toBeInTheDocument();
+  });
+
+  it('shows "Mark all reviewed" for a review kind', async () => {
+    await mount({
+      id: 'gate-6', dryRunDiff: [req('r1'), req('r2')],
+      warnings: [{ kind: 'criteria_value_ungrounded', severity: 'needs_review', nodeIds: ['r1', 'r2'], detail: {}, raw: 'x' }],
+    });
+    await userEvent.click(await screen.findByRole('button', { name: /review in tree/i }));
+    expect(await screen.findByRole('button', { name: 'Mark all reviewed' })).toBeInTheDocument();
+  });
+
+  it('clears a missing-Customer-ID kind with one counted acknowledgement, which can be undone', async () => {
+    vi.mocked(jobsApi.setWarningsAcknowledged).mockResolvedValue({ warnings: [] } as any);
+    const noId = { kind: 'missing_source_reference', severity: 'needs_review', nodeIds: ['r1', 'r2'], detail: {}, raw: 'Requirement has no Customer ID.' };
+    const write = await mount({ id: 'gate-7', dryRunDiff: [req('r1'), req('r2')], warnings: [noId] });
+    expect(write).toHaveAttribute('aria-disabled', 'true');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Accept 2 without a Customer ID' }));
+
+    expect(jobsApi.setWarningsAcknowledged).toHaveBeenCalledWith('gate-7', { kind: 'missing_source_reference', raws: undefined, acknowledged: true });
+    // Said as what was accepted, not as a generic "handled".
+    expect(await screen.findByText('Accepted 2 without a Customer ID.')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: /write to azure devops/i })).not.toHaveAttribute('aria-disabled', 'true'));
+    expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument();
+  });
+
+  it('offers the counted acknowledgement only for kinds that allow it', async () => {
+    await mount({ id: 'gate-8', dryRunDiff: [req('r1'), req('r2')], warnings: [duplicateIds(['r1', 'r2'])] });
+    expect(screen.queryByRole('button', { name: /^Accept \d+ without/ })).not.toBeInTheDocument();
+  });
+
+  it('does not gate a job that is not awaiting review', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'gate-9', status: 'succeeded', mode: 'survey', createdAt: new Date().toISOString(), createdItemCount: 1, writtenLocalIds: ['r1'],
+      dryRunDiff: [req('r1')], warnings: [duplicateIds(['r1'])],
+    } as any);
+    renderAt('gate-9');
+    await screen.findByText('Title r1');
+    expect(screen.queryByText(/to fix before writing/i)).not.toBeInTheDocument();
+  });
+  it('says why Write did nothing in the live region and moves focus to the tree, so neither a screen reader nor a keyboard user is left behind', async () => {
+    const write = await mount({ id: 'gate-a11y', dryRunDiff: [req('r1'), req('r2')], warnings: [duplicateIds(['r1', 'r2'])] });
+    await userEvent.click(write);
+    await waitFor(() =>
+      expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Write is blocked: 2 items to fix before writing. Showing them.'),
+    );
+    await waitFor(() => expect(document.activeElement).toBe(document.getElementById('proposed-tree')));
+  });
+
+  it('takes a blocked Write to the warning itself when the blocker has no tree items, instead of an empty tree', async () => {
+    const zero = (raw: string) => ({ kind: 'zero_nodes', severity: 'pipeline_issue', nodeIds: [], detail: {}, raw });
+    const write = await mount({ id: 'gate-empty', dryRunDiff: [req('r1')], warnings: [zero('Section 3 produced 0 work items.'), zero('Section 7 produced 0 work items.')] });
+    expect(write).toHaveAttribute('aria-disabled', 'true');
+    await userEvent.click(write);
+    await waitFor(() => expect(document.activeElement).toBe(document.getElementById('integrity-warnings')));
+    // The tree is not narrowed to nothing.
+    expect(screen.queryByRole('checkbox', { name: /hide reviewed/i })).not.toBeInTheDocument();
+    expect(screen.getByText('Title r1')).toBeInTheDocument();
+  });
+
+  it('clears a group filter when its group empties, so a pressed chip can never vanish and leave the tree filtered to nothing', async () => {
+    const excluded = new Set<string>();
+    const items = () => [
+      req('a', { title: 'Loose one', groundingScore: 0.1, excluded: excluded.has('a') }),
+      req('b', { title: 'Loose two', groundingScore: 0.05, excluded: excluded.has('b') }),
+      req('c', { title: 'Healthy one', groundingScore: 0.9, qualityScore: 90, excluded: excluded.has('c') }),
+    ];
+    vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockImplementation(async (_id, localId, value) => {
+      if (value) excluded.add(localId);
+      else excluded.delete(localId);
+      return { dryRunDiff: items() } as any;
+    });
+    await mount({ id: 'gate-chip', dryRunDiff: items(), warnings: [] });
+    await userEvent.click(screen.getByRole('button', { name: /^check · 2$/i }));
+    expect(screen.queryByText('Healthy one')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /^exclude matching$/i }));
+    // Both Check items are now excluded: the group is empty, its chip is gone, and the filter with it.
+    await waitFor(() => expect(screen.queryByRole('button', { name: /^check/i })).not.toBeInTheDocument());
+    expect(screen.getByText('Healthy one')).toBeInTheDocument();
+  });
+
+  it('keeps a "Skip to proposed items" link first in the page, which moves focus to the tree (WCAG 2.4.1)', async () => {
+    await mount({ id: 'gate-skip', dryRunDiff: [req('r1'), req('r2')], warnings: [] });
+    const skip = screen.getByRole('link', { name: 'Skip to proposed items' });
+    const tools = screen.getByRole('group', { name: 'Job tools' });
+    expect(skip.compareDocumentPosition(tools) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await userEvent.click(skip);
+    await waitFor(() => expect(document.activeElement).toBe(document.getElementById('proposed-tree')));
+  });
+
+  describe('the sticky write bar (W3)', () => {
+    it('comes after the tree in the DOM and stays at the bottom of the review view', async () => {
+      const write = await mount({ id: 'bar-1', dryRunDiff: [req('r1'), req('r2')], warnings: [] });
+      const bar = screen.getByRole('region', { name: 'Review decision' });
+      expect(bar).toContainElement(write);
+      expect(bar).toHaveClass('sticky', 'bottom-0');
+      const tree = document.getElementById('proposed-tree')!;
+      expect(tree.compareDocumentPosition(bar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(screen.getAllByRole('button', { name: /write to azure devops/i })).toHaveLength(1);
+    });
+
+    it('carries the blocker count in text, linked to Write, and a blocked Write still jumps to the first blocker', async () => {
+      const write = await mount({ id: 'bar-2', dryRunDiff: [req('r1'), req('r2')], warnings: [duplicateIds(['r1', 'r2'])] });
+      const bar = screen.getByRole('region', { name: 'Review decision' });
+      const reason = within(bar).getByText('2 items to fix before writing');
+      expect(write.getAttribute('aria-describedby')).toBe(reason.id);
+      expect(write).toHaveAttribute('aria-disabled', 'true');
+      await userEvent.click(write);
+      expect(await screen.findByRole('checkbox', { name: /hide reviewed/i })).toBeInTheDocument();
+    });
+
+    it('keeps Write the only signal-yellow control on the page', async () => {
+      await mount({ id: 'bar-3', dryRunDiff: [req('r1')], warnings: [] });
+      const write = screen.getByRole('button', { name: /write to azure devops/i });
+      const yellow = Array.from(document.querySelectorAll('button')).filter((b) => /\bbg-cta\b|\bbg-signal\b/.test(b.className));
+      expect(yellow).toEqual([write]);
+    });
+
+    it('gives the bar 44 px targets below md', async () => {
+      await mount({ id: 'bar-4', dryRunDiff: [req('r1')], warnings: [] });
+      expect(screen.getByRole('button', { name: /write to azure devops/i })).toHaveClass('max-md:min-h-11');
+      expect(screen.getByRole('button', { name: /^reject$/i })).toHaveClass('max-md:min-h-11');
+    });
+
+    it.each(['running', 'failed', 'succeeded'])('is not drawn for a %s job', async (status) => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+        id: `bar-${status}`, status, mode: 'survey', createdAt: new Date().toISOString(), dryRunDiff: status === 'running' ? null : [req('r1')], warnings: [],
+      } as any);
+      renderAt(`bar-${status}`);
+      await screen.findByRole('group', { name: 'Job tools' });
+      expect(screen.queryByRole('region', { name: 'Review decision' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /write to azure devops/i })).not.toBeInTheDocument();
+    });
+  });
+
+  it('offers no skip link when the job is not awaiting review', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'gate-skip2', status: 'failed', mode: 'survey', createdAt: new Date().toISOString(), dryRunDiff: [req('r1')], warnings: [],
+    } as any);
+    renderAt('gate-skip2');
+    await screen.findByText('Title r1');
+    expect(screen.queryByRole('link', { name: 'Skip to proposed items' })).not.toBeInTheDocument();
   });
 });

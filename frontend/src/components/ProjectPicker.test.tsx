@@ -25,7 +25,7 @@ describe('ProjectPicker', () => {
     const onChange = renderPicker();
 
     // Combobox: clicking the input opens the suggestion list.
-    expect(screen.getByRole('combobox', { name: 'Team Project' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Team project' })).toBeInTheDocument();
     await userEvent.click(screen.getByLabelText(/team project/i));
     await userEvent.click(await screen.findByRole('option', { name: 'OtherProject' }));
 

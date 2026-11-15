@@ -391,3 +391,64 @@ def test_the_authoring_standard_stays_inside_its_budget_for_a_huge_knowledge_bas
     assert (
         len(render_authoring_standard(build_profile(big, FakeProfileClient(), model="m1"))) < 6_500
     )
+
+
+# --- S6: criteria about the DOCUMENT are not scored against a drafted requirement's text ------------------------------------------
+
+
+def _category(name: str, condition: str | None = None, sources: list[str] | None = None):
+    from app.kb.profile import Category
+
+    return Category(name=name, pass_condition=condition, sources=sources or ["kb.docx"], merged_from=[name])
+
+
+def _profile(*categories):
+    from app.kb.profile import KbProfile
+
+    return KbProfile(version="v", built_with="m", categories=list(categories))
+
+
+LIFECYCLE = "Owner, approver, status, baseline, and change history are present."
+
+
+def test_a_lifecycle_metadata_criterion_is_about_the_document_not_the_drafted_text() -> None:
+    from app.kb.profile import is_document_level_category
+
+    assert is_document_level_category(_category(LIFECYCLE))
+    assert is_document_level_category(_category("Document owner, approver and revision history are recorded"))
+    # The ordinary requirement qualities, and a name that only touches one lifecycle word, are about the text.
+    for name in ("Clear and unambiguous", "Testable", "Status transitions are defined", "Verifiable against a baseline measurement"):
+        assert not is_document_level_category(_category(name)), name
+
+
+def test_a_category_the_user_added_themselves_is_never_dropped() -> None:
+    from app.kb.profile import is_document_level_category
+
+    assert not is_document_level_category(_category(LIFECYCLE, sources=["(pinned)"]))
+
+
+def test_scoring_inputs_leave_document_level_criteria_out_of_the_names_definitions_and_context() -> None:
+    from app.kb.profile import scoring_inputs
+
+    names, definitions, context = scoring_inputs(
+        _profile(_category("Testable", "Can be verified"), _category(LIFECYCLE, "A change history is kept"), _category("Singular", "One thing"))
+    )
+    assert names == ["Testable", "Singular"]
+    assert set(definitions) == {"Testable", "Singular"}
+    assert "Testable" in context and "Singular" in context
+    assert LIFECYCLE not in context and "change history" not in context
+
+
+def test_scoring_inputs_are_unchanged_when_no_category_is_document_level() -> None:
+    from app.kb.profile import scoring_inputs
+
+    names, definitions, _ = scoring_inputs(_profile(_category("Testable", "Can be verified"), _category("Singular", "One thing")))
+    assert names == ["Testable", "Singular"]
+    assert definitions == {"Testable": "Can be verified", "Singular": "One thing"}
+
+
+def test_a_rubric_made_only_of_document_level_criteria_keeps_them_rather_than_scoring_nothing() -> None:
+    from app.kb.profile import scoring_inputs
+
+    names, _, _ = scoring_inputs(_profile(_category(LIFECYCLE)))
+    assert names == [LIFECYCLE]

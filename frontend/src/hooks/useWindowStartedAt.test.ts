@@ -110,4 +110,67 @@ describe('useWindowStartedAt', () => {
     });
     expect(result.current).toBe(7_777);
   });
+
+  it('starts a window that first appears long after mount at the moment it appears, not at mount time', () => {
+    // Seen live (2026-11-12): the page was opened when the job started, no model call was running yet, so
+    // there was no key. Minutes later scoring began and the first key appeared; the clock then read the
+    // time since the PAGE opened ("4m 13s so far") a few seconds into a call that had just started.
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const storageKey = 'progress-window:job1:modelcall:score_requirements:x:x';
+    const { result, rerender } = renderHook(
+      ({ key }: { key: string | undefined }) => useWindowStartedAt(key, Date.now(), key ? storageKey : undefined),
+      { initialProps: { key: undefined } },
+    );
+
+    vi.setSystemTime(253_000);
+    act(() => {
+      rerender({ key: 'modelcall:score_requirements:x:x' });
+    });
+    act(() => {
+      rerender({ key: 'modelcall:score_requirements:x:x' });
+    });
+
+    expect(result.current).toBe(253_000);
+    expect(sessionStorage.getItem(storageKey)).toBe('253000');
+  });
+
+  it('still starts at mount time when the key is already known at mount', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const { result } = renderHook(() => useWindowStartedAt('modelcall:x', Date.now(), 'progress-window:job9:modelcall:x'));
+    expect(result.current).toBe(1_000);
+  });
+
+  it('shows the right start on the very render where a late window first appears, not one tick later', () => {
+    // A single rerender, no settling one: the first frame a user sees for a new window must not carry the old mount time.
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const storageKey = 'progress-window:job1:modelcall:late';
+    const { result, rerender } = renderHook(
+      ({ key }: { key: string | undefined }) => useWindowStartedAt(key, Date.now(), key ? storageKey : undefined),
+      { initialProps: { key: undefined } },
+    );
+    vi.setSystemTime(253_000);
+    act(() => {
+      rerender({ key: 'modelcall:late' });
+    });
+    expect(result.current).toBe(253_000);
+  });
+
+  it('shows a stored start on the render where a late window first appears, when one exists', () => {
+    vi.useFakeTimers();
+    const storageKey = 'progress-window:job1:modelcall:stored';
+    sessionStorage.setItem(storageKey, '7777');
+    vi.setSystemTime(1_000);
+    const { result, rerender } = renderHook(
+      ({ key }: { key: string | undefined }) => useWindowStartedAt(key, Date.now(), key ? storageKey : undefined),
+      { initialProps: { key: undefined } },
+    );
+    vi.setSystemTime(253_000);
+    act(() => {
+      rerender({ key: 'modelcall:stored' });
+    });
+    expect(result.current).toBe(7_777);
+  });
 });

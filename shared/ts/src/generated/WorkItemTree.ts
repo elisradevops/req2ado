@@ -65,6 +65,14 @@ export interface WorkItemNode {
    * Idempotency key input (orchestrator's sourceHash): description + this node's own fixed source position. Distinct from fidelity_hash (drift detection). Null for a node shape predating this field.
    */
   identity_hash?: string | null;
+  /**
+   * W1 content-aware identity: sha256 of the section path titles without numbering, the node type, the anchor text (source heading or first sentence) and the ordinal among nodes sharing those. No filename, no offsets. Null for a node shape predating this field, and for a SURVEY node that shares its source block with another node (it cannot be told apart by anchor or span), which keeps the position lookup.
+   */
+  identity_hash_v2?: string | null;
+  /**
+   * What the item says, to tell an edited item from an unchanged one under the same identity_hash_v2: sha256 of the normalized source span (the node's source block up to the next node's), in both modes, so a follow-up in the other mode does not flag everything; a BASELINE node with no source block of its own uses fidelity_hash. Null when the node has no content of its own to compare.
+   */
+  content_hash?: string | null;
   tags?: (
     | 'functional'
     | 'non_functional'
@@ -185,7 +193,9 @@ export interface IntegrityWarning {
     | 'missing_requirement_row_coverage'
     | 'duplicate_customer_id'
     | 'parent_title_collision'
-    | 'criteria_value_ungrounded';
+    | 'criteria_value_ungrounded'
+    | 'requirement_heading_is_section'
+    | 'changed_since_written';
   /**
    * auto_fixed: deterministic code already resolved it, no action needed. needs_review: an AI/heuristic judgment call a human should verify. pipeline_issue: something broke or was incomplete for this run.
    */
@@ -207,6 +217,10 @@ export interface KbCitation {
   source_file: string;
   similarity: number;
   relevance?: 'relevant' | 'not_relevant' | 'unknown';
+  /**
+   * How the file reached the prompt. 'retrieved' (default when absent): similarity-gated, so `similarity` is a real retrieval score. 'always': an always-include (Full Context) file injected in full, never scored against the query, so `similarity` is a fixed placeholder and must not be shown as a score.
+   */
+  inclusion?: 'retrieved' | 'always';
 }
 export interface KbCoverage {
   /**

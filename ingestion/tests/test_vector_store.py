@@ -266,3 +266,129 @@ def test_a_model_swap_starts_a_fresh_collection_instead_of_reusing_stale_vectors
 
     swapped = ChromaVectorStore(persist_path=str(tmp_path), embed_model="bge-m3")
     assert swapped.query_nearest([1.0, 0.0, 0.0], area_path="Project\\Area1") is None
+
+
+# --- scope and type: what a check compares a proposed item against -------------------------------------------------------------
+
+
+def _store(tmp_path) -> ChromaVectorStore:
+    return ChromaVectorStore(persist_path=str(tmp_path))
+
+
+def _seed(store: ChromaVectorStore) -> None:
+    # One project with a parent area, a child area and a sibling; a Requirement and a Feature that share the same vector.
+    store.upsert("req-parent", [1.0, 0.0], "Proj\\A", document="parent req", type_category="Requirement")
+    store.upsert("req-child", [0.99, 0.01], "Proj\\A\\Child", document="child req", type_category="Requirement")
+    store.upsert("feat-child", [1.0, 0.0], "Proj\\A\\Child", document="child feature", type_category="Feature")
+    store.upsert("req-sibling", [0.98, 0.02], "Proj\\B", document="sibling req", type_category="Requirement")
+    store.upsert("req-other-project", [1.0, 0.0], "Other\\A", document="other project", type_category="Requirement")
+
+
+def _ids(matches) -> list[str]:
+    return [match.item_id for match in matches]
+
+
+def test_a_search_in_an_area_path_also_covers_the_areas_under_it(tmp_path) -> None:
+    store = _store(tmp_path)
+    _seed(store)
+
+    matches = store.query_nearest_many([1.0, 0.0], "Proj\\A", scope="area_path", type_category="Requirement", top_k=10)
+
+    assert set(_ids(matches)) == {"req-parent", "req-child"}
+
+
+def test_a_search_in_the_whole_project_covers_every_area_of_that_project_and_no_other_project(tmp_path) -> None:
+    store = _store(tmp_path)
+    _seed(store)
+
+    matches = store.query_nearest_many([1.0, 0.0], "Proj\\A", scope="project", type_category="Requirement", top_k=10)
+
+    assert set(_ids(matches)) == {"req-parent", "req-child", "req-sibling"}
+
+
+def test_a_requirement_is_only_compared_with_requirements(tmp_path) -> None:
+    store = _store(tmp_path)
+    _seed(store)
+
+    matches = store.query_nearest_many([1.0, 0.0], "Proj\\A", scope="area_path", type_category="Feature", top_k=10)
+
+    assert _ids(matches) == ["feat-child"]
+
+
+def test_an_item_stored_without_a_type_is_never_matched_by_type(tmp_path) -> None:
+    # Older entries have no type: nothing says they are the same kind of item, so a type-matched check must not skip on them.
+    store = _store(tmp_path)
+    store.upsert("legacy", [1.0, 0.0], "Proj\\A", document="old")
+
+    assert store.query_nearest_many([1.0, 0.0], "Proj\\A", scope="area_path", type_category="Requirement", top_k=5) == []
+
+
+def test_without_a_type_every_item_in_scope_is_compared(tmp_path) -> None:
+    store = _store(tmp_path)
+    _seed(store)
+
+    matches = store.query_nearest_many([1.0, 0.0], "Proj\\A", scope="area_path", type_category=None, top_k=10)
+
+    assert set(_ids(matches)) == {"req-parent", "req-child", "feat-child"}
+
+
+def test_matches_come_back_best_first_with_their_text_and_where_they_live(tmp_path) -> None:
+    store = _store(tmp_path)
+    _seed(store)
+
+    matches = store.query_nearest_many([1.0, 0.0], "Proj\\A", scope="project", type_category="Requirement", top_k=10)
+
+    assert _ids(matches)[0] == "req-parent"
+    assert [m.similarity for m in matches] == sorted((m.similarity for m in matches), reverse=True)
+    best = matches[0]
+    assert (best.document, best.area_path) == ("parent req", "Proj\\A")
+
+
+def test_top_k_limits_the_matches_across_all_the_areas(tmp_path) -> None:
+    store = _store(tmp_path)
+    _seed(store)
+
+    assert len(store.query_nearest_many([1.0, 0.0], "Proj\\A", scope="project", type_category="Requirement", top_k=2)) == 2
+
+
+def test_area_paths_are_compared_without_regard_to_case_like_azure_devops(tmp_path) -> None:
+    store = _store(tmp_path)
+    store.upsert("req", [1.0, 0.0], "Proj\\Area", document="x", type_category="Requirement")
+
+    assert _ids(store.query_nearest_many([1.0, 0.0], "proj\\AREA", scope="area_path", type_category="Requirement", top_k=5)) == ["req"]
+
+
+def test_a_sibling_whose_name_starts_the_same_is_not_under_the_area(tmp_path) -> None:
+    store = _store(tmp_path)
+    store.upsert("near", [1.0, 0.0], "Proj\\Area2", document="x", type_category="Requirement")
+
+    assert store.query_nearest_many([1.0, 0.0], "Proj\\Area", scope="area_path", type_category="Requirement", top_k=5) == []
+
+
+def test_the_area_paths_are_remembered_across_a_restart_of_the_store(tmp_path) -> None:
+    first = _store(tmp_path)
+    first.upsert("req", [1.0, 0.0], "Proj\\A\\Child", document="x", type_category="Requirement")
+
+    second = _store(tmp_path)
+
+    assert _ids(second.query_nearest_many([1.0, 0.0], "Proj\\A", scope="area_path", type_category="Requirement", top_k=5)) == ["req"]
+
+
+def test_upsert_many_stores_the_type_of_each_item(tmp_path) -> None:
+    store = _store(tmp_path)
+    store.upsert_many([("a", [1.0, 0.0], "text a"), ("b", [1.0, 0.0], "text b")], "Proj\\A", type_categories=["Requirement", "Feature"])
+
+    assert _ids(store.query_nearest_many([1.0, 0.0], "Proj\\A", scope="area_path", type_category="Feature", top_k=5)) == ["b"]
+
+
+def test_an_area_path_with_nothing_in_it_has_no_matches_and_is_not_created_by_asking(tmp_path) -> None:
+    store = _store(tmp_path)
+
+    assert store.query_nearest_many([1.0, 0.0], "Proj\\Nothing", scope="area_path", type_category="Requirement", top_k=5) == []
+
+
+def test_the_single_nearest_query_used_before_still_works(tmp_path) -> None:
+    store = _store(tmp_path)
+    store.upsert("only", [1.0, 0.0], "Proj\\A", document="text")
+
+    assert store.query_nearest([1.0, 0.0], "Proj\\A")[0] == "only"

@@ -112,4 +112,42 @@ describe('AdoPatProvider', () => {
       provider.validateAndIdentify('https://tfs.internal/tfs/Collection', 'fake-pat'),
     ).rejects.toThrow('ADO connectionData response missing authenticatedUser.descriptor');
   });
+
+  describe('the person behind the token', () => {
+    const connection = (user: Record<string, unknown>) =>
+      jest.spyOn(globalThis, 'fetch').mockResolvedValue({ ok: true, status: 200, json: async () => ({ authenticatedUser: { descriptor: 'desc-1', providerDisplayName: 'Jane Doe', ...user } }) } as Response);
+
+    it('reads the account name, e-mail and id ADO reports', async () => {
+      connection({ id: '11111111-2222-3333-4444-555555555555', properties: { Account: { $value: 'CORP\\jane' }, Mail: { $value: 'jane@corp.example' } } });
+
+      const result = await new AdoPatProvider().validateAndIdentify('https://tfs.internal/tfs/Collection', 'pat');
+
+      expect(result).toEqual({ identity: 'desc-1', displayName: 'Jane Doe', email: 'jane@corp.example', accountName: 'CORP\\jane', adoUserGuid: '11111111-2222-3333-4444-555555555555' });
+    });
+
+    it('uses the account name as the e-mail when it is one and no Mail is given', async () => {
+      connection({ properties: { Account: { $value: 'jane@corp.example' } } });
+
+      const result = await new AdoPatProvider().validateAndIdentify('https://tfs.internal/tfs/Collection', 'pat');
+
+      expect(result).toMatchObject({ email: 'jane@corp.example', accountName: 'jane@corp.example' });
+    });
+
+    it('does not take an account name that is not an address for an e-mail', async () => {
+      connection({ properties: { Account: { $value: 'CORP\\jane' } } });
+
+      const result = await new AdoPatProvider().validateAndIdentify('https://tfs.internal/tfs/Collection', 'pat');
+
+      expect(result.email).toBeUndefined();
+      expect(result.accountName).toBe('CORP\\jane');
+    });
+
+    it('ignores properties of the wrong shape instead of failing the sign-in', async () => {
+      connection({ id: 42, properties: { Account: 'plain', Mail: { $value: 7 } } });
+
+      const result = await new AdoPatProvider().validateAndIdentify('https://tfs.internal/tfs/Collection', 'pat');
+
+      expect(result).toEqual({ identity: 'desc-1', displayName: 'Jane Doe' });
+    });
+  });
 });

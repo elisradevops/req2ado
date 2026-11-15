@@ -121,7 +121,7 @@ export function TraceLinkChips({
         // needs the "what is this" context every time.
         const content =
           target.kind === 'raw'
-            ? "Internal id for an item this job produced -- its title isn't available in this view yet."
+            ? "Internal id for an item this job produced — its title isn't available in this view yet."
             : target.kind === 'title' && target.text.length > 40
               ? target.text
               : null;
@@ -136,7 +136,7 @@ export function TraceLinkChips({
                 after a successful retry, mirroring the Figures section's
                 "Uploaded" treatment. */}
             {failure && onRetry && (
-              <Tooltip content={status === 'done' ? 'Retried -- written to Azure DevOps.' : 'This trace link failed to write to Azure DevOps. Retry?'}>
+              <Tooltip content={status === 'done' ? 'Retried — written to Azure DevOps.' : 'This trace link failed to write to Azure DevOps. Retry?'}>
                 <button
                   type="button"
                   aria-label={`Retry writing "${link.displayName}" trace link to Azure DevOps`}

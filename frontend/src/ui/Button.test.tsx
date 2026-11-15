@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { Button } from './Button';
 
@@ -33,5 +33,20 @@ describe('Button', () => {
     const cls = screen.getByRole('button', { name: 'Save' }).className;
     expect(cls).toMatch(/(^| )duration-instant( |$)/);
     expect(cls).not.toMatch(/(^| )duration-fast( |$)/);
+  });
+  it('softDisabled is aria-disabled, stays focusable and clickable, and drops the variant colour (no signal yellow)', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const onClick = vi.fn();
+    render(<Button variant="cta" softDisabled onClick={onClick}>Write</Button>);
+    const button = screen.getByRole('button', { name: 'Write' });
+    expect(button).toHaveAttribute('aria-disabled', 'true');
+    expect(button).not.toBeDisabled();
+    expect(button.className).not.toContain('pointer-events-none');
+    expect(button.className).not.toContain('bg-signal');
+    expect(button.className).toContain('cursor-not-allowed');
+    button.focus();
+    expect(button).toHaveFocus();
+    await userEvent.click(button);
+    expect(onClick).toHaveBeenCalledTimes(1);
   });
 });

@@ -153,4 +153,45 @@ describe('KbService audit trail', () => {
     expect(line).not.toContain('Identity/abc');
     log.mockRestore();
   });
+
+  describe('activity() and hasModel()', () => {
+    const withJob = (state: string | null | Error) => {
+      const q = { ...queue(), getJob: jest.fn(async () => (state === null ? undefined : { getState: async () => { if (state instanceof Error) throw state; return state; } })) };
+      return new KbProfileScheduler({ queue: q as never, ingestion: {} as never, resolver: resolver('m') as never, profileModel: '' });
+    };
+
+    it.each([['delayed', 'queued'], ['waiting', 'queued'], ['prioritized', 'queued'], ['active', 'building']])('a %s job is %s', async (jobState, expected) => {
+      expect(await withJob(jobState).activity('user-1')).toBe(expected);
+    });
+
+    it('is idle when there is no job, an unknown state, or the queue cannot be asked', async () => {
+      expect(await withJob(null).activity('user-1')).toBe('idle');
+      expect(await withJob('completed').activity('user-1')).toBe('idle');
+      expect(await withJob(new Error('redis down')).activity('user-1')).toBe('idle');
+      const noGetJob = new KbProfileScheduler({ queue: queue(), ingestion: {} as never, resolver: resolver('m') as never, profileModel: '' });
+      expect(await noGetJob.activity('user-1')).toBe('idle');
+    });
+
+    it('is building while a build runs in this process, whatever the queue says', async () => {
+      let release: () => void = () => undefined;
+      const ingestion = { buildKbProfile: jest.fn(() => new Promise((resolve) => { release = () => resolve(null); })) };
+      const scheduler = new KbProfileScheduler({ queue: queue(), ingestion: ingestion as never, resolver: resolver('m') as never, profileModel: '' });
+
+      const running = scheduler.run({ userId: 'user-1' });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(await scheduler.activity('user-1')).toBe('building');
+      expect(await scheduler.activity('user-2')).toBe('idle');
+      release();
+      await running;
+      expect(await scheduler.activity('user-1')).toBe('idle');
+    });
+
+    it('hasModel() is true with a configured model or a resolvable connection, false otherwise', async () => {
+      const make = (profileModel: string, chat: string | null) => new KbProfileScheduler({ queue: queue(), ingestion: {} as never, resolver: resolver(chat) as never, profileModel });
+      expect(await make('fixed-model', null).hasModel('u')).toBe(true);
+      expect(await make('', 'users-model').hasModel('u')).toBe(true);
+      expect(await make('', null).hasModel('u')).toBe(false);
+    });
+  });
 });

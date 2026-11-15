@@ -192,7 +192,13 @@ hex, a pixel size, a radius, a shadow, or a duration outside it.
   --color-live: #06b6d4;             /* streaming / in-flight ONLY */
   --color-live-soft: #ecfeff;
 
-  --color-shimmer-highlight: #e6ebf4;
+  /* 10b. JOB STATES — proposed / written / partly written / failed. Aliases of
+   *     the status families above (no new hex), each always drawn with its own
+   *     icon and words (§2, §13). Not ADO's work-item states (`state-*`). */
+  --color-job-proposed: var(--color-info-ink);      /* + -soft, -border */
+  --color-job-written: var(--color-ok-ink);         /* + -soft, -border */
+  --color-job-partial: var(--color-warning-ink);    /* + -soft, -border */
+  --color-job-failed: var(--color-danger-ink);      /* + -soft, -border */
 
   /* 11. DATA PALETTES — real ADO values, fallback only; the app fetches them
    *     live per project. Allowlisted for raw hex in exactly four files. */
@@ -224,7 +230,7 @@ identifier reads as the same voice as the sentence around it.
 
 ### §1.3 — Type scale
 
-Eight rungs, numeric, closed set. `text-[Npx]` does not exist. `xs`/`sm`/`base`
+Nine rungs, numeric, closed set. `text-[Npx]` does not exist. `xs`/`sm`/`base`
 keep Tailwind's exact px so existing call sites need no edit — only their
 line-heights are pinned to integers.
 
@@ -257,6 +263,10 @@ line-heights are pinned to integers.
   --text-metric: 24px;  --text-metric--line-height: 28px;
   --text-metric--letter-spacing: -0.02em;  --text-metric--font-weight: 600;
        /* StatTile / QualityGauge / ETA numerals only */
+
+  --text-read: 15px;    --text-read--line-height: 24px;
+       /* READING PROSE (added 2026-11-13) — requirement text in the item dialog, source excerpts, summaries.
+          1.6 leading (WCAG 1.4.8). Lines capped at 68ch, never justified. Not for the tree or tables. */
 ```
 
 ### §1.4 — Spacing
@@ -311,12 +321,14 @@ Tailwind's deprecated 4px fallback, a fifth radius nobody chose.
   --shadow-popover: 0px 2px 4px rgba(15, 27, 61, 0.07),
                     0px 16px 34px rgba(15, 27, 61, 0.10);
   --shadow-dialog:  0px 24px 64px rgba(11, 18, 32, 0.32);
+  --shadow-dock:    0px -2px 6px rgba(15, 27, 61, 0.06),
+                    0px 12px 28px rgba(15, 27, 61, 0.14);
   --shadow-cta:           0px 1px 0px rgba(122, 92, 0, 0.22);
   --shadow-cta-attention: 0px 2px 8px rgba(200, 164, 0, 0.34),
                           0px 0px 0px 4px rgba(253, 225, 52, 0.28);
 ```
 
-Seven values, six tiers of meaning. §9 states what each one *means*; a tier may
+Eight values, seven tiers of meaning. §9 states what each one *means*; a tier may
 only be used for its stated meaning, never borrowed because it looks about
 right.
 
@@ -336,6 +348,11 @@ right.
   --duration-ambient: 1500ms;    /* skeleton shimmer, indeterminate loop */
   --duration-breathe: 2600ms;    /* confirm-CTA attention cycle */
 
+  /* Motion by intent: aliases on the rungs above, no new values (§8.3). */
+  --motion-feedback: var(--duration-instant);   /* a chip changing state */
+  --motion-reveal: var(--duration-base);        /* a disclosure opening */
+  --motion-milestone: var(--duration-medium);   /* a phase advancing */
+
   --ease-out:     cubic-bezier(0.22, 0.61, 0.36, 1);   /* entrances, presses */
   --ease-in:      cubic-bezier(0.4, 0, 1, 1);          /* exits */
   --ease-in-out:  cubic-bezier(0.4, 0, 0.2, 1);        /* layout, bidirectional */
@@ -354,11 +371,9 @@ silently delete a row — close it by changing the code, then move it to §18.**
 
 | # | This document prescribes | `index.css` currently has | Impact |
 |---|---|---|---|
-| A | `--font-display` / `--font-sans` = IBM Plex Sans | `'Inter Tight Variable'` / `'Inter Variable'` | Cosmetic; the mono/proportional seam in §1.2 stays visible until migrated. Requires adding the Plex Sans package alongside the existing `@fontsource` Plex Mono. |
 | B | `--text-*: initial`, `--radius-*: initial`, `--shadow-*: initial`, `--duration-*: initial`, `--ease-*: initial` in `@theme` | only `--color-*: initial` is present | The colour scale is mechanically deleted; the other scales are not. Today they are enforced by `tokens.test.ts`'s regex ratchet instead of by the cascade. Adding the `initial` lines would make `text-3xl`, `rounded-2xl`, `duration-500` compile-time impossible rather than test-time detectable. |
-| C | `.liftable` / `.hoverable-row` as `@layer components` utilities (§6) | neither class exists; `.lift` exists only as a reduced-motion marker, with the transition and hover spelled out per call site (see `ui/StatTile.tsx`) | Until §6 lands, hover behaviour is re-decided per component — the exact problem §6 exists to end. |
 
-Nothing else in §1 diverges. Every colour, spacing, radius, shadow, duration and
+Rows A (Plex) and C (`.liftable`) were closed in code earlier and are recorded in §18; their stale rows were removed here. Nothing else in §1 diverges. Every colour, spacing, radius, shadow, duration and
 easing value above matches `index.css` exactly.
 
 ---
@@ -374,6 +389,7 @@ easing value above matches `index.css` exactly.
 | Primary action | `action`, `action-hover`, `action-active` | The one affirmative CTA per view (Start job, Save, Configure) | Two `action`-coloured buttons competing in one view |
 | Interactive / selected | `accent` family | Focus rings, selected rows/cards, active nav, links, checked inputs, the `.hoverable-row` rail, progress fills, stat-tile icons | Anything not currently interactive-or-chosen |
 | Irreversible-write CTA | `signal` family | **Exactly one class of element**: the confirm-to-ADO CTA and its acknowledgement affordance | Focus rings, stat tiles, status chips, toasts, lifecycle steps, any other button |
+| Brand panel (sign-in page) | `brand-blue`, `brand-yellow` | **Exactly one surface**: the non-interactive brand panel of `pages/Login.tsx`. Brand blue is its background; brand yellow is its mark tile and accent bar. | Any control, chip, status, link, focus ring or any other page. `brand-yellow` is **not** `signal` and never means "irreversible write" (§16.7); `brand-*` and `rail-*` (§16.8) are separate scopes. `design/brandTokens.test.ts` fails if any other file uses them. |
 | Nav rail | `rail-*` | `components/AppShell.tsx`'s `<nav>` and its children — **and nothing else** | Buttons, inputs, selected table rows, progress bars — anywhere else |
 | Dark status strip | `ink-1` as a background | **Exactly one element**: `components/NarrationTicker.tsx`'s bar (§11.3) | Any other dark surface; `ink-1` stays a text token everywhere else |
 | Streaming / in-flight | `live` | A chip or icon **only while a stream is actually open** | A terminal status; anything static |
@@ -382,6 +398,10 @@ easing value above matches `index.css` exactly.
 | Caution | `warning` family | Risk flags, quality categories below the passing band, non-blocking parse notes | Errors (use danger) |
 | Informational | `info` family | Neutral system messages, the file-type badge, the ETA scope chip | Success or caution |
 | ADO type/state colours | `wt-*`, `state-*` | Badges that mirror real ADO metadata | Anything not sourced from ADO data |
+| Job state: proposed | `job-proposed` (+ `-soft`, `-border`); alias of `info` | A job in review: `StatusChip` "Diff ready" with `CircleDashed`, the job page's destination label "Writes to" | Without its icon and word; for a single item's ADO state |
+| Job state: written | `job-written` (+ `-soft`, `-border`); alias of `ok` | A written job: `StatusChip` "Written" with `CircleCheck`, destination "Written to" | Without its icon and word; never `signal` (yellow means the write to come, not the written record) |
+| Job state: partly written | `job-partial` (+ `-soft`, `-border`); alias of `warning` | A job in review that wrote some items in an earlier attempt (`createdItemCount > 0`): `StatusChip` "Partly written" with `CircleDotDashed` (job page and Jobs list), destination "Partly written to" | Without its icon and word; never `signal` |
+| Job state: failed | `job-failed` (+ `-soft`, `-border`); alias of `danger` | A failed run: `StatusChip` "Failed" with `CircleX` | Without its icon and word |
 
 **The dark-surface exception, corrected.** An earlier revision of this document
 claimed the running-job **activity log** sat on `rail-900` as the one permitted
@@ -425,6 +445,9 @@ here with its computed ratio **before merge**.
 | Pair | Ratio | Passes |
 |---|---|---|
 | `ink-1` / white | 14.2:1 | yes |
+| white / `brand-blue` | 8.67:1 | yes (sign-in brand panel text) |
+| white at 80% / `brand-blue` | 6.20:1 | yes (the panel's secondary line) |
+| `brand-blue` / `brand-yellow` | 6.60:1 | yes (the mark tile; the yellow accent bar on blue is the same pair) |
 | `ink-2` / white | 10.4:1 | yes |
 | `ink-3` / `surface` | 5.49:1 | yes |
 | `ink-3` / `canvas` | 5.00:1 | yes — retuned from `#64748b`, which was 4.33:1 on canvas, a real SC 1.4.3 failure on the app's own page background. Fixed with zero call-site churn since every use was already `text-ink-3`. |
@@ -440,6 +463,10 @@ here with its computed ratio **before merge**.
 | `ink-on-dark-dim` / `rail-900` | 9.9:1 | yes — on-dark secondary text in the nav rail. |
 | `white` / `ink-1` | 18.4:1 | yes — `NarrationTicker`'s sentence (§2 dark-surface exception). |
 | `ink-on-dark-dim` / `ink-1` | 11.6:1 | yes — `NarrationTicker`'s elapsed timer. `ink-1` is darker than `rail-900`, so every on-dark pair measured above `rail-900` also passes here. |
+| `job-proposed` / `job-proposed-soft` (`info-ink` / `info-soft`) | 6.02:1 | yes — the "Diff ready" chip's word and icon (icon floor 3:1). On `surface-alt` (destination bar): 6.30:1. |
+| `job-written` / `job-written-soft` (`ok-ink` / `ok-soft`) | 6.92:1 | yes — the "Written" chip's word and icon. On `surface-alt`: 7.14:1. |
+| `job-partial` / `job-partial-soft` (`warning-ink` / `warning-soft`) | 6.63:1 | yes — the "Partly written" chip's word and icon. On `surface-alt`: 6.69:1. |
+| `job-failed` / `job-failed-soft` (`danger-ink` / `danger-soft`) | 7.66:1 | yes — the "Failed" chip's word and icon. |
 
 `--color-hairline` is exempt from the 3:1 floor: it is a decorative divider, not
 a control boundary. The moment a hairline is load-bearing — an input edge, a
@@ -474,6 +501,11 @@ focus indicator — it must be `--color-field-border` instead.
 - **Long hierarchical identifiers** (area paths, iteration paths, clause paths)
   render `font-mono text-meta` with `truncate` and a `Tooltip` carrying the full
   value. Never a condensed face; never smaller than `text-meta`.
+- **Dates, times and durations (one formatter, `utils/formatDateTime.ts`).**
+  Absolute: `12 Nov 2026, 17:55` (24-hour, `--` when missing). Elapsed clocks:
+  `m:ss`, or `h:mm:ss` past an hour. Prose durations: `1 h 3 min`. Relative time
+  ("5 min ago") only in lists, with the absolute value as the tooltip. Only
+  identifiers are mono, so dates and relative times are not.
 - Prose columns cap at roughly 62–66 characters. The ADO-preview body (§11.4)
   and the ETA rationale line both hold to this; a requirement description set
   full-bleed across the detail dialog's `max-w-[1180px]` is unreadable. This is
@@ -497,23 +529,42 @@ focus indicator — it must be `--color-field-border` instead.
   connection dots sit in one labelled **Connections** group; that group, with
   its visible heading and slightly tighter spacing, is the one change that also
   shows at `md` and up.
-- **A page's actions come in three tiers, not N equal buttons** (job header: up
+- **A page's actions come in three tiers, not N equal buttons** (job page: up
   to six actions by state). One primary (`cta`: "Write to Azure DevOps") with its
-  counterpart decision beside it (Reject, or Cancel run while running): text,
+  counterpart decision beside it, before it (Reject, or Cancel run while running): text,
   icon and colour. Everything else is an **icon button** (`ui/IconButton`): the
   label is its accessible name and tooltip, 32px at desktop widths and 44px below
   `md`. The destructive one (Delete) is last in the tools. The DOM order is the
-  visual order at every width (decisions, a divider, then the tools), so keyboard
-  and screen-reader order match what is seen. All stay visible; below `md` the
-  decisions take the first, full-width row and the tools sit under them, each
-  with a short visible label beside its icon (there is no hover to show the
-  tooltip).
+  visual order at every width, so keyboard and screen-reader order match what is
+  seen. All stay visible; below `md` the tools sit on their own row, each with a
+  short visible label beside its icon (there is no hover to show the tooltip).
+  - **Where the decisions sit (W3, built 2026-11-13).** While a job is in review
+    (`diff_ready`) its decisions are in the **write bar** (`components/WriteBar.tsx`):
+    a bar sticky at the bottom of the review view that comes **after the tree** in
+    DOM and tab order, so the order is tools (header), then the review, then the
+    decisions. It carries the blocker count in text ("N items to fix before writing",
+    `id="write-blocked-reason"`, the Write button's `aria-describedby`), Reject, then
+    Write, the one signal-yellow control and the only "Write to Azure DevOps" button
+    in the DOM, `softDisabled` while blocked; pressing it then takes the reviewer to
+    the first blocker (§11.3.6). Below `md` it is a bottom bar: the count on its own
+    line, then Reject and a full-width Write, each 44px tall. The "Skip to proposed
+    items" link stays first in the page. A running job keeps its one decision,
+    Cancel run, in the header before the tools; every other status has no decisions
+    and no write bar. Category (§7): a Surface (`surface`, full `hairline-strong` border, `radius-md`,
+    `shadow-dock`) that floats at the bottom of the scroll area, inset from the card above it
+    (`mx-2`, `md:mx-4`; on a phone the page gutter does it) so it shares no edge with it, resting
+    one page padding above the bottom edge (`sticky bottom-0`; `main` keeps its padding) and
+    holding Actions at their own geometry. The left zone says what the write is made of:
+    "N included · M left out" and "to <area path>", then the blocker count and, when Azure DevOps
+    is not set up, the reason Write is unavailable, as text. (It was a flat footer, white on white
+    and the width of the tree card, and read as that card's footer; tinting it did not help; §18.)
 - **Long grouped lists fold below `md`.** The Integrity warnings card starts as
   its three group headings with counts (the red "Fix before confirming" count
   still shows), each opening its rows. The "N warnings need your attention before
   you approve" line is the first line of this card at every width (there is no
   separate banner or jump button, so the message is said once). At
   `md` and up every group starts open as before.
+- **The diff tree also takes the two-line row when the *tree* is narrower than 800px** (the details pane can leave it 696px on a 1280px screen), measured on the tree itself, not the viewport; an unmeasured width is never narrow. At 696px the one-line row cut a Customer ID to "P…"; 856px fits it. Row height stays uniform, so virtualization is unchanged.
 - **Dense lists become two-line rows below `md`** (diff tree: 64px rows, grip,
   Index, Flags and Status columns dropped; the details dialog still carries them).
   Line 1 is the type glyph and the title. Line 2 starts at the *title's* left edge
@@ -537,6 +588,21 @@ focus indicator — it must be `--color-field-border` instead.
     always fits.
   - *Sized in rem.* The two-line row is 4rem, not 64px, so it grows with the
   reader's text-size setting instead of clipping.
+- **At `md` and up the title keeps its room (R7, built 2026-11-13).** The desktop
+  row is one 40px line; what follows the title used to squeeze it ("Operat…")
+  while the Status cell of a New item sat empty. Now: (1) a new item's criteria
+  chip ("criteria to review" / "criteria accepted") sits in the **Status** track,
+  which is otherwise empty for a New item; the track is measured from this job's
+  rows (action labels and criteria labels), never a global reserve, and holds one
+  mark per row (a matched new item keeps its chip on the title line, since Status
+  already says "New, matched WI-n"). (2) The title has a minimum,
+  `min(12rem, 50%)` of its cell, so it scales with text size and never paints past
+  a narrow cell. (3) Everything else after the title (the "Nested" hazard, the
+  focused warning's reason chip, the excluded-ancestor eye, the lock, the customer
+  id, in that order) sits in one group that wraps whole marks onto a second line
+  that is cut away, bounded in rem (`max-h-6`), the same *never half-clipped* rule
+  as the phone row: a mark that does not fit drops out of sight whole and is in the
+  details dialog. Flags keep their 100px track.
 - *Targets.* The matched-item link has a 24px-tall hit area. The details button is 44px (info glyph, not the external-link glyph
     that desktop uses), indent guides cap at three levels.
 - **Card nesting cap:** a `Card` may never contain another `Card`. Depth beyond
@@ -562,6 +628,12 @@ category:
 | Feedback | Alert / Toast: radius `md`. Left accent bar 4px in the severity's fill colour. |
 
 ---
+
+- **Geometry as shipped, and the hard floor.** Default `Button` is 34px tall and
+  `sm` is the compact size; `IconButton` is 32px (44px below `md`). Whatever the
+  size, no interactive target is under 24x24px (WCAG 2.5.8): smaller glyphs get a
+  hit-area expander. Between page regions there is one gap. A prose column has
+  one cap token, not two.
 
 ## §6 — The interaction system (`.liftable` / `.hoverable-row`)
 
@@ -732,6 +804,12 @@ Transition property list:
 `transition-[color,background-color,border-color,box-shadow,transform] duration-fast ease-out`.
 Minimum hit target 24×24 CSS px.
 
+**Soft-disabled (`Button softDisabled`).** An action that is not available *yet*, where the click is
+itself useful (it says why, or takes the user to what blocks it). `aria-disabled="true"`, still
+focusable and clickable, drawn like Disabled with the variant's colour dropped, so a blocked Write is
+not the one yellow control (§0 item 2). The handler must check readiness itself. Use it only with the
+reason in visible text beside it. A native `disabled` button is for actions with nothing to offer.
+
 ### Surface — `Card`, `SectionCard`, `StatTile`, `ModeCards`, `FileDropzone`, `EmptyState`
 
 | State | Non-interactive (default) | `interactive` / `selectable` |
@@ -789,7 +867,11 @@ is a thin wrapper around `ui/Stepper.tsx` rendered **horizontally** inside an
 `InfoTip` held outside the scroll container. Its nodes are therefore governed by
 the **`Stepper` node** column of the table above — filled circles and the six
 `StepState` paints — not by the Row category. It has no hover affordance today
-and needs none: the nodes are not navigable. See §11.3.
+and needs none: the nodes are not navigable. See §11.3. (**Prescribed change,
+not yet built:** §11.3.5 replaces this stepper, while a job runs, with a
+*navigable* vertical phase rail whose pending rows are focusable because they
+show their purpose; the horizontal stepper remains for review state and below
+`lg`. §18.1 tracks it.)
 
 ### Chip / Badge — `Chip`, `StatusChip`, `ModeBadge`, `ActionBadge`, `TagChips`, `IssueChips`, `TraceLinkChips`, `KbCitationChips`, `WorkItemTypeBadge`
 
@@ -802,6 +884,17 @@ and needs none: the nodes are not navigable. See §11.3.
 | Disabled | `opacity-50` |
 | Loading | renders as a `Skeleton` pill of identical geometry |
 | Selected | filter chips: `bg-accent text-white border-accent` |
+
+Status chips (`StatusChip`) use the soft tone everywhere: soft fill, border and
+tinted ink from the same semantic triple. A solid-filled status chip is not
+used.
+
+**Disclosure.** One shared component (`ui/Disclosure.tsx`): a heading holding
+one button, a chevron that rotates 90 degrees, a summary in the same button, and
+a region rendered only while open (`aria-controls` only then). **Loading.** A
+known shape gets a `Skeleton`; an action in flight gets a `Spinner`; never a
+bare "Loading..." line. **Help text.** An `InfoTip` carries a definition; a
+consequence or an action is inline text.
 
 `--color-live` on a chip is permitted only while a stream is actually open. A
 terminal status must never be cyan.
@@ -830,14 +923,14 @@ Five named roles. Every animation in the app is exactly one of them. A new
 | **Entrance** | An element that did not exist now exists | `--duration-fast` (140ms) for frequent arrivals: a route change fades `<main>`, a wizard step fades its container, a table's `<tbody>` fades once on first arrival. `--duration-base` (190ms) for dialogs and popovers, `--duration-medium` (240ms) for a rare arrival (a finished result). No per-row stagger. | `--ease-out` | `opacity`, `translateY(≤4px)`, `scale(0.97→1)`; a route, step or table fade is opacity only | On anything already on screen. On a whole-page route change, anything but opacity (no slide, no scale). On virtualised rows. On a step the person has already seen, on sort, filter or refresh. More than one nesting level animating at once. |
 | **Exit** | An element ceases to exist | `--duration-exit` (120ms) — always shorter than its entrance | `--ease-in` | `opacity`, `scale(1→0.97)`, `translateY(≤4px)` | On unmount without user intent (an SSE data replacement is not an exit). On list items removed by a filter change — those disappear instantly. |
 | **State-change** | The same element becomes different | `--duration-micro` (`.hoverable-row` tint) / `--duration-instant` (colour-only, and a button press) / `--duration-fast` (colour + shadow + `.liftable` + a disclosure chevron) / `--duration-medium` (the stepper sweep) / `--duration-slow` (layout) / `--duration-progress` (determinate bar fill, `transform: scaleX`) | `--ease-out` (pointer-driven) / `--ease-in-out` (layout) | `color`, `background-color`, `border-color`, `box-shadow`, `opacity`, `translateY(≤2px)`, `scaleY` on the row rail, `scaleX` on the progress fill and the stepper connector, `rotate(90deg)` on a disclosure chevron, `scale(0.97–1.09)`, `width` / `height` / `grid-template-rows` for disclosure | On a virtual-scrolled row's background. On any unenumerated property. Via bare `transition`. Never `filter` / `backdrop-filter`. |
-| **Ambient / live** | Something is genuinely happening on a server right now | `--duration-ambient` (skeleton shimmer, indeterminate), `--duration-typedot` (typedot), `--duration-spin` (spin) | `--ease-linear` (spin, shimmer) / `--ease-in-out` (typedot, indeterminate) | `translateX`, `rotate` (Spinner only), `scale`, `opacity`, `background-position`, `box-shadow` (`pulse-ring` only) | **Whenever nothing is actually in flight** — an outliving spinner or shimmer is a correctness bug. No ambient decoration: no idle pulsing, no breathing outside Attention. |
+| **Ambient / live** | Something is genuinely happening on a server right now | `--duration-ambient` (indeterminate progress), `--duration-typedot` (typedot), `--duration-spin` (spin) | `--ease-linear` (spin) / `--ease-in-out` (typedot, indeterminate) | `translateX`, `rotate` (Spinner only), `scale`, `opacity` | **Whenever nothing is actually in flight** — an outliving spinner is a correctness bug. On a loading placeholder (the skeleton is static since 2026-11-13). On reading prose. No ambient decoration: no idle pulsing, no breathing outside Attention. |
 | **Attention** | The app is blocked on an irreversible human decision | `--duration-breathe` (2600ms), once, settling on the attention state | `--ease-in-out` | `box-shadow` only — `--shadow-cta` ↔ `--shadow-cta-attention` | Everywhere except the confirm-to-ADO CTA post-acknowledgement. Never more than one element at a time. Never on reversible-destructive actions (delete, cancel). Never on a toast. |
 
 Existing keyframes, mapped: `fadeIn` / `dialogIn` / `popIn` →
-Entrance. `fadeOut` / `dialogOut` / `popOut` → Exit. `shimmer` / `spin` /
+Entrance. `fadeOut` / `dialogOut` / `popOut` → Exit. `spin` /
 `typedot` / `indeterminate-progress` → Ambient. `ctaBreathe` →
-Attention. `animate-pulse` (Tailwind's builtin) is removed — it double-animates
-alongside the inline `shimmer`.
+Attention. `animate-pulse` (Tailwind's builtin) is removed, and the skeleton's
+`shimmer` keyframe was removed on 2026-11-13 (research #7: a placeholder is static).
 
 `popIn` / `popOut` are `dialogIn` / `dialogOut`'s scale-only counterparts for
 Radix-anchored popovers, which carry their own `translate()` from Radix's popper
@@ -922,7 +1015,12 @@ and a rare arrival.
 | Overview card | The chevron turns | The text appears and leaves at once. |
 | Stat tiles | None | The number is there in the first frame. A count-up shows the wrong number for most of a second on every visit. Tiles do not lift on hover unless they are clickable. |
 | "Diff ready" | The review area fades in once, `--duration-medium`; a polite status line announces it | Only when a job that was running on the page finishes; a job opened already finished stays still and silent. Focus is never moved. |
-| Skeleton placeholder | Drawn only after `SKELETON_DELAY_MS` (1000ms) | It is laid out at once (no jump) but `invisible` until the delay, so a load under a second shows nothing instead of a flash (Primer loading pattern, NN/g). One constant in `ui/Skeleton.tsx` covers every skeleton. Where the placeholder is the only content (job page, wiki), a `role="status" aria-busy` region with visually hidden "Loading…" text exists from the first moment, so assistive technology is not left in silence. |
+| Skeleton placeholder | Drawn only after `SKELETON_DELAY_MS` (1000ms), static | It is laid out at once (no jump) but `invisible` until the delay, so a load under a second shows nothing instead of a flash (Primer loading pattern, NN/g). One constant in `ui/Skeleton.tsx` covers every skeleton. No shimmer loop (research #7). Where the placeholder is the only content (job page, wiki), a `role="status" aria-busy` region with visually hidden "Loading…" text exists from the first moment, so assistive technology is not left in silence. |
+| Skeleton to content | The job page cross-fades in, `ARRIVE.fade` (`--duration-fast`) | `useSkeletonCrossfade(loading)`: only when the placeholder was actually drawn (the load outlasted the delay); a fast load neither shows a placeholder nor fades. The Jobs list already fades its table once on first arrival (row above). The swap itself, and the "Loading…" status leaving, is the text equivalent. |
+| Disclosure open | The region fades in, `--motion-reveal` (190ms), opacity only | Research #6. Only when the reader opens it, not for one open on first paint. Closing is instant (the content leaves the page at once); no height animation (row "Considered and not done" below). The chevron turn is unchanged. |
+| Phase advance | The finished phase's glyph and name, and the new current one's, fade in once, `--motion-milestone` (240ms) | Research #4. `PhaseRail` compares each row with the previous commit, so nothing animates on first paint. The rail has no connector line, so there is no fill. The page's one polite region already announces the step change (§13), so the rail adds none. |
+| Count tick | The review group counters ("Check · 10") and the write bar's "N items to fix before writing" roll to their new value (`AnimatedNumber`) | Research #2. The number is the button's or sentence's text, so the change is announced with it; number-flow snaps under reduced motion. Never on scores in the dialog (the reviewer is reading them). |
+| Job state chip | Colour eases at `--motion-feedback` (90ms) when a status changes on the page (Diff ready, Writing, Written) | The word and icon change with it, so colour is never the only cue. |
 | Confirm-to-ADO attention | The shadow eases from rest to the attention shadow once, 2600ms, and stays | The rule itself holds the attention shadow and the animation uses a `backwards` fill, so the end state is the resting state and the button's own hover and press shadows still apply. The reduced-motion fallback shows the same state, so both modes end alike. Not a loop (WCAG 2.2.2). |
 | Running job: live dot | A halo around the dot fades out once per real server update (`BEAT`, `--duration-slow`), at most one per 2 seconds | Opacity only, never a loop. A hollow ring with a neutral plain-text note after 60 seconds of silence (§11.3.2). Replaces an endless ping. |
 | Running job: activity feed | A line fades in once, `--duration-fast`, when it arrives after first paint | Lines already there on first paint do not animate. A labelled `role="log"`, `aria-live="off"`. |
@@ -952,7 +1050,20 @@ pulsing motions"). WCAG 2.2.2 is not documented as satisfied by honouring `prefe
 so a loop beside usable content is bounded under five seconds instead (the
 current-step spinner, the confirm-button attention).
 
-**Loops that remain, and why.** A skeleton shimmer is a loading placeholder, the
+**Rules from the daily-review research (P18, enforced in `design/motionContract.test.ts`).**
+Motion aliases `--motion-feedback`, `--motion-reveal` and `--motion-milestone` sit on existing rungs
+(no new values), and each has a consumer; there is no `--motion-dismiss` or stagger token, because nothing
+uses one. No `animate-`, `transition` or `ARRIVE` on an element carrying `text-read` (the prose a reviewer
+is reading never moves). The ambient tokens (`--duration-ambient`, `--duration-breathe`) appear only in
+`LivenessDot`, `ui/ProgressBar` and `ProgressBanner` (indeterminate wait), and `--duration-breathe` only on
+`.cta-attention`; an `infinite` loop only in those and in `Spinner` and the chat typing dots. The research
+asked for ambient loops on `LivenessDot` alone; the wait indicators listed below are kept as §8.3 already
+justified them. No per-row stagger: a delay is either a loop's phase offset (the typing dots) or at most
+200ms, and never multiplied by an index. Every animated state change above has a text or live-region
+equivalent. Not supported by a fetched source, and so not cited as fact: that a stagger or a FLIP improves
+task performance (the research says so itself).
+
+**Loops that remain, and why.** The
 indeterminate progress segment appears only when a step has no estimate, the chat
 typing dots live only while a reply is pending, and a spinner inside a button
 marks the control that is busy. Each is a wait indicator, not decoration, and
@@ -982,6 +1093,7 @@ Each tier has exactly one meaning. Using a tier for any other reason is a defect
 | `shadow-sm` | Rest state of a flat interactive control (input, non-elevated chip-button, file-type affordance), and `.liftable`'s pressed state |
 | `shadow-card` | Rest state of a surface sitting above canvas (Card, StatTile, SectionCard, the ETA card) |
 | `shadow-raised` | That same surface, lifted because a pointer is over it or it is focused — i.e. `.liftable:hover` / `:focus-visible` |
+| `shadow-dock` | A surface floating at the scroll edge, inset from the content and above what scrolls under it (the review's Write bar). Falls up and down, since it floats |
 | `shadow-popover` | A floating, anchored surface (Select / Combobox / DropdownMenu popover, Tooltip) |
 | `shadow-dialog` | A floating, modal surface that blocks the page (Dialog, ConfirmDialog, the item-detail panel) |
 | `shadow-cta` / `shadow-cta-attention` | The confirm-to-ADO CTA's rest / attention states — nowhere else |
@@ -1174,7 +1286,9 @@ answer. `StatTile` renders `--` in `tone="dim"` while `parseStatus` is
 `'idle'` or `'parsing'`. This is already the behaviour in `NewJobWizard.tsx`
 (`preview?.blockCount ?? '--'`) and it is now normative.
 
-**Footer.** Built, with one deliberate naming deviation: the primary button
+**Footer.** *Correction (2026-11-12): the shipped label is **Configure**
+(`NewJobWizard.tsx:571`), not Next Step; the paragraph below records the earlier
+decision and its reasoning.* Built, with one deliberate naming deviation: the primary button
 stays labelled **Next Step**, not renamed to **Configure**. This step's real
 action is "advance to the next screen" — destination/mode configuration
 genuinely lives on step 2, so relabeling it to match this section's mockup
@@ -1183,6 +1297,44 @@ two-step IA. No separate "§0.3 safety line" was added — that section doesn't
 exist in this document (a dangling cross-reference, not a built-or-not
 question); the button's own disabled state (`disabled={!preview}`) already
 gates on the same precondition a safety line would have named.
+
+### §11.1b — The Jobs list (built 2026-11-13)
+
+The list answers "what is today's?" before "what is every job?". Rows are grouped, each group headed `Title · count`:
+**Running now** (a job that is queued, running or writing, whatever day it started: the one the user is waiting on), then **Needs you** (a Diff ready or Failed job from the last 7 days), then **Today**, **Yesterday**, **This week**, **Earlier** by the
+reader's local day, newest first. A job is in exactly one group; empty groups are not drawn. Pure logic in `utils/jobGroups.ts`
+(`now` injected; one pass plus one sort, so 20,000 jobs group in well under a second).
+
+- **Stale is a label, never an action.** A job still Diff ready after 7 days (`STALE_AFTER_DAYS`) gets a "Stale · 14 days" chip and falls
+  out of Needs you into its day group, so 60 old proposals do not bury today's. Nothing is archived, hidden or deleted for being old
+  (owner decision, 2026-11-12). The tooltip says the proposal was computed against Azure DevOps as it was then.
+- **"Hide stale" is a view, not an action.** A checkbox "Hide stale (50)" appears only when some proposal is stale; off by default,
+  remembered per user (localStorage, guarded), and when on the list says "50 stale hidden". Nothing is sent to the server: the jobs are still
+  there, and the checkbox brings them back.
+- **Columns drop as the width shrinks** so the row never clips and Document and Status always stay: Area Path below 1400 px, Mode and Items
+  below 1100 px, and the id, Created and the row actions below `md` (those actions were hover-only, so a touch screen never had them). Area Path
+  shows its leaf ("Customer Requirements") with the whole path in the tooltip: the leaf is what tells areas apart. Each day group is its own
+  `tbody` with a row-group header; each row is named for a screen reader by job, file and state.
+- **One clock.** Staleness, grouping and the "Diff ready" tile are judged against one time, read once per change of the list, so they cannot
+  disagree. The tile counts the proposals still worth acting on (the "Needs you" ones); "Hide stale (N)" counts the stale jobs that the
+  search and status filter would otherwise show, so it never promises jobs the filter already hides.
+- **A short job id** (first 8 characters, `font-mono`, §0 item 1) is the first column: the text the job's address starts with, so two
+  uploads of the same file name can be told apart and matched to a page.
+- **One word per state.** The tile, the filter and the chip all say **Diff ready** (not "Awaiting review" in two places and "Diff ready" in
+  a third). A finished write is **Written** (§12).
+
+**Step 1 notes, built 2026-11-13.** The "Worth knowing" card leads with an earlier run when the job list has a job whose file name matches
+(case aside): "You already ran a file with this name: job 4270e8be, Diff ready, 3 hours ago (and 2 other times). If it is the same file, open
+that job instead of starting another." The name is all the list carries, so the wording never says "this file", it links to the job, and it
+never blocks. A file with no headings says what the leveler really does: clause numbering gives structure where the text has it, and only
+with none is everything one Epic and one Feature (`leveling/tree_builder.py`, the grouping-without-headings rule).
+
+**The rail does not claim a destination the form has not got.** With only a project chosen, "Lands" says "Not chosen yet". Below `lg` the rail
+comes after step 3's action bar, so the bar carries a "Lands in <destination>" line itself.
+
+**Step 3 keeps the "This run" rail (owner decision, 2026-11-12; built 2026-11-13).** Same two columns as §11.2.5: the question and Start on the
+left, the file, mode and destination (`RunFacts`, shared with step 2) and the estimate on the right. A new job starts from the last started
+job's mode, project and area path (`utils/lastJobChoices.ts`; per user, localStorage, only for a wizard nobody has touched in the tab).
 
 ### §11.2 — New Job, step 2: Configure
 
@@ -1276,14 +1428,18 @@ exact area path. Its own header comment says it was written to be shared by
 one site, `pages/JobDetail.tsx:737`, and the wizard never imports it. That is
 the gap to close.
 
-**Built (§18), single shared implementation preserved** — the wizard's
-Destination card and `JobDetail.tsx` both render the same `DestinationBar`,
-not independent copies.
+**Built (§18), partly.** *Correction (2026-11-12): the wizard does not render
+`DestinationBar`. It imports only `formatDestinationPreview` from it
+(`NewJobWizard.tsx:13`, `:777`) and keeps its own pickers; a code comment there
+declines the full bar. `JobDetail.tsx` renders the bar. The shared implementation
+therefore covers the one-line preview, not the segmented path bar.*
 
 - The area-path segment's value is `font-mono` (§0.1, identifier rule).
-- The **optional** iteration segment, when unset, renders hatched rather than
-  blank — a repeating-gradient fill in `accent-soft`/`accent-soft-border` — so
-  an optional gap does not read as a missing answer.
+- The **optional** iteration segment, when unset, says **"Project default"** in
+  muted words rather than going blank. (It was drawn hatched until 2026-11-13;
+  both daily-user reviews read the hatch as a stuck loader. §16.9 now names one
+  gradient, the progress fill.) The state chip reads "Work item state: Proposed" so a written
+  job's chip is not taken for the job still being a proposal.
 - Directly beneath, a **path preview** strip restates the resolved destination
   as one `font-mono` string (`Radar Systems \ Radar Systems\EW Suite \ Rev C ·
   state Proposed`). *Shipped without the one-sentence-of-consequence clause
@@ -1664,9 +1820,14 @@ bounded model multiplier.
 E = max(SURVEY_MIN_MINUTES, estimate(b, f) × adjusted_m)
 ```
 
-`SURVEY_MIN_MINUTES = 15` is retained, and the floor is still applied **last**,
-so a `0.5×` model adjustment cannot drag a small document below it. There is
-still no last operation ceiling, and there never will be.
+`SURVEY_MIN_MINUTES` is still applied **last**, so a `0.5×` model adjustment
+cannot drag a small document to nothing. It was 15 until 2026-11-13 and is now
+**2**: at 15 the estimator returned the same 15 minutes (11-19) for 8, 50 and 200
+blocks, hiding the fit's own answer, while an 8-block file ran in about 5. The 2
+is a judgement (a run always parses and makes at least one model call), not a
+measured value, and sits well below anything the fit produces for a real
+document. It is a floor, never a ceiling: there is still no last operation
+ceiling, and there never will be.
 
 ##### §11.2.3.d — This is a server computation with an API in front of it
 
@@ -1873,7 +2034,7 @@ jobs outside the 90-day window being excluded; and **rejected jobs with a
 non-null `diffReadyAt` being included** — the §11.2.3.b regression that a
 `status = 'succeeded'` filter would silently reintroduce.
 
-#### §11.2.3.c — Knowledge-base readiness (SURVEY only)
+#### §11.2.3.f — Knowledge-base readiness (SURVEY only)
 
 **Files:** `components/KbReadinessStrip.tsx`, rendered by `pages/NewJobWizard.tsx`
 in a `SectionCard` titled "Knowledge base" under the mode cards, **only when
@@ -1908,6 +2069,38 @@ because a natively disabled button drops keyboard focus.
 starting a job writes nothing to ADO. `signal` belongs only to the confirm-to-ADO
 step much later in the flow (§16.7).
 
+#### §11.2.5 — Step 2 layout rule (prescribed; not yet built — §18.1)
+
+**Evidence (2026-11-12, live run at 1440×900 and 1920×1080).** The right column was 2.1–2.6× taller than the
+left (three blocks for BASELINE, five for SURVEY), leaving 460–650 px empty under the left column. The primary
+action sat below the fold in both modes, and at 1920×1080 for SURVEY. The estimate appeared in two cards. No
+file name or "Change document" control was on the step, although §11.2 specifies the document strip.
+
+**The rule.** The two columns have different jobs, and a block's column follows its job:
+
+- **Left: the decision path, in the order an engineer decides.** (1) "How should it read the document?" — the
+  two mode cards, each keeping its per-mode range so the two can be compared; the model picker stays inside the
+  SURVEY card (§11.2.1). They stay stacked: side by side would leave each card about 300 px at 1440 px, too narrow
+  for its "What lands in Azure DevOps" example (revisit only if measured width allows). (2) "Where do the items land?" — team
+  project and area path. (3) **More options**, collapsed: iteration, starting state, duplicate scope. The
+  collapsed line shows the current values (`Iteration: project default · State: Proposed · Duplicates: this
+  area path and below`), so a folded choice is never an unknown one. The question headings sit on the canvas,
+  not inside cards, so the mode cards are the only cards (§16.15).
+- **Right: a quiet summary rail, `lg` and up, sticky.** It reads back what was chosen and holds the action:
+  the document strip (file icon, name, `font-mono` counts, ghost **Change document**), mode and model, the
+  resolved destination as one `font-mono` string, **one** estimate (the selected mode's range, "typically",
+  the basis line, the `InfoTip`), one knowledge-base readiness line (SURVEY, §11.2.3.f), the §0 safety line,
+  then Back and Continue / Start job. The rail's range is a read-back of the number the selected mode card
+  shows — one number, two presentations, never two computed figures.
+- **No warning tone for the normal case.** The "SURVEY scales with document size" sentence is not an `Alert`
+  with `warning` colour: a cost that is the ordinary result of choosing SURVEY is information (§11.3.2 applies
+  the same rule to waiting). The sentence moves into the estimate's `InfoTip`.
+- **The primary action is above the fold at 1440×900 in both modes** (measured on 2026-11-12: Start job at
+  y=570 of 900 for BASELINE, Continue at y=539 for SURVEY; before, y=1062 and y=1235). Below `lg` the rail
+  stacks after the decision path and the actions come last.
+- **A disabled primary action says why.** The destination it needs can sit below the fold on the left, so the rail
+  states what is missing ("Choose a team project and an area path to continue.") until it is filled in.
+
 ### §11.3 — The running-job screen
 
 **Files:** `pages/JobDetail.tsx`, `components/JobLifecycleSteps.tsx`,
@@ -1922,6 +2115,16 @@ machine lines. Neither exists. This section has been rewritten against the
 code as it actually stands; the raw-activity-log design is **superseded — do
 not build it.** Its job is done better by `SectionStepList` (§11.3.1), which
 answers "what is left" rather than "what has been emitted."
+
+**What "do not build it" meant.** It rules out the `rail-900` column of timestamped machine lines. It does
+not rule out `ActivityFeed` (§11.3.2): a compact, capped, collapsed record in the same card, which ships. The
+ledger (§18) records that both exist.
+
+**Revision note (2026-11-12).** A live run and a review of this screen against NN/g, Microsoft HAX and agent
+transparency guidance found that the screen specified below puts the same current-activity sentence in three
+or four regions at once (the ticker, the banner sub-line, the newest feed line, the progress line) and shows
+nothing scoped to one phase. §11.3.5 prescribes the replacement: a phase rail and one phase view. Until it is
+built (§18.1), the text from here to §11.3.4 describes the shipped screen and stays in force.
 
 **The problem being fixed.** A header of six chips — a clock, an elapsed timer,
 a block count, a model name, an ETA and a freshness stamp — all at the same size
@@ -2106,7 +2309,7 @@ waiting". The page says that with state, not with decoration:
   that arrives after first paint fades in once (`--duration-fast`).
 - **Counters** swap their number with no count-up and use tabular numerals.
 
-#### §11.3.2 — The three result disclosures
+#### §11.3.2b — The three result disclosures
 
 Below the banner sit three collapsed-by-default cards on `surface`. All three
 are disclosures with the same mechanics and the same `ChevronRight`/
@@ -2312,6 +2515,195 @@ reasons, states, connection notes), sentence case, no internal names (§12). The
 excerpt carries an `InfoTip`: it is a short excerpt of the reader's own document
 and is not stored.
 
+#### §11.3.5 — The phase-centred running screen (prescribed; not yet built — §18.1)
+
+**Evidence (2026-11-12).** A live SURVEY run, two jobs, 1440×900. Four or five regions stated the current
+activity at once, and the same sentence appeared in three or four of them. A 2.5-minute silent stretch showed a
+stale line and an empty bar. The drafted requirements were never visible during the run (the section list
+rendered only when `branchCount` was above zero, and every event carried zero). The Activity record vanished at
+Diff ready, and the item tree began below the fold. Guidance: show only what the current task needs
+(NN/g, progressive disclosure); mark finished steps complete and list future steps as pending, with raw logs behind
+a toggle and a record that outlives the run (Smashing, agentic transparency); show contextually relevant
+information (Microsoft HAX, G4); a progress tracker may also navigate (Carbon, Atlassian AUI).
+
+**The structure.** Header (title, status chip, mode badge, **Cancel run**, tools), then `DestinationBar`, then
+the §0 safety line (below), then two zones: a **phase rail** (about 280 px, left) and one **phase view**
+(right). Below `lg` the rail is a horizontal, scrollable strip above the view (state lines stay in each tab's accessible
+name; arrow keys include Left and Right). Verified live at 390 px on 2026-11-12: 57 px tall, no page overflow.
+
+**The safety line.** "Nothing has been written to Azure DevOps. Writing only starts after you approve the
+diff." is visible, in this exact wording, while the job is pending, running or awaiting review (`failed` and
+`cancelled` can follow a partial write, so the line is not claimed for them). It is one `text-xs text-ink-3` line
+with the `Lock` glyph, the same look as the wizard's (`components/SafetyLine.tsx`). It never uses `--color-signal` (§16.7). The wizard's three
+wordings are one shared constant with the §0 wording of the wizard footer.
+
+**The phase rail.** One row per phase of the job's mode: SURVEY `parse`, `analyze`, `score`, `dedupCheck`,
+`review`, `write`; BASELINE `parse`, `dedupCheck`, `review`, `write` (BASELINE runs no model, §11.3). Paint is
+the six `StepState`s of §7, reused from `JobLifecycleSteps` (`reachedKeyFor`, `statesFor`, including the
+whole-tree passes mapping to Score and a rejected job painting Write `skipped`). Each row carries one
+state-dependent line, in plain language:
+
+| State | The line says | Example |
+|---|---|---|
+| done | what the phase produced | `682 blocks · 39 figures described` |
+| current | a counted position | `7 of 18 sections` |
+| pending | what the phase is for | `Judges each requirement` |
+
+The Write row says "Cannot be undone" in words, never in colour. The rail is a vertical `role="tablist"`
+(`aria-orientation="vertical"`): arrow keys move, Enter or Space selects, roving `tabindex`. **Pending rows are
+focusable** here (amending §7's "pending steps are not focusable", which was written for a stepper with nothing
+to show for a pending step): a pending phase has content, its purpose.
+
+**Following the live phase.** The view shows the live phase by default ("following"). Selecting another row
+stops following and puts a ghost **Back to live** button in the view header. While not following, a live change
+never moves the view and never moves focus; the rail still updates its states, and the live row carries a
+quiet `Live` marker. A change of phase is announced only through `LiveStatusRegion` (§13).
+
+**The phase view.** Its header is the **only** statement of the current activity: the phase headline in
+`text-title`, one sentence, the percentage or "no result yet" (§11.3.2), one meta line (`elapsed · model ·
+updated N s ago`), and one bar labelled in the unit it counts (§16.20). Its body is specific to the phase:
+
+| Phase | Body (reusing the existing components) |
+|---|---|
+| Parse | `DocumentMetrics`; the figure and OCR lanes; `FigureDescriptions` filling as figures are described; `DocumentOverviewCard` once it exists |
+| Analyze | the "Now" card (`WorkingOnCard`); **one Sections list** that merges `SectionStepList`, the outline's working state and each section's drafts and grounding chips from `SectionResults` (a row expands into its drafted items); `ComparePair` when one exists; the chunk bar during the deterministic sub-pass. When the events carry no section count, the list is built from the run map (`useDocumentMap`) instead of staying empty |
+| Score | the batch position, items flagged, the knowledge-base files used and their match, and the four whole-document passes as a small checklist |
+| Dedup check | the single bar, "Checking N of M proposed items against existing work items" |
+| Review | the review workspace; the rail folds to the horizontal stepper so the tree has the full width |
+| Write | `WriteSubStepper` |
+
+**Looking back and ahead.** A finished phase's view is read-only: what it produced (counts and identifiers in
+mono), its own notices, and its duration **only when derivable from event timestamps** and never worded as an
+estimate. A pending phase's view states its purpose and what it will use (the model, N knowledge-base files). **No
+phase shows an ETA** (§16.21: the estimate is a server computation for the whole run; its range stays in the
+meta line). A failed phase's row paints `failed` and its view keeps the failure message; a cancelled run paints
+the remaining phases `skipped`.
+
+**At most two regions state the current activity.** They are the phase view's header and, in Analyze, the "Now"
+card. Nothing else restates it: no ticker, no promoted feed line, no second elapsed timer. Waiting has **one**
+note, one threshold (60 s) and one wording (§11.3.2), neutral in colour; a "so far" clock counts the current
+call, never the job's total elapsed time.
+
+**The record.** `ActivityFeed` becomes a collapsed disclosure, "Run log (n)", under the view, closed by default
+and still available on a finished job (it reads the durable event history). "Limits and adjustments" is the
+second disclosure; each phase's notices also appear in that phase's summary.
+
+**Review state.** From Diff ready the rail folds away. The document overview, the knowledge-base note and the
+tiles condense to one summary line so the proposed tree begins within the first screen at 1440×900 (a target to
+measure, not a guarantee).
+
+**One live region** (§13): `LiveStatusRegion` only. The arrival region in `JobDetail` and the two regions in
+`ProgressBanner` are removed.
+
+**Removed when built:** `NarrationTicker` (and with it §16.8's second dark surface), the banner sub-line, the
+second elapsed timer, `MiniProgress` (the row's count carries it), the duplicate waiting notes, and the three
+separate document lists (`SectionStepList`, `DocumentOutline`, `SectionResults`) as separate surfaces.
+
+**Kept, unchanged:** honest percentages and "no result yet" (§11.3.2), the liveness dot, the neutral waiting
+state, signal yellow only for the irreversible write (§16.7), mono identifiers (§0), no card in a card (§16.15),
+reduced motion (§8.1).
+
+**Tests this screen needs:** waiting with no update; lost connection; a phase with no result yet; a failed
+phase; a cancelled run; BASELINE (four phases); a page opened mid-run (history merged with the live stream); a
+reload; keyboard operation of the rail; focus not moving on a live change; and a count of the regions that state
+the current activity (at most two).
+
+**Status (2026-11-12).** Built: the phase rail (`components/jobPhase/PhaseRail.tsx`: vertical tablist, roving
+tabindex, arrow keys, Home and End, pending rows focusable) and the phase summary (`PhaseSummary.tsx`) for a phase the
+run is not in, with "Back to live"; the live phase keeps `ProgressBanner` as its view; the figures list and the document
+overview moved into Parse, and the results list into Analyze; the run log is a collapsed "Run log (n)" that also appears
+on a finished job from the stored event history; the narration ticker is gone **while a run is in progress**. The
+rail and the summary exist only while a run is in progress (`pending`, `running`, `writing`); from Diff ready the
+horizontal stepper returns, with the ticker's status sentence ("ready for review", "failed", "cancelled"), which does
+not restate live activity. The phase rows' counted lines show what is known: figures described (Parse) and sections
+analyzed (Analyze); every other finished phase reads "Finished".
+
+**Review state (built 2026-11-12; supersedes the earlier "closed on measurement" note, which was wrong).** That note measured a job with
+no warnings (tree at y=668). No Diff ready job observed had none: every one has at least an FYI group, and the tree began at y=931–1220
+at 1440×900 and y=1427 at 390 px. The review state now puts the task first, in this order: the page header (file name at `text-display`,
+one status chip, mode badge, date, Reject, Write to Azure DevOps, the icon tools); the destination on one row (`DestinationBar compact`);
+the §0 safety line; **one "Run details" disclosure** (`ui/Disclosure`) whose summary is the counts (`18 new · 0 reused · 0 skipped as
+duplicate`) and whose body holds the stepper, Run log, Document overview, knowledge-base note, "How this run went", figures and results;
+the Integrity warnings card (its header on one line; the FYI group starts collapsed, even when it is the only group, because there is
+nothing to do there, **except** when it holds a failed enhancement the reviewer can retry: that action must not be hidden, so
+such a group starts open); then the tabs, **"Proposed items (n)"** while it is a proposal, **"Written items (n)"** once written, and
+**"Items (n)"** after a partial write (never "Diff", and never "proposed" for what already exists in Azure DevOps, §0 item 3); and one
+toolbar row (review in risk order, filters, bulk actions). The dark ticker, the three tiles and the
+BASELINE "overview isn't produced" box are gone in this state. "Run details" starts open for a failed or cancelled job, where the stepper
+shows where it stopped; the counts in its summary exist only for a job awaiting review or written.
+
+Measured at 1440×900, first tree row: with warnings **1220 → 718**; FYI-only **1104 → 534**; BASELINE **931 → 484**; at 390 px **1427 → 996**
+(no horizontal overflow). The first targets written for this work (≤600 with warnings, ≤480 FYI/BASELINE, ≤950 at 390 px) were estimates made
+before measuring real content, and are **not all met** (718, 534, 996). Revised targets, set from what the content needs: with warnings
+the first row ≤ 720 with four rows visible; BASELINE ≤ 490; FYI-only ≤ 540; 390 px ≤ 1000. The warnings card (about 250 px) is
+work the reviewer must do, so it is not hidden to hit a number. Not done, and why: moving "+ New item" into the toolbar (its expanding form
+does not fit in a flex row); slimming the group bands (their wording is what makes fix vs review unmistakable).
+
+**Review state, revised 2026-11-12 (the review screen speaks the running screen's language).** The first version above kept a different
+structure from the running page (a horizontal stepper hidden in "Run details", stacked bars) and the user rightly called it inconsistent.
+The review state, and every state after the run stops, now uses the **same phase rail beside one phase view** as §11.3.5: the rail (sticky,
+`lg` and up; a horizontal strip below) shows every phase with its state line (Parse to Dedup check "Finished", Review "Waiting for you",
+Write pending, or "Skipped" for a rejected job, "Failed here" for a failed one) and has no "Live" marker. The phase in view is the one the
+job rests on (Review for a job awaiting review or rejected, Write once written). Its view opens with a headline at `text-title` ("Review the
+proposed items", "Written to Azure DevOps", "Rejected: nothing was written", "The run failed", "The run was cancelled") and the counts line;
+under it come "Run details" (now only the Run log, the knowledge-base note and "How this run went"; the stepper, overview, figures and
+results moved to the Parse and Analyze views where the rail takes you), the Integrity warnings card, and the tabs and tree. Reading
+another phase swaps in its summary with a "Back to review" button; the review content is hidden, not unmounted, so the tree keeps its
+scroll, filters and open rows. Measured with the rail (1440×900, first tree row): **786** for a job with two warning groups and an FYI group
+(was 718 without the rail: the headline, counts line and "Run details" row add about 70 px); the tree is 860 px wide instead of 1150 px.
+The revised target is therefore ≤ 800 with warnings; the rail costs width, not height, for the tree.
+
+**Open (§18.1):** the banner's visible waiting note and liveness dot are absent while another phase is being read; one Sections list merging `SectionStepList`, `DocumentOutline` and `SectionResults` (the three still
+exist); checking Analyze in the production configuration: with `LIVE_PROGRESS` off (the local default; the `/run-map` route then answers 404
+by design) Analyze shows the banner and the waiting state, and small documents emit no section narrations; with it on (the
+production chart sets it) the live panel (document metrics, "Now" card, outline) fills Analyze. The phase view has not yet
+been exercised in a browser with it on;
+per-phase notices in a phase's own summary; removing `MiniProgress`.
+
+#### §11.3.6 — The write gate is a hard block (built 2026-11-13)
+
+**Rule (owner decision, 2026-11-12).** While any **Fix before writing** kind is open, Write is not available. It stays
+visible, `softDisabled` (§7), with the reason in text beside it in the write bar (§5; "N items to fix before writing", linked to
+the button by `aria-describedby`), and pressing it takes the reviewer to the first blocker, in the same narrowed tree "Fix in tree" gives. The
+confirm dialog cannot be opened while blocked; if a blocker appears while it is open, its Write button is disabled and its
+warning line says "Fix them before you write."
+
+**What counts as open.** One pure module (`utils/writeGate.ts`) answers it for the header, the dialog and the tests. A kind is
+open until each affected item is *handled*: marked reviewed, or left out of the write (directly or through an excluded ancestor).
+The warning rows, the banner count and the gate share one handled set. Check, Review and Info kinds never block, and neither does
+an `auto_fixed` warning. **Acknowledgement never clears a per-item Fix kind** (`acknowledgementClears` in `utils/warningKinds.ts`,
+read by `kindProgress`, the queue's `isAcknowledgedKind`, the gate, the warning rows and the summary line): records of such a kind
+that carry `acknowledged` (from before the gate, or from an old client) leave it open and its items blocking until each is decided.
+Acknowledgement may clear only a `kind_counted` kind, an item-less kind (decided notice by notice) and a Review kind.
+
+**A Fix item is decided on purpose.** While an item is still blocking the write, **A** and **R** do nothing and the dialog says so
+("This item has to be fixed or kept as written."); the dialog's primary button reads **Keep as written and next**, and clicking it is
+the decision. The key hint and `aria-keyshortcuts` for A/R are withheld on such an item. This stops a held or repeated key from clearing
+every blocker in seconds. It is a frontend rule: the server gate still treats a reviewed item as decided (`write-gate.ts`), so a client
+that marks items directly is unaffected. Check and Clean items keep A and R.
+
+**One exception, counted.** A Fix kind whose value is *missing from the source document*, with nothing to correct (`ackPolicy:
+'kind_counted'`; today only "Requirement has no Customer ID"), can be cleared by one counted acknowledgement, "Accept 433
+without a Customer ID", which can be undone ("Undo acceptance"). Every other Fix kind needs per-item decisions, and "Mark all
+reviewed" is not offered on a Fix kind at all. No bulk approval inside Fix before writing.
+
+**Written jobs are read-only records.** A job past review shows its warnings as "flagged at write time": no review counters, no
+Done chip, "Show in tree" instead of "Fix in tree". The job chip says **Written**.
+
+**Enforced on the server (2026-11-13).** `POST /jobs/:id/confirm` answers 409 `fix_before_writing` (with `remaining` and `blockers`) for
+a first write while a Fix kind is open. The rules live in `orchestrator/src/modules/pipeline/write-gate.ts` and mirror this section, so
+`utils/warningKinds.ts` and the server read the same list of Fix kinds (a contract test compares them). A retry that already has
+written items is not blocked. Accepting the missing-Customer-ID kind writes an audit line, and undoing it writes another.
+
+#### §11.3.6b — A failed run says why (built 2026-11-13)
+
+A failed job's "No diff was produced" card leads with the cause in plain words, then the raw error text beneath it in mono, never instead of
+it. The server stores the failure class and message (`failureClass`, `failureMessage`, `failedStage`), and the card and the Jobs list read them (`describeStoredFailure`). For a job that failed before they were recorded, the cause is read from the audit line "Pipeline failed: <error>"
+(`utils/failureCause.ts`); only causes the text clearly shows are named (a cut connection, a timeout, a refused request, an answer that could
+not be read). Anything else says "The run stopped with an error." and shows the raw text: a guess would send the reader the wrong way. The summaries say "a step" or "a request", never "the model": the failing call may be Azure DevOps or SharePoint. A bare number is not a status code ("item 403"). A
+durable `job_failed` event, when there is one, still takes precedence. Reading the cause changes nothing else on screen (the card's
+"View audit" button and the audit list are untouched). Not built: showing the failed stage, "what was kept", and a Retry that resumes from a chunk (not known to be possible).
+
 ### §11.4 — The work-item detail dialog
 
 **Files:** `components/NodeDetailDialog.tsx` (the container),
@@ -2393,6 +2785,17 @@ add-child affordance at all rather than a disabled one.
 fractional: the composer and the model row have a minimum workable width, and
 letting chat flex meant the details pane's 62–66ch measure and the chat's
 usability traded against each other on every viewport. See §11.4.2.
+
+**Reading order (built 2026-11-13).** The requirement text comes first. In the details pane: the item's own text and actions, then the
+evidence strip (file and location, and a line saying the original wording is in the source file), then one closed **Why this verdict**
+disclosure holding the weakest area, the scoring note and the KB references, and since 2026-11-13 the whole Quality panel: the gauge
+(its category rows flat, each with its definition and fixes shown, so there is no second level of open and close), the on-demand
+"Why this score?" explanation and the "Matches source wording" line. Its closed line says "Quality N of 100" (", from before your
+edit" when stale) and the weakest area. The lines that change state stay outside it, right after it, in view and in tab order: the
+stale notice with **Re-check quality**, "Not scored yet." with **Score this item**, and "Rescored.". Edit stays in the title row. One
+disclosure level, nothing nested. Before this the strip
+sat above everything and the statement started about 440 px down. An Epic or Feature never says "Needs review: Low quality score": parents
+are not scored (§11.4.1); loose wording against the source still shows.
 
 #### §11.4.0 — The `lg` collapse is real conditional mounting, and that is deliberate
 
@@ -3169,11 +3572,17 @@ documents that informed the score (`KbCitationChips`), and the weakest rubric
 category with its score and the organisation's own checklist text when one was
 matched. Rules:
 
-- **No excerpt, and it says so.** Only offsets are stored with an item, not the
-  source text, so the strip never implies a quote. With a source location it
-  adds "The source text is not stored with this item, only where it came from";
-  without one it says "No source location recorded." If a source excerpt is
-  ever stored, it belongs here, beside the proposed text.
+- **The source wording is fetched, not stored.** Only offsets are stored with an item, so the server re-reads the span from the original file
+  the job kept (`GET /jobs/:id/diff/:localId/source` re-parses it through ingestion's `/source-excerpt`, no model call) and the strip
+  quotes it: a `blockquote` (`dir="auto"`, 68ch, paragraph breaks kept) under a small caption, "Shortened." when it was cut at 1,500
+  characters. Three captions say what the quote is: **Source wording** (the item's own span), **From a table in the source** (a table-derived
+  item: the table's cells, narrowed to the matching row when the Customer ID finds one) and **Written from this part of the source** (a SURVEY
+  item has no span of its own, so the quote is the whole section it was written from). While it loads, two static skeleton lines (the
+  1-second delay, no shimmer) in a `role="status"` box; a late answer for a previous item is never shown under the next. When there is no
+  quote to give (the original was not kept or is gone with the job, the item has no source location or is a grouping item the pipeline added
+  (`synth_`), the file is a scan that could not be re-read, or the request failed) the strip falls back to "The original wording is in the
+  source file, at the location above." and says nothing worse; without a source location it says "No source location recorded." The quote
+  stays in view beside the evidence, not inside "Why this verdict".
 - **Scoring state is the details pane's to say.** Whether an item is scored, or its
   scores are stale, is said by the gauge box and its re-check action. The strip
   mentions scoring only for a fresh score: the scoring note and the weakest-area row
@@ -3324,7 +3733,83 @@ on `surface-alt`), the exit-animation order of the two-dialog hand-over in a rea
 browser, and the write against a real Azure DevOps server. Recorded Lows are in the
 backlog (items 31 to 33).
 
+#### §11.5.1 — The review queue's tiers and where it steps (built 2026-11-13)
+
+Tiers, riskiest first: **blocking** (named by an open "Fix before writing" kind), **low score**, **flagged**, **clean**, **structure**.
+*Structure* is an Epic or Feature with nothing blocking or flagged: quality scoring judges how a requirement is worded, not what a parent
+contains, so a parent's score, and the model's confidence in it, never put it first. A parent keeps a blocking kind, a review kind, or low
+grounding (a sign of invention). Structure items queue last, are never offered for bulk approval, and count as "unscored" in the approve-clean
+summary. Within a tier: lowest score first, then tree order.
+
+After a verdict the queue steps to the item **after** the one just dealt with (wrapping to the top only from the last), never back to the top
+of what is left; an open item that drops out hands over to the item now in its place. `nextInQueue` in `utils/reviewQueue.ts`.
+
+The four named groups of the owner's decision (Fix before writing, Check, Clean, Structure) map onto these tiers (Check = low score + flagged);
+the group filter, counts and per-group counter are not built yet (plan slice 2, remaining).
+
+### §11.7 — Knowledge Base, sign-in and connection status
+
+Written after the pages were built, from what they do. Each rule has a test; where a rule rests on a published guideline the source is named.
+
+**Page shape.** Source bar (the folder link, its status in words, Refresh / Change / Reconnect) → explorer (folders, files with checkboxes, details) → batch panel
+(only while a batch is on show) → knowledge-base health line. The grading rubric is **not** on the page: it opens in a dialog from the health line, the
+ingestion report and a job's score explanation.
+
+**Adding files.** Nothing is ingested before the user has chosen how jobs use the file: Search (retrieved only when similar) or Reference (the full text goes into
+every job, so every job pays for it). One choice can apply to many files, any single file can be flipped, the choice is never preselected unless the user said to
+remember it, and a suggestion states its reason. The per-file switch carries a visible word ("Reference"); a bare switch is not enough (§13).
+
+**Selecting.** Checkboxes on files, "Select all" and "Select new" in a bar that appears only when it has something to do. Folders are left out of a selection unless
+"Include subfolders" is on; while it is off the bar says how many subfolders are not included. Turning it off takes back anything selected below those folders.
+Scanning shows how far it is in words ("3 folders, 41 files"), can be cancelled, keeps what it found when it stops early, and names what it left out. Limits are
+stated, never silent: 200 files per batch, 50 MB per file, 5 levels, 100 folders.
+
+**One library.** A knowledge base holds one SharePoint library. Adding from another asks first, in a destructive confirmation (§7) that says how many files go and
+why, with Cancel as the safe path. Nothing is removed until it is confirmed. Browsing or changing the source removes nothing.
+
+**Background batch.** Server-kept, so it survives leaving the page. States are words with an icon; one status region announces only the start and the end, never
+each file; the progress bar names its reading ("1 of 4 files done"). Cancel finishes the current file and says so. A SharePoint token that runs out pauses the
+batch and says what to do. The finished batch's report lists each file's outcome, a warning for a file that stored no text, and what each file gave the rubric.
+
+**Names.** File and folder names are wrapped in `<bdi dir="auto">`, and a long unbroken name must wrap inside its container (`min-w-0` and `overflow-wrap:anywhere`
+on any flex child that can hold one).
+
+**Sign-in.** A split layout from `md` up (brand panel about 40%, form), the brand panel as a top band below it. Help for a field sits in the field's label row
+(`labelExtra`), never beside the input. The brand panel is decoration: no control lives in it.
+
+**Connection status.** One rail item, not three lights: "All systems OK", or "N need attention" with a count; it says "Checking connections…" until the first answers
+and never shows a failure for a check that has not finished. Its popover lists each connection in words, when it was checked, "Check now", and where to fix it.
+A rejected credential is danger; an unreachable service is a warning; a connection nobody set up is neither.
+
+**Navigation rail.** Icons sit on one vertical line whether the rail is open or closed; labels stay in the page and fade, so links keep their names; the choice is
+remembered; the toggle reports `aria-expanded`.
+
+**Duplicate review.** An item skipped as a near-duplicate says so in words ("Already exists in Azure DevOps"), names the work item it matches as a link that
+opens it, says how alike the two are, and says that the existing item is not changed. The one action is "Create as new item…", a choice dialog with two optional
+links: into this job's tree (on by default) and Related to the existing item (off). It is not a destructive confirmation (§7), because the choice is undoable:
+the item then says "Will be created as a new item" with Undo, and Undo restores the skip. Nothing here edits the existing item. A skipped or reused item shows no
+quality score or "Not scored yet", because it will not be created.
+
+**Narrow screens.** Below `lg` the Knowledge Base explorer stacks: the folder tree is left out (the breadcrumb and the folder rows navigate), the file list takes
+the full width, and the details open under it once a file is chosen. The file list drops Type and Size below `md` and keeps a minimum width for the name. A status
+or address that can be long wraps inside its row (`Settings` integrations), so an action is never pushed off the screen. No page scrolls sideways; a wide table
+scrolls inside its own container.
+
+**State that the user sets.** A dialog starts from what is known when it opens and not again until it re-opens. State must never be reset by an effect keyed on a
+list or object the parent builds anew on each render: any re-render (a status poll is enough) would put the starting value back over the user's choice.
+
 ---
+
+#### §11.7.1 — The SharePoint link is a credential (built 2026-11-13)
+
+The sharing link names a folder and, with its token, opens it. The page therefore draws only a redacted form, on screen and in the tooltip
+(`utils/redactSharingUrl.ts`: no query or hash; in a sharing link after its `:f:` marker the last segment is the token and is hidden by position, whatever it looks like; the `r` form names a folder and is left whole; any other link falls back to a look at the segment); the Change form still edits the full link, and
+requests use it. The last browsed folder is remembered per user (`utils/kbBrowseUrl.ts`, localStorage key `req2ado-kb-browse-url:<userId>`),
+cleared with the user on sign-out; the old global key is never read, since it belonged to whoever browsed last. `GET /kb/documents` and
+`DELETE /kb/documents/:id` send no `userId`: the session says whose documents they are, and an identity claim in a URL ends up in logs.
+Listing a shared folder is `POST /kb/browse-folder` with `{ url }` in the body (since 2026-11-13; the `GET ?url=` route is removed), so
+the link never lands in proxy or access logs; the server takes the user from the session and never reads a `userId` from the body.
+`GET /kb/browse-children` carries only drive and item ids, not the link.
 
 ## §12 — Content and voice
 
@@ -3343,6 +3828,15 @@ backlog (items 31 to 33).
   records that an earlier gloss-first version of this rule was tried and
   explicitly withdrawn.
 - Sentence case everywhere except mode enum names and identifiers (§4).
+- **Glossary.** Say "Azure DevOps" and "work item", never "ADO" or "WI" in prose
+  (`WI-12345` as an identifier is fine). The write is **Write to Azure DevOps**;
+  "Confirm" is retired (an item that needs attention is "Fix before writing").
+  The §0 safety line keeps "approve the diff". The tree is "Proposed items",
+  "Written items" once written, "Items" after a partial write. A finished write is
+  **Written** (the job chip and the Jobs list), never "Succeeded". The destination chip says "Work item
+  state: Proposed" (the Azure DevOps state field), an unset iteration says "Project default", and the
+  write gate says "N items to fix before writing". Filters and tiles
+  both say New / Reused / Skipped as duplicate. The help page is "Help".
 - **Name things by what the user controls,** not by how the system is built.
   "Checking for duplicates," not `dedup_check`. "Reading the document and
   splitting it into sections," not "extracting a deterministic hierarchy
@@ -3379,6 +3873,19 @@ backlog (items 31 to 33).
   files were surfaced for this job." `{0, 0}` reads "No knowledge-base files
   were available to this job." — never "0 of 0". BASELINE and pre-existing jobs
   show no coverage line at all.
+- **Confirm only what is serious, and say what it does; undo what can be undone.** A confirmation is for an action with a serious consequence (the write to
+  Azure DevOps, removing a document or a library's files). It names the object and the count, its button says the verb ("Remove 3 files and continue"), and it never
+  asks "Are you sure?". Anything reversible is done at once and offers undo where one exists. A confirmation used for everything stops being read
+  (NN/g, *Confirmation dialogs*; Fluent 2 alert dialogs; Atlassian modal dialog).
+- **Long work is visible, stoppable and survives leaving.** Over about a second the user is told something is happening; over about ten seconds they are told how far
+  (counted work, "N of M"), shown what is being done, and offered a way to stop (NN/g, *Response times* and *Progress indicators*). Work the server keeps going is
+  found again on return, and its end is announced in a status region without moving focus (WCAG 4.1.3).
+- **Errors say what happened and what to do, where it happened, and keep the user's input** (NN/g, *Error message guidelines*; Primer, *Saving*).
+- **Empty states say why they are empty and what to do next** — still loading, unavailable, or nothing yet (NN/g, *Empty states*; Atlassian empty state).
+- **Text direction.** Runtime text of unknown direction (file names, folder paths, people's names) is wrapped in `<bdi dir="auto">`; CSS uses logical start/end
+  properties for anything that must flip (W3C i18n, *Structural markup and right-to-left*; *Inline markup and bidirectional text*).
+
+---
 
 ## §13 — Accessibility contract
 
@@ -3394,8 +3901,9 @@ backlog (items 31 to 33).
 - **The running screen has one live region.** `LiveStatusRegion` is a `role="status"`
   (`aria-live="polite"`) element, visually hidden, present and empty in the first
   render (screen readers announce only changes to a region that already exists).
-  It announces a change of step, at most once per 15 seconds, latest wins, and
-  the title of the first warning notice of each kind (never its detail). It
+  It announces a change of step, at most once per 15 seconds, latest wins, the
+  title of the first warning notice of each kind (never its detail), the page's
+  arrival message, and a long wait (fixed text, never the ticking time). It
   never announces items, excerpts, counts or percentages. A lost connection uses
   `role="alert"`. The progress bar is named and carries `aria-valuetext` (§11.3.4).
 - **Single-key shortcuts can be turned off.** Every one-key shortcut in the
@@ -3403,9 +3911,10 @@ backlog (items 31 to 33).
   setting, and its hint line disappears with it (WCAG 2.1.4). Results of those keys
   are announced from a status region inside the open dialog (§11.6).
 - **Colour is never the sole carrier of state.** Selected rows and cards set
-  real `aria-selected` / `aria-checked` / `aria-pressed`; status carries a chip
-  label and usually an icon in addition to colour; the proposed-versus-written
-  distinction (§0.3) also changes the available action affordance, not only the
+  real `aria-selected` / `aria-checked` / `aria-pressed`; status carries a text
+  label and an icon or shape in addition to colour (colour is never one of the two
+  cues that carry the meaning); the proposed-versus-written
+  distinction (§0, item 3) also changes the available action affordance, not only the
   paint.
 - Progress bars set `role="progressbar"` with `aria-valuenow` / `aria-valuemin`
   / `aria-valuemax` when a real percentage exists, and `aria-valuetext` carrying
@@ -3469,6 +3978,18 @@ the relevant allowlist — silent baseline bumps are not permitted.**
    /cubic-bezier\(/g                      §16.4  inline easing
    ```
 
+4. **Zero-tolerance guards (no baseline; any hit fails):**
+   `design/signalColour.test.ts` (only `ui/Button.tsx` may use signal-colour
+   utilities or the raw custom property), `design/terminology.test.ts` (§12
+   glossary: "ADO", "WI" as prose, "Confirm" for the write), and
+   `design/scale.test.ts` (no `text-lg/xl/2xl/3xl`, no `rounded-xl/2xl`), and
+   `design/textSpacing.test.tsx` (WCAG 1.4.12: in the rendered item dialog no prose
+   sits under a fixed-height box that clips, and no line clamp; the prose-bearing
+   dialog sources carry no `h-[Npx]` / `max-h-[Npx]`; jsdom measures no layout, so
+   this guards the cause, not the effect).
+   Note: the palette allowlist above names four files; the test is the authority
+   if the two differ.
+
 ### §15.1 — Ratchet changes this revision requires
 
 Adopting §6 and §11 changes what is bannable. Each of these is a same-PR
@@ -3480,6 +4001,7 @@ obligation, not a follow-up:
 | Mode/ETA copy stops carrying hardcoded times (§11.2.3) | **Add a pattern** matching a time-range literal in `.tsx`/`.ts` — e.g. `/\d+\s*[–-]\s*\d+\+?\s*min/g` — with an initial baseline of **seven** offenders (`ModeCards.tsx:11,15,16`, `NewJobWizard.tsx:312,347`, `ProgressBanner.tsx:208`, `labels.ts:122`), so the count can only go down. Note the pattern must cover `.ts`, not just `.tsx` — one offender is in `utils/labels.ts`. This is the mechanical guard against the 40-minute cap creeping back in as prose. |
 | Custom inline icon SVG is banned (§10) | **Add a pattern** matching `<svg` in `.tsx` outside an allowlist. Today the only legitimate inline SVG is whatever `QualityGauge` and `Spinner` draw; record their baselines, ban new ones. Do **not** pair this with a ban on `react-bootstrap-icons` imports — that package is in scoped, intentional use (§10); the correct ratchet is a pattern allowing it **only** in `FileTypeIcon.tsx` and `WorkItemTypeBadge.tsx`. |
 | Plex migration (§1.8 row A) | No new ratchet. Close the row, move it to §18. |
+| Job-state tokens, motion aliases, research motion rules (2026-11-13) | The `job-*` tokens are aliases, so `palette.test.ts` is unchanged (no new hex anywhere). `motionContract.test.ts` gains four rules: no motion on `text-read` prose; ambient tokens and `infinite` loops only in a named allowlist; no stagger over 200ms or multiplied by an index; every `--motion-*` alias sits on a rung and has a consumer. New zero-tolerance guard `textSpacing.test.tsx` (§15 item 4). |
 
 ---
 
@@ -3505,10 +4027,13 @@ Mechanically checkable, and not re-litigable without a §17 change to this file.
 8. **`--color-rail-*` may appear only in `components/AppShell.tsx`'s `<nav>` and
    its children.** Nowhere else. The app's one other dark surface is
    `NarrationTicker`'s `bg-ink-1` strip, which is an `ink` token, not a rail
-   token (§2). No third dark surface without §17.
-9. No gradients on interactive elements. Two gradients exist in the system — the
-   determinate progress fill, and the hatched "projected"/"unset" fill (§11.2.2,
-   §11.3). Both are data encodings, not decoration. No third.
+   token (§2). No third dark surface without §17. (§11.3.5 removes the ticker
+   when the phase-centred screen is built; this item then reads "no dark
+   content surface".)
+9. No gradients on interactive elements. The gradients in the system are data
+   encodings, not decoration: the determinate progress fill and the hatched
+   "projected" fill (§11.3). The "unset" hatch of §11.2.2 was retired 2026-11-13
+   (words instead). No new ones.
 10. No serif faces. No decorative faces. No fourth family.
 11. No shadow on any element smaller than 24px in either dimension, and no
     shadow on chips, badges, inputs, or table rows.
@@ -3517,7 +4042,7 @@ Mechanically checkable, and not re-litigable without a §17 change to this file.
     links.
 13. No transform other than `translateY`, `scale`/`scaleY`, and `translateX`
     (the last only for the indeterminate progress loop). No rotation outside
-    `Spinner`. No skew, no 3-D.
+    `Spinner` and the quarter turn of a disclosure chevron (§8). No skew, no 3-D.
 14. No border-radius above 16px except `rounded-full` on pills, dots, avatars,
     and progress-track caps.
 15. No nesting a `Card` inside a `Card`.
@@ -3640,6 +4165,46 @@ Append-only. Every renamed or removed token, and every closed §1.8 divergence.
 | **[3/3 — frontend]** Severity-tiered `CollapsibleWarnings` (see §11.3.3's own rewrite) + `normalizeWarning`/`titleByLocalId` + the `DiffTree` `selectedId` navigation fix | `utils/warnings.ts` (new: `WarningRecord`, `normalizeWarning`); `components/CollapsibleWarnings.tsx` (full rewrite); `pages/JobDetail.tsx` (`mergedWarnings` now normalizes both `warnings` and `liveWarnings`; `titleByLocalId`; `onJumpToNode` opens the dialog); `components/DiffTree.tsx` (`allRows` memo, two `selectedId` effects) | **Closed.** §11.3.3. 11 tests in `CollapsibleWarnings.test.tsx` (rewritten), 5 in `warnings.test.ts` (new), 3 new in `DiffTree.test.tsx` (mocks `react-window`'s `FixedSizeList` via `vi.hoisted` to spy on `scrollToItem`, since the real component's virtualization has no observable jsdom effect otherwise). Full frontend suite: 452/452, clean `tsc -b && vite build`. |
 | **Follow-up, same day** — `raw` sentence wording still leaked ingestion's own internal identifiers (`det0_h9_3`, `f14`, `[localId: det0_h6_1_2_1]`) into user-facing text, even after the [1/3]-[3/3] structural migration above -- confirmed real gap, user-reported: severity/grouping was the right shape, but the actual prose was still unreadable to anyone who's never seen ingestion's own node-numbering scheme | Every per-node/per-section `raw`-building site across `root_regrouping.py`, `llm_leveling.py` (incl. `_referenced_attachment_warnings`, re-keyed on `section_label` instead of `node_id_prefix`), `scoring.py`, `tree_builder.py`, `conflict_detection.py`; `warnings_finalize.py`'s `_reparented_to_feature`/`_group_reparented` summary builders (now read a `*Title` detail key, not the raw id) | **Closed.** §11.3.3. Systematic substitution: a node/target reference in prose is now always its real `title` (quoted), never `local_id`/`temp_id`; a section reference is `_derive_section_label`'s real heading text (already computed for narration, just not threaded into these messages before), never `node_id_prefix`; a dropped figure/table reference is a count ("referenced 1 figure(s) not offered"), never the raw id list; the near-duplicate-conflict `[localId: ...]` tag is dropped from `raw` entirely now that the structured `node_ids` field (not text-parsing) drives the frontend's Review buttons — `CollapsibleWarnings.tsx`'s tip copy updated to match (no longer explains a tag that no longer appears). Table-group/heading-ID-offset messages were audited and left untouched -- their "ids" (`row.id_text`, a table's own dotted numbering) are the SOURCE DOCUMENT's real numbering, not ingestion's synthetic scheme, and are meaningful to a reviewer holding the original doc. `detail` payloads are unaffected (ids still live there for the UI's own navigation, just never surfaced as prose). 10 existing tests updated for the new wording, 979/979 ingestion suite green; frontend: tip-copy fix + fixture cleanup, 452/452 green. |
 | Banner percentage label `~NN% of this section (est.)` as the only label | `NN% of the run (est.) — N of M items in this step` when the server counts the run; `of this section` kept only as the fallback | `components/ProgressBanner.tsx` (`countedProgress`, `shownProgress`), `utils/liveCopy.ts`, `ui/ProgressBar.tsx` (`label`, `valueText` props) | **Closed.** §11.3.4. One bar still (§16.20): the counted figure replaces the block-based estimate, it does not join it. New: live run view (`components/liveRun/`, `store/liveRunStore.ts`, `hooks/useDocumentMap.ts`, `lib/lcsDiff.ts`), no new tokens, no new keyframes, no new icons beyond `lucide-react` `Check` and `Circle`. |
+| **Spec correction, 2026-11-12:** step 1's footer label | `Configure` is what ships (`NewJobWizard.tsx:571`); §11.1 and the row for the step-1 two-pane split said it stayed `Next Step` | **Correction, not a migration.** The earlier decision and its reasoning stay in §11.1; a note there states the shipped label. |
+| **Spec correction, 2026-11-12:** the wizard and `DestinationBar` | The wizard imports only `formatDestinationPreview` (`NewJobWizard.tsx:13`, `:777`); it does not render the segmented bar. §11.2.2 and the `DestinationBar` row above said it did | **Correction, not a migration.** §11.2.2 now says "built, partly". Closing the gap, if wanted, is a code change that would add a row. |
+| **Spec correction, 2026-11-12:** running-job activity record | `ActivityFeed` (§11.3.2) ships: last 6 lines, "Show all n", visible while running, removed at Diff ready. §11.3's audit note read as if all activity records were to be avoided | **Correction, not a migration.** The audit note now says what "do not build it" excluded (the `rail-900` timestamped column). The three passages (§11.3 audit note, §11.3.2, the activity-log row above) now agree. §11.3.5 prescribes a collapsed "Run log" that also survives Diff ready. |
+| **Numbering, 2026-11-12** | second `§11.3.2` ("The three result disclosures") → `§11.3.2b`; second `§11.2.3.c` ("Knowledge-base readiness") → `§11.2.3.f`; §13's "§0.3" → "§0, item 3" | **Closed.** Citations of "§11.2.3.c" in §16.21 and §11.2.3.d mean the estimate's computation and are unchanged. §11.1's "no §0.3 safety line" sentence quotes the mockup and is left as written. |
+| **Prescribed, not built:** §11.2.5 (step 2 layout rule) and §11.3.5 (phase-centred running screen) | new sections | **Open.** See §18.1. Written from a live run and a review of the code and guidance on 2026-11-12. |
+| **Consistency pass, 2026-11-12** | date/duration rule (§4), geometry floor (§5), soft status chips, shared disclosure and loading rules (§7), glossary (§12), three zero-tolerance guards (§15) | **Closed.** Shipped: `formatDateTime`, `Disclosure`, soft `StatusChip`, glossary applied across the UI and `docs/user-guide.md`, guards above. Sentence case; Help page 16px prose. |
+| **Review efficiency, 2026-11-13** (slice 2, part 1) | queue tier `structure` for Epics/Features (§11.5.1); X/A step to the next item, not the top; evidence strip moved below the text with a closed "Why this verdict" disclosure (§11.4); parents no longer say "Needs review: Low quality score" | `utils/reviewQueue.ts` (+ tests), `components/EvidenceStrip.tsx` (`collapsible`), `NodeDetailDialog.tsx`, `NodeDetailPanel.tsx`, `pages/JobDetail.tsx` | Not built from slice 2: the four-group filter with counts and the per-group counter (R4), plain labels/tooltips and Delete in an overflow menu (R6), status chips in the Status column (R7), Description first in Edit. The tree's own "Needs review" flag (`isFlaggedDiffEntry`) still mirrors the server and still flags a low-scored parent: changing it needs the same change in `orchestrator/.../diff-summary.ts` (server, not approved). |
+| **Jobs list, 2026-11-13** (slice 3, part 1) | flat 70-row list → grouped by Needs you / day (§11.1b); short job id column; stale label; "Awaiting review" → "Diff ready" | `utils/jobGroups.ts` (+ test), `pages/JobsList.tsx` | Not built from slice 3: the failure card, banner/rail agreement (E4a), run-map polling (E6/E6a), activity-feed collapsing (E5), wizard defaults (J2); "Hide stale" toggle (slice 7, F4). |
+| **Failure cause, wizard defaults, gauge, 2026-11-13** (slice 3 part 2) | failed run's cause in plain words (§11.3.6b); wizard starts from the last job's mode/project/area path (`utils/lastJobChoices.ts`, per user, localStorage); summary line counts only open kinds; gauge criterion names wrap below `md` | `utils/failureCause.ts`, `utils/lastJobChoices.ts`, `pages/JobDetail.tsx`, `pages/NewJobWizard.tsx`, `components/CollapsibleWarnings.tsx`, `components/QualityGauge.tsx` | Not built: failed stage / what was kept / resume (plan S3, server); E4a rail mapping; KB per-user URL key and token display (slice 7). |
+| **Wizard wording, 2026-11-13** (slice 4 part 1) | re-upload warning (J3); no-headings copy matches the leveler; step 3 "This run" rail (J4); SharePoint expiry in hours (P2); breadcrumb 24 px hit area (P4); user guide: gate, groups, shortcuts, Jobs list (P3); Settings lists all seven shortcuts | `utils/previousRuns.ts`, `utils/sharePointStatus.ts`, `pages/NewJobWizard.tsx` (`RunFacts`), `components/AppShell.tsx`, `pages/Settings.tsx`, `docs/user-guide.md` | Not built: skeletons and the 300 ms delay (P2), sticky action bar on step 2 at 390 px (J5), the step-3 summary rewrite and its pluralisation (server, plan S9), the BASELINE card's \"no completed runs yet\" (server stats), estimate floor (plan S4). Stepper label \"Configure & review\" is what ships; §11.1 should say so. |
+| **Slice 7 frontend, 2026-11-13** | KB folder key per user and cleared on logout (F1); SharePoint link redacted for display (F2, §11.7.1); no `userId` in KB list/delete requests (F3); "Hide stale" view toggle (F4, §11.1b) | `utils/kbBrowseUrl.ts`, `utils/redactSharingUrl.ts`, `api/kb.ts`, `store/authStore.ts`, `pages/KnowledgeBase.tsx`, `components/KbSourceBar.tsx`, `pages/JobsList.tsx` | `POST /kb/ingest-folder-url` and `browseSharedFolder` still send `userId` in the body/query: the server's handling of those was not checked. |
+| **Reading text, 2026-11-13** (slice 6, part 1) | `text-read` (15/24) added to §1.3 and `lib/cn.ts`; the item dialog's requirement text uses it | `index.css`, `lib/cn.ts`, `components/NodeDetailPanel.tsx` | Not built from slice 6: state colours (proposed/written/partial/failed, each needs §2/§3 rows), `--color-mark-source`, motion aliases (no consumer yet), micro-interactions #1-#8, the WCAG 1.4.12 text-spacing check. The delayed skeleton already exists (`ui/Skeleton`, 1 s). |
+| **Reviewer pass 2, 2026-11-13** (slices 3-7) | Jobs table responsive columns, leaf area path, one clock, filter-aware stale count, tile = Needs you, row groups and row labels; neutral failure-cause wording and strict status-code match; stale cause cleared on job change; log folding only for a pure "N of M" counter; token hidden by position; rail "Not chosen yet"; phone destination line; help page and legacy KB key cleanup | `pages/JobsList.tsx`, `utils/failureCause.ts`, `components/ActivityFeed.tsx`, `utils/redactSharingUrl.ts`, `pages/NewJobWizard.tsx`, `pages/JobDetail.tsx`, `docs/user-guide.md`, `utils/kbBrowseUrl.ts` | Not fixed: `api/kb.ts` sends the full sharing link as a GET query (`/kb/browse-folder?url=`), so it reaches proxy logs (a POST needs a server route; plan, server); remembered wizard defaults are not seeded from existing history; the "Jobs" id column is hidden on phones. |
+| **Write gate, 2026-11-13** (slice 1, part 1) | soft "You can still write" → hard block (§11.3.6); `Button softDisabled` (§7); iteration "hatched when unset" → "Project default" (§11.2.2, §16.9); state chip "Work item state"; job chip "Succeeded" → "Written" (§12); read-only warnings on a finished job | `utils/writeGate.ts` (+ test), `utils/warningKinds.ts` (`ackPolicy`, `countedAckLabel`), `ui/Button.tsx`, `pages/JobDetail.tsx`, `components/CollapsibleWarnings.tsx`, `WriteSummary.tsx`, `DestinationBar.tsx`, `StatusChip.tsx`, `utils/labels.ts` | UI-only: the server still accepts `confirm` with open Fix warnings (plan S1). Not yet built from slice 1: sticky write bar and tab order (W3/W4), Azure DevOps ids on rows (needs plan S2). |
+| **Review screen, 2026-11-13** (R7) | the desktop title no longer squeezed by its chips: a new item's criteria chip moves to the Status track (measured per job, one mark per cell); the title keeps `min(12rem,50%)`; the other marks wrap whole into a rem-bounded group (§5) | `components/DiffTree.tsx` (+ tests) | The row stays 40px (react-window); no new px height. Not verified in a browser (stack not rebuilt). |
+| **Write bar, 2026-11-13** (W3) | Write and Reject leave the page header for a sticky bar after the tree (§5, §11.3.6); the blocker count ticks | new `components/WriteBar.tsx`, `pages/JobDetail.tsx` (+ tests) | Reject chosen to sit beside Write in the bar (both are job-ending decisions; the header keeps only tools, or Cancel run while running). |
+| **Item dialog, 2026-11-13** | the Quality panel folds into "Why this verdict" (§11.4); Re-check / Score this item stay outside it | `components/NodeDetailPanel.tsx`, `EvidenceStrip.tsx`, `NodeDetailDialog.tsx`, `QualityGauge.tsx` (`flat`) (+ tests) | Inside the disclosure the gauge's category rows no longer open and close: definitions and fixes are always shown there (no nested disclosure). |
+| **Write gate, 2026-11-13** (part 2) | `kindProgress` no longer completes a per-item Fix kind through acknowledgement (§11.3.6); one `acknowledgementClears` rule read by the queue, the gate, the warning rows and the summary | `utils/warningKinds.ts`, `utils/reviewQueue.ts` (+ tests in both, `writeGate.test.ts`, `CollapsibleWarnings.test.tsx`) | Covers records acknowledged before the gate existed. `writeSummary.countWarningsForWrite` still counts such records as handled (advisory text only; the gate blocks first). |
+| **Slice 6, 2026-11-13** (part 2) | job-state tokens with icon and word (§1.1, §2, §3); motion aliases (§1.7); disclosure fade, phase advance, count tick, skeleton crossfade (§8.3); research motion rules and the text-spacing guard (§15) | `index.css`, `components/StatusChip.tsx`, `DestinationBar.tsx`, `jobPhase/PhaseRail.tsx`, `ui/Disclosure.tsx`, `ui/Skeleton.tsx`, `pages/JobDetail.tsx`, `pages/JobsList.tsx`, `design/motionContract.test.ts`, new `design/textSpacing.test.tsx` | `--color-mark-source` not added: the evidence strip shows no source sentence (only offsets are stored), so it has no consumer. New-event fade (#8) was already built (§8.3 activity feed row). Real layout under text-spacing overrides was not measured. |
+| `--color-shimmer-highlight`, `@keyframes shimmer` | **removed** | Only `ui/Skeleton.tsx` used them; the skeleton is a static `bg-hairline` block now (research #7). |
+| `GET /kb/browse-folder?url=` | `POST /kb/browse-folder` `{ url }` (§11.7.1) | `orchestrator/src/modules/kb/kb.controller.ts`, `frontend/src/api/kb.ts` (+ `kb.controller.spec.ts`, `kb.test.ts`). The GET route is removed: nothing else called it. Closes the "Not fixed" note in the reviewer-pass-2 row. |
+| **Server work, 2026-11-13** | Write gate enforced in `confirm()` (409 `fix_before_writing`); counted acceptance audited; failure stored on the job (`failedStage`, `failureClass`, `failureMessage`, migration `20261116090000_add_job_failure_details`); `writtenItems` (`localId`, `adoId`) on `GET /jobs/:id`; survey estimate floor 15 → 2 minutes; plainer step 3 overview; drafted requirements scored without document-level criteria; gzip on text responses | `orchestrator/src/modules/pipeline/*`, `jobs.service.ts`, `eta.service.ts`, `document-profile.ts`, `document-summary.ts`, `ingestion/app/kb/profile.py`, `frontend/nginx.conf.template`. Not done: ingestion version bump (cached results for an identical file keep their old scores), resume from a chunk. |
+| **Frontend use of the server work, 2026-11-13** | failure card and Jobs list name the stored cause (§11.3.6b); written rows show `#id` as a link in the Status column; `overview_reused` is an info-only warning kind; the dialog's closed summary no longer doubles the full stop of a criterion | `utils/failureCause.ts`, `pages/JobsList.tsx`, `components/DiffTree.tsx`, `utils/warningKinds.ts`, `components/EvidenceStrip.tsx`. |
+| **Final QA fixes, 2026-11-14** | Copy: false or misleading claims removed (BASELINE estimate "learning", "Auto-sync ledgers", "never creates duplicates", `output_truncated`, `dedup_check_failed`); one vocabulary (Wrote / Written / Diff ready / Check, Run details instead of "audit trail"); jargon out of user copy (AI model, rewriting, duplicate check; one queued line; no literal `--`); a shared `utils/plural.ts` replaces every "(s)" | `utils/labels.ts`, `warningKinds.ts`, `connectionHealth.ts`, `narrationTicker.ts`, `pages/{NewJobWizard,Settings,JobDetail,BatchStatus,BatchJobWizard,KnowledgeBase}.tsx`, `components/{DiffTree,NodeDetailPanel,ModeCards,JobLifecycleSteps,ProgressBanner}.tsx`, `docs/user-guide.md`. Ratchets in `design/terminology.test.ts` hold each retired form out (§12). The score band "Needs review" in `QualityGauge.tsx` is a score range, not the review group, and was left. |
+| **Help and setup, 2026-11-14** | Help renders tables (remark-gfm); a First-day setup section; one shared SharePoint token help (three steps, a Graph Explorer link, "one token serves everyone") used by the KB page and Settings; the KB header no longer says "only visible to your own jobs" | `pages/Wiki.tsx`, `components/SharePointTokenHelp.tsx`, `pages/KnowledgeBase.tsx`, `pages/Settings.tsx`, `docs/user-guide.md`. The dialog names no permission scope and no lifetime: the app does not state either, and the status line shows when the pasted token expires. |
+| **Server safety, 2026-11-14** | `reject()` is status-guarded and answers 409; written jobs age from `completedAt` (the 2-day window is unchanged) | `orchestrator/src/modules/pipeline/{jobs.service,job-retention.service}.ts`. The final `confirm()` update was left unguarded: nothing but `reject()` changed a `writing` job, and a guarded update would drop the written-state diff if it ever missed. |
+| **Ingestion, 2026-11-14** | A requirement heading with sub-sections keeps its statement at the top of the summarized description (`keep_heading_statement`); a trace link between an item and any ancestor or descendant is dropped; new Check notice `requirement_heading_is_section` explains the count gap (shared schema enum, Python `WarningKind`, `KIND_META`, never a Fix kind) | `ingestion/app/leveling/{id_tree_builder,trace_links,hierarchy_rules,tree_builder,llm_leveling}.py`, `ingestion/app/workitem/model.py`, `shared/schemas/work-item-tree.schema.json`, `shared/ts/src/generated/WorkItemTree.ts`, `frontend/src/utils/warningKinds.ts`. |
+| **Step 3 overview counts, 2026-11-14** | Statements are sentences with shall, must, should or will, counted once per table row; every count agrees in number | `orchestrator/src/modules/pipeline/document-profile.ts` (+ spec). "The headings alone give N Epics…" was left as is: its accuracy against the baseline parser's full tree is unconfirmed. |
+| **Jobs list, 2026-11-14** | a "Running now" group above "Needs you"; "Re-run of <short id>" under a file name already run (matched by name, nearest earlier job); the 20 s refresh ignores a slower, older response and says it failed once per outage, not every 20 s | `utils/jobGroups.ts` (`rerunOf`), `pages/JobsList.tsx` (+ tests). `take` was not sent: the server's cap of 200 would hide older jobs without saying so. |
+| **Review decisions, 2026-11-14** | A Fix item is decided by a deliberate **Keep as written and next** click, never A/R (§11.3.6); bulk "Mark all reviewed" on a Check leaves out items that still block the write; the section notice `requirement_heading_is_section` names only sections that have sub-sections and say shall, must or should | `components/NodeDetailDialog.tsx`, `pages/JobDetail.tsx` (`openFixIds`, `keepAsWrittenProps`), `ingestion/app/leveling/hierarchy_rules.py`. |
+| **Source wording, 2026-11-14** | the evidence strip quotes the original wording (§11.6); new ingestion `POST /source-excerpt` (parses the stored original, text capped at 1,500 characters, kinds text/table/section/unavailable); new orchestrator `GET /jobs/:id/diff/:localId/source` (owner-scoped, in-memory LRU of 100 for 10 minutes, never a 500: `no_original`, `no_span`, `parse_failed`) | `ingestion/app/source_excerpt.py`, `orchestrator/src/modules/pipeline/source-excerpt.ts`, `components/EvidenceStrip.tsx`, `api/jobs.ts`. `--color-mark-source` is still not added (the quote uses the existing hairline and ink tokens). Checked live on the public NASA directive NPR 7150.2D (89-page PDF): the first open parses in about 8 seconds and later opens take about 25 ms (ingestion keeps 8 parsed documents and runs one parse per file at a time; the parse owns and removes its temp file; the orchestrator waits up to 45 seconds). The first version waited 10 seconds and failed every open of that file. A scanned PDF was not tried. `/source-excerpt` has no auth of its own, like `/ingest`. BASELINE limit: an item whose title is a heading quotes the heading block; paragraphs merged into its description fall outside the span. A failed save of the original in `JobsService.submit` is still swallowed without a log. |
+| **Setup and credentials, 2026-11-14** | the Open WebUI gate redirect carries a flag and Settings focuses the Open WebUI **Configure** button (primary action); a failed SharePoint reconnect says whether the token was rejected, SharePoint could not be reached, or the app's server did not answer, and that nothing was saved when the check could not run; a pasted SharePoint token is cleaned of `Authorization:`/`Bearer`, quotes and line breaks before it is checked and stored; the Open WebUI key preview is `POST /llm/connection/models/preview` with the key in the body (it used to be `GET …/models?token=…`, which wrote the key to every access log) and the GET no longer reads a token | `components/RouteGuard.tsx`, `pages/Settings.tsx`, `pages/KnowledgeBase.tsx`, `utils/sharePointReconnect.ts`, `orchestrator/src/modules/kb/kb.service.ts` (`cleanPastedToken`), `orchestrator/src/modules/llm/llm-connection.controller.ts`, `api/llmConnection.ts`. Checked live with intercepted responses; a real "Bearer " token was not available to test. |
+| **One stage name on the run page, 2026-11-14** | the banner card headline is the phase rail's current label (`utils/liveStage.ts`); the finer wording is a secondary line; a counted or chunk bar draws only for the stage it belongs to; a stage with no event for 20 s shows "Still working on <stage>" (announced once by `LiveStatusRegion`, cleared by the next event) | `components/ProgressBanner.tsx`, `jobPhase/PhaseRail.tsx`, `liveRun/LiveStatusRegion.tsx`, `store/liveRunStore.ts`, `hooks/useSecondsSinceLastUpdate.ts`. Not yet seen on a live SURVEY run. The chunk bar's active segment is still a fixed ~34% fill that freezes under reduced motion; the screen-reader step announcement still uses a third wording. |
+| **Content-aware identity (W1), 2026-11-14** | each node carries `identity_hash_v2` (normalised section path, type, anchor sentence, ordinal: no file name, no offsets) and a `content_hash`; the dry run looks a **Requirement** up by v2, then the position hash, then the legacy text hash; a hit stays `reuse` and is flagged `changedSinceWritten` (Check kind `changed_since_written`, never blocks a write; nothing in Azure DevOps is updated) when its content differs from what was written; `confirm()` writes the v1 row and, for Requirements, the v2 row with the content hash, and adds a missing v2 row to items reused through an older row (never moves a row); Epics and Features keep matching by the filename-based hash because unrelated documents share headings; Prisma migration `20261117090000_add_idempotency_content_hash` adds `IdempotencyMapping.contentHash` (nullable) and `identityVersion` (default 1); `IDENTITY_V2_ENABLED` switches the lookup off | `ingestion/app/leveling/identity_v2.py`, `orchestrator/src/modules/writeback/{dry-run,idempotency}.service.ts`, `pipeline/jobs.service.ts`, `shared/schemas/work-item-tree.schema.json`. The first follow-up after the migration still creates moved or renamed items (v2 rows exist only once something has been written). A changed item stays flagged on every run until its text in Azure DevOps matches again. SURVEY table-row nodes have no content hash. Verified live only up to the dry run (261 Requirements with unique v2 ids and content hashes); no write was made, so the follow-up behaviour itself rests on unit tests. |
+| **Batch, 2026-11-14** | a batch starts from the last mode and destination, says why Start is unavailable and is titled; it stores one `dedupScope` for all its files (Prisma migration `20261118090000_add_job_batch_dedup_scope`, default `area_path`) and the pump builds each SURVEY file's overview with the preview's own function, best effort | `pages/BatchJobWizard.tsx`, `orchestrator/src/modules/batch/*`, `pipeline/document-preview.ts`. One destination per batch stays (D-B5). |
+| **W1 review fixes and create-as-new, 2026-11-14** | a SURVEY node that shares its source block with another real node (a model-structured run gives a whole branch one block) has no v2 identity and keeps the position lookup; a Customer ID is the v2 anchor when there is one; `content_hash` is the source-span hash in both modes (a mode switch no longer flags every item); the text check for old mappings requires what was written to START with the current text; the write-time re-check also looks Requirements up by v2; the create path writes the v2 row only if missing; a reuse flagged `changedSinceWritten` can be created as a new item (the existing "Create as new item" card, undo restores the flagged reuse) and confirm never repoints the matched item's mapping for that choice | `ingestion/app/leveling/identity_v2.py`, `orchestrator/src/modules/writeback/dry-run.service.ts`, `pipeline/jobs.service.ts` (`overrideDuplicate`, `linkItemsWrittenByAnotherJob`), `components/DuplicateMatchCard.tsx`, `NodeDetailDialog.tsx`. Open (second-round review): two documents with the same title, section and wording still share a v2 identity, so the flagged match is the reviewer's signal and "Create as new item" the escape; an edited one-sentence requirement without a Customer ID still looks new (v2 changes with the wording); a changed item stays flagged until its text in Azure DevOps matches; the backfill upserts one row at a time; the first follow-up after the migration creates moved or renamed items. Verified live up to the dry run; no write was made. |
+| **Batch page, 2026-11-14** | each added file is checked with the preview, two at a time (blocks and sections, the re-run note, an estimate for the chosen mode; the page adds them up; "Checked N of M files" announced once; a file that could not be checked still goes with the batch); the batch has the single wizard's "Search for duplicates in" choice (shared `DedupScopeSelect`, kept in the draft, stored on the batch); the last mode and area path are kept per Team Project in both wizards; the batch status page is titled | `pages/BatchJobWizard.tsx`, `components/{DedupScopeSelect,MultiFileDropzone}.tsx`, `utils/lastJobChoices.ts`, `pages/BatchStatus.tsx`. Seen live at 1440 and 390 px (no overflow) and a two-file BASELINE batch ran to Diff ready; the stored scope is not exposed by any API, so it is covered by unit tests only. Previews are not kept in the draft: coming back to the page parses every file again. |
+| **Write-time duplicate check, 2026-11-14** | `confirm()` looks up each remaining `create` by source hash just before writing; a match whose Azure DevOps item still exists becomes a reuse (audit line: "N items were already written by another job and were linked instead of created again"); a mapping whose item was deleted is forgotten; it runs on a retry, skipping what the job already wrote and any "create anyway" item; every failure means "create as planned" | `orchestrator/src/modules/pipeline/jobs.service.ts` (`linkItemsWrittenByAnotherJob`). It matches the identity hash, which still includes the file name, so it catches the same file run twice, not two different files sharing a requirement (that needs content-aware identity, not built). The write preview counts shown before the click are computed before this step. |
+| **Server safety and Wizard re-runs, 2026-11-14** | `reject()` is status-guarded; written jobs age from `completedAt`; preview returns `fileHash`; `GET /jobs/cached-result` answers whether the result cache holds this file for a mode and model (one shared `fileHashOf`, content only, name excluded); the step 3 AI summary is cached in memory (200 entries, 24 h, `fresh: true` on "Write it again"); the "already ran a file with this name" note shows on steps 2 and 3; the document map numbers from 1 and its number column is no longer a fixed width; a batch starts from the last mode and destination and says why Start is unavailable | `orchestrator/src/modules/pipeline/{jobs.service,job-retention.service,jobs.controller,result-cache,document-summary}.ts`, `ingestion/app/loaders/{docx,pdf}_loader.py`, `frontend/src/pages/{NewJobWizard,BatchJobWizard}.tsx`, `frontend/src/utils/eta.ts`. The probe can answer yes while the job still runs in full (a changed link-type catalog or missing figure rows are checked only at run time). |
+| **Knowledge base, 2026-11-14** | A read-only list of what the knowledge base already holds, from the app's own record, shown with or without a SharePoint connection | `components/KbIngestedList.tsx`, `pages/KnowledgeBase.tsx`. The list loads once; it does not refresh after an add or remove in the tree below until the page is reloaded. |
 
 ### §18.1 — Open migrations
 
@@ -3650,3 +4215,34 @@ code, then moving its row up into §18.
 |---|---|---|
 | `--text-*` / `--radius-*` / `--shadow-*` / `--duration-*` / `--ease-*` `: initial` | `index.css` `@theme` | §1.8 row B |
 | **Stage 2** — per-category `why` / `fix` strings from the model | `_response_schemas.py` (`scores_schema`, `epic_feature_scores_schema`), both `score_*.v1.txt` prompts, `orchestrator_llm_client.py:846-914`, `scoring.py:326-349`, `model.py:62`, regenerated `shared/ts`, `dry-run.service.ts:23`, `pipeline.worker.ts:202`, `DiffTree.tsx:71`, `QualityGauge.tsx:23` | §11.4.3 — new data end to end; no DB migration (`dryRunDiff` is JSON) |
+| `--color-brand-blue: #1b4a8f`, `--color-brand-yellow: #fde134` | **added** (§2 row, §3 rows) | For the sign-in page's brand panel only; `design/brandTokens.test.ts` guards the scope. Brand yellow is not signal yellow (§16.7). |
+| §1.8 rows A (Plex) and C (`.liftable`) | **rows removed** | Both were already closed in code and recorded above; the stale rows were still in §1.8. |
+| §16.13 "no rotation outside `Spinner`" | amended to allow the disclosure chevron's quarter turn | §8 already allowed it; the two rules disagreed. |
+| §13 "status usually has an icon" | amended: a text label plus an icon or shape, always | The rule was weaker than its own "never colour alone". Carbon status pattern and WCAG 1.4.1 ask for two cues. |
+| §11.7 duplicate review, narrow screens, user-set state | **added** | Written from the pages as built. Each rule has a test: `DuplicateMatchCard`, `KnowledgeBase` (stacking), `KbFileList` (columns), `KbAddBatchDialog` (re-render). |
+| §11.3.5 phase-centred running screen — **partly built 2026-11-12** (see the Status paragraph in §11.3.5 for built vs open) | `pages/JobDetail.tsx`, `components/ProgressBanner.tsx`, `components/JobLifecycleSteps.tsx`, `components/ActivityFeed.tsx`, `components/jobPhase/*`; `NarrationTicker.tsx` stays for terminal states | Prescribed 2026-11-12. On landing: amend §7 (navigable stepper, focusable pending rows), §16.8 (no dark content surface), §11.3's diagram and its stepper/ticker paragraphs, and the §13 live-region count (code has three regions; the rule says one). Tests per §11.3.5, including a count of regions that state the current activity. |
+| §11.2.5 step 2 layout rule | `pages/NewJobWizard.tsx` (grid at the step 2 return), new summary rail | Prescribed 2026-11-12. Closes the missing document strip (§11.2) and the two estimate homes. Test: the primary action is above the fold at 1440×900 in both modes. |
+| §0 safety line on the running screen | `pages/JobDetail.tsx`, `pages/NewJobWizard.tsx` (three wordings → one constant) | The line is required (§0) and absent from the running screen as built. Fix is independent of §11.3.5. |
+| Silent-gap and wait-clock defects | `components/ProgressBanner.tsx` (`modelCallInFlight`), `hooks/useWindowStartedAt.ts`, `components/liveRun/LiveRunPanel.tsx` | Seen live 2026-11-12: a stale line for 2.5 minutes while the hierarchy step ran (`infer_hierarchy_start` is a job-event stage, not a narration phase), and a "so far" clock equal to the job's elapsed time. Cause of the second is not yet confirmed; reproduce with a test first. |
+| Duplicate-check scope, linked count, Jobs list stalls, KB list refresh | `components/DestinationBar.tsx` (`dedupScope` line), `pages/JobDetail.tsx` (write toast "linked N that were already there"), `utils/jobGroups.ts` (`STALLED_AFTER_HOURS`: a pending or running job over 12 h goes to "Needs you"), `pages/JobsList.tsx` (the load-error banner clears on success only, so a failing poll does not blink it), `components/KbIngestedList.tsx` (`refreshKey`) | Built from the final QA pass. Each has a test. Server: `GET /jobs/:id` returns `dedupScope`; the confirm response adds `linkedInsteadCount` only when above 0. |
+| Review queue by group, Stalled label, Edit order, checkbox target | `pages/JobDetail.tsx` (with a group chip pressed the queue, the "n of N" counter and J / K are that group; the button reads "Review in Check · N"; when the group empties the queue is everything left), `pages/JobsList.tsx` + `utils/jobGroups.ts` (`Stalled · N h` chip beside the status), `components/NodeDetailPanel.tsx` (Edit order: Title, Description, then the reference fields: Description stays second, after the short title, by choice), `ui/Checkbox.tsx` (24 px target now asserted) | Built from the plan audit. Tests: `JobDetail` (group queue, stored failure fields, a written job has no review controls), `JobsList`, `NodeDetailPanel`, `ui/Checkbox`. Not built: "No estimate yet" for a sparse fit (server estimate), the 44 px queue buttons at 390 px (24 px floor met). |
+| Overview source, estimate near the size, notices left out | `orchestrator/src/modules/pipeline/primer.step.ts` (the saved overview records its job and time; the reuse notice says "read by job 4270e8be, 2026-11-14 10:00 UTC"; older plain-text entries still work), `eta.service.ts` + `pages/NewJobWizard.tsx` (`nearSizeSampleCount`: when no finished run is within half to double the document's blocks the wizard says the range is stretched and rough, and the chip reads "none near this size"), `document-boilerplate.ts` + `pipeline.worker.ts` + `utils/warningKinds.ts` (SURVEY only: a Requirement that starts like a disclaimer, copyright line, revision table or "mock data" banner and states no obligation is excluded by default, with an Info notice "Notices left out"; Include puts it back) | Built from the plan audit. Each has tests. The estimate keeps showing a number: hiding it would sell wait time short (§16.21), so "No estimate yet" is the wording only for the pure-bootstrap case that already existed. Not built: S8 (the per-node heartbeat): a scoring chunk is one model call with no per-node signal, so only a timer line could be added, and the wait clock already covers that. |
+| Notice left out: no Customer ID warning, own wording in Write | `orchestrator/src/modules/pipeline/document-boilerplate.ts` (`dropNoticeIdsFromMissingIdWarning`) + `pipeline.worker.ts` (a notice left out by default is removed from the missing Customer ID warning, and a record that then names no item is dropped), `utils/writeSummary.ts` + `components/WriteSummary.tsx` + `pages/JobDetail.tsx` (the Write dialog says "left out as a notice" for those items, and "excluded by you" only for the reviewer's own) | Review finding F6, seen live: the auto-excluded "mock data" banner still raised "Requirement has no Customer ID" and the dialog said "1 excluded by you" when the reviewer had excluded nothing. Tests: `document-boilerplate.spec.ts`, `pipeline.worker.spec.ts`, `writeSummary.test.ts`. If the reviewer includes the notice again, the missing-ID warning does not come back for that job until it is re-run. Jobs made before this change keep the old warning. |
+| X in a group queue counts that group | `pages/JobDetail.tsx` (`handleQueueReject`: with a group chip pressed, "Excluded. N left." counts what is left in that group, and everything left once the group has emptied) | Review finding F5, seen live: with Check pressed the counter said "1 of 6" while X said "22 left". Gap left by the group-scoped queue row above (accept already used the scoped queue). Test: `JobDetail.test.tsx` (X with a group chip pressed). |
+| Jobs list: a failed load is not "No jobs yet" | `pages/JobsList.tsx` (with the list empty and the load failed, only the error banner and its Retry show; the empty state returns once a load succeeds with no jobs) | Review finding F4, seen live (after a rebuild, while the API was still starting): "Couldn't load jobs" and "No jobs yet · Create your first job" were on screen together. A failing refresh while jobs are already listed still keeps the list. Test: `JobsList.test.tsx`. |
+| Narrow tree keeps the title's width | `components/DiffTree.tsx` (`columnsFor`, `wideOnly`: a tree under 800 px wide uses the three-column template and drops the grip, Index, Status and Flags cells whatever the window width, not only below md) | Review finding F1, seen live at 1024x768: the details pane left the tree about 800 px or less, the row already switched to its two-line content, but the grid kept the seven-column template, so each title got about 8 px and read "P" or "N". Test: `DiffTree.test.tsx` (narrow tree, wide tree). |
+| Tree focus ring and active row | `components/DiffTree.tsx` (the tree container no longer carries `focus:outline-none`, so the universal ring of §7 shows, inset; every row has an id and the tree's `aria-activedescendant` names the selected row) | Review finding F3, seen live: the tree took focus with no visible ring, and the arrow keys moved `aria-selected` while focus stayed on the container, so a screen reader announced nothing. The id is `<useId>-row-<encoded localId>`. A selected row that is collapsed away is not named. Tests: `DiffTree.focus.test.tsx`. F2's Tailwind note applies here too: `outline-none` overrides the base-layer ring. |
+| Field and panel focus rings drawn | `ui/TextField.tsx`, `ui/Select.tsx`, `ui/Combobox.tsx`, `pages/JobDetail.tsx` (both `#phase-view` panels): `focus-visible:outline-solid` next to `focus-visible:outline-2` | Review finding F2, verified live before building: with the keyboard on the phase panel, the text filter and the Select trigger, `:focus-visible` matched but the outline style was `none`, so no ring drew. Cause: in Tailwind 4 `outline-none` sets the outline style to none and `outline-2` only sets a width that reads that style; `outline-solid` restores it on focus-visible. `ui/Dialog.tsx` has the same classes and is left as is: live, focus lands on the dialog's first button, not the dialog box, so its ring is never needed. Tests: `ui/focusRing.test.tsx`, `JobDetail.test.tsx`. |
+| One estimate for a cached file | `components/ModeCards.tsx` (`surveyCached`: the SURVEY card says "A few seconds, this file was already processed" instead of the measured range and its "Based on N jobs" line), `pages/NewJobWizard.tsx` (passes `cachedResult`; the side panel's chip drops `n=N` and "none near this size" for a cached file) | Review finding F7, seen live: for a file the result cache holds, the SURVEY card said "3 min – 6 min, typically" while the side panel said "A few seconds", and the chip quoted "n=23". The "Not enough runs yet" line under Model is about model quality, not time, and is unchanged. Tests: `ModeCards.test.tsx`, `NewJobWizard.test.tsx`. |
+| Jobs row: the document name is the link | `pages/JobsList.tsx` (the row is a plain `tr`: no `role="link"`, no tab stop; the document name is a `Link` named "View job <id>: <file>, <status>"; a click on the row outside a link or button still opens the job, once) | Review finding F9, seen live: each row was `tr[role=link][tabindex=0]` holding the Resubmit and Delete buttons, so interactive controls sat inside a link and every row was two kinds of tab stop. Tests: `JobsList.test.tsx` (the two older tests now check the `tr` for styling and the link for keyboard access). |
+| Skip link first in the app shell | `components/AppShell.tsx` ("Skip to main content" is the first focusable element on every page and moves focus to `<main id="main-content">`; it shows only while focused) | Review finding F8, part A. On a job page the page's own "Skip to proposed items" was the 9th stop, after the rail, status and account controls; there was no way past the shell on any page. The job page's own skip link stays, now the first stop inside the page. Test: `AppShell.test.tsx`. Part B (the tree as one tab stop) follows as its own row. |
+| The review tree is one tab stop (roving) | `components/DiffTree.tsx` (only the selected row's checkbox, expander, Details button, chips and work-item link are in the tab order; every other row's are `tabindex=-1` and stay clickable; with nothing selected the tree container is the only stop), `ui/Checkbox.tsx` (`tabIndex`), `components/ActionBadge.tsx` (`linkTabIndex`) | Review finding F8, part B (the user chose the roving model over the full ARIA tree pattern, which would add Enter, Space and Left/Right keys). Before: every mounted row added a checkbox, expander and Details button, about 70 stops before Write. Arrow keys move the selection, so Tab lands on the row the reader is on. A selected row that has scrolled out of the list leaves no row stop; the tree is still one. The list's own scrolling element (a stop of its own in Chrome) is `tabindex=-1` too (`ListScroller`), found when the live count showed a second stop inside the tree. Tests: `DiffTree.focus.test.tsx`; the older criteria-chip test now covers selected and not selected. |
+| Field labels in sentence case | `components/ProjectPicker.tsx` (Team project), `AreaPathPicker.tsx` and the Area path fields of `NewJobWizard.tsx` and `BatchJobWizard.tsx`, `IterationPathPicker.tsx` and the wizards' Iteration path field, `StatePicker.tsx` (Initial state), the Area path column header in `JobsList.tsx` | Review finding F10 (DESIGN.md §4: sentence case everywhere, labels included). The finding named the Jobs header and the project and area pickers; the Iteration path and Initial state labels had the same defect and sat beside them, so they are changed too. Left as they are: "Personal Access Token" (Azure DevOps's own term for the credential) and "Customer ID" (an acronym). Tests: the picker tests and `JobsList.test.tsx` now match the exact sentence-case names; new `IterationPathPicker.test.tsx`. |
+| Running, Writing, Stale and Stalled chips carry a glyph | `components/StatusChip.tsx` (Running and Writing: `Activity`, the §12 `i-pulse`, static), `pages/JobsList.tsx` (Stalled: `TriangleAlert`; Stale: `Clock`; both `aria-hidden`, the word stays) | Review finding F11 (§13: a text label plus an icon or shape, never colour alone). Only these four chips lacked one; the neutral states (Pending, Rejected, Cancelled and so on) stay plain on purpose. The glyphs are static: a pulse or spin on a list of jobs would break §8's rule on motion in lists. Tests: `StatusChip.test.tsx`, `JobsList.test.tsx`. Built together with F10, which touches the same two files, and committed with it. |
+| Write confirm button names the area path | `pages/JobDetail.tsx` (`confirmLabel`: "Write N items to <area path>", and the Finish and Attach variants, use the area path the dialog's own text names, falling back to the team project) | Review finding F12, seen live: the dialog said it creates the items "under elisradevops-project\Customer Requirements" while the button said "Write 23 items to elisradevops-project", dropping the path. The button already truncates with the full text as its title (`ConfirmDialog`). Tests: `JobDetail.test.tsx` (the six label expectations now carry the area path). |
+| Plain words for the missing Customer ID record and the Write step | `utils/warningKinds.ts` (`warningRecordText`: "N requirements have no Customer ID. None was invented.", from the items the record names; the record's own text is unchanged, since "mark handled" matches on it), `components/CollapsibleWarnings.tsx` (shows it), `components/JobLifecycleSteps.tsx` (the Write step reads "Writes the reviewed work items to Azure DevOps. Nothing is written until you confirm, and it cannot be undone.") | Review finding F13, seen live: the warning row printed the pipeline's sentence ("1 Requirement(s) have no document-authored Customer ID / source-requirement-number -- none was invented…"), and the Write phase card said "Writing the reviewed work items…" while nothing had been written. The pipeline's sentence is not changed (it is ingestion's, and an acknowledgement key). Tests: `warningKinds.test.ts`, `CollapsibleWarnings.test.tsx`, `JobLifecycleSteps.test.tsx`. |
+| Jobs search field shows its placeholder | `pages/JobsList.tsx` (the search `TextField` is `w-[280px] max-w-full` instead of `max-w-[280px]`) | Review finding F14, measured live: in the wrapping filter row the bare field shrank to 171 px at every window width, while "File name, area path or job id…" needs about 213 px with its padding. `fullWidth` was not used: it would make the wrapper take the whole row and push the status filter onto its own line. Test: `JobsList.test.tsx` (a class check; the width itself is measured live). |
+| The queue's screen-reader status no longer makes the page scroll | `pages/JobDetail.tsx` (the proposed-items `Card` is `relative`; it already clips with `overflow-hidden`, so the `sr-only` live region `review-queue-status` stays inside it) | Review finding F15, reproduced live before fixing: at 1024x768 the document overflowed the window by 24 px with nothing clicked, and "Fix in tree" scrolled the window; at 1280x600 the overflow was 109 px. The status box was absolutely placed with the page as its containing block, so it sat at a window-relative spot below a short window. Test: `JobDetail.test.tsx`. Other `sr-only` boxes were not audited. |
+| A mark wider than the title group drops out whole | `components/DiffTree.tsx` (the `title-trailing` group has a zero-width, line-high `before:` placeholder pulled back over the gap, so even its first mark has a line to wrap away from) | Found by the user in a screenshot, then reproduced live at 1440 (tree 856 px): on the excluded "Product Requirements Document" row the "No Customer ID" chip (106 px) was in a group only 88 px wide and drawn 18 px outside its left edge, cut to "o Customer ID". The group's rule is that a mark that does not fit wraps onto a cut-away second line and drops out whole, but a first item cannot wrap, and `justify-end` pushed the overflow left. After the fix the chip is wholly below the clip edge at 1440 and fully shown at 1600 (group 106 px); all 8 marks of the plain tree stay whole at both. The title keeps its 12 rem minimum (R7), so at 1440 the chip is not shown on that row; the Details dialog has it. Test: `DiffTree.test.tsx` (classes; the geometry was measured live). |
+| Dialog box keeps a drawable focus ring | `ui/Dialog.tsx` (`focus-visible:outline-solid` beside `focus-visible:outline-2`) | The last of F2's pattern, found while fixing F2 and left out then because it is inert today: live, focus lands on the dialog's first button, and the dialog box was not focus-visible. Done for consistency with §7 ("never `focus:outline-none` without a replacement ring"): if a dialog with nothing focusable inside ever takes focus from the keyboard, its ring now draws. Test: `ui/Dialog.test.tsx` (a class check). |
+| Write bar floats as its own panel, with a summary and its reason in text | `components/WriteBar.tsx` (inset `mx-2 md:mx-4` (full width on a phone), full `hairline-strong` border, `rounded-md`, `shadow-dock`, `sticky bottom-0`; a left zone with "N included · M left out", "to <area path>", the blocker count, and the reason Write is unavailable as a text line linked by `aria-describedby`, not only a tooltip; phone margin clears the safe area), `index.css` (`--shadow-dock`), `pages/JobDetail.tsx` (`writeCounts` from the diff as it stands; the review grid has no `mb-4` while the bar is present) | The user's screenshot: the bar was `rounded-t-md border border-b-0` in the same white and width as the tree card, with no shadow, so it read as that card's footer. Opus reviewed it (read-only). A flat docked bar (top border, upward shadow, page padding dropped with `:has()`) was built first and measured: it fixed a 36 px strip under the bar but still felt blended; tinted (`surface-alt`) and canvas-coloured variants were tried live and were indistinguishable from it; a dark bar separated it but was rejected. Opus's redesign, a floating dock inset on all four sides, was prototyped live before building and is the first that reads as a separate surface. Final geometry: `bottom-0` with `main`'s own padding (a 20 px offset on top of that gave a 40 px gap and overlapped the last rows at the end of the scroll); negative margins on the bar or its parents do not move a sticky box inside its scroll container's padding. The loading fade was checked and needs no change. Not done, found by the review: the count's `AnimatedNumber` inside the `aria-describedby` target may drop its number from the computed description; a "Saving…" line while `busy`; the bar sits inside the phase tabpanel; the same recipe at `NewJobWizard.tsx` and `NodeDetailPanel.tsx`. Tests: `WriteBar.test.tsx` (new), `JobDetail.test.tsx`, `AppShell.test.tsx`. |

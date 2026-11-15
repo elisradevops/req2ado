@@ -2,6 +2,7 @@ import {
   DryRunService,
   resolveCrossJobTraceLinks,
   verifyExistingAdoIdsStillExist,
+  changedSinceWrittenWarning,
   type DryRunDiffEntry,
   type TraceLink,
 } from '../src/modules/writeback/dry-run.service';
@@ -377,7 +378,8 @@ describe('DryRunService', () => {
         tags: [],
       },
     ]);
-    expect(dedupCheck).toHaveBeenCalledWith('Desc 0', 'Title 0', 'Project\\Area1');
+    // The item's own id goes along (the decision log keys on it), after what was compared.
+    expect(dedupCheck).toHaveBeenCalledWith('Desc 0', 'Title 0', 'Project\\Area1', 'Requirement', 'n0');
   });
 
   it('falls through to "create" (not a NaN existingAdoId) when dedupCheck returns a non-numeric matchedItemId', async () => {
@@ -460,7 +462,7 @@ describe('DryRunService', () => {
     // from the SAME markup, standing in for what a real ADO-side
     // equivalent item's stripped description looks like -- both sides of
     // the comparison must land on this identical plain-text string.
-    expect(dedupCheck).toHaveBeenCalledWith('Intro. Slot Qty A 2', 'Title 0', 'Project\\Area1');
+    expect(dedupCheck).toHaveBeenCalledWith('Intro. Slot Qty A 2', 'Title 0', 'Project\\Area1', 'Requirement', 'n0');
   });
 
   it('marks a node as "create" when no exact-hash match exists and dedupCheck finds no duplicate', async () => {
@@ -1266,5 +1268,170 @@ describe('verifyExistingAdoIdsStillExist', () => {
     await verifyExistingAdoIdsStillExist(diff, getWorkItemsBatch, onError);
 
     expect(onError).not.toHaveBeenCalled();
+  });
+});
+
+// W1 content-aware identity: a follow-up file is matched by identity v2 first, then the v1 position hash, then the legacy text hash; a
+// match whose stored content hash differs from the node's stays 'reuse' (nothing is updated in Azure DevOps, D-W1b) and is flagged.
+describe('DryRunService identity v2', () => {
+  const area = 'Project\\Area1';
+  const node = (extra: Record<string, unknown> = {}) => ({
+    localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Power', description: 'The unit shall respond within 1000 ms.',
+    sourceHash: 'v1-renamed', legacySourceHash: 'legacy-text', identityHashV2: 'v2', contentHash: 'c-new',
+    customerId: null, seCoverageRef: null, areaPath: area, tags: [], ...extra,
+  });
+  const mappings = (rows: [string, number, string | null][]) => ({
+    lookupMany: jest.fn().mockResolvedValue(new Map()),
+    lookupMappings: jest.fn().mockResolvedValue(
+      new Map(rows.map(([hash, adoWorkItemId, contentHash]) => [idempotencyMapKey(hash, area), { adoWorkItemId, contentHash }])),
+    ),
+  }) as unknown as IdempotencyService & { lookupMany: jest.Mock; lookupMappings: jest.Mock };
+
+  it('looks up v2, then the v1 position hash, then the legacy text hash, in one batched call', async () => {
+    const idempotency = mappings([]);
+    await new DryRunService().diff([node()], idempotency);
+    expect(idempotency.lookupMappings).toHaveBeenCalledWith([
+      { sourceHash: 'v2', areaPath: area },
+      { sourceHash: 'v1-renamed', areaPath: area },
+      { sourceHash: 'legacy-text', areaPath: area },
+    ]);
+    expect(idempotency.lookupMany).not.toHaveBeenCalled();
+  });
+
+  it.each(['Epic', 'Feature'])('never matches a %s by identity v2: a different document with the same generic heading must not adopt this one\'s section', async (type) => {
+    const idempotency = mappings([['v2', 41, 'c-old']]);
+    const [entry] = await new DryRunService().diff([node({ type, title: 'Introduction' })], idempotency);
+    expect(idempotency.lookupMappings).toHaveBeenCalledWith([
+      { sourceHash: 'v1-renamed', areaPath: area },
+      { sourceHash: 'legacy-text', areaPath: area },
+    ]);
+    expect(entry.action).toBe('create');
+  });
+
+  it('still matches an Epic or Feature by its v1 hash, and adds no v2 backfill for it', async () => {
+    const [entry] = await new DryRunService().diff([node({ type: 'Feature', sourceHash: 'v1-same' })], mappings([['v1-same', 55, null]]));
+    expect(entry).toMatchObject({ action: 'reuse', existingAdoId: 55 });
+    expect(entry.backfillIdentityV2).toBeUndefined();
+  });
+
+  it('a v2 hit with the same content is a plain reuse, not flagged', async () => {
+    const [entry] = await new DryRunService().diff([node({ contentHash: 'c-old' })], mappings([['v2', 41, 'c-old']]));
+    expect(entry).toMatchObject({ action: 'reuse', existingAdoId: 41, identityHashV2: 'v2', contentHash: 'c-old' });
+    expect(entry.changedSinceWritten).toBeUndefined();
+    expect(entry.backfillIdentityV2).toBeUndefined();
+  });
+
+  it('a v2 hit with different content stays reuse and is flagged changedSinceWritten, with the written content hash', async () => {
+    const [entry] = await new DryRunService().diff([node()], mappings([['v2', 41, 'c-old']]));
+    expect(entry).toMatchObject({ action: 'reuse', existingAdoId: 41, changedSinceWritten: true, writtenContentHash: 'c-old', contentHash: 'c-new' });
+  });
+
+  it('prefers the v2 row over a v1 row that points elsewhere', async () => {
+    const [entry] = await new DryRunService().diff([node()], mappings([['v1-renamed', 99, null], ['v2', 41, 'c-new']]));
+    expect(entry.existingAdoId).toBe(41);
+  });
+
+  it('a v1-only hit is reused and marks a v2 row to backfill at write time (no bulk rewrite)', async () => {
+    const [entry] = await new DryRunService().diff([node({ sourceHash: 'v1-same' })], mappings([['v1-same', 55, null]]));
+    expect(entry).toMatchObject({ action: 'reuse', existingAdoId: 55, backfillIdentityV2: true, writtenContentHash: null });
+    // No content hash was stored with the old row: the text check against Azure DevOps decides (verifyExistingAdoIdsStillExist).
+    expect(entry.contentCheckPending).toBe(true);
+    expect(entry.changedSinceWritten).toBeUndefined();
+  });
+
+  it('a renamed file (new v1 hash, same v2) is reused instead of created again, without a similarity check', async () => {
+    const dedupCheck = jest.fn();
+    const [entry] = await new DryRunService().diff([node({ contentHash: 'c-old' })], mappings([['v2', 41, 'c-old']]), dedupCheck);
+    expect(entry.action).toBe('reuse');
+    expect(dedupCheck).not.toHaveBeenCalled();
+  });
+
+  it('with the flag off, behaves as today: v1 and legacy only, so the renamed file is created', async () => {
+    const idempotency = mappings([['v2', 41, 'c-old']]);
+    const [entry] = await new DryRunService(8, false).diff([node()], idempotency);
+    expect(idempotency.lookupMappings).not.toHaveBeenCalled();
+    expect(idempotency.lookupMany).toHaveBeenCalledWith([
+      { sourceHash: 'v1-renamed', areaPath: area },
+      { sourceHash: 'legacy-text', areaPath: area },
+    ]);
+    expect(entry.action).toBe('create');
+    expect(entry.changedSinceWritten).toBeUndefined();
+  });
+
+  it('a node without a v2 identity (an older ingestion result) keeps today\'s lookup', async () => {
+    const idempotency = mappings([]);
+    await new DryRunService().diff([node({ identityHashV2: undefined, contentHash: undefined })], idempotency);
+    expect(idempotency.lookupMappings).not.toHaveBeenCalled();
+    expect(idempotency.lookupMany).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('verifyExistingAdoIdsStillExist text check (W1, mappings with no content hash)', () => {
+  const reuse = (extra: Partial<DryRunDiffEntry> = {}): DryRunDiffEntry => ({
+    localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Power', description: 'The unit shall respond within 1000 ms.',
+    action: 'reuse', existingAdoId: 41, similarity: null, sourceHash: 'h', customerId: null, seCoverageRef: null, tags: [],
+    contentHash: 'c-new', writtenContentHash: null, contentCheckPending: true, ...extra,
+  });
+  const ado = (description: string) => jest.fn().mockResolvedValue([{ id: 41, fields: { 'System.Description': description } }]);
+
+  it('flags the item when the text in Azure DevOps differs, keeping the old text to compare', async () => {
+    const [entry] = await verifyExistingAdoIdsStillExist([reuse()], ado('<p>The unit shall respond within 100 ms.</p>'), undefined, { compareText: true });
+    expect(entry).toMatchObject({ action: 'reuse', changedSinceWritten: true, writtenText: 'The unit shall respond within 100 ms.' });
+    expect(entry.contentCheckPending).toBeUndefined();
+  });
+
+  it('does not flag equal text (ADO\'s HTML and spacing ignored) and records the content as verified', async () => {
+    const [entry] = await verifyExistingAdoIdsStillExist([reuse()], ado('<p>The unit shall respond within  1000 ms. </p>'), undefined, { compareText: true });
+    expect(entry.changedSinceWritten).toBeUndefined();
+    expect(entry.writtenContentHash).toBe('c-new');
+    expect(entry.contentCheckPending).toBeUndefined();
+  });
+
+  it('accepts an accepted-criteria section added after the description, but nothing added before it or cut from it', async () => {
+    const appended = await verifyExistingAdoIdsStillExist([reuse()], ado('<p>The unit shall respond within 1000 ms.</p><h4>Acceptance criteria</h4><ul><li>Measured on the bench.</li></ul>'), undefined, { compareText: true });
+    expect(appended[0].changedSinceWritten).toBeUndefined();
+    // The current text only appears inside a longer, different one: the written item says something else, so it is flagged.
+    const surrounded = await verifyExistingAdoIdsStillExist([reuse()], ado('<p>Under no load, the unit shall respond within 1000 ms. Otherwise it may take longer.</p>'), undefined, { compareText: true });
+    expect(surrounded[0].changedSinceWritten).toBe(true);
+    // Words were cut from what was written: the new text is shorter, so it is not a prefix of the old.
+    const cut = await verifyExistingAdoIdsStillExist([reuse({ description: 'The unit shall respond within 1000 ms.' })], ado('<p>The unit shall respond within 1000 ms under load.</p>'), undefined, { compareText: true });
+    expect(cut[0].changedSinceWritten).toBe(true);
+  });
+
+  it('never compares generated (SURVEY) text: the marker is dropped and nothing is flagged', async () => {
+    const [entry] = await verifyExistingAdoIdsStillExist([reuse()], ado('<p>Other words</p>'), undefined, { compareText: false });
+    expect(entry.changedSinceWritten).toBeUndefined();
+    expect(entry.contentCheckPending).toBeUndefined();
+  });
+
+  it('a match whose item was deleted becomes a plain create, with no change flag left on it', async () => {
+    const [entry] = await verifyExistingAdoIdsStillExist(
+      [reuse({ changedSinceWritten: true, writtenContentHash: 'c-old', contentCheckPending: undefined, backfillIdentityV2: true })],
+      jest.fn().mockResolvedValue([]),
+      undefined,
+      { compareText: true },
+    );
+    expect(entry.action).toBe('create');
+    expect(entry.changedSinceWritten).toBeUndefined();
+    expect(entry.writtenContentHash).toBeUndefined();
+    expect(entry.backfillIdentityV2).toBeUndefined();
+  });
+});
+
+describe('changedSinceWrittenWarning', () => {
+  it('emits one Check warning per job listing the changed items, and none when nothing changed', () => {
+    const entries = [
+      { localId: 'a', changedSinceWritten: true },
+      { localId: 'b' },
+      { localId: 'c', changedSinceWritten: true },
+    ] as DryRunDiffEntry[];
+    expect(changedSinceWrittenWarning(entries)).toEqual({
+      kind: 'changed_since_written',
+      severity: 'needs_review',
+      nodeIds: ['a', 'c'],
+      detail: { count: 2 },
+      raw: '2 items match items already in Azure DevOps whose text differs. Nothing was updated in Azure DevOps.',
+    });
+    expect(changedSinceWrittenWarning([{ localId: 'b' }] as DryRunDiffEntry[])).toBeNull();
   });
 });

@@ -18,7 +18,7 @@ export function IconButton({
 }: {
   label: string;
   icon: ComponentType<{ className?: string }>;
-  onClick: () => void;
+  onClick: (event: React.MouseEvent<HTMLButtonElement>) => void;
   disabled?: boolean;
   loading?: boolean;
   // `danger` marks a destructive action by colour as well as by where it is placed.

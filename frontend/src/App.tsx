@@ -9,6 +9,7 @@ import { NewJobWizard } from './pages/NewJobWizard';
 import { BatchJobWizard } from './pages/BatchJobWizard';
 import { BatchStatus } from './pages/BatchStatus';
 import { JobDetail } from './pages/JobDetail';
+import { NotFound } from './pages/NotFound';
 import { Wiki } from './pages/Wiki';
 import { KnowledgeBase } from './pages/KnowledgeBase';
 import { Settings } from './pages/Settings';
@@ -37,12 +38,7 @@ export function App(): React.ReactElement {
                       <Route path="/settings" element={<Settings />} />
                       <Route
                         path="*"
-                        element={
-                          <div className="flex flex-col items-center gap-2 py-16 text-center">
-                            <h1 className="text-lg font-semibold">Page not found</h1>
-                            <p className="text-sm text-ink-3">This page doesn't exist.</p>
-                          </div>
-                        }
+                        element={<NotFound />}
                       />
                     </Routes>
                   </AppShell>

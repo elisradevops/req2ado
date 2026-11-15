@@ -8,7 +8,11 @@ import type { PrismaClient } from '@prisma/client';
 // 682 blocks, 39 figures) -- see DESIGN.md §18's ledger. This is not a
 // better guess; it is a different technique.
 
-export const SURVEY_MIN_MINUTES = 15;
+// A lower bound only: a SURVEY run always parses the document and makes at least one model call, so its estimate never reads as instant. It was
+// 15 minutes, which is far above what small documents take (an 8-block file ran in about 5) and made 8, 50 and 200 blocks all read "15 min",
+// hiding the fit's own answer. It is a judgement, not a measured value, and is deliberately well below anything the fit produces for a real
+// document, so the estimate comes from the data. It is a floor, never a ceiling (DESIGN.md §16.21).
+export const SURVEY_MIN_MINUTES = 2;
 export const BASELINE_FLAT_MINUTES = 1;
 
 // Bootstrap default -- used when there is no real history to fit against
@@ -270,6 +274,8 @@ export interface EtaEstimate {
   upperMinutes: number;
   basis: 'bootstrap' | 'blended';
   sampleCount: number;
+  /** Finished runs that fed the fit whose block count is within half to double this document's: 0 means the fit is extrapolating. */
+  nearSizeSampleCount: number;
   modelSampleCount: number;
   modelAdjustment: number;
   windowDays: number;
@@ -280,6 +286,8 @@ interface CachedFit {
   fit3: OlsFit3 | null;
   fit2: OlsFit2 | null;
   sampleCount: number;
+  /** Block counts of the samples the fit used (empty when the fit degenerated), for the near-size count. */
+  sampleBlockCounts: number[];
   // model -> { ratio (observed/estimated, averaged), count }
   perModel: Map<string, { ratio: number; count: number }>;
 }
@@ -370,6 +378,7 @@ export class EtaService {
         upperMinutes: BASELINE_FLAT_MINUTES,
         basis: 'bootstrap',
         sampleCount: 0,
+        nearSizeSampleCount: 0,
         modelSampleCount: 0,
         modelAdjustment: 1,
         windowDays: ETA_WINDOW_DAYS,
@@ -443,6 +452,7 @@ export class EtaService {
       upperMinutes: estimateMinutes * ETA_RANGE_UPPER,
       basis: n > 0 ? 'blended' : 'bootstrap',
       sampleCount: n,
+      nearSizeSampleCount: cached.sampleBlockCounts.filter((blocks) => blocks >= blockCount / 2 && blocks <= blockCount * 2).length,
       modelSampleCount: modelStats?.count ?? 0,
       modelAdjustment,
       windowDays: ETA_WINDOW_DAYS,
@@ -571,7 +581,7 @@ export class EtaService {
       }
     }
 
-    this.cachedFit = { expiresAt: Date.now() + ETA_FIT_CACHE_TTL_MS, fit3, fit2, sampleCount, perModel };
+    this.cachedFit = { expiresAt: Date.now() + ETA_FIT_CACHE_TTL_MS, fit3, fit2, sampleCount, sampleBlockCounts: sampleCount > 0 ? samples.map((sample) => sample.blockCount) : [], perModel };
     return this.cachedFit;
   }
 }

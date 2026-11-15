@@ -92,6 +92,34 @@ describe('BatchController.submit', () => {
     ).rejects.toThrow(/exceeds the 2-file limit/i);
     expect(batchService.submitBatch).not.toHaveBeenCalled();
   });
+
+  it('passes a whole-project duplicate scope through to BatchService.submitBatch', async () => {
+    const batchService = { submitBatch: jest.fn().mockResolvedValue({ batchId: 'batch-1', filesAccepted: 1, filesRejected: 0 }) };
+    const controller = new BatchController(batchService as any, 25);
+
+    await controller.submit([makeFile('a.txt')], USER, 'Project\\Area1', undefined, 'survey', undefined, undefined, undefined, 'project');
+
+    expect(batchService.submitBatch).toHaveBeenCalledWith(expect.objectContaining({ dedupScope: 'project' }));
+  });
+
+  it('sends no duplicate scope when none was chosen, so the stored default applies', async () => {
+    const batchService = { submitBatch: jest.fn().mockResolvedValue({ batchId: 'batch-1', filesAccepted: 1, filesRejected: 0 }) };
+    const controller = new BatchController(batchService as any, 25);
+
+    await controller.submit([makeFile('a.txt')], USER, 'Project\\Area1', undefined, 'survey', undefined, undefined, undefined, undefined);
+
+    expect(batchService.submitBatch.mock.calls[0][0]).not.toHaveProperty('dedupScope');
+  });
+
+  it('rejects an invalid dedupScope value the same way a single job does', async () => {
+    const batchService = { submitBatch: jest.fn() };
+    const controller = new BatchController(batchService as any, 25);
+
+    await expect(
+      controller.submit([makeFile('a.txt')], USER, 'Project\\Area1', undefined, 'survey', undefined, undefined, undefined, 'everywhere'),
+    ).rejects.toThrow(/dedupScope must be 'area_path' or 'project'/);
+    expect(batchService.submitBatch).not.toHaveBeenCalled();
+  });
 });
 
 describe('BatchController.getBatch / list / cancelQueued -- ownership', () => {

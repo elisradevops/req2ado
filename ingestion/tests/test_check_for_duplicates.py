@@ -349,6 +349,67 @@ def test_judge_client_distinct_verdict_downgrades_an_embedding_match() -> None:
         ]
 
 
+def test_a_match_with_no_stored_text_is_not_skipped_when_a_judge_is_configured_because_nothing_can_confirm_it() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ChromaVectorStore(persist_path=tmp)
+        store.upsert("old-item", [1.0, 0.0], area_path="Project\\Area1")  # indexed before texts were stored
+        judge_client = RecordingJudgeClient("redundant")
+
+        result = check_for_duplicates(
+            text="shall support terrestrial broadcast input",
+            title="shall support terrestrial broadcast input",
+            item_id="candidate-item",
+            area_path="Project\\Area1",
+            embed_client=FakeEmbedClient({"shall support terrestrial broadcast input": [1.0, 0.0]}),
+            vector_store=store,
+            judge_client=judge_client,
+        )
+
+        assert result.is_duplicate is False
+        assert result.judge_verdict == "unverified"
+        assert result.matched_item_id == "old-item"
+        assert judge_client.calls == []
+
+
+def test_a_later_match_with_no_stored_text_does_not_get_skipped_after_the_judge_said_distinct_to_an_earlier_one() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ChromaVectorStore(persist_path=tmp)
+        store.upsert("judged-item", [1.0, 0.0], area_path="Project\\Area1", document="a different requirement")
+        store.upsert("old-item", [0.95, 0.31], area_path="Project\\Area1")
+        judge_client = RecordingJudgeClient("distinct")
+
+        result = check_for_duplicates(
+            text="shall support terrestrial broadcast input",
+            title="shall support terrestrial broadcast input",
+            item_id="candidate-item",
+            area_path="Project\\Area1",
+            embed_client=FakeEmbedClient({"shall support terrestrial broadcast input": [1.0, 0.0]}),
+            vector_store=store,
+            judge_client=judge_client,
+        )
+
+        assert result.is_duplicate is False
+        assert len(judge_client.calls) == 1
+
+
+def test_a_match_with_no_stored_text_still_stands_when_there_is_no_judge_at_all() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ChromaVectorStore(persist_path=tmp)
+        store.upsert("old-item", [1.0, 0.0], area_path="Project\\Area1")
+
+        result = check_for_duplicates(
+            text="shall support terrestrial broadcast input",
+            title="shall support terrestrial broadcast input",
+            item_id="candidate-item",
+            area_path="Project\\Area1",
+            embed_client=FakeEmbedClient({"shall support terrestrial broadcast input": [1.0, 0.0]}),
+            vector_store=store,
+        )
+
+        assert result.is_duplicate is True
+        assert result.judge_verdict is None
+
+
 def test_judge_client_redundant_verdict_keeps_the_duplicate_flag() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         store = ChromaVectorStore(persist_path=tmp)
@@ -374,11 +435,10 @@ def test_judge_client_redundant_verdict_keeps_the_duplicate_flag() -> None:
         assert result.judge_verdict == "redundant"
 
 
-def test_judge_client_contradictory_verdict_also_keeps_the_duplicate_flag() -> None:
-    # This call only answers "does this ADO item already exist" -- conflict
-    # semantics (differing values for the same parameter) are a SEPARATE
-    # concern (conflict_detection.py's within-job cluster judge), not this
-    # cross-job check's job.
+def test_judge_client_contradictory_verdict_is_not_a_duplicate_so_the_requirement_is_not_dropped() -> None:
+    # A "contradictory" pair says similar things with DIFFERENT content. Skipping it as a duplicate would silently drop a requirement
+    # that disagrees with an existing one, which is exactly what a reviewer needs to see. The verdict stays visible; the similarity and
+    # the matched item are still reported so the reviewer can compare the two.
     with tempfile.TemporaryDirectory() as tmp:
         store = ChromaVectorStore(persist_path=tmp)
         store.upsert(
@@ -399,11 +459,13 @@ def test_judge_client_contradictory_verdict_also_keeps_the_duplicate_flag() -> N
             vector_store=store,
             judge_client=judge_client,
         )
-        assert result.is_duplicate is True
+        assert result.is_duplicate is False
         assert result.judge_verdict == "contradictory"
+        assert result.matched_item_id == "existing-item"
+        assert result.similarity is not None
 
 
-def test_judge_client_exception_falls_back_to_the_embedding_only_verdict_but_is_marked_unverified(
+def test_judge_client_exception_does_not_skip_the_requirement_and_is_marked_unverified(
     caplog,
 ) -> None:
     # Real bug this closes: a judge exception previously left judge_verdict
@@ -441,8 +503,11 @@ def test_judge_client_exception_falls_back_to_the_embedding_only_verdict_but_is_
                 vector_store=store,
                 judge_client=RaisingJudgeClient(),
             )
-        assert result.is_duplicate is True
+        # The judge never confirmed the match, so nothing is skipped: creating a requirement that turns out to be a duplicate is
+        # visible and fixable, silently never creating a real one is not.
+        assert result.is_duplicate is False
         assert result.judge_verdict == "judge_failed"
+        assert result.matched_item_id == "existing-item"
         assert any("judge" in record.message.lower() for record in caplog.records)
 
 
@@ -492,3 +557,157 @@ def test_judge_client_is_never_called_when_the_numeric_veto_already_downgraded_t
         )
         assert result.is_duplicate is False
         assert judge_client.calls == []
+
+
+# --- what a proposed item is compared against: same kind, in scope, and more than the single nearest --------------------------
+
+
+class ScriptedJudge:
+    """Answers per matched text: {matched_text: verdict}; an Exception value is raised."""
+
+    def __init__(self, verdicts: dict[str, object]) -> None:
+        self.verdicts = verdicts
+        self.calls: list[str] = []
+
+    def judge_duplicate_pair(self, candidate_text: str, matched_text: str, user_id: str | None = None) -> dict:
+        self.calls.append(matched_text)
+        verdict = self.verdicts[matched_text]
+        if isinstance(verdict, Exception):
+            raise verdict
+        return {"verdict": verdict}
+
+
+def _check(store, judge=None, area_path="Proj\\A", text="shall do the thing", **kwargs):
+    return check_for_duplicates(
+        text=text,
+        title=text,
+        item_id="candidate",
+        area_path=area_path,
+        embed_client=FakeEmbedClient({text: [1.0, 0.0]}),
+        vector_store=store,
+        judge_client=judge,
+        **kwargs,
+    )
+
+
+def _vec(similarity: float) -> list[float]:
+    import math
+
+    return [similarity, math.sqrt(1 - similarity * similarity)]
+
+
+def test_a_requirement_is_not_called_a_duplicate_of_a_feature_with_the_same_words() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ChromaVectorStore(persist_path=tmp)
+        store.upsert("feature-1", [1.0, 0.0], "Proj\\A", document="shall do the thing", type_category="Feature")
+
+        result = _check(store, type_category="Requirement")
+
+        assert result.is_duplicate is False
+
+
+def test_the_same_kind_in_a_sub_area_is_found_by_default_and_a_sibling_area_only_by_a_project_wide_search() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ChromaVectorStore(persist_path=tmp)
+        store.upsert("in-child", [1.0, 0.0], "Proj\\A\\Child", document="shall do the thing", type_category="Requirement")
+        store.upsert("in-sibling", [1.0, 0.0], "Proj\\B", document="shall do the thing", type_category="Requirement")
+
+        by_area = _check(store, type_category="Requirement", scope="area_path")
+        by_project = _check(store, type_category="Requirement", scope="project")
+
+        assert by_area.is_duplicate and by_area.matched_item_id == "in-child"
+        assert by_project.is_duplicate  # one of the two, both are exact matches
+
+
+def test_when_the_nearest_match_is_vetoed_the_next_one_is_still_considered() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ChromaVectorStore(persist_path=tmp)
+        # nearest: differs by a number, so vetoed; second: a real restatement just under it
+        store.upsert("nearest", [1.0, 0.0], "Proj\\A", document="shall do the thing within 5 s", type_category="Requirement")
+        store.upsert("second", _vec(0.97), "Proj\\A", document="shall do the thing", type_category="Requirement")
+
+        # the candidate has no number: the nearest one ("5 s") differs by a number and is vetoed, the second is a plain restatement
+        embed = FakeEmbedClient({"shall do the thing": [1.0, 0.0]})
+        result = check_for_duplicates(
+            text="shall do the thing",
+            title="shall do the thing",
+            item_id="candidate",
+            area_path="Proj\\A",
+            embed_client=embed,
+            vector_store=store,
+            type_category="Requirement",
+        )
+
+        assert result.is_duplicate is True
+        assert result.matched_item_id == "second"
+
+
+def test_the_judge_is_asked_about_each_close_candidate_in_turn_and_only_a_restatement_skips() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ChromaVectorStore(persist_path=tmp)
+        store.upsert("a", _vec(0.99), "Proj\\A", document="text a", type_category="Requirement")
+        store.upsert("b", _vec(0.96), "Proj\\A", document="text b", type_category="Requirement")
+        store.upsert("c", _vec(0.93), "Proj\\A", document="text c", type_category="Requirement")
+        judge = ScriptedJudge({"text a": "distinct", "text b": "contradictory", "text c": "redundant"})
+
+        result = _check(store, judge, type_category="Requirement")
+
+        assert judge.calls == ["text a", "text b", "text c"]
+        assert result.is_duplicate is True
+        assert result.matched_item_id == "c"
+        assert result.judge_verdict == "redundant"
+
+
+def test_when_no_candidate_is_confirmed_the_item_is_kept_and_the_best_candidate_is_still_reported() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ChromaVectorStore(persist_path=tmp)
+        store.upsert("a", _vec(0.99), "Proj\\A", document="text a", type_category="Requirement")
+        store.upsert("b", _vec(0.95), "Proj\\A", document="text b", type_category="Requirement")
+        judge = ScriptedJudge({"text a": "distinct", "text b": "distinct"})
+
+        result = _check(store, judge, type_category="Requirement")
+
+        assert result.is_duplicate is False
+        assert result.matched_item_id == "a"
+        assert result.similarity is not None and result.similarity > 0.98
+        assert result.judge_verdict == "distinct"
+
+
+def test_a_judge_that_fails_stops_the_search_and_nothing_is_skipped() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ChromaVectorStore(persist_path=tmp)
+        store.upsert("a", _vec(0.99), "Proj\\A", document="text a", type_category="Requirement")
+        store.upsert("b", _vec(0.95), "Proj\\A", document="text b", type_category="Requirement")
+        judge = ScriptedJudge({"text a": RuntimeError("LLM down"), "text b": "redundant"})
+
+        result = _check(store, judge, type_category="Requirement")
+
+        assert judge.calls == ["text a"]  # no further calls into a judge that is down
+        assert result.is_duplicate is False
+        assert result.judge_verdict == "judge_failed"
+
+
+def test_only_the_closest_few_candidates_cost_a_judge_call() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ChromaVectorStore(persist_path=tmp)
+        words = ["alpha", "bravo", "charlie", "delta", "echo"]  # no digits: a number in the text would trip the numeric guard
+        for word, similarity in zip(words, [0.99, 0.98, 0.97, 0.96, 0.95]):
+            store.upsert(f"i-{word}", _vec(similarity), "Proj\\A", document=f"text {word}", type_category="Requirement")
+        judge = ScriptedJudge({f"text {word}": "distinct" for word in words})
+
+        result = _check(store, judge, type_category="Requirement")
+
+        assert len(judge.calls) == 3
+        assert result.is_duplicate is False
+
+
+def test_candidates_under_the_threshold_are_never_judged_or_skipped() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ChromaVectorStore(persist_path=tmp)
+        store.upsert("far", _vec(0.80), "Proj\\A", document="text far", type_category="Requirement")
+        judge = ScriptedJudge({"text far": "redundant"})
+
+        result = _check(store, judge, type_category="Requirement")
+
+        assert judge.calls == []
+        assert result.is_duplicate is False

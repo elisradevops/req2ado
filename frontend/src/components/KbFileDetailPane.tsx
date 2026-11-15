@@ -4,8 +4,9 @@ import { FileTypeIcon, fileTypeLabel } from './FileTypeIcon';
 import { formatFileSize } from '../utils/fileSize';
 import { Button } from '../ui/Button';
 import { EmptyState } from '../ui/EmptyState';
-import { KbIngestStatusChip, hasNoVectors } from './KbIngestStatusChip';
+import { KbIngestStatusChip } from './KbIngestStatusChip';
 import { InfoTip } from '../ui/Tooltip';
+import { Switch } from '../ui/Switch';
 import type { FolderTreeEntry } from '../api/kb';
 
 // The right pane of the three-pane Knowledge Base explorer (DESIGN.md
@@ -19,6 +20,7 @@ export function KbFileDetailPane({
   chunkCount,
   isIngesting,
   alwaysInclude,
+  isUpdatingMode,
   onToggleAlwaysInclude,
   onIngest,
   onRequestRemove,
@@ -28,13 +30,12 @@ export function KbFileDetailPane({
   // Stored chunk count for this file; null = unknown (see KbIngestStatusChip).
   chunkCount: number | null;
   isIngesting: boolean;
-  // Only meaningful before ingest -- a small, static reference doc (e.g. a
-  // CMMI/requirements-writing-standards file) can be tagged "always
-  // include" so its full text grounds every SURVEY prompt unconditionally
-  // instead of being similarity-gated like a regular customer-content
-  // upload (Open WebUI's own Knowledge feature offers exactly this same
-  // choice -- Focused Retrieval vs Full Context -- per file).
+  // Whether an INGESTED file is "Reference" (its full text grounds every SURVEY job) rather than "Search" (used only when
+  // similar). The choice for a new file is made in the add dialog before it is ingested; this switch changes it afterwards
+  // (which retags the stored chunks, no re-ingest).
   alwaysInclude: boolean;
+  // True while switching an ingested file's mode is in flight.
+  isUpdatingMode: boolean;
   onToggleAlwaysInclude: (value: boolean) => void;
   onIngest: () => void;
   onRequestRemove: () => void;
@@ -48,6 +49,19 @@ export function KbFileDetailPane({
   }
 
   const extension = extensionOf(entry.name);
+
+  const alwaysIncludeControl = (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center justify-between gap-2">
+        <span className="flex items-center gap-1.5 text-sm text-ink-2">
+          Reference (always include)
+          <InfoTip content="Reference files are sent in full with every survey job: right for short, stable guides such as writing standards, style guides and templates. Search files are used only when a section of your document is similar to them: right for large or customer-specific documents." />
+        </span>
+        <Switch checked={alwaysInclude} onCheckedChange={onToggleAlwaysInclude} ariaLabel="Reference (always include)" disabled={isUpdatingMode} />
+      </div>
+      <p className="text-xs text-ink-3">{alwaysInclude ? 'The full text is added to every survey job.' : 'Used only when a section of your document is similar to it.'}</p>
+    </div>
+  );
 
   return (
     <div className="flex flex-col gap-4 p-4">
@@ -73,7 +87,10 @@ export function KbFileDetailPane({
       </dl>
       {ingested ? (
         <>
-          {hasNoVectors(ingested, chunkCount) && entry.downloadUrl && (
+          {alwaysIncludeControl}
+          {/* Offered for every ingested file, not only one with no vectors: an unchanged file is
+              otherwise never read again, so this is how an improved parser reaches it. */}
+          {entry.downloadUrl && (
             <Button size="sm" loading={isIngesting} onClick={onIngest}>
               Re-ingest file
             </Button>
@@ -83,21 +100,9 @@ export function KbFileDetailPane({
           </Button>
         </>
       ) : entry.downloadUrl ? (
-        <>
-          <label className="flex items-center gap-1.5 text-sm text-ink-2">
-            <input
-              type="checkbox"
-              checked={alwaysInclude}
-              onChange={(e) => onToggleAlwaysInclude(e.target.checked)}
-              className="h-3.5 w-3.5"
-            />
-            Always include (Full Context)
-            <InfoTip content="Injects this file's full text into every SURVEY prompt unconditionally, no similarity gate -- for small, static reference material (e.g. a CMMI/requirements-writing-standards doc) whose relevance is definitional, not topical. Leave unchecked for a regular customer-content document, which is instead retrieved only when similar enough to what's being processed." />
-          </label>
-          <Button size="sm" loading={isIngesting} onClick={onIngest}>
-            Add to knowledge base
-          </Button>
-        </>
+        <Button size="sm" loading={isIngesting} onClick={onIngest}>
+          Add to knowledge base
+        </Button>
       ) : null}
     </div>
   );

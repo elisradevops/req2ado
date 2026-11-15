@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { JobsController } from '../src/modules/pipeline/jobs.controller';
 import { BadRequestException } from '@nestjs/common';
 
@@ -28,6 +29,9 @@ describe('JobsController.preview', () => {
     const file = { buffer: Buffer.from('x'), originalname: 'req.docx', size: 4 } as Express.Multer.File;
     const result = await controller.preview(file, undefined, undefined);
 
+    // P5: the content hash the result cache keys on, so the wizard can ask GET /jobs/cached-result once mode and model are chosen.
+    expect(result.fileHash).toBe(createHash('sha256').update(file.buffer).digest('hex'));
+
     // skipVision=true: preview only needs blockCount/sectionCount/fileType,
     // never figure captions -- must not pay the per-image vision-LLM cost
     // (confirmed live: 28s instead of ~30ms for one small embedded image).
@@ -49,6 +53,7 @@ describe('JobsController.preview', () => {
       figureCount: 2,
       depth: 2,
       fileType: 'docx',
+      fileHash: expect.any(String),
       estimate: { mode: 'baseline', estimateMinutes: 1 },
       tableCount: 1,
       openTbdCount: 0,
@@ -76,7 +81,7 @@ describe('JobsController.preview', () => {
     expect(level).toHaveBeenCalledWith(doc, 'baseline', undefined, undefined, undefined, undefined, undefined, undefined, expect.any(AbortSignal)); // abortable: a slow ingestion is not left running
     expect(ok.overview.profile.baselineTree).toEqual({ epics: 1, features: 1, requirements: 0, depth: 2, roots: 1 });
     expect(ok.overview.structureHint).toMatch(/context only/i);
-    expect((ok.overview.lines ?? []).join(' ')).toMatch(/1 Epics, 1 Features and 0 Requirements/);
+    expect((ok.overview.lines ?? []).join(' ')).toMatch(/1 Epic, 1 Feature and 0 Requirements/);
 
     // a hung ingestion: the preview answers after the short bound and cancels the call
     jest.useFakeTimers();
@@ -126,6 +131,7 @@ describe('JobsController.preview', () => {
       figureCount: 0,
       depth: 0,
       fileType: 'docx',
+      fileHash: expect.any(String),
       estimate: { mode: 'baseline', estimateMinutes: 1 },
       tableCount: 0,
       openTbdCount: 0,
@@ -1134,6 +1140,122 @@ describe('JobsController.previewSummary', () => {
   });
 });
 
+describe('JobsController.previewSummary cache (P6)', () => {
+  const INPUT = ['§1 Scope: This ICD defines the electrical interfaces of the SOSA backplane for the AirPro LRU.', 'Sections: 1 Scope; 2 Power; 3 Thermal', 'Cited: VITA 46.0, MIL-STD-704'].join('\n');
+  const GOOD = 'This document defines the electrical interfaces of the SOSA backplane for the AirPro unit, covering power and thermal limits, and cites VITA 46.0 and MIL-STD-704 as its references.';
+  const USER = { userId: 'user-1', displayName: 'U' } as any;
+  const make = (chat: jest.Mock) =>
+    new JobsController({} as any, {} as any, { isModelHidden: () => false, getClientFor: jest.fn().mockResolvedValue({ chat, chatModel: 'default-m' }) } as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+  it('answers a second identical request without calling the model again', async () => {
+    const chat = jest.fn().mockResolvedValue({ content: GOOD });
+    const controller = make(chat);
+    expect(await controller.previewSummary(USER, { summaryInput: INPUT, model: 'm1' })).toEqual({ summary: GOOD });
+    expect(await controller.previewSummary(USER, { summaryInput: INPUT, model: 'm1' })).toEqual({ summary: GOOD });
+    expect(chat).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks the model again for a different input or a different model', async () => {
+    const chat = jest.fn().mockResolvedValue({ content: GOOD });
+    const controller = make(chat);
+    await controller.previewSummary(USER, { summaryInput: INPUT, model: 'm1' });
+    await controller.previewSummary(USER, { summaryInput: `${INPUT}\nSections: 4 EMC`, model: 'm1' });
+    await controller.previewSummary(USER, { summaryInput: INPUT, model: 'm2' });
+    expect(chat).toHaveBeenCalledTimes(3);
+  });
+
+  it('asks the model again once the entry has expired', async () => {
+    const now = jest.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      const chat = jest.fn().mockResolvedValue({ content: GOOD });
+      const controller = make(chat);
+      await controller.previewSummary(USER, { summaryInput: INPUT });
+      now.mockReturnValue(1_000_000 + 24 * 60 * 60 * 1000);
+      await controller.previewSummary(USER, { summaryInput: INPUT });
+      expect(chat).toHaveBeenCalledTimes(2);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('does not keep a failure: the next request asks the model again', async () => {
+    const chat = jest.fn().mockRejectedValueOnce(new Error('down')).mockResolvedValue({ content: GOOD });
+    const controller = make(chat);
+    expect(await controller.previewSummary(USER, { summaryInput: INPUT })).toEqual({ summary: null });
+    expect(await controller.previewSummary(USER, { summaryInput: INPUT })).toEqual({ summary: GOOD });
+    expect(chat).toHaveBeenCalledTimes(2);
+  });
+
+  it('"Write it again" (fresh) asks the model even when a summary is kept, and keeps the new one', async () => {
+    const OTHER = GOOD.replace('covering power and thermal limits', 'covering its power and thermal limits');
+    const chat = jest.fn().mockResolvedValueOnce({ content: GOOD }).mockResolvedValue({ content: OTHER });
+    const controller = make(chat);
+    await controller.previewSummary(USER, { summaryInput: INPUT });
+    expect(await controller.previewSummary(USER, { summaryInput: INPUT, fresh: true })).toEqual({ summary: OTHER });
+    expect(await controller.previewSummary(USER, { summaryInput: INPUT })).toEqual({ summary: OTHER });
+    expect(chat).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('JobsController.cachedResult (P5)', () => {
+  const USER = { userId: 'user-1', displayName: 'U' } as any;
+  const HASH = 'a'.repeat(64);
+  const make = (probe?: { has: jest.Mock }, hidden = false, chatModel = 'default-m') => {
+    const getClientFor = jest.fn().mockResolvedValue({ chatModel });
+    const controller = new JobsController({} as any, {} as any, { isModelHidden: () => hidden, getClientFor } as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, undefined, undefined, probe as any);
+    return { controller, getClientFor };
+  };
+
+  it('asks the probe with the file hash, the caller, the mode and the chosen model', async () => {
+    const probe = { has: jest.fn().mockResolvedValue(true) };
+    expect(await make(probe).controller.cachedResult(USER, { fileHash: HASH, mode: 'survey', model: 'm1' })).toEqual({ cachedResult: true });
+    expect(probe.has).toHaveBeenCalledWith({ fileHash: HASH, userId: 'user-1', mode: 'survey', model: 'm1' });
+  });
+
+  it('resolves "Default" to the model the job would run on (the user\'s connection), as the worker does', async () => {
+    const probe = { has: jest.fn().mockResolvedValue(false) };
+    const { controller, getClientFor } = make(probe, false, 'conn-model');
+    expect(await controller.cachedResult(USER, { fileHash: HASH, mode: 'survey' })).toEqual({ cachedResult: false });
+    expect(getClientFor).toHaveBeenCalledWith('user-1');
+    expect(probe.has).toHaveBeenCalledWith(expect.objectContaining({ model: 'conn-model' }));
+  });
+
+  it('is false for BASELINE (never cached) and when no probe is wired, without asking anything', async () => {
+    const probe = { has: jest.fn().mockResolvedValue(true) };
+    expect(await make(probe).controller.cachedResult(USER, { fileHash: HASH, mode: 'baseline' })).toEqual({ cachedResult: false });
+    expect(probe.has).not.toHaveBeenCalled();
+    expect(await make(undefined).controller.cachedResult(USER, { fileHash: HASH, mode: 'survey', model: 'm1' })).toEqual({ cachedResult: false });
+  });
+
+  it('is false, never an error, when the probe or the model lookup fails', async () => {
+    const probe = { has: jest.fn().mockRejectedValue(new Error('redis down')) };
+    expect(await make(probe).controller.cachedResult(USER, { fileHash: HASH, mode: 'survey', model: 'm1' })).toEqual({ cachedResult: false });
+    const controller = new JobsController({} as any, {} as any, { isModelHidden: () => false, getClientFor: jest.fn().mockRejectedValue(new Error('no conn')) } as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, undefined, undefined, { has: jest.fn() } as any);
+    expect(await controller.cachedResult(USER, { fileHash: HASH, mode: 'survey' })).toEqual({ cachedResult: false });
+  });
+
+  it.each([
+    ['a missing hash', { mode: 'survey' }],
+    ['a hash that is not sha256 hex', { fileHash: 'xyz', mode: 'survey' }],
+    ['an unknown mode', { fileHash: HASH, mode: 'other' }],
+  ])('rejects %s', async (_label, query) => {
+    const probe = { has: jest.fn() };
+    await expect(make(probe).controller.cachedResult(USER, query as any)).rejects.toBeInstanceOf(BadRequestException);
+    expect(probe.has).not.toHaveBeenCalled();
+  });
+
+  it('refuses a model that is not available', async () => {
+    const probe = { has: jest.fn() };
+    await expect(make(probe, true).controller.cachedResult(USER, { fileHash: HASH, mode: 'survey', model: 'hidden' })).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('is routed as GET /jobs/cached-result, declared before GET /jobs/:id', () => {
+    const names = Object.getOwnPropertyNames(JobsController.prototype);
+    expect(Reflect.getMetadata('path', JobsController.prototype.cachedResult)).toBe('cached-result');
+    expect(names.indexOf('cachedResult')).toBeLessThan(names.indexOf('getById'));
+  });
+});
+
 describe('POST /jobs/preview/summary limits', () => {
   it('is throttled well below the global limit, because it is a model call on caller-chosen text', () => {
     const handler = JobsController.prototype.previewSummary;
@@ -1228,5 +1350,152 @@ describe('JobsController discussion routes', () => {
     const jobsService = svc();
     await make(jobsService).removeDiscussionEntry('job-1', 'n0', 'e1', TEST_USER);
     expect(jobsService.removeDiscussionEntry).toHaveBeenCalledWith('job-1', 'n0', 'e1');
+  });
+});
+
+describe('JobsController.submit: the scope of the duplicate check', () => {
+  const TEST_USER = { userId: 'user-1', displayName: 'User One' } as any;
+  const file = { buffer: Buffer.from('x'), originalname: 'req.docx', size: 4 } as Express.Multer.File;
+  const build = () => {
+    const jobsService = { submit: jest.fn().mockResolvedValue({ jobId: 'job-1' }) };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    return { controller, jobsService };
+  };
+
+  it('passes the scope the form chose on to the job', async () => {
+    const { controller, jobsService } = build();
+
+    await controller.submit(file, TEST_USER, 'Project\\A', 'Project', 'baseline', undefined, undefined, undefined, undefined, 'project');
+
+    expect(jobsService.submit).toHaveBeenCalledWith(expect.objectContaining({ dedupScope: 'project' }));
+  });
+
+  it('leaves it out when the form did not say, so the default applies', async () => {
+    const { controller, jobsService } = build();
+
+    await controller.submit(file, TEST_USER, 'Project\\A', 'Project', 'baseline', undefined, undefined, undefined, undefined, undefined);
+
+    expect(jobsService.submit.mock.calls[0][0].dedupScope).toBeUndefined();
+  });
+
+  it('refuses a scope it does not know', async () => {
+    const { controller, jobsService } = build();
+
+    await expect(controller.submit(file, TEST_USER, 'Project\\A', 'Project', 'baseline', undefined, undefined, undefined, undefined, 'galaxy')).rejects.toThrow(/dedupScope/);
+    expect(jobsService.submit).not.toHaveBeenCalled();
+  });
+});
+
+describe('JobsController duplicate override routes', () => {
+  const USER = { userId: 'user-1', displayName: 'User One' } as any;
+  const build = () => {
+    const jobsService = {
+      overrideDuplicate: jest.fn().mockResolvedValue([{ localId: 'n1', action: 'create' }]),
+      undoDuplicateOverride: jest.fn().mockResolvedValue([{ localId: 'n1', action: 'dedup_skip' }]),
+      getJobOrThrow: jest.fn(),
+    };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    jest.spyOn(controller as any, 'ownedJob').mockResolvedValue({ writtenLocalIds: new Set<string>() });
+    return { controller, jobsService };
+  };
+
+  it('creates the item anyway, with the tree links on and no Related link unless asked', async () => {
+    const { controller, jobsService } = build();
+
+    await controller.overrideDuplicate('job-1', 'n1', USER, undefined, undefined);
+
+    expect(jobsService.overrideDuplicate).toHaveBeenCalledWith('job-1', 'n1', { linkTree: true, relateToExisting: false });
+  });
+
+  it('passes the reviewer\'s choices on', async () => {
+    const { controller, jobsService } = build();
+
+    await controller.overrideDuplicate('job-1', 'n1', USER, false, true);
+
+    expect(jobsService.overrideDuplicate).toHaveBeenCalledWith('job-1', 'n1', { linkTree: false, relateToExisting: true });
+  });
+
+  it('refuses a choice that is not true or false', async () => {
+    const { controller, jobsService } = build();
+
+    await expect(controller.overrideDuplicate('job-1', 'n1', USER, 'yes' as any, undefined)).rejects.toThrow(/linkTree/);
+    expect(jobsService.overrideDuplicate).not.toHaveBeenCalled();
+  });
+
+  it('undoes it', async () => {
+    const { controller, jobsService } = build();
+
+    const result = await controller.undoDuplicateOverride('job-1', 'n1', USER);
+
+    expect(jobsService.undoDuplicateOverride).toHaveBeenCalledWith('job-1', 'n1');
+    expect(result).toEqual({ dryRunDiff: expect.anything() });
+  });
+});
+
+
+describe('JobsController.getEntrySource', () => {
+  const TEST_USER = { userId: 'user-descriptor-1', displayName: 'Jane Doe' } as any;
+  const STORED_JOB = {
+    id: 'job-1',
+    userId: 'user-descriptor-1',
+    mode: 'baseline',
+    originalFilename: 'spec.docx',
+    dryRunDiff: [{ localId: 'n4', customerId: null, sourceRef: { documentPath: 'spec.docx', startOffset: 108, endOffset: 151, page: null } }],
+  };
+
+  it("returns the item's original wording from the stored source file, read again through ingestion", async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue(STORED_JOB), getSourceFileBytes: jest.fn().mockResolvedValue(Buffer.from('docx bytes')) };
+    const ingestionClient = { sourceExcerpt: jest.fn().mockResolvedValue({ text: 'The unit must report an undervoltage fault.', truncated: false, kind: 'text' }) };
+    const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+    await expect(controller.getEntrySource('job-1', 'n4', TEST_USER)).resolves.toEqual({
+      text: 'The unit must report an undervoltage fault.',
+      truncated: false,
+      kind: 'text',
+    });
+    expect(jobsService.getSourceFileBytes).toHaveBeenCalledWith('job-1');
+    expect(ingestionClient.sourceExcerpt).toHaveBeenCalledWith(
+      Buffer.from('docx bytes'),
+      'spec.docx',
+      expect.objectContaining({ startOffset: 108, endOffset: 151, extent: 'span' }),
+      expect.any(AbortSignal),
+    );
+  });
+
+  it('answers unavailable (not an error) for a job whose original was not kept', async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue(STORED_JOB), getSourceFileBytes: jest.fn().mockResolvedValue(null) };
+    const ingestionClient = { sourceExcerpt: jest.fn() };
+    const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+    await expect(controller.getEntrySource('job-1', 'n4', TEST_USER)).resolves.toEqual({ kind: 'unavailable', reason: 'no_original' });
+    expect(ingestionClient.sourceExcerpt).not.toHaveBeenCalled();
+  });
+
+  it('sends the deployment OCR languages, so a scanned PDF reads back the same text it was cut from', async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue(STORED_JOB), getSourceFileBytes: jest.fn().mockResolvedValue(Buffer.from('pdf')) };
+    const ingestionClient = { sourceExcerpt: jest.fn().mockResolvedValue({ text: 'x', truncated: false, kind: 'text' }) };
+    const controller = new JobsController(
+      jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024,
+      undefined, undefined, undefined, 'heb+eng',
+    );
+
+    await controller.getEntrySource('job-1', 'n4', TEST_USER);
+
+    expect(ingestionClient.sourceExcerpt.mock.calls[0][2]).toMatchObject({ languages: 'heb+eng' });
+  });
+
+  it('404s for an item the job does not have', async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue(STORED_JOB), getSourceFileBytes: jest.fn() };
+    const controller = new JobsController(jobsService as any, { sourceExcerpt: jest.fn() } as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+    await expect(controller.getEntrySource('job-1', 'n99', TEST_USER)).rejects.toThrow('not found');
+  });
+
+  it('404s for a job that does not belong to the caller, before reading any file', async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue({ ...STORED_JOB, userId: 'someone-else' }), getSourceFileBytes: jest.fn() };
+    const controller = new JobsController(jobsService as any, { sourceExcerpt: jest.fn() } as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+    await expect(controller.getEntrySource('job-1', 'n4', TEST_USER)).rejects.toThrow('not found');
+    expect(jobsService.getSourceFileBytes).not.toHaveBeenCalled();
   });
 });

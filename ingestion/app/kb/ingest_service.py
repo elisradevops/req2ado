@@ -4,7 +4,9 @@ from __future__ import annotations
 import hashlib
 import logging
 import tempfile
+import threading
 from collections.abc import Callable
+from contextlib import contextmanager
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -29,6 +31,8 @@ class IngestResult(BaseModel):
     # skip-unchanged branch, so callers can record a truthful number. None =
     # unknown (count unavailable); never 0 by default.
     chunks_in_store: int | None = None
+    # The SharePoint library the file is in, when known (the orchestrator records it to keep one library per knowledge base).
+    drive_id: str | None = None
 
 
 # Recursive folder-crawl depth cap: bounds worst-case Graph API calls
@@ -51,10 +55,47 @@ class FolderIngestFileResult(BaseModel):
     # `file` for top-level entries. Distinguishes same-named files across
     # different subfolders in a recursive ingest.
     relative_path: str | None = None
+    drive_id: str | None = None
 
 
 class FolderIngestResult(BaseModel):
     files: list[FolderIngestFileResult]
+
+
+# One ingest of a given (user, file) at a time. The batch runner is the only caller that can ask for the same file twice at
+# once (a retry racing an orphaned call from before a restart), and two concurrent ingests would both delete and rewrite its
+# chunks. The second waits, then finds the first one's work stored and skips it as unchanged. An entry exists only while
+# someone holds or awaits it.
+_item_locks: dict[tuple[str, str], list] = {}
+_item_locks_guard = threading.Lock()
+
+
+@contextmanager
+def _item_lock(user_id: str, item_id: str):
+    key = (user_id, item_id)
+    with _item_locks_guard:
+        entry = _item_locks.get(key)
+        if entry is None:
+            entry = _item_locks[key] = [threading.Lock(), 0]
+        entry[1] += 1
+    try:
+        with entry[0]:
+            yield
+    finally:
+        with _item_locks_guard:
+            entry[1] -= 1
+            if entry[1] == 0:
+                _item_locks.pop(key, None)
+
+
+# Bump when the .pptx loader/chunker starts extracting more of a deck. An already-ingested deck
+# whose bytes are unchanged is otherwise skipped by the hash check and would never get the fix.
+PPTX_PARSE_VERSION = 2
+
+
+def parse_version_for(name: str) -> int | None:
+    """The current parser revision for this file type, None for types with no versioned parser."""
+    return PPTX_PARSE_VERSION if Path(name).suffix.lower() == ".pptx" else None
 
 
 def _store_document(
@@ -102,7 +143,11 @@ def _store_document(
     verify_supported_content(name, content)
 
     file_hash = hashlib.sha256(content).hexdigest()
-    if vector_store.existing_file_hash(user_id, name, item_id) == file_hash:
+    parse_version = parse_version_for(name)
+    if (
+        vector_store.existing_file_hash(user_id, name, item_id) == file_hash
+        and vector_store.existing_parse_version(user_id, item_id) == parse_version
+    ):
         # Content unchanged, so no re-parse/re-embed needed -- but the file
         # may have been renamed/moved on SharePoint since it was last
         # ingested (source_id, the stable Graph drive-item identity,
@@ -120,6 +165,18 @@ def _store_document(
             vector_store.rename_file(user_id, item_id, name)
         except Exception as exc:  # noqa: BLE001 - rename metadata update must never fail an ingest
             logger.warning("rename_file failed for %s (source_id=%s): %s", name, item_id, exc)
+        # An unchanged file still takes the mode it is asked for now: skipping the ingest must not leave it in the mode it
+        # had (the caller records the requested mode, so the stored chunks would otherwise disagree with it). "retrieve" and
+        # no mode are the same thing. Best-effort like the rename: a hiccup must not fail the skip branch.
+        try:
+            requested_mode = "always_include" if retrieval_mode == "always_include" else None
+            stored_mode = vector_store.existing_retrieval_mode(user_id, item_id)
+            if (stored_mode if stored_mode == "always_include" else None) != requested_mode:
+                vector_store.set_retrieval_mode(user_id, item_id, requested_mode or "retrieve")
+        except Exception as exc:  # noqa: BLE001 - mode retag must never fail an ingest
+            logger.warning(
+                "retrieval-mode retag failed for %s (source_id=%s): %s", name, item_id, exc
+            )
         # Best-effort like the rename above: a store hiccup here must not fail
         # the (otherwise infallible) skip branch; the count is then unknown.
         try:
@@ -211,6 +268,7 @@ def _store_document(
             quality_checklist=quality_checklist,
             quality_checklist_definitions=quality_checklist_definitions,
             retrieval_mode=retrieval_mode,
+            parse_version=parse_version,
         )
 
     return IngestResult(
@@ -264,6 +322,50 @@ def ingest_document_from_url(
         checklist_client=checklist_client,
         retrieval_mode=retrieval_mode,
     )
+    return result.model_copy(update={"mime_type": item.mime_type, "drive_id": item.drive_id})
+
+
+def ingest_drive_item(
+    drive_id: str,
+    item_id: str,
+    user_id: str,
+    doc_type: str | None,
+    graph_client,
+    embed_client,
+    vector_store: KbVectorStore,
+    describe_figure: Callable[[bytes], str] | None = None,
+    checklist_client: object | None = None,
+    retrieval_mode: str | None = None,
+) -> IngestResult:
+    """Ingests one file addressed by drive + item id, the way the batch runner does: the item is looked up and its bytes
+    downloaded NOW, with a download link issued for this call (see GraphClient.get_item_by_id), so a file queued long ago
+    is not at the mercy of the link it was browsed with. Size is checked from the metadata before downloading and again on
+    the bytes. Any failure (ValueError, GraphApiError) propagates to the caller; `describe_figure`/`checklist_client`/
+    `retrieval_mode` -- see _store_document's docstring. The file is stored under its bare name, as the single-file route
+    does."""
+    with _item_lock(user_id, item_id):
+        item = graph_client.get_item_by_id(drive_id, item_id)
+        if item.is_folder:
+            raise ValueError("a folder cannot be added as a document")
+        if not item.download_url:
+            raise ValueError("no download URL available for this file")
+        if item.size > MAX_FILE_SIZE_BYTES:
+            raise ValueError(f"file exceeds {MAX_FILE_SIZE_BYTES}-byte limit: {item.size}")
+        content = graph_client.fetch_child_content(item.download_url)
+        if len(content) > MAX_FILE_SIZE_BYTES:
+            raise ValueError(f"file exceeds {MAX_FILE_SIZE_BYTES}-byte limit: {len(content)}")
+        result = _store_document(
+            item.name,
+            item.id,
+            content,
+            user_id,
+            doc_type,
+            embed_client,
+            vector_store,
+            describe_figure=describe_figure,
+            checklist_client=checklist_client,
+            retrieval_mode=retrieval_mode,
+        )
     return result.model_copy(update={"mime_type": item.mime_type})
 
 
@@ -379,6 +481,9 @@ def _ingest_folder_children(
                 vector_store,
                 describe_figure=describe_figure,
                 checklist_client=checklist_client,
+                # The folder route has no per-file mode: re-parsing a file (changed, or ingested by
+                # an older parser) must keep the mode it already has, not reset it to retrieval.
+                retrieval_mode=vector_store.existing_retrieval_mode(user_id, child.id),
             )
             results.append(
                 FolderIngestFileResult(
@@ -390,6 +495,7 @@ def _ingest_folder_children(
                     mime_type=child.mime_type,
                     size_bytes=len(content),
                     relative_path=relative_path,
+                    drive_id=child.drive_id,
                 )
             )
         except Exception as exc:  # noqa: BLE001 - one file's failure must not abort the batch

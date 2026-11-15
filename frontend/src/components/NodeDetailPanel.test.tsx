@@ -174,6 +174,38 @@ describe('NodeDetailPanel', () => {
     expect(screen.queryByRole('button', { name: /score this item/i })).not.toBeInTheDocument();
   });
 
+  it.each(['reuse', 'dedup_skip'] as const)('says nothing about scoring for a never-scored %s Requirement: it will not be created, so there is nothing to score', (action) => {
+    renderPanel(
+      <NodeDetailPanel
+        entry={{ localId: 'e2', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action, existingAdoId: 42, similarity: 0.93, customerId: null, tags: [] }}
+      />,
+    );
+
+    expect(screen.queryByText('Not scored yet.')).not.toBeInTheDocument();
+  });
+
+  it('does not repeat "already exists" in a grey note when the duplicate card says it, but keeps the note about its position', () => {
+    renderPanel(
+      <NodeDetailPanel
+        entry={{ localId: 'e2', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'dedup_skip', existingAdoId: 42, similarity: 0.93, customerId: null, tags: [] }}
+        duplicateSlot={<div>Already exists in Azure DevOps</div>}
+      />,
+    );
+
+    expect(screen.queryByText(/read-only: this maps to an item that already exists/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/its position in this tree is also read-only in azure devops/i)).toBeInTheDocument();
+  });
+
+  it('keeps the read-only note for an exact reuse, which has no duplicate card', () => {
+    renderPanel(
+      <NodeDetailPanel
+        entry={{ localId: 'e2', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'reuse', existingAdoId: 42, customerId: null, tags: [] }}
+      />,
+    );
+
+    expect(screen.getByText(/read-only: this maps to an item that already exists/i)).toBeInTheDocument();
+  });
+
   it('clicking Score this item calls onRescore with the entry localId -- reuses the exact same rescore action a stale item\'s Re-check quality button uses', async () => {
     const { default: userEvent } = await import('@testing-library/user-event');
     const user = userEvent.setup();
@@ -419,6 +451,20 @@ describe('NodeDetailPanel', () => {
     expect(screen.getByDisplayValue('Req body')).toBeInTheDocument();
   });
 
+  it('puts the text being corrected straight after its title in Edit, before the reference fields', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const user = userEvent.setup();
+    renderPanel(
+      <NodeDetailPanel
+        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
+        onSave={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: /edit/i }));
+    const order = screen.getAllByRole('textbox').map((field) => (field as HTMLInputElement).labels?.[0]?.textContent ?? '');
+    expect(order.slice(0, 3)).toEqual(['Title', 'Description', 'Customer ID']);
+  });
+
   it('opens the edit form when editRequest changes, only for an editable entry, not on mount', () => {
     const entry: DryRunDiffEntry = { localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] };
     const { rerender } = renderPanel(<NodeDetailPanel entry={entry} onSave={vi.fn()} editRequest={3} />);
@@ -575,7 +621,7 @@ describe('NodeDetailPanel', () => {
     expect(screen.queryByText('Classification')).not.toBeInTheDocument();
   });
 
-  it('marks the tag that would actually be written to ADO when requirementClassificationField allows it', async () => {
+  it('marks the tag that would actually be written to Azure DevOps when requirementClassificationField allows it', async () => {
     const { default: userEvent } = await import('@testing-library/user-event');
     const user = userEvent.setup();
     renderPanel(
@@ -587,7 +633,7 @@ describe('NodeDetailPanel', () => {
     );
     await user.click(screen.getByRole('button', { name: /edit/i }));
     // safety outranks functional -- see utils/requirementClassification.ts.
-    expect(screen.getByText(/"Safety".*written to ADO/i)).toBeInTheDocument();
+    expect(screen.getByText(/"Safety".*written to .*Azure DevOps/i)).toBeInTheDocument();
   });
 
   it('exits edit mode and drops the stale draft when the selected entry changes mid-edit', async () => {
@@ -774,10 +820,10 @@ describe('NodeDetailPanel', () => {
           onAttachFigure={onAttachFigure}
         />,
       );
-      await userEvent.click(screen.getByRole('button', { name: /Upload to ADO \(WI-42\)/ }));
+      await userEvent.click(screen.getByRole('button', { name: /Upload to Azure DevOps \(WI-42\)/ }));
       expect(await screen.findByText('Upload failed. Try again.')).toBeInTheDocument();
       onAttachFigure.mockResolvedValue(undefined);
-      await userEvent.click(screen.getByRole('button', { name: /Upload to ADO \(WI-42\)/ }));
+      await userEvent.click(screen.getByRole('button', { name: /Upload to Azure DevOps \(WI-42\)/ }));
       await waitFor(() => expect(screen.queryByText('Upload failed. Try again.')).not.toBeInTheDocument());
     });
 
@@ -816,7 +862,7 @@ describe('NodeDetailPanel', () => {
           onAttachFigure={onAttachFigure}
         />,
       );
-      await userEvent.click(screen.getByRole('button', { name: /Upload to ADO \(WI-42\)/ }));
+      await userEvent.click(screen.getByRole('button', { name: /Upload to Azure DevOps \(WI-42\)/ }));
       expect(onAttachFigure).toHaveBeenCalledWith('e1', 'f5');
     });
 
@@ -923,14 +969,14 @@ describe('NodeDetailPanel', () => {
   // POSITION -- a reviewer reparenting this row (drag or the "Move to..."
   // control) sees the move persist with no indication it never reaches
   // ADO. Extends the same read-only message rather than adding a second one.
-  it('also explains that a matched entry\'s position in the tree is read-only in ADO, distinct from its fields', () => {
+  it('also explains that a matched entry\'s position in the tree is read-only in Azure DevOps, distinct from its fields', () => {
     renderPanel(
       <NodeDetailPanel
         entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'reuse', existingAdoId: 42, customerId: null, tags: [] }}
         onSave={vi.fn()}
       />,
     );
-    expect(screen.getByText(/its position in this tree is also read-only in ado/i)).toBeInTheDocument();
+    expect(screen.getByText(/its position in this tree is also read-only in azure devops/i)).toBeInTheDocument();
   });
 
   it('explains "job no longer editable" for a create entry once the job leaves diff_ready', () => {
@@ -1263,10 +1309,23 @@ describe('NodeDetailPanel', () => {
       action: 'create', customerId: null, groundingScore: 0.9, qualityScore: 95, qualityConfidence: 'low',
     };
     const { unmount } = renderPanel(<NodeDetailPanel entry={flagged} />);
-    expect(screen.getByTestId('review-reason')).toHaveTextContent('Needs review: Model was unsure about this score');
+    expect(screen.getByTestId('review-reason')).toHaveTextContent('Check: Model was unsure about this score');
     unmount();
     renderPanel(<NodeDetailPanel entry={{ ...flagged, qualityConfidence: 'high' }} />);
     expect(screen.queryByTestId('review-reason')).not.toBeInTheDocument();
+  });
+
+  it('does not say an Epic or Feature "needs review" for a low quality score: parents are not scored', () => {
+    const feature: DryRunDiffEntry = {
+      localId: 'f1', parentLocalId: null, type: 'Feature', title: 'Sync', description: 'Body',
+      action: 'create', customerId: null, qualityScore: 15, qualityConfidence: 'low', groundingScore: 0.9,
+    };
+    const { unmount } = renderPanel(<NodeDetailPanel entry={feature} />);
+    expect(screen.queryByTestId('review-reason')).not.toBeInTheDocument();
+    unmount();
+    // A real signal on a parent (loose wording, a sign of invention) still shows.
+    renderPanel(<NodeDetailPanel entry={{ ...feature, groundingScore: 0.1 }} />);
+    expect(screen.getByTestId('review-reason')).toBeInTheDocument();
   });
 
   it('does not mark the Grounding metric low just because qualityConfidence is low', () => {
@@ -1415,4 +1474,37 @@ describe('NodeDetailPanel figure move', () => {
     await userEvent.click(screen.getByRole('button', { name: "Don't attach, figure 1 of 2" }));
     expect(await screen.findByText('Could not change the figure. Please try again.')).toBeInTheDocument();
   });
+describe('NodeDetailPanel: requirement text is set for reading (DESIGN.md §4, reading text)', () => {
+  it('draws the description at the reading size with a capped line length, not the 14px chrome size', () => {
+    const entry: DryRunDiffEntry = {
+      localId: 'r1', parentLocalId: null, type: 'Requirement', title: 'T', description: 'The receiver shall tune across 2 to 18 GHz.',
+      action: 'create', customerId: null, tags: [],
+    };
+    renderPanel(<NodeDetailPanel entry={entry} />);
+    const block = screen.getByText('The receiver shall tune across 2 to 18 GHz.').closest('div') as HTMLElement;
+    expect(block.className).toContain('text-read');
+    expect(block.className).not.toContain('text-sm');
+    expect(block.className).toContain('max-w-[68ch]');
+  });
+});
+
+describe('NodeDetailPanel: the edit form puts the text first', () => {
+  it('lists Title, then Description, then the reference fields and classification (R3)', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const requirement: DryRunDiffEntry = {
+      localId: 'r1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body',
+      action: 'create', customerId: '3.2.1', tags: [],
+    };
+    renderPanel(<NodeDetailPanel entry={requirement} onSave={vi.fn()} />);
+    await userEvent.click(screen.getByRole('button', { name: /^edit$/i }));
+    const title = screen.getByLabelText('Title');
+    const description = screen.getByLabelText('Description');
+    const customerId = screen.getByLabelText('Customer ID');
+    const seRef = screen.getByLabelText('SE Coverage Reference');
+    const after = (a: Element, b: Element) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(after(title, description)).toBe(true);
+    expect(after(description, customerId)).toBe(true);
+    expect(after(customerId, seRef)).toBe(true);
+  });
+});
 });

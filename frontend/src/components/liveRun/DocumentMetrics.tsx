@@ -45,11 +45,21 @@ export function DocumentMetrics({
         </Chip>
       )}
       {total > 0 && (
+        // Until the first outline item is finished, the count is how many the document has: a "0 of N" that stays at 0 through the whole
+        // analysis looks frozen. Nothing is written to Azure DevOps during a run, so the items are "done", not "written".
         <span className='text-xs text-ink-3'>
-          <span className='font-mono tabular-nums text-ink-2'>
-            {formatCount(Math.min(finished, total))} of {formatCount(total)}
-          </span>{' '}
-          outline items written
+          {finished > 0 ? (
+            <>
+              <span className='font-mono tabular-nums text-ink-2'>
+                {formatCount(Math.min(finished, total))} of {formatCount(total)}
+              </span>{' '}
+              outline items done
+            </>
+          ) : (
+            <>
+              <span className='font-mono tabular-nums text-ink-2'>{formatCount(total)}</span> outline {total === 1 ? 'item' : 'items'}
+            </>
+          )}
         </span>
       )}
     </div>

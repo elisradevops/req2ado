@@ -29,9 +29,23 @@ describe('DocumentMetrics', () => {
 
   it('counts finished outline items, capped at the total', () => {
     const { rerender } = render(<DocumentMetrics stats={stats()} finished={12} total={48} />);
-    expect(screen.getByTestId('document-metrics')).toHaveTextContent('12 of 48 outline items written');
+    expect(screen.getByTestId('document-metrics')).toHaveTextContent('12 of 48 outline items done');
     rerender(<DocumentMetrics stats={stats()} finished={60} total={48} />);
-    expect(screen.getByTestId('document-metrics')).toHaveTextContent('48 of 48 outline items written');
+    expect(screen.getByTestId('document-metrics')).toHaveTextContent('48 of 48 outline items done');
+  });
+
+  it('says how many outline items the document has, not "0 of N", until the first one is done', () => {
+    render(<DocumentMetrics stats={stats()} finished={0} total={15} />);
+    const box = screen.getByTestId('document-metrics');
+    expect(box).toHaveTextContent('15 outline items');
+    expect(box).not.toHaveTextContent(/0 of 15/);
+    expect(box).not.toHaveTextContent('written'); // nothing is written to Azure DevOps during a run
+  });
+
+  it('uses the singular for one outline item', () => {
+    render(<DocumentMetrics stats={stats()} finished={0} total={1} />);
+    expect(screen.getByTestId('document-metrics')).toHaveTextContent('1 outline item');
+    expect(screen.getByTestId('document-metrics')).not.toHaveTextContent('1 outline items');
   });
 
   it('uses singular nouns for one', () => {

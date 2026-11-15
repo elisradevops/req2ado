@@ -1,13 +1,21 @@
+import { reconnectFailureMessage } from '../utils/sharePointReconnect';
+import { SharePointTokenHelp, SHAREPOINT_TOKEN_DIALOG_DESCRIPTION } from '../components/SharePointTokenHelp';
 import { useEffect, useRef, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { httpClient } from '../api/httpClient';
-import { getSharePointStatus, reconnectSharePoint, type SharePointStatus } from '../api/kb';
+import { reconnectSharePoint, type SharePointStatus } from '../api/kb';
+import { isAxiosError } from 'axios';
 import { getAppSettings, updateAppSettings } from '../api/settings';
 import { getLlmConnection, getLlmConnectionModels, setLlmConnection, type LlmConnectionStatus, type LlmSelectableModel } from '../api/llmConnection';
+import { useConnectionStatusStore } from '../store/connectionStatusStore';
 import { useLlmConnectionStore } from '../store/llmConnectionStore';
-import { useAuthStore, useDisplayName, useOrgUrl, useUserId } from '../store/authStore';
+import { useAccountName, useAuthStore, useDisplayName, useEmail, useOrgUrl, useUserId } from '../store/authStore';
 import { useDenseView, useAutoSyncLedgers, useKeyboardShortcuts, useUiPreferencesStore } from '../store/uiPreferencesStore';
 import { useToast } from '../components/ToastProvider';
 import { formatSharePointExpiry } from '../utils/sharePointStatus';
+import { adoConnectionRow, type HealthState } from '../utils/connectionHealth';
+import { ProfileCard } from '../components/ProfileCard';
+import { usePageTitle } from '../hooks/usePageTitle';
 import { PageHeader } from '../ui/PageHeader';
 import { SectionCard } from '../ui/SectionCard';
 import { Button } from '../ui/Button';
@@ -20,8 +28,14 @@ import { Switch } from '../ui/Switch';
 import { Select } from '../ui/Select';
 import { Skeleton } from '../ui/Skeleton';
 import { cn } from '../lib/cn';
+import { Briefcase } from 'lucide-react';
 
 type IntegrationTone = 'ok' | 'danger' | 'warning' | 'dim';
+
+// What the connection check found, as the row's tone: a rejected credential is danger, an unreachable service a warning.
+const ADO_TONE: Record<HealthState, IntegrationTone> = { ok: 'ok', attention: 'warning', danger: 'danger', off: 'dim', checking: 'dim' };
+
+const SHAREPOINT_UNREACHABLE: SharePointStatus = { status: 'unreachable', expiresInSeconds: null };
 
 const SHAREPOINT_COPY: Record<SharePointStatus['status'], { label: string; tone: IntegrationTone; reason: string | null }> = {
   valid: { label: 'Connected', tone: 'ok', reason: null },
@@ -55,6 +69,7 @@ const THRESHOLD_PERCENT_MIN = 0;
 const THRESHOLD_PERCENT_MAX = 100;
 const THRESHOLD_LOAD_ERROR = "Couldn't load the current threshold. Reload the page to try again.";
 const THRESHOLD_SAVE_ERROR = "Couldn't save the threshold. Check your connection and try again.";
+const THRESHOLD_FORBIDDEN_ERROR = 'Only an administrator can change the threshold.';
 const THRESHOLD_RANGE_ERROR = `Enter a percentage between ${THRESHOLD_PERCENT_MIN} and ${THRESHOLD_PERCENT_MAX}.`;
 
 // 0.905 -> "90.5". Rounds to one decimal place of a percent, which is finer
@@ -99,6 +114,7 @@ function IntegrationRow({
   // split which genuinely depends on whether a token was ever set.
   actionLabel,
   onAction,
+  focusAction = false,
 }: {
   icon: React.ReactNode;
   name: string;
@@ -107,18 +123,25 @@ function IntegrationRow({
   reason?: string | null;
   actionLabel?: string;
   onAction: () => void;
+  // The user was sent here to do exactly this (the Open WebUI gate): focus the action so the next key press is the one that matters.
+  focusAction?: boolean;
 }): React.ReactElement {
+  const actionRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (focusAction) actionRef.current?.focus();
+  }, [focusAction]);
   return (
     <div className={cn('flex items-center gap-3 rounded-md border p-3', TONE_CARD_CLASSES[tone])}>
       <span className="grid h-8 w-8 flex-none place-items-center rounded-md bg-surface-alt text-ink-3">{icon}</span>
       <div className="min-w-0 flex-1">
-        <p className="flex items-center gap-2 text-sm font-medium text-ink-1">
+        <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium text-ink-1">
           {name}
-          <Chip className={cn('border text-xs font-normal', TONE_CHIP_CLASSES[tone])}>{detail}</Chip>
+          {/* The status can be long (an address, an expiry): it wraps inside the row instead of pushing the action off a narrow screen. */}
+          <Chip className={cn('max-w-full rounded-lg border text-xs font-normal whitespace-normal [overflow-wrap:anywhere]', TONE_CHIP_CLASSES[tone])}>{detail}</Chip>
         </p>
         {reason && <p className="mt-0.5 text-xs text-danger-ink">{reason}</p>}
       </div>
-      <Button size="sm" variant={tone === 'ok' || tone === 'dim' ? 'outline' : 'primary'} onClick={onAction}>
+      <Button ref={actionRef} size="sm" variant={focusAction || (tone !== 'ok' && tone !== 'dim') ? 'primary' : 'outline'} onClick={onAction}>
         {actionLabel ?? TONE_ACTION_LABEL[tone]}
       </Button>
     </div>
@@ -163,9 +186,16 @@ function DisplayPreferenceRow({
  * than only ever being discoverable by visiting the Knowledge Base page.
  */
 export function Settings(): React.ReactElement {
+  usePageTitle('Profile and connections');
+  // Set by RouteGuard when it sent the user here because Open WebUI is not configured yet.
+  const sentByLlmGate = (useLocation().state as { llmGate?: boolean } | null)?.llmGate === true;
   const displayName = useDisplayName();
   const orgUrl = useOrgUrl();
   const userId = useUserId();
+  const email = useEmail();
+  const accountName = useAccountName();
+  const adoEntry = useConnectionStatusStore((s) => s.ado);
+  const adoRow = adoConnectionRow(adoEntry);
   const { showToast } = useToast();
   const denseView = useDenseView();
   const autoSyncLedgers = useAutoSyncLedgers();
@@ -176,7 +206,9 @@ export function Settings(): React.ReactElement {
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [reconnectError, setReconnectError] = useState<string | null>(null);
 
-  const [sharePointStatus, setSharePointStatus] = useState<SharePointStatus | null>(null);
+  // Shared with the rest of the app (polled and refreshed in one place); a check that failed reads as unreachable.
+  const sharePointEntry = useConnectionStatusStore((s) => s.sharePoint);
+  const sharePointStatus = sharePointEntry.error ? SHAREPOINT_UNREACHABLE : sharePointEntry.data;
   const [sharePointReconnectOpen, setSharePointReconnectOpen] = useState(false);
   const [sharePointToken, setSharePointToken] = useState('');
   const [isSharePointReconnecting, setIsSharePointReconnecting] = useState(false);
@@ -198,6 +230,9 @@ export function Settings(): React.ReactElement {
   const [thresholdPercent, setThresholdPercent] = useState('');
   const [savedThresholdPercent, setSavedThresholdPercent] = useState<string | null>(null);
   const [isThresholdLoading, setIsThresholdLoading] = useState(true);
+  const [embeddingModel, setEmbeddingModel] = useState<string | null>(null);
+  // Whether this user may change the threshold; true until the server says otherwise (an older one let everyone).
+  const [canEditThreshold, setCanEditThreshold] = useState(true);
   const [isSavingThreshold, setIsSavingThreshold] = useState(false);
   const [thresholdError, setThresholdError] = useState<string | null>(null);
   const isSavingThresholdRef = useRef(false);
@@ -205,9 +240,7 @@ export function Settings(): React.ReactElement {
   const isSharePointReconnectingRef = useRef(false);
 
   useEffect(() => {
-    getSharePointStatus()
-      .then(setSharePointStatus)
-      .catch(() => setSharePointStatus({ status: 'unreachable', expiresInSeconds: null }));
+    void useConnectionStatusStore.getState().refresh('sharePoint');
   }, []);
 
   useEffect(() => {
@@ -222,6 +255,8 @@ export function Settings(): React.ReactElement {
         const percentText = fractionToPercentText(settings.dedupThreshold);
         setThresholdPercent(percentText);
         setSavedThresholdPercent(percentText);
+        setEmbeddingModel(settings.embeddingModel ?? null);
+        setCanEditThreshold(settings.canEditDedupThreshold !== false);
       })
       .catch(() => setThresholdError(THRESHOLD_LOAD_ERROR))
       .finally(() => setIsThresholdLoading(false));
@@ -246,11 +281,11 @@ export function Settings(): React.ReactElement {
       // orgUrl is the only locally-cached field this touches -- the PAT
       // itself never enters authStore; the vault write already happened
       // server-side in the request above.
-      useAuthStore.getState().login(newOrgUrl, displayName ?? '', userId ?? '');
+      useAuthStore.getState().login(newOrgUrl, displayName ?? '', userId ?? '', { email, accountName });
       showToast('Azure DevOps connection updated.', 'success');
       setReconnectOpen(false);
     } catch {
-      setReconnectError('Invalid ADO organization URL or Personal Access Token, or it belongs to a different ADO account.');
+      setReconnectError('Invalid Azure DevOps organization URL or personal access token, or it belongs to a different Azure DevOps account.');
     } finally {
       isReconnectingRef.current = false;
       setIsReconnecting(false);
@@ -273,14 +308,14 @@ export function Settings(): React.ReactElement {
     try {
       const status = await reconnectSharePoint(sharePointToken);
       if (status.status !== 'valid') {
-        setSharePointReconnectError('SharePoint rejected that token. Check you copied the whole value — they are long.');
+        setSharePointReconnectError(reconnectFailureMessage(status.status));
         return;
       }
-      setSharePointStatus(status);
+      useConnectionStatusStore.getState().record('sharePoint', status);
       showToast('SharePoint reconnected.', 'success');
       setSharePointReconnectOpen(false);
     } catch {
-      setSharePointReconnectError('SharePoint rejected that token. Check you copied the whole value — they are long.');
+      setSharePointReconnectError(reconnectFailureMessage('error'));
     } finally {
       isSharePointReconnectingRef.current = false;
       setIsSharePointReconnecting(false);
@@ -335,7 +370,7 @@ export function Settings(): React.ReactElement {
     setIsSavingLlmConnection(true);
     setLlmConnectionError(null);
     try {
-      await setLlmConnection(llmToken.trim(), llmChatModel);
+      const saved = await setLlmConnection(llmToken.trim(), llmChatModel);
       const status = await getLlmConnection();
       setLlmConnectionState(status);
       // Flips RouteGuard's cached gate state directly -- without this, a
@@ -345,6 +380,10 @@ export function Settings(): React.ReactElement {
       // re-checks once per session, not on every navigation.
       useLlmConnectionStore.getState().setConfigured(status.configured);
       showToast('Open WebUI connection saved.', 'success');
+      // Saved either way (chat works without it), but the user should hear that matching against existing items will not run.
+      if (saved?.embeddings === 'unavailable') {
+        showToast('Duplicate detection cannot use this connection yet: your account cannot reach the embedding model. Ask whoever runs this system to give your account access to it.', 'warning');
+      }
       setLlmDialogOpen(false);
     } catch {
       setLlmConnectionError('Could not save this connection. Check the token and selected models and try again.');
@@ -375,8 +414,8 @@ export function Settings(): React.ReactElement {
       setThresholdPercent(percentText);
       setSavedThresholdPercent(percentText);
       showToast('Duplicate detection threshold saved.', 'success');
-    } catch {
-      setThresholdError(THRESHOLD_SAVE_ERROR);
+    } catch (error) {
+      setThresholdError(isAxiosError(error) && error.response?.status === 403 ? THRESHOLD_FORBIDDEN_ERROR : THRESHOLD_SAVE_ERROR);
     } finally {
       isSavingThresholdRef.current = false;
       setIsSavingThreshold(false);
@@ -400,23 +439,23 @@ export function Settings(): React.ReactElement {
 
   return (
     <div className="flex flex-col gap-4">
-      <PageHeader title="Profile & Connections" />
-      <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
+      <PageHeader title="Profile and connections" />
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
         <SectionCard title="Profile">
-          <div className="flex flex-col gap-1 text-sm">
-            <p className="font-medium text-ink-1">{displayName}</p>
-            <p className="font-mono text-xs text-ink-3">{userId}</p>
-          </div>
+          <ProfileCard displayName={displayName} email={email} accountName={accountName} userId={userId} orgUrl={orgUrl} />
         </SectionCard>
 
         <div className="flex flex-col gap-4">
           <SectionCard title="Integrations">
             <div className="flex flex-col gap-2.5">
               <IntegrationRow
-                icon={<span className="text-xs font-bold">ADO</span>}
+                icon={<Briefcase className="h-4 w-4" aria-hidden="true" />}
                 name="Azure DevOps"
-                detail={orgUrl ?? 'Not connected'}
-                tone="ok"
+                // A healthy or still-checking connection says so in words beside the address (the failures say it below the row), so the
+                // state is never carried by the colour of the chip alone.
+                detail={adoRow.state === 'ok' || adoRow.state === 'checking' ? `${adoRow.word}${orgUrl ? ` · ${orgUrl}` : ''}` : (orgUrl ?? 'Not connected')}
+                tone={ADO_TONE[adoRow.state]}
+                reason={adoRow.state === 'attention' || adoRow.state === 'danger' ? adoRow.word : null}
                 actionLabel="Reconnect"
                 onAction={openReconnect}
               />
@@ -437,35 +476,36 @@ export function Settings(): React.ReactElement {
                   detail={llmConnection.configured ? `Connected · ${llmConnection.chatModel}` : 'Not configured'}
                   tone={llmConnection.configured ? 'ok' : 'dim'}
                   onAction={openLlmDialog}
+                  focusAction={!llmConnection.configured && sentByLlmGate}
                 />
               )}
             </div>
           </SectionCard>
 
-          <SectionCard title="Display Preferences">
+          <SectionCard title="Display preferences">
             <div className="flex flex-col gap-3">
               <DisplayPreferenceRow
-                label="Dense View"
-                description="Reduce padding for data tables"
+                label="Dense view"
+                description="Tighter rows in the Jobs list"
                 checked={denseView}
                 onCheckedChange={(value) => useUiPreferencesStore.getState().setDenseView(value)}
               />
               <DisplayPreferenceRow
-                label="Auto-Sync Ledgers"
-                description="Periodically fetch updates from ADO"
+                label="Refresh the Jobs list"
+                description="Check for job status changes every few seconds"
                 checked={autoSyncLedgers}
                 onCheckedChange={(value) => useUiPreferencesStore.getState().setAutoSyncLedgers(value)}
               />
               <DisplayPreferenceRow
-                label="Keyboard Shortcuts"
-                description="Single-key shortcuts while reviewing: J, K, A, R and X"
+                label="Keyboard shortcuts"
+                description="Single-key shortcuts while reviewing: J, K, A, R, X, E and U"
                 checked={keyboardShortcuts}
                 onCheckedChange={(value) => useUiPreferencesStore.getState().setKeyboardShortcuts(value)}
               />
             </div>
           </SectionCard>
 
-          <SectionCard title="Duplicate Detection">
+          <SectionCard title="Duplicate detection">
             {isThresholdLoading ? (
               <Skeleton className="h-8 w-full" />
             ) : (
@@ -474,11 +514,12 @@ export function Settings(): React.ReactElement {
                   <div className="min-w-0">
                     <p className="flex items-center gap-1.5 text-sm font-medium text-ink-1">
                       Similarity threshold
-                      <InfoTip content="Raise it and the system gets more conservative about calling two items duplicates: fewer items are skipped by mistake, but a real near-duplicate is likelier to slip through and be created a second time in Azure DevOps. Lower it and more items are skipped as duplicates, including ones you wanted created. Compared as a cosine similarity against work items already in the project." />
+                      <InfoTip content="Raise it and the system gets more conservative about calling two items duplicates: fewer items are skipped by mistake, but a real near-duplicate is likelier to slip through and be created a second time in Azure DevOps. Lower it and more items are skipped as duplicates, including ones you wanted created. Measured against the work items already in the project." />
                     </p>
                     <p className="text-xs text-ink-3">
-                      A proposed item scoring at or above this against an existing work item is skipped as a duplicate instead of created.
+                      How alike two items must be to count as duplicates. A proposed item scoring at or above this against an existing work item is skipped instead of created.
                     </p>
+                    <p className="text-xs text-ink-3">A second check confirms every match; if it cannot run, nothing is skipped.</p>
                   </div>
                   <div className="flex flex-none items-center gap-1.5">
                     <TextField
@@ -489,18 +530,25 @@ export function Settings(): React.ReactElement {
                       aria-label="Similarity threshold percentage"
                       value={thresholdPercent}
                       onChange={(e) => setThresholdPercent(e.target.value)}
-                      disabled={isThresholdUnavailable || isSavingThreshold}
+                      disabled={isThresholdUnavailable || !canEditThreshold || isSavingThreshold}
                       className="w-[72px] text-right"
                     />
                     <span className="text-sm text-ink-2">%</span>
                   </div>
                 </div>
+                {embeddingModel && (
+                  <p className="flex flex-wrap items-baseline gap-x-2 text-xs text-ink-3">
+                    Similarity is measured with <span className="font-mono text-ink-2">{embeddingModel}</span>
+                    <span>(set by whoever runs this system)</span>
+                  </p>
+                )}
+                {!canEditThreshold && <p className="text-xs text-ink-3">Only an administrator can change this. Ask whoever runs this system.</p>}
                 {thresholdError && <p className="text-sm text-danger">{thresholdError}</p>}
                 <div className="flex justify-end">
                   <Button
                     size="sm"
                     onClick={handleSaveThreshold}
-                    disabled={isThresholdUnavailable || !isThresholdDirty || !isThresholdValid || isSavingThreshold}
+                    disabled={isThresholdUnavailable || !canEditThreshold || !isThresholdDirty || !isThresholdValid || isSavingThreshold}
                   >
                     {isSavingThreshold && <Spinner />}
                     Save threshold
@@ -530,7 +578,7 @@ export function Settings(): React.ReactElement {
           </>
         }
       >
-        <TextField label="ADO Organization URL" value={newOrgUrl} onChange={(e) => setNewOrgUrl(e.target.value)} fullWidth />
+        <TextField label="Azure DevOps organization URL" value={newOrgUrl} onChange={(e) => setNewOrgUrl(e.target.value)} fullWidth />
         <div className="flex items-end gap-1.5">
           <TextField label="Personal Access Token" type="password" value={newPat} onChange={(e) => setNewPat(e.target.value)} fullWidth />
           <InfoTip content="Needs Work Items (Read, write, & manage) scope at minimum. Reconnecting re-validates and re-encrypts this token server-side without signing you out." />
@@ -542,7 +590,7 @@ export function Settings(): React.ReactElement {
         open={sharePointReconnectOpen}
         onOpenChange={setSharePointReconnectOpen}
         title="Reconnect SharePoint"
-        description="Paste a fresh access token. This is checked against SharePoint before saving, and one token is shared by everyone using the knowledge base."
+        description={SHAREPOINT_TOKEN_DIALOG_DESCRIPTION}
         footer={
           <>
             <span className="ml-auto" />
@@ -556,6 +604,7 @@ export function Settings(): React.ReactElement {
           </>
         }
       >
+        <SharePointTokenHelp />
         <TextField label="SharePoint access token" type="password" value={sharePointToken} onChange={(e) => setSharePointToken(e.target.value)} fullWidth />
         {sharePointReconnectError && <p className="text-sm text-danger">{sharePointReconnectError}</p>}
       </Dialog>
@@ -564,7 +613,7 @@ export function Settings(): React.ReactElement {
         open={llmDialogOpen}
         onOpenChange={setLlmDialogOpen}
         title="Configure Open WebUI"
-        description="Your own API token and default models -- used for every job you submit and for chat. Never shared with other users."
+        description="Your own API token and default models — used for every job you submit and for chat. Never shared with other users."
         footer={
           <>
             <span className="ml-auto" />

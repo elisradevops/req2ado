@@ -152,4 +152,13 @@ describe('Dialog body', () => {
     // class pin: jsdom has no layout, so it cannot measure the clipping itself.
     expect(screen.getByRole('button', { name: 'Inside' }).parentElement?.className).toContain('pt-1');
   });
+
+  it('keeps a drawable focus ring on the dialog box itself: outline-none alone would hide the ring that outline-2 asks for (Tailwind 4)', async () => {
+    const user = userEvent.setup();
+    render(<Harness />);
+    await user.click(screen.getByRole('button', { name: 'Open it' }));
+    const classes = (await screen.findByRole('dialog')).className.split(/\s+/);
+    expect(classes).toContain('focus-visible:outline-2');
+    expect(classes).toContain('focus-visible:outline-solid');
+  });
 });

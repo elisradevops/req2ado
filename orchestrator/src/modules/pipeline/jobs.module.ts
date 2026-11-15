@@ -2,7 +2,9 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { PrismaClient } from '@prisma/client';
 import Redis from 'ioredis';
-import { JobsController } from './jobs.controller';
+import { JobsController, RESULT_CACHE_PROBE } from './jobs.controller';
+import { JobResultCache, ResultCacheProbe, kbVersionFor, releaseVersion, type ResultCacheStore } from './result-cache';
+import { DedupDecisionsController } from './dedup-decisions.controller';
 import { AdoController } from './ado.controller';
 import {
   JobEventsController,
@@ -18,6 +20,7 @@ import { JobsService } from './jobs.service';
 import { McpClient } from './mcp.client';
 import { WorkItemTypeCatalogService } from './work-item-type-catalog.service';
 import { IngestionHttpClient } from './ingestion-http.client';
+import { buildFileOverview } from './document-preview';
 import { IdempotencyService } from '../writeback/idempotency.service';
 import { JobEventsPublisher } from './job-events.publisher';
 import { BackfillService } from '../writeback/backfill.service';
@@ -30,7 +33,7 @@ import { BatchPumpService } from '../batch/batch-pump.service';
 
 @Module({
   imports: [ConfigModule, LlmModule, AuthModule],
-  controllers: [JobsController, AdoController, JobEventsController, BackfillController, BatchController],
+  controllers: [JobsController, AdoController, JobEventsController, BackfillController, BatchController, DedupDecisionsController],
   providers: [
     { provide: PrismaClient, useValue: new PrismaClient() },
     {
@@ -138,9 +141,33 @@ import { BatchPumpService } from '../batch/batch-pump.service';
       useFactory: (config: ConfigService) => config.get<number>('DOCUMENT_OVERVIEW_MAX_TOKENS') ?? 4000,
     },
     {
+      // P5: the wizard's "this file was already processed" probe. The same store, code version and on/off switch the worker's result
+      // cache is built with (pipeline.processor.ts), so the probe reads exactly the entries the worker would.
+      provide: RESULT_CACHE_PROBE,
+      inject: [ConfigService, PrismaClient, IngestionHttpClient],
+      useFactory: (config: ConfigService, prisma: PrismaClient, ingestionClient: IngestionHttpClient) => {
+        const redis = new Redis(config.get<string>('REDIS_URL')!);
+        // eslint-disable-next-line no-console -- no structured logger in this module yet
+        redis.on('error', (err) => console.error('ResultCacheProbe Redis error:', err));
+        const release = releaseVersion();
+        const cache = new JobResultCache(
+          redis as unknown as ResultCacheStore,
+          `${release ?? 'unknown'}+${config.get<string>('RESULT_CACHE_VERSION')}`,
+          config.get<boolean>('RESULT_CACHE_ENABLED') === true && release !== null,
+        );
+        return new ResultCacheProbe(cache, (userId) => kbVersionFor(prisma, userId), (userId) => ingestionClient.cacheScope(userId));
+      },
+    },
+    {
       provide: 'MAX_UPLOAD_SIZE_BYTES',
       inject: [ConfigService],
       useFactory: (config: ConfigService) => config.get<number>('MAX_UPLOAD_SIZE_MB')! * 1024 * 1024,
+    },
+    {
+      // The same OCR_LANGUAGES the pipeline worker parses with (pipeline.processor.ts), for re-reading an item's source wording.
+      provide: 'OCR_LANGUAGES',
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => config.get<string>('OCR_LANGUAGES') ?? '',
     },
     {
       // Constructed with `import type Redis` erased at runtime the same way
@@ -240,6 +267,7 @@ import { BatchPumpService } from '../batch/batch-pump.service';
           config.get<number>('JOB_RETENTION_CHECK_INTERVAL_MS')!,
           config.get<number>('JOB_RETENTION_MAX_AGE_MS')!,
           config.get<number>('JOB_FIGURE_RETENTION_MAX_AGE_MS')!,
+          config.get<number>('DEDUP_DECISION_LOG_RETENTION_MS')!,
         ),
     },
     {
@@ -274,14 +302,23 @@ import { BatchPumpService } from '../batch/batch-pump.service';
       // treatment. Reuses the SAME 'MAX_UPLOAD_SIZE_BYTES' token
       // JobsController already relies on -- one config knob, not two.
       provide: BatchService,
-      inject: [PrismaClient, JobsService, 'MAX_UPLOAD_SIZE_BYTES', ConfigService],
-      useFactory: (prisma: PrismaClient, jobsService: JobsService, maxUploadSizeBytes: number, config: ConfigService) =>
+      inject: [PrismaClient, JobsService, 'MAX_UPLOAD_SIZE_BYTES', ConfigService, IngestionHttpClient],
+      useFactory: (prisma: PrismaClient, jobsService: JobsService, maxUploadSizeBytes: number, config: ConfigService, ingestionClient: IngestionHttpClient) =>
         new BatchService(
           prisma,
           jobsService,
           maxUploadSizeBytes,
           config.get<number>('BATCH_SURVEY_CONCURRENCY')!,
           config.get<number>('BATCH_SUBMIT_STUCK_MS')!,
+          // A batch SURVEY file gets the overview the single wizard sends (its structure hint), built the way /jobs/preview builds it:
+          // the same skip-vision parse, then buildPreviewOverview.
+          (fileBuffer, filename) =>
+            buildFileOverview(
+              fileBuffer,
+              filename,
+              (buffer, name, signal) => ingestionClient.ingest(buffer, name, true, 'baseline', undefined, undefined, undefined, undefined, undefined, undefined, signal),
+              (...args) => ingestionClient.level(...args),
+            ),
         ),
     },
     {

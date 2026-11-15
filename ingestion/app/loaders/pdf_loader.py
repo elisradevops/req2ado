@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import logging
 import re
 from collections.abc import Callable
@@ -1115,7 +1116,8 @@ def _advance_heading_counter(
             heading_counters[:] = [int(p) for p in parts]
         return None
     heading_counters[heading_level - 1] += 1
-    return ".".join(str(n) for n in heading_counters)
+    # Leading zeros are ancestor levels the document never has: numbering starts at "1", not "0.1" (as docx_loader).
+    return ".".join(str(n) for n in itertools.dropwhile(lambda n: n == 0, heading_counters))
 
 
 def _outline_heading_positions(path: str) -> dict[tuple[int, str], int]:

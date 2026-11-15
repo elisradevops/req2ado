@@ -101,10 +101,10 @@ describe('DestinationBar', () => {
     expect(screen.getByText('Proposed')).toBeInTheDocument();
   });
 
-  it('hatches the iteration segment instead of leaving it blank when unset', () => {
+  it('says "Project default" in words for an unset iteration, not a hatched fill that reads as a stuck loader', () => {
     render(<DestinationBar teamProject="Radar Systems" areaPath="Radar Systems\EW Suite" />);
-    // A label on a span with no role is prohibited ARIA (axe aria-prohibited-attr): it must be an img.
-    expect(screen.getByRole('img', { name: 'Iteration not set' })).toBeInTheDocument();
+    expect(screen.getByText('Project default')).toBeInTheDocument();
+    expect(screen.queryByRole('img', { name: 'Iteration not set' })).not.toBeInTheDocument();
   });
 
   it('never hatches the state segment when unset -- state is not optional the way iteration is', () => {
@@ -167,5 +167,53 @@ describe('formatDestinationPreview', () => {
     // "looking very bad" bug this function exists to prevent, just for a
     // different input shape than the other regression test above covers.
     expect(formatDestinationPreview('Radar Systems', 'Radar Systems', 'Radar Systems', 'Proposed')).toBe('Radar Systems · state Proposed');
+  });
+
+  it('has a compact form that keeps the label, the path and the state on one row (the job page; DESIGN.md §11.3.5)', () => {
+    const { container } = render(<DestinationBar compact teamProject="Proj" areaPath="Proj\\Area" iterationPath={null} state="Proposed" />);
+    const label = screen.getByText('Destination');
+    const project = screen.getByText('Proj');
+    // the label and the first path segment sit in the same row element
+    expect(label.closest('[data-destination-row]')).not.toBeNull();
+    expect(label.closest('[data-destination-row]')).toBe(project.closest('[data-destination-row]'));
+    expect(screen.getByLabelText('Work item state: Proposed')).toBeInTheDocument();
+    // Said in words, so a written job's chip is not read as the job still being a proposal.
+    expect(screen.getByText('Work item state')).toBeInTheDocument();
+    expect(container.querySelectorAll('[data-destination-row]')).toHaveLength(1);
+  });
+
+  it('keeps the two-row form by default', () => {
+    const { container } = render(<DestinationBar teamProject="Proj" areaPath="Proj\\Area" />);
+    expect(container.querySelectorAll('[data-destination-row]')).toHaveLength(0);
+  });
+
+  // DESIGN.md §2 job states: the job page's destination says whether the items are still proposed there, partly written or written,
+  // in words with the state's icon, never colour alone.
+  it.each([
+    ['proposed', 'Writes to', 'lucide-circle-dashed', 'var(--color-job-proposed)'],
+    ['partial', 'Partly written to', 'lucide-circle-dot-dashed', 'var(--color-job-partial)'],
+    ['written', 'Written to', 'lucide-circle-check', 'var(--color-job-written)'],
+  ] as const)('labels a %s destination "%s" with its icon', (writeState, label, icon, colour) => {
+    const { container } = render(<DestinationBar compact teamProject="Proj" areaPath="Proj\\Area" writeState={writeState} />);
+    const labelEl = screen.getByText(label);
+    const svg = container.querySelector(`svg.${icon}`) as SVGElement;
+    expect(svg).not.toBeNull();
+    expect(svg).toHaveAttribute('aria-hidden', 'true');
+    expect(svg.getAttribute('style') ?? '').toContain(colour);
+    expect(labelEl).toBeInTheDocument();
+  });
+
+  // The duplicate check's reach is part of where a job writes: say it in words when it is wider than the default.
+  it.each([
+    ['project', /duplicates checked across the whole project/i],
+    ['area_path', /duplicates checked in this area path/i],
+  ] as const)('says how wide the duplicate check looked for %s', (dedupScope, text) => {
+    render(<DestinationBar compact teamProject="Proj" areaPath="Proj\\Area" dedupScope={dedupScope} />);
+    expect(screen.getByText(text)).toBeInTheDocument();
+  });
+
+  it('says nothing about the duplicate check when the scope is not known', () => {
+    render(<DestinationBar compact teamProject="Proj" areaPath="Proj\\Area" />);
+    expect(screen.queryByText(/duplicates checked/i)).toBeNull();
   });
 });

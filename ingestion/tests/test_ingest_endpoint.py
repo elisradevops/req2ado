@@ -1725,3 +1725,96 @@ def test_the_cache_key_changes_when_what_the_model_is_sent_changes() -> None:
     assert main_module._VISION_INPUT_VERSION in main_module._figure_caption_cache_key(
         b"img", None, None
     )
+
+
+# ---- KB figure captions: transcription mode with its own cache ----
+
+
+class _KbFakeRedis:
+    def __init__(self) -> None:
+        self.store: dict[str, bytes] = {}
+
+    def get(self, key):
+        return self.store.get(key)
+
+    def set(self, key, value, ex=None):
+        self.store[key] = value.encode("utf-8") if isinstance(value, str) else value
+
+    def publish(self, channel, payload):
+        pass
+
+
+class _KbFakeVision:
+    def __init__(self, visible_text: str | None = "TRANSCRIBED שלום") -> None:
+        self.calls: list[dict] = []
+        self._visible_text = visible_text
+
+    def describe_figure(
+        self, image_bytes, mime_type=None, document_context=None, user_id=None, **extra
+    ):
+        self.calls.append(extra)
+        return FigureVisionResult(
+            significant=True,
+            description="a slide of rules",
+            visible_text=self._visible_text if extra.get("transcribe") else None,
+        )
+
+
+def _kb_main(monkeypatch, vision):
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module, "_vision_client", vision)
+    monkeypatch.setattr(main_module, "_narration_redis", _KbFakeRedis())
+    return main_module
+
+
+def test_kb_caption_is_the_description_plus_the_transcribed_text(monkeypatch) -> None:
+    vision = _KbFakeVision()
+    main_module = _kb_main(monkeypatch, vision)
+
+    caption = main_module._describe_figure(b"slide-image", purpose="kb")
+
+    assert caption == "a slide of rules\nTRANSCRIBED שלום"
+    assert vision.calls == [{"transcribe": True}]
+
+
+def test_kb_caption_is_just_the_description_when_the_image_has_no_text(monkeypatch) -> None:
+    main_module = _kb_main(monkeypatch, _KbFakeVision(visible_text=None))
+
+    assert main_module._describe_figure(b"slide-image", purpose="kb") == "a slide of rules"
+
+
+def test_a_kb_caption_is_cached_including_its_transcription(monkeypatch) -> None:
+    vision = _KbFakeVision()
+    main_module = _kb_main(monkeypatch, vision)
+
+    first = main_module._describe_figure(b"slide-image", purpose="kb")
+    second = main_module._describe_figure(b"slide-image", purpose="kb")
+
+    assert first == second == "a slide of rules\nTRANSCRIBED שלום"
+    assert len(vision.calls) == 1
+
+
+def test_survey_and_kb_captions_of_the_same_image_do_not_share_a_cache_entry(monkeypatch) -> None:
+    vision = _KbFakeVision()
+    main_module = _kb_main(monkeypatch, vision)
+
+    survey = main_module._describe_figure(b"slide-image")
+    kb = main_module._describe_figure(b"slide-image", purpose="kb")
+
+    assert survey == "a slide of rules"  # no transcription in the survey caption
+    assert kb == "a slide of rules\nTRANSCRIBED שלום"
+    # The survey call is exactly the pre-existing call: no extra keyword argument.
+    assert vision.calls == [{}, {"transcribe": True}]
+
+
+def test_the_survey_cache_key_is_unchanged_and_the_kb_key_differs() -> None:
+    survey_key = _figure_caption_cache_key(b"img", None)
+
+    assert survey_key == _figure_caption_cache_key(b"img", None, purpose="survey")
+    kb_key = _figure_caption_cache_key(b"img", None, purpose="kb")
+    assert kb_key != survey_key
+    assert PROMPT_VERSION in survey_key
+    from app.vision.orchestrator_vision_client import KB_PROMPT_VERSION
+
+    assert KB_PROMPT_VERSION in kb_key and PROMPT_VERSION not in kb_key

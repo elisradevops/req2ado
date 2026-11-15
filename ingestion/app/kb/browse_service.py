@@ -21,6 +21,9 @@ class FolderChildSummary(BaseModel):
     # this file (POST /kb/ingest-item) without having that file's own
     # sharing link, which browsing alone never produces.
     download_url: str | None = None
+    # The drive this item lives in, for files and folders alike. `drive_id` above is only for descending into a folder; a
+    # batch ingest addresses a FILE by drive + item id, and a file's own drive id is otherwise dropped.
+    parent_drive_id: str | None = None
 
 
 def browse_shared_folder(url: str, graph_client: GraphClient) -> list[FolderChildSummary]:
@@ -39,6 +42,7 @@ def browse_shared_folder(url: str, graph_client: GraphClient) -> list[FolderChil
             is_folder=child.is_folder,
             drive_id=child.drive_id if child.is_folder else None,
             download_url=child.download_url if not child.is_folder else None,
+            parent_drive_id=child.drive_id,
         )
         for child in children
     ]
@@ -60,6 +64,7 @@ def browse_subfolder(
             is_folder=child.is_folder,
             drive_id=child.drive_id if child.is_folder else None,
             download_url=child.download_url if not child.is_folder else None,
+            parent_drive_id=child.drive_id,
         )
         for child in children
     ]

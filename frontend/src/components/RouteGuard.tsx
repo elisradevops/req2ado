@@ -52,7 +52,7 @@ export function RouteGuard({ children }: { children: ReactElement }): ReactEleme
   }
 
   if (isGateBlocking) {
-    return <Navigate to={LLM_GATE_EXEMPT_PATH} replace />;
+    return <Navigate to={LLM_GATE_EXEMPT_PATH} replace state={{ llmGate: true }} />;
   }
 
   return children;

@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { FLUSH_INTERVAL_MS, useLiveRunStore } from './liveRunStore';
 import type { Heartbeat, LiveFrame, ProgressEvent } from '../api/liveTypes';
+import type { JobStage, NarrationEvent } from '../api/events';
+import { countedBarMatches, liveStageFor } from '../utils/liveStage';
+import { LIVE_RUN_SEQUENCE } from '../test/fixtures/liveRunSequence';
 
 const progress = (seq: number, pct: number, extra: Partial<ProgressEvent> = {}): ProgressEvent => ({
   type: 'progress', seq, pct, stage: 'improve', unit: 'items', done: pct, total: 100, estimated: true,
@@ -179,5 +182,34 @@ describe('liveRunStore', () => {
     store().touch();
     expect(store().errorAt).toBeNull();
     expect(store().lastEventAt).not.toBeNull();
+  });
+
+  it('names one stage at every step of a replayed live run, and draws a counted bar only for that stage (QA P2)', () => {
+    let stage: JobStage | null = null;
+    let status = 'running';
+    const narrations: NarrationEvent[] = [];
+    for (const { step, expect: want } of LIVE_RUN_SEQUENCE) {
+      if (step.kind === 'stage') {
+        stage = step.stage;
+        status = step.status ?? status;
+      } else if (step.kind === 'narration') narrations.push(step.event);
+      else {
+        store().ingestProgress(step.event);
+        tick();
+      }
+      const live = liveStageFor('survey', status, stage, narrations.at(-1) ?? null);
+      expect({ label: live.label, line: live.line }).toEqual({ label: want.label, line: want.line });
+      expect(countedBarMatches('survey', live.key, store().progress)).toBe(want.countedBar);
+    }
+  });
+
+  it('holds the stage that has gone quiet, and clears it on reset', () => {
+    store().setStillWorkingOn('Score');
+    expect(store().stillWorkingOn).toBe('Score');
+    store().setStillWorkingOn(null);
+    expect(store().stillWorkingOn).toBeNull();
+    store().setStillWorkingOn('Score');
+    store().reset();
+    expect(store().stillWorkingOn).toBeNull();
   });
 });

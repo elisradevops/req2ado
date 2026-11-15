@@ -193,3 +193,36 @@ def test_links_dropped_later_do_not_use_up_the_per_source_cap() -> None:
         [source, child, *targets], _Client(proposals), CATALOG, [], None, 0, 0
     )
     assert len(links) == MAX_LINKS_PER_SOURCE
+
+
+def _tree() -> list[WorkItemNode]:
+    """grand -> parent -> child, plus an unrelated sibling of grand, each naming the others in its text."""
+    grand = _node("grand", "Interface Specifications", "Groups the Serial Data Communication Protocol.")
+    parent = _node("parent", "Serial Data Communication Protocol", "Serial Data Communication Protocol bridges Interface Specifications.")
+    child = _node("child", "Data framing", "Frames of Serial Data Communication Protocol and Interface Specifications.")
+    other = _node("other", "Environment", "Unrelated environment text.")
+    parent.parent_local_id = "grand"
+    child.parent_local_id = "parent"
+    return [grand, parent, child, other]
+
+
+def test_a_link_between_an_ancestor_and_its_descendant_at_any_depth_is_dropped() -> None:
+    # The hierarchy already says these two are related. A live run proposed Epic -> the bridge Feature under its nested Epic
+    # (a grandparent, not the direct parent), which the direct-parent check let through and the write dialog then listed.
+    nodes = _tree()
+    proposals = [
+        _link("grand", "child", "Frames of Serial Data Communication Protocol"),
+        _link("child", "grand", "Interface Specifications"),
+        _link("grand", "parent", "Serial Data Communication Protocol"),
+    ]
+    links = _infer_trace_links_for_nodes(nodes, _Client(proposals), CATALOG, [], None, 0, 0)
+    assert links == []
+
+
+def test_a_link_between_unrelated_branches_still_stands() -> None:
+    nodes = _tree()
+    nodes[3].description = "Environment limits follow Data framing."
+    links = _infer_trace_links_for_nodes(
+        nodes, _Client([_link("other", "child", "Data framing")]), CATALOG, [], None, 0, 0
+    )
+    assert [(link.source_local_id, link.target_local_id) for link in links] == [("other", "child")]
