@@ -332,6 +332,15 @@ describe('AppShell below the md breakpoint', () => {
     expect(nav).toHaveAttribute('data-open', 'false');
   });
 
+  it('has a skip link as the very first stop on every page, and it sends focus to the page', async () => {
+    renderShell();
+    await userEvent.tab();
+    const skip = screen.getByRole('link', { name: 'Skip to main content' });
+    expect(skip).toHaveFocus();
+    await userEvent.keyboard('{Enter}');
+    expect(screen.getByRole('main')).toHaveFocus();
+  });
+
   it('closes the open navigation when a link is followed', async () => {
     renderShell();
     await userEvent.click(screen.getByRole('button', { name: 'Open navigation' }));

@@ -176,6 +176,17 @@ export function AppShell({ children }: { children: ReactNode }): React.ReactElem
     // overflow-y-auto the only scroll region, so `nav` (and its footer)
     // stays pinned regardless of page content length.
     <div className="flex h-screen overflow-hidden">
+      {/* The first stop on every page: the rail and the header sit before the content. Shown only while it has focus. */}
+      <a
+        href="#main-content"
+        onClick={(event) => {
+          event.preventDefault();
+          mainRef.current?.focus();
+        }}
+        className="sr-only rounded-sm bg-surface px-3 py-1.5 text-sm font-semibold text-action focus:not-sr-only focus:fixed focus:left-2 focus:top-2 focus:z-50 focus:border focus:border-field-border"
+      >
+        Skip to main content
+      </a>
       {drawerOpen && (
         <button
           type="button"
@@ -316,7 +327,7 @@ export function AppShell({ children }: { children: ReactNode }): React.ReactElem
             </DropdownMenu>
           </div>
         </header>
-        <main ref={mainRef} tabIndex={-1} className="flex-1 overflow-y-auto p-3 focus:outline-none md:p-5">{children}</main>
+        <main id="main-content" ref={mainRef} tabIndex={-1} className="flex-1 overflow-y-auto p-3 focus:outline-none md:p-5">{children}</main>
       </div>
     </div>
   );
