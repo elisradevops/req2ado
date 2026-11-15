@@ -37,4 +37,36 @@ describe('DiffTree keyboard focus', () => {
     expect(after).toHaveFocus();
     expect(screen.getByText('Req 2')).toBeInTheDocument();
   });
+  const treeEntries = [
+    entry('e1', null, 'Epic', 'Epic 1'),
+    entry('f1', 'e1', 'Feature', 'Feature 1'),
+    entry('r1', 'f1', 'Requirement', 'Req 1'),
+  ];
+  const renderTree = (selectedId: string | null) =>
+    render(<DiffTree entries={treeEntries} selectedId={selectedId} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+
+  it('points the tree at the selected row, so a screen reader hears the row the arrow keys moved to', () => {
+    renderTree('r1');
+    const tree = screen.getByRole('tree');
+    const row = screen.getByText('Req 1').closest('[role="treeitem"]') as HTMLElement;
+    expect(row.id).not.toBe('');
+    expect(tree).toHaveAttribute('aria-activedescendant', row.id);
+  });
+
+  it('names no active row when nothing is selected', () => {
+    renderTree(null);
+    expect(screen.getByRole('tree')).not.toHaveAttribute('aria-activedescendant');
+  });
+
+  it('gives every row its own id', () => {
+    renderTree('r1');
+    const ids = screen.getAllByRole('treeitem').map((row) => row.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids.every((id) => id !== '')).toBe(true);
+  });
+
+  it('keeps the universal focus ring on the tree: no focus:outline-none without a replacement (DESIGN.md section 7)', () => {
+    renderTree(null);
+    expect(screen.getByRole('tree').className).not.toMatch(/outline-none/);
+  });
 });

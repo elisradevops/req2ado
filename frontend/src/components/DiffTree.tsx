@@ -1,5 +1,5 @@
 import { plural } from '../utils/plural';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { FixedSizeList, type ListChildComponentProps } from 'react-window';
 import {
   DndContext,
@@ -407,6 +407,8 @@ const WIDE_ONLY = 'max-md:hidden';
 // A tree narrower than TWO_LINE_BELOW_TREE_PX is laid out like a phone whatever the window is, so the template and the dropped cells follow `narrow`, not only the md breakpoint.
 const columnsFor = (narrow: boolean): string => (narrow ? NARROW_TEMPLATE : `${WIDE_COLUMNS} ${NARROW_COLUMNS}`);
 const wideOnly = (narrow: boolean): string => (narrow ? 'hidden' : WIDE_ONLY);
+// The DOM id of a row, which the tree names in aria-activedescendant (focus stays on the tree while the arrow keys move the selection).
+const rowDomId = (prefix: string, localId: string): string => `${prefix}-row-${encodeURIComponent(localId)}`;
 
 // DESIGN.md §11.5 -- drag-and-drop is scoped to short, in-viewport moves;
 // MoveToPicker (a separate component, not part of this file) is the stated
@@ -530,6 +532,7 @@ export function DiffTree({
   const belowMd = useMediaQuery(BELOW_MD);
   const [heightRef, listHeight, treeWidth] = useContainerHeight();
   const narrow = belowMd || (treeWidth > 0 && treeWidth < TWO_LINE_BELOW_TREE_PX);
+  const treeDomId = useId();
   // Read once per breakpoint change, not on every render (drag-move re-renders would each force a style read).
   const rowHeight = useMemo(() => (narrow ? narrowRowHeight() : ROW_HEIGHT), [narrow]);
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(() => {
@@ -820,9 +823,11 @@ export function DiffTree({
           tabIndex={0}
           onKeyDown={handleKeyDown}
           role="tree"
+          aria-activedescendant={selectedId && rows.some((row) => row.entry.localId === selectedId) ? rowDomId(treeDomId, selectedId) : undefined}
           // As tall as the job's rows (at least 3, so a near-empty tree is still a card), up to the viewport-based cap that used to be the fixed height. Counted from ALL entries, not the visible rows, so filtering or collapsing a branch never makes the card jump.
           style={{ height: `min(max(calc(100vh - 400px), 280px), ${Math.max(entries.length, 3) * rowHeight}px)` }}
-          className="focus:outline-none"
+          // The universal focus ring (index.css), inset so the list's own overflow does not clip it; focus:outline-none would remove it.
+          className="focus-visible:outline-offset-[-2px]"
         >
           <FixedSizeList
             ref={listRef}
@@ -852,6 +857,7 @@ export function DiffTree({
               rows,
               reasonByLocalId,
               narrow,
+              rowIdPrefix: treeDomId,
               selectedId,
               onSelect,
               openDetails,
@@ -917,6 +923,7 @@ function DiffTreeRow({
   writtenAdoIds,
   canMove,
   narrow,
+  rowIdPrefix,
   isFiltering,
   collapsedIds,
   toggleCollapsed,
@@ -942,6 +949,7 @@ function DiffTreeRow({
   canMove: boolean;
   // below md (one query in DiffTree, so header, rows and row height always flip together)
   narrow: boolean;
+  rowIdPrefix: string;
   isFiltering: boolean;
   collapsedIds: Set<string>;
   toggleCollapsed: (localId: string) => void;
@@ -1180,6 +1188,7 @@ function DiffTreeRow({
         zIndex: isDragging ? 1 : undefined,
       }}
       role="treeitem"
+      id={rowDomId(rowIdPrefix, entry.localId)}
       // the real depth, even where the phone row draws at most three indent guides
       aria-level={row.depth + 1}
       aria-selected={entry.localId === selectedId}
