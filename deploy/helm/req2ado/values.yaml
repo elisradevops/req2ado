@@ -144,6 +144,8 @@ config:
   FILES_STATUS_PATH: "/api/v1/files"
   FILES_UPLOAD_PATH: "/api/v1/files/"
   GRAPH_BASE_URL: "https://graph.microsoft.com/v1.0"
+  # Content-aware identity for follow-up files (a moved or renamed Requirement is still recognised). "false" restores the position lookup.
+  IDENTITY_V2_ENABLED: "true"
   # A SURVEY /level is streamed (heartbeats): its limits are silence and a total guard. INGESTION_REQUEST_TIMEOUT_MS still bounds
   # /ingest and the other long calls.
   INGESTION_IDLE_TIMEOUT_MS: "300000"

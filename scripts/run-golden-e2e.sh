@@ -44,10 +44,13 @@ fi
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FIXTURE="$ROOT_DIR/docs/golden-e2e-fixture.txt"
 
-PG_CONTAINER="req2ado-temp-pg-5432"
-REDIS_CONTAINER="req2ado-temp-redis-6379"
-PG_PORT=5432
-REDIS_PORT=6379
+# Every port can be moved with GOLDEN_* so the script can run beside a developer's own stack (docker compose holds 5432 and 6379, other
+# local services hold the rest) without touching it. The defaults are unchanged, so CI is unaffected. The temp containers are named after
+# their port, so a run on other ports never reuses or removes the default ones.
+PG_PORT="${GOLDEN_PG_PORT:-5432}"
+REDIS_PORT="${GOLDEN_REDIS_PORT:-6379}"
+PG_CONTAINER="req2ado-temp-pg-${PG_PORT}"
+REDIS_CONTAINER="req2ado-temp-redis-${REDIS_PORT}"
 STARTED_PG=0
 STARTED_REDIS=0
 
@@ -55,11 +58,11 @@ STARTED_REDIS=0
 # an unrelated project's Docker container (elisradevops-python-download-service),
 # which answers with its own 404 and silently masks a real ingestion-boot
 # failure as a false "healthy" if reused.
-INGESTION_PORT=8010
-MCP_PORT=4100
-ORCH_PORT=3001
+INGESTION_PORT="${GOLDEN_INGESTION_PORT:-8010}"
+MCP_PORT="${GOLDEN_MCP_PORT:-4100}"
+ORCH_PORT="${GOLDEN_ORCH_PORT:-3001}"
 # Fake ADO identity endpoint, see step 4b below.
-FAKE_ADO_PORT=4102
+FAKE_ADO_PORT="${GOLDEN_FAKE_ADO_PORT:-4102}"
 
 MOCK_DB_DIR="$(mktemp -d /tmp/req2ado-mock-ado.XXXXXX)"
 LOG_DIR="$(mktemp -d /tmp/req2ado-e2e-logs.XXXXXX)"
@@ -351,8 +354,15 @@ poll_job_status() {
     tries=120
   fi
   for ((i = 0; i < tries; i++)); do
-    local body
-    body="$(curl -sf -b "$COOKIE_JAR" "http://localhost:${ORCH_PORT}/jobs/${job_id}")"
+    local body http_status
+    # Status and body are read explicitly so a failed poll says why in the log (curl -f only gives exit code 22).
+    body="$(curl -sS -w '\n%{http_code}' -b "$COOKIE_JAR" "http://localhost:${ORCH_PORT}/jobs/${job_id}")"
+    http_status="${body##*$'\n'}"
+    body="${body%$'\n'*}"
+    if [ "$http_status" -ge 400 ]; then
+      log "Polling job $job_id failed: HTTP $http_status: $body" >&2
+      return 1
+    fi
     local status
     status="$(echo "$body" | jq -r '.status')"
     if [ "$status" = "diff_ready" ] || [ "$status" = "failed" ]; then
@@ -434,6 +444,93 @@ if [ "$JOB2_NON_REUSE_COUNT" -ne 0 ]; then
 fi
 
 log "GOLDEN E2E PASSED: job #1 created $CONFIRM1_CREATED_COUNT work item(s); job #2's re-run diff was 100% reuse ($JOB2_ENTRY_COUNT/$JOB2_ENTRY_COUNT entries)."
+
+# ---------------------------------------------------------------------------
+# 9b. Follow-up files (content-aware identity). A later version of a customer file must be matched by what its items SAY, not where they sit:
+#     an unchanged requirement is reused (even in a renamed file with a longer intro), an edited one is reused AND flagged changedSinceWritten
+#     (nothing is updated in Azure DevOps), a new one is created, and the reviewer can still create a flagged one as a new item.
+#     BASELINE only, so it needs no model: the exact identity match runs before the similarity check.
+# ---------------------------------------------------------------------------
+req_field() { # <job body> <title> <jq field>
+  echo "$1" | jq -r --arg t "$2" --arg f "$3" '[.dryRunDiff[] | select(.type=="Requirement" and .title==$t)][0] | .[$f] // empty'
+}
+written_ado_id() { # <job body after confirm> <title>
+  local local_id
+  local_id="$(echo "$1" | jq -r --arg t "$2" '[.dryRunDiff[] | select(.type=="Requirement" and .title==$t)][0].localId')"
+  echo "$1" | jq -r --arg id "$local_id" '[.writtenItems[] | select(.localId==$id)][0].adoId // empty'
+}
+assert_eq() { # <label> <actual> <expected>
+  if [ "$2" != "$3" ]; then
+    log "ASSERTION FAILED: $1: expected '$3', got '$2'"
+    exit 1
+  fi
+}
+write_job() { # <job id>: accept the counted "no Customer ID" warning the way a reviewer does, write, and say why a refusal happened
+  local id="$1" body status
+  # A Markdown file has no Customer IDs: the write gate (409 fix_before_writing) wants that one counted notice accepted first.
+  curl -sS -b "$COOKIE_JAR" -X PATCH "http://localhost:${ORCH_PORT}/jobs/${id}/warnings/acknowledged" \
+    -H 'Content-Type: application/json' -d '{"kind":"missing_source_reference","acknowledged":true}' >/dev/null || true
+  body="$(curl -sS -w '\n%{http_code}' -b "$COOKIE_JAR" -X POST "http://localhost:${ORCH_PORT}/jobs/${id}/confirm")"
+  status="${body##*$'\n'}"
+  body="${body%$'\n'*}"
+  if [ "$status" -ge 400 ]; then
+    log "Writing job $id was refused: HTTP $status: $body" >&2
+    return 1
+  fi
+  echo "$body"
+}
+submit_md() { # <file> <upload name>
+  # The status and body are read explicitly so a rejected submit says WHY in the log, not only curl's exit code 22.
+  local response status body
+  response="$(curl -q -sS -w '\n%{http_code}' -b "$COOKIE_JAR" -X POST "http://localhost:${ORCH_PORT}/jobs" \
+    -F "file=@$1;filename=$2" -F "areaPath=${AREA_PATH}" -F "adoProject=${ADO_PROJECT}")"
+  status="${response##*$'\n'}"
+  body="${response%$'\n'*}"
+  if [ "$status" -ge 400 ]; then
+    log "Submitting $2 was rejected: HTTP $status: $body" >&2
+    return 1
+  fi
+  echo "$body" | jq -r '.jobId'
+}
+
+log "Submitting job #5 (follow-up v1) and writing it"
+JOB5_ID="$(submit_md "$ROOT_DIR/docs/golden-e2e-follow-up-v1.md" follow-up-v1.md)"
+JOB5_BODY="$(poll_job_status "$JOB5_ID")"
+assert_eq "job #5 status" "$(echo "$JOB5_BODY" | jq -r '.status')" "diff_ready"
+write_job "$JOB5_ID" >/dev/null
+JOB5_WRITTEN="$(curl -sf -b "$COOKIE_JAR" "http://localhost:${ORCH_PORT}/jobs/${JOB5_ID}")"
+POWER_ADO_ID="$(written_ado_id "$JOB5_WRITTEN" Power)"
+LOGGING_ADO_ID="$(written_ado_id "$JOB5_WRITTEN" Logging)"
+if [ -z "$POWER_ADO_ID" ] || [ -z "$LOGGING_ADO_ID" ]; then
+  log "ASSERTION FAILED: job #5 wrote no Power/Logging requirement (Power=$POWER_ADO_ID Logging=$LOGGING_ADO_ID)"
+  exit 1
+fi
+
+log "Submitting job #6 (follow-up v2: renamed file, longer intro, Power edited, Safety added)"
+JOB6_ID="$(submit_md "$ROOT_DIR/docs/golden-e2e-follow-up-v2.md" renamed-follow-up-v2.md)"
+JOB6_BODY="$(poll_job_status "$JOB6_ID")"
+assert_eq "job #6 status" "$(echo "$JOB6_BODY" | jq -r '.status')" "diff_ready"
+assert_eq "unchanged requirement (Logging) is reused despite the renamed file and the longer intro" "$(req_field "$JOB6_BODY" Logging action)" "reuse"
+assert_eq "Logging reuses the item job #5 wrote" "$(req_field "$JOB6_BODY" Logging existingAdoId)" "$LOGGING_ADO_ID"
+assert_eq "an unchanged requirement is not flagged" "$(req_field "$JOB6_BODY" Logging changedSinceWritten)" ""
+assert_eq "edited requirement (Power) is reused, not hidden" "$(req_field "$JOB6_BODY" Power action)" "reuse"
+assert_eq "Power matches the item job #5 wrote" "$(req_field "$JOB6_BODY" Power existingAdoId)" "$POWER_ADO_ID"
+assert_eq "the edited requirement is flagged as changed since it was written" "$(req_field "$JOB6_BODY" Power changedSinceWritten)" "true"
+assert_eq "a new requirement (Safety) is created" "$(req_field "$JOB6_BODY" Safety action)" "create"
+assert_eq "the changed_since_written warning names the item" "$(echo "$JOB6_BODY" | jq -r '[.warnings[] | select(.kind=="changed_since_written")] | length')" "1"
+
+log "Creating the flagged Power requirement as a new item (the reviewer's escape), then writing job #6"
+POWER_LOCAL_ID="$(echo "$JOB6_BODY" | jq -r '[.dryRunDiff[] | select(.type=="Requirement" and .title=="Power")][0].localId')"
+curl -sf -b "$COOKIE_JAR" -X POST "http://localhost:${ORCH_PORT}/jobs/${JOB6_ID}/diff/${POWER_LOCAL_ID}/duplicate-override" \
+  -H 'Content-Type: application/json' -d '{"linkTree":true,"relateToExisting":false}' >/dev/null
+CONFIRM6_RESPONSE="$(write_job "$JOB6_ID")"
+JOB6_WRITTEN="$(curl -sf -b "$COOKIE_JAR" "http://localhost:${ORCH_PORT}/jobs/${JOB6_ID}")"
+NEW_POWER_ADO_ID="$(written_ado_id "$JOB6_WRITTEN" Power)"
+if [ -z "$NEW_POWER_ADO_ID" ] || [ "$NEW_POWER_ADO_ID" = "$POWER_ADO_ID" ]; then
+  log "ASSERTION FAILED: the 'create as new item' choice should have written a NEW Power item (old=$POWER_ADO_ID new=$NEW_POWER_ADO_ID)"
+  exit 1
+fi
+log "GOLDEN E2E PASSED (follow-up): renamed file reused unchanged items, flagged the edited one, created the new one, and 'create as new item' wrote a separate item ($(echo "$CONFIRM6_RESPONSE" | jq -c .))."
 
 if [ "$BASELINE_ONLY" -eq 1 ]; then
   log "GOLDEN E2E (BASELINE-ONLY) PASSED: skipping job #3 (SURVEY) and job #4 (dedup near-duplicate) -- both need a real Ollama backend, see --baseline-only's own comment."
