@@ -1013,6 +1013,11 @@ export function JobDetail(): React.ReactElement {
       }),
     };
   }, [writeSummaryState, diff, approvalMethods, bulkCheckedIds, editedIds]);
+  // Items left out by default as a document notice that are still excluded: the Write dialog words them apart from the reviewer's own.
+  const noticeExcludedCount = useMemo(() => {
+    const noticeIds = new Set(mergedWarnings.filter((warning) => warning.kind === 'boilerplate_excluded').flatMap((warning) => warning.nodeIds ?? []));
+    return noticeIds.size === 0 ? 0 : diff.filter((entry) => entry.excluded && noticeIds.has(entry.localId)).length;
+  }, [mergedWarnings, diff]);
   const previewedTotal = writeSummaryState.status === 'ready' ? writeSummaryState.preview.createdTotal : null;
   const writePreviewed = writeSummaryState.status === 'ready' ? writeSummaryState.preview : null;
   const nothingToWrite = writePreviewed !== null && !writeHasWork(writePreviewed);
@@ -3275,6 +3280,7 @@ export function JobDetail(): React.ReactElement {
           teamProject={teamProject}
           areaPath={areaPath}
           warnings={writeWarningCounts}
+          noticeCount={noticeExcludedCount}
           onReviewUnreviewed={handleWriteReviewUnreviewed}
           onShowWarnings={handleWriteShowWarnings}
           onShowExcluded={handleWriteShowExcluded}

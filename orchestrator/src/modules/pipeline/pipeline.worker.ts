@@ -1,4 +1,4 @@
-import { excludeBoilerplate } from './document-boilerplate';
+import { dropNoticeIdsFromMissingIdWarning, excludeBoilerplate } from './document-boilerplate';
 import { classifyFailure, describeFailure } from './failure-reason';
 import { joinContexts } from './document-profile';
 import { JobResultCache, fileHashOf, hashCatalog, isDegradedResult, kbVersionFor, type CachedResult } from './result-cache';
@@ -1308,8 +1308,11 @@ export async function runPipelineJob(
         status: 'diff_ready',
         dryRunDiff: resolvedDiff as any,
         warnings: [
-          ...(tree.warnings ?? []).map(
-            (w): WarningRecord => ({ kind: w.kind, severity: w.severity, nodeIds: w.node_ids, detail: w.detail, raw: w.raw }),
+          ...dropNoticeIdsFromMissingIdWarning(
+            (tree.warnings ?? []).map(
+              (w): WarningRecord => ({ kind: w.kind, severity: w.severity, nodeIds: w.node_ids, detail: w.detail, raw: w.raw }),
+            ),
+            boilerplateWarning?.nodeIds ?? [],
           ),
           ...verificationWarnings,
           ...figureStorageWarnings,

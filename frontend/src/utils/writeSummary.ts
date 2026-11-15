@@ -38,7 +38,8 @@ export function remainingLinksPhrase(preview: WritePreview): string | null {
   return `${parts.join(' and ')} ${parts.length === 1 && count === 1 ? 'remains' : 'remain'}`;
 }
 
-export function writeSummaryLines(preview: WritePreview, review: ApprovalBreakdown): SummaryLine[] {
+// `noticeCount`: how many of the directly excluded items were left out by default as a document notice, not by the reviewer.
+export function writeSummaryLines(preview: WritePreview, review: ApprovalBreakdown, noticeCount = 0): SummaryLine[] {
   const lines: SummaryLine[] = [];
   const figuresOnly = isFiguresOnlyWrite(preview);
   const remaining = preview.createdTotal === 0 ? remainingLinksPhrase(preview) : null;
@@ -60,8 +61,11 @@ export function writeSummaryLines(preview: WritePreview, review: ApprovalBreakdo
 
   const excludedTotal = preview.excluded.direct + preview.excluded.viaAncestor;
   if (excludedTotal > 0) {
+    const notices = Math.min(noticeCount, preview.excluded.direct);
+    const byYou = preview.excluded.direct - notices;
     const why = [
-      preview.excluded.direct > 0 ? `${preview.excluded.direct.toLocaleString()} excluded by you` : null,
+      notices > 0 ? `${notices.toLocaleString()} left out as a notice` : null,
+      byYou > 0 ? `${byYou.toLocaleString()} excluded by you` : null,
       preview.excluded.viaAncestor > 0 ? `${preview.excluded.viaAncestor.toLocaleString()} under an excluded parent` : null,
     ].filter((part): part is string => part !== null);
     lines.push({ id: 'excluded', text: `${plural(excludedTotal, 'item')} left out: ${why.join(', ')}.`, tone: 'plain' });

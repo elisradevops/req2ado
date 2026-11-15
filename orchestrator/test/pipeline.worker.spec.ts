@@ -167,6 +167,17 @@ describe('runPipelineJob', () => {
       expect(data.warnings).toEqual([expect.objectContaining({ kind: 'boilerplate_excluded', nodeIds: ['notice'] })]);
     });
 
+    it('does not ask for a Customer ID on a notice it left out, but still does for the other items', async () => {
+      const missingId = (nodeIds: string[]) => ({ kind: 'missing_source_reference', severity: 'needs_review', node_ids: nodeIds, detail: {}, raw: 'no Customer ID' });
+      fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+      fakeIngestionClient.level.mockResolvedValue({ nodes: [], warnings: [missingId(['notice']), missingId(['notice', 'real'])] });
+      fakeDryRunService.diff.mockResolvedValue(diff);
+      await runPipelineJob({ id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' }, deps());
+
+      const kinds = storedData().warnings.map((w: any) => [w.kind, w.nodeIds]);
+      expect(kinds).toEqual([['missing_source_reference', ['real']], ['boilerplate_excluded', ['notice']]]);
+    });
+
     it('keeps every block in BASELINE', async () => {
       fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
       fakeIngestionClient.level.mockResolvedValue({ nodes: [] });

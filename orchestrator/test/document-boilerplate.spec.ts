@@ -1,4 +1,4 @@
-import { excludeBoilerplate, findBoilerplateIds } from '../src/modules/pipeline/document-boilerplate';
+import { dropNoticeIdsFromMissingIdWarning, excludeBoilerplate, findBoilerplateIds } from '../src/modules/pipeline/document-boilerplate';
 
 const req = (localId: string, title: string, description = '', extra: Record<string, unknown> = {}) => ({
   localId, type: 'Requirement', title, description, action: 'create', ...extra,
@@ -63,5 +63,19 @@ describe('excludeBoilerplate', () => {
   it('does not touch an item the reviewer already excluded or included on purpose', () => {
     const decided = [req('b', 'Disclaimer', '', { excluded: false, reviewed: true })];
     expect(excludeBoilerplate(decided, 'survey').diff).toEqual(decided);
+  });
+});
+
+describe('dropNoticeIdsFromMissingIdWarning', () => {
+  const warn = (kind: string, nodeIds: string[]) => ({ kind, severity: 'needs_review' as const, nodeIds, detail: {}, raw: kind });
+
+  it('removes a left-out notice from the missing Customer ID warning, and drops the warning when nothing else is named', () => {
+    const result = dropNoticeIdsFromMissingIdWarning([warn('missing_source_reference', ['b', 'r']), warn('missing_source_reference', ['b'])], ['b']);
+    expect(result.map((w) => [w.kind, w.nodeIds])).toEqual([['missing_source_reference', ['r']]]);
+  });
+
+  it('leaves other warning kinds, and a warning that names no item, alone', () => {
+    const others = [warn('duplicate_customer_id', ['b']), warn('missing_source_reference', [])];
+    expect(dropNoticeIdsFromMissingIdWarning(others, ['b'])).toEqual(others);
   });
 });

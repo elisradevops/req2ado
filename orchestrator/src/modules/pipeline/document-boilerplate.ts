@@ -80,3 +80,22 @@ export function excludeBoilerplate<T extends BoilerplateCandidate>(
     },
   };
 }
+
+/**
+ * A notice left out by default is not written, so it must not ask for a Customer ID either: removes `noticeIds` from the missing Customer ID
+ * warning and drops a record that then names no item. Other kinds, and a record that never named an item, are kept as they are.
+ */
+export function dropNoticeIdsFromMissingIdWarning<W extends { kind: string; nodeIds: string[] }>(warnings: readonly W[], noticeIds: readonly string[]): W[] {
+  if (noticeIds.length === 0) return [...warnings];
+  const notices = new Set(noticeIds);
+  const result: W[] = [];
+  for (const warning of warnings) {
+    if (warning.kind !== 'missing_source_reference' || warning.nodeIds.length === 0) {
+      result.push(warning);
+      continue;
+    }
+    const nodeIds = warning.nodeIds.filter((id) => !notices.has(id));
+    if (nodeIds.length > 0) result.push({ ...warning, nodeIds });
+  }
+  return result;
+}
