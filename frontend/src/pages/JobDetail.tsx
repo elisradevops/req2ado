@@ -2409,9 +2409,11 @@ export function JobDetail(): React.ReactElement {
   }, [queueMode, spotCheckMode, spotCheckSampleItems, spotCheckCheckedCount, diff, warningKindGroups, focusWarning, selectedId]);
 
   // What is still to review, riskiest first. Only built for a job still awaiting review.
+  // With a group chip pressed, the queue is that group: "n of N", J / K and A / X all stay inside it. When its last item is decided the chip
+  // goes (see activeReviewGroup) and the queue is the whole of what is left again.
   const reviewQueue = useMemo(
-    () => (status === 'diff_ready' ? buildReviewQueue(diff, warningKindGroups) : []),
-    [status, diff, warningKindGroups],
+    () => (status === 'diff_ready' ? (activeReviewGroup ? reviewGroups[activeReviewGroup] : buildReviewQueue(diff, warningKindGroups)) : []),
+    [status, diff, warningKindGroups, activeReviewGroup, reviewGroups],
   );
   // Leaving the dialog (Escape, the close button) ends queue mode. A spot-check ends too, and hands back to its confirmation.
   useEffect(() => {
@@ -2838,7 +2840,7 @@ export function JobDetail(): React.ReactElement {
                     {status === 'diff_ready' && reviewQueue.length > 0 && (
                       <>
                     <Button ref={queueButtonRef} size="sm" variant="outline" onClick={handleStartReviewQueue}>
-                      Review in risk order · {reviewQueue.length.toLocaleString()}
+                      {activeReviewGroup ? `Review in ${REVIEW_GROUP_META[activeReviewGroup].title} · ` : 'Review in risk order · '}{reviewQueue.length.toLocaleString()}
                     </Button>
                     {bulk.items.length > 0 && (
                       <Button ref={approveCleanButtonRef} size="sm" variant="outline" onClick={handleOpenBulkApprove}>

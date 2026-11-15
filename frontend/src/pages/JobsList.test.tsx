@@ -365,6 +365,13 @@ describe('JobsList', () => {
       expect(screen.getAllByRole('rowheader').map((h) => h.textContent)).toEqual(['Needs you · 1', 'Earlier · 1']);
     });
 
+    it('labels a run that has not finished in 12 hours as stalled, with the hours, and not a run that just started', async () => {
+      renderAtNow([row('fresh111-1', 'running', at(0)), row('hung2222-2', 'running', at(1)), row('slow3333-3', 'succeeded', at(1))]);
+      await waitFor(() => expect(screen.getByText('hung2222-2.docx')).toBeInTheDocument());
+      expect(screen.getAllByText(/^Stalled/)).toHaveLength(1);
+      expect(screen.getByText(/^Stalled · \d+ h$/)).toBeInTheDocument();
+    });
+
     it('says "Diff ready" for the state everywhere: the tile, the filter and the chip', async () => {
       renderAtNow([row('fresh111-1', 'diff_ready', at(0))]);
       await waitFor(() => expect(screen.getByText('fresh111-1.docx')).toBeInTheDocument());

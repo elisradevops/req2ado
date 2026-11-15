@@ -52,7 +52,7 @@ function dayGroupOf(createdAt: string, today: number): JobGroupId {
 }
 
 // Pending or running for longer than a run can take. A write (status 'writing') is excluded: it is long by design and has its own progress.
-function isStalledJob(job: JobGroupable, now: Date): boolean {
+export function isStalledJob(job: JobGroupable, now: Date): boolean {
   if (job.status !== 'pending' && job.status !== 'running') return false;
   const created = Date.parse(job.createdAt);
   return Number.isFinite(created) && now.getTime() - created > STALLED_AFTER_HOURS * 60 * 60 * 1000;

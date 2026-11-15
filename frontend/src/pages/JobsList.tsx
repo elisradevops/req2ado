@@ -27,7 +27,7 @@ import { cn } from '../lib/cn';
 import { ARRIVE } from '../ui/motion';
 import { formatDateTime } from '../utils/formatDateTime';
 import { IconButton } from '../ui/IconButton';
-import { groupJobs, isStaleJob, rerunOf, shortJobId } from '../utils/jobGroups';
+import { groupJobs, isStaleJob, isStalledJob, rerunOf, shortJobId } from '../utils/jobGroups';
 import { useUserId } from '../store/authStore';
 import { jobStatusLabel } from '../utils/labels';
 
@@ -430,6 +430,13 @@ export function JobsList(): React.ReactElement {
                         <td className={cn('px-3.5', cellPaddingY)}>
                           <span className="flex flex-wrap items-center gap-1.5">
                             <StatusChip status={job.status} partial={job.status === 'diff_ready' && job.createdItemCount > 0} />
+                            {isStalledJob(job, now) && (
+                              <Tooltip content="Started over 12 hours ago and has not finished. The worker may have stopped: open the job to check, then resubmit it if it has.">
+                                <Chip bg="var(--color-warning-soft)" color="var(--color-warning-ink)" className="border border-warning-border">
+                                  Stalled · {Math.floor((now.getTime() - Date.parse(job.createdAt)) / 3_600_000)} h
+                                </Chip>
+                              </Tooltip>
+                            )}
                             {isStaleJob(job, now) && (
                               <Tooltip content="Waiting for review for over a week. The proposal was computed against Azure DevOps as it was then.">
                                 <Chip bg="var(--color-warning-soft)" color="var(--color-warning-ink)" className="border border-warning-border">

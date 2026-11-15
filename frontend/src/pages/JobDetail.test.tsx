@@ -389,6 +389,35 @@ describe('JobDetail', () => {
     expect(screen.getByRole('combobox', { name: 'Filter by action' })).toBeInTheDocument();
   });
 
+  it('a failed job says why from the stored failure fields, trusting the stored class over the audit text', async () => {
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-fs', status: 'failed', mode: 'survey', dryRunDiff: null, createdAt: new Date().toISOString(),
+      failedStage: 'infer_hierarchy_start', failureClass: 'timeout', failureMessage: 'fetch failed (UND_ERR_HEADERS_TIMEOUT)',
+    } as any);
+    vi.spyOn(jobsApi, 'getAudit').mockResolvedValue([{ id: 'a1', message: 'Pipeline failed: ECONNRESET other side closed', createdAt: new Date().toISOString() }] as any);
+    renderAt('job-fs');
+
+    expect(await screen.findByText('A step took too long to answer.')).toBeInTheDocument();
+    expect(screen.getByText('fetch failed (UND_ERR_HEADERS_TIMEOUT)')).toBeInTheDocument();
+    expect(screen.queryByText('The connection was cut during the run.')).not.toBeInTheDocument();
+  });
+
+  it('a succeeded job has no review controls, counters or risk-order entry, and shows the written items', async () => {
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-ws', status: 'succeeded', mode: 'survey', createdItemCount: 1, writtenLocalIds: ['r1'], writtenItems: [{ localId: 'r1', adoId: 4242 }],
+      dryRunDiff: [{ localId: 'r1', parentLocalId: null, type: 'Requirement', title: 'Written req', description: '', action: 'create', customerId: null, tags: [], groundingScore: 0.1 }],
+    } as any);
+    renderAt('job-ws');
+
+    await waitFor(() => expect(screen.getByText('Written req')).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: /mark reviewed|mark all reviewed/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/needs review/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/\d+ of \d+ reviewed/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /review in risk order/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^(check|clean|structure|fix before writing)/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/4242/)).toBeInTheDocument();
+  });
+
   describe('integrity warnings', () => {
     function epic(localId: string, title: string) {
       return { localId, parentLocalId: null, type: 'Epic', title, description: '', action: 'create', customerId: null, tags: [] };
@@ -3029,6 +3058,33 @@ describe('JobDetail', () => {
       // The next in line, "Low two", not the top of the queue.
       await waitFor(() => expect(within(dialog).getAllByText('Low two').length).toBeGreaterThan(0));
       expect(within(dialog).queryAllByText('Blocked one')).toHaveLength(0);
+    });
+
+    it('with a group chip pressed the queue is that group: the counter counts it and J and K do not leave it', async () => {
+      const rq = (localId: string, title: string, extra: Record<string, unknown> = {}) => ({
+        localId, parentLocalId: null, type: 'Requirement', title, description: '', action: 'create', customerId: null, tags: [], ...extra,
+      });
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+        id: 'job-73', status: 'diff_ready', mode: 'survey',
+        dryRunDiff: [
+          rq('c1', 'Check one', { qualityScore: 30 }),
+          rq('c2', 'Check two', { qualityScore: 35 }),
+          rq('ok', 'Clean one', { qualityScore: 95, groundingScore: 0.9 }),
+        ],
+        warnings: [],
+      } as any);
+      renderAt('job-73');
+      const { default: userEvent } = await import('@testing-library/user-event');
+      await userEvent.click(await screen.findByRole('button', { name: /^check · 2$/i }));
+      await userEvent.click(screen.getByRole('button', { name: /^review in check · 2$/i }));
+      const dialog = await screen.findByRole('dialog');
+      await waitFor(() => expect(within(dialog).getByRole('note')).toHaveTextContent('1 of 2'));
+
+      await userEvent.keyboard('j');
+      await waitFor(() => expect(within(dialog).getByRole('note')).toHaveTextContent('2 of 2'));
+      await userEvent.keyboard('j'); // the end of the group: J does not step onto the clean item
+      await waitFor(() => expect(within(dialog).getByRole('note')).toHaveTextContent('2 of 2'));
+      expect(within(dialog).queryAllByText('Clean one')).toHaveLength(0);
     });
 
     it('outside the queue, J and K follow the order the tree is drawn in, even when the diff lists a parent last', async () => {

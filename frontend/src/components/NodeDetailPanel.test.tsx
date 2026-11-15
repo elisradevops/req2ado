@@ -451,6 +451,20 @@ describe('NodeDetailPanel', () => {
     expect(screen.getByDisplayValue('Req body')).toBeInTheDocument();
   });
 
+  it('puts the text being corrected straight after its title in Edit, before the reference fields', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const user = userEvent.setup();
+    renderPanel(
+      <NodeDetailPanel
+        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
+        onSave={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: /edit/i }));
+    const order = screen.getAllByRole('textbox').map((field) => (field as HTMLInputElement).labels?.[0]?.textContent ?? '');
+    expect(order.slice(0, 3)).toEqual(['Title', 'Description', 'Customer ID']);
+  });
+
   it('opens the edit form when editRequest changes, only for an editable entry, not on mount', () => {
     const entry: DryRunDiffEntry = { localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] };
     const { rerender } = renderPanel(<NodeDetailPanel entry={entry} onSave={vi.fn()} editRequest={3} />);
