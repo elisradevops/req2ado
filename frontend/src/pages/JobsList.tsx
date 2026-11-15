@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Briefcase, Plus, RefreshCw, Trash2, RotateCw, Layers } from 'lucide-react';
+import { Briefcase, Clock, Plus, RefreshCw, Trash2, RotateCw, Layers, TriangleAlert } from 'lucide-react';
 import { listJobs, deleteJob, resubmitJob } from '../api/jobs';
 import { useJobsStore, useJobs, type JobSummary } from '../store/jobsStore';
 import { StatusChip } from '../components/StatusChip';
@@ -350,7 +350,7 @@ export function JobsList(): React.ReactElement {
                       <TableHeaderCell className={cn('whitespace-nowrap max-[1099px]:hidden', cellPaddingY)}>Mode</TableHeaderCell>
                       <TableHeaderCell className={cn('whitespace-nowrap', cellPaddingY)}>Status</TableHeaderCell>
                       <TableHeaderCell className={cn('whitespace-nowrap max-[1099px]:hidden', cellPaddingY)}>Items</TableHeaderCell>
-                      <TableHeaderCell className={cn('whitespace-nowrap max-[1399px]:hidden', cellPaddingY)}>Area Path</TableHeaderCell>
+                      <TableHeaderCell className={cn('whitespace-nowrap max-[1399px]:hidden', cellPaddingY)}>Area path</TableHeaderCell>
                       <TableHeaderCell className={cn('whitespace-nowrap max-md:hidden', cellPaddingY)}>Created</TableHeaderCell>
                       <TableHeaderCell align="right" className={cn('whitespace-nowrap max-md:hidden', cellPaddingY)}>
                         <span className="sr-only">Actions</span>
@@ -439,6 +439,7 @@ export function JobsList(): React.ReactElement {
                             {isStalledJob(job, now) && (
                               <Tooltip content="Started over 12 hours ago and has not finished. The worker may have stopped: open the job to check, then resubmit it if it has.">
                                 <Chip bg="var(--color-warning-soft)" color="var(--color-warning-ink)" className="border border-warning-border">
+                                  <TriangleAlert className="h-3 w-3 flex-none" aria-hidden="true" />
                                   Stalled · {Math.floor((now.getTime() - Date.parse(job.createdAt)) / 3_600_000)} h
                                 </Chip>
                               </Tooltip>
@@ -446,6 +447,7 @@ export function JobsList(): React.ReactElement {
                             {isStaleJob(job, now) && (
                               <Tooltip content="Waiting for review for over a week. The proposal was computed against Azure DevOps as it was then.">
                                 <Chip bg="var(--color-warning-soft)" color="var(--color-warning-ink)" className="border border-warning-border">
+                                  <Clock className="h-3 w-3 flex-none" aria-hidden="true" />
                                   Stale · {Math.floor((now.getTime() - Date.parse(job.createdAt)) / 86_400_000)} days
                                 </Chip>
                               </Tooltip>

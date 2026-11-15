@@ -318,11 +318,11 @@ export function BatchJobWizard(): React.ReactElement {
                   {project ? (
                     <AreaPathPicker value={areaPath} onChange={setAreaPath} project={project} />
                   ) : (
-                    <TextField label="Area Path" value={areaPath} disabled helperText="Select a team project first" fullWidth />
+                    <TextField label="Area path" value={areaPath} disabled helperText="Select a team project first" fullWidth />
                   )}
                 </>
               ) : (
-                <TextField label="Area Path" value={areaPath} onChange={(event) => setAreaPath(event.target.value)} fullWidth />
+                <TextField label="Area path" value={areaPath} onChange={(event) => setAreaPath(event.target.value)} fullWidth />
               )}
               <div className="grid grid-cols-2 gap-2.5">
                 {hasAdoSession && project ? (
@@ -341,7 +341,7 @@ export function BatchJobWizard(): React.ReactElement {
                   <IterationPathPicker value={iterationPath} onChange={setIterationPath} project={project} />
                 ) : (
                   <TextField
-                    label="Iteration Path (optional)"
+                    label="Iteration path (optional)"
                     value={iterationPath}
                     onChange={(event) => setIterationPath(event.target.value)}
                     disabled={hasAdoSession}

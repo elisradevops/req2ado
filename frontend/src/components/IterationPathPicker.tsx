@@ -45,7 +45,7 @@ export function IterationPathPicker({
 
   return (
     <Combobox
-      label="Iteration Path (optional)"
+      label="Iteration path (optional)"
       labelExtra={labelExtra}
       value={value}
       onChange={onChange}

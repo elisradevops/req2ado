@@ -403,6 +403,7 @@ describe('JobsList', () => {
       renderAtNow([row('fresh111-1', 'diff_ready', at(0)), row('stale222-2', 'diff_ready', at(14))]);
       await waitFor(() => expect(screen.getByText('stale222-2.docx')).toBeInTheDocument());
       expect(screen.getByText('Stale · 14 days')).toBeInTheDocument();
+      expect(screen.getByText('Stale · 14 days').querySelector('svg[aria-hidden="true"]')).not.toBeNull();
       expect(screen.getAllByText(/^Stale/)).toHaveLength(1);
       expect(screen.getAllByRole('rowheader').map((h) => h.textContent)).toEqual(['Needs you · 1', 'Earlier · 1']);
     });
@@ -412,6 +413,7 @@ describe('JobsList', () => {
       await waitFor(() => expect(screen.getByText('hung2222-2.docx')).toBeInTheDocument());
       expect(screen.getAllByText(/^Stalled/)).toHaveLength(1);
       expect(screen.getByText(/^Stalled · \d+ h$/)).toBeInTheDocument();
+      expect(screen.getByText(/^Stalled · \d+ h$/).querySelector('svg[aria-hidden="true"]')).not.toBeNull();
     });
 
     it('says "Diff ready" for the state everywhere: the tile, the filter and the chip', async () => {
@@ -479,7 +481,7 @@ describe('JobsList', () => {
       renderAtNow([row('fresh111-1', 'diff_ready', at(0))]);
       await waitFor(() => expect(screen.getByText('fresh111-1.docx')).toBeInTheDocument());
       const header = (name: string) => screen.getByRole('columnheader', { name }).className;
-      expect(header('Area Path')).toContain('max-[1399px]:hidden');
+      expect(header('Area path')).toContain('max-[1399px]:hidden');
       expect(header('Mode')).toContain('max-[1099px]:hidden');
       expect(header('Items')).toContain('max-[1099px]:hidden');
       expect(header('Job')).toContain('max-md:hidden');

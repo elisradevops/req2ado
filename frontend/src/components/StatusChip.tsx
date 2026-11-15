@@ -1,4 +1,4 @@
-import { CircleCheck, CircleDashed, CircleDotDashed, CircleX, type LucideIcon } from 'lucide-react';
+import { Activity, CircleCheck, CircleDashed, CircleDotDashed, CircleX, type LucideIcon } from 'lucide-react';
 import { Chip } from '../ui/Chip';
 import { Tooltip } from '../ui/Tooltip';
 import { jobStatusLabel } from '../utils/labels';
@@ -6,7 +6,8 @@ import { jobStatusLabel } from '../utils/labels';
 // DESIGN.md §7, Chip / Badge: a soft fill with tinted ink, the same look as the Knowledge Base chips. The label carries the state; the
 // colour only reinforces it (§13). Neutral states use the recessed surface with the secondary ink.
 const NEUTRAL = { bg: 'var(--color-surface-alt)', color: 'var(--color-ink-2)' };
-const LIVE = { bg: 'var(--color-live-soft)', color: 'var(--color-ink-1)' };
+// A running or writing job: the pulse glyph of DESIGN.md's icon vocabulary (i-pulse), static here; the word carries the state.
+const LIVE = { bg: 'var(--color-live-soft)', color: 'var(--color-ink-1)', icon: Activity };
 const DANGER = { bg: 'var(--color-danger-soft)', color: 'var(--color-danger-ink)' };
 // The four job states (DESIGN.md §2): each has its own token, icon and word, so the state never rests on colour alone (§13).
 const PROPOSED = { bg: 'var(--color-job-proposed-soft)', color: 'var(--color-job-proposed)', icon: CircleDashed };

@@ -46,7 +46,7 @@ export function AreaPathPicker({
 
   return (
     <Combobox
-      label="Area Path"
+      label="Area path"
       labelExtra={labelExtra}
       value={value}
       onChange={onChange}

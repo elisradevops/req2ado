@@ -903,11 +903,11 @@ export function NewJobWizard(): React.ReactElement {
                   {project ? (
                     <AreaPathPicker value={areaPath} onChange={setAreaPath} project={project} />
                   ) : (
-                    <TextField label="Area Path" value={areaPath} disabled helperText="Select a team project first" fullWidth />
+                    <TextField label="Area path" value={areaPath} disabled helperText="Select a team project first" fullWidth />
                   )}
                 </>
               ) : (
-                <TextField label="Area Path" value={areaPath} onChange={(event) => setAreaPath(event.target.value)} fullWidth />
+                <TextField label="Area path" value={areaPath} onChange={(event) => setAreaPath(event.target.value)} fullWidth />
               )}
             </div>
           </SectionCard>
@@ -957,7 +957,7 @@ export function NewJobWizard(): React.ReactElement {
                   />
                 ) : (
                   <TextField
-                    label="Iteration Path (optional)"
+                    label="Iteration path (optional)"
                     labelExtra={
                       <InfoTip content="Every created item is assigned to this iteration. Leave it blank to use the project default if you plan to sort the backlog later." />
                     }

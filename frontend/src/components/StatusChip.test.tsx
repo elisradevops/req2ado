@@ -9,6 +9,12 @@ describe('StatusChip', () => {
     expect(screen.getByText(new RegExp(status.replace('_', ' '), 'i'))).toBeInTheDocument();
   });
 
+  it.each(['running', 'writing'])('gives the live state %s a glyph as well as its word, so it never rests on colour alone (DESIGN.md section 13)', (status) => {
+    render(<StatusChip status={status} />);
+    const chip = screen.getByText(new RegExp(status, 'i'));
+    expect(chip.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
+  });
+
   it('calls a written job "Written", the one word for the committed state (DESIGN.md §0 item 3), not "Succeeded"', () => {
     render(<StatusChip status="succeeded" />);
     expect(screen.getByText('Written')).toBeInTheDocument();
@@ -77,8 +83,8 @@ describe('StatusChip', () => {
       expect(chip.style.color).toBe('var(--color-job-partial)');
     });
 
-    it('keeps other statuses as they were, without an icon', () => {
-      const { container } = render(<StatusChip status="running" />);
+    it('keeps the neutral statuses as they were, without an icon', () => {
+      const { container } = render(<StatusChip status="pending" />);
       expect(container.querySelector('svg')).toBeNull();
     });
   });

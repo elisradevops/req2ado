@@ -50,7 +50,7 @@ export function StatePicker({
   if (!loading && options.length === 0) {
     return (
       <TextField
-        label="Initial State (optional)"
+        label="Initial state (optional)"
         labelExtra={labelExtra}
         value={value}
         onChange={(event) => onChange(event.target.value)}
@@ -61,7 +61,7 @@ export function StatePicker({
 
   return (
     <Select
-      label="Initial State (optional)"
+      label="Initial state (optional)"
       labelExtra={labelExtra}
       value={value}
       onChange={(event) => onChange(event.target.value)}

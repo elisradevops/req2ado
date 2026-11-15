@@ -55,7 +55,7 @@ export function ProjectPicker({
 
   return (
     <Combobox
-      label="Team Project"
+      label="Team project"
       value={query}
       onChange={handleChange}
       options={names}
