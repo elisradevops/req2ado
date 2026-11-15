@@ -321,12 +321,14 @@ Tailwind's deprecated 4px fallback, a fifth radius nobody chose.
   --shadow-popover: 0px 2px 4px rgba(15, 27, 61, 0.07),
                     0px 16px 34px rgba(15, 27, 61, 0.10);
   --shadow-dialog:  0px 24px 64px rgba(11, 18, 32, 0.32);
+  --shadow-dock:    0px -2px 6px rgba(15, 27, 61, 0.06),
+                    0px 12px 28px rgba(15, 27, 61, 0.14);
   --shadow-cta:           0px 1px 0px rgba(122, 92, 0, 0.22);
   --shadow-cta-attention: 0px 2px 8px rgba(200, 164, 0, 0.34),
                           0px 0px 0px 4px rgba(253, 225, 52, 0.28);
 ```
 
-Seven values, six tiers of meaning. §9 states what each one *means*; a tier may
+Eight values, seven tiers of meaning. §9 states what each one *means*; a tier may
 only be used for its stated meaning, never borrowed because it looks about
 right.
 
@@ -548,8 +550,14 @@ focus indicator — it must be `--color-field-border` instead.
     line, then Reject and a full-width Write, each 44px tall. The "Skip to proposed
     items" link stays first in the page. A running job keeps its one decision,
     Cancel run, in the header before the tools; every other status has no decisions
-    and no write bar. Category (§7): a Surface (`surface`, `hairline-strong` top edge,
-    radius `md` on its top corners) holding Actions at their own geometry.
+    and no write bar. Category (§7): a Surface (`surface`, full `hairline-strong` border, `radius-md`,
+    `shadow-dock`) that floats at the bottom of the scroll area, inset from the card above it
+    (`mx-2`, `md:mx-4`; on a phone the page gutter does it) so it shares no edge with it, resting
+    one page padding above the bottom edge (`sticky bottom-0`; `main` keeps its padding) and
+    holding Actions at their own geometry. The left zone says what the write is made of:
+    "N included · M left out" and "to <area path>", then the blocker count and, when Azure DevOps
+    is not set up, the reason Write is unavailable, as text. (It was a flat footer, white on white
+    and the width of the tree card, and read as that card's footer; tinting it did not help; §18.)
 - **Long grouped lists fold below `md`.** The Integrity warnings card starts as
   its three group headings with counts (the red "Fix before confirming" count
   still shows), each opening its rows. The "N warnings need your attention before
@@ -1085,6 +1093,7 @@ Each tier has exactly one meaning. Using a tier for any other reason is a defect
 | `shadow-sm` | Rest state of a flat interactive control (input, non-elevated chip-button, file-type affordance), and `.liftable`'s pressed state |
 | `shadow-card` | Rest state of a surface sitting above canvas (Card, StatTile, SectionCard, the ETA card) |
 | `shadow-raised` | That same surface, lifted because a pointer is over it or it is focused — i.e. `.liftable:hover` / `:focus-visible` |
+| `shadow-dock` | A surface floating at the scroll edge, inset from the content and above what scrolls under it (the review's Write bar). Falls up and down, since it floats |
 | `shadow-popover` | A floating, anchored surface (Select / Combobox / DropdownMenu popover, Tooltip) |
 | `shadow-dialog` | A floating, modal surface that blocks the page (Dialog, ConfirmDialog, the item-detail panel) |
 | `shadow-cta` / `shadow-cta-attention` | The confirm-to-ADO CTA's rest / attention states — nowhere else |
@@ -4236,3 +4245,4 @@ code, then moving its row up into §18.
 | The queue's screen-reader status no longer makes the page scroll | `pages/JobDetail.tsx` (the proposed-items `Card` is `relative`; it already clips with `overflow-hidden`, so the `sr-only` live region `review-queue-status` stays inside it) | Review finding F15, reproduced live before fixing: at 1024x768 the document overflowed the window by 24 px with nothing clicked, and "Fix in tree" scrolled the window; at 1280x600 the overflow was 109 px. The status box was absolutely placed with the page as its containing block, so it sat at a window-relative spot below a short window. Test: `JobDetail.test.tsx`. Other `sr-only` boxes were not audited. |
 | A mark wider than the title group drops out whole | `components/DiffTree.tsx` (the `title-trailing` group has a zero-width, line-high `before:` placeholder pulled back over the gap, so even its first mark has a line to wrap away from) | Found by the user in a screenshot, then reproduced live at 1440 (tree 856 px): on the excluded "Product Requirements Document" row the "No Customer ID" chip (106 px) was in a group only 88 px wide and drawn 18 px outside its left edge, cut to "o Customer ID". The group's rule is that a mark that does not fit wraps onto a cut-away second line and drops out whole, but a first item cannot wrap, and `justify-end` pushed the overflow left. After the fix the chip is wholly below the clip edge at 1440 and fully shown at 1600 (group 106 px); all 8 marks of the plain tree stay whole at both. The title keeps its 12 rem minimum (R7), so at 1440 the chip is not shown on that row; the Details dialog has it. Test: `DiffTree.test.tsx` (classes; the geometry was measured live). |
 | Dialog box keeps a drawable focus ring | `ui/Dialog.tsx` (`focus-visible:outline-solid` beside `focus-visible:outline-2`) | The last of F2's pattern, found while fixing F2 and left out then because it is inert today: live, focus lands on the dialog's first button, and the dialog box was not focus-visible. Done for consistency with §7 ("never `focus:outline-none` without a replacement ring"): if a dialog with nothing focusable inside ever takes focus from the keyboard, its ring now draws. Test: `ui/Dialog.test.tsx` (a class check). |
+| Write bar floats as its own panel, with a summary and its reason in text | `components/WriteBar.tsx` (inset `mx-2 md:mx-4` (full width on a phone), full `hairline-strong` border, `rounded-md`, `shadow-dock`, `sticky bottom-0`; a left zone with "N included · M left out", "to <area path>", the blocker count, and the reason Write is unavailable as a text line linked by `aria-describedby`, not only a tooltip; phone margin clears the safe area), `index.css` (`--shadow-dock`), `pages/JobDetail.tsx` (`writeCounts` from the diff as it stands; the review grid has no `mb-4` while the bar is present) | The user's screenshot: the bar was `rounded-t-md border border-b-0` in the same white and width as the tree card, with no shadow, so it read as that card's footer. Opus reviewed it (read-only). A flat docked bar (top border, upward shadow, page padding dropped with `:has()`) was built first and measured: it fixed a 36 px strip under the bar but still felt blended; tinted (`surface-alt`) and canvas-coloured variants were tried live and were indistinguishable from it; a dark bar separated it but was rejected. Opus's redesign, a floating dock inset on all four sides, was prototyped live before building and is the first that reads as a separate surface. Final geometry: `bottom-0` with `main`'s own padding (a 20 px offset on top of that gave a 40 px gap and overlapped the last rows at the end of the scroll); negative margins on the bar or its parents do not move a sticky box inside its scroll container's padding. The loading fade was checked and needs no change. Not done, found by the review: the count's `AnimatedNumber` inside the `aria-describedby` target may drop its number from the computed description; a "Saving…" line while `busy`; the bar sits inside the phase tabpanel; the same recipe at `NewJobWizard.tsx` and `NodeDetailPanel.tsx`. Tests: `WriteBar.test.tsx` (new), `JobDetail.test.tsx`, `AppShell.test.tsx`. |

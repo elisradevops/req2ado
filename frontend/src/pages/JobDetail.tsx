@@ -2319,6 +2319,16 @@ export function JobDetail(): React.ReactElement {
     return handled;
   }, [diff]);
 
+  // What the Write bar says the write is made of: the items in the job and the ones left out (themselves or under an excluded parent).
+  // From the diff as it stands, so it is there before the Write dialog (whose server preview is not) and follows an Include or Exclude at once.
+  const writeCounts = useMemo(() => {
+    const byId = new Map(diff.map((entry) => [entry.localId, entry]));
+    const cache = new Map<string, boolean>();
+    let leftOut = 0;
+    for (const entry of diff) if (isExcludedWithAncestors(entry, byId, cache)) leftOut += 1;
+    return { included: diff.length - leftOut, leftOut };
+  }, [diff]);
+
   // Counted per warning TYPE (one row each in the panel), not per record:
   // "3 warnings need your attention" must match the 3 rows to fix or review.
   // Kinds that need nothing from the reviewer (group 'info') never count,
@@ -3148,7 +3158,7 @@ export function JobDetail(): React.ReactElement {
     </>
   );
 
-  // DESIGN.md §5 / §11.3.6: after the tree in DOM and tab order, sticky at the bottom of the review view. Only a job in review has one.
+  // DESIGN.md §5 / §11.3.6: after the tree in DOM and tab order, floating at the bottom of the review view. Only a job in review has one.
   const writeBar =
     status === 'diff_ready' ? (
       <WriteBar
@@ -3157,6 +3167,9 @@ export function JobDetail(): React.ReactElement {
         onReject={() => setRejectDialogOpen(true)}
         busy={isMutating}
         canWriteToAdo={canWriteToAdo}
+        includedCount={writeCounts.included}
+        leftOutCount={writeCounts.leftOut}
+        destination={areaPath ?? teamProject ?? undefined}
       />
     ) : null;
 
@@ -3456,7 +3469,9 @@ export function JobDetail(): React.ReactElement {
         </div>
       )}
       {reviewLayout && phaseModel && viewKey ? (
-        <div className="mb-4 grid grid-cols-1 gap-4 lg:grid-cols-[17.5rem_minmax(0,1fr)]">
+        // mb-4 only without the Write bar: the bar cancels the page's bottom padding to rest on the edge, and a margin here would leave a strip
+        // of content scrolling under it.
+        <div className={cn('grid grid-cols-1 gap-4 lg:grid-cols-[17.5rem_minmax(0,1fr)]', !writeBar && 'mb-4')}>
           {/* Sticky: the review list is long, and the phases stay beside it. */}
           <div className="lg:sticky lg:top-4 lg:self-start">
             <PhaseRail

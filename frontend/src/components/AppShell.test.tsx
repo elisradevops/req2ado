@@ -332,6 +332,13 @@ describe('AppShell below the md breakpoint', () => {
     expect(nav).toHaveAttribute('data-open', 'false');
   });
 
+  it('keeps the page\'s own padding all round: a floating bar rests that far above the bottom edge, and the last rows are not under it', () => {
+    renderShell();
+    const classes = screen.getByRole('main').className.split(/\s+/);
+    expect(classes).toEqual(expect.arrayContaining(['p-3', 'md:p-5']));
+    expect(classes.some((name) => name.includes('data-docked-bar'))).toBe(false);
+  });
+
   it('has a skip link as the very first stop on every page, and it sends focus to the page', async () => {
     renderShell();
     await userEvent.tab();

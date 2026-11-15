@@ -237,6 +237,9 @@
   --shadow-raised: 0px 2px 4px rgba(15, 27, 61, 0.07), 0px 12px 26px rgba(15, 27, 61, 0.09);
   --shadow-popover: 0px 2px 4px rgba(15, 27, 61, 0.07), 0px 16px 34px rgba(15, 27, 61, 0.1);
   --shadow-dialog: 0px 24px 64px rgba(11, 18, 32, 0.32);
+  /* A surface floating at the scroll edge, inset from the content and above what scrolls under it (the review's Write bar). Falls both up and
+     down, since it floats. */
+  --shadow-dock: 0px -2px 6px rgba(15, 27, 61, 0.06), 0px 12px 28px rgba(15, 27, 61, 0.14);
   --shadow-cta: 0px 1px 0px rgba(122, 92, 0, 0.22);
   --shadow-cta-attention:
     0px 2px 8px rgba(200, 164, 0, 0.34), 0px 0px 0px 4px rgba(253, 225, 52, 0.28);

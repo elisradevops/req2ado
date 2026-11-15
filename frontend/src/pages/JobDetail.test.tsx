@@ -2200,6 +2200,23 @@ describe('JobDetail', () => {
       expect(screen.getByRole('button', { name: 'Write 2 items to Compliance\\Auth' })).toBeInTheDocument();
     });
 
+    it('gives the Write bar the counts and the destination, from the job as it stands (not from the preview, which only exists while the dialog is open)', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+        id: 'job-ws-bar', status: 'diff_ready', areaPath: 'Compliance\\Auth', adoProject: 'Compliance',
+        dryRunDiff: [entry('a'), entry('b'), entry('x', { excluded: true })],
+      } as any);
+      vi.spyOn(jobsApi, 'getWritePreview').mockResolvedValue(previewOf());
+      useAuthStore.getState().login('https://ado.example', 'Jane', 'user-descriptor-1');
+      renderAt('job-ws-bar');
+      const bar = await waitFor(() => {
+        const found = document.querySelector('section[aria-label="Review decision"]');
+        expect(found).not.toBeNull();
+        return found as HTMLElement;
+      });
+      expect(within(bar).getByText('2 included · 1 left out')).toBeInTheDocument();
+      expect(within(bar).getByText('Compliance\\Auth')).toBeInTheDocument();
+    });
+
     it('disables the write when nothing would be created', async () => {
       vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
         id: 'job-ws2', status: 'diff_ready', areaPath: 'Compliance\\Auth', adoProject: 'Compliance', dryRunDiff: [entry('a', { excluded: true })],
@@ -3009,6 +3026,16 @@ describe('JobDetail', () => {
       const card = status.closest('.relative');
       expect(card).not.toBeNull();
       expect(card!.className).toContain('overflow-hidden');
+    });
+
+    it('lets the Write bar rest on the bottom edge: the review grid carries no bottom margin while the bar is there', async () => {
+      await startQueue();
+      // queried by its label, not its role: the open queue dialog hides the rest of the page from the accessibility tree
+      const bar = document.querySelector('section[aria-label="Review decision"]');
+      expect(bar).not.toBeNull();
+      const grid = bar!.closest('.grid');
+      expect(grid).not.toBeNull();
+      expect(grid!.className.split(/\s+/)).not.toContain('mb-4');
     });
 
     it('says where the reviewer is: "1 of 3" on the first item, and "1 of 2" on the next after one is marked', async () => {
