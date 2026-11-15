@@ -1373,6 +1373,17 @@ describe('NewJobWizard re-run of a file (P5)', () => {
     expect(within(rail).queryByText('typically, once it starts')).not.toBeInTheDocument();
   });
 
+  it('shows one estimate for a cached file: the card and the side panel agree, and the chip does not quote a sample size', async () => {
+    await toStep2(true);
+    const rail = screen.getByRole('complementary', { name: 'This run' });
+    await within(rail).findByText('A few seconds');
+    const card = screen.getByRole('radio', { name: /SURVEY/ });
+    expect(card).toHaveTextContent('A few seconds');
+    expect(card).not.toHaveTextContent('20 min');
+    expect(within(rail).getByText('SURVEY')).toBeInTheDocument();
+    expect(within(rail).queryByText(/n=\d/)).not.toBeInTheDocument();
+  });
+
   it('keeps the measured range when the file is not in the cache', async () => {
     await toStep2(false);
     const rail = screen.getByRole('complementary', { name: 'This run' });

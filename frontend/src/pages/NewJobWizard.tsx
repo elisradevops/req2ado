@@ -885,6 +885,7 @@ export function NewJobWizard(): React.ReactElement {
             onChange={handleModeChange}
             baselineEstimate={baselineEstimate}
             surveyEstimate={surveyEstimate}
+            surveyCached={cachedResult}
             model={model}
             onModelChange={setModel}
             availableModels={availableModels}
@@ -1000,7 +1001,7 @@ export function NewJobWizard(): React.ReactElement {
                     <Chip className="border border-info-border bg-info-soft font-mono text-micro font-normal normal-case tabular-nums text-info-ink">
                       <Cpu className="h-3 w-3 flex-none" />
                       {mode.toUpperCase()}
-                      {mode === 'survey' && selectedEstimate && ` · ${selectedEstimate.basis === 'blended' ? `n=${selectedEstimate.sampleCount}${selectedEstimate.nearSizeSampleCount === 0 ? ' · none near this size' : ''}` : 'no completed runs yet'}`}
+                      {mode === 'survey' && selectedEstimate && !cachedResult && ` · ${selectedEstimate.basis === 'blended' ? `n=${selectedEstimate.sampleCount}${selectedEstimate.nearSizeSampleCount === 0 ? ' · none near this size' : ''}` : 'no completed runs yet'}`}
                     </Chip>
                     <InfoTip
                       content={

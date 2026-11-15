@@ -20,6 +20,20 @@ function estimate(overrides: Partial<EtaEstimate> = {}): EtaEstimate {
 }
 
 describe('ModeCards', () => {
+  it('says a cached file takes a few seconds on the SURVEY card, instead of a range that contradicts the side panel', () => {
+    render(<ModeCards value="survey" onChange={vi.fn()} baselineEstimate={estimate({ mode: 'baseline', lowerMinutes: 1, upperMinutes: 1 })} surveyEstimate={estimate()} surveyCached />);
+    const card = screen.getByRole('radio', { name: /SURVEY/ });
+    expect(card).toHaveTextContent('A few seconds');
+    expect(card).toHaveTextContent('this file was already processed');
+    expect(card).not.toHaveTextContent('20 min');
+    expect(card).not.toHaveTextContent('Based on');
+  });
+
+  it('keeps the measured range on the SURVEY card when the file is not cached', () => {
+    render(<ModeCards value="survey" onChange={vi.fn()} baselineEstimate={estimate({ mode: 'baseline', lowerMinutes: 1, upperMinutes: 1 })} surveyEstimate={estimate()} />);
+    expect(screen.getByRole('radio', { name: /SURVEY/ })).toHaveTextContent('20 min – 30 min, typically');
+  });
+
   it('selects survey when its card is clicked', async () => {
     const onChange = vi.fn();
     render(<ModeCards value="baseline" onChange={onChange} />);
