@@ -3266,7 +3266,8 @@ export function JobDetail(): React.ReactElement {
               : 'This cannot be undone from req2ado — items must be deleted directly in Azure DevOps afterward.'}
           </>
         }
-        confirmLabel={figuresOnlyWrite && teamProject ? `Attach ${figuresToAttach.toLocaleString()} ${figuresToAttach === 1 ? 'figure' : 'figures'} to ${teamProject}` : finishingLinks && teamProject ? `Finish writing to ${teamProject}` : previewedTotal !== null && teamProject ? `Write ${previewedTotal.toLocaleString()} ${previewedTotal === 1 ? 'item' : 'items'} to ${teamProject}` : 'Write to Azure DevOps'}
+        // The destination the dialog's own text names: the area path (which starts with the team project), not the project alone.
+        confirmLabel={figuresOnlyWrite && teamProject ? `Attach ${figuresToAttach.toLocaleString()} ${figuresToAttach === 1 ? 'figure' : 'figures'} to ${areaPath ?? teamProject}` : finishingLinks && teamProject ? `Finish writing to ${areaPath ?? teamProject}` : previewedTotal !== null && teamProject ? `Write ${previewedTotal.toLocaleString()} ${previewedTotal === 1 ? 'item' : 'items'} to ${areaPath ?? teamProject}` : 'Write to Azure DevOps'}
         confirmDisabled={writeLoading || nothingToWrite || writeGate.blocked}
         confirmDisabledReason={writeGate.blocked ? 'Fix the items marked "Fix before writing" first.' : writeLoading ? 'Checking what will be written.' : 'Nothing will be created, so there is nothing to write.'}
         onConfirm={handleConfirm}

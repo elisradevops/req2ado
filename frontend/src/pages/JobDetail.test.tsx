@@ -2197,7 +2197,7 @@ describe('JobDetail', () => {
       expect(await screen.findByText('2 new work items: 2 Requirements.')).toBeInTheDocument();
       expect(screen.getByText('1 item left out: 1 excluded by you.')).toBeInTheDocument();
       expect(screen.getByText('Review: 1 reviewed earlier, 1 not reviewed.')).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Write 2 items to Compliance' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Write 2 items to Compliance\\Auth' })).toBeInTheDocument();
     });
 
     it('disables the write when nothing would be created', async () => {
@@ -2211,7 +2211,7 @@ describe('JobDetail', () => {
 
       expect(await screen.findByText('Nothing will be created.')).toBeInTheDocument();
       await user.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
-      expect(screen.getByRole('button', { name: /^write 0 items to compliance$/i })).toBeDisabled();
+      expect(screen.getByRole('button', { name: /^write 0 items to compliance\\auth$/i })).toBeDisabled();
     });
 
     it('says it could not check, and still lets the reviewer write', async () => {
@@ -2364,7 +2364,7 @@ describe('JobDetail', () => {
       expect(await screen.findByText('Nothing new to create; 2 parent links remain. 3 items are already written.')).toBeInTheDocument();
       expect(screen.queryByText(/creates 0 new work items/i)).not.toBeInTheDocument();
       await user.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
-      expect(screen.getByRole('button', { name: 'Finish writing to Compliance' })).toBeEnabled();
+      expect(screen.getByRole('button', { name: 'Finish writing to Compliance\\Auth' })).toBeEnabled();
     });
 
     it('figures-only write dialog shows the attach copy and button label', async () => {
@@ -2385,7 +2385,7 @@ describe('JobDetail', () => {
       expect(screen.queryByText(/must be deleted directly/)).not.toBeInTheDocument();
       expect(screen.queryByText('Write these items to Azure DevOps?')).not.toBeInTheDocument();
       await user.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
-      expect(screen.getByRole('button', { name: 'Attach 36 figures to Compliance' })).toBeEnabled();
+      expect(screen.getByRole('button', { name: 'Attach 36 figures to Compliance\\Auth' })).toBeEnabled();
     });
 
     it('keeps the write disabled, with the reason, when there is nothing at all to do', async () => {
@@ -2397,7 +2397,7 @@ describe('JobDetail', () => {
 
       expect(await screen.findByText('Nothing will be created.')).toBeInTheDocument();
       await user.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
-      const button = screen.getByRole('button', { name: /^write 0 items to compliance$/i });
+      const button = screen.getByRole('button', { name: /^write 0 items to compliance\\auth$/i });
       expect(button).toBeDisabled();
       expect(button).toHaveAccessibleDescription(/nothing will be created, so there is nothing to write/i);
     });
@@ -2497,7 +2497,7 @@ describe('JobDetail', () => {
       await screen.findByText('2 new work items: 2 Requirements.');
       await user.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
 
-      await user.click(screen.getByRole('button', { name: 'Write 2 items to Compliance' }));
+      await user.click(screen.getByRole('button', { name: 'Write 2 items to Compliance\\Auth' }));
 
       await waitFor(() => expect(writeDialog()).not.toBeInTheDocument());
       expect(jobsApi.confirmJob).toHaveBeenCalledTimes(1);
