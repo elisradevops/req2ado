@@ -43,6 +43,8 @@ export interface EtaEstimate {
   upperMinutes: number;
   basis: 'bootstrap' | 'blended';
   sampleCount: number;
+  // Finished runs of about this document's size (half to double its blocks) behind the fit; 0 means the number is extrapolated. Absent on an older server.
+  nearSizeSampleCount?: number;
   modelSampleCount: number;
   modelAdjustment: number;
   windowDays: number;

@@ -1,3 +1,4 @@
+import { excludeBoilerplate } from './document-boilerplate';
 import { classifyFailure, describeFailure } from './failure-reason';
 import { joinContexts } from './document-profile';
 import { JobResultCache, fileHashOf, hashCatalog, isDegradedResult, kbVersionFor, type CachedResult } from './result-cache';
@@ -1267,7 +1268,7 @@ export async function runPipelineJob(
       }
     }
 
-    const resolvedDiff =
+    const resolvedDiffBeforeNotices =
       resolvedCustomerIdField !== null
         ? await Promise.all(
             verifiedDiff.map(async (entry) => ({
@@ -1280,6 +1281,8 @@ export async function runPipelineJob(
             })),
           )
         : verifiedDiff;
+    // SURVEY drafts a document's own notices (a disclaimer, a revision table) as Requirements; they are left out by default, with one Info warning.
+    const { diff: resolvedDiff, warning: boilerplateWarning } = excludeBoilerplate(resolvedDiffBeforeNotices, job.mode);
 
     // Third and final cooperative-cancellation checkpoint. The two earlier
     // checkpoints (before ingest(), right after level()) do not cover the
@@ -1312,6 +1315,7 @@ export async function runPipelineJob(
           ...figureStorageWarnings,
           ...figureCaptionWarnings,
           ...primerWarnings,
+          ...(boilerplateWarning ? [boilerplateWarning] : []),
         ] as any,
         kbCitations: (tree.kb_citations ?? []).map((c) => ({
           sourceFile: c.source_file,

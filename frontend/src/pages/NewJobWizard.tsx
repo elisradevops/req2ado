@@ -1000,7 +1000,7 @@ export function NewJobWizard(): React.ReactElement {
                     <Chip className="border border-info-border bg-info-soft font-mono text-micro font-normal normal-case tabular-nums text-info-ink">
                       <Cpu className="h-3 w-3 flex-none" />
                       {mode.toUpperCase()}
-                      {mode === 'survey' && selectedEstimate && ` · ${selectedEstimate.basis === 'blended' ? `n=${selectedEstimate.sampleCount}` : 'no completed runs yet'}`}
+                      {mode === 'survey' && selectedEstimate && ` · ${selectedEstimate.basis === 'blended' ? `n=${selectedEstimate.sampleCount}${selectedEstimate.nearSizeSampleCount === 0 ? ' · none near this size' : ''}` : 'no completed runs yet'}`}
                     </Chip>
                     <InfoTip
                       content={
@@ -1014,6 +1014,12 @@ export function NewJobWizard(): React.ReactElement {
                     />
                   </span>
                 </div>
+                {mode === 'survey' && selectedEstimate?.basis === 'blended' && selectedEstimate.nearSizeSampleCount === 0 && (
+                  <p className="flex items-start gap-1.5 rounded-sm border border-info-border bg-info-soft px-2 py-1.5 text-xs text-info-ink">
+                    <Info className="mt-0.5 h-3.5 w-3.5 flex-none" />
+                    No finished SURVEY run is near this document's size, so this estimate stretches the fit past what it has seen. Treat the range as rough.
+                  </p>
+                )}
                 {mode === 'survey' && selectedEstimate?.basis === 'bootstrap' && (
                   <p className="flex items-start gap-1.5 rounded-sm border border-info-border bg-info-soft px-2 py-1.5 text-xs text-info-ink">
                     <Info className="mt-0.5 h-3.5 w-3.5 flex-none" />

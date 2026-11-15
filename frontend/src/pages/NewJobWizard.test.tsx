@@ -972,20 +972,20 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
 });
 
 describe('NewJobWizard step 2 layout (DESIGN.md §11.2.5)', () => {
-  const ESTIMATES = (): void => {
+  const ESTIMATES = (nearSizeSampleCount?: number): void => {
     vi.spyOn(jobsApi, 'getEstimate').mockImplementation(async ({ mode }) =>
       mode === 'baseline'
         ? ({ mode: 'baseline', estimateMinutes: 1, lowerMinutes: 1, upperMinutes: 1, basis: 'bootstrap', sampleCount: 0, modelSampleCount: 0, modelAdjustment: 1, windowDays: 90 } as any)
-        : ({ mode: 'survey', estimateMinutes: 25, lowerMinutes: 20, upperMinutes: 30, basis: 'blended', sampleCount: 5, modelSampleCount: 5, modelAdjustment: 1, windowDays: 90 } as any),
+        : ({ mode: 'survey', estimateMinutes: 25, lowerMinutes: 20, upperMinutes: 30, basis: 'blended', sampleCount: 5, modelSampleCount: 5, modelAdjustment: 1, windowDays: 90, ...(nearSizeSampleCount === undefined ? {} : { nearSizeSampleCount }) } as any),
     );
   };
 
-  async function reachStep2(): Promise<void> {
+  async function reachStep2(nearSizeSampleCount?: number): Promise<void> {
     vi.spyOn(jobsApi, 'listModels').mockResolvedValue({ models: ['qwen2.5:1.5b'], recommended: null, details: [] });
     vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({
       blockCount: 682, sectionCount: 24, figureCount: 39, depth: 4, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
     } as any);
-    ESTIMATES();
+    ESTIMATES(nearSizeSampleCount);
     render(
       <ToastProvider>
         <MemoryRouter>
@@ -1005,6 +1005,20 @@ describe('NewJobWizard step 2 layout (DESIGN.md §11.2.5)', () => {
     expect(rail).toHaveTextContent('BASELINE');
     expect(rail).not.toHaveTextContent(/no completed runs yet/i);
     expect(rail).not.toHaveTextContent(/feeds the fit|sharpens on its own|conservative default/i);
+  });
+
+  it('says so when no finished SURVEY run is near the document\'s size', async () => {
+    await reachStep2(0);
+    await userEvent.click(screen.getByRole('radio', { name: /survey/i }));
+    expect(screen.getByText(/no finished survey run is near this document's size/i)).toBeInTheDocument();
+    expect(screen.getByRole('complementary', { name: 'This run' })).toHaveTextContent(/none near this size/i);
+  });
+
+  it('does not say it when a finished SURVEY run is near the document\'s size', async () => {
+    await reachStep2(3);
+    await userEvent.click(screen.getByRole('radio', { name: /survey/i }));
+    expect(screen.queryByText(/no finished survey run is near this document's size/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('complementary', { name: 'This run' })).not.toHaveTextContent(/none near this size/i);
   });
 
   it('shows the uploaded document in the summary rail, with its counts', async () => {

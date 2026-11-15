@@ -313,6 +313,15 @@ export const KIND_META: Record<string, KindMeta> = {
     chip: 'Reused overview',
     unit: ['notice', 'notices'],
   },
+  boilerplate_excluded: {
+    title: 'Notices left out',
+    group: 'info',
+    short: 'These items look like a notice (a disclaimer, copyright line or revision table), not a requirement, so they were left out.',
+    means: 'The text starts like document furniture and states no obligation. Nothing was deleted: each item is still in the tree, marked Excluded.',
+    todo: 'Nothing required. If one of them is a real requirement, Include it.',
+    chip: 'Left out as a notice',
+    unit: ['item', 'items'],
+  },
   // Not a warning the pipeline emits: the label the tree filter wears when "Approve clean items" shows its
   // list. "info", so the filter offers no mark-all-reviewed of its own (that would skip the spot-check).
   // Never put a pipeline warning under this kind: it would take this entry's wording.

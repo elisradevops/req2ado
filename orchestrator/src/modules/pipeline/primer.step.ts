@@ -136,6 +136,35 @@ const clock = (seconds: number): string => `${Math.floor(seconds / 60)}:${String
 /** The one primer warning that reports a healthy run (a saved overview was reused): it must never count as the run being degraded. */
 export const OVERVIEW_REUSED_KIND = 'overview_reused';
 
+/** What the primer cache stores: the overview and where it came from. Entries from before this was recorded are the bare text. */
+interface CachedPrimer {
+  text: string;
+  jobId?: string;
+  at?: string;
+}
+
+function readCachedPrimer(raw: string | null): CachedPrimer | null {
+  if (raw === null) return null;
+  if (raw.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(raw) as Partial<CachedPrimer>;
+      if (typeof parsed.text === 'string') {
+        return { text: parsed.text, ...(typeof parsed.jobId === 'string' ? { jobId: parsed.jobId } : {}), ...(typeof parsed.at === 'string' ? { at: parsed.at } : {}) };
+      }
+    } catch {
+      /* not an envelope: an overview that happens to start with a brace is still text */
+    }
+  }
+  return { text: raw };
+}
+
+/** " (read by job 4270e8be, 2026-11-14 10:00 UTC)", or nothing for an entry that does not say where it came from. */
+function reusedFrom(entry: CachedPrimer): string {
+  const when = entry.at && !Number.isNaN(Date.parse(entry.at)) ? entry.at.slice(0, 16).replace('T', ' ') + ' UTC' : null;
+  const parts = [entry.jobId ? `read by job ${entry.jobId.slice(0, 8)}` : null, when].filter((part): part is string => part !== null);
+  return parts.length > 0 ? ` (${parts.join(', ')})` : '';
+}
+
 function warning(reason: string, raw: string, extra: Record<string, unknown> = {}): WarningRecord {
   return { kind: 'primer_unavailable', severity: 'pipeline_issue', nodeIds: [], detail: { reason, ...extra }, raw };
 }
@@ -177,19 +206,19 @@ export async function runPrimerStep(input: PrimerStepInput): Promise<PrimerStepR
   let primerContext: string | undefined;
   try {
     client = await raceAbort(input.getClient(), signal);
-    const cached = await raceAbort(cache.get(cacheKey), signal);
-    if (cached !== null) {
+    const cachedEntry = readCachedPrimer(await raceAbort(cache.get(cacheKey), signal));
+    if (cachedEntry !== null) {
       say('cached', 'Reused a saved overview of this document.');
       // On the job too (an informational warning), not only a line in the run log: a run that finishes in seconds explains itself, and a
-      // reviewer can tell the overview was reused rather than re-read. The cache keeps only the text, so it cannot say from which job or when.
+      // reviewer can tell the overview was reused rather than re-read. A current entry says from which job and when; an older plain-text one cannot.
       warnings.push({
         kind: OVERVIEW_REUSED_KIND,
         severity: 'pipeline_issue',
         nodeIds: [],
-        detail: { reason: 'cache_hit' },
-        raw: 'Reused a saved overview of this document, so it was not read again for this run.',
+        detail: { reason: 'cache_hit', ...(cachedEntry.jobId ? { sourceJobId: cachedEntry.jobId } : {}), ...(cachedEntry.at ? { cachedAt: cachedEntry.at } : {}) },
+        raw: `Reused a saved overview of this document${reusedFrom(cachedEntry)}, so it was not read again for this run.`,
       });
-      return { primerContext: cached, warnings };
+      return { primerContext: cachedEntry.text, warnings };
     }
     if (options.skipMemorySeconds > 0 && Boolean(await raceAbort(cache.get(skipKey), signal))) {
       say('skipped', 'Skipped the document overview: it timed out recently for this document.');
@@ -225,7 +254,10 @@ export async function runPrimerStep(input: PrimerStepInput): Promise<PrimerStepR
       result = await ask(client.chatModel);
     }
     primerContext = result.content?.trim().slice(0, PRIMER_CONTEXT_MAX_CHARS) || undefined;
-    if (primerContext) await cache.set(cacheKey, primerContext, 'EX', PRIMER_CONTEXT_CACHE_TTL_SECONDS);
+    if (primerContext) {
+      const entry: CachedPrimer = { text: primerContext, jobId: job.id, at: new Date().toISOString() };
+      await cache.set(cacheKey, JSON.stringify(entry), 'EX', PRIMER_CONTEXT_CACHE_TTL_SECONDS);
+    }
     stopBeat();
     say('done', 'Document overview ready.');
     return { primerContext, warnings };

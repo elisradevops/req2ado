@@ -138,6 +138,47 @@ describe('runPipelineJob', () => {
     expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(Buffer.from('text'), 'x.txt', false, 'baseline', 'job-1', undefined, undefined, 'user-1', undefined, undefined, expect.any(AbortSignal));
   });
 
+  describe('document notices (SURVEY)', () => {
+    const deps = () => ({
+      ingestionClient: fakeIngestionClient as any,
+      dryRunService: fakeDryRunService as any,
+      idempotencyService: fakeIdempotencyService as any,
+      prisma: fakePrisma as any,
+      jobEventsPublisher: fakeJobEventsPublisher as any,
+      mcpClient: fakeMcpClient as any,
+      backfillService: fakeBackfillService as any,
+      adoCredentialResolver: fakeAdoCredentialResolver as any,
+      defaultLlmModel: 'gemma4:12b',
+    });
+    const entry = (localId: string, title: string, description: string) => ({
+      localId, parentLocalId: null, type: 'Requirement', title, description, action: 'create', existingAdoId: null, sourceHash: localId, customerId: null, sourceRef: null, tags: [],
+    });
+    const diff = [entry('notice', 'Disclaimer', ''), entry('real', 'Logging', 'The unit shall log every fault.')];
+    const storedData = () => fakePrisma.job.update.mock.calls.find(([arg]: any) => arg.data.status === 'diff_ready')![0].data;
+
+    it('leaves a disclaimer out by default in SURVEY, and says so in an Info warning', async () => {
+      fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+      fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
+      fakeDryRunService.diff.mockResolvedValue(diff);
+      await runPipelineJob({ id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' }, deps());
+
+      const data = storedData();
+      expect(data.dryRunDiff.map((e: any) => [e.localId, e.excluded ?? false])).toEqual([['notice', true], ['real', false]]);
+      expect(data.warnings).toEqual([expect.objectContaining({ kind: 'boilerplate_excluded', nodeIds: ['notice'] })]);
+    });
+
+    it('keeps every block in BASELINE', async () => {
+      fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+      fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
+      fakeDryRunService.diff.mockResolvedValue(diff);
+      await runPipelineJob({ id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' }, deps());
+
+      const data = storedData();
+      expect(data.dryRunDiff.every((e: any) => e.excluded === undefined)).toBe(true);
+      expect(data.warnings).toEqual([]);
+    });
+  });
+
   describe('figure vision plan (SURVEY)', () => {
     const surveyJob = {
       id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: 'user-1', mode: 'survey' as const,
@@ -3176,8 +3217,10 @@ describe('runPipelineJob', () => {
       );
       expect(fakeOpenWebUiClient.deleteFile).toHaveBeenCalledWith('file-1');
       expect(fakePrimerCacheRedis.set).toHaveBeenCalledWith(
-        expect.stringContaining('primer:gemma4:12b:'), 'This is an avionics ICD.', 'EX', 86_400,
+        expect.stringContaining('primer:gemma4:12b:'), expect.any(String), 'EX', 86_400,
       );
+      const savedOverview = JSON.parse(fakePrimerCacheRedis.set.mock.calls.find(([key]: [string]) => key.startsWith('primer:'))![1]);
+      expect(savedOverview).toMatchObject({ text: 'This is an avionics ICD.', jobId: expect.any(String) });
     });
 
     it('fails open to undefined primerContext when upload throws', async () => {
@@ -3330,7 +3373,8 @@ describe('runPipelineJob', () => {
       const clampedPrimerContext = fakeIngestionClient.level.mock.calls[0][6];
       expect(clampedPrimerContext).toHaveLength(1000);
       expect(clampedPrimerContext).toBe(overlyLongReply.slice(0, 1000));
-      expect(fakePrimerCacheRedis.set).toHaveBeenCalledWith(expect.any(String), clampedPrimerContext, 'EX', 86_400);
+      expect(fakePrimerCacheRedis.set).toHaveBeenCalledWith(expect.any(String), expect.any(String), 'EX', 86_400);
+      expect(JSON.parse(fakePrimerCacheRedis.set.mock.calls[0][1]).text).toBe(clampedPrimerContext);
     });
 
     it('passes maxTokens on the primer chat call -- bounds worst-case latency/output, same precedent as vision()\'s own caption cap', async () => {

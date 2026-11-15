@@ -290,4 +290,11 @@ describe('changed_since_written', () => {
     expect(meta.means).toMatch(/nothing is updated automatically/i);
     expect(meta.todo).toMatch(/by hand|leave it/i);
   });
+
+  it('boilerplate_excluded is an Info notice that names what was left out and says it can be included again', () => {
+    const meta = kindMeta('boilerplate_excluded');
+    expect(meta.group).toBe('info');
+    expect(meta.title).toBe('Notices left out');
+    expect(meta.todo).toMatch(/include/i);
+  });
 });

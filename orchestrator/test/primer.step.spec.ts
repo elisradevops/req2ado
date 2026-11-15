@@ -52,7 +52,9 @@ describe('primer step: what the user sees', () => {
     expect(steps(narrations)).toEqual(['uploading', 'processing', 'reading', 'done']);
     expect(narrations.every((n) => typeof n.message === 'string' && n.message.length > 0 && n.elapsedSeconds >= 0)).toBe(true);
     expect(client.deleteFile).toHaveBeenCalledWith('file-1');
-    expect(cache.set).toHaveBeenCalledWith(expect.stringContaining('primer:gemma4:12b:'), 'This is an avionics ICD.', 'EX', 86_400);
+    expect(cache.set).toHaveBeenCalledWith(expect.stringContaining('primer:gemma4:12b:'), expect.any(String), 'EX', 86_400);
+    const stored = JSON.parse(cache.set.mock.calls.find(([key]) => String(key).startsWith('primer:'))![1] as string);
+    expect(stored).toEqual({ text: 'This is an avionics ICD.', jobId: job.id, at: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/) });
   });
 
   it('says it reused a saved overview and uploads nothing on a cache hit', async () => {
@@ -78,6 +80,28 @@ describe('primer step: what the user sees', () => {
     // What it says: the overview was saved, not re-read, so this run did not re-think the whole document.
     expect(result.warnings[0].raw).toMatch(/saved overview/i);
     expect(result.warnings[0].raw).toMatch(/not read again|not re-read|reused/i);
+  });
+
+  it('says which job the saved overview came from, and when, when the entry records it', async () => {
+    const { run, cache } = setup();
+    cache.get.mockResolvedValueOnce(JSON.stringify({ text: 'saved overview', jobId: 'job-src', at: '2026-11-14T10:00:00.000Z' }));
+    const result = await run();
+    expect(result.primerContext).toBe('saved overview');
+    expect(result.warnings[0]).toMatchObject({
+      kind: 'overview_reused',
+      detail: { reason: 'cache_hit', sourceJobId: 'job-src', cachedAt: '2026-11-14T10:00:00.000Z' },
+    });
+    // The text the page shows says it too: the first 8 characters of the job id (what its address starts with) and the time.
+    expect(result.warnings[0].raw).toMatch(/job job-src/);
+    expect(result.warnings[0].raw).toMatch(/2026-11-14 10:00 UTC/);
+  });
+
+  it('still reuses an entry saved before the source was recorded (plain text), without a source', async () => {
+    const { run, cache } = setup();
+    cache.get.mockResolvedValueOnce('plain saved overview');
+    const result = await run();
+    expect(result.primerContext).toBe('plain saved overview');
+    expect(result.warnings[0].detail).toEqual({ reason: 'cache_hit' });
   });
 
   it('adds no such warning when the overview was freshly read', async () => {

@@ -389,6 +389,15 @@ describe('EtaService', () => {
     expect(new Set(minutes).size).toBe(4);
   });
 
+  it('says how many finished runs are near the document\'s size (within half to double its blocks), so a far-off fit can be called what it is', async () => {
+    const rows = [100, 150, 200, 220, 900].map((blockCount, i) => row({ blockCount, figureCount: i }));
+    const service = new EtaService(fakePrisma(rows), 'model-a');
+
+    expect((await service.estimate({ mode: 'survey', blockCount: 180, figureCount: 2 })).nearSizeSampleCount).toBe(4); // 90..360: 100, 150, 200, 220
+    expect((await service.estimate({ mode: 'survey', blockCount: 5000, figureCount: 2 })).nearSizeSampleCount).toBe(0);
+    expect((await new EtaService(fakePrisma([]), 'model-a').estimate({ mode: 'survey', blockCount: 180, figureCount: 2 })).nearSizeSampleCount).toBe(0);
+  });
+
   it('keeps the floor low: it only stops an estimate reading as instant, and is never what a real document\'s estimate comes from', () => {
     expect(SURVEY_MIN_MINUTES).toBeGreaterThan(0);
     expect(SURVEY_MIN_MINUTES).toBeLessThanOrEqual(3);
