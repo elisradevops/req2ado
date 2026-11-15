@@ -179,15 +179,19 @@ export class JobEventPersistenceService implements OnModuleInit, OnModuleDestroy
   }
 
   async backfillMissedEvents(): Promise<void> {
-    const narrationLogKeys = await this.scanKeys('job-events:*:narration-log');
-    for (const key of narrationLogKeys) {
-      const jobId = key.slice('job-events:'.length, key.length - ':narration-log'.length);
-      if (jobId) await this.backfillJobNarrationLog(jobId, key);
+    const prefix = 'job-events:';
+    const narrationEntries = (await this.scanKeys('job-events:*:narration-log')).map((key) => ({ key, jobId: key.slice(prefix.length, key.length - ':narration-log'.length) }));
+    const currentEntries = (await this.scanKeys('job-events:*:current')).map((key) => ({ key, jobId: key.slice(prefix.length, key.length - ':current'.length) }));
+    // A deleted job's Redis keys outlive it (they only expire), and writing its events would fail the foreign key on every start. One query
+    // for every job the keys name, then only those that still exist are restored.
+    const jobIds = [...new Set([...narrationEntries, ...currentEntries].map((entry) => entry.jobId).filter(Boolean))];
+    if (jobIds.length === 0) return;
+    const existing = new Set((await this.prisma.job.findMany({ where: { id: { in: jobIds } }, select: { id: true } })).map((job) => job.id));
+    for (const { key, jobId } of narrationEntries) {
+      if (jobId && existing.has(jobId)) await this.backfillJobNarrationLog(jobId, key);
     }
-    const currentKeys = await this.scanKeys('job-events:*:current');
-    for (const key of currentKeys) {
-      const jobId = key.slice('job-events:'.length, key.length - ':current'.length);
-      if (jobId) await this.backfillJobCurrentStage(jobId, key);
+    for (const { key, jobId } of currentEntries) {
+      if (jobId && existing.has(jobId)) await this.backfillJobCurrentStage(jobId, key);
     }
   }
 
