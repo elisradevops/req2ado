@@ -1512,10 +1512,10 @@ export function JobDetail(): React.ReactElement {
     }
     const excludedId = selectedId;
     setQueueAnnouncement('');
-    const rest = buildReviewQueue(
-      diff.map((entry) => (entry.localId === excludedId ? { ...entry, excluded: true } : entry)),
-      warningKindGroups,
-    );
+    const afterExclude = diff.map((entry) => (entry.localId === excludedId ? { ...entry, excluded: true } : entry));
+    // With a group chip pressed the queue is that group, so "left" counts it; once the group has emptied it is everything left (as reviewQueue).
+    const groupRest = activeReviewGroup ? groupReviewQueue(afterExclude, warningKindGroups)[activeReviewGroup] : [];
+    const rest = groupRest.length > 0 ? groupRest : buildReviewQueue(afterExclude, warningKindGroups);
     if (!(await excludeWithUndo(excludedId))) return;
     // Step on only if the reviewer is still on the excluded item; one who moved on (J/K) keeps their place.
     if (selectedIdRef.current === excludedId) advanceReviewQueue(rest, 'Excluded', excludedId);

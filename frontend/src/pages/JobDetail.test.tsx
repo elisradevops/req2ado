@@ -3087,6 +3087,79 @@ describe('JobDetail', () => {
       expect(within(dialog).queryAllByText('Clean one')).toHaveLength(0);
     });
 
+    it('with a group chip pressed, X counts what is left in that group, not in the whole queue', async () => {
+      const rq = (localId: string, title: string, extra: Record<string, unknown> = {}) => ({
+        localId, parentLocalId: null, type: 'Requirement', title, description: '', action: 'create', customerId: null, tags: [], ...extra,
+      });
+      const entries = (excludedId?: string) => [
+        rq('c1', 'Check one', { qualityScore: 30, excluded: excludedId === 'c1' }),
+        rq('c2', 'Check two', { qualityScore: 35 }),
+        rq('ok', 'Clean one', { qualityScore: 95, groundingScore: 0.9 }),
+        rq('ok2', 'Clean two', { qualityScore: 96, groundingScore: 0.9 }),
+      ];
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-74', status: 'diff_ready', mode: 'survey', dryRunDiff: entries(), warnings: [] } as any);
+      vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockImplementation(async (_id, localId) => ({ dryRunDiff: entries(localId) }) as any);
+      renderAt('job-74');
+      const { default: userEvent } = await import('@testing-library/user-event');
+      await userEvent.click(await screen.findByRole('button', { name: /^check · 2$/i }));
+      await userEvent.click(screen.getByRole('button', { name: /^review in check · 2$/i }));
+      const dialog = await screen.findByRole('dialog');
+      await waitFor(() => expect(within(dialog).getByRole('note')).toHaveTextContent('1 of 2'));
+
+      await userEvent.keyboard('x');
+
+      await waitFor(() => expect(jobsApi.setDiffEntryExcluded).toHaveBeenCalledWith('job-74', 'c1', true));
+      await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Excluded. 1 left.'));
+    });
+
+    it('with a group chip pressed, X on the last item of the group stays in the group', async () => {
+      const rq = (localId: string, title: string, extra: Record<string, unknown> = {}) => ({
+        localId, parentLocalId: null, type: 'Requirement', title, description: '', action: 'create', customerId: null, tags: [], ...extra,
+      });
+      const entries = (excludedId?: string) => [
+        rq('c1', 'Check one', { qualityScore: 30 }),
+        rq('c2', 'Check two', { qualityScore: 35, excluded: excludedId === 'c2' }),
+        rq('ok', 'Clean one', { qualityScore: 95, groundingScore: 0.9 }),
+      ];
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-75', status: 'diff_ready', mode: 'survey', dryRunDiff: entries(), warnings: [] } as any);
+      vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockImplementation(async (_id, localId) => ({ dryRunDiff: entries(localId) }) as any);
+      renderAt('job-75');
+      const { default: userEvent } = await import('@testing-library/user-event');
+      await userEvent.click(await screen.findByRole('button', { name: /^check · 2$/i }));
+      await userEvent.click(screen.getByRole('button', { name: /^review in check · 2$/i }));
+      const dialog = await screen.findByRole('dialog');
+      await userEvent.keyboard('j');
+      await waitFor(() => expect(within(dialog).getByRole('note')).toHaveTextContent('2 of 2'));
+
+      await userEvent.keyboard('x');
+
+      await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Excluded. 1 left.'));
+      await waitFor(() => expect(within(dialog).getByRole('note')).toHaveTextContent('1 of 1'));
+      expect(within(dialog).queryAllByText('Clean one')).toHaveLength(0);
+    });
+
+    it('with a group chip pressed, X on the only item of the group counts everything left, as the queue does once the group has emptied', async () => {
+      const rq = (localId: string, title: string, extra: Record<string, unknown> = {}) => ({
+        localId, parentLocalId: null, type: 'Requirement', title, description: '', action: 'create', customerId: null, tags: [], ...extra,
+      });
+      const entries = (excludedId?: string) => [
+        rq('c1', 'Check one', { qualityScore: 30, excluded: excludedId === 'c1' }),
+        rq('ok', 'Clean one', { qualityScore: 95, groundingScore: 0.9 }),
+        rq('ok2', 'Clean two', { qualityScore: 96, groundingScore: 0.9 }),
+      ];
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-76', status: 'diff_ready', mode: 'survey', dryRunDiff: entries(), warnings: [] } as any);
+      vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockImplementation(async (_id, localId) => ({ dryRunDiff: entries(localId) }) as any);
+      renderAt('job-76');
+      const { default: userEvent } = await import('@testing-library/user-event');
+      await userEvent.click(await screen.findByRole('button', { name: /^check · 1$/i }));
+      await userEvent.click(screen.getByRole('button', { name: /^review in check · 1$/i }));
+      await screen.findByRole('dialog');
+
+      await userEvent.keyboard('x');
+
+      await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Excluded. 2 left.'));
+    });
+
     it('outside the queue, J and K follow the order the tree is drawn in, even when the diff lists a parent last', async () => {
       vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
         id: 'job-71',
