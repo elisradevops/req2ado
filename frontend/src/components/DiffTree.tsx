@@ -1347,7 +1347,12 @@ function DiffTreeRow({
               row's line 2: a mark that does not fit drops out of sight whole (the Details dialog has every one). Bounded in rem, not px.
               Order is by what must never be lost, since wrapping hides the LAST: the hazard, the focused warning's reason, the excluded
               ancestor, the criteria chip (only for a matched new item; otherwise it is in Status), the lock, then the customer id. */}
-          <span data-testid="title-trailing" className="flex max-h-6 min-w-0 flex-[0_1_auto] flex-wrap empty:hidden items-center justify-end gap-x-2 overflow-hidden">
+          {/* before:*: a zero-width, line-high placeholder as the first item of line 1, pulled back over the gap (-mr-2 = the gap) so it
+              costs no width. A mark wider than the group cannot wrap away when it is the first item on its line, so it was drawn
+              half outside the end-aligned group and cut ("o Customer ID"); behind the placeholder even the first mark has a line to
+              wrap away from, and it drops out whole. A pseudo item does not count for :empty, so the group still leaves layout when
+              it has no marks. */}
+          <span data-testid="title-trailing" className="flex max-h-6 min-w-0 flex-[0_1_auto] flex-wrap empty:hidden items-center justify-end gap-x-2 overflow-hidden before:h-6 before:w-0 before:flex-none before:-mr-2 before:content-['']">
             {sameTierEl}
             {reasonEl}
             {excludedEl}

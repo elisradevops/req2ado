@@ -2806,7 +2806,9 @@ export function JobDetail(): React.ReactElement {
         >
           {tab === 'tree' ? (
             <div id="proposed-tree" tabIndex={-1} className={cn('pt-3 outline-none', fading && ARRIVE.fadeMedium)}>
-              <Card>
+              {/* relative: the queue's sr-only status (below) is absolutely placed; with no positioned ancestor it sat at a window-relative spot
+                  that can lie below a short window, which made the page scroll. Card clips it (overflow-hidden). */}
+              <Card className="relative">
                 {/* DESIGN.md §11.5 -- the artifact's persistent "+ New item"
                     toolbar button, previously missing entirely: creation
                     only existed buried inside an existing node's own "Add

@@ -3002,6 +3002,15 @@ describe('JobDetail', () => {
       expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Marked reviewed. 2 left.');
     });
 
+    it('keeps the screen-reader status inside its card: an absolutely placed box with no positioned ancestor can lie below a short window and make the page scroll', async () => {
+      await startQueue();
+      const status = screen.getByTestId('review-queue-status');
+      expect(status.className.split(/\s+/)).toContain('sr-only');
+      const card = status.closest('.relative');
+      expect(card).not.toBeNull();
+      expect(card!.className).toContain('overflow-hidden');
+    });
+
     it('says where the reviewer is: "1 of 3" on the first item, and "1 of 2" on the next after one is marked', async () => {
       const userEvent = await startQueue();
       const dialog = await screen.findByRole('dialog');

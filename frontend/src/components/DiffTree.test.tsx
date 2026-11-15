@@ -689,6 +689,16 @@ describe('DiffTree signal counts', () => {
     expect(title.compareDocumentPosition(trailing) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  it('lets a mark that is wider than the group drop out whole: a first-line placeholder gives even the first mark a line to wrap away from (it was cut in half, "o Customer ID")', () => {
+    const entries: DryRunDiffEntry[] = [{ ...baseEntry, localId: 'c', title: 'Child req', customerId: 'REQ-1' }];
+    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+    const trailing = screen.getByText('REQ-1').closest('[data-testid="title-trailing"]') as HTMLElement;
+    // a zero-width, full-height pseudo item on line 1, pulled back over the gap so it costs no width
+    expect(trailing).toHaveClass('before:h-6', 'before:w-0', 'before:flex-none', 'before:-mr-2');
+    // the group is still removed from layout when it has no marks (the pseudo item does not make it non-empty)
+    expect(trailing).toHaveClass('empty:hidden');
+  });
+
   it('keeps the external-link glyph on the details button at desktop widths, and no review triangle on line 2', () => {
     render(<DiffTree entries={[{ ...baseEntry, qualityIssues: ['ambiguous'] }]} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
     const button = screen.getByRole('button', { name: /details for sys req/i });
