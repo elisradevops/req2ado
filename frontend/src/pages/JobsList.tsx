@@ -116,12 +116,12 @@ export function JobsList(): React.ReactElement {
   const failureShown = useRef(false);
 
   function load(): void {
-    setLoadError(false);
     const seq = ++loadSeq.current;
     listJobs()
       .then((result) => {
         if (seq !== loadSeq.current) return;
         failureShown.current = false;
+        setLoadError(false);
         setJobs(result);
         setLoaded(true);
       })

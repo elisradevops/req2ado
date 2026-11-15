@@ -10,7 +10,8 @@ type LoadState = { kind: 'loading' } | { kind: 'error' } | { kind: 'ready'; docu
 
 // What the knowledge base already holds, read from this app's own record of ingested files. It needs no SharePoint connection, so a user whose
 // token has expired can still see what their SURVEY jobs are grounded against. Read-only: adding and removing stay in the folder tree below.
-export function KbIngestedList(): React.ReactElement {
+// `refreshKey` changes after a file is added or removed below: the list is read again in place, keeping what is shown until the new answer lands.
+export function KbIngestedList({ refreshKey = 0 }: { refreshKey?: number }): React.ReactElement {
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
 
   useEffect(() => {
@@ -20,12 +21,13 @@ export function KbIngestedList(): React.ReactElement {
         if (!cancelled) setState({ kind: 'ready', documents });
       })
       .catch(() => {
-        if (!cancelled) setState({ kind: 'error' });
+        // A failed refresh keeps the list already shown; only a first load that fails is an error.
+        if (!cancelled) setState((prev) => (prev.kind === 'ready' ? prev : { kind: 'error' }));
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [refreshKey]);
 
   if (state.kind === 'loading') return <Skeleton className="h-16 w-full" />;
   if (state.kind === 'error') return <Alert severity="error">Couldn't load the documents in your knowledge base. Try again in a moment.</Alert>;

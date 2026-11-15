@@ -46,6 +46,21 @@ describe('JobsList', () => {
     }
   });
 
+  it('keeps the load-error banner on screen while a retry is in flight, and drops it once the list loads', async () => {
+    let resolveRetry: (v: never) => void = () => undefined;
+    vi.spyOn(jobsApi, 'listJobs')
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockReturnValueOnce(new Promise<never>((resolve) => { resolveRetry = resolve; }));
+    render(<ToastProvider><MemoryRouter><JobsList /></MemoryRouter></ToastProvider>);
+    await waitFor(() => expect(screen.getByText(/couldn't load jobs/i)).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /retry/i }));
+    expect(screen.getByText(/couldn't load jobs/i)).toBeInTheDocument();
+
+    resolveRetry([] as never);
+    await waitFor(() => expect(screen.queryByText(/couldn't load jobs/i)).toBeNull());
+  });
+
   it('renders an empty-state CTA when there are no jobs', async () => {
     vi.spyOn(jobsApi, 'listJobs').mockResolvedValue([]);
     render(<ToastProvider><MemoryRouter><JobsList /></MemoryRouter></ToastProvider>);

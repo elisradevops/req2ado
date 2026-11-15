@@ -31,6 +31,8 @@ export interface JobDetail {
   failedStage?: string | null;
   failureClass?: string | null;
   failureMessage?: string | null;
+  // How wide the duplicate check looked; absent on an older server.
+  dedupScope?: 'area_path' | 'project';
   status: string;
   mode: string;
   dryRunDiff: unknown;

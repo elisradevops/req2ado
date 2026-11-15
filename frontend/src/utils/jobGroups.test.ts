@@ -113,6 +113,21 @@ describe('running jobs', () => {
     expect(groups[0].jobs.map((j) => j.id)).toEqual(['going', 'queued', 'writing']);
   });
 
+  it('moves a pending or running job that has not finished in 12 hours to "Needs you": a worker that died would otherwise show "Running now" forever', () => {
+    const groups = groupJobs(
+      [
+        job('fresh', 'running', daysAgo(0)),
+        job('hung-run', 'running', daysAgo(1, 8)), // 26 h
+        job('hung-queue', 'pending', daysAgo(2)),
+        job('long-write', 'writing', daysAgo(1, 8)), // a write is never moved on age alone
+      ],
+      NOW,
+    );
+    expect(groups.map((g) => g.id)).toEqual(['running', 'needs_you']);
+    expect(groups[0].jobs.map((j) => j.id).sort()).toEqual(['fresh', 'long-write']);
+    expect(groups[1].jobs.map((j) => j.id)).toEqual(['hung-run', 'hung-queue']);
+  });
+
   it('keeps every job in exactly one group with the new one in place', () => {
     const jobs = [job('a', 'running', daysAgo(0)), job('b', 'diff_ready', daysAgo(0)), job('c', 'failed', daysAgo(0)), job('d', 'succeeded', daysAgo(40))];
     const placed = groupJobs(jobs, NOW).flatMap((g) => g.jobs.map((j) => j.id));

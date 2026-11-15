@@ -205,7 +205,7 @@ export async function getJob(id: string): Promise<JobDetail> {
   return response.data;
 }
 
-export async function confirmJob(id: string): Promise<{ status: string; createdCount: number }> {
+export async function confirmJob(id: string): Promise<{ status: string; createdCount: number; linkedInsteadCount?: number }> {
   const response = await httpClient.post(`/jobs/${id}/confirm`);
   return response.data;
 }

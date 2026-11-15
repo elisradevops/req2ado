@@ -45,4 +45,16 @@ describe('KbIngestedList', () => {
     expect(items[0]).not.toHaveTextContent('1 chunks');
     expect(items[1]).toHaveTextContent('chunks not counted');
   });
+
+  it('reads the list again, without flashing the loading skeleton, when told a file was added or removed', async () => {
+    vi.mocked(kbApi.listIngestedDocuments).mockClear();
+    vi.mocked(kbApi.listIngestedDocuments).mockResolvedValueOnce([doc()]).mockResolvedValueOnce([doc(), doc({ id: 'd2', name: 'Added.pdf' })]);
+    const { rerender } = render(<KbIngestedList refreshKey={0} />);
+    await screen.findByText('Standard.pdf');
+
+    rerender(<KbIngestedList refreshKey={1} />);
+    expect(screen.getByText('Standard.pdf')).toBeInTheDocument();
+    expect(await screen.findByText('Added.pdf')).toBeInTheDocument();
+    expect(kbApi.listIngestedDocuments).toHaveBeenCalledTimes(2);
+  });
 });

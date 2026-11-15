@@ -202,5 +202,18 @@ describe('formatDestinationPreview', () => {
     expect(svg.getAttribute('style') ?? '').toContain(colour);
     expect(labelEl).toBeInTheDocument();
   });
-});
 
+  // The duplicate check's reach is part of where a job writes: say it in words when it is wider than the default.
+  it.each([
+    ['project', /duplicates checked across the whole project/i],
+    ['area_path', /duplicates checked in this area path/i],
+  ] as const)('says how wide the duplicate check looked for %s', (dedupScope, text) => {
+    render(<DestinationBar compact teamProject="Proj" areaPath="Proj\\Area" dedupScope={dedupScope} />);
+    expect(screen.getByText(text)).toBeInTheDocument();
+  });
+
+  it('says nothing about the duplicate check when the scope is not known', () => {
+    render(<DestinationBar compact teamProject="Proj" areaPath="Proj\\Area" />);
+    expect(screen.queryByText(/duplicates checked/i)).toBeNull();
+  });
+});

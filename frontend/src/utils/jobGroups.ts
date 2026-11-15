@@ -21,6 +21,8 @@ export const JOB_GROUP_TITLES: Record<JobGroupId, string> = {
 
 const GROUP_ORDER: JobGroupId[] = ['running', 'needs_you', 'today', 'yesterday', 'this_week', 'earlier'];
 const DAY_MS = 24 * 60 * 60 * 1000;
+// A pending or running job older than this has most likely lost its worker; it is asked about, not shown as live.
+export const STALLED_AFTER_HOURS = 12;
 
 // The first 8 characters of the job id: what the job's URL starts with, so a row can be matched to its page.
 export function shortJobId(id: string): string {
@@ -49,7 +51,15 @@ function dayGroupOf(createdAt: string, today: number): JobGroupId {
   return 'earlier';
 }
 
+// Pending or running for longer than a run can take. A write (status 'writing') is excluded: it is long by design and has its own progress.
+function isStalledJob(job: JobGroupable, now: Date): boolean {
+  if (job.status !== 'pending' && job.status !== 'running') return false;
+  const created = Date.parse(job.createdAt);
+  return Number.isFinite(created) && now.getTime() - created > STALLED_AFTER_HOURS * 60 * 60 * 1000;
+}
+
 function needsYou(job: JobGroupable, now: Date): boolean {
+  if (isStalledJob(job, now)) return true;
   if (job.status === 'failed') {
     const created = Date.parse(job.createdAt);
     return Number.isFinite(created) && now.getTime() - created <= STALE_AFTER_DAYS * DAY_MS;
@@ -61,13 +71,13 @@ function needsYou(job: JobGroupable, now: Date): boolean {
 // waiting on, and it would otherwise sit under 17 proposals.
 const RUNNING_STATUSES = new Set(['pending', 'running', 'writing']);
 
-// "Running now" first, then "Needs you": a Diff ready or Failed job from the last week. Everything else by local day, newest first. A stale job falls to
+// "Running now" first, then "Needs you": a Diff ready or Failed job from the last week, or a run stalled for 12 hours. Everything else by local day, newest first. A stale job falls to
 // its day group, so 60 old proposals do not bury today's. Each job is in exactly one group; empty groups are dropped.
 export function groupJobs<T extends JobGroupable>(jobs: T[], now: Date): Array<{ id: JobGroupId; title: string; jobs: T[] }> {
   const today = startOfLocalDay(now);
   const buckets: Record<JobGroupId, T[]> = { running: [], needs_you: [], today: [], yesterday: [], this_week: [], earlier: [] };
   for (const job of jobs) {
-    buckets[RUNNING_STATUSES.has(job.status) ? 'running' : needsYou(job, now) ? 'needs_you' : dayGroupOf(job.createdAt, today)].push(job);
+    buckets[needsYou(job, now) && isStalledJob(job, now) ? 'needs_you' : RUNNING_STATUSES.has(job.status) ? 'running' : needsYou(job, now) ? 'needs_you' : dayGroupOf(job.createdAt, today)].push(job);
   }
   const time = (job: T): number => {
     const parsed = Date.parse(job.createdAt);

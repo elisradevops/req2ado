@@ -151,6 +151,8 @@ export function KnowledgeBase(): React.ReactElement {
   // the center-pane row action must show as ingested in the right-hand
   // detail pane too, without a re-browse round trip.
   const [ingestOverrides, setIngestOverrides] = useState<Record<string, { ingested: boolean; docId: string | null; chunkCount?: number | null }>>({});
+  // Bumped after a file is added or removed so the list at the top reads the knowledge base again.
+  const [kbListVersion, setKbListVersion] = useState(0);
   const [ingestingId, setIngestingId] = useState<string | null>(null);
   const ingestingRef = useRef(false);
   // Per-file "always include" (Full Context mode) choice, made in the
@@ -456,6 +458,7 @@ export function KnowledgeBase(): React.ReactElement {
       if (docId && currentModeOf(entry) !== mode) await setRetrievalMode(docId, mode);
       const result = await ingestFolderItem(entry.name, entry.id, entry.downloadUrl, relativePath, userId, mode === 'always_include' ? 'always_include' : undefined, driveId);
       setAlwaysIncludeSelection((prev) => ({ ...prev, [entry.id]: mode === 'always_include' }));
+      setKbListVersion((v) => v + 1);
       setIngestOverrides((prev) => ({
         ...prev,
         [entry.id]: {
@@ -506,6 +509,7 @@ export function KnowledgeBase(): React.ReactElement {
     try {
       await deleteIngestedDocument(documentPendingRemoval.documentId);
       showToast(`Removed "${documentPendingRemoval.name}" from the knowledge base.`, 'success');
+      setKbListVersion((v) => v + 1);
       setIngestOverrides((prev) => ({ ...prev, [documentPendingRemoval.entryId]: { ingested: false, docId: null } }));
       setDocumentPendingRemoval(null);
     } catch (err) {
@@ -742,7 +746,7 @@ export function KnowledgeBase(): React.ReactElement {
   return (
     <div className="flex flex-col gap-4">
       <PageHeader title="Knowledge base" description="Your reference documents. SURVEY jobs you start use them for context. Other users do not see them." />
-      <KbIngestedList />
+      <KbIngestedList refreshKey={kbListVersion} />
       <KbSourceBar
         sourceUrl={sourceUrl}
         draftUrl={browseUrl}

@@ -350,6 +350,7 @@ export function JobDetail(): React.ReactElement {
   // simply weren't read out of the job response at all.
   const [iterationPath, setIterationPath] = useState<string | null>(null);
   const [workItemState, setWorkItemState] = useState<string | null>(null);
+  const [dedupScope, setDedupScope] = useState<'area_path' | 'project' | undefined>(undefined);
   const [sourceFilename, setSourceFilename] = useState<string | null>(null);
   const [confirmDialogOpen, setConfirmDialogOpen] = useState(false);
   const [writeSummaryState, setWriteSummaryState] = useState<WriteSummaryState>({ status: 'loading' });
@@ -481,6 +482,7 @@ export function JobDetail(): React.ReactElement {
         setAdoProject(job.adoProject ?? null);
         setIterationPath(job.iterationPath ?? null);
         setWorkItemState(job.state ?? null);
+        setDedupScope(job.dedupScope);
         setSourceFilename(job.originalFilename);
         if (job.originalFilename) usePageLabelStore.getState().setJobLabel(job.id, job.originalFilename);
         setTypeCatalog(job.workItemTypeCatalog ?? null);
@@ -1038,7 +1040,11 @@ export function JobDetail(): React.ReactElement {
       setStatus(job.status);
       setCreatedItemCount(job.createdItemCount ?? 0);
       setWrittenLocalIds(job.writtenLocalIds ?? []);
-      showToast(`Wrote ${plural(result.createdCount, 'work item')} to Azure DevOps.`, 'success');
+      const linkedInstead = result.linkedInsteadCount ?? 0;
+      showToast(
+        `Wrote ${plural(result.createdCount, 'work item')} to Azure DevOps${linkedInstead > 0 ? `, linked ${linkedInstead} that ${linkedInstead === 1 ? 'was' : 'were'} already there` : ''}.`,
+        'success',
+      );
     } catch {
       setMutationError('Confirm failed — the job may be safe to retry. Check the Audit tab for details.');
       // Re-sync with the server's actual status rather than leaving the
@@ -3223,6 +3229,7 @@ export function JobDetail(): React.ReactElement {
               areaPath={areaPath}
               iterationPath={iterationPath}
               state={workItemState}
+              dedupScope={dedupScope}
               writeState={status === 'succeeded' ? 'written' : status === 'diff_ready' ? (createdItemCount > 0 ? 'partial' : 'proposed') : undefined}
             />
           </div>

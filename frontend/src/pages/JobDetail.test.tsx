@@ -2106,6 +2106,27 @@ describe('JobDetail', () => {
     await waitFor(() => expect(screen.getByText(/wrote 3 work items to azure devops/i)).toBeInTheDocument());
   });
 
+  it('says how many items were linked to an existing work item instead of created', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob')
+      .mockResolvedValueOnce({ id: 'job-10b', status: 'diff_ready', dryRunDiff: [], areaPath: 'Project\\Area1' } as any)
+      .mockResolvedValueOnce({ id: 'job-10b', status: 'succeeded', dryRunDiff: [] } as any);
+    vi.spyOn(jobsApi, 'confirmJob').mockResolvedValue({ status: 'succeeded', createdCount: 3, linkedInsteadCount: 2 });
+    useAuthStore.getState().login('https://ado.example', 'Jane', 'user-descriptor-1');
+
+    renderAt('job-10b');
+    await waitFor(() => expect(screen.getByRole('button', { name: /^write to azure devops$/i })).toBeInTheDocument());
+
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await userEvent.click(screen.getByRole('button', { name: /^write to azure devops$/i }));
+    // The confirm-to-ADO dialog is irreversible -- its Confirm button stays
+    // disabled until the acknowledgement checkbox is ticked (DESIGN.md §7/§8).
+    await userEvent.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^write to azure devops$/i }));
+
+    await waitFor(() => expect(screen.getByText(/wrote 3 work items to azure devops, linked 2 that were already there/i)).toBeInTheDocument());
+  });
+
   describe('final write summary', () => {
     const entry = (localId: string, extra: Record<string, unknown> = {}) => ({
       localId, parentLocalId: null, type: 'Requirement', title: localId, description: '', action: 'create', customerId: null, tags: [], ...extra,

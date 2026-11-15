@@ -137,11 +137,14 @@ export function DestinationBar({
   iterationPath,
   state,
   writeState,
+  dedupScope,
 }: {
   label?: string;
   // The job page (DESIGN.md §2 job states): whether the items are still proposed for this destination, partly written or written. Replaces
   // the label with words and the state's icon.
   writeState?: 'proposed' | 'partial' | 'written';
+  // How wide the duplicate check looked (the job page); omitted where it is not known.
+  dedupScope?: 'area_path' | 'project';
   /** One row: the label, the path and the state together (the job page). The default keeps the label above the path. */
   compact?: boolean;
   teamProject?: string | null;
@@ -199,6 +202,11 @@ export function DestinationBar({
           <span className="text-xs text-accent-ink">Work item state</span>
           <span className="text-xs font-semibold text-accent-ink">{state || '—'}</span>
         </span>
+        {dedupScope && (
+          <span className="text-xs text-ink-3">
+            {dedupScope === 'project' ? 'Duplicates checked across the whole project' : 'Duplicates checked in this area path'}
+          </span>
+        )}
       </div>
     </div>
   );
