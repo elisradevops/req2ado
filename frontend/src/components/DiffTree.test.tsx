@@ -642,10 +642,15 @@ describe('DiffTree signal counts', () => {
     expect(screen.getByText('Child').closest('[role=treeitem]')).toHaveAttribute('aria-level', '2');
   });
 
-  it('keeps the criteria chip a tab stop at desktop widths', () => {
+  it('keeps the criteria chip a tab stop at desktop widths on the selected row, and out of the tab order on the others', () => {
     const entries: DryRunDiffEntry[] = [{ ...baseEntry, localId: 'a', title: 'Has criteria', proposal: { kind: 'criteria' } as any, proposalAccepted: false }];
-    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+    const view = (selectedId: string | null) => (
+      <DiffTree entries={entries} selectedId={selectedId} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />
+    );
+    const { rerender } = render(view('a'));
     expect(screen.getByText('criteria to review')).toHaveAttribute('tabindex', '0');
+    rerender(view(null));
+    expect(screen.getByText('criteria to review')).toHaveAttribute('tabindex', '-1');
   });
 
   it('puts a new item\'s criteria chip in the Status column at desktop widths, not after the title (R7)', () => {

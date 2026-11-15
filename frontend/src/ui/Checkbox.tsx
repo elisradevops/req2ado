@@ -8,6 +8,7 @@ export function Checkbox({
   disabled,
   ariaLabel,
   className,
+  tabIndex,
 }: {
   // 'indeterminate' is the "some of them" state of a select-all box; clicking it selects everything.
   checked: boolean | 'indeterminate';
@@ -15,6 +16,8 @@ export function Checkbox({
   disabled?: boolean;
   ariaLabel?: string;
   className?: string;
+  // -1 takes it out of the tab order (a row of a long list that is not the current one) while keeping it clickable.
+  tabIndex?: number;
 }): React.ReactElement {
   return (
     <RadixCheckbox.Root
@@ -22,6 +25,7 @@ export function Checkbox({
       onCheckedChange={(value) => onCheckedChange(value === true)}
       disabled={disabled}
       aria-label={ariaLabel}
+      tabIndex={tabIndex}
       className={cn(
         // relative + the absolutely-positioned ::before expander give this a
         // 24x24 CSS-px hit target (DESIGN.md §13) without inflating the

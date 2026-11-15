@@ -1,5 +1,5 @@
 import { plural } from '../utils/plural';
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { FixedSizeList, type ListChildComponentProps } from 'react-window';
 import {
   DndContext,
@@ -407,6 +407,11 @@ const WIDE_ONLY = 'max-md:hidden';
 // A tree narrower than TWO_LINE_BELOW_TREE_PX is laid out like a phone whatever the window is, so the template and the dropped cells follow `narrow`, not only the md breakpoint.
 const columnsFor = (narrow: boolean): string => (narrow ? NARROW_TEMPLATE : `${WIDE_COLUMNS} ${NARROW_COLUMNS}`);
 const wideOnly = (narrow: boolean): string => (narrow ? 'hidden' : WIDE_ONLY);
+// react-window's scrolling element. A browser makes a scrollable region a keyboard stop of its own; the tree container already is the one stop
+// (it moves the selection with the arrow keys and scrolls the list), so this one is taken out. Module level, so its identity never changes.
+const ListScroller = forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(function ListScroller(props, ref) {
+  return <div ref={ref} tabIndex={-1} {...props} />;
+});
 // The DOM id of a row, which the tree names in aria-activedescendant (focus stays on the tree while the arrow keys move the selection).
 const rowDomId = (prefix: string, localId: string): string => `${prefix}-row-${encodeURIComponent(localId)}`;
 
@@ -831,6 +836,7 @@ export function DiffTree({
         >
           <FixedSizeList
             ref={listRef}
+            outerElementType={ListScroller}
             height={listHeight}
             width="100%"
             itemCount={rows.length}
@@ -1098,6 +1104,11 @@ function DiffTreeRow({
     )}
     </>
   );
+  // One tab stop for the whole tree: only the selected row's controls are in the tab order (roving tabindex); the others stay clickable.
+  // Arrow keys move the selection, so Tab lands on the row the reader is on. Chips and the work-item link are further left out on a phone row.
+  const isTabStop = entry.localId === selectedId;
+  const controlTab = isTabStop ? 0 : -1;
+  const chipTab = isTabStop && !narrow ? 0 : -1;
   // A plain fact, not the jargon "same tier": it reads the same on a phone, where there is no hover to show the tooltip.
   const sameTierLabel = `Nested ${realTypeName(entry.type)}`;
   const typeName = realTypeName(entry.type);
@@ -1130,7 +1141,7 @@ function DiffTreeRow({
       >
         <Chip
           // a chip that may sit on the hidden wrapped line of a phone row is not a tab stop there (the Details dialog has it)
-          tabIndex={narrow ? -1 : 0}
+          tabIndex={chipTab}
           bg={entry.proposalAccepted ? 'var(--color-accent-soft)' : 'var(--color-surface-alt)'}
           color={entry.proposalAccepted ? 'var(--color-accent)' : 'var(--color-ink-2)'}
           // inset focus ring: the Status cell and the title's trailing group clip their overflow, which would cut an outer ring
@@ -1147,7 +1158,7 @@ function DiffTreeRow({
     {reason && (
       <Tooltip content={reason.tip}>
         <Chip
-          tabIndex={narrow ? -1 : 0}
+          tabIndex={chipTab}
           bg={REASON_CHIP_COLORS[reason.group].bg}
           color={REASON_CHIP_COLORS[reason.group].color}
           className={cn('flex-none border focus-visible:outline-offset-[-2px]', REASON_CHIP_COLORS[reason.group].borderClass)}
@@ -1246,6 +1257,7 @@ function DiffTreeRow({
       </span>
       <span onClick={(e) => e.stopPropagation()} className="flex justify-center">
         <Checkbox
+          tabIndex={controlTab}
           ariaLabel={`Exclude ${entry.title}`}
           checked={!!entry.excluded}
           onCheckedChange={(checked) => onToggleExclude(entry.localId, checked)}
@@ -1268,6 +1280,7 @@ function DiffTreeRow({
         {row.hasChildren && !isFiltering && (
           <button
             type="button"
+            tabIndex={controlTab}
             aria-label={collapsedIds.has(entry.localId) ? `Expand ${entry.title}` : `Collapse ${entry.title}`}
             aria-expanded={!collapsedIds.has(entry.localId)}
             onClick={(e) => {
@@ -1307,7 +1320,7 @@ function DiffTreeRow({
               {/* Line 2, starting at the title's left edge. Order is by what must never be lost: what it will do first (wrapping hides the LAST chips, and the red tint still marks a same-tier row), then the hazard text,
                   then the rest. Whole chips wrap out of sight rather than being cut in half; the Details dialog has all of them. */}
               <span className="flex h-6 min-w-0 flex-wrap content-start items-center gap-x-1 overflow-hidden">
-                <ActionBadge action={entry.action} existingAdoId={entry.existingAdoId} matchedWi={entry.duplicateOf?.existingAdoId} orgUrl={orgUrl} project={project} quiet />
+                <ActionBadge action={entry.action} existingAdoId={entry.existingAdoId} matchedWi={entry.duplicateOf?.existingAdoId} linkTabIndex={controlTab} orgUrl={orgUrl} project={project} quiet />
                 {sameTierPhoneEl}
                 {criteriaEl}
                 {reasonEl}
@@ -1356,7 +1369,7 @@ function DiffTreeRow({
           it. */}
       {!narrow && (
         <span data-col="status" className="flex flex-none items-center justify-end overflow-hidden">
-          <ActionBadge action={entry.action} existingAdoId={entry.existingAdoId} matchedWi={entry.duplicateOf?.existingAdoId} orgUrl={orgUrl} project={project} hideNew />
+          <ActionBadge action={entry.action} existingAdoId={entry.existingAdoId} matchedWi={entry.duplicateOf?.existingAdoId} linkTabIndex={controlTab} orgUrl={orgUrl} project={project} hideNew />
           {criteriaInStatusColumn(entry) && criteriaEl}
           {writtenAdoIds?.[entry.localId] != null && (
             orgUrl ? (
@@ -1433,6 +1446,7 @@ function DiffTreeRow({
       <span className="flex justify-center">
         <button
           type="button"
+          tabIndex={controlTab}
           aria-label={`Details for ${entry.title}`}
           onClick={(e) => {
             e.stopPropagation();

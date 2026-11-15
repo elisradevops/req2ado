@@ -69,4 +69,46 @@ describe('DiffTree keyboard focus', () => {
     renderTree(null);
     expect(screen.getByRole('tree').className).not.toMatch(/outline-none/);
   });
+  // Tab stops inside the tree: a control is a stop unless it is taken out of the tab order with tabindex -1.
+  const tabStops = (): string[] =>
+    [...screen.getByRole('tree').querySelectorAll<HTMLElement>('a[href], button, [tabindex]')]
+      .filter((el) => el.getAttribute('tabindex') !== '-1')
+      .map((el) => el.getAttribute('aria-label') ?? el.textContent ?? '');
+
+  it('makes only the selected row\'s controls tab stops, so the tree is not seventy stops long', () => {
+    renderTree('f1');
+    expect(tabStops()).toEqual(['Exclude Feature 1', 'Collapse Feature 1', 'Details for Feature 1']);
+  });
+
+  it('has no row stop at all while nothing is selected: the tree itself is the one stop', () => {
+    renderTree(null);
+    expect(tabStops()).toEqual([]);
+  });
+
+  it('moves the stop with the selection', () => {
+    const { rerender } = renderTree('f1');
+    rerender(<DiffTree entries={treeEntries} selectedId="r1" onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+    expect(tabStops()).toEqual(['Exclude Req 1', 'Details for Req 1']);
+  });
+
+  it('treats the work-item link in a row the same way: a stop only on the selected row', () => {
+    const linked = [
+      entry('e1', null, 'Epic', 'Epic 1'),
+      { ...entry('r1', 'e1', 'Requirement', 'Req 1'), action: 'reuse', existingAdoId: 77 } as DryRunDiffEntry,
+    ];
+    const view = (selectedId: string) => (
+      <DiffTree entries={linked} selectedId={selectedId} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} orgUrl="https://ado.example" project="P" />
+    );
+    const { rerender } = render(view('e1'));
+    expect(screen.getByRole('link')).toHaveAttribute('tabindex', '-1');
+    rerender(view('r1'));
+    expect(screen.getByRole('link')).not.toHaveAttribute('tabindex', '-1');
+  });
+  it('takes the scrolling list itself out of the tab order (a browser makes a scrollable region a stop), so the tree stays one stop', () => {
+    renderTree(null);
+    const scroller = screen.getByRole('tree').firstElementChild as HTMLElement;
+    expect(scroller).toBeInstanceOf(HTMLElement);
+    expect(scroller.style.overflow || scroller.className).not.toBe('');
+    expect(scroller).toHaveAttribute('tabindex', '-1');
+  });
 });
