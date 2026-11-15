@@ -1371,6 +1371,23 @@ describe('DiffTree in a narrow tree (the details pane takes the width)', () => {
     expect(row.querySelector('[data-col="status"]')).toBeNull();
   });
 
+  it('also switches the column template and hides the wide-only cells, so the title keeps its width on a window wider than md', () => {
+    const { container } = renderAtTreeWidth(696);
+    const wrapper = container.firstElementChild as HTMLElement;
+    expect(wrapper.className).toContain('[--diff-cols:32px_minmax(0,1fr)_44px]');
+    expect(wrapper.className).not.toContain('--index-w');
+    for (const label of ['Index', 'Status', 'Flags']) expect(screen.getByText(label).className).toMatch(/(^| )hidden( |$)/);
+    const row = screen.getByText('Time sync source').closest('[role="treeitem"]') as HTMLElement;
+    expect(row.firstElementChild!.className).toMatch(/(^| )hidden( |$)/);
+  });
+
+  it('keeps the seven-column template and the wide cells when the tree is wide enough', () => {
+    const { container } = renderAtTreeWidth(856);
+    const wrapper = container.firstElementChild as HTMLElement;
+    expect(wrapper.className).toContain('--index-w');
+    expect(screen.getByText('Index').className).not.toMatch(/(^| )hidden( |$)/);
+  });
+
   it('keeps the one-line 40px row when the tree is wide enough', () => {
     const { container } = renderAtTreeWidth(856);
     const row = screen.getByText('Time sync source').closest('[role="treeitem"]') as HTMLElement;

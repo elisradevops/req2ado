@@ -401,8 +401,12 @@ const GRID_TEMPLATE_COLUMNS = 'var(--diff-cols)';
 // (pointer-only), Index and Flags columns are dropped outright; the details dialog still carries their facts. The wrapper's tailwind class
 // picks which template `--diff-cols` holds.
 const WIDE_COLUMNS = '[--diff-cols:var(--grip-w,20px)_32px_var(--index-w,44px)_minmax(0,1fr)_var(--status-w,108px)_100px_36px]';
-const NARROW_COLUMNS = 'max-md:[--diff-cols:32px_minmax(0,1fr)_44px]';
+const NARROW_TEMPLATE = '[--diff-cols:32px_minmax(0,1fr)_44px]';
+const NARROW_COLUMNS = `max-md:${NARROW_TEMPLATE}`;
 const WIDE_ONLY = 'max-md:hidden';
+// A tree narrower than TWO_LINE_BELOW_TREE_PX is laid out like a phone whatever the window is, so the template and the dropped cells follow `narrow`, not only the md breakpoint.
+const columnsFor = (narrow: boolean): string => (narrow ? NARROW_TEMPLATE : `${WIDE_COLUMNS} ${NARROW_COLUMNS}`);
+const wideOnly = (narrow: boolean): string => (narrow ? 'hidden' : WIDE_ONLY);
 
 // DESIGN.md §11.5 -- drag-and-drop is scoped to short, in-viewport moves;
 // MoveToPicker (a separate component, not part of this file) is the stated
@@ -774,7 +778,7 @@ export function DiffTree({
 
   return (
     <div
-      className={`${WIDE_COLUMNS} ${NARROW_COLUMNS}`}
+      className={columnsFor(narrow)}
       style={
         {
           '--index-w': `${indexColumnWidth}px`,
@@ -789,15 +793,15 @@ export function DiffTree({
         className={cn('grid items-center gap-2.5 border-b border-hairline bg-surface-alt px-3.5 py-1.5 max-md:gap-1.5', LABEL_MICRO, 'text-ink-2')}
         style={{ gridTemplateColumns: GRID_TEMPLATE_COLUMNS }}
       >
-        <span className={WIDE_ONLY} />
+        <span className={wideOnly(narrow)} />
         <span />
-        <span className={cn('text-right', WIDE_ONLY)}>Index</span>
+        <span className={cn('text-right', wideOnly(narrow))}>Index</span>
         <span>Item</span>
-        <span className={cn('flex items-center gap-1', WIDE_ONLY)}>
+        <span className={cn('flex items-center gap-1', wideOnly(narrow))}>
           Status
           <InfoTip content="What will happen to this item when you write to Azure DevOps. No pill means New (written to Azure DevOps for the first time). A pill means: Links to an existing WI-#### (reused, nothing new written, and it keeps its existing Azure DevOps parent regardless of where you place it in this tree), or Near-duplicate of an existing item (skipped, same parent-keeping rule). On a new item, 'criteria to review' or 'criteria accepted' says whether its proposed acceptance criteria will be written with it." />
         </span>
-        <span className={cn('flex items-center justify-end gap-1', WIDE_ONLY)}>
+        <span className={cn('flex items-center justify-end gap-1', wideOnly(narrow))}>
           Flags
           <InfoTip content="Quick counts for this item: a flag means the item needs your review (hover for why), a triangle shows how many quality issues were found (open the item for details), a link icon shows how many trace links it has, a table icon shows how many tables fed it, and an image icon shows how many figures fed it (amber when one or more of those figures got no description)." />
         </span>
@@ -1224,7 +1228,7 @@ function DiffTreeRow({
       <span
         className={cn(
           'flex items-center justify-center text-ink-3',
-          WIDE_ONLY,
+          wideOnly(narrow),
           canMove && 'cursor-grab opacity-0 transition-opacity duration-instant group-hover:opacity-100 group-focus-within:opacity-100',
         )}
         title={canMove ? 'Drag to move' : undefined}
@@ -1241,7 +1245,7 @@ function DiffTreeRow({
 
       {/* Generic per-row index (see FlatRow.index's own doc comment) -- width
           scales to the widest index actually present (see useIndexColumnWidth). */}
-      <span className={cn('text-right font-mono text-xs tabular-nums tracking-tight text-ink-3', WIDE_ONLY)}>{row.index}</span>
+      <span className={cn('text-right font-mono text-xs tabular-nums tracking-tight text-ink-3', wideOnly(narrow))}>{row.index}</span>
 
       {/* Item column: indent guides -> chevron -> type badge -> title, all single-line (truncated, not
           wrapped -- fixed row height demands it; full title/description is one click away in the
@@ -1377,7 +1381,7 @@ function DiffTreeRow({
           forced useStatusColumnWidth to reserve icon width GLOBALLY for
           every row, even unflagged ones with a short "New" label -- a
           visible gap before the action chip on every row. Confirmed live. */}
-      <span className={cn('flex flex-none items-center justify-end gap-2 text-xs', WIDE_ONLY)}>
+      <span className={cn('flex flex-none items-center justify-end gap-2 text-xs', wideOnly(narrow))}>
         {isFlaggedDiffEntry(entry) && (
           // A flag, not the issue triangle: two different signals no longer share one glyph. Named for assistive tech; the reason is the tooltip.
           <span role="img" aria-label="Check" className="flex items-center text-warning" title={flaggedDiffEntryReason(entry) ?? 'Check'}>
