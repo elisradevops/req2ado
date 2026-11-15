@@ -3410,7 +3410,7 @@ export function JobDetail(): React.ReactElement {
             liveKey={phaseModel.liveKey}
             onSelect={(key) => setPickedPhase(key === phaseModel.liveKey ? null : key)}
           />
-          <div id="phase-view" role="tabpanel" tabIndex={0} aria-labelledby={`phase-tab-${viewKey}`} className="flex min-w-0 flex-col gap-4 outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus">
+          <div id="phase-view" role="tabpanel" tabIndex={0} aria-labelledby={`phase-tab-${viewKey}`} className="flex min-w-0 flex-col gap-4 outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus">
             {viewKey === phaseModel.liveKey ? (
               <>
                 {status === 'pending' && (
@@ -3463,7 +3463,7 @@ export function JobDetail(): React.ReactElement {
               onSelect={(key) => setPickedPhase(key === phaseModel.liveKey ? null : key)}
             />
           </div>
-          <div id="phase-view" role="tabpanel" tabIndex={0} aria-labelledby={`phase-tab-${viewKey}`} className="flex min-w-0 flex-col gap-4 outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus">
+          <div id="phase-view" role="tabpanel" tabIndex={0} aria-labelledby={`phase-tab-${viewKey}`} className="flex min-w-0 flex-col gap-4 outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus">
             {viewKey !== phaseModel.liveKey &&
               (() => {
                 const phase = phaseModel.phases.find((p) => p.key === viewKey)!;

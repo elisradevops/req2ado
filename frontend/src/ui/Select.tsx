@@ -87,7 +87,7 @@ export const Select = forwardRef<
           title={value}
           className={cn(
             // DESIGN.md §7 Input category: hover:border-ink-3, matching Checkbox.tsx's own already-correct treatment.
-            'flex w-full cursor-pointer items-center justify-between gap-2 rounded-sm border border-field-border bg-surface px-2.5 py-1.5 text-sm text-ink-1 transition-colors duration-fast ease-out hover:border-ink-3 focus:border-accent focus:outline-none focus-visible:outline-2 focus-visible:outline-accent aria-invalid:border-danger disabled:cursor-not-allowed disabled:bg-canvas disabled:text-ink-3',
+            'flex w-full cursor-pointer items-center justify-between gap-2 rounded-sm border border-field-border bg-surface px-2.5 py-1.5 text-sm text-ink-1 transition-colors duration-fast ease-out hover:border-ink-3 focus:border-accent focus:outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-accent aria-invalid:border-danger disabled:cursor-not-allowed disabled:bg-canvas disabled:text-ink-3',
             className,
           )}
         >

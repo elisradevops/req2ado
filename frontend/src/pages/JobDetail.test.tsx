@@ -4420,6 +4420,14 @@ describe('JobDetail: the phase rail while a run is in progress (DESIGN.md §11.3
     expect(screen.getByRole('tabpanel')).toHaveAttribute('aria-labelledby', 'phase-tab-analyze');
   });
 
+  it('draws a ring on the phase panel when it is focus-visible (outline-none alone would hide it in Tailwind 4)', async () => {
+    await mountRunning();
+    const panel = await screen.findByRole('tabpanel');
+    const classes = panel.className.split(/\s+/);
+    expect(classes).toContain('focus-visible:outline-2');
+    expect(classes).toContain('focus-visible:outline-solid');
+  });
+
   it('has exactly one polite status region while a run is in progress (DESIGN.md §13)', async () => {
     await mountRunning({ stage: 'infer_hierarchy_start' });
     await screen.findAllByRole('tab');
