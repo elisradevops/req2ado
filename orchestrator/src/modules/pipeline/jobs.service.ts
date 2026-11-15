@@ -206,6 +206,8 @@ export interface JobDetail {
   // The Azure DevOps id of each written item (from the write's own record), so a written job can show #12000 on its rows. Empty until a write.
   writtenItems: { localId: string; adoId: number }[];
   // Why a failed job failed (null for any other job, and for a job that failed before this was recorded: its cause is then only in the audit trail).
+  // How wide the duplicate check looked: this area path only, or the whole project.
+  dedupScope: 'area_path' | 'project';
   failedStage: string | null;
   failureClass: string | null;
   failureMessage: string | null;
@@ -407,8 +409,10 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     if (input.fileBuffer.length <= this.maxStoredSourceBytes) {
       try {
         await this.prisma.jobSourceFile.create({ data: { jobId: job.id, bytes: input.fileBuffer } });
-      } catch {
-        // Swallowed deliberately -- see comment above.
+      } catch (error) {
+        // Not fatal (see comment above), but a job whose upload was not kept cannot be re-run from it: say so.
+        // eslint-disable-next-line no-console -- operational visibility for a best-effort path, not app logging
+        console.error(`Could not store the uploaded file for job ${job.id}; it cannot be re-run from the original:`, error);
       }
     }
     return { jobId: job.id };
@@ -681,6 +685,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       createdItemCount: job._count.createdItemMappings,
       writtenLocalIds,
       writtenItems,
+      dedupScope: job.dedupScope === 'project' ? 'project' : 'area_path',
       failedStage: job.failedStage ?? null,
       failureClass: job.failureClass ?? null,
       failureMessage: job.failureMessage ?? null,
@@ -2994,17 +2999,26 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       // identity v2 even when it moved or the file was renamed. Never a bulk rewrite, and never moves an existing row. Its content hash
       // is what is known to be in ADO (the stored one, or the verified text), so a change stays flagged until ADO is updated.
       // Best-effort: the reuse itself needs no write, so a failure here is logged and the write goes on.
+      // One batched insert-if-missing for the whole job. It also covers a Requirement written by an interrupted earlier attempt, which
+      // may have stopped between its v1 and its v2 record.
+      const backfillRows: { sourceHash: string; areaPath: string; adoWorkItemId: number; contentHash: string | null; identityVersion: 2 }[] = [];
       for (const entry of diff) {
-        if (entry.action !== 'reuse' || entry.type !== 'Requirement' || !entry.backfillIdentityV2 || !entry.identityHashV2 || entry.existingAdoId === null) continue;
+        if (entry.type !== 'Requirement' || !entry.identityHashV2) continue;
+        if (entry.action === 'reuse' && entry.backfillIdentityV2 && entry.existingAdoId !== null) {
+          backfillRows.push({ sourceHash: entry.identityHashV2, areaPath: job.areaPath, adoWorkItemId: entry.existingAdoId, contentHash: entry.writtenContentHash ?? null, identityVersion: 2 });
+          continue;
+        }
+        const resumedAdoId = resumedAdoIdByLocalId.get(entry.localId);
+        if (entry.action === 'create' && resumedAdoId !== undefined) {
+          backfillRows.push({ sourceHash: entry.identityHashV2, areaPath: job.areaPath, adoWorkItemId: resumedAdoId, contentHash: entry.contentHash ?? null, identityVersion: 2 });
+        }
+      }
+      if (backfillRows.length > 0) {
         try {
-          await this.idempotencyService.record(entry.identityHashV2, job.areaPath, entry.existingAdoId, {
-            contentHash: entry.writtenContentHash ?? null,
-            identityVersion: 2,
-            onlyIfMissing: true,
-          });
+          await this.idempotencyService.recordManyIfMissing(backfillRows);
         } catch (error) {
           // eslint-disable-next-line no-console -- operational visibility for a best-effort path, not app logging
-          console.error(`Could not add the identity v2 mapping for reused item ${entry.existingAdoId}:`, error);
+          console.error(`Could not add ${backfillRows.length} identity v2 mapping(s):`, error);
         }
       }
 
@@ -3364,6 +3378,6 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         },
       });
     }
-    return { status: 'succeeded', createdCount };
+    return { status: 'succeeded', createdCount, ...(linkedInsteadCount > 0 ? { linkedInsteadCount } : {}) };
   }
 }

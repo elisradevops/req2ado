@@ -9,6 +9,18 @@ export function idempotencyMapKey(sourceHash: string, areaPath: string): string 
   return `${sourceHash}::${areaPath}`;
 }
 
+// A lookup names every hash of a document in one IN list; PostgreSQL allows 32,767 bind parameters per statement and a v2 lookup sends up to three hashes
+// per node, so a 10,000-node document would not fit in one query. Asked for in slices, answers merged.
+const LOOKUP_CHUNK = 2000;
+// Rows inserted per statement when backfilling.
+const INSERT_CHUNK = 500;
+
+function chunked<T>(items: readonly T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let start = 0; start < items.length; start += size) out.push(items.slice(start, start + size));
+  return out;
+}
+
 /**
  * Backs docs/architecture.md's idempotency key: (source_hash, area_path) ->
  * System.Id. A row existing means this exact source content, in this area
@@ -64,11 +76,13 @@ export class IdempotencyService {
     const result = new Map<string, number>();
     if (keys.length === 0) return result;
     const sourceHashes = [...new Set(keys.map((key) => key.sourceHash))];
-    const rows = await this.prisma.idempotencyMapping.findMany({
-      where: { sourceHash: { in: sourceHashes } },
-    });
-    for (const row of rows) {
-      result.set(idempotencyMapKey(row.sourceHash, row.areaPath), row.adoWorkItemId);
+    for (const slice of chunked(sourceHashes, LOOKUP_CHUNK)) {
+      const rows = await this.prisma.idempotencyMapping.findMany({
+        where: { sourceHash: { in: slice } },
+      });
+      for (const row of rows) {
+        result.set(idempotencyMapKey(row.sourceHash, row.areaPath), row.adoWorkItemId);
+      }
     }
     return result;
   }
@@ -81,11 +95,13 @@ export class IdempotencyService {
     const result = new Map<string, { adoWorkItemId: number; contentHash: string | null }>();
     if (keys.length === 0) return result;
     const sourceHashes = [...new Set(keys.map((key) => key.sourceHash))];
-    const rows = await this.prisma.idempotencyMapping.findMany({
-      where: { sourceHash: { in: sourceHashes } },
-    });
-    for (const row of rows) {
-      result.set(idempotencyMapKey(row.sourceHash, row.areaPath), { adoWorkItemId: row.adoWorkItemId, contentHash: row.contentHash ?? null });
+    for (const slice of chunked(sourceHashes, LOOKUP_CHUNK)) {
+      const rows = await this.prisma.idempotencyMapping.findMany({
+        where: { sourceHash: { in: slice } },
+      });
+      for (const row of rows) {
+        result.set(idempotencyMapKey(row.sourceHash, row.areaPath), { adoWorkItemId: row.adoWorkItemId, contentHash: row.contentHash ?? null });
+      }
     }
     return result;
   }
@@ -121,6 +137,16 @@ export class IdempotencyService {
       create: { sourceHash, areaPath, adoWorkItemId, contentHash, identityVersion },
       update: identity.onlyIfMissing ? {} : { adoWorkItemId, contentHash, identityVersion },
     });
+  }
+
+  // The lazy v2 backfill for many items at once: a row is added when absent and one that exists is never touched (createMany skipDuplicates is
+  // INSERT .. ON CONFLICT DO NOTHING). One statement per 500 rows instead of one round trip per item while the job holds its writing claim.
+  async recordManyIfMissing(
+    rows: { sourceHash: string; areaPath: string; adoWorkItemId: number; contentHash: string | null; identityVersion: 1 | 2 }[],
+  ): Promise<void> {
+    for (const slice of chunked(rows, INSERT_CHUNK)) {
+      await this.prisma.idempotencyMapping.createMany({ data: slice, skipDuplicates: true });
+    }
   }
 
   // Called when DryRunService.verifyExistingAdoIdsStillExist proves a

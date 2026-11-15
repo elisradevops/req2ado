@@ -5579,6 +5579,24 @@ describe('JobsService.submit', () => {
     expect(jobSourceFileCreate).toHaveBeenCalledWith({ data: { jobId: 'job-1', bytes: Buffer.from('small file') } });
   });
 
+  it('still submits, and logs, when the uploaded bytes cannot be stored', async () => {
+    jest.spyOn(Queue.prototype, 'add').mockResolvedValue(undefined as any);
+    const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const prisma = {
+      job: { create: jest.fn().mockResolvedValue({ id: 'job-1' }) },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      jobSourceFile: { create: jest.fn().mockRejectedValue(new Error('disk full')) },
+    };
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused', undefined, undefined, undefined, 1000);
+
+    await expect(service.submit({
+      areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline',
+      fileBuffer: Buffer.from('small file'), filename: 'doc.txt', sourceHash: 'hash-1',
+    })).resolves.toEqual({ jobId: 'job-1' });
+
+    expect(consoleError).toHaveBeenCalledWith(expect.stringContaining('job-1'), expect.any(Error));
+  });
+
   it('keeps how wide the duplicate check looks on the job and sends it to the worker, defaulting to the area path', async () => {
     const queueAdd = jest.spyOn(Queue.prototype, 'add').mockResolvedValue(undefined as any);
     queueAdd.mockClear(); // a spy left by an earlier test keeps its calls
@@ -5925,6 +5943,7 @@ describe('JobsService.getById', () => {
       createdItemCount: 0,
       writtenLocalIds: [],
       writtenItems: [],
+      dedupScope: 'area_path',
       failedStage: null,
       failureClass: null,
       failureMessage: null,
@@ -5981,6 +6000,14 @@ describe('JobsService.getById', () => {
     expect(failed).toMatchObject({ failedStage: 'infer_hierarchy_start', failureClass: 'timeout', failureMessage: 'fetch failed (UND_ERR_HEADERS_TIMEOUT)' });
     const old = await make({}).getById('job-f');
     expect(old).toMatchObject({ failedStage: null, failureClass: null, failureMessage: null });
+  });
+
+  it('getById returns how wide the duplicate check looked, defaulting to the area path for a job from before the setting', async () => {
+    const make = (extra: object) => new JobsService({
+      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-d', status: 'diff_ready', mode: 'survey', dryRunDiff: [], warnings: null, kbCitations: [], figureDescriptions: [], _count: { createdItemMappings: 0 }, createdItemMappings: [], ...extra }) },
+    } as any, {} as any, {} as any, {} as any, 'redis://unused');
+    expect(await make({ dedupScope: 'project' }).getById('job-d')).toMatchObject({ dedupScope: 'project' });
+    expect(await make({}).getById('job-d')).toMatchObject({ dedupScope: 'area_path' });
   });
 
   it('getById returns no written items for a job nothing has been written for', async () => {
@@ -7804,7 +7831,7 @@ describe('JobsService.confirm write-time duplicate re-check', () => {
     expect(createWorkItem.mock.calls[0][1]).toMatchObject({ 'System.Title': 'n1' });
     expect(record).toHaveBeenCalledTimes(1);
     expect(record).toHaveBeenCalledWith('h1', 'Project\\Area1', 100);
-    expect(result).toEqual({ status: 'succeeded', createdCount: 1 });
+    expect(result).toEqual({ status: 'succeeded', createdCount: 1, linkedInsteadCount: 1 });
     expect(prisma.auditEntry.create).toHaveBeenCalledWith({
       data: { jobId: 'job-1', message: '1 item was already written by another job and was linked instead of created again.' },
     });
@@ -7882,7 +7909,7 @@ import { idempotencyMapKey as idempotencyKeyFor } from '../src/modules/writeback
 
 describe('JobsService.confirm identity v2 (W1)', () => {
   const area = 'Project\\Area1';
-  const build = (diff: unknown[]) => {
+  const build = (diff: unknown[], priorMappings: { localId: string; adoWorkItemId: number; linked: boolean }[] = []) => {
     const prisma = {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -7891,9 +7918,10 @@ describe('JobsService.confirm identity v2 (W1)', () => {
       },
       auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
       jobFigureFile: { findMany: jest.fn().mockResolvedValue([]) },
-      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue(priorMappings), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
     };
     const record = jest.fn().mockResolvedValue(undefined);
+    const recordManyIfMissing = jest.fn().mockResolvedValue(undefined);
     const service = new JobsService(
       prisma as any,
       {
@@ -7902,13 +7930,13 @@ describe('JobsService.confirm identity v2 (W1)', () => {
         linkParentChild: jest.fn(),
         discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }),
       } as any,
-      { record, deleteByAdoWorkItemId: jest.fn(), lookupMany: jest.fn().mockResolvedValue(new Map()) } as any,
+      { record, recordManyIfMissing, deleteByAdoWorkItemId: jest.fn(), lookupMany: jest.fn().mockResolvedValue(new Map()) } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
       undefined, undefined, undefined, undefined,
       { publish: jest.fn().mockResolvedValue(undefined), publishNarration: jest.fn().mockResolvedValue(undefined) } as any,
     );
-    return { service, record };
+    return { service, record, recordManyIfMissing };
   };
   const entry = (extra: Record<string, unknown>) => ({
     localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Power', description: 'd', action: 'create', existingAdoId: null,
@@ -7943,16 +7971,27 @@ describe('JobsService.confirm identity v2 (W1)', () => {
     expect(record).toHaveBeenCalledWith('v2', area, 100, { contentHash: 'c1', identityVersion: 2, onlyIfMissing: true });
   });
 
-  it('lazily adds the v2 row for an item reused through its v1 row, without moving an existing one', async () => {
-    const { service, record } = build([
+  it('lazily adds the v2 row for an item reused through its v1 row, in ONE batched insert-if-missing, without moving an existing one', async () => {
+    const { service, record, recordManyIfMissing } = build([
       entry({}), // one item to create, so there is something to write
       entry({ localId: 'r0', type: 'Requirement', action: 'reuse', existingAdoId: 55, identityHashV2: 'v2-r', contentHash: 'c2', backfillIdentityV2: true, writtenContentHash: 'c2' }),
       entry({ localId: 'r1', action: 'reuse', existingAdoId: 56, sourceHash: 'v1-b', identityHashV2: 'v2-b', contentHash: 'c3' }),
     ]);
     await service.confirm('job-1');
-    expect(record).toHaveBeenCalledTimes(2);
+    expect(record).toHaveBeenCalledTimes(1);
     expect(record).toHaveBeenCalledWith('v1', area, 100);
-    expect(record).toHaveBeenCalledWith('v2-r', area, 55, { contentHash: 'c2', identityVersion: 2, onlyIfMissing: true });
+    expect(recordManyIfMissing).toHaveBeenCalledTimes(1);
+    expect(recordManyIfMissing).toHaveBeenCalledWith([{ sourceHash: 'v2-r', areaPath: area, adoWorkItemId: 55, contentHash: 'c2', identityVersion: 2 }]);
+  });
+
+  it('gives an item written before an interruption its missing v2 row when the write is resumed', async () => {
+    // n0 was created and mapped by the first attempt (which stopped between its v1 and its v2 record); n1 is still to create.
+    const { service, recordManyIfMissing } = build(
+      [entry({ localId: 'n0', type: 'Requirement', identityHashV2: 'v2-n0', contentHash: 'c0' }), entry({ localId: 'n1', sourceHash: 'v1-n1' })],
+      [{ localId: 'n0', adoWorkItemId: 77, linked: true }],
+    );
+    await service.confirm('job-1');
+    expect(recordManyIfMissing).toHaveBeenCalledWith([{ sourceHash: 'v2-n0', areaPath: area, adoWorkItemId: 77, contentHash: 'c0', identityVersion: 2 }]);
   });
 
   it('an entry from before W1 (no v2, no content hash) is recorded exactly as before', async () => {

@@ -232,3 +232,46 @@ describe('IdempotencyService', () => {
     expect(result.get(idempotencyMapKey('v1-hash', 'Project\\Area1'))).toEqual({ adoWorkItemId: 8, contentHash: null });
   });
 });
+
+describe('IdempotencyService at scale', () => {
+  const makeService = (findMany: jest.Mock, createMany?: jest.Mock) =>
+    // @ts-expect-error -- fake Prisma client for the test
+    new IdempotencyService({ idempotencyMapping: { findMany, createMany: createMany ?? jest.fn().mockResolvedValue({ count: 0 }) } });
+  const hashes = (n: number) => Array.from({ length: n }, (_, i) => ({ sourceHash: `h${i}`, areaPath: 'Project\\Area1' }));
+
+  it('lookupMany asks for at most 2,000 hashes per query, so a 10,000-node document stays under the database bind limit, and merges the answers', async () => {
+    const findMany = jest.fn().mockImplementation(async ({ where }: { where: { sourceHash: { in: string[] } } }) =>
+      where.sourceHash.in.filter((h) => h === 'h0' || h === 'h4999').map((sourceHash) => ({ sourceHash, areaPath: 'Project\\Area1', adoWorkItemId: sourceHash === 'h0' ? 1 : 2 })),
+    );
+    const result = await makeService(findMany).lookupMany(hashes(5000));
+    expect(findMany).toHaveBeenCalledTimes(3);
+    expect(findMany.mock.calls.map((c) => c[0].where.sourceHash.in.length)).toEqual([2000, 2000, 1000]);
+    expect(result.get(idempotencyMapKey('h0', 'Project\\Area1'))).toBe(1);
+    expect(result.get(idempotencyMapKey('h4999', 'Project\\Area1'))).toBe(2);
+  });
+
+  it('lookupMappings chunks the same way and keeps each row\'s content hash', async () => {
+    const findMany = jest.fn().mockImplementation(async ({ where }: { where: { sourceHash: { in: string[] } } }) =>
+      where.sourceHash.in.includes('h2500') ? [{ sourceHash: 'h2500', areaPath: 'Project\\Area1', adoWorkItemId: 9, contentHash: 'c9' }] : [],
+    );
+    const result = await makeService(findMany).lookupMappings(hashes(3000));
+    expect(findMany).toHaveBeenCalledTimes(2);
+    expect(result.get(idempotencyMapKey('h2500', 'Project\\Area1'))).toEqual({ adoWorkItemId: 9, contentHash: 'c9' });
+  });
+
+  it('recordManyIfMissing inserts a batch in one statement per 500 rows and never overwrites a row that exists', async () => {
+    const createMany = jest.fn().mockResolvedValue({ count: 0 });
+    const rows = Array.from({ length: 1200 }, (_, i) => ({ sourceHash: `v2-${i}`, areaPath: 'Project\\Area1', adoWorkItemId: i, contentHash: `c${i}`, identityVersion: 2 as const }));
+    await makeService(jest.fn(), createMany).recordManyIfMissing(rows);
+    expect(createMany).toHaveBeenCalledTimes(3);
+    expect(createMany.mock.calls.map((c) => c[0].data.length)).toEqual([500, 500, 200]);
+    expect(createMany.mock.calls[0][0].skipDuplicates).toBe(true);
+    expect(createMany.mock.calls[0][0].data[0]).toEqual({ sourceHash: 'v2-0', areaPath: 'Project\\Area1', adoWorkItemId: 0, contentHash: 'c0', identityVersion: 2 });
+  });
+
+  it('recordManyIfMissing does nothing for no rows', async () => {
+    const createMany = jest.fn();
+    await makeService(jest.fn(), createMany).recordManyIfMissing([]);
+    expect(createMany).not.toHaveBeenCalled();
+  });
+});
