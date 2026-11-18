@@ -82,13 +82,10 @@ export function describeStepCount(progress: Pick<ProgressEvent, 'done' | 'total'
   return `${formatCount(done)} of ${formatCount(progress.total)} ${unitName(progress.unit, progress.total)}`;
 }
 
-/** The line under the percentage when it is counted from real units. */
+/** The line under the bar: this step's own count only. The percentage is shown once, in the header. */
 export function describeCountedProgress(progress: ProgressEvent): string {
   const step = describeStepCount(progress);
-  const share = progress.estimated ? ' (est.)' : '';
-  return step
-    ? `${progress.pct}% of the run${share} — ${step} in this step`
-    : `${progress.pct}% of the run${share}`;
+  return step ? `${step} in this step` : '';
 }
 
 export function describeCountedValueText(progress: ProgressEvent): string {
@@ -97,7 +94,7 @@ export function describeCountedValueText(progress: ProgressEvent): string {
 
 export const COUNTED_EXPLANATION =
   'The percentage is counted from the items each step has finished. How much of the whole run each step takes is an ' +
-  'estimate, so the number can move in uneven steps and is marked est.';
+  'estimate, so the number can move in uneven steps.';
 
 export const EXCERPT_EXPLANATION =
   'A short excerpt of your own document, shown while the model works on that part. It is not stored.';

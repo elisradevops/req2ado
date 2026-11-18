@@ -37,6 +37,15 @@ import type { JobStage, NarrationEvent } from '../api/events';
 // duplicates,' never dedup_check"): reused directly rather than
 // duplicating a second near-identical Record for the same concept in the
 // same file.
+// The steps that look things up in the knowledge base; the "Not grounded" pill is only meaningful for these (or when a citation arrived).
+const KB_RETRIEVING_PHASES: ReadonlySet<NarrationEvent['phase']> = new Set([
+  'build_skeleton',
+  'analyze_section',
+  'generate_requirements',
+  'score_requirements',
+  'section_complete',
+]);
+
 export const PHASE_SUBLABEL: Record<NarrationEvent['phase'], string> = {
   describe_figure: 'Describing figures',
   primer: 'Reading the whole document',
@@ -495,11 +504,8 @@ export function ProgressBanner({
   // have no grounding concept at all.
   const showKbGroundingNote =
     !!latest &&
-    latest.phase !== 'describe_figure' &&
-    latest.phase !== 'parse_done' &&
-    latest.phase !== 'preparing_analysis' && // KB retrieval hasn't run yet AT this exact event -- nothing to report
-    latest.phase !== 'dedup_check' &&
-    latest.phase !== 'writing';
+    (KB_RETRIEVING_PHASES.has(latest.phase) ||
+      ((latest.kbCitations?.length ?? 0) > 0 && latest.phase !== 'dedup_check' && latest.phase !== 'writing'));
   // CR-10 ("Wizard UX Options" decision sheet) -- both phases already get
   // their own dedicated, correctly-labeled single bar from RunDetail below
   // (the dedup_check branch's "Checking N of M proposed items" bar, and
@@ -555,7 +561,7 @@ export function ProgressBanner({
           )}
           {waitingLong && (
             <p data-testid='waiting-note' className='mt-1 w-fit rounded-sm bg-surface-alt px-2 py-0.5 text-xs text-ink-2'>
-              No update for {formatDuration(secondsSinceUpdate * 1000)}. The job is still working: one large request can take many minutes. You can close this page; the run continues on the server.
+              No update for {formatDuration(secondsSinceUpdate * 1000)}. Still working; you can close this page.
             </p>
           )}
         </div>

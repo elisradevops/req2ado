@@ -2671,7 +2671,7 @@ export function JobDetail(): React.ReactElement {
               ? 'Failed here'
               : phase.state === 'skipped'
                 ? 'Skipped'
-                : phase.purpose,
+                : phase.pendingLine,
   }));
   // What belongs to one phase, shown with that phase instead of in a global stack.
   const phaseBody = (key: LifecycleKey): React.ReactNode => (
