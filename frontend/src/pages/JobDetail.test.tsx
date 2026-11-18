@@ -2188,6 +2188,64 @@ describe('JobDetail', () => {
     await waitFor(() => expect(screen.getByText(/wrote 3 work items to azure devops, linked 2 that were already there/i)).toBeInTheDocument());
   });
 
+  it('stays on the writing view when the stream replays diff_ready while our own write is in flight', async () => {
+    // Opening the live stream replays the server's last stored stage
+    // ('diff_ready'). If that replay is acted on before the server has marked
+    // the job 'writing', the page flips back to the review view and the
+    // stream closes before the real 'writing' events arrive.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    const getJobSpy = vi.spyOn(jobsApi, 'getJob').mockResolvedValue(
+      { id: 'job-10c', status: 'diff_ready', dryRunDiff: [], areaPath: 'Project\\Area1' } as any,
+    );
+    vi.spyOn(jobsApi, 'confirmJob').mockReturnValue(new Promise(() => {}));
+    let replayStage: ((stage: string) => void) | undefined;
+    const events = await import('../api/events');
+    vi.mocked(events.subscribeToJobEvents).mockImplementation((_id, _base, onStage) => {
+      replayStage = onStage as (stage: string) => void;
+      return () => {};
+    });
+    useAuthStore.getState().login('https://ado.example', 'Jane', 'user-descriptor-1');
+
+    renderAt('job-10c');
+    await waitFor(() => expect(screen.getByRole('button', { name: /^write to azure devops$/i })).toBeInTheDocument());
+
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await userEvent.click(screen.getByRole('button', { name: /^write to azure devops$/i }));
+    await userEvent.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^write to azure devops$/i }));
+
+    await waitFor(() => expect(replayStage).toBeDefined());
+    const callsBeforeReplay = getJobSpy.mock.calls.length;
+    await act(async () => replayStage!('diff_ready'));
+
+    expect(getJobSpy.mock.calls.length).toBe(callsBeforeReplay);
+    expect(screen.queryByRole('button', { name: /^write to azure devops$/i })).not.toBeInTheDocument();
+  });
+
+  it('follows the server back to the review view when a write it did not start fails and the job is reset', async () => {
+    // A page opened (or a second tab) while another session's write runs must not stay on 'writing' once that write fails: the server
+    // resets the job to diff_ready and announces it for exactly that reason.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob')
+      .mockResolvedValueOnce({ id: 'job-10d', status: 'writing', dryRunDiff: [], areaPath: 'Project\\Area1' } as any)
+      .mockResolvedValue({ id: 'job-10d', status: 'diff_ready', dryRunDiff: [], areaPath: 'Project\\Area1' } as any);
+    let onStage: ((stage: string) => void) | undefined;
+    const events = await import('../api/events');
+    vi.mocked(events.subscribeToJobEvents).mockImplementation((_id, _base, stage) => {
+      onStage = stage as (stage: string) => void;
+      return () => {};
+    });
+    useAuthStore.getState().login('https://ado.example', 'Jane', 'user-descriptor-1');
+
+    renderAt('job-10d');
+    await waitFor(() => expect(onStage).toBeDefined());
+    expect(screen.queryByRole('button', { name: /^write to azure devops$/i })).not.toBeInTheDocument();
+
+    await act(async () => onStage!('diff_ready'));
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /^write to azure devops$/i })).toBeInTheDocument());
+  });
+
   describe('final write summary', () => {
     const entry = (localId: string, extra: Record<string, unknown> = {}) => ({
       localId, parentLocalId: null, type: 'Requirement', title: localId, description: '', action: 'create', customerId: null, tags: [], ...extra,

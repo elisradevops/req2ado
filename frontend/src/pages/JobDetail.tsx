@@ -607,10 +607,22 @@ export function JobDetail(): React.ReactElement {
           live.touch();
           setStage(nextStage);
           setStatus((current) => (current === 'pending' ? 'running' : current));
+          // Opening this stream replays the server's last stored stage, which
+          // for a job in Diff Ready is 'diff_ready'. While our own confirm is
+          // in flight that replay is stale: acting on it can fetch the job
+          // before the server has marked it 'writing', flip the page back to
+          // the review view, and tear this stream down before the real
+          // 'writing' events arrive.
+          if (nextStage === 'diff_ready' && isMutatingRef.current) return;
           if (nextStage === 'diff_ready' || nextStage === 'failed' || nextStage === 'cancelled') {
             getJob(id).then((job) => {
               if (cancelled) return;
-              setStatus(job.status);
+              // Same race, but the replay slipped past the guard above (our write started while this fetch was in flight): stay on
+              // 'writing'. Only while our own write runs: a viewer who did not start it must follow the server back to 'diff_ready' when
+              // the write fails and the job is reset, which the server announces for exactly that reason.
+              setStatus((current) =>
+                isMutatingRef.current && current === 'writing' && job.status === 'diff_ready' ? current : job.status,
+              );
               setDiff((job.dryRunDiff as DryRunDiffEntry[] | null) ?? []);
               // The mount-time fetch (loadJob above) almost always got {}
               // here -- the backend only resolves a real catalog once
