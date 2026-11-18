@@ -5,7 +5,19 @@
  */
 
 export type StageName =
-  'parse' | 'draft' | 'improve' | 'summarize' | 'skeleton' | 'map' | 'write' | 'score' | 'link' | 'dedup' | 'write_ado';
+  | 'parse'
+  | 'draft'
+  | 'improve'
+  | 'summarize'
+  | 'skeleton'
+  | 'map'
+  | 'write'
+  | 'score'
+  | 'link'
+  | 'trace'
+  | 'criteria'
+  | 'dedup'
+  | 'write_ado';
 
 /**
  * Wire contracts for live job transparency (docs/job-transparency-implementation-plan.md): the static document map, the exact stage units ingestion reports, the weighted progress the orchestrator publishes, and the live frames shown while a job runs. Single source of truth - TS types are generated from this file (shared/ts, `pnpm generate`); the Python producers are hand-written and checked against this schema by ingestion/tests/test_job_live_contract.py. The root object only bundles the definitions so they are all generated.

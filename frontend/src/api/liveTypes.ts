@@ -14,6 +14,8 @@ export const STAGE_NAMES = [
   'write',
   'score',
   'link',
+  'trace',
+  'criteria',
   'dedup',
   'write_ado',
 ] as const;

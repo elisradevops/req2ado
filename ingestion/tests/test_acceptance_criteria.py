@@ -1382,3 +1382,27 @@ def test_needs_input_names_the_value_a_dropped_criterion_stated_without_support(
     propose_acceptance_criteria([node], _study(), client, [], table_text=lambda _id: None)
 
     assert '<span data-missing-value="7">7</span>' in node.description
+
+
+def test_the_step_counts_its_own_items_through_the_stage_counter(monkeypatch) -> None:  # noqa: ANN001
+    class _Counter:
+        def __init__(self) -> None:
+            self.calls: list[tuple] = []
+
+        def set_total(self, stage: str, total: int) -> None:
+            self.calls.append(("set_total", stage, total))
+
+        def advance(self, stage: str, count: int) -> None:
+            self.calls.append(("advance", stage, count))
+
+        def complete(self, stage: str) -> None:
+            self.calls.append(("complete", stage))
+
+    counter = _Counter()
+    monkeypatch.setattr("app.leveling.acceptance_criteria.current_stage_counter", lambda: counter)
+    node = _node("a", description="<p>The unit shall boot.</p>", issues=[Issue.NOT_TESTABLE])
+    client = _Client({"a": {"criteria": ["Given the unit is powered, then it boots"], "assumptions": [], "needs_author_input": False}})
+
+    propose_acceptance_criteria([node], _study(), client, [], table_text=lambda _id: None)
+
+    assert counter.calls == [("set_total", "criteria", 1), ("advance", "criteria", 1), ("complete", "criteria")]

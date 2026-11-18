@@ -151,13 +151,15 @@ def test_scoring_batch_done_events_report_the_cumulative_count_until_the_last_ba
     assert last.done == 426
 
 
-def test_whole_document_passes_count_passes_finished() -> None:
-    got = [
-        units_from_progress(_p(phase)).done
-        for phase in ("detect_conflicts", "regroup_roots", "infer_trace_links")
-    ]
-    assert got == [0, 1, 2]
-    assert units_from_progress(_p("detect_conflicts")).total == 3
+def test_the_two_quick_passes_count_passes_finished_and_trace_links_start_completes_them() -> None:
+    first = units_from_progress(_p("detect_conflicts"))
+    second = units_from_progress(_p("regroup_roots"))
+    trace = units_from_progress(_p("infer_trace_links"))
+    assert [first.done, second.done, trace.done] == [0, 1, 2]
+    assert first.total == second.total == trace.total == 2
+    assert trace.complete is True
+    # Trace links and acceptance criteria count their own items, through the stage counter, not through narration.
+    assert trace.stage == "link"
 
 
 @pytest.mark.parametrize(

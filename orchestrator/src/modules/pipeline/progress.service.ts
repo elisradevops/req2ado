@@ -29,7 +29,8 @@ interface StageWeight {
   skippable?: boolean;
 }
 
-// Order is the order stages run in. Weights in each path sum to 1. Measured on 14 real
+// Order is the order stages run in. Weights in each path sum to 1. `link` is the two quick whole-document passes (conflicts, regrouping), so it is worth
+// little; trace linking and acceptance criteria are slow and count their own items. Before they did, the bar sat at 89% for a fifth of a run. Measured on 14 real
 // runs (docx, spreadsheet, text PDF, scanned PDF) with one local model: scoring and
 // trace linking take roughly two thirds of a run, the drafting passes a quarter.
 // The shares depend on the model and the hardware (a slower model made a single
@@ -48,7 +49,9 @@ export const PROGRESS_WEIGHTS: Record<ProgressPath, StageWeight[]> = {
     { stage: 'skeleton', weight: 0.03, optional: true },
     { stage: 'write', weight: 0.03, optional: true },
     { stage: 'score', weight: 0.3 },
-    { stage: 'link', weight: 0.24 },
+    { stage: 'link', weight: 0.02 },
+    { stage: 'trace', weight: 0.12, optional: true },
+    { stage: 'criteria', weight: 0.1, optional: true },
     { stage: 'dedup', weight: 0.02 },
   ],
   llm: [
@@ -57,7 +60,9 @@ export const PROGRESS_WEIGHTS: Record<ProgressPath, StageWeight[]> = {
     { stage: 'map', weight: 0.02 },
     { stage: 'write', weight: 0.16 },
     { stage: 'score', weight: 0.37 },
-    { stage: 'link', weight: 0.25 },
+    { stage: 'link', weight: 0.02 },
+    { stage: 'trace', weight: 0.13, optional: true },
+    { stage: 'criteria', weight: 0.1, optional: true },
     { stage: 'dedup', weight: 0.02 },
   ],
   scan: [
@@ -66,7 +71,9 @@ export const PROGRESS_WEIGHTS: Record<ProgressPath, StageWeight[]> = {
     { stage: 'map', weight: 0.02 },
     { stage: 'write', weight: 0.14 },
     { stage: 'score', weight: 0.29 },
-    { stage: 'link', weight: 0.25 },
+    { stage: 'link', weight: 0.02 },
+    { stage: 'trace', weight: 0.13, optional: true },
+    { stage: 'criteria', weight: 0.1, optional: true },
     { stage: 'dedup', weight: 0.02 },
   ],
 };

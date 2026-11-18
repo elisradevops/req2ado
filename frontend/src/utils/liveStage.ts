@@ -81,6 +81,8 @@ const COUNTED_KEY: Record<StageName, LifecycleKey> = {
   write: 'analyze',
   score: 'score',
   link: 'score',
+  trace: 'score',
+  criteria: 'score',
   dedup: 'dedupCheck',
   write_ado: 'write',
 };

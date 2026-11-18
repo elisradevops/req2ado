@@ -27,11 +27,13 @@ type PathName = keyof typeof PROGRESS_WEIGHTS;
 const weightOf = (path: PathName, stage: StageName): number =>
   (PROGRESS_WEIGHTS[path].find((entry) => entry.stage === stage) as { weight: number }).weight;
 const D = (stage: StageName): number => weightOf('det', stage);
-const L = (stage: StageName): number => weightOf('llm', stage);
-const S = (stage: StageName): number => weightOf('scan', stage);
+// Trace linking and acceptance criteria are optional (they count once they report), so before they do the other stages share what is left.
+const withoutLateStages = (path: 'det' | 'llm' | 'scan'): number => 1 - weightOf(path, 'trace') - weightOf(path, 'criteria');
+const L = (stage: StageName): number => weightOf('llm', stage) / withoutLateStages('llm');
+const S = (stage: StageName): number => weightOf('scan', stage) / withoutLateStages('scan');
 // On the deterministic path the two section stages are optional, so while they have
 // not reported the weights that count are all the others.
-const DET = 1 - D('skeleton') - D('write');
+const DET = 1 - D('skeleton') - D('write') - D('trace') - D('criteria');
 // The same, with the draft pass planned at zero (skipped) as well.
 const DET_NO_DRAFT = DET - D('draft');
 const detPct = (draftShare: number): number => Math.round((100 * (D('parse') + D('draft') * draftShare)) / DET);
@@ -263,10 +265,10 @@ describe('ProgressTracker', () => {
 
   it('keeps a scanned run on the scanned path when parse then reports figures complete (B10)', () => {
     const tracker = new ProgressTracker(fixed);
-    expect(tracker.ingest(units('parse', 5, 10, { unit: 'pages' }))?.pct).toBe(6); // 12% share, half done
+    expect(tracker.ingest(units('parse', 5, 10, { unit: 'pages' }))?.pct).toBe(8); // parse is 12% of the 75% that counts before trace linking and criteria report, so half of it is 8
     // The ordinary "parse finished" event counts figures; pages and the path stay.
-    expect(tracker.ingest(units('parse', 0, 0, { unit: 'figures', complete: true }))?.pct).toBe(12);
-    expect(tracker.ingest(units('skeleton', 0, 4))?.pct).toBe(12);
+    expect(tracker.ingest(units('parse', 0, 0, { unit: 'figures', complete: true }))?.pct).toBe(16);
+    expect(tracker.ingest(units('skeleton', 0, 4))?.pct).toBe(16);
     expect(tracker.ingest(units('skeleton', 2, 4))?.pct).toBe(Math.round(100 * (S('parse') + S('skeleton') * 0.5)));
   });
 
@@ -439,5 +441,26 @@ describe('ProgressService', () => {
     const stop = await service.track('job-1');
     await expect(stop()).resolves.toBeUndefined();
     errors.mockRestore();
+  });
+});
+
+describe('trace linking and acceptance criteria count their own items (no plateau after scoring)', () => {
+  it('moves the percentage while trace links are resolved, instead of holding it', () => {
+    const base = [units('parse', 0, 0, { complete: true }), units('skeleton', 4, 4, { complete: true }), units('write', 4, 4, { complete: true }), units('score', 10, 10, { complete: true }), units('link', 2, 2, { complete: true })];
+    const at = (done: number): number => computeOverall(seenOf(...base, units('trace', done, 10))).value;
+    expect(at(5)).toBeGreaterThan(at(0));
+    expect(at(10)).toBeGreaterThan(at(5));
+  });
+
+  it('keeps the two quick passes worth little: finishing them does not hand out a fifth of the run', () => {
+    const before = computeOverall(seenOf(units('score', 10, 10, { complete: true }))).value;
+    const after = computeOverall(seenOf(units('score', 10, 10, { complete: true }), units('link', 2, 2, { complete: true }))).value;
+    expect(after - before).toBeLessThan(0.05);
+  });
+
+  it('does not reach the end before acceptance criteria are done', () => {
+    const seen = seenOf(units('score', 10, 10, { complete: true }), units('link', 2, 2, { complete: true }), units('trace', 10, 10, { complete: true }), units('criteria', 3, 10));
+    expect(computeOverall(seen).value).toBeLessThan(0.97);
+    expect(computeOverall(seenOf(...seen.values(), units('criteria', 10, 10, { complete: true }))).value).toBeGreaterThan(0.97); // only the dedup check is left
   });
 });

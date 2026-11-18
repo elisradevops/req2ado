@@ -49,6 +49,14 @@ export const STAGE_COPY: Record<StageName, StageCopy> = {
     headline: 'Linking related requirements',
     why: 'Near-duplicates are compared for values that disagree, and requirements that cover each other are linked.',
   },
+  trace: {
+    headline: 'Resolving trace links',
+    why: 'Requirements that refer to or cover each other are linked, so the traceability is there when the items are written.',
+  },
+  criteria: {
+    headline: 'Proposing acceptance criteria',
+    why: 'Requirements whose text states nothing checkable get criteria drawn from the document, or a note on what is missing.',
+  },
   dedup: {
     headline: 'Checking for duplicates',
     why: 'Each proposed item is compared with work items already in Azure DevOps so nothing is created twice.',
