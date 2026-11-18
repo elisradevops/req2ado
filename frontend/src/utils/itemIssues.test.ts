@@ -12,6 +12,11 @@ describe('itemIssues', () => {
     expect(issue.text).toBe('Quality 42 of 100. Weakest: testability (35).');
   });
 
+  it('drops trailing punctuation from an organisation\'s category name', () => {
+    const [issue] = itemIssues({ type: 'Requirement', qualityScore: 45, qualityCategoryScores: { 'Verifiable?': 20 } });
+    expect(issue.text).toBe('Quality 45 of 100. Weakest: verifiable (20).');
+  });
+
   it('gives an Epic or Feature no score, confidence or source-overlap issue, whatever the data holds', () => {
     for (const type of ['Epic', 'Feature']) {
       expect(itemIssues({ type, qualityScore: 5, qualityConfidence: 'low', groundingScore: 0.01, qualityCategoryScores: { capabilityClarity: 1 } })).toEqual([]);

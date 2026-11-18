@@ -53,7 +53,7 @@ export function itemIssues(entry: IssueEntry): ItemIssue[] {
         issues.push({
           id: 'quality-low',
           severity: 'review',
-          text: `Quality ${Math.round(entry.qualityScore)} of 100.${weakest ? ` Weakest: ${categoryLabel(weakest.key).toLowerCase()} (${Math.round(weakest.score)}).` : ''}`,
+          text: `Quality ${Math.round(entry.qualityScore)} of 100.${weakest ? ` Weakest: ${categoryLabel(weakest.key).toLowerCase().replace(/[.?!。]+$/, '')} (${Math.round(weakest.score)}).` : ''}`,
         });
       }
       if (entry.qualityConfidence === 'low') {
