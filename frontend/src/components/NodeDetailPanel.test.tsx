@@ -236,7 +236,7 @@ describe('NodeDetailPanel', () => {
   // DESIGN.md §11.4.1 -- in place of the absent gauge, an Epic/Feature
   // shows a Scope group: real descendant counts + why there's no score.
   describe('Epic/Feature Scope group', () => {
-    it('shows real descendant counts and states plainly why there is no score', () => {
+    it('shows real descendant counts, and says nothing about scoring', () => {
       renderPanel(
         <NodeDetailPanel
           entry={{ localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Epic Title', description: 'Epic body', action: 'create', customerId: null, tags: [] }}
@@ -244,7 +244,8 @@ describe('NodeDetailPanel', () => {
         />,
       );
       expect(screen.getByText('Covers 6 features, 41 requirements.')).toBeInTheDocument();
-      expect(screen.getByText(/aren't scored/i)).toBeInTheDocument();
+      expect(screen.queryByText(/scored/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/quality|grounding|CapabilityClarity/i)).not.toBeInTheDocument();
     });
 
     it('uses singular wording for exactly one descendant of a kind', () => {
@@ -1308,10 +1309,10 @@ describe('NodeDetailPanel', () => {
       action: 'create', customerId: null, groundingScore: 0.9, qualityScore: 95, qualityConfidence: 'low',
     };
     const { unmount } = renderPanel(<NodeDetailPanel entry={flagged} />);
-    expect(screen.getByTestId('review-reason')).toHaveTextContent('Check: Model was unsure about this score');
+    expect(screen.getByTestId('issue-unsure')).toHaveTextContent('The scorer was unsure about this score.');
     unmount();
     renderPanel(<NodeDetailPanel entry={{ ...flagged, qualityConfidence: 'high' }} />);
-    expect(screen.queryByTestId('review-reason')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('issue-unsure')).not.toBeInTheDocument();
   });
 
   it('does not say an Epic or Feature "needs review" for a low quality score: parents are not scored', () => {
@@ -1320,11 +1321,11 @@ describe('NodeDetailPanel', () => {
       action: 'create', customerId: null, qualityScore: 15, qualityConfidence: 'low', groundingScore: 0.9,
     };
     const { unmount } = renderPanel(<NodeDetailPanel entry={feature} />);
-    expect(screen.queryByTestId('review-reason')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('issue-unsure')).not.toBeInTheDocument();
     unmount();
     // Loose wording is not a reason for a parent either (the same rule as the tree).
     renderPanel(<NodeDetailPanel entry={{ ...feature, groundingScore: 0.1 }} />);
-    expect(screen.queryByTestId('review-reason')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('issue-unsure')).not.toBeInTheDocument();
   });
 
   it('does not mark the Grounding metric low just because qualityConfidence is low', () => {

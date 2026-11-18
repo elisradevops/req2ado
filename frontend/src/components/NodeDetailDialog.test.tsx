@@ -18,6 +18,23 @@ const ENTRY: DryRunDiffEntry = {
   action: 'create', customerId: '3.2.1', tags: [],
 };
 
+// The shortcut keys now live in a popover behind the keyboard button (DESIGN.md §11.4.5): open it and read them.
+async function shortcutKeys(): Promise<Array<[string, string]>> {
+  const { default: userEvent } = await import('@testing-library/user-event');
+  await userEvent.click(screen.getByRole('button', { name: /keyboard shortcuts/i }));
+  const popover = (await screen.findByText('Keyboard shortcuts')).parentElement as HTMLElement;
+  return Array.from(popover.querySelectorAll('li')).map((li) => [li.querySelector('kbd')!.textContent!, li.querySelector('span')!.textContent!] as [string, string]);
+}
+const desktopViewport = () =>
+  vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({
+    matches: true, media: query, onchange: null, addListener: () => {}, removeListener: () => {},
+    addEventListener: () => {}, removeEventListener: () => {}, dispatchEvent: () => false,
+  }) as unknown as MediaQueryList);
+async function openAssistant(): Promise<void> {
+  const { default: userEvent } = await import('@testing-library/user-event');
+  await userEvent.click(screen.getByRole('button', { name: /^ask/i }));
+}
+
 function renderDialog(props: Partial<React.ComponentProps<typeof NodeDetailDialog>> = {}) {
   return render(
     <ToastProvider>
@@ -160,23 +177,23 @@ describe('NodeDetailDialog', () => {
   });
 
   it('offers the split starter in the chat only for a fresh compound-flagged Requirement', async () => {
-    const matchMediaSpy = vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({
-      matches: true, media: query, onchange: null, addListener: () => {}, removeListener: () => {},
-      addEventListener: () => {}, removeEventListener: () => {}, dispatchEvent: () => false,
-    }) as unknown as MediaQueryList);
+    const matchMediaSpy = desktopViewport();
     const props = { onSave: vi.fn(), jobMode: 'survey' as const, jobStatus: 'diff_ready' };
     try {
       const fresh = renderDialog({ entry: { ...ENTRY, qualityIssues: ['compound'] } as DryRunDiffEntry, ...props });
+      await openAssistant();
       expect(await screen.findByRole('button', { name: /split into separate requirements/i })).toBeInTheDocument();
       fresh.unmount();
 
       const stale = renderDialog({ entry: { ...ENTRY, qualityIssues: ['compound'], qualityStale: true } as DryRunDiffEntry, ...props });
-      await screen.findByText(/i have read this requirement/i);
+      await openAssistant();
+      await screen.findByText(/start from a suggestion/i);
       expect(screen.queryByRole('button', { name: /split into separate requirements/i })).not.toBeInTheDocument();
       stale.unmount();
 
       renderDialog({ entry: { ...ENTRY, type: 'Feature', qualityIssues: ['compound'] } as DryRunDiffEntry, ...props });
-      await screen.findByText(/i have read this feature/i);
+      await openAssistant();
+      await screen.findByText(/ask for a change to this feature/i);
       expect(screen.queryByRole('button', { name: /split into separate requirements/i })).not.toBeInTheDocument();
     } finally {
       matchMediaSpy.mockRestore();
@@ -333,7 +350,7 @@ describe('NodeDetailDialog', () => {
       expect(onMark).toHaveBeenCalledTimes(1);
     });
 
-    it('words the mark as "Looks right and next" for a spot-check, on the button, the key hint and A or R', async () => {
+    it('words the mark as "Looks right and next" for a spot-check, on the button, the shortcut list and A or R', async () => {
       const onMark = vi.fn();
       renderDialog({
         onNavigate: vi.fn(),
@@ -343,7 +360,8 @@ describe('NodeDetailDialog', () => {
       const { default: userEvent } = await import('@testing-library/user-event');
 
       expect(screen.queryByRole('button', { name: 'Mark reviewed and next' })).not.toBeInTheDocument();
-      expect(screen.getByRole('note')).toHaveTextContent(/A\/R\s*looks right/);
+      expect(await shortcutKeys()).toContainEqual(['A/R', 'looks right']);
+      await userEvent.keyboard('{Escape}');
       await userEvent.click(screen.getByRole('button', { name: 'Looks right and next' }));
       await userEvent.keyboard('a');
       expect(onMark).toHaveBeenCalledTimes(2);
@@ -466,46 +484,19 @@ describe('NodeDetailDialog', () => {
         expect(onMark).not.toHaveBeenCalled();
       });
 
-      it('hides the key hints from screen readers (aria-keyshortcuts carries the keys) in both placements', () => {
-        const { unmount } = renderDialog({
-          onNavigate: vi.fn(),
-          reason,
-          review: { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn() },
-        });
-        expect(screen.getByTestId('key-hints')).toHaveAttribute('aria-hidden', 'true');
-        unmount();
-        renderDialog({ onNavigate: vi.fn(), review: { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn() } });
-        expect(screen.getByTestId('key-hints')).toHaveAttribute('aria-hidden', 'true');
-      });
-
-      // class pin: jsdom has no layout
-      it('lets the key hints wrap onto the next line, keeping each key with its label', () => {
-        renderDialog({
-          onNavigate: vi.fn(),
-          reason,
-          review: { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn(), onReject: vi.fn(), onUndo: vi.fn() },
-        });
-        const keys = Array.from(screen.getByRole('note').querySelectorAll('kbd'));
-        expect(keys.map((k) => k.textContent)).toEqual(['J', 'K', 'A/R', 'X', 'U', 'E']);
-        for (const key of keys) {
-          // One wrapper per key, so a break can only fall between pairs.
-          expect(key.parentElement).toHaveClass('whitespace-nowrap');
-          expect(key.parentElement?.querySelectorAll('kbd')).toHaveLength(1);
-          // The space that lets the line break sits outside the pair: inside a nowrap span it cannot break.
-          expect(key.parentElement?.textContent).toMatch(/^\S/);
-          // A logical margin, so the hints keep their gap from the text in a right-to-left layout too.
-          expect(key.parentElement?.parentElement).toHaveClass('ms-2');
-          expect(key.parentElement?.parentElement).not.toHaveClass('ml-2');
-          // A line that cannot wrap runs past the dialog edge on a phone.
-          expect(key.parentElement?.parentElement).not.toHaveClass('whitespace-nowrap');
-        }
+      it('has no hint bar: the keys are in a popover behind a labelled keyboard button, and on the buttons as aria-keyshortcuts', async () => {
+        renderDialog({ onNavigate: vi.fn(), reason, review: { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn(), onReject: vi.fn(), onUndo: vi.fn() } });
+        expect(screen.queryByTestId('key-hints')).not.toBeInTheDocument();
+        expect((await shortcutKeys()).map(([key]) => key)).toEqual(['J', 'K', 'A/R', 'X', 'U', 'E', 'C']);
+        expect(screen.getByRole('button', { name: /^ask/i })).toHaveAttribute('aria-keyshortcuts', 'C');
       });
 
       it('names the actions the way the buttons do', () => {
         renderDialog({ onNavigate: vi.fn(), reason, review: { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn(), onReject: vi.fn() } });
-        const note = screen.getByRole('note');
-        expect(note).toHaveTextContent(/A\/R\s*mark reviewed/);
-        expect(note).toHaveTextContent(/X\s*exclude/);
+        return shortcutKeys().then((keys) => {
+          expect(keys).toContainEqual(['A/R', 'mark reviewed']);
+          expect(keys).toContainEqual(['X', 'exclude']);
+        });
       });
 
       it('does not act while typing in a field', async () => {
@@ -528,7 +519,8 @@ describe('NodeDetailDialog', () => {
         const { unmount } = renderDialog({ onNavigate: vi.fn(), reason, review });
         const { default: userEvent } = await import('@testing-library/user-event');
 
-        expect(screen.getByRole('note')).toHaveTextContent(/U\s*undo/);
+        expect(await shortcutKeys()).toContainEqual(['U', 'undo']);
+        await userEvent.keyboard('{Escape}');
         await userEvent.keyboard('u');
         expect(onUndo).toHaveBeenCalledTimes(1);
         unmount();
@@ -549,13 +541,15 @@ describe('NodeDetailDialog', () => {
       it('E opens the edit form of an editable item and shows the hint only then', async () => {
         const { default: userEvent } = await import('@testing-library/user-event');
         const { unmount } = renderDialog({ onNavigate: vi.fn(), reason, jobStatus: 'diff_ready' });
-        expect(screen.getByRole('note')).toHaveTextContent(/E\s*edit/);
+        expect(await shortcutKeys()).toContainEqual(['E', 'edit']);
+        await userEvent.keyboard('{Escape}');
         await userEvent.keyboard('e');
         expect(await screen.findByDisplayValue('Req Title')).toBeInTheDocument();
         unmount();
 
         renderDialog({ onNavigate: vi.fn(), reason, jobStatus: 'succeeded' });
-        expect(screen.getByRole('note')).not.toHaveTextContent(/E\s*edit/);
+        expect((await shortcutKeys()).map(([key]) => key)).not.toContain('E');
+        await userEvent.keyboard('{Escape}');
         await userEvent.keyboard('e');
         expect(screen.queryByDisplayValue('Req Title')).not.toBeInTheDocument();
       });
@@ -632,17 +626,16 @@ describe('NodeDetailDialog', () => {
         expect(onMark).toHaveBeenCalledTimes(2);
       });
 
-      it('shows the key hints in a thin row when there is no reason, with A/R for the mark', () => {
+      it('lists the keys in the popover when there is no reason, with A/R for the mark', async () => {
         renderDialog({
           onNavigate: vi.fn(),
           review: { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn(), onReject: vi.fn() },
         });
         expect(screen.queryByRole('note')).not.toBeInTheDocument();
-        const hints = screen.getByTestId('key-hints');
-        expect(Array.from(hints.querySelectorAll('kbd')).map((k) => k.textContent)).toEqual(['J', 'K', 'A/R', 'X', 'E']);
+        expect((await shortcutKeys()).map(([key]) => key)).toEqual(['J', 'K', 'A/R', 'X', 'E', 'C']);
       });
 
-      it('shows the hints with no reason for a spot-check, with the keys that mode supports', () => {
+      it('lists the keys a spot-check supports, worded as the button is', async () => {
         renderDialog({
           onNavigate: vi.fn(),
           review: {
@@ -650,9 +643,9 @@ describe('NodeDetailDialog', () => {
             markLabel: 'Looks right and next', markHint: 'looks right',
           },
         });
-        const hints = screen.getByTestId('key-hints');
-        expect(hints).toHaveTextContent(/A\/R\s*looks right/);
-        expect(Array.from(hints.querySelectorAll('kbd')).map((k) => k.textContent)).toEqual(['J', 'K', 'A/R', 'X', 'E']);
+        const keys = await shortcutKeys();
+        expect(keys).toContainEqual(['A/R', 'looks right']);
+        expect(keys.map(([key]) => key)).toEqual(['J', 'K', 'A/R', 'X', 'E', 'C']);
       });
 
       it('declares aria-keyshortcuts on the buttons only while shortcuts are on', () => {
@@ -754,36 +747,37 @@ describe('NodeDetailDialog', () => {
     });
   });
 
-  it('mounts the real two-pane layout (details + chat both visible, no tabs) on a desktop-width viewport', () => {
-    const matchMediaSpy = vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({
-      matches: true,
-      media: query,
-      onchange: null,
-      addListener: () => {},
-      removeListener: () => {},
-      addEventListener: () => {},
-      removeEventListener: () => {},
-      dispatchEvent: () => false,
-    }) as unknown as MediaQueryList);
-
+  it('keeps the assistant closed to begin with, and mounts it only while it is open (no chat history fetched for a closed one)', async () => {
+    const matchMediaSpy = desktopViewport();
     renderDialog();
     expect(screen.getByText('Req body')).toBeInTheDocument();
-    // Chat pane is genuinely mounted (not behind an unselected tab) --
-    // its composer placeholder is present.
-    expect(screen.getByPlaceholderText(/ask the assistant/i)).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(/ask the assistant/i)).not.toBeInTheDocument();
+    expect(chatApi.getChatHistory).not.toHaveBeenCalled();
+    await openAssistant();
+    expect(await screen.findByPlaceholderText(/ask the assistant/i)).toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: /chat/i })).not.toBeInTheDocument();
-
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await userEvent.click(screen.getByRole('button', { name: /^ask/i }));
+    expect(screen.queryByPlaceholderText(/ask the assistant/i)).not.toBeInTheDocument();
     matchMediaSpy.mockRestore();
   });
 
-  it('disables chat with a status-specific message once the job leaves diff_ready', async () => {
-    // jsdom has no real viewport (see test/setup.ts's matchMedia stub, which
-    // defaults to non-matching) -- renders the mobile/tabbed layout, so Chat
-    // is behind its own tab rather than always-visible as on a real desktop.
-    renderDialog({ jobStatus: 'succeeded' });
+  it('opens the assistant with C, and a c typed in its composer does not toggle it', async () => {
+    renderDialog({ onNavigate: vi.fn() });
     const { default: userEvent } = await import('@testing-library/user-event');
-    await userEvent.click(screen.getByRole('tab', { name: /chat/i }));
-    expect(screen.getByText(/this job's review is closed/i)).toBeInTheDocument();
+    await userEvent.keyboard('c');
+    expect(await screen.findByPlaceholderText(/ask the assistant/i)).toBeInTheDocument();
+    await userEvent.keyboard('{Escape}');
+    const input = screen.getByPlaceholderText(/ask the assistant/i);
+    input.focus();
+    await userEvent.keyboard('c');
+    expect(screen.getByPlaceholderText(/ask the assistant/i)).toBeInTheDocument(); // typing a c did not toggle it
+  });
+
+  it('disables chat with a status-specific message once the job leaves diff_ready', async () => {
+    renderDialog({ jobStatus: 'succeeded' });
+    await openAssistant();
+    expect(await screen.findByText(/this job's review is closed/i)).toBeInTheDocument();
   });
 
   // Figures section (item 3/4 of the figure-viewing + manual-attach work):

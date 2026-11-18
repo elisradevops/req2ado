@@ -60,13 +60,14 @@ describe('ChatPanel', () => {
     expect(chatApi.getChatHistory).not.toHaveBeenCalled();
   });
 
-  it('shows an inviting empty state before any history exists, not a blank scroll region (CR-9 Take C: a fake opening Assistant turn, not a graphic)', async () => {
+  it('shows an empty state with suggestions before any history exists, and no fake "I have read this" turn', async () => {
     render(
       <ToastProvider>
         <ChatPanel jobId="job-1" localId="n0" disabled={false} onAcceptProposal={vi.fn()} />
       </ToastProvider>,
     );
-    expect(await screen.findByText(/i have read this requirement/i)).toBeInTheDocument();
+    expect(await screen.findByText(/start from a suggestion/i)).toBeInTheDocument();
+    expect(screen.queryByText(/i have read this/i)).not.toBeInTheDocument();
   });
 
   it('offers the split starter first for a compound item, and sends its fixed prompt', async () => {
@@ -127,7 +128,7 @@ describe('ChatPanel', () => {
         <ChatPanel jobId="job-1" localId="n0" disabled={false} onAcceptProposal={vi.fn()} />
       </ToastProvider>,
     );
-    await screen.findByText(/i have read this requirement/i);
+    await screen.findByText(/start from a suggestion/i);
     expect(screen.queryByRole('button', { name: /split into separate requirements/i })).not.toBeInTheDocument();
   });
 
@@ -491,45 +492,40 @@ describe('ChatPanel', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeInTheDocument());
   });
 
-  it('shows all 4 starter rows in the empty state, each with its label and effect, including Suggest a better title (CR-9 Take C)', async () => {
+  it('offers suggestions from the item\'s real weak categories, then the title, and nothing generic', async () => {
     render(
       <ToastProvider>
-        <ChatPanel jobId="job-1" localId="n0" disabled={false} onAcceptProposal={vi.fn()} />
+        <ChatPanel jobId="job-1" localId="n0" disabled={false} categoryScores={{ testability: 20, rationale: 40, clarity: 95 }} onAcceptProposal={vi.fn()} />
       </ToastProvider>,
     );
     await screen.findByPlaceholderText(/ask the assistant/i);
-    expect(screen.getByRole('button', { name: /^make it testable/i })).toBeInTheDocument();
-    expect(screen.getByText(/rewrite so it is independently verifiable/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^add the missing rationale/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^tighten the wording/i })).toBeInTheDocument();
-    // Exactly one control now (was a regression guard against a SECOND,
-    // duplicate control -- there both is, and can only ever be, one, since
-    // the persistent header button this used to also guard against is gone).
+    expect(screen.getByRole('button', { name: /^add a measurable pass\/fail condition/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^add why this is needed/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^remove vague words/i })).not.toBeInTheDocument(); // clarity scored 95
     expect(screen.getAllByRole('button', { name: /^suggest a (better )?title/i })).toHaveLength(1);
   });
 
-  it('names an Epic as an epic and offers no testability starter for it', async () => {
+  it('offers an Epic only the title suggestion', async () => {
     render(
       <ToastProvider>
-        <ChatPanel jobId="job-1" localId="n0" itemType="Epic" disabled={false} onAcceptProposal={vi.fn()} />
+        <ChatPanel jobId="job-1" localId="n0" itemType="Epic" disabled={false} categoryScores={{ testability: 1 }} onAcceptProposal={vi.fn()} />
       </ToastProvider>,
     );
     await screen.findByPlaceholderText(/ask the assistant/i);
-    expect(screen.getByText('I have read this epic. Want me to:')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^make it testable/i })).not.toBeInTheDocument();
-    expect(screen.getByText('add a brief rationale explaining why this epic exists')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^tighten the wording/i })).toBeInTheDocument();
+    expect(screen.getByText(/ask for a change to this epic/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^suggest a better title/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /pass\/fail|vague|why this is needed/i })).not.toBeInTheDocument();
   });
 
-  it('clicking a starter row sends its real prompt text through the normal send() path', async () => {
+  it('clicking a suggestion sends its real prompt text through the normal send() path', async () => {
     const user = userEvent.setup();
     render(
       <ToastProvider>
-        <ChatPanel jobId="job-1" localId="n0" disabled={false} onAcceptProposal={vi.fn()} />
+        <ChatPanel jobId="job-1" localId="n0" disabled={false} categoryScores={{ testability: 20 }} onAcceptProposal={vi.fn()} />
       </ToastProvider>,
     );
     await screen.findByPlaceholderText(/ask the assistant/i);
-    await user.click(screen.getByRole('button', { name: /^make it testable/i }));
+    await user.click(screen.getByRole('button', { name: /^add a measurable pass\/fail condition/i }));
     expect(chatApi.sendChatTurn).toHaveBeenCalledWith('job-1', 'n0', expect.stringMatching(/testable/i), undefined);
   });
 

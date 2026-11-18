@@ -49,10 +49,10 @@ describe('NodeDetailPanel proposal card', () => {
     expect(onSetProposalAccepted).toHaveBeenCalledWith('e1', false);
   });
 
-  it('shows a needs-input note as information only, with no accept button', () => {
+  it('shows a needs-input note as one issue that names the missing value, with no accept button', () => {
     renderPanel({ ...base, proposal: { kind: 'needs-input', html: NEEDS_INPUT_HTML } });
-    expect(screen.getByText('Needs author input')).toBeInTheDocument();
-    expect(screen.getByText(/unresolved value/i)).toBeInTheDocument();
+    expect(screen.getByTestId('issue-needs-input')).toBeInTheDocument();
+    expect(screen.queryByText('Needs author input')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /accept/i })).not.toBeInTheDocument();
   });
 

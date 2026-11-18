@@ -84,6 +84,15 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+// The dialog's shortcut keys are in a popover behind its keyboard button (DESIGN.md §11.4.5): whether U is listed.
+async function undoListed(user: { click: (el: Element) => Promise<void>; keyboard: (keys: string) => Promise<void> }): Promise<boolean> {
+  await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: /keyboard shortcuts/i }));
+  const popover = (await screen.findByText('Keyboard shortcuts')).parentElement as HTMLElement;
+  const listed = Array.from(popover.querySelectorAll('kbd')).some((k) => k.textContent === 'U');
+  await user.keyboard('{Escape}');
+  return listed;
+}
+
 const afterEachStops: Array<() => void> = [];
 afterEach(() => {
   for (const stop of afterEachStops.splice(0)) stop();
@@ -3585,11 +3594,11 @@ describe('JobDetail', () => {
     it('U undoes the last accept, announces it, and offers the hint', async () => {
       const userEvent = await startQueue();
       const dialog = await screen.findByRole('dialog');
-      expect(within(dialog).getByRole('note')).not.toHaveTextContent(/U\s*undo/);
+      expect(await undoListed(userEvent)).toBe(false);
 
       await pressMark(userEvent);
       await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Marked reviewed. 2 left.'));
-      await waitFor(() => expect(within(screen.getByRole('dialog')).getByRole('note')).toHaveTextContent(/U\s*undo/));
+      expect(await undoListed(userEvent)).toBe(true);
       await userEvent.keyboard('u');
 
       await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenLastCalledWith('job-70', ['blocked'], false));
@@ -3642,7 +3651,7 @@ describe('JobDetail', () => {
       await userEvent.keyboard('u');
 
       await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Couldn\'t undo "Blocked item". Try again.'));
-      expect(within(screen.getByRole('dialog')).getByRole('note')).toHaveTextContent(/U\s*undo/);
+      expect(await undoListed(userEvent)).toBe(true);
       setExcluded.mockImplementation(async (_id, localId, excluded) => excludedDiff(excluded ? localId : '') as any);
       await userEvent.keyboard('u');
       await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Undone: "Blocked item".'));

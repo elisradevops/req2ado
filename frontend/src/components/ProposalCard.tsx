@@ -52,7 +52,8 @@ export function ProposalCard({
   const [pending, setPending] = useState(false);
   const headingId = useId();
   const proposal = entry.proposal;
-  if (!proposal) return null;
+  // A "needs author input" note is an issue in the issues list (it names the missing values), not a card.
+  if (!proposal || proposal.kind === 'needs-input') return null;
   const parsed = parseProposalHtml(proposal.html);
   const isCriteria = proposal.kind === 'criteria';
   const readable = parsed.blocks.some((block) => block.kind === 'list');

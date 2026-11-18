@@ -14,6 +14,7 @@ import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { InfoTip } from '../ui/Tooltip';
 import { DescriptionMarkdown, Markdown } from '../ui/Markdown';
 import { cn } from '../lib/cn';
+import { chatSuggestions } from '../utils/chatSuggestions';
 import { LABEL_MICRO } from '../utils/labelMicro';
 import { WEAK_CATEGORY_SCORE, weakestCategory } from '../utils/qualityCategories';
 
@@ -62,51 +63,6 @@ function predictedLine(data: RewriteComparison | null): string {
   const verdict = Math.abs(data.delta) <= NOISE_BAND ? ', about the same' : '';
   return `Predicted score: ${data.before.score} → ${data.after.score} (${sign}${data.delta}${verdict})`;
 }
-
-// CR-9 (Take C, "Wizard UX Options" sheet) -- the empty state used to be a
-// centered icon graphic + a row of label-only chips. Replaced with a fake
-// opening Assistant turn ("I have read this <item type>. Want me to:")
-// followed by starter rows in the transcript's own voice: each row states
-// the action AND its one-line effect, so the panel teaches what this chat
-// is for instead of just naming four ideas. "Suggest a better title" folds
-// in as a row here rather than a separate control -- it has no other home
-// now that the header button and the old chip row are both gone. Each row
-// reuses send()'s existing in-flight/typing-indicator path, same as before.
-function suggestedPrompts(noun: string, scored: boolean): { label: string; effect: string; prompt: string }[] {
-  const prompts = [
-    {
-      label: 'Make it testable',
-      effect: 'rewrite so it is independently verifiable, with clear acceptance criteria',
-      prompt: 'Rewrite this so it is independently testable, with clear acceptance criteria.',
-    },
-    {
-      label: 'Add the missing rationale',
-      effect: `add a brief rationale explaining why this ${noun} exists`,
-      prompt: `Add a brief rationale explaining why this ${noun} exists.`,
-    },
-    {
-      label: 'Tighten the wording',
-      effect: 'remove ambiguity and vague terms',
-      prompt: 'Tighten the wording — remove ambiguity and vague terms.',
-    },
-    {
-      label: 'Suggest a better title',
-      effect: `a more specific, concise title for this ${noun}`,
-      prompt: `Suggest a more specific, concise title for this ${noun} based on its description.`,
-    },
-  ];
-  // Testability is a rubric of requirements; an Epic or a Feature is never scored for it.
-  return scored ? prompts : prompts.filter((p) => p.label !== 'Make it testable');
-}
-
-// Offered first, only for an item the scorer flagged "compound" (review finding R8). A chat turn edits this one item and cannot create
-// siblings, so the starter asks for the first requirement to stay here and the rest to be listed as complete statements to add.
-const SPLIT_STARTER = {
-  label: 'Split into separate requirements',
-  effect: 'this item keeps the first one; the others are listed for you to add as new items',
-  prompt:
-    'This item combines more than one requirement. Keep only the first requirement in this item, and list each remaining requirement as its own complete statement. Ignore any "Proposed acceptance criteria" or "Needs author input" section: those are generated notes, not requirements.',
-};
 
 export function ChatPanel({
   jobId,
@@ -488,12 +444,9 @@ export function ChatPanel({
                 convention the real turns below use, so the empty state
                 reads as the start of this transcript rather than a
                 separate graphic. */}
-            <div className="mb-2 max-w-[85%] border-l-2 border-hairline-strong pl-2.5">
-              <p className={LABEL_MICRO}>Assistant</p>
-              <p className="text-sm text-ink-1">I have read this {noun}. Want me to:</p>
-            </div>
+            <p className="mb-2 text-xs text-ink-3">Ask for a change to this {noun}, or start from a suggestion:</p>
             <div className="ml-2.5 flex flex-col gap-1.5">
-              {(isCompound ? [SPLIT_STARTER, ...suggestedPrompts(noun, checkedKind)] : suggestedPrompts(noun, checkedKind)).map((p) => (
+              {chatSuggestions(categoryScores, checkedKind, noun, isCompound).map((p) => (
                 <button
                   key={p.label}
                   type="button"

@@ -19,6 +19,8 @@ import { TextField, TextArea } from '../ui/TextField';
 import { Button } from '../ui/Button';
 import { ProposalCard } from './ProposalCard';
 import { Chip } from '../ui/Chip';
+import { IssuesList } from './IssuesList';
+import { itemIssues } from '../utils/itemIssues';
 import { Tooltip } from '../ui/Tooltip';
 import { DescriptionMarkdown, Markdown } from '../ui/Markdown';
 import { cn } from '../lib/cn';
@@ -368,7 +370,7 @@ export function NodeDetailPanel({
   // An Epic or Feature is not scored (quality scoring judges how a requirement is worded), so its score, and the model's confidence in
   // that score, are never a reason to review it; loose wording against the source still is.
   const isParentEntry = entry.type === 'Epic' || entry.type === 'Feature';
-  const reviewReason = flaggedDiffEntryReason(isParentEntry ? { ...entry, qualityScore: null, qualityConfidence: null } : entry);
+  const issues = itemIssues(entry);
 
   function startEditing(): void {
     setDraftTitle(entry!.title);
@@ -814,7 +816,7 @@ export function NodeDetailPanel({
     </div>
   );
   const groundingLine =
-    entry.groundingScore != null ? (
+    entry.groundingScore != null && !isParentEntry ? (
       <div className={cn('flex items-center gap-1.5 text-sm', !foldQuality && 'rounded-sm border border-hairline bg-surface-alt p-2.5')}>
         <Tooltip content="How closely this item's wording follows the original document text.">
           <span className="text-ink-3">Matches source wording:</span>
@@ -847,6 +849,7 @@ export function NodeDetailPanel({
           </Button>
         </div>
       )}
+      <IssuesList issues={issues} />
       {duplicateSlot}
       {moveSlot}
       {/* 'excluded' has no message of its own here -- the dialog header
@@ -972,12 +975,6 @@ export function NodeDetailPanel({
           fact. Classification alone is real content the gauge doesn't
           cover, so it stays -- as its own full-width block now that it no
           longer needs to share a 2-column row with something else. */}
-      {reviewReason && (
-        <p data-testid="review-reason" className="flex items-start gap-1.5 text-sm text-warning-ink">
-          <Flag aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 flex-none" />
-          <span>Check: {reviewReason}</span>
-        </p>
-      )}
       {entry.tags && entry.tags.length > 0 && (
         <div className="flex flex-col gap-1">
           <span className={LABEL_MICRO}>Classification</span>
@@ -1019,9 +1016,6 @@ export function NodeDetailPanel({
             ) : (
               `No child items under this ${entry.type} yet.`
             )}
-          </p>
-          <p className="text-xs text-ink-3">
-            {entry.type === 'Epic' ? 'Epics' : 'Features'} aren't scored — quality scoring judges how a requirement is worded, not what it covers.
           </p>
         </div>
       )}

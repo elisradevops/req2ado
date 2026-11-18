@@ -1,8 +1,8 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useAnimate } from 'motion/react-mini';
-import { ChevronUp, ChevronDown } from 'lucide-react';
+import { ChevronUp, ChevronDown, Keyboard, MessageSquareText } from 'lucide-react';
+import { Popover } from 'radix-ui';
 import { Dialog } from '../ui/Dialog';
-import { Tabs } from '../ui/Tabs';
 import { Button } from '../ui/Button';
 import { WorkItemTypeBadge } from './WorkItemTypeBadge';
 import { ActionBadge } from './ActionBadge';
@@ -86,22 +86,6 @@ function matchesShortcutLetter(event: KeyboardEvent, letter: string): boolean {
   const latin = /^[a-z]$/.test(key);
   // Only a real typed character may fall back to the physical key: 'Dead', 'Unidentified' and 'Process' (IME) are not letters.
   return !latin && event.key.length === 1 && event.code === `Key${letter.toUpperCase()}`;
-}
-
-function KeyHints({ hints }: { hints: Array<[string, string]> }): React.ReactElement {
-  return (
-    <span data-testid="key-hints" aria-hidden="true" className="ms-2 text-xs opacity-80">
-      {hints.map(([key, label], index) => (
-        <Fragment key={key}>
-          {/* The break point is this space, outside the nowrap pair: the line breaks between hints, never inside one. */}
-          {index > 0 && ' '}
-          <span className="whitespace-nowrap">
-            <kbd className="rounded-sm border border-current/30 px-1 font-mono text-micro">{key}</kbd> {label}
-          </span>
-        </Fragment>
-      ))}
-    </span>
-  );
 }
 
 export function NodeDetailDialog({
@@ -264,15 +248,21 @@ export function NodeDetailDialog({
   // Select LABELS only -- see AddChildForm.tsx's own doc comment.
   categoryLabels?: Record<'Epic' | 'Feature' | 'Requirement', string>;
 }): React.ReactElement | null {
-  const [mobileTab, setMobileTab] = useState<'details' | 'chat'>('details');
+  // The assistant is a drawer, closed to begin with. ChatPanel is mounted only while it is open, so stepping through items fetches no chat
+  // history, and the one-mount rule of §11.4.0 holds. It stays open across J / K.
+  const [assistantOpen, setAssistantOpen] = useState(false);
+  const askButtonRef = useRef<HTMLButtonElement>(null);
   const isDesktop = useIsAboveBreakpoint(LG_BREAKPOINT_QUERY);
 
-  // Reset to the details tab whenever the selected node changes -- staying
-  // on a previous node's chat tab while looking at a new node's details
-  // (or vice versa) would be confusing.
+  // Closing the dialog closes the assistant. Closing only the assistant returns focus to the Ask button, so a keyboard user is not dropped.
+  const wasAssistantOpen = useRef(false);
   useEffect(() => {
-    setMobileTab('details');
-  }, [entry?.localId]);
+    if (!open) setAssistantOpen(false);
+  }, [open]);
+  useEffect(() => {
+    if (wasAssistantOpen.current && !assistantOpen && open) askButtonRef.current?.focus();
+    wasAssistantOpen.current = assistantOpen;
+  }, [assistantOpen, open]);
 
   // Brief settle-in when J/K/R moves to another item, so the reviewer sees
   // the content change under their hands. Not on first open (the dialog's
@@ -301,12 +291,14 @@ export function NodeDetailDialog({
   // E asks the panel to open its edit form (the form's state lives there); a counter so every press counts.
   const [editRequest, setEditRequest] = useState(0);
   const entryEditable = !!entry && canEditEntry(entry, jobStatus, written);
+  // Always available: a closed review still opens the assistant, which says why it cannot change anything.
+  const entryAskable = !!entry;
 
   // J / K step to the next / previous item, same as the chevrons in the
   // title. Ignored while typing (edit fields, chat) and with any modifier
   // held, so it never swallows a real character or a browser shortcut.
   useEffect(() => {
-    if (!open || !onNavigate || !shortcutsEnabled) return;
+    if (!open || !shortcutsEnabled) return;
     function handleKeyDown(event: KeyboardEvent): void {
       if (event.defaultPrevented || event.shiftKey || event.isComposing || event.keyCode === 229) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
@@ -318,10 +310,13 @@ export function NodeDetailDialog({
       const is = (letter: string): boolean => matchesShortcutLetter(event, letter);
       // A held A, R or X must not mark or exclude the whole queue at key-repeat speed.
       if (event.repeat && (is('r') || is('a') || is('x') || is('u') || is('e'))) return;
-      if (is('j') && hasNext) {
+      if (is('c') && entryAskable) {
+        event.preventDefault();
+        setAssistantOpen((value) => !value);
+      } else if (is('j') && hasNext && onNavigate) {
         event.preventDefault();
         onNavigate?.('next');
-      } else if (is('k') && hasPrev) {
+      } else if (is('k') && hasPrev && onNavigate) {
         event.preventDefault();
         onNavigate?.('prev');
       } else if ((is('r') || is('a')) && review && !review.reviewed) {
@@ -343,7 +338,7 @@ export function NodeDetailDialog({
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [open, onNavigate, hasNext, hasPrev, review, shortcutsEnabled, entryEditable]);
+  }, [open, onNavigate, hasNext, hasPrev, review, shortcutsEnabled, entryEditable, entryAskable]);
 
   if (!entry) return null;
 
@@ -401,6 +396,7 @@ export function NodeDetailDialog({
     ...(review && !review.reviewed && review.onReject ? ([['X', 'exclude']] as Array<[string, string]>) : []),
     ...(review?.onUndo ? ([['U', 'undo']] as Array<[string, string]>) : []),
     ...(entryEditable ? ([['E', 'edit']] as Array<[string, string]>) : []),
+    ...(entryAskable ? ([['C', 'assistant']] as Array<[string, string]>) : []),
   ];
 
   const detailsContent = (
@@ -496,6 +492,44 @@ export function NodeDetailDialog({
           <span dir="auto" className="min-w-[12rem] flex-1 break-words" title={entry.title}>{entry.title}</span>
           {entry.customerId && <span className="flex-none font-mono text-xs tracking-tight text-ink-3">{entry.customerId}</span>}
           <ActionBadge action={entry.action} existingAdoId={entry.existingAdoId} />
+          <span className="ms-auto flex flex-none items-center gap-1.5">
+            {entryAskable && (
+              <Button
+                ref={askButtonRef}
+                size="sm"
+                variant="outline"
+                aria-pressed={assistantOpen}
+                aria-keyshortcuts={shortcutsEnabled ? 'C' : undefined}
+                onClick={() => setAssistantOpen((value) => !value)}
+              >
+                <MessageSquareText className="h-3.5 w-3.5" aria-hidden="true" />
+                Ask
+                {shortcutsEnabled && <kbd className="rounded-sm border border-current/30 px-1 font-mono text-micro">C</kbd>}
+              </Button>
+            )}
+            {shortcutsEnabled && keyHints.length > 0 && (
+              <Popover.Root>
+                <Popover.Trigger asChild>
+                  <Button size="sm" variant="ghost" aria-label="Keyboard shortcuts">
+                    <Keyboard className="h-4 w-4" aria-hidden="true" />
+                  </Button>
+                </Popover.Trigger>
+                <Popover.Portal>
+                  <Popover.Content align="end" sideOffset={6} className="z-50 rounded-md border border-hairline-strong bg-surface p-3 text-sm shadow-dock">
+                    <p className="mb-1.5 text-xs font-semibold text-ink-2">Keyboard shortcuts</p>
+                    <ul className="flex flex-col gap-1">
+                      {keyHints.map(([key, label]) => (
+                        <li key={key} className="flex items-center gap-2">
+                          <kbd className="w-9 rounded-sm border border-hairline-strong px-1 text-center font-mono text-micro">{key}</kbd>
+                          <span>{label}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </Popover.Content>
+                </Popover.Portal>
+              </Popover.Root>
+            )}
+          </span>
         </div>
       }
       /* Excluded is the only thing that still needs its own row -- everything
@@ -527,7 +561,6 @@ export function NodeDetailDialog({
                 </span>
               )}
               <span className="font-semibold">{reason.title}.</span> {reason.todo}
-              {onNavigate && shortcutsEnabled && <KeyHints hints={keyHints} />}
             </span>
             {review &&
               (review.reviewed ? (
@@ -581,34 +614,27 @@ export function NodeDetailDialog({
           </div>
         </div>
       )}
-      {!reason && onNavigate && shortcutsEnabled && (
-        <div className="flex-none border-b border-hairline bg-surface-sunken px-5 py-1 text-ink-2">
-          <KeyHints hints={keyHints} />
-        </div>
-      )}
       {isDesktop ? (
-        // `lg` and up: real two-pane layout, details left / chat right.
+        // `lg` and up: the details, and the assistant as a right-hand drawer while it is open.
         <div className="flex min-h-0 flex-1">
           <div className="min-h-0 flex-1 overflow-y-auto">
             <div ref={detailsScope}>{detailsContent}</div>
           </div>
-          <div className="min-h-0 w-[400px] flex-none border-l border-hairline">{chatContent}</div>
+          {assistantOpen && <div className="min-h-0 w-[380px] flex-none border-l border-hairline">{chatContent}</div>}
         </div>
       ) : (
-        // Below `lg`: Details/Chat tabs instead of a too-narrow chat pane.
+        // Below `lg`: one column. Ask swaps the body for the assistant, with a way back.
         <div className="flex min-h-0 flex-1 flex-col">
-          <div className="flex-none px-5">
-            <Tabs
-              value={mobileTab}
-              onValueChange={(v) => setMobileTab(v as 'details' | 'chat')}
-              tabs={[
-                { value: 'details', label: 'Details' },
-                { value: 'chat', label: 'Chat' },
-              ]}
-            />
-          </div>
+          {assistantOpen && (
+            <div className="flex-none px-5 pt-2">
+              <Button size="sm" variant="ghost" onClick={() => setAssistantOpen(false)}>
+                <ChevronUp className="h-3.5 w-3.5 -rotate-90" aria-hidden="true" />
+                Back to item
+              </Button>
+            </div>
+          )}
           <div className="min-h-0 flex-1 overflow-y-auto">
-            {mobileTab === 'details' ? <div ref={detailsScope}>{detailsContent}</div> : chatContent}
+            {assistantOpen ? chatContent : <div ref={detailsScope}>{detailsContent}</div>}
           </div>
         </div>
       )}
