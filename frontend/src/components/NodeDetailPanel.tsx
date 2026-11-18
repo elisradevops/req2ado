@@ -152,10 +152,10 @@ export function NodeDetailPanel({
   // The caller shows this entry's provenance itself (NodeDetailDialog's EvidenceStrip owns it there), so the Sources block is left out.
   // A caller that renders this panel without an EvidenceStrip must not set it.
   hideSources?: boolean;
-  // The dialog's evidence strip (file, location, "Why this verdict"): drawn right after the item's text and any proposal or discussion, so
+  // The dialog's evidence strip (file, location, "How this was scored"): drawn right after the item's text and any proposal or discussion, so
   // the source is next to what it supports and the long score panel comes after it.
   // A function receives the Quality panel's read-only body (gauge, score explanation, grounding line) so the strip can fold it into its
-  // "Why this verdict" disclosure; the Re-check / Score this item line then stays outside it, in view.
+  // "How this was scored" disclosure; the Re-check / Score this item line then stays outside it, in view.
   evidenceSlot?: React.ReactNode | ((quality: React.ReactNode) => React.ReactNode);
   // DESIGN.md §11.5 -- the keyboard-accessible "Move to..." control, owned/
   // wired by the caller (NodeDetailDialog builds the actual
@@ -749,7 +749,7 @@ export function NodeDetailPanel({
   }
 
 
-  // The Quality panel in pieces, so the dialog can fold its read-only body into "Why this verdict" (DESIGN.md §11.4) and keep the line that
+  // The Quality panel in pieces, so the dialog can fold its read-only body into "How this was scored" (DESIGN.md §11.4) and keep the line that
   // changes state (stale notice + Re-check quality, Not scored yet + Score this item, Rescored.) outside it, in view and in tab order.
   // An item that maps to one that already exists is not created, so "Not scored yet" would invite a score for nothing.
   const foldQuality = typeof evidenceSlot === 'function';
@@ -788,7 +788,7 @@ export function NodeDetailPanel({
           {rescoring
             ? 'Re-scoring against the current wording. This takes a few seconds.'
             : foldQuality
-              ? 'Edited since this was scored. The scores under "Why this verdict" are from before your change.'
+              ? 'Edited since this was scored. The scores under "How this was scored" are from before your change.'
               : 'Edited since this was scored. The numbers above are from before your change.'}
         </p>
         {onRescore && (

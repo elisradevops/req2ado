@@ -1,4 +1,5 @@
 import { categoryLabel, weakestCategory } from '../utils/qualityCategories';
+import { isScoredType } from '../utils/diffFlagging';
 import type { DryRunDiffEntry } from './DiffTree';
 import { SourceProvenance } from './SourceProvenance';
 import { Disclosure } from '../ui/Disclosure';
@@ -69,13 +70,14 @@ export function EvidenceStrip({
   jobMode?: 'baseline' | 'survey' | null;
   kbCitations?: KbCitation[];
   // The item dialog: the file, the location and the source line stay in view; the weakest area, the scoring note and the KB references
-  // fold into one closed "Why this verdict" disclosure (one level, nothing nested), so they do not push the requirement text down.
+  // fold into one closed "How this was scored" disclosure (one level, nothing nested), so they do not push the requirement text down.
   collapsible?: boolean;
   // The item's Quality panel (gauge, score explanation, grounding line), folded into the same disclosure after the weakest area. Its
   // actions that change state (Re-check quality, Score this item) are the caller's to keep outside, in view.
   quality?: React.ReactNode;
 }): React.ReactElement {
-  const weakest = entry.qualityStale ? null : weakestCategory(entry.qualityCategoryScores, entry.qualityCategoryChecklist);
+  // Only Requirements are scored: an Epic or Feature never names a weakest area, whatever its stored data holds.
+  const weakest = entry.qualityStale || !isScoredType(entry.type) ? null : weakestCategory(entry.qualityCategoryScores, entry.qualityCategoryChecklist);
   const hasCitations = !!kbCitations && kbCitations.length > 0;
   const noteApplies = jobMode === 'survey' && entry.type === 'Requirement' && entry.action === 'create' &&
     entry.qualityScore != null &&
@@ -144,7 +146,7 @@ export function EvidenceStrip({
         {sourceLine}
         {hasWhy && (
           <Disclosure
-            title="Why this verdict"
+            title="How this was scored"
             summary={summaryParts.length > 0 ? <span dir="auto">{summaryParts.join(' · ')}</span> : undefined}
             className="bg-surface"
           >

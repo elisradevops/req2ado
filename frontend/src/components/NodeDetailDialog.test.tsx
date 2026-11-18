@@ -77,7 +77,7 @@ describe('NodeDetailDialog', () => {
     expect(text.compareDocumentPosition(evidence) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  describe('the Quality panel folds into "Why this verdict" (one closed disclosure, one level)', () => {
+  describe('the Quality panel folds into "How this was scored" (one closed disclosure, one level)', () => {
     const scored: DryRunDiffEntry = {
       ...ENTRY,
       sourceRef: { documentPath: 'spec.docx', startOffset: 0, endOffset: 5, page: 2 },
@@ -89,7 +89,7 @@ describe('NodeDetailDialog', () => {
 
     it('starts closed: no gauge, no grounding line, no score explanation in the dialog until it is opened', () => {
       renderDialog({ entry: scored, jobMode: 'survey' });
-      expect(screen.getByRole('button', { name: /why this verdict/i })).toHaveAttribute('aria-expanded', 'false');
+      expect(screen.getByRole('button', { name: /how this was scored/i })).toHaveAttribute('aria-expanded', 'false');
       expect(screen.queryByText('Quality')).not.toBeInTheDocument();
       expect(screen.queryByText(/matches source wording/i)).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: /why this score/i })).not.toBeInTheDocument();
@@ -97,15 +97,15 @@ describe('NodeDetailDialog', () => {
 
     it('says the score and the weakest area in its closed summary line', () => {
       renderDialog({ entry: scored, jobMode: 'survey' });
-      const toggle = screen.getByRole('button', { name: /why this verdict/i });
+      const toggle = screen.getByRole('button', { name: /how this was scored/i });
       expect(toggle).toHaveTextContent('Quality 40 of 100');
       expect(toggle).toHaveTextContent(/weakest area: .*35 of 100/i);
     });
 
     it('holds the whole Quality panel once opened, after the evidence, with no disclosure nested inside it', () => {
       renderDialog({ entry: scored, jobMode: 'survey' });
-      fireEvent.click(screen.getByRole('button', { name: /why this verdict/i }));
-      const region = screen.getByRole('region', { name: /why this verdict/i });
+      fireEvent.click(screen.getByRole('button', { name: /how this was scored/i }));
+      const region = screen.getByRole('region', { name: /how this was scored/i });
       expect(within(region).getByText('Quality')).toBeInTheDocument();
       expect(within(region).getByText(/matches source wording/i)).toBeInTheDocument();
       expect(within(region).getByRole('button', { name: /why this score/i })).toBeInTheDocument();
@@ -118,12 +118,12 @@ describe('NodeDetailDialog', () => {
 
     it('keeps the stale notice and Re-check quality outside the closed disclosure, as a reachable button', () => {
       renderDialog({ entry: { ...scored, qualityStale: true }, jobMode: 'survey', jobStatus: 'diff_ready', onRescore: vi.fn() } as any);
-      expect(screen.getByRole('button', { name: /why this verdict/i })).toHaveAttribute('aria-expanded', 'false');
+      expect(screen.getByRole('button', { name: /how this was scored/i })).toHaveAttribute('aria-expanded', 'false');
       expect(screen.getByText(/edited since this was scored/i)).toBeInTheDocument();
       const recheck = screen.getByRole('button', { name: /re-check quality/i });
       recheck.focus();
       expect(recheck).toHaveFocus();
-      expect(screen.getByRole('button', { name: /why this verdict/i })).toHaveTextContent(/from before your edit/i);
+      expect(screen.getByRole('button', { name: /how this was scored/i })).toHaveTextContent(/from before your edit/i);
     });
 
     it('keeps "Score this item" outside the disclosure for an item that has no score', () => {
