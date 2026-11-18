@@ -28,17 +28,34 @@ class JobCancelled(Exception):
     """Raised at a model call of a run whose caller has gone away."""
 
 
+BUDGET_REASON = "budget"
+
+
+class LlmBudgetExceeded(JobCancelled):
+    """The model provider refused a call because the caller's token budget is used up.
+
+    A JobCancelled on purpose: every stage already lets that exception through its own handler, and it stops the run's remaining
+    calls at once, so no more of a spent budget is used. The difference is the answer: a run cancelled for this reason must be
+    reported as a failure (`/level` answers 402), never returned as a result, because the stages' fail-open handling would otherwise
+    hand back a tree that is missing whatever the refused calls would have produced."""
+
+
 class CancelToken:
     def __init__(self) -> None:
         self.cancelled = False
+        # Why the run was cancelled, when it was not simply its caller going away (see BUDGET_REASON). The first reason stays.
+        self.reason: str | None = None
+        self.reason_detail: str | None = None
         self._callbacks: list = []
         self._lock = threading.Lock()
 
-    def cancel(self) -> None:
+    def cancel(self, reason: str | None = None, detail: str | None = None) -> None:
         with self._lock:
             if self.cancelled:
                 return
             self.cancelled = True
+            self.reason = reason
+            self.reason_detail = detail
             callbacks, self._callbacks = self._callbacks, []
         for callback in callbacks:
             try:
@@ -101,6 +118,8 @@ def raise_if_cancelled() -> None:
     """Called before every model call. Outside a scope (chat, rescoring, scripts) it never raises."""
     token = _token_var.get()
     if token is not None and token.cancelled:
+        if token.reason == BUDGET_REASON:
+            raise LlmBudgetExceeded(token.reason_detail or "the token budget is used up")
         raise JobCancelled("the run was cancelled: its caller is gone")
 
 

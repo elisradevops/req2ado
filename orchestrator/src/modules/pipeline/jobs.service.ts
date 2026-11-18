@@ -470,6 +470,16 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     return this.prisma.auditEntry.findMany({ where: { jobId: id }, orderBy: { createdAt: 'asc' } });
   }
 
+  /** The job's token ledger, one row per (stage, model): what the LLM proxy reported for each call made on the job's behalf. */
+  async getTokenUsage(id: string): Promise<{ stage: string; model: string; calls: number; promptTokens: number; completionTokens: number; cachedTokens: number; reasoningTokens: number }[]> {
+    const rows = await this.prisma.jobTokenUsage.findMany({
+      where: { jobId: id },
+      orderBy: [{ promptTokens: 'desc' }, { stage: 'asc' }],
+      select: { stage: true, model: true, calls: true, promptTokens: true, completionTokens: true, cachedTokens: true, reasoningTokens: true },
+    });
+    return rows;
+  }
+
   // Proxies ingestion's debug-capture read -- best-effort, matching every
   // other enhancement in this codebase: a failure to REACH ingestion (down,
   // network) must not break the Audit tab that's already showing the job's
@@ -2130,6 +2140,8 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       // itself so a job with a stuck trace-link failure can never hit the
       // same FK-violation bug JobEvent had above.
       this.prisma.jobTraceLinkFailure.deleteMany({ where: { jobId: id } }),
+      // The token ledger has no FK to Job (see its model comment), so it is cleared here with the rest.
+      this.prisma.jobTokenUsage.deleteMany({ where: { jobId: id } }),
       this.prisma.job.delete({ where: { id } }),
     ]);
     return { deleted: true };

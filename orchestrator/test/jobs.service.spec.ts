@@ -5120,6 +5120,7 @@ describe('JobsService.delete', () => {
         jobFigureFile: { deleteMany: jobFigureFileDeleteMany },
         jobEvent: { deleteMany: jobEventDeleteMany },
         jobTraceLinkFailure: { deleteMany: jobTraceLinkFailureDeleteMany },
+        jobTokenUsage: { deleteMany: jest.fn().mockResolvedValue(undefined) },
         idempotencyMapping: { deleteMany: jest.fn() },
         $transaction: jest.fn(async (ops: unknown[]) => Promise.all(ops)),
       };

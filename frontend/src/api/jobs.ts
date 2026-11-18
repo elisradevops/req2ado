@@ -26,6 +26,22 @@ export async function getDebugCaptures(id: string): Promise<DebugCaptureEntry[]>
   return response.data;
 }
 
+/** One row of a job's token ledger: what the LLM proxy reported for the calls of one pipeline stage on one model. */
+export interface TokenUsageRow {
+  stage: string;
+  model: string;
+  calls: number;
+  promptTokens: number;
+  completionTokens: number;
+  cachedTokens: number;
+  reasoningTokens: number;
+}
+
+export async function getTokenUsage(id: string): Promise<TokenUsageRow[]> {
+  const response = await httpClient.get<TokenUsageRow[]>(`/jobs/${id}/token-usage`);
+  return response.data;
+}
+
 export async function listJobs(): Promise<JobSummary[]> {
   const response = await httpClient.get<JobSummary[]>('/jobs');
   return response.data;

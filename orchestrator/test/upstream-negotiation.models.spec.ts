@@ -7,6 +7,10 @@ import {
   isToolsWithReasoningRejection,
   parseContextLengthCap,
   rateLimitWaitMs,
+  isBudgetExceeded,
+  BUDGET_EXCEEDED_CODE,
+  RATE_LIMIT_EXHAUSTED_CODE,
+  UpstreamHttpError,
   RATE_LIMIT_DEFAULT_WAIT_MS,
   RATE_LIMIT_MAX_WAIT_MS,
   parseUnsupportedParams,
@@ -690,5 +694,85 @@ describe('rateLimitWaitMs', () => {
     expect(rateLimitWaitMs(limited({}))).toBe(RATE_LIMIT_DEFAULT_WAIT_MS);
     expect(rateLimitWaitMs(apiError('bad request', 400))).toBeNull();
     expect(rateLimitWaitMs(new Error('socket hang up'))).toBeNull();
+  });
+});
+
+describe('a used-up token budget', () => {
+  const budget = (status: number, message: string, type?: string) => new OpenAI.APIError(status, { message, ...(type ? { type } : {}) }, `${status} ${message}`, {} as any);
+
+  it('is told apart from a per-minute rate limit, whatever status the proxy used', () => {
+    expect(isBudgetExceeded(budget(400, 'Budget has been exceeded! Current cost: 5.1, Max budget: 5.0'))).toBe(true);
+    expect(isBudgetExceeded(budget(429, 'ExceededBudget: User=u1 over budget. Spend=5.1, Budget=5.0'))).toBe(true);
+    expect(isBudgetExceeded(budget(400, 'limit reached', 'budget_exceeded'))).toBe(true);
+    expect(isBudgetExceeded(budget(429, 'Rate limit reached for tokens per min (TPM): Limit 30000'))).toBe(false);
+    expect(isBudgetExceeded(budget(429, 'slow down'))).toBe(false);
+    // Looser wordings that are not a refused budget: matching them would end a whole job.
+    expect(isBudgetExceeded(budget(400, 'Request exceeded the reasoning token budget for this model'))).toBe(false);
+    expect(isBudgetExceeded(budget(400, 'your messages resulted in 130000 tokens, which exceeded the budget of this model'))).toBe(false);
+    expect(isBudgetExceeded(budget(400, 'max_tokens must be greater than thinking.budget_tokens'))).toBe(false);
+    expect(isBudgetExceeded(budget(500, 'Budget has been exceeded!'))).toBe(false);
+    expect(isBudgetExceeded(new Error('Budget has been exceeded!'))).toBe(false);
+  });
+
+  const config = {
+    LLM_BASE_URL: 'http://localhost:11434/v1',
+    LLM_API_KEY: undefined,
+    LLM_CHAT_MODEL: 'llama3.1',
+    LLM_TRUSTED_LOCAL: false,
+    EMBED_TRANSPORT: 'openai' as const,
+    EMBED_BASE_URL: undefined,
+    EMBED_MODEL: 'nomic-embed-text',
+    EMBED_PATH: '/api/embed',
+    SHOW_PATH: '/api/show',
+    FILES_UPLOAD_PATH: '/api/v1/files/',
+    FILES_STATUS_PATH: '/api/v1/files',
+    LLM_REQUEST_TIMEOUT_MS: 600_000,
+    LLM_SEND_SEED: false,
+    LLM_SEND_REASONING_EFFORT: false,
+  };
+
+  it.each([400, 429])('stops at once with a 402 carrying the budget code, instead of waiting and repeating a %i', async (status) => {
+    const create = jest.fn().mockRejectedValue(budget(status, 'Budget has been exceeded! Current cost: 5.1, Max budget: 5.0'));
+    const client = new OpenWebUiClient(config as any);
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = create;
+
+    const failure = await client.chat([{ role: 'user', content: 'hi' }], { model: 'gpt-chat-latest' }).catch((e: unknown) => e);
+
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(failure).toBeInstanceOf(UpstreamHttpError);
+    expect((failure as UpstreamHttpError).upstreamStatus).toBe(402);
+    expect((failure as UpstreamHttpError).message).toContain(`${BUDGET_EXCEEDED_CODE}: `);
+    expect((failure as UpstreamHttpError).message).toContain('Budget has been exceeded');
+  });
+
+  const limited = () => new OpenAI.APIError(429, { message: 'slow down' }, '429 slow down', { 'retry-after-ms': '1' } as any);
+  const rateLimitedClient = (create: jest.Mock) => {
+    const client = new OpenWebUiClient(config as any);
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = create;
+    return client;
+  };
+
+  it('marks a 429 it has already waited out and repeated, so ingestion does not repeat it again', async () => {
+    const create = jest.fn().mockRejectedValue(limited());
+    const failure = await rateLimitedClient(create).chat([{ role: 'user', content: 'hi' }], { model: 'gpt-chat-latest' }).catch((e: unknown) => e);
+
+    expect(create).toHaveBeenCalledTimes(3); // the call and its two repeats
+    expect(failure).toBeInstanceOf(UpstreamHttpError);
+    expect((failure as UpstreamHttpError).upstreamStatus).toBe(429);
+    expect((failure as UpstreamHttpError).message).toContain(`${RATE_LIMIT_EXHAUSTED_CODE}: `);
+  });
+
+  it('leaves a 429 it gave up on early unmarked, so ingestion may still retry it', async () => {
+    const create = jest.fn().mockRejectedValue(limited());
+    // A deadline too close for another attempt: the orchestrator sends the call once and does not repeat it.
+    const failure = await rateLimitedClient(create)
+      .chat([{ role: 'user', content: 'hi' }], { model: 'gpt-chat-latest', deadlineAtMs: Date.now() + 1000 })
+      .catch((e: unknown) => e);
+
+    expect(create).toHaveBeenCalledTimes(1);
+    expect((failure as UpstreamHttpError).upstreamStatus).toBe(429);
+    expect((failure as UpstreamHttpError).message).not.toContain(RATE_LIMIT_EXHAUSTED_CODE);
   });
 });

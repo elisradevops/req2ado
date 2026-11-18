@@ -15,6 +15,7 @@ export function failureAuditMessage(entries: ReadonlyArray<{ message: string }>)
 // text rarely says which. A bare number (an item 403, a count 401) is not a status code, so a refusal needs the words around it.
 // One wording per cause, shared by the text reader below and by the class the server stores (describeStoredFailure), so they cannot drift.
 const SUMMARY = {
+  budget_exhausted: 'The token budget for this account is used up, so the run was stopped. Run it again once the budget is available.',
   connection_reset: 'The connection was cut during the run.',
   timeout: 'A step took too long to answer.',
   refused: 'A request was refused: a sign-in or permission problem.',
@@ -23,6 +24,7 @@ const SUMMARY = {
 } as const;
 
 const CAUSES: Array<{ test: RegExp; summary: string }> = [
+  { test: /LLM_BUDGET_EXCEEDED/, summary: SUMMARY.budget_exhausted },
   { test: /UND_ERR_SOCKET|ECONNRESET|other side closed|socket hang up/i, summary: SUMMARY.connection_reset },
   { test: /timeout|timed out|ETIMEDOUT|UND_ERR_HEADERS_TIMEOUT|UND_ERR_BODY_TIMEOUT/i, summary: SUMMARY.timeout },
   { test: /status code 40[13]\b|HTTP 40[13]\b|unauthori[sz]ed|forbidden/i, summary: SUMMARY.refused },

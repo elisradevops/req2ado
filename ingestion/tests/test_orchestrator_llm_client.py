@@ -5531,3 +5531,127 @@ def test_an_ordinary_chat_json_call_sends_no_budget_fields_and_still_ignores_a_l
     client.score_requirements_for_document({"n0": "The unit shall power on within 2 seconds."})
 
     assert "budgetKind" not in captured["body"] and "deadlineMs" not in captured["body"]
+
+
+def _capture_headers(captured: list[dict]) -> httpx.MockTransport:
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(dict(request.headers))
+        return httpx.Response(200, json={"content": json.dumps({"n0": {"score": 85, "issues": []}})})
+
+    return httpx.MockTransport(handler)
+
+
+def test_chat_call_inside_a_job_names_the_job_and_stage_for_the_token_ledger() -> None:
+    from app.logging_context import job_id_scope
+
+    captured: list[dict] = []
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _capture_headers(captured)
+
+    with job_id_scope("job-42"):
+        client.score_requirements_for_document({"n0": "The unit shall power on within 2 seconds."})
+
+    assert captured[0]["x-req2ado-job-id"] == "job-42"
+    assert captured[0]["x-req2ado-stage"] == "score_requirements_for_document"
+
+
+def test_chat_call_outside_a_job_sends_no_ledger_headers() -> None:
+    captured: list[dict] = []
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _capture_headers(captured)
+
+    client.score_requirements_for_document({"n0": "The unit shall power on within 2 seconds."})
+
+    assert "x-req2ado-job-id" not in captured[0]
+    assert "x-req2ado-stage" not in captured[0]
+
+
+def _rate_limited_run(monkeypatch, body: dict):
+    sleeps: list[float] = []
+    monkeypatch.setattr(orchestrator_llm_client_module.time, "sleep", lambda seconds: sleeps.append(seconds))
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(429, json=body)
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+    with pytest.raises(httpx.HTTPStatusError) as raised:
+        client.score_requirements_for_document({"n0": "The unit shall power on within 2 seconds."})
+    return raised.value.response.status_code, calls["n"], sleeps
+
+
+def test_post_chat_does_not_resend_a_429_the_orchestrator_already_waited_out_and_repeated(monkeypatch) -> None:
+    # The orchestrator waits out Retry-After and repeats a rate-limited call itself, and marks the 429 it still got afterwards.
+    # Resending that one here multiplied each rate-limited call (and spent a token quota faster).
+    status, calls, sleeps = _rate_limited_run(
+        monkeypatch, {"message": "RATE_LIMIT_RETRIED: 429 slow down"}
+    )
+    assert status == 429
+    assert calls == 1
+    assert sleeps == []
+
+
+def test_post_chat_still_retries_a_429_the_orchestrator_gave_up_on_early(monkeypatch) -> None:
+    # No mark: the orchestrator had no time or attempts left and did not repeat the call, so a retry here is the only one it gets.
+    status, calls, sleeps = _rate_limited_run(monkeypatch, {"message": "429 slow down"})
+    assert status == 429
+    assert calls == 3
+    assert sleeps == [2.0, 8.0]
+
+
+def _budget_transport(calls: dict) -> httpx.MockTransport:
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(
+            402,
+            json={"statusCode": 402, "message": "LLM_BUDGET_EXCEEDED: 400 Budget has been exceeded!"},
+        )
+
+    return httpx.MockTransport(handler)
+
+
+def test_a_used_up_budget_stops_the_run_at_the_first_refusal(monkeypatch) -> None:
+    from app import job_cancel
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(orchestrator_llm_client_module.time, "sleep", lambda s: sleeps.append(s))
+    calls = {"n": 0}
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _budget_transport(calls)
+
+    with job_cancel.cancellation_scope() as token:
+        with pytest.raises(job_cancel.LlmBudgetExceeded, match="Budget has been exceeded"):
+            client.score_requirements_for_document({"n0": "The unit shall power on within 2 seconds."})
+        # Every later call of the run is refused before it is sent: no more of the spent budget is used.
+        with pytest.raises(job_cancel.LlmBudgetExceeded):
+            client.score_requirements_for_document({"n0": "Another requirement."})
+        assert token.cancelled and token.reason == job_cancel.BUDGET_REASON
+
+    assert calls["n"] == 1
+    assert sleeps == []
+
+
+def test_a_used_up_budget_outside_a_run_is_returned_as_the_402_it_is() -> None:
+    calls = {"n": 0}
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _budget_transport(calls)
+
+    with pytest.raises(httpx.HTTPStatusError) as raised:
+        client.score_requirements_for_document({"n0": "The unit shall power on within 2 seconds."})
+
+    assert raised.value.response.status_code == 402
+    assert calls["n"] == 1
+
+
+def test_a_402_that_is_not_a_budget_refusal_does_not_stop_the_run() -> None:
+    from app import job_cancel
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(lambda request: httpx.Response(402, json={"message": "payment required"}))
+
+    with job_cancel.cancellation_scope() as token:
+        with pytest.raises(httpx.HTTPStatusError):
+            client.score_requirements_for_document({"n0": "The unit shall power on within 2 seconds."})
+        assert not token.cancelled

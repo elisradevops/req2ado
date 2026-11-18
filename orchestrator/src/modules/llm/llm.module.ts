@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common';
+import { PrismaClient } from '@prisma/client';
+import { TokenUsageRecorder } from './token-usage';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { LlmController } from './llm.controller';
 import { LlmStatusController } from './llm-status.controller';
@@ -17,6 +19,11 @@ import { AuthModule } from '../auth/auth.module';
   controllers: [LlmController, LlmStatusController, LlmConnectionController],
   providers: [
     LlmProxyBearerGuard,
+    {
+      // The per-job token ledger the /llm/chat proxy writes to. Same per-module PrismaClient pattern as the other modules.
+      provide: TokenUsageRecorder,
+      useFactory: () => new TokenUsageRecorder(new PrismaClient()),
+    },
     {
       // OpenWebUiClientFactory takes a plain global-config object, not a
       // ConfigService -- see its own doc comment for why (pipeline.

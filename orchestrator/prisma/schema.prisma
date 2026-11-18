@@ -437,6 +437,26 @@ model JobTraceLinkFailure {
   @@unique([jobId, sourceAdoId, targetAdoId, referenceName])
 }
 
+// Tokens a job spent, summed per (job, pipeline stage, model). Written by the LLM proxy for every chat call the ingestion
+// service makes on the job's behalf (it names the job and the stage in request headers), and read for the per-job usage panel.
+// No relation to Job on purpose: a failed recording must never block a model call, and JobsService.delete() clears the rows
+// with the job. Counts are what the proxy reported; a call it reported nothing for adds to `calls` only.
+model JobTokenUsage {
+  id               String   @id @default(uuid())
+  jobId            String
+  stage            String
+  model            String
+  calls            Int      @default(0)
+  promptTokens     Int      @default(0)
+  completionTokens Int      @default(0)
+  cachedTokens     Int      @default(0)
+  reasoningTokens  Int      @default(0)
+  updatedAt        DateTime @updatedAt
+
+  // The unique key leads with jobId, so it also serves the per-job read; a second index on jobId would only cost writes.
+  @@unique([jobId, stage, model])
+}
+
 // Idempotency map: prevents duplicate ADO writes on job re-run.
 // See docs/architecture.md 1c: (source_hash, area_path) -> System.Id
 // customerId is kept as an unused legacy column (historical rows only --

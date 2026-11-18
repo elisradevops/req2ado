@@ -1082,6 +1082,15 @@ export class JobsController {
     return this.jobsService.getAuditTrail(id);
   }
 
+  @Get(':id/token-usage')
+  async getTokenUsage(
+    @Param('id') id: string,
+    @CurrentUser() user: SessionUser,
+  ): Promise<Awaited<ReturnType<JobsService['getTokenUsage']>>> {
+    await this.ownedJob(id, user);
+    return this.jobsService.getTokenUsage(id);
+  }
+
   @Get(':id/debug')
   async getDebugCaptures(
     @Param('id') id: string,

@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, Headers, HttpException, Logger, NotFoundException, Post, Res, UnauthorizedException, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Headers, HttpException, Logger, NotFoundException, Optional, Post, Res, UnauthorizedException, UseGuards } from '@nestjs/common';
 import OpenAI from 'openai';
 import { SkipThrottle } from '@nestjs/throttler';
 import type { Response } from 'express';
@@ -6,7 +6,8 @@ import { llmChatRequestSchema } from './llm-chat.dto';
 import { llmEmbedRequestSchema } from './llm-embed.dto';
 import { llmShowRequestSchema } from './llm-show.dto';
 import { llmVisionRequestSchema } from './llm-vision.dto';
-import type { LlmToolCall } from './llm-client.interface';
+import type { LlmToolCall, LlmUsage } from './llm-client.interface';
+import { TokenUsageRecorder } from './token-usage';
 import { LlmProxyBearerGuard } from './llm-proxy-bearer.guard';
 import { OpenWebUiClientFactory } from './openwebui-client.factory';
 import { ModelInfoUnavailableError, UpstreamHttpError, type ModelInfo } from './openwebui.client';
@@ -29,7 +30,11 @@ import { Public } from '../auth/public.decorator';
 export class LlmController {
   private readonly logger = new Logger(LlmController.name);
 
-  constructor(private readonly clientFactory: OpenWebUiClientFactory) {}
+  constructor(
+    private readonly clientFactory: OpenWebUiClientFactory,
+    // Optional so a controller built without a ledger (older tests) still serves calls; nothing is recorded then.
+    @Optional() private readonly tokenUsage?: TokenUsageRecorder,
+  ) {}
 
   // The X-Req2Ado-User-Id header carries the submitting user's identity on
   // every ingestion-originated call -- ingestion already receives job.userId
@@ -72,7 +77,10 @@ export class LlmController {
     @Body() rawBody: unknown,
     @Headers('x-req2ado-user-id') userId: string | undefined,
     @Res({ passthrough: true }) res?: Response,
-  ): Promise<{ content: string; toolCalls?: LlmToolCall[]; finishReason?: string }> {
+    // Which job and pipeline stage this call is for, set by the ingestion service; absent on any other caller. Used only for the token ledger.
+    @Headers('x-req2ado-job-id') jobId?: string,
+    @Headers('x-req2ado-stage') stage?: string,
+  ): Promise<{ content: string; toolCalls?: LlmToolCall[]; finishReason?: string; usage?: LlmUsage }> {
     const parseResult = llmChatRequestSchema.safeParse(rawBody);
     if (!parseResult.success) {
       throw new BadRequestException('Invalid request body: messages must be a non-empty array');
@@ -97,6 +105,9 @@ export class LlmController {
         ...(body.budgetKind !== undefined ? { budgetKind: body.budgetKind } : {}),
         ...(body.deadlineMs !== undefined ? { deadlineAtMs: Date.now() + body.deadlineMs } : {}),
       });
+      if (jobId && this.tokenUsage) {
+        await this.tokenUsage.record({ jobId, stage: stage?.trim() || 'other', model: body.model ?? llmClient.chatModel, ...(result.usage ? { usage: result.usage } : {}) });
+      }
       return result;
     } catch (err) {
       if (err instanceof UpstreamHttpError) throw new HttpException(err.message, err.upstreamStatus);

@@ -950,6 +950,38 @@ describe('JobDetail', () => {
     expect(screen.getByText(/infer_trace_links — document/i)).toBeInTheDocument();
   });
 
+  it('shows the job\'s token usage on the audit tab, and still shows the audit rows when it cannot be read', async () => {
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-17b', status: 'diff_ready', dryRunDiff: [] } as any);
+    vi.spyOn(jobsApi, 'getAudit').mockResolvedValue([{ id: 'a1', message: 'Job submitted: x.docx', createdAt: '2026-07-09T00:00:00Z' }]);
+    vi.spyOn(jobsApi, 'getDebugCaptures').mockResolvedValue([]);
+    vi.spyOn(jobsApi, 'getTokenUsage').mockResolvedValue([
+      { stage: 'propose_acceptance_criteria', model: 'm1', calls: 54, promptTokens: 270000, completionTokens: 60000, cachedTokens: 0, reasoningTokens: 0 },
+    ]);
+
+    renderAt('job-17b');
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await waitFor(() => expect(screen.getByRole('tab', { name: /audit/i })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('tab', { name: /audit/i }));
+
+    await waitFor(() => expect(screen.getByText('Tokens used — 330,000 across 54 calls')).toBeInTheDocument());
+    expect(screen.getByText(/Propose acceptance criteria/)).toBeInTheDocument();
+  });
+
+  it('keeps the audit rows when the token usage request fails', async () => {
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-17c', status: 'diff_ready', dryRunDiff: [] } as any);
+    vi.spyOn(jobsApi, 'getAudit').mockResolvedValue([{ id: 'a1', message: 'Job submitted: x.docx', createdAt: '2026-07-09T00:00:00Z' }]);
+    vi.spyOn(jobsApi, 'getDebugCaptures').mockResolvedValue([]);
+    vi.spyOn(jobsApi, 'getTokenUsage').mockRejectedValue(new Error('network error'));
+
+    renderAt('job-17c');
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await waitFor(() => expect(screen.getByRole('tab', { name: /audit/i })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('tab', { name: /audit/i }));
+
+    await waitFor(() => expect(screen.getByText('Job submitted: x.docx')).toBeInTheDocument());
+    expect(screen.queryByText(/Tokens used/)).not.toBeInTheDocument();
+  });
+
   describe('rebuild duplicate index', () => {
     const FAILED = { id: 'a1', message: 'Dedup index may be only partly updated for 3 newly-created item(s) -- boom', createdAt: '2026-07-09T00:00:00Z' };
     const REBUILT = { id: 'a2', message: 'Duplicate index rebuilt for 3 item(s)', createdAt: '2026-07-09T01:00:00Z' };

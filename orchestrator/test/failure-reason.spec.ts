@@ -36,6 +36,11 @@ describe('classifyFailure', () => {
     expect(classifyFailure(new Error('terminated (UND_ERR_SOCKET: other side closed)'))).toBe('connection_reset');
   });
 
+  it('names a used-up token budget, even when the text also mentions a timeout or a status', () => {
+    expect(classifyFailure(new Error('Ingestion /level request failed: LLM_BUDGET_EXCEEDED: 400 Budget has been exceeded!'))).toBe('budget_exhausted');
+    expect(classifyFailure(new Error('LLM_BUDGET_EXCEEDED: ExceededBudget after a timeout, status code 401'))).toBe('budget_exhausted');
+  });
+
   it('names a timeout', () => {
     expect(classifyFailure(networkError('UND_ERR_HEADERS_TIMEOUT', 'Headers Timeout Error'))).toBe('timeout');
     expect(classifyFailure(new Error('the request timed out'))).toBe('timeout');
