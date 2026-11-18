@@ -68,7 +68,7 @@ import { VALID_REQUIREMENT_TAGS } from '../../config/requirement-type-fields';
 /** DI token of the ResultCacheProbe JobsController asks for GET cached-result (wired in jobs.module.ts). */
 export const RESULT_CACHE_PROBE = 'RESULT_CACHE_PROBE';
 
-export const ALLOWED_EXTENSIONS = new Set(['.txt', '.md', '.docx', '.pdf', '.xlsx']);
+export const ALLOWED_EXTENSIONS = new Set(['.txt', '.md', '.docx', '.doc', '.pdf', '.xlsx', '.xls', '.csv']);
 
 // Customer ID (per-Requirement source reference, e.g. "1.1.2.2") stays a
 // free-form identifier -- no format/regex is enforced since the source

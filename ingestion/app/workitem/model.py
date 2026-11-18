@@ -375,6 +375,11 @@ class WarningKind(StrEnum):
     # included): the items were NOT checked for conflicting values and a reviewer should compare them.
     CONFLICT_JUDGMENT_SKIPPED = "conflict_judgment_skipped"
     OUTPUT_TRUNCATED = "output_truncated"
+    # A spreadsheet sheet the model read as a list of requirements (every row mapped to an item by code, from the model's reading of its
+    # columns): shown so a reviewer can check the columns it chose. NOT emitted when the sheet could not be read that way:
+    SPREADSHEET_MAPPED = "spreadsheet_mapped"
+    # ...in which case it stays on the model-driven path, which can miss rows in a large sheet.
+    SPREADSHEET_NOT_MAPPED = "spreadsheet_not_mapped"
     NO_MODEL_TITLE = "no_model_title"
     INVALID_FIGURE_IDS = "invalid_figure_ids"
     INVALID_TABLE_IDS = "invalid_table_ids"
@@ -526,6 +531,8 @@ WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
     WarningKind.NEAR_DUPLICATE_CONFLICT: WarningSeverity.NEEDS_REVIEW,
     WarningKind.CONFLICT_JUDGMENT_SKIPPED: WarningSeverity.NEEDS_REVIEW,
     WarningKind.OUTPUT_TRUNCATED: WarningSeverity.PIPELINE_ISSUE,
+    WarningKind.SPREADSHEET_MAPPED: WarningSeverity.NEEDS_REVIEW,
+    WarningKind.SPREADSHEET_NOT_MAPPED: WarningSeverity.PIPELINE_ISSUE,
     WarningKind.NO_MODEL_TITLE: WarningSeverity.AUTO_FIXED,
     WarningKind.INVALID_FIGURE_IDS: WarningSeverity.NEEDS_REVIEW,
     WarningKind.INVALID_TABLE_IDS: WarningSeverity.NEEDS_REVIEW,

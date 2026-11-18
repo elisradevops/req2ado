@@ -175,6 +175,18 @@ describe('JobsController.preview', () => {
     await expect(controller.preview(file, undefined, undefined)).rejects.toThrow('unsupported file type: .exe');
     expect(ingestionClient.ingest).not.toHaveBeenCalled();
   });
+
+  it.each(['.doc', '.xls', '.csv', '.DOC', '.Xls'])('accepts a %s file and hands it to ingestion, which reads it', async (extension) => {
+    const ingestionClient = { ingest: jest.fn().mockResolvedValue({ blocks: [], tables: [], figures: [] }) };
+    const etaService = { estimate: jest.fn().mockResolvedValue({ mode: 'baseline', estimateMinutes: 1 }) };
+    const controller = new JobsController({} as any, ingestionClient as any, {} as any, {} as any, {} as any, etaService as any, 500 * 1024 * 1024);
+
+    const file = { buffer: Buffer.from('x'), originalname: `req${extension}`, size: 4 } as Express.Multer.File;
+    const result = await controller.preview(file, undefined, undefined);
+
+    expect(ingestionClient.ingest).toHaveBeenCalledWith(file.buffer, `req${extension}`, true);
+    expect(result.fileType).toBe(extension.slice(1).toLowerCase());
+  });
 });
 
 describe('JobsController.getById', () => {

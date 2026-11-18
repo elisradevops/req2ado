@@ -1,7 +1,9 @@
 # ingestion/app/dispatch.py
 from __future__ import annotations
 
+import hashlib
 import re
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
@@ -12,9 +14,11 @@ from app.loaders.csv_loader import load_csv
 from app.loaders.docx_loader import load_docx
 from app.loaders.image_loader import load_image
 from app.loaders.ocr import load_pdf_with_ocr_fallback
+from app.loaders.office_convert import LEGACY_CONVERSIONS, convert_legacy_office
 from app.loaders.pptx_loader import load_pptx
 from app.loaders.rtf_loader import load_rtf
 from app.loaders.text_loader import load_markdown, load_txt
+from app.loaders.xls_loader import XlsReadError, load_xls
 from app.loaders.xlsx_loader import load_xlsx
 
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif"}
@@ -27,6 +31,10 @@ _SUPPORTED_EXTENSIONS = {
     ".pptx",
     ".csv",
     ".rtf",
+    # Word 97-2003 is converted to .docx first (loaders/office_convert.py); Excel 97-2003 is read by xlrd (loaders/xls_loader.py). Spelled
+    # out, not spliced: orchestrator/test/allowed-extensions.drift-guard.spec.ts reads this literal.
+    ".doc",
+    ".xls",
     *_IMAGE_EXTENSIONS,
 }
 
@@ -85,6 +93,46 @@ def _normalize_document_identity(doc: CanonicalDoc, filename: str) -> CanonicalD
     return doc
 
 
+def _unreadable_legacy_file(extension: str, newer: str) -> HTTPException:
+    return HTTPException(
+        status_code=422,
+        detail=(
+            f"The {extension} file could not be read. It may be damaged or password-protected; "
+            f"saving it as {newer} and uploading that will work."
+        ),
+    )
+
+
+def _load_xls(tmp_path: str) -> CanonicalDoc:
+    original_sha256 = hashlib.sha256(Path(tmp_path).read_bytes()).hexdigest()
+    try:
+        doc = load_xls(tmp_path)
+    except XlsReadError as error:
+        raise _unreadable_legacy_file(".xls", ".xlsx") from error
+    doc.document.sha256 = original_sha256  # the rewritten workbook's bytes are not the upload's
+    return doc
+
+
+def _load_legacy_office(
+    extension: str,
+    tmp_path: str,
+    describe_figure: Callable[[bytes], str] | None,
+    on_figure_bytes: Callable[[bytes], None] | None,
+) -> CanonicalDoc:
+    """A .doc read through its converted .docx. A file that cannot be converted (damaged, password-protected, or no LibreOffice here) is
+    refused with a message that says so, never read as something it is not."""
+    original_sha256 = hashlib.sha256(Path(tmp_path).read_bytes()).hexdigest()
+    # Figures are read from the converted file while it exists, so everything that needs it happens inside this block.
+    with tempfile.TemporaryDirectory() as work_dir:
+        converted = convert_legacy_office(tmp_path, extension, work_dir)
+        if converted is None:
+            raise _unreadable_legacy_file(extension, ".docx")
+        doc = load_docx(converted, describe_figure=describe_figure, on_figure_bytes=on_figure_bytes)
+    # The converted bytes differ from run to run (timestamps inside the container), so the hash that stands for this file is the upload's.
+    doc.document.sha256 = original_sha256
+    return doc
+
+
 def dispatch_by_extension(
     filename: str,
     tmp_path: str,
@@ -107,8 +155,16 @@ def dispatch_by_extension(
         doc = load_xlsx(tmp_path)
     elif extension == ".pptx":
         doc = load_pptx(tmp_path, describe_figure=describe_figure, on_figure_bytes=on_figure_bytes)
+    elif extension in LEGACY_CONVERSIONS:
+        doc = _load_legacy_office(extension, tmp_path, describe_figure, on_figure_bytes)
+    elif extension == ".xls":
+        doc = _load_xls(tmp_path)
     elif extension == ".csv":
         doc = load_csv(tmp_path)
+        # The loader names the table after the file it was handed, which is a temporary path: the sheet is the uploaded file.
+        for table in doc.tables:
+            if table.caption == Path(tmp_path).stem:
+                table.caption = Path(filename).stem
     elif extension == ".rtf":
         doc = load_rtf(tmp_path)
     elif extension in _IMAGE_EXTENSIONS:

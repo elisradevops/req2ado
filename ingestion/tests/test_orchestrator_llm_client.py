@@ -5655,3 +5655,65 @@ def test_a_402_that_is_not_a_budget_refusal_does_not_stop_the_run() -> None:
         with pytest.raises(httpx.HTTPStatusError):
             client.score_requirements_for_document({"n0": "The unit shall power on within 2 seconds."})
         assert not token.cancelled
+
+
+def _study_answer() -> dict:
+    return {
+        "kind": "requirements_list",
+        "summary": "A requirements list.",
+        "header_rows": 1,
+        "id_column": 0,
+        "title_column": 2,
+        "text_columns": [3],
+        "group_columns": [1],
+    }
+
+
+def test_study_spreadsheet_sends_the_sample_and_returns_the_models_answer() -> None:
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json={"content": json.dumps(_study_answer())})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    answer = client.study_spreadsheet({"sheet": "Reqs", "rowCount": 2001}, user_id="u1")
+
+    assert answer == _study_answer()
+    body = seen[0]
+    assert json.loads(body["messages"][1]["content"]) == {"sheet": "Reqs", "rowCount": 2001}
+    assert body["responseSchema"]["name"] == "sheet_study"
+    assert set(body["responseSchema"]["schema"]["required"]) == set(_study_answer())
+
+
+def test_study_spreadsheet_refuses_an_answer_that_is_not_an_object() -> None:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(lambda request: httpx.Response(200, json={"content": json.dumps([1, 2])}))
+
+    with pytest.raises(ValueError, match="malformed JSON"):
+        client.study_spreadsheet({"sheet": "Reqs"}, user_id="u1")
+
+
+def test_study_spreadsheet_reads_an_identical_sheet_once() -> None:
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json={"content": json.dumps(_study_answer())})
+
+    class Cache(dict):
+        def get(self, key):
+            return super().get(key)
+
+        def set(self, key, value):
+            self[key] = value
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=Cache())
+    client._transport = httpx.MockTransport(handler)
+
+    first = client.study_spreadsheet({"sheet": "Reqs"}, user_id="u1")
+    second = client.study_spreadsheet({"sheet": "Reqs"}, user_id="u1")
+
+    assert first == second and calls["n"] == 1

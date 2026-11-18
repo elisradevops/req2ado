@@ -47,6 +47,7 @@ from app.survey._response_schemas import (
     score_explanation_schema,
     section_analysis_schema,
     section_skeleton_schema,
+    sheet_study_schema,
     trace_links_schema,
 )
 from app.survey.keyed_calls import (
@@ -2093,6 +2094,41 @@ class OrchestratorLlmClient:
         )
         if not isinstance(parsed, dict):
             raise ValueError(f"malformed JSON in LLM response content: {parsed!r}")
+        return parsed
+
+    def study_spreadsheet(self, sample: dict, user_id: str | None = None) -> dict:
+        """Backs app.leveling.sheet_study: how one sheet is laid out (which rows are headings, which column holds the id, the title, the
+        text, the sections), from a bounded sample of it. Returns the model's answer as a dict; the caller checks every number in it
+        against the sheet, so an answer is never trusted for its columns, only used once they fit."""
+        system_prompt = load_prompt("study_spreadsheet")
+        key = None
+        if self._cache is not None and user_id:  # a call without a user id shares no cached answer
+            key = cache_key(
+                "study_spreadsheet",
+                self._model,
+                self._num_ctx,
+                self._top_k,
+                self._min_p,
+                self._seed,
+                system_prompt,
+                sheet_study_schema(),
+                sample,
+                user_scope(user_id),
+            )
+            cached = self._cache.get(key)
+            if cached is not None:
+                return cached
+        parsed = self._chat_json(
+            system_prompt,
+            json.dumps(sample, ensure_ascii=False),
+            schema=sheet_study_schema(),
+            max_tokens=1500,
+            user_id=user_id,
+        )
+        if not isinstance(parsed, dict):
+            raise ValueError(f"malformed JSON in LLM response content: {parsed!r}")
+        if key is not None:
+            self._cache.set(key, parsed)
         return parsed
 
     def propose_acceptance_criteria(

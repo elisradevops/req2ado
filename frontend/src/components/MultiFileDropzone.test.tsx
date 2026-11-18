@@ -15,6 +15,18 @@ describe('MultiFileDropzone', () => {
     expect(onFilesAdded).toHaveBeenCalledWith(files);
   });
 
+  it.each(['old.doc', 'old.xls', 'export.csv', 'UPPER.XLS'])('accepts %s without skipping it', async (name) => {
+    const user = userEvent.setup({ applyAccept: false });
+    const onFilesAdded = vi.fn();
+    render(<MultiFileDropzone files={[]} onFilesAdded={onFilesAdded} onFileRemoved={vi.fn()} />);
+    const file = new File(['a'], name);
+
+    await user.upload(screen.getByLabelText(/upload requirements documents/i) as HTMLInputElement, file);
+
+    expect(onFilesAdded).toHaveBeenCalledWith([file]);
+    expect(screen.queryByText(/skipped/i)).not.toBeInTheDocument();
+  });
+
   it('filters out unsupported extensions and shows a skipped-count line, still accepting the supported ones', async () => {
     // applyAccept: false -- userEvent.upload otherwise pre-filters against
     // the input's own `accept` attribute before this component's onChange

@@ -10,7 +10,7 @@ finding as historical and re-verify the specific line, not the whole doc.
 - `POST /jobs` — multipart (`file`, `areaPath` required, `customerId?`, `mode?` default
   `'baseline'`). No formal DTO — raw `@Body('...')` extraction.
   `orchestrator/src/modules/pipeline/jobs.controller.ts:42-81`.
-  - File extension allow-list `.txt .md .docx .pdf .xlsx` (`:23, 62-65`).
+  - File extension allow-list `.txt .md .docx .doc .pdf .xlsx .xls .csv` (`ALLOWED_EXTENSIONS` in `jobs.controller.ts`; `.doc` is converted by LibreOffice, `.xls` is read by xlrd).
   - `mode` enum strictly `'baseline' | 'survey'`, rejects anything else with 400 (`:69-71`).
   - Computes SHA-256 `sourceHash` of file bytes (`:72`).
 - `GET /jobs/:id` → `{id, status, dryRunDiff}` (`:83`). **No `GET /jobs` list route exists** —

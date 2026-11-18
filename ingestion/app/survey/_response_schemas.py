@@ -695,6 +695,30 @@ def kb_document_profile_schema() -> dict:
     }
 
 
+def sheet_study_schema() -> dict:
+    """study_spreadsheet (sheet_study.py): how one sheet is laid out, as column and row numbers only. The caller checks every number
+    against the sheet; the schema only fixes the shape, so a column the model cannot name is null and a list it cannot fill is empty."""
+    column = {"type": ["integer", "null"]}
+    columns = {"type": "array", "items": {"type": "integer"}}
+    return {
+        "name": "sheet_study",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "enum": ["requirements_list", "other"]},
+                "summary": {"type": "string"},
+                "header_rows": {"type": "integer"},
+                "id_column": column,
+                "title_column": column,
+                "text_columns": columns,
+                "group_columns": columns,
+            },
+            "required": ["kind", "summary", "header_rows", "id_column", "title_column", "text_columns", "group_columns"],
+            "additionalProperties": False,
+        },
+    }
+
+
 def document_study_schema() -> dict:
     """study_document_window: what one window of the job's document states about its glossary, unresolved-value markers, verification
     wording, cited standards, table roles, list lead-ins and the sentences that state its purpose. Entries are checked against the window text by the caller."""

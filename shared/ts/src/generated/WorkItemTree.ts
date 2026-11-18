@@ -195,7 +195,9 @@ export interface IntegrityWarning {
     | 'parent_title_collision'
     | 'criteria_value_ungrounded'
     | 'requirement_heading_is_section'
-    | 'changed_since_written';
+    | 'changed_since_written'
+    | 'spreadsheet_mapped'
+    | 'spreadsheet_not_mapped';
   /**
    * auto_fixed: deterministic code already resolved it, no action needed. needs_review: an AI/heuristic judgment call a human should verify. pipeline_issue: something broke or was incomplete for this run.
    */
