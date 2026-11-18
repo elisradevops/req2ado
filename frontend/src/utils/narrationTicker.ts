@@ -32,7 +32,7 @@ const PHASE_FALLBACK_SENTENCES: Record<NarrationEvent['phase'], string> = {
   parse_done: 'Finished parsing the document.',
   table_detected: 'Detected a table.',
   preparing_analysis: 'Preparing analysis.',
-  deterministic_subtree: 'Extracting a deterministic hierarchy subtree.',
+  deterministic_subtree: 'Building the item hierarchy.',
   // STAGE 1 of SURVEY's per-branch generation -- structure only, before any
   // requirement text exists (see events.ts's own comment for the stale
   // 'analyze_section' label this replaces).
