@@ -309,7 +309,7 @@ describe('JobDetail', () => {
       status: 'diff_ready',
       dryRunDiff: [
         {
-          localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Loose epic', description: '',
+          localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Loose requirement', description: '',
           action: 'create', customerId: null, tags: [], groundingScore: 0.1,
         },
         {
@@ -319,9 +319,9 @@ describe('JobDetail', () => {
       ],
     } as any);
     renderAt('job-40');
-    await waitFor(() => expect(screen.getByText('Loose epic')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Loose requirement')).toBeInTheDocument());
 
-    // A parent with loose wording is Check; a healthy one is Structure. Groups with nothing in them are not offered.
+    // A requirement with loose wording is Check; a healthy one is Structure. Groups with nothing in them are not offered.
     const check = screen.getByRole('button', { name: /^check · 1$/i });
     const structure = screen.getByRole('button', { name: /^structure · 1$/i });
     expect(screen.queryByRole('button', { name: /^fix before writing/i })).not.toBeInTheDocument();
@@ -335,7 +335,7 @@ describe('JobDetail', () => {
     const { default: userEvent } = await import('@testing-library/user-event');
     await userEvent.click(check);
     expect(screen.getByRole('button', { name: /^check · 1$/i })).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByText('Loose epic')).toBeInTheDocument();
+    expect(screen.getByText('Loose requirement')).toBeInTheDocument();
     expect(screen.queryByText('Healthy epic')).not.toBeInTheDocument();
 
     // Pressing it again clears the filter.

@@ -81,9 +81,8 @@ export function riskTier(entry: ReviewQueueEntry, kindGroups: WarningKindGroup[]
 function tierOf(entry: ReviewQueueEntry, blockingIds: ReadonlySet<string>, reviewIds: ReadonlySet<string>): RiskTier {
   if (blockingIds.has(entry.localId)) return 'blocking';
   if (isStructureEntry(entry)) {
-    // A parent keeps its real signals (a review warning, low grounding: a sign of invention). Everything about its score is ignored,
-    // including the model's "low confidence", which is confidence in that score.
-    return reviewIds.has(entry.localId) || isFlaggedDiffEntry({ ...entry, qualityScore: null, qualityConfidence: null }) ? 'flagged' : 'structure';
+    // A parent keeps its review warnings only; a score or word overlap is never a reason for it (diffFlagging's one rule).
+    return reviewIds.has(entry.localId) ? 'flagged' : 'structure';
   }
   if (isLowQualityEntry(entry)) return 'low_score';
   if (isFlaggedDiffEntry(entry) || reviewIds.has(entry.localId)) return 'flagged';
@@ -256,8 +255,7 @@ export function riskReason(
     case 'low_score':
       return { title: 'Low quality score', todo: check, group: 'review' };
     case 'flagged': {
-      // A parent's score, and the model's confidence in it, are never a reason (the tier ignores them too).
-      const flagReason = flaggedDiffEntryReason(isStructureEntry(entry) ? { ...entry, qualityScore: null, qualityConfidence: null } : entry);
+      const flagReason = flaggedDiffEntryReason(entry);
       const kind = firstKind('review');
       return {
         title: flagReason ?? kind?.meta.title ?? 'Flagged for review',

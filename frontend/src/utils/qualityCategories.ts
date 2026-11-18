@@ -67,7 +67,10 @@ export function weakestCategory(
 // A KB-derived category key can be snake_case verbatim from the org's own ingested checklist
 // document (e.g. "completeness_as_requirement"); splits on '_'/'-' and capitalizes every word.
 export function categoryLabel(key: string): string {
-  return key
+  // Also splits a camelCase key ("capabilityClarity" -> "Capability Clarity"): a stored key is never shown as it is. A key with spaces is
+  // an org checklist sentence and is left as written.
+  const spaced = /\s/.test(key) ? key : key.replace(/([a-z0-9])([A-Z])/g, '$1 $2');
+  return spaced
     .split(/[_-]/)
     .map((word) => (word ? word.charAt(0).toUpperCase() + word.slice(1) : word))
     .join(' ');

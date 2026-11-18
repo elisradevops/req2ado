@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { flaggedDiffEntryReason, isFlaggedDiffEntry } from './diffFlagging';
+import { flaggedDiffEntryReason, isFlaggedDiffEntry, isLowQualityEntry, isScoredType } from './diffFlagging';
 
 describe('isFlaggedDiffEntry', () => {
   it('is false when both scores are null', () => {
@@ -18,8 +18,15 @@ describe('isFlaggedDiffEntry', () => {
     expect(isFlaggedDiffEntry({ groundingScore: 0.9, qualityScore: 95 })).toBe(false);
   });
 
-  it('flags an Epic with a grounding score below the higher parent threshold but above the base threshold', () => {
-    expect(isFlaggedDiffEntry({ type: 'Epic', groundingScore: 0.3, qualityScore: 100 })).toBe(true);
+  it('never flags an Epic or Feature, whatever its grounding, score or confidence: only Requirements are scored', () => {
+    for (const type of ['Epic', 'Feature']) {
+      expect(isFlaggedDiffEntry({ type, groundingScore: 0.01, qualityScore: 5, qualityConfidence: 'low' })).toBe(false);
+      expect(flaggedDiffEntryReason({ type, groundingScore: 0.01, qualityScore: 5, qualityConfidence: 'low' })).toBeNull();
+      expect(isLowQualityEntry({ type, qualityScore: 5 })).toBe(false);
+    }
+    expect(isScoredType('Requirement')).toBe(true);
+    expect(isScoredType(undefined)).toBe(true);
+    expect(isScoredType('Epic')).toBe(false);
   });
 
   it('does not flag a Requirement with the same grounding score that would flag an Epic', () => {

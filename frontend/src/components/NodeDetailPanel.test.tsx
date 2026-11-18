@@ -1278,7 +1278,7 @@ describe('NodeDetailPanel', () => {
     expect(screen.queryByText(/matches source wording/i)).not.toBeInTheDocument();
   });
 
-  it('marks an Epic Grounding metric as low using the higher 0.35 parent threshold, not the base 0.2 threshold', () => {
+  it('does not mark an Epic Grounding metric as low: only Requirements are checked against the source', () => {
     // M3: NodeDetailPanel must use the same isFlaggedDiffEntry threshold
     // logic as the diff tree/list view -- a hardcoded 0.2 here would let a
     // synthesized Epic/Feature that the diff tree flags "Needs review"
@@ -1289,8 +1289,7 @@ describe('NodeDetailPanel', () => {
       action: 'create', customerId: null, groundingScore: 0.3,
     };
     renderPanel(<NodeDetailPanel entry={epicEntry} />);
-    expect(screen.getByText('Loosely')).toBeInTheDocument();
-    expect(screen.getByText(/worth checking against the source/i)).toBeInTheDocument();
+    expect(screen.queryByText(/worth checking against the source/i)).not.toBeInTheDocument();
   });
 
   it('does not mark a Requirement Grounding metric as low at the same score that would flag an Epic', () => {
@@ -1323,9 +1322,9 @@ describe('NodeDetailPanel', () => {
     const { unmount } = renderPanel(<NodeDetailPanel entry={feature} />);
     expect(screen.queryByTestId('review-reason')).not.toBeInTheDocument();
     unmount();
-    // A real signal on a parent (loose wording, a sign of invention) still shows.
+    // Loose wording is not a reason for a parent either (the same rule as the tree).
     renderPanel(<NodeDetailPanel entry={{ ...feature, groundingScore: 0.1 }} />);
-    expect(screen.getByTestId('review-reason')).toBeInTheDocument();
+    expect(screen.queryByTestId('review-reason')).not.toBeInTheDocument();
   });
 
   it('does not mark the Grounding metric low just because qualityConfidence is low', () => {

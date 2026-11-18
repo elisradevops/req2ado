@@ -557,9 +557,8 @@ describe('riskReason for a parent ignores its score, as the tier does', () => {
     expect(reason.title).not.toMatch(/quality|score|unsure/i);
   });
 
-  it('still explains a parent with loose wording by the wording', () => {
+  it('does not flag a parent for loose wording either: only a review warning does', () => {
     const reason = riskReason(entry('f', { type: 'Feature', qualityScore: 15, groundingScore: 0.1 }), NO_WARNINGS);
-    expect(reason.title).toMatch(/grounding|wording|source/i);
-    expect(reason.title).not.toMatch(/quality score/i);
+    expect(reason.title).not.toMatch(/grounding|wording|source|quality score/i);
   });
 });

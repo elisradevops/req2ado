@@ -8,13 +8,6 @@
 // deployables with no shared package for these constants, same as that
 // file's own comment mirroring ingestion's llm_leveling thresholds.
 const LOW_GROUNDING_THRESHOLD = 0.2;
-// A synthesized Epic/Feature summary is scored against a much larger
-// concatenated multi-descendant corpus than a single source block, which
-// inflates the natural word-overlap baseline (more source vocabulary
-// available to match by chance) -- the flat 0.2 cutoff calibrated for one-
-// block-vs-one-generation is too lenient for a synthesized parent and
-// would under-flag real fabrication there (SWEEP.md section 7, item 2).
-const PARENT_LOW_GROUNDING_THRESHOLD = 0.35;
 const LOW_QUALITY_THRESHOLD = 50;
 // SWEEP.md section 7: the scoring model's own abstain channel (see
 // ingestion's QualityConfidence docstring, app/workitem/model.py). A 'low'
@@ -73,11 +66,10 @@ export function isFlaggedDiffEntry(entry: {
   qualityScore?: number | null;
   qualityConfidence?: string | null;
 }): boolean {
-  const groundingThreshold = entry.type === 'Epic' || entry.type === 'Feature'
-    ? PARENT_LOW_GROUNDING_THRESHOLD
-    : LOW_GROUNDING_THRESHOLD;
+  // Only Requirements are scored; an Epic or Feature is never flagged by a score or by overlap with the source (mirrors the frontend's isScoredType).
+  if (entry.type === 'Epic' || entry.type === 'Feature') return false;
   return (
-    (entry.groundingScore != null && entry.groundingScore < groundingThreshold) ||
+    (entry.groundingScore != null && entry.groundingScore < LOW_GROUNDING_THRESHOLD) ||
     (entry.qualityScore != null && entry.qualityScore < LOW_QUALITY_THRESHOLD) ||
     entry.qualityConfidence === LOW_CONFIDENCE
   );

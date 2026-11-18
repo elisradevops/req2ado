@@ -48,6 +48,11 @@ describe('categoryLabel', () => {
     expect(categoryLabel('well-formed')).toBe('Well Formed');
     expect(categoryLabel('clarity')).toBe('Clarity');
   });
+
+  it('splits a camelCase key, so a stored key is never shown as it is', () => {
+    expect(categoryLabel('capabilityClarity')).toBe('Capability Clarity');
+    expect(categoryLabel('scopeCoherence')).toBe('Scope Coherence');
+  });
 });
 
 // What to do when the ingestion file cannot be found: run the guard, skip it locally, or fail in CI
