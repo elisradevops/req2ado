@@ -96,7 +96,6 @@ from app.leveling.root_regrouping import (
 from app.leveling.scoring import (
     BatchedScoringClient,
     _score_all_requirements,
-    _score_epics_and_features,
 )
 from app.leveling.sheet_study import SheetMapping, SheetStudyClient, describe_plan, study_sheet
 from app.leveling.study_runner import StudyHandle
@@ -2201,18 +2200,6 @@ def _build_survey_tree(
                     chunk_concurrency=chunk_concurrency,
                     user_id=user_id,
                 )
-            _score_epics_and_features(
-                all_nodes,
-                scoring_client,
-                all_warnings,
-                progress_callback,
-                model_name,
-                len(det_nodes),
-                0,
-                debug_capture=debug_capture,
-                chunk_concurrency=chunk_concurrency,
-                user_id=user_id,
-            )
 
         _detect_conflicting_duplicates(
             all_nodes,
@@ -3042,24 +3029,6 @@ def _build_survey_tree(
                 chunk_concurrency=chunk_concurrency,
                 user_id=user_id,
             )
-        # Separate rubric/prompt from Requirement scoring above -- see
-        # OrchestratorLlmClient.score_epics_and_features_for_document's own
-        # docstring. Runs regardless of whether the document had any
-        # Requirement nodes at all (an Epic/Feature-only tree still gets
-        # reviewed) -- its own internal empty-list guard is a no-op when
-        # there's nothing of that type either.
-        _score_epics_and_features(
-            all_nodes,
-            scoring_client,
-            all_warnings,
-            progress_callback,
-            model_name,
-            blocks_total,
-            len(branches),
-            debug_capture=debug_capture,
-            chunk_concurrency=chunk_concurrency,
-            user_id=user_id,
-        )
 
     _detect_conflicting_duplicates(
         all_nodes,
