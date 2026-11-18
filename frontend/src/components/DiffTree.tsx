@@ -1113,9 +1113,10 @@ function DiffTreeRow({
   const sameTierLabel = `Nested ${realTypeName(entry.type)}`;
   const typeName = realTypeName(entry.type);
   const sameTierTitle = `Parent is also ${/^[aeiou]/i.test(typeName) ? 'an' : 'a'} ${typeName}. This writes fine to Azure DevOps, but its native Backlogs hub cannot reorder links between items of the same category, and sprint backlogs and taskboards show only the lowest item.`;
-  // On the phone line the red pill is too wide to leave room for the status beside it, so it is plain red text there.
+  // Nesting an item under one of its own type is valid, so this is a quiet fact, not an alarm (DESIGN.md §11.3.5). On the phone line the
+  // pill is too wide to leave room for the status beside it, so it is plain text there.
   const sameTierPhoneEl = isSameTierParent && (
-    <span className="flex-none text-xs font-semibold text-danger-ink" title={sameTierTitle}>
+    <span className="flex-none text-xs font-medium text-ink-2" title={sameTierTitle}>
       {sameTierLabel}
     </span>
   );
@@ -1123,9 +1124,9 @@ function DiffTreeRow({
     <>
     {isSameTierParent && (
       <Chip
-        bg="var(--color-danger-soft)"
-        color="var(--color-danger-ink)"
-        className="flex-none border border-danger-border"
+        bg="var(--color-surface-alt)"
+        color="var(--color-ink-2)"
+        className="flex-none border border-hairline-strong"
         title={sameTierTitle}
       >
         {sameTierLabel}
@@ -1217,9 +1218,9 @@ function DiffTreeRow({
         // visibility below -- not a new hover system, the same pattern
         // JobsList.tsx already ships and tests.
         'hoverable-row group grid items-center gap-2.5 px-3.5 max-md:grid-rows-1 max-md:gap-x-1.5',
-        // Phone only: a whole-row tint promotes the rows that need a decision (same-tier hazard over needs-review).
+        // Phone only: a whole-row tint promotes the rows that need a decision (needs-review).
         // (utilities outrank the component-layer selected fill, so the tint is simply not applied to the selected row)
-        entry.localId !== selectedId && (isSameTierParent ? 'max-md:bg-danger-soft max-md:hover:bg-surface-alt' : (isFlaggedDiffEntry(entry) || issueCount > 0) && 'max-md:bg-warning-soft max-md:hover:bg-surface-alt'),
+        entry.localId !== selectedId && ((isFlaggedDiffEntry(entry) || issueCount > 0) && 'max-md:bg-warning-soft max-md:hover:bg-surface-alt'),
         canMove && 'select-none',
         canMove ? 'cursor-grab' : 'cursor-pointer',
         isDragging && 'opacity-40',

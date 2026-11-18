@@ -89,6 +89,22 @@ function tierOf(entry: ReviewQueueEntry, blockingIds: ReadonlySet<string>, revie
   return 'clean';
 }
 
+/**
+ * How many of a kind's items still need a check once that kind is accepted. An accepted kind stops ranking its items, so each falls into the
+ * tier its own other signals give it (a low score, a review warning); this counts the ones that are not clean. Said after an acceptance, so the
+ * Check count growing is not a surprise.
+ */
+export function countStillToCheck<T extends ReviewQueueEntry>(entries: T[], kindGroups: WarningKindGroup[], kind: string): number {
+  const accepted = kindGroups.map((group) =>
+    group.kind === kind ? { ...group, records: group.records.map((record) => ({ ...record, acknowledged: true })) } : group,
+  );
+  const ids = new Set(kindGroups.find((group) => group.kind === kind)?.nodeIds ?? []);
+  return entries.filter((entry) => ids.has(entry.localId) && !entry.excluded).filter((entry) => {
+    const tier = riskTier(entry, accepted);
+    return tier === 'blocking' || tier === 'low_score' || tier === 'flagged';
+  }).length;
+}
+
 // Whether an entry is excluded itself or sits under an excluded ancestor (confirm drops those too). `cache` lets a caller share results across many entries.
 export function isExcludedWithAncestors(
   entry: ReviewQueueEntry,

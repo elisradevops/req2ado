@@ -788,7 +788,7 @@ describe('DiffTree signal counts', () => {
       expect(screen.getByText('Child req')).not.toContainElement(chip);
     });
 
-    it('promotes rows that need a decision: a labelled triangle and a warm tint, red tint for a same-tier hazard, nothing for a clean row', () => {
+    it('promotes rows that need a decision: a labelled triangle and a warm tint, no tint for a nested same-type item (valid), nothing for a clean row', () => {
       const entries: DryRunDiffEntry[] = [
         { ...baseEntry, localId: 'clean', title: 'Clean one' },
         { ...baseEntry, localId: 'issue', title: 'Issue one', qualityIssues: ['ambiguous'] },
@@ -800,7 +800,8 @@ describe('DiffTree signal counts', () => {
       expect(rowOf('Clean one')).not.toHaveClass('max-md:bg-danger-soft');
       expect(within(rowOf('Issue one')).getByTestId('narrow-flag')).toHaveAttribute('aria-label', 'Check');
       expect(rowOf('Issue one')).toHaveClass('max-md:bg-warning-soft');
-      expect(rowOf('Tier one')).toHaveClass('max-md:bg-danger-soft');
+      expect(rowOf('Tier one')).not.toHaveClass('max-md:bg-danger-soft');
+      expect(rowOf('Tier one')).not.toHaveClass('max-md:bg-warning-soft');
       expect(within(rowOf('Clean one')).queryByTestId('narrow-flag')).toBeNull();
     });
 

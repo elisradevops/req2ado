@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isRunDetailStatus, shouldShowTiles, shouldShowTabs, shouldShowFilterBar, shouldShowNothingWrittenLine } from './jobDetailLayout';
+import { isRunDetailStatus, shouldShowTiles, shouldShowTabs, shouldShowFilterBar, shouldShowNothingWrittenLine, phaseRailOrientation } from './jobDetailLayout';
 
 describe('isRunDetailStatus', () => {
   it('is true only for running and writing', () => {
@@ -68,5 +68,12 @@ describe('shouldShowNothingWrittenLine and a partial write', () => {
     expect(shouldShowNothingWrittenLine('diff_ready', 3)).toBe(false);
     expect(shouldShowNothingWrittenLine('diff_ready', 0)).toBe(true);
     expect(shouldShowNothingWrittenLine('diff_ready')).toBe(true);
+  });
+});
+
+describe('phaseRailOrientation', () => {
+  it('is a list beside the view while the run is live and a strip once it is over', () => {
+    for (const status of ['pending', 'running', 'writing']) expect(phaseRailOrientation(status)).toBe('vertical');
+    for (const status of ['diff_ready', 'succeeded', 'rejected', 'failed', 'cancelled', null]) expect(phaseRailOrientation(status)).toBe('horizontal');
   });
 });

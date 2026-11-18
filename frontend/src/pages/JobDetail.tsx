@@ -75,7 +75,7 @@ import { computeWriteGate, openReviewRecordCount } from '../utils/writeGate';
 import { QUEUED_COPY } from '../utils/labels';
 import { describeFailureCause, describeStoredFailure, failureAuditMessage } from '../utils/failureCause';
 import { REVIEW_GROUP_META } from '../components/reviewGroupMeta';
-import { buildReviewQueue, cleanApproval, groupReviewQueue, isExcludedWithAncestors, nextInQueue, REVIEW_GROUP_ORDER, reviewQueueModeReducer, type ReviewGroup, riskReason, spotCheckSample } from '../utils/reviewQueue';
+import { buildReviewQueue, cleanApproval, countStillToCheck, groupReviewQueue, isExcludedWithAncestors, nextInQueue, REVIEW_GROUP_ORDER, reviewQueueModeReducer, type ReviewGroup, riskReason, spotCheckSample } from '../utils/reviewQueue';
 import { BulkApproveDialog } from '../components/BulkApproveDialog';
 import { WriteSummary, type WriteSummaryState } from '../components/WriteSummary';
 import { approvalBreakdown, type ApprovalMethod } from '../utils/approvalBreakdown';
@@ -112,7 +112,7 @@ import { matchesDiffFilter } from '../utils/diffFilterMatch';
 import { FigureDescriptions, type FigureDescriptionEntry } from '../components/FigureDescriptions';
 import { SectionResults, type SectionResultEntry } from '../components/SectionResults';
 import type { WorkItemTypeCatalogEntry } from '../api/ado';
-import { isRunDetailStatus, shouldShowTiles, shouldShowTabs, shouldShowFilterBar, shouldShowNothingWrittenLine, reviewHeadline } from './jobDetailLayout';
+import { isRunDetailStatus, shouldShowTiles, shouldShowTabs, shouldShowFilterBar, shouldShowNothingWrittenLine, reviewHeadline, phaseRailOrientation } from './jobDetailLayout';
 import { SafetyLine } from '../components/SafetyLine';
 import { Download, FileX2, RotateCw, ShieldCheck, Trash2, TriangleAlert, Upload, X } from 'lucide-react';
 import { IconButton } from '../ui/IconButton';
@@ -1816,9 +1816,14 @@ export function JobDetail(): React.ReactElement {
       const counted = warningKindGroups.find((group) => group.kind === kind);
       const acceptedLabel = counted?.meta.ackPolicy === 'kind_counted' ? counted.meta.countedAckLabel : undefined;
       const acceptedCount = counted ? (counted.nodeIds.length > 0 ? counted.nodeIds.length : counted.records.length) : 0;
+      // Accepting a kind returns its items to the tier their other signals give them, so say how many still need a check: the Check count
+      // growing after an acceptance would otherwise look like a bug.
+      const stillToCheck = acknowledged && acceptedLabel ? countStillToCheck(diff, warningKindGroups, kind) : 0;
       showToast(
         acknowledged
-          ? acceptedLabel ? `Accepted ${acceptedCount.toLocaleString()} ${acceptedLabel}.` : 'Marked handled.'
+          ? acceptedLabel
+            ? `Accepted ${acceptedCount.toLocaleString()} ${acceptedLabel}.${stillToCheck > 0 ? ` ${stillToCheck.toLocaleString()} of them still need a check.` : ''}`
+            : 'Marked handled.'
           : acceptedLabel ? 'Acceptance undone.' : 'Marked not handled.',
         'success',
         {
@@ -2643,6 +2648,7 @@ export function JobDetail(): React.ReactElement {
     latestNarrationForSteps?.phase === 'job_failed' ? (latestNarrationForSteps.lastPhase ?? null) : (latestNarrationForSteps?.phase ?? null);
   // The rail also stays after the run stops (DESIGN.md §11.3.5): Review is then the phase in view, and the finished phases stay readable.
   const reviewLayout = !isLive && !!mode && !!status;
+  const railOrientation = phaseRailOrientation(status);
   const phaseModel = liveLayout || reviewLayout ? lifecyclePhases(mode as 'baseline' | 'survey', status as string, stage, latestPhaseForSteps) : null;
   const viewKey: LifecycleKey | null = phaseModel
     ? pickedPhase && phaseModel.phases.some((phase) => phase.key === pickedPhase)
@@ -3322,8 +3328,6 @@ export function JobDetail(): React.ReactElement {
       >
         <WriteSummary
           state={writeSummary}
-          teamProject={teamProject}
-          areaPath={areaPath}
           warnings={writeWarningCounts}
           noticeCount={noticeExcludedCount}
           onReviewUnreviewed={handleWriteReviewUnreviewed}
@@ -3500,10 +3504,11 @@ export function JobDetail(): React.ReactElement {
       {reviewLayout && phaseModel && viewKey ? (
         // mb-4 only without the Write bar: the bar cancels the page's bottom padding to rest on the edge, and a margin here would leave a strip
         // of content scrolling under it.
-        <div className={cn('grid grid-cols-1 gap-4 lg:grid-cols-[17.5rem_minmax(0,1fr)]', !writeBar && 'mb-4')}>
+        <div className={cn('grid grid-cols-1 gap-4', railOrientation === 'vertical' && 'lg:grid-cols-[17.5rem_minmax(0,1fr)]', !writeBar && 'mb-4')}>
           {/* Sticky: the review list is long, and the phases stay beside it. */}
-          <div className="lg:sticky lg:top-4 lg:self-start">
+          <div className={cn(railOrientation === 'vertical' && 'lg:sticky lg:top-4 lg:self-start')}>
             <PhaseRail
+              orientation={railOrientation}
               rows={phaseRailRows}
               selectedKey={viewKey}
               liveKey={phaseModel.liveKey}

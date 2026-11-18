@@ -21,8 +21,6 @@ const preview: WritePreview = {
 };
 const review = { edited: 0, single: 3, bulk: 0, bulkSpotChecked: 0, group: 0, earlier: 0, notReviewed: 0 };
 const props = {
-  teamProject: 'Compliance',
-  areaPath: 'Compliance\\Auth',
   warnings: { open: { fix: 0, review: 0, info: 0 }, handled: 0 },
 };
 
@@ -76,9 +74,9 @@ describe('WriteSummary', () => {
     expect(screen.getByRole('alert')).not.toHaveTextContent('count above');
   });
 
-  it('shows the destination and the summary lines', () => {
+  it('shows the summary lines, and not the destination (the header bar and the confirm button say it)', () => {
     render(<WriteSummary {...props} state={{ status: 'ready', preview, review }} />);
-    expect(screen.getByText('Compliance\\Auth')).toBeInTheDocument();
+    expect(screen.queryByText(/Destination/)).not.toBeInTheDocument();
     expect(screen.getByText('3 new work items: 1 Feature, 2 Requirements.')).toBeInTheDocument();
     expect(screen.getByText('1 item left out: 1 excluded by you.')).toBeInTheDocument();
     expect(screen.getByText('Review: 3 approved one by one.')).toBeInTheDocument();
@@ -117,18 +115,18 @@ describe('WriteSummary', () => {
 
     it('shows no actions section when nothing applies', () => {
       render(<WriteSummary {...props} state={ready} onReviewUnreviewed={() => {}} onShowWarnings={() => {}} onShowExcluded={() => {}} />);
-      expect(screen.queryByText('Before you write:')).toBeNull();
+      expect(screen.queryByRole('button')).toBeNull();
     });
 
     it('shows no button without its callback, even when the count is above zero', () => {
       render(<WriteSummary {...props} warnings={warn(2)} state={{ ...ready, review: { ...review, notReviewed: 2 } }} />);
-      expect(screen.queryByText('Before you write:')).toBeNull();
+      expect(screen.queryByRole('button')).toBeNull();
     });
 
     it('offers to review unreviewed items, singular and plural, and calls back', async () => {
       const onReviewUnreviewed = vi.fn();
       const { rerender } = render(<WriteSummary {...props} onReviewUnreviewed={onReviewUnreviewed} state={{ ...ready, review: { ...review, notReviewed: 1 } }} />);
-      expect(screen.getByText('Before you write:')).toBeInTheDocument();
+      expect(screen.queryByText('Before you write:')).toBeNull(); // the buttons speak for themselves
       await userEvent.click(screen.getByRole('button', { name: 'Review 1 unreviewed item' }));
       expect(onReviewUnreviewed).toHaveBeenCalledTimes(1);
       rerender(<WriteSummary {...props} onReviewUnreviewed={onReviewUnreviewed} state={{ ...ready, review: { ...review, notReviewed: 4 } }} />);

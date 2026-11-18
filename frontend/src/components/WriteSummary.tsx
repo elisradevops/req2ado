@@ -36,12 +36,10 @@ function statusText(state: WriteSummaryState): string {
     : `Ready: ${total.toLocaleString()} ${total === 1 ? 'item' : 'items'} will be created.`;
 }
 
-// The final summary inside the write confirmation (P17d): where the items go, what will be created and linked, what is left out, and how
+// The final summary inside the write confirmation (P17d): what will be created and linked, what is left out, and how
 // the reviewer reviewed them. The numbers are the server's (the write's own rules); this only shows them. Reading it never blocks the write.
 export function WriteSummary({
   state,
-  teamProject,
-  areaPath,
   warnings,
   noticeCount,
   onReviewUnreviewed,
@@ -49,8 +47,6 @@ export function WriteSummary({
   onShowExcluded,
 }: {
   state: WriteSummaryState;
-  teamProject: string | null;
-  areaPath: string | null;
   warnings: WarningCounts;
   // Directly excluded items that were left out by default as a document notice (worded apart from the reviewer's own exclusions).
   noticeCount?: number;
@@ -59,7 +55,6 @@ export function WriteSummary({
   onShowWarnings?: () => void;
   onShowExcluded?: () => void;
 }): React.ReactElement {
-  const destination = areaPath ?? teamProject;
   const warningText = warningSentence(warnings);
   const unreviewed = state.status === 'ready' ? state.review.notReviewed : 0;
   const excluded = state.status === 'ready' ? state.preview.excluded.direct + state.preview.excluded.viaAncestor : 0;
@@ -77,11 +72,6 @@ export function WriteSummary({
   ].filter((action): action is { id: string; label: string; run: () => void } => action !== null);
   return (
     <div className="flex flex-col gap-2 text-sm">
-      {destination && (
-        <p className="text-ink-2">
-          Destination: <bdi className="font-medium text-ink-1 [overflow-wrap:anywhere]">{destination}</bdi>
-        </p>
-      )}
       <p role="status" className={state.status === 'loading' ? 'text-ink-2' : 'sr-only'}>
         {statusText(state)}
       </p>
@@ -103,15 +93,12 @@ export function WriteSummary({
       )}
       {warningText && <p className="text-warning-ink">{warningText}</p>}
       {actions.length > 0 && (
-        <div className="flex flex-col gap-1.5">
-          <p className="text-ink-2">Before you write:</p>
-          <div className="flex flex-wrap gap-2">
-            {actions.map((action) => (
-              <Button key={action.id} size="sm" variant="outline" className="max-md:min-h-11" onClick={action.run}>
-                {action.label}
-              </Button>
-            ))}
-          </div>
+        <div className="flex flex-wrap gap-2">
+          {actions.map((action) => (
+            <Button key={action.id} size="sm" variant="outline" className="max-md:min-h-11" onClick={action.run}>
+              {action.label}
+            </Button>
+          ))}
         </div>
       )}
     </div>
