@@ -129,7 +129,7 @@ describe('ModeCards', () => {
     });
   });
 
-  it('explains what the SURVEY estimate is based on, and says nothing extra for BASELINE', () => {
+  it('shows the SURVEY range only: the basis is stated once, in the summary rail', () => {
     render(
       <ModeCards
         value="survey"
@@ -138,7 +138,20 @@ describe('ModeCards', () => {
         surveyEstimate={estimate({ sampleCount: 7, modelSampleCount: 0 })}
       />,
     );
-    expect(screen.getByText('Based on 7 completed jobs in the last 90 days')).toBeInTheDocument();
+    expect(screen.queryByText(/Based on 7 completed jobs/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Rough guess/)).not.toBeInTheDocument();
+  });
+
+  it('shows a generic example in placeholders, with no numbers, units or score', () => {
+    render(<ModeCards value="baseline" onChange={vi.fn()} baselineEstimate={undefined} surveyEstimate={undefined} />);
+    const cards = screen.getAllByText(/Example of what lands in Azure DevOps/);
+    expect(cards).toHaveLength(2);
+    expect(screen.getByText(/1\.1 The system shall <requirement text, copied word for word>\./)).toBeInTheDocument();
+    expect(screen.getByText('<short title>')).toBeInTheDocument();
+    expect(screen.getByText('from §<section>')).toBeInTheDocument();
+    for (const card of screen.getAllByRole('radio')) {
+      const example = card.querySelector('[class*="bg-surface-alt"]')?.textContent ?? '';
+      expect(example).not.toMatch(/quality|GHz|MHz|µs|\b\d{2,}\b/i);
+    }
   });
 });

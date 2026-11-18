@@ -91,11 +91,11 @@ describe('DocumentOverviewCard', () => {
     expect(screen.getByText('Unresolved values: TBD ×5.')).toHaveAttribute('dir', 'auto');
   });
 
-  it('shows the first 8 lines and the rest on request', async () => {
+  it('shows the first 5 lines and the rest on request', async () => {
     const lines = Array.from({ length: 12 }, (_v, i) => `Line ${i + 1}.`);
     render(<DocumentOverviewCard overview={{ synopsis: 's', caveat: null, lines }} />);
     await userEvent.click(screen.getByRole('button', { name: /^document overview/i }));
-    expect(screen.getAllByText(/^Line \d+\.$/)).toHaveLength(8);
+    expect(screen.getAllByText(/^Line \d+\.$/)).toHaveLength(5);
     await userEvent.click(screen.getByRole('button', { name: /show all 12 lines/i }));
     expect(screen.getAllByText(/^Line \d+\.$/)).toHaveLength(12);
   });

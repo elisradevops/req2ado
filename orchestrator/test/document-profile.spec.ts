@@ -129,13 +129,14 @@ describe('composeProfileLines', () => {
     expect(lines[0]).toMatch(/§1/);
     expect(lines.join('\n')).toMatch(/TBD/);
     expect(lines.join('\n')).toMatch(/MIL-STD-704F/);
-    expect(lines.slice(0, -1).join('\n')).not.toMatch(/\bAI\b/); // only the closing label names AI, to say it is not used
+    expect(lines.join('\n')).not.toMatch(/\bAI\b/);
   });
 
-  it('says in one line that the text is from the document and structure, not a model', () => {
+  it('is short: no definition line and no closing "no AI" line', () => {
     const lines = composeProfileLines(buildDocumentProfile(doc([h(1, '1', 'Scope'), p(SCOPE)])));
-    expect(lines[lines.length - 1]).toMatch(/text and structure.*no AI/i);
+    expect(lines.join('\n')).not.toMatch(/no AI was used|Statements are sentences/i);
   });
+
 });
 
 
@@ -156,25 +157,15 @@ describe('summarizeBaselineTree', () => {
     expect(summarizeBaselineTree(tree).depth).toBe(2); // the two nodes, each seen once
   });
 
-  it('is told to the user as one line, labelled as what the headings alone give without AI', () => {
+  it('is told in the structure hint, not repeated in the lines the wizard shows', () => {
     const profile = { ...buildDocumentProfile(doc([h(1, '1', 'Scope'), p(SCOPE)])), baselineTree: { epics: 3, features: 12, requirements: 140, depth: 4, roots: 3 } };
-    const lines = composeProfileLines(profile);
-    const line = lines.find((l) => /headings alone/i.test(l))!;
-    expect(line).toMatch(/3 Epics, 12 Features and 140 Requirements/);
-    // Shown in SURVEY too, where "the baseline parser will build" read as a promise about the run: it says what the headings alone
-    // give, and that SURVEY decides its own structure.
-    expect(line).not.toMatch(/baseline parser/i);
-    expect(line).toMatch(/headings alone/);
-    expect(line).toMatch(/SURVEY decides its own structure/);
-    expect(line).toMatch(/4 levels/);
-    expect(line).toMatch(/without AI/i);
+    expect(composeProfileLines(profile).join('\n')).not.toMatch(/headings alone/i);
+    expect(composeStructureHint(profile)).toMatch(/3 Epics, 12 Features and 140 Requirements from the headings/);
   });
 
-  it('says Epic, Feature and Requirement in the singular for a count of one, in the user line and in the hint for the AI', () => {
+  it('says Epic, Feature and Requirement in the singular for a count of one in the hint for the AI', () => {
     const profile = { ...buildDocumentProfile(doc([h(1, '1', 'Scope'), p(SCOPE)])), baselineTree: { epics: 1, features: 1, requirements: 1, depth: 2, roots: 1 } };
-    const line = composeProfileLines(profile).find((l) => /headings alone/i.test(l))!;
-    expect(line).toMatch(/1 Epic, 1 Feature and 1 Requirement,/);
-    expect(line).not.toMatch(/1 (Epics|Features|Requirements)/);
+    expect(composeStructureHint(profile)).not.toMatch(/1 (Epics|Features|Requirements)/);
     expect(composeStructureHint(profile)).toMatch(/1 Epic, 1 Feature and 1 Requirement from the headings/);
   });
 
@@ -185,7 +176,7 @@ describe('summarizeBaselineTree', () => {
     };
     const lines = composeProfileLines(profile).join('\n');
     expect(lines).toMatch(/2 subsections, 2 statements\)/);
-    expect(lines).toMatch(/Statements are sentences with “shall”, “must”, “should” or “will”\./);
+    expect(lines).not.toMatch(/Statements are sentences/);
     expect(lines).not.toMatch(/requirement statement/i);
     const one = composeProfileLines(buildDocumentProfile(doc([h(1, '2', 'Power'), p('The unit shall be sealed.')]))).join('\n');
     expect(one).toMatch(/0 subsections, 1 statement\)/);

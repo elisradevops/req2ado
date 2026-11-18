@@ -13,8 +13,8 @@ import { Skeleton } from '../ui/Skeleton';
 
 const SHAREPOINT_COPY: Record<SharePointStatus['status'], { label: string; tone: 'ok' | 'warn' | 'muted' }> = {
   valid: { label: 'SharePoint connected', tone: 'ok' },
-  invalid: { label: 'SharePoint token expired (adding files will fail)', tone: 'warn' },
-  unreachable: { label: "Can't reach SharePoint (adding files will fail)", tone: 'warn' },
+  invalid: { label: 'SharePoint token expired', tone: 'warn' },
+  unreachable: { label: "Can't reach SharePoint", tone: 'warn' },
   not_configured: { label: 'SharePoint not connected', tone: 'muted' },
 };
 
@@ -122,7 +122,6 @@ export function KbReadinessStrip(): React.ReactElement {
           (older ingests, or ones whose vectors were lost). {reingest}
         </p>
       )}
-      {sharePointBroken && <p className="text-xs text-warning-ink">Reconnect SharePoint in the knowledge base before adding or re-ingesting files.</p>}
     </div>
   );
 }

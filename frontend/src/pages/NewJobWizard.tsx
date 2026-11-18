@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { LayoutGrid, AlignLeft, Image, Layers, Table2, TriangleAlert, ArrowRight, Activity, Cpu, Info } from 'lucide-react';
+import { LayoutGrid, AlignLeft, Image, Layers, Table2, TriangleAlert, ArrowRight, Activity, Info } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { restorableDraft, useNewJobDraftStore } from '../store/newJobDraftStore';
 import { isUntouchedChoices, loadLastJobChoices, loadProjectChoices, rememberJobChoices, withRememberedChoices } from '../utils/lastJobChoices';
@@ -48,6 +48,7 @@ import { StatTile } from '../ui/StatTile';
 import { ARRIVE, useReplayOnChange } from '../ui/motion';
 import { Stepper, type StepState } from '../ui/Stepper';
 import { InfoTip } from '../ui/Tooltip';
+import { describeEstimateBasis } from '../utils/modelFacts';
 
 // The flow is genuinely two screens (upload, then configure+review) -- a
 // 4-label stepper (Source/Target/Options/Review) would claim stages that
@@ -831,8 +832,8 @@ export function NewJobWizard(): React.ReactElement {
             {documentOverview?.caveat && <Alert severity="warning">{documentOverview.caveat}</Alert>}
           </div>
         </SectionCard>
-        {/* sticky: the list above can be long and a summary can appear or go away above it, and Start must not move out from under the pointer */}
-        <div className="sticky bottom-0 -mx-1 flex flex-wrap items-center gap-3 border-t border-hairline bg-canvas px-1 py-3">
+        {/* sticky: the list above can be long and a summary can appear or go away above it, and Start must not move out from under the pointer. Styled as the Write bar's dock (own border, shadow, z-10) so the content scrolling under it does not show through. */}
+        <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-3 rounded-md border border-hairline-strong bg-surface px-3.5 py-2.5 shadow-dock">
           <Button variant="outline" onClick={() => setStep(2)}>
             ← Back to configure
           </Button>
@@ -868,6 +869,10 @@ export function NewJobWizard(): React.ReactElement {
                 <div className="flex flex-wrap items-baseline gap-2.5 border-t border-hairline pt-3">
                   <span className="font-mono text-metric font-semibold tabular-nums text-ink-1">{selectedEstimateLine.value}</span>
                   <span className="text-xs text-ink-3">{selectedEstimateLine.note}</span>
+                  {/* The basis is said here once; the mode card shows the range only. */}
+                  {selectedEstimate && !cachedResult && describeEstimateBasis(selectedEstimate) && (
+                    <span className="basis-full text-meta text-ink-3">{describeEstimateBasis(selectedEstimate)}</span>
+                  )}
                 </div>
               )}
               {forecastLine && (
@@ -1035,23 +1040,6 @@ export function NewJobWizard(): React.ReactElement {
                 <div className="flex flex-wrap items-baseline gap-2.5">
                   <span className="font-mono text-metric font-semibold tabular-nums text-ink-1">{selectedEstimateLine?.value ?? '--'}</span>
                   <span className="text-xs text-ink-3">{selectedEstimateLine?.note ?? 'typically, once it starts'}</span>
-                  <span className="ml-auto flex items-center gap-1">
-                    <Chip className="border border-info-border bg-info-soft font-mono text-micro font-normal normal-case tabular-nums text-info-ink">
-                      <Cpu className="h-3 w-3 flex-none" />
-                      {mode.toUpperCase()}
-                      {mode === 'survey' && selectedEstimate && !cachedResult && ` · ${selectedEstimate.basis === 'blended' ? `n=${selectedEstimate.sampleCount}${selectedEstimate.nearSizeSampleCount === 0 ? ' · none near this size' : ''}` : 'no completed runs yet'}`}
-                    </Chip>
-                    <InfoTip
-                      content={
-                        mode === 'baseline'
-                          ? 'BASELINE reads the document structure only, with no AI model, and typically takes about a minute.'
-                          : (selectedEstimate?.basis === 'blended'
-                          ? `Based on ${selectedEstimate.sampleCount} previous SURVEY run${selectedEstimate.sampleCount === 1 ? '' : 's'} on this deployment. BASELINE parses structure only; SURVEY also runs an AI quality and duplicate check on each clause. Figures cost the most, since each one needs a separate vision call.`
-                          : 'No completed SURVEY runs on this deployment yet, so this is a starting estimate from document size, not a measured one. BASELINE parses structure only; SURVEY also runs an AI quality and duplicate check on each clause.') +
-                        (mode === 'survey' ? ' SURVEY time scales with document size. You will see progress on the job page once it starts.' : '')
-                      }
-                    />
-                  </span>
                 </div>
                 {mode === 'survey' && selectedEstimate?.basis === 'blended' && selectedEstimate.nearSizeSampleCount === 0 && (
                   <p className="flex items-start gap-1.5 rounded-sm border border-info-border bg-info-soft px-2 py-1.5 text-xs text-info-ink">

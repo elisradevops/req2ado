@@ -810,11 +810,11 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
     expect(screen.getByText('From the file’s text and structure')).toBeInTheDocument();
   });
 
-  it('shows the first 8 overview lines and the rest on request, so Start stays near, and lines that repeat do not collide', async () => {
+  it('shows the first 5 overview lines and the rest on request, so Start stays near, and lines that repeat do not collide', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const lines = [...Array.from({ length: 11 }, (_v, i) => `Line ${i + 1}.`), 'Line 1.'];
     await openStep3({ ...OVERVIEW, lines });
-    expect(screen.getAllByText(/^Line \d+\.$/)).toHaveLength(8);
+    expect(screen.getAllByText(/^Line \d+\.$/)).toHaveLength(5);
     await userEvent.click(screen.getByRole('button', { name: /show all 12 lines/i }));
     expect(screen.getAllByText(/^Line \d+\.$/)).toHaveLength(12);
     expect(error.mock.calls.filter((call) => String(call[0]).includes('same key'))).toEqual([]);
@@ -856,7 +856,12 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
 
   it('keeps the Start button in view: the action bar is sticky', async () => {
     await openStep3();
-    expect(screen.getByRole('button', { name: /looks right/i }).parentElement?.className).toMatch(/sticky/);
+    const bar = screen.getByRole('button', { name: /looks right/i }).parentElement?.className ?? '';
+    expect(bar).toMatch(/sticky/);
+    // The same dock as the Write bar: its own surface, border and shadow above the content, so rows do not show through.
+    expect(bar).toMatch(/z-10/);
+    expect(bar).toMatch(/shadow-dock/);
+    expect(bar).toMatch(/bg-surface/);
   });
 
   it('shows the structure caveat as a warning', async () => {
@@ -1011,14 +1016,12 @@ describe('NewJobWizard step 2 layout (DESIGN.md §11.2.5)', () => {
     await reachStep2(0);
     await userEvent.click(screen.getByRole('radio', { name: /survey/i }));
     expect(screen.getByText(/no finished survey run is near this document's size/i)).toBeInTheDocument();
-    expect(screen.getByRole('complementary', { name: 'This run' })).toHaveTextContent(/none near this size/i);
   });
 
   it('does not say it when a finished SURVEY run is near the document\'s size', async () => {
     await reachStep2(3);
     await userEvent.click(screen.getByRole('radio', { name: /survey/i }));
     expect(screen.queryByText(/no finished survey run is near this document's size/i)).not.toBeInTheDocument();
-    expect(screen.getByRole('complementary', { name: 'This run' })).not.toHaveTextContent(/none near this size/i);
   });
 
   it('shows the uploaded document in the summary rail, with its counts', async () => {
@@ -1373,14 +1376,13 @@ describe('NewJobWizard re-run of a file (P5)', () => {
     expect(within(rail).queryByText('typically, once it starts')).not.toBeInTheDocument();
   });
 
-  it('shows one estimate for a cached file: the card and the side panel agree, and the chip does not quote a sample size', async () => {
+  it('shows one estimate for a cached file: the card and the side panel agree, and no sample size is quoted', async () => {
     await toStep2(true);
     const rail = screen.getByRole('complementary', { name: 'This run' });
     await within(rail).findByText('A few seconds');
     const card = screen.getByRole('radio', { name: /SURVEY/ });
     expect(card).toHaveTextContent('A few seconds');
     expect(card).not.toHaveTextContent('20 min');
-    expect(within(rail).getByText('SURVEY')).toBeInTheDocument();
     expect(within(rail).queryByText(/n=\d/)).not.toBeInTheDocument();
   });
 

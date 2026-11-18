@@ -7,7 +7,7 @@ import { cn } from '../lib/cn';
 
 const TEASER_CHARS = 150;
 /** Lines shown before "Show all": enough to read what the file is, few enough that what follows (the Start button) stays near. */
-export const OVERVIEW_LINES_SHOWN = 8;
+export const OVERVIEW_LINES_SHOWN = 5;
 
 /** One line that says what is inside: the AI summary's first sentence when there is one, else the structure line. */
 const NOTHING_TO_SUMMARIZE = 'Too little text to summarize.';

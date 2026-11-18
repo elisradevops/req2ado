@@ -3,7 +3,7 @@ import { cn } from '../lib/cn';
 import { LABEL_MICRO } from '../utils/labelMicro';
 import { formatEtaRange } from '../utils/eta';
 import { Select } from '../ui/Select';
-import { describeEstimateBasis, describeModelFacts } from '../utils/modelFacts';
+import { describeModelFacts } from '../utils/modelFacts';
 import type { EtaEstimate, ModelDetail } from '../api/jobs';
 
 // Exported so ModeBadge.tsx (the persistent chip shown in job list/detail
@@ -22,13 +22,10 @@ import type { EtaEstimate, ModelDetail } from '../api/jobs';
 // server (EtaService, via props below) -- this object keeps only what's
 // genuinely static: what each mode IS, and whether it costs model quota.
 //
-// `sample` is a fixed, illustrative example of what each mode actually
-// writes to Azure DevOps -- NOT derived from the uploaded document (no real
-// per-document sample exists before a run actually happens). Matches the
-// agreed mockup's own "What lands in Azure DevOps" preview: the two modes
-// differ in SHAPE (verbatim clause vs. a distilled, scored, titled item),
-// and that shape difference is what a description sentence can't show as
-// fast as a real-looking example can.
+// `sample` is a generic example of the SHAPE each mode writes to Azure DevOps
+// (verbatim clause vs. a titled, rewritten item), in placeholders only: a
+// realistic clause, section number, unit or score would be read as real
+// output (DESIGN.md §11.2.5).
 export const MODE_COPY = {
   baseline: {
     title: 'BASELINE',
@@ -36,7 +33,7 @@ export const MODE_COPY = {
     costNote: 'no model cost',
     sample: {
       kind: 'verbatim' as const,
-      text: '3.2.1 The receiver shall tune across 2–18 GHz in 1 MHz steps with a settling time not exceeding 50 µs.',
+      text: '1.1 The system shall <requirement text, copied word for word>.',
     },
   },
   survey: {
@@ -45,9 +42,9 @@ export const MODE_COPY = {
     costNote: 'uses your model quota',
     sample: {
       kind: 'structured' as const,
-      title: 'Receiver tuning range and step size',
-      body: 'The receiver shall tune across the 2–18 GHz band in 1 MHz steps, settling within 50 µs of a commanded change.',
-      provenance: 'quality 82 · well-formed · from §3.2.1',
+      title: '<short title>',
+      body: 'The system shall <the requirement, rewritten as a clear "shall" statement>.',
+      provenance: 'from §<section>',
     },
   },
 } as const;
@@ -69,7 +66,6 @@ function EstimateLine({ estimate, cached }: { estimate: EtaEstimate | undefined;
     return <span className="font-mono text-meta text-ink-3">--</span>;
   }
   const { lower, upper } = formatEtaRange(estimate.lowerMinutes, estimate.upperMinutes);
-  const basis = describeEstimateBasis(estimate);
   // DESIGN.md §12: "an estimate is a range with 'typically', never a
   // false-precision point value" -- except when lower===upper (BASELINE's
   // flat, non-probabilistic 1 minute has no range to project), where the
@@ -77,7 +73,6 @@ function EstimateLine({ estimate, cached }: { estimate: EtaEstimate | undefined;
   return (
     <>
       <span className="font-mono text-meta text-ink-3">{lower === upper ? lower : `${lower} – ${upper}, typically`}</span>
-      {basis && <span className="basis-full text-meta text-ink-3">{basis}</span>}
     </>
   );
 }
@@ -86,7 +81,7 @@ function SamplePreview({ sample }: { sample: (typeof MODE_COPY)['baseline' | 'su
   return (
     <span className="block overflow-hidden rounded-sm border border-hairline bg-surface-alt">
       <span className={cn('block px-2.5 pt-2 pb-1', LABEL_MICRO)}>
-        What lands in Azure DevOps
+        Example of what lands in Azure DevOps
       </span>
       <span className="block px-2.5 pt-0.5 pb-2.5">
         {sample.kind === 'verbatim' ? (
