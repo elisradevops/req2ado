@@ -238,7 +238,6 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     private readonly idempotencyService: IdempotencyService,
     private readonly ingestionClient: IngestionHttpClient,
     redisUrl: string,
-    private readonly initialState: string = 'Proposed',
     private readonly writeConcurrency: number = 8,
     private readonly customerIdFieldCandidates: string[] = DEFAULT_CUSTOMER_ID_FIELD_CANDIDATES,
     // Same cap as upload validation (JobsController's MAX_UPLOAD_SIZE_BYTES)
@@ -366,7 +365,9 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         adoProject: input.adoProject ?? null,
         userId: input.userId,
         dedupScope: input.dedupScope ?? 'area_path',
-        state: input.state ?? this.initialState,
+        // '' = the user chose "Default": no state is sent, so every created item starts in ITS OWN type's default state from the project's
+        // process (a single hard-coded state is wrong for most processes, and the three types' workflows differ).
+        state: input.state ?? '',
         iterationPath: input.iterationPath ?? null,
         originalFilename: input.filename,
         batchId: input.batchId ?? null,
@@ -2672,6 +2673,8 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     const fieldsByType = new Map<string, Promise<{ referenceName: string; allowedValues: string[]; alwaysRequired: boolean }[]>>();
     let createdCount = 0;
     let linkedInsteadCount = 0;
+    // Types whose items started in their own default state because the job's chosen state is not in their workflow (see startStateByType).
+    const startStateNotes: string[] = [];
 
     // A failure anywhere below previously left the job stuck in 'writing'
     // forever -- confirm()'s own guard requires 'diff_ready', so no retry
@@ -2783,6 +2786,31 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         }
       }
 
+      // The state each created item starts in, per type, from THIS project's own workflow for that type. An empty job state means "Default": no
+      // System.State is sent and Azure DevOps uses the type's default. A chosen state a type does not have is not sent for that type either
+      // (Azure DevOps refuses the whole create), so that type starts in its default state, and the write says so. A lookup that fails sends the
+      // chosen state as it was: without the type's states there is nothing to check it against.
+      const startStateByType = new Map<string, string | undefined>();
+      if (job.state) {
+        for (const type of new Set(toCreate.map((entry) => entry.type))) {
+          const adoType = realType(type);
+          try {
+            const allowed = await this.mcpClient.readStates(adoType, project, credential);
+            const match = allowed.find((name) => name.toLowerCase() === job.state.toLowerCase());
+            startStateByType.set(type, match);
+            if (match === undefined) {
+              startStateNotes.push(
+                `"${job.state}" is not a state of ${adoType} in this project (it has: ${allowed.join(', ') || 'none'}), so ${adoType} items start in their default state.`,
+              );
+            }
+          } catch (error) {
+            startStateByType.set(type, job.state);
+            // eslint-disable-next-line no-console -- no structured logger in this service
+            console.warn(`Could not read the states of ${adoType} to check "${job.state}": ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+      }
+
       // Every create is fully independent of every other create (fields
       // are self-contained; parent linking is a separate phase below that
       // only starts once ALL creates have finished) -- safe to run with
@@ -2808,9 +2836,10 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         const fields: Record<string, string> = {
           'System.Title': entry.title,
           'System.Description': composeAdoDescriptionHtml(entry),
-          'System.State': job.state,
           'System.AreaPath': job.areaPath,
         };
+        const startState = startStateByType.get(entry.type);
+        if (startState) fields['System.State'] = startState;
         if (job.iterationPath) {
           fields['System.IterationPath'] = job.iterationPath;
         }
@@ -3395,6 +3424,14 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         },
       });
     }
-    return { status: 'succeeded', createdCount, ...(linkedInsteadCount > 0 ? { linkedInsteadCount } : {}) };
+    for (const note of startStateNotes) {
+      await this.prisma.auditEntry.create({ data: { jobId: id, message: note } });
+    }
+    return {
+      status: 'succeeded',
+      createdCount,
+      ...(linkedInsteadCount > 0 ? { linkedInsteadCount } : {}),
+      ...(startStateNotes.length > 0 ? { startStateNotes } : {}),
+    };
   }
 }

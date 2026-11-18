@@ -1065,7 +1065,9 @@ export function JobDetail(): React.ReactElement {
       setWrittenLocalIds(job.writtenLocalIds ?? []);
       const linkedInstead = result.linkedInsteadCount ?? 0;
       showToast(
-        `Wrote ${plural(result.createdCount, 'work item')} to Azure DevOps${linkedInstead > 0 ? `, linked ${linkedInstead} that ${linkedInstead === 1 ? 'was' : 'were'} already there` : ''}.`,
+        `Wrote ${plural(result.createdCount, 'work item')} to Azure DevOps${linkedInstead > 0 ? `, linked ${linkedInstead} that ${linkedInstead === 1 ? 'was' : 'were'} already there` : ''}.` +
+          // The chosen starting state is not in every type's workflow: those types started in their own default state (details: Audit tab).
+          (result.startStateNotes?.length ? " Some items started in their type's default state, because the chosen state is not available for it: see the Audit tab." : ''),
         'success',
       );
     } catch {

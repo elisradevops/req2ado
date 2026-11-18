@@ -2167,6 +2167,27 @@ describe('JobDetail', () => {
     await waitFor(() => expect(screen.getByText(/wrote 3 work items to azure devops/i)).toBeInTheDocument());
   });
 
+  it('says when some items started in their type\'s default state because the chosen state is not in its workflow', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob')
+      .mockResolvedValueOnce({ id: 'job-10e', status: 'diff_ready', dryRunDiff: [], areaPath: 'Project\\Area1' } as any)
+      .mockResolvedValueOnce({ id: 'job-10e', status: 'succeeded', dryRunDiff: [] } as any);
+    vi.spyOn(jobsApi, 'confirmJob').mockResolvedValue({
+      status: 'succeeded', createdCount: 3, startStateNotes: ['"New" is not a state of Epic in this project (it has: Proposed), so Epic items start in their default state.'],
+    });
+    useAuthStore.getState().login('https://ado.example', 'Jane', 'user-descriptor-1');
+
+    renderAt('job-10e');
+    await waitFor(() => expect(screen.getByRole('button', { name: /^write to azure devops$/i })).toBeInTheDocument());
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await userEvent.click(screen.getByRole('button', { name: /^write to azure devops$/i }));
+    await userEvent.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^write to azure devops$/i }));
+
+    await waitFor(() => expect(screen.getByText(/wrote 3 work items to azure devops\. some items started in their type's default state/i)).toBeInTheDocument());
+    expect(screen.getByText(/see the audit tab/i)).toBeInTheDocument();
+  });
+
   it('says how many items were linked to an existing work item instead of created', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
     vi.spyOn(jobsApi, 'getJob')

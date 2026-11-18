@@ -196,11 +196,11 @@ export function DestinationBar({
             'inline-flex flex-none items-center gap-1 rounded-full border border-accent-soft-border bg-accent-soft px-2 py-0.5',
             !state && 'border-hairline-strong bg-transparent',
           )}
-          aria-label={`Work item state: ${state || 'not set'}`}
+          aria-label={`Work item state: ${state || "each type's own default"}`}
         >
           <CircleDot className="h-3 w-3 flex-none text-accent-ink" />
           <span className="text-xs text-accent-ink">Work item state</span>
-          <span className="text-xs font-semibold text-accent-ink">{state || '—'}</span>
+          <span className="text-xs font-semibold text-accent-ink">{state || 'Default'}</span>
         </span>
         {dedupScope && (
           <span className="text-xs text-ink-3">

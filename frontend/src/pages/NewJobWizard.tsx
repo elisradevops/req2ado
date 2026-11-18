@@ -965,17 +965,17 @@ export function NewJobWizard(): React.ReactElement {
                   <StatePicker
                     value={state}
                     onChange={setState}
-                    workItemType="Requirement"
+                   
                     project={project}
                     labelExtra={
-                      <InfoTip content="The workflow state each new item starts in, fetched from this project's Requirement workflow — it varies by process template. Proposed keeps items out of active sprint metrics until someone triages them." />
+                      <InfoTip content="The workflow state each new item starts in, read from this project's own Epic, Feature and Requirement workflows — they vary by process template. Only states every type has are listed. Default starts each type in its own default state." />
                     }
                   />
                 ) : (
                   <TextField
                     label="State (optional)"
                     labelExtra={
-                      <InfoTip content="The workflow state each new item starts in, fetched from this project's Requirement workflow — it varies by process template. Proposed keeps items out of active sprint metrics until someone triages them." />
+                      <InfoTip content="The workflow state each new item starts in, read from this project's own Epic, Feature and Requirement workflows — they vary by process template. Only states every type has are listed. Default starts each type in its own default state." />
                     }
                     value={state}
                     onChange={(event) => setState(event.target.value)}

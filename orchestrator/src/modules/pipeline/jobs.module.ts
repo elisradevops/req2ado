@@ -127,7 +127,6 @@ const JOB_CACHED_RESULTS = 'JOB_CACHED_RESULTS';
           idempotencyService,
           ingestionClient,
           config.get<string>('REDIS_URL')!,
-          config.get<string>('ADO_INITIAL_STATE')!,
           config.get<number>('CONFIRM_WRITE_CONCURRENCY')!,
           // Unset keeps JobsService's own default candidate list (see its
           // constructor) rather than passing an empty array here, which
