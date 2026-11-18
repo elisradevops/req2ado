@@ -255,7 +255,7 @@ describe('NodeDetailPanel', () => {
           descendantCounts={{ epics: 0, features: 0, requirements: 1 }}
         />,
       );
-      expect(screen.getByText('Covers 0 features, 1 requirement.')).toBeInTheDocument();
+      expect(screen.getByText('Covers 1 requirement.')).toBeInTheDocument(); // a count of zero is left out
     });
 
     it('includes nested epics in the covered count, not just features/requirements', () => {

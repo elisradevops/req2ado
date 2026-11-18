@@ -1,5 +1,5 @@
 import { categoryLabel, weakestCategory } from '../utils/qualityCategories';
-import { isScoredType } from '../utils/diffFlagging';
+import { isLowQualityEntry, isScoredType } from '../utils/diffFlagging';
 import type { DryRunDiffEntry } from './DiffTree';
 import { SourceProvenance } from './SourceProvenance';
 import { Disclosure } from '../ui/Disclosure';
@@ -101,10 +101,12 @@ export function EvidenceStrip({
     const hasWhy = !!weakest || hasCitations || noteApplies || !!quality;
     // The closed line says what is worth knowing without opening it: the score (marked when it predates an edit) and the weakest area.
     const summaryParts: string[] = [];
-    if (quality && entry.qualityScore != null) {
+    // A low score is already said once, in the issues list; the closed line adds it only when it is not.
+    const qualityInIssues = isLowQualityEntry(entry) && !entry.qualityStale;
+    if (quality && entry.qualityScore != null && !qualityInIssues) {
       summaryParts.push(`Quality ${clampScore(entry.qualityScore)} of 100${entry.qualityStale ? ', from before your edit' : ''}`);
     }
-    if (weakest) summaryParts.push(`Weakest area: ${categoryLabel(weakest.key).replace(/[.。]$/, '')}, ${weakest.score} of 100`);
+    if (weakest && !qualityInIssues) summaryParts.push(`Weakest area: ${categoryLabel(weakest.key).replace(/[.。]$/, '')}, ${weakest.score} of 100`);
     if (sourceInPane && !hasWhy) return null;
     return (
       <section aria-label="Evidence" className="flex flex-col gap-2 rounded-sm border border-hairline bg-surface-alt p-3 text-sm">

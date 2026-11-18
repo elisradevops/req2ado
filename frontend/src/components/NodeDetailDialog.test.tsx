@@ -101,6 +101,21 @@ describe('NodeDetailDialog', () => {
     expect(screen.queryByRole('group', { name: 'Review decision' })).not.toBeInTheDocument();
   });
 
+  it('puts Edit in the header with its key, opens the edit form from there, and has no second Edit button in the body', async () => {
+    renderDialog({ jobStatus: 'diff_ready' });
+    const edits = screen.getAllByRole('button', { name: /^edit/i });
+    expect(edits).toHaveLength(1);
+    expect(edits[0]).toHaveAttribute('aria-keyshortcuts', 'E');
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await userEvent.click(edits[0]);
+    expect(await screen.findByDisplayValue('Req Title')).toBeInTheDocument();
+  });
+
+  it('does not repeat an Epic title as its description', () => {
+    renderDialog({ entry: { ...ENTRY, type: 'Epic', title: 'Functional and Performance', description: 'Functional and Performance' } });
+    expect(screen.getAllByText('Functional and Performance')).toHaveLength(1);
+  });
+
   it('has no Source column for an item without a source location, or for an Epic', () => {
     const { unmount } = renderDialog({ entry: { ...ENTRY, sourceRef: undefined } });
     expect(screen.queryByRole('region', { name: 'Source' })).not.toBeInTheDocument();
@@ -127,11 +142,17 @@ describe('NodeDetailDialog', () => {
       expect(screen.queryByRole('button', { name: /why this score/i })).not.toBeInTheDocument();
     });
 
-    it('says the score and the weakest area in its closed summary line', () => {
-      renderDialog({ entry: scored, jobMode: 'survey' });
+    it('says the score and the weakest area in its closed summary line when the score is not low', () => {
+      renderDialog({ entry: { ...scored, qualityScore: 60 }, jobMode: 'survey' });
       const toggle = screen.getByRole('button', { name: /how this was scored/i });
-      expect(toggle).toHaveTextContent('Quality 40 of 100');
+      expect(toggle).toHaveTextContent('Quality 60 of 100');
       expect(toggle).toHaveTextContent(/weakest area: .*35 of 100/i);
+    });
+
+    it('says a low score once, in the issues list, and not again on the closed summary line', () => {
+      renderDialog({ entry: scored, jobMode: 'survey' });
+      expect(screen.getByTestId('issue-quality-low')).toHaveTextContent('Quality 40 of 100. Weakest: testability (35).');
+      expect(screen.getByRole('button', { name: /how this was scored/i })).not.toHaveTextContent(/Quality 40/);
     });
 
     it('holds the whole Quality panel once opened, after the evidence, with no disclosure nested inside it', () => {

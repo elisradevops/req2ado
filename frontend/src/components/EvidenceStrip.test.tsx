@@ -59,7 +59,7 @@ describe('EvidenceStrip', () => {
   it('does not double the punctuation in the closed summary when the criterion already ends in a full stop', () => {
     render(
       <EvidenceStrip
-        entry={{ ...BASE, qualityScore: 45, qualityCategoryScores: { 'Owner is present.': 10, clarity: 80 } }}
+        entry={{ ...BASE, qualityScore: 55, qualityCategoryScores: { 'Owner is present.': 10, clarity: 80 } }}
         jobMode="survey"
         collapsible
         quality={<div>panel</div>}
@@ -195,8 +195,15 @@ describe('EvidenceStrip', () => {
     });
 
     it('says the weakest area on the closed disclosure, so the reason is visible without opening it', () => {
-      render(<EvidenceStrip entry={scored} jobMode="survey" collapsible />);
+      render(<EvidenceStrip entry={{ ...scored, qualityScore: 60 }} jobMode="survey" collapsible />);
       expect(screen.getByRole('button', { name: /how this was scored/i })).toHaveTextContent('Testability');
+    });
+
+    it('does not repeat a low score on the closed line: the issues list already says it once', () => {
+      render(<EvidenceStrip entry={scored} jobMode="survey" collapsible quality={<div>panel</div>} />);
+      const toggle = screen.getByRole('button', { name: /how this was scored/i });
+      expect(toggle).not.toHaveTextContent(/Quality 40/);
+      expect(toggle).not.toHaveTextContent(/Weakest area/);
     });
 
     it('is closed by default and shows no disclosure when there is nothing to explain', () => {

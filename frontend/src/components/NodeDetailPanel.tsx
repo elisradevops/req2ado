@@ -62,6 +62,17 @@ export function editabilityOf(entry: DryRunDiffEntry, jobStatus?: string | null,
   return { editable: true };
 }
 
+// What an Epic or Feature covers, as one plain line; a count of zero is left out.
+function coverageLine(type: string, counts?: { epics: number; features: number; requirements: number }): string {
+  const plural = (n: number, one: string): string => `${n} ${one}${n === 1 ? '' : 's'}`;
+  const parts = [
+    counts && counts.epics > 0 ? plural(counts.epics, 'epic') : null,
+    counts && counts.features > 0 ? plural(counts.features, 'feature') : null,
+    counts && counts.requirements > 0 ? plural(counts.requirements, 'requirement') : null,
+  ].filter((part): part is string => part !== null);
+  return parts.length > 0 ? `Covers ${parts.join(', ')}.` : `No child items under this ${type} yet.`;
+}
+
 export function canEditEntry(entry: DryRunDiffEntry, jobStatus?: string | null, written?: boolean): boolean {
   return editabilityOf(entry, jobStatus, written).editable;
 }
@@ -95,6 +106,7 @@ export function NodeDetailPanel({
   parentEntry,
   addChildSlot,
   hideSources,
+  hideEditButton,
   evidenceSlot,
   sourceSlot,
   moveSlot,
@@ -153,6 +165,8 @@ export function NodeDetailPanel({
   // The caller shows this entry's provenance itself (NodeDetailDialog's EvidenceStrip owns it there), so the Sources block is left out.
   // A caller that renders this panel without an EvidenceStrip must not set it.
   hideSources?: boolean;
+  // The dialog shows Edit in its own header; the panel keeps its button when it is used on its own.
+  hideEditButton?: boolean;
   // The dialog's evidence strip (file, location, "How this was scored"): drawn right after the item's text and any proposal or discussion, so
   // the source is next to what it supports and the long score panel comes after it.
   // A function receives the Quality panel's read-only body (gauge, score explanation, grounding line) so the strip can fold it into its
@@ -368,6 +382,8 @@ export function NodeDetailPanel({
   // that score, are never a reason to review it; loose wording against the source still is.
   const isParentEntry = entry.type === 'Epic' || entry.type === 'Feature';
   const issues = itemIssues(entry);
+  // An Epic or Feature whose description only repeats its title says nothing the header does not.
+  const echoesTitle = isParentEntry && entry.description.replace(/\W+/g, '').toLowerCase() === entry.title.replace(/\W+/g, '').toLowerCase();
 
   function startEditing(): void {
     setDraftTitle(entry!.title);
@@ -835,9 +851,11 @@ export function NodeDetailPanel({
 
   const proposedBody = (
     <>
-      <div className="w-full text-read text-ink-2 [&>*]:max-w-[68ch] [&>*:dir(rtl)]:me-auto">
+      {!echoesTitle && (
+        <div className="w-full text-read text-ink-2 [&>*]:max-w-[68ch] [&>*:dir(rtl)]:me-auto">
           <DescriptionMarkdown>{entry.description}</DescriptionMarkdown>
         </div>
+      )}
         <ProposalCard
           key={entry.localId}
           entry={entry}
@@ -933,7 +951,7 @@ export function NodeDetailPanel({
       {/* Edit sits right next to the title it edits -- it used to be a lone
           button at the very bottom of the pane, past description/quality/
           trace-links/sources, disconnected from what it acts on. */}
-      {canEdit && (
+      {canEdit && !hideEditButton && (
         <div className="flex justify-end">
           <Button variant="outline" size="sm" onClick={startEditing} className="flex-none">
             <Pencil className="h-3.5 w-3.5" />
@@ -943,7 +961,6 @@ export function NodeDetailPanel({
       )}
       <IssuesList issues={issues} />
       {duplicateSlot}
-      {moveSlot}
       {/* 'excluded' has no message of its own here -- the dialog header
           already shows a dedicated "Excluded from this run" badge right
           next to the title (NodeDetailDialog.tsx), so a second copy in
@@ -1083,28 +1100,8 @@ export function NodeDetailPanel({
           shows what it covers (real descendant counts from the diff tree,
           computed by the caller) and states plainly why there is no score,
           rather than leaving this slot silently empty. */}
-      {(entry.type === 'Epic' || entry.type === 'Feature') && (
-        <div className="flex flex-col gap-1.5 rounded-sm border border-hairline bg-surface-alt p-2.5">
-          <span className="text-xs font-semibold text-ink-2">Scope</span>
-          <p className="text-sm text-ink-2">
-            {descendantCounts &&
-            (descendantCounts.epics > 0 || descendantCounts.features > 0 || descendantCounts.requirements > 0) ? (
-              <>
-                Covers{' '}
-                {descendantCounts.epics > 0 && (
-                  <>
-                    {descendantCounts.epics} epic{descendantCounts.epics === 1 ? '' : 's'},{' '}
-                  </>
-                )}
-                {descendantCounts.features} feature{descendantCounts.features === 1 ? '' : 's'}, {descendantCounts.requirements}{' '}
-                requirement{descendantCounts.requirements === 1 ? '' : 's'}.
-              </>
-            ) : (
-              `No child items under this ${entry.type} yet.`
-            )}
-          </p>
-        </div>
-      )}
+      {isParentEntry && <p className="text-sm text-ink-2">{coverageLine(entry.type, descendantCounts)}</p>}
+      {moveSlot}
       {entry.traceLinks && entry.traceLinks.length > 0 && (
         <div className="mt-1">
           <span className="text-xs font-semibold text-ink-2">Trace links</span>
@@ -1134,7 +1131,7 @@ export function NodeDetailPanel({
           real HTML <table> via DescriptionMarkdown elsewhere in this same
           description, so this is purely "here's which table(s) fed this
           item", not a second table viewer. */}
-      {entry.tableIds && entry.tableIds.length > 0 && (
+      {entry.tableIds && entry.tableIds.length > 0 && !(sourceSlot && entry.tableIds.every((tableId) => !captionByTableId?.[tableId])) && (
         <div className="mt-1">
           <span className="text-xs font-semibold text-ink-2">Tables</span>
           <div className="mt-1 flex flex-wrap gap-1.5">

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useAnimate } from 'motion/react-mini';
-import { ChevronUp, ChevronDown, Keyboard, MessageSquareText } from 'lucide-react';
+import { ChevronUp, ChevronDown, Keyboard, MessageSquareText, Pencil } from 'lucide-react';
 import { Popover } from 'radix-ui';
 import { Dialog } from '../ui/Dialog';
 import { Button } from '../ui/Button';
@@ -421,6 +421,7 @@ export function NodeDetailDialog({
       parentEntry={entry.parentLocalId != null ? diffByLocalId?.[entry.parentLocalId] : undefined}
       addChildSlot={addChildSlot}
       hideSources
+      hideEditButton
       evidenceSlot={evidenceStrip}
       sourceSlot={useSourcePane ? <SourcePane entry={entry} jobId={jobId} /> : undefined}
       moveSlot={moveSlot}
@@ -503,6 +504,13 @@ export function NodeDetailDialog({
           {entry.customerId && <span className="flex-none font-mono text-xs tracking-tight text-ink-3">{entry.customerId}</span>}
           <ActionBadge action={entry.action} existingAdoId={entry.existingAdoId} />
           <span className="ms-auto flex flex-none items-center gap-1.5">
+            {entryEditable && (
+              <Button size="sm" variant="outline" aria-keyshortcuts={shortcutsEnabled ? 'E' : undefined} onClick={() => setEditRequest((count) => count + 1)}>
+                <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+                Edit
+                {shortcutsEnabled && <kbd aria-hidden="true" className="rounded-sm border border-current/30 px-1 font-mono text-micro">E</kbd>}
+              </Button>
+            )}
             {entryAskable && (
               <Button
                 ref={askButtonRef}
@@ -514,7 +522,7 @@ export function NodeDetailDialog({
               >
                 <MessageSquareText className="h-3.5 w-3.5" aria-hidden="true" />
                 Ask
-                {shortcutsEnabled && <kbd className="rounded-sm border border-current/30 px-1 font-mono text-micro">C</kbd>}
+                {shortcutsEnabled && <kbd aria-hidden="true" className="rounded-sm border border-current/30 px-1 font-mono text-micro">C</kbd>}
               </Button>
             )}
             {shortcutsEnabled && keyHints.length > 0 && (
