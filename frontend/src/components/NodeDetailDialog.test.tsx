@@ -80,6 +80,27 @@ describe('NodeDetailDialog', () => {
     expect(text.compareDocumentPosition(source) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  it('puts the decision in one footer bar, present even when there is no reason banner, with the wording the caller gives', async () => {
+    const onMark = vi.fn();
+    const onReject = vi.fn();
+    renderDialog({ review: { reviewed: false, onMark, onUnmark: vi.fn(), onReject, markLabel: 'Mark reviewed', rejectLabel: 'Exclude' } });
+    expect(screen.queryByRole('note')).not.toBeInTheDocument();
+    const bar = screen.getByRole('group', { name: 'Review decision' });
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await userEvent.click(within(bar).getByRole('button', { name: 'Mark reviewed' }));
+    await userEvent.click(within(bar).getByRole('button', { name: 'Exclude' }));
+    expect(onMark).toHaveBeenCalledTimes(1);
+    expect(onReject).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows "Mark not reviewed" in the bar once reviewed, and no bar when the caller offers no review', () => {
+    const { unmount } = renderDialog({ review: { reviewed: true, onMark: vi.fn(), onUnmark: vi.fn() } });
+    expect(within(screen.getByRole('group', { name: 'Review decision' })).getByRole('button', { name: 'Mark not reviewed' })).toBeInTheDocument();
+    unmount();
+    renderDialog();
+    expect(screen.queryByRole('group', { name: 'Review decision' })).not.toBeInTheDocument();
+  });
+
   it('has no Source column for an item without a source location, or for an Epic', () => {
     const { unmount } = renderDialog({ entry: { ...ENTRY, sourceRef: undefined } });
     expect(screen.queryByRole('region', { name: 'Source' })).not.toBeInTheDocument();

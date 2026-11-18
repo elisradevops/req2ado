@@ -227,6 +227,8 @@ export function NodeDetailDialog({
     onUndo?: () => void;
     // Wording for the mark when it is not "mark reviewed" (the spot-check's "Looks right and next").
     markLabel?: string;
+    // The exclude button's wording; "Exclude and next" in a queue, plain "Exclude" when the item was opened from the tree.
+    rejectLabel?: string;
     markHint?: string;
     // The open item is a "Fix before writing" item: keeping it as it is must be a deliberate click, so A and R do nothing (a held key could
     // clear every blocker in seconds) and `onKeyBlocked` says why.
@@ -570,8 +572,41 @@ export function NodeDetailDialog({
               )}
               <span className="font-semibold">{reason.title}.</span> {reason.todo}
             </span>
-            {review &&
-              (review.reviewed ? (
+          </div>
+        </div>
+      )}
+      {isDesktop ? (
+        // `lg` and up: the details, and the assistant as a right-hand drawer while it is open.
+        <div className="flex min-h-0 flex-1">
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <div ref={detailsScope}>{detailsContent}</div>
+          </div>
+          {assistantOpen && <div className="min-h-0 w-[380px] flex-none border-l border-hairline">{chatContent}</div>}
+        </div>
+      ) : (
+        // Below `lg`: one column. Ask swaps the body for the assistant, with a way back.
+        <div className="flex min-h-0 flex-1 flex-col">
+          {assistantOpen && (
+            <div className="flex-none px-5 pt-2">
+              <Button size="sm" variant="ghost" onClick={() => setAssistantOpen(false)}>
+                <ChevronUp className="h-3.5 w-3.5 -rotate-90" aria-hidden="true" />
+                Back to item
+              </Button>
+            </div>
+          )}
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            {assistantOpen ? chatContent : <div ref={detailsScope}>{detailsContent}</div>}
+          </div>
+        </div>
+      )}
+      {review && (
+        // The decision is always in the same place, whether the dialog was opened from the queue or from the tree (DESIGN.md §11.4.5).
+        <div
+          role="group"
+          aria-label="Review decision"
+          className="flex flex-none flex-wrap items-center justify-end gap-2 border-t border-hairline bg-surface px-5 py-2.5 max-md:pb-[max(0.625rem,env(safe-area-inset-bottom))]"
+        >
+            {(review.reviewed ? (
                 <Button
                   size="sm"
                   variant="outline"
@@ -600,7 +635,7 @@ export function NodeDetailDialog({
                         else review.onReject?.();
                       }}
                     >
-                      Exclude and next
+                      {review.rejectLabel ?? 'Exclude and next'}
                     </Button>
                   )}
                   <Button
@@ -619,31 +654,6 @@ export function NodeDetailDialog({
                   </Button>
                 </div>
               ))}
-          </div>
-        </div>
-      )}
-      {isDesktop ? (
-        // `lg` and up: the details, and the assistant as a right-hand drawer while it is open.
-        <div className="flex min-h-0 flex-1">
-          <div className="min-h-0 flex-1 overflow-y-auto">
-            <div ref={detailsScope}>{detailsContent}</div>
-          </div>
-          {assistantOpen && <div className="min-h-0 w-[380px] flex-none border-l border-hairline">{chatContent}</div>}
-        </div>
-      ) : (
-        // Below `lg`: one column. Ask swaps the body for the assistant, with a way back.
-        <div className="flex min-h-0 flex-1 flex-col">
-          {assistantOpen && (
-            <div className="flex-none px-5 pt-2">
-              <Button size="sm" variant="ghost" onClick={() => setAssistantOpen(false)}>
-                <ChevronUp className="h-3.5 w-3.5 -rotate-90" aria-hidden="true" />
-                Back to item
-              </Button>
-            </div>
-          )}
-          <div className="min-h-0 flex-1 overflow-y-auto">
-            {assistantOpen ? chatContent : <div ref={detailsScope}>{detailsContent}</div>}
-          </div>
         </div>
       )}
     </Dialog>

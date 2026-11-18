@@ -2739,6 +2739,20 @@ export function JobDetail(): React.ReactElement {
           onMark: handleMarkSelectedReviewedAndNext,
           onUnmark: () => void handleSetReviewed([selectedId], false),
         }
+      : selectedId && status === 'diff_ready' && diff.find((entry) => entry.localId === selectedId)?.action === 'create' && !diff.find((entry) => entry.localId === selectedId)?.excluded
+      ? {
+          // Opened from the tree: the same two decisions, in the same place, without the queue's stepping on.
+          ...keepAsWrittenProps(selectedId),
+          reviewed: reviewedIds.has(selectedId),
+          busy: isDiffMutating,
+          onBusyAttempt: () => announceAgain('Still saving. Try again.'),
+          onMark: () => void handleSetReviewed([selectedId], true, { method: 'single' }),
+          onUnmark: () => void handleSetReviewed([selectedId], false),
+          onReject: () => void handleToggleExclude(selectedId, true),
+          markLabel: keepAsWrittenProps(selectedId).markLabel ?? 'Mark reviewed',
+          markHint: 'mark reviewed',
+          rejectLabel: 'Exclude',
+        }
       : null;
 
   const reviewMain = (

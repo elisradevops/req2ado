@@ -182,6 +182,27 @@ describe('JobDetail', () => {
     expect(await screen.findAllByText('Root')).not.toHaveLength(0);
   });
 
+  it('offers Mark reviewed and Exclude in the dialog for an item opened from the tree, not only in the queue', async () => {
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-decide',
+      status: 'diff_ready',
+      dryRunDiff: [{ localId: 'r1', parentLocalId: null, type: 'Requirement', title: 'Plain item', description: 'Body', action: 'create', customerId: null, tags: [] }],
+    } as any);
+    const chatApi = await import('../api/chat');
+    vi.mocked(chatApi.getChatHistory).mockResolvedValue([]);
+    vi.mocked(chatApi.listModels).mockResolvedValue([]);
+    const setReviewed = vi.spyOn(jobsApi, 'setDiffEntriesReviewed').mockResolvedValue({ dryRunDiff: [{ localId: 'r1', parentLocalId: null, type: 'Requirement', title: 'Plain item', description: 'Body', action: 'create', customerId: null, tags: [], reviewed: true }] } as any);
+    renderAt('job-decide');
+    await waitFor(() => expect(screen.getByText('Plain item')).toBeInTheDocument());
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await openNodeDetails(userEvent, 'Plain item');
+    const decision = await screen.findByRole('group', { name: 'Review decision' });
+    expect(within(decision).getByRole('button', { name: 'Exclude' })).toBeInTheDocument();
+    await userEvent.click(within(decision).getByRole('button', { name: 'Mark reviewed' }));
+    await waitFor(() => expect(setReviewed).toHaveBeenCalledWith('job-decide', ['r1'], true));
+    setReviewed.mockRestore();
+  });
+
   describe('proposal review gate (P9d)', () => {
     const proposal = { kind: 'criteria' as const, html: '<div data-r2a="criteria"><p><b>Proposed acceptance criteria</b></p><ul><li>Given X then Y</li></ul></div>' };
     const entry = { localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [], proposal };
@@ -940,7 +961,7 @@ describe('JobDetail', () => {
     // pipeline_issue warning auto-expands by default now, so no clicks are
     // needed to reveal it.
     const { default: userEvent } = await import('@testing-library/user-event');
-    expect(screen.getByText('Trace links failed to write to Azure DevOps')).toBeInTheDocument();
+    expect(await screen.findByText('Trace links failed to write to Azure DevOps')).toBeInTheDocument();
 
     const retryName = /retry writing "covers" trace link/i;
     await openNodeDetails(userEvent, 'Root');
