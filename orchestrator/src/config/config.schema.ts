@@ -168,10 +168,6 @@ export const configSchema = z.object({
   FILES_UPLOAD_PATH: z.string().default('/api/v1/files/'),
   FILES_STATUS_PATH: z.string().default('/api/v1/files'),
   MAX_UPLOAD_SIZE_MB: z.coerce.number().default(25),
-  // Initial System.State written on every created work item. Hardcoded
-  // 'Proposed' previously -- an on-prem custom process template without
-  // that state would fail every create. Configurable per-deployment.
-  ADO_INITIAL_STATE: z.string().default('Proposed'),
   // Comma-separated candidate field ref names tried, in order, for the
   // Customer ID custom field (see JobsService.resolveCustomerIdField).
   // Previously hardcoded to a fixed 3-name list with no way to add an

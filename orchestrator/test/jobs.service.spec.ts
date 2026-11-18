@@ -218,7 +218,6 @@ describe('JobsService.confirm', () => {
       undefined,
       undefined,
       undefined,
-      undefined,
       { publish, publishNarration } as any,
     );
 
@@ -267,7 +266,6 @@ describe('JobsService.confirm', () => {
       undefined,
       undefined,
       undefined,
-      undefined,
       { publish: jest.fn(), publishNarration } as any,
     );
 
@@ -313,7 +311,6 @@ describe('JobsService.confirm', () => {
       undefined,
       undefined,
       undefined,
-      undefined,
       { publish: jest.fn(), publishNarration } as any,
     );
 
@@ -352,7 +349,6 @@ describe('JobsService.confirm', () => {
       { record } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
-      undefined,
       undefined,
       undefined,
       undefined,
@@ -599,7 +595,6 @@ describe('JobsService.confirm', () => {
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
-      'Proposed',
       8,
       ['Custom.OrgSpecificCustomerRef'],
     );
@@ -1167,10 +1162,11 @@ describe('JobsService.confirm', () => {
     // Regression: System.State was previously hardcoded literal 'Proposed'
     // in the create-fields object -- an on-prem custom process template
     // without that exact state would fail every create. System.State is now
-    // sourced from job.state (populated at submit() time from either the
-    // caller's explicit state or JobsService's initialState ctor default),
-    // not re-read from the ctor here -- so this fixture sets job.state
-    // directly to prove confirm() honors a non-default value.
+    // sourced from job.state (the caller's explicit state, or '' for "Default"),
+    // so this fixture sets job.state directly to prove confirm() honors a
+    // non-default value. The state is also checked against the type's own
+    // workflow (see 'start state per type' below); this client has no
+    // readStates, so the check cannot be made and the chosen state is sent.
     const createWorkItem = jest.fn().mockResolvedValue({ id: 300 });
     const prisma = {
       job: {
@@ -1341,8 +1337,7 @@ describe('JobsService.confirm post-claim mapping re-check', () => {
       { createWorkItem, linkParentChild: jest.fn(), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn().mockResolvedValue(undefined) } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
-      'redis://unused',
-      undefined, undefined, undefined, undefined,
+      'redis://unused', undefined, undefined, undefined,
       { publish, publishNarration: jest.fn().mockResolvedValue(undefined) } as any,
     );
     return { service, prisma, createWorkItem, publish };
@@ -4060,7 +4055,6 @@ describe('JobsService.confirm — trace links', () => {
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
-      undefined,
       4, // writeConcurrency -- deliberately > 1, so overlap would show up if the 3 links for this one work item weren't serialized
     );
 
@@ -4669,7 +4663,6 @@ describe('JobsService.confirm — figure attachments', () => {
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
-      undefined,
       4, // writeConcurrency -- deliberately > 1, so overlap would show up if the 3 figures for this one work item weren't serialized
     );
 
@@ -4867,7 +4860,6 @@ describe('JobsService.confirm — sibling creation order', () => {
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
-      undefined,
       4, // writeConcurrency -- deliberately > 1, so overlap would show up if the 3 siblings weren't serialized relative to each other
     );
 
@@ -4932,7 +4924,6 @@ describe('JobsService.confirm — sibling creation order', () => {
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
-      undefined,
       4,
     );
 
@@ -4979,7 +4970,6 @@ describe('JobsService.confirm — sibling creation order', () => {
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
-      undefined,
       4,
     );
 
@@ -5079,6 +5069,108 @@ describe('JobsService.cancel', () => {
   });
 });
 
+describe('JobsService.confirm start state per type', () => {
+  const diff = [
+    { localId: 'e0', parentLocalId: null, type: 'Epic', title: 'E', description: 'D', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
+    { localId: 'f0', parentLocalId: 'e0', type: 'Feature', title: 'F', description: 'D', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null, sourceRef: null, tags: [] },
+    { localId: 'r0', parentLocalId: 'f0', type: 'Requirement', title: 'R', description: 'D', action: 'create', existingAdoId: null, sourceHash: 'h2', customerId: null, sourceRef: null, tags: [] },
+  ];
+
+  function build(state: string, readStates?: jest.Mock) {
+    let nextId = 100;
+    const createWorkItem = jest.fn().mockImplementation(async () => ({ id: nextId++ }));
+    const prisma = {
+      job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', state, areaPath: 'Project\\Area1', adoProject: 'Project', dryRunDiff: diff }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+    };
+    const mcp = {
+      createWorkItem,
+      linkParentChild: jest.fn(),
+      discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }),
+      ...(readStates ? { readStates } : {}),
+    };
+    const service = new JobsService(prisma as any, mcp as any, { record: jest.fn() } as any, { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any, 'redis://unused');
+    const stateSent = (type: string) => createWorkItem.mock.calls.find((c) => c[0] === type)?.[1]['System.State'];
+    const auditMessages = () => prisma.auditEntry.create.mock.calls.map((c: any[]) => c[0].data.message as string);
+    return { service, createWorkItem, stateSent, auditMessages };
+  }
+
+  const states = (byType: Record<string, string[]>) => jest.fn().mockImplementation(async (type: string) => byType[type]);
+
+  it('sends no state at all for "Default" (empty), so every type starts in its own default state, and does not even look the states up', async () => {
+    const readStates = states({});
+    const { service, stateSent } = build('', readStates);
+
+    const result = await service.confirm('job-1');
+
+    expect(['Epic', 'Feature', 'Requirement'].map(stateSent)).toEqual([undefined, undefined, undefined]);
+    expect(readStates).not.toHaveBeenCalled();
+    expect(result).not.toHaveProperty('startStateNotes');
+  });
+
+  it('sends the chosen state for every type whose own workflow has it', async () => {
+    const { service, stateSent } = build('New', states({ Epic: ['New', 'Active'], Feature: ['New', 'Active'], Requirement: ['New', 'Active'] }));
+
+    const result = await service.confirm('job-1');
+
+    expect(['Epic', 'Feature', 'Requirement'].map(stateSent)).toEqual(['New', 'New', 'New']);
+    expect(result).not.toHaveProperty('startStateNotes');
+  });
+
+  it('starts a type that does not have the chosen state in its own default state, keeps it for the others, and says so', async () => {
+    // The reported failure: the project's Requirement has "New" but its Epic and Feature do not (their workflow starts at "Proposed").
+    const { service, stateSent, auditMessages } = build(
+      'New',
+      states({ Epic: ['Proposed', 'Active', 'Closed'], Feature: ['Proposed', 'Active'], Requirement: ['New', 'Active'] }),
+    );
+
+    const result = await service.confirm('job-1');
+
+    expect(stateSent('Epic')).toBeUndefined();
+    expect(stateSent('Feature')).toBeUndefined();
+    expect(stateSent('Requirement')).toBe('New');
+    expect(result).toMatchObject({ status: 'succeeded', createdCount: 3 });
+    expect((result as any).startStateNotes).toEqual([
+      '"New" is not a state of Epic in this project (it has: Proposed, Active, Closed), so Epic items start in their default state.',
+      '"New" is not a state of Feature in this project (it has: Proposed, Active), so Feature items start in their default state.',
+    ]);
+    expect(auditMessages()).toEqual(expect.arrayContaining((result as any).startStateNotes));
+  });
+
+  it('matches a state by name regardless of case and sends the process\'s own spelling', async () => {
+    const { service, stateSent } = build('proposed', states({ Epic: ['Proposed'], Feature: ['Proposed'], Requirement: ['Proposed'] }));
+
+    await service.confirm('job-1');
+
+    expect(['Epic', 'Feature', 'Requirement'].map(stateSent)).toEqual(['Proposed', 'Proposed', 'Proposed']);
+  });
+
+  it('looks each type up once, whatever the number of items', async () => {
+    const readStates = states({ Epic: ['New'], Feature: ['New'], Requirement: ['New'] });
+    const { service } = build('New', readStates);
+
+    await service.confirm('job-1');
+
+    expect(readStates).toHaveBeenCalledTimes(3);
+  });
+
+  it('sends the chosen state as it was when a type\'s states cannot be read, because there is nothing to check it against', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { service, stateSent } = build('New', jest.fn().mockRejectedValue(new Error('403')));
+
+    const result = await service.confirm('job-1');
+
+    expect(['Epic', 'Feature', 'Requirement'].map(stateSent)).toEqual(['New', 'New', 'New']);
+    expect(result).not.toHaveProperty('startStateNotes');
+    warn.mockRestore();
+  });
+});
+
 describe('JobsService.delete', () => {
   afterEach(() => {
     jest.restoreAllMocks();
@@ -5169,7 +5261,7 @@ describe('JobsService.delete cached results', () => {
   it("removes the job's stored result and overview after its rows are gone, so a re-run starts clean", async () => {
     const forget = jest.fn().mockResolvedValue(undefined);
     const prisma = prismaFor();
-    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused', undefined, undefined, undefined, undefined, undefined, undefined, undefined, { forget });
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused', undefined, undefined, undefined, undefined, undefined, undefined, { forget });
 
     await service.delete('job-1');
 
@@ -5180,7 +5272,7 @@ describe('JobsService.delete cached results', () => {
   it('does not clear anything when the job cannot be deleted', async () => {
     const forget = jest.fn();
     const prisma = { job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'running' }) } };
-    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused', undefined, undefined, undefined, undefined, undefined, undefined, undefined, { forget });
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused', undefined, undefined, undefined, undefined, undefined, undefined, { forget });
 
     await expect(service.delete('job-1')).rejects.toThrow('cannot be deleted');
     expect(forget).not.toHaveBeenCalled();
@@ -5616,8 +5708,7 @@ describe('JobsService.submit', () => {
       jobSourceFile: { create: jobSourceFileCreate },
     };
     const service = new JobsService(
-      prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused',
-      undefined, undefined, undefined, 1000, // maxStoredSourceBytes
+      prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused', undefined, undefined, 1000, // maxStoredSourceBytes
     );
 
     await service.submit({
@@ -5636,7 +5727,7 @@ describe('JobsService.submit', () => {
       auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
       jobSourceFile: { create: jest.fn().mockRejectedValue(new Error('disk full')) },
     };
-    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused', undefined, undefined, undefined, 1000);
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused', undefined, undefined, 1000);
 
     await expect(service.submit({
       areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline',
@@ -5681,6 +5772,28 @@ describe('JobsService.submit', () => {
     expect(jobCreate.mock.calls[0][0].data.dedupScope).toBe('project');
   });
 
+  it.each([
+    ['no state chosen ("Default")', undefined, ''],
+    ['a state chosen in the wizard', 'Active', 'Active'],
+  ])('stores %s as %p, never a guessed starting state', async (_label, chosen, stored) => {
+    jest.spyOn(Queue.prototype, 'add').mockResolvedValue(undefined as any);
+    const jobCreate = jest.fn().mockResolvedValue({ id: 'job-1' });
+    const prisma = {
+      job: { create: jobCreate },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      jobSourceFile: { create: jest.fn().mockResolvedValue(undefined) },
+    };
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    await service.submit({
+      areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline',
+      fileBuffer: Buffer.from('x'), filename: 'doc.txt', sourceHash: 'hash-1',
+      ...(chosen !== undefined ? { state: chosen } : {}),
+    });
+
+    expect(jobCreate.mock.calls[0][0].data.state).toBe(stored);
+  });
+
   it('does not persist bytes over the size cap', async () => {
     jest.spyOn(Queue.prototype, 'add').mockResolvedValue(undefined as any);
     const jobSourceFileCreate = jest.fn().mockResolvedValue(undefined);
@@ -5690,8 +5803,7 @@ describe('JobsService.submit', () => {
       jobSourceFile: { create: jobSourceFileCreate },
     };
     const service = new JobsService(
-      prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused',
-      undefined, undefined, undefined, 5, // maxStoredSourceBytes -- smaller than the test buffer
+      prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused', undefined, undefined, 5, // maxStoredSourceBytes -- smaller than the test buffer
     );
 
     await service.submit({
@@ -6274,7 +6386,7 @@ describe('JobsService.onModuleInit', () => {
       auditEntry: { create: jest.fn().mockResolvedValue({}) },
     };
     const publisher = { publish: jest.fn().mockResolvedValue(undefined) };
-    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused', undefined, undefined, undefined, undefined, publisher as any);
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused', undefined, undefined, undefined, publisher as any);
     (service as any).queue = { getJob: jest.fn().mockResolvedValue(undefined) };
     return { prisma, publisher, service };
   };
@@ -6734,7 +6846,7 @@ describe('JobsService.confirm — pre-claim validation', () => {
     };
     const service = new JobsService(
       prisma as any, mcp as any, { record: jest.fn() } as any, { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
-      'redis://unused', undefined, undefined, undefined, undefined, { publish, publishNarration: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused', undefined, undefined, undefined, { publish, publishNarration: jest.fn().mockResolvedValue(undefined) } as any,
     );
     return { service, prisma, mcp, createWorkItem, linkParentChild, linkWorkItems, publish };
   }
@@ -6899,8 +7011,7 @@ describe('JobsService.confirm round-2 review fixes', () => {
       { createWorkItem, linkParentChild: jest.fn(), uploadAttachment, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
-      'redis://unused',
-      undefined, undefined, undefined, undefined,
+      'redis://unused', undefined, undefined, undefined,
       { publish, publishNarration: jest.fn().mockResolvedValue(undefined) } as any,
     );
     return { service, prisma, uploadAttachment, publish };
@@ -7857,8 +7968,7 @@ describe('JobsService.confirm write-time duplicate re-check', () => {
       { createWorkItem, getWorkItemsBatch, linkParentChild: jest.fn(), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record, deleteByAdoWorkItemId, ...idempotency } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
-      'redis://unused',
-      undefined, undefined, undefined, undefined,
+      'redis://unused', undefined, undefined, undefined,
       { publish: jest.fn().mockResolvedValue(undefined), publishNarration: jest.fn().mockResolvedValue(undefined) } as any,
     );
     return { service, prisma, createWorkItem, record, getWorkItemsBatch, deleteByAdoWorkItemId };
@@ -7981,8 +8091,7 @@ describe('JobsService.confirm identity v2 (W1)', () => {
       } as any,
       { record, recordManyIfMissing, deleteByAdoWorkItemId: jest.fn(), lookupMany: jest.fn().mockResolvedValue(new Map()) } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
-      'redis://unused',
-      undefined, undefined, undefined, undefined,
+      'redis://unused', undefined, undefined, undefined,
       { publish: jest.fn().mockResolvedValue(undefined), publishNarration: jest.fn().mockResolvedValue(undefined) } as any,
     );
     return { service, record, recordManyIfMissing };

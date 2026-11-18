@@ -326,7 +326,7 @@ export function BatchJobWizard(): React.ReactElement {
               )}
               <div className="grid grid-cols-2 gap-2.5">
                 {hasAdoSession && project ? (
-                  <StatePicker value={state} onChange={setState} workItemType="Requirement" project={project} />
+                  <StatePicker value={state} onChange={setState} project={project} />
                 ) : (
                   <TextField
                     label="State (optional)"

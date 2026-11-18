@@ -112,6 +112,11 @@ describe('DestinationBar', () => {
     expect(screen.queryByLabelText('State not set')).not.toBeInTheDocument();
   });
 
+  it('says "Default" in words for an unset state, because each type then starts in its own default state', () => {
+    render(<DestinationBar teamProject="Radar Systems" areaPath="Radar Systems\EW Suite" state="" />);
+    expect(screen.getByLabelText("Work item state: each type's own default")).toHaveTextContent('Default');
+  });
+
   it('does not render a mono preview line below the segments -- confirmed live as duplicated information once the segments themselves show the correct, deduped values', () => {
     render(
       <DestinationBar
