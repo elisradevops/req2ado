@@ -17,6 +17,7 @@ from app.canonical.model import (
     Block,
     BlockKind,
     CanonicalDoc,
+    DocumentFormat,
     Figure,
     SourceRef,
     Table,
@@ -97,6 +98,7 @@ from app.leveling.scoring import (
     _score_all_requirements,
     _score_epics_and_features,
 )
+from app.leveling.sheet_study import SheetMapping, SheetStudyClient, describe_plan, study_sheet
 from app.leveling.study_runner import StudyHandle
 from app.leveling.study_store import StudyStore
 from app.leveling.table_groups import TableGroupInfo, qualifying_table_groups
@@ -1419,6 +1421,9 @@ def _detect_deterministic_subtrees(
     # app.config.Settings.survey_chunk_concurrency.
     chunk_concurrency: int = 1,
     user_id: str | None = None,
+    # Studies the sheets of a spreadsheet the id convention does not read (see sheet_study.py). None (every caller that does not pass it)
+    # leaves a spreadsheet exactly as it was: its sheets go to the model-driven path below.
+    sheet_study_client: SheetStudyClient | None = None,
 ) -> tuple[list[WorkItemNode], list[IntegrityWarning], CanonicalDoc]:
     """Detects and builds every deterministic hierarchy subtree this
     document's own structure already encodes -- a 2-column dotted-ID
@@ -1470,6 +1475,28 @@ def _detect_deterministic_subtrees(
     # which nodes end up in det_nodes or their order -- only WHEN the rows
     # are computed, not what they contain.
     qualifying_table_rows = [(table, rows_from_table(table)) for table in doc.tables]
+    # A spreadsheet's sheets the id convention does not read: the model studies each ONE time, from a sample, and code maps every row by
+    # its answer (sheet_study.py). A sheet it cannot or will not map stays on the model-driven path below, with a warning saying so.
+    sheet_mappings: dict[str, SheetMapping] = {}
+    if sheet_study_client is not None and doc.document.format in (DocumentFormat.XLSX, DocumentFormat.CSV):
+        for position, (table, rows) in enumerate(qualifying_table_rows):
+            if rows:
+                continue
+            mapping = study_sheet(table, sheet_study_client, user_id)
+            if mapping.rows is None:
+                det_warnings.append(
+                    IntegrityWarning.make(
+                        WarningKind.SPREADSHEET_NOT_MAPPED,
+                        raw=(
+                            f'Sheet "{table.caption or table.id}" was not read row by row: {mapping.reason}. '
+                            "It was analysed as ordinary content, which can miss rows in a large sheet."
+                        ),
+                        detail={"sheet": table.caption or table.id, "reason": mapping.reason},
+                    )
+                )
+                continue
+            sheet_mappings[table.id] = mapping
+            qualifying_table_rows[position] = (table, mapping.rows)
     qualifying_table_rows = [(table, rows) for table, rows in qualifying_table_rows if rows]
     heading_rows_preview, _, _ = rows_from_id_headings(doc.blocks)
     if not heading_rows_preview:
@@ -1535,7 +1562,8 @@ def _detect_deterministic_subtrees(
             # the table's own identity as its root segment. Same
             # caption-or-id-fallback convention _build_headingless_tree's
             # own per-table title already uses.
-            section_path_root=table.caption or f"Table {table.id}",
+            # A studied sheet's own first row IS the sheet, so it needs no root segment seeded in front of it.
+            section_path_root=None if table.id in sheet_mappings else (table.caption or f"Table {table.id}"),
             chunk_concurrency=chunk_concurrency,
             user_id=user_id,
         )
@@ -1544,8 +1572,27 @@ def _detect_deterministic_subtrees(
         # span (see the span-claiming loop below), a table-row subtree's
         # nodes ARE that table, so table_ids is simply every node pointing
         # back at it, unconditionally.
-        for node in nodes:
-            node.table_ids = [table.id]
+        # Not for a studied sheet: its rows ARE the items, and the parent summary pass re-embeds the HTML of every table a node points at, which
+        # would put the whole sheet into every section's description.
+        if table.id not in sheet_mappings:
+            for node in nodes:
+                node.table_ids = [table.id]
+        studied = sheet_mappings.get(table.id)
+        if studied is not None and studied.plan is not None and nodes:
+            how = describe_plan(table, studied.plan)
+            warnings.append(
+                IntegrityWarning.make(
+                    WarningKind.SPREADSHEET_MAPPED,
+                    raw=(
+                        f'Sheet "{table.caption or table.id}" was read as a list of requirements: {studied.item_rows} rows became items, '
+                        "taken word for word. The model chose these columns: "
+                        f"id {how['id'] or 'none'}, title {how['title'] or 'none'}, text {', '.join(how['text']) or 'none'}, "
+                        f"sections {', '.join(how['sections']) or 'none'}. Check them against the sheet."
+                    ),
+                    node_ids=[nodes[0].local_id],
+                    detail={"sheet": table.caption or table.id, "rows": studied.item_rows, "blankRows": studied.blank_rows, **how},
+                )
+            )
         # Post-hoc structural safety net -- same reasoning and same
         # already-tested function the LLM-analysis path uses (see its own
         # docstring): a deterministic subtree can still end up with a
@@ -2031,6 +2078,7 @@ def _build_survey_tree(
         figure_id_by_block_id=figure_id_by_block_id,
         chunk_concurrency=chunk_concurrency,
         user_id=user_id,
+        sheet_study_client=analysis_client if hasattr(analysis_client, "study_spreadsheet") else None,
     )
 
     if structure_mode == "baseline" and (llm_doc.blocks or llm_doc.tables or llm_doc.figures):

@@ -10,6 +10,7 @@
 // the same document. Two falsified guesses in a row is why the technique
 // changed rather than being re-tuned a third time -- see DESIGN.md §18's
 // ledger. This file now only formats numbers the server already computed.
+import type { TokenForecast } from '../api/jobs';
 
 /** Renders a minute count as "42 min" under an hour, "2h 15m" at or above one -- a raw 3-digit-plus minute count is not readable for large documents. */
 export function formatEtaMinutes(minutes: number): string {
@@ -45,4 +46,31 @@ export function estimateLine(
   if (!estimate) return null;
   const { lower, upper } = formatEtaRange(estimate.lowerMinutes, estimate.upperMinutes);
   return { value: lower === upper ? lower : `${lower} – ${upper}`, note: 'typically, once it starts' };
+}
+
+/** 1,200,000 -> "1.2M", 45,000 -> "45k": a forecast is read at a glance, not to the digit. */
+export function formatTokenCount(tokens: number): string {
+  if (tokens >= 1_000_000) return `${Math.round(tokens / 100_000) / 10}M`;
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k`;
+  return String(Math.round(tokens));
+}
+
+const formatUsd = (usd: number): string => `$${usd >= 10 ? Math.round(usd).toLocaleString('en-US') : usd.toFixed(2)}`;
+
+/** "$4.20 – $18". */
+export function formatUsdRange(cost: { low: number; high: number }): string {
+  return `${formatUsd(cost.low)} – ${formatUsd(cost.high)}`;
+}
+
+/**
+ * The forecast line under the time estimate: the range of tokens a SURVEY run is expected to use, and, only when the deployment has a price for the
+ * model, the range of its cost. Null when there is no forecast (BASELINE, an older server, or a result served from the cache).
+ */
+export function tokenForecastLine(tokens: TokenForecast | undefined): { value: string; note: string } | null {
+  if (!tokens) return null;
+  const low = tokens.inputTokens.low + tokens.outputTokens.low;
+  const high = tokens.inputTokens.high + tokens.outputTokens.high;
+  const range = `${formatTokenCount(low)} – ${formatTokenCount(high)} tokens`;
+  if (!tokens.costUsd) return { value: range, note: 'rough forecast of model use' };
+  return { value: `${range} · ${formatUsdRange(tokens.costUsd)}`, note: 'rough forecast of model use and cost' };
 }

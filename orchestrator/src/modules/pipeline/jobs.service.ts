@@ -264,6 +264,8 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     // org until this is explicitly configured, and seCoverageRef simply
     // never reaches ADO until then.
     private readonly seCoverageRefFieldCandidates: string[] = DEFAULT_SE_COVERAGE_REF_FIELD_CANDIDATES,
+    // Trailing, same placement reasoning as above. Absent: delete() leaves the cached results to expire on their own.
+    private readonly cachedResults?: { forget(jobId: string): Promise<void> },
   ) {
     this.queue = logQueueErrors(new Queue('req2ado-pipeline', { connection: { url: redisUrl } as any }), 'req2ado-pipeline');
   }
@@ -468,6 +470,16 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
 
   async getAuditTrail(id: string): Promise<{ id: string; message: string; createdAt: Date }[]> {
     return this.prisma.auditEntry.findMany({ where: { jobId: id }, orderBy: { createdAt: 'asc' } });
+  }
+
+  /** The job's token ledger, one row per (stage, model): what the LLM proxy reported for each call made on the job's behalf. */
+  async getTokenUsage(id: string): Promise<{ stage: string; model: string; calls: number; promptTokens: number; completionTokens: number; cachedTokens: number; reasoningTokens: number }[]> {
+    const rows = await this.prisma.jobTokenUsage.findMany({
+      where: { jobId: id },
+      orderBy: [{ promptTokens: 'desc' }, { stage: 'asc' }],
+      select: { stage: true, model: true, calls: true, promptTokens: true, completionTokens: true, cachedTokens: true, reasoningTokens: true },
+    });
+    return rows;
   }
 
   // Proxies ingestion's debug-capture read -- best-effort, matching every
@@ -2130,8 +2142,13 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       // itself so a job with a stuck trace-link failure can never hit the
       // same FK-violation bug JobEvent had above.
       this.prisma.jobTraceLinkFailure.deleteMany({ where: { jobId: id } }),
+      // The token ledger has no FK to Job (see its model comment), so it is cleared here with the rest.
+      this.prisma.jobTokenUsage.deleteMany({ where: { jobId: id } }),
       this.prisma.job.delete({ where: { id } }),
     ]);
+    // After the rows are gone: the job's stored SURVEY result and document overview must not outlive it, or a re-run of the same file
+    // would still be served from them. Best-effort (forget never throws); IdempotencyMapping stays, see the comment above.
+    await this.cachedResults?.forget(id);
     return { deleted: true };
   }
 

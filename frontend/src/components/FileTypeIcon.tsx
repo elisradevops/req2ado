@@ -1,4 +1,4 @@
-import { FiletypeDoc, FiletypeDocx, FiletypeMd, FiletypePdf, FiletypeTxt, FiletypeXls, FiletypeXlsx } from 'react-bootstrap-icons';
+import { FiletypeCsv, FiletypeDoc, FiletypeDocx, FiletypeMd, FiletypePdf, FiletypeTxt, FiletypeXls, FiletypeXlsx } from 'react-bootstrap-icons';
 import { cn } from '../lib/cn';
 import { NEUTRAL_FALLBACK_COLOR } from '../utils/neutralColor';
 
@@ -15,6 +15,7 @@ const FILE_TYPE_CONFIG: Record<string, { icon: typeof FiletypePdf; color: string
   pdf: { icon: FiletypePdf, color: '#D1434B', label: 'PDF' },
   xlsx: { icon: FiletypeXlsx, color: '#15803D', label: 'XLSX' },
   xls: { icon: FiletypeXls, color: '#15803D', label: 'XLS' },
+  csv: { icon: FiletypeCsv, color: '#15803D', label: 'CSV' },
   txt: { icon: FiletypeTxt, color: '#64748B', label: 'TXT' },
   md: { icon: FiletypeMd, color: '#7C3AED', label: 'MD' },
 };

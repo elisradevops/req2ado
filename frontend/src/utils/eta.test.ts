@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { formatEtaMinutes, formatEtaRange, estimateLine } from './eta';
+import { formatEtaMinutes, formatEtaRange, estimateLine, formatTokenCount, formatUsdRange, tokenForecastLine } from './eta';
+import type { TokenForecast } from '../api/jobs';
 
 // computeEtaMinutes was deleted from this file (DESIGN.md §18's ledger) --
 // the ETA is now computed server-side from real completed-job history, not
@@ -59,3 +60,49 @@ describe('estimateLine', () => {
     expect(estimateLine(undefined, false)).toBeNull();
   });
 });
+
+describe('formatTokenCount', () => {
+  it.each([
+    [0, '0'],
+    [950, '950'],
+    [45_000, '45k'],
+    [999_400, '999k'],
+    [1_200_000, '1.2M'],
+    [12_500_000, '12.5M'],
+  ])('writes %i as %s', (tokens, text) => {
+    expect(formatTokenCount(tokens)).toBe(text);
+  });
+});
+
+describe('formatUsdRange', () => {
+  it('keeps cents under ten dollars and rounds above, with a thousands separator', () => {
+    expect(formatUsdRange({ low: 4.2, high: 18 })).toBe('$4.20 – $18');
+    expect(formatUsdRange({ low: 950, high: 1_800 })).toBe('$950 – $1,800');
+  });
+});
+
+describe('tokenForecastLine', () => {
+  const forecast = (over: Partial<TokenForecast> = {}): TokenForecast => ({
+    documentTokens: 100_000,
+    inputTokens: { low: 600_000, likely: 1_100_000, high: 1_500_000 },
+    outputTokens: { low: 90_000, likely: 297_000, high: 600_000 },
+    requiresConfirmation: false,
+    ...over,
+  });
+
+  it('is null without a forecast', () => {
+    expect(tokenForecastLine(undefined)).toBeNull();
+  });
+
+  it('gives the token range of input plus output, with no money when no price is configured', () => {
+    expect(tokenForecastLine(forecast())).toEqual({ value: '690k – 2.1M tokens', note: 'rough forecast of model use' });
+  });
+
+  it('adds the cost range only when the server priced it', () => {
+    expect(tokenForecastLine(forecast({ costUsd: { low: 4.2, high: 18 } }))).toEqual({
+      value: '690k – 2.1M tokens · $4.20 – $18',
+      note: 'rough forecast of model use and cost',
+    });
+  });
+});
+

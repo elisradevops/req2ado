@@ -48,10 +48,21 @@ export interface LlmToolCall {
 // existing single-shot ingestion callers (they only ever read `.content`).
 // `toolCalls`/`finishReason` are populated only when `opts.tools` was set
 // and the model chose to call one.
+/** What the upstream reported for one call. Fields the upstream left out are left out here, never guessed. */
+export interface LlmUsage {
+  promptTokens?: number;
+  completionTokens?: number;
+  /** Prompt tokens served from the provider's prompt cache (billed at a discount). */
+  cachedTokens?: number;
+  /** Completion tokens spent on hidden reasoning (billed as output). */
+  reasoningTokens?: number;
+}
+
 export interface LlmChatResult {
   content: string;
   toolCalls?: LlmToolCall[];
   finishReason?: string;
+  usage?: LlmUsage;
 }
 
 export interface LlmChatOptions {

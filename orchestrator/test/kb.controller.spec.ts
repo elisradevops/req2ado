@@ -257,6 +257,21 @@ describe('KbController', () => {
     expect(result).toEqual({ removed: 2, failed: [] });
   });
 
+  it('reconcileOrphans() only lists unless dryRun=false is given, for the session user', async () => {
+    const kbService = { reconcileOrphans: jest.fn().mockResolvedValue({ dryRun: true, orphans: [], removed: 0, failed: [] }) };
+    const controller = new KbController(kbService as any);
+
+    await controller.reconcileOrphans(TEST_USER, undefined);
+    await controller.reconcileOrphans(TEST_USER, 'true');
+    await controller.reconcileOrphans(TEST_USER, 'false');
+
+    expect(kbService.reconcileOrphans.mock.calls).toEqual([
+      [TEST_USER.userId, true],
+      [TEST_USER.userId, true],
+      [TEST_USER.userId, false],
+    ]);
+  });
+
   describe('browseFolder() -- the sharing link travels in a POST body, never a query string', () => {
     it('is routed as POST /kb/browse-folder, so the link never lands in proxy or access logs', () => {
       const handler = KbController.prototype.browseFolder;

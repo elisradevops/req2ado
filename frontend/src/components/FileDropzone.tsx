@@ -3,9 +3,10 @@ import { Upload, CircleCheck, TriangleAlert } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { FileTypeIcon } from './FileTypeIcon';
 import { Spinner } from '../ui/Spinner';
+import { JOB_FILE_EXTENSIONS, JOB_FILE_TYPE_LABELS } from '../utils/extension';
 
-const ACCEPTED_EXTENSIONS = '.txt,.md,.docx,.pdf,.xlsx';
-const SUPPORTED_TYPES = ['docx', 'pdf', 'xlsx', 'txt', 'md'];
+const ACCEPTED_EXTENSIONS = JOB_FILE_EXTENSIONS;
+const SUPPORTED_TYPES = JOB_FILE_TYPE_LABELS;
 
 // Idle/dragging were the only two states this ever had -- the multi-second
 // gap between a drop and either a toast (failure) or the parsed stat tiles

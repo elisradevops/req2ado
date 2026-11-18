@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import socket
+import sys
 import time
 from collections.abc import Callable
 from typing import Any, Literal
@@ -13,7 +14,12 @@ import httpx
 from json_repair import repair_json
 
 from app.config import settings
-from app.job_cancel import current_token, raise_if_cancelled
+from app.job_cancel import (
+    BUDGET_REASON,
+    LlmBudgetExceeded,
+    current_token,
+    raise_if_cancelled,
+)
 from app.leveling.live_context import current_stage_counter, live_emitter_for, notice
 from app.leveling.live_stream import DraftingDisplay
 from app.leveling.llm_call_gate import gated
@@ -41,6 +47,7 @@ from app.survey._response_schemas import (
     score_explanation_schema,
     section_analysis_schema,
     section_skeleton_schema,
+    sheet_study_schema,
     trace_links_schema,
 )
 from app.survey.keyed_calls import (
@@ -159,10 +166,17 @@ _CHECKLIST_MAX_ITEM_CHARS = 60
 # openwebui.client.ts's own comment on why a non-idempotent, multi-minute
 # call must never be blindly retried at that layer). This is NOT that same
 # mistake: retries are bounded (2 extra attempts, not a storm), scoped to
-# 429/5xx/network errors only (never a successful-but-slow response), and
+# 429/5xx only (never a successful-but-slow response), and
 # sit ABOVE the per-chunk fail-open safety nets in scoring.py/id_tree_builder.py
 # -- most transient blips should never even reach those nets now.
+#
+# One exception: a 429 the orchestrator marks as already retried is NOT retried again here. The orchestrator waits out the provider's
+# Retry-After and repeats a rate-limited call itself (upstream-negotiation.ts), and only marks the 429 it still got after its last repeat;
+# sending that call a third and fourth time multiplied every rate-limited call (up to 3 x 3 sends) and spent a token quota faster.
+# A 429 without the mark was given up on early (no time or attempts left), so it is still retried here.
 _RETRYABLE_CHAT_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+# The text the orchestrator puts in front of such a 429 (orchestrator upstream-negotiation.ts RATE_LIMIT_EXHAUSTED_CODE).
+_RATE_LIMIT_RETRIED_CODE = "RATE_LIMIT_RETRIED"
 _MAX_CHAT_RETRY_ATTEMPTS = 3
 # How long the orchestrator may spend on one document-study window, its output-limit raises included (ms): inside the study's own budgets.
 _STUDY_CALL_DEADLINE_MS = 600_000
@@ -1012,6 +1026,36 @@ def _abort_in_flight(client: httpx.Client) -> None:
     client.close()
 
 
+# The text the orchestrator puts in front of a budget refusal (orchestrator upstream-negotiation.ts BUDGET_EXCEEDED_CODE).
+_BUDGET_CODE = "LLM_BUDGET_EXCEEDED"
+
+
+def _budget_detail(response: httpx.Response) -> str:
+    """The refusal's own wording (it starts with the code), from the orchestrator's JSON error body or the raw text."""
+    try:
+        message = response.json().get("message")
+    except Exception:  # noqa: BLE001 -- not JSON: the text is still the answer
+        message = None
+    text = message if isinstance(message, str) else response.text
+    return " ".join(text.split())[:500]
+
+
+def _ledger_stage() -> str:
+    """The pipeline stage a /llm/chat call belongs to, for the orchestrator's per-job token ledger: the name of the nearest
+    public OrchestratorLlmClient method on the call stack (`score_requirements_for_document`, `propose_acceptance_criteria`, ...).
+    Read from the stack so no call site has to name its stage; "other" when the call did not come from such a method."""
+    frame = sys._getframe(1)
+    while frame is not None:
+        code = frame.f_code
+        # The method itself, not a helper nested inside it (those also see `self`), so compare against the class's own code object.
+        if not code.co_name.startswith("_") and getattr(
+            getattr(OrchestratorLlmClient, code.co_name, None), "__code__", None
+        ) is code:
+            return code.co_name
+        frame = frame.f_back
+    return "other"
+
+
 class OrchestratorLlmClient:
     """SURVEY mode's real LLM client. Calls the orchestrator's POST
     /llm/chat proxy — NEVER calls Open WebUI/Ollama directly, per the
@@ -1134,6 +1178,11 @@ class OrchestratorLlmClient:
         headers = {"Authorization": f"Bearer {self._bearer_token}"}
         if user_id:
             headers["X-Req2Ado-User-Id"] = user_id
+        # Names the job and stage so the orchestrator can add this call's token usage to the job's ledger. Only sent inside a job.
+        job_id = current_job_id()
+        if job_id:
+            headers["X-Req2Ado-Job-Id"] = job_id
+            headers["X-Req2Ado-Stage"] = _ledger_stage()
         for attempt in range(_MAX_CHAT_RETRY_ATTEMPTS):
             raise_if_cancelled()  # a job whose caller is gone makes no further model calls
             with gated():  # a lease (when a gate is set) covers this one attempt, not the back-off sleep below; the wait for it is not "elapsed"
@@ -1161,8 +1210,20 @@ class OrchestratorLlmClient:
                         raise
                     finally:
                         unregister()
+            if response.status_code == 402 and _BUDGET_CODE in response.text:
+                # The provider's token budget is used up (the orchestrator already stopped at the first refusal). Every further call of
+                # this run would be refused too, so the run is stopped: its token is cancelled with this reason and /level answers 402.
+                # Outside a run (no token: chat, a rescore) the response goes back as it was and the caller reports the 402.
+                token = current_token()
+                if token is not None:
+                    detail = _budget_detail(response)
+                    token.cancel(BUDGET_REASON, detail)
+                    raise LlmBudgetExceeded(detail)
+                return response
             if response.status_code not in _RETRYABLE_CHAT_STATUS_CODES:
                 return response
+            if response.status_code == 429 and _RATE_LIMIT_RETRIED_CODE in response.text:
+                return response  # already waited out and repeated by the orchestrator: the callers' own rate-limit handling takes it from here
             if payload.get("budgetKind") == "study" and response.status_code == 504:
                 return response  # the study reads a 504 as an overloaded backend and leaves that window unread; another identical request only adds to the load
             elapsed = time.monotonic() - started
@@ -2033,6 +2094,41 @@ class OrchestratorLlmClient:
         )
         if not isinstance(parsed, dict):
             raise ValueError(f"malformed JSON in LLM response content: {parsed!r}")
+        return parsed
+
+    def study_spreadsheet(self, sample: dict, user_id: str | None = None) -> dict:
+        """Backs app.leveling.sheet_study: how one sheet is laid out (which rows are headings, which column holds the id, the title, the
+        text, the sections), from a bounded sample of it. Returns the model's answer as a dict; the caller checks every number in it
+        against the sheet, so an answer is never trusted for its columns, only used once they fit."""
+        system_prompt = load_prompt("study_spreadsheet")
+        key = None
+        if self._cache is not None and user_id:  # a call without a user id shares no cached answer
+            key = cache_key(
+                "study_spreadsheet",
+                self._model,
+                self._num_ctx,
+                self._top_k,
+                self._min_p,
+                self._seed,
+                system_prompt,
+                sheet_study_schema(),
+                sample,
+                user_scope(user_id),
+            )
+            cached = self._cache.get(key)
+            if cached is not None:
+                return cached
+        parsed = self._chat_json(
+            system_prompt,
+            json.dumps(sample, ensure_ascii=False),
+            schema=sheet_study_schema(),
+            max_tokens=1500,
+            user_id=user_id,
+        )
+        if not isinstance(parsed, dict):
+            raise ValueError(f"malformed JSON in LLM response content: {parsed!r}")
+        if key is not None:
+            self._cache.set(key, parsed)
         return parsed
 
     def propose_acceptance_criteria(

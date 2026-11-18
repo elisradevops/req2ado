@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
 import { listIngestedDocuments, type IngestedDocument } from '../api/kb';
 import { Alert } from '../ui/Alert';
+import { Button } from '../ui/Button';
 import { Card } from '../ui/Card';
 import { Skeleton } from '../ui/Skeleton';
+import { KbUnlistedContentDialog } from './KbUnlistedContentDialog';
 import { formatDate } from '../utils/formatDateTime';
 import { plural } from '../utils/plural';
 
@@ -13,6 +15,7 @@ type LoadState = { kind: 'loading' } | { kind: 'error' } | { kind: 'ready'; docu
 // `refreshKey` changes after a file is added or removed below: the list is read again in place, keeping what is shown until the new answer lands.
 export function KbIngestedList({ refreshKey = 0 }: { refreshKey?: number }): React.ReactElement {
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
+  const [checkOpen, setCheckOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -35,9 +38,14 @@ export function KbIngestedList({ refreshKey = 0 }: { refreshKey?: number }): Rea
   return (
     <Card>
       <div className="flex flex-col gap-2 p-4">
-        <h2 className="text-title">
-          In your knowledge base <span className="font-normal text-ink-3">{state.documents.length.toLocaleString('en-US')}</span>
-        </h2>
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="text-title">
+            In your knowledge base <span className="font-normal text-ink-3">{state.documents.length.toLocaleString('en-US')}</span>
+          </h2>
+          <Button variant="ghost" size="sm" onClick={() => setCheckOpen(true)}>
+            Check for unlisted content
+          </Button>
+        </div>
         {state.documents.length === 0 ? (
           <p className="text-sm text-ink-2">No documents yet. Browse a folder below and add files to use them as reference.</p>
         ) : (
@@ -57,6 +65,7 @@ export function KbIngestedList({ refreshKey = 0 }: { refreshKey?: number }): Rea
           </ul>
         )}
       </div>
+      <KbUnlistedContentDialog open={checkOpen} onOpenChange={setCheckOpen} />
     </Card>
   );
 }

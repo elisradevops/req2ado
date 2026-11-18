@@ -28,6 +28,7 @@ import { IngestionHttpClient, type RewriteComparison, type ScoreExplanation } fr
 import { WorkItemTypeCatalogService, type WorkItemTypeCatalogEntry } from './work-item-type-catalog.service';
 import { jobFigureFileUploadSchema } from './job-figure-file.dto';
 import { etaEstimateQuerySchema } from './eta-estimate.dto';
+import { CostEstimator, documentTokensOf, type TokenEstimate } from './token-estimate';
 import { jobsListQuerySchema } from './jobs-list.dto';
 import { EtaService, type EtaEstimate, type ModelStats } from './eta.service';
 import { buildDocumentMap, type DocumentMapSection } from './document-map';
@@ -67,7 +68,7 @@ import { VALID_REQUIREMENT_TAGS } from '../../config/requirement-type-fields';
 /** DI token of the ResultCacheProbe JobsController asks for GET cached-result (wired in jobs.module.ts). */
 export const RESULT_CACHE_PROBE = 'RESULT_CACHE_PROBE';
 
-export const ALLOWED_EXTENSIONS = new Set(['.txt', '.md', '.docx', '.pdf', '.xlsx']);
+export const ALLOWED_EXTENSIONS = new Set(['.txt', '.md', '.docx', '.doc', '.pdf', '.xlsx', '.xls', '.csv']);
 
 // Customer ID (per-Requirement source reference, e.g. "1.1.2.2") stays a
 // free-form identifier -- no format/regex is enforced since the source
@@ -158,6 +159,8 @@ export class JobsController {
     // The OCR language packs the pipeline parsed with (config OCR_LANGUAGES): a scanned PDF must be read back the same way, or
     // its text, and so its offsets, would differ. Absent: ingestion's own default, as for the pipeline.
     @Optional() @Inject('OCR_LANGUAGES') private readonly ocrLanguages?: string,
+    // The pre-flight token and cost forecast (GET estimate); absent, the estimate carries none.
+    @Optional() @Inject('COST_ESTIMATOR') private readonly costEstimator?: CostEstimator,
   ) {}
 
   // The AI summaries already written in this process (P6): a re-upload of the same file gets its summary at once.
@@ -354,6 +357,8 @@ export class JobsController {
     overview: DocumentOverview & { profile: DocumentProfile };
     // The result-cache file hash (content only, not the name): the wizard asks GET cached-result with it once mode and model are chosen.
     fileHash: string;
+    // The document's size in tokens (script-aware), for the pre-flight cost forecast the wizard asks GET estimate for.
+    documentTokens: number;
   }> {
     await this.assertModelAllowed(model);
     if (!file) {
@@ -417,6 +422,7 @@ export class JobsController {
       // What the wizard's "does this look right?" step shows: made from the parsed text and structure alone, at once, with no model.
       overview: await buildPreviewOverview(doc, (...args) => this.ingestionClient.level(...args), { sectionCount, depth, documentMap }, this.logger),
       fileHash: fileHashOf(file.buffer),
+      documentTokens: documentTokensOf(doc),
     };
   }
 
@@ -490,12 +496,16 @@ export class JobsController {
   // string "estimate" instead of routing here at all (@Get('models')
   // above is the existing precedent for a literal route sitting above :id).
   @Get('estimate')
-  async getEstimate(@Query() rawQuery: unknown): Promise<EtaEstimate> {
+  async getEstimate(@Query() rawQuery: unknown): Promise<EtaEstimate & { tokens?: TokenEstimate }> {
     const parseResult = etaEstimateQuerySchema.safeParse(rawQuery);
     if (!parseResult.success) {
       throw new BadRequestException('Invalid query: blockCount, figureCount (non-negative integers), and mode are required');
     }
-    return this.etaService.estimate(parseResult.data);
+    const { documentTokens, ...query } = parseResult.data;
+    const estimate = await this.etaService.estimate(query);
+    // Only SURVEY calls a model, so only SURVEY has a token forecast.
+    if (query.mode !== 'survey' || documentTokens === undefined || !this.costEstimator) return estimate;
+    return { ...estimate, tokens: this.costEstimator.estimate({ documentTokens, figureCount: query.figureCount, ...(query.model ? { model: query.model } : {}) }) };
   }
 
   @Get(':id')
@@ -1080,6 +1090,15 @@ export class JobsController {
   ): Promise<{ id: string; message: string; createdAt: Date }[]> {
     await this.ownedJob(id, user);
     return this.jobsService.getAuditTrail(id);
+  }
+
+  @Get(':id/token-usage')
+  async getTokenUsage(
+    @Param('id') id: string,
+    @CurrentUser() user: SessionUser,
+  ): Promise<Awaited<ReturnType<JobsService['getTokenUsage']>>> {
+    await this.ownedJob(id, user);
+    return this.jobsService.getTokenUsage(id);
   }
 
   @Get(':id/debug')

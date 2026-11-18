@@ -8,6 +8,18 @@ from pathlib import Path
 from app.canonical.model import CanonicalDoc, Document, DocumentFormat, SourceRef, Table, TableCell
 from app.loaders.encoding_utils import read_text_degrading, unsupported_encoding_note
 
+# Excel writes "CSV" with the list separator of the user's regional settings, so a file is as often semicolon- or tab-separated as comma-separated.
+_DELIMITERS = ",;\t|"
+_SNIFF_CHARS = 16_384
+
+
+def _delimiter_of(text: str) -> str:
+    """The separator the file uses, read from its first lines; a comma when it cannot be told (a one-column file, or no clear pattern)."""
+    try:
+        return csv.Sniffer().sniff(text[:_SNIFF_CHARS], delimiters=_DELIMITERS).delimiter
+    except csv.Error:
+        return ","
+
 
 def load_csv(path: str) -> CanonicalDoc:
     """A CSV has no heading/sheet structure at all -- one Table for the
@@ -22,7 +34,7 @@ def load_csv(path: str) -> CanonicalDoc:
     document = Document(path=path, format=DocumentFormat.CSV, sha256=sha256)
 
     text, had_decode_error = read_text_degrading(file_path, encoding="utf-8-sig")
-    rows = [row for row in csv.reader(io.StringIO(text, newline=""))]
+    rows = [row for row in csv.reader(io.StringIO(text, newline=""), delimiter=_delimiter_of(text))]
 
     # A malformed/inconsistent CSV can have ragged row lengths (unlike a
     # real table) -- the pre-TableCell `rows: list[list[str]]` shape

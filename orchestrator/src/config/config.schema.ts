@@ -47,6 +47,11 @@ export const configSchema = z.object({
   // value as ingestion's KB_PROFILE_MODEL so the background build and a job's lazy build agree.
   KB_PROFILE_MODEL: z.string().optional(),
   RESULT_CACHE_VERSION: z.string().default('1'),
+  // The pre-flight cost forecast (pipeline/token-estimate.ts). LLM_MODEL_PRICES is a JSON object of model id ("*" for any other) to
+  // {"inputPerMTok": n, "outputPerMTok": n}, US dollars per million tokens; without a price for the model the wizard shows tokens only.
+  // COST_CONFIRM_TOKENS: a run forecast above this many tokens (input + output, likely case) asks the user to confirm before Start; 0 never asks.
+  LLM_MODEL_PRICES: z.string().optional(),
+  COST_CONFIRM_TOKENS: z.coerce.number().int().min(0).default(0),
   // W1 content-aware identity: a follow-up file is matched by identity_hash_v2 first (so a renamed or shifted file still matches) and a
   // reused item whose content changed is flagged. 'false' restores the v1 position lookup exactly, with no code change; confirm() keeps
   // writing the v2 rows either way, so turning it back on loses nothing.

@@ -5,6 +5,7 @@ import {
   getJob,
   confirmJob,
   getAudit,
+  getTokenUsage,
   reindexDedup,
   getEventHistory,
   getDebugCaptures,
@@ -32,6 +33,7 @@ import {
   retryTraceLinkWrite,
   validateCreatedTree,
   type AuditEntry,
+  type TokenUsageRow,
   type DebugCaptureEntry,
   type DocumentOverview,
   type JobEventRecord,
@@ -117,6 +119,7 @@ import { IconButton } from '../ui/IconButton';
 import { WriteBar } from '../components/WriteBar';
 import { EmptyState } from '../ui/EmptyState';
 import { DocumentOverviewCard } from '../components/DocumentOverviewCard';
+import { TokenUsagePanel } from '../components/TokenUsagePanel';
 
 // WID 300578's own field/expected/actual can carry the item's full
 // (HTML-normalized) description -- long, and often not useful in full for
@@ -331,6 +334,7 @@ export function JobDetail(): React.ReactElement {
   const [tab, setTab] = useState<'tree' | 'audit'>('tree');
   const [audit, setAudit] = useState<AuditEntry[]>([]);
   const [debugCaptures, setDebugCaptures] = useState<DebugCaptureEntry[]>([]);
+  const [tokenUsage, setTokenUsage] = useState<TokenUsageRow[]>([]);
   // Durable counterpart to the live SSE narration stream -- fetched once a
   // job reaches a terminal status (see the effect below), since that's
   // exactly when the SSE connection closes and the client-side narration
@@ -516,6 +520,8 @@ export function JobDetail(): React.ReactElement {
     setFailureAudit([]);
     setStoredFailure(null);
     setWrittenItems([]);
+    // Another job's token counts must never show on this one.
+    setTokenUsage([]);
   }, [id]);
 
   useEffect(loadJob, [id]);
@@ -601,10 +607,22 @@ export function JobDetail(): React.ReactElement {
           live.touch();
           setStage(nextStage);
           setStatus((current) => (current === 'pending' ? 'running' : current));
+          // Opening this stream replays the server's last stored stage, which
+          // for a job in Diff Ready is 'diff_ready'. While our own confirm is
+          // in flight that replay is stale: acting on it can fetch the job
+          // before the server has marked it 'writing', flip the page back to
+          // the review view, and tear this stream down before the real
+          // 'writing' events arrive.
+          if (nextStage === 'diff_ready' && isMutatingRef.current) return;
           if (nextStage === 'diff_ready' || nextStage === 'failed' || nextStage === 'cancelled') {
             getJob(id).then((job) => {
               if (cancelled) return;
-              setStatus(job.status);
+              // Same race, but the replay slipped past the guard above (our write started while this fetch was in flight): stay on
+              // 'writing'. Only while our own write runs: a viewer who did not start it must follow the server back to 'diff_ready' when
+              // the write fails and the job is reset, which the server announces for exactly that reason.
+              setStatus((current) =>
+                isMutatingRef.current && current === 'writing' && job.status === 'diff_ready' ? current : job.status,
+              );
               setDiff((job.dryRunDiff as DryRunDiffEntry[] | null) ?? []);
               // The mount-time fetch (loadJob above) almost always got {}
               // here -- the backend only resolves a real catalog once
@@ -2191,6 +2209,13 @@ export function JobDetail(): React.ReactElement {
     } catch {
       setDebugCaptures([]);
     }
+    // Same best-effort reasoning: the usage panel must never block the audit rows.
+    try {
+      const rows = await getTokenUsage(id);
+      setTokenUsage(Array.isArray(rows) ? rows : []);
+    } catch {
+      setTokenUsage([]);
+    }
   }
 
   const selectedEntry = diff.find((entry) => entry.localId === selectedId) ?? null;
@@ -3044,6 +3069,7 @@ export function JobDetail(): React.ReactElement {
                 </div>
               )}
               <AuditEntryList entries={audit} />
+              <TokenUsagePanel rows={tokenUsage} />
               {debugCaptures.length > 0 && (
                 <div className="flex flex-col gap-2 border-t border-hairline pt-3">
                   <span className="text-xs font-semibold text-ink-2">

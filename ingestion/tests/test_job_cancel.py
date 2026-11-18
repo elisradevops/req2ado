@@ -187,3 +187,24 @@ def test_a_failing_callback_does_not_stop_the_others() -> None:
     token.on_cancel(lambda: called.append("ok"))
     token.cancel()
     assert called == ["ok"]
+
+
+def test_a_run_cancelled_for_a_used_up_budget_raises_the_budget_exception_at_every_later_model_call() -> None:
+    with job_cancel.cancellation_scope() as token:
+        token.cancel(job_cancel.BUDGET_REASON, "LLM_BUDGET_EXCEEDED: Budget has been exceeded!")
+        with pytest.raises(job_cancel.LlmBudgetExceeded, match="Budget has been exceeded"):
+            job_cancel.raise_if_cancelled()
+
+
+def test_the_budget_exception_is_a_job_cancelled_so_every_stage_already_lets_it_through() -> None:
+    assert issubclass(job_cancel.LlmBudgetExceeded, job_cancel.JobCancelled)
+
+
+def test_a_plain_cancel_still_raises_the_plain_exception_and_the_first_reason_stays() -> None:
+    with job_cancel.cancellation_scope() as token:
+        token.cancel()
+        token.cancel(job_cancel.BUDGET_REASON, "later")
+        assert token.reason is None
+        with pytest.raises(job_cancel.JobCancelled) as raised:
+            job_cancel.raise_if_cancelled()
+        assert not isinstance(raised.value, job_cancel.LlmBudgetExceeded)

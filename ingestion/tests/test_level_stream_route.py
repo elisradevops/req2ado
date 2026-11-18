@@ -110,3 +110,41 @@ def test_a_run_that_fails_ends_with_one_error_line_like_the_plain_status(monkeyp
     assert [line["type"] for line in lines] == ["error"]
     assert lines[0]["status"] == 502 and "the model said no" in lines[0]["detail"]
     assert post().status_code == 502  # the plain route's answer for the same failure
+
+
+def budget_stopped_run():
+    """A run whose model call was refused for a used-up budget: the stages are fail-open, so the run itself still returns a tree."""
+    from app import job_cancel
+
+    token = job_cancel.current_token()
+    assert token is not None
+    token.cancel(job_cancel.BUDGET_REASON, "LLM_BUDGET_EXCEEDED: Budget has been exceeded!")
+    return tree()
+
+
+def test_a_run_stopped_by_a_used_up_budget_is_a_402_failure_not_a_degraded_result(monkeypatch) -> None:
+    patch_run(monkeypatch, budget_stopped_run)
+    response = post()
+    assert response.status_code == 402
+    assert "LLM_BUDGET_EXCEEDED" in response.json()["detail"]
+
+
+def test_a_streamed_run_stopped_by_a_used_up_budget_ends_in_a_402_error_line(monkeypatch) -> None:
+    patch_run(monkeypatch, budget_stopped_run)
+    lines = lines_of(post(NDJSON))
+    assert [line["type"] for line in lines] == ["error"]
+    assert lines[0]["status"] == 402
+    assert "LLM_BUDGET_EXCEEDED" in lines[0]["detail"]
+
+
+def test_a_budget_refusal_that_escapes_the_stages_is_the_same_402(monkeypatch) -> None:
+    from app import job_cancel
+
+    def refused():
+        raise job_cancel.LlmBudgetExceeded("Budget has been exceeded!")
+
+    patch_run(monkeypatch, refused)
+    plain = post()
+    streamed = lines_of(post(NDJSON))
+    assert plain.status_code == 402 and "LLM_BUDGET_EXCEEDED" in plain.json()["detail"]
+    assert streamed[-1]["status"] == 402 and "LLM_BUDGET_EXCEEDED" in streamed[-1]["detail"]

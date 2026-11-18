@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import OpenAI from 'openai';
 import { getEncoding, type Tiktoken } from 'js-tiktoken';
 import type { LlmChatOptions, LlmChatResult, LlmClient, LlmResponseSchema, LlmStreamChunk } from './llm-client.interface';
+import { usageOf } from './token-usage';
 import { redactMessages, redactText, type ChatMessage } from './redactor';
 import { isModelHidden, parseModelHidePatterns } from './model-visibility';
 import { chatCompletionResponseSchema, errorMessageFromBody, modelsResponseSchema } from './openwebui-api';
@@ -348,10 +349,12 @@ export class OpenWebUiClient implements LlmClient {
           `[OpenWebUiClient.chat] finishReason=${finishReason} model=${chatModel} promptTokens=${response.usage?.prompt_tokens ?? 'n/a'} completionTokens=${response.usage?.completion_tokens ?? 'n/a'} maxTokens=${opts?.maxTokens ?? 'n/a'}`,
         );
       }
+      const usage = usageOf(response.usage);
       return {
         content: response.choices[0]?.message?.content ?? '',
         toolCalls: response.choices[0]?.message?.tool_calls as LlmChatResult['toolCalls'],
         finishReason,
+        ...(usage ? { usage } : {}),
       };
     };
     // Classification and retry policy live in negotiate() (upstream-negotiation.ts): a required temperature,

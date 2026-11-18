@@ -16,6 +16,7 @@ import { JobEventPersistenceService } from './job-event-persistence.service';
 import { StaleJobWatchdogService } from './stale-job-watchdog.service';
 import { JobRetentionService } from './job-retention.service';
 import { EtaService } from './eta.service';
+import { CostEstimator, parseModelPrices } from './token-estimate';
 import { JobsService } from './jobs.service';
 import { McpClient } from './mcp.client';
 import { WorkItemTypeCatalogService } from './work-item-type-catalog.service';
@@ -30,6 +31,9 @@ import { AuthModule } from '../auth/auth.module';
 import { BatchController } from '../batch/batch.controller';
 import { BatchService } from '../batch/batch.service';
 import { BatchPumpService } from '../batch/batch-pump.service';
+
+/** DI token of the JobResultCache JobsService.delete() uses to remove a deleted job's cached results. */
+const JOB_CACHED_RESULTS = 'JOB_CACHED_RESULTS';
 
 @Module({
   imports: [ConfigModule, LlmModule, AuthModule],
@@ -95,8 +99,19 @@ import { BatchPumpService } from '../batch/batch-pump.service';
         }),
     },
     {
+      // The store the worker's result cache and document-overview cache live in; JobsService.delete() clears a job's entries from it.
+      provide: JOB_CACHED_RESULTS,
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => {
+        const redis = new Redis(config.get<string>('REDIS_URL')!);
+        // eslint-disable-next-line no-console -- no structured logger in this module yet
+        redis.on('error', (err) => console.error('JobCachedResults Redis error:', err));
+        return new JobResultCache(redis as unknown as ResultCacheStore, 'forget-only', false);
+      },
+    },
+    {
       provide: JobsService,
-      inject: [PrismaClient, McpClient, IdempotencyService, IngestionHttpClient, JobEventsPublisher, ConfigService],
+      inject: [PrismaClient, McpClient, IdempotencyService, IngestionHttpClient, JobEventsPublisher, ConfigService, JOB_CACHED_RESULTS],
       useFactory: (
         prisma: PrismaClient,
         mcpClient: McpClient,
@@ -104,6 +119,7 @@ import { BatchPumpService } from '../batch/batch-pump.service';
         ingestionClient: IngestionHttpClient,
         jobEventsPublisher: JobEventsPublisher,
         config: ConfigService,
+        cachedResults: JobResultCache,
       ) =>
         new JobsService(
           prisma,
@@ -133,7 +149,17 @@ import { BatchPumpService } from '../batch/batch-pump.service';
             ?.split(',')
             .map((s) => s.trim())
             .filter(Boolean),
+          // undefined keeps JobsService's own default for seCoverageRefFieldCandidates, which sits before cachedResults.
+          undefined,
+          cachedResults,
         ),
+    },
+    {
+      // The wizard's pre-flight token and cost forecast. An invalid LLM_MODEL_PRICES stops the app at startup rather than silently showing no cost.
+      provide: 'COST_ESTIMATOR',
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) =>
+        new CostEstimator(parseModelPrices(config.get<string>('LLM_MODEL_PRICES')), config.get<number>('COST_CONFIRM_TOKENS') ?? 0, config.get<string>('LLM_CHAT_MODEL')),
     },
     {
       provide: 'SUMMARY_MAX_TOKENS',

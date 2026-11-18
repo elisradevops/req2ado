@@ -4,14 +4,14 @@ import { cn } from '../lib/cn';
 import { FileTypeIcon } from './FileTypeIcon';
 import { Button } from '../ui/Button';
 import { formatFileSize } from '../utils/fileSize';
-import { extensionOf } from '../utils/extension';
+import { extensionOf, JOB_FILE_EXTENSIONS, JOB_FILE_TYPE_LABELS } from '../utils/extension';
 
 // Same accepted-format set as FileDropzone.tsx's single-file wizard --
 // kept as a separate literal (not imported) since the two components are
 // otherwise fully independent and there is no shared constants module for
 // this today.
-const ACCEPTED_EXTENSIONS = '.txt,.md,.docx,.pdf,.xlsx';
-const SUPPORTED_TYPES = ['docx', 'pdf', 'xlsx', 'txt', 'md'];
+const ACCEPTED_EXTENSIONS = JOB_FILE_EXTENSIONS;
+const SUPPORTED_TYPES = JOB_FILE_TYPE_LABELS;
 
 function isSupported(filename: string): boolean {
   return ACCEPTED_EXTENSIONS.split(',').includes(extensionOf(filename));

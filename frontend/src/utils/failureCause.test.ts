@@ -58,6 +58,20 @@ describe('describeFailureCause', () => {
   });
 });
 
+describe('a used-up token budget', () => {
+  const SUMMARY = 'The token budget for this account is used up, so the run was stopped. Run it again once the budget is available.';
+
+  it('is named from the stored class', () => {
+    const cause = describeStoredFailure({ failureClass: 'budget_exhausted', failureMessage: 'LLM_BUDGET_EXCEEDED: Budget has been exceeded!' });
+    expect(cause?.summary).toBe(SUMMARY);
+    expect(cause?.detail).toBe('LLM_BUDGET_EXCEEDED: Budget has been exceeded!');
+  });
+
+  it('is named from the audit text of a job that failed before the class was stored', () => {
+    expect(describeFailureCause('Ingestion /level request failed: LLM_BUDGET_EXCEEDED: Budget has been exceeded!').summary).toBe(SUMMARY);
+  });
+});
+
 describe('describeStoredFailure', () => {
   it('names the cause from the stored class and keeps the stored message as the detail', () => {
     const cause = describeStoredFailure({ failureClass: 'timeout', failureMessage: 'ETIMEDOUT', failedStage: 'score' });

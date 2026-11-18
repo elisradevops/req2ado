@@ -1403,3 +1403,98 @@ describe('NewJobWizard re-run of a file (P5)', () => {
     expect(vi.mocked(jobsApi.previewSummary).mock.calls[1][0]).toMatchObject({ fresh: true });
   });
 });
+
+describe('NewJobWizard token forecast', () => {
+  const HASH = 'a'.repeat(64);
+  const forecast = (over: Record<string, unknown> = {}) => ({
+    documentTokens: 100_000,
+    inputTokens: { low: 600_000, likely: 1_100_000, high: 1_500_000 },
+    outputTokens: { low: 90_000, likely: 297_000, high: 600_000 },
+    requiresConfirmation: false,
+    ...over,
+  });
+
+  async function toStep3(tokens: unknown, cached = false): Promise<void> {
+    useAuthStore.getState().logout(); // free-text area path: no ADO pickers to drive
+    vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({
+      blockCount: 20, sectionCount: 3, figureCount: 0, depth: 2, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [], fileHash: HASH,
+      documentTokens: 100_000, overview: { synopsis: 'A spec.', caveat: null, profile: { summaryInput: 'Sections: 1 Scope' } },
+    } as any);
+    vi.spyOn(jobsApi, 'listJobs').mockResolvedValue([]);
+    vi.spyOn(jobsApi, 'getEstimate').mockImplementation(
+      async ({ mode }) => ({ mode, lowerMinutes: 20, upperMinutes: 35, basis: 'blended', sampleCount: 4, ...(mode === 'survey' && tokens ? { tokens } : {}) }) as any,
+    );
+    vi.spyOn(jobsApi, 'getCachedResult').mockResolvedValue(cached);
+    vi.spyOn(jobsApi, 'previewSummary').mockResolvedValue(null);
+    vi.spyOn(jobsApi, 'listModels').mockResolvedValue({ models: ['m1'], recommended: null, details: [] });
+    vi.spyOn(jobsApi, 'submitJob').mockResolvedValue({ jobId: 'job-1' } as any);
+    render(
+      <ToastProvider>
+        <MemoryRouter>
+          <NewJobWizard />
+        </MemoryRouter>
+      </ToastProvider>,
+    );
+    await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'spec.docx'));
+    await userEvent.click(await screen.findByRole('button', { name: /configure/i }));
+    await userEvent.click(screen.getByText('SURVEY'));
+    await userEvent.type(screen.getByLabelText(/area path/i), 'Project');
+    await userEvent.click(screen.getByRole('button', { name: /continue/i }));
+    await screen.findByRole('button', { name: /looks right/i });
+  }
+
+  it('asks the server for the forecast with the document size', async () => {
+    await toStep3(forecast());
+    expect(jobsApi.getEstimate).toHaveBeenCalledWith(expect.objectContaining({ mode: 'survey', documentTokens: 100_000 }));
+  });
+
+  it('shows the token range beside the time estimate, with no money unless the server priced it', async () => {
+    await toStep3(forecast());
+    const rail = screen.getByRole('complementary', { name: 'This run' });
+    expect(await within(rail).findByText('690k – 2.1M tokens')).toBeInTheDocument();
+    expect(within(rail).getByText('rough forecast of model use')).toBeInTheDocument();
+  });
+
+  it('shows the cost range when the server priced it', async () => {
+    await toStep3(forecast({ costUsd: { low: 4.2, high: 18 } }));
+    const rail = screen.getByRole('complementary', { name: 'This run' });
+    expect(await within(rail).findByText('690k – 2.1M tokens · $4.20 – $18')).toBeInTheDocument();
+  });
+
+  it('starts at once when the forecast is below the threshold', async () => {
+    await toStep3(forecast({ requiresConfirmation: false }));
+    await userEvent.click(screen.getByRole('button', { name: /looks right/i }));
+    await waitFor(() => expect(jobsApi.submitJob).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText('Start a large run?')).not.toBeInTheDocument();
+  });
+
+  it('asks first when the forecast is above the threshold, starts only on confirmation, and not at all on cancel', async () => {
+    await toStep3(forecast({ requiresConfirmation: true, costUsd: { low: 4.2, high: 18 } }));
+
+    await userEvent.click(screen.getByRole('button', { name: /looks right/i }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('Start a large run?')).toBeInTheDocument();
+    expect(dialog).toHaveTextContent('690k – 2.1M model tokens ($4.20 – $18)');
+    expect(jobsApi.submitJob).not.toHaveBeenCalled();
+
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(jobsApi.submitJob).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole('button', { name: /looks right/i }));
+    await userEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Start job' }));
+    await waitFor(() => expect(jobsApi.submitJob).toHaveBeenCalledTimes(1));
+  });
+
+  it('shows no forecast and never asks for a file the result cache would serve, which spends no tokens', async () => {
+    await toStep3(forecast({ requiresConfirmation: true }), true);
+    const rail = screen.getByRole('complementary', { name: 'This run' });
+    await within(rail).findByText('A few seconds');
+    expect(within(rail).queryByText(/tokens/)).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: /looks right/i }));
+    await waitFor(() => expect(jobsApi.submitJob).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText('Start a large run?')).not.toBeInTheDocument();
+  });
+});
+

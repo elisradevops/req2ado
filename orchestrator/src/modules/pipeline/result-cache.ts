@@ -10,6 +10,8 @@ import type { PrismaClient } from '@prisma/client';
 export interface ResultCacheStore {
   get(key: string): Promise<string | null>;
   set(key: string, value: string, mode: 'EX', seconds: number): Promise<unknown>;
+  /** Optional so a store that cannot delete (older callers, tests) still works; `forget` then does nothing. */
+  del?(...keys: string[]): Promise<unknown>;
 }
 
 export interface CachedResult {
@@ -38,6 +40,8 @@ export interface ResultKeyParts {
 }
 
 const TTL_SECONDS = 30 * 24 * 60 * 60;
+// A cache key is a hash of its inputs, so a deleted job cannot find the entries it created. This index (job -> keys) lets it.
+const trackKey = (jobId: string): string => `job-cache-keys:${jobId}`;
 const DEFAULT_MAX_BYTES = 40 * 1024 * 1024;
 
 // A leveled tree is 1-2 MB of repetitive JSON and Valkey holds it in memory: it is stored gzipped (base64, so the store stays a string
@@ -81,8 +85,34 @@ export class JobResultCache {
       const serialized = JSON.stringify(result);
       if (serialized.length > this.maxBytes) return;
       await this.store.set(key, encode(serialized), 'EX', TTL_SECONDS);
+      if (result.sourceJobId) await this.track(result.sourceJobId, key);
     } catch {
       /* a cache that cannot be written is just a cache that does not help */
+    }
+  }
+
+  /** Records that `jobId` created the entry at `key`, so `forget(jobId)` can remove it. Not gated by `enabled`: it also indexes the document overview. */
+  async track(jobId: string, key: string): Promise<void> {
+    try {
+      const raw = await this.store.get(trackKey(jobId));
+      const keys = new Set<string>(raw ? (JSON.parse(raw) as string[]) : []);
+      keys.add(key);
+      await this.store.set(trackKey(jobId), JSON.stringify([...keys]), 'EX', TTL_SECONDS);
+    } catch {
+      /* the entry then simply lives until its own expiry */
+    }
+  }
+
+  /** Removes every entry `jobId` created (its stored result and document overview). Best-effort: a failure leaves them to expire. */
+  async forget(jobId: string): Promise<void> {
+    if (!this.store.del) return;
+    try {
+      const raw = await this.store.get(trackKey(jobId));
+      const keys = raw ? (JSON.parse(raw) as string[]) : [];
+      await this.store.del(...keys, trackKey(jobId));
+    } catch (error) {
+      // eslint-disable-next-line no-console -- no structured logger in this module yet
+      console.error(`Could not remove the cached results of job ${jobId}:`, error instanceof Error ? error.message : 'unknown error');
     }
   }
 }

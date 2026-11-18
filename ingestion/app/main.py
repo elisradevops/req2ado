@@ -2241,10 +2241,25 @@ async def _survey_level(
 LEVEL_HEARTBEAT_SECONDS = 15.0
 
 
+def _budget_failure_detail(detail: str | None) -> str:
+    """What a run stopped by a used-up token budget reports. It carries the code the orchestrator stores as the job's failure class."""
+    text = (detail or "the token budget is used up").strip()
+    return text if "LLM_BUDGET_EXCEEDED" in text else f"LLM_BUDGET_EXCEEDED: {text}"
+
+
+def _raise_if_budget_stopped(token: job_cancel.CancelToken) -> None:
+    """A run whose token was cancelled for a used-up budget is a failure, never a result: its stages are fail-open, so what comes back
+    is a tree missing whatever the refused calls would have produced."""
+    if token.cancelled and token.reason == job_cancel.BUDGET_REASON:
+        raise HTTPException(status_code=402, detail=_budget_failure_detail(token.reason_detail))
+
+
 def _level_failure(request: Request, exc: Exception) -> tuple[int, str]:
     """A failed streamed run as the (status, detail) the plain route's handlers give the same failure."""
     if isinstance(exc, HTTPException):
         return exc.status_code, str(exc.detail)
+    if isinstance(exc, job_cancel.LlmBudgetExceeded):
+        return 402, _budget_failure_detail(str(exc))
     logger.exception("Unhandled exception in %s", request.url)
     _publish_job_failed(request, exc)
     return (502 if isinstance(exc, ValueError) else 500), describe_exception(exc)
@@ -2294,6 +2309,7 @@ async def level(
                         primer_context,
                         rubric_report,
                     )
+                _raise_if_budget_stopped(token)
                 return await run_in_threadpool(_level_result, doc, tree, rubric_report)
 
             return StreamingResponse(
@@ -2309,9 +2325,15 @@ async def level(
         with job_cancel.cancellation_scope() as cancel_token:
             async with job_cancel.watch_for_disconnect(request, cancel_token):
                 rubric_report: dict = {}
-                tree = await _survey_level(
-                    doc, model, user_id, link_type_catalog, job_id, primer_context, rubric_report
-                )
+                try:
+                    tree = await _survey_level(
+                        doc, model, user_id, link_type_catalog, job_id, primer_context, rubric_report
+                    )
+                except job_cancel.LlmBudgetExceeded as exc:
+                    raise HTTPException(
+                        status_code=402, detail=_budget_failure_detail(str(exc))
+                    ) from None
+            _raise_if_budget_stopped(cancel_token)
             if cancel_token.cancelled:
                 raise HTTPException(
                     status_code=499, detail="the caller disconnected; the run was cancelled"
@@ -3373,6 +3395,25 @@ async def kb_delete_document(user_id: str, source_file: str, source_id: str) -> 
         source_id,
     )
     return {"ok": True}
+
+
+@app.get("/kb/sources")
+async def kb_list_sources(user_id: str) -> list[dict]:
+    """What a user's KB really holds, one entry per source (see KbVectorStore.list_sources): lets the orchestrator find content its own
+    list of KB documents has no record of. Read-only."""
+    if not user_id.strip():
+        raise HTTPException(status_code=400, detail="user_id is required")
+    return await run_in_threadpool(_kb_vector_store.list_sources, user_id)
+
+
+@app.delete("/kb/sources/unattributed")
+async def kb_delete_unattributed(user_id: str) -> dict[str, int]:
+    """Deletes this user's chunks that carry no source_id, which /kb/documents (matching on source_id) cannot reach."""
+    if not user_id.strip():
+        raise HTTPException(status_code=400, detail="user_id is required")
+    deleted = await run_in_threadpool(_kb_vector_store.delete_unattributed_chunks, user_id)
+    logger.info("KB chunks without a source removed: user=%s chunks=%d", _audit_user(user_id), deleted)
+    return {"deleted": deleted}
 
 
 class KbSetRetrievalModeRequest(BaseModel):

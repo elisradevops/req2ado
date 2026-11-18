@@ -26,6 +26,22 @@ export async function getDebugCaptures(id: string): Promise<DebugCaptureEntry[]>
   return response.data;
 }
 
+/** One row of a job's token ledger: what the LLM proxy reported for the calls of one pipeline stage on one model. */
+export interface TokenUsageRow {
+  stage: string;
+  model: string;
+  calls: number;
+  promptTokens: number;
+  completionTokens: number;
+  cachedTokens: number;
+  reasoningTokens: number;
+}
+
+export async function getTokenUsage(id: string): Promise<TokenUsageRow[]> {
+  const response = await httpClient.get<TokenUsageRow[]>(`/jobs/${id}/token-usage`);
+  return response.data;
+}
+
 export async function listJobs(): Promise<JobSummary[]> {
   const response = await httpClient.get<JobSummary[]>('/jobs');
   return response.data;
@@ -48,6 +64,24 @@ export interface EtaEstimate {
   modelSampleCount: number;
   modelAdjustment: number;
   windowDays: number;
+  /** A SURVEY forecast of what the run will spend, when the request gave the document's size. Absent for BASELINE and an older server. */
+  tokens?: TokenForecast;
+}
+
+export interface TokenRange {
+  low: number;
+  likely: number;
+  high: number;
+}
+
+/** A rough forecast of a SURVEY run's model usage (orchestrator token-estimate.ts). `costUsd` exists only when a price is configured for the model. */
+export interface TokenForecast {
+  documentTokens: number;
+  inputTokens: TokenRange;
+  outputTokens: TokenRange;
+  costUsd?: { low: number; high: number };
+  /** True when the forecast is above the deployment's threshold, so Start asks first. */
+  requiresConfirmation: boolean;
 }
 
 // DESIGN.md §11.1 -- one row of the wizard step-1 document map, the "honest
@@ -74,6 +108,8 @@ export interface PreviewResult {
   overview?: DocumentOverview & { profile?: { summaryInput?: string } };
   /** The result-cache hash of the file's bytes (not its name), for getCachedResult. Absent from a server that predates it. */
   fileHash?: string;
+  /** The document's size in tokens, passed back to getEstimate for the cost forecast. Absent from a server that predates it. */
+  documentTokens?: number;
 }
 
 /** The wizard's overview of a document: `lines` is what step 3 shows, each read off the document's text and structure. */
@@ -138,6 +174,7 @@ export async function getEstimate(params: {
   figureCount: number;
   mode: 'baseline' | 'survey';
   model?: string;
+  documentTokens?: number;
 }): Promise<EtaEstimate> {
   const response = await httpClient.get<EtaEstimate>('/jobs/estimate', { params });
   return response.data;

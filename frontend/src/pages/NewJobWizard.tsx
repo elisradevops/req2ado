@@ -27,7 +27,8 @@ import {
   type PreviewResult,
   type DocumentOverview,
 } from '../api/jobs';
-import { estimateLine } from '../utils/eta';
+import { estimateLine, formatTokenCount, formatUsdRange, tokenForecastLine } from '../utils/eta';
+import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { findPreviousRuns, type PreviousRuns } from '../utils/previousRuns';
 import { jobStatusLabel } from '../utils/labels';
 import { formatRelativeTime } from '../utils/relativeTime';
@@ -450,6 +451,7 @@ export function NewJobWizard(): React.ReactElement {
   // that state rather than a locally-approximated number.
   const [baselineEstimate, setBaselineEstimate] = useState<EtaEstimate | undefined>(undefined);
   const [surveyEstimate, setSurveyEstimate] = useState<EtaEstimate | undefined>(undefined);
+  const [costConfirmOpen, setCostConfirmOpen] = useState(false);
   // Request-sequence guard: a fast model-dropdown change can resolve out of
   // order (the older request finishing after the newer one) and paint a
   // stale number over a fresher one. Only the response matching the
@@ -517,7 +519,7 @@ export function NewJobWizard(): React.ReactElement {
     const seq = ++estimateRequestSeq.current;
     Promise.all([
       getEstimate({ blockCount: preview.blockCount, figureCount: preview.figureCount, mode: 'baseline' }),
-      getEstimate({ blockCount: preview.blockCount, figureCount: preview.figureCount, mode: 'survey', model: model || undefined }),
+      getEstimate({ blockCount: preview.blockCount, figureCount: preview.figureCount, mode: 'survey', model: model || undefined, documentTokens: preview.documentTokens }),
     ])
       .then(([baseline, survey]) => {
         // A later request may have already superseded this one (fast
@@ -584,6 +586,13 @@ export function NewJobWizard(): React.ReactElement {
     setPreview(null);
     setParseStatus('idle');
     setParseError(null);
+  }
+
+  // Start on step 3. A run forecast above the deployment's threshold asks first (the server decides: COST_CONFIRM_TOKENS), so a very large file
+  // is a deliberate choice; everything else starts at once as before.
+  function requestStart(): void {
+    if (forecast?.requiresConfirmation) setCostConfirmOpen(true);
+    else void handleSubmit();
   }
 
   async function handleSubmit(): Promise<void> {
@@ -761,6 +770,9 @@ export function NewJobWizard(): React.ReactElement {
   // ModeCards can show both side by side, but the footer only needs one.
   const selectedEstimate = mode === 'baseline' ? baselineEstimate : surveyEstimate;
   const selectedEstimateLine = estimateLine(selectedEstimate, mode === 'survey' && cachedResult);
+  // What a SURVEY run will spend in model tokens: not shown for a file served from the result cache, which spends none.
+  const forecast = mode === 'survey' && !cachedResult ? surveyEstimate?.tokens : undefined;
+  const forecastLine = tokenForecastLine(forecast);
 
   if (step === 3) {
     return (
@@ -831,7 +843,7 @@ export function NewJobWizard(): React.ReactElement {
             </p>
           )}
           <SafetyLine variant="wizard" />
-          <Button onClick={handleSubmit} disabled={isSubmitting} className="ml-auto">
+          <Button onClick={requestStart} disabled={isSubmitting} className="ml-auto">
             {isSubmitting ? <Spinner /> : <Activity className="h-3.5 w-3.5" />}
             {isSubmitting ? 'Starting…' : 'Looks right — start job'}
           </Button>
@@ -858,10 +870,36 @@ export function NewJobWizard(): React.ReactElement {
                   <span className="text-xs text-ink-3">{selectedEstimateLine.note}</span>
                 </div>
               )}
+              {forecastLine && (
+                <div className="flex flex-wrap items-baseline gap-2.5">
+                  <span className="font-mono text-sm font-semibold tabular-nums text-ink-1">{forecastLine.value}</span>
+                  <span className="text-xs text-ink-3">{forecastLine.note}</span>
+                </div>
+              )}
             </div>
           </SectionCard>
         </aside>
         </div>
+        {forecast && (
+          <ConfirmDialog
+            open={costConfirmOpen}
+            onOpenChange={setCostConfirmOpen}
+            title="Start a large run?"
+            description={
+              <>
+                This run is forecast to use roughly {formatTokenCount(forecast.inputTokens.low + forecast.outputTokens.low)} –{' '}
+                {formatTokenCount(forecast.inputTokens.high + forecast.outputTokens.high)} model tokens
+                {forecast.costUsd ? ` (${formatUsdRange(forecast.costUsd)})` : ''}. It is a rough forecast made before the run, and your account is billed for what the run really uses.
+              </>
+            }
+            confirmLabel="Start job"
+            onConfirm={() => {
+              setCostConfirmOpen(false);
+              void handleSubmit();
+            }}
+            cancelVariant="outline"
+          />
+        )}
       </div>
     );
   }
@@ -1028,6 +1066,12 @@ export function NewJobWizard(): React.ReactElement {
                   </p>
                 )}
               </div>
+              {forecastLine && (
+                <div className="flex flex-wrap items-baseline gap-2.5 border-t border-hairline pt-3">
+                  <span className="font-mono text-sm font-semibold tabular-nums text-ink-1">{forecastLine.value}</span>
+                  <span className="text-xs text-ink-3">{forecastLine.note}</span>
+                </div>
+              )}
               {mode === 'survey' && (
                 <div className="border-t border-hairline pt-3">
                   <KbReadinessStrip />

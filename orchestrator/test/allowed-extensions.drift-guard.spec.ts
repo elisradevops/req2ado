@@ -8,7 +8,7 @@ import { ALLOWED_EXTENSIONS } from '../src/modules/pipeline/jobs.controller';
 // (the KB ingest path's gate, which accepts a wider format range). A prior
 // audit found this relationship had gone undocumented and the comment
 // claiming parity was stale/false -- this test is the guard that convention
-// lacked, so if ingestion ever DROPS support for one of the 5 job-creation
+// lacked, so if ingestion ever DROPS support for one of the job-creation
 // extensions without updating this file (or vice versa, someone narrows
 // ALLOWED_EXTENSIONS to something ingestion no longer has a loader for),
 // this fails loudly instead of surfacing as a silent 400 in production.

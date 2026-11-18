@@ -396,6 +396,27 @@ export const RATE_LIMIT_DEFAULT_WAIT_MS = 2_000;
 /** A rate-limited call is repeated at most this many times (the first attempt not counted). */
 export const RATE_LIMIT_RETRIES = 2;
 
+/** Marks a 429 the orchestrator already waited out and repeated its full number of times: ingestion must not repeat it again. A 429 without this
+ *  mark was given up on early (no time or attempts left), so ingestion may still retry it. */
+export const RATE_LIMIT_EXHAUSTED_CODE = 'RATE_LIMIT_RETRIED';
+
+/** Marks the text of a budget refusal so every layer above (ingestion, the job's stored failure reason, the page) can tell it from any other failure. */
+export const BUDGET_EXCEEDED_CODE = 'LLM_BUDGET_EXCEEDED';
+
+/**
+ * Whether the upstream refused the call because the caller's token or spend budget is used up (LiteLLM: "ExceededBudget",
+ * "Budget has been exceeded!", type `budget_exceeded`; it arrives as a 400 or a 429). This is NOT a rate limit: waiting a few seconds
+ * does not help, so repeating the call only spends more of a budget that is already gone. Per-minute limits ("rate limit reached")
+ * are deliberately not matched.
+ */
+export function isBudgetExceeded(err: unknown): boolean {
+  if (!(err instanceof OpenAI.APIError)) return false;
+  if (err.status !== 400 && err.status !== 402 && err.status !== 429) return false;
+  if (typeof err.type === 'string' && /^budget_exceeded$/i.test(err.type)) return true;
+  // Only LiteLLM's own wordings: a looser match ("exceeded ... budget") would also catch unrelated errors, and a match ends the whole job.
+  return /exceededbudget|budget has been exceeded|budget_exceeded|over budget|max budget limit reached/i.test(err.message ?? '');
+}
+
 /** How long to wait before repeating a call the upstream answered with 429, or null when the error is not a 429. */
 export function rateLimitWaitMs(err: unknown): number | null {
   if (!(err instanceof OpenAI.APIError) || err.status !== 429) return null;
@@ -472,6 +493,10 @@ export async function negotiate<T>(args: NegotiationArgs<T>): Promise<T> {
         return giveUp(new UpstreamHttpError(504, `Upstream answer was cut off at the output limit and there was no time or attempt left to raise it to ${err.target}`));
       }
       logFailure(err);
+      // A used-up budget is final: no repeat, no adaptation. Surfaced as 402 with a code every layer above can recognise.
+      if (isBudgetExceeded(err)) {
+        return giveUp(new UpstreamHttpError(402, `${BUDGET_EXCEEDED_CODE}: ${summarizeUpstreamError(err).message}`));
+      }
       if (attempt >= maxAttempts || outOfTime()) return giveUp(err);
 
       // A rate limit says nothing about the request: wait what the provider asked (bounded) and send the same call.
@@ -482,6 +507,9 @@ export async function negotiate<T>(args: NegotiationArgs<T>): Promise<T> {
         console.warn(`[${args.label}] rate limited; repeating after ${rateLimitWait} ms for model=${args.model}`);
         await (args.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(rateLimitWait);
         continue;
+      }
+      if (rateLimitWait !== null && rateLimitRetries >= RATE_LIMIT_RETRIES) {
+        return giveUp(new UpstreamHttpError(429, `${RATE_LIMIT_EXHAUSTED_CODE}: ${summarizeUpstreamError(err).message}`));
       }
 
       const requiredTemperature = parseTemperatureConstraint(err);

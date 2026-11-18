@@ -151,6 +151,27 @@ export async function switchKbSource(driveId: string): Promise<{ removed: number
   return response.data;
 }
 
+// Stored knowledge-base content the document list has no record of (so it cannot be removed from the list). `sourceId` is null for content that
+// carries no source at all (an older version stored none).
+export interface KbOrphanSource {
+  sourceId: string | null;
+  fileNames: string[];
+  chunks: number;
+}
+
+export interface KbReconcileResult {
+  dryRun: boolean;
+  orphans: KbOrphanSource[];
+  removed: number;
+  failed: { sourceId: string | null; fileNames: string[] }[];
+}
+
+// Lists the unlisted content (dryRun, nothing is removed) or removes it. Refused with a 409 (`kb_batch_active`) while files are still being added.
+export async function reconcileKbOrphans(dryRun: boolean): Promise<KbReconcileResult> {
+  const response = await httpClient.post<KbReconcileResult>('/kb/orphans/reconcile', undefined, { params: { dryRun } });
+  return response.data;
+}
+
 export interface SharePointStatus {
   status: 'not_configured' | 'valid' | 'invalid' | 'unreachable';
   expiresInSeconds: number | null;
