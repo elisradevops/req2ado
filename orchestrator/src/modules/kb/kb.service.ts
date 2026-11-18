@@ -38,6 +38,21 @@ export interface KbProfileView {
   conflicts: { kind: string; key: string; variantCount: number }[];
 }
 
+/** Stored KB content with no matching document on the KB page (see KbService.reconcileOrphans). */
+export interface KbOrphanSource {
+  /** Null for chunks that carry no source id at all. */
+  sourceId: string | null;
+  fileNames: string[];
+  chunks: number;
+}
+
+export interface KbReconcileResult {
+  dryRun: boolean;
+  orphans: KbOrphanSource[];
+  removed: number;
+  failed: { sourceId: string | null; fileNames: string[] }[];
+}
+
 export interface IngestedDocumentSummary {
   id: string;
   userId: string;
@@ -406,6 +421,37 @@ export class KbService {
   }
 
   /**
+   * Called when ingestion stored a file's chunks but its document row could not be saved. Chunks with no row are invisible on the KB page
+   * (so they can never be deleted there) while jobs still read them, so they are removed again, best-effort. Only when no row exists for
+   * the file: a re-ingest of a listed file keeps its old row, and deleting its fresh chunks would leave a listed document with none. When
+   * that cannot be told (the lookup fails too), nothing is removed: reconcileOrphans finds whatever is left.
+   */
+  private async removeChunksIfUnlisted(userId: string, name: string, driveItemId: string): Promise<void> {
+    try {
+      const row = await this.prisma.ingestedDocument.findUnique({ where: { userId_driveItemId: { userId, driveItemId } }, select: { id: true } });
+      if (row) return;
+      await this.ingestionClient.deleteDocument(userId, name, driveItemId);
+      logger.warn(`KB: removed the stored chunks of "${name}" (${driveItemId}) because its document row could not be saved`);
+    } catch (error) {
+      logger.warn(`KB: could not remove the stored chunks of "${name}" (${driveItemId}) after its row failed to save: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /** recordIngestedDocument for a file ingestion has just stored: when the row cannot be saved, the chunks are not left behind unlisted. */
+  private async recordStoredDocument(
+    userId: string,
+    result: IngestUrlResult,
+    options: { relativePath: string; docType: string | null; retrievalMode: string | null; driveId?: string },
+  ): Promise<string> {
+    try {
+      return await this.recordIngestedDocument(userId, result, options);
+    } catch (error) {
+      await this.removeChunksIfUnlisted(userId, options.relativePath, result.driveitemId);
+      throw error;
+    }
+  }
+
+  /**
    * Ingests one file addressed by drive + item id and records it. Used by the batch runner: the SharePoint token is read
    * fresh from the vault for every file (so one rotated mid-batch is picked up), ingestion looks the item up itself (no
    * download link to expire), and the profile build is left to the caller (`scheduleProfile: false`), because a batch
@@ -429,7 +475,7 @@ export class KbService {
     if (conflict) throw new KbDriveMismatchException(conflict);
     const graphToken = await this.resolveGraphTokenOverride();
     const result = await this.ingestionClient.ingestDriveItem(driveId, itemId, userId, docType, graphToken, retrievalMode, signal);
-    const ingestedDocumentId = await this.recordIngestedDocument(userId, result, { relativePath, docType, retrievalMode, driveId });
+    const ingestedDocumentId = await this.recordStoredDocument(userId, result, { relativePath, docType, retrievalMode, driveId });
     if (scheduleProfile) await this.profileScheduler?.schedule(userId);
     return { ...result, ingestedDocumentId };
   }
@@ -462,7 +508,7 @@ export class KbService {
     // remove action -- IngestUrlResult alone only carries the Graph
     // driveitemId, not the Prisma row's own id that DELETE
     // /kb/documents/:id needs.
-    const ingestedDocumentId = await this.recordIngestedDocument(userId, result, { relativePath, docType, retrievalMode, driveId });
+    const ingestedDocumentId = await this.recordStoredDocument(userId, result, { relativePath, docType, retrievalMode, driveId });
     await this.profileScheduler?.schedule(userId);
     return { ...result, ingestedDocumentId };
   }
@@ -498,6 +544,49 @@ export class KbService {
       await this.profileScheduler?.schedule(userId);
     }
     return { removed, failed };
+  }
+
+  /**
+   * Finds (and, unless `dryRun`, removes) KB content the user's document list has no record of: stored chunks whose source id matches no
+   * IngestedDocument row, plus chunks that carry no source id at all. Such content is invisible on the KB page, so it can never be
+   * deleted there, yet jobs still read it, next to the current copy of the same file. Refused while a batch is still going, like
+   * switchDrive. A source that could not be removed is reported and the rest carry on; running it again finishes the job.
+   * Content being added by a single upload at this very moment has chunks before its row, so run it when nothing is being added.
+   */
+  async reconcileOrphans(userId: string, dryRun: boolean): Promise<KbReconcileResult> {
+    const active = await this.prisma.kbIngestBatch.count({ where: { userId, status: { in: ['queued', 'running', 'paused'] } } });
+    if (active > 0) {
+      throw new ConflictException({ code: 'kb_batch_active', message: 'Files are still being added. Wait for them to finish, or cancel them, then clean up.' });
+    }
+    const [sources, documents] = await Promise.all([
+      this.ingestionClient.listKbSources(userId),
+      this.prisma.ingestedDocument.findMany({ where: { userId }, select: { driveItemId: true } }),
+    ]);
+    const known = new Set(documents.map((document) => document.driveItemId));
+    const orphans: KbOrphanSource[] = sources
+      .filter((source) => source.source_id === null || !known.has(source.source_id))
+      .map((source) => ({ sourceId: source.source_id, fileNames: source.source_files, chunks: source.chunks }));
+    if (dryRun || orphans.length === 0) {
+      return { dryRun, orphans, removed: 0, failed: [] };
+    }
+    let removed = 0;
+    const failed: KbReconcileResult['failed'] = [];
+    for (const orphan of orphans) {
+      try {
+        if (orphan.sourceId === null) {
+          await this.ingestionClient.deleteUnattributedKbChunks(userId);
+        } else {
+          await this.ingestionClient.deleteDocument(userId, orphan.fileNames[0] ?? 'unknown', orphan.sourceId);
+        }
+        removed += 1;
+      } catch (error) {
+        logger.warn(`KB cleanup: could not remove ${orphan.sourceId ?? 'content without a source'}: ${error instanceof Error ? error.message : String(error)}`);
+        failed.push({ sourceId: orphan.sourceId, fileNames: orphan.fileNames });
+      }
+    }
+    logger.log(`KB cleanup: user=${createHash('sha256').update(userId).digest('hex').slice(0, 10)} removed=${removed} failed=${failed.length}`);
+    if (removed > 0) await this.profileScheduler?.schedule(userId);
+    return { dryRun, orphans, removed, failed };
   }
 
   async ingestFolderUrl(
@@ -538,13 +627,14 @@ export class KbService {
         }),
       ),
     );
-    settled.forEach((outcome, i) => {
+    for (const [i, outcome] of settled.entries()) {
       if (outcome.status === 'rejected') {
         const file = toPersist[i];
         file.status = 'failed';
         file.reason = `KB store succeeded but database persistence failed: ${outcome.reason?.message ?? outcome.reason}`;
+        await this.removeChunksIfUnlisted(userId, file.relativePath ?? file.file, file.driveitemId!);
       }
-    });
+    }
     await this.profileScheduler?.schedule(userId);
     return result;
   }

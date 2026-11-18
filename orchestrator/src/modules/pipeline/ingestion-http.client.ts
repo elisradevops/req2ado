@@ -170,6 +170,14 @@ function seconds(ms: number): string {
   return String(ms / 1000);
 }
 
+/** One stored source of a user's KB as ingestion reports it (see KbVectorStore.list_sources). */
+export interface KbSourceEntry {
+  source_id: string | null;
+  source_files: string[];
+  file_hashes: string[];
+  chunks: number;
+}
+
 @Injectable()
 export class IngestionHttpClient {
   private readonly longRunningAgent: Agent;
@@ -985,6 +993,24 @@ export class IngestionHttpClient {
     if (!response.ok) {
       throw await _ingestionError(response, `Ingestion DELETE /kb/documents request failed: `);
     }
+  }
+
+  /** What the user's KB really holds, one entry per source (a null source_id is content that carries none). Read-only. */
+  async listKbSources(userId: string): Promise<KbSourceEntry[]> {
+    const response = await fetch(`${this.baseUrl}/kb/sources?${new URLSearchParams({ user_id: userId }).toString()}`);
+    if (!response.ok) {
+      throw await _ingestionError(response, `Ingestion GET /kb/sources request failed: `);
+    }
+    return (await response.json()) as KbSourceEntry[];
+  }
+
+  /** Deletes the user's chunks that carry no source_id (which deleteDocument, matching on source_id, cannot reach); returns how many. */
+  async deleteUnattributedKbChunks(userId: string): Promise<number> {
+    const response = await fetch(`${this.baseUrl}/kb/sources/unattributed?${new URLSearchParams({ user_id: userId }).toString()}`, { method: 'DELETE' });
+    if (!response.ok) {
+      throw await _ingestionError(response, `Ingestion DELETE /kb/sources/unattributed request failed: `);
+    }
+    return ((await response.json()) as { deleted: number }).deleted;
   }
 
   async setRetrievalMode(userId: string, sourceId: string, retrievalMode: 'retrieve' | 'always_include'): Promise<void> {

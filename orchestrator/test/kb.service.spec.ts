@@ -719,3 +719,180 @@ describe('KbService', () => {
     });
   });
 });
+
+describe('KbService.reconcileOrphans()', () => {
+  type Source = { source_id: string | null; source_files: string[]; file_hashes: string[]; chunks: number };
+  const source = (id: string | null, name: string, chunks = 2): Source => ({ source_id: id, source_files: [name], file_hashes: ['h'], chunks });
+
+  function build(sources: Source[], rows: string[], options: { activeBatches?: number; failDelete?: string } = {}) {
+    const ingestionClient = {
+      listKbSources: jest.fn().mockResolvedValue(sources),
+      deleteDocument: jest.fn().mockImplementation(async (_user: string, _name: string, sourceId: string) => {
+        if (sourceId === options.failDelete) throw new Error('chroma down');
+      }),
+      deleteUnattributedKbChunks: jest.fn().mockResolvedValue(3),
+    };
+    const prisma = {
+      ingestedDocument: { findMany: jest.fn().mockResolvedValue(rows.map((driveItemId) => ({ driveItemId }))) },
+      kbIngestBatch: { count: jest.fn().mockResolvedValue(options.activeBatches ?? 0) },
+    };
+    const profileScheduler = { schedule: jest.fn().mockResolvedValue(undefined) };
+    const service = new KbService(prisma as any, ingestionClient as any, fakeCredentialVault as any, profileScheduler as any);
+    return { service, ingestionClient, prisma, profileScheduler };
+  }
+
+  const stored = [source('item-keep', 'spec.docx'), source('item-old', 'spec.docx', 5), source(null, 'ancient.docx', 3)];
+
+  it('lists content the KB page has no record of, and deletes nothing, on a dry run', async () => {
+    const { service, ingestionClient, profileScheduler } = build(stored, ['item-keep']);
+
+    const result = await service.reconcileOrphans('u', true);
+
+    expect(result).toEqual({
+      dryRun: true,
+      orphans: [
+        { sourceId: 'item-old', fileNames: ['spec.docx'], chunks: 5 },
+        { sourceId: null, fileNames: ['ancient.docx'], chunks: 3 },
+      ],
+      removed: 0,
+      failed: [],
+    });
+    expect(ingestionClient.deleteDocument).not.toHaveBeenCalled();
+    expect(ingestionClient.deleteUnattributedKbChunks).not.toHaveBeenCalled();
+    expect(profileScheduler.schedule).not.toHaveBeenCalled();
+  });
+
+  it('removes each unlisted source (and the content with no source id), never a listed one, and rebuilds the profile once', async () => {
+    const { service, ingestionClient, profileScheduler } = build(stored, ['item-keep']);
+
+    const result = await service.reconcileOrphans('u', false);
+
+    expect(result.removed).toBe(2);
+    expect(ingestionClient.deleteDocument).toHaveBeenCalledTimes(1);
+    expect(ingestionClient.deleteDocument).toHaveBeenCalledWith('u', 'spec.docx', 'item-old');
+    expect(ingestionClient.deleteUnattributedKbChunks).toHaveBeenCalledWith('u');
+    expect(profileScheduler.schedule).toHaveBeenCalledTimes(1);
+  });
+
+  it('does nothing, and schedules nothing, when every stored source is listed', async () => {
+    const { service, ingestionClient, profileScheduler } = build([source('item-keep', 'spec.docx')], ['item-keep']);
+
+    expect(await service.reconcileOrphans('u', false)).toEqual({ dryRun: false, orphans: [], removed: 0, failed: [] });
+    expect(ingestionClient.deleteDocument).not.toHaveBeenCalled();
+    expect(profileScheduler.schedule).not.toHaveBeenCalled();
+  });
+
+  it('is refused while a batch is still going, before it reads or deletes anything', async () => {
+    const { service, ingestionClient } = build(stored, ['item-keep'], { activeBatches: 1 });
+
+    await expect(service.reconcileOrphans('u', false)).rejects.toMatchObject({ response: { code: 'kb_batch_active' } });
+    expect(ingestionClient.listKbSources).not.toHaveBeenCalled();
+    expect(ingestionClient.deleteDocument).not.toHaveBeenCalled();
+  });
+
+  it('reports a source it could not remove and carries on with the rest', async () => {
+    const { service, ingestionClient } = build([source('item-a', 'a.docx'), source('item-b', 'b.docx')], [], { failDelete: 'item-a' });
+
+    const result = await service.reconcileOrphans('u', false);
+
+    expect(result.removed).toBe(1);
+    expect(result.failed).toEqual([{ sourceId: 'item-a', fileNames: ['a.docx'] }]);
+    expect(ingestionClient.deleteDocument).toHaveBeenCalledTimes(2);
+  });
+
+  it("only ever looks at the given user's rows and sources", async () => {
+    const { service, ingestionClient, prisma } = build([], []);
+
+    await service.reconcileOrphans('user-7', true);
+
+    expect(ingestionClient.listKbSources).toHaveBeenCalledWith('user-7');
+    expect(prisma.ingestedDocument.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { userId: 'user-7' } }));
+  });
+});
+
+describe('KbService: a file whose chunks were stored but whose row could not be saved', () => {
+  const stored = { documentName: 'a.pdf', driveitemId: 'item-1', mimeType: 'application/pdf', sizeBytes: 5, chunksStored: 2, chunksInStore: 2, skippedUnchanged: false };
+
+  function build(options: { existingRow?: boolean; lookupFails?: boolean } = {}) {
+    const ingestionClient = {
+      ingestItem: jest.fn().mockResolvedValue(stored),
+      ingestDriveItem: jest.fn().mockResolvedValue(stored),
+      ingestFolderUrl: jest.fn(),
+      deleteDocument: jest.fn().mockResolvedValue(undefined),
+    };
+    const prisma = {
+      ingestedDocument: {
+        findMany: jest.fn().mockResolvedValue([]), // the one-library check made before an ingest
+        upsert: jest.fn().mockRejectedValue(new Error('db down')),
+        findUnique: options.lookupFails
+          ? jest.fn().mockRejectedValue(new Error('db still down'))
+          : jest.fn().mockResolvedValue(options.existingRow ? { id: 'row-1' } : null),
+      },
+      kbIngestBatch: { count: jest.fn().mockResolvedValue(0) },
+    };
+    const profileScheduler = { schedule: jest.fn().mockResolvedValue(undefined) };
+    const service = new KbService(prisma as any, ingestionClient as any, fakeCredentialVault as any, profileScheduler as any);
+    return { service, ingestionClient, prisma };
+  }
+
+  it('removes the chunks again, so they are not left unlisted, and still reports the failure (single file)', async () => {
+    const { service, ingestionClient } = build();
+
+    await expect(service.ingestItem('a.pdf', 'item-1', 'https://dl', 'Sub/a.pdf', 'u', null)).rejects.toThrow('db down');
+
+    expect(ingestionClient.deleteDocument).toHaveBeenCalledWith('u', 'Sub/a.pdf', 'item-1');
+  });
+
+  it('does the same for a file added by a batch', async () => {
+    const { service, ingestionClient } = build();
+
+    await expect(
+      service.ingestDriveItem({ userId: 'u', driveId: 'd', itemId: 'item-1', relativePath: 'a.pdf', docType: null, retrievalMode: null }),
+    ).rejects.toThrow('db down');
+
+    expect(ingestionClient.deleteDocument).toHaveBeenCalledWith('u', 'a.pdf', 'item-1');
+  });
+
+  it('keeps the chunks of a file that is already listed: a re-ingest would otherwise leave a listed document with none', async () => {
+    const { service, ingestionClient } = build({ existingRow: true });
+
+    await expect(service.ingestItem('a.pdf', 'item-1', 'https://dl', 'a.pdf', 'u', null)).rejects.toThrow('db down');
+
+    expect(ingestionClient.deleteDocument).not.toHaveBeenCalled();
+  });
+
+  it('removes nothing when it cannot tell whether the file is listed, and still reports the original failure', async () => {
+    const { service, ingestionClient } = build({ lookupFails: true });
+
+    await expect(service.ingestItem('a.pdf', 'item-1', 'https://dl', 'a.pdf', 'u', null)).rejects.toThrow('db down');
+
+    expect(ingestionClient.deleteDocument).not.toHaveBeenCalled();
+  });
+
+  it('a failed removal never replaces the original error', async () => {
+    const { service, ingestionClient } = build();
+    ingestionClient.deleteDocument.mockRejectedValue(new Error('chroma down'));
+
+    await expect(service.ingestItem('a.pdf', 'item-1', 'https://dl', 'a.pdf', 'u', null)).rejects.toThrow('db down');
+  });
+
+  it('removes the chunks of each file of a folder whose row failed, marks it failed, and leaves the others alone', async () => {
+    const { service, ingestionClient, prisma } = build();
+    prisma.ingestedDocument.upsert.mockImplementation(async (args: any) => {
+      if (args.where.userId_driveItemId.driveItemId === 'item-bad') throw new Error('db down');
+      return { id: 'row' };
+    });
+    const files = [
+      { file: 'good.pdf', status: 'ingested', driveitemId: 'item-good', mimeType: 'application/pdf', sizeBytes: 1, chunksInStore: 1 },
+      { file: 'bad.pdf', relativePath: 'Sub/bad.pdf', status: 'ingested', driveitemId: 'item-bad', mimeType: 'application/pdf', sizeBytes: 1, chunksInStore: 1 },
+    ];
+    ingestionClient.ingestFolderUrl.mockResolvedValue({ files });
+
+    const result: any = await service.ingestFolderUrl('https://x', 'u', null);
+
+    expect(result.files.map((f: any) => f.status)).toEqual(['ingested', 'failed']);
+    expect(ingestionClient.deleteDocument).toHaveBeenCalledTimes(1);
+    expect(ingestionClient.deleteDocument).toHaveBeenCalledWith('u', 'Sub/bad.pdf', 'item-bad');
+  });
+});
+

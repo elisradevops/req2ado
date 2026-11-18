@@ -3397,6 +3397,25 @@ async def kb_delete_document(user_id: str, source_file: str, source_id: str) -> 
     return {"ok": True}
 
 
+@app.get("/kb/sources")
+async def kb_list_sources(user_id: str) -> list[dict]:
+    """What a user's KB really holds, one entry per source (see KbVectorStore.list_sources): lets the orchestrator find content its own
+    list of KB documents has no record of. Read-only."""
+    if not user_id.strip():
+        raise HTTPException(status_code=400, detail="user_id is required")
+    return await run_in_threadpool(_kb_vector_store.list_sources, user_id)
+
+
+@app.delete("/kb/sources/unattributed")
+async def kb_delete_unattributed(user_id: str) -> dict[str, int]:
+    """Deletes this user's chunks that carry no source_id, which /kb/documents (matching on source_id) cannot reach."""
+    if not user_id.strip():
+        raise HTTPException(status_code=400, detail="user_id is required")
+    deleted = await run_in_threadpool(_kb_vector_store.delete_unattributed_chunks, user_id)
+    logger.info("KB chunks without a source removed: user=%s chunks=%d", _audit_user(user_id), deleted)
+    return {"deleted": deleted}
+
+
 class KbSetRetrievalModeRequest(BaseModel):
     user_id: str
     source_id: str

@@ -1,5 +1,5 @@
 import { BadRequestException, Body, Controller, Delete, Get, HttpCode, HttpException, NotFoundException, Param, Post, Put, Query } from '@nestjs/common';
-import { BrowseFolderEntry, FolderIngestUrlResult, IngestedDocumentSummary, IngestUrlResult, KbProfileView, KbService } from './kb.service';
+import { BrowseFolderEntry, FolderIngestUrlResult, IngestedDocumentSummary, IngestUrlResult, KbProfileView, KbReconcileResult, KbService } from './kb.service';
 import { IngestionHttpError, Rubric, SharePointStatus } from '../pipeline/ingestion-http.client';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { SessionUser } from '../auth/session.service';
@@ -185,6 +185,12 @@ export class KbController {
       throw new BadRequestException('driveId is required');
     }
     return this.kbService.switchDrive(user.userId, driveId);
+  }
+
+  // Lists, or with dryRun=false removes, KB content the KB page has no record of (see KbService.reconcileOrphans). Lists by default.
+  @Post('orphans/reconcile')
+  async reconcileOrphans(@CurrentUser() user: SessionUser, @Query('dryRun') dryRun?: string): Promise<KbReconcileResult> {
+    return this.kbService.reconcileOrphans(user.userId, dryRun !== 'false');
   }
 
   @Post('ingest-item')

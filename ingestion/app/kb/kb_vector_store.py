@@ -446,6 +446,66 @@ class KbVectorStore:
                 return count
             offset += _GET_PAGE_SIZE
 
+    def list_sources(self, user_id: str) -> list[dict]:
+        """One entry per stored source of this user's KB, for finding content the KB page has no record of: `source_id` (None for chunks
+        that carry none), the distinct `source_files` names and `file_hashes` seen under it, and its chunk count. Read-only; reads
+        metadata only (no chunk text) a page at a time."""
+        collection = self._existing_collection(user_id)
+        if collection is None or collection.count() == 0:
+            return []
+        groups: dict[str | None, dict] = {}
+        offset = 0
+        while True:
+            page = collection.get(limit=_GET_PAGE_SIZE, offset=offset, include=["metadatas"])
+            metadatas = page.get("metadatas") or []
+            if not metadatas:
+                break
+            for metadata in metadatas:
+                source_id = metadata.get("source_id") or None
+                group = groups.setdefault(
+                    source_id,
+                    {"source_id": source_id, "source_files": set(), "file_hashes": set(), "chunks": 0},
+                )
+                group["chunks"] += 1
+                if metadata.get("source_file"):
+                    group["source_files"].add(metadata["source_file"])
+                if metadata.get("file_hash"):
+                    group["file_hashes"].add(metadata["file_hash"])
+            if len(metadatas) < _GET_PAGE_SIZE:
+                break
+            offset += _GET_PAGE_SIZE
+        return [
+            {
+                "source_id": group["source_id"],
+                "source_files": sorted(group["source_files"]),
+                "file_hashes": sorted(group["file_hashes"]),
+                "chunks": group["chunks"],
+            }
+            for group in sorted(groups.values(), key=lambda g: (g["source_id"] is None, g["source_id"] or ""))
+        ]
+
+    def delete_unattributed_chunks(self, user_id: str) -> int:
+        """Deletes the chunks that carry no source_id (left by a version that stored none): delete_file_chunks matches on source_id, so
+        it can never reach them. Returns how many were deleted."""
+        collection = self._existing_collection(user_id)
+        if collection is None or collection.count() == 0:
+            return 0
+        doomed: list[str] = []
+        offset = 0
+        while True:
+            page = collection.get(limit=_GET_PAGE_SIZE, offset=offset, include=["metadatas"])
+            ids = page.get("ids") or []
+            metadatas = page.get("metadatas") or []
+            if not ids:
+                break
+            doomed.extend(i for i, m in zip(ids, metadatas, strict=False) if not (m or {}).get("source_id"))
+            if len(ids) < _GET_PAGE_SIZE:
+                break
+            offset += _GET_PAGE_SIZE
+        for start in range(0, len(doomed), _GET_PAGE_SIZE):
+            collection.delete(ids=doomed[start : start + _GET_PAGE_SIZE])
+        return len(doomed)
+
     def purge_user(self, user_id: str) -> None:
         """Irreversibly drops this user_id's entire KB collection -- the
         admin/CLI remediation for a deleted-and-recreated ADO account whose

@@ -57,4 +57,22 @@ describe('KbIngestedList', () => {
     expect(await screen.findByText('Added.pdf')).toBeInTheDocument();
     expect(kbApi.listIngestedDocuments).toHaveBeenCalledTimes(2);
   });
+
+  it('offers a check for unlisted content that starts only when asked, and removes nothing by itself', async () => {
+    vi.mocked(kbApi.listIngestedDocuments).mockResolvedValue([doc()]);
+    vi.mocked(kbApi.reconcileKbOrphans).mockReset();
+    vi.mocked(kbApi.reconcileKbOrphans).mockResolvedValue({ dryRun: true, orphans: [], removed: 0, failed: [] });
+    render(<KbIngestedList />);
+
+    const button = await screen.findByRole('button', { name: 'Check for unlisted content' });
+    expect(kbApi.reconcileKbOrphans).not.toHaveBeenCalled();
+
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await userEvent.click(button);
+
+    expect(await screen.findByText(/nothing unlisted found/i)).toBeInTheDocument();
+    expect(kbApi.reconcileKbOrphans).toHaveBeenCalledTimes(1);
+    expect(kbApi.reconcileKbOrphans).toHaveBeenCalledWith(true);
+  });
 });
+
