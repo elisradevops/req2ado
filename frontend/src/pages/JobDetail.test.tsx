@@ -1,5 +1,6 @@
+import { autoOpenWarnings } from '../test/openWarnings';
 import { usePageLabelStore } from '../store/pageLabelStore';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Link, MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -83,7 +84,16 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function renderAt(id: string) {
+const afterEachStops: Array<() => void> = [];
+afterEach(() => {
+  for (const stop of afterEachStops.splice(0)) stop();
+});
+
+function renderAt(id: string, options: { keepWarningsFolded?: boolean } = {}) {
+  if (!options.keepWarningsFolded) {
+    const stop = autoOpenWarnings();
+    afterEachStops.push(stop);
+  }
   // Wrapped in ToastProvider matching App.tsx's real composition -- the
   // diff tree's NodeDetailPanel renders ChatPanel (and, since Fix D, calls
   // useToast() itself for the "Suggest a title" button's error handling),
@@ -546,7 +556,7 @@ describe('JobDetail', () => {
         warnings: [{ kind: 'parent_title_collision', severity: 'auto_fixed', nodeIds: ['e1', 'e2'], detail: {}, raw: 'Fixed.' }],
       } as any);
       renderAt('job-62');
-      fireEvent.click(await screen.findByRole('button', { name: /for your information/i })); // an informational group starts collapsed
+      fireEvent.click(await screen.findByRole('button', { name: /^for your information \(1\)/i })); // an informational group starts collapsed
       const { default: userEvent } = await import('@testing-library/user-event');
       await screen.findByRole('region', { name: /integrity warnings/i });
       // The informational group is the only one, so it is open already.

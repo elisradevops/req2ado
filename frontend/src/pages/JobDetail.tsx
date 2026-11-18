@@ -2797,6 +2797,7 @@ export function JobDetail(): React.ReactElement {
       <div id="integrity-warnings" tabIndex={-1} className="outline-none">
         <CollapsibleWarnings
           warnings={mergedWarnings}
+          foldable={status === 'diff_ready'}
           gateCount={status === 'diff_ready' ? actionableWarningCount : undefined}
           fixGroupTitle={status !== null && ['succeeded', 'failed', 'rejected', 'cancelled'].includes(status) ? 'Flagged before writing' : undefined}
           readOnly={status !== null && status !== 'diff_ready'}

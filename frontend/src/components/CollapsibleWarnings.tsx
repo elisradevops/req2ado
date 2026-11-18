@@ -68,6 +68,7 @@ export function CollapsibleWarnings({
   gateCount,
   fixGroupTitle,
   readOnly,
+  foldable,
 }: {
   warnings: WarningRecord[];
   // Filters the proposed tree to a kind's affected items. Omitted: rows
@@ -104,10 +105,13 @@ export function CollapsibleWarnings({
   fixGroupTitle?: string;
   // The job is no longer awaiting review: a record of what was flagged at write time. No review counters, no Done chip, "Show in tree".
   readOnly?: boolean;
+  // The card folds to its header line (the gate sentence and the summary), closed to begin with, so the proposed items come first (DESIGN.md §11.3.5).
+  foldable?: boolean;
 }): React.ReactElement | null {
   const kindGroups = useMemo(() => buildKindGroups(warnings), [warnings]);
   const hasActionable = kindGroups.some((entry) => entry.group !== 'info');
   const [openKind, setOpenKind] = useState('');
+  const [cardOpen, setCardOpen] = useState(false);
   // Below md the card starts folded to its group headings, so a phone reaches the diff tree without scrolling past every row; each heading shows
   // its count and opens its rows. At md and up "Fix before confirming" and "Review" start open as before. For your information always starts
   // collapsed: there is nothing to do there, so even when it is all there is it must not push the work down.
@@ -137,6 +141,24 @@ export function CollapsibleWarnings({
 
   return (
     <section aria-label="Integrity warnings" className="overflow-hidden rounded-sm border border-hairline bg-surface">
+      {foldable ? (
+        <button
+          type="button"
+          onClick={() => setCardOpen((open) => !open)}
+          aria-expanded={cardOpen}
+          className="flex w-full flex-wrap items-baseline gap-x-3 gap-y-0.5 px-3.5 py-2 text-left"
+        >
+          {cardOpen ? <ChevronDown aria-hidden="true" className="h-3.5 w-3.5 flex-none self-center" /> : <ChevronRight aria-hidden="true" className="h-3.5 w-3.5 flex-none self-center" />}
+          <h2 className="text-sm font-semibold text-ink-1">Integrity warnings</h2>
+          {gateCount != null && gateCount > 0 && (
+            <span data-testid="approval-gate" role="status" className="flex items-center gap-1.5 text-sm font-medium text-warning-ink">
+              <TriangleAlert aria-hidden="true" className="h-3.5 w-3.5 flex-none" />
+              <span><AnimatedNumber value={gateCount} /> warning{gateCount === 1 ? '' : 's'} need{gateCount === 1 ? 's' : ''} your attention before you approve.</span>
+            </span>
+          )}
+          <span className="ml-auto text-xs text-ink-3">{summary}</span>
+        </button>
+      ) : (
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 border-b border-hairline px-3.5 py-2">
         <h2 className="text-sm font-semibold text-ink-1">Integrity warnings</h2>
         {gateCount != null && gateCount > 0 && (
@@ -147,6 +169,8 @@ export function CollapsibleWarnings({
         )}
         <span className="ml-auto text-xs text-ink-3">{summary}</span>
       </div>
+      )}
+      {(!foldable || cardOpen) && (
       <Accordion value={openKind} onValueChange={setOpenKind}>
         {GROUP_ORDER.map((group) => {
           const entries = kindGroups.filter((entry) => entry.group === group);
@@ -202,6 +226,7 @@ export function CollapsibleWarnings({
           );
         })}
       </Accordion>
+      )}
     </section>
   );
 }
