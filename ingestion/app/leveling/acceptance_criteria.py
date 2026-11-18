@@ -35,6 +35,7 @@ from app.job_cancel import JobCancelled, raise_if_cancelled, submit_in_context
 from app.leveling.criteria_grounding import Grounding, given_values, has_quantity, ungrounded
 from app.leveling.description_text import description_for_model
 from app.leveling.document_study import DocumentStudy, contains_token
+from app.leveling.grounding import grounding_score, significant_words
 from app.leveling.llm_call_gate import LeaseGate, StepBudgetExceeded, use_gate
 from app.request_identity import user_scope
 from app.workitem.model import (
@@ -223,13 +224,32 @@ def unmistakable_markers(plain_text: str) -> list[str]:
     return found
 
 
+def _missing_value(label: str) -> str:
+    """"number:7" -> "7", "unit:mA" -> "mA": the value a criterion stated that the input does not."""
+    return label.split(":", 1)[1] if ":" in label else label
+
+
 def _needs_input_section(tokens: list[str]) -> str:
-    detail = (
-        f"Unresolved value(s) in this requirement: {', '.join(tokens)}. "
-        if tokens
-        else "This requirement needs a value that the text does not provide. "
-    )
-    return f'<div {_MARKER}="needs-input"><p><b>{NEEDS_INPUT_TITLE}</b></p><p>{html.escape(detail)}Acceptance criteria were not proposed.</p></div>'
+    """The needs-input note. Each missing value sits in its own `data-missing-value` span so the screen can name it; the sentence reads the
+    same as plain text."""
+    values = list(dict.fromkeys(t for t in tokens if t))
+    if values:
+        spans = ", ".join(
+            f'<span data-missing-value="{html.escape(v, quote=True)}">{html.escape(v)}</span>'
+            for v in values
+        )
+        detail = f"Unresolved value(s) in this requirement: {spans}. "
+    else:
+        detail = html.escape("This requirement needs a value that the text does not provide. ")
+    return f'<div {_MARKER}="needs-input"><p><b>{NEEDS_INPUT_TITLE}</b></p><p>{detail}Acceptance criteria were not proposed.</p></div>'
+
+
+# A criterion whose own words are almost all in the requirement says nothing the requirement did not: it restates it.
+_RESTATEMENT_OVERLAP = 0.9
+
+
+def _restates(criterion: str, requirement_text: str) -> bool:
+    return bool(significant_words(criterion)) and grounding_score(criterion, requirement_text) >= _RESTATEMENT_OVERLAP
 
 
 def _grounding_of(item: dict, cited: frozenset[str]) -> Grounding:
@@ -396,6 +416,7 @@ def propose_acceptance_criteria(
     outcomes: list[_Outcome] = [_Outcome("failed")] * len(chunks)
     chunk_items: dict[int, dict[str, dict]] = {}
     groundings: dict[str, Grounding] = {}
+    texts: dict[str, str] = {}
     for index, pairs in enumerate(chunks):
         try:
             items = {
@@ -407,6 +428,7 @@ def propose_acceptance_criteria(
             groundings.update(
                 {local_id: _grounding_of(item, cited) for local_id, item in items.items()}
             )
+            texts.update({local_id: str(item.get("text", "")) for local_id, item in items.items()})
         except JobCancelled:
             raise
         except Exception as error:  # noqa: BLE001 -- see _ask_all
@@ -461,14 +483,15 @@ def propose_acceptance_criteria(
                 unanswered.append(node.local_id)
                 continue
             if answer.get("needs_author_input") is True:
-                _append(node, _needs_input_section([]))
+                _append(node, _needs_input_section(_strings(answer.get("missing"))))
                 needs_input += 1
                 continue
-            criteria = _strings(answer.get("criteria"))
+            criteria = [c for c in _strings(answer.get("criteria")) if not _restates(c, texts.get(node.local_id, ""))]
             if not criteria:
                 continue
             assumptions = _strings(answer.get("assumptions"))
             grounding = groundings[node.local_id]
+            missing = [_missing_value(label) for c in criteria for label in ungrounded(c, grounding)]
             kept = [c for c in criteria if not ungrounded(c, grounding)]
             invented_assumption = any(ungrounded(a, grounding) for a in assumptions)
             if len(kept) < len(criteria):
@@ -479,7 +502,7 @@ def propose_acceptance_criteria(
                 if invented_assumption and len(kept) == len(criteria):
                     dropped_nodes.append(node.local_id)
                     assumption_only += 1
-                _append(node, _needs_input_section([]))
+                _append(node, _needs_input_section(missing + _strings(answer.get("missing"))))
                 needs_input += 1
                 continue
             body = f"<p><b>{SECTION_TITLE}</b></p>{_list_html(kept)}"

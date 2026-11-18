@@ -361,16 +361,13 @@ def _regroup_disconnected_roots(
             else WorkItemType.EPIC
         )
         synth_id = f"{node_id_prefix}synth_group_{group_index}"
-        member_titles = ", ".join(m.title for m in members)
+        member_titles = "; ".join(m.title for m in members)
         group_node = WorkItemNode(
             local_id=synth_id,
             type=group_type,
             parent_local_id=None,
             title=group_title.strip()[:256],
-            description=(
-                f"Auto-inserted topical grouping -- the following originally-disconnected root "
-                f"sections were grouped by topic: {member_titles}"
-            ),
+            description=f"Groups related sections of the document: {member_titles}.",
             source_ref=members[0].source_ref,
             fidelity_hash=hashlib.sha256(synth_id.encode()).hexdigest(),
             identity_hash=_hash_identity_for_synthesized_node(synth_id, members[0].source_ref),
@@ -540,10 +537,9 @@ def _ensure_root_features_have_epic_parent(
         type=WorkItemType.EPIC,
         parent_local_id=None,
         title=epic_title,
-        description=(
-            "Auto-inserted catch-all Epic -- the following root Feature(s) had no Epic ancestor "
-            "of their own: " + ", ".join(n.title for n in orphan_features)
-        ),
+        description="Groups features that had no Epic of their own: "
+        + ", ".join(n.title for n in orphan_features)
+        + ".",
         source_ref=orphan_features[0].source_ref,
         fidelity_hash=hashlib.sha256(synth_id.encode()).hexdigest(),
         identity_hash=_hash_identity_for_synthesized_node(synth_id, orphan_features[0].source_ref),
@@ -676,10 +672,7 @@ def _repair_requirement_hierarchy(
             type=WorkItemType.FEATURE,
             parent_local_id=epic.local_id if epic is not None else None,
             title=f"(auto-grouped) {requirement.title[:60]}",
-            description=(
-                "Auto-inserted grouping Feature -- the model emitted one or more "
-                "Requirements in this section without a Feature parent."
-            ),
+            description="Groups the requirements of this section that had no Feature of their own.",
             # A synthesized Feature never carries a customer_id -- only
             # Requirement nodes do (see WorkItemNode.customer_id's own
             # docstring). Previously copied from `requirement`, which was

@@ -576,7 +576,7 @@ def test_marker_routing_does_not_depend_on_what_the_study_listed(study) -> None:
 
     assert list(client.calls[0]) == ["b"]
     assert NEEDS_INPUT_TITLE in marked.description and SECTION_TITLE not in marked.description
-    assert "TBD, ??" in marked.description
+    assert '<span data-missing-value="TBD">TBD</span>, <span data-missing-value="??">??</span>' in marked.description
 
 
 @pytest.mark.parametrize("token", ["DC", "RF", "ID", "N/A"])
@@ -1346,5 +1346,39 @@ def test_the_emitted_section_shape_is_the_one_the_orchestrator_splits_off() -> N
     assert node.description.count("<div") == 1
     assert _needs_input_section(["TBD"]) == (
         '<div data-r2a="needs-input"><p><b>Needs author input</b></p>'
-        "<p>Unresolved value(s) in this requirement: TBD. Acceptance criteria were not proposed.</p></div>"
+        '<p>Unresolved value(s) in this requirement: <span data-missing-value="TBD">TBD</span>. '
+        "Acceptance criteria were not proposed.</p></div>"
     )
+
+
+def test_a_criterion_that_only_restates_the_requirement_is_dropped_and_nothing_is_said() -> None:
+    node = _node("a", description="<p>The relay shall use part number AB-123.</p>", issues=[Issue.NOT_TESTABLE])
+    client = _Client(
+        {"a": {"criteria": ["The relay uses part number AB-123"], "assumptions": [], "needs_author_input": False}}
+    )
+
+    propose_acceptance_criteria([node], _study(), client, [], table_text=lambda _id: None)
+
+    assert node.description == "<p>The relay shall use part number AB-123.</p>"
+
+
+def test_needs_input_names_the_values_the_model_says_are_missing() -> None:
+    node = _node("a", description="<p>The unit shall cool quickly.</p>", issues=[Issue.NOT_TESTABLE])
+    client = _Client(
+        {"a": {"criteria": [], "assumptions": [], "needs_author_input": True, "missing": ["the cooling time"]}}
+    )
+
+    propose_acceptance_criteria([node], _study(), client, [], table_text=lambda _id: None)
+
+    assert '<span data-missing-value="the cooling time">the cooling time</span>' in node.description
+
+
+def test_needs_input_names_the_value_a_dropped_criterion_stated_without_support() -> None:
+    node = _node("a", description="<p>The unit shall boot reliably.</p>", issues=[Issue.NOT_TESTABLE])
+    client = _Client(
+        {"a": {"criteria": ["Boot completes within 7 seconds"], "assumptions": [], "needs_author_input": False}}
+    )
+
+    propose_acceptance_criteria([node], _study(), client, [], table_text=lambda _id: None)
+
+    assert '<span data-missing-value="7">7</span>' in node.description

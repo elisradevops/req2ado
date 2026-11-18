@@ -9975,7 +9975,7 @@ def test_repair_requirement_hierarchy_runs_on_the_skeleton_before_authoring() ->
     # anything -- the payload names the bridge as the Requirement's parent.
     assert fake.author_calls[0]["skeleton_nodes"]["n1"]["parent_id"] == bridge.local_id
     assert bridge.local_id not in fake.author_calls[0]["skeleton_nodes"]
-    assert bridge.description.startswith("Auto-inserted grouping Feature")
+    assert bridge.description.startswith("Groups the requirements of this section")
 
 
 def test_root_regrouping_runs_between_the_two_stages(monkeypatch) -> None:
@@ -10015,7 +10015,7 @@ def test_root_regrouping_runs_between_the_two_stages(monkeypatch) -> None:
         assert [entry["parent_id"] for entry in call["skeleton_nodes"].values()] == [group.local_id]
         # A synthesized grouping node is structure only -- never authored.
         assert group.local_id not in call["skeleton_nodes"]
-    assert group.description.startswith("Auto-inserted topical grouping")
+    assert group.description.startswith("Groups related sections of the document:")
 
 
 def test_catchall_epic_wrap_runs_between_the_two_stages(monkeypatch) -> None:
@@ -10057,7 +10057,7 @@ def test_catchall_epic_wrap_runs_between_the_two_stages(monkeypatch) -> None:
     assert authored_parents["br0_n1"] == catchall.local_id
     assert authored_parents["br1_n1"] == catchall.local_id
     assert catchall.local_id not in authored_parents  # structure only, never authored
-    assert catchall.description.startswith("Auto-inserted catch-all Epic")
+    assert catchall.description.startswith("Groups features that had no Epic of their own:")
 
 
 def test_agentic_retrieval_grounds_the_authoring_call_too(monkeypatch) -> None:
