@@ -440,6 +440,7 @@ export function NodeDetailDialog({
       disabled={!canEdit}
       disabledReason={chatDisabledReason}
       categoryScores={entry.qualityStale ? null : entry.qualityCategoryScores}
+      hasChildren={(() => { const c = descendantCountsByLocalId?.[entry.localId]; return !!c && c.epics + c.features + c.requirements > 0; })()}
       isCompound={entry.type === 'Requirement' && !entry.qualityStale && (entry.qualityIssues ?? []).includes('compound')}
       onAcceptProposal={(patch) =>
         onSave?.(entry.localId, {

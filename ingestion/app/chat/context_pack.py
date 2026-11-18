@@ -1,6 +1,6 @@
 """Where a requirement sits in its document, as text for the chat prompt.
 
-Built from what the job already holds for the item (its parents, its siblings, its trace links, its figures and tables); nothing
+Built from what the job already holds for the item (its parents, its siblings, the items nested under it, its trace links, its figures and tables); nothing
 here reads the source document, which is not kept after a job. Every part is capped, so the pack stays small whatever the document
 looks like, and the tail (figures, tables) is what gives way first."""
 
@@ -11,6 +11,7 @@ from app.leveling.description_text import description_for_model
 MAX_CONTEXT_CHARS = 3_000
 _PARENT_DESCRIPTION_CHARS = 400
 _MAX_SIBLINGS = 12
+_MAX_CHILDREN = 30
 _MAX_LINKED = 8
 _MAX_CAPTIONED = 6
 _TITLE_CHARS = 120
@@ -50,6 +51,13 @@ def render_context_pack(context: dict | None) -> str | None:
     ][:_MAX_SIBLINGS]
     if siblings:
         lines.append("Neighbouring items under the same parent: " + "; ".join(siblings))
+    children = [
+        f"{_clip(c.get('type'), 20)}: {title}" if _clip(c.get("type"), 20) else title
+        for c in _dicts(context.get("children"))
+        if (title := _clip(c.get("title"), _TITLE_CHARS))
+    ][:_MAX_CHILDREN]
+    if children:
+        lines.append("Items nested directly under this one: " + "; ".join(children))
     linked = [
         f"{_clip(link.get('relation'), 40) or 'Related'}: {title}"
         for link in _dicts(context.get("linked"))

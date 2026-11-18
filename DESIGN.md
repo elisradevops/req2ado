@@ -3368,8 +3368,8 @@ Issues: one line each, absent when clean ─────────────
 - **The assistant is a drawer.** The Ask button or the **C** key opens a 380 px column on the right; `ChatPanel` is mounted only while it is open,
   so stepping through items fetches no chat history. Esc or C closes it, focus goes to the composer on open and back to Ask on close. C
   matches by letter and by key code (Hebrew layouts), and does nothing while typing.
-- **Suggestions come from the item.** At most three, from its real weak categories (below the weak score, or named by a quality issue),
-  then "Suggest a better title". An Epic, a Feature or a stale score gets only the title suggestion. No generic list; no fake "I have read this"
+- **Suggestions come from the item and what is nested under it.** At most three, from its real weak categories (below the weak score, or named by a quality issue),
+  then "Suggest a better title". An Epic or Feature is judged from the items nested directly under it, which the chat is given: it is offered "Restate it from its items" and "Check its items belong together" (only when something is nested there), and a stale score gets only the title suggestion. No generic list; no fake "I have read this"
   turn.
 - **The shortcut hint bar is gone.** Each action carries `aria-keyshortcuts` and a visible key hint; a keyboard button opens a popover that
   lists J, K, A, R, X, U, E and C.

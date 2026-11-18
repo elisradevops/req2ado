@@ -38,13 +38,32 @@ const BY_CATEGORY: Record<string, (noun: string) => ChatSuggestion> = {
   }),
 };
 
+// An Epic or Feature is judged from what is nested under it, which the chat is given (DESIGN.md §11.4.5): the suggestions say so, and are only
+// offered when something is nested there.
+function fromItsItems(noun: string): ChatSuggestion[] {
+  return [
+    {
+      label: 'Restate it from its items',
+      effect: `rewrite the description so it says what the items under this ${noun} cover`,
+      prompt: `Rewrite this ${noun}'s description so it summarizes what the items nested directly under it cover. Use only the items listed in the context; do not add anything they do not say.`,
+    },
+    {
+      label: 'Check its items belong together',
+      effect: 'name any item that does not fit under it, and why',
+      prompt: `Look at the items nested directly under this ${noun}. Say which of them, if any, do not belong under it, and why. Do not change the text.`,
+    },
+  ];
+}
+
 export function chatSuggestions(
   categoryScores: Record<string, number> | null | undefined,
   scored: boolean,
   noun: string,
   compound = false,
+  hasChildren = false,
 ): ChatSuggestion[] {
   const out: ChatSuggestion[] = [];
+  if (!scored && hasChildren) out.push(...fromItsItems(noun));
   if (scored) {
     const weak = Object.entries(categoryScores ?? {})
       .filter(([key, score]) => Number.isFinite(score) && score < WEAK_CATEGORY_SCORE && BY_CATEGORY[key])
@@ -57,7 +76,10 @@ export function chatSuggestions(
   out.push({
     label: 'Suggest a better title',
     effect: `a more specific, concise title for this ${noun}`,
-    prompt: `Suggest a more specific, concise title for this ${noun} based on its description.`,
+    prompt:
+      !scored && hasChildren
+        ? `Suggest a more specific, concise title for this ${noun} based on its description and the items nested under it.`
+        : `Suggest a more specific, concise title for this ${noun} based on its description.`,
   });
   return out;
 }

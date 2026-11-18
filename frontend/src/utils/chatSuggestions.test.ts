@@ -27,4 +27,14 @@ describe('chatSuggestions', () => {
     expect(labels(chatSuggestions({ atomicity: 30 }, true, 'requirement', true))).toEqual(['Split into separate requirements', 'Suggest a better title']);
     expect(labels(chatSuggestions({}, true, 'requirement', true))[0]).toBe('Split into separate requirements');
   });
+
+  it('offers an Epic or Feature suggestions drawn from the items nested under it, only when there are some', () => {
+    expect(labels(chatSuggestions(null, false, 'epic', false, true))).toEqual([
+      'Restate it from its items',
+      'Check its items belong together',
+      'Suggest a better title',
+    ]);
+    expect(chatSuggestions(null, false, 'epic', false, true).at(-1)!.prompt).toMatch(/items nested under it/);
+    expect(labels(chatSuggestions(null, false, 'epic', false, false))).toEqual(['Suggest a better title']);
+  });
 });

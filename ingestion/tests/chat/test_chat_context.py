@@ -201,3 +201,18 @@ def test_the_one_statement_rule_is_for_requirements_only() -> None:
         assert (
             "keep the title" in other and "number" in other and "invent" in other
         )  # the other rules still apply
+
+
+def test_the_items_nested_under_the_item_are_named_with_their_type() -> None:
+    text = render_context_pack(
+        {"children": [{"type": "Feature", "title": "Carrier acquisition"}, {"type": "Requirement", "title": "Lock time"}]}
+    )
+    assert text is not None
+    assert "Items nested directly under this one: Feature: Carrier acquisition; Requirement: Lock time" in text
+
+
+def test_children_are_capped_and_an_empty_list_adds_nothing() -> None:
+    many = [{"type": "Requirement", "title": f"Item {i}"} for i in range(80)]
+    text = render_context_pack({"children": many})
+    assert text is not None and "Item 29" in text and "Item 30" not in text
+    assert render_context_pack({"children": []}) is None

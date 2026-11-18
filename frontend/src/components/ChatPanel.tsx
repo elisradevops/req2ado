@@ -72,6 +72,7 @@ export function ChatPanel({
   disabledReason,
   categoryScores,
   isCompound,
+  hasChildren = false,
   onAcceptProposal,
   onDiscuss,
 }: {
@@ -89,6 +90,8 @@ export function ChatPanel({
   categoryScores?: Record<string, number> | null;
   // The scorer flagged this item as combining several requirements: adds the split starter.
   isCompound?: boolean;
+  // Items are nested under this one: an Epic or Feature then gets suggestions drawn from them.
+  hasChildren?: boolean;
   onAcceptProposal: (patch: { title?: string; description?: string }) => void;
   // "To be discussed": park the proposal in the item's ADO Discussion, leaving its text as is. Absent = the button is not offered.
   // A rejection keeps the proposal card (the caller already told the user why).
@@ -446,7 +449,7 @@ export function ChatPanel({
                 separate graphic. */}
             <p className="mb-2 text-xs text-ink-3">Ask for a change to this {noun}, or start from a suggestion:</p>
             <div className="ml-2.5 flex flex-col gap-1.5">
-              {chatSuggestions(categoryScores, checkedKind, noun, isCompound).map((p) => (
+              {chatSuggestions(categoryScores, checkedKind, noun, isCompound, hasChildren).map((p) => (
                 <button
                   key={p.label}
                   type="button"
