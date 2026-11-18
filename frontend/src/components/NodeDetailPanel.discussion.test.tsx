@@ -22,9 +22,45 @@ function renderPanel(entry: DryRunDiffEntry, props: Partial<React.ComponentProps
 }
 
 describe('NodeDetailPanel discussion list', () => {
-  it('is hidden when the entry has no discussion', () => {
+  it('is hidden when the entry has no discussion and notes cannot be added (a read-only view)', () => {
     renderPanel(base);
     expect(screen.queryByText(/to be discussed/i)).not.toBeInTheDocument();
+  });
+
+  it('is always there for a new item under review, with an empty state and a box to add a note', () => {
+    renderPanel(base, { onAddDiscussion: vi.fn() });
+    expect(screen.getByRole('region', { name: /to be discussed/i })).toBeInTheDocument();
+    expect(screen.getByText('Nothing parked for this item yet.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add to discussion' })).toBeInTheDocument();
+  });
+
+  it('adds the typed note as a description entry, clears the box, and ignores an empty note', async () => {
+    const onAddDiscussion = vi.fn().mockResolvedValue(undefined);
+    renderPanel(base, { onAddDiscussion });
+    await userEvent.click(screen.getByRole('button', { name: 'Add to discussion' }));
+    expect(onAddDiscussion).not.toHaveBeenCalled();
+    const box = screen.getByLabelText('Add a question or note for the author');
+    await userEvent.type(box, 'Please confirm the value of N.');
+    await userEvent.click(screen.getByRole('button', { name: 'Add to discussion' }));
+    expect(onAddDiscussion).toHaveBeenCalledWith('e1', { proposedDescription: 'Please confirm the value of N.' });
+    await vi.waitFor(() => expect(box).toHaveValue(''));
+  });
+
+  it('keeps the typed note when adding it fails', async () => {
+    renderPanel(base, { onAddDiscussion: vi.fn().mockRejectedValue(new Error('refused')) });
+    const box = screen.getByLabelText('Add a question or note for the author');
+    await userEvent.type(box, 'Keep me');
+    await userEvent.click(screen.getByRole('button', { name: 'Add to discussion' }));
+    await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Add to discussion' })).not.toHaveAttribute('aria-busy', 'true'));
+    expect(box).toHaveValue('Keep me');
+  });
+
+  it('offers no box for an item that is not a new item or once the job left review', () => {
+    const { unmount } = renderPanel({ ...base, action: 'reuse', existingAdoId: 5 }, { onAddDiscussion: vi.fn() });
+    expect(screen.queryByRole('button', { name: 'Add to discussion' })).not.toBeInTheDocument();
+    unmount();
+    renderPanel(base, { onAddDiscussion: vi.fn(), jobStatus: 'succeeded' });
+    expect(screen.queryByRole('button', { name: 'Add to discussion' })).not.toBeInTheDocument();
   });
 
   it('lists each entry and removes one by id', async () => {

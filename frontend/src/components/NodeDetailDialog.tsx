@@ -434,6 +434,7 @@ export function NodeDetailDialog({
       onRescore={onRescore}
       onSetProposalAccepted={onSetProposalAccepted}
       onRemoveDiscussion={onRemoveDiscussion}
+      onAddDiscussion={onAddDiscussion}
       onAttachFigure={onAttachFigure}
       onMoveFigure={onMoveFigure}
       figureMoveTargets={figureMoveTargets}

@@ -108,6 +108,7 @@ export function NodeDetailPanel({
   hideSources,
   hideEditButton,
   onAskAssistant,
+  onAddDiscussion,
   evidenceSlot,
   sourceSlot,
   moveSlot,
@@ -170,6 +171,8 @@ export function NodeDetailPanel({
   hideEditButton?: boolean;
   // Opens the assistant from an issue's "Fix with assistant" button.
   onAskAssistant?: () => void;
+  // Parks a note for the item's Azure DevOps Discussion, posted when the item is created. Absent = notes can only be read (and removed).
+  onAddDiscussion?: (localId: string, entry: { proposedTitle?: string; proposedDescription?: string }) => Promise<void> | void;
   // The dialog's evidence strip (file, location, "How this was scored"): drawn right after the item's text and any proposal or discussion, so
   // the source is next to what it supports and the long score panel comes after it.
   // A function receives the Quality panel's read-only body (gauge, score explanation, grounding line) so the strip can fold it into its
@@ -253,6 +256,9 @@ export function NodeDetailPanel({
   editRequest?: number;
 }): React.ReactElement {
   const [editing, setEditing] = useState(false);
+  const [noteDraft, setNoteDraft] = useState('');
+  const [notePending, setNotePending] = useState(false);
+  useEffect(() => setNoteDraft(''), [entry?.localId]);
   const [draftTitle, setDraftTitle] = useState('');
   const [draftDescription, setDraftDescription] = useState('');
   // Requirement-only (see WorkItemNode.customer_id's own docstring, ingestion
@@ -385,6 +391,8 @@ export function NodeDetailPanel({
   // that score, are never a reason to review it; loose wording against the source still is.
   const isParentEntry = entry.type === 'Epic' || entry.type === 'Feature';
   const issues = itemIssues(entry);
+  // A note can be parked for a new item that is still being reviewed (the server accepts discussion on creates only).
+  const canDiscuss = canEdit && entry.action === 'create' && !!onAddDiscussion;
   // An Epic or Feature whose description only repeats its title says nothing the header does not.
   const echoesTitle = isParentEntry && entry.description.replace(/\W+/g, '').toLowerCase() === entry.title.replace(/\W+/g, '').toLowerCase();
 
@@ -1036,11 +1044,13 @@ export function NodeDetailPanel({
       ) : (
         proposedBody
       )}
-      {entry.discussion && entry.discussion.length > 0 && (
-        <div className="flex flex-col gap-1.5 rounded-sm border border-hairline bg-surface-alt p-2.5">
-          <span className={LABEL_MICRO}>To be discussed</span>
+      {(canDiscuss || (entry.discussion?.length ?? 0) > 0) && (
+        <section aria-labelledby={`discussion-${entry.localId}`} className="flex flex-col gap-1.5 rounded-sm border border-hairline bg-surface-alt p-2.5">
+          <h3 id={`discussion-${entry.localId}`} className={LABEL_MICRO}>
+            To be discussed{(entry.discussion?.length ?? 0) > 0 ? ` (${entry.discussion!.length})` : ''}
+          </h3>
           <p className="text-xs text-ink-3">Posted to this item's Discussion in Azure DevOps when it is created; the text above is unchanged.</p>
-          {entry.discussion.map((d) => (
+          {(entry.discussion ?? []).map((d) => (
             <div key={d.id} className="flex items-start gap-2 border-t border-hairline pt-1.5 text-sm text-ink-2">
               <div className="min-w-0 flex-1 wrap-anywhere">
                 {d.proposedTitle && (
@@ -1058,7 +1068,34 @@ export function NodeDetailPanel({
               )}
             </div>
           ))}
-        </div>
+          {(entry.discussion?.length ?? 0) === 0 && <p className="text-sm text-ink-2">Nothing parked for this item yet.</p>}
+          {canDiscuss && (
+            <form
+              className="flex flex-col gap-1.5 border-t border-hairline pt-1.5"
+              onSubmit={(event) => {
+                event.preventDefault();
+                const text = noteDraft.trim();
+                if (!text || notePending || !onAddDiscussion) return;
+                setNotePending(true);
+                void Promise.resolve(onAddDiscussion(entry.localId, { proposedDescription: text }))
+                  .then(() => setNoteDraft(''))
+                  .catch(() => undefined) // the caller already shows the failure; the note stays in the box
+                  .finally(() => setNotePending(false));
+              }}
+            >
+              <TextArea
+                label="Add a question or note for the author"
+                value={noteDraft}
+                onChange={(event) => setNoteDraft(event.target.value)}
+                rows={2}
+                fullWidth
+              />
+              <Button type="submit" size="sm" variant="outline" className="w-fit" aria-busy={notePending} aria-disabled={!noteDraft.trim() || notePending}>
+                Add to discussion
+              </Button>
+            </form>
+          )}
+        </section>
       )}
       {foldQuality ? (
         <>
