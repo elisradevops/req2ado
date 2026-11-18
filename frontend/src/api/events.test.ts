@@ -57,7 +57,7 @@ describe('subscribeToJobEvents', () => {
 
   // The server ends the stream itself on a final stage. A browser EventSource then reconnects on its own (about 3 s later) to a job that is
   // already finished -- seen live as a second, pointless /events request, once with a 503. Closing on the final stage prevents that.
-  it.each(['diff_ready', 'failed', 'cancelled'])('closes the stream after the final stage %s, so the browser never reconnects', (stage) => {
+  it.each(['diff_ready', 'succeeded', 'failed', 'cancelled'])('closes the stream after the final stage %s, so the browser never reconnects', (stage) => {
     const onStage = vi.fn();
     subscribeToJobEvents('job-1', 'https://api.example', onStage);
     const source = FakeEventSource.instances[0];

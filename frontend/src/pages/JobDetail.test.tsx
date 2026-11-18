@@ -2243,6 +2243,31 @@ describe('JobDetail', () => {
     expect(screen.queryByRole('button', { name: /^write to azure devops$/i })).not.toBeInTheDocument();
   });
 
+  it('moves on from writing when the write finishes on the server and this page did not start it', async () => {
+    // A page opened (or a second tab, or one whose own confirm request was cut by a proxy timeout) while a write runs has nothing else telling it
+    // the write is over: it used to stay on "writing" until the page was reloaded.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    const getJobSpy = vi.spyOn(jobsApi, 'getJob')
+      .mockResolvedValueOnce({ id: 'job-10f', status: 'writing', dryRunDiff: [], areaPath: 'Project\\Area1' } as any)
+      .mockResolvedValue({ id: 'job-10f', status: 'succeeded', createdItemCount: 0, dryRunDiff: [], areaPath: 'Project\\Area1' } as any);
+    let onStage: ((stage: string) => void) | undefined;
+    const events = await import('../api/events');
+    vi.mocked(events.subscribeToJobEvents).mockImplementation((_id, _base, stage) => {
+      onStage = stage as (stage: string) => void;
+      return () => {};
+    });
+
+    renderAt('job-10f');
+    await waitFor(() => expect(onStage).toBeDefined());
+    expect(screen.queryByText(/written items \(\d+\)/i)).not.toBeInTheDocument();
+    const callsBefore = getJobSpy.mock.calls.length;
+
+    await act(async () => onStage!('succeeded'));
+
+    await waitFor(() => expect(screen.getByText(/written items \(\d+\)/i)).toBeInTheDocument());
+    expect(getJobSpy.mock.calls.length).toBeGreaterThan(callsBefore);
+  });
+
   it('follows the server back to the review view when a write it did not start fails and the job is reset', async () => {
     // A page opened (or a second tab) while another session's write runs must not stay on 'writing' once that write fails: the server
     // resets the job to diff_ready and announces it for exactly that reason.

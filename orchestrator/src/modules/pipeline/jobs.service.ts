@@ -31,7 +31,7 @@ import {
 } from '../../config/requirement-type-fields';
 import { DEFAULT_SE_COVERAGE_REF_FIELD_CANDIDATES } from '../../config/se-coverage-ref-fields';
 import { canonicalizeForCompare, composeAdoDescriptionHtml, composeAdoDiscussionHtml, normalizeAdoStoredHtml } from './description-html';
-import type { JobEventsPublisher } from './job-events.publisher';
+import type { JobEventsPublisher, JobStage } from './job-events.publisher';
 import { canNest, canBeRoot } from './canNest';
 import { attachFigures, buildFigureAttachmentFilename, sanitizeFigureError } from './figure-attach';
 import { setReviewerOutcomes } from './dedup-decision-log';
@@ -267,6 +267,16 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     private readonly cachedResults?: { forget(jobId: string): Promise<void> },
   ) {
     this.queue = logQueueErrors(new Queue('req2ado-pipeline', { connection: { url: redisUrl } as any }), 'req2ado-pipeline');
+  }
+
+  /** Publishes a stage for the job's open pages; a failure is logged and swallowed, because the event only informs and must never fail a write. */
+  private async publishStageQuietly(id: string, stage: JobStage): Promise<void> {
+    try {
+      await this.jobEventsPublisher?.publish(id, stage);
+    } catch (error) {
+      // eslint-disable-next-line no-console -- operational visibility for a best-effort path, not app logging
+      console.error(`Publishing ${stage} for job ${id} failed:`, error);
+    }
   }
 
   /**
@@ -3299,6 +3309,9 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       await this.prisma.auditEntry.create({
         data: { jobId: id, message: `Confirm failed (safe to retry): ${(error as Error).message}` },
       });
+      // Tell every open page the write is over (the early rollback above does the same): a page that did not start it would otherwise stay
+      // on 'writing' until reloaded. Best-effort: it must never replace the error the caller is about to see.
+      await this.publishStageQuietly(id, 'diff_ready');
       throw error;
     }
 
@@ -3427,6 +3440,9 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     for (const note of startStateNotes) {
       await this.prisma.auditEntry.create({ data: { jobId: id, message: note } });
     }
+    // The write is done: say so, so a page that is still showing 'writing' (it did not start the write, or its confirm request was cut by a
+    // proxy timeout) moves on without a reload.
+    await this.publishStageQuietly(id, 'succeeded');
     return {
       status: 'succeeded',
       createdCount,

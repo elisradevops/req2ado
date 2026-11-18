@@ -614,7 +614,7 @@ export function JobDetail(): React.ReactElement {
           // the review view, and tear this stream down before the real
           // 'writing' events arrive.
           if (nextStage === 'diff_ready' && isMutatingRef.current) return;
-          if (nextStage === 'diff_ready' || nextStage === 'failed' || nextStage === 'cancelled') {
+          if (nextStage === 'diff_ready' || nextStage === 'succeeded' || nextStage === 'failed' || nextStage === 'cancelled') {
             getJob(id).then((job) => {
               if (cancelled) return;
               // Same race, but the replay slipped past the guard above (our write started while this fetch was in flight): stay on

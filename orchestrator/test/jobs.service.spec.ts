@@ -6986,8 +6986,9 @@ describe('JobsService.confirm round-2 review fixes', () => {
     mappingFindMany?: jest.Mock;
     updateMany?: jest.Mock;
     publish?: jest.Mock;
+    createWorkItem?: jest.Mock;
   }) => {
-    const createWorkItem = jest.fn().mockResolvedValue({ id: 1234 });
+    const createWorkItem = opts.createWorkItem ?? jest.fn().mockResolvedValue({ id: 1234 });
     const uploadAttachment = opts.upload ?? jest.fn().mockResolvedValue(undefined);
     const publish = opts.publish ?? jest.fn().mockResolvedValue(undefined);
     const prisma = {
@@ -7082,6 +7083,54 @@ describe('JobsService.confirm round-2 review fixes', () => {
     await expect(service.confirm('job-1')).rejects.toThrow('original blip');
     expect(updateMany).toHaveBeenCalledTimes(2);
     errorSpy.mockRestore();
+  });
+
+  it('publishes succeeded once the write is done and recorded, so a page still on writing can move on', async () => {
+    const publish = jest.fn().mockResolvedValue(undefined);
+    const { service, prisma } = build({ diff: [node('n0')], publish });
+
+    const result = await service.confirm('job-1');
+
+    expect(result).toMatchObject({ status: 'succeeded', createdCount: 1 });
+    expect(publish.mock.calls.map((c: any[]) => c[1])).toEqual(['writing', 'succeeded']);
+    const lastJobUpdate = Math.max(...prisma.job.update.mock.invocationCallOrder);
+    const succeededAt = publish.mock.invocationCallOrder[publish.mock.calls.findIndex((c: any[]) => c[1] === 'succeeded')];
+    expect(succeededAt).toBeGreaterThan(lastJobUpdate); // announced only after the job row says succeeded, so the page's refetch sees it
+  });
+
+  it('a failed publish of succeeded never fails a write that worked', async () => {
+    const error = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const publish = jest.fn().mockImplementation(async (_id: string, stage: string) => {
+      if (stage === 'succeeded') throw new Error('redis down');
+    });
+    const { service } = build({ diff: [node('n0')], publish });
+
+    await expect(service.confirm('job-1')).resolves.toMatchObject({ status: 'succeeded', createdCount: 1 });
+    expect(error).toHaveBeenCalled();
+    error.mockRestore();
+  });
+
+  it('publishes diff_ready when a write fails part-way, so a page that did not start it leaves writing, and still throws the real error', async () => {
+    const publish = jest.fn().mockResolvedValue(undefined);
+    const createWorkItem = jest.fn().mockRejectedValue(new Error('TF401320: rule error'));
+    const { service, prisma } = build({ diff: [node('n0')], publish, createWorkItem });
+
+    await expect(service.confirm('job-1')).rejects.toThrow('TF401320');
+
+    expect(publish.mock.calls.map((c: any[]) => c[1])).toEqual(['writing', 'diff_ready']);
+    expect(prisma.job.update).toHaveBeenCalledWith({ where: { id: 'job-1' }, data: { status: 'diff_ready' } });
+  });
+
+  it('a failed publish of that diff_ready never replaces the error the caller sees', async () => {
+    const error = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const publish = jest.fn().mockImplementation(async (_id: string, stage: string) => {
+      if (stage === 'diff_ready') throw new Error('redis down');
+    });
+    const createWorkItem = jest.fn().mockRejectedValue(new Error('TF401320: rule error'));
+    const { service } = build({ diff: [node('n0')], publish, createWorkItem });
+
+    await expect(service.confirm('job-1')).rejects.toThrow('TF401320');
+    error.mockRestore();
   });
 
   it('a diff_ready event is published after reverting a claim that had published writing', async () => {

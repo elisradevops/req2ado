@@ -72,6 +72,7 @@ const STAGE_FALLBACK_SENTENCES: Record<JobStage, string> = {
   diff_ready: 'Diff ready for your review.',
   dedup_check: 'Checking for existing/duplicate work items...',
   writing: 'Writing work items to Azure DevOps...',
+  succeeded: 'Work items written to Azure DevOps.',
   failed: 'Job failed.',
   cancelled: 'Job cancelled.',
 };
