@@ -1392,9 +1392,16 @@ describe('DiffTree in a narrow tree (the details pane takes the width)', () => {
     const wrapper = container.firstElementChild as HTMLElement;
     expect(wrapper.className).toContain('[--diff-cols:32px_minmax(0,1fr)_44px]');
     expect(wrapper.className).not.toContain('--index-w');
-    for (const label of ['Index', 'Status', 'Flags']) expect(screen.getByText(label).className).toMatch(/(^| )hidden( |$)/);
+    for (const label of ['Index', 'Flags']) expect(screen.getByText(label).className).toMatch(/(^| )hidden( |$)/);
     const row = screen.getByText('Time sync source').closest('[role="treeitem"]') as HTMLElement;
     expect(row.firstElementChild!.className).toMatch(/(^| )hidden( |$)/);
+  });
+
+  it('gives the Status column no width and no header when no row draws anything in it', () => {
+    const { container } = renderAtTreeWidth(856);
+    const wrapper = container.firstElementChild as HTMLElement;
+    expect(wrapper.style.getPropertyValue('--status-w')).toBe('0px');
+    expect(screen.queryByText('Status')).not.toBeInTheDocument();
   });
 
   it('keeps the seven-column template and the wide cells when the tree is wide enough', () => {

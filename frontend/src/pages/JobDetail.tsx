@@ -93,6 +93,7 @@ import { Skeleton, useSkeletonCrossfade } from '../ui/Skeleton';
 import { Spinner } from '../ui/Spinner';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { Tooltip } from '../ui/Tooltip';
+import { DropdownMenu, DropdownMenuItem } from '../ui/DropdownMenu';
 import { DestinationBar } from '../components/DestinationBar';
 import { Card } from '../ui/Card';
 import { TextField } from '../ui/TextField';
@@ -114,7 +115,7 @@ import { SectionResults, type SectionResultEntry } from '../components/SectionRe
 import type { WorkItemTypeCatalogEntry } from '../api/ado';
 import { isRunDetailStatus, shouldShowTiles, shouldShowTabs, shouldShowFilterBar, shouldShowNothingWrittenLine, reviewHeadline, phaseRailOrientation } from './jobDetailLayout';
 import { SafetyLine } from '../components/SafetyLine';
-import { Download, FileX2, RotateCw, ShieldCheck, Trash2, TriangleAlert, Upload, X } from 'lucide-react';
+import { Download, Ellipsis, FileX2, RotateCw, ShieldCheck, Trash2, TriangleAlert, Upload, X } from 'lucide-react';
 import { IconButton } from '../ui/IconButton';
 import { WriteBar } from '../components/WriteBar';
 import { EmptyState } from '../ui/EmptyState';
@@ -2979,13 +2980,23 @@ export function JobDetail(): React.ReactElement {
                       </Button>
                     )}
                     {status === 'diff_ready' && (
-                      <div className="ml-auto flex gap-2">
-                        <Button size="sm" variant="ghost" onClick={() => handleBulkExclude(true)} disabled={isDiffMutating}>
-                          Exclude {filterAction || filterText || activeReviewGroup || focusWarning ? 'matching' : 'all'}
-                        </Button>
-                        <Button size="sm" variant="ghost" onClick={() => handleBulkExclude(false)} disabled={isDiffMutating}>
-                          Include {filterAction || filterText || activeReviewGroup || focusWarning ? 'matching' : 'all'}
-                        </Button>
+                      <div className="ml-auto">
+                        {/* The bulk exclude/include are rare and sweeping: one menu, not two buttons in the row (DESIGN.md §11.3.5). */}
+                        <DropdownMenu
+                          trigger={
+                            <Button size="sm" variant="ghost" aria-label="More actions" disabled={isDiffMutating}>
+                              <Ellipsis className="h-4 w-4" aria-hidden="true" />
+                              More
+                            </Button>
+                          }
+                        >
+                          <DropdownMenuItem onSelect={() => void handleBulkExclude(true)}>
+                            Exclude {filterAction || filterText || activeReviewGroup || focusWarning ? 'matching' : 'all'}
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onSelect={() => void handleBulkExclude(false)}>
+                            Include {filterAction || filterText || activeReviewGroup || focusWarning ? 'matching' : 'all'}
+                          </DropdownMenuItem>
+                        </DropdownMenu>
                       </div>
                     )}
                       </>

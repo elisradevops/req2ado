@@ -48,14 +48,14 @@ export function WriteBar({
     </span>
   );
   return (
-    // Its own panel, floating above the content: inset from the edges of the card it sits under (mx-2 / md:mx-4; on a phone the page gutter
+    // Its own panel at the end of the review (not sticky, DESIGN.md §11.3.5: it used to float over the tabs and the last rows): inset from the edges of the card it sits under (mx-2 / md:mx-4; on a phone the page gutter
     // does it), a full border, radius-md corners and its own shadow, so it shares no edge with the card. It was a flat footer, white on white,
     // the same width as the tree card, and read as that card's footer. `bottom-0` rests it one page padding above the edge (main keeps its
     // p-3 / md:p-5), which is also where it sits at the end of the scroll, so it never covers the last rows; mid-scroll that strip shows
     // rows beneath it, which is what makes it read as floating. On a phone it clears the home indicator.
     <section
       aria-label="Review decision"
-      className="sticky bottom-0 z-10 mx-2 flex flex-wrap items-center justify-end gap-x-3 gap-y-2 rounded-md border border-hairline-strong bg-surface px-3.5 py-2.5 shadow-dock max-md:mx-0 max-md:mb-[env(safe-area-inset-bottom)] max-md:flex-col max-md:items-stretch md:mx-4"
+      className="mx-2 flex flex-wrap items-center justify-end gap-x-3 gap-y-2 rounded-md border border-hairline-strong bg-surface px-3.5 py-2.5 shadow-dock max-md:mx-0 max-md:mb-[env(safe-area-inset-bottom)] max-md:flex-col max-md:items-stretch md:mx-4"
     >
       {(includedCount !== undefined || blocked || !canWriteToAdo) && (
         <div className="mr-auto flex min-w-0 flex-col gap-0.5 max-md:mr-0">

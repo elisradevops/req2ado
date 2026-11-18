@@ -89,6 +89,12 @@ afterEach(() => {
   for (const stop of afterEachStops.splice(0)) stop();
 });
 
+// Bulk exclude/include live in the toolbar's "More" menu (DESIGN.md §11.3.5): open it, then choose the item.
+async function chooseBulk(user: { click: (el: Element) => Promise<void> }, name: RegExp): Promise<void> {
+  await user.click(screen.getByRole('button', { name: /more actions/i }));
+  await user.click(await screen.findByRole('menuitem', { name }));
+}
+
 function renderAt(id: string, options: { keepWarningsFolded?: boolean } = {}) {
   if (!options.keepWarningsFolded) {
     const stop = autoOpenWarnings();
@@ -516,7 +522,7 @@ describe('JobDetail', () => {
       await waitFor(() => expect(screen.getByText('Untouched')).toBeInTheDocument());
       const { default: userEvent } = await import('@testing-library/user-event');
 
-      expect(screen.getByRole('button', { name: /exclude all/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /more actions/i })).toBeInTheDocument();
       await userEvent.click(screen.getByRole('button', { name: 'Review in tree' }));
 
       expect(screen.getByText('Affected one')).toBeInTheDocument();
@@ -525,7 +531,9 @@ describe('JobDetail', () => {
       expect(screen.getByText(/Low grounding: possible fabrication:\s*2 left of 2/)).toBeInTheDocument();
       // Reason chip on the rows, so a reviewer sees why each is listed.
       expect(screen.getAllByText('Low grounding')).toHaveLength(2);
-      expect(screen.getByRole('button', { name: /exclude matching/i })).toBeInTheDocument();
+      await userEvent.click(screen.getByRole('button', { name: /more actions/i }));
+      expect(screen.getByRole('menuitem', { name: /exclude matching/i })).toBeInTheDocument();
+      await userEvent.keyboard('{Escape}');
 
       await userEvent.click(screen.getByRole('button', { name: /clear warning filter/i }));
 
@@ -576,7 +584,7 @@ describe('JobDetail', () => {
         await waitFor(() => expect(screen.getByText('Untouched')).toBeInTheDocument());
         const { default: userEvent } = await import('@testing-library/user-event');
         await userEvent.click(screen.getByRole('button', { name: 'Review in tree' }));
-        await userEvent.click(screen.getByRole('button', { name: /^exclude matching$/i }));
+        await chooseBulk(userEvent, /^exclude matching$/i);
         await waitFor(() => expect(jobsApi.setDiffEntryExcluded).toHaveBeenCalledTimes(1));
         await openNodeDetails(userEvent, 'Affected two');
         const dialog = screen.getByRole('dialog');
@@ -1839,7 +1847,7 @@ describe('JobDetail', () => {
     const userEventModule = await import('@testing-library/user-event');
     const userEvent = userEventModule.default;
     await userEvent.type(screen.getByPlaceholderText(/filter by title/i), 'Match');
-    await userEvent.click(screen.getByRole('button', { name: /^exclude matching$/i }));
+    await chooseBulk(userEvent, /^exclude matching$/i);
 
     await waitFor(() => expect(excludeSpy).toHaveBeenCalledTimes(2));
     expect(excludeSpy).toHaveBeenCalledWith('job-6', 'a', true);
@@ -1879,7 +1887,7 @@ describe('JobDetail', () => {
 
     const { default: userEvent } = await import('@testing-library/user-event');
     await userEvent.click(screen.getByRole('button', { name: /^check · 2$/i }));
-    await userEvent.click(screen.getByRole('button', { name: /^exclude matching$/i }));
+    await chooseBulk(userEvent, /^exclude matching$/i);
 
     await waitFor(() => expect(excludeSpy).toHaveBeenCalledTimes(2));
     expect(excludeSpy).toHaveBeenCalledWith('job-41', 'a', true);
@@ -2014,7 +2022,7 @@ describe('JobDetail', () => {
     await waitFor(() => expect(screen.getByText('Match one')).toBeInTheDocument());
 
     const { default: userEvent } = await import('@testing-library/user-event');
-    await userEvent.click(screen.getByRole('button', { name: /^exclude all$/i }));
+    await chooseBulk(userEvent, /^exclude all$/i);
 
     await waitFor(() => expect(screen.getByText(/stopped after updating 1 of 2 item/i)).toBeInTheDocument());
   });
@@ -4018,7 +4026,7 @@ describe('JobDetail', () => {
         const { userEvent } = await markBlockedPending();
         vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockImplementation((async () => ({ dryRunDiff: rowsWith() })) as never);
 
-        await userEvent.click(screen.getByRole('button', { name: /^exclude all$/i }));
+        await chooseBulk(userEvent, /^exclude all$/i);
         await waitFor(() => expect(jobsApi.setDiffEntryExcluded).toHaveBeenCalledTimes(3));
         await screen.findByText(/excluded 3 items/i);
 
@@ -4881,7 +4889,7 @@ describe('JobDetail: one toolbar row above the proposed items (DESIGN.md §11.3.
     const rowOf = (el: HTMLElement): Element | null => el.closest('.border-b');
     const risk = await screen.findByRole('button', { name: /Review in risk order/ });
     const filter = screen.getByPlaceholderText('Filter by title…');
-    const exclude = screen.getByRole('button', { name: /^Exclude/ });
+    const exclude = screen.getByRole('button', { name: /more actions/i });
     expect(rowOf(risk)).not.toBeNull();
     expect(rowOf(risk)).toBe(rowOf(filter));
     expect(rowOf(risk)).toBe(rowOf(exclude));
@@ -5112,7 +5120,7 @@ describe('JobDetail: the write gate is a hard block (DESIGN.md §11.3.5, review 
     await mount({ id: 'gate-chip', dryRunDiff: items(), warnings: [] });
     await userEvent.click(screen.getByRole('button', { name: /^check · 2$/i }));
     expect(screen.queryByText('Healthy one')).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: /^exclude matching$/i }));
+    await chooseBulk(userEvent, /^exclude matching$/i);
     // Both Check items are now excluded: the group is empty, its chip is gone, and the filter with it.
     await waitFor(() => expect(screen.queryByRole('button', { name: /^check/i })).not.toBeInTheDocument());
     expect(screen.getByText('Healthy one')).toBeInTheDocument();
@@ -5128,11 +5136,11 @@ describe('JobDetail: the write gate is a hard block (DESIGN.md §11.3.5, review 
   });
 
   describe('the sticky write bar (W3)', () => {
-    it('comes after the tree in the DOM and stays at the bottom of the review view', async () => {
+    it('comes after the tree in the DOM, as a normal last item (not floating)', async () => {
       const write = await mount({ id: 'bar-1', dryRunDiff: [req('r1'), req('r2')], warnings: [] });
       const bar = screen.getByRole('region', { name: 'Review decision' });
       expect(bar).toContainElement(write);
-      expect(bar).toHaveClass('sticky', 'bottom-0');
+      expect(bar).not.toHaveClass('sticky');
       const tree = document.getElementById('proposed-tree')!;
       expect(tree.compareDocumentPosition(bar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(screen.getAllByRole('button', { name: /write to azure devops/i })).toHaveLength(1);

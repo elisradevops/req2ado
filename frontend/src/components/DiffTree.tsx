@@ -69,7 +69,6 @@ function narrowRowHeight(): number {
 // Fallback index-column width when the document is unavailable (e.g.
 // SSR/tests) -- matches the approved design's own fallback.
 const FALLBACK_INDEX_WIDTH = 44;
-const FALLBACK_STATUS_WIDTH = 108;
 
 // Used only before the container's real height is first measured (see
 // useContainerHeight below) -- react-window's `height` prop must be a
@@ -357,7 +356,8 @@ function useStatusColumnWidth(entries: DryRunDiffEntry[]): number {
     const font = `600 12px ${fontFamily}`;
     let widest = 0;
     for (const entry of entries) {
-      widest = Math.max(widest, measureTextWidth(actionLabel(entry), font));
+      // A plain new item draws no pill (ActionBadge hideNew), so it reserves no width: only labels that are really drawn are measured.
+      if (!(entry.action === 'create' && entry.duplicateOf?.existingAdoId == null)) widest = Math.max(widest, measureTextWidth(actionLabel(entry), font));
       // R7: a new item's criteria chip sits in this column (it is about what the write will carry), and it is the only mark there on
       // such a row, so the column is as wide as the widest of the two, measured from this job's rows only.
       const criteria = criteriaChipLabel(entry);
@@ -366,7 +366,8 @@ function useStatusColumnWidth(entries: DryRunDiffEntry[]): number {
     // Chip's own horizontal padding+border (px-2 + 1px border each side =
     // 18px) plus a small buffer so text never sits flush against the
     // pill's edge.
-    return widest > 0 ? Math.ceil(widest) + 18 + 8 : FALLBACK_STATUS_WIDTH;
+    // Nothing drawn in any row: the column takes no width and its header goes with it, so titles get the room.
+    return widest > 0 ? Math.ceil(widest) + 18 + 8 : 0;
   }, [entries]);
 }
 
@@ -805,9 +806,9 @@ export function DiffTree({
         <span />
         <span className={cn('text-right', wideOnly(narrow))}>Index</span>
         <span>Item</span>
-        <span className={cn('flex items-center gap-1', wideOnly(narrow))}>
-          Status
-          <InfoTip content="What will happen to this item when you write to Azure DevOps. No pill means New (written to Azure DevOps for the first time). A pill means: Links to an existing WI-#### (reused, nothing new written, and it keeps its existing Azure DevOps parent regardless of where you place it in this tree), or Near-duplicate of an existing item (skipped, same parent-keeping rule). On a new item, 'criteria to review' or 'criteria accepted' says whether its proposed acceptance criteria will be written with it." />
+        <span className={cn('flex items-center gap-1 overflow-hidden', wideOnly(narrow))}>
+          {statusColumnWidth > 0 && <>Status
+          <InfoTip content="What will happen to this item when you write to Azure DevOps. No pill means New (written to Azure DevOps for the first time). A pill means: Links to an existing WI-#### (reused, nothing new written, and it keeps its existing Azure DevOps parent regardless of where you place it in this tree), or Near-duplicate of an existing item (skipped, same parent-keeping rule). On a new item, 'criteria to review' or 'criteria accepted' says whether its proposed acceptance criteria will be written with it." /></>}
         </span>
         <span className={cn('flex items-center justify-end gap-1', wideOnly(narrow))}>
           Flags
@@ -830,7 +831,7 @@ export function DiffTree({
           role="tree"
           aria-activedescendant={selectedId && rows.some((row) => row.entry.localId === selectedId) ? rowDomId(treeDomId, selectedId) : undefined}
           // As tall as the job's rows (at least 3, so a near-empty tree is still a card), up to the viewport-based cap that used to be the fixed height. Counted from ALL entries, not the visible rows, so filtering or collapsing a branch never makes the card jump.
-          style={{ height: `min(max(calc(100vh - 400px), 280px), ${Math.max(entries.length, 3) * rowHeight}px)` }}
+          style={{ height: `min(max(calc(100vh - 160px), 280px), ${Math.max(entries.length, 3) * rowHeight}px)` }}
           // The universal focus ring (index.css), inset so the list's own overflow does not clip it; focus:outline-none would remove it.
           className="focus-visible:outline-offset-[-2px]"
         >
