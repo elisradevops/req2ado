@@ -311,3 +311,17 @@ describe('EvidenceStrip source wording', () => {
     expect(screen.getByText(FALLBACK)).toBeInTheDocument();
   });
 });
+
+describe('EvidenceStrip for an Epic or Feature', () => {
+  it('offers no "How this was scored" disclosure, even with knowledge-base citations', () => {
+    render(
+      <EvidenceStrip
+        collapsible
+        jobMode="survey"
+        entry={{ ...BASE, type: 'Epic', sourceRef: REF }}
+        kbCitations={[{ sourceFile: 'std.pdf', similarity: 0.8 }] as never}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: /how this was scored/i })).not.toBeInTheDocument();
+  });
+});

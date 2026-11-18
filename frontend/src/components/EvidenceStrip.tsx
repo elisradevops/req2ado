@@ -78,7 +78,8 @@ export function EvidenceStrip({
 }): React.ReactElement {
   // Only Requirements are scored: an Epic or Feature never names a weakest area, whatever its stored data holds.
   const weakest = entry.qualityStale || !isScoredType(entry.type) ? null : weakestCategory(entry.qualityCategoryScores, entry.qualityCategoryChecklist);
-  const hasCitations = !!kbCitations && kbCitations.length > 0;
+  // Knowledge-base references explain a score, so an unscored Epic or Feature has none to show.
+  const hasCitations = isScoredType(entry.type) && !!kbCitations && kbCitations.length > 0;
   const noteApplies = jobMode === 'survey' && entry.type === 'Requirement' && entry.action === 'create' &&
     entry.qualityScore != null &&
     !entry.qualityStale;
