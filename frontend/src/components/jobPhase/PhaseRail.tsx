@@ -95,7 +95,7 @@ export function PhaseRail({
                 <span className={cn('text-sm', selected || row.state === 'current' ? 'font-semibold text-ink-1' : 'text-ink-2')}>{row.label}</span>
                 {row.key === liveKey && row.state === 'current' && <span className="text-meta text-live">● Live</span>}
               </span>
-              {/* Below lg the strip is compact, but the state line stays in the accessible name. */}
+              {/* In the horizontal strip (and below lg) the state line stays in the accessible name only. */}
               <span className={cn('text-xs text-ink-3', orientation === 'vertical' ? 'sr-only lg:not-sr-only lg:block' : 'sr-only')}>{row.line}</span>
             </span>
             </span>

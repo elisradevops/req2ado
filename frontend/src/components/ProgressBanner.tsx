@@ -24,6 +24,16 @@ import { ARRIVE, useArrivedLate, useSettled } from '../ui/motion';
 import { ActivityFeed, useActivityLog } from './ActivityFeed';
 import type { JobStage, NarrationEvent } from '../api/events';
 
+// The steps that look things up in the knowledge base; the "Not grounded" pill is only meaningful for these (or when a citation arrived).
+const KB_RETRIEVING_PHASES: ReadonlySet<NarrationEvent['phase']> = new Set([
+  'build_skeleton',
+  'analyze_section',
+  'generate_requirements',
+  'score_requirements',
+  'section_complete',
+]);
+
+
 // Short sub-labels shown next to the currently-active section in the step
 // list -- the narration message itself is more verbose (includes block
 // counts), this is just "which of the section's three passes is running".
@@ -37,15 +47,6 @@ import type { JobStage, NarrationEvent } from '../api/events';
 // duplicates,' never dedup_check"): reused directly rather than
 // duplicating a second near-identical Record for the same concept in the
 // same file.
-// The steps that look things up in the knowledge base; the "Not grounded" pill is only meaningful for these (or when a citation arrived).
-const KB_RETRIEVING_PHASES: ReadonlySet<NarrationEvent['phase']> = new Set([
-  'build_skeleton',
-  'analyze_section',
-  'generate_requirements',
-  'score_requirements',
-  'section_complete',
-]);
-
 export const PHASE_SUBLABEL: Record<NarrationEvent['phase'], string> = {
   describe_figure: 'Describing figures',
   primer: 'Reading the whole document',

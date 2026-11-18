@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Pencil, Link2, RefreshCw, Upload, Check, Flag, X } from 'lucide-react';
+import { Pencil, Link2, RefreshCw, Upload, Check, X } from 'lucide-react';
 import { MoveToPicker, type MoveToPickerCandidate } from './MoveToPicker';
 import { getServerMessage } from '../lib/errorDetails';
 import { TagChips } from './TagChips';
@@ -25,7 +25,7 @@ import { Tooltip } from '../ui/Tooltip';
 import { DescriptionMarkdown, Markdown } from '../ui/Markdown';
 import { cn } from '../lib/cn';
 import { LABEL_MICRO } from '../utils/labelMicro';
-import { flaggedDiffEntryReason, isFlaggedDiffEntry } from '../utils/diffFlagging';
+import { isFlaggedDiffEntry } from '../utils/diffFlagging';
 import { formatDateTime } from '../utils/formatDateTime';
 
 // CR-7d rescore: the quality score/categoryScores from JUST BEFORE a
@@ -361,13 +361,7 @@ export function NodeDetailPanel({
       : !(entry.insignificantFigureIds ?? []).includes(figureId),
   );
   const undescribedFigureCount = visibleUncaptionedFigureIds.filter((figureId) => !detachedFigureIds.includes(figureId)).length;
-  // M3: uses the same shared threshold logic as the diff tree/list view
-  // (isFlaggedDiffEntry, which raises the Epic/Feature grounding threshold
-  // to 0.35) instead of a hardcoded 0.2 -- otherwise an Epic/Feature that
-  // the diff tree flags "Needs review" under the higher threshold could
-  // render as healthy here, in its own detail panel. qualityScore is
-  // deliberately null: this check is scoped to the grounding badge alone,
-  // not the separate quality-score gauge already shown above.
+  // The same rule as the tree's flag (utils/diffFlagging): only Requirements are checked against the source.
   const isLowGrounding = isFlaggedDiffEntry({ type: entry.type, groundingScore: entry.groundingScore, qualityScore: null });
   // The row's flag only carries this as a tooltip, so the same reason is written out here for keyboard and touch users.
   // An Epic or Feature is not scored (quality scoring judges how a requirement is worded), so its score, and the model's confidence in

@@ -339,6 +339,14 @@ def _ungrounded_message(affected: int, dropped: int, assumption_only: int) -> st
     return f"{message} ({'; '.join(clauses)})." if clauses else f"{message}."
 
 
+def skip_criteria_stage() -> None:
+    """Tells the run's percentage there is nothing to propose: the stage is planned at zero items and drops out. Without this a run that never
+    asks (no client, nothing eligible) would hold the bar short of where it belongs until the next stage reported."""
+    counter = current_stage_counter()
+    if counter is not None:
+        counter.set_total("criteria", 0)
+
+
 def propose_acceptance_criteria(
     nodes: list[WorkItemNode],
     study: DocumentStudy | None,
@@ -354,6 +362,7 @@ def propose_acceptance_criteria(
         (n, plain) for n, plain in _eligible_pairs(nodes) if f'{_MARKER}="' not in n.description
     ]
     if not pending:
+        skip_criteria_stage()
         return
     to_ask: list[tuple[WorkItemNode, str]] = []
     needs_input = 0

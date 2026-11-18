@@ -1,5 +1,5 @@
-import { categoryLabel, weakestCategory, WEAK_CATEGORY_SCORE } from './qualityCategories';
-import { flaggedDiffEntryReason, isScoredType } from './diffFlagging';
+import { categoryLabel, weakestCategory } from './qualityCategories';
+import { isLowQualityEntry, isScoredType, LOW_GROUNDING_THRESHOLD } from './diffFlagging';
 import { missingValuesOf } from './proposal';
 
 // One plain sentence per thing that needs the reviewer, in the order fix, review, info (DESIGN.md §11.4.5, §12). Pure: the dialog renders it.
@@ -48,7 +48,7 @@ export function itemIssues(entry: IssueEntry): ItemIssue[] {
     if (entry.qualityStale) {
       issues.push({ id: 'stale', severity: 'review', text: 'Edited since it was scored. The score may be out of date.' });
     } else if (entry.qualityScore != null) {
-      if (entry.qualityScore < 50) {
+      if (isLowQualityEntry(entry)) {
         const weakest = weakestCategory(entry.qualityCategoryScores);
         issues.push({
           id: 'quality-low',
@@ -60,19 +60,10 @@ export function itemIssues(entry: IssueEntry): ItemIssue[] {
         issues.push({ id: 'unsure', severity: 'review', text: 'The scorer was unsure about this score.' });
       }
     }
-    const other = flaggedDiffEntryReason({ type: entry.type, groundingScore: entry.groundingScore, qualityScore: null, qualityConfidence: null });
-    if (other) issues.push({ id: 'far-from-source', severity: 'review', text: 'The wording is far from the source text. Check it against the source.' });
+    if (entry.groundingScore != null && entry.groundingScore < LOW_GROUNDING_THRESHOLD) {
+      issues.push({ id: 'far-from-source', severity: 'review', text: 'The wording is far from the source text. Check it against the source.' });
+    }
   }
 
   return issues.sort((a, b) => ORDER[a.severity] - ORDER[b.severity]);
-}
-
-// The weak categories the assistant can aim at, from the item's real scores (at most three), for its suggestions.
-export function weakCategoryKeys(entry: IssueEntry): string[] {
-  if (!isScoredType(entry.type) || entry.qualityStale) return [];
-  return Object.entries(entry.qualityCategoryScores ?? {})
-    .filter(([, score]) => Number.isFinite(score) && score < WEAK_CATEGORY_SCORE)
-    .sort((a, b) => a[1] - b[1] || (a[0] < b[0] ? -1 : 1))
-    .slice(0, 3)
-    .map(([key]) => key);
 }

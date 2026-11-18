@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { itemIssues, weakCategoryKeys } from './itemIssues';
+import { itemIssues } from './itemIssues';
 import { missingValuesOf } from './proposal';
 
 describe('itemIssues', () => {
@@ -38,15 +38,6 @@ describe('itemIssues', () => {
   it('never uses the words verdict or grounding', () => {
     const text = itemIssues({ type: 'Requirement', qualityScore: 20, qualityConfidence: 'low', groundingScore: 0.05 }).map((i) => i.text).join(' ');
     expect(text).not.toMatch(/verdict|grounding/i);
-  });
-});
-
-describe('weakCategoryKeys', () => {
-  it('lists at most three real weak categories, weakest first, and none for a parent or a stale score', () => {
-    const qualityCategoryScores = { clarity: 60, testability: 20, atomicity: 40, style: 95, rationale: 50 };
-    expect(weakCategoryKeys({ type: 'Requirement', qualityCategoryScores })).toEqual(['testability', 'atomicity', 'rationale']);
-    expect(weakCategoryKeys({ type: 'Feature', qualityCategoryScores })).toEqual([]);
-    expect(weakCategoryKeys({ type: 'Requirement', qualityCategoryScores, qualityStale: true })).toEqual([]);
   });
 });
 

@@ -29,8 +29,9 @@ interface StageWeight {
   skippable?: boolean;
 }
 
-// Order is the order stages run in. Weights in each path sum to 1. `link` is the two quick whole-document passes (conflicts, regrouping), so it is worth
-// little; trace linking and acceptance criteria are slow and count their own items. They always count (never `optional`): an optional stage adds nothing until it reports, so the bar filled to ~97% from the other stages and could not move back when they started. Before they did, the bar sat at 89% for a fifth of a run. Measured on 14 real
+// Order is the order stages run in. Weights in each path sum to 1. `link` is the two quick whole-document passes (conflicts, regrouping), so it is
+// worth little. Trace linking and acceptance criteria are slow and count their own items; they are never `optional`, because an optional stage adds
+// nothing until it reports and the bar would then have to move back. Measured on 14 real
 // runs (docx, spreadsheet, text PDF, scanned PDF) with one local model: scoring and
 // trace linking take roughly two thirds of a run, the drafting passes a quarter.
 // The shares depend on the model and the hardware (a slower model made a single

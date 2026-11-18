@@ -1406,3 +1406,18 @@ def test_the_step_counts_its_own_items_through_the_stage_counter(monkeypatch) ->
     propose_acceptance_criteria([node], _study(), client, [], table_text=lambda _id: None)
 
     assert counter.calls == [("set_total", "criteria", 1), ("advance", "criteria", 1), ("complete", "criteria")]
+
+
+def test_a_step_with_nothing_to_propose_tells_the_counter_to_drop_the_stage(monkeypatch) -> None:  # noqa: ANN001
+    calls: list[tuple] = []
+
+    class _Counter:
+        def set_total(self, stage: str, total: int) -> None:
+            calls.append((stage, total))
+
+    monkeypatch.setattr("app.leveling.acceptance_criteria.current_stage_counter", lambda: _Counter())
+    already = _node("a", description='<p>The unit shall boot.</p><div data-r2a="criteria"></div>', issues=[Issue.NOT_TESTABLE])
+
+    propose_acceptance_criteria([already], _study(), _Client({}), [], table_text=lambda _id: None)
+
+    assert calls == [("criteria", 0)]

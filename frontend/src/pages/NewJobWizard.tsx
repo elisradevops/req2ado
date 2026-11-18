@@ -770,6 +770,7 @@ export function NewJobWizard(): React.ReactElement {
   // estimate; the OTHER mode's is still fetched (see the effect above) so
   // ModeCards can show both side by side, but the footer only needs one.
   const selectedEstimate = mode === 'baseline' ? baselineEstimate : surveyEstimate;
+  const estimateBasis = selectedEstimate && !cachedResult ? describeEstimateBasis(selectedEstimate) : null;
   const selectedEstimateLine = estimateLine(selectedEstimate, mode === 'survey' && cachedResult);
   // What a SURVEY run will spend in model tokens: not shown for a file served from the result cache, which spends none.
   const forecast = mode === 'survey' && !cachedResult ? surveyEstimate?.tokens : undefined;
@@ -870,9 +871,7 @@ export function NewJobWizard(): React.ReactElement {
                   <span className="font-mono text-metric font-semibold tabular-nums text-ink-1">{selectedEstimateLine.value}</span>
                   <span className="text-xs text-ink-3">{selectedEstimateLine.note}</span>
                   {/* The basis is said here once; the mode card shows the range only. */}
-                  {selectedEstimate && !cachedResult && describeEstimateBasis(selectedEstimate) && (
-                    <span className="basis-full text-meta text-ink-3">{describeEstimateBasis(selectedEstimate)}</span>
-                  )}
+                  {estimateBasis && <span className="basis-full text-meta text-ink-3">{estimateBasis}</span>}
                 </div>
               )}
               {forecastLine && (

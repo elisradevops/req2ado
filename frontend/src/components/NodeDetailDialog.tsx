@@ -317,10 +317,10 @@ export function NodeDetailDialog({
         setAssistantOpen((value) => !value);
       } else if (is('j') && hasNext && onNavigate) {
         event.preventDefault();
-        onNavigate?.('next');
+        onNavigate('next');
       } else if (is('k') && hasPrev && onNavigate) {
         event.preventDefault();
-        onNavigate?.('prev');
+        onNavigate('prev');
       } else if ((is('r') || is('a')) && review && !review.reviewed) {
         event.preventDefault();
         if (review.keepAsWritten) review.onKeyBlocked?.();
@@ -389,6 +389,8 @@ export function NodeDetailDialog({
   // dialog is short by default; NodeDetailPanel keeps Re-check quality / Score this item outside it.
   // A Requirement with a source location gets the Source column beside its text (decided from the location, known at once, not from the quote).
   const useSourcePane = isScoredType(entry.type) && !!entry.sourceRef;
+  const counts = descendantCountsByLocalId?.[entry.localId];
+  const hasChildren = !!counts && counts.epics + counts.features + counts.requirements > 0;
   const evidenceStrip = (quality: React.ReactNode) => (
     <EvidenceStrip entry={entry} jobId={jobId} jobMode={jobMode} kbCitations={kbCitations} collapsible quality={quality} sourceInPane={useSourcePane} />
   );
@@ -445,7 +447,7 @@ export function NodeDetailDialog({
       disabled={!canEdit}
       disabledReason={chatDisabledReason}
       categoryScores={entry.qualityStale ? null : entry.qualityCategoryScores}
-      hasChildren={(() => { const c = descendantCountsByLocalId?.[entry.localId]; return !!c && c.epics + c.features + c.requirements > 0; })()}
+      hasChildren={hasChildren}
       isCompound={entry.type === 'Requirement' && !entry.qualityStale && (entry.qualityIssues ?? []).includes('compound')}
       onAcceptProposal={(patch) =>
         onSave?.(entry.localId, {

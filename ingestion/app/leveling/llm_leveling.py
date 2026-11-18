@@ -36,6 +36,7 @@ from app.leveling.acceptance_criteria import (
     AcceptanceCriteriaClient,
     eligible_nodes,
     propose_acceptance_criteria,
+    skip_criteria_stage,
 )
 from app.leveling.baseline_structure import adopt_baseline_structure
 from app.leveling.conflict_detection import (
@@ -3349,6 +3350,7 @@ def _propose_criteria_step(
     when nothing is eligible, stops it and keeps the windows it had stored. Without one the proposals use the hierarchy alone, and when the study
     was wanted (`study_enabled` and a `study_client`) one warning says it could not be started: the document is never read on the job's thread."""
     if criteria_client is None or not eligible_nodes(nodes):
+        skip_criteria_stage()
         if study_handle is not None:
             study_handle.stop(keep_results=True)  # not needed: what is stored stays as the cache
         return

@@ -272,16 +272,16 @@ def _infer_trace_links_for_nodes(
     skipped_groups: list[tuple[list[dict], str]] = []
     any_answered = False
     chunks = list(_chunk_nodes(llm_nodes))
-    # The step counts its own chunks, so the run's percentage moves while links are being resolved (None unless live progress is on).
+    # The step counts its own items, so the run's percentage moves while links are being resolved (None unless live progress is on).
     counter = current_stage_counter()
     if counter is not None:
-        counter.set_total("trace", len(chunks))
+        counter.set_total("trace", len(llm_nodes))
     for chunk in chunks:
         answered, skipped = _infer_chunk_resilient(
             link_type_client, chunk, catalog, kb_context, user_id
         )
         if counter is not None:
-            counter.advance("trace", 1)
+            counter.advance("trace", len(chunk))
         for links in answered:
             any_answered = True
             raw_links.extend(links)

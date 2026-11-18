@@ -4,7 +4,7 @@
 // shared package for a ~4-line pure function, same precedent as
 // frontend/src/lib/canNest.ts (see that file's own doc comment for the
 // "five build-infrastructure changes for a ~10-line pure function" reasoning).
-const LOW_GROUNDING_THRESHOLD = 0.2;
+export const LOW_GROUNDING_THRESHOLD = 0.2;
 const LOW_QUALITY_THRESHOLD = 50;
 // SWEEP.md section 7: the scoring model's own abstain channel (see
 // ingestion's QualityConfidence docstring, app/workitem/model.py). A 'low'
