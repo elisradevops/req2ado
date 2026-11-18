@@ -30,7 +30,7 @@ interface StageWeight {
 }
 
 // Order is the order stages run in. Weights in each path sum to 1. `link` is the two quick whole-document passes (conflicts, regrouping), so it is worth
-// little; trace linking and acceptance criteria are slow and count their own items. Before they did, the bar sat at 89% for a fifth of a run. Measured on 14 real
+// little; trace linking and acceptance criteria are slow and count their own items. They always count (never `optional`): an optional stage adds nothing until it reports, so the bar filled to ~97% from the other stages and could not move back when they started. Before they did, the bar sat at 89% for a fifth of a run. Measured on 14 real
 // runs (docx, spreadsheet, text PDF, scanned PDF) with one local model: scoring and
 // trace linking take roughly two thirds of a run, the drafting passes a quarter.
 // The shares depend on the model and the hardware (a slower model made a single
@@ -50,8 +50,8 @@ export const PROGRESS_WEIGHTS: Record<ProgressPath, StageWeight[]> = {
     { stage: 'write', weight: 0.03, optional: true },
     { stage: 'score', weight: 0.3 },
     { stage: 'link', weight: 0.02 },
-    { stage: 'trace', weight: 0.12, optional: true },
-    { stage: 'criteria', weight: 0.1, optional: true },
+    { stage: 'trace', weight: 0.12, skippable: true },
+    { stage: 'criteria', weight: 0.1, skippable: true },
     { stage: 'dedup', weight: 0.02 },
   ],
   llm: [
@@ -61,8 +61,8 @@ export const PROGRESS_WEIGHTS: Record<ProgressPath, StageWeight[]> = {
     { stage: 'write', weight: 0.16 },
     { stage: 'score', weight: 0.37 },
     { stage: 'link', weight: 0.02 },
-    { stage: 'trace', weight: 0.13, optional: true },
-    { stage: 'criteria', weight: 0.1, optional: true },
+    { stage: 'trace', weight: 0.13, skippable: true },
+    { stage: 'criteria', weight: 0.1, skippable: true },
     { stage: 'dedup', weight: 0.02 },
   ],
   scan: [
@@ -72,8 +72,8 @@ export const PROGRESS_WEIGHTS: Record<ProgressPath, StageWeight[]> = {
     { stage: 'write', weight: 0.14 },
     { stage: 'score', weight: 0.29 },
     { stage: 'link', weight: 0.02 },
-    { stage: 'trace', weight: 0.13, optional: true },
-    { stage: 'criteria', weight: 0.1, optional: true },
+    { stage: 'trace', weight: 0.13, skippable: true },
+    { stage: 'criteria', weight: 0.1, skippable: true },
     { stage: 'dedup', weight: 0.02 },
   ],
 };
