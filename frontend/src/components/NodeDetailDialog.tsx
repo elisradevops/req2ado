@@ -422,6 +422,7 @@ export function NodeDetailDialog({
       addChildSlot={addChildSlot}
       hideSources
       hideEditButton
+      onAskAssistant={() => setAssistantOpen(true)}
       evidenceSlot={evidenceStrip}
       sourceSlot={useSourcePane ? <SourcePane entry={entry} jobId={jobId} /> : undefined}
       moveSlot={moveSlot}
@@ -451,6 +452,7 @@ export function NodeDetailDialog({
       disabledReason={chatDisabledReason}
       categoryScores={entry.qualityStale ? null : entry.qualityCategoryScores}
       hasChildren={hasChildren}
+      focusComposer
       isCompound={entry.type === 'Requirement' && !entry.qualityStale && (entry.qualityIssues ?? []).includes('compound')}
       onAcceptProposal={(patch) =>
         onSave?.(entry.localId, {
@@ -471,6 +473,12 @@ export function NodeDetailDialog({
       open={open}
       onOpenChange={onOpenChange}
       unpadded
+      // Escape closes the assistant first and the dialog only when it is already closed, so the reviewer keeps their place.
+      onEscapeKeyDown={(event) => {
+        if (!assistantOpen) return;
+        event.preventDefault();
+        setAssistantOpen(false);
+      }}
       maxWidthClassName="max-w-[1180px]"
       maxHeightClassName="h-[min(760px,calc(100vh-96px))]"
       title={

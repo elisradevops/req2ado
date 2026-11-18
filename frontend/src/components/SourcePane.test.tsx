@@ -12,6 +12,12 @@ describe('isSameAsSource', () => {
     expect(isSameAsSource('Same words', { kind: 'section', text: 'Same words' })).toBe(false);
   });
 
+  it('is true for a table row when one of its cells is the item text, and false when none is', () => {
+    const row = 'P-SENSOR-000# | Time sync source | The system shall synchronize to Standard-XX within N ms.';
+    expect(isSameAsSource('The system shall synchronize to Standard-XX within N ms.', { kind: 'table', text: row })).toBe(true);
+    expect(isSameAsSource('The system shall synchronize within 5 ms.', { kind: 'table', text: row })).toBe(false);
+  });
+
   it('compares Hebrew text by its letters too', () => {
     expect(isSameAsSource('היחידה תאתחל תוך 5 שניות.', { kind: 'text', text: 'היחידה תאתחל תוך 5 שניות' })).toBe(true);
   });

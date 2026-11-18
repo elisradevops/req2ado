@@ -48,11 +48,15 @@ export function useEntrySource(jobId: string | undefined, entry: DryRunDiffEntry
 // Letters and digits only, so "the same words" survives whitespace, punctuation and markdown marks, and nothing weaker passes.
 const lettersOf = (text: string): string => text.replace(/<[^>]*>/g, ' ').replace(/[^\p{L}\p{N}]+/gu, '').toLowerCase();
 
-// Whether the item's text is the source wording itself (BASELINE copies it): the quote is then redundant, so one line says so.
+// Whether the item's text is the source wording itself (BASELINE copies it, a table row included): the quote is then redundant, so one line says so.
 export function isSameAsSource(description: string, source: { kind: string; text: string; truncated?: boolean }): boolean {
-  if (source.kind !== 'text' || source.truncated) return false;
-  const quote = lettersOf(source.text);
-  return quote.length > 0 && quote === lettersOf(description);
+  if (source.truncated) return false;
+  const wanted = lettersOf(description);
+  if (wanted.length === 0) return false;
+  if (source.kind === 'text') return lettersOf(source.text) === wanted;
+  // A table row is quoted with its other cells (the ID, the parameter name); the item is the same as the source when one cell is its text.
+  if (source.kind === 'table') return source.text.split('|').some((cell) => lettersOf(cell) === wanted);
+  return false;
 }
 
 // The Source column of the item dialog (DESIGN.md §11.6): where the item came from and the original wording, beside the proposed text.

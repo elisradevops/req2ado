@@ -1,4 +1,4 @@
-import { WEAK_CATEGORY_SCORE } from './qualityCategories';
+import { categoryLabel, WEAK_CATEGORY_SCORE } from './qualityCategories';
 
 export interface ChatSuggestion {
   label: string;
@@ -38,6 +38,16 @@ const BY_CATEGORY: Record<string, (noun: string) => ChatSuggestion> = {
   }),
 };
 
+// A category the organisation defined itself (its own checklist) has no fixed wording: the suggestion names it as the user sees it.
+function ownCategory(key: string): (noun: string) => ChatSuggestion {
+  const label = categoryLabel(key).replace(/[.?!。]+$/, '');
+  return (noun) => ({
+    label: `Improve: ${label}`,
+    effect: `rewrite so this ${noun} meets that check`,
+    prompt: `Rewrite this ${noun} so it meets this check: ${label}. Change only what is needed for it.`,
+  });
+}
+
 // An Epic or Feature is judged from what is nested under it, which the chat is given (DESIGN.md §11.4.5): the suggestions say so, and are only
 // offered when something is nested there.
 function fromItsItems(noun: string): ChatSuggestion[] {
@@ -66,12 +76,12 @@ export function chatSuggestions(
   if (!scored && hasChildren) out.push(...fromItsItems(noun));
   if (scored) {
     const weak = Object.entries(categoryScores ?? {})
-      .filter(([key, score]) => Number.isFinite(score) && score < WEAK_CATEGORY_SCORE && BY_CATEGORY[key])
+      .filter(([, score]) => Number.isFinite(score) && score < WEAK_CATEGORY_SCORE)
       .sort((a, b) => a[1] - b[1] || (a[0] < b[0] ? -1 : 1))
       .map(([key]) => key);
     // A "compound" flag is the same fact as weak atomicity.
     if (compound && !weak.includes('atomicity')) weak.unshift('atomicity');
-    for (const key of weak.slice(0, 3)) out.push(BY_CATEGORY[key](noun));
+    for (const key of weak.slice(0, 3)) out.push((BY_CATEGORY[key] ?? ownCategory(key))(noun));
   }
   out.push({
     label: 'Suggest a better title',

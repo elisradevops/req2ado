@@ -107,6 +107,7 @@ export function NodeDetailPanel({
   addChildSlot,
   hideSources,
   hideEditButton,
+  onAskAssistant,
   evidenceSlot,
   sourceSlot,
   moveSlot,
@@ -167,6 +168,8 @@ export function NodeDetailPanel({
   hideSources?: boolean;
   // The dialog shows Edit in its own header; the panel keeps its button when it is used on its own.
   hideEditButton?: boolean;
+  // Opens the assistant from an issue's "Fix with assistant" button.
+  onAskAssistant?: () => void;
   // The dialog's evidence strip (file, location, "How this was scored"): drawn right after the item's text and any proposal or discussion, so
   // the source is next to what it supports and the long score panel comes after it.
   // A function receives the Quality panel's read-only body (gauge, score explanation, grounding line) so the strip can fold it into its
@@ -959,7 +962,7 @@ export function NodeDetailPanel({
           </Button>
         </div>
       )}
-      <IssuesList issues={issues} />
+      <IssuesList issues={issues} onAsk={onAskAssistant} />
       {duplicateSlot}
       {/* 'excluded' has no message of its own here -- the dialog header
           already shows a dedicated "Excluded from this run" badge right

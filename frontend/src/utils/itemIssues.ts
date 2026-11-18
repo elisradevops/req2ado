@@ -11,6 +11,8 @@ export interface ItemIssue {
   text: string;
   // The detail behind the sentence, shown under "Why".
   why?: string;
+  // The issue can be worked on with the assistant: the list offers a button when the caller can open it.
+  askable?: boolean;
 }
 
 export interface IssueEntry {
@@ -53,6 +55,7 @@ export function itemIssues(entry: IssueEntry): ItemIssue[] {
         issues.push({
           id: 'quality-low',
           severity: 'review',
+          askable: true,
           text: `Quality ${Math.round(entry.qualityScore)} of 100.${weakest ? ` Weakest: ${categoryLabel(weakest.key).toLowerCase().replace(/[.?!。]+$/, '')} (${Math.round(weakest.score)}).` : ''}`,
         });
       }
@@ -61,7 +64,7 @@ export function itemIssues(entry: IssueEntry): ItemIssue[] {
       }
     }
     if (entry.groundingScore != null && entry.groundingScore < LOW_GROUNDING_THRESHOLD) {
-      issues.push({ id: 'far-from-source', severity: 'review', text: 'The wording is far from the source text. Check it against the source.' });
+      issues.push({ id: 'far-from-source', severity: 'review', askable: true, text: 'The wording is far from the source text. Check it against the source.' });
     }
   }
 

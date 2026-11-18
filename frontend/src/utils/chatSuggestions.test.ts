@@ -28,6 +28,12 @@ describe('chatSuggestions', () => {
     expect(labels(chatSuggestions({}, true, 'requirement', true))[0]).toBe('Split into separate requirements');
   });
 
+  it('names a category the organisation defined itself, as the user sees it, instead of dropping it', () => {
+    const [own] = chatSuggestions({ 'Numerical limits include units, tolerances, and measurement point.': 30 }, true, 'requirement');
+    expect(own.label).toBe('Improve: Numerical limits include units, tolerances, and measurement point');
+    expect(own.prompt).toMatch(/meets this check: Numerical limits include/);
+  });
+
   it('offers an Epic or Feature suggestions drawn from the items nested under it, only when there are some', () => {
     expect(labels(chatSuggestions(null, false, 'epic', false, true))).toEqual([
       'Restate it from its items',

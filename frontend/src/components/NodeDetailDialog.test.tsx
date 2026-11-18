@@ -815,16 +815,27 @@ describe('NodeDetailDialog', () => {
     matchMediaSpy.mockRestore();
   });
 
-  it('opens the assistant with C, and a c typed in its composer does not toggle it', async () => {
+  it('opens the assistant with C and puts focus in its composer, so a c typed there does not toggle it', async () => {
     renderDialog({ onNavigate: vi.fn() });
     const { default: userEvent } = await import('@testing-library/user-event');
     await userEvent.keyboard('c');
-    expect(await screen.findByPlaceholderText(/ask the assistant/i)).toBeInTheDocument();
-    await userEvent.keyboard('{Escape}');
-    const input = screen.getByPlaceholderText(/ask the assistant/i);
-    input.focus();
+    const composer = await screen.findByPlaceholderText(/ask the assistant/i);
+    expect(composer).toHaveFocus();
     await userEvent.keyboard('c');
-    expect(screen.getByPlaceholderText(/ask the assistant/i)).toBeInTheDocument(); // typing a c did not toggle it
+    expect(screen.getByPlaceholderText(/ask the assistant/i)).toHaveValue('c');
+  });
+
+  it('closes only the assistant on Escape, and the dialog on the next Escape', async () => {
+    const onOpenChange = vi.fn();
+    renderDialog({ onOpenChange });
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await userEvent.click(screen.getByRole('button', { name: /^ask/i }));
+    await screen.findByPlaceholderText(/ask the assistant/i);
+    await userEvent.keyboard('{Escape}');
+    expect(screen.queryByPlaceholderText(/ask the assistant/i)).not.toBeInTheDocument();
+    expect(onOpenChange).not.toHaveBeenCalled();
+    await userEvent.keyboard('{Escape}');
+    expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 
   it('disables chat with a status-specific message once the job leaves diff_ready', async () => {

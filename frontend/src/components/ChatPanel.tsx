@@ -73,6 +73,7 @@ export function ChatPanel({
   categoryScores,
   isCompound,
   hasChildren = false,
+  focusComposer = false,
   onAcceptProposal,
   onDiscuss,
 }: {
@@ -92,6 +93,8 @@ export function ChatPanel({
   isCompound?: boolean;
   // Items are nested under this one: an Epic or Feature then gets suggestions drawn from them.
   hasChildren?: boolean;
+  // Focus goes to the composer when the panel opens (the drawer), so a keyboard user can type at once.
+  focusComposer?: boolean;
   onAcceptProposal: (patch: { title?: string; description?: string }) => void;
   // "To be discussed": park the proposal in the item's ADO Discussion, leaving its text as is. Absent = the button is not offered.
   // A rejection keeps the proposal card (the caller already told the user why).
@@ -670,6 +673,7 @@ export function ChatPanel({
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 placeholder="Ask the assistant to refine this item…"
+                autoFocus={focusComposer}
                 fullWidth
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {

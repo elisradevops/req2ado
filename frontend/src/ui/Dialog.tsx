@@ -56,6 +56,7 @@ export function Dialog({
   // control takes focus itself and a closing dialog must not steal it back).
   restoreFocus = true,
   describedById,
+  onEscapeKeyDown,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -70,6 +71,8 @@ export function Dialog({
   restoreFocus?: boolean;
   // Id of an element in the body that describes the dialog, for a caller that has no `description` of its own.
   describedById?: string;
+  // Called before Escape closes the dialog; `preventDefault()` keeps it open (a caller with a layer of its own to close first).
+  onEscapeKeyDown?: (event: KeyboardEvent) => void;
 }): React.ReactElement {
   const contentRef = useRef<HTMLDivElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
@@ -106,6 +109,7 @@ export function Dialog({
           ref={contentRef}
           // Spread only when given: an explicit undefined would override Radix's own link to the description.
           {...(describedById ? { 'aria-describedby': describedById } : {})}
+          onEscapeKeyDown={onEscapeKeyDown}
           onCloseAutoFocus={(event) => {
             event.preventDefault();
             const opener = openerRef.current;
