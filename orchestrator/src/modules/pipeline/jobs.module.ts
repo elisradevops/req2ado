@@ -16,6 +16,7 @@ import { JobEventPersistenceService } from './job-event-persistence.service';
 import { StaleJobWatchdogService } from './stale-job-watchdog.service';
 import { JobRetentionService } from './job-retention.service';
 import { EtaService } from './eta.service';
+import { CostEstimator, parseModelPrices } from './token-estimate';
 import { JobsService } from './jobs.service';
 import { McpClient } from './mcp.client';
 import { WorkItemTypeCatalogService } from './work-item-type-catalog.service';
@@ -152,6 +153,13 @@ const JOB_CACHED_RESULTS = 'JOB_CACHED_RESULTS';
           undefined,
           cachedResults,
         ),
+    },
+    {
+      // The wizard's pre-flight token and cost forecast. An invalid LLM_MODEL_PRICES stops the app at startup rather than silently showing no cost.
+      provide: 'COST_ESTIMATOR',
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) =>
+        new CostEstimator(parseModelPrices(config.get<string>('LLM_MODEL_PRICES')), config.get<number>('COST_CONFIRM_TOKENS') ?? 0, config.get<string>('LLM_CHAT_MODEL')),
     },
     {
       provide: 'SUMMARY_MAX_TOKENS',

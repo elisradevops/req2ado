@@ -29,6 +29,8 @@ describe('JobsController.preview', () => {
     const file = { buffer: Buffer.from('x'), originalname: 'req.docx', size: 4 } as Express.Multer.File;
     const result = await controller.preview(file, undefined, undefined);
 
+    // The document's size in tokens (headings 'Introduction' + 'Scope' only carry text here: 12 + 5 characters), for the cost forecast.
+    expect(result.documentTokens).toBe(Math.round(17 * 0.25));
     // P5: the content hash the result cache keys on, so the wizard can ask GET /jobs/cached-result once mode and model are chosen.
     expect(result.fileHash).toBe(createHash('sha256').update(file.buffer).digest('hex'));
 
@@ -54,6 +56,7 @@ describe('JobsController.preview', () => {
       depth: 2,
       fileType: 'docx',
       fileHash: expect.any(String),
+      documentTokens: expect.any(Number),
       estimate: { mode: 'baseline', estimateMinutes: 1 },
       tableCount: 1,
       openTbdCount: 0,
@@ -132,6 +135,7 @@ describe('JobsController.preview', () => {
       depth: 0,
       fileType: 'docx',
       fileHash: expect.any(String),
+      documentTokens: expect.any(Number),
       estimate: { mode: 'baseline', estimateMinutes: 1 },
       tableCount: 0,
       openTbdCount: 0,
@@ -946,6 +950,53 @@ describe('JobsController.getEstimate', () => {
 
     expect(etaService.estimate).toHaveBeenCalledWith(expect.objectContaining({ mode: 'baseline' }));
     expect(result.mode).toBe('baseline');
+  });
+});
+
+describe('JobsController.getEstimate token forecast', () => {
+  const build = (costEstimator?: unknown) => {
+    const etaService = { estimate: jest.fn().mockResolvedValue({ mode: 'survey', estimateMinutes: 42 }) };
+    const controller = new JobsController(
+      {} as any, {} as any, {} as any, {} as any, {} as any, etaService as any, 500 * 1024 * 1024,
+      undefined, undefined, undefined, undefined, costEstimator as any,
+    );
+    return { controller, etaService };
+  };
+  const forecast = { documentTokens: 100, requiresConfirmation: false };
+
+  it('adds the forecast to a SURVEY estimate when the document size is given, for the requested model and figure count', async () => {
+    const costEstimator = { estimate: jest.fn().mockReturnValue(forecast) };
+    const { controller, etaService } = build(costEstimator);
+
+    const result = await controller.getEstimate({ blockCount: '10', figureCount: '39', mode: 'survey', model: 'm1', documentTokens: '100' });
+
+    expect(costEstimator.estimate).toHaveBeenCalledWith({ documentTokens: 100, figureCount: 39, model: 'm1' });
+    expect(result).toEqual({ mode: 'survey', estimateMinutes: 42, tokens: forecast });
+    // The time estimate is asked exactly as before: the document size is not part of it.
+    expect(etaService.estimate).toHaveBeenCalledWith({ blockCount: 10, figureCount: 39, mode: 'survey', model: 'm1' });
+  });
+
+  it.each([
+    ['BASELINE, which calls no model', { mode: 'baseline', documentTokens: '100' }],
+    ['a request that gives no document size', { mode: 'survey' }],
+  ])('adds no forecast for %s', async (_label, extra) => {
+    const costEstimator = { estimate: jest.fn() };
+    const { controller } = build(costEstimator);
+
+    const result = await controller.getEstimate({ blockCount: '10', figureCount: '2', ...extra });
+
+    expect(result).not.toHaveProperty('tokens');
+    expect(costEstimator.estimate).not.toHaveBeenCalled();
+  });
+
+  it('adds no forecast when no estimator is wired (older callers)', async () => {
+    const { controller } = build(undefined);
+    expect(await controller.getEstimate({ blockCount: '10', figureCount: '2', mode: 'survey', documentTokens: '100' })).not.toHaveProperty('tokens');
+  });
+
+  it('rejects a negative document size', async () => {
+    const { controller } = build({ estimate: jest.fn() });
+    await expect(controller.getEstimate({ blockCount: '10', figureCount: '2', mode: 'survey', documentTokens: '-1' })).rejects.toThrow('Invalid query');
   });
 });
 

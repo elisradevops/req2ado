@@ -9,6 +9,8 @@ export const etaEstimateQuerySchema = z.object({
   figureCount: z.coerce.number().int().min(0),
   mode: z.enum(['baseline', 'survey']),
   model: z.string().optional(),
+  // The document's size in tokens (the preview returns it): lets the answer include a forecast of what a SURVEY run will spend.
+  documentTokens: z.coerce.number().int().min(0).optional(),
 });
 
 export type EtaEstimateQuery = z.infer<typeof etaEstimateQuerySchema>;
