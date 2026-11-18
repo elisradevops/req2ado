@@ -96,6 +96,7 @@ export function NodeDetailPanel({
   addChildSlot,
   hideSources,
   evidenceSlot,
+  sourceSlot,
   moveSlot,
   duplicateSlot,
   captionByFigureId,
@@ -157,6 +158,8 @@ export function NodeDetailPanel({
   // A function receives the Quality panel's read-only body (gauge, score explanation, grounding line) so the strip can fold it into its
   // "How this was scored" disclosure; the Re-check / Score this item line then stays outside it, in view.
   evidenceSlot?: React.ReactNode | ((quality: React.ReactNode) => React.ReactNode);
+  // The Source column, shown beside the proposed text in two columns when the pane is wide enough (container query), stacked under it otherwise.
+  sourceSlot?: React.ReactNode;
   // DESIGN.md §11.5 -- the keyboard-accessible "Move to..." control, owned/
   // wired by the caller (NodeDetailDialog builds the actual
   // MoveEntryControl) for the same reason addChildSlot is: this component
@@ -836,8 +839,103 @@ export function NodeDetailPanel({
       </>
     ) : null;
 
+  const proposedBody = (
+    <>
+      <div className="w-full text-read text-ink-2 [&>*]:max-w-[68ch] [&>*:dir(rtl)]:me-auto">
+          <DescriptionMarkdown>{entry.description}</DescriptionMarkdown>
+        </div>
+        <ProposalCard
+          key={entry.localId}
+          entry={entry}
+          canAccept={canEdit && !!onSetProposalAccepted}
+          lockedNote={
+            editability.editable
+              ? undefined
+              : editability.reason === 'written'
+                ? WRITTEN_NOTE
+                : editability.reason === 'matched'
+                ? 'This item already exists in Azure DevOps, so its description is not written.'
+                : editability.reason === 'excluded'
+                  ? 'This item is excluded, so nothing is written for it.'
+                  : 'This job is no longer in review, so the choice cannot be changed.'
+          }
+          onSetAccepted={onSetProposalAccepted}
+        />
+    </>
+  );
+
+  const figuresBlock = (
+    <>
+      {/* This entry's OWN referenced figure(s) -- distinct from the
+            document-wide FigureDescriptions panel (JobDetail.tsx), which
+            lists every figure in the source file regardless of which
+            requirement(s) cited it. Gives the reviewer the actual image next
+            to a description that only names it in text (e.g. "Figure: This
+            diagram illustrates..."), plus a manual retry/backfill for ADO
+            attachment -- confirm()'s own automatic attach only ever runs
+            once, at confirm() time, so a 'reuse'/'dedup_skip' entry (which
+            never goes through that create/writeback path) or a job already
+            'succeeded' before this figure's attachment succeeded has no
+            other way to get it attached. See JobsService.attachFigureToAdo's
+            own doc comment. */}
+        {((jobId && entry.figureIds && entry.figureIds.length > 0) || visibleUncaptionedFigureIds.length > 0) && (
+          <div className="mt-1">
+            <span ref={figuresHeadingRef} tabIndex={-1} className="text-xs font-semibold text-ink-2 outline-none">
+              Figures
+            </span>
+            {jobId && entry.figureIds && entry.figureIds.length > 0 && (
+              <ul className="mt-1 flex flex-col gap-2">
+                {entry.figureIds.map((figureId) => renderFigureCard(entry, figureId, jobId, false))}
+              </ul>
+            )}
+            {/* Uncaptioned figures -- disjoint from figureIds above (a figure
+                id is in exactly one of the two lists). These sit immediately
+                below the captioned figures' full image cards, not in a
+                separate/collapsed section, because the whole point is making a
+                silently-dropped figure visible to a reviewer without them
+                needing to go looking for it. With a jobId each gets the same
+                image card as above, since it is still attached to this item
+                at write time and placement is positional; without one, only
+                the chip is possible.
+                insignificantFigureIds are filtered out of
+                visibleUncaptionedFigureIds entirely -- those are the vision
+                model CORRECTLY judging a figure decorative/non-technical, not
+                a failure, so every id left here is a genuine vision_failed
+                case (or, when the whole run had vision disabled, already
+                explained once at the tree level by the
+                vision_captioning_disabled warning -- see JobDetail's warnings
+                panel). */}
+            {visibleUncaptionedFigureIds.length > 0 &&
+              (jobId ? (
+                <>
+                  {undescribedFigureCount > 1 && <p className="mt-2 text-xs text-ink-3">{noDescriptionHint}</p>}
+                  <ul className="mt-2 flex flex-col gap-2">
+                    {visibleUncaptionedFigureIds.map((figureId) => renderFigureCard(entry, figureId, jobId, true))}
+                  </ul>
+                </>
+              ) : (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {visibleUncaptionedFigureIds.map((figureId) => (
+                    <Tooltip key={figureId} content={noDescriptionHint}>
+                      {/* Same warning-band treatment QualityGauge's "Needs
+                          review" chip uses (bg-warning-soft + border-warning-
+                          border + text-warning-ink) -- reused, not a new color,
+                          so "amber" means the same thing everywhere in this
+                          app. */}
+                      <Chip className="border border-warning-border bg-warning-soft text-warning-ink">
+                        Figure {figureId}: no description
+                      </Chip>
+                    </Tooltip>
+                  ))}
+                </div>
+              ))}
+          </div>
+        )}
+    </>
+  );
+
   return (
-    <div ref={panelRootRef} tabIndex={-1} data-node-detail-panel className="flex flex-col gap-3 p-5 outline-none">
+    <div ref={panelRootRef} tabIndex={-1} data-node-detail-panel className="@container flex flex-col gap-3 p-5 outline-none">
       {/* Edit sits right next to the title it edits -- it used to be a lone
           button at the very bottom of the pane, past description/quality/
           trace-links/sources, disconnected from what it acts on. */}
@@ -910,26 +1008,20 @@ export function NodeDetailPanel({
       {/* The 68ch measure sits on each block, not the wrapper, so a right-to-left
           block (:dir(rtl), resolved from dir="auto") can anchor to the pane's
           right edge instead of the right edge of a 68ch box. */}
-      <div className="w-full text-read text-ink-2 [&>*]:max-w-[68ch] [&>*:dir(rtl)]:me-auto">
-        <DescriptionMarkdown>{entry.description}</DescriptionMarkdown>
-      </div>
-      <ProposalCard
-        key={entry.localId}
-        entry={entry}
-        canAccept={canEdit && !!onSetProposalAccepted}
-        lockedNote={
-          editability.editable
-            ? undefined
-            : editability.reason === 'written'
-              ? WRITTEN_NOTE
-              : editability.reason === 'matched'
-              ? 'This item already exists in Azure DevOps, so its description is not written.'
-              : editability.reason === 'excluded'
-                ? 'This item is excluded, so nothing is written for it.'
-                : 'This job is no longer in review, so the choice cannot be changed.'
-        }
-        onSetAccepted={onSetProposalAccepted}
-      />
+      {sourceSlot ? (
+        <div className="grid min-w-0 gap-4 @4xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] @4xl:gap-6">
+          <section aria-labelledby={`proposed-${entry.localId}`} className="flex min-w-0 flex-col gap-3">
+            <h3 id={`proposed-${entry.localId}`} className={cn(LABEL_MICRO, 'text-ink-2')}>
+              Proposed
+            </h3>
+            {proposedBody}
+            {figuresBlock}
+          </section>
+          {sourceSlot}
+        </div>
+      ) : (
+        proposedBody
+      )}
       {entry.discussion && entry.discussion.length > 0 && (
         <div className="flex flex-col gap-1.5 rounded-sm border border-hairline bg-surface-alt p-2.5">
           <span className={LABEL_MICRO}>To be discussed</span>
@@ -1042,71 +1134,7 @@ export function NodeDetailPanel({
           <SourceProvenance sourceRef={entry.sourceRef} showScoringNote={entry.type === 'Requirement'} kbCitations={kbCitations} />
         </div>
       )}
-      {/* This entry's OWN referenced figure(s) -- distinct from the
-          document-wide FigureDescriptions panel (JobDetail.tsx), which
-          lists every figure in the source file regardless of which
-          requirement(s) cited it. Gives the reviewer the actual image next
-          to a description that only names it in text (e.g. "Figure: This
-          diagram illustrates..."), plus a manual retry/backfill for ADO
-          attachment -- confirm()'s own automatic attach only ever runs
-          once, at confirm() time, so a 'reuse'/'dedup_skip' entry (which
-          never goes through that create/writeback path) or a job already
-          'succeeded' before this figure's attachment succeeded has no
-          other way to get it attached. See JobsService.attachFigureToAdo's
-          own doc comment. */}
-      {((jobId && entry.figureIds && entry.figureIds.length > 0) || visibleUncaptionedFigureIds.length > 0) && (
-        <div className="mt-1">
-          <span ref={figuresHeadingRef} tabIndex={-1} className="text-xs font-semibold text-ink-2 outline-none">
-            Figures
-          </span>
-          {jobId && entry.figureIds && entry.figureIds.length > 0 && (
-            <ul className="mt-1 flex flex-col gap-2">
-              {entry.figureIds.map((figureId) => renderFigureCard(entry, figureId, jobId, false))}
-            </ul>
-          )}
-          {/* Uncaptioned figures -- disjoint from figureIds above (a figure
-              id is in exactly one of the two lists). These sit immediately
-              below the captioned figures' full image cards, not in a
-              separate/collapsed section, because the whole point is making a
-              silently-dropped figure visible to a reviewer without them
-              needing to go looking for it. With a jobId each gets the same
-              image card as above, since it is still attached to this item
-              at write time and placement is positional; without one, only
-              the chip is possible.
-              insignificantFigureIds are filtered out of
-              visibleUncaptionedFigureIds entirely -- those are the vision
-              model CORRECTLY judging a figure decorative/non-technical, not
-              a failure, so every id left here is a genuine vision_failed
-              case (or, when the whole run had vision disabled, already
-              explained once at the tree level by the
-              vision_captioning_disabled warning -- see JobDetail's warnings
-              panel). */}
-          {visibleUncaptionedFigureIds.length > 0 &&
-            (jobId ? (
-              <>
-                {undescribedFigureCount > 1 && <p className="mt-2 text-xs text-ink-3">{noDescriptionHint}</p>}
-                <ul className="mt-2 flex flex-col gap-2">
-                  {visibleUncaptionedFigureIds.map((figureId) => renderFigureCard(entry, figureId, jobId, true))}
-                </ul>
-              </>
-            ) : (
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {visibleUncaptionedFigureIds.map((figureId) => (
-                  <Tooltip key={figureId} content={noDescriptionHint}>
-                    {/* Same warning-band treatment QualityGauge's "Needs
-                        review" chip uses (bg-warning-soft + border-warning-
-                        border + text-warning-ink) -- reused, not a new color,
-                        so "amber" means the same thing everywhere in this
-                        app. */}
-                    <Chip className="border border-warning-border bg-warning-soft text-warning-ink">
-                      Figure {figureId}: no description
-                    </Chip>
-                  </Tooltip>
-                ))}
-              </div>
-            ))}
-        </div>
-      )}
+      {!sourceSlot && figuresBlock}
       {/* Tables folded into this node -- sibling of Figures above, but with
           no image/upload treatment: a table's content already renders as a
           real HTML <table> via DescriptionMarkdown elsewhere in this same

@@ -63,18 +63,29 @@ describe('NodeDetailDialog', () => {
     vi.mocked(jobsApi.getFigureFile).mockResolvedValue(null);
   });
 
-  it('shows the evidence strip once, and not a second Sources block in the details', () => {
+  it('shows the source once, in its own Source column beside the proposed text, and not a second Sources block', () => {
     renderDialog({ entry: { ...ENTRY, sourceRef: { documentPath: 'spec.docx', startOffset: 0, endOffset: 5, page: 2 } } });
-    expect(screen.getByRole('region', { name: 'Evidence' })).toBeInTheDocument();
+    const source = screen.getByRole('region', { name: 'Source' });
+    expect(source).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Proposed' })).toBeInTheDocument();
     expect(screen.getAllByText('spec.docx')).toHaveLength(1);
+    expect(source).toHaveTextContent('spec.docx');
     expect(screen.queryByText('Sources')).not.toBeInTheDocument();
   });
 
-  it('puts the requirement text before the evidence, so the decision text is not buried under metadata (R3)', () => {
+  it('keeps the reading order the screen shows: the proposed text first, then the source (no CSS reordering)', () => {
     renderDialog({ entry: { ...ENTRY, sourceRef: { documentPath: 'spec.docx', startOffset: 0, endOffset: 5, page: 2 } } });
     const text = screen.getByText('Req body');
-    const evidence = screen.getByRole('region', { name: 'Evidence' });
-    expect(text.compareDocumentPosition(evidence) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const source = screen.getByRole('region', { name: 'Source' });
+    expect(text.compareDocumentPosition(source) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('has no Source column for an item without a source location, or for an Epic', () => {
+    const { unmount } = renderDialog({ entry: { ...ENTRY, sourceRef: undefined } });
+    expect(screen.queryByRole('region', { name: 'Source' })).not.toBeInTheDocument();
+    unmount();
+    renderDialog({ entry: { ...ENTRY, type: 'Epic', sourceRef: { documentPath: 'spec.docx', startOffset: 0, endOffset: 5, page: 2 } } });
+    expect(screen.queryByRole('region', { name: 'Source' })).not.toBeInTheDocument();
   });
 
   describe('the Quality panel folds into "How this was scored" (one closed disclosure, one level)', () => {

@@ -8,6 +8,8 @@ import { WorkItemTypeBadge } from './WorkItemTypeBadge';
 import { ActionBadge } from './ActionBadge';
 import { NodeDetailPanel, canEditEntry } from './NodeDetailPanel';
 import { EvidenceStrip } from './EvidenceStrip';
+import { SourcePane } from './SourcePane';
+import { isScoredType } from '../utils/diffFlagging';
 import { AddChildCard } from './AddChildCard';
 import { ChatPanel } from './ChatPanel';
 import { MoveToPicker, type MoveToPickerCandidate } from './MoveToPicker';
@@ -385,8 +387,10 @@ export function NodeDetailDialog({
 
   // The Quality panel's read-only body folds into the strip's one closed "How this was scored" disclosure (DESIGN.md §11.4), so the
   // dialog is short by default; NodeDetailPanel keeps Re-check quality / Score this item outside it.
+  // A Requirement with a source location gets the Source column beside its text (decided from the location, known at once, not from the quote).
+  const useSourcePane = isScoredType(entry.type) && !!entry.sourceRef;
   const evidenceStrip = (quality: React.ReactNode) => (
-    <EvidenceStrip entry={entry} jobId={jobId} jobMode={jobMode} kbCitations={kbCitations} collapsible quality={quality} />
+    <EvidenceStrip entry={entry} jobId={jobId} jobMode={jobMode} kbCitations={kbCitations} collapsible quality={quality} sourceInPane={useSourcePane} />
   );
 
   const keyHints: Array<[string, string]> = [
@@ -414,6 +418,7 @@ export function NodeDetailDialog({
       addChildSlot={addChildSlot}
       hideSources
       evidenceSlot={evidenceStrip}
+      sourceSlot={useSourcePane ? <SourcePane entry={entry} jobId={jobId} /> : undefined}
       moveSlot={moveSlot}
       duplicateSlot={duplicateSlot}
       captionByFigureId={captionByFigureId}

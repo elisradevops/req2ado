@@ -5,47 +5,9 @@ import { SourceProvenance } from './SourceProvenance';
 import { Disclosure } from '../ui/Disclosure';
 import { clampScore } from './QualityGauge';
 import type { KbCitation } from './KbCitationChips';
-import { useEffect, useState } from 'react';
-import { getEntrySource, type EntrySource } from '../api/jobs';
+import { SOURCE_KIND_LABEL, useEntrySource } from './SourcePane';
 import { Skeleton, useSkeletonCrossfade } from '../ui/Skeleton';
 import { cn } from '../lib/cn';
-
-const SOURCE_KIND_LABEL: Record<'text' | 'table' | 'section', string> = {
-  text: 'Source wording',
-  table: 'From a table in the source',
-  // A SURVEY item is written from its section, not copied from one sentence of it.
-  section: 'Written from this part of the source',
-};
-
-// The item's original wording, fetched when the dialog shows the item. undefined while loading, null when there is none to show
-// (unavailable, or the request failed). Keyed by job and item: when J/K moves on before an answer arrives, the late answer is
-// dropped twice over (the effect's cleanup flag, and the key check), so item A's words never appear under item B.
-function useEntrySource(jobId: string | undefined, entry: DryRunDiffEntry): Extract<EntrySource, { text: string }> | null | undefined {
-  const key = jobId && entry.sourceRef ? `${jobId}\u0000${entry.localId}` : null;
-  const [answer, setAnswer] = useState<{ key: string; source: Extract<EntrySource, { text: string }> | null } | null>(null);
-  useEffect(() => {
-    if (!key || !jobId) return;
-    const controller = new AbortController();
-    let current = true;
-    // Through a resolved promise, so even a synchronous throw lands in the failure branch and never breaks the dialog.
-    Promise.resolve()
-      .then(() => getEntrySource(jobId, entry.localId, controller.signal))
-      .then(
-        (source) => {
-          if (current) setAnswer({ key, source: source && source.kind !== 'unavailable' ? source : null });
-        },
-        () => {
-          if (current) setAnswer({ key, source: null });
-        },
-      );
-    return () => {
-      current = false;
-      controller.abort();
-    };
-  }, [key, jobId, entry.localId]);
-  if (!key) return null;
-  return answer && answer.key === key ? answer.source : undefined;
-}
 
 // What a reviewer needs to judge an item without leaving the dialog: where it came from, which
 // KB documents informed its score, and where it scored worst. Shown for every item, clean ones
@@ -63,6 +25,7 @@ export function EvidenceStrip({
   kbCitations,
   collapsible = false,
   quality,
+  sourceInPane = false,
 }: {
   entry: DryRunDiffEntry;
   // The item's job: with it, the strip quotes the item's original wording (GET /jobs/:id/diff/:localId/source). Without it, the plain line.
@@ -75,7 +38,9 @@ export function EvidenceStrip({
   // The item's Quality panel (gauge, score explanation, grounding line), folded into the same disclosure after the weakest area. Its
   // actions that change state (Re-check quality, Score this item) are the caller's to keep outside, in view.
   quality?: React.ReactNode;
-}): React.ReactElement {
+  // The dialog shows the location and the quote in its own Source column (SourcePane), so the collapsible strip keeps only the scoring disclosure.
+  sourceInPane?: boolean;
+}): React.ReactElement | null {
   // Only Requirements are scored: an Epic or Feature never names a weakest area, whatever its stored data holds.
   const weakest = entry.qualityStale || !isScoredType(entry.type) ? null : weakestCategory(entry.qualityCategoryScores, entry.qualityCategoryChecklist);
   // Knowledge-base references explain a score, so an unscored Epic or Feature has none to show.
@@ -140,11 +105,12 @@ export function EvidenceStrip({
       summaryParts.push(`Quality ${clampScore(entry.qualityScore)} of 100${entry.qualityStale ? ', from before your edit' : ''}`);
     }
     if (weakest) summaryParts.push(`Weakest area: ${categoryLabel(weakest.key).replace(/[.。]$/, '')}, ${weakest.score} of 100`);
+    if (sourceInPane && !hasWhy) return null;
     return (
       <section aria-label="Evidence" className="flex flex-col gap-2 rounded-sm border border-hairline bg-surface-alt p-3 text-sm">
-        {entry.sourceRef && <SourceProvenance sourceRef={entry.sourceRef} showScoringNote={false} />}
-        {!entry.sourceRef && <p className="text-xs text-ink-3">No source location recorded.</p>}
-        {sourceLine}
+        {!sourceInPane && entry.sourceRef && <SourceProvenance sourceRef={entry.sourceRef} showScoringNote={false} />}
+        {!sourceInPane && !entry.sourceRef && <p className="text-xs text-ink-3">No source location recorded.</p>}
+        {!sourceInPane && sourceLine}
         {hasWhy && (
           <Disclosure
             title="How this was scored"
