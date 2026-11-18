@@ -613,7 +613,17 @@ export async function runPipelineJob(
           // Resolved fresh per job from job.userId -- never reused across jobs at this call site (the factory has its own
           // per-user cache). See PipelineWorkerDeps.openWebUiClientFactory's doc comment: a shared client would leak credentials.
           getClient: () => openWebUiClientFactory.getClientFor(primerUserId),
-          cache: primerCacheRedis,
+          // Indexed under this job, so deleting the job also removes the overview it saved (see JobResultCache.forget).
+          cache: deps.resultCache
+            ? {
+                get: (key) => primerCacheRedis.get(key),
+                set: async (key, value, mode, ttl) => {
+                  const written = await primerCacheRedis.set(key, value, mode, ttl);
+                  if (key.startsWith('primer:')) await deps.resultCache!.track(job.id, key);
+                  return written;
+                },
+              }
+            : primerCacheRedis,
           narrate: (narration) =>
             deps.jobEventsPublisher.publishNarration(job.id, { phase: 'primer', blocksDone: 0, blocksTotal: 0, ...narration }),
           options: deps.primerOptions ?? DEFAULT_PRIMER_OPTIONS,

@@ -31,6 +31,9 @@ import { BatchController } from '../batch/batch.controller';
 import { BatchService } from '../batch/batch.service';
 import { BatchPumpService } from '../batch/batch-pump.service';
 
+/** DI token of the JobResultCache JobsService.delete() uses to remove a deleted job's cached results. */
+const JOB_CACHED_RESULTS = 'JOB_CACHED_RESULTS';
+
 @Module({
   imports: [ConfigModule, LlmModule, AuthModule],
   controllers: [JobsController, AdoController, JobEventsController, BackfillController, BatchController, DedupDecisionsController],
@@ -95,8 +98,19 @@ import { BatchPumpService } from '../batch/batch-pump.service';
         }),
     },
     {
+      // The store the worker's result cache and document-overview cache live in; JobsService.delete() clears a job's entries from it.
+      provide: JOB_CACHED_RESULTS,
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => {
+        const redis = new Redis(config.get<string>('REDIS_URL')!);
+        // eslint-disable-next-line no-console -- no structured logger in this module yet
+        redis.on('error', (err) => console.error('JobCachedResults Redis error:', err));
+        return new JobResultCache(redis as unknown as ResultCacheStore, 'forget-only', false);
+      },
+    },
+    {
       provide: JobsService,
-      inject: [PrismaClient, McpClient, IdempotencyService, IngestionHttpClient, JobEventsPublisher, ConfigService],
+      inject: [PrismaClient, McpClient, IdempotencyService, IngestionHttpClient, JobEventsPublisher, ConfigService, JOB_CACHED_RESULTS],
       useFactory: (
         prisma: PrismaClient,
         mcpClient: McpClient,
@@ -104,6 +118,7 @@ import { BatchPumpService } from '../batch/batch-pump.service';
         ingestionClient: IngestionHttpClient,
         jobEventsPublisher: JobEventsPublisher,
         config: ConfigService,
+        cachedResults: JobResultCache,
       ) =>
         new JobsService(
           prisma,
@@ -133,6 +148,9 @@ import { BatchPumpService } from '../batch/batch-pump.service';
             ?.split(',')
             .map((s) => s.trim())
             .filter(Boolean),
+          // undefined keeps JobsService's own default for seCoverageRefFieldCandidates, which sits before cachedResults.
+          undefined,
+          cachedResults,
         ),
     },
     {

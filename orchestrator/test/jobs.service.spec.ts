@@ -5151,6 +5151,54 @@ describe('JobsService.delete', () => {
   );
 });
 
+describe('JobsService.delete cached results', () => {
+  const prismaFor = () => ({
+    job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'succeeded' }), delete: jest.fn().mockResolvedValue(undefined) },
+    chatMessage: { deleteMany: jest.fn() },
+    createdItemMapping: { deleteMany: jest.fn() },
+    dedupSkipAudit: { deleteMany: jest.fn() },
+    auditEntry: { deleteMany: jest.fn() },
+    jobSourceFile: { deleteMany: jest.fn() },
+    jobFigureFile: { deleteMany: jest.fn() },
+    jobEvent: { deleteMany: jest.fn() },
+    jobTraceLinkFailure: { deleteMany: jest.fn() },
+    jobTokenUsage: { deleteMany: jest.fn() },
+    $transaction: jest.fn(async (ops: unknown[]) => Promise.all(ops)),
+  });
+
+  it("removes the job's stored result and overview after its rows are gone, so a re-run starts clean", async () => {
+    const forget = jest.fn().mockResolvedValue(undefined);
+    const prisma = prismaFor();
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused', undefined, undefined, undefined, undefined, undefined, undefined, undefined, { forget });
+
+    await service.delete('job-1');
+
+    expect(forget).toHaveBeenCalledWith('job-1');
+    expect(prisma.$transaction.mock.invocationCallOrder[0]).toBeLessThan(forget.mock.invocationCallOrder[0]);
+  });
+
+  it('does not clear anything when the job cannot be deleted', async () => {
+    const forget = jest.fn();
+    const prisma = { job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'running' }) } };
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused', undefined, undefined, undefined, undefined, undefined, undefined, undefined, { forget });
+
+    await expect(service.delete('job-1')).rejects.toThrow('cannot be deleted');
+    expect(forget).not.toHaveBeenCalled();
+  });
+});
+
+describe('JobsService.getTokenUsage', () => {
+  it("reads only that job's ledger rows, largest input first", async () => {
+    const rows = [{ stage: 'propose_acceptance_criteria', model: 'm1', calls: 54, promptTokens: 270000, completionTokens: 60000, cachedTokens: 0, reasoningTokens: 0 }];
+    const findMany = jest.fn().mockResolvedValue(rows);
+    const service = new JobsService({ jobTokenUsage: { findMany } } as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    await expect(service.getTokenUsage('job-1')).resolves.toBe(rows);
+
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { jobId: 'job-1' }, orderBy: [{ promptTokens: 'desc' }, { stage: 'asc' }] }));
+  });
+});
+
 describe('JobsService.storeFigureFile', () => {
   afterEach(() => {
     jest.restoreAllMocks();

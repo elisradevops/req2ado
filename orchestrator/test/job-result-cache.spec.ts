@@ -12,6 +12,10 @@ const memoryStore = (): ResultCacheStore & { data: Map<string, string>; sets: nu
       store.sets += 1;
       return 'OK';
     },
+    del: async (...keys: string[]) => {
+      keys.forEach((k) => data.delete(k));
+      return keys.length;
+    },
   };
   return store;
 };
@@ -178,5 +182,53 @@ import { releaseVersion } from '../src/modules/pipeline/result-cache';
 describe('releaseVersion', () => {
   it('reads the version of the running release from its package.json (not from an npm variable a worker process may lack)', () => {
     expect(releaseVersion()).toMatch(/^\d+\.\d+\.\d+/);
+  });
+});
+
+describe('JobResultCache.forget', () => {
+  it('removes the stored result and the overview a job created, and nothing another job created', async () => {
+    const store = memoryStore();
+    const cache = new JobResultCache(store, 'code-1');
+    const mine = cache.keyFor(parts);
+    const theirs = cache.keyFor({ ...parts, fileHash: 'f2' });
+    await cache.save(mine, { ...result, sourceJobId: 'job-1' });
+    await cache.save(theirs, { ...result, sourceJobId: 'job-2' });
+    await cache.track('job-1', 'primer:model:abc');
+    store.data.set('primer:model:abc', 'overview');
+
+    await cache.forget('job-1');
+
+    expect(await cache.lookup(mine)).toBeUndefined();
+    expect(store.data.has('primer:model:abc')).toBe(false);
+    expect(await cache.lookup(theirs)).toEqual({ ...result, sourceJobId: 'job-2' });
+    expect([...store.data.keys()].some((k) => k.includes('job-1'))).toBe(false);
+  });
+
+  it('keeps every key when one job saves under two (the rubric changed mid-run)', async () => {
+    const store = memoryStore();
+    const cache = new JobResultCache(store, 'code-1');
+    const first = cache.keyFor(parts);
+    const second = cache.keyFor({ ...parts, profileVersion: 'p2' });
+    await cache.save(first, { ...result, sourceJobId: 'job-1' });
+    await cache.save(second, { ...result, sourceJobId: 'job-1' });
+    await cache.forget('job-1');
+    expect(await cache.lookup(first)).toBeUndefined();
+    expect(await cache.lookup(second)).toBeUndefined();
+  });
+
+  it('indexes the overview even when the result cache is switched off', async () => {
+    const store = memoryStore();
+    const cache = new JobResultCache(store, 'code-1', false);
+    await cache.track('job-1', 'primer:model:abc');
+    store.data.set('primer:model:abc', 'overview');
+    await cache.forget('job-1');
+    expect(store.data.has('primer:model:abc')).toBe(false);
+  });
+
+  it('never throws: a store without delete, or one that fails, leaves the entries to expire', async () => {
+    await expect(new JobResultCache({ get: async () => null, set: async () => 'OK' }, 'c').forget('job-1')).resolves.toBeUndefined();
+    const broken: ResultCacheStore = { get: async () => { throw new Error('redis down'); }, set: async () => 'OK', del: async () => 0 };
+    jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    await expect(new JobResultCache(broken, 'c').forget('job-1')).resolves.toBeUndefined();
   });
 });

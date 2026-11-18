@@ -264,6 +264,8 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     // org until this is explicitly configured, and seCoverageRef simply
     // never reaches ADO until then.
     private readonly seCoverageRefFieldCandidates: string[] = DEFAULT_SE_COVERAGE_REF_FIELD_CANDIDATES,
+    // Trailing, same placement reasoning as above. Absent: delete() leaves the cached results to expire on their own.
+    private readonly cachedResults?: { forget(jobId: string): Promise<void> },
   ) {
     this.queue = logQueueErrors(new Queue('req2ado-pipeline', { connection: { url: redisUrl } as any }), 'req2ado-pipeline');
   }
@@ -2144,6 +2146,9 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       this.prisma.jobTokenUsage.deleteMany({ where: { jobId: id } }),
       this.prisma.job.delete({ where: { id } }),
     ]);
+    // After the rows are gone: the job's stored SURVEY result and document overview must not outlive it, or a re-run of the same file
+    // would still be served from them. Best-effort (forget never throws); IdempotencyMapping stays, see the comment above.
+    await this.cachedResults?.forget(id);
     return { deleted: true };
   }
 
