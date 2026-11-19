@@ -3197,6 +3197,10 @@ and is absent, not disabled, when the job is closed (§16.22).
 
 #### §11.4.4 — Re-check quality after an edit
 
+**Amended 2026-11-20 (§11.4.6).** After a reviewer accepts an assistant's suggestion for a scored Requirement, one re-score runs automatically, and an
+Undo restores the previous text with its stored scores. Every other text edit still goes stale and waits for "Re-check quality".
+
+
 **This closes the gap logged in §11.4.2 and removes the §14 exclusion.** It is
 **not a frontend change.** It requires a new ingestion route and a new
 orchestrator route, and it has a prerequisite that is easy to miss (below). Any
@@ -3377,6 +3381,50 @@ Issues: one line each, absent when clean ─────────────
   grounding, no score, no "aren't scored" sentence anywhere**: they are not scored (pipeline, same change), and a flag that depends on a
   score or on grounding is Requirement-only everywhere (the tree, the queue, the dialog and the server's summary share one rule).
 - Category names are shown in words ("Capability clarity"), never as the stored key.
+
+#### §11.4.6 — Reviewing an assistant's suggestion next to the original (2026-11-20)
+
+A suggested rewrite used to appear only as a small card in the 380 px chat drawer: the suggested title and text, one line "Predicted score: 45 → 78",
+and no sign of the original. The reviewer could not see what changed, and the numbers hid on the far side of the drawer. This section replaces that card.
+
+**Where it lives.** The comparison is shown in the dialog body, in place of the Proposed column ("review mode"), with the Source column beside it, so
+the first check ("is it still faithful to the source?") needs no scrolling. The chat drawer keeps only a summary card (the predicted grade, a warning
+count and a "Review change" button). The proposal and its check belong to the dialog, not to `ChatPanel`, so they survive closing the drawer and
+stepping to another item (§11.4.0 still unmounts `ChatPanel` with the drawer). Below `lg` review mode replaces the body, with a "Back to chat" button.
+Below 56rem of dialog width the Source drops under the comparison.
+
+**The comparison.** The title is always two lines, "Was" and "Now". The description is compared by words, never by characters: first the text is split
+into blocks (paragraphs, list items, trusted `<table>` blocks), then the words inside matching blocks are compared as Unicode words (`Intl.Segmenter`),
+so a Hebrew prefix letter does not break a match; a number or an identifier is one token, so a dropped "461G" is one deletion. A table whose rows and
+columns are unchanged is compared cell by cell, otherwise both versions are shown. Deletions are `<del>` (strikethrough and a red tint), insertions are
+`<ins>` (underline and a green tint), each with hidden "deleted" / "inserted" text, and a summary line says how many changes there are. Marks isolate
+their text direction, and each block sets its own (`dir="auto"`). The "Changes" view is the default when at most about 40% of the words changed; past that,
+or beyond 20 000 tokens, "Side by side" shows both versions in full and says why. The reviewer's last choice is remembered.
+
+**The grade.** Only a Requirement's description is scored, so only that has a grade; titles are not scored and Epics and Features are not scored at all
+(§11.4.1). The strip says it is a prediction, from the same scorer as the item's own score: "Predicted 45 → 78, up 33." A change of 5 or less is
+noise ("about the same"). Category rows show the changed categories (a difference above 5, at most four) as "Testability 35 → 80". States and their
+exact words: predicting, "Predicting the suggestion's score… 12 s"; late (over a minute), "Still predicting (75 s). You can apply without it; the
+score appears here if it arrives."; unavailable, "No predicted score: the scorer did not answer. The warnings below still apply."; a title-only suggestion,
+"Titles are not scored. The text is unchanged, so the score stays 45."; a stored score that differs from the comparison's own "before", "The current
+text was re-scored with the suggestion (45); its stored score is 42."; low confidence is added when the scorer says so. An Epic or Feature shows no strip.
+
+**Actions.** Accept applies the whole suggestion; its menu also offers "Title only". (There is no "Text only": a new text under an old title was never
+judged as a pair; Edit first covers custom mixes.) Applying asks first when the score is predicted to drop by more than 5, a warning says content was
+probably lost, or the check could not run ("unchecked" is not "fine"). "Edit first" opens the edit form filled with the suggestion. "To be discussed"
+parks it as before, and records the predicted line. Reject discards it. After Accept an "Applied. Undo" bar appears and **one real re-score runs
+automatically** (an amendment to §11.4.4, which re-scored only on request: this is one deliberate action, not repeated saves); the prediction is then
+replaced by the real score ("Predicted 78 · Scored 74"). Undo restores the previous text and its stored scores from a saved revision, so no fake
+re-score is needed. Keys: Ctrl/Cmd+Enter accepts and Esc leaves review mode (the suggestion stays pending); there is no new single-letter key, because
+one key overwriting text is too easy to press by accident. A suggestion that is pending when the reviewer steps to another item is kept with the
+item: the issues list says "1 suggestion waiting" with a link back.
+
+**Accessibility.** The result of the prediction is announced once through the dialog's status region ("Predicted score ready: 45 to 78"); the ticking time
+is not. Focus goes to the comparison heading when review mode opens and back to the "Review change" button when it closes. Everything reflows to one
+column, wide tables scroll inside their own region, and nothing has a fixed height (text spacing, §13).
+
+**Not built, deliberately:** accepting changes one by one, a character-level diff, a grade for a title or an Epic, accepting automatically when the
+score goes up, and synchronised scrolling.
 
 ### §11.5 — The diff-review tree: reparent, reorder, and place new items
 
@@ -4335,3 +4383,4 @@ code, then moving its row up into §18.
 | Epics and Features scored by the pipeline (`_score_epics_and_features`) | removed 2026-11-19 | Every Feature scored exactly 45 from its own AI summary, and the screen said "Features aren't scored". Epic/Feature `qualityScore` and `categoryScores` stay null. Quality and grounding flags are Requirement-only (`utils/diffFlagging.ts`, `diff-summary.ts`). **Do not restore.** |
 | Item dialog: permanent chat column, shortcut hint bar, `EvidenceStrip` with a verdict, `Scope` card for parents, generic "I have read" assistant opening | issues list, `SourcePane`, assistant drawer (§11.4.5) | `components/NodeDetailDialog.tsx`, `NodeDetailPanel.tsx`, `EvidenceStrip.tsx` (renamed `SourcePane.tsx`), `ChatPanel.tsx`, `ProposalCard.tsx`. |
 | Review screen: warnings card always open, vertical rail after the run, floating Write bar, red "Nested Epic" | folded warnings, horizontal strip, flex column, quiet chip (§11.3.5) | `CollapsibleWarnings.tsx`, `jobDetailLayout.ts`, `WriteBar.tsx`, `DiffTree.tsx`, `JobDetail.tsx`. |
+| The assistant's proposal card in the chat drawer (suggested text only, one "Predicted score" line) | review mode in the dialog body, beside the Source (§11.4.6) | `components/ChatPanel.tsx` (summary only), new `components/ProposalReview.tsx` and `hooks/useProposalReview.ts`, `components/NodeDetailDialog.tsx`. |
