@@ -18,7 +18,8 @@ import { IngestionHttpError, type IngestionHttpClient, type RewriteComparison, t
 import { buildChatContext } from '../chat/chat-context';
 import { idempotencyMapKey } from '../writeback/idempotency.service';
 import type { IdempotencyService } from '../writeback/idempotency.service';
-import type { DiscussionEntry, DryRunDiffEntry, TraceLink, WarningRecord } from '../writeback/dry-run.service';
+import type { DiffRevision, DiscussionEntry, DryRunDiffEntry, SuggestionDecision, TraceLink, WarningRecord } from '../writeback/dry-run.service';
+import { RewriteCheckCache } from './rewrite-check-cache';
 import { mapWithConcurrency, type SettledResult } from './map-with-concurrency';
 import { buildExclusionChecker, filterExcludedDiffEntries, summarizeDiffEntries } from './diff-summary';
 import { attachableFigureIds, buildWritePreview, findOrphanedSelections, findUnknownSelections, planHasWork, selectEntriesToCreate, selectEntriesToLink, selectTraceLinks, type WritePlanEntry, type WritePreview } from './write-plan';
@@ -228,9 +229,16 @@ const COUNTED_ACCEPTANCE_LABELS: Record<string, { singular: string; plural: stri
   missing_source_reference: { singular: 'requirement', plural: 'requirements', without: 'without a Customer ID' },
 };
 
+// Identifies the text of an item (title and description), so an Undo can tell whether the item was edited since a suggestion was applied.
+function textHash(title: string, description: string): string {
+  return createHash('sha256').update(`${title}\u0000${description}`).digest('hex');
+}
+
 @Injectable()
 export class JobsService implements OnModuleInit, OnModuleDestroy {
   private readonly queue: Queue;
+  // How a suggestion compares with its item, remembered so reopening it costs no second model call (process-local: an optimisation, not state).
+  private readonly rewriteChecks = new RewriteCheckCache<RewriteComparison>();
 
   constructor(
     private readonly prisma: PrismaClient,
@@ -1357,7 +1365,16 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
   async editDiffEntry(
     id: string,
     localId: string,
-    patch: { title?: string; description?: string; customerId?: string | null; tags?: string[]; seCoverageRef?: string | null },
+    patch: {
+      title?: string;
+      description?: string;
+      customerId?: string | null;
+      tags?: string[];
+      seCoverageRef?: string | null;
+      // Applying an assistant's suggestion: keep what it replaces (scores included) so Undo can put it back, and mark the suggestion accepted.
+      snapshot?: boolean;
+      suggestionId?: string;
+    },
   ): Promise<DryRunDiffEntry[]> {
     await this.assertNotWritten(id, localId);
     return this.mutateDiffVersioned(id, (diff) => {
@@ -1417,7 +1434,26 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       const staleness = descriptionChanged && diff[index].qualityScore != null ? { qualityStale: true } : {};
       // The criteria were proposed for the previous text: a changed description withdraws their acceptance (the reviewer can accept again).
       const withdrawn = descriptionChanged && diff[index].proposalAccepted ? { proposalAccepted: false } : {};
-      diff[index] = { ...diff[index], ...definedPatch, ...staleness, ...withdrawn };
+      const previous = diff[index];
+      const next = { ...previous, ...definedPatch, ...staleness, ...withdrawn };
+      if (patch.snapshot && (definedPatch.title !== undefined || definedPatch.description !== undefined)) {
+        next.previousRevision = {
+          title: previous.title,
+          description: previous.description,
+          qualityScore: previous.qualityScore,
+          qualityIssues: previous.qualityIssues,
+          qualityCategoryScores: previous.qualityCategoryScores,
+          qualityCategoryChecklist: previous.qualityCategoryChecklist,
+          qualityConfidence: previous.qualityConfidence,
+          qualityStale: previous.qualityStale,
+          afterHash: textHash(next.title, next.description),
+          createdAt: new Date().toISOString(),
+        } satisfies DiffRevision;
+      }
+      if (patch.suggestionId && previous.suggestion?.id === patch.suggestionId) {
+        next.suggestion = { ...previous.suggestion, decision: 'accepted' };
+      }
+      diff[index] = next;
       return diff;
     });
   }
@@ -1616,6 +1652,74 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * Keeps the assistant's newest suggestion with the item (DESIGN.md §11.4.6), so it survives closing the chat and stepping to another item.
+   * Only the newest is kept: a new one replaces the old.
+   */
+  async setSuggestion(
+    id: string,
+    localId: string,
+    input: { proposedTitle?: string | null; proposedDescription?: string | null },
+  ): Promise<DryRunDiffEntry[]> {
+    await this.assertNotWritten(id, localId);
+    const title = input.proposedTitle?.trim() ? input.proposedTitle : null;
+    const description = input.proposedDescription?.trim() ? input.proposedDescription : null;
+    if (title === null && description === null) throw new BadRequestException('proposedTitle or proposedDescription is required');
+    return this.mutateDiffVersioned(id, (diff) => {
+      const index = diff.findIndex((entry) => entry.localId === localId);
+      if (index === -1) throw new NotFoundException(`Diff entry ${localId} not found`);
+      if (diff[index].action !== 'create') throw new BadRequestException('only create entries can have a suggestion');
+      diff[index] = {
+        ...diff[index],
+        suggestion: { id: randomUUID(), proposedTitle: title, proposedDescription: description, decision: 'pending', createdAt: new Date().toISOString() },
+      };
+      return diff;
+    });
+  }
+
+  /**
+   * Records what the reviewer did with the item's suggestion (rejected, or parked in the Discussion). An accept is recorded by the edit that
+   * applies it. A decision for a suggestion that has since been replaced is ignored, never applied to the newer one.
+   */
+  async decideSuggestion(id: string, localId: string, decision: Exclude<SuggestionDecision, 'pending' | 'accepted'>, suggestionId?: string): Promise<DryRunDiffEntry[]> {
+    await this.assertNotWritten(id, localId);
+    return this.mutateDiffVersioned(id, (diff) => {
+      const index = diff.findIndex((entry) => entry.localId === localId);
+      if (index === -1) throw new NotFoundException(`Diff entry ${localId} not found`);
+      const suggestion = diff[index].suggestion;
+      if (!suggestion || (suggestionId !== undefined && suggestion.id !== suggestionId)) return diff;
+      diff[index] = { ...diff[index], suggestion: { ...suggestion, decision } };
+      return diff;
+    });
+  }
+
+  /**
+   * Undo of an applied suggestion: puts back the text AND the scores it replaced, from the saved revision, and makes the suggestion pending again.
+   * Refused once the item has been edited since: an undo must never overwrite the reviewer's later work.
+   */
+  async revertDiffEntry(id: string, localId: string): Promise<DryRunDiffEntry[]> {
+    await this.assertNotWritten(id, localId);
+    return this.mutateDiffVersioned(id, (diff) => {
+      const index = diff.findIndex((entry) => entry.localId === localId);
+      if (index === -1) throw new NotFoundException(`Diff entry ${localId} not found`);
+      const entry = diff[index];
+      if (entry.action !== 'create') throw new BadRequestException('only create entries can be reverted');
+      const revision = entry.previousRevision;
+      if (!revision) throw new ConflictException('There is nothing to undo for this item.');
+      if (textHash(entry.title, entry.description) !== revision.afterHash) {
+        throw new ConflictException('This item was edited after the suggestion was applied, so it cannot be undone.');
+      }
+      const { afterHash: _afterHash, createdAt: _createdAt, ...restore } = revision;
+      diff[index] = {
+        ...entry,
+        ...restore,
+        previousRevision: null,
+        suggestion: entry.suggestion ? { ...entry.suggestion, decision: 'pending' } : entry.suggestion,
+      };
+      return diff;
+    });
+  }
+
+  /**
    * Judges a proposed rewrite of one Requirement against the entry as it is now, before the user applies it: both texts are scored
    * in one model call under the entry's own categories, and the deterministic warnings come with it. Read-only: the diff is not
    * touched, so nothing here can launder a score into the entry.
@@ -1633,8 +1737,21 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     if (index === -1) throw new NotFoundException(`Diff entry ${localId} not found`);
     if (diff[index].type !== 'Requirement') throw new BadRequestException('only Requirement entries can be checked');
     if (!proposal.proposedDescription?.trim()) throw new BadRequestException('the proposed description must not be blank');
+    // A scored comparison that was already answered for these exact texts is not asked again (warnings-only answers are free and not kept).
+    const cacheKey = RewriteCheckCache.key({
+      jobId: id,
+      localId,
+      title: diff[index].title,
+      description: diff[index].description,
+      proposedTitle: proposal.proposedTitle ?? null,
+      proposedDescription: proposal.proposedDescription,
+    });
+    if (!proposal.warningsOnly) {
+      const hit = this.rewriteChecks.get(cacheKey);
+      if (hit) return hit;
+    }
     try {
-      return await this.ingestionClient.compareRewrite(
+      const result = await this.ingestionClient.compareRewrite(
         { title: diff[index].title, description: diff[index].description },
         { title: proposal.proposedTitle ?? null, description: proposal.proposedDescription },
         this.resolveCategoryChecklist(diff, index),
@@ -1642,6 +1759,9 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         job.model ?? undefined,
         ...(proposal.warningsOnly ? [{ warningsOnly: true }] : []),
       );
+      // Only an answer that carries a score is kept: one without (the scorer did not answer) is worth asking again.
+      if (!proposal.warningsOnly && result.delta !== null) this.rewriteChecks.set(cacheKey, result);
+      return result;
     } catch (err) {
       if (err instanceof IngestionHttpError) {
         throw new BadGatewayException({

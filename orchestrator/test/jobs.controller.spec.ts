@@ -1562,3 +1562,59 @@ describe('JobsController.getEntrySource', () => {
     expect(jobsService.getSourceFileBytes).not.toHaveBeenCalled();
   });
 });
+
+describe('JobsController suggestion routes (DESIGN.md §11.4.6)', () => {
+  const TEST_USER = { userId: 'user-descriptor-1', displayName: 'Jane Doe' } as any;
+  const TEST_JOB = { id: 'job-1', userId: 'user-descriptor-1', status: 'diff_ready' };
+  const make = (jobsService: any) =>
+    new JobsController(jobsService, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+  const svc = () => ({
+    getById: jest.fn().mockResolvedValue(TEST_JOB),
+    setSuggestion: jest.fn().mockResolvedValue([{ localId: 'n0' }]),
+    decideSuggestion: jest.fn().mockResolvedValue([{ localId: 'n0' }]),
+    revertDiffEntry: jest.fn().mockResolvedValue([{ localId: 'n0' }]),
+    editDiffEntry: jest.fn().mockResolvedValue([{ localId: 'n0' }]),
+  });
+
+  it('keeps a suggestion, allowing a long description but not a long title, and refuses non-strings', async () => {
+    const jobsService = svc();
+    const c = make(jobsService);
+    await c.setSuggestion('job-1', 'n0', TEST_USER, 'T', 'x'.repeat(100_000));
+    expect(jobsService.setSuggestion).toHaveBeenCalledWith('job-1', 'n0', { proposedTitle: 'T', proposedDescription: 'x'.repeat(100_000) });
+    await expect(c.setSuggestion('job-1', 'n0', TEST_USER, 5 as any, 'x')).rejects.toThrow(BadRequestException);
+    await expect(c.setSuggestion('job-1', 'n0', TEST_USER, 'x'.repeat(1000), 'x')).rejects.toThrow(/limit/);
+    await expect(c.setSuggestion('job-1', 'n0', TEST_USER, 'T', 'x'.repeat(300_000))).rejects.toThrow(/limit/);
+  });
+
+  it('records only a rejection or a parking, never an accept (that is recorded by the edit that applies it)', async () => {
+    const jobsService = svc();
+    const c = make(jobsService);
+    await c.decideSuggestion('job-1', 'n0', TEST_USER, 'rejected', 's1');
+    expect(jobsService.decideSuggestion).toHaveBeenCalledWith('job-1', 'n0', 'rejected', 's1');
+    await expect(c.decideSuggestion('job-1', 'n0', TEST_USER, 'accepted', undefined)).rejects.toThrow(BadRequestException);
+    await expect(c.decideSuggestion('job-1', 'n0', TEST_USER, undefined, undefined)).rejects.toThrow(BadRequestException);
+    await expect(c.decideSuggestion('job-1', 'n0', TEST_USER, 'rejected', 5 as any)).rejects.toThrow(BadRequestException);
+  });
+
+  it('passes the snapshot flag and the suggestion id through the edit, and rejects wrong types', async () => {
+    const jobsService = svc();
+    const c = make(jobsService);
+    await c.editDiffEntry('job-1', 'n0', TEST_USER, 'T', 'D', undefined, undefined, undefined, true, 's1');
+    expect(jobsService.editDiffEntry).toHaveBeenCalledWith('job-1', 'n0', expect.objectContaining({ title: 'T', description: 'D', snapshot: true, suggestionId: 's1' }));
+    await c.editDiffEntry('job-1', 'n0', TEST_USER, 'T', 'D', undefined, undefined, undefined);
+    expect(jobsService.editDiffEntry).toHaveBeenLastCalledWith('job-1', 'n0', expect.not.objectContaining({ snapshot: true }));
+    await expect(c.editDiffEntry('job-1', 'n0', TEST_USER, 'T', 'D', undefined, undefined, undefined, 'yes' as any)).rejects.toThrow(BadRequestException);
+    await expect(c.editDiffEntry('job-1', 'n0', TEST_USER, 'T', 'D', undefined, undefined, undefined, true, 5 as any)).rejects.toThrow(BadRequestException);
+  });
+
+  it('reverts through the service and is not reachable on another user\'s job', async () => {
+    const jobsService = svc();
+    await make(jobsService).revertDiffEntry('job-1', 'n0', TEST_USER);
+    expect(jobsService.revertDiffEntry).toHaveBeenCalledWith('job-1', 'n0');
+    const other = { ...svc(), getById: jest.fn().mockResolvedValue({ ...TEST_JOB, userId: 'someone-else' }) };
+    await expect(make(other).revertDiffEntry('job-1', 'n0', TEST_USER)).rejects.toThrow();
+    await expect(make(other).setSuggestion('job-1', 'n0', TEST_USER, 'T', 'D')).rejects.toThrow();
+    expect(other.revertDiffEntry).not.toHaveBeenCalled();
+    expect(other.setSuggestion).not.toHaveBeenCalled();
+  });
+});
