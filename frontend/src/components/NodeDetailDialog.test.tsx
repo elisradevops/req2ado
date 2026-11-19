@@ -1161,6 +1161,23 @@ describe('NodeDetailDialog: reviewing an assistant suggestion beside the origina
       }
     });
 
+    it('says it once: while the chat shows the suggestion, the "suggestion waiting" issue steps aside', async () => {
+      const matchMedia = desktopViewport();
+      try {
+        const user = (await import('@testing-library/user-event')).default.setup();
+        renderDialog({
+          entry: { ...ENTRY, sourceRef: SOURCE, qualityScore: 45, suggestion: stored() } as DryRunDiffEntry,
+          jobStatus: 'diff_ready', onSuggest: vi.fn(), onDecideSuggestion: vi.fn(),
+        });
+        expect(await screen.findByTestId('issue-suggestion-waiting')).toBeInTheDocument();
+        await user.click(screen.getByRole('button', { name: /^ask/i }));
+        expect(await screen.findByTestId('proposal-summary')).toBeInTheDocument();
+        expect(screen.queryByTestId('issue-suggestion-waiting')).not.toBeInTheDocument();
+      } finally {
+        matchMedia.mockRestore();
+      }
+    });
+
     it('does not bring back one that was accepted, rejected or parked', async () => {
       const matchMedia = desktopViewport();
       try {

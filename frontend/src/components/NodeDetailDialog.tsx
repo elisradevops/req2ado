@@ -272,6 +272,8 @@ export function NodeDetailDialog({
   const suggestion = useProposalReview(jobId, entry?.localId ?? '', !entry || entry.type === 'Requirement');
   // Review mode: the suggestion is shown beside the original, in place of the Proposed column.
   const [reviewMode, setReviewMode] = useState(false);
+  // Whether the review was opened from the chat (so "Back to chat" has somewhere to go) or from the item's own issue.
+  const [reviewFromChat, setReviewFromChat] = useState(false);
   const [editSeed, setEditSeed] = useState<{ title: string; description: string } | null>(null);
   const hasProposal = suggestion.proposal !== null;
   const storedSuggestion = entry?.suggestion ?? null;
@@ -521,7 +523,7 @@ export function NodeDetailDialog({
           suggestion.setProposal(null);
         }}
         onBack={
-          isDesktop
+          isDesktop || !reviewFromChat
             ? undefined
             : () => {
                 setReviewMode(false);
@@ -566,7 +568,8 @@ export function NodeDetailDialog({
       {appliedBar}
     <NodeDetailPanel
       jobId={jobId}
-      entry={storedSuggestion && dismissedSuggestions.includes(storedSuggestion.id) ? { ...entry, suggestion: null } : entry}
+      // The chat's own summary card carries a suggestion on screen, so the issue that points at it would say it twice.
+      entry={storedSuggestion && (dismissedSuggestions.includes(storedSuggestion.id) || (assistantOpen && hasProposal)) ? { ...entry, suggestion: null } : entry}
       jobMode={jobMode}
       jobStatus={jobStatus}
       written={written}
@@ -581,7 +584,10 @@ export function NodeDetailDialog({
       hideSources
       hideEditButton
       onAskAssistant={() => setAssistantOpen(true)}
-      onReviewSuggestion={() => setReviewMode(true)}
+      onReviewSuggestion={() => {
+        setReviewFromChat(false);
+        setReviewMode(true);
+      }}
       evidenceSlot={evidenceStrip}
       sourceSlot={useSourcePane ? <SourcePane entry={entry} jobId={jobId} /> : undefined}
       moveSlot={moveSlot}
@@ -617,6 +623,7 @@ export function NodeDetailDialog({
       isCompound={entry.type === 'Requirement' && !entry.qualityStale && (entry.qualityIssues ?? []).includes('compound')}
       review={suggestion}
       onOpenReview={() => {
+        setReviewFromChat(true);
         setReviewMode(true);
         if (!isDesktop) setAssistantOpen(false); // below lg the assistant replaces the item: review mode needs the item
       }}

@@ -298,7 +298,8 @@ export function ProposalReview({
         </div>
       )}
 
-      <div className="flex flex-wrap items-center gap-2 border-t border-hairline pt-2.5">
+      // Sticky: the decision stays in reach however long the comparison above it is.
+      <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-2 border-t border-hairline bg-surface py-2.5">
         <span className="inline-flex">
           <Button size="sm" onClick={onAcceptClick} disabled={disabled} className={newTitle ? 'rounded-e-none' : undefined}>
             Accept
