@@ -37,11 +37,21 @@ export interface RewriteWarning {
 
 /** A proposed rewrite judged against the current item: both texts scored together, plus what can be seen in the two texts. */
 export interface RewriteComparison {
-  before: { score: number | null };
-  after: { score: number | null };
+  // Each text as the scorer judged it. The category scores and the confidence are optional because the warnings-only answer carries none.
+  before: RewriteScore;
+  after: RewriteScore;
   // after - before; null when the model could not score both texts (the warnings still stand).
   delta: number | null;
+  // after - before for each category both texts were scored on.
+  categoryDeltas?: Record<string, number>;
   warnings: RewriteWarning[];
+}
+
+export interface RewriteScore {
+  score: number | null;
+  issues?: string[];
+  categoryScores?: Record<string, number> | null;
+  confidence?: 'high' | 'medium' | 'low' | null;
 }
 
 // Read-only: nothing in the job changes. Throws on failure; the caller treats that as "not checked", never as "fine".

@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { NodeDetailDialog } from './NodeDetailDialog';
 import { ToastProvider } from './ToastProvider';
 import type { DryRunDiffEntry } from './DiffTree';
 import * as chatApi from '../api/chat';
+import { useChatSocket } from '../hooks/useChatSocket';
 import * as jobsApi from '../api/jobs';
 
 vi.mock('../api/chat');
@@ -989,5 +990,135 @@ describe('NodeDetailDialog', () => {
       });
       expect(screen.getByRole('button', { name: /move this feature to a different parent/i })).toBeEnabled();
     });
+  });
+});
+
+describe('NodeDetailDialog: reviewing an assistant suggestion beside the original (DESIGN.md §11.4.6)', () => {
+  type Emit = (event: import('../hooks/useChatSocket').StreamEvent) => void;
+  let emit: Emit | undefined;
+  const SOURCE = { documentPath: 'spec.docx', startOffset: 0, endOffset: 5, page: 2 };
+  const comparison = {
+    before: { score: 45, issues: [], categoryScores: { Testable: 35 }, confidence: 'high' },
+    after: { score: 78, issues: [], categoryScores: { Testable: 80 }, confidence: 'high' },
+    delta: 33,
+    categoryDeltas: { Testable: 45 },
+    warnings: [],
+  };
+
+  beforeEach(() => {
+    emit = undefined;
+    vi.mocked(useChatSocket).mockImplementation((_job, _node, onEvent) => {
+      emit = onEvent;
+    });
+    vi.mocked(chatApi.checkRewrite).mockImplementation(async (_job, _node, proposal) =>
+      (proposal.warningsOnly ? { before: { score: null }, after: { score: null }, delta: null, warnings: [] } : comparison) as never,
+    );
+  });
+
+  // Opens the assistant and has it propose a rewrite of the description.
+  async function openWithSuggestion(props: Partial<React.ComponentProps<typeof NodeDetailDialog>> = {}) {
+    const user = (await import('@testing-library/user-event')).default.setup();
+    const result = renderDialog({ entry: { ...ENTRY, sourceRef: SOURCE, qualityScore: 45 } as DryRunDiffEntry, jobStatus: 'diff_ready', onNavigate: vi.fn(), ...props });
+    await user.click(screen.getByRole('button', { name: /^ask/i }));
+    await screen.findByPlaceholderText(/ask the assistant/i);
+    act(() => emit?.({ type: 'done', message: 'Here you go', model: 'm', proposedTitle: 'Receiver lock time', proposedDescription: 'The receiver shall acquire lock within 5 ms.' }));
+    return { user, ...result };
+  }
+
+  it('shows only a summary in the drawer, and opens the comparison in place of the Proposed column, with the Source still beside it', async () => {
+    const matchMedia = desktopViewport();
+    try {
+      const { user } = await openWithSuggestion();
+      const summary = await screen.findByTestId('proposal-summary');
+      expect(screen.queryByRole('button', { name: /^accept$/i })).not.toBeInTheDocument();
+      expect(screen.getByRole('region', { name: 'Proposed' })).toBeInTheDocument();
+
+      await user.click(within(summary).getByRole('button', { name: /review change/i }));
+      expect(await screen.findByRole('region', { name: 'Suggested change' })).toBeInTheDocument();
+      expect(screen.queryByRole('region', { name: 'Proposed' })).not.toBeInTheDocument();
+      expect(screen.getByRole('region', { name: 'Source' })).toBeInTheDocument();
+      expect(await within(screen.getByRole('region', { name: 'Suggested change' })).findByText(/predicted 45\s*→\s*78, up 33/i)).toBeInTheDocument();
+    } finally {
+      matchMedia.mockRestore();
+    }
+  });
+
+  it('Escape leaves review mode and keeps the suggestion pending; the next Escape closes the assistant', async () => {
+    const matchMedia = desktopViewport();
+    try {
+      const onOpenChange = vi.fn();
+      const { user } = await openWithSuggestion({ onOpenChange });
+      await user.click(within(await screen.findByTestId('proposal-summary')).getByRole('button', { name: /review change/i }));
+      await screen.findByRole('region', { name: 'Suggested change' });
+
+      await user.keyboard('{Escape}');
+      expect(screen.queryByRole('region', { name: 'Suggested change' })).not.toBeInTheDocument();
+      expect(screen.getByTestId('proposal-summary')).toBeInTheDocument(); // still pending
+      expect(onOpenChange).not.toHaveBeenCalled();
+
+      await user.keyboard('{Escape}');
+      expect(screen.queryByPlaceholderText(/ask the assistant/i)).not.toBeInTheDocument();
+      expect(onOpenChange).not.toHaveBeenCalled();
+    } finally {
+      matchMedia.mockRestore();
+    }
+  });
+
+  it('keeps the suggestion when the assistant is closed and opened again', async () => {
+    const matchMedia = desktopViewport();
+    try {
+      const { user } = await openWithSuggestion();
+      await screen.findByTestId('proposal-summary');
+      await user.click(screen.getByRole('button', { name: /^ask/i })); // closes the drawer: the chat panel unmounts
+      expect(screen.queryByPlaceholderText(/ask the assistant/i)).not.toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: /^ask/i }));
+      expect(await screen.findByTestId('proposal-summary')).toBeInTheDocument();
+    } finally {
+      matchMedia.mockRestore();
+    }
+  });
+
+  it('Accept saves the suggested title and text, and leaves review mode', async () => {
+    const matchMedia = desktopViewport();
+    try {
+      const onSave = vi.fn();
+      const { user } = await openWithSuggestion({ onSave });
+      await user.click(within(await screen.findByTestId('proposal-summary')).getByRole('button', { name: /review change/i }));
+      await user.click(await screen.findByRole('button', { name: /^accept$/i, hidden: false }));
+      expect(onSave).toHaveBeenCalledWith('e1', { title: 'Receiver lock time', description: 'The receiver shall acquire lock within 5 ms.' });
+      await vi.waitFor(() => expect(screen.queryByRole('region', { name: 'Suggested change' })).not.toBeInTheDocument());
+      expect(screen.queryByTestId('proposal-summary')).not.toBeInTheDocument();
+    } finally {
+      matchMedia.mockRestore();
+    }
+  });
+
+  it('"Edit first" opens the edit form filled with the suggestion', async () => {
+    const matchMedia = desktopViewport();
+    try {
+      const { user } = await openWithSuggestion();
+      await user.click(within(await screen.findByTestId('proposal-summary')).getByRole('button', { name: /review change/i }));
+      await user.click(await screen.findByRole('button', { name: /edit first/i }));
+      expect(await screen.findByDisplayValue('Receiver lock time')).toBeInTheDocument();
+      expect(screen.getByDisplayValue('The receiver shall acquire lock within 5 ms.')).toBeInTheDocument();
+    } finally {
+      matchMedia.mockRestore();
+    }
+  });
+
+  it('drops a pending suggestion when the dialog moves to another item', async () => {
+    const matchMedia = desktopViewport();
+    try {
+      const { rerender } = await openWithSuggestion();
+      await screen.findByTestId('proposal-summary');
+      rerender(
+        <ToastProvider>
+          <NodeDetailDialog open onOpenChange={vi.fn()} jobId="job-1" entry={{ ...ENTRY, localId: 'e2', title: 'Another' } as DryRunDiffEntry} jobStatus="diff_ready" onAddChild={vi.fn()} />
+        </ToastProvider>,
+      );
+      await vi.waitFor(() => expect(screen.queryByTestId('proposal-summary')).not.toBeInTheDocument());
+    } finally {
+      matchMedia.mockRestore();
+    }
   });
 });

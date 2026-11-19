@@ -3412,7 +3412,7 @@ text was re-scored with the suggestion (45); its stored score is 42."; low confi
 **Actions.** Accept applies the whole suggestion; its menu also offers "Title only". (There is no "Text only": a new text under an old title was never
 judged as a pair; Edit first covers custom mixes.) Applying asks first when the score is predicted to drop by more than 5, a warning says content was
 probably lost, or the check could not run ("unchecked" is not "fine"). "Edit first" opens the edit form filled with the suggestion. "To be discussed"
-parks it as before, and records the predicted line. Reject discards it. After Accept an "Applied. Undo" bar appears and **one real re-score runs
+parks it as before. Reject discards it. After Accept an "Applied. Undo" bar appears and **one real re-score runs
 automatically** (an amendment to §11.4.4, which re-scored only on request: this is one deliberate action, not repeated saves); the prediction is then
 replaced by the real score ("Predicted 78 · Scored 74"). Undo restores the previous text and its stored scores from a saved revision, so no fake
 re-score is needed. Keys: Ctrl/Cmd+Enter accepts and Esc leaves review mode (the suggestion stays pending); there is no new single-letter key, because

@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { isAxiosError } from 'axios';
 import { MessageSquareText, SendHorizontal, ChevronRight } from 'lucide-react';
-import { checkRewrite, getChatHistory, listModels, sendChatTurn, stopChatTurn, type ChatMessage, type RewriteComparison, type RewriteWarning } from '../api/chat';
+import { getChatHistory, listModels, sendChatTurn, stopChatTurn, type ChatMessage } from '../api/chat';
 import { useChatSocket, type StreamEvent } from '../hooks/useChatSocket';
+import type { ProposalReviewState } from '../hooks/useProposalReview';
+import { gradeLine } from './ProposalReview';
 import { useToast } from './ToastProvider';
 import { ElapsedTimer } from './ElapsedTimer';
 import { TextField } from '../ui/TextField';
@@ -10,59 +12,13 @@ import { Select } from '../ui/Select';
 import { Button } from '../ui/Button';
 import { Card } from '../ui/Card';
 import { Chip } from '../ui/Chip';
-import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { InfoTip } from '../ui/Tooltip';
-import { DescriptionMarkdown, Markdown } from '../ui/Markdown';
+import { Markdown } from '../ui/Markdown';
 import { cn } from '../lib/cn';
 import { chatSuggestions } from '../utils/chatSuggestions';
 import { LABEL_MICRO } from '../utils/labelMicro';
-import { WEAK_CATEGORY_SCORE, weakestCategory } from '../utils/qualityCategories';
-
-interface Proposal {
-  proposedTitle: string | null;
-  proposedDescription: string | null;
-}
 
 const HISTORY_DISPLAY_LIMIT = 50;
-
-// The prediction is a model call and can be slow (the server stops waiting for it at 60 s). Past this limit the proposal can be applied
-// without it, but the card keeps listening: an answer that arrives later still updates it. The warnings do not wait for the prediction
-// (they need no model), and a warning still asks for confirmation.
-const CHECK_TIMEOUT_MS = 75_000;
-// The scorer is a sampled model: a difference this small is noise, not a better or worse rewrite.
-const NOISE_BAND = 5;
-
-/**
- * What is known about ONE proposal. `warnings` come back at once; `prediction` (the original and the proposal scored together)
- * takes a model call. Kept with the proposal it belongs to, so a state left over from an earlier proposal is never read for a newer one.
- */
-interface ProposalCheck {
-  proposal: Proposal;
-  warnings: { status: 'loading' } | { status: 'unavailable' } | { status: 'ready'; items: RewriteWarning[] };
-  // `late`: the limit passed without an answer; Accept is open, the answer may still come.
-  prediction: { status: 'loading' } | { status: 'late' } | { status: 'unavailable' } | { status: 'ready'; data: RewriteComparison };
-}
-
-const WARNING_LABEL: Record<string, string> = {
-  empty_description: 'Empty description',
-  title_changed: 'Title changed',
-  much_longer: 'Much longer',
-  more_statements: 'More statements',
-  dropped_numbers: 'Numbers dropped',
-  dropped_identifiers: 'Identifiers dropped',
-};
-
-function warningText(warning: RewriteWarning): string {
-  const label = WARNING_LABEL[warning.code] ?? warning.code;
-  return warning.code === 'title_changed' || warning.code === 'empty_description' ? label : `${label}: ${warning.detail}`;
-}
-
-function predictedLine(data: RewriteComparison | null): string {
-  if (!data || data.delta === null || data.before.score === null || data.after.score === null) return 'The predicted score is unavailable.';
-  const sign = data.delta > 0 ? '+' : '';
-  const verdict = Math.abs(data.delta) <= NOISE_BAND ? ', about the same' : '';
-  return `Predicted score: ${data.before.score} → ${data.after.score} (${sign}${data.delta}${verdict})`;
-}
 
 export function ChatPanel({
   jobId,
@@ -74,12 +30,12 @@ export function ChatPanel({
   isCompound,
   hasChildren = false,
   focusComposer = false,
-  onAcceptProposal,
-  onDiscuss,
+  review,
+  onOpenReview,
 }: {
   jobId: string;
   localId: string;
-  // Only requirements are checked (the check judges a requirement's description); an Epic or Feature proposal is applied as before.
+  // Only requirements are checked (the check judges a requirement's description).
   itemType?: string;
   disabled: boolean;
   // Shown in place of the composer when disabled -- callers pass a
@@ -87,7 +43,7 @@ export function ChatPanel({
   // relying on the generic fallback below, which doesn't tell the user
   // WHY chat is unavailable.
   disabledReason?: string;
-  // The item's score per quality category: a rewrite is aimed at the weakest one, and the proposal card says which.
+  // The item's score per quality category: the suggestions offered are aimed at the weakest ones.
   categoryScores?: Record<string, number> | null;
   // The scorer flagged this item as combining several requirements: adds the split starter.
   isCompound?: boolean;
@@ -95,10 +51,10 @@ export function ChatPanel({
   hasChildren?: boolean;
   // Focus goes to the composer when the panel opens (the drawer), so a keyboard user can type at once.
   focusComposer?: boolean;
-  onAcceptProposal: (patch: { title?: string; description?: string }) => void;
-  // "To be discussed": park the proposal in the item's ADO Discussion, leaving its text as is. Absent = the button is not offered.
-  // A rejection keeps the proposal card (the caller already told the user why).
-  onDiscuss?: (patch: { title?: string; description?: string }) => Promise<void> | void;
+  // The suggestion the assistant made, and its check, are the item dialog's (they outlive this panel). This panel reports a suggestion and shows a summary.
+  review: ProposalReviewState;
+  // Opens the suggestion beside the original (review mode) in the item dialog.
+  onOpenReview: () => void;
 }): React.ReactElement {
   const { showToast, showErrorToast } = useToast();
   const [history, setHistory] = useState<ChatMessage[]>([]);
@@ -141,13 +97,6 @@ export function ChatPanel({
   // counter while streaming -- real evidence something is progressing,
   // stronger than a static "can take a couple of minutes" sentence.
   const [streamStartedAt, setStreamStartedAt] = useState<string | null>(null);
-  const [proposal, setProposal] = useState<Proposal | null>(null);
-  // A discuss request is in flight: the three proposal actions are locked so none can race it.
-  const [discussing, setDiscussing] = useState(false);
-  const [checkState, setCheckState] = useState<ProposalCheck | null>(null);
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const checkRequestRef = useRef(0);
-  const [predictingSeconds, setPredictingSeconds] = useState(0);
   const historyEndRef = useRef<HTMLDivElement>(null);
 
   // Reset chat state whenever the selected node changes so a stale
@@ -155,7 +104,6 @@ export function ChatPanel({
   // onto the newly-selected one.
   useEffect(() => {
     setHistory([]);
-    setProposal(null);
     setDraft('');
     setModel(undefined);
     setStreaming('');
@@ -196,66 +144,8 @@ export function ChatPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId, localId, disabled]);
 
-  // A proposal with a description is checked before it can be applied: the warnings come back at once (no model), the predicted score
-  // (the original and the proposal scored together) when the model has answered. A result that arrives after the proposal or the node
-  // changed is discarded.
   const checkedKind = itemType === undefined || itemType === 'Requirement';
   const noun = checkedKind ? 'requirement' : (itemType ?? 'item').toLowerCase();
-  useEffect(() => {
-    const request = ++checkRequestRef.current;
-    setConfirmOpen(false);
-    if (!checkedKind || !proposal?.proposedDescription) {
-      setCheckState(null);
-      return;
-    }
-    const target = { proposedTitle: proposal.proposedTitle, proposedDescription: proposal.proposedDescription };
-    const fresh = () => request === checkRequestRef.current;
-    const update = (patch: Partial<Pick<ProposalCheck, 'warnings' | 'prediction'>>) =>
-      setCheckState((prev) => (prev && prev.proposal === proposal ? { ...prev, ...patch } : prev));
-    setCheckState({ proposal, warnings: { status: 'loading' }, prediction: { status: 'loading' } });
-
-    checkRewrite(jobId, localId, { ...target, warningsOnly: true })
-      .then((data) => {
-        if (fresh()) update(data && Array.isArray(data.warnings) ? { warnings: { status: 'ready', items: data.warnings } } : { warnings: { status: 'unavailable' } });
-      })
-      .catch(() => {
-        if (fresh()) update({ warnings: { status: 'unavailable' } });
-      });
-
-    // Past the limit Accept opens up (`late`), but the request is not abandoned: an answer that comes later still updates the card.
-    setPredictingSeconds(0);
-    const startedAt = Date.now();
-    const ticker = setInterval(() => setPredictingSeconds(Math.floor((Date.now() - startedAt) / 1000)), 1000);
-    const limit = setTimeout(
-      () => setCheckState((prev) => (prev && prev.proposal === proposal && prev.prediction.status === 'loading' ? { ...prev, prediction: { status: 'late' } } : prev)),
-      CHECK_TIMEOUT_MS,
-    );
-    const settle = () => {
-      clearInterval(ticker);
-      clearTimeout(limit);
-    };
-    checkRewrite(jobId, localId, target)
-      .then((data) => {
-        if (!fresh()) return;
-        if (data && Array.isArray(data.warnings)) update({ prediction: { status: 'ready', data }, warnings: { status: 'ready', items: data.warnings } });
-        else update({ prediction: { status: 'unavailable' } });
-      })
-      .catch(() => {
-        if (fresh()) update({ prediction: { status: 'unavailable' } });
-      })
-      .finally(settle);
-    return settle;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [proposal, jobId, localId, checkedKind]);
-
-  // Only the state that belongs to the proposal on screen counts (the render before the effect runs would otherwise see the last one's).
-  const check = checkState && checkState.proposal === proposal ? checkState : null;
-  const checking = checkedKind && !!proposal?.proposedDescription;
-  const targetCategory = weakestCategory(categoryScores, null, WEAK_CATEGORY_SCORE);
-  const loading = checking && (!check || check.warnings.status === 'loading' || check.prediction.status === 'loading');
-  const warningItems = check?.warnings.status === 'ready' ? check.warnings.items : [];
-  const comparison = check?.prediction.status === 'ready' ? check.prediction.data : null;
-  const notChecked = checking && check?.warnings.status === 'unavailable';
 
   useChatSocket(
     jobId,
@@ -286,7 +176,7 @@ export function ChatPanel({
           },
         ]);
         if (event.proposedTitle || event.proposedDescription) {
-          setProposal({ proposedTitle: event.proposedTitle ?? null, proposedDescription: event.proposedDescription ?? null });
+          review.setProposal({ proposedTitle: event.proposedTitle ?? null, proposedDescription: event.proposedDescription ?? null });
         }
       } else if (event.type === 'error') {
         isStreamingRef.current = false;
@@ -339,7 +229,7 @@ export function ChatPanel({
     ]);
     setIsStreaming(true);
     setStreamStartedAt(new Date().toISOString());
-    setProposal(null);
+    review.setProposal(null);
     try {
       await sendChatTurn(jobId, localId, text, model);
     } catch (err) {
@@ -380,42 +270,6 @@ export function ChatPanel({
     } finally {
       isStoppingRef.current = false;
     }
-  }
-
-  // Applying asks first when the check predicts a lower score, found something that probably lost content, or could not check at all
-  // ("unchecked" is not "fine").
-  const needsConfirmation =
-    !loading && (notChecked || warningItems.some((w) => w.severity === 'high') || (comparison?.delta != null && comparison.delta < -NOISE_BAND));
-
-  function onAcceptClick(): void {
-    if (needsConfirmation) setConfirmOpen(true);
-    else acceptProposal();
-  }
-
-  function acceptProposal(): void {
-    if (!proposal) return;
-    setConfirmOpen(false);
-    onAcceptProposal({
-      title: proposal.proposedTitle ?? undefined,
-      description: proposal.proposedDescription ?? undefined,
-    });
-    setProposal(null);
-  }
-
-  async function discussProposal(): Promise<void> {
-    if (!proposal || !onDiscuss) return;
-    setDiscussing(true);
-    try {
-      await onDiscuss({
-        title: proposal.proposedTitle ?? undefined,
-        description: proposal.proposedDescription ?? undefined,
-      });
-    } catch {
-      return; // the caller has already surfaced the failure; keep the card so the proposal is not lost
-    } finally {
-      setDiscussing(false);
-    }
-    setProposal(null);
   }
 
   if (disabled) {
@@ -542,79 +396,22 @@ export function ChatPanel({
         )}
         <div ref={historyEndRef} />
       </div>
-      {proposal && (
-        <Card className="mb-2 p-2">
-          <p className="text-xs">Proposed change</p>
-          {targetCategory && proposal.proposedDescription && (
-            <p className="text-xs text-ink-3">
-              Aimed at: {targetCategory.key} ({targetCategory.score})
-            </p>
+      {review.proposal && (
+        <Card className="mb-2 p-2" data-testid="proposal-summary">
+          <p className={cn(LABEL_MICRO, 'text-ink-2')}>Suggestion</p>
+          {(() => {
+            const line = gradeLine({ type: itemType ?? 'Requirement', title: '', description: '' }, review);
+            return line ? <p className="mt-0.5 text-sm font-medium text-ink-1">{line}</p> : null;
+          })()}
+          {review.warningItems.length > 0 && (
+            <p className="mt-0.5 text-xs text-warning-ink">{`${review.warningItems.length} warning${review.warningItems.length === 1 ? '' : 's'}`}</p>
           )}
-          {proposal.proposedTitle && (
-            <p className="text-sm">
-              <strong>Title:</strong> {proposal.proposedTitle}
-            </p>
-          )}
-          {proposal.proposedDescription && (
-            <div className="text-sm">
-              <strong>Description:</strong>
-              {/* Rendered as the detail window renders it, so a table the proposal keeps shows as a table with its styling. */}
-              <DescriptionMarkdown>{proposal.proposedDescription}</DescriptionMarkdown>
-            </div>
-          )}
-          {notChecked && <p className="mt-1 text-xs text-ink-3">This rewrite could not be checked.</p>}
-          {warningItems.length > 0 && (
-            <div className="mt-1 flex flex-wrap gap-1">
-              {warningItems.map((w) => (
-                <Chip key={w.code} className={w.severity === 'high' ? 'bg-danger-soft text-danger-ink' : 'bg-canvas text-ink-2'}>
-                  {warningText(w)}
-                </Chip>
-              ))}
-            </div>
-          )}
-          {checking && check && check.prediction.status === 'loading' && (
-            <p className="mt-1 text-xs text-ink-3">Predicting the score… ({predictingSeconds} s)</p>
-          )}
-          {checking && check && check.prediction.status === 'late' && (
-            <p className="mt-1 text-xs text-ink-3">The score is still being predicted ({predictingSeconds} s); you can apply without it.</p>
-          )}
-          {checking && check && (check.prediction.status === 'ready' || check.prediction.status === 'unavailable') && !notChecked && (
-            <p className="mt-1 text-xs text-ink-2">{predictedLine(comparison)}</p>
-          )}
-          <div className="mt-1.5 flex gap-2">
-            <Button size="sm" onClick={onAcceptClick} disabled={loading || discussing}>
-              Accept
-            </Button>
-            {onDiscuss && (
-              <Button size="sm" variant="outline" onClick={() => void discussProposal()} disabled={loading || discussing}>
-                To be discussed
-              </Button>
-            )}
-            <Button size="sm" variant="ghost" onClick={() => setProposal(null)} disabled={discussing}>
-              Reject
-            </Button>
-          </div>
+          {review.notChecked && <p className="mt-0.5 text-xs text-ink-3">This rewrite could not be checked.</p>}
+          <Button id="review-change-button" size="sm" variant="outline" className="mt-1.5" onClick={onOpenReview}>
+            Review change
+          </Button>
         </Card>
       )}
-      <ConfirmDialog
-        open={confirmOpen}
-        onOpenChange={setConfirmOpen}
-        title="Apply this rewrite anyway?"
-        description="The check found something you may want to look at first."
-        confirmLabel="Apply anyway"
-        onConfirm={acceptProposal}
-      >
-        <div className="flex flex-col gap-1 text-sm">
-          {notChecked ? <p>This rewrite could not be checked.</p> : <p>{predictedLine(comparison)}</p>}
-          {warningItems.length > 0 && (
-            <ul className="list-disc pl-5">
-              {warningItems.map((w) => (
-                <li key={w.code}>{warningText(w)}</li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </ConfirmDialog>
       <div className="flex flex-col gap-2 border-t border-hairline pt-3">
         {/* Model picker is a secondary control (most turns leave it on
             Default) -- kept narrow so it doesn't compete with the input for

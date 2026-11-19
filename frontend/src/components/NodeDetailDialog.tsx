@@ -12,6 +12,8 @@ import { SourcePane } from './SourcePane';
 import { isScoredType } from '../utils/diffFlagging';
 import { AddChildCard } from './AddChildCard';
 import { ChatPanel } from './ChatPanel';
+import { ProposalReview } from './ProposalReview';
+import { useProposalReview } from '../hooks/useProposalReview';
 import { MoveToPicker, type MoveToPickerCandidate } from './MoveToPicker';
 import { DuplicateMatchCard, type DuplicateOverrideOptions } from './DuplicateMatchCard';
 import { cn } from '../lib/cn';
@@ -256,6 +258,23 @@ export function NodeDetailDialog({
   // history, and the one-mount rule of §11.4.0 holds. It stays open across J / K.
   const [assistantOpen, setAssistantOpen] = useState(false);
   const askButtonRef = useRef<HTMLButtonElement>(null);
+  // The assistant's suggestion and its check belong to this dialog, not to the chat panel: they outlive the drawer (DESIGN.md §11.4.6).
+  const suggestion = useProposalReview(jobId, entry?.localId ?? '', !entry || entry.type === 'Requirement');
+  // Review mode: the suggestion is shown beside the original, in place of the Proposed column.
+  const [reviewMode, setReviewMode] = useState(false);
+  const [editSeed, setEditSeed] = useState<{ title: string; description: string } | null>(null);
+  const hasProposal = suggestion.proposal !== null;
+  useEffect(() => {
+    if (!hasProposal) setReviewMode(false);
+  }, [hasProposal]);
+  // Leaving review mode returns focus to where the reviewer came from: the summary's button while the assistant is open, otherwise Ask.
+  const wasReviewMode = useRef(false);
+  useEffect(() => {
+    if (wasReviewMode.current && !reviewMode && open && hasProposal) {
+      (document.getElementById('review-change-button') ?? askButtonRef.current)?.focus();
+    }
+    wasReviewMode.current = reviewMode;
+  }, [reviewMode, open, hasProposal]);
   const isDesktop = useIsAboveBreakpoint(LG_BREAKPOINT_QUERY);
 
   // Closing the dialog closes the assistant. Closing only the assistant returns focus to the Ask button, so a keyboard user is not dropped.
@@ -407,6 +426,38 @@ export function NodeDetailDialog({
     ...(entryAskable ? ([['C', 'assistant']] as Array<[string, string]>) : []),
   ];
 
+  const reviewSlot =
+    reviewMode && suggestion.proposal ? (
+      <ProposalReview
+        review={suggestion}
+        item={{ type: entry.type, title: entry.title, description: entry.description, qualityScore: entry.qualityScore, qualityStale: entry.qualityStale }}
+        onAccept={(patch) =>
+          onSave?.(entry.localId, {
+            title: patch.title ?? entry.title,
+            description: patch.description ?? entry.description,
+          })
+        }
+        onEditFirst={(seed) => {
+          setEditSeed({ ...seed });
+          suggestion.setProposal(null);
+        }}
+        onDiscuss={
+          onAddDiscussion
+            ? (patch) => onAddDiscussion(entry.localId, { proposedTitle: patch.title, proposedDescription: patch.description })
+            : undefined
+        }
+        onReject={() => suggestion.setProposal(null)}
+        onBack={
+          isDesktop
+            ? undefined
+            : () => {
+                setReviewMode(false);
+                setAssistantOpen(true);
+              }
+        }
+      />
+    ) : undefined;
+
   const detailsContent = (
     <NodeDetailPanel
       jobId={jobId}
@@ -415,6 +466,8 @@ export function NodeDetailDialog({
       jobStatus={jobStatus}
       written={written}
       editRequest={editRequest}
+      editSeed={editSeed}
+      reviewSlot={reviewSlot}
       kbCitations={kbCitations}
       traceTargetTitles={traceTargetTitles}
       traceLinkFailures={traceLinkFailures}
@@ -455,17 +508,11 @@ export function NodeDetailDialog({
       hasChildren={hasChildren}
       focusComposer
       isCompound={entry.type === 'Requirement' && !entry.qualityStale && (entry.qualityIssues ?? []).includes('compound')}
-      onAcceptProposal={(patch) =>
-        onSave?.(entry.localId, {
-          title: patch.title ?? entry.title,
-          description: patch.description ?? entry.description,
-        })
-      }
-      onDiscuss={
-        onAddDiscussion
-          ? (patch) => onAddDiscussion(entry.localId, { proposedTitle: patch.title, proposedDescription: patch.description })
-          : undefined
-      }
+      review={suggestion}
+      onOpenReview={() => {
+        setReviewMode(true);
+        if (!isDesktop) setAssistantOpen(false); // below lg the assistant replaces the item: review mode needs the item
+      }}
     />
   );
 
@@ -476,6 +523,11 @@ export function NodeDetailDialog({
       unpadded
       // Escape closes the assistant first and the dialog only when it is already closed, so the reviewer keeps their place.
       onEscapeKeyDown={(event) => {
+        if (reviewMode) {
+          event.preventDefault();
+          setReviewMode(false); // the suggestion stays pending
+          return;
+        }
         if (!assistantOpen) return;
         event.preventDefault();
         setAssistantOpen(false);

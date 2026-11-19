@@ -128,6 +128,8 @@ export function NodeDetailPanel({
   descendantCounts,
   requirementClassificationField,
   editRequest = 0,
+  editSeed,
+  reviewSlot,
 }: {
   // Needed only by the Figures section below (FigureImage's fetch route is
   // job-scoped) -- optional so every existing caller/test that has no
@@ -255,6 +257,10 @@ export function NodeDetailPanel({
   // boolean: the form's state lives here, and every press has to count. Only a change
   // after mount is a request, and only an editable entry honors it.
   editRequest?: number;
+  // "Edit first" on a suggestion: the edit form opens with these texts instead of the item's own. A new object each time it should apply.
+  editSeed?: { title: string; description: string } | null;
+  // The assistant's suggestion beside the original (review mode): it replaces the Proposed column's content while the reviewer decides.
+  reviewSlot?: React.ReactNode;
 }): React.ReactElement {
   const [editing, setEditing] = useState(false);
   const [noteDraft, setNoteDraft] = useState('');
@@ -353,6 +359,19 @@ export function NodeDetailPanel({
     if (entry && canEditEntry(entry, jobStatus, written) && !editing) startEditing();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editRequest]);
+
+  // "Edit first": the same form, opened with the suggestion's texts.
+  const handledSeedRef = useRef(editSeed);
+  useEffect(() => {
+    if (!editSeed || editSeed === handledSeedRef.current) return;
+    handledSeedRef.current = editSeed;
+    if (entry && canEditEntry(entry, jobStatus, written)) {
+      startEditing();
+      setDraftTitle(editSeed.title);
+      setDraftDescription(editSeed.description);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editSeed]);
 
   // After a figure move the diff updates; if the Figures section is gone, keep focus inside the panel.
   useEffect(() => {
@@ -1042,17 +1061,19 @@ export function NodeDetailPanel({
           right edge instead of the right edge of a 68ch box. */}
       {sourceSlot ? (
         <div className="grid min-w-0 gap-4 @4xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] @4xl:gap-6">
-          <section aria-labelledby={`proposed-${entry.localId}`} className="flex min-w-0 flex-col gap-3">
-            <h3 id={`proposed-${entry.localId}`} className={cn(LABEL_MICRO, 'text-ink-2')}>
-              Proposed
-            </h3>
-            {proposedBody}
+          <section aria-labelledby={reviewSlot ? undefined : `proposed-${entry.localId}`} className="flex min-w-0 flex-col gap-3">
+            {reviewSlot ?? (
+              <h3 id={`proposed-${entry.localId}`} className={cn(LABEL_MICRO, 'text-ink-2')}>
+                Proposed
+              </h3>
+            )}
+            {reviewSlot ? null : proposedBody}
             {figuresBlock}
           </section>
           {sourceSlot}
         </div>
       ) : (
-        proposedBody
+        (reviewSlot ?? proposedBody)
       )}
       {(canDiscuss || (entry.discussion?.length ?? 0) > 0) && (
         <section aria-labelledby={`discussion-${entry.localId}`} className="flex flex-col gap-1.5 rounded-sm border border-hairline bg-surface-alt p-2.5">
