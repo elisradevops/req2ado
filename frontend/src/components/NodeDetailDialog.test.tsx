@@ -116,11 +116,17 @@ describe('NodeDetailDialog', () => {
     expect(screen.getAllByText('Functional and Performance')).toHaveLength(1);
   });
 
-  it('says "No issues flagged." for a clean new Requirement, so the text keeps its place, and nothing for an Epic', () => {
-    const { unmount } = renderDialog({ jobStatus: 'diff_ready' });
-    expect(screen.getByTestId('issues-clean')).toBeInTheDocument();
+  it('says "No issues flagged." for a scored new Requirement with nothing wrong, so the text keeps its place', () => {
+    renderDialog({ entry: { ...ENTRY, qualityScore: 90, qualityCategoryScores: { clarity: 90 } }, jobStatus: 'diff_ready' });
+    expect(screen.getByTestId('issues-clean')).toHaveTextContent('No issues flagged.');
+  });
+
+  it('does not call an item that was never scored clean: the scoring row says it is not scored, and an Epic has no such line', () => {
+    const { unmount } = renderDialog({ entry: { ...ENTRY, qualityScore: null }, jobStatus: 'diff_ready', jobMode: 'baseline' });
+    expect(screen.queryByTestId('issues-clean')).not.toBeInTheDocument();
+    expect(screen.getByText('Not scored yet.')).toBeInTheDocument();
     unmount();
-    renderDialog({ entry: { ...ENTRY, type: 'Epic' }, jobStatus: 'diff_ready' });
+    renderDialog({ entry: { ...ENTRY, type: 'Epic', qualityScore: 90 }, jobStatus: 'diff_ready' });
     expect(screen.queryByTestId('issues-clean')).not.toBeInTheDocument();
   });
 

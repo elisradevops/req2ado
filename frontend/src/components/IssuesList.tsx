@@ -10,7 +10,8 @@ const ICON = { fix: CircleAlert, review: TriangleAlert, info: Info } as const;
 const TONE = { fix: 'text-danger-ink', review: 'text-warning-ink', info: 'text-ink-2' } as const;
 
 export function IssuesList({ issues, onAsk, showWhenClean = false }: { issues: ItemIssue[]; onAsk?: () => void; showWhenClean?: boolean }): React.ReactElement | null {
-  // A clean item still says so when asked (`showWhenClean`), so the text under it keeps its place as the reviewer steps from item to item.
+  // A scored item with nothing wrong still says so when asked (`showWhenClean`), so the text under it keeps its place as the reviewer steps
+  // from item to item. An item that was never scored is not "clean": nothing was checked, so the caller does not ask and the scoring row says so.
   if (issues.length === 0) {
     return showWhenClean ? (
       <p data-testid="issues-clean" className="flex items-center gap-2 px-2.5 py-1.5 text-sm text-ink-3">

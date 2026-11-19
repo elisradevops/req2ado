@@ -974,7 +974,7 @@ export function NodeDetailPanel({
           </Button>
         </div>
       )}
-      <IssuesList issues={issues} onAsk={onAskAssistant} showWhenClean={!isParentEntry && canEdit} />
+      <IssuesList issues={issues} onAsk={onAskAssistant} showWhenClean={!isParentEntry && canEdit && entry.qualityScore != null} />
       {duplicateSlot}
       {/* 'excluded' has no message of its own here -- the dialog header
           already shows a dedicated "Excluded from this run" badge right
