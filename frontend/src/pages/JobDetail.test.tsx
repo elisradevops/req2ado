@@ -349,6 +349,53 @@ describe('JobDetail', () => {
     });
   });
 
+  describe('suggestions kept with the item (apply, undo, decide)', () => {
+    const SUGGESTION = { id: 's1', proposedTitle: 'Receiver lock time', proposedDescription: 'The receiver shall lock within 5 ms.', decision: 'pending', createdAt: '2026-01-01T00:00:00Z' };
+    const base = { localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] };
+
+    async function open(entry: Record<string, unknown>) {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-sg', status: 'diff_ready', dryRunDiff: [entry] } as any);
+      const chatApi = await import('../api/chat');
+      vi.mocked(chatApi.getChatHistory).mockResolvedValue([]);
+      vi.mocked(chatApi.listModels).mockResolvedValue([]);
+      vi.mocked(chatApi.checkRewrite).mockResolvedValue({ before: { score: null }, after: { score: null }, delta: null, warnings: [] } as never);
+      renderAt('job-sg');
+      await waitFor(() => expect(screen.getByText('Req Title')).toBeInTheDocument());
+      const { default: userEvent } = await import('@testing-library/user-event');
+      await openNodeDetails(userEvent, 'Req Title');
+      return userEvent;
+    }
+
+    it('Accept applies with a snapshot and the suggestion id, and says so', async () => {
+      vi.mocked(jobsApi.editDiffEntry).mockClear().mockResolvedValue({ dryRunDiff: [{ ...base, title: 'Receiver lock time', description: 'The receiver shall lock within 5 ms.', previousRevision: { title: 'Req Title', description: 'Req body', afterHash: 'x', savedAt: '2026-01-01T00:00:00Z' } }] } as any);
+      const user = await open({ ...base, suggestion: SUGGESTION });
+      await user.click(await screen.findByRole('button', { name: /review change/i }));
+      await user.click(await screen.findByRole('button', { name: /^accept$/i }));
+      await waitFor(() =>
+        expect(jobsApi.editDiffEntry).toHaveBeenCalledWith('job-sg', 'e1', {
+          title: 'Receiver lock time', description: 'The receiver shall lock within 5 ms.', snapshot: true, suggestionId: 's1',
+        }),
+      );
+      expect(await screen.findByText('Suggestion applied.')).toBeInTheDocument();
+    });
+
+    it('Undo asks the server to put the previous text and score back', async () => {
+      vi.mocked(jobsApi.revertDiffEntry).mockClear().mockResolvedValue({ dryRunDiff: [base] } as any);
+      const user = await open({ ...base, previousRevision: { title: 'Old', description: 'Old body', afterHash: 'x', savedAt: '2026-01-01T00:00:00Z' } });
+      await user.click(await screen.findByRole('button', { name: /^undo$/i }));
+      await waitFor(() => expect(jobsApi.revertDiffEntry).toHaveBeenCalledWith('job-sg', 'e1'));
+      expect(await screen.findByText('Undone: the previous text and score are back.')).toBeInTheDocument();
+    });
+
+    it('Reject records the decision for that suggestion', async () => {
+      vi.mocked(jobsApi.decideSuggestion).mockClear().mockResolvedValue({ dryRunDiff: [{ ...base, suggestion: { ...SUGGESTION, decision: 'rejected' } }] } as any);
+      const user = await open({ ...base, suggestion: SUGGESTION });
+      await user.click(await screen.findByRole('button', { name: /review change/i }));
+      await user.click(await screen.findByRole('button', { name: /^reject$/i }));
+      await waitFor(() => expect(jobsApi.decideSuggestion).toHaveBeenCalledWith('job-sg', 'e1', 'rejected', 's1'));
+    });
+  });
+
   // Guard added alongside handleToggleExclude/handleBulkExclude/
   // handleMoveEntry's own isDiffMutatingRef re-entry guard (779-856 above)
   // -- handleSaveEdit had none, so a user who re-opens Edit and clicks Save

@@ -1121,4 +1121,116 @@ describe('NodeDetailDialog: reviewing an assistant suggestion beside the origina
       matchMedia.mockRestore();
     }
   });
+
+  describe('kept with the item: stored, restored, decided, applied and undone (Phase 3)', () => {
+    const PROPOSAL = { proposedTitle: 'Receiver lock time', proposedDescription: 'The receiver shall acquire lock within 5 ms.' };
+    const stored = (decision: 'pending' | 'accepted' | 'rejected' | 'discussed' = 'pending') => ({
+      id: 's1', ...PROPOSAL, decision, createdAt: '2026-01-01T00:00:00Z',
+    });
+    // A suggestion kept with the item shows as an issue; its button opens the comparison without the assistant.
+    const openReview = async (user: ReturnType<typeof import('@testing-library/user-event').default.setup>) => {
+      await user.click(within(await screen.findByTestId('issue-suggestion-waiting')).getByRole('button', { name: /review change/i }));
+      await screen.findByRole('region', { name: 'Suggested change' });
+    };
+
+    it('keeps a new suggestion with the item, once', async () => {
+      const matchMedia = desktopViewport();
+      try {
+        const onSuggest = vi.fn();
+        await openWithSuggestion({ onSuggest });
+        await screen.findByTestId('proposal-summary');
+        expect(onSuggest).toHaveBeenCalledTimes(1);
+        expect(onSuggest).toHaveBeenCalledWith('e1', PROPOSAL);
+      } finally {
+        matchMedia.mockRestore();
+      }
+    });
+
+    it('brings back a suggestion nobody decided on when the item is opened, without storing it again', async () => {
+      const matchMedia = desktopViewport();
+      try {
+        const onSuggest = vi.fn();
+        renderDialog({
+          entry: { ...ENTRY, sourceRef: SOURCE, qualityScore: 45, suggestion: stored() } as DryRunDiffEntry,
+          jobStatus: 'diff_ready', onSuggest, onDecideSuggestion: vi.fn(),
+        });
+        expect(await screen.findByTestId('issue-suggestion-waiting')).toBeInTheDocument();
+        expect(onSuggest).not.toHaveBeenCalled();
+      } finally {
+        matchMedia.mockRestore();
+      }
+    });
+
+    it('does not bring back one that was accepted, rejected or parked', async () => {
+      const matchMedia = desktopViewport();
+      try {
+        for (const decision of ['accepted', 'rejected', 'discussed'] as const) {
+          const { unmount } = renderDialog({
+            entry: { ...ENTRY, sourceRef: SOURCE, suggestion: stored(decision) } as DryRunDiffEntry,
+            jobStatus: 'diff_ready', onSuggest: vi.fn(), onDecideSuggestion: vi.fn(),
+          });
+          expect(screen.queryByTestId('issue-suggestion-waiting')).not.toBeInTheDocument();
+          unmount();
+        }
+      } finally {
+        matchMedia.mockRestore();
+      }
+    });
+
+    it('records a rejection, and does not bring the suggestion back while that decision is on its way', async () => {
+      const matchMedia = desktopViewport();
+      try {
+        const onDecideSuggestion = vi.fn();
+        const entry = { ...ENTRY, sourceRef: SOURCE, qualityScore: 45, suggestion: stored() } as DryRunDiffEntry;
+        const user = (await import('@testing-library/user-event')).default.setup();
+        renderDialog({ entry, jobStatus: 'diff_ready', onSuggest: vi.fn(), onDecideSuggestion });
+        await openReview(user);
+        await user.click(screen.getByRole('button', { name: /^reject$/i }));
+        expect(onDecideSuggestion).toHaveBeenCalledWith('e1', 'rejected', 's1');
+        await vi.waitFor(() => expect(screen.queryByRole('region', { name: 'Suggested change' })).not.toBeInTheDocument());
+        expect(screen.queryByTestId('issue-suggestion-waiting')).not.toBeInTheDocument();
+      } finally {
+        matchMedia.mockRestore();
+      }
+    });
+
+    it('applies through onApplySuggestion with the stored id, and puts the suggestion back when that fails', async () => {
+      const matchMedia = desktopViewport();
+      try {
+        const onApplySuggestion = vi.fn().mockRejectedValue(new Error('nope'));
+        const user = (await import('@testing-library/user-event')).default.setup();
+        renderDialog({
+          entry: { ...ENTRY, sourceRef: SOURCE, qualityScore: 45, suggestion: stored() } as DryRunDiffEntry,
+          jobStatus: 'diff_ready', onSuggest: vi.fn(), onDecideSuggestion: vi.fn(), onApplySuggestion,
+        });
+        await openReview(user);
+        await user.click(screen.getByRole('button', { name: /^accept$/i }));
+        expect(onApplySuggestion).toHaveBeenCalledWith('e1', { title: PROPOSAL.proposedTitle, description: PROPOSAL.proposedDescription }, 's1');
+        expect(await screen.findByTestId('issue-suggestion-waiting')).toBeInTheDocument(); // not applied: it is waiting again
+      } finally {
+        matchMedia.mockRestore();
+      }
+    });
+
+    it('after an apply, says so with the predicted and the scored number, and Undo reverts', async () => {
+      const matchMedia = desktopViewport();
+      try {
+        const onRevertSuggestion = vi.fn().mockResolvedValue(undefined);
+        const user = (await import('@testing-library/user-event')).default.setup();
+        renderDialog({
+          entry: {
+            ...ENTRY, sourceRef: SOURCE, qualityScore: 70, qualityStale: false,
+            previousRevision: { title: 'Lock time', description: 'old', qualityScore: 45, afterHash: 'x', savedAt: '2026-01-01T00:00:00Z' },
+          } as unknown as DryRunDiffEntry,
+          jobStatus: 'diff_ready', onRevertSuggestion,
+        });
+        const bar = await screen.findByTestId('applied-bar');
+        expect(bar).toHaveTextContent(/applied\. scored 70/i);
+        await user.click(within(bar).getByRole('button', { name: /undo/i }));
+        expect(onRevertSuggestion).toHaveBeenCalledWith('e1');
+      } finally {
+        matchMedia.mockRestore();
+      }
+    });
+  });
 });

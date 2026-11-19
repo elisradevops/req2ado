@@ -9,7 +9,7 @@ import type { ItemIssue } from '../utils/itemIssues';
 const ICON = { fix: CircleAlert, review: TriangleAlert, info: Info } as const;
 const TONE = { fix: 'text-danger-ink', review: 'text-warning-ink', info: 'text-ink-2' } as const;
 
-export function IssuesList({ issues, onAsk, showWhenClean = false }: { issues: ItemIssue[]; onAsk?: () => void; showWhenClean?: boolean }): React.ReactElement | null {
+export function IssuesList({ issues, onAsk, onReview, showWhenClean = false }: { issues: ItemIssue[]; onAsk?: () => void; onReview?: () => void; showWhenClean?: boolean }): React.ReactElement | null {
   // A scored item with nothing wrong still says so when asked (`showWhenClean`), so the text under it keeps its place as the reviewer steps
   // from item to item. An item that was never scored is not "clean": nothing was checked, so the caller does not ask and the scoring row says so.
   if (issues.length === 0) {
@@ -29,6 +29,11 @@ export function IssuesList({ issues, onAsk, showWhenClean = false }: { issues: I
             <span className="flex items-start gap-2">
               <Icon aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 flex-none" />
               <span className="min-w-0 flex-1">{issue.text}</span>
+              {issue.reviewable && onReview && (
+                <Button size="sm" variant="ghost" className="flex-none" onClick={onReview}>
+                  Review change
+                </Button>
+              )}
               {issue.askable && onAsk && (
                 <Button size="sm" variant="ghost" className="flex-none" onClick={onAsk}>
                   Fix with assistant

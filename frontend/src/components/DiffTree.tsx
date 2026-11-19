@@ -112,6 +112,22 @@ export interface DiscussionEntry {
   createdAt: string;
 }
 
+// The assistant's newest suggestion for an item, kept on the item (DESIGN.md §11.4.6) so it survives closing the chat and stepping to another item.
+export interface DiffSuggestion {
+  id: string;
+  proposedTitle: string | null;
+  proposedDescription: string | null;
+  decision: 'pending' | 'accepted' | 'rejected' | 'discussed';
+  createdAt: string;
+}
+
+// What an accepted suggestion replaced, kept so Undo can put it back, scores included. The server refuses an Undo once the item was edited since.
+export interface DiffRevision {
+  title: string;
+  description: string;
+  createdAt: string;
+}
+
 export interface DryRunDiffEntry {
   localId: string;
   parentLocalId: string | null;
@@ -140,6 +156,8 @@ export interface DryRunDiffEntry {
   proposalAccepted?: boolean;
   // Rewrites the reviewer parked as "To be discussed": written to the ADO Discussion on Confirm; title/description stay as extracted.
   discussion?: DiscussionEntry[];
+  suggestion?: DiffSuggestion | null;
+  previousRevision?: DiffRevision | null;
   qualityScore?: number | null;
   // Computed server-side alongside qualityScore (vocabulary-overlap check
   // against the node's own source text) -- see DiffTree's own review-chip

@@ -63,3 +63,18 @@ describe('itemIssues with a long organisation-defined category name', () => {
     expect(issue.why).toBeUndefined();
   });
 });
+
+describe('itemIssues: a suggestion kept with the item', () => {
+  it('is an issue while nobody decided on it, and not after it was accepted, rejected or parked', () => {
+    const waiting = itemIssues({ type: 'Requirement', suggestion: { decision: 'pending' } });
+    expect(waiting).toEqual([expect.objectContaining({ id: 'suggestion-waiting', severity: 'review', reviewable: true })]);
+    for (const decision of ['accepted', 'rejected', 'discussed']) {
+      expect(itemIssues({ type: 'Requirement', suggestion: { decision } })).toEqual([]);
+    }
+  });
+
+  it('also applies to an Epic, which has no score to report', () => {
+    expect(itemIssues({ type: 'Epic', suggestion: { decision: 'pending' } }).map((issue) => issue.id)).toEqual(['suggestion-waiting']);
+  });
+});
+

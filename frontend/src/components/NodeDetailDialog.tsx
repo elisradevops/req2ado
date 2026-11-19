@@ -110,6 +110,10 @@ export function NodeDetailDialog({
   captionByTableId,
   onSave,
   onRescore,
+  onSuggest,
+  onDecideSuggestion,
+  onApplySuggestion,
+  onRevertSuggestion,
   onSetProposalAccepted,
   onOverrideDuplicate,
   onUndoDuplicateOverride,
@@ -174,6 +178,12 @@ export function NodeDetailDialog({
   // classification to -- see NodeDetailPanel's own doc comment.
   requirementClassificationField?: { referenceName: string; allowedValues: string[] } | null;
   onRescore?: (localId: string) => Promise<void>;
+  // The assistant's suggestion is kept with the item (so it survives closing the chat and stepping on), decided, applied with a snapshot and a
+  // re-score, and undone (DESIGN.md §11.4.6). Absent: the suggestion lives only while this dialog does, and Accept saves through onSave as before.
+  onSuggest?: (localId: string, proposal: { proposedTitle: string | null; proposedDescription: string | null }) => Promise<void> | void;
+  onDecideSuggestion?: (localId: string, decision: 'rejected' | 'discussed', suggestionId?: string) => Promise<void> | void;
+  onApplySuggestion?: (localId: string, patch: { title: string; description: string }, suggestionId?: string) => Promise<void>;
+  onRevertSuggestion?: (localId: string) => Promise<void>;
   onSetProposalAccepted?: (localId: string, accepted: boolean) => Promise<void> | void;
   // "Create as new item" on a skipped near-duplicate, and its undo. Absent = the card only shows what the item matched.
   onOverrideDuplicate?: (localId: string, options: DuplicateOverrideOptions) => Promise<void>;
@@ -264,6 +274,43 @@ export function NodeDetailDialog({
   const [reviewMode, setReviewMode] = useState(false);
   const [editSeed, setEditSeed] = useState<{ title: string; description: string } | null>(null);
   const hasProposal = suggestion.proposal !== null;
+  const storedSuggestion = entry?.suggestion ?? null;
+  // The stored suggestion this one on screen is (same texts), when it has been kept.
+  const suggestionId =
+    storedSuggestion &&
+    suggestion.proposal &&
+    storedSuggestion.proposedTitle === suggestion.proposal.proposedTitle &&
+    storedSuggestion.proposedDescription === suggestion.proposal.proposedDescription
+      ? storedSuggestion.id
+      : undefined;
+  // Suggestions the reviewer has dealt with in this dialog: never restored from the item while their decision is still on its way to the server.
+  const [dismissedSuggestions, setDismissedSuggestions] = useState<string[]>([]);
+  const persistedProposal = useRef<unknown>(null);
+  const restoredProposal = useRef<unknown>(null);
+  const [rescoring, setRescoring] = useState(false);
+  const [reverting, setReverting] = useState(false);
+  const [appliedPredicted, setAppliedPredicted] = useState<number | null>(null);
+  // A new suggestion from the assistant is kept with the item (best effort); one restored from the item is already kept.
+  useEffect(() => {
+    const proposal = suggestion.proposal;
+    if (!proposal || !entry || !onSuggest) return;
+    if (persistedProposal.current === proposal) return;
+    persistedProposal.current = proposal;
+    if (restoredProposal.current === proposal) return;
+    void onSuggest(entry.localId, proposal);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [suggestion.proposal]);
+  // Opening an item that still has a suggestion nobody decided on brings it back.
+  const storedId = storedSuggestion?.id;
+  const storedDecision = storedSuggestion?.decision;
+  useEffect(() => {
+    if (!storedSuggestion || storedSuggestion.decision !== 'pending' || suggestion.proposal) return;
+    if (dismissedSuggestions.includes(storedSuggestion.id)) return;
+    const restored = { proposedTitle: storedSuggestion.proposedTitle, proposedDescription: storedSuggestion.proposedDescription };
+    restoredProposal.current = restored;
+    suggestion.setProposal(restored);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entry?.localId, storedId, storedDecision, hasProposal, dismissedSuggestions]);
   useEffect(() => {
     if (!hasProposal) setReviewMode(false);
   }, [hasProposal]);
@@ -426,27 +473,53 @@ export function NodeDetailDialog({
     ...(entryAskable ? ([['C', 'assistant']] as Array<[string, string]>) : []),
   ];
 
+  const dismissSuggestion = (): void => {
+    if (suggestionId) setDismissedSuggestions((ids) => [...ids, suggestionId]);
+  };
   const reviewSlot =
     reviewMode && suggestion.proposal ? (
       <ProposalReview
         review={suggestion}
         item={{ type: entry.type, title: entry.title, description: entry.description, qualityScore: entry.qualityScore, qualityStale: entry.qualityStale }}
-        onAccept={(patch) =>
-          onSave?.(entry.localId, {
-            title: patch.title ?? entry.title,
-            description: patch.description ?? entry.description,
-          })
-        }
+        onAccept={(patch) => {
+          const next = { title: patch.title ?? entry.title, description: patch.description ?? entry.description };
+          const applied = suggestion.proposal;
+          dismissSuggestion();
+          if (!onApplySuggestion) {
+            onSave?.(entry.localId, next);
+            return;
+          }
+          setAppliedPredicted(suggestion.comparison?.after.score ?? null);
+          setRescoring(entry.type === 'Requirement' && entry.qualityScore != null && patch.description !== undefined);
+          void onApplySuggestion(entry.localId, next, suggestionId)
+            .catch(() => {
+              // Not applied (the caller said why): the suggestion comes back so it can be tried again.
+              if (suggestionId) setDismissedSuggestions((ids) => ids.filter((id) => id !== suggestionId));
+              suggestion.setProposal(applied);
+            })
+            .finally(() => setRescoring(false));
+        }}
         onEditFirst={(seed) => {
+          // The suggestion became the starting point of a manual edit: it is no longer waiting for a decision.
+          if (suggestionId) void onDecideSuggestion?.(entry.localId, 'rejected', suggestionId);
+          dismissSuggestion();
           setEditSeed({ ...seed });
           suggestion.setProposal(null);
         }}
         onDiscuss={
           onAddDiscussion
-            ? (patch) => onAddDiscussion(entry.localId, { proposedTitle: patch.title, proposedDescription: patch.description })
+            ? async (patch) => {
+                await onAddDiscussion(entry.localId, { proposedTitle: patch.title, proposedDescription: patch.description });
+                if (suggestionId) void onDecideSuggestion?.(entry.localId, 'discussed', suggestionId);
+                dismissSuggestion();
+              }
             : undefined
         }
-        onReject={() => suggestion.setProposal(null)}
+        onReject={() => {
+          if (suggestionId) void onDecideSuggestion?.(entry.localId, 'rejected', suggestionId);
+          dismissSuggestion();
+          suggestion.setProposal(null);
+        }}
         onBack={
           isDesktop
             ? undefined
@@ -458,10 +531,42 @@ export function NodeDetailDialog({
       />
     ) : undefined;
 
+  // After a suggestion is applied: say so, say how the score settled, and offer Undo (which restores the text AND its scores from the saved revision).
+  const appliedBar =
+    entry.previousRevision && onRevertSuggestion ? (
+      <div data-testid="applied-bar" role="status" className="mx-5 mt-1 flex flex-wrap items-center gap-2 rounded-sm border border-ok-border bg-ok-soft px-3 py-1.5 text-sm text-ok-ink">
+        <span>
+          {rescoring
+            ? 'Applied. Re-checking the quality…'
+            : entry.qualityStale || entry.qualityScore == null
+              ? 'Applied.'
+              : appliedPredicted != null
+                ? `Applied. Predicted ${Math.round(appliedPredicted)} · Scored ${Math.round(entry.qualityScore)}`
+                : `Applied. Scored ${Math.round(entry.qualityScore)}`}
+        </span>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="ms-auto"
+          disabled={reverting || rescoring}
+          onClick={() => {
+            setReverting(true);
+            void onRevertSuggestion(entry.localId)
+              .catch(() => undefined) // the caller already said why (for example, the item was edited since)
+              .finally(() => setReverting(false));
+          }}
+        >
+          Undo
+        </Button>
+      </div>
+    ) : null;
+
   const detailsContent = (
+    <>
+      {appliedBar}
     <NodeDetailPanel
       jobId={jobId}
-      entry={entry}
+      entry={storedSuggestion && dismissedSuggestions.includes(storedSuggestion.id) ? { ...entry, suggestion: null } : entry}
       jobMode={jobMode}
       jobStatus={jobStatus}
       written={written}
@@ -476,6 +581,7 @@ export function NodeDetailDialog({
       hideSources
       hideEditButton
       onAskAssistant={() => setAssistantOpen(true)}
+      onReviewSuggestion={() => setReviewMode(true)}
       evidenceSlot={evidenceStrip}
       sourceSlot={useSourcePane ? <SourcePane entry={entry} jobId={jobId} /> : undefined}
       moveSlot={moveSlot}
@@ -495,6 +601,7 @@ export function NodeDetailDialog({
       descendantCounts={descendantCountsByLocalId?.[entry.localId]}
       requirementClassificationField={requirementClassificationField}
     />
+    </>
   );
 
   const chatContent = (

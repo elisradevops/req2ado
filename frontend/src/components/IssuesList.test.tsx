@@ -46,3 +46,19 @@ describe('IssuesList for a clean item', () => {
     expect(container).toBeEmptyDOMElement();
   });
 });
+
+describe('IssuesList for a suggestion waiting', () => {
+  it('offers Review change only on that issue, and only when the caller can open it', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const onReview = vi.fn();
+    const issues = [{ id: 'suggestion-waiting', severity: 'review' as const, text: 'The assistant suggested a rewrite.', reviewable: true }, { id: 'n', severity: 'review' as const, text: 'Missing value.' }];
+    const { unmount } = render(<IssuesList issues={issues} onReview={onReview} />);
+    expect(screen.getAllByRole('button', { name: 'Review change' })).toHaveLength(1);
+    await userEvent.click(screen.getByRole('button', { name: 'Review change' }));
+    expect(onReview).toHaveBeenCalledTimes(1);
+    unmount();
+    render(<IssuesList issues={issues} />);
+    expect(screen.queryByRole('button', { name: 'Review change' })).not.toBeInTheDocument();
+  });
+});
+

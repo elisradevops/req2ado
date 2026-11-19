@@ -109,6 +109,7 @@ export function NodeDetailPanel({
   hideSources,
   hideEditButton,
   onAskAssistant,
+  onReviewSuggestion,
   onAddDiscussion,
   evidenceSlot,
   sourceSlot,
@@ -174,6 +175,8 @@ export function NodeDetailPanel({
   hideEditButton?: boolean;
   // Opens the assistant from an issue's "Fix with assistant" button.
   onAskAssistant?: () => void;
+  // Opens the comparison of a suggestion kept with the item.
+  onReviewSuggestion?: () => void;
   // Parks a note for the item's Azure DevOps Discussion, posted when the item is created. Absent = notes can only be read (and removed).
   onAddDiscussion?: (localId: string, entry: { proposedTitle?: string; proposedDescription?: string }) => Promise<void> | void;
   // The dialog's evidence strip (file, location, "How this was scored"): drawn right after the item's text and any proposal or discussion, so
@@ -416,7 +419,8 @@ export function NodeDetailPanel({
   // An Epic or Feature is not scored (quality scoring judges how a requirement is worded), so its score, and the model's confidence in
   // that score, are never a reason to review it; loose wording against the source still is.
   const isParentEntry = entry.type === 'Epic' || entry.type === 'Feature';
-  const issues = itemIssues(entry);
+  // The suggestion being reviewed right here is not "waiting" any more.
+  const issues = itemIssues(entry).filter((issue) => !(issue.id === 'suggestion-waiting' && reviewSlot));
   // The values the source left open are marked in the text, so the "Missing value" issue points at words.
   const missingTokens = entry.proposal?.kind === 'needs-input' ? missingValuesOf(entry.proposal.html) : [];
   // A note can be parked for a new item that is still being reviewed (the server accepts discussion on creates only).
@@ -999,7 +1003,7 @@ export function NodeDetailPanel({
           </Button>
         </div>
       )}
-      <IssuesList issues={issues} onAsk={onAskAssistant} showWhenClean={!isParentEntry && canEdit && entry.qualityScore != null} />
+      <IssuesList issues={issues} onAsk={onAskAssistant} onReview={onReviewSuggestion} showWhenClean={!isParentEntry && canEdit && entry.qualityScore != null} />
       {duplicateSlot}
       {/* 'excluded' has no message of its own here -- the dialog header
           already shows a dedicated "Excluded from this run" badge right

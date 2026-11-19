@@ -22,6 +22,9 @@ import {
   addDiffEntry,
   moveDiffEntry,
   rescoreDiffEntry,
+  setSuggestion,
+  decideSuggestion,
+  revertDiffEntry,
   rejectJob,
   cancelJob,
   deleteJob,
@@ -2069,6 +2072,71 @@ export function JobDetail(): React.ReactElement {
     }
   }
 
+  // The assistant's suggestion is kept with the item so it survives closing the chat and stepping to another item (DESIGN.md §11.4.6). Both
+  // calls are best effort: a failure only means the suggestion will not be restored later; it is still on screen, so no error is shown.
+  async function handleSuggest(localId: string, proposal: { proposedTitle: string | null; proposedDescription: string | null }): Promise<void> {
+    if (!id) return;
+    try {
+      const result = await setSuggestion(id, localId, proposal);
+      setDiff(mergeServerDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []));
+    } catch {
+      // not restored later; nothing the reviewer must do
+    }
+  }
+
+  async function handleDecideSuggestion(localId: string, decision: 'rejected' | 'discussed', suggestionId?: string): Promise<void> {
+    if (!id) return;
+    try {
+      const result = await decideSuggestion(id, localId, decision, suggestionId);
+      setDiff(mergeServerDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []));
+    } catch {
+      // the decision is not recorded: the suggestion may come back when the item is opened again, and can be dismissed again
+    }
+  }
+
+  // Applies a suggestion keeping what it replaces (for Undo), then re-scores once if the item had a score: the text is new, so the old score is stale.
+  async function handleApplySuggestion(localId: string, patch: { title: string; description: string }, suggestionId?: string): Promise<void> {
+    if (!id) return;
+    if (isDiffMutatingRef.current) {
+      showToast('Try again — another change is still saving.', 'error');
+      throw new Error('another change is still saving');
+    }
+    const wasScored = diffRef.current.find((entry) => entry.localId === localId)?.qualityScore != null;
+    isDiffMutatingRef.current = true;
+    setIsDiffMutating(true);
+    try {
+      const result = await editDiffEntry(id, localId, { ...patch, snapshot: true, ...(suggestionId ? { suggestionId } : {}) });
+      setDiff(mergeServerDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []));
+      setEditedIds((prev) => new Set(prev).add(localId));
+      showToast('Suggestion applied.', 'success');
+    } catch (err) {
+      showErrorToast('Failed to apply the suggestion — please try again.', err);
+      throw err;
+    } finally {
+      isDiffMutatingRef.current = false;
+      setIsDiffMutating(false);
+    }
+    if (wasScored) {
+      try {
+        await handleRescore(localId); // its own toasts say what happened; the applied text stays either way
+      } catch {
+        // the item is shown as edited since it was scored, with Re-check quality available
+      }
+    }
+  }
+
+  async function handleRevertSuggestion(localId: string): Promise<void> {
+    if (!id) return;
+    try {
+      const result = await revertDiffEntry(id, localId);
+      setDiff(mergeServerDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []));
+      showToast('Undone: the previous text and score are back.', 'success');
+    } catch (err) {
+      showErrorToast(getServerMessage(err) ?? 'Failed to undo — please try again.', err);
+      throw err;
+    }
+  }
+
   // Re-throws on failure, same contract as handleRescore above -- lets
   // NodeDetailPanel's own per-figure loading-button guard know the call
   // failed and reset itself, rather than this function owning that local
@@ -3080,6 +3148,10 @@ export function JobDetail(): React.ReactElement {
                 captionByTableId={captionByTableId}
                 onSave={handleSaveEdit}
                 onRescore={handleRescore}
+                onSuggest={handleSuggest}
+                onDecideSuggestion={handleDecideSuggestion}
+                onApplySuggestion={handleApplySuggestion}
+                onRevertSuggestion={handleRevertSuggestion}
                 onSetProposalAccepted={handleSetProposalAccepted}
                 onOverrideDuplicate={handleOverrideDuplicate}
                 onUndoDuplicateOverride={handleUndoDuplicateOverride}

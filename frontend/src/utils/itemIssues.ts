@@ -13,6 +13,8 @@ export interface ItemIssue {
   why?: string;
   // The issue can be worked on with the assistant: the list offers a button when the caller can open it.
   askable?: boolean;
+  // The issue is a suggestion waiting for a decision: the list offers "Review change" when the caller can open it.
+  reviewable?: boolean;
 }
 
 export interface IssueEntry {
@@ -26,6 +28,8 @@ export interface IssueEntry {
   qualityCategoryScores?: Record<string, number> | null;
   proposal?: { kind: string; html: string } | null;
   duplicateOf?: { existingAdoId?: number | null } | null;
+  // The assistant's suggestion kept with the item: one nobody decided on is an issue until it is accepted, rejected or parked.
+  suggestion?: { decision: string } | null;
 }
 
 const MAX_NAME_CHARS = 48;
@@ -44,6 +48,10 @@ export function itemIssues(entry: IssueEntry): ItemIssue[] {
           ? `Missing value in the source: ${values.join(', ')}. Ask the author.`
           : 'The source leaves a value open. Ask the author.',
     });
+  }
+
+  if (entry.suggestion?.decision === 'pending') {
+    issues.push({ id: 'suggestion-waiting', severity: 'review', text: 'The assistant suggested a rewrite. Review it before moving on.', reviewable: true });
   }
 
   // Only Requirements are scored and checked against the source; an Epic or Feature never carries a score line or a "Check:" line.
