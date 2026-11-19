@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ArrowLeft } from 'lucide-react';
 import type { RewriteComparison, RewriteWarning } from '../api/chat';
 import { NOISE_BAND, type ProposalReviewState } from '../hooks/useProposalReview';
@@ -7,6 +7,8 @@ import { Chip } from '../ui/Chip';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { DropdownMenu, DropdownMenuItem } from '../ui/DropdownMenu';
 import { DescriptionMarkdown } from '../ui/Markdown';
+import { ProposalChanges } from './ProposalChanges';
+import { diffDescriptions } from '../utils/textDiff';
 import { isScoredType } from '../utils/diffFlagging';
 import { LABEL_MICRO } from '../utils/labelMicro';
 import { categoryLabel } from '../utils/qualityCategories';
@@ -28,6 +30,27 @@ export function warningText(warning: RewriteWarning): string {
   const label = WARNING_LABEL[warning.code] ?? warning.code;
   return warning.code === 'title_changed' || warning.code === 'empty_description' ? label : `${label}: ${warning.detail}`;
 }
+
+// The reviewer's last choice of view is remembered; a private window or blocked storage just means the automatic choice applies.
+type ViewChoice = 'changes' | 'side';
+const VIEW_KEY = 'req2ado.proposalView';
+function readView(): ViewChoice | null {
+  try {
+    const value = window.localStorage.getItem(VIEW_KEY);
+    return value === 'changes' || value === 'side' ? value : null;
+  } catch {
+    return null;
+  }
+}
+function storeView(view: ViewChoice): void {
+  try {
+    window.localStorage.setItem(VIEW_KEY, view);
+  } catch {
+    // not remembered
+  }
+}
+// At most this share of the words may have changed for the inline view to be the automatic choice: past it, marks are noise.
+const AUTO_CHANGES_MAX_SHARE = 0.4;
 
 export interface ReviewedItem {
   type: string;
@@ -101,7 +124,12 @@ export function ProposalReview({
   const headingRef = useRef<HTMLHeadingElement>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [discussing, setDiscussing] = useState(false);
+  const [choice, setChoice] = useState<ViewChoice | null>(readView);
   const proposal = review.proposal;
+  const proposedText = proposal?.proposedDescription ?? null;
+  const diff = useMemo(() => (proposedText !== null ? diffDescriptions(item.description, proposedText) : null), [item.description, proposedText]);
+  const autoView: ViewChoice = diff && !diff.tooLarge && diff.changedShare <= AUTO_CHANGES_MAX_SHARE ? 'changes' : 'side';
+  const view: ViewChoice = diff?.tooLarge ? 'side' : (choice ?? autoView);
 
   // A suggestion appearing moves focus to the heading; closing review mode is the caller's to restore.
   const hasProposal = proposal !== null;
@@ -204,21 +232,47 @@ export function ProposalReview({
         </dl>
       )}
 
-      {hasDescription && (
-        <div className="grid gap-3 @2xl:grid-cols-2">
-          <div className="min-w-0 rounded-sm border border-hairline bg-surface-alt p-2.5">
-            <p className={cn(LABEL_MICRO, 'mb-1 text-ink-3')}>Original</p>
-            <div className="text-sm text-ink-2">
-              <DescriptionMarkdown>{item.description}</DescriptionMarkdown>
+      {hasDescription && diff && (
+        <div className="flex min-w-0 flex-col gap-2">
+          {!diff.tooLarge && (
+            <div role="group" aria-label="View" className="inline-flex w-fit overflow-hidden rounded-md border border-hairline-strong text-xs font-semibold">
+              {(['changes', 'side'] as const).map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  aria-pressed={view === option}
+                  onClick={() => {
+                    setChoice(option);
+                    storeView(option);
+                  }}
+                  className={cn('px-2.5 py-1', view === option ? 'bg-accent-soft text-accent-ink' : 'bg-surface text-ink-2 hover:bg-surface-alt')}
+                >
+                  {option === 'changes' ? 'Changes' : 'Side by side'}
+                </button>
+              ))}
             </div>
-          </div>
-          <div className="min-w-0 rounded-sm border border-ok-border bg-ok-soft p-2.5">
-            <p className={cn(LABEL_MICRO, 'mb-1 text-ok-ink')}>Suggested</p>
-            <div className="text-sm text-ink-1">
-              {/* Rendered as the detail window renders it, so a table the proposal keeps shows as a table with its styling. */}
-              <DescriptionMarkdown>{proposal.proposedDescription ?? ''}</DescriptionMarkdown>
+          )}
+          {diff.tooLarge && <p className="text-xs text-ink-3">This text is too long to compare word by word, so both versions are shown.</p>}
+          {!diff.tooLarge && view === 'side' && choice === null && <p className="text-xs text-ink-3">Most of the text changed, so both versions are shown.</p>}
+          {view === 'changes' ? (
+            <ProposalChanges diff={diff} />
+          ) : (
+            <div className="grid gap-3 @2xl:grid-cols-2">
+              <div className="min-w-0 rounded-sm border border-hairline bg-surface-alt p-2.5">
+                <p className={cn(LABEL_MICRO, 'mb-1 text-ink-3')}>Original</p>
+                <div className="text-sm text-ink-2">
+                  <DescriptionMarkdown>{item.description}</DescriptionMarkdown>
+                </div>
+              </div>
+              <div className="min-w-0 rounded-sm border border-ok-border bg-ok-soft p-2.5">
+                <p className={cn(LABEL_MICRO, 'mb-1 text-ok-ink')}>Suggested</p>
+                <div className="text-sm text-ink-1">
+                  {/* Rendered as the detail window renders it, so a table the proposal keeps shows as a table with its styling. */}
+                  <DescriptionMarkdown>{proposal.proposedDescription ?? ''}</DescriptionMarkdown>
+                </div>
+              </div>
             </div>
-          </div>
+          )}
         </div>
       )}
 

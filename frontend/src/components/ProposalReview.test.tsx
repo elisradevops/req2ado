@@ -50,6 +50,7 @@ function mockCheck(warnings: unknown[], full: unknown): void {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  window.localStorage.clear();
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -308,12 +309,13 @@ describe('ProposalReview: the comparison and the actions', () => {
     mockCheck([], comparison());
   });
 
-  it('shows the title as Was and Now, and the original text beside the suggested text', async () => {
+  it('shows the title as Was and Now, and, in the Side by side view, the original text beside the suggested text', async () => {
     render(<Harness proposal={text('The receiver shall acquire lock within 5 ms.', 'Receiver lock time')} />);
     await screen.findByText(/predicted 64/i);
     const was = screen.getByText('Was');
     expect(was.nextElementSibling).toHaveTextContent('Receiver lock');
     expect(screen.getByText('Now').nextElementSibling).toHaveTextContent('Receiver lock time');
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Side by side' }));
     expect(screen.getByText('Original').parentElement).toHaveTextContent('The receiver shall lock.');
     expect(screen.getByText('Suggested').parentElement).toHaveTextContent('The receiver shall acquire lock within 5 ms.');
   });
@@ -399,5 +401,83 @@ describe('ProposalReview: the comparison and the actions', () => {
   it('marks nothing and renders nothing when there is no suggestion', () => {
     const { container } = render(<Harness proposal={null} />);
     expect(container).toBeEmptyDOMElement();
+  });
+});
+
+describe('ProposalReview: the Changes view and the toggle', () => {
+  const ORIGINAL: ReviewedItem = { ...REQUIREMENT, description: 'The unit shall support power input within range of the supply.' };
+
+  beforeEach(() => {
+    mockCheck([], comparison());
+  });
+
+  it('starts in the Changes view for a small edit, marking the words with strikethrough and underline plus hidden labels', async () => {
+    render(<Harness proposal={text('The unit shall accept power input within range of the supply.')} item={ORIGINAL} />);
+    const view = await screen.findByTestId('proposal-changes');
+    expect(screen.getByRole('button', { name: 'Changes' })).toHaveAttribute('aria-pressed', 'true');
+    const del = within(view).getByText('support').closest('del');
+    const ins = within(view).getByText('accept').closest('ins');
+    expect(del).not.toBeNull();
+    expect(ins).not.toBeNull();
+    expect(del).toHaveTextContent('deleted: support');
+    expect(ins).toHaveTextContent('inserted: accept');
+    expect(within(view).getByText(/1 change: 1 replaced\. Marked by underline and strikethrough as well as colour\./)).toBeInTheDocument();
+  });
+
+  it('starts Side by side when most of the text changed, and says why', async () => {
+    render(<Harness proposal={text('Operators must configure voltage limits during commissioning.')} item={ORIGINAL} />);
+    await screen.findByText(/predicted 64/i);
+    expect(screen.queryByTestId('proposal-changes')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Side by side' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByText(/most of the text changed, so both versions are shown/i)).toBeInTheDocument();
+  });
+
+  it('remembers the reviewer\'s choice for the next suggestion', async () => {
+    const user = userEvent.setup();
+    const first = render(<Harness proposal={text('The unit shall accept power input within range of the supply.')} item={ORIGINAL} />);
+    await screen.findByTestId('proposal-changes');
+    await user.click(screen.getByRole('button', { name: 'Side by side' }));
+    expect(window.localStorage.getItem('req2ado.proposalView')).toBe('side');
+    first.unmount();
+
+    render(<Harness proposal={text('The unit shall accept power input within range of the supply.')} item={ORIGINAL} />);
+    await screen.findByText(/predicted 64/i);
+    expect(screen.queryByTestId('proposal-changes')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Side by side' })).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('still works when storage is blocked (the automatic choice applies)', async () => {
+    const spy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('blocked');
+    });
+    try {
+      render(<Harness proposal={text('The unit shall accept power input within range of the supply.')} item={ORIGINAL} />);
+      expect(await screen.findByTestId('proposal-changes')).toBeInTheDocument();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('says so when the text is unchanged (only the title differs)', async () => {
+    render(<Harness proposal={text(ORIGINAL.description, 'A better title')} item={ORIGINAL} />);
+    expect(await screen.findByText('The text is unchanged.')).toBeInTheDocument();
+  });
+
+  it('shows a table cell by cell when its shape is unchanged', async () => {
+    const before = '<table><tr><th>Parameter</th><th>Value</th></tr><tr><td>Rate</td><td>N Hz</td></tr></table>';
+    const after = before.replace('N Hz', '5 Hz');
+    render(<Harness proposal={text(`Intro.\n\n${after}`)} item={{ ...ORIGINAL, description: `Intro.\n\n${before}` }} />);
+    const view = await screen.findByTestId('proposal-changes');
+    const cell = within(view).getByText('N').closest('del');
+    expect(cell).not.toBeNull();
+    expect(within(view).getByText('5').closest('ins')).not.toBeNull();
+    expect(view.querySelector('table')).not.toBeNull();
+  });
+
+  it('shows a comparison that is too large as both versions, with no toggle', async () => {
+    const huge = Array.from({ length: 21_000 }, (_, i) => `w${i}`).join(' ');
+    render(<Harness proposal={text(`${huge} extra`)} item={{ ...ORIGINAL, description: huge }} />);
+    expect(await screen.findByText(/too long to compare word by word/i)).toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: 'View' })).not.toBeInTheDocument();
   });
 });
