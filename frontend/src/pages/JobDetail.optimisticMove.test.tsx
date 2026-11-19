@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { autoOpenWarnings } from '../test/openWarnings';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { createElement, forwardRef } from 'react';
@@ -48,7 +49,16 @@ vi.mock('../hooks/useChatSocket', async () => {
   return { ...actual, useChatSocket: vi.fn() };
 });
 
-function renderAt(id: string) {
+const afterEachStops: Array<() => void> = [];
+afterEach(() => {
+  for (const stop of afterEachStops.splice(0)) stop();
+});
+
+function renderAt(id: string, options: { keepWarningsFolded?: boolean } = {}) {
+  if (!options.keepWarningsFolded) {
+    const stop = autoOpenWarnings();
+    afterEachStops.push(stop);
+  }
   return render(
     <ToastProvider>
       <MemoryRouter initialEntries={[`/jobs/${id}`]}>
@@ -185,7 +195,7 @@ describe('JobDetail optimistic move on drag-and-drop', () => {
       renderAt(jobId);
       await waitFor(() => expect(screen.getByText('Feature One')).toBeInTheDocument());
       const { default: userEvent } = await import('@testing-library/user-event');
-      await userEvent.click(screen.getByRole('button', { name: 'Review in tree' }));
+      await userEvent.click(await screen.findByRole('button', { name: 'Review in tree' }));
       await userEvent.click(screen.getByRole('checkbox', { name: /hide reviewed/i }));
       await userEvent.click(screen.getByRole('button', { name: 'Mark all reviewed' }));
       expect(screen.queryByRole('button', { name: 'Mark all reviewed' })).not.toBeInTheDocument();

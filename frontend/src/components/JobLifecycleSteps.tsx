@@ -8,33 +8,37 @@ interface StepDef {
   key: LifecycleKey;
   label: string;
   tip: string;
+  // One short line for a step that has not started (the phase rail); the tip is the longer sentence for the phase view and the tooltip.
+  pendingLine: string;
 }
 
 // SURVEY runs two LLM passes (Analyze, Score) BASELINE never has -- BASELINE
 // is deterministic, verbatim, no LLM at all, so Analyze/Score would sit
 // permanently grey and misrepresent the pipeline if shown for it.
 const SURVEY_STEPS: StepDef[] = [
-  { key: 'parse', label: 'Parse', tip: 'Reading the document and splitting it into sections.' },
-  { key: 'analyze', label: 'Analyze', tip: 'Inferring the work-item hierarchy and drafting requirement text for each section.' },
-  { key: 'score', label: 'Score', tip: "Judging each drafted requirement's quality (clarity, testability, atomicity, style, rationale)." },
+  { key: 'parse', pendingLine: 'Reads the document', label: 'Parse', tip: 'Reading the document and splitting it into sections.' },
+  { key: 'analyze', pendingLine: 'Drafts the work items', label: 'Analyze', tip: 'Inferring the work-item hierarchy and drafting requirement text for each section.' },
+  { key: 'score', pendingLine: 'Checks each requirement', label: 'Score', tip: "Judging each drafted requirement's quality (clarity, testability, atomicity, style, rationale)." },
   {
     key: 'dedupCheck',
+    pendingLine: 'Looks for existing items',
     label: 'Dedup check',
     tip: 'Checking whether a near-identical work item already exists under this area path, to avoid creating duplicates.',
   },
-  { key: 'review', label: 'Review', tip: 'Awaiting your review of the proposed diff — nothing is written to Azure DevOps yet.' },
-  { key: 'write', label: 'Write', tip: 'Writes the reviewed work items to Azure DevOps. Nothing is written until you confirm, and it cannot be undone.' },
+  { key: 'review', pendingLine: 'Your review of the proposed items', label: 'Review', tip: 'Waiting for your review of the proposed items.' },
+  { key: 'write', pendingLine: 'Writes approved items. Cannot be undone.', label: 'Write', tip: 'Writes the reviewed work items to Azure DevOps. It cannot be undone.' },
 ];
 
 const BASELINE_STEPS: StepDef[] = [
-  { key: 'parse', label: 'Parse', tip: 'Reading the document verbatim: no AI model, no rewriting.' },
+  { key: 'parse', pendingLine: 'Reads the document', label: 'Parse', tip: 'Reading the document verbatim: no AI model, no rewriting.' },
   {
     key: 'dedupCheck',
+    pendingLine: 'Looks for existing items',
     label: 'Dedup check',
     tip: 'Checking whether a near-identical work item already exists under this area path, to avoid creating duplicates.',
   },
-  { key: 'review', label: 'Review', tip: 'Awaiting your review of the proposed diff — nothing is written to Azure DevOps yet.' },
-  { key: 'write', label: 'Write', tip: 'Writes the reviewed work items to Azure DevOps. Nothing is written until you confirm, and it cannot be undone.' },
+  { key: 'review', pendingLine: 'Your review of the proposed items', label: 'Review', tip: 'Waiting for your review of the proposed items.' },
+  { key: 'write', pendingLine: 'Writes approved items. Cannot be undone.', label: 'Write', tip: 'Writes the reviewed work items to Azure DevOps. It cannot be undone.' },
 ];
 
 function stepsFor(mode: 'baseline' | 'survey'): StepDef[] {
@@ -260,6 +264,8 @@ export interface LifecyclePhase {
   label: string;
   /** The step's one-sentence purpose (its tooltip text), for a phase view that has not started yet. */
   purpose: string;
+  /** The short line the phase rail shows for a phase that has not started. */
+  pendingLine: string;
   state: StepState;
 }
 
@@ -277,5 +283,5 @@ export function lifecyclePhases(
   const keys = defs.map((def) => def.key);
   const liveKey = reachedKeyFor(mode, status, stage, latestNarrationPhase);
   const states = statesFor(keys, liveKey, status);
-  return { liveKey, phases: defs.map((def, index) => ({ key: def.key, label: def.label, purpose: def.tip, state: states[index] })) };
+  return { liveKey, phases: defs.map((def, index) => ({ key: def.key, label: def.label, purpose: def.tip, pendingLine: def.pendingLine, state: states[index] })) };
 }

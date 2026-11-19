@@ -193,7 +193,7 @@ export class JobEventsController implements OnModuleDestroy {
       void subscriber.quit().catch(() => undefined);
     };
 
-    const terminalStages = new Set(['diff_ready', 'failed', 'cancelled']);
+    const terminalStages = new Set(['diff_ready', 'succeeded', 'failed', 'cancelled']);
     let streamEnded = false;
     // Writes one already-serialized message onto the SSE stream, ending it
     // (and cleaning up) if it's a terminal stage. Shared by both the live

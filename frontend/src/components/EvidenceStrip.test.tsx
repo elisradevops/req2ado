@@ -59,7 +59,7 @@ describe('EvidenceStrip', () => {
   it('does not double the punctuation in the closed summary when the criterion already ends in a full stop', () => {
     render(
       <EvidenceStrip
-        entry={{ ...BASE, qualityScore: 45, qualityCategoryScores: { 'Owner is present.': 10, clarity: 80 } }}
+        entry={{ ...BASE, qualityScore: 55, qualityCategoryScores: { 'Owner is present.': 10, clarity: 80 } }}
         jobMode="survey"
         collapsible
         quality={<div>panel</div>}
@@ -170,7 +170,7 @@ describe('EvidenceStrip', () => {
     expect(checklist).toHaveAttribute('dir', 'auto');
     expect(screen.getByText('דרישות הספק').closest('bdi')).not.toBeNull();
   });
-  describe('collapsible (the item dialog): provenance stays, the scoring detail folds into "Why this verdict"', () => {
+  describe('collapsible (the item dialog): provenance stays, the scoring detail folds into "How this was scored"', () => {
     const scored = {
       ...BASE,
       sourceRef: REF,
@@ -188,27 +188,34 @@ describe('EvidenceStrip', () => {
       expect(screen.queryByText('KB references')).not.toBeInTheDocument();
       expect(screen.queryByText(/scored on wording only/i)).not.toBeInTheDocument();
 
-      await userEvent.click(screen.getByRole('button', { name: /why this verdict/i }));
+      await userEvent.click(screen.getByRole('button', { name: /how this was scored/i }));
       expect(screen.getByText('Weakest area')).toBeInTheDocument();
       expect(screen.getByText('KB references')).toBeInTheDocument();
       expect(screen.getByText(/scored on wording only/i)).toBeInTheDocument();
     });
 
     it('says the weakest area on the closed disclosure, so the reason is visible without opening it', () => {
-      render(<EvidenceStrip entry={scored} jobMode="survey" collapsible />);
-      expect(screen.getByRole('button', { name: /why this verdict/i })).toHaveTextContent('Testability');
+      render(<EvidenceStrip entry={{ ...scored, qualityScore: 60 }} jobMode="survey" collapsible />);
+      expect(screen.getByRole('button', { name: /how this was scored/i })).toHaveTextContent('Testability');
+    });
+
+    it('does not repeat a low score on the closed line: the issues list already says it once', () => {
+      render(<EvidenceStrip entry={scored} jobMode="survey" collapsible quality={<div>panel</div>} />);
+      const toggle = screen.getByRole('button', { name: /how this was scored/i });
+      expect(toggle).not.toHaveTextContent(/Quality 40/);
+      expect(toggle).not.toHaveTextContent(/Weakest area/);
     });
 
     it('is closed by default and shows no disclosure when there is nothing to explain', () => {
       render(<EvidenceStrip entry={{ ...BASE, sourceRef: REF }} jobMode="baseline" collapsible />);
-      expect(screen.queryByRole('button', { name: /why this verdict/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /how this was scored/i })).not.toBeInTheDocument();
       expect(screen.getByText('spec.docx')).toBeInTheDocument();
     });
 
     it('opens to the KB references alone when the item has citations but no scores', async () => {
       render(<EvidenceStrip entry={{ ...BASE, sourceRef: REF }} jobMode="baseline" kbCitations={citations} collapsible />);
       expect(screen.queryByText('KB references')).not.toBeInTheDocument();
-      await userEvent.click(screen.getByRole('button', { name: /why this verdict/i }));
+      await userEvent.click(screen.getByRole('button', { name: /how this was scored/i }));
       expect(screen.getByText('KB references')).toBeInTheDocument();
     });
   });
@@ -309,5 +316,42 @@ describe('EvidenceStrip source wording', () => {
     render(<EvidenceStrip entry={BASE} jobMode="baseline" jobId="job-1" collapsible />);
     expect(getEntrySource).not.toHaveBeenCalled();
     expect(screen.getByText(FALLBACK)).toBeInTheDocument();
+  });
+});
+
+describe('EvidenceStrip for an Epic or Feature', () => {
+  it('offers no "How this was scored" disclosure, even with knowledge-base citations', () => {
+    render(
+      <EvidenceStrip
+        collapsible
+        jobMode="survey"
+        entry={{ ...BASE, type: 'Epic', sourceRef: REF }}
+        kbCitations={[{ sourceFile: 'std.pdf', similarity: 0.8 }] as never}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: /how this was scored/i })).not.toBeInTheDocument();
+  });
+});
+
+describe('EvidenceStrip quote for an Epic or Feature', () => {
+  it('keeps the location in view and the section text behind a closed "Section text" disclosure', () => {
+    render(<EvidenceStrip collapsible jobMode="survey" entry={{ ...BASE, type: 'Feature', sourceRef: REF }} />);
+    expect(screen.getByText('spec.docx')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /section text/i })).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('leaves a Requirement\'s source line open, with no disclosure around it', () => {
+    render(<EvidenceStrip collapsible jobMode="survey" entry={{ ...BASE, type: 'Requirement', sourceRef: REF }} />);
+    expect(screen.queryByRole('button', { name: /section text/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/original wording is in the source file/i)).toBeInTheDocument();
+  });
+});
+
+describe('EvidenceStrip when the Source column owns the wording', () => {
+  it('does not fetch the source itself, so a request is not sent twice', () => {
+    vi.mocked(getEntrySource).mockReset();
+    vi.mocked(getEntrySource).mockResolvedValue({ kind: 'text', text: 'x', truncated: false });
+    render(<EvidenceStrip collapsible sourceInPane jobId="job-1" jobMode="survey" entry={{ ...BASE, localId: 'a', sourceRef: REF }} />);
+    expect(getEntrySource).not.toHaveBeenCalled();
   });
 });

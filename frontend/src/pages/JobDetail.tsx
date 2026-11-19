@@ -22,6 +22,9 @@ import {
   addDiffEntry,
   moveDiffEntry,
   rescoreDiffEntry,
+  setSuggestion,
+  decideSuggestion,
+  revertDiffEntry,
   rejectJob,
   cancelJob,
   deleteJob,
@@ -75,7 +78,7 @@ import { computeWriteGate, openReviewRecordCount } from '../utils/writeGate';
 import { QUEUED_COPY } from '../utils/labels';
 import { describeFailureCause, describeStoredFailure, failureAuditMessage } from '../utils/failureCause';
 import { REVIEW_GROUP_META } from '../components/reviewGroupMeta';
-import { buildReviewQueue, cleanApproval, groupReviewQueue, isExcludedWithAncestors, nextInQueue, REVIEW_GROUP_ORDER, reviewQueueModeReducer, type ReviewGroup, riskReason, spotCheckSample } from '../utils/reviewQueue';
+import { buildReviewQueue, cleanApproval, countStillToCheck, groupReviewQueue, isExcludedWithAncestors, nextInQueue, REVIEW_GROUP_ORDER, reviewQueueModeReducer, type ReviewGroup, riskReason, spotCheckSample } from '../utils/reviewQueue';
 import { BulkApproveDialog } from '../components/BulkApproveDialog';
 import { WriteSummary, type WriteSummaryState } from '../components/WriteSummary';
 import { approvalBreakdown, type ApprovalMethod } from '../utils/approvalBreakdown';
@@ -93,6 +96,7 @@ import { Skeleton, useSkeletonCrossfade } from '../ui/Skeleton';
 import { Spinner } from '../ui/Spinner';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { Tooltip } from '../ui/Tooltip';
+import { DropdownMenu, DropdownMenuItem } from '../ui/DropdownMenu';
 import { DestinationBar } from '../components/DestinationBar';
 import { Card } from '../ui/Card';
 import { TextField } from '../ui/TextField';
@@ -112,9 +116,9 @@ import { matchesDiffFilter } from '../utils/diffFilterMatch';
 import { FigureDescriptions, type FigureDescriptionEntry } from '../components/FigureDescriptions';
 import { SectionResults, type SectionResultEntry } from '../components/SectionResults';
 import type { WorkItemTypeCatalogEntry } from '../api/ado';
-import { isRunDetailStatus, shouldShowTiles, shouldShowTabs, shouldShowFilterBar, shouldShowNothingWrittenLine, reviewHeadline } from './jobDetailLayout';
+import { isRunDetailStatus, shouldShowTiles, shouldShowTabs, shouldShowFilterBar, shouldShowNothingWrittenLine, reviewHeadline, phaseRailOrientation } from './jobDetailLayout';
 import { SafetyLine } from '../components/SafetyLine';
-import { Download, FileX2, RotateCw, ShieldCheck, Trash2, TriangleAlert, Upload, X } from 'lucide-react';
+import { Download, Ellipsis, FileX2, RotateCw, ShieldCheck, Trash2, TriangleAlert, Upload, X } from 'lucide-react';
 import { IconButton } from '../ui/IconButton';
 import { WriteBar } from '../components/WriteBar';
 import { EmptyState } from '../ui/EmptyState';
@@ -614,7 +618,7 @@ export function JobDetail(): React.ReactElement {
           // the review view, and tear this stream down before the real
           // 'writing' events arrive.
           if (nextStage === 'diff_ready' && isMutatingRef.current) return;
-          if (nextStage === 'diff_ready' || nextStage === 'failed' || nextStage === 'cancelled') {
+          if (nextStage === 'diff_ready' || nextStage === 'succeeded' || nextStage === 'failed' || nextStage === 'cancelled') {
             getJob(id).then((job) => {
               if (cancelled) return;
               // Same race, but the replay slipped past the guard above (our write started while this fetch was in flight): stay on
@@ -1816,9 +1820,14 @@ export function JobDetail(): React.ReactElement {
       const counted = warningKindGroups.find((group) => group.kind === kind);
       const acceptedLabel = counted?.meta.ackPolicy === 'kind_counted' ? counted.meta.countedAckLabel : undefined;
       const acceptedCount = counted ? (counted.nodeIds.length > 0 ? counted.nodeIds.length : counted.records.length) : 0;
+      // Accepting a kind returns its items to the tier their other signals give them, so say how many still need a check: the Check count
+      // growing after an acceptance would otherwise look like a bug.
+      const stillToCheck = acknowledged && acceptedLabel ? countStillToCheck(diff, warningKindGroups, kind) : 0;
       showToast(
         acknowledged
-          ? acceptedLabel ? `Accepted ${acceptedCount.toLocaleString()} ${acceptedLabel}.` : 'Marked handled.'
+          ? acceptedLabel
+            ? `Accepted ${acceptedCount.toLocaleString()} ${acceptedLabel}.${stillToCheck > 0 ? ` ${stillToCheck.toLocaleString()} of them still need a check.` : ''}`
+            : 'Marked handled.'
           : acceptedLabel ? 'Acceptance undone.' : 'Marked not handled.',
         'success',
         {
@@ -2059,6 +2068,71 @@ export function JobDetail(): React.ReactElement {
         reason ? `Failed to rescore — ${reason.length > 200 ? `${reason.slice(0, 200)}…` : reason}` : 'Failed to rescore — please try again.',
         err,
       );
+      throw err;
+    }
+  }
+
+  // The assistant's suggestion is kept with the item so it survives closing the chat and stepping to another item (DESIGN.md §11.4.6). Both
+  // calls are best effort: a failure only means the suggestion will not be restored later; it is still on screen, so no error is shown.
+  async function handleSuggest(localId: string, proposal: { proposedTitle: string | null; proposedDescription: string | null }): Promise<void> {
+    if (!id) return;
+    try {
+      const result = await setSuggestion(id, localId, proposal);
+      setDiff(mergeServerDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []));
+    } catch {
+      // not restored later; nothing the reviewer must do
+    }
+  }
+
+  async function handleDecideSuggestion(localId: string, decision: 'rejected' | 'discussed', suggestionId?: string): Promise<void> {
+    if (!id) return;
+    try {
+      const result = await decideSuggestion(id, localId, decision, suggestionId);
+      setDiff(mergeServerDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []));
+    } catch {
+      // the decision is not recorded: the suggestion may come back when the item is opened again, and can be dismissed again
+    }
+  }
+
+  // Applies a suggestion keeping what it replaces (for Undo), then re-scores once if the item had a score: the text is new, so the old score is stale.
+  async function handleApplySuggestion(localId: string, patch: { title: string; description: string }, suggestionId?: string): Promise<void> {
+    if (!id) return;
+    if (isDiffMutatingRef.current) {
+      showToast('Try again — another change is still saving.', 'error');
+      throw new Error('another change is still saving');
+    }
+    const wasScored = diffRef.current.find((entry) => entry.localId === localId)?.qualityScore != null;
+    isDiffMutatingRef.current = true;
+    setIsDiffMutating(true);
+    try {
+      const result = await editDiffEntry(id, localId, { ...patch, snapshot: true, ...(suggestionId ? { suggestionId } : {}) });
+      setDiff(mergeServerDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []));
+      setEditedIds((prev) => new Set(prev).add(localId));
+      showToast('Suggestion applied.', 'success');
+    } catch (err) {
+      showErrorToast('Failed to apply the suggestion — please try again.', err);
+      throw err;
+    } finally {
+      isDiffMutatingRef.current = false;
+      setIsDiffMutating(false);
+    }
+    if (wasScored) {
+      try {
+        await handleRescore(localId); // its own toasts say what happened; the applied text stays either way
+      } catch {
+        // the item is shown as edited since it was scored, with Re-check quality available
+      }
+    }
+  }
+
+  async function handleRevertSuggestion(localId: string): Promise<void> {
+    if (!id) return;
+    try {
+      const result = await revertDiffEntry(id, localId);
+      setDiff(mergeServerDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []));
+      showToast('Undone: the previous text and score are back.', 'success');
+    } catch (err) {
+      showErrorToast(getServerMessage(err) ?? 'Failed to undo — please try again.', err);
       throw err;
     }
   }
@@ -2643,6 +2717,7 @@ export function JobDetail(): React.ReactElement {
     latestNarrationForSteps?.phase === 'job_failed' ? (latestNarrationForSteps.lastPhase ?? null) : (latestNarrationForSteps?.phase ?? null);
   // The rail also stays after the run stops (DESIGN.md §11.3.5): Review is then the phase in view, and the finished phases stay readable.
   const reviewLayout = !isLive && !!mode && !!status;
+  const railOrientation = phaseRailOrientation(status);
   const phaseModel = liveLayout || reviewLayout ? lifecyclePhases(mode as 'baseline' | 'survey', status as string, stage, latestPhaseForSteps) : null;
   const viewKey: LifecycleKey | null = phaseModel
     ? pickedPhase && phaseModel.phases.some((phase) => phase.key === pickedPhase)
@@ -2671,7 +2746,7 @@ export function JobDetail(): React.ReactElement {
               ? 'Failed here'
               : phase.state === 'skipped'
                 ? 'Skipped'
-                : phase.purpose,
+                : phase.pendingLine,
   }));
   // What belongs to one phase, shown with that phase instead of in a global stack.
   const phaseBody = (key: LifecycleKey): React.ReactNode => (
@@ -2698,6 +2773,14 @@ export function JobDetail(): React.ReactElement {
           onKeyBlocked: () => announceAgain('This item has to be fixed or kept as written. Press the Keep as written button, or edit it.'),
         }
       : {};
+  // An item opened from the tree can be reviewed from the dialog while it is a new item, still in review, and neither it nor a parent is excluded.
+  const treeReviewEntry = (() => {
+    if (!selectedId || status !== 'diff_ready') return undefined;
+    const entry = diff.find((candidate) => candidate.localId === selectedId);
+    if (!entry || entry.action !== 'create') return undefined;
+    const byId = new Map(diff.map((candidate) => [candidate.localId, candidate] as const));
+    return isExcludedWithAncestors(entry, byId, new Map()) ? undefined : entry;
+  })();
   const dialogReview =
     queueMode && selectedId && status === 'diff_ready'
       ? {
@@ -2731,6 +2814,26 @@ export function JobDetail(): React.ReactElement {
           onBusyAttempt: () => announceAgain('Still saving. Try again.'),
           onMark: handleMarkSelectedReviewedAndNext,
           onUnmark: () => void handleSetReviewed([selectedId], false),
+        }
+      : treeReviewEntry
+      ? {
+          // Opened from the tree: the same two decisions, in the same place, without the queue's stepping on.
+          ...keepAsWrittenProps(selectedId!),
+          reviewed: reviewedIds.has(selectedId!),
+          busy: isDiffMutating,
+          onBusyAttempt: () => announceAgain('Still saving. Try again.'),
+          onMark: () => void handleSetReviewed([selectedId!], true, { method: 'single' }),
+          onUnmark: () => void handleSetReviewed([selectedId!], false),
+          // X is a single key, so an exclude from here says what it did and offers the way back.
+          onReject: () => {
+            const { localId, title } = treeReviewEntry;
+            void handleToggleExclude(localId, true).then(() =>
+              showToast(`Excluded "${title}".`, 'success', { label: 'Undo', onAction: () => void handleToggleExclude(localId, false) }),
+            );
+          },
+          markLabel: keepAsWrittenProps(selectedId!).markLabel ?? 'Mark reviewed',
+          markHint: 'mark reviewed',
+          rejectLabel: 'Exclude',
         }
       : null;
 
@@ -2797,6 +2900,7 @@ export function JobDetail(): React.ReactElement {
       <div id="integrity-warnings" tabIndex={-1} className="outline-none">
         <CollapsibleWarnings
           warnings={mergedWarnings}
+          foldable={status === 'diff_ready'}
           gateCount={status === 'diff_ready' ? actionableWarningCount : undefined}
           fixGroupTitle={status !== null && ['succeeded', 'failed', 'rejected', 'cancelled'].includes(status) ? 'Flagged before writing' : undefined}
           readOnly={status !== null && status !== 'diff_ready'}
@@ -2972,13 +3076,23 @@ export function JobDetail(): React.ReactElement {
                       </Button>
                     )}
                     {status === 'diff_ready' && (
-                      <div className="ml-auto flex gap-2">
-                        <Button size="sm" variant="ghost" onClick={() => handleBulkExclude(true)} disabled={isDiffMutating}>
-                          Exclude {filterAction || filterText || activeReviewGroup || focusWarning ? 'matching' : 'all'}
-                        </Button>
-                        <Button size="sm" variant="ghost" onClick={() => handleBulkExclude(false)} disabled={isDiffMutating}>
-                          Include {filterAction || filterText || activeReviewGroup || focusWarning ? 'matching' : 'all'}
-                        </Button>
+                      <div className="ml-auto">
+                        {/* The bulk exclude/include are rare and sweeping: one menu, not two buttons in the row (DESIGN.md §11.3.5). */}
+                        <DropdownMenu
+                          trigger={
+                            <Button size="sm" variant="ghost" aria-label="More actions" disabled={isDiffMutating}>
+                              <Ellipsis className="h-4 w-4" aria-hidden="true" />
+                              More
+                            </Button>
+                          }
+                        >
+                          <DropdownMenuItem onSelect={() => void handleBulkExclude(true)}>
+                            Exclude {filterAction || filterText || activeReviewGroup || focusWarning ? 'matching' : 'all'}
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onSelect={() => void handleBulkExclude(false)}>
+                            Include {filterAction || filterText || activeReviewGroup || focusWarning ? 'matching' : 'all'}
+                          </DropdownMenuItem>
+                        </DropdownMenu>
                       </div>
                     )}
                       </>
@@ -3034,6 +3148,10 @@ export function JobDetail(): React.ReactElement {
                 captionByTableId={captionByTableId}
                 onSave={handleSaveEdit}
                 onRescore={handleRescore}
+                onSuggest={handleSuggest}
+                onDecideSuggestion={handleDecideSuggestion}
+                onApplySuggestion={handleApplySuggestion}
+                onRevertSuggestion={handleRevertSuggestion}
                 onSetProposalAccepted={handleSetProposalAccepted}
                 onOverrideDuplicate={handleOverrideDuplicate}
                 onUndoDuplicateOverride={handleUndoDuplicateOverride}
@@ -3321,8 +3439,6 @@ export function JobDetail(): React.ReactElement {
       >
         <WriteSummary
           state={writeSummary}
-          teamProject={teamProject}
-          areaPath={areaPath}
           warnings={writeWarningCounts}
           noticeCount={noticeExcludedCount}
           onReviewUnreviewed={handleWriteReviewUnreviewed}
@@ -3499,10 +3615,11 @@ export function JobDetail(): React.ReactElement {
       {reviewLayout && phaseModel && viewKey ? (
         // mb-4 only without the Write bar: the bar cancels the page's bottom padding to rest on the edge, and a margin here would leave a strip
         // of content scrolling under it.
-        <div className={cn('grid grid-cols-1 gap-4 lg:grid-cols-[17.5rem_minmax(0,1fr)]', !writeBar && 'mb-4')}>
+        <div className={cn('grid grid-cols-1 gap-4', railOrientation === 'vertical' && 'lg:grid-cols-[17.5rem_minmax(0,1fr)]', !writeBar && 'mb-4')}>
           {/* Sticky: the review list is long, and the phases stay beside it. */}
-          <div className="lg:sticky lg:top-4 lg:self-start">
+          <div className={cn(railOrientation === 'vertical' && 'lg:sticky lg:top-4 lg:self-start')}>
             <PhaseRail
+              orientation={railOrientation}
               rows={phaseRailRows}
               selectedKey={viewKey}
               liveKey={phaseModel.liveKey}

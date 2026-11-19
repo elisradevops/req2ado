@@ -53,13 +53,13 @@ describe('text spacing (WCAG 1.4.12): no prose sits in a fixed-height box that c
     vi.mocked(jobsApi.getFigureFile).mockResolvedValue(null);
   });
 
-  it('the item dialog: description, proposal, evidence and the opened "Why this verdict" region', () => {
+  it('the item dialog: description, proposal, evidence and the opened "How this was scored" region', () => {
     render(
       <ToastProvider>
         <NodeDetailDialog open onOpenChange={vi.fn()} jobId="job-1" entry={ENTRY} jobMode="survey" onAddChild={vi.fn()} />
       </ToastProvider>,
     );
-    fireEvent.click(screen.getByRole('button', { name: /why this verdict/i }));
+    fireEvent.click(screen.getByRole('button', { name: /how this was scored/i }));
     const root = screen.getByRole('dialog');
     const prose = Array.from(root.querySelectorAll('p, li, .text-read'));
     expect(prose.length).toBeGreaterThan(5);

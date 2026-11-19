@@ -74,6 +74,17 @@ describe('buildChatContext', () => {
 
   it('is empty-handed, not broken, for an item with nothing around it', () => {
     const alone = [entry('x', null, 'Requirement', 'Alone')];
-    expect(buildChatContext(alone as any, alone[0] as any, {} as any)).toEqual({ parents: [], siblings: [], linked: [], figures: [], tables: [] });
+    expect(buildChatContext(alone as any, alone[0] as any, {} as any)).toEqual({ parents: [], siblings: [], children: [], linked: [], figures: [], tables: [] });
+  });
+
+  it('names the items directly under the item, with their type, leaving out excluded ones and deeper levels', () => {
+    const diff = [
+      entry('e', null, 'Epic', 'Epic'),
+      entry('f1', 'e', 'Feature', 'Feature one'),
+      { ...entry('f2', 'e', 'Feature', 'Feature two'), excluded: true },
+      entry('r1', 'f1', 'Requirement', 'Deep requirement'),
+    ];
+    const context = buildChatContext(diff as any, diff[0] as any, {} as any);
+    expect(context.children).toEqual([{ type: 'Feature', title: 'Feature one' }]);
   });
 });

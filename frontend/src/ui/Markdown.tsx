@@ -1,4 +1,4 @@
-import { Fragment } from 'react';
+import { Fragment, type ReactNode } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -42,9 +42,48 @@ const CHAT_MARKDOWN_COMPONENTS: Components = {
 // explicitly advertises as supported, plus tables/autolinks) fall through
 // as literal `~~text~~` instead of rendering as struck-through text
 // (confirmed live: this was the actual bug before adding the plugin).
-export function Markdown({ children }: { children: string }): React.ReactElement {
+// Marks each of `tokens` where it stands alone in a paragraph or list item (a value the source left open, such as "N" or "TBD"), so the reader
+// sees which words the "missing value" issue is about. Text only: other elements are passed through untouched, and the mark is a word-bearing
+// element with a title, never colour alone.
+function markTokens(children: ReactNode, tokens: readonly string[]): ReactNode {
+  const escaped = tokens
+    .filter(Boolean)
+    // A lone letter right after a number is a unit ("10 N", "5N"), not a value left open, so it is not marked there.
+    .map((token) => {
+      const literal = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return [...token].length === 1 && /\p{L}/u.test(token) ? `(?<!\\d\\s?)${literal}` : literal;
+    });
+  if (escaped.length === 0) return children;
+  const pattern = new RegExp(`(?<![\\p{L}\\p{N}])(${escaped.join('|')})(?![\\p{L}\\p{N}])`, 'gu');
+  const walk = (node: ReactNode): ReactNode => {
+    if (typeof node === 'string') {
+      return node.split(pattern).map((part, index) =>
+        index % 2 === 1 ? (
+          <mark key={index} title="A value the source leaves open" className="rounded-sm bg-warning-soft px-0.5 font-medium text-warning-ink underline decoration-dotted underline-offset-2">
+            {part}
+          </mark>
+        ) : (
+          part
+        ),
+      );
+    }
+    if (Array.isArray(node)) return node.map((child, index) => <Fragment key={index}>{walk(child)}</Fragment>);
+    return node;
+  };
+  return walk(children);
+}
+
+export function Markdown({ children, markedTokens }: { children: string; markedTokens?: readonly string[] }): React.ReactElement {
+  const components: Components =
+    markedTokens && markedTokens.length > 0
+      ? {
+          ...CHAT_MARKDOWN_COMPONENTS,
+          p: ({ children: inner }) => <p dir="auto" className="mb-1.5 text-sm leading-relaxed text-ink-1 last:mb-0">{markTokens(inner, markedTokens)}</p>,
+          li: ({ children: inner }) => <li>{markTokens(inner, markedTokens)}</li>,
+        }
+      : CHAT_MARKDOWN_COMPONENTS;
   return (
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={CHAT_MARKDOWN_COMPONENTS}>
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
       {children}
     </ReactMarkdown>
   );
@@ -330,14 +369,14 @@ function TrustedTable({ tableHtml }: { tableHtml: string }): React.ReactElement 
 // TABLE_BLOCK_PATTERN segments for trusted rendering and leaves everything
 // else on the same markdown path as before, matching what
 // toAdoDescriptionHtml's TABLE_BLOCK_PATTERN carve-out actually writes to ADO.
-export function DescriptionMarkdown({ children }: { children: string }): React.ReactElement {
+export function DescriptionMarkdown({ children, markedTokens }: { children: string; markedTokens?: readonly string[] }): React.ReactElement {
   const segments = children.split(TABLE_BLOCK_PATTERN);
   const tables = children.match(TABLE_BLOCK_PATTERN) ?? [];
   return (
     <>
       {segments.map((segment, index) => (
         <Fragment key={index}>
-          {segment && <Markdown>{segment}</Markdown>}
+          {segment && <Markdown markedTokens={markedTokens}>{segment}</Markdown>}
           {tables[index] && <TrustedTable tableHtml={tables[index]} />}
         </Fragment>
       ))}

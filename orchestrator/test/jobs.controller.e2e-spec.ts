@@ -92,7 +92,8 @@ describe('JobsController (e2e)', () => {
     // then occasionally got an answer from something else on that port (a 404/403 for a request this app's server never logged), failing
     // whichever test was unlucky. One bind per spec keeps every request on the same port.
     await new Promise<void>((resolve) => app.getHttpServer().listen(0, resolve));
-  });
+    // Loading the whole AppModule takes most of jest's 5 s default on a fast machine; a CI runner under parallel load needs more.
+  }, 30_000);
 
   afterAll(async () => {
     await app.close();

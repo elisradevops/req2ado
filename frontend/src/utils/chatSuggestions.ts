@@ -1,0 +1,95 @@
+import { categoryLabel, WEAK_CATEGORY_SCORE } from './qualityCategories';
+
+export interface ChatSuggestion {
+  label: string;
+  effect: string;
+  prompt: string;
+}
+
+// What the assistant offers, drawn from the item's own weak categories (below WEAK_CATEGORY_SCORE), at most three, then a title. An item with no
+// real weakness, a stale score, an Epic or a Feature gets the title suggestion only: a generic "make it testable" next to a part number that
+// scored 95 on testability is noise (DESIGN.md §11.4.5).
+const BY_CATEGORY: Record<string, (noun: string) => ChatSuggestion> = {
+  testability: () => ({
+    label: 'Add a measurable pass/fail condition',
+    effect: 'rewrite so it can be checked, with clear acceptance criteria',
+    prompt: 'Rewrite this so it is independently testable, with a measurable pass/fail condition and clear acceptance criteria.',
+  }),
+  clarity: () => ({
+    label: 'Remove vague words',
+    effect: 'remove ambiguity and vague terms',
+    prompt: 'Tighten the wording: remove ambiguity and vague terms.',
+  }),
+  atomicity: () => ({
+    label: 'Split into separate requirements',
+    effect: 'this item keeps the first one; the others are listed for you to add as new items',
+    prompt:
+      'This item combines more than one requirement. Keep only the first requirement in this item, and list each remaining requirement as its own complete statement. Ignore any "Proposed acceptance criteria" or "Needs author input" section: those are generated notes, not requirements.',
+  }),
+  style: () => ({
+    label: 'Name who does the action',
+    effect: 'say who or what performs the action, in a "shall" statement',
+    prompt: 'Rewrite this as a clear "shall" statement that names who or what does the action.',
+  }),
+  rationale: (noun) => ({
+    label: 'Add why this is needed',
+    effect: `add a brief rationale explaining why this ${noun} exists`,
+    prompt: `Add a brief rationale explaining why this ${noun} exists.`,
+  }),
+};
+
+// A category the organisation defined itself (its own checklist) has no fixed wording: the suggestion names it as the user sees it.
+function ownCategory(key: string): (noun: string) => ChatSuggestion {
+  const label = categoryLabel(key).replace(/[.?!。]+$/, '');
+  return (noun) => ({
+    label: `Improve: ${label}`,
+    effect: `rewrite so this ${noun} meets that check`,
+    prompt: `Rewrite this ${noun} so it meets this check: ${label}. Change only what is needed for it.`,
+  });
+}
+
+// An Epic or Feature is judged from what is nested under it, which the chat is given (DESIGN.md §11.4.5): the suggestions say so, and are only
+// offered when something is nested there.
+function fromItsItems(noun: string): ChatSuggestion[] {
+  return [
+    {
+      label: 'Restate it from its items',
+      effect: `rewrite the description so it says what the items under this ${noun} cover`,
+      prompt: `Rewrite this ${noun}'s description so it summarizes what the items nested directly under it cover. Use only the items listed in the context; do not add anything they do not say.`,
+    },
+    {
+      label: 'Check its items belong together',
+      effect: 'name any item that does not fit under it, and why',
+      prompt: `Look at the items nested directly under this ${noun}. Say which of them, if any, do not belong under it, and why. Do not change the text.`,
+    },
+  ];
+}
+
+export function chatSuggestions(
+  categoryScores: Record<string, number> | null | undefined,
+  scored: boolean,
+  noun: string,
+  compound = false,
+  hasChildren = false,
+): ChatSuggestion[] {
+  const out: ChatSuggestion[] = [];
+  if (!scored && hasChildren) out.push(...fromItsItems(noun));
+  if (scored) {
+    const weak = Object.entries(categoryScores ?? {})
+      .filter(([, score]) => Number.isFinite(score) && score < WEAK_CATEGORY_SCORE)
+      .sort((a, b) => a[1] - b[1] || (a[0] < b[0] ? -1 : 1))
+      .map(([key]) => key);
+    // A "compound" flag is the same fact as weak atomicity.
+    if (compound && !weak.includes('atomicity')) weak.unshift('atomicity');
+    for (const key of weak.slice(0, 3)) out.push((BY_CATEGORY[key] ?? ownCategory(key))(noun));
+  }
+  out.push({
+    label: 'Suggest a better title',
+    effect: `a more specific, concise title for this ${noun}`,
+    prompt:
+      !scored && hasChildren
+        ? `Suggest a more specific, concise title for this ${noun} based on its description and the items nested under it.`
+        : `Suggest a more specific, concise title for this ${noun} based on its description.`,
+  });
+  return out;
+}

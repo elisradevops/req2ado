@@ -10,7 +10,6 @@ from app.leveling.scoring import (
     _apply_quality_scores,
     _match_category_checklist,
     _score_all_requirements,
-    _score_epics_and_features,
     score_single_requirement_text,
     score_texts_together,
 )
@@ -510,92 +509,6 @@ def test_score_all_requirements_one_failing_chunk_still_scores_the_others_under_
     assert any(e.phase == "chunk_warning" for e in fired)
 
 
-def test_score_epics_and_features_runs_chunks_concurrently() -> None:
-    seen: set[str] = set()
-    lock = threading.Lock()
-
-    class ThreadRecordingClient:
-        def score_epics_and_features_for_document(self, nodes_by_id, user_id=None):
-            with lock:
-                seen.add(threading.current_thread().name)
-            time.sleep(0.05)
-            return {node_id: {"score": 75} for node_id in nodes_by_id}
-
-    _score_epics_and_features(
-        _epic_nodes(320),
-        ThreadRecordingClient(),
-        [],
-        None,
-        None,
-        0,
-        1,
-        chunk_concurrency=3,
-    )
-
-    assert len(seen) > 1
-
-
-def test_score_epics_and_features_output_is_identical_serial_vs_concurrent() -> None:
-    class OrderSensitiveClient:
-        def score_epics_and_features_for_document(self, nodes_by_id, user_id=None):
-            if "e0" in nodes_by_id:
-                time.sleep(0.2)
-            return {
-                node_id: {"score": 60 + (index % 20), "categoryScores": {"scopeCoherence": 55}}
-                for index, node_id in enumerate(nodes_by_id)
-            }
-
-    def run(concurrency: int):
-        nodes = _epic_nodes(320)
-        warnings: list = []
-        _score_epics_and_features(
-            nodes,
-            OrderSensitiveClient(),
-            warnings,
-            None,
-            None,
-            0,
-            1,
-            chunk_concurrency=concurrency,
-        )
-        return (
-            [(n.local_id, n.quality_score, n.quality_category_scores) for n in nodes],
-            [w.raw for w in warnings],
-        )
-
-    assert run(1) == run(4)
-
-
-def test_score_epics_and_features_narrates_chunks_in_document_order_under_concurrency() -> None:
-    class SlowFirstChunkClient:
-        def score_epics_and_features_for_document(self, nodes_by_id, user_id=None):
-            if "e0" in nodes_by_id:
-                time.sleep(0.2)
-            return {node_id: {"score": 75} for node_id in nodes_by_id}
-
-    fired: list = []
-
-    _score_epics_and_features(
-        _epic_nodes(320),
-        SlowFirstChunkClient(),
-        [],
-        fired.append,
-        None,
-        0,
-        1,
-        chunk_concurrency=4,
-    )
-
-    starts = [e for e in fired if e.phase == "score_requirements"]
-    dones = [e for e in fired if e.phase == "score_requirements_done"]
-    size = _SCORING_CHUNK_NODE_COUNT
-    chunk_starts = list(range(0, 320, size))
-    assert [e.chunk_index for e in starts] == list(range(len(chunk_starts)))
-    assert [e.blocks_done for e in starts] == chunk_starts
-    assert [e.chunk_index for e in dones] == list(range(len(chunk_starts)))
-    assert [e.blocks_done for e in dones] == [min(start + size, 320) for start in chunk_starts]
-
-
 class _CanaryObservingClient:
     """Records the exact batch it was handed and answers every key,
     including the sentinel, with a good score."""
@@ -922,23 +835,6 @@ def test_a_400_scoring_failure_is_retried_as_two_halves_and_the_survivor_half_is
     assert all(n.quality_score == 80 for n in nodes)
     assert not any(w.kind.value == "scoring_failed" for w in warnings)
     assert len(calls) == 3
-
-
-def test_epic_feature_scoring_also_splits_on_a_5xx() -> None:
-    calls: list[int] = []
-
-    class Fails500OnFullChunkClient:
-        def score_epics_and_features_for_document(self, nodes_by_id, user_id=None):
-            calls.append(len(nodes_by_id))
-            if len(nodes_by_id) > _SCORING_CHUNK_NODE_COUNT * 0.6:
-                raise _http_status_error(502)
-            return {node_id: {"score": 70, "categoryScores": {}} for node_id in nodes_by_id}
-
-    nodes = _epic_nodes(_SCORING_CHUNK_NODE_COUNT)
-    warnings: list = []
-    _score_epics_and_features(nodes, Fails500OnFullChunkClient(), warnings, None, None, 0, 1)
-    assert len(calls) == 3
-    assert not any(w.kind.value == "scoring_failed" for w in warnings)
 
 
 def test_the_scoring_batch_shrinks_as_the_category_list_grows_so_one_answer_stays_the_same_size() -> (

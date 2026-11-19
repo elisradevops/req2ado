@@ -441,3 +441,44 @@ describe('ProgressService', () => {
     errors.mockRestore();
   });
 });
+
+describe('trace linking and acceptance criteria count their own items (no plateau after scoring)', () => {
+  it('moves the percentage while trace links are resolved, instead of holding it', () => {
+    const base = [units('parse', 0, 0, { complete: true }), units('skeleton', 4, 4, { complete: true }), units('write', 4, 4, { complete: true }), units('score', 10, 10, { complete: true }), units('link', 2, 2, { complete: true })];
+    const at = (done: number): number => computeOverall(seenOf(...base, units('trace', done, 10))).value;
+    expect(at(5)).toBeGreaterThan(at(0));
+    expect(at(10)).toBeGreaterThan(at(5));
+  });
+
+  it('keeps the two quick passes worth little: finishing them does not hand out a fifth of the run', () => {
+    const before = computeOverall(seenOf(units('score', 10, 10, { complete: true }))).value;
+    const after = computeOverall(seenOf(units('score', 10, 10, { complete: true }), units('link', 2, 2, { complete: true }))).value;
+    expect(after - before).toBeLessThan(0.05);
+  });
+
+  it('does not reach the end before acceptance criteria are done', () => {
+    const seen = seenOf(units('score', 10, 10, { complete: true }), units('link', 2, 2, { complete: true }), units('trace', 10, 10, { complete: true }), units('criteria', 3, 10));
+    expect(computeOverall(seen).value).toBeLessThan(0.97);
+    expect(computeOverall(seenOf(...seen.values(), units('criteria', 10, 10, { complete: true }))).value).toBeGreaterThan(0.97); // only the dedup check is left
+  });
+
+  it('does not fill the bar before trace links report: the stage counts from the start, so reporting never has to pull the bar back', () => {
+    const scoringDone = seenOf(units('parse', 0, 0, { complete: true }), units('skeleton', 4, 4, { complete: true }), units('write', 4, 4, { complete: true }), units('score', 10, 10, { complete: true }), units('link', 2, 2, { complete: true }));
+    const before = computeOverall(scoringDone).value;
+    expect(before).toBeLessThan(0.8);
+    const during = computeOverall(seenOf(...scoringDone.values(), units('trace', 1, 10))).value;
+    expect(during).toBeGreaterThanOrEqual(before);
+  });
+
+  it('drops a stage planned at zero items (no criteria to propose) instead of leaving the bar short', () => {
+    const seen = seenOf(units('score', 10, 10, { complete: true }), units('link', 2, 2, { complete: true }), units('trace', 10, 10, { complete: true }), units('criteria', 0, 0, { complete: true }));
+    expect(computeOverall(seen).value).toBeGreaterThan(0.97);
+  });
+
+  it('ignores a step that reports after the run has finished', () => {
+    const tracker = new ProgressTracker(() => new Date('2026-01-01T00:00:00Z'));
+    tracker.ingest(units('score', 10, 10, { complete: true }));
+    expect(tracker.finish()?.pct).toBe(100);
+    expect(tracker.ingest(units('criteria', 3, 10))).toBeNull();
+  });
+});

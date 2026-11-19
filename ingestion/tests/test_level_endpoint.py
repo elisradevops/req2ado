@@ -423,11 +423,7 @@ def test_level_endpoint_survey_mode_with_area_path_injects_kb_context(
     # through the same MockTransport handler -- its own system prompt
     # doesn't carry kb_context (it's the thing being verified, not something
     # to ground itself in), so it's excluded from the assertion below via
-    # its "knowledge-base snippets" phrase. score_epics_and_features_for_
-    # document (fires here too -- the fixture's one node is type Epic) is a
-    # separate, deliberately un-grounded rubric (structural scope-coherence/
-    # decomposability judgments, not content-standard criteria) -- excluded
-    # via its own distinguishing phrase.
+    # its "knowledge-base snippets" phrase.
 
     doc = CanonicalDoc(
         document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
@@ -445,7 +441,7 @@ def test_level_endpoint_survey_mode_with_area_path_injects_kb_context(
     grounded_prompts = [
         p
         for p in captured_system_prompts
-        if "knowledge-base snippets" not in p and "Epic and Feature work items" not in p
+        if "knowledge-base snippets" not in p
     ]
     assert grounded_prompts and all(
         "Injected KB reference text." in prompt for prompt in grounded_prompts

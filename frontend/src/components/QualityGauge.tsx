@@ -173,7 +173,7 @@ function CategoryRow({
   clearedCodes: string[];
   expanded: boolean;
   onToggle: () => void;
-  // Inside the dialog's "Why this verdict" disclosure (DESIGN.md §11.4): no second level of open/close, so the row is not a button and
+  // Inside the dialog's "How this was scored" disclosure (DESIGN.md §11.4): no second level of open/close, so the row is not a button and
   // its definition and fixes are always shown.
   flat?: boolean;
 }): React.ReactElement {

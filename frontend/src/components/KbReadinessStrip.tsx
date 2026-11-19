@@ -13,8 +13,8 @@ import { Skeleton } from '../ui/Skeleton';
 
 const SHAREPOINT_COPY: Record<SharePointStatus['status'], { label: string; tone: 'ok' | 'warn' | 'muted' }> = {
   valid: { label: 'SharePoint connected', tone: 'ok' },
-  invalid: { label: 'SharePoint token expired (adding files will fail)', tone: 'warn' },
-  unreachable: { label: "Can't reach SharePoint (adding files will fail)", tone: 'warn' },
+  invalid: { label: 'SharePoint token expired', tone: 'warn' },
+  unreachable: { label: "Can't reach SharePoint", tone: 'warn' },
   not_configured: { label: 'SharePoint not connected', tone: 'muted' },
 };
 
@@ -82,7 +82,7 @@ export function KbReadinessStrip(): React.ReactElement {
       <div className="flex flex-wrap items-center gap-2">
         {documents.length === 0 ? (
           <span className="text-xs text-warning-ink">
-            Your knowledge base is empty — this run won't be grounded against your standards.
+            Your knowledge base is empty — this run won't draw on your standards.
           </span>
         ) : (
           <Chip bg="var(--color-surface)" color="var(--color-ink-2)" className="border border-hairline-strong text-xs font-normal tabular-nums">
@@ -122,7 +122,6 @@ export function KbReadinessStrip(): React.ReactElement {
           (older ingests, or ones whose vectors were lost). {reingest}
         </p>
       )}
-      {sharePointBroken && <p className="text-xs text-warning-ink">Reconnect SharePoint in the knowledge base before adding or re-ingesting files.</p>}
     </div>
   );
 }

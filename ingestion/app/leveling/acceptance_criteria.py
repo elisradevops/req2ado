@@ -35,6 +35,8 @@ from app.job_cancel import JobCancelled, raise_if_cancelled, submit_in_context
 from app.leveling.criteria_grounding import Grounding, given_values, has_quantity, ungrounded
 from app.leveling.description_text import description_for_model
 from app.leveling.document_study import DocumentStudy, contains_token
+from app.leveling.grounding import grounding_score, significant_words
+from app.leveling.live_context import current_stage_counter
 from app.leveling.llm_call_gate import LeaseGate, StepBudgetExceeded, use_gate
 from app.request_identity import user_scope
 from app.workitem.model import (
@@ -224,12 +226,26 @@ def unmistakable_markers(plain_text: str) -> list[str]:
 
 
 def _needs_input_section(tokens: list[str]) -> str:
-    detail = (
-        f"Unresolved value(s) in this requirement: {', '.join(tokens)}. "
-        if tokens
-        else "This requirement needs a value that the text does not provide. "
-    )
-    return f'<div {_MARKER}="needs-input"><p><b>{NEEDS_INPUT_TITLE}</b></p><p>{html.escape(detail)}Acceptance criteria were not proposed.</p></div>'
+    """The needs-input note. Each missing value sits in its own `data-missing-value` span so the screen can name it; the sentence reads the
+    same as plain text."""
+    values = list(dict.fromkeys(t for t in tokens if t))
+    if values:
+        spans = ", ".join(
+            f'<span data-missing-value="{html.escape(v, quote=True)}">{html.escape(v)}</span>'
+            for v in values
+        )
+        detail = f"Unresolved value(s) in this requirement: {spans}. "
+    else:
+        detail = html.escape("This requirement needs a value that the text does not provide. ")
+    return f'<div {_MARKER}="needs-input"><p><b>{NEEDS_INPUT_TITLE}</b></p><p>{detail}Acceptance criteria were not proposed.</p></div>'
+
+
+# A criterion whose own words are almost all in the requirement says nothing the requirement did not: it restates it.
+_RESTATEMENT_OVERLAP = 0.9
+
+
+def _restates(criterion: str, requirement_text: str) -> bool:
+    return bool(significant_words(criterion)) and grounding_score(criterion, requirement_text) >= _RESTATEMENT_OVERLAP
 
 
 def _grounding_of(item: dict, cited: frozenset[str]) -> Grounding:
@@ -318,6 +334,14 @@ def _ungrounded_message(affected: int, dropped: int, assumption_only: int) -> st
     return f"{message} ({'; '.join(clauses)})." if clauses else f"{message}."
 
 
+def skip_criteria_stage() -> None:
+    """Tells the run's percentage there is nothing to propose: the stage is planned at zero items and drops out. Without this a run that never
+    asks (no client, nothing eligible) would hold the bar short of where it belongs until the next stage reported."""
+    counter = current_stage_counter()
+    if counter is not None:
+        counter.set_total("criteria", 0)
+
+
 def propose_acceptance_criteria(
     nodes: list[WorkItemNode],
     study: DocumentStudy | None,
@@ -333,6 +357,7 @@ def propose_acceptance_criteria(
         (n, plain) for n, plain in _eligible_pairs(nodes) if f'{_MARKER}="' not in n.description
     ]
     if not pending:
+        skip_criteria_stage()
         return
     to_ask: list[tuple[WorkItemNode, str]] = []
     needs_input = 0
@@ -376,8 +401,16 @@ def propose_acceptance_criteria(
     ceiling = max(1, settings.survey_study_user_slots - 1) if shared_limiter is not None else 2
     workers = max(1, min(settings.survey_criteria_concurrency, ceiling, len(chunks)))
 
+    # The step counts its own items, so the run's percentage moves while criteria are being proposed (None unless live progress is on).
+    counter = current_stage_counter()
+    if counter is not None:
+        counter.set_total("criteria", len(to_ask))
+
     def ask(items: dict[str, dict]) -> dict[str, dict]:
-        return _ask(client, items, user_id, background, gate)
+        answers = _ask(client, items, user_id, background, gate)
+        if counter is not None:
+            counter.advance("criteria", len(items))
+        return answers
 
     # The one more try of a failed chunk runs on the job's own thread: it waits for a slot for a short while only, never the rest of the budget.
     retry_gate = LeaseGate(
@@ -389,13 +422,17 @@ def propose_acceptance_criteria(
     )
 
     def retry(items: dict[str, dict]) -> dict[str, dict]:
-        return _ask(client, items, user_id, background, retry_gate)
+        answers = _ask(client, items, user_id, background, retry_gate)
+        if counter is not None:
+            counter.advance("criteria", len(items))
+        return answers
 
     # Every context is built here, on the caller's thread, before any worker starts: workers read these dicts and write nothing. A chunk whose
     # context cannot be built is a failed chunk (reported below), never an exception.
     outcomes: list[_Outcome] = [_Outcome("failed")] * len(chunks)
     chunk_items: dict[int, dict[str, dict]] = {}
     groundings: dict[str, Grounding] = {}
+    texts: dict[str, str] = {}
     for index, pairs in enumerate(chunks):
         try:
             items = {
@@ -407,6 +444,7 @@ def propose_acceptance_criteria(
             groundings.update(
                 {local_id: _grounding_of(item, cited) for local_id, item in items.items()}
             )
+            texts.update({local_id: str(item.get("text", "")) for local_id, item in items.items()})
         except JobCancelled:
             raise
         except Exception as error:  # noqa: BLE001 -- see _ask_all
@@ -426,6 +464,8 @@ def propose_acceptance_criteria(
         _ask_all([chunk_items[i] for i in failed_chunks], retry, workers) if failed_chunks else [],
     ):
         outcomes[index] = outcome
+    if counter is not None:
+        counter.complete("criteria")  # a chunk that failed or ran out of budget is reported below; the step itself is over
     unanswered: list[str] = []
     late: list[str] = []
     dropped_nodes: list[str] = []
@@ -461,10 +501,10 @@ def propose_acceptance_criteria(
                 unanswered.append(node.local_id)
                 continue
             if answer.get("needs_author_input") is True:
-                _append(node, _needs_input_section([]))
+                _append(node, _needs_input_section(_strings(answer.get("missing"))))
                 needs_input += 1
                 continue
-            criteria = _strings(answer.get("criteria"))
+            criteria = [c for c in _strings(answer.get("criteria")) if not _restates(c, texts.get(node.local_id, ""))]
             if not criteria:
                 continue
             assumptions = _strings(answer.get("assumptions"))
@@ -479,7 +519,9 @@ def propose_acceptance_criteria(
                 if invented_assumption and len(kept) == len(criteria):
                     dropped_nodes.append(node.local_id)
                     assumption_only += 1
-                _append(node, _needs_input_section([]))
+                # Only what the model says is missing from the requirement: a value one of ITS criteria invented (the ungrounded ones)
+                # is not something the requirement leaves open, and naming it would present an invented number as the author's gap.
+                _append(node, _needs_input_section(_strings(answer.get("missing"))))
                 needs_input += 1
                 continue
             body = f"<p><b>{SECTION_TITLE}</b></p>{_list_html(kept)}"

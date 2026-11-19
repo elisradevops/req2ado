@@ -15,13 +15,13 @@ describe('SectionResults KB note', () => {
   it('keeps the legacy wording when availability is unknown', async () => {
     render(<SectionResults items={[entry()]} />);
     await open();
-    expect(screen.getByText('Not grounded against your knowledge base for this section.')).toBeInTheDocument();
+    expect(screen.getByText('Did not use your knowledge base for this section.')).toBeInTheDocument();
   });
 
   it('reports files available when the section cited none', async () => {
     render(<SectionResults items={[entry({ kbFilesAvailable: 3 })]} />);
     await open();
-    expect(screen.getByText('Not grounded against your knowledge base for this step (3 files available)')).toBeInTheDocument();
+    expect(screen.getByText('Did not use your knowledge base for this step (3 files available)')).toBeInTheDocument();
   });
 
   it('reports cited of available when grounded', async () => {
@@ -31,7 +31,7 @@ describe('SectionResults KB note', () => {
       />,
     );
     await open();
-    expect(screen.getByText('Grounded against 1 of 3 KB files:')).toBeInTheDocument();
+    expect(screen.getByText('Used 1 of 3 KB files:')).toBeInTheDocument();
   });
 });
 

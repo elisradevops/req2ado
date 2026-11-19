@@ -25,12 +25,12 @@ export function describeStepKbGrounding(
     // Citations from an empty KB cannot happen; fall back to the legacy copy
     // rather than print "N of 0".
     if (available === 0) return null;
-    return { grounded: true, text: `Grounded against ${cited} of ${available} KB ${plural(available, 'file', 'files')}` };
+    return { grounded: true, text: `Used ${cited} of ${available} KB ${plural(available, 'file', 'files')}` };
   }
   if (available === 0) return { grounded: false, text: 'Your knowledge base has no ingested files' };
   return {
     grounded: false,
-    text: `Not grounded against your knowledge base for this step (${available} ${plural(available, 'file', 'files')} available)`,
+    text: `Did not use your knowledge base for this step (${available} ${plural(available, 'file', 'files')} available)`,
   };
 }
 

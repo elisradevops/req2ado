@@ -286,6 +286,9 @@ class LevelingProgress:
     # subtree_index/subtree_count already use. None on every other phase.
     chunk_index: int | None = None
     chunk_count: int | None = None
+    # deterministic_subtree only: which chunked pass this event is in, as (pass, part, parts, items) with pass "draft" or "improve", so the
+    # message can read in plain words. Not on the wire: the browser still reads `subtree_label` (utils/deterministicSubtreeChunk.ts).
+    subtree_part: tuple[str, int, int, int] | None = None
     # job_failed only: the real exception's class name, message, and how
     # long the job had been running when it failed -- replaces the flattened
     # "Pipeline failed: <message>" AuditEntry line with actual structured
@@ -352,7 +355,7 @@ _PHASE_MESSAGES: dict[Phase, str] = {
     "table_detected": "Detected a table",
     "page_alignment": "Deriving real page numbers from a converted PDF",
     "preparing_analysis": "Preparing analysis -- splitting sections, retrieving context",
-    "deterministic_subtree": "Extracting a deterministic hierarchy subtree",
+    "deterministic_subtree": "Building the item hierarchy",
     "build_skeleton": "Deciding this section's work-item structure",
     "analyze_section": "Analyzing and synthesizing requirements",
     "score_requirements": "Scoring requirement quality",
@@ -429,6 +432,13 @@ def _format_message(progress: LevelingProgress) -> str:
             base += f" -- {progress.page_align_page_count} page(s), {pct}% anchored"
         return base
     if progress.phase == "deterministic_subtree":
+        if progress.subtree_part is not None:
+            kind, part, parts, items = progress.subtree_part
+            action = "Writing requirement text" if kind == "draft" else "Improving titles and tags"
+            text = f"{action}, part {part} of {parts} ({items} {'item' if items == 1 else 'items'})"
+            if progress.subtree_count is not None and progress.subtree_count > 1 and progress.subtree_index is not None:
+                text += f", group {progress.subtree_index + 1} of {progress.subtree_count}"
+            return text
         if progress.subtree_index is not None and progress.subtree_count is not None:
             base += f" ({progress.subtree_index + 1} of {progress.subtree_count}"
             if progress.subtree_label:

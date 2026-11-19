@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { NodeDetailDialog } from './NodeDetailDialog';
 import { ToastProvider } from './ToastProvider';
 import type { DryRunDiffEntry } from './DiffTree';
 import * as chatApi from '../api/chat';
+import { useChatSocket } from '../hooks/useChatSocket';
 import * as jobsApi from '../api/jobs';
 
 vi.mock('../api/chat');
@@ -17,6 +18,23 @@ const ENTRY: DryRunDiffEntry = {
   localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body',
   action: 'create', customerId: '3.2.1', tags: [],
 };
+
+// The shortcut keys now live in a popover behind the keyboard button (DESIGN.md §11.4.5): open it and read them.
+async function shortcutKeys(): Promise<Array<[string, string]>> {
+  const { default: userEvent } = await import('@testing-library/user-event');
+  await userEvent.click(screen.getByRole('button', { name: /keyboard shortcuts/i }));
+  const popover = (await screen.findByText('Keyboard shortcuts')).parentElement as HTMLElement;
+  return Array.from(popover.querySelectorAll('li')).map((li) => [li.querySelector('kbd')!.textContent!, li.querySelector('span')!.textContent!] as [string, string]);
+}
+const desktopViewport = () =>
+  vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({
+    matches: true, media: query, onchange: null, addListener: () => {}, removeListener: () => {},
+    addEventListener: () => {}, removeEventListener: () => {}, dispatchEvent: () => false,
+  }) as unknown as MediaQueryList);
+async function openAssistant(): Promise<void> {
+  const { default: userEvent } = await import('@testing-library/user-event');
+  await userEvent.click(screen.getByRole('button', { name: /^ask/i }));
+}
 
 function renderDialog(props: Partial<React.ComponentProps<typeof NodeDetailDialog>> = {}) {
   return render(
@@ -46,21 +64,93 @@ describe('NodeDetailDialog', () => {
     vi.mocked(jobsApi.getFigureFile).mockResolvedValue(null);
   });
 
-  it('shows the evidence strip once, and not a second Sources block in the details', () => {
+  it('shows the source once, in its own Source column beside the proposed text, and not a second Sources block', () => {
     renderDialog({ entry: { ...ENTRY, sourceRef: { documentPath: 'spec.docx', startOffset: 0, endOffset: 5, page: 2 } } });
-    expect(screen.getByRole('region', { name: 'Evidence' })).toBeInTheDocument();
+    const source = screen.getByRole('region', { name: 'Source' });
+    expect(source).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Proposed' })).toBeInTheDocument();
     expect(screen.getAllByText('spec.docx')).toHaveLength(1);
+    expect(source).toHaveTextContent('spec.docx');
     expect(screen.queryByText('Sources')).not.toBeInTheDocument();
   });
 
-  it('puts the requirement text before the evidence, so the decision text is not buried under metadata (R3)', () => {
+  it('keeps the reading order the screen shows: the proposed text first, then the source (no CSS reordering)', () => {
     renderDialog({ entry: { ...ENTRY, sourceRef: { documentPath: 'spec.docx', startOffset: 0, endOffset: 5, page: 2 } } });
     const text = screen.getByText('Req body');
-    const evidence = screen.getByRole('region', { name: 'Evidence' });
-    expect(text.compareDocumentPosition(evidence) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const source = screen.getByRole('region', { name: 'Source' });
+    expect(text.compareDocumentPosition(source) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  describe('the Quality panel folds into "Why this verdict" (one closed disclosure, one level)', () => {
+  it('puts the decision in one footer bar, present even when there is no reason banner, with the wording the caller gives', async () => {
+    const onMark = vi.fn();
+    const onReject = vi.fn();
+    renderDialog({ review: { reviewed: false, onMark, onUnmark: vi.fn(), onReject, markLabel: 'Mark reviewed', rejectLabel: 'Exclude' } });
+    expect(screen.queryByRole('note')).not.toBeInTheDocument();
+    const bar = screen.getByRole('group', { name: 'Review decision' });
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await userEvent.click(within(bar).getByRole('button', { name: 'Mark reviewed' }));
+    await userEvent.click(within(bar).getByRole('button', { name: 'Exclude' }));
+    expect(onMark).toHaveBeenCalledTimes(1);
+    expect(onReject).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows "Mark not reviewed" in the bar once reviewed, and no bar when the caller offers no review', () => {
+    const { unmount } = renderDialog({ review: { reviewed: true, onMark: vi.fn(), onUnmark: vi.fn() } });
+    expect(within(screen.getByRole('group', { name: 'Review decision' })).getByRole('button', { name: 'Mark not reviewed' })).toBeInTheDocument();
+    unmount();
+    renderDialog();
+    expect(screen.queryByRole('group', { name: 'Review decision' })).not.toBeInTheDocument();
+  });
+
+  it('puts Edit in the header with its key, opens the edit form from there, and has no second Edit button in the body', async () => {
+    renderDialog({ jobStatus: 'diff_ready' });
+    const edits = screen.getAllByRole('button', { name: /^edit/i });
+    expect(edits).toHaveLength(1);
+    expect(edits[0]).toHaveAttribute('aria-keyshortcuts', 'E');
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await userEvent.click(edits[0]);
+    expect(await screen.findByDisplayValue('Req Title')).toBeInTheDocument();
+  });
+
+  it('does not repeat an Epic title as its description', () => {
+    renderDialog({ entry: { ...ENTRY, type: 'Epic', title: 'Functional and Performance', description: 'Functional and Performance' } });
+    expect(screen.getAllByText('Functional and Performance')).toHaveLength(1);
+  });
+
+  it('says "No issues flagged." for a scored new Requirement with nothing wrong, so the text keeps its place', () => {
+    renderDialog({ entry: { ...ENTRY, qualityScore: 90, qualityCategoryScores: { clarity: 90 } }, jobStatus: 'diff_ready' });
+    expect(screen.getByTestId('issues-clean')).toHaveTextContent('No issues flagged.');
+  });
+
+  it('does not call an item that was never scored clean: the scoring row says it is not scored, and an Epic has no such line', () => {
+    const { unmount } = renderDialog({ entry: { ...ENTRY, qualityScore: null }, jobStatus: 'diff_ready', jobMode: 'baseline' });
+    expect(screen.queryByTestId('issues-clean')).not.toBeInTheDocument();
+    expect(screen.getByText('Not scored yet.')).toBeInTheDocument();
+    unmount();
+    renderDialog({ entry: { ...ENTRY, type: 'Epic', qualityScore: 90 }, jobStatus: 'diff_ready' });
+    expect(screen.queryByTestId('issues-clean')).not.toBeInTheDocument();
+  });
+
+  it('hides the keyboard button on a phone and points to Settings to turn the shortcuts off', async () => {
+    renderDialog({ onNavigate: vi.fn() });
+    const button = screen.getByRole('button', { name: /keyboard shortcuts/i });
+    expect(button).toHaveClass('max-md:hidden');
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await userEvent.click(button);
+    const link = await screen.findByRole('link', { name: 'Settings' });
+    expect(link).toHaveAttribute('href', '/settings');
+    expect(link).toHaveAttribute('target', '_blank');
+  });
+
+  it('has no Source column for an item without a source location, or for an Epic', () => {
+    const { unmount } = renderDialog({ entry: { ...ENTRY, sourceRef: undefined } });
+    expect(screen.queryByRole('region', { name: 'Source' })).not.toBeInTheDocument();
+    unmount();
+    renderDialog({ entry: { ...ENTRY, type: 'Epic', sourceRef: { documentPath: 'spec.docx', startOffset: 0, endOffset: 5, page: 2 } } });
+    expect(screen.queryByRole('region', { name: 'Source' })).not.toBeInTheDocument();
+  });
+
+  describe('the Quality panel folds into "How this was scored" (one closed disclosure, one level)', () => {
     const scored: DryRunDiffEntry = {
       ...ENTRY,
       sourceRef: { documentPath: 'spec.docx', startOffset: 0, endOffset: 5, page: 2 },
@@ -72,23 +162,29 @@ describe('NodeDetailDialog', () => {
 
     it('starts closed: no gauge, no grounding line, no score explanation in the dialog until it is opened', () => {
       renderDialog({ entry: scored, jobMode: 'survey' });
-      expect(screen.getByRole('button', { name: /why this verdict/i })).toHaveAttribute('aria-expanded', 'false');
+      expect(screen.getByRole('button', { name: /how this was scored/i })).toHaveAttribute('aria-expanded', 'false');
       expect(screen.queryByText('Quality')).not.toBeInTheDocument();
       expect(screen.queryByText(/matches source wording/i)).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: /why this score/i })).not.toBeInTheDocument();
     });
 
-    it('says the score and the weakest area in its closed summary line', () => {
-      renderDialog({ entry: scored, jobMode: 'survey' });
-      const toggle = screen.getByRole('button', { name: /why this verdict/i });
-      expect(toggle).toHaveTextContent('Quality 40 of 100');
+    it('says the score and the weakest area in its closed summary line when the score is not low', () => {
+      renderDialog({ entry: { ...scored, qualityScore: 60 }, jobMode: 'survey' });
+      const toggle = screen.getByRole('button', { name: /how this was scored/i });
+      expect(toggle).toHaveTextContent('Quality 60 of 100');
       expect(toggle).toHaveTextContent(/weakest area: .*35 of 100/i);
+    });
+
+    it('says a low score once, in the issues list, and not again on the closed summary line', () => {
+      renderDialog({ entry: scored, jobMode: 'survey' });
+      expect(screen.getByTestId('issue-quality-low')).toHaveTextContent('Quality 40 of 100. Weakest: testability (35).');
+      expect(screen.getByRole('button', { name: /how this was scored/i })).not.toHaveTextContent(/Quality 40/);
     });
 
     it('holds the whole Quality panel once opened, after the evidence, with no disclosure nested inside it', () => {
       renderDialog({ entry: scored, jobMode: 'survey' });
-      fireEvent.click(screen.getByRole('button', { name: /why this verdict/i }));
-      const region = screen.getByRole('region', { name: /why this verdict/i });
+      fireEvent.click(screen.getByRole('button', { name: /how this was scored/i }));
+      const region = screen.getByRole('region', { name: /how this was scored/i });
       expect(within(region).getByText('Quality')).toBeInTheDocument();
       expect(within(region).getByText(/matches source wording/i)).toBeInTheDocument();
       expect(within(region).getByRole('button', { name: /why this score/i })).toBeInTheDocument();
@@ -99,14 +195,15 @@ describe('NodeDetailDialog', () => {
       expect(text.compareDocumentPosition(region) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
-    it('keeps the stale notice and Re-check quality outside the closed disclosure, as a reachable button', () => {
+    it('says the score is out of date once, in the issues list, with Re-check quality outside the closed disclosure as a reachable button', () => {
       renderDialog({ entry: { ...scored, qualityStale: true }, jobMode: 'survey', jobStatus: 'diff_ready', onRescore: vi.fn() } as any);
-      expect(screen.getByRole('button', { name: /why this verdict/i })).toHaveAttribute('aria-expanded', 'false');
-      expect(screen.getByText(/edited since this was scored/i)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /how this was scored/i })).toHaveAttribute('aria-expanded', 'false');
+      expect(screen.getAllByText(/edited since (it|this) was scored/i)).toHaveLength(1);
+      expect(screen.getByTestId('issue-stale')).toHaveTextContent('Edited since it was scored. The score may be out of date.');
       const recheck = screen.getByRole('button', { name: /re-check quality/i });
       recheck.focus();
       expect(recheck).toHaveFocus();
-      expect(screen.getByRole('button', { name: /why this verdict/i })).toHaveTextContent(/from before your edit/i);
+      expect(screen.getByRole('button', { name: /how this was scored/i })).not.toHaveTextContent(/before your edit/i);
     });
 
     it('keeps "Score this item" outside the disclosure for an item that has no score', () => {
@@ -160,23 +257,23 @@ describe('NodeDetailDialog', () => {
   });
 
   it('offers the split starter in the chat only for a fresh compound-flagged Requirement', async () => {
-    const matchMediaSpy = vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({
-      matches: true, media: query, onchange: null, addListener: () => {}, removeListener: () => {},
-      addEventListener: () => {}, removeEventListener: () => {}, dispatchEvent: () => false,
-    }) as unknown as MediaQueryList);
+    const matchMediaSpy = desktopViewport();
     const props = { onSave: vi.fn(), jobMode: 'survey' as const, jobStatus: 'diff_ready' };
     try {
       const fresh = renderDialog({ entry: { ...ENTRY, qualityIssues: ['compound'] } as DryRunDiffEntry, ...props });
+      await openAssistant();
       expect(await screen.findByRole('button', { name: /split into separate requirements/i })).toBeInTheDocument();
       fresh.unmount();
 
       const stale = renderDialog({ entry: { ...ENTRY, qualityIssues: ['compound'], qualityStale: true } as DryRunDiffEntry, ...props });
-      await screen.findByText(/i have read this requirement/i);
+      await openAssistant();
+      await screen.findByText(/start from a suggestion/i);
       expect(screen.queryByRole('button', { name: /split into separate requirements/i })).not.toBeInTheDocument();
       stale.unmount();
 
       renderDialog({ entry: { ...ENTRY, type: 'Feature', qualityIssues: ['compound'] } as DryRunDiffEntry, ...props });
-      await screen.findByText(/i have read this feature/i);
+      await openAssistant();
+      await screen.findByText(/ask for a change to this feature/i);
       expect(screen.queryByRole('button', { name: /split into separate requirements/i })).not.toBeInTheDocument();
     } finally {
       matchMediaSpy.mockRestore();
@@ -333,7 +430,7 @@ describe('NodeDetailDialog', () => {
       expect(onMark).toHaveBeenCalledTimes(1);
     });
 
-    it('words the mark as "Looks right and next" for a spot-check, on the button, the key hint and A or R', async () => {
+    it('words the mark as "Looks right and next" for a spot-check, on the button, the shortcut list and A or R', async () => {
       const onMark = vi.fn();
       renderDialog({
         onNavigate: vi.fn(),
@@ -343,7 +440,8 @@ describe('NodeDetailDialog', () => {
       const { default: userEvent } = await import('@testing-library/user-event');
 
       expect(screen.queryByRole('button', { name: 'Mark reviewed and next' })).not.toBeInTheDocument();
-      expect(screen.getByRole('note')).toHaveTextContent(/A\/R\s*looks right/);
+      expect(await shortcutKeys()).toContainEqual(['A/R', 'looks right']);
+      await userEvent.keyboard('{Escape}');
       await userEvent.click(screen.getByRole('button', { name: 'Looks right and next' }));
       await userEvent.keyboard('a');
       expect(onMark).toHaveBeenCalledTimes(2);
@@ -466,46 +564,19 @@ describe('NodeDetailDialog', () => {
         expect(onMark).not.toHaveBeenCalled();
       });
 
-      it('hides the key hints from screen readers (aria-keyshortcuts carries the keys) in both placements', () => {
-        const { unmount } = renderDialog({
-          onNavigate: vi.fn(),
-          reason,
-          review: { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn() },
-        });
-        expect(screen.getByTestId('key-hints')).toHaveAttribute('aria-hidden', 'true');
-        unmount();
-        renderDialog({ onNavigate: vi.fn(), review: { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn() } });
-        expect(screen.getByTestId('key-hints')).toHaveAttribute('aria-hidden', 'true');
-      });
-
-      // class pin: jsdom has no layout
-      it('lets the key hints wrap onto the next line, keeping each key with its label', () => {
-        renderDialog({
-          onNavigate: vi.fn(),
-          reason,
-          review: { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn(), onReject: vi.fn(), onUndo: vi.fn() },
-        });
-        const keys = Array.from(screen.getByRole('note').querySelectorAll('kbd'));
-        expect(keys.map((k) => k.textContent)).toEqual(['J', 'K', 'A/R', 'X', 'U', 'E']);
-        for (const key of keys) {
-          // One wrapper per key, so a break can only fall between pairs.
-          expect(key.parentElement).toHaveClass('whitespace-nowrap');
-          expect(key.parentElement?.querySelectorAll('kbd')).toHaveLength(1);
-          // The space that lets the line break sits outside the pair: inside a nowrap span it cannot break.
-          expect(key.parentElement?.textContent).toMatch(/^\S/);
-          // A logical margin, so the hints keep their gap from the text in a right-to-left layout too.
-          expect(key.parentElement?.parentElement).toHaveClass('ms-2');
-          expect(key.parentElement?.parentElement).not.toHaveClass('ml-2');
-          // A line that cannot wrap runs past the dialog edge on a phone.
-          expect(key.parentElement?.parentElement).not.toHaveClass('whitespace-nowrap');
-        }
+      it('has no hint bar: the keys are in a popover behind a labelled keyboard button, and on the buttons as aria-keyshortcuts', async () => {
+        renderDialog({ onNavigate: vi.fn(), reason, review: { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn(), onReject: vi.fn(), onUndo: vi.fn() } });
+        expect(screen.queryByTestId('key-hints')).not.toBeInTheDocument();
+        expect((await shortcutKeys()).map(([key]) => key)).toEqual(['J', 'K', 'A/R', 'X', 'U', 'E', 'C']);
+        expect(screen.getByRole('button', { name: /^ask/i })).toHaveAttribute('aria-keyshortcuts', 'C');
       });
 
       it('names the actions the way the buttons do', () => {
         renderDialog({ onNavigate: vi.fn(), reason, review: { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn(), onReject: vi.fn() } });
-        const note = screen.getByRole('note');
-        expect(note).toHaveTextContent(/A\/R\s*mark reviewed/);
-        expect(note).toHaveTextContent(/X\s*exclude/);
+        return shortcutKeys().then((keys) => {
+          expect(keys).toContainEqual(['A/R', 'mark reviewed']);
+          expect(keys).toContainEqual(['X', 'exclude']);
+        });
       });
 
       it('does not act while typing in a field', async () => {
@@ -528,7 +599,8 @@ describe('NodeDetailDialog', () => {
         const { unmount } = renderDialog({ onNavigate: vi.fn(), reason, review });
         const { default: userEvent } = await import('@testing-library/user-event');
 
-        expect(screen.getByRole('note')).toHaveTextContent(/U\s*undo/);
+        expect(await shortcutKeys()).toContainEqual(['U', 'undo']);
+        await userEvent.keyboard('{Escape}');
         await userEvent.keyboard('u');
         expect(onUndo).toHaveBeenCalledTimes(1);
         unmount();
@@ -549,13 +621,15 @@ describe('NodeDetailDialog', () => {
       it('E opens the edit form of an editable item and shows the hint only then', async () => {
         const { default: userEvent } = await import('@testing-library/user-event');
         const { unmount } = renderDialog({ onNavigate: vi.fn(), reason, jobStatus: 'diff_ready' });
-        expect(screen.getByRole('note')).toHaveTextContent(/E\s*edit/);
+        expect(await shortcutKeys()).toContainEqual(['E', 'edit']);
+        await userEvent.keyboard('{Escape}');
         await userEvent.keyboard('e');
         expect(await screen.findByDisplayValue('Req Title')).toBeInTheDocument();
         unmount();
 
         renderDialog({ onNavigate: vi.fn(), reason, jobStatus: 'succeeded' });
-        expect(screen.getByRole('note')).not.toHaveTextContent(/E\s*edit/);
+        expect((await shortcutKeys()).map(([key]) => key)).not.toContain('E');
+        await userEvent.keyboard('{Escape}');
         await userEvent.keyboard('e');
         expect(screen.queryByDisplayValue('Req Title')).not.toBeInTheDocument();
       });
@@ -632,17 +706,16 @@ describe('NodeDetailDialog', () => {
         expect(onMark).toHaveBeenCalledTimes(2);
       });
 
-      it('shows the key hints in a thin row when there is no reason, with A/R for the mark', () => {
+      it('lists the keys in the popover when there is no reason, with A/R for the mark', async () => {
         renderDialog({
           onNavigate: vi.fn(),
           review: { reviewed: false, onMark: vi.fn(), onUnmark: vi.fn(), onReject: vi.fn() },
         });
         expect(screen.queryByRole('note')).not.toBeInTheDocument();
-        const hints = screen.getByTestId('key-hints');
-        expect(Array.from(hints.querySelectorAll('kbd')).map((k) => k.textContent)).toEqual(['J', 'K', 'A/R', 'X', 'E']);
+        expect((await shortcutKeys()).map(([key]) => key)).toEqual(['J', 'K', 'A/R', 'X', 'E', 'C']);
       });
 
-      it('shows the hints with no reason for a spot-check, with the keys that mode supports', () => {
+      it('lists the keys a spot-check supports, worded as the button is', async () => {
         renderDialog({
           onNavigate: vi.fn(),
           review: {
@@ -650,9 +723,9 @@ describe('NodeDetailDialog', () => {
             markLabel: 'Looks right and next', markHint: 'looks right',
           },
         });
-        const hints = screen.getByTestId('key-hints');
-        expect(hints).toHaveTextContent(/A\/R\s*looks right/);
-        expect(Array.from(hints.querySelectorAll('kbd')).map((k) => k.textContent)).toEqual(['J', 'K', 'A/R', 'X', 'E']);
+        const keys = await shortcutKeys();
+        expect(keys).toContainEqual(['A/R', 'looks right']);
+        expect(keys.map(([key]) => key)).toEqual(['J', 'K', 'A/R', 'X', 'E', 'C']);
       });
 
       it('declares aria-keyshortcuts on the buttons only while shortcuts are on', () => {
@@ -754,36 +827,54 @@ describe('NodeDetailDialog', () => {
     });
   });
 
-  it('mounts the real two-pane layout (details + chat both visible, no tabs) on a desktop-width viewport', () => {
-    const matchMediaSpy = vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({
-      matches: true,
-      media: query,
-      onchange: null,
-      addListener: () => {},
-      removeListener: () => {},
-      addEventListener: () => {},
-      removeEventListener: () => {},
-      dispatchEvent: () => false,
-    }) as unknown as MediaQueryList);
-
+  it('keeps the assistant closed to begin with, and mounts it only while it is open (no chat history fetched for a closed one)', async () => {
+    const matchMediaSpy = desktopViewport();
     renderDialog();
     expect(screen.getByText('Req body')).toBeInTheDocument();
-    // Chat pane is genuinely mounted (not behind an unselected tab) --
-    // its composer placeholder is present.
-    expect(screen.getByPlaceholderText(/ask the assistant/i)).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(/ask the assistant/i)).not.toBeInTheDocument();
+    expect(chatApi.getChatHistory).not.toHaveBeenCalled();
+    await openAssistant();
+    expect(await screen.findByPlaceholderText(/ask the assistant/i)).toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: /chat/i })).not.toBeInTheDocument();
-
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await userEvent.click(screen.getByRole('button', { name: /^ask/i }));
+    expect(screen.queryByPlaceholderText(/ask the assistant/i)).not.toBeInTheDocument();
     matchMediaSpy.mockRestore();
   });
 
-  it('disables chat with a status-specific message once the job leaves diff_ready', async () => {
-    // jsdom has no real viewport (see test/setup.ts's matchMedia stub, which
-    // defaults to non-matching) -- renders the mobile/tabbed layout, so Chat
-    // is behind its own tab rather than always-visible as on a real desktop.
-    renderDialog({ jobStatus: 'succeeded' });
+  it('opens the assistant with C and puts focus in its composer, so a c typed there does not toggle it', async () => {
+    renderDialog({ onNavigate: vi.fn() });
     const { default: userEvent } = await import('@testing-library/user-event');
-    await userEvent.click(screen.getByRole('tab', { name: /chat/i }));
-    expect(screen.getByText(/this job's review is closed/i)).toBeInTheDocument();
+    await userEvent.keyboard('c');
+    const composer = await screen.findByPlaceholderText(/ask the assistant/i);
+    expect(composer).toHaveFocus();
+    await userEvent.keyboard('c');
+    expect(screen.getByPlaceholderText(/ask the assistant/i)).toHaveValue('c');
+  });
+
+  it('ignores a held C (key repeat), so the drawer does not flicker open and closed', () => {
+    renderDialog({ onNavigate: vi.fn() });
+    fireEvent.keyDown(window, { key: 'c', repeat: true });
+    expect(screen.queryByPlaceholderText(/ask the assistant/i)).not.toBeInTheDocument();
+  });
+
+  it('closes only the assistant on Escape, and the dialog on the next Escape', async () => {
+    const onOpenChange = vi.fn();
+    renderDialog({ onOpenChange });
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await userEvent.click(screen.getByRole('button', { name: /^ask/i }));
+    await screen.findByPlaceholderText(/ask the assistant/i);
+    await userEvent.keyboard('{Escape}');
+    expect(screen.queryByPlaceholderText(/ask the assistant/i)).not.toBeInTheDocument();
+    expect(onOpenChange).not.toHaveBeenCalled();
+    await userEvent.keyboard('{Escape}');
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it('disables chat with a status-specific message once the job leaves diff_ready', async () => {
+    renderDialog({ jobStatus: 'succeeded' });
+    await openAssistant();
+    expect(await screen.findByText(/this job's review is closed/i)).toBeInTheDocument();
   });
 
   // Figures section (item 3/4 of the figure-viewing + manual-attach work):
@@ -898,6 +989,265 @@ describe('NodeDetailDialog', () => {
         diffByLocalId: { epic1: EPIC, e1: { ...CHILD_FEATURE, action: 'reuse', existingAdoId: 42 } },
       });
       expect(screen.getByRole('button', { name: /move this feature to a different parent/i })).toBeEnabled();
+    });
+  });
+});
+
+describe('NodeDetailDialog: reviewing an assistant suggestion beside the original (DESIGN.md §11.4.6)', () => {
+  type Emit = (event: import('../hooks/useChatSocket').StreamEvent) => void;
+  let emit: Emit | undefined;
+  const SOURCE = { documentPath: 'spec.docx', startOffset: 0, endOffset: 5, page: 2 };
+  const comparison = {
+    before: { score: 45, issues: [], categoryScores: { Testable: 35 }, confidence: 'high' },
+    after: { score: 78, issues: [], categoryScores: { Testable: 80 }, confidence: 'high' },
+    delta: 33,
+    categoryDeltas: { Testable: 45 },
+    warnings: [],
+  };
+
+  beforeEach(() => {
+    emit = undefined;
+    vi.mocked(useChatSocket).mockImplementation((_job, _node, onEvent) => {
+      emit = onEvent;
+    });
+    vi.mocked(chatApi.checkRewrite).mockImplementation(async (_job, _node, proposal) =>
+      (proposal.warningsOnly ? { before: { score: null }, after: { score: null }, delta: null, warnings: [] } : comparison) as never,
+    );
+  });
+
+  // Opens the assistant and has it propose a rewrite of the description.
+  async function openWithSuggestion(props: Partial<React.ComponentProps<typeof NodeDetailDialog>> = {}) {
+    const user = (await import('@testing-library/user-event')).default.setup();
+    const result = renderDialog({ entry: { ...ENTRY, sourceRef: SOURCE, qualityScore: 45 } as DryRunDiffEntry, jobStatus: 'diff_ready', onNavigate: vi.fn(), ...props });
+    await user.click(screen.getByRole('button', { name: /^ask/i }));
+    await screen.findByPlaceholderText(/ask the assistant/i);
+    act(() => emit?.({ type: 'done', message: 'Here you go', model: 'm', proposedTitle: 'Receiver lock time', proposedDescription: 'The receiver shall acquire lock within 5 ms.' }));
+    return { user, ...result };
+  }
+
+  it('shows only a summary in the drawer, and opens the comparison in place of the Proposed column, with the Source still beside it', async () => {
+    const matchMedia = desktopViewport();
+    try {
+      const { user } = await openWithSuggestion();
+      const summary = await screen.findByTestId('proposal-summary');
+      expect(screen.queryByRole('button', { name: /^accept$/i })).not.toBeInTheDocument();
+      expect(screen.getByRole('region', { name: 'Proposed' })).toBeInTheDocument();
+
+      await user.click(within(summary).getByRole('button', { name: /review change/i }));
+      expect(await screen.findByRole('region', { name: 'Suggested change' })).toBeInTheDocument();
+      expect(screen.queryByRole('region', { name: 'Proposed' })).not.toBeInTheDocument();
+      expect(screen.getByRole('region', { name: 'Source' })).toBeInTheDocument();
+      expect(await within(screen.getByRole('region', { name: 'Suggested change' })).findByText(/predicted 45\s*→\s*78, up 33/i)).toBeInTheDocument();
+    } finally {
+      matchMedia.mockRestore();
+    }
+  });
+
+  it('Escape leaves review mode and keeps the suggestion pending; the next Escape closes the assistant', async () => {
+    const matchMedia = desktopViewport();
+    try {
+      const onOpenChange = vi.fn();
+      const { user } = await openWithSuggestion({ onOpenChange });
+      await user.click(within(await screen.findByTestId('proposal-summary')).getByRole('button', { name: /review change/i }));
+      await screen.findByRole('region', { name: 'Suggested change' });
+
+      await user.keyboard('{Escape}');
+      expect(screen.queryByRole('region', { name: 'Suggested change' })).not.toBeInTheDocument();
+      expect(screen.getByTestId('proposal-summary')).toBeInTheDocument(); // still pending
+      expect(onOpenChange).not.toHaveBeenCalled();
+
+      await user.keyboard('{Escape}');
+      expect(screen.queryByPlaceholderText(/ask the assistant/i)).not.toBeInTheDocument();
+      expect(onOpenChange).not.toHaveBeenCalled();
+    } finally {
+      matchMedia.mockRestore();
+    }
+  });
+
+  it('keeps the suggestion when the assistant is closed and opened again', async () => {
+    const matchMedia = desktopViewport();
+    try {
+      const { user } = await openWithSuggestion();
+      await screen.findByTestId('proposal-summary');
+      await user.click(screen.getByRole('button', { name: /^ask/i })); // closes the drawer: the chat panel unmounts
+      expect(screen.queryByPlaceholderText(/ask the assistant/i)).not.toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: /^ask/i }));
+      expect(await screen.findByTestId('proposal-summary')).toBeInTheDocument();
+    } finally {
+      matchMedia.mockRestore();
+    }
+  });
+
+  it('Accept saves the suggested title and text, and leaves review mode', async () => {
+    const matchMedia = desktopViewport();
+    try {
+      const onSave = vi.fn();
+      const { user } = await openWithSuggestion({ onSave });
+      await user.click(within(await screen.findByTestId('proposal-summary')).getByRole('button', { name: /review change/i }));
+      await user.click(await screen.findByRole('button', { name: /^accept$/i, hidden: false }));
+      expect(onSave).toHaveBeenCalledWith('e1', { title: 'Receiver lock time', description: 'The receiver shall acquire lock within 5 ms.' });
+      await vi.waitFor(() => expect(screen.queryByRole('region', { name: 'Suggested change' })).not.toBeInTheDocument());
+      expect(screen.queryByTestId('proposal-summary')).not.toBeInTheDocument();
+    } finally {
+      matchMedia.mockRestore();
+    }
+  });
+
+  it('"Edit first" opens the edit form filled with the suggestion', async () => {
+    const matchMedia = desktopViewport();
+    try {
+      const { user } = await openWithSuggestion();
+      await user.click(within(await screen.findByTestId('proposal-summary')).getByRole('button', { name: /review change/i }));
+      await user.click(await screen.findByRole('button', { name: /edit first/i }));
+      expect(await screen.findByDisplayValue('Receiver lock time')).toBeInTheDocument();
+      expect(screen.getByDisplayValue('The receiver shall acquire lock within 5 ms.')).toBeInTheDocument();
+    } finally {
+      matchMedia.mockRestore();
+    }
+  });
+
+  it('drops a pending suggestion when the dialog moves to another item', async () => {
+    const matchMedia = desktopViewport();
+    try {
+      const { rerender } = await openWithSuggestion();
+      await screen.findByTestId('proposal-summary');
+      rerender(
+        <ToastProvider>
+          <NodeDetailDialog open onOpenChange={vi.fn()} jobId="job-1" entry={{ ...ENTRY, localId: 'e2', title: 'Another' } as DryRunDiffEntry} jobStatus="diff_ready" onAddChild={vi.fn()} />
+        </ToastProvider>,
+      );
+      await vi.waitFor(() => expect(screen.queryByTestId('proposal-summary')).not.toBeInTheDocument());
+    } finally {
+      matchMedia.mockRestore();
+    }
+  });
+
+  describe('kept with the item: stored, restored, decided, applied and undone (Phase 3)', () => {
+    const PROPOSAL = { proposedTitle: 'Receiver lock time', proposedDescription: 'The receiver shall acquire lock within 5 ms.' };
+    const stored = (decision: 'pending' | 'accepted' | 'rejected' | 'discussed' = 'pending') => ({
+      id: 's1', ...PROPOSAL, decision, createdAt: '2026-01-01T00:00:00Z',
+    });
+    // A suggestion kept with the item shows as an issue; its button opens the comparison without the assistant.
+    const openReview = async (user: ReturnType<typeof import('@testing-library/user-event').default.setup>) => {
+      await user.click(within(await screen.findByTestId('issue-suggestion-waiting')).getByRole('button', { name: /review change/i }));
+      await screen.findByRole('region', { name: 'Suggested change' });
+    };
+
+    it('keeps a new suggestion with the item, once', async () => {
+      const matchMedia = desktopViewport();
+      try {
+        const onSuggest = vi.fn();
+        await openWithSuggestion({ onSuggest });
+        await screen.findByTestId('proposal-summary');
+        expect(onSuggest).toHaveBeenCalledTimes(1);
+        expect(onSuggest).toHaveBeenCalledWith('e1', PROPOSAL);
+      } finally {
+        matchMedia.mockRestore();
+      }
+    });
+
+    it('brings back a suggestion nobody decided on when the item is opened, without storing it again', async () => {
+      const matchMedia = desktopViewport();
+      try {
+        const onSuggest = vi.fn();
+        renderDialog({
+          entry: { ...ENTRY, sourceRef: SOURCE, qualityScore: 45, suggestion: stored() } as DryRunDiffEntry,
+          jobStatus: 'diff_ready', onSuggest, onDecideSuggestion: vi.fn(),
+        });
+        expect(await screen.findByTestId('issue-suggestion-waiting')).toBeInTheDocument();
+        expect(onSuggest).not.toHaveBeenCalled();
+      } finally {
+        matchMedia.mockRestore();
+      }
+    });
+
+    it('says it once: while the chat shows the suggestion, the "suggestion waiting" issue steps aside', async () => {
+      const matchMedia = desktopViewport();
+      try {
+        const user = (await import('@testing-library/user-event')).default.setup();
+        renderDialog({
+          entry: { ...ENTRY, sourceRef: SOURCE, qualityScore: 45, suggestion: stored() } as DryRunDiffEntry,
+          jobStatus: 'diff_ready', onSuggest: vi.fn(), onDecideSuggestion: vi.fn(),
+        });
+        expect(await screen.findByTestId('issue-suggestion-waiting')).toBeInTheDocument();
+        await user.click(screen.getByRole('button', { name: /^ask/i }));
+        expect(await screen.findByTestId('proposal-summary')).toBeInTheDocument();
+        expect(screen.queryByTestId('issue-suggestion-waiting')).not.toBeInTheDocument();
+      } finally {
+        matchMedia.mockRestore();
+      }
+    });
+
+    it('does not bring back one that was accepted, rejected or parked', async () => {
+      const matchMedia = desktopViewport();
+      try {
+        for (const decision of ['accepted', 'rejected', 'discussed'] as const) {
+          const { unmount } = renderDialog({
+            entry: { ...ENTRY, sourceRef: SOURCE, suggestion: stored(decision) } as DryRunDiffEntry,
+            jobStatus: 'diff_ready', onSuggest: vi.fn(), onDecideSuggestion: vi.fn(),
+          });
+          expect(screen.queryByTestId('issue-suggestion-waiting')).not.toBeInTheDocument();
+          unmount();
+        }
+      } finally {
+        matchMedia.mockRestore();
+      }
+    });
+
+    it('records a rejection, and does not bring the suggestion back while that decision is on its way', async () => {
+      const matchMedia = desktopViewport();
+      try {
+        const onDecideSuggestion = vi.fn();
+        const entry = { ...ENTRY, sourceRef: SOURCE, qualityScore: 45, suggestion: stored() } as DryRunDiffEntry;
+        const user = (await import('@testing-library/user-event')).default.setup();
+        renderDialog({ entry, jobStatus: 'diff_ready', onSuggest: vi.fn(), onDecideSuggestion });
+        await openReview(user);
+        await user.click(screen.getByRole('button', { name: /^reject$/i }));
+        expect(onDecideSuggestion).toHaveBeenCalledWith('e1', 'rejected', 's1');
+        await vi.waitFor(() => expect(screen.queryByRole('region', { name: 'Suggested change' })).not.toBeInTheDocument());
+        expect(screen.queryByTestId('issue-suggestion-waiting')).not.toBeInTheDocument();
+      } finally {
+        matchMedia.mockRestore();
+      }
+    });
+
+    it('applies through onApplySuggestion with the stored id, and puts the suggestion back when that fails', async () => {
+      const matchMedia = desktopViewport();
+      try {
+        const onApplySuggestion = vi.fn().mockRejectedValue(new Error('nope'));
+        const user = (await import('@testing-library/user-event')).default.setup();
+        renderDialog({
+          entry: { ...ENTRY, sourceRef: SOURCE, qualityScore: 45, suggestion: stored() } as DryRunDiffEntry,
+          jobStatus: 'diff_ready', onSuggest: vi.fn(), onDecideSuggestion: vi.fn(), onApplySuggestion,
+        });
+        await openReview(user);
+        await user.click(screen.getByRole('button', { name: /^accept$/i }));
+        expect(onApplySuggestion).toHaveBeenCalledWith('e1', { title: PROPOSAL.proposedTitle, description: PROPOSAL.proposedDescription }, 's1');
+        expect(await screen.findByTestId('issue-suggestion-waiting')).toBeInTheDocument(); // not applied: it is waiting again
+      } finally {
+        matchMedia.mockRestore();
+      }
+    });
+
+    it('after an apply, says so with the predicted and the scored number, and Undo reverts', async () => {
+      const matchMedia = desktopViewport();
+      try {
+        const onRevertSuggestion = vi.fn().mockResolvedValue(undefined);
+        const user = (await import('@testing-library/user-event')).default.setup();
+        renderDialog({
+          entry: {
+            ...ENTRY, sourceRef: SOURCE, qualityScore: 70, qualityStale: false,
+            previousRevision: { title: 'Lock time', description: 'old', qualityScore: 45, afterHash: 'x', savedAt: '2026-01-01T00:00:00Z' },
+          } as unknown as DryRunDiffEntry,
+          jobStatus: 'diff_ready', onRevertSuggestion,
+        });
+        const bar = await screen.findByTestId('applied-bar');
+        expect(bar).toHaveTextContent(/applied\. scored 70/i);
+        await user.click(within(bar).getByRole('button', { name: /undo/i }));
+        expect(onRevertSuggestion).toHaveBeenCalledWith('e1');
+      } finally {
+        matchMedia.mockRestore();
+      }
     });
   });
 });

@@ -27,7 +27,6 @@ def test_the_validator_agrees_with_the_shared_vectors(vector: dict) -> None:
 KNOWN_NOT_PORTABLE: dict[str, list[str]] = {
     "checklist_definitions_schema": ["/:free_form_object"],
     "content_authoring_schema": ["/:free_form_object"],
-    "epic_feature_scores_schema": ["/:free_form_object"],
     "figure_table_mapping_schema": ["/:free_form_object"],
     "kb_relevance_schema": ["/:free_form_object"],
     "parent_summary_schema": ["/:free_form_object"],

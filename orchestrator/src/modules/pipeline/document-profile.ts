@@ -372,7 +372,7 @@ export function buildDocumentProfile(doc: CanonicalDoc): DocumentProfile {
   };
 }
 
-/** The profile as the lines the wizard shows. Every line is read off the document; the last says so. */
+/** The profile as the lines the wizard shows. Every line is read off the document (the baseline tree and the definition of a statement are not repeated here). */
 export function composeProfileLines(profile: DocumentProfile): string[] {
   const lines: string[] = [];
   if (!profile.purpose && profile.structure.sectionCount > 0) lines.push('No Scope, Purpose or Introduction section was found, so the file itself does not say what it is for.');
@@ -385,14 +385,9 @@ export function composeProfileLines(profile: DocumentProfile): string[] {
     `Structure: ${counted(s.sectionCount, 'section')}, ${counted(s.depth, 'level')} deep, ${counted(s.tables, 'table')}, ${counted(s.figures, 'figure')}. Heading detection looks ${s.headingDetection === 'reliable' ? 'reliable' : s.headingDetection === 'partial' ? 'partly reliable' : 'absent'}.`,
   );
   for (const note of s.notes) lines.push(note);
-  if (profile.baselineTree) {
-    const t = profile.baselineTree;
-    lines.push(`Without AI, the headings alone give ${counted(t.epics, 'Epic')}, ${counted(t.features, 'Feature')} and ${counted(t.requirements, 'Requirement')}, nested up to ${t.depth} levels. SURVEY decides its own structure.`);
-  }
   if (profile.outline.length > 0) {
     const shown = profile.outline.slice(0, MAX_LISTED).map((entry) => `${`${entry.number ?? ''} ${entry.title}`.trim()} (${counted(entry.subsections, 'subsection')}, ${counted(entry.requirements, 'statement')})`);
     lines.push(`Top-level sections: ${shown.join('; ')}${profile.outline.length > MAX_LISTED ? `; and ${profile.outline.length - MAX_LISTED} more` : ''}.`);
-    lines.push('Statements are sentences with “shall”, “must”, “should” or “will”.');
   }
   if (profile.standards.count > 0) {
     const listed = profile.standards.applicableDocuments;
@@ -405,7 +400,6 @@ export function composeProfileLines(profile: DocumentProfile): string[] {
   if (profile.unresolved.length > 0) {
     lines.push(`Unresolved values: ${profile.unresolved.map((u) => `${u.marker} ×${u.count}${u.sections.length > 0 ? ` (${u.sections.join(', ')})` : ''}`).join('; ')}.`);
   }
-  lines.push('All of the above is taken from the document’s text and structure; no AI was used.');
   return lines;
 }
 

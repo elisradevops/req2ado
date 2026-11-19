@@ -992,7 +992,7 @@ describe('ProgressBanner', () => {
       />,
     );
     expect(screen.getByText(/no fixed step count to measure against/i)).toBeInTheDocument();
-    expect(screen.queryByText(/not grounded against your knowledge base/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/did not use your knowledge base/i)).not.toBeInTheDocument();
   });
 
   it('renders a parse_done narration with real block/table/figure counts', () => {
@@ -1024,7 +1024,7 @@ describe('ProgressBanner', () => {
         ]}
       />,
     );
-    expect(screen.getByText('Grounded against:')).toBeInTheDocument();
+    expect(screen.getByText('Used:')).toBeInTheDocument();
     // similarity must be VISIBLE text, not only a hover title attribute
     // (DESIGN.md Track B, phase B6) -- matched as one chip's full content.
     expect(screen.getByText('requirements-standard.pdf · 82%')).toBeInTheDocument();
@@ -1041,7 +1041,7 @@ describe('ProgressBanner', () => {
         ]}
       />,
     );
-    expect(screen.getByText(/not grounded against your knowledge base/i)).toBeInTheDocument();
+    expect(screen.getByText(/did not use your knowledge base/i)).toBeInTheDocument();
   });
 
   it('shows cited-of-available KB files when the backend reports how many were available', () => {
@@ -1059,7 +1059,7 @@ describe('ProgressBanner', () => {
         ]}
       />,
     );
-    expect(screen.getByText('Grounded against 1 of 3 KB files:')).toBeInTheDocument();
+    expect(screen.getByText('Used 1 of 3 KB files:')).toBeInTheDocument();
   });
 
   it('says how many KB files were available when a step was not grounded', () => {
@@ -1073,7 +1073,7 @@ describe('ProgressBanner', () => {
         ]}
       />,
     );
-    expect(screen.getByText('Not grounded against your knowledge base for this step (3 files available)')).toBeInTheDocument();
+    expect(screen.getByText('Did not use your knowledge base for this step (3 files available)')).toBeInTheDocument();
   });
 
   it('says the knowledge base is empty when zero files are available', () => {
@@ -1379,7 +1379,8 @@ describe('ProgressBanner live run view', () => {
     render(<ProgressBanner stage="infer_hierarchy_start" startedAt="2026-07-09T10:00:00Z" mode="survey" narrations={[analyze]} jobId="job-1" />);
     send({});
     expect(screen.getByText('38%')).toBeInTheDocument();
-    expect(screen.getByText('38% of the run (est.) — 12 of 36 items in this step')).toBeInTheDocument();
+    expect(screen.getByText('12 of 36 items in this step')).toBeInTheDocument();
+    expect(screen.getAllByText(/38%/)).toHaveLength(1); // once, in the header
     expect(screen.queryByText(/of this section \(est\.\)/)).not.toBeInTheDocument();
   });
 
@@ -1735,14 +1736,14 @@ describe('ProgressBanner: one stage name while a run is live (QA P2)', () => {
     }
   });
 
-  it('keeps the counted run percentage in words when the bar is withheld for another step', () => {
+  it('keeps the percentage in the header only, and no other step\'s count, when the bar is withheld', () => {
     pushProgress({ type: 'progress', seq: 1, pct: 2, stage: 'parse', unit: 'pages', done: 3, total: 3, estimated: true, emittedAt: 'x' });
     render(
       <ProgressBanner stage="infer_hierarchy_start" status="running" startedAt="2026-11-13T09:00:00Z" mode="survey" narrations={[SCORE_BATCH]} />,
     );
     expect(headlines()).toEqual(['Score']);
     expect(screen.queryByRole('progressbar', { name: 'Run progress' })).not.toBeInTheDocument();
-    expect(screen.getByText(/2% of the run \(est\.\)/)).toBeInTheDocument();
+    expect(screen.getAllByText(/2%/)).toHaveLength(1);
     expect(screen.queryByText(/3 of 3 pages/)).not.toBeInTheDocument();
   });
 

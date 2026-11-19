@@ -26,6 +26,8 @@ export type JobStage =
   // all).
   | 'dedup_check'
   | 'writing'
+  // The write finished: tells a page still showing 'writing' (it did not start the write, or its confirm request was cut) to reload the job.
+  | 'succeeded'
   | 'failed'
   | 'cancelled';
 
@@ -298,6 +300,7 @@ const KNOWN_JOB_STAGES: readonly JobStage[] = [
   'diff_ready',
   'dedup_check',
   'writing',
+  'succeeded',
   'failed',
   'cancelled',
 ];
@@ -469,7 +472,7 @@ export function subscribeToJobEvents(
     }
     onStage(payload.stage);
     // The server ends the stream on a final stage; closing here stops the browser's automatic reconnect to a finished job.
-    if (payload.stage === 'diff_ready' || payload.stage === 'failed' || payload.stage === 'cancelled') source.close();
+    if (payload.stage === 'diff_ready' || payload.stage === 'succeeded' || payload.stage === 'failed' || payload.stage === 'cancelled') source.close();
   });
   source.addEventListener('narration', (event) => {
     const payload: unknown = JSON.parse((event as MessageEvent).data);

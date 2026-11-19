@@ -576,7 +576,7 @@ def test_marker_routing_does_not_depend_on_what_the_study_listed(study) -> None:
 
     assert list(client.calls[0]) == ["b"]
     assert NEEDS_INPUT_TITLE in marked.description and SECTION_TITLE not in marked.description
-    assert "TBD, ??" in marked.description
+    assert '<span data-missing-value="TBD">TBD</span>, <span data-missing-value="??">??</span>' in marked.description
 
 
 @pytest.mark.parametrize("token", ["DC", "RF", "ID", "N/A"])
@@ -1346,5 +1346,100 @@ def test_the_emitted_section_shape_is_the_one_the_orchestrator_splits_off() -> N
     assert node.description.count("<div") == 1
     assert _needs_input_section(["TBD"]) == (
         '<div data-r2a="needs-input"><p><b>Needs author input</b></p>'
-        "<p>Unresolved value(s) in this requirement: TBD. Acceptance criteria were not proposed.</p></div>"
+        '<p>Unresolved value(s) in this requirement: <span data-missing-value="TBD">TBD</span>. '
+        "Acceptance criteria were not proposed.</p></div>"
     )
+
+
+def test_a_criterion_that_only_restates_the_requirement_is_dropped_and_nothing_is_said() -> None:
+    node = _node("a", description="<p>The relay shall use part number AB-123.</p>", issues=[Issue.NOT_TESTABLE])
+    client = _Client(
+        {"a": {"criteria": ["The relay uses part number AB-123"], "assumptions": [], "needs_author_input": False}}
+    )
+
+    propose_acceptance_criteria([node], _study(), client, [], table_text=lambda _id: None)
+
+    assert node.description == "<p>The relay shall use part number AB-123.</p>"
+
+
+def test_needs_input_names_the_values_the_model_says_are_missing() -> None:
+    node = _node("a", description="<p>The unit shall cool quickly.</p>", issues=[Issue.NOT_TESTABLE])
+    client = _Client(
+        {"a": {"criteria": [], "assumptions": [], "needs_author_input": True, "missing": ["the cooling time"]}}
+    )
+
+    propose_acceptance_criteria([node], _study(), client, [], table_text=lambda _id: None)
+
+    assert '<span data-missing-value="the cooling time">the cooling time</span>' in node.description
+
+
+def test_needs_input_never_names_a_value_one_of_the_models_own_criteria_invented() -> None:
+    # "7" is what the model made up, not something the requirement leaves open: it must not appear as a missing value.
+    node = _node("a", description="<p>The unit shall boot reliably.</p>", issues=[Issue.NOT_TESTABLE])
+    client = _Client(
+        {"a": {"criteria": ["Boot completes within 7 seconds"], "assumptions": [], "needs_author_input": False}}
+    )
+
+    propose_acceptance_criteria([node], _study(), client, [], table_text=lambda _id: None)
+
+    assert "data-missing-value" not in node.description
+    assert "7" not in node.description.split("</p>", 1)[1]
+    assert "needs a value that the text does not provide" in node.description
+
+
+def test_needs_input_after_a_dropped_criterion_still_names_what_the_model_says_is_missing() -> None:
+    node = _node("a", description="<p>The unit shall boot reliably.</p>", issues=[Issue.NOT_TESTABLE])
+    client = _Client(
+        {
+            "a": {
+                "criteria": ["Boot completes within 7 seconds"],
+                "assumptions": [],
+                "needs_author_input": False,
+                "missing": ["the boot time limit"],
+            }
+        }
+    )
+
+    propose_acceptance_criteria([node], _study(), client, [], table_text=lambda _id: None)
+
+    assert '<span data-missing-value="the boot time limit">the boot time limit</span>' in node.description
+    assert "7" not in node.description.split("</p>", 1)[1]
+
+
+def test_the_step_counts_its_own_items_through_the_stage_counter(monkeypatch) -> None:  # noqa: ANN001
+    class _Counter:
+        def __init__(self) -> None:
+            self.calls: list[tuple] = []
+
+        def set_total(self, stage: str, total: int) -> None:
+            self.calls.append(("set_total", stage, total))
+
+        def advance(self, stage: str, count: int) -> None:
+            self.calls.append(("advance", stage, count))
+
+        def complete(self, stage: str) -> None:
+            self.calls.append(("complete", stage))
+
+    counter = _Counter()
+    monkeypatch.setattr("app.leveling.acceptance_criteria.current_stage_counter", lambda: counter)
+    node = _node("a", description="<p>The unit shall boot.</p>", issues=[Issue.NOT_TESTABLE])
+    client = _Client({"a": {"criteria": ["Given the unit is powered, then it boots"], "assumptions": [], "needs_author_input": False}})
+
+    propose_acceptance_criteria([node], _study(), client, [], table_text=lambda _id: None)
+
+    assert counter.calls == [("set_total", "criteria", 1), ("advance", "criteria", 1), ("complete", "criteria")]
+
+
+def test_a_step_with_nothing_to_propose_tells_the_counter_to_drop_the_stage(monkeypatch) -> None:  # noqa: ANN001
+    calls: list[tuple] = []
+
+    class _Counter:
+        def set_total(self, stage: str, total: int) -> None:
+            calls.append((stage, total))
+
+    monkeypatch.setattr("app.leveling.acceptance_criteria.current_stage_counter", lambda: _Counter())
+    already = _node("a", description='<p>The unit shall boot.</p><div data-r2a="criteria"></div>', issues=[Issue.NOT_TESTABLE])
+
+    propose_acceptance_criteria([already], _study(), _Client({}), [], table_text=lambda _id: None)
+
+    assert calls == [("criteria", 0)]

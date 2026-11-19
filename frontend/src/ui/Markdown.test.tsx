@@ -276,3 +276,32 @@ describe('DescriptionMarkdown', () => {
     expect(table.style.width).toBe('');
   });
 });
+
+describe('markedTokens', () => {
+  it('marks a value the source left open where it stands alone, and not inside another word', () => {
+    const { container } = render(<DescriptionMarkdown markedTokens={['N', 'TBD']}>{'The unit shall sync within N ms, not NATO or TBD-1 ... TBD.'}</DescriptionMarkdown>);
+    const marks = Array.from(container.querySelectorAll('mark')).map((m) => m.textContent);
+    expect(marks).toEqual(['N', 'TBD', 'TBD']);
+    expect(container.textContent).toContain('NATO');
+    expect(container.querySelector('mark')).toHaveAttribute('title', 'A value the source leaves open');
+  });
+
+  it('marks inside list items and leaves other markup alone, and marks nothing without tokens', () => {
+    const { container, rerender } = render(<DescriptionMarkdown markedTokens={['X']}>{'- limit X microseconds\n- **bold** text'}</DescriptionMarkdown>);
+    expect(container.querySelectorAll('mark')).toHaveLength(1);
+    expect(container.querySelector('strong')?.textContent).toBe('bold');
+    rerender(<DescriptionMarkdown>{'- limit X microseconds'}</DescriptionMarkdown>);
+    expect(container.querySelectorAll('mark')).toHaveLength(0);
+  });
+
+  it('treats regex characters in a token as plain text (both are marked, and nothing throws)', () => {
+    const { container } = render(<DescriptionMarkdown markedTokens={['??', '***']}>{'Value ?? and *** here'}</DescriptionMarkdown>);
+    expect(Array.from(container.querySelectorAll('mark')).map((m) => m.textContent)).toEqual(['??', '***']);
+  });
+
+  it('does not mark a lone letter used as a unit right after a number, but still marks it elsewhere and marks longer tokens after a number', () => {
+    const { container } = render(<DescriptionMarkdown markedTokens={['N', 'TBD']}>{'Force of 10 N and 5N, within N ms, after 5 TBD.'}</DescriptionMarkdown>);
+    expect(Array.from(container.querySelectorAll('mark')).map((m) => m.textContent)).toEqual(['N', 'TBD']);
+    expect(container.textContent).toContain('10 N and 5N');
+  });
+});

@@ -1,5 +1,6 @@
+import { autoOpenWarnings } from '../test/openWarnings';
 import { usePageLabelStore } from '../store/pageLabelStore';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Link, MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -83,7 +84,31 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function renderAt(id: string) {
+// The dialog's shortcut keys are in a popover behind its keyboard button (DESIGN.md §11.4.5): whether U is listed.
+async function undoListed(user: { click: (el: Element) => Promise<void>; keyboard: (keys: string) => Promise<void> }): Promise<boolean> {
+  await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: /keyboard shortcuts/i }));
+  const popover = (await screen.findByText('Keyboard shortcuts')).parentElement as HTMLElement;
+  const listed = Array.from(popover.querySelectorAll('kbd')).some((k) => k.textContent === 'U');
+  await user.keyboard('{Escape}');
+  return listed;
+}
+
+const afterEachStops: Array<() => void> = [];
+afterEach(() => {
+  for (const stop of afterEachStops.splice(0)) stop();
+});
+
+// Bulk exclude/include live in the toolbar's "More" menu (DESIGN.md §11.3.5): open it, then choose the item.
+async function chooseBulk(user: { click: (el: Element) => Promise<void> }, name: RegExp): Promise<void> {
+  await user.click(screen.getByRole('button', { name: /more actions/i }));
+  await user.click(await screen.findByRole('menuitem', { name }));
+}
+
+function renderAt(id: string, options: { keepWarningsFolded?: boolean } = {}) {
+  if (!options.keepWarningsFolded) {
+    const stop = autoOpenWarnings();
+    afterEachStops.push(stop);
+  }
   // Wrapped in ToastProvider matching App.tsx's real composition -- the
   // diff tree's NodeDetailPanel renders ChatPanel (and, since Fix D, calls
   // useToast() itself for the "Suggest a title" button's error handling),
@@ -155,6 +180,81 @@ describe('JobDetail', () => {
     const { default: userEvent } = await import('@testing-library/user-event');
     await openNodeDetails(userEvent, 'Root');
     expect(await screen.findAllByText('Root')).not.toHaveLength(0);
+  });
+
+  it('offers Mark reviewed and Exclude in the dialog for an item opened from the tree, not only in the queue', async () => {
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-decide',
+      status: 'diff_ready',
+      dryRunDiff: [{ localId: 'r1', parentLocalId: null, type: 'Requirement', title: 'Plain item', description: 'Body', action: 'create', customerId: null, tags: [] }],
+    } as any);
+    const chatApi = await import('../api/chat');
+    vi.mocked(chatApi.getChatHistory).mockResolvedValue([]);
+    vi.mocked(chatApi.listModels).mockResolvedValue([]);
+    const setReviewed = vi.spyOn(jobsApi, 'setDiffEntriesReviewed').mockResolvedValue({ dryRunDiff: [{ localId: 'r1', parentLocalId: null, type: 'Requirement', title: 'Plain item', description: 'Body', action: 'create', customerId: null, tags: [], reviewed: true }] } as any);
+    renderAt('job-decide');
+    await waitFor(() => expect(screen.getByText('Plain item')).toBeInTheDocument());
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await openNodeDetails(userEvent, 'Plain item');
+    const decision = await screen.findByRole('group', { name: 'Review decision' });
+    expect(within(decision).getByRole('button', { name: 'Exclude' })).toBeInTheDocument();
+    await userEvent.click(within(decision).getByRole('button', { name: 'Mark reviewed' }));
+    await waitFor(() => expect(setReviewed).toHaveBeenCalledWith('job-decide', ['r1'], true));
+    setReviewed.mockRestore();
+  });
+
+  it('excludes a tree-opened item from the dialog with a toast that offers Undo', async () => {
+    const plain = { localId: 'r1', parentLocalId: 'e1', type: 'Requirement', title: 'Plain item', description: 'Body', action: 'create', customerId: null, tags: [] };
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-excl', status: 'diff_ready',
+      dryRunDiff: [{ localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Parent epic', description: '', action: 'create', customerId: null, tags: [] }, plain],
+    } as any);
+    const chatApi = await import('../api/chat');
+    vi.mocked(chatApi.getChatHistory).mockResolvedValue([]);
+    vi.mocked(chatApi.listModels).mockResolvedValue([]);
+    const exclude = vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockImplementation(async (_id, localId, excluded) => ({
+      dryRunDiff: [{ localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Parent epic', description: '', action: 'create', customerId: null, tags: [] }, { ...plain, excluded: excluded && localId === 'r1' }],
+    }) as any);
+    renderAt('job-excl');
+    await waitFor(() => expect(screen.getByText('Plain item')).toBeInTheDocument());
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await openNodeDetails(userEvent, 'Plain item');
+    await userEvent.click(await screen.findByRole('button', { name: 'Exclude' }));
+    expect(await screen.findByText('Excluded "Plain item".')).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole('button', { name: 'Undo', hidden: true }));
+    await waitFor(() => expect(exclude).toHaveBeenLastCalledWith('job-excl', 'r1', false));
+    exclude.mockRestore();
+  });
+
+  it('offers no decision bar for an item whose parent is excluded: the write drops it anyway', async () => {
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-anc', status: 'diff_ready',
+      dryRunDiff: [
+        { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Excluded epic', description: '', action: 'create', customerId: null, tags: [], excluded: true },
+        { localId: 'r1', parentLocalId: 'e1', type: 'Requirement', title: 'Child item', description: 'Body', action: 'create', customerId: null, tags: [] },
+      ],
+    } as any);
+    const chatApi = await import('../api/chat');
+    vi.mocked(chatApi.getChatHistory).mockResolvedValue([]);
+    vi.mocked(chatApi.listModels).mockResolvedValue([]);
+    renderAt('job-anc');
+    await waitFor(() => expect(screen.getByText('Child item')).toBeInTheDocument());
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await openNodeDetails(userEvent, 'Child item');
+    await screen.findByRole('dialog');
+    expect(screen.queryByRole('group', { name: 'Review decision' })).not.toBeInTheDocument();
+  });
+
+  it('shows the warnings card open for a finished job, which is not foldable (no test helper opening it)', async () => {
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-done', status: 'succeeded',
+      dryRunDiff: [{ localId: 'r1', parentLocalId: null, type: 'Requirement', title: 'Done item', description: 'Body', action: 'create', customerId: null, tags: [] }],
+      warnings: [{ kind: 'low_grounding', severity: 'needs_review', nodeIds: ['r1'], detail: {}, raw: 'Low overlap.' }],
+    } as any);
+    renderAt('job-done', { keepWarningsFolded: true });
+    await waitFor(() => expect(screen.getByText('Done item')).toBeInTheDocument());
+    expect(await screen.findByRole('region', { name: /integrity warnings/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^integrity warnings/i })).not.toBeInTheDocument();
   });
 
   describe('proposal review gate (P9d)', () => {
@@ -249,6 +349,53 @@ describe('JobDetail', () => {
     });
   });
 
+  describe('suggestions kept with the item (apply, undo, decide)', () => {
+    const SUGGESTION = { id: 's1', proposedTitle: 'Receiver lock time', proposedDescription: 'The receiver shall lock within 5 ms.', decision: 'pending', createdAt: '2026-01-01T00:00:00Z' };
+    const base = { localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] };
+
+    async function open(entry: Record<string, unknown>) {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-sg', status: 'diff_ready', dryRunDiff: [entry] } as any);
+      const chatApi = await import('../api/chat');
+      vi.mocked(chatApi.getChatHistory).mockResolvedValue([]);
+      vi.mocked(chatApi.listModels).mockResolvedValue([]);
+      vi.mocked(chatApi.checkRewrite).mockResolvedValue({ before: { score: null }, after: { score: null }, delta: null, warnings: [] } as never);
+      renderAt('job-sg');
+      await waitFor(() => expect(screen.getByText('Req Title')).toBeInTheDocument());
+      const { default: userEvent } = await import('@testing-library/user-event');
+      await openNodeDetails(userEvent, 'Req Title');
+      return userEvent;
+    }
+
+    it('Accept applies with a snapshot and the suggestion id, and says so', async () => {
+      vi.mocked(jobsApi.editDiffEntry).mockClear().mockResolvedValue({ dryRunDiff: [{ ...base, title: 'Receiver lock time', description: 'The receiver shall lock within 5 ms.', previousRevision: { title: 'Req Title', description: 'Req body', afterHash: 'x', savedAt: '2026-01-01T00:00:00Z' } }] } as any);
+      const user = await open({ ...base, suggestion: SUGGESTION });
+      await user.click(await screen.findByRole('button', { name: /review change/i }));
+      await user.click(await screen.findByRole('button', { name: /^accept$/i }));
+      await waitFor(() =>
+        expect(jobsApi.editDiffEntry).toHaveBeenCalledWith('job-sg', 'e1', {
+          title: 'Receiver lock time', description: 'The receiver shall lock within 5 ms.', snapshot: true, suggestionId: 's1',
+        }),
+      );
+      expect(await screen.findByText('Suggestion applied.')).toBeInTheDocument();
+    });
+
+    it('Undo asks the server to put the previous text and score back', async () => {
+      vi.mocked(jobsApi.revertDiffEntry).mockClear().mockResolvedValue({ dryRunDiff: [base] } as any);
+      const user = await open({ ...base, previousRevision: { title: 'Old', description: 'Old body', afterHash: 'x', savedAt: '2026-01-01T00:00:00Z' } });
+      await user.click(await screen.findByRole('button', { name: /^undo$/i }));
+      await waitFor(() => expect(jobsApi.revertDiffEntry).toHaveBeenCalledWith('job-sg', 'e1'));
+      expect(await screen.findByText('Undone: the previous text and score are back.')).toBeInTheDocument();
+    });
+
+    it('Reject records the decision for that suggestion', async () => {
+      vi.mocked(jobsApi.decideSuggestion).mockClear().mockResolvedValue({ dryRunDiff: [{ ...base, suggestion: { ...SUGGESTION, decision: 'rejected' } }] } as any);
+      const user = await open({ ...base, suggestion: SUGGESTION });
+      await user.click(await screen.findByRole('button', { name: /review change/i }));
+      await user.click(await screen.findByRole('button', { name: /^reject$/i }));
+      await waitFor(() => expect(jobsApi.decideSuggestion).toHaveBeenCalledWith('job-sg', 'e1', 'rejected', 's1'));
+    });
+  });
+
   // Guard added alongside handleToggleExclude/handleBulkExclude/
   // handleMoveEntry's own isDiffMutatingRef re-entry guard (779-856 above)
   // -- handleSaveEdit had none, so a user who re-opens Edit and clicks Save
@@ -309,7 +456,7 @@ describe('JobDetail', () => {
       status: 'diff_ready',
       dryRunDiff: [
         {
-          localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Loose epic', description: '',
+          localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Loose requirement', description: '',
           action: 'create', customerId: null, tags: [], groundingScore: 0.1,
         },
         {
@@ -319,9 +466,9 @@ describe('JobDetail', () => {
       ],
     } as any);
     renderAt('job-40');
-    await waitFor(() => expect(screen.getByText('Loose epic')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Loose requirement')).toBeInTheDocument());
 
-    // A parent with loose wording is Check; a healthy one is Structure. Groups with nothing in them are not offered.
+    // A requirement with loose wording is Check; a healthy one is Structure. Groups with nothing in them are not offered.
     const check = screen.getByRole('button', { name: /^check · 1$/i });
     const structure = screen.getByRole('button', { name: /^structure · 1$/i });
     expect(screen.queryByRole('button', { name: /^fix before writing/i })).not.toBeInTheDocument();
@@ -335,7 +482,7 @@ describe('JobDetail', () => {
     const { default: userEvent } = await import('@testing-library/user-event');
     await userEvent.click(check);
     expect(screen.getByRole('button', { name: /^check · 1$/i })).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByText('Loose epic')).toBeInTheDocument();
+    expect(screen.getByText('Loose requirement')).toBeInTheDocument();
     expect(screen.queryByText('Healthy epic')).not.toBeInTheDocument();
 
     // Pressing it again clears the filter.
@@ -506,7 +653,7 @@ describe('JobDetail', () => {
       await waitFor(() => expect(screen.getByText('Untouched')).toBeInTheDocument());
       const { default: userEvent } = await import('@testing-library/user-event');
 
-      expect(screen.getByRole('button', { name: /exclude all/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /more actions/i })).toBeInTheDocument();
       await userEvent.click(screen.getByRole('button', { name: 'Review in tree' }));
 
       expect(screen.getByText('Affected one')).toBeInTheDocument();
@@ -515,7 +662,9 @@ describe('JobDetail', () => {
       expect(screen.getByText(/Low grounding: possible fabrication:\s*2 left of 2/)).toBeInTheDocument();
       // Reason chip on the rows, so a reviewer sees why each is listed.
       expect(screen.getAllByText('Low grounding')).toHaveLength(2);
-      expect(screen.getByRole('button', { name: /exclude matching/i })).toBeInTheDocument();
+      await userEvent.click(screen.getByRole('button', { name: /more actions/i }));
+      expect(screen.getByRole('menuitem', { name: /exclude matching/i })).toBeInTheDocument();
+      await userEvent.keyboard('{Escape}');
 
       await userEvent.click(screen.getByRole('button', { name: /clear warning filter/i }));
 
@@ -546,7 +695,7 @@ describe('JobDetail', () => {
         warnings: [{ kind: 'parent_title_collision', severity: 'auto_fixed', nodeIds: ['e1', 'e2'], detail: {}, raw: 'Fixed.' }],
       } as any);
       renderAt('job-62');
-      fireEvent.click(await screen.findByRole('button', { name: /for your information/i })); // an informational group starts collapsed
+      fireEvent.click(await screen.findByRole('button', { name: /^for your information \(1\)/i })); // an informational group starts collapsed
       const { default: userEvent } = await import('@testing-library/user-event');
       await screen.findByRole('region', { name: /integrity warnings/i });
       // The informational group is the only one, so it is open already.
@@ -566,7 +715,7 @@ describe('JobDetail', () => {
         await waitFor(() => expect(screen.getByText('Untouched')).toBeInTheDocument());
         const { default: userEvent } = await import('@testing-library/user-event');
         await userEvent.click(screen.getByRole('button', { name: 'Review in tree' }));
-        await userEvent.click(screen.getByRole('button', { name: /^exclude matching$/i }));
+        await chooseBulk(userEvent, /^exclude matching$/i);
         await waitFor(() => expect(jobsApi.setDiffEntryExcluded).toHaveBeenCalledTimes(1));
         await openNodeDetails(userEvent, 'Affected two');
         const dialog = screen.getByRole('dialog');
@@ -913,7 +1062,7 @@ describe('JobDetail', () => {
     // pipeline_issue warning auto-expands by default now, so no clicks are
     // needed to reveal it.
     const { default: userEvent } = await import('@testing-library/user-event');
-    expect(screen.getByText('Trace links failed to write to Azure DevOps')).toBeInTheDocument();
+    expect(await screen.findByText('Trace links failed to write to Azure DevOps')).toBeInTheDocument();
 
     const retryName = /retry writing "covers" trace link/i;
     await openNodeDetails(userEvent, 'Root');
@@ -1829,7 +1978,7 @@ describe('JobDetail', () => {
     const userEventModule = await import('@testing-library/user-event');
     const userEvent = userEventModule.default;
     await userEvent.type(screen.getByPlaceholderText(/filter by title/i), 'Match');
-    await userEvent.click(screen.getByRole('button', { name: /^exclude matching$/i }));
+    await chooseBulk(userEvent, /^exclude matching$/i);
 
     await waitFor(() => expect(excludeSpy).toHaveBeenCalledTimes(2));
     expect(excludeSpy).toHaveBeenCalledWith('job-6', 'a', true);
@@ -1869,7 +2018,7 @@ describe('JobDetail', () => {
 
     const { default: userEvent } = await import('@testing-library/user-event');
     await userEvent.click(screen.getByRole('button', { name: /^check · 2$/i }));
-    await userEvent.click(screen.getByRole('button', { name: /^exclude matching$/i }));
+    await chooseBulk(userEvent, /^exclude matching$/i);
 
     await waitFor(() => expect(excludeSpy).toHaveBeenCalledTimes(2));
     expect(excludeSpy).toHaveBeenCalledWith('job-41', 'a', true);
@@ -2004,7 +2153,7 @@ describe('JobDetail', () => {
     await waitFor(() => expect(screen.getByText('Match one')).toBeInTheDocument());
 
     const { default: userEvent } = await import('@testing-library/user-event');
-    await userEvent.click(screen.getByRole('button', { name: /^exclude all$/i }));
+    await chooseBulk(userEvent, /^exclude all$/i);
 
     await waitFor(() => expect(screen.getByText(/stopped after updating 1 of 2 item/i)).toBeInTheDocument());
   });
@@ -2241,6 +2390,31 @@ describe('JobDetail', () => {
 
     expect(getJobSpy.mock.calls.length).toBe(callsBeforeReplay);
     expect(screen.queryByRole('button', { name: /^write to azure devops$/i })).not.toBeInTheDocument();
+  });
+
+  it('moves on from writing when the write finishes on the server and this page did not start it', async () => {
+    // A page opened (or a second tab, or one whose own confirm request was cut by a proxy timeout) while a write runs has nothing else telling it
+    // the write is over: it used to stay on "writing" until the page was reloaded.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    const getJobSpy = vi.spyOn(jobsApi, 'getJob')
+      .mockResolvedValueOnce({ id: 'job-10f', status: 'writing', dryRunDiff: [], areaPath: 'Project\\Area1' } as any)
+      .mockResolvedValue({ id: 'job-10f', status: 'succeeded', createdItemCount: 0, dryRunDiff: [], areaPath: 'Project\\Area1' } as any);
+    let onStage: ((stage: string) => void) | undefined;
+    const events = await import('../api/events');
+    vi.mocked(events.subscribeToJobEvents).mockImplementation((_id, _base, stage) => {
+      onStage = stage as (stage: string) => void;
+      return () => {};
+    });
+
+    renderAt('job-10f');
+    await waitFor(() => expect(onStage).toBeDefined());
+    expect(screen.queryByText(/written items \(\d+\)/i)).not.toBeInTheDocument();
+    const callsBefore = getJobSpy.mock.calls.length;
+
+    await act(async () => onStage!('succeeded'));
+
+    await waitFor(() => expect(screen.getByText(/written items \(\d+\)/i)).toBeInTheDocument());
+    expect(getJobSpy.mock.calls.length).toBeGreaterThan(callsBefore);
   });
 
   it('follows the server back to the review view when a write it did not start fails and the job is reset', async () => {
@@ -3542,11 +3716,11 @@ describe('JobDetail', () => {
     it('U undoes the last accept, announces it, and offers the hint', async () => {
       const userEvent = await startQueue();
       const dialog = await screen.findByRole('dialog');
-      expect(within(dialog).getByRole('note')).not.toHaveTextContent(/U\s*undo/);
+      expect(await undoListed(userEvent)).toBe(false);
 
       await pressMark(userEvent);
       await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Marked reviewed. 2 left.'));
-      await waitFor(() => expect(within(screen.getByRole('dialog')).getByRole('note')).toHaveTextContent(/U\s*undo/));
+      expect(await undoListed(userEvent)).toBe(true);
       await userEvent.keyboard('u');
 
       await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenLastCalledWith('job-70', ['blocked'], false));
@@ -3599,7 +3773,7 @@ describe('JobDetail', () => {
       await userEvent.keyboard('u');
 
       await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Couldn\'t undo "Blocked item". Try again.'));
-      expect(within(screen.getByRole('dialog')).getByRole('note')).toHaveTextContent(/U\s*undo/);
+      expect(await undoListed(userEvent)).toBe(true);
       setExcluded.mockImplementation(async (_id, localId, excluded) => excludedDiff(excluded ? localId : '') as any);
       await userEvent.keyboard('u');
       await waitFor(() => expect(screen.getByTestId('review-queue-status')).toHaveTextContent('Undone: "Blocked item".'));
@@ -3983,7 +4157,7 @@ describe('JobDetail', () => {
         const { userEvent } = await markBlockedPending();
         vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockImplementation((async () => ({ dryRunDiff: rowsWith() })) as never);
 
-        await userEvent.click(screen.getByRole('button', { name: /^exclude all$/i }));
+        await chooseBulk(userEvent, /^exclude all$/i);
         await waitFor(() => expect(jobsApi.setDiffEntryExcluded).toHaveBeenCalledTimes(3));
         await screen.findByText(/excluded 3 items/i);
 
@@ -4846,7 +5020,7 @@ describe('JobDetail: one toolbar row above the proposed items (DESIGN.md §11.3.
     const rowOf = (el: HTMLElement): Element | null => el.closest('.border-b');
     const risk = await screen.findByRole('button', { name: /Review in risk order/ });
     const filter = screen.getByPlaceholderText('Filter by title…');
-    const exclude = screen.getByRole('button', { name: /^Exclude/ });
+    const exclude = screen.getByRole('button', { name: /more actions/i });
     expect(rowOf(risk)).not.toBeNull();
     expect(rowOf(risk)).toBe(rowOf(filter));
     expect(rowOf(risk)).toBe(rowOf(exclude));
@@ -5077,7 +5251,7 @@ describe('JobDetail: the write gate is a hard block (DESIGN.md §11.3.5, review 
     await mount({ id: 'gate-chip', dryRunDiff: items(), warnings: [] });
     await userEvent.click(screen.getByRole('button', { name: /^check · 2$/i }));
     expect(screen.queryByText('Healthy one')).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: /^exclude matching$/i }));
+    await chooseBulk(userEvent, /^exclude matching$/i);
     // Both Check items are now excluded: the group is empty, its chip is gone, and the filter with it.
     await waitFor(() => expect(screen.queryByRole('button', { name: /^check/i })).not.toBeInTheDocument());
     expect(screen.getByText('Healthy one')).toBeInTheDocument();
@@ -5093,11 +5267,11 @@ describe('JobDetail: the write gate is a hard block (DESIGN.md §11.3.5, review 
   });
 
   describe('the sticky write bar (W3)', () => {
-    it('comes after the tree in the DOM and stays at the bottom of the review view', async () => {
+    it('comes after the tree in the DOM, as a normal last item (not floating)', async () => {
       const write = await mount({ id: 'bar-1', dryRunDiff: [req('r1'), req('r2')], warnings: [] });
       const bar = screen.getByRole('region', { name: 'Review decision' });
       expect(bar).toContainElement(write);
-      expect(bar).toHaveClass('sticky', 'bottom-0');
+      expect(bar).not.toHaveClass('sticky');
       const tree = document.getElementById('proposed-tree')!;
       expect(tree.compareDocumentPosition(bar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(screen.getAllByRole('button', { name: /write to azure devops/i })).toHaveLength(1);

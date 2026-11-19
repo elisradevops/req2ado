@@ -287,9 +287,45 @@ export async function getEventHistory(id: string): Promise<JobEventRecord[]> {
 export async function editDiffEntry(
   jobId: string,
   localId: string,
-  patch: { title?: string; description?: string; customerId?: string | null; tags?: string[]; seCoverageRef?: string | null },
+  patch: {
+    title?: string;
+    description?: string;
+    customerId?: string | null;
+    tags?: string[];
+    seCoverageRef?: string | null;
+    // Applying an assistant's suggestion: keep what it replaces (for Undo) and mark that suggestion accepted.
+    snapshot?: boolean;
+    suggestionId?: string;
+  },
 ): Promise<{ dryRunDiff: unknown }> {
   const response = await httpClient.patch(`/jobs/${jobId}/diff/${localId}`, patch);
+  return response.data;
+}
+
+// Keeps the assistant's newest suggestion with the item, so it survives closing the chat and stepping to another item. See JobsService.setSuggestion.
+export async function setSuggestion(
+  jobId: string,
+  localId: string,
+  suggestion: { proposedTitle: string | null; proposedDescription: string | null },
+): Promise<{ dryRunDiff: unknown }> {
+  const response = await httpClient.put(`/jobs/${jobId}/diff/${localId}/suggestion`, suggestion);
+  return response.data;
+}
+
+// What the reviewer did with the suggestion. An accept is recorded by the edit that applies it. See JobsService.decideSuggestion.
+export async function decideSuggestion(
+  jobId: string,
+  localId: string,
+  decision: 'rejected' | 'discussed',
+  suggestionId?: string,
+): Promise<{ dryRunDiff: unknown }> {
+  const response = await httpClient.patch(`/jobs/${jobId}/diff/${localId}/suggestion`, { decision, suggestionId });
+  return response.data;
+}
+
+// Undo of an applied suggestion: the text and the scores it replaced come back. Refused (409) once the item was edited since.
+export async function revertDiffEntry(jobId: string, localId: string): Promise<{ dryRunDiff: unknown }> {
+  const response = await httpClient.post(`/jobs/${jobId}/diff/${localId}/revert`);
   return response.data;
 }
 

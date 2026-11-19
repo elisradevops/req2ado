@@ -663,3 +663,32 @@ describe('CollapsibleWarnings', () => {
     });
   });
 });
+
+describe('CollapsibleWarnings foldable', () => {
+  const warnings = [{ kind: 'low_grounding', severity: 'needs_review', nodeIds: ['a'], detail: {}, raw: 'Low overlap.' }] as never;
+
+  it('starts folded to its header line: the gate sentence and the summary, no rows', () => {
+    render(<CollapsibleWarnings warnings={warnings} foldable gateCount={2} />);
+    const header = screen.getByRole('button', { name: /integrity warnings/i });
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+    expect(header).toHaveTextContent(/2 warnings need your attention before you approve/i);
+    expect(header).toHaveTextContent(/to review/i);
+    expect(screen.queryByText('Low overlap.')).not.toBeInTheDocument();
+  });
+
+  it('opens its groups when the header is pressed, and folds again', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    render(<CollapsibleWarnings warnings={warnings} foldable />);
+    const header = screen.getByRole('button', { name: /integrity warnings/i });
+    await userEvent.click(header);
+    expect(header).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText(/^Review \(1\)/)).toBeInTheDocument();
+    await userEvent.click(header);
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('is not foldable by default (a written job shows its record as before)', () => {
+    render(<CollapsibleWarnings warnings={warnings} />);
+    expect(screen.queryByRole('button', { name: /^integrity warnings/i })).not.toBeInTheDocument();
+  });
+});

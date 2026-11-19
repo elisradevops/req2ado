@@ -19,6 +19,9 @@ export type JobStage =
   // own status branches before this fix).
   | 'dedup_check'
   | 'writing'
+  // The write finished (job status 'succeeded'): published once, so a page that did not start the write -- or whose own confirm request was cut by
+  // a proxy timeout -- learns it is over, instead of staying on 'writing' until it is reloaded.
+  | 'succeeded'
   | 'failed'
   | 'cancelled';
 

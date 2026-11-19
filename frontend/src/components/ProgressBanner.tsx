@@ -24,6 +24,16 @@ import { ARRIVE, useArrivedLate, useSettled } from '../ui/motion';
 import { ActivityFeed, useActivityLog } from './ActivityFeed';
 import type { JobStage, NarrationEvent } from '../api/events';
 
+// The steps that look things up in the knowledge base; the "Not grounded" pill is only meaningful for these (or when a citation arrived).
+const KB_RETRIEVING_PHASES: ReadonlySet<NarrationEvent['phase']> = new Set([
+  'build_skeleton',
+  'analyze_section',
+  'generate_requirements',
+  'score_requirements',
+  'section_complete',
+]);
+
+
 // Short sub-labels shown next to the currently-active section in the step
 // list -- the narration message itself is more verbose (includes block
 // counts), this is just "which of the section's three passes is running".
@@ -495,11 +505,8 @@ export function ProgressBanner({
   // have no grounding concept at all.
   const showKbGroundingNote =
     !!latest &&
-    latest.phase !== 'describe_figure' &&
-    latest.phase !== 'parse_done' &&
-    latest.phase !== 'preparing_analysis' && // KB retrieval hasn't run yet AT this exact event -- nothing to report
-    latest.phase !== 'dedup_check' &&
-    latest.phase !== 'writing';
+    (KB_RETRIEVING_PHASES.has(latest.phase) ||
+      ((latest.kbCitations?.length ?? 0) > 0 && latest.phase !== 'dedup_check' && latest.phase !== 'writing'));
   // CR-10 ("Wizard UX Options" decision sheet) -- both phases already get
   // their own dedicated, correctly-labeled single bar from RunDetail below
   // (the dedup_check branch's "Checking N of M proposed items" bar, and
@@ -555,7 +562,7 @@ export function ProgressBanner({
           )}
           {waitingLong && (
             <p data-testid='waiting-note' className='mt-1 w-fit rounded-sm bg-surface-alt px-2 py-0.5 text-xs text-ink-2'>
-              No update for {formatDuration(secondsSinceUpdate * 1000)}. The job is still working: one large request can take many minutes. You can close this page; the run continues on the server.
+              No update for {formatDuration(secondsSinceUpdate * 1000)}. Still working; you can close this page.
             </p>
           )}
         </div>
@@ -699,7 +706,7 @@ export function ProgressBanner({
                   const note = describeStepKbGrounding(latest!.kbFilesAvailable, latest!.kbCitations.length, latest!.kbGrounded);
                   return latest!.kbGrounded && latest!.kbCitations.length > 0 ? (
                     <>
-                      <span className='text-xs text-ink-3'>{note ? `${note.text}:` : 'Grounded against:'}</span>
+                      <span className='text-xs text-ink-3'>{note ? `${note.text}:` : 'Used:'}</span>
                       {latest!.kbCitations.map((citation) => (
                         <Chip
                           key={citation.sourceFile}
@@ -717,7 +724,7 @@ export function ProgressBanner({
                       color='var(--color-ink-3)'
                       className='h-auto max-w-full whitespace-normal rounded-md border border-hairline-strong text-meta font-normal'
                     >
-                      {note ? note.text : 'Not grounded against your knowledge base for this step'}
+                      {note ? note.text : 'Did not use your knowledge base for this step'}
                     </Chip>
                   );
                 })()}

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Pencil, Link2, RefreshCw, Upload, Check, Flag, X } from 'lucide-react';
+import { Pencil, Link2, RefreshCw, Upload, Check, X } from 'lucide-react';
 import { MoveToPicker, type MoveToPickerCandidate } from './MoveToPicker';
 import { getServerMessage } from '../lib/errorDetails';
 import { TagChips } from './TagChips';
@@ -19,11 +19,14 @@ import { TextField, TextArea } from '../ui/TextField';
 import { Button } from '../ui/Button';
 import { ProposalCard } from './ProposalCard';
 import { Chip } from '../ui/Chip';
+import { IssuesList } from './IssuesList';
+import { itemIssues } from '../utils/itemIssues';
+import { missingValuesOf } from '../utils/proposal';
 import { Tooltip } from '../ui/Tooltip';
 import { DescriptionMarkdown, Markdown } from '../ui/Markdown';
 import { cn } from '../lib/cn';
 import { LABEL_MICRO } from '../utils/labelMicro';
-import { flaggedDiffEntryReason, isFlaggedDiffEntry } from '../utils/diffFlagging';
+import { isFlaggedDiffEntry } from '../utils/diffFlagging';
 import { formatDateTime } from '../utils/formatDateTime';
 
 // CR-7d rescore: the quality score/categoryScores from JUST BEFORE a
@@ -60,6 +63,17 @@ export function editabilityOf(entry: DryRunDiffEntry, jobStatus?: string | null,
   return { editable: true };
 }
 
+// What an Epic or Feature covers, as one plain line; a count of zero is left out.
+function coverageLine(type: string, counts?: { epics: number; features: number; requirements: number }): string {
+  const plural = (n: number, one: string): string => `${n} ${one}${n === 1 ? '' : 's'}`;
+  const parts = [
+    counts && counts.epics > 0 ? plural(counts.epics, 'epic') : null,
+    counts && counts.features > 0 ? plural(counts.features, 'feature') : null,
+    counts && counts.requirements > 0 ? plural(counts.requirements, 'requirement') : null,
+  ].filter((part): part is string => part !== null);
+  return parts.length > 0 ? `Covers ${parts.join(', ')}.` : `No child items under this ${type} yet.`;
+}
+
 export function canEditEntry(entry: DryRunDiffEntry, jobStatus?: string | null, written?: boolean): boolean {
   return editabilityOf(entry, jobStatus, written).editable;
 }
@@ -93,7 +107,12 @@ export function NodeDetailPanel({
   parentEntry,
   addChildSlot,
   hideSources,
+  hideEditButton,
+  onAskAssistant,
+  onReviewSuggestion,
+  onAddDiscussion,
   evidenceSlot,
+  sourceSlot,
   moveSlot,
   duplicateSlot,
   captionByFigureId,
@@ -110,6 +129,8 @@ export function NodeDetailPanel({
   descendantCounts,
   requirementClassificationField,
   editRequest = 0,
+  editSeed,
+  reviewSlot,
 }: {
   // Needed only by the Figures section below (FigureImage's fetch route is
   // job-scoped) -- optional so every existing caller/test that has no
@@ -150,11 +171,21 @@ export function NodeDetailPanel({
   // The caller shows this entry's provenance itself (NodeDetailDialog's EvidenceStrip owns it there), so the Sources block is left out.
   // A caller that renders this panel without an EvidenceStrip must not set it.
   hideSources?: boolean;
-  // The dialog's evidence strip (file, location, "Why this verdict"): drawn right after the item's text and any proposal or discussion, so
+  // The dialog shows Edit in its own header; the panel keeps its button when it is used on its own.
+  hideEditButton?: boolean;
+  // Opens the assistant from an issue's "Fix with assistant" button.
+  onAskAssistant?: () => void;
+  // Opens the comparison of a suggestion kept with the item.
+  onReviewSuggestion?: () => void;
+  // Parks a note for the item's Azure DevOps Discussion, posted when the item is created. Absent = notes can only be read (and removed).
+  onAddDiscussion?: (localId: string, entry: { proposedTitle?: string; proposedDescription?: string }) => Promise<void> | void;
+  // The dialog's evidence strip (file, location, "How this was scored"): drawn right after the item's text and any proposal or discussion, so
   // the source is next to what it supports and the long score panel comes after it.
   // A function receives the Quality panel's read-only body (gauge, score explanation, grounding line) so the strip can fold it into its
-  // "Why this verdict" disclosure; the Re-check / Score this item line then stays outside it, in view.
+  // "How this was scored" disclosure; the Re-check / Score this item line then stays outside it, in view.
   evidenceSlot?: React.ReactNode | ((quality: React.ReactNode) => React.ReactNode);
+  // The Source column, shown beside the proposed text in two columns when the pane is wide enough (container query), stacked under it otherwise.
+  sourceSlot?: React.ReactNode;
   // DESIGN.md §11.5 -- the keyboard-accessible "Move to..." control, owned/
   // wired by the caller (NodeDetailDialog builds the actual
   // MoveEntryControl) for the same reason addChildSlot is: this component
@@ -229,8 +260,21 @@ export function NodeDetailPanel({
   // boolean: the form's state lives here, and every press has to count. Only a change
   // after mount is a request, and only an editable entry honors it.
   editRequest?: number;
+  // "Edit first" on a suggestion: the edit form opens with these texts instead of the item's own. A new object each time it should apply.
+  editSeed?: { title: string; description: string } | null;
+  // The assistant's suggestion beside the original (review mode): it replaces the Proposed column's content while the reviewer decides.
+  reviewSlot?: React.ReactNode;
 }): React.ReactElement {
   const [editing, setEditing] = useState(false);
+  const [noteDraft, setNoteDraft] = useState('');
+  const [notePending, setNotePending] = useState(false);
+  // The note box belongs to one item: stepping on clears it, and a save that finishes after the step must not clear the next item's draft.
+  const noteEntryRef = useRef(entry?.localId);
+  noteEntryRef.current = entry?.localId;
+  useEffect(() => {
+    setNoteDraft('');
+    setNotePending(false);
+  }, [entry?.localId]);
   const [draftTitle, setDraftTitle] = useState('');
   const [draftDescription, setDraftDescription] = useState('');
   // Requirement-only (see WorkItemNode.customer_id's own docstring, ingestion
@@ -319,6 +363,19 @@ export function NodeDetailPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editRequest]);
 
+  // "Edit first": the same form, opened with the suggestion's texts.
+  const handledSeedRef = useRef(editSeed);
+  useEffect(() => {
+    if (!editSeed || editSeed === handledSeedRef.current) return;
+    handledSeedRef.current = editSeed;
+    if (entry && canEditEntry(entry, jobStatus, written)) {
+      startEditing();
+      setDraftTitle(editSeed.title);
+      setDraftDescription(editSeed.description);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editSeed]);
+
   // After a figure move the diff updates; if the Figures section is gone, keep focus inside the panel.
   useEffect(() => {
     if (!refocusAfterFigureChangeRef.current) return;
@@ -356,19 +413,20 @@ export function NodeDetailPanel({
       : !(entry.insignificantFigureIds ?? []).includes(figureId),
   );
   const undescribedFigureCount = visibleUncaptionedFigureIds.filter((figureId) => !detachedFigureIds.includes(figureId)).length;
-  // M3: uses the same shared threshold logic as the diff tree/list view
-  // (isFlaggedDiffEntry, which raises the Epic/Feature grounding threshold
-  // to 0.35) instead of a hardcoded 0.2 -- otherwise an Epic/Feature that
-  // the diff tree flags "Needs review" under the higher threshold could
-  // render as healthy here, in its own detail panel. qualityScore is
-  // deliberately null: this check is scoped to the grounding badge alone,
-  // not the separate quality-score gauge already shown above.
+  // The same rule as the tree's flag (utils/diffFlagging): only Requirements are checked against the source.
   const isLowGrounding = isFlaggedDiffEntry({ type: entry.type, groundingScore: entry.groundingScore, qualityScore: null });
   // The row's flag only carries this as a tooltip, so the same reason is written out here for keyboard and touch users.
   // An Epic or Feature is not scored (quality scoring judges how a requirement is worded), so its score, and the model's confidence in
   // that score, are never a reason to review it; loose wording against the source still is.
   const isParentEntry = entry.type === 'Epic' || entry.type === 'Feature';
-  const reviewReason = flaggedDiffEntryReason(isParentEntry ? { ...entry, qualityScore: null, qualityConfidence: null } : entry);
+  // The suggestion being reviewed right here is not "waiting" any more.
+  const issues = itemIssues(entry).filter((issue) => !(issue.id === 'suggestion-waiting' && reviewSlot));
+  // The values the source left open are marked in the text, so the "Missing value" issue points at words.
+  const missingTokens = entry.proposal?.kind === 'needs-input' ? missingValuesOf(entry.proposal.html) : [];
+  // A note can be parked for a new item that is still being reviewed (the server accepts discussion on creates only).
+  const canDiscuss = canEdit && entry.action === 'create' && !!onAddDiscussion;
+  // An Epic or Feature whose description only repeats its title says nothing the header does not.
+  const echoesTitle = isParentEntry && entry.description.replace(/\W+/g, '').toLowerCase() === entry.title.replace(/\W+/g, '').toLowerCase();
 
   function startEditing(): void {
     setDraftTitle(entry!.title);
@@ -747,7 +805,7 @@ export function NodeDetailPanel({
   }
 
 
-  // The Quality panel in pieces, so the dialog can fold its read-only body into "Why this verdict" (DESIGN.md §11.4) and keep the line that
+  // The Quality panel in pieces, so the dialog can fold its read-only body into "How this was scored" (DESIGN.md §11.4) and keep the line that
   // changes state (stale notice + Re-check quality, Not scored yet + Score this item, Rescored.) outside it, in view and in tab order.
   // An item that maps to one that already exists is not created, so "Not scored yet" would invite a score for nothing.
   const foldQuality = typeof evidenceSlot === 'function';
@@ -782,15 +840,16 @@ export function NodeDetailPanel({
   const qualityActions = !showQualityPanel ? null : entry.qualityScore != null ? (
     entry.qualityStale ? (
       <div className="flex items-center justify-between gap-2">
-        <p className="text-xs text-ink-3">
-          {rescoring
-            ? 'Re-scoring against the current wording. This takes a few seconds.'
-            : foldQuality
-              ? 'Edited since this was scored. The scores under "Why this verdict" are from before your change.'
+        {/* In the dialog the issues list already says the score is out of date, so only the progress of a re-check is said here. */}
+        {(rescoring || !foldQuality) && (
+          <p className="text-xs text-ink-3">
+            {rescoring
+              ? 'Re-scoring against the current wording. This takes a few seconds.'
               : 'Edited since this was scored. The numbers above are from before your change.'}
-        </p>
+          </p>
+        )}
         {onRescore && (
-          <Button variant="outline" size="sm" onClick={handleRescoreClick} loading={rescoring} className="flex-none">
+          <Button variant="outline" size="sm" onClick={handleRescoreClick} loading={rescoring} className="ms-auto flex-none">
             {!rescoring && <RefreshCw className="h-3 w-3" />}
             {rescoring ? 'Re-checking…' : 'Re-check quality'}
           </Button>
@@ -814,7 +873,7 @@ export function NodeDetailPanel({
     </div>
   );
   const groundingLine =
-    entry.groundingScore != null ? (
+    entry.groundingScore != null && !isParentEntry ? (
       <div className={cn('flex items-center gap-1.5 text-sm', !foldQuality && 'rounded-sm border border-hairline bg-surface-alt p-2.5')}>
         <Tooltip content="How closely this item's wording follows the original document text.">
           <span className="text-ink-3">Matches source wording:</span>
@@ -834,12 +893,109 @@ export function NodeDetailPanel({
       </>
     ) : null;
 
+  const proposedBody = (
+    <>
+      {!echoesTitle && (
+        <div className="w-full text-read text-ink-2 [&>*]:max-w-[68ch] [&>*:dir(rtl)]:me-auto">
+          <DescriptionMarkdown markedTokens={missingTokens}>{entry.description}</DescriptionMarkdown>
+        </div>
+      )}
+        <ProposalCard
+          key={entry.localId}
+          entry={entry}
+          canAccept={canEdit && !!onSetProposalAccepted}
+          lockedNote={
+            editability.editable
+              ? undefined
+              : editability.reason === 'written'
+                ? WRITTEN_NOTE
+                : editability.reason === 'matched'
+                ? 'This item already exists in Azure DevOps, so its description is not written.'
+                : editability.reason === 'excluded'
+                  ? 'This item is excluded, so nothing is written for it.'
+                  : 'This job is no longer in review, so the choice cannot be changed.'
+          }
+          onSetAccepted={onSetProposalAccepted}
+        />
+    </>
+  );
+
+  const figuresBlock = (
+    <>
+      {/* This entry's OWN referenced figure(s) -- distinct from the
+            document-wide FigureDescriptions panel (JobDetail.tsx), which
+            lists every figure in the source file regardless of which
+            requirement(s) cited it. Gives the reviewer the actual image next
+            to a description that only names it in text (e.g. "Figure: This
+            diagram illustrates..."), plus a manual retry/backfill for ADO
+            attachment -- confirm()'s own automatic attach only ever runs
+            once, at confirm() time, so a 'reuse'/'dedup_skip' entry (which
+            never goes through that create/writeback path) or a job already
+            'succeeded' before this figure's attachment succeeded has no
+            other way to get it attached. See JobsService.attachFigureToAdo's
+            own doc comment. */}
+        {((jobId && entry.figureIds && entry.figureIds.length > 0) || visibleUncaptionedFigureIds.length > 0) && (
+          <div className="mt-1">
+            <span ref={figuresHeadingRef} tabIndex={-1} className="text-xs font-semibold text-ink-2 outline-none">
+              Figures
+            </span>
+            {jobId && entry.figureIds && entry.figureIds.length > 0 && (
+              <ul className="mt-1 flex flex-col gap-2">
+                {entry.figureIds.map((figureId) => renderFigureCard(entry, figureId, jobId, false))}
+              </ul>
+            )}
+            {/* Uncaptioned figures -- disjoint from figureIds above (a figure
+                id is in exactly one of the two lists). These sit immediately
+                below the captioned figures' full image cards, not in a
+                separate/collapsed section, because the whole point is making a
+                silently-dropped figure visible to a reviewer without them
+                needing to go looking for it. With a jobId each gets the same
+                image card as above, since it is still attached to this item
+                at write time and placement is positional; without one, only
+                the chip is possible.
+                insignificantFigureIds are filtered out of
+                visibleUncaptionedFigureIds entirely -- those are the vision
+                model CORRECTLY judging a figure decorative/non-technical, not
+                a failure, so every id left here is a genuine vision_failed
+                case (or, when the whole run had vision disabled, already
+                explained once at the tree level by the
+                vision_captioning_disabled warning -- see JobDetail's warnings
+                panel). */}
+            {visibleUncaptionedFigureIds.length > 0 &&
+              (jobId ? (
+                <>
+                  {undescribedFigureCount > 1 && <p className="mt-2 text-xs text-ink-3">{noDescriptionHint}</p>}
+                  <ul className="mt-2 flex flex-col gap-2">
+                    {visibleUncaptionedFigureIds.map((figureId) => renderFigureCard(entry, figureId, jobId, true))}
+                  </ul>
+                </>
+              ) : (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {visibleUncaptionedFigureIds.map((figureId) => (
+                    <Tooltip key={figureId} content={noDescriptionHint}>
+                      {/* Same warning-band treatment QualityGauge's "Needs
+                          review" chip uses (bg-warning-soft + border-warning-
+                          border + text-warning-ink) -- reused, not a new color,
+                          so "amber" means the same thing everywhere in this
+                          app. */}
+                      <Chip className="border border-warning-border bg-warning-soft text-warning-ink">
+                        Figure {figureId}: no description
+                      </Chip>
+                    </Tooltip>
+                  ))}
+                </div>
+              ))}
+          </div>
+        )}
+    </>
+  );
+
   return (
-    <div ref={panelRootRef} tabIndex={-1} data-node-detail-panel className="flex flex-col gap-3 p-5 outline-none">
+    <div ref={panelRootRef} tabIndex={-1} data-node-detail-panel className="@container flex flex-col gap-3 px-5 pb-5 pt-1 outline-none">
       {/* Edit sits right next to the title it edits -- it used to be a lone
           button at the very bottom of the pane, past description/quality/
           trace-links/sources, disconnected from what it acts on. */}
-      {canEdit && (
+      {canEdit && !hideEditButton && (
         <div className="flex justify-end">
           <Button variant="outline" size="sm" onClick={startEditing} className="flex-none">
             <Pencil className="h-3.5 w-3.5" />
@@ -847,8 +1003,8 @@ export function NodeDetailPanel({
           </Button>
         </div>
       )}
+      <IssuesList issues={issues} onAsk={onAskAssistant} onReview={onReviewSuggestion} showWhenClean={!isParentEntry && canEdit && entry.qualityScore != null} />
       {duplicateSlot}
-      {moveSlot}
       {/* 'excluded' has no message of its own here -- the dialog header
           already shows a dedicated "Excluded from this run" badge right
           next to the title (NodeDetailDialog.tsx), so a second copy in
@@ -907,31 +1063,29 @@ export function NodeDetailPanel({
       {/* The 68ch measure sits on each block, not the wrapper, so a right-to-left
           block (:dir(rtl), resolved from dir="auto") can anchor to the pane's
           right edge instead of the right edge of a 68ch box. */}
-      <div className="w-full text-read text-ink-2 [&>*]:max-w-[68ch] [&>*:dir(rtl)]:me-auto">
-        <DescriptionMarkdown>{entry.description}</DescriptionMarkdown>
-      </div>
-      <ProposalCard
-        key={entry.localId}
-        entry={entry}
-        canAccept={canEdit && !!onSetProposalAccepted}
-        lockedNote={
-          editability.editable
-            ? undefined
-            : editability.reason === 'written'
-              ? WRITTEN_NOTE
-              : editability.reason === 'matched'
-              ? 'This item already exists in Azure DevOps, so its description is not written.'
-              : editability.reason === 'excluded'
-                ? 'This item is excluded, so nothing is written for it.'
-                : 'This job is no longer in review, so the choice cannot be changed.'
-        }
-        onSetAccepted={onSetProposalAccepted}
-      />
-      {entry.discussion && entry.discussion.length > 0 && (
-        <div className="flex flex-col gap-1.5 rounded-sm border border-hairline bg-surface-alt p-2.5">
-          <span className={LABEL_MICRO}>To be discussed</span>
+      {sourceSlot ? (
+        <div className="grid min-w-0 gap-4 @4xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] @4xl:gap-6">
+          <section aria-labelledby={reviewSlot ? undefined : `proposed-${entry.localId}`} className="flex min-w-0 flex-col gap-3">
+            {reviewSlot ?? (
+              <h3 id={`proposed-${entry.localId}`} className={cn(LABEL_MICRO, 'text-ink-2')}>
+                Proposed
+              </h3>
+            )}
+            {reviewSlot ? null : proposedBody}
+            {figuresBlock}
+          </section>
+          {sourceSlot}
+        </div>
+      ) : (
+        (reviewSlot ?? proposedBody)
+      )}
+      {(canDiscuss || (entry.discussion?.length ?? 0) > 0) && (
+        <section aria-labelledby={`discussion-${entry.localId}`} className="flex flex-col gap-1.5 rounded-sm border border-hairline bg-surface-alt p-2.5">
+          <h3 id={`discussion-${entry.localId}`} className={LABEL_MICRO}>
+            To be discussed{(entry.discussion?.length ?? 0) > 0 ? ` (${entry.discussion!.length})` : ''}
+          </h3>
           <p className="text-xs text-ink-3">Posted to this item's Discussion in Azure DevOps when it is created; the text above is unchanged.</p>
-          {entry.discussion.map((d) => (
+          {(entry.discussion ?? []).map((d) => (
             <div key={d.id} className="flex items-start gap-2 border-t border-hairline pt-1.5 text-sm text-ink-2">
               <div className="min-w-0 flex-1 wrap-anywhere">
                 {d.proposedTitle && (
@@ -949,7 +1103,37 @@ export function NodeDetailPanel({
               )}
             </div>
           ))}
-        </div>
+          {(entry.discussion?.length ?? 0) === 0 && <p className="text-sm text-ink-2">Nothing parked for this item yet.</p>}
+          {canDiscuss && (
+            <form
+              className="flex flex-col gap-1.5 border-t border-hairline pt-1.5"
+              onSubmit={(event) => {
+                event.preventDefault();
+                const text = noteDraft.trim();
+                if (!text || notePending || !onAddDiscussion) return;
+                setNotePending(true);
+                const forEntry = entry.localId;
+                void Promise.resolve(onAddDiscussion(forEntry, { proposedDescription: text }))
+                  .then(() => {
+                    if (noteEntryRef.current === forEntry) setNoteDraft('');
+                  })
+                  .catch(() => undefined) // the caller already shows the failure; the note stays in the box
+                  .finally(() => setNotePending(false));
+              }}
+            >
+              <TextArea
+                label="Add a question or note for the author"
+                value={noteDraft}
+                onChange={(event) => setNoteDraft(event.target.value)}
+                rows={2}
+                fullWidth
+              />
+              <Button type="submit" size="sm" variant="outline" className="w-fit" aria-busy={notePending} aria-disabled={!noteDraft.trim() || notePending}>
+                Add to discussion
+              </Button>
+            </form>
+          )}
+        </section>
       )}
       {foldQuality ? (
         <>
@@ -972,12 +1156,6 @@ export function NodeDetailPanel({
           fact. Classification alone is real content the gauge doesn't
           cover, so it stays -- as its own full-width block now that it no
           longer needs to share a 2-column row with something else. */}
-      {reviewReason && (
-        <p data-testid="review-reason" className="flex items-start gap-1.5 text-sm text-warning-ink">
-          <Flag aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 flex-none" />
-          <span>Check: {reviewReason}</span>
-        </p>
-      )}
       {entry.tags && entry.tags.length > 0 && (
         <div className="flex flex-col gap-1">
           <span className={LABEL_MICRO}>Classification</span>
@@ -1000,31 +1178,8 @@ export function NodeDetailPanel({
           shows what it covers (real descendant counts from the diff tree,
           computed by the caller) and states plainly why there is no score,
           rather than leaving this slot silently empty. */}
-      {(entry.type === 'Epic' || entry.type === 'Feature') && (
-        <div className="flex flex-col gap-1.5 rounded-sm border border-hairline bg-surface-alt p-2.5">
-          <span className="text-xs font-semibold text-ink-2">Scope</span>
-          <p className="text-sm text-ink-2">
-            {descendantCounts &&
-            (descendantCounts.epics > 0 || descendantCounts.features > 0 || descendantCounts.requirements > 0) ? (
-              <>
-                Covers{' '}
-                {descendantCounts.epics > 0 && (
-                  <>
-                    {descendantCounts.epics} epic{descendantCounts.epics === 1 ? '' : 's'},{' '}
-                  </>
-                )}
-                {descendantCounts.features} feature{descendantCounts.features === 1 ? '' : 's'}, {descendantCounts.requirements}{' '}
-                requirement{descendantCounts.requirements === 1 ? '' : 's'}.
-              </>
-            ) : (
-              `No child items under this ${entry.type} yet.`
-            )}
-          </p>
-          <p className="text-xs text-ink-3">
-            {entry.type === 'Epic' ? 'Epics' : 'Features'} aren't scored — quality scoring judges how a requirement is worded, not what it covers.
-          </p>
-        </div>
-      )}
+      {isParentEntry && <p className="text-sm text-ink-2">{coverageLine(entry.type, descendantCounts)}</p>}
+      {moveSlot}
       {entry.traceLinks && entry.traceLinks.length > 0 && (
         <div className="mt-1">
           <span className="text-xs font-semibold text-ink-2">Trace links</span>
@@ -1048,77 +1203,13 @@ export function NodeDetailPanel({
           <SourceProvenance sourceRef={entry.sourceRef} showScoringNote={entry.type === 'Requirement'} kbCitations={kbCitations} />
         </div>
       )}
-      {/* This entry's OWN referenced figure(s) -- distinct from the
-          document-wide FigureDescriptions panel (JobDetail.tsx), which
-          lists every figure in the source file regardless of which
-          requirement(s) cited it. Gives the reviewer the actual image next
-          to a description that only names it in text (e.g. "Figure: This
-          diagram illustrates..."), plus a manual retry/backfill for ADO
-          attachment -- confirm()'s own automatic attach only ever runs
-          once, at confirm() time, so a 'reuse'/'dedup_skip' entry (which
-          never goes through that create/writeback path) or a job already
-          'succeeded' before this figure's attachment succeeded has no
-          other way to get it attached. See JobsService.attachFigureToAdo's
-          own doc comment. */}
-      {((jobId && entry.figureIds && entry.figureIds.length > 0) || visibleUncaptionedFigureIds.length > 0) && (
-        <div className="mt-1">
-          <span ref={figuresHeadingRef} tabIndex={-1} className="text-xs font-semibold text-ink-2 outline-none">
-            Figures
-          </span>
-          {jobId && entry.figureIds && entry.figureIds.length > 0 && (
-            <ul className="mt-1 flex flex-col gap-2">
-              {entry.figureIds.map((figureId) => renderFigureCard(entry, figureId, jobId, false))}
-            </ul>
-          )}
-          {/* Uncaptioned figures -- disjoint from figureIds above (a figure
-              id is in exactly one of the two lists). These sit immediately
-              below the captioned figures' full image cards, not in a
-              separate/collapsed section, because the whole point is making a
-              silently-dropped figure visible to a reviewer without them
-              needing to go looking for it. With a jobId each gets the same
-              image card as above, since it is still attached to this item
-              at write time and placement is positional; without one, only
-              the chip is possible.
-              insignificantFigureIds are filtered out of
-              visibleUncaptionedFigureIds entirely -- those are the vision
-              model CORRECTLY judging a figure decorative/non-technical, not
-              a failure, so every id left here is a genuine vision_failed
-              case (or, when the whole run had vision disabled, already
-              explained once at the tree level by the
-              vision_captioning_disabled warning -- see JobDetail's warnings
-              panel). */}
-          {visibleUncaptionedFigureIds.length > 0 &&
-            (jobId ? (
-              <>
-                {undescribedFigureCount > 1 && <p className="mt-2 text-xs text-ink-3">{noDescriptionHint}</p>}
-                <ul className="mt-2 flex flex-col gap-2">
-                  {visibleUncaptionedFigureIds.map((figureId) => renderFigureCard(entry, figureId, jobId, true))}
-                </ul>
-              </>
-            ) : (
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {visibleUncaptionedFigureIds.map((figureId) => (
-                  <Tooltip key={figureId} content={noDescriptionHint}>
-                    {/* Same warning-band treatment QualityGauge's "Needs
-                        review" chip uses (bg-warning-soft + border-warning-
-                        border + text-warning-ink) -- reused, not a new color,
-                        so "amber" means the same thing everywhere in this
-                        app. */}
-                    <Chip className="border border-warning-border bg-warning-soft text-warning-ink">
-                      Figure {figureId}: no description
-                    </Chip>
-                  </Tooltip>
-                ))}
-              </div>
-            ))}
-        </div>
-      )}
+      {!sourceSlot && figuresBlock}
       {/* Tables folded into this node -- sibling of Figures above, but with
           no image/upload treatment: a table's content already renders as a
           real HTML <table> via DescriptionMarkdown elsewhere in this same
           description, so this is purely "here's which table(s) fed this
           item", not a second table viewer. */}
-      {entry.tableIds && entry.tableIds.length > 0 && (
+      {entry.tableIds && entry.tableIds.length > 0 && !(sourceSlot && entry.tableIds.every((tableId) => !captionByTableId?.[tableId])) && (
         <div className="mt-1">
           <span className="text-xs font-semibold text-ink-2">Tables</span>
           <div className="mt-1 flex flex-wrap gap-1.5">

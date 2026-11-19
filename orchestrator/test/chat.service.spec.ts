@@ -150,6 +150,7 @@ describe('ChatService.sendTurn: where the item sits', () => {
       documentName: 'AirPro.docx',
       parents: [{ type: 'Feature', title: 'Carrier acquisition', description: 'How lock is found.' }],
       siblings: [{ title: 'Neighbour' }],
+      children: [],
       linked: [],
       figures: [{ name: 'State machine', caption: 'Idle to locked.' }],
       tables: [],

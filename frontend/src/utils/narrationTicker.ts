@@ -32,7 +32,7 @@ const PHASE_FALLBACK_SENTENCES: Record<NarrationEvent['phase'], string> = {
   parse_done: 'Finished parsing the document.',
   table_detected: 'Detected a table.',
   preparing_analysis: 'Preparing analysis.',
-  deterministic_subtree: 'Extracting a deterministic hierarchy subtree.',
+  deterministic_subtree: 'Building the item hierarchy.',
   // STAGE 1 of SURVEY's per-branch generation -- structure only, before any
   // requirement text exists (see events.ts's own comment for the stale
   // 'analyze_section' label this replaces).
@@ -72,6 +72,7 @@ const STAGE_FALLBACK_SENTENCES: Record<JobStage, string> = {
   diff_ready: 'Diff ready for your review.',
   dedup_check: 'Checking for existing/duplicate work items...',
   writing: 'Writing work items to Azure DevOps...',
+  succeeded: 'Work items written to Azure DevOps.',
   failed: 'Job failed.',
   cancelled: 'Job cancelled.',
 };

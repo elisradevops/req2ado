@@ -142,6 +142,20 @@ describe('JobEventsController', () => {
     expect(subscriber.quit).toHaveBeenCalled();
   });
 
+  it('closes the stream and releases the subscriber when the write has succeeded, which is what tells a page still on writing to move on', async () => {
+    const subscriber = makeSubscriber();
+    const { controller } = makeController(subscriber);
+    const res = makeRes();
+
+    await controller.streamEvents('job-1', res as any, TEST_USER);
+    subscriber.__handlers.message('job-events:job-1', JSON.stringify({ stage: 'succeeded' }));
+
+    expect(res.write).toHaveBeenCalledWith(expect.stringContaining('"stage":"succeeded"'));
+    expect(res.end).toHaveBeenCalled();
+    expect(subscriber.unsubscribe).toHaveBeenCalled();
+    expect(subscriber.quit).toHaveBeenCalled();
+  });
+
   // Diagnostics for an unexplained 503 once seen on a stream reconnect: one line when a stream opens and one when it ends (with why and for
   // how long), so a failing request can be told apart from a normal end. Only the job id is logged -- never the user, a cookie or a token.
   describe('stream diagnostics', () => {

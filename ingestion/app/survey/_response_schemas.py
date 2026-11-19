@@ -387,34 +387,6 @@ def checklist_definitions_schema() -> dict:
     }
 
 
-def epic_feature_scores_schema() -> dict:
-    """score_epics_and_features_for_document: a dynamic node_id-keyed
-    object -- additionalProperties (not properties), same shape family as
-    scores_schema. No 'issues' field here -- RequirementQualityIssue's
-    closed vocabulary (ambiguous, not_testable, compound, ...) describes
-    atomic 'shall' statements, not what an Epic/Feature grouping IS (see
-    llm_leveling.py's own comment on why quality scoring was originally
-    scoped to Requirement-type nodes only); Epic/Feature review is
-    score + categoryScores only."""
-    return {
-        "name": "epic_feature_scores_by_node",
-        "schema": {
-            "type": "object",
-            "additionalProperties": {
-                "type": "object",
-                "properties": {
-                    "score": {"type": "integer", "minimum": 0, "maximum": 100},
-                    "categoryScores": {
-                        "type": "object",
-                        "additionalProperties": {"type": "integer", "minimum": 0, "maximum": 100},
-                    },
-                },
-                "required": ["score", "categoryScores"],
-            },
-        },
-    }
-
-
 def title_tags_schema() -> dict:
     """title_and_tags_for_rows (OrchestratorLlmClient, backing
     TitleTagClient/id_tree_builder._apply_title_tag_pass): a dynamic
@@ -782,8 +754,9 @@ def acceptance_criteria_schema() -> dict:
                             "criteria": {"type": "array", "items": {"type": "string"}},
                             "assumptions": {"type": "array", "items": {"type": "string"}},
                             "needs_author_input": {"type": "boolean"},
+                            "missing": {"type": "array", "items": {"type": "string"}},
                         },
-                        "required": ["id", "criteria", "assumptions", "needs_author_input"],
+                        "required": ["id", "criteria", "assumptions", "needs_author_input", "missing"],
                         "additionalProperties": False,
                     },
                 },

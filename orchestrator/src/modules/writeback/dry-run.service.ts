@@ -163,6 +163,32 @@ export interface WarningRecord {
 // A proposed rewrite a reviewer parked as "To be discussed": written to the work item's ADO Discussion (System.History) at confirm(),
 // never merged into title/description (BASELINE keeps those verbatim).
 // A type alias, not an interface: it is stored in the Job.dryRunDiff JSON column, and only an alias is assignable to Prisma's JSON input type.
+// The assistant's latest suggestion for an item, kept with the item so it survives closing the chat and stepping to another item
+// (DESIGN.md §11.4.6). Only the newest is kept; `decision` says what the reviewer did with it.
+export type SuggestionDecision = 'pending' | 'accepted' | 'rejected' | 'discussed';
+export type DiffSuggestion = {
+  id: string;
+  proposedTitle: string | null;
+  proposedDescription: string | null;
+  decision: SuggestionDecision;
+  createdAt: string;
+};
+
+// What an accepted suggestion replaced, so Undo can put it back exactly, scores included. `afterHash` identifies the text that was applied:
+// a revert is refused once the item has been edited since, so it can never overwrite the reviewer's later work.
+export type DiffRevision = {
+  title: string;
+  description: string;
+  qualityScore?: number | null;
+  qualityIssues?: string[];
+  qualityCategoryScores?: QualityCategoryScores | null;
+  qualityCategoryChecklist?: QualityCategoryChecklist | null;
+  qualityConfidence?: 'high' | 'medium' | 'low' | null;
+  qualityStale?: boolean;
+  afterHash: string;
+  createdAt: string;
+};
+
 export type DiscussionEntry = {
   id: string;
   proposedTitle?: string;
@@ -255,6 +281,9 @@ export interface DryRunDiffEntry {
   proposalAccepted?: boolean;
   // Reviewer-parked rewrites (JobsService.addDiscussionEntry); written to ADO Discussion by confirm(), baseline text untouched.
   discussion?: DiscussionEntry[];
+  // The assistant's newest suggestion for this item and what the reviewer did with it; and what an accepted one replaced (for Undo).
+  suggestion?: DiffSuggestion | null;
+  previousRevision?: DiffRevision | null;
   // Reviewer has checked this item (see JobsService.setDiffEntriesReviewed).
   // Advisory progress state for working through integrity warnings --
   // confirm() never reads it, so it never changes what is written to ADO.

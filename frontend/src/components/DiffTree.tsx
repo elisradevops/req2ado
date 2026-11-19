@@ -69,7 +69,6 @@ function narrowRowHeight(): number {
 // Fallback index-column width when the document is unavailable (e.g.
 // SSR/tests) -- matches the approved design's own fallback.
 const FALLBACK_INDEX_WIDTH = 44;
-const FALLBACK_STATUS_WIDTH = 108;
 
 // Used only before the container's real height is first measured (see
 // useContainerHeight below) -- react-window's `height` prop must be a
@@ -113,6 +112,22 @@ export interface DiscussionEntry {
   createdAt: string;
 }
 
+// The assistant's newest suggestion for an item, kept on the item (DESIGN.md §11.4.6) so it survives closing the chat and stepping to another item.
+export interface DiffSuggestion {
+  id: string;
+  proposedTitle: string | null;
+  proposedDescription: string | null;
+  decision: 'pending' | 'accepted' | 'rejected' | 'discussed';
+  createdAt: string;
+}
+
+// What an accepted suggestion replaced, kept so Undo can put it back, scores included. The server refuses an Undo once the item was edited since.
+export interface DiffRevision {
+  title: string;
+  description: string;
+  createdAt: string;
+}
+
 export interface DryRunDiffEntry {
   localId: string;
   parentLocalId: string | null;
@@ -141,6 +156,8 @@ export interface DryRunDiffEntry {
   proposalAccepted?: boolean;
   // Rewrites the reviewer parked as "To be discussed": written to the ADO Discussion on Confirm; title/description stay as extracted.
   discussion?: DiscussionEntry[];
+  suggestion?: DiffSuggestion | null;
+  previousRevision?: DiffRevision | null;
   qualityScore?: number | null;
   // Computed server-side alongside qualityScore (vocabulary-overlap check
   // against the node's own source text) -- see DiffTree's own review-chip
@@ -357,7 +374,8 @@ function useStatusColumnWidth(entries: DryRunDiffEntry[]): number {
     const font = `600 12px ${fontFamily}`;
     let widest = 0;
     for (const entry of entries) {
-      widest = Math.max(widest, measureTextWidth(actionLabel(entry), font));
+      // A plain new item draws no pill (ActionBadge hideNew), so it reserves no width: only labels that are really drawn are measured.
+      if (!(entry.action === 'create' && entry.duplicateOf?.existingAdoId == null)) widest = Math.max(widest, measureTextWidth(actionLabel(entry), font));
       // R7: a new item's criteria chip sits in this column (it is about what the write will carry), and it is the only mark there on
       // such a row, so the column is as wide as the widest of the two, measured from this job's rows only.
       const criteria = criteriaChipLabel(entry);
@@ -366,7 +384,8 @@ function useStatusColumnWidth(entries: DryRunDiffEntry[]): number {
     // Chip's own horizontal padding+border (px-2 + 1px border each side =
     // 18px) plus a small buffer so text never sits flush against the
     // pill's edge.
-    return widest > 0 ? Math.ceil(widest) + 18 + 8 : FALLBACK_STATUS_WIDTH;
+    // Nothing drawn in any row: the column takes no width and its header goes with it, so titles get the room.
+    return widest > 0 ? Math.ceil(widest) + 18 + 8 : 0;
   }, [entries]);
 }
 
@@ -805,9 +824,9 @@ export function DiffTree({
         <span />
         <span className={cn('text-right', wideOnly(narrow))}>Index</span>
         <span>Item</span>
-        <span className={cn('flex items-center gap-1', wideOnly(narrow))}>
-          Status
-          <InfoTip content="What will happen to this item when you write to Azure DevOps. No pill means New (written to Azure DevOps for the first time). A pill means: Links to an existing WI-#### (reused, nothing new written, and it keeps its existing Azure DevOps parent regardless of where you place it in this tree), or Near-duplicate of an existing item (skipped, same parent-keeping rule). On a new item, 'criteria to review' or 'criteria accepted' says whether its proposed acceptance criteria will be written with it." />
+        <span className={cn('flex items-center gap-1 overflow-hidden', wideOnly(narrow))}>
+          {statusColumnWidth > 0 && <>Status
+          <InfoTip content="What will happen to this item when you write to Azure DevOps. No pill means New (written to Azure DevOps for the first time). A pill means: Links to an existing WI-#### (reused, nothing new written, and it keeps its existing Azure DevOps parent regardless of where you place it in this tree), or Near-duplicate of an existing item (skipped, same parent-keeping rule). On a new item, 'criteria to review' or 'criteria accepted' says whether its proposed acceptance criteria will be written with it." /></>}
         </span>
         <span className={cn('flex items-center justify-end gap-1', wideOnly(narrow))}>
           Flags
@@ -830,7 +849,7 @@ export function DiffTree({
           role="tree"
           aria-activedescendant={selectedId && rows.some((row) => row.entry.localId === selectedId) ? rowDomId(treeDomId, selectedId) : undefined}
           // As tall as the job's rows (at least 3, so a near-empty tree is still a card), up to the viewport-based cap that used to be the fixed height. Counted from ALL entries, not the visible rows, so filtering or collapsing a branch never makes the card jump.
-          style={{ height: `min(max(calc(100vh - 400px), 280px), ${Math.max(entries.length, 3) * rowHeight}px)` }}
+          style={{ height: `min(max(calc(100vh - 160px), 280px), ${Math.max(entries.length, 3) * rowHeight}px)` }}
           // The universal focus ring (index.css), inset so the list's own overflow does not clip it; focus:outline-none would remove it.
           className="focus-visible:outline-offset-[-2px]"
         >
@@ -1113,9 +1132,10 @@ function DiffTreeRow({
   const sameTierLabel = `Nested ${realTypeName(entry.type)}`;
   const typeName = realTypeName(entry.type);
   const sameTierTitle = `Parent is also ${/^[aeiou]/i.test(typeName) ? 'an' : 'a'} ${typeName}. This writes fine to Azure DevOps, but its native Backlogs hub cannot reorder links between items of the same category, and sprint backlogs and taskboards show only the lowest item.`;
-  // On the phone line the red pill is too wide to leave room for the status beside it, so it is plain red text there.
+  // Nesting an item under one of its own type is valid, so this is a quiet fact, not an alarm (DESIGN.md §11.3.5). On the phone line the
+  // pill is too wide to leave room for the status beside it, so it is plain text there.
   const sameTierPhoneEl = isSameTierParent && (
-    <span className="flex-none text-xs font-semibold text-danger-ink" title={sameTierTitle}>
+    <span className="flex-none text-xs font-medium text-ink-2" title={sameTierTitle}>
       {sameTierLabel}
     </span>
   );
@@ -1123,9 +1143,9 @@ function DiffTreeRow({
     <>
     {isSameTierParent && (
       <Chip
-        bg="var(--color-danger-soft)"
-        color="var(--color-danger-ink)"
-        className="flex-none border border-danger-border"
+        bg="var(--color-surface-alt)"
+        color="var(--color-ink-2)"
+        className="flex-none border border-hairline-strong"
         title={sameTierTitle}
       >
         {sameTierLabel}
@@ -1217,9 +1237,9 @@ function DiffTreeRow({
         // visibility below -- not a new hover system, the same pattern
         // JobsList.tsx already ships and tests.
         'hoverable-row group grid items-center gap-2.5 px-3.5 max-md:grid-rows-1 max-md:gap-x-1.5',
-        // Phone only: a whole-row tint promotes the rows that need a decision (same-tier hazard over needs-review).
+        // Phone only: a whole-row tint promotes the rows that need a decision (needs-review).
         // (utilities outrank the component-layer selected fill, so the tint is simply not applied to the selected row)
-        entry.localId !== selectedId && (isSameTierParent ? 'max-md:bg-danger-soft max-md:hover:bg-surface-alt' : (isFlaggedDiffEntry(entry) || issueCount > 0) && 'max-md:bg-warning-soft max-md:hover:bg-surface-alt'),
+        entry.localId !== selectedId && ((isFlaggedDiffEntry(entry) || issueCount > 0) && 'max-md:bg-warning-soft max-md:hover:bg-surface-alt'),
         canMove && 'select-none',
         canMove ? 'cursor-grab' : 'cursor-pointer',
         isDragging && 'opacity-40',

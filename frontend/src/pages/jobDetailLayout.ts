@@ -63,3 +63,8 @@ export function reviewHeadline(status: string | null): string {
       return 'Items';
   }
 }
+
+/** The phase rail runs beside the view only while the run is live; once the run is over it is a strip above the review (DESIGN.md §11.3.5). */
+export function phaseRailOrientation(status: string | null): 'vertical' | 'horizontal' {
+  return status === 'pending' || status === 'running' || status === 'writing' ? 'vertical' : 'horizontal';
+}

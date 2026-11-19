@@ -873,6 +873,12 @@ not yet built:** §11.3.5 replaces this stepper, while a job runs, with a
 show their purpose; the horizontal stepper remains for review state and below
 `lg`. §18.1 tracks it.)
 
+### Issues list — `IssuesList` (the item dialog, §11.4.5)
+
+A `<ul aria-label="Issues">`, one row per issue: a severity icon (not colour alone), one plain sentence, an optional action button, and a
+"Why" disclosure (`Disclosure`, §7 Navigation states). Absent, not empty, when the item is clean (§16.22). Rest `bg-surface`; severity is
+carried by the icon and by the word, with the tint from `warning-soft` or `danger-soft` only for fix-level rows.
+
 ### Chip / Badge — `Chip`, `StatusChip`, `ModeBadge`, `ActionBadge`, `TagChips`, `IssueChips`, `TraceLinkChips`, `KbCitationChips`, `WorkItemTypeBadge`
 
 | State | Utilities |
@@ -2062,6 +2068,10 @@ Step 3 also offers "Write it again" for the optional AI summary. The button stay
 mounted and is `aria-disabled` (not `disabled`) while a summary is being written,
 because a natively disabled button drops keyboard focus.
 
+**Revised 2026-11-19.** The SharePoint problem is said once, as the chip ("SharePoint token expired", "can't reach SharePoint"); the
+extra "adding files will fail" sentence under the chip is removed. Step 3's document overview shows four to five lines: the definition
+line and the "no AI was used" line are dropped (the structure line and the `No …` lines stay).
+
 #### §11.2.4 — Footer
 
 `Back` (outline) and `Start job` (primary, with the `Activity` glyph). The
@@ -2100,6 +2110,14 @@ file name or "Change document" control was on the step, although §11.2 specifie
   stacks after the decision path and the actions come last.
 - **A disabled primary action says why.** The destination it needs can sit below the fold on the left, so the rail
   states what is missing ("Choose a team project and an area path to continue.") until it is filled in.
+
+**Revised 2026-11-19 (say each thing once).** (1) The estimate is shown **twice at most**: the selected mode's range on its card and the
+same number in the rail. The "SURVEY · n=23" basis chip and its second `InfoTip` on the card are removed; the basis ("Based on N jobs") is
+said once, beside the rail's number. (2) **The "What lands in Azure DevOps" example is generic.** It is labelled "Example" and uses
+placeholders, never a realistic clause, section number, unit or score (`1.1 The system shall <requirement text, copied word for word>.` for
+BASELINE; a `<short title>`, `The system shall <the requirement, rewritten as a clear "shall" statement>.` and `from §<section>` for SURVEY),
+because a realistic-looking sample is read as real output. §11.2.5's rule that an example stays is kept; only its content changes.
+(3) The sticky Start bar is styled as the Write bar's dock (§11.6: `z-10`, full border, `shadow-dock`) so content does not show through it.
 
 ### §11.3 — The running-job screen
 
@@ -2653,12 +2671,35 @@ scroll, filters and open rows. Measured with the rail (1440×900, first tree row
 (was 718 without the rail: the headline, counts line and "Run details" row add about 70 px); the tree is 860 px wide instead of 1150 px.
 The revised target is therefore ≤ 800 with warnings; the rail costs width, not height, for the tree.
 
+**Review state, revised again 2026-11-19 (tree first; the rail folds to a strip after the run).** A scripted review of a real 557-item run showed
+the screen above is correct but crowded: about 14 lines of warnings sat above the tree, the rail kept a fifth of the width after the run, and
+the Write bar floated over the last warning. Three rules replace the earlier ones where they differ. (1) **The tree comes first.** The
+integrity-warnings card shows only its header line (the gate sentence and the summary) on every width, closed by default for a job awaiting
+review; the toolbar chips are the entry points into each group, and "Accept N" stays reachable inside the opened group. This supersedes "the
+warnings card is not hidden to hit a number": it is no longer hidden, it is folded, and the work is one click away. (2) **After the run the
+rail is the horizontal strip** (the older rule above, "the rail folds away"), in one column: the vertical rail beside the view is for the
+running job only. (3) **The review view is a flex column of fixed height.** The tree takes the remaining height and the Write bar is its
+normal last item, not a floating panel, so nothing sits over the tabs or the last warning. The toolbar's main row is the filter chips;
+"All actions" and "Exclude/Include all" are in one "More" menu. A nested Epic is a quiet informational chip (neutral, no row tint): nesting an
+Epic under an Epic is valid, so it must not look like an error. The review screen states review status once (§11.6) and the destination once
+(the header bar); the Write bar shows only the count.
+
 **Open (§18.1):** the banner's visible waiting note and liveness dot are absent while another phase is being read; one Sections list merging `SectionStepList`, `DocumentOutline` and `SectionResults` (the three still
 exist); checking Analyze in the production configuration: with `LIVE_PROGRESS` off (the local default; the `/run-map` route then answers 404
 by design) Analyze shows the banner and the waiting state, and small documents emit no section narrations; with it on (the
 production chart sets it) the live panel (document metrics, "Now" card, outline) fills Analyze. The phase view has not yet
 been exercised in a browser with it on;
 per-phase notices in a phase's own summary; removing `MiniProgress`.
+
+**Running screen, revised 2026-11-19 (one statement per fact).** (1) The safety line ("Nothing is written to Azure DevOps until you approve")
+is stated once, by `SafetyLine`; the rail's steps carry a short pending line ("Your review of the proposed items", "Writes approved items.
+Cannot be undone.") and never repeat it. (2) The "Not grounded against your knowledge base" pill shows only while the step really retrieves
+(or the event says it was grounded); it is absent on Parse. (3) The percent appears **once**, in the header; the line under the bar is
+step-only ("12 of 275 items in this step"). (4) A wait is one short note ("No update for 5m. Still working; you can close this page.").
+(5) Narration is plain words ("Writing requirement text, part 1 of 2 (150 items)"); the part and pass are structured fields on the event
+(`chunk_index`, `chunk_count`, `pass`), and the screen reads those first, the old text second. (6) **Progress has no long plateau.** Trace
+links and acceptance criteria report their own units (a `criteria` stage has its own share), and the quick passes (conflict detection,
+root regrouping) are worth little, so the bar moves while the slow work runs; the previous weights left it at 89% for about a fifth of a run.
 
 #### §11.3.6 — The write gate is a hard block (built 2026-11-13)
 
@@ -2787,7 +2828,7 @@ letting chat flex meant the details pane's 62–66ch measure and the chat's
 usability traded against each other on every viewport. See §11.4.2.
 
 **Reading order (built 2026-11-13).** The requirement text comes first. In the details pane: the item's own text and actions, then the
-evidence strip (file and location, and a line saying the original wording is in the source file), then one closed **Why this verdict**
+evidence strip (file and location, and a line saying the original wording is in the source file), then one closed **How this was scored**
 disclosure holding the weakest area, the scoring note and the KB references, and since 2026-11-13 the whole Quality panel: the gauge
 (its category rows flat, each with its definition and fixes shown, so there is no second level of open and close), the on-demand
 "Why this score?" explanation and the "Matches source wording" line. Its closed line says "Quality N of 100" (", from before your
@@ -2877,6 +2918,10 @@ of the work item.
 per-category rows, and their explanations — is specified in §11.4.3, which
 supersedes the sentence above on composition only. The gate rule in this section
 is unchanged by it.*
+
+**Superseded in part, 2026-11-19.** Epics and Features are no longer scored by the pipeline (the model scored each from its own AI summary
+alone, so every Feature came out the same). The gauge rule above stays, and is now backed by the data: an Epic or Feature has no score and no
+quality or grounding flag. See §11.4.5.
 
 #### §11.4.2 — The chat panel's model selector is permanent — and is built
 
@@ -3152,6 +3197,10 @@ and is absent, not disabled, when the job is closed (§16.22).
 
 #### §11.4.4 — Re-check quality after an edit
 
+**Amended 2026-11-20 (§11.4.6).** After a reviewer accepts an assistant's suggestion for a scored Requirement, one re-score runs automatically, and an
+Undo restores the previous text with its stored scores. Every other text edit still goes stale and waits for "Re-check quality".
+
+
 **This closes the gap logged in §11.4.2 and removes the §14 exclusion.** It is
 **not a frontend change.** It requires a new ingestion route and a new
 orchestrator route, and it has a prerequisite that is easy to miss (below). Any
@@ -3295,6 +3344,87 @@ deviations from this list's original text.**
   to a job that is still running, where nothing is editable.
 
 ---
+
+#### §11.4.5 — The redesigned dialog: issues first, the item beside its source, the assistant on request (2026-11-19)
+
+This section **supersedes** the two-pane structure, the details stack order, the permanent chat column and the shortcut hint bar described
+above where they differ. §11.4.0 (one mounted pane) still holds, now for the assistant drawer. §11.4.1 now covers Epics and Features
+completely (below).
+
+```
+[▲▼] REQ 1.1.2.2  Title (dir=auto)…   New   [Edit E] [Ask C] [keyboard] [×]
+3 of 17 · Low quality score.            [Exclude and next X] [Reviewed and next A]   (only when in the queue)
+Issues: one line each, absent when clean ─────────────────────────────────────────
+ ! Missing value in the source: TBD. Ask the author.                         Why >
+ ! Quality 42 of 100. Weakest: testability (35).        [Re-check]           Why >
+───────────────────────────────────────┬─────────────────────────────────────────
+ PROPOSED (what lands in Azure DevOps) │ SOURCE  spec.docx > 3.2 Power > p. 14
+ text, then figure / table, criteria   │ the quote from the document
+───────────────────────────────────────┴─────────────────────────────────────────
+ Parent · Type · Trace links · To discuss  (one plain list, no cards)   [+ Add child item]
+```
+
+- **The item text, its figure or table and the source quote are visible together, above the fold.** Medium width: the source sits under the
+  text. Phone: one column (Issues, Proposed, figures, Source, details); Ask swaps the body for the assistant with a "Back to item" button.
+- **Issues come first, one plain sentence each**, in the order fix, review, info, with a "Why" disclosure for the detail. The list is absent
+  when there is nothing to say. What was a verdict line, a "Check:" line, a read-only paragraph, a needs-input card and a flag row is one
+  issue each. Copy is in §12.
+- **The assistant is a drawer.** The Ask button or the **C** key opens a 380 px column on the right; `ChatPanel` is mounted only while it is open,
+  so stepping through items fetches no chat history. Esc or C closes it, focus goes to the composer on open and back to Ask on close. C
+  matches by letter and by key code (Hebrew layouts), and does nothing while typing.
+- **Suggestions come from the item and what is nested under it.** At most three, from its real weak categories (below the weak score, or named by a quality issue),
+  then "Suggest a better title". An Epic or Feature is judged from the items nested directly under it, which the chat is given: it is offered "Restate it from its items" and "Check its items belong together" (only when something is nested there), and a stale score gets only the title suggestion. No generic list; no fake "I have read this"
+  turn.
+- **The shortcut hint bar is gone.** Each action carries `aria-keyshortcuts` and a visible key hint; a keyboard button opens a popover that
+  lists J, K, A, R, X, U, E and C.
+- **Epic and Feature.** Description, one line ("Covers 6 features, 41 requirements."), the source, the details list. **No quality, no
+  grounding, no score, no "aren't scored" sentence anywhere**: they are not scored (pipeline, same change), and a flag that depends on a
+  score or on grounding is Requirement-only everywhere (the tree, the queue, the dialog and the server's summary share one rule).
+- Category names are shown in words ("Capability clarity"), never as the stored key.
+
+#### §11.4.6 — Reviewing an assistant's suggestion next to the original (2026-11-20)
+
+A suggested rewrite used to appear only as a small card in the 380 px chat drawer: the suggested title and text, one line "Predicted score: 45 → 78",
+and no sign of the original. The reviewer could not see what changed, and the numbers hid on the far side of the drawer. This section replaces that card.
+
+**Where it lives.** The comparison is shown in the dialog body, in place of the Proposed column ("review mode"), with the Source column beside it, so
+the first check ("is it still faithful to the source?") needs no scrolling. The chat drawer keeps only a summary card (the predicted grade, a warning
+count and a "Review change" button). The proposal and its check belong to the dialog, not to `ChatPanel`, so they survive closing the drawer and
+stepping to another item (§11.4.0 still unmounts `ChatPanel` with the drawer). Below `lg` review mode replaces the body, with a "Back to chat" button.
+Below 56rem of dialog width the Source drops under the comparison.
+
+**The comparison.** The title is always two lines, "Was" and "Now". The description is compared by words, never by characters: first the text is split
+into blocks (paragraphs, list items, trusted `<table>` blocks), then the words inside matching blocks are compared as Unicode words (`Intl.Segmenter`),
+so a Hebrew prefix letter does not break a match; a number or an identifier is one token, so a dropped "461G" is one deletion. A table whose rows and
+columns are unchanged is compared cell by cell, otherwise both versions are shown. Deletions are `<del>` (strikethrough and a red tint), insertions are
+`<ins>` (underline and a green tint), each with hidden "deleted" / "inserted" text, and a summary line says how many changes there are. Marks isolate
+their text direction, and each block sets its own (`dir="auto"`). The "Changes" view is the default when at most about 40% of the words changed; past that,
+or beyond 20 000 tokens, "Side by side" shows both versions in full and says why. The reviewer's last choice is remembered.
+
+**The grade.** Only a Requirement's description is scored, so only that has a grade; titles are not scored and Epics and Features are not scored at all
+(§11.4.1). The strip says it is a prediction, from the same scorer as the item's own score: "Predicted 45 → 78, up 33." A change of 5 or less is
+noise ("about the same"). Category rows show the changed categories (a difference above 5, at most four) as "Testability 35 → 80". States and their
+exact words: predicting, "Predicting the suggestion's score… 12 s"; late (over a minute), "Still predicting (75 s). You can apply without it; the
+score appears here if it arrives."; unavailable, "No predicted score: the scorer did not answer. The warnings below still apply."; a title-only suggestion,
+"Titles are not scored. The text is unchanged, so the score stays 45."; a stored score that differs from the comparison's own "before", "The current
+text was re-scored with the suggestion (45); its stored score is 42."; low confidence is added when the scorer says so. An Epic or Feature shows no strip.
+
+**Actions.** Accept applies the whole suggestion; its menu also offers "Title only". (There is no "Text only": a new text under an old title was never
+judged as a pair; Edit first covers custom mixes.) Applying asks first when the score is predicted to drop by more than 5, a warning says content was
+probably lost, or the check could not run ("unchecked" is not "fine"). "Edit first" opens the edit form filled with the suggestion. "To be discussed"
+parks it as before. Reject discards it. After Accept an "Applied. Undo" bar appears and **one real re-score runs
+automatically** (an amendment to §11.4.4, which re-scored only on request: this is one deliberate action, not repeated saves); the prediction is then
+replaced by the real score ("Predicted 78 · Scored 74"). Undo restores the previous text and its stored scores from a saved revision, so no fake
+re-score is needed. Keys: Ctrl/Cmd+Enter accepts and Esc leaves review mode (the suggestion stays pending); there is no new single-letter key, because
+one key overwriting text is too easy to press by accident. A suggestion that is pending when the reviewer steps to another item is kept with the
+item: the issues list says "1 suggestion waiting" with a link back.
+
+**Accessibility.** The result of the prediction is announced once through the dialog's status region ("Predicted score ready: 45 to 78"); the ticking time
+is not. Focus goes to the comparison heading when review mode opens and back to the "Review change" button when it closes. Everything reflows to one
+column, wide tables scroll inside their own region, and nothing has a fixed height (text spacing, §13).
+
+**Not built, deliberately:** accepting changes one by one, a character-level diff, a grade for a title or an Epic, accepting automatically when the
+score goes up, and synchronised scrolling.
 
 ### §11.5 — The diff-review tree: reparent, reorder, and place new items
 
@@ -3582,7 +3712,7 @@ matched. Rules:
   quote to give (the original was not kept or is gone with the job, the item has no source location or is a grouping item the pipeline added
   (`synth_`), the file is a scan that could not be re-read, or the request failed) the strip falls back to "The original wording is in the
   source file, at the location above." and says nothing worse; without a source location it says "No source location recorded." The quote
-  stays in view beside the evidence, not inside "Why this verdict".
+  stays in view beside the evidence, not inside "How this was scored".
 - **Scoring state is the details pane's to say.** Whether an item is scored, or its
   scores are stale, is said by the gauge box and its re-check action. The strip
   mentions scoring only for a fresh score: the scoring note and the weakest-area row
@@ -3827,6 +3957,10 @@ the link never lands in proxy or access logs; the server takes the user from the
   not explanation. §11.4.3 is the worked example and the strictest case, and
   records that an earlier gloss-first version of this rule was tried and
   explicitly withdrawn.
+- **Issue copy in the item dialog (§11.4.5): one plain sentence each.** No Customer ID ("Add one if the source has it"); Needs author input
+  ("Missing value in the source: TBD, XXX. Ask the author."; with no values known, "The source leaves a value open. Ask the author."); Quality
+  low ("Quality 42 of 100. Weakest: testability (35)."); Edited since scored; Not scored yet; Wording far from the source (Requirements only).
+  **Never shown:** "verdict", "grounding", a raw category key, a score or a "Check:" line on an Epic or Feature.
 - Sentence case everywhere except mode enum names and identifiers (§4).
 - **Glossary.** Say "Azure DevOps" and "work item", never "ADO" or "WI" in prose
   (`WI-12345` as an identifier is fine). The write is **Write to Azure DevOps**;
@@ -4171,7 +4305,7 @@ Append-only. Every renamed or removed token, and every closed §1.8 divergence.
 | **Numbering, 2026-11-12** | second `§11.3.2` ("The three result disclosures") → `§11.3.2b`; second `§11.2.3.c` ("Knowledge-base readiness") → `§11.2.3.f`; §13's "§0.3" → "§0, item 3" | **Closed.** Citations of "§11.2.3.c" in §16.21 and §11.2.3.d mean the estimate's computation and are unchanged. §11.1's "no §0.3 safety line" sentence quotes the mockup and is left as written. |
 | **Prescribed, not built:** §11.2.5 (step 2 layout rule) and §11.3.5 (phase-centred running screen) | new sections | **Open.** See §18.1. Written from a live run and a review of the code and guidance on 2026-11-12. |
 | **Consistency pass, 2026-11-12** | date/duration rule (§4), geometry floor (§5), soft status chips, shared disclosure and loading rules (§7), glossary (§12), three zero-tolerance guards (§15) | **Closed.** Shipped: `formatDateTime`, `Disclosure`, soft `StatusChip`, glossary applied across the UI and `docs/user-guide.md`, guards above. Sentence case; Help page 16px prose. |
-| **Review efficiency, 2026-11-13** (slice 2, part 1) | queue tier `structure` for Epics/Features (§11.5.1); X/A step to the next item, not the top; evidence strip moved below the text with a closed "Why this verdict" disclosure (§11.4); parents no longer say "Needs review: Low quality score" | `utils/reviewQueue.ts` (+ tests), `components/EvidenceStrip.tsx` (`collapsible`), `NodeDetailDialog.tsx`, `NodeDetailPanel.tsx`, `pages/JobDetail.tsx` | Not built from slice 2: the four-group filter with counts and the per-group counter (R4), plain labels/tooltips and Delete in an overflow menu (R6), status chips in the Status column (R7), Description first in Edit. The tree's own "Needs review" flag (`isFlaggedDiffEntry`) still mirrors the server and still flags a low-scored parent: changing it needs the same change in `orchestrator/.../diff-summary.ts` (server, not approved). |
+| **Review efficiency, 2026-11-13** (slice 2, part 1) | queue tier `structure` for Epics/Features (§11.5.1); X/A step to the next item, not the top; evidence strip moved below the text with a closed "How this was scored" disclosure (§11.4); parents no longer say "Needs review: Low quality score" | `utils/reviewQueue.ts` (+ tests), `components/EvidenceStrip.tsx` (`collapsible`), `NodeDetailDialog.tsx`, `NodeDetailPanel.tsx`, `pages/JobDetail.tsx` | Not built from slice 2: the four-group filter with counts and the per-group counter (R4), plain labels/tooltips and Delete in an overflow menu (R6), status chips in the Status column (R7), Description first in Edit. The tree's own "Needs review" flag (`isFlaggedDiffEntry`) still mirrors the server and still flags a low-scored parent: changing it needs the same change in `orchestrator/.../diff-summary.ts` (server, not approved). |
 | **Jobs list, 2026-11-13** (slice 3, part 1) | flat 70-row list → grouped by Needs you / day (§11.1b); short job id column; stale label; "Awaiting review" → "Diff ready" | `utils/jobGroups.ts` (+ test), `pages/JobsList.tsx` | Not built from slice 3: the failure card, banner/rail agreement (E4a), run-map polling (E6/E6a), activity-feed collapsing (E5), wizard defaults (J2); "Hide stale" toggle (slice 7, F4). |
 | **Failure cause, wizard defaults, gauge, 2026-11-13** (slice 3 part 2) | failed run's cause in plain words (§11.3.6b); wizard starts from the last job's mode/project/area path (`utils/lastJobChoices.ts`, per user, localStorage); summary line counts only open kinds; gauge criterion names wrap below `md` | `utils/failureCause.ts`, `utils/lastJobChoices.ts`, `pages/JobDetail.tsx`, `pages/NewJobWizard.tsx`, `components/CollapsibleWarnings.tsx`, `components/QualityGauge.tsx` | Not built: failed stage / what was kept / resume (plan S3, server); E4a rail mapping; KB per-user URL key and token display (slice 7). |
 | **Wizard wording, 2026-11-13** (slice 4 part 1) | re-upload warning (J3); no-headings copy matches the leveler; step 3 "This run" rail (J4); SharePoint expiry in hours (P2); breadcrumb 24 px hit area (P4); user guide: gate, groups, shortcuts, Jobs list (P3); Settings lists all seven shortcuts | `utils/previousRuns.ts`, `utils/sharePointStatus.ts`, `pages/NewJobWizard.tsx` (`RunFacts`), `components/AppShell.tsx`, `pages/Settings.tsx`, `docs/user-guide.md` | Not built: skeletons and the 300 ms delay (P2), sticky action bar on step 2 at 390 px (J5), the step-3 summary rewrite and its pluralisation (server, plan S9), the BASELINE card's \"no completed runs yet\" (server stats), estimate floor (plan S4). Stepper label \"Configure & review\" is what ships; §11.1 should say so. |
@@ -4181,7 +4315,7 @@ Append-only. Every renamed or removed token, and every closed §1.8 divergence.
 | **Write gate, 2026-11-13** (slice 1, part 1) | soft "You can still write" → hard block (§11.3.6); `Button softDisabled` (§7); iteration "hatched when unset" → "Project default" (§11.2.2, §16.9); state chip "Work item state"; job chip "Succeeded" → "Written" (§12); read-only warnings on a finished job | `utils/writeGate.ts` (+ test), `utils/warningKinds.ts` (`ackPolicy`, `countedAckLabel`), `ui/Button.tsx`, `pages/JobDetail.tsx`, `components/CollapsibleWarnings.tsx`, `WriteSummary.tsx`, `DestinationBar.tsx`, `StatusChip.tsx`, `utils/labels.ts` | UI-only: the server still accepts `confirm` with open Fix warnings (plan S1). Not yet built from slice 1: sticky write bar and tab order (W3/W4), Azure DevOps ids on rows (needs plan S2). |
 | **Review screen, 2026-11-13** (R7) | the desktop title no longer squeezed by its chips: a new item's criteria chip moves to the Status track (measured per job, one mark per cell); the title keeps `min(12rem,50%)`; the other marks wrap whole into a rem-bounded group (§5) | `components/DiffTree.tsx` (+ tests) | The row stays 40px (react-window); no new px height. Not verified in a browser (stack not rebuilt). |
 | **Write bar, 2026-11-13** (W3) | Write and Reject leave the page header for a sticky bar after the tree (§5, §11.3.6); the blocker count ticks | new `components/WriteBar.tsx`, `pages/JobDetail.tsx` (+ tests) | Reject chosen to sit beside Write in the bar (both are job-ending decisions; the header keeps only tools, or Cancel run while running). |
-| **Item dialog, 2026-11-13** | the Quality panel folds into "Why this verdict" (§11.4); Re-check / Score this item stay outside it | `components/NodeDetailPanel.tsx`, `EvidenceStrip.tsx`, `NodeDetailDialog.tsx`, `QualityGauge.tsx` (`flat`) (+ tests) | Inside the disclosure the gauge's category rows no longer open and close: definitions and fixes are always shown there (no nested disclosure). |
+| **Item dialog, 2026-11-13** | the Quality panel folds into "How this was scored" (§11.4); Re-check / Score this item stay outside it | `components/NodeDetailPanel.tsx`, `EvidenceStrip.tsx`, `NodeDetailDialog.tsx`, `QualityGauge.tsx` (`flat`) (+ tests) | Inside the disclosure the gauge's category rows no longer open and close: definitions and fixes are always shown there (no nested disclosure). |
 | **Write gate, 2026-11-13** (part 2) | `kindProgress` no longer completes a per-item Fix kind through acknowledgement (§11.3.6); one `acknowledgementClears` rule read by the queue, the gate, the warning rows and the summary | `utils/warningKinds.ts`, `utils/reviewQueue.ts` (+ tests in both, `writeGate.test.ts`, `CollapsibleWarnings.test.tsx`) | Covers records acknowledged before the gate existed. `writeSummary.countWarningsForWrite` still counts such records as handled (advisory text only; the gate blocks first). |
 | **Slice 6, 2026-11-13** (part 2) | job-state tokens with icon and word (§1.1, §2, §3); motion aliases (§1.7); disclosure fade, phase advance, count tick, skeleton crossfade (§8.3); research motion rules and the text-spacing guard (§15) | `index.css`, `components/StatusChip.tsx`, `DestinationBar.tsx`, `jobPhase/PhaseRail.tsx`, `ui/Disclosure.tsx`, `ui/Skeleton.tsx`, `pages/JobDetail.tsx`, `pages/JobsList.tsx`, `design/motionContract.test.ts`, new `design/textSpacing.test.tsx` | `--color-mark-source` not added: the evidence strip shows no source sentence (only offsets are stored), so it has no consumer. New-event fade (#8) was already built (§8.3 activity feed row). Real layout under text-spacing overrides was not measured. |
 | `--color-shimmer-highlight`, `@keyframes shimmer` | **removed** | Only `ui/Skeleton.tsx` used them; the skeleton is a static `bg-hairline` block now (research #7). |
@@ -4246,3 +4380,7 @@ code, then moving its row up into §18.
 | A mark wider than the title group drops out whole | `components/DiffTree.tsx` (the `title-trailing` group has a zero-width, line-high `before:` placeholder pulled back over the gap, so even its first mark has a line to wrap away from) | Found by the user in a screenshot, then reproduced live at 1440 (tree 856 px): on the excluded "Product Requirements Document" row the "No Customer ID" chip (106 px) was in a group only 88 px wide and drawn 18 px outside its left edge, cut to "o Customer ID". The group's rule is that a mark that does not fit wraps onto a cut-away second line and drops out whole, but a first item cannot wrap, and `justify-end` pushed the overflow left. After the fix the chip is wholly below the clip edge at 1440 and fully shown at 1600 (group 106 px); all 8 marks of the plain tree stay whole at both. The title keeps its 12 rem minimum (R7), so at 1440 the chip is not shown on that row; the Details dialog has it. Test: `DiffTree.test.tsx` (classes; the geometry was measured live). |
 | Dialog box keeps a drawable focus ring | `ui/Dialog.tsx` (`focus-visible:outline-solid` beside `focus-visible:outline-2`) | The last of F2's pattern, found while fixing F2 and left out then because it is inert today: live, focus lands on the dialog's first button, and the dialog box was not focus-visible. Done for consistency with §7 ("never `focus:outline-none` without a replacement ring"): if a dialog with nothing focusable inside ever takes focus from the keyboard, its ring now draws. Test: `ui/Dialog.test.tsx` (a class check). |
 | Write bar floats as its own panel, with a summary and its reason in text | `components/WriteBar.tsx` (inset `mx-2 md:mx-4` (full width on a phone), full `hairline-strong` border, `rounded-md`, `shadow-dock`, `sticky bottom-0`; a left zone with "N included · M left out", "to <area path>", the blocker count, and the reason Write is unavailable as a text line linked by `aria-describedby`, not only a tooltip; phone margin clears the safe area), `index.css` (`--shadow-dock`), `pages/JobDetail.tsx` (`writeCounts` from the diff as it stands; the review grid has no `mb-4` while the bar is present) | The user's screenshot: the bar was `rounded-t-md border border-b-0` in the same white and width as the tree card, with no shadow, so it read as that card's footer. Opus reviewed it (read-only). A flat docked bar (top border, upward shadow, page padding dropped with `:has()`) was built first and measured: it fixed a 36 px strip under the bar but still felt blended; tinted (`surface-alt`) and canvas-coloured variants were tried live and were indistinguishable from it; a dark bar separated it but was rejected. Opus's redesign, a floating dock inset on all four sides, was prototyped live before building and is the first that reads as a separate surface. Final geometry: `bottom-0` with `main`'s own padding (a 20 px offset on top of that gave a 40 px gap and overlapped the last rows at the end of the scroll); negative margins on the bar or its parents do not move a sticky box inside its scroll container's padding. The loading fade was checked and needs no change. Not done, found by the review: the count's `AnimatedNumber` inside the `aria-describedby` target may drop its number from the computed description; a "Saving…" line while `busy`; the bar sits inside the phase tabpanel; the same recipe at `NewJobWizard.tsx` and `NodeDetailPanel.tsx`. Tests: `WriteBar.test.tsx` (new), `JobDetail.test.tsx`, `AppShell.test.tsx`. |
+| Epics and Features scored by the pipeline (`_score_epics_and_features`) | removed 2026-11-19 | Every Feature scored exactly 45 from its own AI summary, and the screen said "Features aren't scored". Epic/Feature `qualityScore` and `categoryScores` stay null. Quality and grounding flags are Requirement-only (`utils/diffFlagging.ts`, `diff-summary.ts`). **Do not restore.** |
+| Item dialog: permanent chat column, shortcut hint bar, `EvidenceStrip` with a verdict, `Scope` card for parents, generic "I have read" assistant opening | issues list, `SourcePane`, assistant drawer (§11.4.5) | `components/NodeDetailDialog.tsx`, `NodeDetailPanel.tsx`, `EvidenceStrip.tsx` (renamed `SourcePane.tsx`), `ChatPanel.tsx`, `ProposalCard.tsx`. |
+| Review screen: warnings card always open, vertical rail after the run, floating Write bar, red "Nested Epic" | folded warnings, horizontal strip, flex column, quiet chip (§11.3.5) | `CollapsibleWarnings.tsx`, `jobDetailLayout.ts`, `WriteBar.tsx`, `DiffTree.tsx`, `JobDetail.tsx`. |
+| The assistant's proposal card in the chat drawer (suggested text only, one "Predicted score" line) | review mode in the dialog body, beside the Source (§11.4.6) | `components/ChatPanel.tsx` (summary only), new `components/ProposalReview.tsx` and `hooks/useProposalReview.ts`, `components/NodeDetailDialog.tsx`. |

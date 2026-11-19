@@ -222,8 +222,8 @@ def _store_document(
     # extraction). `getattr` duck-typing (not a required Protocol method)
     # since checklist_client is untyped `object` here and existing test
     # doubles implementing only extract_quality_checklist must keep working
-    # unchanged -- same optional-capability convention llm_leveling.py's
-    # _score_epics_and_features already uses for scoring_client.
+    # unchanged -- same optional-capability convention llm_leveling.py uses
+    # for the late-added methods of its clients.
     quality_checklist_definitions: dict[str, str] | None = None
     if checklist_client is not None:
         try:

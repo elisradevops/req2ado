@@ -49,10 +49,10 @@ describe('NodeDetailPanel proposal card', () => {
     expect(onSetProposalAccepted).toHaveBeenCalledWith('e1', false);
   });
 
-  it('shows a needs-input note as information only, with no accept button', () => {
+  it('shows a needs-input note as one issue that names the missing value, with no accept button', () => {
     renderPanel({ ...base, proposal: { kind: 'needs-input', html: NEEDS_INPUT_HTML } });
-    expect(screen.getByText('Needs author input')).toBeInTheDocument();
-    expect(screen.getByText(/unresolved value/i)).toBeInTheDocument();
+    expect(screen.getByTestId('issue-needs-input')).toBeInTheDocument();
+    expect(screen.queryByText('Needs author input')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /accept/i })).not.toBeInTheDocument();
   });
 
@@ -154,5 +154,13 @@ describe('NodeDetailPanel written entry', () => {
     renderPanel(accepted, { written: false, onSetProposalAccepted: vi.fn(), onSave: vi.fn() });
     expect(screen.getByText(/accepted — will be written to azure devops with this item/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /undo/i })).toBeInTheDocument();
+  });
+});
+
+describe('NodeDetailPanel marks the values a needs-input note names', () => {
+  it('marks them in the item text', () => {
+    const html = '<div data-r2a="needs-input"><p><b>Needs author input</b></p><p>Unresolved value(s) in this requirement: <span data-missing-value="N">N</span>. Acceptance criteria were not proposed.</p></div>';
+    renderPanel({ ...base, description: 'The unit shall boot within N ms.', proposal: { kind: 'needs-input', html } });
+    expect(screen.getAllByText('N').some((el) => el.tagName === 'MARK')).toBe(true);
   });
 });

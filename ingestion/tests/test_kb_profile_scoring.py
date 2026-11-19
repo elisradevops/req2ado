@@ -44,9 +44,6 @@ class CapturingScorer:
             for node_id in descriptions_by_node_id
         }
 
-    def score_epics_and_features_for_document(self, *args, **kwargs):
-        return {}
-
 
 def _doc() -> CanonicalDoc:
     ref = SourceRef(document_path="x.txt", start_offset=0, end_offset=10)

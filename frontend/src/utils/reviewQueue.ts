@@ -81,13 +81,28 @@ export function riskTier(entry: ReviewQueueEntry, kindGroups: WarningKindGroup[]
 function tierOf(entry: ReviewQueueEntry, blockingIds: ReadonlySet<string>, reviewIds: ReadonlySet<string>): RiskTier {
   if (blockingIds.has(entry.localId)) return 'blocking';
   if (isStructureEntry(entry)) {
-    // A parent keeps its real signals (a review warning, low grounding: a sign of invention). Everything about its score is ignored,
-    // including the model's "low confidence", which is confidence in that score.
-    return reviewIds.has(entry.localId) || isFlaggedDiffEntry({ ...entry, qualityScore: null, qualityConfidence: null }) ? 'flagged' : 'structure';
+    // A parent keeps its review warnings only; a score or word overlap is never a reason for it (diffFlagging's one rule).
+    return reviewIds.has(entry.localId) ? 'flagged' : 'structure';
   }
   if (isLowQualityEntry(entry)) return 'low_score';
   if (isFlaggedDiffEntry(entry) || reviewIds.has(entry.localId)) return 'flagged';
   return 'clean';
+}
+
+/**
+ * How many of a kind's items still need a check once that kind is accepted. An accepted kind stops ranking its items, so each falls into the
+ * tier its own other signals give it (a low score, a review warning); this counts the ones that are not clean. Said after an acceptance, so the
+ * Check count growing is not a surprise.
+ */
+export function countStillToCheck<T extends ReviewQueueEntry>(entries: T[], kindGroups: WarningKindGroup[], kind: string): number {
+  const accepted = kindGroups.map((group) =>
+    group.kind === kind ? { ...group, records: group.records.map((record) => ({ ...record, acknowledged: true })) } : group,
+  );
+  const ids = new Set(kindGroups.find((group) => group.kind === kind)?.nodeIds ?? []);
+  return entries.filter((entry) => ids.has(entry.localId) && !entry.excluded).filter((entry) => {
+    const tier = riskTier(entry, accepted);
+    return tier === 'blocking' || tier === 'low_score' || tier === 'flagged';
+  }).length;
 }
 
 // Whether an entry is excluded itself or sits under an excluded ancestor (confirm drops those too). `cache` lets a caller share results across many entries.
@@ -256,8 +271,7 @@ export function riskReason(
     case 'low_score':
       return { title: 'Low quality score', todo: check, group: 'review' };
     case 'flagged': {
-      // A parent's score, and the model's confidence in it, are never a reason (the tier ignores them too).
-      const flagReason = flaggedDiffEntryReason(isStructureEntry(entry) ? { ...entry, qualityScore: null, qualityConfidence: null } : entry);
+      const flagReason = flaggedDiffEntryReason(entry);
       const kind = firstKind('review');
       return {
         title: flagReason ?? kind?.meta.title ?? 'Flagged for review',

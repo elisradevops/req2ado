@@ -9,6 +9,7 @@ import {
   NotFoundException,
   Param,
   Patch,
+  Put,
   PayloadTooLargeException,
   Post,
   Query,
@@ -90,6 +91,8 @@ export const MAX_SE_COVERAGE_REF_LENGTH = 128;
 // (a proposed rewrite can carry a table) but bounds what one entry adds to the Job.dryRunDiff JSON.
 export const MAX_DISCUSSION_TITLE_LENGTH = 255;
 export const MAX_DISCUSSION_DESCRIPTION_LENGTH = 20000;
+// A suggested description is a whole rewrite of an item (it can hold a table), so it is allowed more room than a Discussion note.
+const MAX_SUGGESTION_DESCRIPTION_LENGTH = 200_000;
 
 // Requirement classification tags, unlike Customer ID, ARE validated against
 // a closed vocabulary -- see VALID_REQUIREMENT_TAGS's own doc comment for
@@ -672,7 +675,12 @@ export class JobsController {
     @Body('customerId') customerId: string | null | undefined,
     @Body('tags') tags: string[] | undefined,
     @Body('seCoverageRef') seCoverageRef: string | null | undefined,
+    // Applying an assistant's suggestion: keep what it replaces for Undo, and mark that suggestion accepted.
+    @Body('snapshot') snapshot?: boolean,
+    @Body('suggestionId') suggestionId?: string,
   ): Promise<{ dryRunDiff: unknown }> {
+    if (snapshot !== undefined && typeof snapshot !== 'boolean') throw new BadRequestException('snapshot must be a boolean');
+    if (suggestionId !== undefined && typeof suggestionId !== 'string') throw new BadRequestException('suggestionId must be a string');
     const { writtenLocalIds } = await this.ownedJob(id, user);
     // Same trim-then-null-if-blank convention the wizard's own (now-removed)
     // job-level Customer ID field used -- undefined (field omitted) leaves
@@ -719,7 +727,59 @@ export class JobsController {
       customerId: trimmedCustomerId,
       tags,
       seCoverageRef: trimmedSeCoverageRef,
+      ...(snapshot === true ? { snapshot: true } : {}),
+      ...(suggestionId ? { suggestionId } : {}),
     });
+    return { dryRunDiff: decorateStoredDiff(dryRunDiff, writtenLocalIds) };
+  }
+
+  /** Keeps the assistant's newest suggestion with the item (DESIGN.md §11.4.6), so it survives closing the chat and stepping to another item. */
+  @Put(':id/diff/:localId/suggestion')
+  async setSuggestion(
+    @Param('id') id: string,
+    @Param('localId') localId: string,
+    @CurrentUser() user: SessionUser,
+    @Body('proposedTitle') proposedTitle: string | null | undefined,
+    @Body('proposedDescription') proposedDescription: string | null | undefined,
+  ): Promise<{ dryRunDiff: unknown }> {
+    if (proposedTitle != null && typeof proposedTitle !== 'string') throw new BadRequestException('proposedTitle must be a string');
+    if (proposedDescription != null && typeof proposedDescription !== 'string') throw new BadRequestException('proposedDescription must be a string');
+    if (proposedTitle && proposedTitle.length > MAX_DISCUSSION_TITLE_LENGTH) {
+      throw new BadRequestException(`proposedTitle exceeds the ${MAX_DISCUSSION_TITLE_LENGTH}-character limit`);
+    }
+    if (proposedDescription && proposedDescription.length > MAX_SUGGESTION_DESCRIPTION_LENGTH) {
+      throw new BadRequestException(`proposedDescription exceeds the ${MAX_SUGGESTION_DESCRIPTION_LENGTH}-character limit`);
+    }
+    const { writtenLocalIds } = await this.ownedJob(id, user);
+    const dryRunDiff = await this.jobsService.setSuggestion(id, localId, { proposedTitle, proposedDescription });
+    return { dryRunDiff: decorateStoredDiff(dryRunDiff, writtenLocalIds) };
+  }
+
+  /** Records that the reviewer rejected the suggestion or parked it in the Discussion. (An accept is recorded by the edit that applies it.) */
+  @Patch(':id/diff/:localId/suggestion')
+  async decideSuggestion(
+    @Param('id') id: string,
+    @Param('localId') localId: string,
+    @CurrentUser() user: SessionUser,
+    @Body('decision') decision: string | undefined,
+    @Body('suggestionId') suggestionId: string | undefined,
+  ): Promise<{ dryRunDiff: unknown }> {
+    if (decision !== 'rejected' && decision !== 'discussed') throw new BadRequestException("decision must be 'rejected' or 'discussed'");
+    if (suggestionId !== undefined && typeof suggestionId !== 'string') throw new BadRequestException('suggestionId must be a string');
+    const { writtenLocalIds } = await this.ownedJob(id, user);
+    const dryRunDiff = await this.jobsService.decideSuggestion(id, localId, decision, suggestionId);
+    return { dryRunDiff: decorateStoredDiff(dryRunDiff, writtenLocalIds) };
+  }
+
+  /** Undo of an applied suggestion: the text and the scores it replaced come back. Refused (409) once the item was edited since. */
+  @Post(':id/diff/:localId/revert')
+  async revertDiffEntry(
+    @Param('id') id: string,
+    @Param('localId') localId: string,
+    @CurrentUser() user: SessionUser,
+  ): Promise<{ dryRunDiff: unknown }> {
+    const { writtenLocalIds } = await this.ownedJob(id, user);
+    const dryRunDiff = await this.jobsService.revertDiffEntry(id, localId);
     return { dryRunDiff: decorateStoredDiff(dryRunDiff, writtenLocalIds) };
   }
 

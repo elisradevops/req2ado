@@ -3720,11 +3720,7 @@ def test_build_survey_tree_scores_only_requirement_type_nodes_when_a_scoring_cli
     # INCOSE/ISO quality criteria describe atomic testable "shall"
     # statements, not Epic/Feature groupings, so score_requirements_for_
     # document (this test's own FakeScoringClient) is scoped to Requirement
-    # nodes only. n0 stays unscored here specifically because
-    # FakeScoringClient doesn't implement score_epics_and_features_for_
-    # document (Epic/Feature review is a SEPARATE, optional capability --
-    # see test_build_survey_tree_scores_epic_and_feature_nodes_via_the_
-    # separate_rubric below for the case where it IS implemented).
+    # nodes only; n0 (the Feature) is never scored.
     scoring_client = FakeScoringClient()
     tree = build_survey_tree(_small_doc(), FakeSectionAnalysisClient(), scoring_client)
 
@@ -3735,161 +3731,35 @@ def test_build_survey_tree_scores_only_requirement_type_nodes_when_a_scoring_cli
     # batched call covering exactly the real requirement nodes".
     assert set(scoring_client.calls[0].keys()) - {_CANARY_NODE_ID} == {"n1"}
     by_id = {node.local_id: node for node in tree.nodes}
-    assert (
-        by_id["n0"].quality_score is None
-    )  # no score_epics_and_features_for_document on this double
+    assert by_id["n0"].quality_score is None  # a Feature is never scored
     assert by_id["n1"].quality_score == 90
     assert by_id["n1"].quality_issues == []
 
 
-def test_build_survey_tree_scores_epic_and_feature_nodes_via_the_separate_rubric() -> None:
-    # Confirmed real feature (CMMI guidance): Epic/Feature get their OWN
-    # quality review (scope coherence / decomposability), separate from
-    # Requirement's EARS/INCOSE wording rubric -- via score_epics_and_
-    # features_for_document, an optional capability on the scoring client
-    # (duck-typed, not every scoring_client needs to implement it).
-    class _FullScoringClient(FakeScoringClient):
-        def __init__(self) -> None:
-            super().__init__()
-            self.epic_feature_calls: list[dict] = []
-
-        def score_epics_and_features_for_document(self, nodes_by_id, user_id=None):
-            self.epic_feature_calls.append(nodes_by_id)
-            return {
-                node_id: {
-                    "score": 77,
-                    "categoryScores": {"scopeCoherence": 70, "outcomeClarity": 80},
-                }
-                for node_id in nodes_by_id
-            }
-
-    scoring_client = _FullScoringClient()
-    tree = build_survey_tree(_small_doc(), FakeSectionAnalysisClient(), scoring_client)
-
-    assert len(scoring_client.epic_feature_calls) == 1
-    assert set(scoring_client.epic_feature_calls[0].keys()) == {"n0"}  # only the Feature node
-    assert scoring_client.epic_feature_calls[0]["n0"] == {
-        "type": "Feature",
-        "text": "The system shall handle: Display",
-    }
-    by_id = {node.local_id: node for node in tree.nodes}
-    assert by_id["n0"].quality_score == 77
-    assert by_id["n0"].quality_category_scores == {"scopeCoherence": 70, "outcomeClarity": 80}
-    assert by_id["n0"].quality_issues == []  # no issues vocabulary for Epic/Feature review
-    # Requirement scoring (the separate rubric) is untouched.
-    assert by_id["n1"].quality_score == 90
-
-
-def test_build_survey_tree_excludes_a_synthesized_bridge_feature_from_epic_feature_scoring() -> (
-    None
-):
-    # A Feature synthesized by _repair_requirement_hierarchy to hold
-    # otherwise-orphaned Requirements was never a real authorial decision --
-    # scoring it against scopeCoherence/capabilityClarity would produce a
-    # guaranteed-low, misleading score. It must not appear in the
-    # score_epics_and_features_for_document call at all.
-    class _FullScoringClient(FakeScoringClient):
-        def __init__(self) -> None:
-            super().__init__()
-            self.epic_feature_calls: list[dict] = []
-
-        def score_epics_and_features_for_document(self, nodes_by_id, user_id=None):
-            self.epic_feature_calls.append(nodes_by_id)
-            return {node_id: {"score": 50, "categoryScores": {}} for node_id in nodes_by_id}
-
+def test_build_survey_tree_a_synthesized_bridge_feature_has_no_score_and_no_customer_id() -> None:
+    # A Feature synthesized by _repair_requirement_hierarchy to hold otherwise-orphaned Requirements was never a
+    # real authorial decision: it carries no score, and (like every non-Requirement) no customer_id, even though it
+    # is built FROM a Requirement that might have one (see ensure_bridge_feature in root_regrouping.py).
     fake = FakeSectionAnalysisClient(
         nodes=[
-            {
-                "temp_id": "n0",
-                "type": "Requirement",
-                "parent_temp_id": None,
-                "text": "Shall do X.",
-                "tags": [],
-            },
-            {
-                "temp_id": "n1",
-                "type": "Requirement",
-                "parent_temp_id": None,
-                "text": "Shall do Y.",
-                "tags": [],
-            },
+            {"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "Shall do X.", "tags": []},
+            {"temp_id": "n1", "type": "Requirement", "parent_temp_id": None, "text": "Shall do Y.", "tags": []},
         ]
     )
-    scoring_client = _FullScoringClient()
-    tree = build_survey_tree(_small_doc(), fake, scoring_client)
+    tree = build_survey_tree(_small_doc(), fake, FakeScoringClient())
 
     synthesized = [n for n in tree.nodes if n.type == WorkItemType.FEATURE]
     assert len(synthesized) == 1
     assert synthesized[0].local_id.endswith("synth_feature")
-    # The scoring call fired for zero nodes (no real Epic/Feature exists in
-    # this fixture, only the synthesized bridge, which is excluded) --
-    # so score_epics_and_features_for_document is never even called.
-    assert scoring_client.epic_feature_calls == []
     assert synthesized[0].quality_score is None
-    # A synthesized bridge Feature never carries a customer_id, even though
-    # it's built FROM a Requirement that (in principle) might have one --
-    # only Requirement nodes ever do (see ensure_bridge_feature's own fix
-    # in root_regrouping.py).
     assert synthesized[0].customer_id is None
-
-
-def test_score_epics_and_features_excludes_a_per_epic_bridge_feature() -> None:
-    # Regression: the deterministic-path reparent fix (Phase 1) changed a
-    # per-Epic bridge Feature's local_id from the shared
-    # "..._synth_feature" to "..._synth_feature_{epic_local_id}" (see
-    # ensure_bridge_feature) so each Epic gets its OWN bridge instead of
-    # sharing one document-global bridge -- but the scoring-exclusion
-    # check here originally used `.endswith("synth_feature")`, which no
-    # longer matches the per-Epic variant (it ends with the epic's own
-    # id, not the literal string "synth_feature"). Confirmed this would
-    # have silently sent every per-Epic bridge Feature to real Epic/
-    # Feature quality review, scoring a mechanically-inserted node as if
-    # it were a real authorial decision.
-    from app.leveling.llm_leveling import _score_epics_and_features
-
-    class _RecordingScoringClient:
-        def __init__(self) -> None:
-            self.calls: list[dict] = []
-
-        def score_epics_and_features_for_document(self, nodes_by_id, user_id=None):
-            self.calls.append(nodes_by_id)
-            return {node_id: {"score": 50, "categoryScores": {}} for node_id in nodes_by_id}
-
-    epic = WorkItemNode(
-        local_id="det0_h1",
-        type=WorkItemType.EPIC,
-        parent_local_id=None,
-        title="Epic A",
-        description="Epic A",
-        source_ref=_sr("x.docx"),
-        mode=WorkItemMode.SURVEY,
-    )
-    per_epic_bridge = WorkItemNode(
-        local_id="det0_synth_feature_det0_h1",
-        type=WorkItemType.FEATURE,
-        parent_local_id="det0_h1",
-        title="(auto-grouped) ...",
-        description="Auto-inserted grouping Feature -- ...",
-        source_ref=_sr("x.docx"),
-        mode=WorkItemMode.SURVEY,
-    )
-    scoring_client = _RecordingScoringClient()
-    warnings: list[str] = []
-
-    _score_epics_and_features([epic, per_epic_bridge], scoring_client, warnings, None, None, 0, 0)
-
-    assert len(scoring_client.calls) == 1
-    assert "det0_synth_feature_det0_h1" not in scoring_client.calls[0]
-    assert per_epic_bridge.quality_score is None
 
 
 def test_build_survey_tree_requirement_scoring_failure_is_caught_and_warned() -> None:
     # Regression: a real job (ba8c26d1-...) lost 45+ minutes of prior
     # parse/tree-build/title-tag/synthesis work to a single transient 500
     # from the LLM backend inside _score_all_requirements, which had no
-    # fail-open protection -- unlike its sibling _score_epics_and_features
-    # (see test_build_survey_tree_epic_feature_scoring_failure_is_caught_and_warned
-    # immediately below). Requirement quality scoring is an enhancement on
+    # fail-open protection. Requirement quality scoring is an enhancement on
     # top of an already-built tree, never a dependency of its correctness.
     class _RaisingRequirementScoringClient(FakeScoringClient):
         def score_requirements_for_document(
@@ -3930,45 +3800,6 @@ def test_build_survey_tree_requirement_scoring_failure_fires_chunk_warning() -> 
         _small_doc(),
         FakeSectionAnalysisClient(),
         _RaisingRequirementScoringClient(),
-        progress_callback=fired.append,
-    )
-
-    chunk_warnings = [p for p in fired if p.phase == "chunk_warning"]
-    assert len(chunk_warnings) == 1
-    assert any(chunk_warnings[0].warning_message == w.raw for w in tree.warnings)
-
-
-def test_build_survey_tree_epic_feature_scoring_is_a_noop_without_scoring_client() -> None:
-    tree = build_survey_tree(_small_doc(), FakeSectionAnalysisClient())
-    by_id = {node.local_id: node for node in tree.nodes}
-    assert by_id["n0"].quality_score is None
-    assert by_id["n1"].quality_score is None
-
-
-def test_build_survey_tree_epic_feature_scoring_failure_is_caught_and_warned() -> None:
-    class _RaisingEpicFeatureClient(FakeScoringClient):
-        def score_epics_and_features_for_document(self, nodes_by_id, user_id=None):
-            raise ValueError("boom")
-
-    scoring_client = _RaisingEpicFeatureClient()
-    tree = build_survey_tree(_small_doc(), FakeSectionAnalysisClient(), scoring_client)
-
-    by_id = {node.local_id: node for node in tree.nodes}
-    assert by_id["n0"].quality_score is None  # failed -- but the job itself did not fail
-    assert by_id["n1"].quality_score == 90  # Requirement scoring, a separate call, is unaffected
-    assert any("Epic/Feature quality scoring failed" in w.raw for w in tree.warnings)
-
-
-def test_build_survey_tree_epic_feature_scoring_failure_fires_chunk_warning() -> None:
-    class _RaisingEpicFeatureClient(FakeScoringClient):
-        def score_epics_and_features_for_document(self, nodes_by_id, user_id=None):
-            raise ValueError("boom")
-
-    fired: list[LevelingProgress] = []
-    tree = build_survey_tree(
-        _small_doc(),
-        FakeSectionAnalysisClient(),
-        _RaisingEpicFeatureClient(),
         progress_callback=fired.append,
     )
 
@@ -4034,32 +3865,6 @@ def test_apply_quality_scores_inconsistent_categories_fires_chunk_warning() -> N
     chunk_warnings = [p for p in fired if p.phase == "chunk_warning"]
     assert len(chunk_warnings) == 1
     assert "2 different sets of category names" in chunk_warnings[0].warning_message
-
-
-def test_build_survey_tree_captures_the_raw_response_when_epic_feature_scoring_fails() -> None:
-    class _RaisingEpicFeatureClient(FakeScoringClient):
-        def score_epics_and_features_for_document(self, nodes_by_id, user_id=None):
-            raise ValueError("boom")
-
-    class _FakeDebugCapture:
-        def __init__(self) -> None:
-            self.calls: list[tuple[str, str, str]] = []
-
-        def capture(self, kind: str, identifier: str, raw_response: str) -> None:
-            self.calls.append((kind, identifier, raw_response))
-
-    debug_capture = _FakeDebugCapture()
-    build_survey_tree(
-        _small_doc(),
-        FakeSectionAnalysisClient(),
-        _RaisingEpicFeatureClient(),
-        debug_capture=debug_capture,
-    )
-    assert len(debug_capture.calls) == 1
-    kind, identifier, raw_response = debug_capture.calls[0]
-    assert kind == "score_epics_and_features"
-    assert identifier == "chunk_0"
-    assert "boom" in raw_response
 
 
 def test_build_survey_tree_carries_category_scores_through_to_the_node() -> None:
@@ -9338,8 +9143,7 @@ class _FakeDebugCapture:
 
 def test_regroup_disconnected_roots_captures_the_failure_when_group_root_topics_raises() -> None:
     # Real diagnostic gap this closes: before this, a group_root_topics
-    # failure was only ever a log line -- unlike score_epics_and_features'
-    # own failure, which was already captured for the debug-read endpoint.
+    # failure was only ever a log line, with nothing captured for the debug-read endpoint.
     class RaisingGroupingClient:
         def group_root_topics(
             self, titles_by_id: dict[str, str], user_id: str | None = None
@@ -10098,7 +9902,7 @@ def test_repair_requirement_hierarchy_runs_on_the_skeleton_before_authoring() ->
     # anything -- the payload names the bridge as the Requirement's parent.
     assert fake.author_calls[0]["skeleton_nodes"]["n1"]["parent_id"] == bridge.local_id
     assert bridge.local_id not in fake.author_calls[0]["skeleton_nodes"]
-    assert bridge.description.startswith("Auto-inserted grouping Feature")
+    assert bridge.description.startswith("Groups the requirements of this section")
 
 
 def test_root_regrouping_runs_between_the_two_stages(monkeypatch) -> None:
@@ -10138,7 +9942,7 @@ def test_root_regrouping_runs_between_the_two_stages(monkeypatch) -> None:
         assert [entry["parent_id"] for entry in call["skeleton_nodes"].values()] == [group.local_id]
         # A synthesized grouping node is structure only -- never authored.
         assert group.local_id not in call["skeleton_nodes"]
-    assert group.description.startswith("Auto-inserted topical grouping")
+    assert group.description.startswith("Groups related sections of the document:")
 
 
 def test_catchall_epic_wrap_runs_between_the_two_stages(monkeypatch) -> None:
@@ -10180,7 +9984,7 @@ def test_catchall_epic_wrap_runs_between_the_two_stages(monkeypatch) -> None:
     assert authored_parents["br0_n1"] == catchall.local_id
     assert authored_parents["br1_n1"] == catchall.local_id
     assert catchall.local_id not in authored_parents  # structure only, never authored
-    assert catchall.description.startswith("Auto-inserted catch-all Epic")
+    assert catchall.description.startswith("Groups features that had no Epic of their own:")
 
 
 def test_agentic_retrieval_grounds_the_authoring_call_too(monkeypatch) -> None:
@@ -11695,3 +11499,21 @@ def test_merge_always_include_context_marks_its_citations_as_always_included() -
     assert by_file["guide.pptx"].relevance == KbCitationRelevance.RELEVANT
     # A retrieved citation keeps the default.
     assert by_file["spec.docx"].inclusion == "retrieved"
+
+
+def test_trace_links_count_their_own_items_not_chunks_through_the_stage_counter(monkeypatch) -> None:  # noqa: ANN001
+    calls: list[tuple] = []
+
+    class _Counter:
+        def set_total(self, stage: str, total: int) -> None:
+            calls.append(("set_total", stage, total))
+
+        def advance(self, stage: str, count: int) -> None:
+            calls.append(("advance", stage, count))
+
+    monkeypatch.setattr("app.leveling.trace_links.current_stage_counter", lambda: _Counter())
+    nodes = [_req_node(f"n{i}", f"The system shall do thing {i}.") for i in range(3)]
+    _infer_trace_links_for_nodes(nodes, FakeTraceLinkInferenceClient(results=[]), [], [], None, 0, 0)
+
+    assert calls[0] == ("set_total", "trace", 3)
+    assert sum(count for kind, _stage, count in calls if kind == "advance") == 3

@@ -68,7 +68,7 @@
       }
     },
     "StageName": {
-      "enum": ["parse", "draft", "improve", "summarize", "skeleton", "map", "write", "score", "link", "dedup", "write_ado"]
+      "enum": ["parse", "draft", "improve", "summarize", "skeleton", "map", "write", "score", "link", "trace", "criteria", "dedup", "write_ado"]
     },
     "StageUnits": {
       "type": "object",

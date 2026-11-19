@@ -88,11 +88,12 @@ describe('KbReadinessStrip', () => {
     expect(screen.queryByRole('link')).toBeNull();
   });
 
-  it('says to reconnect SharePoint in the knowledge base when its token expired', async () => {
+  it('says the SharePoint problem once, in the chip, and links to the fix', async () => {
     vi.spyOn(kbApi, 'listIngestedDocuments').mockResolvedValue([doc('a.pdf', 5)]);
     vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'invalid', expiresInSeconds: null });
     renderStrip();
-    expect(await screen.findByText(/Reconnect SharePoint in the knowledge base/)).toBeInTheDocument();
+    expect(await screen.findByText('SharePoint token expired')).toBeInTheDocument();
+    expect(screen.queryByText(/Reconnect SharePoint/)).not.toBeInTheDocument();
     expect(screen.getByRole('link', { name: /fix in the knowledge base/i })).toBeInTheDocument();
   });
 
@@ -107,7 +108,7 @@ describe('KbReadinessStrip', () => {
     vi.spyOn(kbApi, 'listIngestedDocuments').mockResolvedValue([doc('a.pdf', 5)]);
     vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'unreachable', expiresInSeconds: null });
     renderStrip();
-    expect(await screen.findByText("Can't reach SharePoint (adding files will fail)")).toBeInTheDocument();
+    expect(await screen.findByText("Can't reach SharePoint")).toBeInTheDocument();
     expect(screen.getByText('1 file · 5 chunks')).toBeInTheDocument();
   });
 

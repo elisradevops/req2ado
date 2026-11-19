@@ -1,4 +1,4 @@
-// Where a requirement sits in its job's document, for the chat: its parents, the other items under the same parent, the items it is
+// Where a requirement sits in its job's document, for the chat: its parents, the other items under the same parent, the items directly under it, the items it is
 // linked to and the captions of its own figures and tables. Built only from what the job already holds (the diff and the stored
 // captions); the source document is not kept after a job, so nothing here reads it. Ingestion renders it into the prompt and
 // caps it again; the limits here only keep the request small.
@@ -26,6 +26,8 @@ export interface ChatContext {
   documentName?: string;
   parents: { type: string; title: string; description: string }[];
   siblings: { title: string }[];
+  // The items directly under this one: what an Epic or Feature is made of, so the assistant can judge or restate it from them.
+  children: { type: string; title: string }[];
   linked: { relation: string; title: string }[];
   figures: { name: string; caption: string }[];
   tables: { caption: string }[];
@@ -34,6 +36,7 @@ export interface ChatContext {
 const MAX_PARENTS = 5;
 const MAX_SIBLINGS = 20;
 const MAX_LINKED = 10;
+const MAX_CHILDREN = 30;
 
 export function buildChatContext(diff: DiffLike[], entry: DiffLike, job: JobLike): ChatContext {
   const byId = new Map(diff.map((e) => [e.localId, e]));
@@ -52,6 +55,11 @@ export function buildChatContext(diff: DiffLike[], entry: DiffLike, job: JobLike
     .slice(0, MAX_SIBLINGS)
     .map((e) => ({ title: e.title }));
 
+  const children = diff
+    .filter((e) => e.parentLocalId === entry.localId && e.action === 'create' && !e.excluded)
+    .slice(0, MAX_CHILDREN)
+    .map((e) => ({ type: e.type, title: e.title }));
+
   const linked: ChatContext['linked'] = [];
   for (const link of entry.traceLinks ?? []) {
     const target = link.targetKind === 'intraJob' && link.targetLocalId ? byId.get(link.targetLocalId) : undefined;
@@ -69,5 +77,5 @@ export function buildChatContext(diff: DiffLike[], entry: DiffLike, job: JobLike
     .filter((t): t is NonNullable<typeof t> => Boolean(t?.caption))
     .map((t) => ({ caption: t.caption }));
 
-  return { ...(job.filename ? { documentName: job.filename } : {}), parents, siblings, linked, figures, tables };
+  return { ...(job.filename ? { documentName: job.filename } : {}), parents, siblings, children, linked, figures, tables };
 }

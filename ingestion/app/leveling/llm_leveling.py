@@ -36,6 +36,7 @@ from app.leveling.acceptance_criteria import (
     AcceptanceCriteriaClient,
     eligible_nodes,
     propose_acceptance_criteria,
+    skip_criteria_stage,
 )
 from app.leveling.baseline_structure import adopt_baseline_structure
 from app.leveling.conflict_detection import (
@@ -96,7 +97,6 @@ from app.leveling.root_regrouping import (
 from app.leveling.scoring import (
     BatchedScoringClient,
     _score_all_requirements,
-    _score_epics_and_features,
 )
 from app.leveling.sheet_study import SheetMapping, SheetStudyClient, describe_plan, study_sheet
 from app.leveling.study_runner import StudyHandle
@@ -2201,18 +2201,6 @@ def _build_survey_tree(
                     chunk_concurrency=chunk_concurrency,
                     user_id=user_id,
                 )
-            _score_epics_and_features(
-                all_nodes,
-                scoring_client,
-                all_warnings,
-                progress_callback,
-                model_name,
-                len(det_nodes),
-                0,
-                debug_capture=debug_capture,
-                chunk_concurrency=chunk_concurrency,
-                user_id=user_id,
-            )
 
         _detect_conflicting_duplicates(
             all_nodes,
@@ -3042,24 +3030,6 @@ def _build_survey_tree(
                 chunk_concurrency=chunk_concurrency,
                 user_id=user_id,
             )
-        # Separate rubric/prompt from Requirement scoring above -- see
-        # OrchestratorLlmClient.score_epics_and_features_for_document's own
-        # docstring. Runs regardless of whether the document had any
-        # Requirement nodes at all (an Epic/Feature-only tree still gets
-        # reviewed) -- its own internal empty-list guard is a no-op when
-        # there's nothing of that type either.
-        _score_epics_and_features(
-            all_nodes,
-            scoring_client,
-            all_warnings,
-            progress_callback,
-            model_name,
-            blocks_total,
-            len(branches),
-            debug_capture=debug_capture,
-            chunk_concurrency=chunk_concurrency,
-            user_id=user_id,
-        )
 
     _detect_conflicting_duplicates(
         all_nodes,
@@ -3380,6 +3350,7 @@ def _propose_criteria_step(
     when nothing is eligible, stops it and keeps the windows it had stored. Without one the proposals use the hierarchy alone, and when the study
     was wanted (`study_enabled` and a `study_client`) one warning says it could not be started: the document is never read on the job's thread."""
     if criteria_client is None or not eligible_nodes(nodes):
+        skip_criteria_stage()
         if study_handle is not None:
             study_handle.stop(keep_results=True)  # not needed: what is stored stays as the cache
         return
@@ -4352,8 +4323,8 @@ class FigureTableMappingClient(Protocol):
     Deliberately a SEPARATE, optional Protocol rather than a fourth method on
     SectionAnalysisClient: it is resolved off the analysis client by
     duck-typing at the call site (`getattr(analysis_client,
-    "map_figures_tables", None)`, the same convention _score_epics_and_features
-    already uses for its own late-added method), so a client that predates
+    "map_figures_tables", None)`, the same convention used for the other late-added
+    methods), so a client that predates
     this stage keeps working unchanged -- it simply gets no mapping, which is
     byte-identical to the state stage 2 was introduced to replace (every
     node's figure_ids/table_ids empty, nothing excluded)."""

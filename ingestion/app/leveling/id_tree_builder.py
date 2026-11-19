@@ -355,6 +355,7 @@ def _apply_title_tag_pass(
                     f"{label_prefix}enhancing titles/tags for {len(chunk_ids)} node(s) "
                     f"(chunk {chunk_num} of {total_chunks})"
                 ),
+                subtree_part=("improve", chunk_num, total_chunks, len(chunk_ids)),
             )
         )
 
@@ -1071,6 +1072,7 @@ def _apply_synthesis_pass(
                     f"{label_prefix}synthesizing requirement text for {len(chunk_ids)} node(s) "
                     f"(chunk {chunk_num} of {total_chunks})"
                 ),
+                subtree_part=("draft", chunk_num, total_chunks, len(chunk_ids)),
             )
         )
 

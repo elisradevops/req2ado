@@ -20,11 +20,14 @@ export function PhaseRail({
   selectedKey,
   liveKey,
   onSelect,
+  orientation = 'vertical',
 }: {
   rows: PhaseRailRow[];
   selectedKey: LifecycleKey;
   liveKey: LifecycleKey;
   onSelect: (key: LifecycleKey) => void;
+  // 'vertical' (default): a list beside the view from `lg`. 'horizontal': a strip at every width, for a job whose run is over (§11.3.5).
+  orientation?: 'vertical' | 'horizontal';
 }): React.ReactElement {
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   // Research #4 (DESIGN.md §8.3): a phase whose state changed after first paint (the run finished it, or it became current) cross-fades
@@ -43,8 +46,8 @@ export function PhaseRail({
   }
 
   return (
-    <div role="tablist" aria-orientation="vertical" aria-label="Run phases" // A vertical list from `lg`; below it a horizontal strip, so six tall rows do not push the phase view down a phone.
-    className="flex flex-row overflow-x-auto rounded-md border border-hairline bg-surface lg:flex-col lg:overflow-visible">
+    <div role="tablist" aria-orientation={orientation} aria-label="Run phases" // A vertical list from `lg` (running job); below it, and for a finished run, a horizontal strip, so six tall rows do not push the phase view down.
+    className={cn('flex flex-row overflow-x-auto rounded-md border border-hairline bg-surface', orientation === 'vertical' && 'lg:flex-col lg:overflow-visible')}>
       {rows.map((row, index) => {
         const selected = row.key === selectedKey;
         const before = previousStates.current?.[row.key];
@@ -78,7 +81,7 @@ export function PhaseRail({
               }
             }}
             // `.hoverable-row` (§6) paints hover, the selected fill and the hairline between rows.
-            className="hoverable-row flex min-w-[7.5rem] flex-none items-start gap-3 px-3.5 py-3 text-left first:border-t-0 lg:min-w-0"
+            className={cn('hoverable-row flex min-w-[7.5rem] flex-none items-start gap-3 px-3.5 py-3 text-left first:border-t-0', orientation === 'vertical' && 'lg:min-w-0')}
           >
             {/* keyed by state, so a change remounts the glyph and name and the one-shot fade plays once */}
             <span
@@ -92,8 +95,8 @@ export function PhaseRail({
                 <span className={cn('text-sm', selected || row.state === 'current' ? 'font-semibold text-ink-1' : 'text-ink-2')}>{row.label}</span>
                 {row.key === liveKey && row.state === 'current' && <span className="text-meta text-live">● Live</span>}
               </span>
-              {/* Below lg the strip is compact, but the state line stays in the accessible name. */}
-              <span className="sr-only text-xs text-ink-3 lg:not-sr-only lg:block">{row.line}</span>
+              {/* In the horizontal strip (and below lg) the state line stays in the accessible name only. */}
+              <span className={cn('text-xs text-ink-3', orientation === 'vertical' ? 'sr-only lg:not-sr-only lg:block' : 'sr-only')}>{row.line}</span>
             </span>
             </span>
           </button>

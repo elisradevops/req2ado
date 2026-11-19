@@ -6,6 +6,7 @@ from app.leveling.narration_publisher import (
     LevelingProgress,
     NarrationPublisher,
     Phase,
+    _format_message,
 )
 
 
@@ -783,3 +784,18 @@ def test_publish_carries_the_models_reason_for_a_figure_judged_not_significant()
         _progress(phase="describe_figure", figure_index=4)
     )
     assert json.loads(redis_client.publish_calls[1][1])["figureCaptionReason"] is None
+
+
+def test_a_hierarchy_pass_reads_in_plain_words_not_in_pipeline_terms() -> None:
+    draft = _progress(
+        phase="deterministic_subtree",
+        subtree_index=0,
+        subtree_count=1,
+        subtree_label="Heading hierarchy -- synthesizing requirement text for 150 node(s) (chunk 1 of 2)",
+        subtree_part=("draft", 1, 2, 150),
+    )
+    improve = _progress(phase="deterministic_subtree", subtree_index=1, subtree_count=3, subtree_part=("improve", 2, 2, 1))
+    assert _format_message(draft) == "Writing requirement text, part 1 of 2 (150 items)"
+    assert _format_message(improve) == "Improving titles and tags, part 2 of 2 (1 item), group 2 of 3"
+    for message in (_format_message(draft), _format_message(improve)):
+        assert not any(word in message.lower() for word in ("deterministic", "node(s)", "synthesiz", "chunk"))

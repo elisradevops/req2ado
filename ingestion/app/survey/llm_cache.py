@@ -17,8 +17,7 @@ _DEFAULT_TTL_SECONDS = 24 * 60 * 60
 
 class LlmResponseCache:
     """Caches OrchestratorLlmClient's deterministic (temperature=0)
-    analysis/scoring calls (analyze_section, score_requirements_for_document,
-    score_epics_and_features_for_document) so re-running the SAME
+    analysis/scoring calls (analyze_section, score_requirements_for_document) so re-running the SAME
     section/document under the SAME model+params skips a real LLM round
     trip entirely. Fail-open, matching NarrationPublisher's own Redis-error
     philosophy (app.leveling.narration_publisher): a Redis error on get/set

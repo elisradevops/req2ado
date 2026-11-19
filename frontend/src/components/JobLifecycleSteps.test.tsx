@@ -158,8 +158,10 @@ describe('the Write step\'s tip', () => {
   it.each(['baseline', 'survey'] as const)('does not say writing is under way before anything is written (%s)', (mode) => {
     const write = lifecyclePhases(mode, 'diff_ready', null).phases.find((phase) => phase.key === 'write')!;
     expect(write.purpose).not.toMatch(/^Writing\b/);
-    expect(write.purpose).toMatch(/nothing is written until you confirm/i);
+    // The safety statement lives in SafetyLine alone; the step says only what it does.
+    expect(write.purpose).not.toMatch(/nothing is written/i);
     expect(write.purpose).toMatch(/cannot be undone/i);
+    expect(write.pendingLine).toBe('Writes approved items. Cannot be undone.');
   });
 });
 
@@ -184,6 +186,7 @@ describe('lifecyclePhases', () => {
   it('paints a rejected run\'s Write phase skipped, and carries each phase\'s purpose sentence', () => {
     const { phases } = lifecyclePhases('survey', 'rejected', 'diff_ready');
     expect(phases.find((p) => p.key === 'write')?.state).toBe('skipped');
-    expect(phases.find((p) => p.key === 'review')?.purpose).toMatch(/nothing is written/i);
+    expect(phases.find((p) => p.key === 'review')?.purpose).toMatch(/waiting for your review/i);
+    expect(phases.find((p) => p.key === 'review')?.pendingLine).toBe('Your review of the proposed items');
   });
 });

@@ -14,21 +14,22 @@ describe('describeStepKbGrounding', () => {
   it('reports files available when nothing was cited for the step', () => {
     expect(describeStepKbGrounding(3, 0, false)).toEqual({
       grounded: false,
-      text: 'Not grounded against your knowledge base for this step (3 files available)',
+      text: 'Did not use your knowledge base for this step (3 files available)',
     });
     expect(describeStepKbGrounding(1, 0, false)?.text).toContain('(1 file available)');
   });
 
   it('reports cited of available when grounded', () => {
-    expect(describeStepKbGrounding(3, 2, true)).toEqual({ grounded: true, text: 'Grounded against 2 of 3 KB files' });
-    expect(describeStepKbGrounding(1, 1, true)?.text).toBe('Grounded against 1 of 1 KB file');
+    expect(describeStepKbGrounding(3, 2, true)).toEqual({ grounded: true, text: 'Used 2 of 3 KB files' });
+    expect(describeStepKbGrounding(1, 1, true)?.text).toBe('Used 1 of 1 KB file');
   });
 });
 
 describe('describeStepKbGrounding consistency with the grounded flag', () => {
-  it('never says "Grounded against" when the step was not grounded, even with citations present', () => {
+  it('never says "Used" when the step was not grounded, even with citations present', () => {
     expect(describeStepKbGrounding(3, 2, false)?.grounded).toBe(false);
-    expect(describeStepKbGrounding(3, 2, false)?.text).toContain('Not grounded');
+    expect(describeStepKbGrounding(3, 2, false)?.text).toContain('Did not use');
+    expect(describeStepKbGrounding(3, 2, false)?.text).not.toMatch(/^Used /);
   });
 
   it('never prints "of 0" when a grounded step reports an empty KB', () => {

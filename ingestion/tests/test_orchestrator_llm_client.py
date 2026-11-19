@@ -979,81 +979,6 @@ def test_score_requirements_for_document_with_fixed_checklist_and_kb_context_dro
     assert "Necessary" in prompt
 
 
-def test_score_epics_and_features_for_document_sends_type_aware_prompt_and_schema() -> None:
-    captured: dict = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured.setdefault("body", json.loads(request.content))
-        return httpx.Response(200, json={"content": "{}"})
-
-    client = OrchestratorLlmClient(
-        base_url="http://orchestrator.internal", bearer_token="test-bearer"
-    )
-    client._transport = httpx.MockTransport(handler)
-
-    client.score_epics_and_features_for_document(
-        {
-            "n0": {"type": "Epic", "text": "Automated Customer Requirements Processing."},
-            "n1": {
-                "type": "Feature",
-                "text": "Parse and normalize uploaded requirement documents.",
-            },
-        }
-    )
-
-    prompt = captured["body"]["messages"][0]["content"]
-    assert "scopeCoherence" in prompt
-    assert "outcomeClarity" in prompt
-    assert "capabilityClarity" in prompt
-    assert "decomposability" in prompt
-    assert "exactly 2 node_id(s)" in prompt
-    assert "exactly 2 entries" in prompt
-    # No 'issues' vocabulary at all -- RequirementQualityIssue's closed
-    # vocabulary (ambiguous, not_testable, ...) describes atomic statements,
-    # not what an Epic/Feature grouping is.
-    assert "not_testable" not in prompt
-    schema = captured["body"]["responseSchema"]["schema"]["additionalProperties"]
-    assert set(schema["required"]) == {"score", "categoryScores"}
-    assert captured["body"]["temperature"] == 0
-    assert captured["body"]["think"] is False
-
-
-def test_score_epics_and_features_for_document_parses_valid_response() -> None:
-    response_json = {
-        "content": json.dumps(
-            {
-                "n0": {"score": 85, "categoryScores": {"scopeCoherence": 90, "outcomeClarity": 80}},
-            }
-        )
-    }
-    client = OrchestratorLlmClient(
-        base_url="http://orchestrator.internal", bearer_token="test-bearer"
-    )
-    client._transport = _mock_transport(response_json)
-
-    result = client.score_epics_and_features_for_document({"n0": {"type": "Epic", "text": "text"}})
-    assert result["n0"]["score"] == 85
-    assert result["n0"]["categoryScores"] == {"scopeCoherence": 90, "outcomeClarity": 80}
-
-
-def test_score_epics_and_features_for_document_forwards_top_k_and_min_p_when_configured() -> None:
-    captured: dict = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured["body"] = json.loads(request.content)
-        return httpx.Response(200, json={"content": "{}"})
-
-    client = OrchestratorLlmClient(
-        base_url="http://orchestrator.internal", bearer_token="test-bearer", top_k=50, min_p=0.05
-    )
-    client._transport = httpx.MockTransport(handler)
-
-    client.score_epics_and_features_for_document({"n0": {"type": "Epic", "text": "text"}})
-
-    assert captured["body"]["topK"] == 50
-    assert captured["body"]["minP"] == 0.05
-
-
 def test_chat_json_sends_the_expected_payload_shape_with_schema() -> None:
     captured: dict = {}
 
@@ -1729,38 +1654,6 @@ def test_score_requirements_for_document_cache_miss_then_hit_skips_the_second_ll
     assert call_count == 1
     assert first == {"n0": {"score": 80}}
     assert second == {"n0": {"score": 80}}
-
-
-def test_score_epics_and_features_for_document_cache_miss_then_hit_skips_the_second_llm_call() -> (
-    None
-):
-    from app.survey.llm_cache import LlmResponseCache
-
-    call_count = 0
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        nonlocal call_count
-        call_count += 1
-        return httpx.Response(
-            200, json={"content": json.dumps({"n0": {"score": 90, "categoryScores": {}}})}
-        )
-
-    cache = LlmResponseCache(_CountingFakeRedis())
-    client = OrchestratorLlmClient(
-        base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=cache
-    )
-    client._transport = httpx.MockTransport(handler)
-
-    first = client.score_epics_and_features_for_document(
-        {"n0": {"type": "Epic", "text": "Perimeter security"}}
-    )
-    second = client.score_epics_and_features_for_document(
-        {"n0": {"type": "Epic", "text": "Perimeter security"}}
-    )
-
-    assert call_count == 1
-    assert first == {"n0": {"score": 90, "categoryScores": {}}}
-    assert second == {"n0": {"score": 90, "categoryScores": {}}}
 
 
 def test_analyze_section_without_a_cache_configured_always_calls_the_llm() -> None:
@@ -4655,10 +4548,6 @@ _KEYED_CALLS = [
     (
         "score_requirements",
         lambda c: c.score_requirements_for_document({"0": "The unit shall survive a 1m drop."}),
-    ),
-    (
-        "score_epic_feature",
-        lambda c: c.score_epics_and_features_for_document({"e1": {"type": "Epic", "text": "x"}}),
     ),
     (
         "authoring",

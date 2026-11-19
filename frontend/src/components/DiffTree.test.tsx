@@ -788,7 +788,7 @@ describe('DiffTree signal counts', () => {
       expect(screen.getByText('Child req')).not.toContainElement(chip);
     });
 
-    it('promotes rows that need a decision: a labelled triangle and a warm tint, red tint for a same-tier hazard, nothing for a clean row', () => {
+    it('promotes rows that need a decision: a labelled triangle and a warm tint, no tint for a nested same-type item (valid), nothing for a clean row', () => {
       const entries: DryRunDiffEntry[] = [
         { ...baseEntry, localId: 'clean', title: 'Clean one' },
         { ...baseEntry, localId: 'issue', title: 'Issue one', qualityIssues: ['ambiguous'] },
@@ -800,7 +800,8 @@ describe('DiffTree signal counts', () => {
       expect(rowOf('Clean one')).not.toHaveClass('max-md:bg-danger-soft');
       expect(within(rowOf('Issue one')).getByTestId('narrow-flag')).toHaveAttribute('aria-label', 'Check');
       expect(rowOf('Issue one')).toHaveClass('max-md:bg-warning-soft');
-      expect(rowOf('Tier one')).toHaveClass('max-md:bg-danger-soft');
+      expect(rowOf('Tier one')).not.toHaveClass('max-md:bg-danger-soft');
+      expect(rowOf('Tier one')).not.toHaveClass('max-md:bg-warning-soft');
       expect(within(rowOf('Clean one')).queryByTestId('narrow-flag')).toBeNull();
     });
 
@@ -1391,9 +1392,16 @@ describe('DiffTree in a narrow tree (the details pane takes the width)', () => {
     const wrapper = container.firstElementChild as HTMLElement;
     expect(wrapper.className).toContain('[--diff-cols:32px_minmax(0,1fr)_44px]');
     expect(wrapper.className).not.toContain('--index-w');
-    for (const label of ['Index', 'Status', 'Flags']) expect(screen.getByText(label).className).toMatch(/(^| )hidden( |$)/);
+    for (const label of ['Index', 'Flags']) expect(screen.getByText(label).className).toMatch(/(^| )hidden( |$)/);
     const row = screen.getByText('Time sync source').closest('[role="treeitem"]') as HTMLElement;
     expect(row.firstElementChild!.className).toMatch(/(^| )hidden( |$)/);
+  });
+
+  it('gives the Status column no width and no header when no row draws anything in it', () => {
+    const { container } = renderAtTreeWidth(856);
+    const wrapper = container.firstElementChild as HTMLElement;
+    expect(wrapper.style.getPropertyValue('--status-w')).toBe('0px');
+    expect(screen.queryByText('Status')).not.toBeInTheDocument();
   });
 
   it('keeps the seven-column template and the wide cells when the tree is wide enough', () => {

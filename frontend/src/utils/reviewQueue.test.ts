@@ -6,6 +6,7 @@ import {
   isExcludedWithAncestors,
   nextInQueue,
   cleanApproval,
+  countStillToCheck,
   groupReviewQueue,
   reviewGroupOf,
   reviewQueueModeReducer,
@@ -557,9 +558,25 @@ describe('riskReason for a parent ignores its score, as the tier does', () => {
     expect(reason.title).not.toMatch(/quality|score|unsure/i);
   });
 
-  it('still explains a parent with loose wording by the wording', () => {
+  it('does not flag a parent for loose wording either: only a review warning does', () => {
     const reason = riskReason(entry('f', { type: 'Feature', qualityScore: 15, groundingScore: 0.1 }), NO_WARNINGS);
-    expect(reason.title).toMatch(/grounding|wording|source/i);
-    expect(reason.title).not.toMatch(/quality score/i);
+    expect(reason.title).not.toMatch(/grounding|wording|source|quality score/i);
+  });
+});
+
+
+describe('countStillToCheck: what is left to check once a kind is accepted', () => {
+  it('counts the kind\'s items that another signal still puts in Check, not the clean ones', () => {
+    const groups = buildKindGroups([warning('missing_customer_id', 'needs_review', ['a', 'b', 'c'])]);
+    const entries = [
+      entry('a', { qualityScore: 20 }), // a low score keeps it in Check
+      entry('b', { qualityScore: 95 }), // clean once accepted
+      entry('c', { qualityScore: 95, excluded: true }), // left out, not counted
+    ];
+    expect(countStillToCheck(entries, groups, 'missing_customer_id')).toBe(1);
+  });
+
+  it('is zero for a kind that names no items', () => {
+    expect(countStillToCheck([entry('a')], NO_WARNINGS, 'missing_customer_id')).toBe(0);
   });
 });

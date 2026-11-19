@@ -49,10 +49,10 @@ describe('live run copy', () => {
     expect(describeStepCount(progress({ done: 99, total: 10 }))).toBe('10 of 10 items');
   });
 
-  it('labels the percentage as an estimate and names the step count', () => {
-    expect(describeCountedProgress(progress())).toBe('38% of the run (est.) — 12 of 36 items in this step');
-    expect(describeCountedProgress(progress({ total: 0 }))).toBe('38% of the run (est.)');
-    expect(describeCountedProgress(progress({ estimated: false, pct: 100 }))).toContain('100% of the run —');
+  it('names the step count only: the percentage is shown once, in the header', () => {
+    expect(describeCountedProgress(progress())).toBe('12 of 36 items in this step');
+    expect(describeCountedProgress(progress({ total: 0 }))).toBe('');
+    expect(describeCountedProgress(progress())).not.toMatch(/%/);
     expect(describeCountedValueText(progress())).toBe('38 percent of the run, estimated');
   });
 

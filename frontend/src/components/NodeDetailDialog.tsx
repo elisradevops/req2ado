@@ -1,15 +1,19 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useAnimate } from 'motion/react-mini';
-import { ChevronUp, ChevronDown } from 'lucide-react';
+import { ChevronUp, ChevronDown, Keyboard, MessageSquareText, Pencil } from 'lucide-react';
+import { Popover } from 'radix-ui';
 import { Dialog } from '../ui/Dialog';
-import { Tabs } from '../ui/Tabs';
 import { Button } from '../ui/Button';
 import { WorkItemTypeBadge } from './WorkItemTypeBadge';
 import { ActionBadge } from './ActionBadge';
 import { NodeDetailPanel, canEditEntry } from './NodeDetailPanel';
 import { EvidenceStrip } from './EvidenceStrip';
+import { SourcePane } from './SourcePane';
+import { isScoredType } from '../utils/diffFlagging';
 import { AddChildCard } from './AddChildCard';
 import { ChatPanel } from './ChatPanel';
+import { ProposalReview } from './ProposalReview';
+import { useProposalReview } from '../hooks/useProposalReview';
 import { MoveToPicker, type MoveToPickerCandidate } from './MoveToPicker';
 import { DuplicateMatchCard, type DuplicateOverrideOptions } from './DuplicateMatchCard';
 import { cn } from '../lib/cn';
@@ -88,22 +92,6 @@ function matchesShortcutLetter(event: KeyboardEvent, letter: string): boolean {
   return !latin && event.key.length === 1 && event.code === `Key${letter.toUpperCase()}`;
 }
 
-function KeyHints({ hints }: { hints: Array<[string, string]> }): React.ReactElement {
-  return (
-    <span data-testid="key-hints" aria-hidden="true" className="ms-2 text-xs opacity-80">
-      {hints.map(([key, label], index) => (
-        <Fragment key={key}>
-          {/* The break point is this space, outside the nowrap pair: the line breaks between hints, never inside one. */}
-          {index > 0 && ' '}
-          <span className="whitespace-nowrap">
-            <kbd className="rounded-sm border border-current/30 px-1 font-mono text-micro">{key}</kbd> {label}
-          </span>
-        </Fragment>
-      ))}
-    </span>
-  );
-}
-
 export function NodeDetailDialog({
   open,
   onOpenChange,
@@ -122,6 +110,10 @@ export function NodeDetailDialog({
   captionByTableId,
   onSave,
   onRescore,
+  onSuggest,
+  onDecideSuggestion,
+  onApplySuggestion,
+  onRevertSuggestion,
   onSetProposalAccepted,
   onOverrideDuplicate,
   onUndoDuplicateOverride,
@@ -186,6 +178,12 @@ export function NodeDetailDialog({
   // classification to -- see NodeDetailPanel's own doc comment.
   requirementClassificationField?: { referenceName: string; allowedValues: string[] } | null;
   onRescore?: (localId: string) => Promise<void>;
+  // The assistant's suggestion is kept with the item (so it survives closing the chat and stepping on), decided, applied with a snapshot and a
+  // re-score, and undone (DESIGN.md §11.4.6). Absent: the suggestion lives only while this dialog does, and Accept saves through onSave as before.
+  onSuggest?: (localId: string, proposal: { proposedTitle: string | null; proposedDescription: string | null }) => Promise<void> | void;
+  onDecideSuggestion?: (localId: string, decision: 'rejected' | 'discussed', suggestionId?: string) => Promise<void> | void;
+  onApplySuggestion?: (localId: string, patch: { title: string; description: string }, suggestionId?: string) => Promise<void>;
+  onRevertSuggestion?: (localId: string) => Promise<void>;
   onSetProposalAccepted?: (localId: string, accepted: boolean) => Promise<void> | void;
   // "Create as new item" on a skipped near-duplicate, and its undo. Absent = the card only shows what the item matched.
   onOverrideDuplicate?: (localId: string, options: DuplicateOverrideOptions) => Promise<void>;
@@ -241,6 +239,8 @@ export function NodeDetailDialog({
     onUndo?: () => void;
     // Wording for the mark when it is not "mark reviewed" (the spot-check's "Looks right and next").
     markLabel?: string;
+    // The exclude button's wording; "Exclude and next" in a queue, plain "Exclude" when the item was opened from the tree.
+    rejectLabel?: string;
     markHint?: string;
     // The open item is a "Fix before writing" item: keeping it as it is must be a deliberate click, so A and R do nothing (a held key could
     // clear every blocker in seconds) and `onKeyBlocked` says why.
@@ -264,15 +264,77 @@ export function NodeDetailDialog({
   // Select LABELS only -- see AddChildForm.tsx's own doc comment.
   categoryLabels?: Record<'Epic' | 'Feature' | 'Requirement', string>;
 }): React.ReactElement | null {
-  const [mobileTab, setMobileTab] = useState<'details' | 'chat'>('details');
+  // The assistant is a drawer, closed to begin with. ChatPanel is mounted only while it is open, so stepping through items fetches no chat
+  // history, and the one-mount rule of §11.4.0 holds. It stays open across J / K.
+  const [assistantOpen, setAssistantOpen] = useState(false);
+  const askButtonRef = useRef<HTMLButtonElement>(null);
+  // The assistant's suggestion and its check belong to this dialog, not to the chat panel: they outlive the drawer (DESIGN.md §11.4.6).
+  const suggestion = useProposalReview(jobId, entry?.localId ?? '', !entry || entry.type === 'Requirement');
+  // Review mode: the suggestion is shown beside the original, in place of the Proposed column.
+  const [reviewMode, setReviewMode] = useState(false);
+  // Whether the review was opened from the chat (so "Back to chat" has somewhere to go) or from the item's own issue.
+  const [reviewFromChat, setReviewFromChat] = useState(false);
+  const [editSeed, setEditSeed] = useState<{ title: string; description: string } | null>(null);
+  const hasProposal = suggestion.proposal !== null;
+  const storedSuggestion = entry?.suggestion ?? null;
+  // The stored suggestion this one on screen is (same texts), when it has been kept.
+  const suggestionId =
+    storedSuggestion &&
+    suggestion.proposal &&
+    storedSuggestion.proposedTitle === suggestion.proposal.proposedTitle &&
+    storedSuggestion.proposedDescription === suggestion.proposal.proposedDescription
+      ? storedSuggestion.id
+      : undefined;
+  // Suggestions the reviewer has dealt with in this dialog: never restored from the item while their decision is still on its way to the server.
+  const [dismissedSuggestions, setDismissedSuggestions] = useState<string[]>([]);
+  const persistedProposal = useRef<unknown>(null);
+  const restoredProposal = useRef<unknown>(null);
+  const [rescoring, setRescoring] = useState(false);
+  const [reverting, setReverting] = useState(false);
+  const [appliedPredicted, setAppliedPredicted] = useState<number | null>(null);
+  // A new suggestion from the assistant is kept with the item (best effort); one restored from the item is already kept.
+  useEffect(() => {
+    const proposal = suggestion.proposal;
+    if (!proposal || !entry || !onSuggest) return;
+    if (persistedProposal.current === proposal) return;
+    persistedProposal.current = proposal;
+    if (restoredProposal.current === proposal) return;
+    void onSuggest(entry.localId, proposal);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [suggestion.proposal]);
+  // Opening an item that still has a suggestion nobody decided on brings it back.
+  const storedId = storedSuggestion?.id;
+  const storedDecision = storedSuggestion?.decision;
+  useEffect(() => {
+    if (!storedSuggestion || storedSuggestion.decision !== 'pending' || suggestion.proposal) return;
+    if (dismissedSuggestions.includes(storedSuggestion.id)) return;
+    const restored = { proposedTitle: storedSuggestion.proposedTitle, proposedDescription: storedSuggestion.proposedDescription };
+    restoredProposal.current = restored;
+    suggestion.setProposal(restored);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entry?.localId, storedId, storedDecision, hasProposal, dismissedSuggestions]);
+  useEffect(() => {
+    if (!hasProposal) setReviewMode(false);
+  }, [hasProposal]);
+  // Leaving review mode returns focus to where the reviewer came from: the summary's button while the assistant is open, otherwise Ask.
+  const wasReviewMode = useRef(false);
+  useEffect(() => {
+    if (wasReviewMode.current && !reviewMode && open && hasProposal) {
+      (document.getElementById('review-change-button') ?? askButtonRef.current)?.focus();
+    }
+    wasReviewMode.current = reviewMode;
+  }, [reviewMode, open, hasProposal]);
   const isDesktop = useIsAboveBreakpoint(LG_BREAKPOINT_QUERY);
 
-  // Reset to the details tab whenever the selected node changes -- staying
-  // on a previous node's chat tab while looking at a new node's details
-  // (or vice versa) would be confusing.
+  // Closing the dialog closes the assistant. Closing only the assistant returns focus to the Ask button, so a keyboard user is not dropped.
+  const wasAssistantOpen = useRef(false);
   useEffect(() => {
-    setMobileTab('details');
-  }, [entry?.localId]);
+    if (!open) setAssistantOpen(false);
+  }, [open]);
+  useEffect(() => {
+    if (wasAssistantOpen.current && !assistantOpen && open) askButtonRef.current?.focus();
+    wasAssistantOpen.current = assistantOpen;
+  }, [assistantOpen, open]);
 
   // Brief settle-in when J/K/R moves to another item, so the reviewer sees
   // the content change under their hands. Not on first open (the dialog's
@@ -301,12 +363,14 @@ export function NodeDetailDialog({
   // E asks the panel to open its edit form (the form's state lives there); a counter so every press counts.
   const [editRequest, setEditRequest] = useState(0);
   const entryEditable = !!entry && canEditEntry(entry, jobStatus, written);
+  // Always available: a closed review still opens the assistant, which says why it cannot change anything.
+  const entryAskable = !!entry;
 
   // J / K step to the next / previous item, same as the chevrons in the
   // title. Ignored while typing (edit fields, chat) and with any modifier
   // held, so it never swallows a real character or a browser shortcut.
   useEffect(() => {
-    if (!open || !onNavigate || !shortcutsEnabled) return;
+    if (!open || !shortcutsEnabled) return;
     function handleKeyDown(event: KeyboardEvent): void {
       if (event.defaultPrevented || event.shiftKey || event.isComposing || event.keyCode === 229) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
@@ -317,13 +381,16 @@ export function NodeDetailDialog({
       if (target?.closest?.(WIDGET_ROLE_SELECTOR)) return;
       const is = (letter: string): boolean => matchesShortcutLetter(event, letter);
       // A held A, R or X must not mark or exclude the whole queue at key-repeat speed.
-      if (event.repeat && (is('r') || is('a') || is('x') || is('u') || is('e'))) return;
-      if (is('j') && hasNext) {
+      if (event.repeat && (is('r') || is('a') || is('x') || is('u') || is('e') || is('c'))) return;
+      if (is('c') && entryAskable) {
         event.preventDefault();
-        onNavigate?.('next');
-      } else if (is('k') && hasPrev) {
+        setAssistantOpen((value) => !value);
+      } else if (is('j') && hasNext && onNavigate) {
         event.preventDefault();
-        onNavigate?.('prev');
+        onNavigate('next');
+      } else if (is('k') && hasPrev && onNavigate) {
+        event.preventDefault();
+        onNavigate('prev');
       } else if ((is('r') || is('a')) && review && !review.reviewed) {
         event.preventDefault();
         if (review.keepAsWritten) review.onKeyBlocked?.();
@@ -343,7 +410,7 @@ export function NodeDetailDialog({
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [open, onNavigate, hasNext, hasPrev, review, shortcutsEnabled, entryEditable]);
+  }, [open, onNavigate, hasNext, hasPrev, review, shortcutsEnabled, entryEditable, entryAskable]);
 
   if (!entry) return null;
 
@@ -388,10 +455,14 @@ export function NodeDetailDialog({
       />
     ) : undefined;
 
-  // The Quality panel's read-only body folds into the strip's one closed "Why this verdict" disclosure (DESIGN.md §11.4), so the
+  // The Quality panel's read-only body folds into the strip's one closed "How this was scored" disclosure (DESIGN.md §11.4), so the
   // dialog is short by default; NodeDetailPanel keeps Re-check quality / Score this item outside it.
+  // A Requirement with a source location gets the Source column beside its text (decided from the location, known at once, not from the quote).
+  const useSourcePane = isScoredType(entry.type) && !!entry.sourceRef;
+  const counts = descendantCountsByLocalId?.[entry.localId];
+  const hasChildren = !!counts && counts.epics + counts.features + counts.requirements > 0;
   const evidenceStrip = (quality: React.ReactNode) => (
-    <EvidenceStrip entry={entry} jobId={jobId} jobMode={jobMode} kbCitations={kbCitations} collapsible quality={quality} />
+    <EvidenceStrip entry={entry} jobId={jobId} jobMode={jobMode} kbCitations={kbCitations} collapsible quality={quality} sourceInPane={useSourcePane} />
   );
 
   const keyHints: Array<[string, string]> = [
@@ -401,23 +472,124 @@ export function NodeDetailDialog({
     ...(review && !review.reviewed && review.onReject ? ([['X', 'exclude']] as Array<[string, string]>) : []),
     ...(review?.onUndo ? ([['U', 'undo']] as Array<[string, string]>) : []),
     ...(entryEditable ? ([['E', 'edit']] as Array<[string, string]>) : []),
+    ...(entryAskable ? ([['C', 'assistant']] as Array<[string, string]>) : []),
   ];
 
+  const dismissSuggestion = (): void => {
+    if (suggestionId) setDismissedSuggestions((ids) => [...ids, suggestionId]);
+  };
+  const reviewSlot =
+    reviewMode && suggestion.proposal ? (
+      <ProposalReview
+        review={suggestion}
+        item={{ type: entry.type, title: entry.title, description: entry.description, qualityScore: entry.qualityScore, qualityStale: entry.qualityStale }}
+        onAccept={(patch) => {
+          const next = { title: patch.title ?? entry.title, description: patch.description ?? entry.description };
+          const applied = suggestion.proposal;
+          dismissSuggestion();
+          if (!onApplySuggestion) {
+            onSave?.(entry.localId, next);
+            return;
+          }
+          setAppliedPredicted(suggestion.comparison?.after.score ?? null);
+          setRescoring(entry.type === 'Requirement' && entry.qualityScore != null && patch.description !== undefined);
+          void onApplySuggestion(entry.localId, next, suggestionId)
+            .catch(() => {
+              // Not applied (the caller said why): the suggestion comes back so it can be tried again.
+              if (suggestionId) setDismissedSuggestions((ids) => ids.filter((id) => id !== suggestionId));
+              suggestion.setProposal(applied);
+            })
+            .finally(() => setRescoring(false));
+        }}
+        onEditFirst={(seed) => {
+          // The suggestion became the starting point of a manual edit: it is no longer waiting for a decision.
+          if (suggestionId) void onDecideSuggestion?.(entry.localId, 'rejected', suggestionId);
+          dismissSuggestion();
+          setEditSeed({ ...seed });
+          suggestion.setProposal(null);
+        }}
+        onDiscuss={
+          onAddDiscussion
+            ? async (patch) => {
+                await onAddDiscussion(entry.localId, { proposedTitle: patch.title, proposedDescription: patch.description });
+                if (suggestionId) void onDecideSuggestion?.(entry.localId, 'discussed', suggestionId);
+                dismissSuggestion();
+              }
+            : undefined
+        }
+        onReject={() => {
+          if (suggestionId) void onDecideSuggestion?.(entry.localId, 'rejected', suggestionId);
+          dismissSuggestion();
+          suggestion.setProposal(null);
+        }}
+        onBack={
+          isDesktop || !reviewFromChat
+            ? undefined
+            : () => {
+                setReviewMode(false);
+                setAssistantOpen(true);
+              }
+        }
+      />
+    ) : undefined;
+
+  // After a suggestion is applied: say so, say how the score settled, and offer Undo (which restores the text AND its scores from the saved revision).
+  const appliedBar =
+    entry.previousRevision && onRevertSuggestion ? (
+      <div data-testid="applied-bar" role="status" className="mx-5 mt-1 flex flex-wrap items-center gap-2 rounded-sm border border-ok-border bg-ok-soft px-3 py-1.5 text-sm text-ok-ink">
+        <span>
+          {rescoring
+            ? 'Applied. Re-checking the quality…'
+            : entry.qualityStale || entry.qualityScore == null
+              ? 'Applied.'
+              : appliedPredicted != null
+                ? `Applied. Predicted ${Math.round(appliedPredicted)} · Scored ${Math.round(entry.qualityScore)}`
+                : `Applied. Scored ${Math.round(entry.qualityScore)}`}
+        </span>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="ms-auto"
+          disabled={reverting || rescoring}
+          onClick={() => {
+            setReverting(true);
+            void onRevertSuggestion(entry.localId)
+              .catch(() => undefined) // the caller already said why (for example, the item was edited since)
+              .finally(() => setReverting(false));
+          }}
+        >
+          Undo
+        </Button>
+      </div>
+    ) : null;
+
   const detailsContent = (
+    <>
+      {appliedBar}
     <NodeDetailPanel
       jobId={jobId}
-      entry={entry}
+      // The chat's own summary card carries a suggestion on screen, so the issue that points at it would say it twice.
+      entry={storedSuggestion && (dismissedSuggestions.includes(storedSuggestion.id) || (assistantOpen && hasProposal)) ? { ...entry, suggestion: null } : entry}
       jobMode={jobMode}
       jobStatus={jobStatus}
       written={written}
       editRequest={editRequest}
+      editSeed={editSeed}
+      reviewSlot={reviewSlot}
       kbCitations={kbCitations}
       traceTargetTitles={traceTargetTitles}
       traceLinkFailures={traceLinkFailures}
       parentEntry={entry.parentLocalId != null ? diffByLocalId?.[entry.parentLocalId] : undefined}
       addChildSlot={addChildSlot}
       hideSources
+      hideEditButton
+      onAskAssistant={() => setAssistantOpen(true)}
+      onReviewSuggestion={() => {
+        setReviewFromChat(false);
+        setReviewMode(true);
+      }}
       evidenceSlot={evidenceStrip}
+      sourceSlot={useSourcePane ? <SourcePane entry={entry} jobId={jobId} /> : undefined}
       moveSlot={moveSlot}
       duplicateSlot={duplicateSlot}
       captionByFigureId={captionByFigureId}
@@ -427,6 +599,7 @@ export function NodeDetailDialog({
       onRescore={onRescore}
       onSetProposalAccepted={onSetProposalAccepted}
       onRemoveDiscussion={onRemoveDiscussion}
+      onAddDiscussion={onAddDiscussion}
       onAttachFigure={onAttachFigure}
       onMoveFigure={onMoveFigure}
       figureMoveTargets={figureMoveTargets}
@@ -434,6 +607,7 @@ export function NodeDetailDialog({
       descendantCounts={descendantCountsByLocalId?.[entry.localId]}
       requirementClassificationField={requirementClassificationField}
     />
+    </>
   );
 
   const chatContent = (
@@ -444,18 +618,15 @@ export function NodeDetailDialog({
       disabled={!canEdit}
       disabledReason={chatDisabledReason}
       categoryScores={entry.qualityStale ? null : entry.qualityCategoryScores}
+      hasChildren={hasChildren}
+      focusComposer
       isCompound={entry.type === 'Requirement' && !entry.qualityStale && (entry.qualityIssues ?? []).includes('compound')}
-      onAcceptProposal={(patch) =>
-        onSave?.(entry.localId, {
-          title: patch.title ?? entry.title,
-          description: patch.description ?? entry.description,
-        })
-      }
-      onDiscuss={
-        onAddDiscussion
-          ? (patch) => onAddDiscussion(entry.localId, { proposedTitle: patch.title, proposedDescription: patch.description })
-          : undefined
-      }
+      review={suggestion}
+      onOpenReview={() => {
+        setReviewFromChat(true);
+        setReviewMode(true);
+        if (!isDesktop) setAssistantOpen(false); // below lg the assistant replaces the item: review mode needs the item
+      }}
     />
   );
 
@@ -464,6 +635,17 @@ export function NodeDetailDialog({
       open={open}
       onOpenChange={onOpenChange}
       unpadded
+      // Escape closes the assistant first and the dialog only when it is already closed, so the reviewer keeps their place.
+      onEscapeKeyDown={(event) => {
+        if (reviewMode) {
+          event.preventDefault();
+          setReviewMode(false); // the suggestion stays pending
+          return;
+        }
+        if (!assistantOpen) return;
+        event.preventDefault();
+        setAssistantOpen(false);
+      }}
       maxWidthClassName="max-w-[1180px]"
       maxHeightClassName="h-[min(760px,calc(100vh-96px))]"
       title={
@@ -496,6 +678,58 @@ export function NodeDetailDialog({
           <span dir="auto" className="min-w-[12rem] flex-1 break-words" title={entry.title}>{entry.title}</span>
           {entry.customerId && <span className="flex-none font-mono text-xs tracking-tight text-ink-3">{entry.customerId}</span>}
           <ActionBadge action={entry.action} existingAdoId={entry.existingAdoId} />
+          <span className="ms-auto flex flex-none items-center gap-1.5">
+            {entryEditable && (
+              <Button size="sm" variant="outline" aria-keyshortcuts={shortcutsEnabled ? 'E' : undefined} onClick={() => setEditRequest((count) => count + 1)}>
+                <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+                Edit
+                {shortcutsEnabled && <kbd aria-hidden="true" className="rounded-sm border border-current/30 px-1 font-mono text-micro">E</kbd>}
+              </Button>
+            )}
+            {entryAskable && (
+              <Button
+                ref={askButtonRef}
+                size="sm"
+                variant="outline"
+                aria-pressed={assistantOpen}
+                aria-keyshortcuts={shortcutsEnabled ? 'C' : undefined}
+                onClick={() => setAssistantOpen((value) => !value)}
+              >
+                <MessageSquareText className="h-3.5 w-3.5" aria-hidden="true" />
+                Ask
+                {shortcutsEnabled && <kbd aria-hidden="true" className="rounded-sm border border-current/30 px-1 font-mono text-micro">C</kbd>}
+              </Button>
+            )}
+            {shortcutsEnabled && keyHints.length > 0 && (
+              <Popover.Root>
+                <Popover.Trigger asChild>
+                  <Button size="sm" variant="ghost" aria-label="Keyboard shortcuts" className="max-md:hidden">
+                    <Keyboard className="h-4 w-4" aria-hidden="true" />
+                  </Button>
+                </Popover.Trigger>
+                <Popover.Portal>
+                  <Popover.Content align="end" sideOffset={6} className="z-50 rounded-md border border-hairline-strong bg-surface p-3 text-sm shadow-dock">
+                    <p className="mb-1.5 text-xs font-semibold text-ink-2">Keyboard shortcuts</p>
+                    <ul className="flex flex-col gap-1">
+                      {keyHints.map(([key, label]) => (
+                        <li key={key} className="flex items-center gap-2">
+                          <kbd className="w-9 rounded-sm border border-hairline-strong px-1 text-center font-mono text-micro">{key}</kbd>
+                          <span>{label}</span>
+                        </li>
+                      ))}
+                    </ul>
+                    <p className="mt-2 border-t border-hairline pt-2 text-xs text-ink-3">
+                      Turn these off in{' '}
+                      <a href="/settings" target="_blank" rel="noreferrer" className="text-accent underline underline-offset-2">
+                        Settings
+                      </a>
+                      .
+                    </p>
+                  </Popover.Content>
+                </Popover.Portal>
+              </Popover.Root>
+            )}
+          </span>
         </div>
       }
       /* Excluded is the only thing that still needs its own row -- everything
@@ -527,10 +761,42 @@ export function NodeDetailDialog({
                 </span>
               )}
               <span className="font-semibold">{reason.title}.</span> {reason.todo}
-              {onNavigate && shortcutsEnabled && <KeyHints hints={keyHints} />}
             </span>
-            {review &&
-              (review.reviewed ? (
+          </div>
+        </div>
+      )}
+      {isDesktop ? (
+        // `lg` and up: the details, and the assistant as a right-hand drawer while it is open.
+        <div className="flex min-h-0 flex-1">
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <div ref={detailsScope}>{detailsContent}</div>
+          </div>
+          {assistantOpen && <div className="min-h-0 w-[380px] flex-none border-l border-hairline">{chatContent}</div>}
+        </div>
+      ) : (
+        // Below `lg`: one column. Ask swaps the body for the assistant, with a way back.
+        <div className="flex min-h-0 flex-1 flex-col">
+          {assistantOpen && (
+            <div className="flex-none px-5 pt-2">
+              <Button size="sm" variant="ghost" onClick={() => setAssistantOpen(false)}>
+                <ChevronUp className="h-3.5 w-3.5 -rotate-90" aria-hidden="true" />
+                Back to item
+              </Button>
+            </div>
+          )}
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            {assistantOpen ? chatContent : <div ref={detailsScope}>{detailsContent}</div>}
+          </div>
+        </div>
+      )}
+      {review && (
+        // The decision is always in the same place, whether the dialog was opened from the queue or from the tree (DESIGN.md §11.4.5).
+        <div
+          role="group"
+          aria-label="Review decision"
+          className="flex flex-none flex-wrap items-center justify-end gap-2 border-t border-hairline bg-surface px-5 py-2.5 max-md:pb-[max(0.625rem,env(safe-area-inset-bottom))]"
+        >
+            {(review.reviewed ? (
                 <Button
                   size="sm"
                   variant="outline"
@@ -559,7 +825,7 @@ export function NodeDetailDialog({
                         else review.onReject?.();
                       }}
                     >
-                      Exclude and next
+                      {review.rejectLabel ?? 'Exclude and next'}
                     </Button>
                   )}
                   <Button
@@ -578,38 +844,6 @@ export function NodeDetailDialog({
                   </Button>
                 </div>
               ))}
-          </div>
-        </div>
-      )}
-      {!reason && onNavigate && shortcutsEnabled && (
-        <div className="flex-none border-b border-hairline bg-surface-sunken px-5 py-1 text-ink-2">
-          <KeyHints hints={keyHints} />
-        </div>
-      )}
-      {isDesktop ? (
-        // `lg` and up: real two-pane layout, details left / chat right.
-        <div className="flex min-h-0 flex-1">
-          <div className="min-h-0 flex-1 overflow-y-auto">
-            <div ref={detailsScope}>{detailsContent}</div>
-          </div>
-          <div className="min-h-0 w-[400px] flex-none border-l border-hairline">{chatContent}</div>
-        </div>
-      ) : (
-        // Below `lg`: Details/Chat tabs instead of a too-narrow chat pane.
-        <div className="flex min-h-0 flex-1 flex-col">
-          <div className="flex-none px-5">
-            <Tabs
-              value={mobileTab}
-              onValueChange={(v) => setMobileTab(v as 'details' | 'chat')}
-              tabs={[
-                { value: 'details', label: 'Details' },
-                { value: 'chat', label: 'Chat' },
-              ]}
-            />
-          </div>
-          <div className="min-h-0 flex-1 overflow-y-auto">
-            {mobileTab === 'details' ? <div ref={detailsScope}>{detailsContent}</div> : chatContent}
-          </div>
         </div>
       )}
     </Dialog>

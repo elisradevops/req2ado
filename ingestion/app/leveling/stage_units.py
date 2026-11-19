@@ -39,7 +39,7 @@ def units_latest_key(job_id: str) -> str:
 
 @dataclass(frozen=True)
 class StageUnits:
-    stage: str  # parse | draft | improve | summarize | skeleton | map | write | score | link
+    stage: str  # parse | draft | improve | summarize | skeleton | map | write | score | link | trace | criteria
     unit: str  # figures | items | sections | requirements | passes
     done: int
     total: int
@@ -126,11 +126,14 @@ def units_from_progress(progress: LevelingProgress) -> StageUnits | None:
                 done = total
         return StageUnits("score", "requirements", _clamp(done, total), total)
 
-    # The three whole-document passes after scoring. Each event marks the START
-    # of a pass, so passes finished = how many came before it.
-    link_order = {"detect_conflicts": 0, "regroup_roots": 1, "infer_trace_links": 2}
+    # The two quick whole-document passes after scoring. Each event marks the START
+    # of a pass, so passes finished = how many came before it; trace links (which
+    # starts after both) and acceptance criteria count their own items (StageCounter).
+    link_order = {"detect_conflicts": 0, "regroup_roots": 1}
     if phase in link_order:
-        return StageUnits("link", "passes", link_order[phase], 3)
+        return StageUnits("link", "passes", link_order[phase], 2)
+    if phase == "infer_trace_links":
+        return StageUnits("link", "passes", 2, 2, complete=True)
 
     return None
 
@@ -212,6 +215,8 @@ class StageCounter:
 
     def advance(self, stage: str, count: int) -> None:
         with self._lock:
+            if stage in self._complete:
+                return  # a worker that finishes after its stage was closed (a late chunk) must not publish again
             self._finished[stage] = self._finished.get(stage, 0) + max(0, int(count))
         self._publish(stage, force=True)
 
