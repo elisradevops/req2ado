@@ -98,7 +98,7 @@ function SectionResultRow({ item }: { item: SectionResultEntry }): React.ReactEl
             const note = describeStepKbGrounding(item.kbFilesAvailable, item.kbCitations.length, item.kbGrounded);
             return item.kbGrounded && item.kbCitations.length > 0 ? (
               <div className="flex flex-wrap items-center gap-1.5">
-                <span className="text-xs text-ink-3">{note ? `${note.text}:` : 'Grounded against:'}</span>
+                <span className="text-xs text-ink-3">{note ? `${note.text}:` : 'Used:'}</span>
                 {item.kbCitations.map((citation) => (
                   <Chip
                     key={citation.sourceFile}
@@ -113,7 +113,7 @@ function SectionResultRow({ item }: { item: SectionResultEntry }): React.ReactEl
               </div>
             ) : (
               <p className="text-xs text-ink-3">
-                {note ? note.text : 'Not grounded against your knowledge base for this section.'}
+                {note ? note.text : 'Did not use your knowledge base for this section.'}
               </p>
             );
           })()}

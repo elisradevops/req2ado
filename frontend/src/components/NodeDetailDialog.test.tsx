@@ -116,6 +116,25 @@ describe('NodeDetailDialog', () => {
     expect(screen.getAllByText('Functional and Performance')).toHaveLength(1);
   });
 
+  it('says "No issues flagged." for a clean new Requirement, so the text keeps its place, and nothing for an Epic', () => {
+    const { unmount } = renderDialog({ jobStatus: 'diff_ready' });
+    expect(screen.getByTestId('issues-clean')).toBeInTheDocument();
+    unmount();
+    renderDialog({ entry: { ...ENTRY, type: 'Epic' }, jobStatus: 'diff_ready' });
+    expect(screen.queryByTestId('issues-clean')).not.toBeInTheDocument();
+  });
+
+  it('hides the keyboard button on a phone and points to Settings to turn the shortcuts off', async () => {
+    renderDialog({ onNavigate: vi.fn() });
+    const button = screen.getByRole('button', { name: /keyboard shortcuts/i });
+    expect(button).toHaveClass('max-md:hidden');
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await userEvent.click(button);
+    const link = await screen.findByRole('link', { name: 'Settings' });
+    expect(link).toHaveAttribute('href', '/settings');
+    expect(link).toHaveAttribute('target', '_blank');
+  });
+
   it('has no Source column for an item without a source location, or for an Epic', () => {
     const { unmount } = renderDialog({ entry: { ...ENTRY, sourceRef: undefined } });
     expect(screen.queryByRole('region', { name: 'Source' })).not.toBeInTheDocument();

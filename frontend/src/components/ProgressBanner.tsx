@@ -706,7 +706,7 @@ export function ProgressBanner({
                   const note = describeStepKbGrounding(latest!.kbFilesAvailable, latest!.kbCitations.length, latest!.kbGrounded);
                   return latest!.kbGrounded && latest!.kbCitations.length > 0 ? (
                     <>
-                      <span className='text-xs text-ink-3'>{note ? `${note.text}:` : 'Grounded against:'}</span>
+                      <span className='text-xs text-ink-3'>{note ? `${note.text}:` : 'Used:'}</span>
                       {latest!.kbCitations.map((citation) => (
                         <Chip
                           key={citation.sourceFile}
@@ -724,7 +724,7 @@ export function ProgressBanner({
                       color='var(--color-ink-3)'
                       className='h-auto max-w-full whitespace-normal rounded-md border border-hairline-strong text-meta font-normal'
                     >
-                      {note ? note.text : 'Not grounded against your knowledge base for this step'}
+                      {note ? note.text : 'Did not use your knowledge base for this step'}
                     </Chip>
                   );
                 })()}

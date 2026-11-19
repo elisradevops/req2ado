@@ -28,6 +28,7 @@ export interface IssueEntry {
   duplicateOf?: { existingAdoId?: number | null } | null;
 }
 
+const MAX_NAME_CHARS = 48;
 const ORDER: Record<IssueSeverity, number> = { fix: 0, review: 1, info: 2 };
 
 export function itemIssues(entry: IssueEntry): ItemIssue[] {
@@ -52,11 +53,15 @@ export function itemIssues(entry: IssueEntry): ItemIssue[] {
     } else if (entry.qualityScore != null) {
       if (isLowQualityEntry(entry)) {
         const weakest = weakestCategory(entry.qualityCategoryScores);
+        // An organisation's own check can be a whole sentence: the line keeps its start and the full text goes under "Why".
+        const name = weakest ? categoryLabel(weakest.key).toLowerCase().replace(/[.?!。]+$/, '') : '';
+        const shortName = name.length > MAX_NAME_CHARS ? `${name.slice(0, MAX_NAME_CHARS - 1).trimEnd()}…` : name;
         issues.push({
           id: 'quality-low',
           severity: 'review',
           askable: true,
-          text: `Quality ${Math.round(entry.qualityScore)} of 100.${weakest ? ` Weakest: ${categoryLabel(weakest.key).toLowerCase().replace(/[.?!。]+$/, '')} (${Math.round(weakest.score)}).` : ''}`,
+          text: `Quality ${Math.round(entry.qualityScore)} of 100.${weakest ? ` Weakest: ${shortName} (${Math.round(weakest.score)}).` : ''}`,
+          ...(weakest && shortName !== name ? { why: `The weakest check is "${name}", at ${Math.round(weakest.score)} of 100.` } : {}),
         });
       }
       if (entry.qualityConfidence === 'low') {

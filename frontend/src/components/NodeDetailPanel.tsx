@@ -962,7 +962,7 @@ export function NodeDetailPanel({
   );
 
   return (
-    <div ref={panelRootRef} tabIndex={-1} data-node-detail-panel className="@container flex flex-col gap-3 p-5 outline-none">
+    <div ref={panelRootRef} tabIndex={-1} data-node-detail-panel className="@container flex flex-col gap-3 px-5 pb-5 pt-1 outline-none">
       {/* Edit sits right next to the title it edits -- it used to be a lone
           button at the very bottom of the pane, past description/quality/
           trace-links/sources, disconnected from what it acts on. */}
@@ -974,7 +974,7 @@ export function NodeDetailPanel({
           </Button>
         </div>
       )}
-      <IssuesList issues={issues} onAsk={onAskAssistant} />
+      <IssuesList issues={issues} onAsk={onAskAssistant} showWhenClean={!isParentEntry && canEdit} />
       {duplicateSlot}
       {/* 'excluded' has no message of its own here -- the dialog header
           already shows a dedicated "Excluded from this run" badge right

@@ -82,7 +82,7 @@ export function KbReadinessStrip(): React.ReactElement {
       <div className="flex flex-wrap items-center gap-2">
         {documents.length === 0 ? (
           <span className="text-xs text-warning-ink">
-            Your knowledge base is empty — this run won't be grounded against your standards.
+            Your knowledge base is empty — this run won't draw on your standards.
           </span>
         ) : (
           <Chip bg="var(--color-surface)" color="var(--color-ink-2)" className="border border-hairline-strong text-xs font-normal tabular-nums">

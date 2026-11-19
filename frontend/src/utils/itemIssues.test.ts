@@ -48,3 +48,18 @@ describe('missingValuesOf', () => {
     expect(missingValuesOf(undefined)).toEqual([]);
   });
 });
+
+describe('itemIssues with a long organisation-defined category name', () => {
+  it('keeps the line short and puts the full name under Why', () => {
+    const long = 'Numerical limits include units, tolerances, and measurement point.';
+    const [issue] = itemIssues({ type: 'Requirement', qualityScore: 45, qualityCategoryScores: { [long]: 30 } });
+    expect(issue.text.length).toBeLessThan(90);
+    expect(issue.text).toMatch(/^Quality 45 of 100\. Weakest: numerical limits include units, tolerances, and… \(30\)\.$/);
+    expect(issue.why).toBe('The weakest check is "numerical limits include units, tolerances, and measurement point", at 30 of 100.');
+  });
+
+  it('adds no Why for a short name', () => {
+    const [issue] = itemIssues({ type: 'Requirement', qualityScore: 45, qualityCategoryScores: { testability: 30 } });
+    expect(issue.why).toBeUndefined();
+  });
+});

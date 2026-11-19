@@ -992,7 +992,7 @@ describe('ProgressBanner', () => {
       />,
     );
     expect(screen.getByText(/no fixed step count to measure against/i)).toBeInTheDocument();
-    expect(screen.queryByText(/not grounded against your knowledge base/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/did not use your knowledge base/i)).not.toBeInTheDocument();
   });
 
   it('renders a parse_done narration with real block/table/figure counts', () => {
@@ -1024,7 +1024,7 @@ describe('ProgressBanner', () => {
         ]}
       />,
     );
-    expect(screen.getByText('Grounded against:')).toBeInTheDocument();
+    expect(screen.getByText('Used:')).toBeInTheDocument();
     // similarity must be VISIBLE text, not only a hover title attribute
     // (DESIGN.md Track B, phase B6) -- matched as one chip's full content.
     expect(screen.getByText('requirements-standard.pdf · 82%')).toBeInTheDocument();
@@ -1041,7 +1041,7 @@ describe('ProgressBanner', () => {
         ]}
       />,
     );
-    expect(screen.getByText(/not grounded against your knowledge base/i)).toBeInTheDocument();
+    expect(screen.getByText(/did not use your knowledge base/i)).toBeInTheDocument();
   });
 
   it('shows cited-of-available KB files when the backend reports how many were available', () => {
@@ -1059,7 +1059,7 @@ describe('ProgressBanner', () => {
         ]}
       />,
     );
-    expect(screen.getByText('Grounded against 1 of 3 KB files:')).toBeInTheDocument();
+    expect(screen.getByText('Used 1 of 3 KB files:')).toBeInTheDocument();
   });
 
   it('says how many KB files were available when a step was not grounded', () => {
@@ -1073,7 +1073,7 @@ describe('ProgressBanner', () => {
         ]}
       />,
     );
-    expect(screen.getByText('Not grounded against your knowledge base for this step (3 files available)')).toBeInTheDocument();
+    expect(screen.getByText('Did not use your knowledge base for this step (3 files available)')).toBeInTheDocument();
   });
 
   it('says the knowledge base is empty when zero files are available', () => {

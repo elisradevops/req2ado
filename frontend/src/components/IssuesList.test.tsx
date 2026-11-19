@@ -37,3 +37,12 @@ describe('IssuesList', () => {
     expect(screen.getByRole('button', { name: /why/i })).toBeInTheDocument();
   });
 });
+
+describe('IssuesList for a clean item', () => {
+  it('says so when asked, so the text under it keeps its place, and says nothing by default', () => {
+    const { rerender, container } = render(<IssuesList issues={[]} showWhenClean />);
+    expect(screen.getByTestId('issues-clean')).toHaveTextContent('No issues flagged.');
+    rerender(<IssuesList issues={[]} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+});

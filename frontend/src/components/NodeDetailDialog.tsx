@@ -537,7 +537,7 @@ export function NodeDetailDialog({
             {shortcutsEnabled && keyHints.length > 0 && (
               <Popover.Root>
                 <Popover.Trigger asChild>
-                  <Button size="sm" variant="ghost" aria-label="Keyboard shortcuts">
+                  <Button size="sm" variant="ghost" aria-label="Keyboard shortcuts" className="max-md:hidden">
                     <Keyboard className="h-4 w-4" aria-hidden="true" />
                   </Button>
                 </Popover.Trigger>
@@ -552,6 +552,13 @@ export function NodeDetailDialog({
                         </li>
                       ))}
                     </ul>
+                    <p className="mt-2 border-t border-hairline pt-2 text-xs text-ink-3">
+                      Turn these off in{' '}
+                      <a href="/settings" target="_blank" rel="noreferrer" className="text-accent underline underline-offset-2">
+                        Settings
+                      </a>
+                      .
+                    </p>
                   </Popover.Content>
                 </Popover.Portal>
               </Popover.Root>

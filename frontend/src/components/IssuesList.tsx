@@ -1,4 +1,4 @@
-import { CircleAlert, Info, TriangleAlert } from 'lucide-react';
+import { Check, CircleAlert, Info, TriangleAlert } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { Disclosure } from '../ui/Disclosure';
 import { cn } from '../lib/cn';
@@ -9,8 +9,16 @@ import type { ItemIssue } from '../utils/itemIssues';
 const ICON = { fix: CircleAlert, review: TriangleAlert, info: Info } as const;
 const TONE = { fix: 'text-danger-ink', review: 'text-warning-ink', info: 'text-ink-2' } as const;
 
-export function IssuesList({ issues, onAsk }: { issues: ItemIssue[]; onAsk?: () => void }): React.ReactElement | null {
-  if (issues.length === 0) return null;
+export function IssuesList({ issues, onAsk, showWhenClean = false }: { issues: ItemIssue[]; onAsk?: () => void; showWhenClean?: boolean }): React.ReactElement | null {
+  // A clean item still says so when asked (`showWhenClean`), so the text under it keeps its place as the reviewer steps from item to item.
+  if (issues.length === 0) {
+    return showWhenClean ? (
+      <p data-testid="issues-clean" className="flex items-center gap-2 px-2.5 py-1.5 text-sm text-ink-3">
+        <Check aria-hidden="true" className="h-3.5 w-3.5 flex-none" />
+        No issues flagged.
+      </p>
+    ) : null;
+  }
   return (
     <ul aria-label="Issues" className="flex flex-col gap-1.5 rounded-sm border border-hairline bg-surface-alt p-2.5">
       {issues.map((issue) => {
