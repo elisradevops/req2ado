@@ -215,6 +215,8 @@ class StageCounter:
 
     def advance(self, stage: str, count: int) -> None:
         with self._lock:
+            if stage in self._complete:
+                return  # a worker that finishes after its stage was closed (a late chunk) must not publish again
             self._finished[stage] = self._finished.get(stage, 0) + max(0, int(count))
         self._publish(stage, force=True)
 

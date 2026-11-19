@@ -250,3 +250,19 @@ def test_flag_on_adds_units_without_touching_the_browser_channel(monkeypatch) ->
     browser_on[0].pop("emittedAt")
     assert browser_on[0] == browser_off[0]
     assert [c for c, _ in on.published] == ["job-events:job-1", "job-events:job-1:units"]
+
+
+def test_a_late_report_for_a_stage_that_is_already_complete_publishes_nothing() -> None:
+    from app.leveling.stage_units import StageCounter
+
+    redis = _FakeRedis()
+    counter = StageCounter(redis, "job-late", clock=lambda: 0.0)
+    counter.set_total("criteria", 10)
+    counter.advance("criteria", 4)
+    counter.complete("criteria")
+    published_before = len(redis.published)
+
+    counter.advance("criteria", 6)  # a worker that finished after the stage was closed
+
+    assert len(redis.published) == published_before
+    assert redis.published[-1][1]["complete"] is True

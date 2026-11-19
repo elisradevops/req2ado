@@ -298,4 +298,10 @@ describe('markedTokens', () => {
     const { container } = render(<DescriptionMarkdown markedTokens={['??', '***']}>{'Value ?? and *** here'}</DescriptionMarkdown>);
     expect(Array.from(container.querySelectorAll('mark')).map((m) => m.textContent)).toEqual(['??', '***']);
   });
+
+  it('does not mark a lone letter used as a unit right after a number, but still marks it elsewhere and marks longer tokens after a number', () => {
+    const { container } = render(<DescriptionMarkdown markedTokens={['N', 'TBD']}>{'Force of 10 N and 5N, within N ms, after 5 TBD.'}</DescriptionMarkdown>);
+    expect(Array.from(container.querySelectorAll('mark')).map((m) => m.textContent)).toEqual(['N', 'TBD']);
+    expect(container.textContent).toContain('10 N and 5N');
+  });
 });

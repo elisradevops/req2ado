@@ -46,7 +46,13 @@ const CHAT_MARKDOWN_COMPONENTS: Components = {
 // sees which words the "missing value" issue is about. Text only: other elements are passed through untouched, and the mark is a word-bearing
 // element with a title, never colour alone.
 function markTokens(children: ReactNode, tokens: readonly string[]): ReactNode {
-  const escaped = tokens.filter(Boolean).map((token) => token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const escaped = tokens
+    .filter(Boolean)
+    // A lone letter right after a number is a unit ("10 N", "5N"), not a value left open, so it is not marked there.
+    .map((token) => {
+      const literal = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return [...token].length === 1 && /\p{L}/u.test(token) ? `(?<!\\d\\s?)${literal}` : literal;
+    });
   if (escaped.length === 0) return children;
   const pattern = new RegExp(`(?<![\\p{L}\\p{N}])(${escaped.join('|')})(?![\\p{L}\\p{N}])`, 'gu');
   const walk = (node: ReactNode): ReactNode => {
