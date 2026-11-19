@@ -2705,6 +2705,14 @@ export function JobDetail(): React.ReactElement {
           onKeyBlocked: () => announceAgain('This item has to be fixed or kept as written. Press the Keep as written button, or edit it.'),
         }
       : {};
+  // An item opened from the tree can be reviewed from the dialog while it is a new item, still in review, and neither it nor a parent is excluded.
+  const treeReviewEntry = (() => {
+    if (!selectedId || status !== 'diff_ready') return undefined;
+    const entry = diff.find((candidate) => candidate.localId === selectedId);
+    if (!entry || entry.action !== 'create') return undefined;
+    const byId = new Map(diff.map((candidate) => [candidate.localId, candidate] as const));
+    return isExcludedWithAncestors(entry, byId, new Map()) ? undefined : entry;
+  })();
   const dialogReview =
     queueMode && selectedId && status === 'diff_ready'
       ? {
@@ -2739,17 +2747,23 @@ export function JobDetail(): React.ReactElement {
           onMark: handleMarkSelectedReviewedAndNext,
           onUnmark: () => void handleSetReviewed([selectedId], false),
         }
-      : selectedId && status === 'diff_ready' && diff.find((entry) => entry.localId === selectedId)?.action === 'create' && !diff.find((entry) => entry.localId === selectedId)?.excluded
+      : treeReviewEntry
       ? {
           // Opened from the tree: the same two decisions, in the same place, without the queue's stepping on.
-          ...keepAsWrittenProps(selectedId),
-          reviewed: reviewedIds.has(selectedId),
+          ...keepAsWrittenProps(selectedId!),
+          reviewed: reviewedIds.has(selectedId!),
           busy: isDiffMutating,
           onBusyAttempt: () => announceAgain('Still saving. Try again.'),
-          onMark: () => void handleSetReviewed([selectedId], true, { method: 'single' }),
-          onUnmark: () => void handleSetReviewed([selectedId], false),
-          onReject: () => void handleToggleExclude(selectedId, true),
-          markLabel: keepAsWrittenProps(selectedId).markLabel ?? 'Mark reviewed',
+          onMark: () => void handleSetReviewed([selectedId!], true, { method: 'single' }),
+          onUnmark: () => void handleSetReviewed([selectedId!], false),
+          // X is a single key, so an exclude from here says what it did and offers the way back.
+          onReject: () => {
+            const { localId, title } = treeReviewEntry;
+            void handleToggleExclude(localId, true).then(() =>
+              showToast(`Excluded "${title}".`, 'success', { label: 'Undo', onAction: () => void handleToggleExclude(localId, false) }),
+            );
+          },
+          markLabel: keepAsWrittenProps(selectedId!).markLabel ?? 'Mark reviewed',
           markHint: 'mark reviewed',
           rejectLabel: 'Exclude',
         }

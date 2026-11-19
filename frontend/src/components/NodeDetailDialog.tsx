@@ -313,7 +313,7 @@ export function NodeDetailDialog({
       if (target?.closest?.(WIDGET_ROLE_SELECTOR)) return;
       const is = (letter: string): boolean => matchesShortcutLetter(event, letter);
       // A held A, R or X must not mark or exclude the whole queue at key-repeat speed.
-      if (event.repeat && (is('r') || is('a') || is('x') || is('u') || is('e'))) return;
+      if (event.repeat && (is('r') || is('a') || is('x') || is('u') || is('e') || is('c'))) return;
       if (is('c') && entryAskable) {
         event.preventDefault();
         setAssistantOpen((value) => !value);

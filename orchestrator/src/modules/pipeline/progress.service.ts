@@ -199,6 +199,8 @@ export class ProgressTracker {
 
   /** Returns an event only when the percentage or the stage changed. */
   ingest(units: ProgressUnits): ProgressEvent | null {
+    // A step's worker can report once more after the run is over (a late criteria chunk): it must not reopen a finished run.
+    if (this.finished) return null;
     this.setUnits(units);
     const overall = computeOverall(this.seen, units);
     // 100 is reserved for finish(): the run is not done until the diff is ready.

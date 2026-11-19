@@ -46,6 +46,26 @@ describe('NodeDetailPanel discussion list', () => {
     await vi.waitFor(() => expect(box).toHaveValue(''));
   });
 
+  it('does not clear the next item\'s draft when a save for the previous item finishes after stepping on', async () => {
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const onAddDiscussion = vi.fn().mockReturnValue(pending);
+    const { rerender } = renderPanel(base, { onAddDiscussion });
+    await userEvent.type(screen.getByLabelText('Add a question or note for the author'), 'for A');
+    await userEvent.click(screen.getByRole('button', { name: 'Add to discussion' }));
+    rerender(
+      <ToastProvider>
+        <NodeDetailPanel entry={{ ...base, localId: 'e2', title: 'Other' }} jobStatus="diff_ready" onAddDiscussion={onAddDiscussion} />
+      </ToastProvider>,
+    );
+    const box = screen.getByLabelText('Add a question or note for the author');
+    await userEvent.type(box, 'for B');
+    finish();
+    await vi.waitFor(() => expect(box).toHaveValue('for B'));
+  });
+
   it('keeps the typed note when adding it fails', async () => {
     renderPanel(base, { onAddDiscussion: vi.fn().mockRejectedValue(new Error('refused')) });
     const box = screen.getByLabelText('Add a question or note for the author');

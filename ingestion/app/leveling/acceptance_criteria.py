@@ -225,11 +225,6 @@ def unmistakable_markers(plain_text: str) -> list[str]:
     return found
 
 
-def _missing_value(label: str) -> str:
-    """"number:7" -> "7", "unit:mA" -> "mA": the value a criterion stated that the input does not."""
-    return label.split(":", 1)[1] if ":" in label else label
-
-
 def _needs_input_section(tokens: list[str]) -> str:
     """The needs-input note. Each missing value sits in its own `data-missing-value` span so the screen can name it; the sentence reads the
     same as plain text."""
@@ -514,7 +509,6 @@ def propose_acceptance_criteria(
                 continue
             assumptions = _strings(answer.get("assumptions"))
             grounding = groundings[node.local_id]
-            missing = [_missing_value(label) for c in criteria for label in ungrounded(c, grounding)]
             kept = [c for c in criteria if not ungrounded(c, grounding)]
             invented_assumption = any(ungrounded(a, grounding) for a in assumptions)
             if len(kept) < len(criteria):
@@ -525,7 +519,9 @@ def propose_acceptance_criteria(
                 if invented_assumption and len(kept) == len(criteria):
                     dropped_nodes.append(node.local_id)
                     assumption_only += 1
-                _append(node, _needs_input_section(missing + _strings(answer.get("missing"))))
+                # Only what the model says is missing from the requirement: a value one of ITS criteria invented (the ungrounded ones)
+                # is not something the requirement leaves open, and naming it would present an invented number as the author's gap.
+                _append(node, _needs_input_section(_strings(answer.get("missing"))))
                 needs_input += 1
                 continue
             body = f"<p><b>{SECTION_TITLE}</b></p>{_list_html(kept)}"

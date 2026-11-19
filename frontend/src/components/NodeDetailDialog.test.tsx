@@ -851,6 +851,12 @@ describe('NodeDetailDialog', () => {
     expect(screen.getByPlaceholderText(/ask the assistant/i)).toHaveValue('c');
   });
 
+  it('ignores a held C (key repeat), so the drawer does not flicker open and closed', () => {
+    renderDialog({ onNavigate: vi.fn() });
+    fireEvent.keyDown(window, { key: 'c', repeat: true });
+    expect(screen.queryByPlaceholderText(/ask the assistant/i)).not.toBeInTheDocument();
+  });
+
   it('closes only the assistant on Escape, and the dialog on the next Escape', async () => {
     const onOpenChange = vi.fn();
     renderDialog({ onOpenChange });

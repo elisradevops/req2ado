@@ -71,7 +71,8 @@ export function EvidenceStrip({
     </div>
   ) : null;
 
-  const source = useEntrySource(jobId, entry);
+  // The Source column fetches the wording itself; fetching it here too would send every request twice.
+  const source = useEntrySource(sourceInPane ? undefined : jobId, entry);
   const sourceFade = useSkeletonCrossfade(source === undefined);
   let sourceLine: React.ReactNode = null;
   if (entry.sourceRef && source === undefined) {

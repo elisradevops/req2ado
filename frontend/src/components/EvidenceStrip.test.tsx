@@ -346,3 +346,12 @@ describe('EvidenceStrip quote for an Epic or Feature', () => {
     expect(screen.getByText(/original wording is in the source file/i)).toBeInTheDocument();
   });
 });
+
+describe('EvidenceStrip when the Source column owns the wording', () => {
+  it('does not fetch the source itself, so a request is not sent twice', () => {
+    vi.mocked(getEntrySource).mockReset();
+    vi.mocked(getEntrySource).mockResolvedValue({ kind: 'text', text: 'x', truncated: false });
+    render(<EvidenceStrip collapsible sourceInPane jobId="job-1" jobMode="survey" entry={{ ...BASE, localId: 'a', sourceRef: REF }} />);
+    expect(getEntrySource).not.toHaveBeenCalled();
+  });
+});

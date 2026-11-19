@@ -474,4 +474,11 @@ describe('trace linking and acceptance criteria count their own items (no platea
     const seen = seenOf(units('score', 10, 10, { complete: true }), units('link', 2, 2, { complete: true }), units('trace', 10, 10, { complete: true }), units('criteria', 0, 0, { complete: true }));
     expect(computeOverall(seen).value).toBeGreaterThan(0.97);
   });
+
+  it('ignores a step that reports after the run has finished', () => {
+    const tracker = new ProgressTracker(() => new Date('2026-01-01T00:00:00Z'));
+    tracker.ingest(units('score', 10, 10, { complete: true }));
+    expect(tracker.finish()?.pct).toBe(100);
+    expect(tracker.ingest(units('criteria', 3, 10))).toBeNull();
+  });
 });

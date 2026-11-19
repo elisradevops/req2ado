@@ -259,7 +259,13 @@ export function NodeDetailPanel({
   const [editing, setEditing] = useState(false);
   const [noteDraft, setNoteDraft] = useState('');
   const [notePending, setNotePending] = useState(false);
-  useEffect(() => setNoteDraft(''), [entry?.localId]);
+  // The note box belongs to one item: stepping on clears it, and a save that finishes after the step must not clear the next item's draft.
+  const noteEntryRef = useRef(entry?.localId);
+  noteEntryRef.current = entry?.localId;
+  useEffect(() => {
+    setNoteDraft('');
+    setNotePending(false);
+  }, [entry?.localId]);
   const [draftTitle, setDraftTitle] = useState('');
   const [draftDescription, setDraftDescription] = useState('');
   // Requirement-only (see WorkItemNode.customer_id's own docstring, ingestion
@@ -1081,8 +1087,11 @@ export function NodeDetailPanel({
                 const text = noteDraft.trim();
                 if (!text || notePending || !onAddDiscussion) return;
                 setNotePending(true);
-                void Promise.resolve(onAddDiscussion(entry.localId, { proposedDescription: text }))
-                  .then(() => setNoteDraft(''))
+                const forEntry = entry.localId;
+                void Promise.resolve(onAddDiscussion(forEntry, { proposedDescription: text }))
+                  .then(() => {
+                    if (noteEntryRef.current === forEntry) setNoteDraft('');
+                  })
                   .catch(() => undefined) // the caller already shows the failure; the note stays in the box
                   .finally(() => setNotePending(false));
               }}

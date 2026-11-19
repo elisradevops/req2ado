@@ -1373,7 +1373,8 @@ def test_needs_input_names_the_values_the_model_says_are_missing() -> None:
     assert '<span data-missing-value="the cooling time">the cooling time</span>' in node.description
 
 
-def test_needs_input_names_the_value_a_dropped_criterion_stated_without_support() -> None:
+def test_needs_input_never_names_a_value_one_of_the_models_own_criteria_invented() -> None:
+    # "7" is what the model made up, not something the requirement leaves open: it must not appear as a missing value.
     node = _node("a", description="<p>The unit shall boot reliably.</p>", issues=[Issue.NOT_TESTABLE])
     client = _Client(
         {"a": {"criteria": ["Boot completes within 7 seconds"], "assumptions": [], "needs_author_input": False}}
@@ -1381,7 +1382,28 @@ def test_needs_input_names_the_value_a_dropped_criterion_stated_without_support(
 
     propose_acceptance_criteria([node], _study(), client, [], table_text=lambda _id: None)
 
-    assert '<span data-missing-value="7">7</span>' in node.description
+    assert "data-missing-value" not in node.description
+    assert "7" not in node.description.split("</p>", 1)[1]
+    assert "needs a value that the text does not provide" in node.description
+
+
+def test_needs_input_after_a_dropped_criterion_still_names_what_the_model_says_is_missing() -> None:
+    node = _node("a", description="<p>The unit shall boot reliably.</p>", issues=[Issue.NOT_TESTABLE])
+    client = _Client(
+        {
+            "a": {
+                "criteria": ["Boot completes within 7 seconds"],
+                "assumptions": [],
+                "needs_author_input": False,
+                "missing": ["the boot time limit"],
+            }
+        }
+    )
+
+    propose_acceptance_criteria([node], _study(), client, [], table_text=lambda _id: None)
+
+    assert '<span data-missing-value="the boot time limit">the boot time limit</span>' in node.description
+    assert "7" not in node.description.split("</p>", 1)[1]
 
 
 def test_the_step_counts_its_own_items_through_the_stage_counter(monkeypatch) -> None:  # noqa: ANN001

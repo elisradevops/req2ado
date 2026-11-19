@@ -203,6 +203,60 @@ describe('JobDetail', () => {
     setReviewed.mockRestore();
   });
 
+  it('excludes a tree-opened item from the dialog with a toast that offers Undo', async () => {
+    const plain = { localId: 'r1', parentLocalId: 'e1', type: 'Requirement', title: 'Plain item', description: 'Body', action: 'create', customerId: null, tags: [] };
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-excl', status: 'diff_ready',
+      dryRunDiff: [{ localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Parent epic', description: '', action: 'create', customerId: null, tags: [] }, plain],
+    } as any);
+    const chatApi = await import('../api/chat');
+    vi.mocked(chatApi.getChatHistory).mockResolvedValue([]);
+    vi.mocked(chatApi.listModels).mockResolvedValue([]);
+    const exclude = vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockImplementation(async (_id, localId, excluded) => ({
+      dryRunDiff: [{ localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Parent epic', description: '', action: 'create', customerId: null, tags: [] }, { ...plain, excluded: excluded && localId === 'r1' }],
+    }) as any);
+    renderAt('job-excl');
+    await waitFor(() => expect(screen.getByText('Plain item')).toBeInTheDocument());
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await openNodeDetails(userEvent, 'Plain item');
+    await userEvent.click(await screen.findByRole('button', { name: 'Exclude' }));
+    expect(await screen.findByText('Excluded "Plain item".')).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole('button', { name: 'Undo', hidden: true }));
+    await waitFor(() => expect(exclude).toHaveBeenLastCalledWith('job-excl', 'r1', false));
+    exclude.mockRestore();
+  });
+
+  it('offers no decision bar for an item whose parent is excluded: the write drops it anyway', async () => {
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-anc', status: 'diff_ready',
+      dryRunDiff: [
+        { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Excluded epic', description: '', action: 'create', customerId: null, tags: [], excluded: true },
+        { localId: 'r1', parentLocalId: 'e1', type: 'Requirement', title: 'Child item', description: 'Body', action: 'create', customerId: null, tags: [] },
+      ],
+    } as any);
+    const chatApi = await import('../api/chat');
+    vi.mocked(chatApi.getChatHistory).mockResolvedValue([]);
+    vi.mocked(chatApi.listModels).mockResolvedValue([]);
+    renderAt('job-anc');
+    await waitFor(() => expect(screen.getByText('Child item')).toBeInTheDocument());
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await openNodeDetails(userEvent, 'Child item');
+    await screen.findByRole('dialog');
+    expect(screen.queryByRole('group', { name: 'Review decision' })).not.toBeInTheDocument();
+  });
+
+  it('shows the warnings card open for a finished job, which is not foldable (no test helper opening it)', async () => {
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-done', status: 'succeeded',
+      dryRunDiff: [{ localId: 'r1', parentLocalId: null, type: 'Requirement', title: 'Done item', description: 'Body', action: 'create', customerId: null, tags: [] }],
+      warnings: [{ kind: 'low_grounding', severity: 'needs_review', nodeIds: ['r1'], detail: {}, raw: 'Low overlap.' }],
+    } as any);
+    renderAt('job-done', { keepWarningsFolded: true });
+    await waitFor(() => expect(screen.getByText('Done item')).toBeInTheDocument());
+    expect(await screen.findByRole('region', { name: /integrity warnings/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^integrity warnings/i })).not.toBeInTheDocument();
+  });
+
   describe('proposal review gate (P9d)', () => {
     const proposal = { kind: 'criteria' as const, html: '<div data-r2a="criteria"><p><b>Proposed acceptance criteria</b></p><ul><li>Given X then Y</li></ul></div>' };
     const entry = { localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [], proposal };
