@@ -112,7 +112,8 @@ export function EvidenceStrip({
       <section aria-label="Evidence" className="flex flex-col gap-2 rounded-sm border border-hairline bg-surface-alt p-3 text-sm">
         {!sourceInPane && entry.sourceRef && <SourceProvenance sourceRef={entry.sourceRef} showScoringNote={false} />}
         {!sourceInPane && !entry.sourceRef && <p className="text-xs text-ink-3">No source location recorded.</p>}
-        {!sourceInPane && sourceLine}
+        {/* An Epic or Feature is written from a whole section, so its quote can be pages long: it is there to open, not to read first. */}
+        {!sourceInPane && sourceLine && (isScoredType(entry.type) ? sourceLine : <Disclosure title="Section text" className="bg-surface"><div className="p-2.5">{sourceLine}</div></Disclosure>)}
         {hasWhy && (
           <Disclosure
             title="How this was scored"

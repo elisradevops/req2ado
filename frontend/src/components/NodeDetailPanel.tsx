@@ -21,6 +21,7 @@ import { ProposalCard } from './ProposalCard';
 import { Chip } from '../ui/Chip';
 import { IssuesList } from './IssuesList';
 import { itemIssues } from '../utils/itemIssues';
+import { missingValuesOf } from '../utils/proposal';
 import { Tooltip } from '../ui/Tooltip';
 import { DescriptionMarkdown, Markdown } from '../ui/Markdown';
 import { cn } from '../lib/cn';
@@ -391,6 +392,8 @@ export function NodeDetailPanel({
   // that score, are never a reason to review it; loose wording against the source still is.
   const isParentEntry = entry.type === 'Epic' || entry.type === 'Feature';
   const issues = itemIssues(entry);
+  // The values the source left open are marked in the text, so the "Missing value" issue points at words.
+  const missingTokens = entry.proposal?.kind === 'needs-input' ? missingValuesOf(entry.proposal.html) : [];
   // A note can be parked for a new item that is still being reviewed (the server accepts discussion on creates only).
   const canDiscuss = canEdit && entry.action === 'create' && !!onAddDiscussion;
   // An Epic or Feature whose description only repeats its title says nothing the header does not.
@@ -864,7 +867,7 @@ export function NodeDetailPanel({
     <>
       {!echoesTitle && (
         <div className="w-full text-read text-ink-2 [&>*]:max-w-[68ch] [&>*:dir(rtl)]:me-auto">
-          <DescriptionMarkdown>{entry.description}</DescriptionMarkdown>
+          <DescriptionMarkdown markedTokens={missingTokens}>{entry.description}</DescriptionMarkdown>
         </div>
       )}
         <ProposalCard

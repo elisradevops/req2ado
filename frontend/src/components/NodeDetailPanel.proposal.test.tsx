@@ -156,3 +156,11 @@ describe('NodeDetailPanel written entry', () => {
     expect(screen.getByRole('button', { name: /undo/i })).toBeInTheDocument();
   });
 });
+
+describe('NodeDetailPanel marks the values a needs-input note names', () => {
+  it('marks them in the item text', () => {
+    const html = '<div data-r2a="needs-input"><p><b>Needs author input</b></p><p>Unresolved value(s) in this requirement: <span data-missing-value="N">N</span>. Acceptance criteria were not proposed.</p></div>';
+    renderPanel({ ...base, description: 'The unit shall boot within N ms.', proposal: { kind: 'needs-input', html } });
+    expect(screen.getAllByText('N').some((el) => el.tagName === 'MARK')).toBe(true);
+  });
+});

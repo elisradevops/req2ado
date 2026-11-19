@@ -332,3 +332,17 @@ describe('EvidenceStrip for an Epic or Feature', () => {
     expect(screen.queryByRole('button', { name: /how this was scored/i })).not.toBeInTheDocument();
   });
 });
+
+describe('EvidenceStrip quote for an Epic or Feature', () => {
+  it('keeps the location in view and the section text behind a closed "Section text" disclosure', () => {
+    render(<EvidenceStrip collapsible jobMode="survey" entry={{ ...BASE, type: 'Feature', sourceRef: REF }} />);
+    expect(screen.getByText('spec.docx')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /section text/i })).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('leaves a Requirement\'s source line open, with no disclosure around it', () => {
+    render(<EvidenceStrip collapsible jobMode="survey" entry={{ ...BASE, type: 'Requirement', sourceRef: REF }} />);
+    expect(screen.queryByRole('button', { name: /section text/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/original wording is in the source file/i)).toBeInTheDocument();
+  });
+});
