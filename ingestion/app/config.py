@@ -91,7 +91,7 @@ class Settings(BaseSettings):
     # Comma-separated pass names forced to "array" regardless of keyed_schema_mode, so a
     # deployment can enable ONE pass at a time and roll back with a config change only
     # (KEYED_SCHEMA_PASSES=title_tag). Unknown names are ignored. Pass names: title_tag, synthesis,
-    # parent_summary, kb_relevance, author_content, figure_table_mapping, scoring, epic_feature_scoring.
+    # parent_summary, kb_relevance, author_content, figure_table_mapping, scoring.
     keyed_schema_passes: str = ""
     # Per-model sizing overrides, as JSON: {"<model name>": {"context_budget_tokens": 150000, "branch_cap": 100000,
     # "supports_tools": true, "max_output_tokens": 16384}} (any subset of the keys). Matched on the model name as sent

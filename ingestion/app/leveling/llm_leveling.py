@@ -4323,8 +4323,8 @@ class FigureTableMappingClient(Protocol):
     Deliberately a SEPARATE, optional Protocol rather than a fourth method on
     SectionAnalysisClient: it is resolved off the analysis client by
     duck-typing at the call site (`getattr(analysis_client,
-    "map_figures_tables", None)`, the same convention _score_epics_and_features
-    already uses for its own late-added method), so a client that predates
+    "map_figures_tables", None)`, the same convention used for the other late-added
+    methods), so a client that predates
     this stage keeps working unchanged -- it simply gets no mapping, which is
     byte-identical to the state stage 2 was introduced to replace (every
     node's figure_ids/table_ids empty, nothing excluded)."""

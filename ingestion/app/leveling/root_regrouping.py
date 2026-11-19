@@ -260,10 +260,8 @@ def _regroup_disconnected_roots(
     This is the one exception to that policy, deliberately narrow: a
     synthesized grouping node here carries NO requirement text of its own
     (its description says so explicitly), contributes no fidelity_hash,
-    and is excluded from Epic/Feature scoring the same way a bridge
-    Feature already is (see _score_epics_and_features's own exclusion
-    check) -- it invents STRUCTURE only, never content. Every real leaf
-    still traces to a real source heading; only its ANCESTRY changes.
+    and is never scored (Epics and Features are not) -- it invents STRUCTURE only,
+    never content. Every real leaf still traces to a real source heading; only its ANCESTRY changes.
 
     Sends the LLM only the disconnected roots' own short TITLES (never
     full content) and asks for a topical grouping into a handful of
@@ -522,8 +520,7 @@ def _ensure_root_features_have_epic_parent(
     judgment call: every remaining root-level Feature (any count >= 1)
     is wrapped under ONE new catch-all root Epic, structure only, same
     "never invent content" discipline as every other synthetic node in
-    this module (excluded from scoring via the shared "synth_" local_id
-    marker, see _score_epics_and_features's own exclusion check)."""
+    this module (Epics and Features are not scored)."""
     if not any(n.type == WorkItemType.EPIC for n in nodes):
         return
     orphan_features = [

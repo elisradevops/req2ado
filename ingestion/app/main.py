@@ -392,7 +392,7 @@ _study_redis = redis.Redis.from_url(
 # that run on the same worker thread build_survey_tree itself runs on.
 _debug_capture = DebugCapture(_narration_redis)
 # S11: caches OrchestratorLlmClient's analyze_section/score_requirements_for_
-# document/score_epics_and_features_for_document calls -- same shared sync
+# document calls -- same shared sync
 # client as above (fail-open on any Redis error, see LlmResponseCache's own
 # docstring), not a separate connection.
 _llm_response_cache = LlmResponseCache(_narration_redis)

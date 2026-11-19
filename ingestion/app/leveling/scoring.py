@@ -2,12 +2,9 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Protocol, TypeVar
+from typing import Protocol, TypeVar
 
 import httpx
-
-if TYPE_CHECKING:
-    from app.debug_capture import DebugCapture
 
 from app.config import settings
 from app.leveling.bounded_chunks import run_chunks_bounded
@@ -27,7 +24,6 @@ from app.workitem.model import (
     RequirementQualityIssue,
     WarningKind,
     WorkItemNode,
-    WorkItemType,
 )
 
 logger = logging.getLogger(__name__)
@@ -477,8 +473,7 @@ def _score_all_requirements(
             # the rest of an already-mostly-complete SURVEY job. Requirement
             # quality scoring is an enhancement on top of the already-built
             # tree, never a dependency of its correctness -- same "must never
-            # fail a SURVEY job" philosophy _score_epics_and_features (below)
-            # already uses for the identical kind of call.
+            # fail a SURVEY job" philosophy.
             message = (
                 f"Requirement quality scoring failed for {len(chunk)} node(s): {outcome.error}"
             )
@@ -543,195 +538,6 @@ def _score_all_requirements(
                 detail={"scope": "job", "distinctKeySetCount": len(job_key_sets)},
             )
         )
-
-
-def _score_epics_and_features(
-    nodes: list[WorkItemNode],
-    scoring_client: object,
-    warnings: list[IntegrityWarning],
-    progress_callback: ProgressCallback | None,
-    model_name: str | None,
-    blocks_total: int,
-    branch_count: int,
-    debug_capture: DebugCapture | None = None,
-    # How many of this pass's independent chunks may be in flight at once
-    # (see app.config.Settings.survey_chunk_concurrency). 1 (the default)
-    # is the byte-identical previous behavior.
-    chunk_concurrency: int = 1,
-    user_id: str | None = None,
-) -> None:
-    """Epic/Feature quality review -- the counterpart to
-    _score_all_requirements, run separately (see
-    OrchestratorLlmClient.score_epics_and_features_for_document's own
-    docstring for why this is a different call/prompt, not the same one
-    widened). Optional capability: `scoring_client` is duck-typed via
-    getattr rather than a required Protocol method, since a test double (or
-    a future scoring backend) implementing only score_requirements_for_
-    document must keep working unchanged -- reusing this same object
-    (rather than a second constructor param) since the real
-    OrchestratorLlmClient implements both. Reuses the existing
-    score_requirements/score_requirements_done narration phases (no new
-    Phase enum value needed for what is, narration-wise, a brief
-    continuation of the same "scoring" activity) -- draft_count reflects
-    however many Epic/Feature nodes this pass covers, distinguishing it
-    from the Requirement pass's own count.
-
-    A failure here (network error, malformed response) is an enhancement
-    failing, never a reason to fail the whole SURVEY job -- caught, logged,
-    and warned, same tolerant philosophy as every other best-effort scoring
-    path in this module. quality_issues is deliberately left untouched
-    ([], its default) -- see epic_feature_scores_schema's own docstring for
-    why Epic/Feature review has no issues vocabulary.
-
-    Chunks may run concurrently, bounded by `chunk_concurrency` (see
-    app.config.Settings.survey_chunk_concurrency). Determinism is preserved
-    structurally: the client call is the only work off the calling thread,
-    outcomes come back by chunk INDEX rather than completion order, and
-    every mutation, warning append, and narration event happens in the
-    fixed-order merge loop -- so scores, warning order, and the narration
-    stream are byte-identical to a serial run. Per-chunk fail-soft is
-    unchanged."""
-    score_fn = getattr(scoring_client, "score_epics_and_features_for_document", None)
-    if score_fn is None:
-        return
-    epic_feature_types = (WorkItemType.EPIC, WorkItemType.FEATURE)
-    epic_feature_nodes = [
-        node
-        for node in nodes
-        if node.type in epic_feature_types
-        # Any mechanically-inserted grouping node -- a bridge Feature from
-        # _repair_requirement_hierarchy, a topical root-regrouping node
-        # from _regroup_disconnected_roots, or a catch-all root Epic from
-        # _ensure_root_features_have_epic_parent -- every one of these
-        # local_ids CONTAINS the substring "synth_" (never asserted via
-        # endswith, since each suffixes a real id or index after the
-        # marker). None was ever a real authorial decision -- each is a
-        # mechanically inserted node whose own description literally says
-        # so. Scoring any of them against scopeCoherence/capabilityClarity
-        # would produce a guaranteed-low, misleading score the reviewer
-        # can't act on, so all are excluded from Epic/Feature quality
-        # review entirely rather than scored and shown as if they were a
-        # real quality judgment.
-        and "synth_" not in node.local_id
-    ]
-    if not epic_feature_nodes:
-        return
-
-    total_epic_feature_nodes = len(epic_feature_nodes)
-    chunks = _chunk_by_count_and_chars(epic_feature_nodes, lambda node: len(node.description))
-    total_chunks = len(chunks)
-    chunk_start_offsets = [sum(len(c) for c in chunks[:i]) for i in range(len(chunks))]
-
-    def _fire(phase: Phase, chunk: list[WorkItemNode], nodes_done: int, chunk_index: int) -> None:
-        if progress_callback is None:
-            return
-        progress_callback(
-            LevelingProgress(
-                phase=phase,
-                branch_index=None,
-                branch_count=branch_count,
-                blocks_done=nodes_done,
-                blocks_total=total_epic_feature_nodes,
-                kb_grounded=False,
-                kb_citations=[],
-                model=model_name,
-                draft_count=len(chunk),
-                sample_titles=_sample_titles([n.title for n in chunk]),
-                chunk_index=chunk_index,
-                chunk_count=total_chunks,
-            )
-        )
-
-    # PHASE 1 -- chunk construction on the calling thread, in document order
-    # (see _score_all_requirements' own identical structure). The per-chunk
-    # PRE-dispatch narration event fires from the merge loop below, not
-    # here -- same reasoning, spelled out there.
-    payloads: list[dict[str, dict]] = [
-        {
-            node.local_id: {
-                "type": node.type.value,
-                "text": description_for_model(node.description),
-            }
-            for node in chunk
-        }
-        for chunk in chunks
-    ]
-
-    # PHASE 2 -- only the client call leaves the calling thread.
-    def _score_payload(nodes_by_id: dict[str, dict]) -> dict[str, dict]:
-        try:
-            return score_fn(nodes_by_id, user_id=user_id)
-        except Exception as error:  # noqa: BLE001 -- narrowed just below; anything else is re-raised
-            if not _is_splittable_upstream_failure(error) or len(nodes_by_id) < 2:
-                raise
-            # Same bounded split-and-retry as the requirement pass: each
-            # half once, results merged. Unlike the requirement pass a
-            # failed half fails the whole chunk (the response is a plain
-            # dict, so there is no per-half warning channel here) -- still
-            # no worse than before.
-            logger.warning(
-                "Epic/Feature scoring chunk of %d failed (%s) -- retrying as two halves",
-                len(nodes_by_id),
-                error,
-            )
-            keys = list(nodes_by_id)
-            first, second = _split_in_half(keys)
-            merged: dict[str, dict] = {}
-            for half in (first, second):
-                merged.update(score_fn({key: nodes_by_id[key] for key in half}, user_id=user_id))
-            return merged
-
-    outcomes = run_chunks_bounded(payloads, _score_payload, chunk_concurrency)
-
-    # PHASE 3 -- merge in fixed CHUNK order on the calling thread.
-    for kickoff_index in range(len(chunks)):
-        # Narrate immediately BEFORE pulling this chunk's outcome -- see
-        # _score_all_requirements' PHASE 1 comment.
-        _fire(
-            "score_requirements",
-            chunks[kickoff_index],
-            nodes_done=chunk_start_offsets[kickoff_index],
-            chunk_index=kickoff_index,
-        )
-        outcome = next(outcomes)
-        chunk = chunks[outcome.chunk_index]
-        chunk_index = outcome.chunk_index
-        if outcome.error is not None:
-            message = f"Epic/Feature quality scoring failed: {outcome.error}"
-            logger.warning(message)
-            if debug_capture is not None:
-                debug_capture.capture(
-                    "score_epics_and_features",
-                    f"chunk_{chunk_start_offsets[chunk_index]}",
-                    str(outcome.error),
-                )
-            warnings.append(_scoring_failed_warning(chunk, outcome.error, "epic_feature", message))
-            if progress_callback is not None:
-                progress_callback(
-                    LevelingProgress(
-                        phase="chunk_warning",
-                        branch_index=None,
-                        branch_count=branch_count,
-                        blocks_done=0,
-                        blocks_total=total_epic_feature_nodes,
-                        kb_grounded=False,
-                        kb_citations=[],
-                        warning_message=message,
-                    )
-                )
-            continue
-        scores_by_id = outcome.value or {}
-        for node in chunk:
-            entry = scores_by_id.get(node.local_id)
-            if not isinstance(entry, dict):
-                continue
-            raw_score = entry.get("score")
-            is_int = isinstance(raw_score, int) and not isinstance(raw_score, bool)
-            if is_int and 0 <= raw_score <= 100:
-                node.quality_score = raw_score
-            node.quality_category_scores = _parse_category_scores(entry.get("categoryScores"))
-        nodes_done = chunk_start_offsets[chunk_index] + len(chunk)
-        _fire("score_requirements_done", chunk, nodes_done=nodes_done, chunk_index=chunk_index)
 
 
 def score_texts_together(

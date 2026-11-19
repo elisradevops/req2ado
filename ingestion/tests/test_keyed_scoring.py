@@ -17,12 +17,11 @@ from app.survey.keyed_calls import (
     output_lead,
     reset_degraded,
 )
-from app.survey.keyed_specs import EPIC_FEATURE_SCORING_SPEC, SCORING_SPEC
+from app.survey.keyed_specs import SCORING_SPEC
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient, _with_category_dict
 
 GOLDEN = json.loads((Path(__file__).parent / "fixtures" / "scoring_prompts_none.json").read_text())
 DESCRIPTIONS = {"n1": "The unit shall do X.", "n2": "Size: 3U"}
-EPICS = {"e1": {"type": "Epic", "text": "x"}, "f1": {"type": "Feature", "text": "y"}}
 
 
 @pytest.fixture(autouse=True)
@@ -37,7 +36,7 @@ def _default_modes(monkeypatch):
 @pytest.fixture
 def array_mode(monkeypatch):
     monkeypatch.setattr(
-        keyed_calls_module.settings, "keyed_schema_passes", "scoring,epic_feature_scoring"
+        keyed_calls_module.settings, "keyed_schema_passes", "scoring"
     )
 
 
@@ -77,7 +76,6 @@ CASES = {
     "criteria": lambda c: c.score_requirements_for_document(
         DESCRIPTIONS, criteria_context="criteria text"
     ),
-    "epic": lambda c: c.score_epics_and_features_for_document(EPICS),
 }
 
 
@@ -101,7 +99,7 @@ def _walk(node):
             yield from _walk(value)
 
 
-@pytest.mark.parametrize("spec", [SCORING_SPEC, EPIC_FEATURE_SCORING_SPEC])
+@pytest.mark.parametrize("spec", [SCORING_SPEC])
 def test_the_scoring_schemas_follow_the_vendor_rules_for_strict_structured_output(spec) -> None:
     schema = items_schema(spec)
     assert schema["strict"] is True
@@ -122,10 +120,7 @@ def test_the_scoring_schemas_follow_the_vendor_rules_for_strict_structured_outpu
 
 
 def test_the_scoring_schemas_do_not_grow_with_the_number_of_nodes() -> None:
-    assert (
-        len(json.dumps(items_schema(SCORING_SPEC))) < 1500
-        and len(json.dumps(items_schema(EPIC_FEATURE_SCORING_SPEC))) < 800
-    )
+    assert len(json.dumps(items_schema(SCORING_SPEC))) < 1500
 
 
 def test_the_requirement_schema_keeps_every_field_the_scorer_reads() -> None:
@@ -150,7 +145,7 @@ def test_the_lead_clause_comes_from_the_same_place_as_the_other_passes() -> None
 
 def test_modes_follow_the_named_passes(monkeypatch) -> None:
     monkeypatch.setattr(keyed_calls_module.settings, "keyed_schema_passes", "scoring")
-    assert mode_for(SCORING_SPEC) == "array" and mode_for(EPIC_FEATURE_SCORING_SPEC) == "none"
+    assert mode_for(SCORING_SPEC) == "array"
 
 
 def _array_answer(ids, categories=(("clarity", 80), ("testability", 60))):
@@ -248,31 +243,6 @@ def test_the_checklist_names_still_reach_the_model_in_array_mode(array_mode) -> 
     assert (
         '["Necessary", "Verifiable", "completeness_as_requirement"]'
         in body["messages"][0]["content"]
-    )
-
-
-def test_epic_and_feature_scoring_in_array_mode(array_mode) -> None:
-    seen: list[dict] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content)
-        seen.append(body)
-        ids = json.loads(body["messages"][1]["content"])
-        items = [
-            {"id": i, "score": 55, "categoryScores": [{"name": "scopeCoherence", "score": 50}]}
-            for i in ids
-        ]
-        return httpx.Response(200, json={"content": json.dumps({"items": items})})
-
-    result = _client(handler).score_epics_and_features_for_document(EPICS)
-
-    assert seen[0]["responseSchema"] == items_schema(EPIC_FEATURE_SCORING_SPEC)
-    assert result == {i: {"score": 55, "categoryScores": {"scopeCoherence": 50}} for i in EPICS}
-    prompt = seen[0]["messages"][0]["content"]
-    assert (
-        "'categoryScores' (an array of" in prompt
-        and "scopeCoherence" in prompt
-        and "exactly 2 node_id(s)" in prompt
     )
 
 

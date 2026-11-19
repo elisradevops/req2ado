@@ -61,7 +61,6 @@ from app.survey.keyed_calls import (
 )
 from app.survey.keyed_specs import (
     AUTHOR_CONTENT_SPEC,
-    EPIC_FEATURE_SCORING_SPEC,
     FIGURE_TABLE_MAPPING_SPEC,
     KB_RELEVANCE_SPEC,
     PARENT_SUMMARY_SPEC,
@@ -1089,8 +1088,8 @@ class OrchestratorLlmClient:
         # seed=None explicitly to opt OUT for a caller that genuinely wants
         # varied sampling (none exists today).
         seed: int | None = 42,
-        # S11: caches analyze_section/score_requirements_for_document/
-        # score_epics_and_features_for_document -- see LlmResponseCache's own
+        # S11: caches analyze_section/score_requirements_for_document --
+        # see LlmResponseCache's own
         # docstring. None (the default) disables caching entirely, matching
         # pre-cache behavior exactly -- every existing construction site
         # (module-level singletons in main.py that never touch these three
@@ -1829,99 +1828,6 @@ class OrchestratorLlmClient:
             if not definition:
                 continue
             result[canonical_name] = definition[:_CHECKLIST_DEFINITION_MAX_CHARS]
-        return result
-
-    def score_epics_and_features_for_document(
-        self,
-        nodes_by_id: dict[str, dict],
-        user_id: str | None = None,
-    ) -> dict[str, dict]:
-        """Batched Epic/Feature quality review -- the counterpart to
-        score_requirements_for_document, deliberately kept as a SEPARATE
-        call/prompt rather than folded into it: RequirementQualityIssue's
-        closed vocabulary (ambiguous, not_testable, compound, ...) and the
-        "formal shall-style requirement statement" framing describe atomic
-        requirements, not what an Epic/Feature GROUPING is (see
-        llm_leveling.py's own comment on why scoring was originally scoped
-        to Requirement-type nodes only) -- reusing that prompt's wording
-        verbatim for an Epic/Feature would judge them against a rubric that
-        was never about them.
-
-        `nodes_by_id` maps each node_id to {'type': 'Epic'|'Feature',
-        'text': description} -- one call judges both types together (typical
-        documents have far fewer Epics/Features than Requirements, so this
-        stays cheap as one batched call rather than two). Returns node_id ->
-        {'score': int, 'categoryScores': dict[str, int]} -- no 'issues' key,
-        see epic_feature_scores_schema's own docstring for why."""
-        key = None
-        if self._cache is not None:
-            key = cache_key(
-                "score_epics_and_features_for_document",
-                self._model,
-                self._num_ctx,
-                self._top_k,
-                self._min_p,
-                self._seed,
-                nodes_by_id,
-            )
-            cached = self._cache.get(key)
-            if cached is not None:
-                logger.info("score_epics_and_features_for_document: cache hit, skipping LLM call")
-                return cached
-        spec = EPIC_FEATURE_SCORING_SPEC
-
-        def send(nodes: dict, mode: KeyedMode) -> object:
-            system_prompt = load_prompt(
-                "score_epics_and_features_for_document",
-                output_lead=output_lead(spec, mode),
-                category_scores_form=(
-                    '\'categoryScores\' (an array of {"name": <category name>, "score": <integer 0-100>} objects, '
-                    "one for each category listed below)"
-                    if mode == "array"
-                    else "'categoryScores'"
-                ),
-                node_count=str(len(nodes)),
-            )
-            schema = schema_for(spec, mode)
-            payload = {
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": json.dumps(nodes)},
-                ],
-                "temperature": 0,
-                **({"model": self._model} if self._model else {}),
-                **({"responseSchema": schema} if schema is not None else {}),
-                "think": False,
-                "maxTokens": self._max_output_tokens,
-                **({"numCtx": self._num_ctx} if self._num_ctx else {}),
-                **({"topK": self._top_k} if self._top_k else {}),
-                **({"minP": self._min_p} if self._min_p else {}),
-                **({"seed": self._seed} if self._seed is not None else {}),
-            }
-            # Same perf-investigation instrumentation as
-            # score_requirements_for_document -- see its own comment.
-            request_chars = len(json.dumps(payload))
-            started_at = time.monotonic()
-            response = self._post_chat(payload, user_id)
-            elapsed_seconds = time.monotonic() - started_at
-            logger.info(
-                "score_epics_and_features_for_document: %d node(s), %d request char(s), "
-                "%.1fs wall time",
-                len(nodes),
-                request_chars,
-                elapsed_seconds,
-            )
-            response.raise_for_status()
-            body = response.json()
-            parsed = _parse_json_object(_strip_json_fence(body["content"]))
-            if body.get("finishReason") == "length":
-                parsed = drop_possibly_cut_last_entry(parsed)
-            return parsed
-
-        entries = run_keyed(send, nodes_by_id, spec, model=self._model)
-        result = {node_id: _with_category_dict(entry) for node_id, entry in entries.items()}
-        if key is not None and not entries.missing:
-            self._cache.set(key, result)
         return result
 
     def title_and_tags_for_rows(
@@ -3111,8 +3017,8 @@ class OrchestratorLlmClient:
 
         `skeleton_nodes` maps each node's own id to {'type', 'title',
         'parent_id'} (the same real-node-id-keyed convention
-        summarize_parent_nodes/score_epics_and_features_for_document already
-        use, rather than a second temp-id space): 'parent_id' is
+        summarize_parent_nodes already
+        uses, rather than a second temp-id space): 'parent_id' is
         informational context for authoring, NOT something this call may
         change. The prompt states the hierarchy is FIXED -- no node may be
         added, dropped, re-typed, re-parented or renamed here, because those

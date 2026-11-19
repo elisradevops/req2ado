@@ -94,13 +94,6 @@ def test_score_requirements_v2_prompt_permits_low_confidence_instead_of_guessing
     assert "__CATEGORY_INSTRUCTION__" not in result
 
 
-def test_score_epics_and_features_for_document_prompt() -> None:
-    result = load_prompt("score_epics_and_features_for_document", node_count="9")
-    assert "The input contains exactly 9 node_id(s)." in result
-    assert "scopeCoherence" in result
-    assert "capabilityClarity" in result
-
-
 def test_title_and_tags_for_rows_prompt() -> None:
     result = load_prompt("title_and_tags_for_rows", tag_vocabulary=_TAG_VOCABULARY, row_count="5")
     assert _TAG_VOCABULARY in result

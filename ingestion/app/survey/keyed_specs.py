@@ -8,7 +8,6 @@ from app.survey._response_schemas import (
     _ISSUES,
     _TAGS,
     content_authoring_schema,
-    epic_feature_scores_schema,
     figure_table_mapping_schema,
     kb_relevance_schema,
     parent_summary_schema,
@@ -128,14 +127,3 @@ SCORING_SPEC = KeyedSpec(
     legacy_schema=scores_schema,
 )
 
-EPIC_FEATURE_SCORING_SPEC = KeyedSpec(
-    name="epic_feature_scoring",
-    schema_name="epic_feature_scores_by_node",
-    fields={"score": {"type": "integer"}, "categoryScores": _CATEGORY_SCORES},
-    field_prompts={
-        "score": "'score' (an integer 0-100)",
-        "categoryScores": '\'categoryScores\' (a list of {"name", "score"} objects)',
-    },
-    id_noun="node_id",
-    legacy_schema=epic_feature_scores_schema,
-)
