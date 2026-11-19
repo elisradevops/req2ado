@@ -811,15 +811,16 @@ export function NodeDetailPanel({
   const qualityActions = !showQualityPanel ? null : entry.qualityScore != null ? (
     entry.qualityStale ? (
       <div className="flex items-center justify-between gap-2">
-        <p className="text-xs text-ink-3">
-          {rescoring
-            ? 'Re-scoring against the current wording. This takes a few seconds.'
-            : foldQuality
-              ? 'Edited since this was scored. The scores under "How this was scored" are from before your change.'
+        {/* In the dialog the issues list already says the score is out of date, so only the progress of a re-check is said here. */}
+        {(rescoring || !foldQuality) && (
+          <p className="text-xs text-ink-3">
+            {rescoring
+              ? 'Re-scoring against the current wording. This takes a few seconds.'
               : 'Edited since this was scored. The numbers above are from before your change.'}
-        </p>
+          </p>
+        )}
         {onRescore && (
-          <Button variant="outline" size="sm" onClick={handleRescoreClick} loading={rescoring} className="flex-none">
+          <Button variant="outline" size="sm" onClick={handleRescoreClick} loading={rescoring} className="ms-auto flex-none">
             {!rescoring && <RefreshCw className="h-3 w-3" />}
             {rescoring ? 'Re-checking…' : 'Re-check quality'}
           </Button>

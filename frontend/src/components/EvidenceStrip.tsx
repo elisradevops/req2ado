@@ -104,7 +104,7 @@ export function EvidenceStrip({
     // A low score is already said once, in the issues list; the closed line adds it only when it is not.
     const qualityInIssues = isLowQualityEntry(entry) && !entry.qualityStale;
     if (quality && entry.qualityScore != null && !qualityInIssues) {
-      summaryParts.push(`Quality ${clampScore(entry.qualityScore)} of 100${entry.qualityStale ? ', from before your edit' : ''}`);
+      summaryParts.push(`Quality ${clampScore(entry.qualityScore)} of 100`);
     }
     if (weakest && !qualityInIssues) summaryParts.push(`Weakest area: ${categoryLabel(weakest.key).replace(/[.。]$/, '')}, ${weakest.score} of 100`);
     if (sourceInPane && !hasWhy) return null;

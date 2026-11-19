@@ -169,14 +169,15 @@ describe('NodeDetailDialog', () => {
       expect(text.compareDocumentPosition(region) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
-    it('keeps the stale notice and Re-check quality outside the closed disclosure, as a reachable button', () => {
+    it('says the score is out of date once, in the issues list, with Re-check quality outside the closed disclosure as a reachable button', () => {
       renderDialog({ entry: { ...scored, qualityStale: true }, jobMode: 'survey', jobStatus: 'diff_ready', onRescore: vi.fn() } as any);
       expect(screen.getByRole('button', { name: /how this was scored/i })).toHaveAttribute('aria-expanded', 'false');
-      expect(screen.getByText(/edited since this was scored/i)).toBeInTheDocument();
+      expect(screen.getAllByText(/edited since (it|this) was scored/i)).toHaveLength(1);
+      expect(screen.getByTestId('issue-stale')).toHaveTextContent('Edited since it was scored. The score may be out of date.');
       const recheck = screen.getByRole('button', { name: /re-check quality/i });
       recheck.focus();
       expect(recheck).toHaveFocus();
-      expect(screen.getByRole('button', { name: /how this was scored/i })).toHaveTextContent(/from before your edit/i);
+      expect(screen.getByRole('button', { name: /how this was scored/i })).not.toHaveTextContent(/before your edit/i);
     });
 
     it('keeps "Score this item" outside the disclosure for an item that has no score', () => {
