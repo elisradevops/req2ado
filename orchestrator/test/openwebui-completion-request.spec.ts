@@ -52,8 +52,13 @@ describe('requests the app sends', () => {
     await client.chat(user, { model, maxTokens: 100, responseSchema: schema as never });
     await client.vision('What colour?', [Buffer.from('png')], { model, mimeType: 'image/png' }).catch(() => undefined);
     await client.chatWithFullFileContext('Name the colour.', 'file-1', { model, maxTokens: 100 }).catch(() => undefined);
+    await client.chat(user, { model, maxTokens: 100, responseSchema: schema as never, fileId: 'file-2' }).catch(() => undefined);
+    await client
+      .chat(user, { model, maxTokens: 100, responseSchema: schema as never, fileId: 'file-3', numCtx: 8192, topK: 20, minP: 0.05, think: false, budgetKind: 'study' })
+      .catch(() => undefined);
     const sent = completions().filter((r) => r.body.model === model);
-    expect(sent.length).toBeGreaterThanOrEqual(4);
+    expect(sent.length).toBeGreaterThanOrEqual(6);
+    expect(sent.some((r) => r.body.files?.[0]?.id === 'file-3' && r.body.options && r.body.reasoning_effort === 'none')).toBe(true);
     for (const request of sent) {
       expect(openWebUiCompletionRequestSchema.safeParse(request.body)).toMatchObject({ success: true });
       expect(Object.keys(request.body).filter((key) => !(APP_REQUEST_KEYS as readonly string[]).includes(key))).toEqual([]);

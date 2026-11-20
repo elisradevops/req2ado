@@ -21,6 +21,17 @@ describe('configSchema LLM fields', () => {
     expect(result.LLM_PROXY_BEARER).toBe('test-llm-proxy-bearer');
   });
 
+  it('asks before a SURVEY run forecast above 250,000 tokens unless COST_CONFIRM_TOKENS says otherwise, and 0 turns it off', () => {
+    expect(configSchema.parse(BASE_ENV).COST_CONFIRM_TOKENS).toBe(250_000);
+    expect(configSchema.parse({ ...BASE_ENV, COST_CONFIRM_TOKENS: '1000000' }).COST_CONFIRM_TOKENS).toBe(1_000_000);
+    expect(configSchema.parse({ ...BASE_ENV, COST_CONFIRM_TOKENS: '0' }).COST_CONFIRM_TOKENS).toBe(0);
+  });
+
+  it('attaches the file to a table pre-study only when PRESTUDY_ATTACH_FILE_FOR_TABLES is true', () => {
+    expect(configSchema.parse(BASE_ENV).PRESTUDY_ATTACH_FILE_FOR_TABLES).toBe(false);
+    expect(configSchema.parse({ ...BASE_ENV, PRESTUDY_ATTACH_FILE_FOR_TABLES: 'true' }).PRESTUDY_ATTACH_FILE_FOR_TABLES).toBe(true);
+  });
+
   it('rejects missing LLM_BASE_URL', () => {
     const { LLM_BASE_URL, ...rest } = BASE_ENV;
     expect(() => configSchema.parse(rest)).toThrow();

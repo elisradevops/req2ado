@@ -12,6 +12,16 @@ describe('toAdoDescriptionHtml', () => {
     expect(html).toContain('<del>struck</del>');
   });
 
+  it('writes a description converted from a tracker export\'s HTML as real tags, never as literal markup', () => {
+    // What ingestion stores for `<div><b>Requirement (R-1):</b> It shall start.</div><ul><li>one</li><li>two</li></ul>`.
+    const html = toAdoDescriptionHtml('**Requirement (R-1):** It shall start.\n\n**Notes:**\n\n- one\n- two');
+    expect(html).toContain('<strong>Requirement (R-1):</strong>');
+    expect(html).toContain('<ul>');
+    expect((html.match(/<li>/g) ?? []).length).toBe(2);
+    expect(html).not.toContain('&lt;div');
+    expect(html).not.toContain('&lt;b&gt;');
+  });
+
   it('converts an unordered list, including nested items, to real <ul>/<li>', () => {
     const html = toAdoDescriptionHtml('- Slot A\n- Slot B\n  - Sub-slot B1\n- Slot C');
     expect(html).toContain('<ul>');
@@ -113,6 +123,25 @@ describe('toAdoDescriptionHtml', () => {
     const html = toAdoDescriptionHtml(description);
     expect(html).toContain('&lt;TBD&gt;');
     expect(html).toContain('<table><thead><tr><th>H</th></tr></thead><tbody><tr><td>Cell A</td></tr></tbody></table>');
+  });
+
+  it('passes a colgroup/col table with a bold cell and a line break through (the full shape _table_to_html emits)', () => {
+    const description =
+      '<table style="width:100%"><colgroup><col style="width:50%"><col style="width:50%"></colgroup>' +
+      '<tbody><tr><td style="border:1px solid"><b>A</b></td><td>x<br>y</td></tr></tbody></table>';
+    expect(toAdoDescriptionHtml(description)).toContain(description);
+  });
+
+  it('escapes a table block holding any tag or attribute ingestion never emits, so it reaches ADO as text', () => {
+    for (const block of [
+      '<table><tr><td><img src=x onerror=alert(1)></td></tr></table>',
+      '<table onclick="alert(1)"><tr><td>x</td></tr></table>',
+      '<table><tr><td><a href="javascript:alert(1)">x</a></td></tr></table>',
+    ]) {
+      const html = toAdoDescriptionHtml(`Intro.\n${block}`);
+      expect(html).not.toContain('<table');
+      expect(html).toContain('&lt;table');
+    }
   });
 });
 

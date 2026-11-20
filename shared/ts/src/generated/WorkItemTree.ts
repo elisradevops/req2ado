@@ -197,7 +197,12 @@ export interface IntegrityWarning {
     | 'requirement_heading_is_section'
     | 'changed_since_written'
     | 'spreadsheet_mapped'
-    | 'spreadsheet_not_mapped';
+    | 'spreadsheet_not_mapped'
+    | 'source_type_skipped'
+    | 'source_structure_violation'
+    | 'rulebook_mismatch'
+    | 'prestudy_applied'
+    | 'prestudy_rejected';
   /**
    * auto_fixed: deterministic code already resolved it, no action needed. needs_review: an AI/heuristic judgment call a human should verify. pipeline_issue: something broke or was incomplete for this run.
    */

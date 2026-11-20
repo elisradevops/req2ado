@@ -19,6 +19,9 @@ export interface JobSummary {
   batchId?: string | null;
   // Why a failed run stopped (the server's failure class); null for a job that failed before it was recorded.
   failureClass?: string | null;
+  // "N of M reviewed" for a job in review (the same rule as the review page's Write bar); null for any other job.
+  reviewedCount?: number | null;
+  reviewableCount?: number | null;
 }
 
 export interface JobDetail {

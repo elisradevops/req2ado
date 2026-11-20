@@ -85,4 +85,30 @@ describe('BulkApproveDialog', () => {
     const approve = screen.getByRole('button', { name: 'Approve 12 clean items' });
     expect(approve).toHaveAccessibleDescription('Spot-check: 1 of 3 checked');
   });
+
+  describe('BASELINE', () => {
+    const BASELINE = { ...BASE, mode: 'baseline' as const, lowestScore: null, highestScore: null };
+
+    it('says plainly the items were not scored, and names no score signal', () => {
+      render(<BulkApproveDialog {...BASELINE} />);
+      const dialog = screen.getByRole('dialog', { name: 'Approve 12 clean items?' });
+      expect(dialog).toHaveTextContent('no blocking or review warning');
+      expect(dialog).toHaveTextContent(/copied word for word and are not scored/i);
+      expect(dialog).toHaveTextContent(/check a sample first/i);
+      expect(dialog.textContent).not.toMatch(/low score|low grounding|model confidence|with scores?\b/i);
+      expect(dialog.textContent).not.toMatch(/verified|correct|safe/i);
+    });
+
+    it('gives only the reasons that fit BASELINE for what is left out: warnings and Epics/Features, never a score', () => {
+      render(<BulkApproveDialog {...BASELINE} leftOut={{ flagged: 2, unscored: 4, stale: 1, structure: 3 }} />);
+      const dialog = screen.getByRole('dialog');
+      expect(dialog).toHaveTextContent('5 items left out: 2 with warnings, 3 Epics and Features, which you check one by one.');
+      expect(dialog).not.toHaveTextContent(/\d not scored|out-of-date score/i);
+    });
+
+    it('keeps the spot-check gate', () => {
+      render(<BulkApproveDialog {...BASELINE} checkedCount={1} />);
+      expect(screen.getByRole('button', { name: 'Approve 12 clean items' })).toBeDisabled();
+    });
+  });
 });

@@ -1,3 +1,4 @@
+import { fullText } from '../test/textContent';
 import { autoOpenWarnings } from '../test/openWarnings';
 import { usePageLabelStore } from '../store/pageLabelStore';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -8,6 +9,7 @@ import { JobDetail } from './JobDetail';
 import { ToastProvider } from '../components/ToastProvider';
 import * as jobsApi from '../api/jobs';
 import { useAuthStore } from '../store/authStore';
+import { AxiosError } from 'axios';
 
 // An item that still blocks the write is decided by the deliberate "Keep as written and next" button (A and R do nothing on it, DESIGN.md
 // §11.3.6); any other item is decided with the key. One helper, so a test says "mark the open item" and gets the right gesture.
@@ -156,6 +158,59 @@ describe('JobDetail', () => {
     renderAt('job-1');
     await waitFor(() => expect(screen.getByText(/job failed/i)).toBeInTheDocument());
     expect(screen.queryByText(/select a node/i)).not.toBeInTheDocument();
+  });
+
+  it('shows the Not found page for a job the server does not have, not a connection problem', async () => {
+    vi.spyOn(jobsApi, 'getJob').mockRejectedValue(new AxiosError('Not Found', 'ERR_BAD_REQUEST', undefined, undefined, { status: 404 } as any));
+    renderAt('does-not-exist');
+    expect(await screen.findByRole('heading', { name: 'Page not found' })).toBeInTheDocument();
+    expect(screen.getByText('/jobs/does-not-exist')).toBeInTheDocument();
+    expect(screen.queryByText(/check your connection/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the connection message and Retry for any other load failure', async () => {
+    vi.spyOn(jobsApi, 'getJob').mockRejectedValue(new AxiosError('Network Error', 'ERR_NETWORK'));
+    renderAt('job-1');
+    expect(await screen.findByText("Couldn't load this job. Check your connection and try again.")).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    expect(screen.queryByText('Page not found')).not.toBeInTheDocument();
+  });
+
+  it('says in the Write bar that nothing is left to write when every new item is excluded', async () => {
+    useAuthStore.getState().login('https://ado.example', 'Jane', 'user-1');
+    afterEachStops.push(() => useAuthStore.getState().logout());
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-n',
+      status: 'diff_ready',
+      dryRunDiff: [
+        { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Root', description: '', action: 'create', customerId: null, tags: [], excluded: true },
+        { localId: 'r1', parentLocalId: null, type: 'Requirement', title: 'Kept', description: '', action: 'reuse', customerId: null, tags: [] },
+      ],
+    } as any);
+    renderAt('job-n');
+    expect(await screen.findByText('Nothing left to write: every item is excluded or already exists.')).toBeInTheDocument();
+  });
+
+  it('says in the Write bar how many of the new items still in the write are reviewed (not reuse, not excluded or under an excluded parent)', async () => {
+    const row = (localId: string, extra: Record<string, unknown> = {}) => ({
+      localId, parentLocalId: null, type: 'Requirement', title: `Item ${localId}`, description: '', action: 'create', customerId: null, tags: [], ...extra,
+    });
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-p',
+      status: 'diff_ready',
+      dryRunDiff: [
+        row('a', { reviewed: true }),
+        row('b'),
+        row('c'),
+        row('x', { type: 'Feature', excluded: true }),
+        row('under', { parentLocalId: 'x', reviewed: true }),
+        row('reused', { action: 'reuse', reviewed: true }),
+      ],
+    } as any);
+    renderAt('job-p');
+    const bar = await screen.findByRole('region', { name: 'Review decision' });
+    await waitFor(() => expect(bar).toHaveTextContent('1 of 3 reviewed'));
   });
 
   it('renders the diff tree for a diff_ready job, and opens the details dialog on row click', async () => {
@@ -588,7 +643,7 @@ describe('JobDetail', () => {
       renderAt('job-60');
 
       // Two warning types, but enhancement_call_failed is informational.
-      await waitFor(() => expect(screen.getByText(/1 warning needs your attention/i)).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByText(fullText(/1 warning needs your attention/i))).toBeInTheDocument());
     });
 
     it('a succeeded job with fix-group warnings shows no approval gate', async () => {
@@ -659,7 +714,7 @@ describe('JobDetail', () => {
       expect(screen.getByText('Affected one')).toBeInTheDocument();
       expect(screen.getByText('Affected two')).toBeInTheDocument();
       expect(screen.queryByText('Untouched')).not.toBeInTheDocument();
-      expect(screen.getByText(/Low grounding: possible fabrication:\s*2 left of 2/)).toBeInTheDocument();
+      expect(screen.getByText(fullText(/Low grounding: possible fabrication:\s*2 left of 2/))).toBeInTheDocument();
       // Reason chip on the rows, so a reviewer sees why each is listed.
       expect(screen.getAllByText('Low grounding')).toHaveLength(2);
       await userEvent.click(screen.getByRole('button', { name: /more actions/i }));
@@ -669,7 +724,7 @@ describe('JobDetail', () => {
       await userEvent.click(screen.getByRole('button', { name: /clear warning filter/i }));
 
       expect(screen.getByText('Untouched')).toBeInTheDocument();
-      expect(screen.queryByText(/2 left of 2/)).not.toBeInTheDocument();
+      expect(screen.queryByText(fullText(/2 left of 2/))).not.toBeInTheDocument();
       expect(screen.queryAllByText('Low grounding')).toHaveLength(0);
     });
 
@@ -777,7 +832,7 @@ describe('JobDetail', () => {
 
         expect(jobsApi.setDiffEntriesReviewed).toHaveBeenLastCalledWith('job-60', ['e1', 'e2'], false);
         expect(await screen.findByText('Affected one')).toBeInTheDocument();
-        expect(screen.getByText(/1 warning needs your attention/i)).toBeInTheDocument();
+        expect(screen.getByText(fullText(/1 warning needs your attention/i))).toBeInTheDocument();
       });
 
       it('keeps reviewed items listed, marked Reviewed, when hide reviewed is turned off', async () => {
@@ -828,7 +883,7 @@ describe('JobDetail', () => {
 
         expect(await screen.findByText(/failed to update review state/i)).toBeInTheDocument();
         expect(screen.getByText('Affected one')).toBeInTheDocument();
-        expect(screen.getByText(/1 warning needs your attention/i)).toBeInTheDocument();
+        expect(screen.getByText(fullText(/1 warning needs your attention/i))).toBeInTheDocument();
       });
 
       it('marks the open item reviewed and steps to the next item still to do', async () => {
@@ -997,7 +1052,7 @@ describe('JobDetail', () => {
         mockJobWithZeroNodes();
         vi.mocked(jobsApi.setWarningsAcknowledged).mockResolvedValue({ warnings: [] });
         renderAt('job-62');
-        await waitFor(() => expect(screen.getByText(/1 warning needs your attention/i)).toBeInTheDocument());
+        await waitFor(() => expect(screen.getByText(fullText(/1 warning needs your attention/i))).toBeInTheDocument());
         const { default: userEvent } = await import('@testing-library/user-event');
 
         await userEvent.click(screen.getByRole('button', { name: 'Mark handled' }));
@@ -1011,14 +1066,14 @@ describe('JobDetail', () => {
         mockJobWithZeroNodes();
         vi.mocked(jobsApi.setWarningsAcknowledged).mockRejectedValue(new Error('409'));
         renderAt('job-62');
-        await waitFor(() => expect(screen.getByText(/1 warning needs your attention/i)).toBeInTheDocument());
+        await waitFor(() => expect(screen.getByText(fullText(/1 warning needs your attention/i))).toBeInTheDocument());
         const { default: userEvent } = await import('@testing-library/user-event');
 
         await userEvent.click(screen.getByRole('button', { name: 'Mark handled' }));
 
         expect(await screen.findByText(/failed to update/i)).toBeInTheDocument();
         expect(screen.queryByText('Done')).not.toBeInTheDocument();
-        expect(screen.getByText(/1 warning needs your attention/i)).toBeInTheDocument();
+        expect(screen.getByText(fullText(/1 warning needs your attention/i))).toBeInTheDocument();
       });
     });
   });
@@ -1940,7 +1995,7 @@ describe('JobDetail', () => {
 
     // The prominent banner and the warnings panel below it both show the
     // warning now -- the banner by count, the panel by its row.
-    await waitFor(() => expect(screen.getByText(/1 warning needs your attention/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(fullText(/1 warning needs your attention/i))).toBeInTheDocument());
     expect(screen.getByText('Low grounding: possible fabrication')).toBeInTheDocument();
   });
 
@@ -4299,18 +4354,12 @@ describe('JobDetail', () => {
       ).toBeInTheDocument();
     });
 
-    it('offers the action only for a SURVEY job awaiting review that has clean items', async () => {
+    it('offers the action for a SURVEY job awaiting review that has clean items', async () => {
       await render80();
       expect(await screen.findByRole('button', { name: 'Approve 5 clean items' })).toBeInTheDocument();
     });
 
-    it('offers nothing for a BASELINE job, a job past review, or when nothing is clean', async () => {
-      mockJob({ mode: 'baseline' });
-      const first = renderAt('job-80');
-      await waitFor(() => expect(screen.getByText('Clean one')).toBeInTheDocument());
-      expect(screen.queryByRole('button', { name: /clean items?$/i })).not.toBeInTheDocument();
-      first.unmount();
-
+    it('offers nothing for a job past review, or when nothing is clean', async () => {
       mockJob({ status: 'confirmed' });
       const second = renderAt('job-80');
       await waitFor(() => expect(screen.getByText('Clean one')).toBeInTheDocument());
@@ -4321,6 +4370,56 @@ describe('JobDetail', () => {
       renderAt('job-80');
       await waitFor(() => expect(screen.getByText('Only flagged')).toBeInTheDocument());
       expect(screen.queryByRole('button', { name: /clean items?$/i })).not.toBeInTheDocument();
+    });
+
+    describe('BASELINE (nothing is scored: clean means no warning)', () => {
+      function baselineRows() {
+        const bare = { qualityScore: null, groundingScore: null };
+        return [
+          item('e1', 'Base epic', { ...bare, type: 'Epic' }),
+          item('f1', 'Base feature', { ...bare, type: 'Feature', parentLocalId: 'e1' }),
+          item('b1', 'Base one', { ...bare, parentLocalId: 'f1' }),
+          item('b2', 'Base two', { ...bare, parentLocalId: 'f1' }),
+          item('b3', 'Base three', { ...bare, parentLocalId: 'f1' }),
+          item('w1', 'Base warned', { ...bare, parentLocalId: 'f1' }),
+        ];
+      }
+      const WARNED = [{ kind: 'low_grounding', severity: 'needs_review', nodeIds: ['w1'], detail: {}, raw: 'low_grounding w1' }];
+      const BASE_IDS = ['b1', 'b2', 'b3'];
+
+      it('offers the unwarned Requirements, never an Epic, a Feature or a warned item', async () => {
+        await render80({ mode: 'baseline', dryRunDiff: baselineRows(), warnings: WARNED });
+        expect(await screen.findByRole('button', { name: 'Approve 3 clean items' })).toBeInTheDocument();
+      });
+
+      it('says in the confirmation that the items were not scored, names no score signal, and gives BASELINE reasons for what is left out', async () => {
+        const userEvent = await render80({ mode: 'baseline', dryRunDiff: baselineRows(), warnings: WARNED });
+        await userEvent.click(await screen.findByRole('button', { name: 'Approve 3 clean items' }));
+        const dialog = await screen.findByRole('dialog', { name: 'Approve 3 clean items?' });
+        expect(dialog).toHaveTextContent(/copied word for word and are not scored/i);
+        expect(dialog.textContent).not.toMatch(/low score|low grounding|model confidence|with scores?\b|out-of-date/i);
+        expect(dialog).toHaveTextContent('3 items left out: 1 with warnings, 2 Epics and Features, which you check one by one.');
+        expect(within(dialog).getByRole('button', { name: 'Approve 3 clean items' })).toBeDisabled();
+      });
+
+      it('approves them in one call after the spot-check, and Undo puts them back', async () => {
+        const userEvent = await render80({ mode: 'baseline', dryRunDiff: baselineRows(), warnings: WARNED });
+        await userEvent.click(await screen.findByRole('button', { name: 'Approve 3 clean items' }));
+        await screen.findByRole('dialog', { name: 'Approve 3 clean items?' });
+        await userEvent.click(screen.getByRole('button', { name: 'Start spot-check' }));
+        for (const title of ['Base one', 'Base two', 'Base three']) {
+          const dialog = await screen.findByRole('dialog');
+          await waitFor(() => expect(within(dialog).getAllByText(title).length).toBeGreaterThan(0));
+          await userEvent.click(within(dialog).getByRole('button', { name: 'Looks right and next' }));
+        }
+        const confirmation = await screen.findByRole('dialog', { name: 'Approve 3 clean items?' });
+        await userEvent.click(within(confirmation).getByRole('button', { name: 'Approve 3 clean items' }));
+
+        await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledWith('job-80', BASE_IDS, true));
+        await userEvent.click(await screen.findByRole('button', { name: 'Undo' }));
+        await waitFor(() => expect(jobsApi.setDiffEntriesReviewed).toHaveBeenLastCalledWith('job-80', BASE_IDS, false));
+        expect(await screen.findByRole('button', { name: 'Approve 3 clean items' })).toBeInTheDocument();
+      });
     });
 
     it('opens a confirmation with the count and what is left out, focus on Cancel, and writes nothing', async () => {
@@ -5139,7 +5238,7 @@ describe('JobDetail: the write gate is a hard block (DESIGN.md §11.3.5, review 
     const write = await mount({ id: 'gate-1', dryRunDiff: [req('r1'), req('r2')], warnings: [duplicateIds(['r1', 'r2'])] });
     expect(write).toHaveAttribute('aria-disabled', 'true');
     expect(write).not.toBeDisabled();
-    expect(screen.getByText('2 items to fix before writing')).toBeInTheDocument();
+    expect(screen.getByText(fullText('2 items to fix before writing'))).toBeInTheDocument();
 
     await userEvent.click(write);
     expect(screen.queryByRole('dialog', { name: /write these items to azure devops/i })).not.toBeInTheDocument();
@@ -5280,7 +5379,7 @@ describe('JobDetail: the write gate is a hard block (DESIGN.md §11.3.5, review 
     it('carries the blocker count in text, linked to Write, and a blocked Write still jumps to the first blocker', async () => {
       const write = await mount({ id: 'bar-2', dryRunDiff: [req('r1'), req('r2')], warnings: [duplicateIds(['r1', 'r2'])] });
       const bar = screen.getByRole('region', { name: 'Review decision' });
-      const reason = within(bar).getByText('2 items to fix before writing');
+      const reason = within(bar).getByText(fullText('2 items to fix before writing'));
       expect(write.getAttribute('aria-describedby')).toBe(reason.id);
       expect(write).toHaveAttribute('aria-disabled', 'true');
       await userEvent.click(write);

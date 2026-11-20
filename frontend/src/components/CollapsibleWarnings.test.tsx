@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { CollapsibleWarnings } from './CollapsibleWarnings';
 import type { WarningRecord } from '../utils/warnings';
+import { fullText } from '../test/textContent';
 
 function warning(overrides: Partial<WarningRecord> & Pick<WarningRecord, 'kind' | 'severity' | 'raw'>): WarningRecord {
   return { nodeIds: [], detail: {}, ...overrides };
@@ -414,7 +415,7 @@ describe('CollapsibleWarnings', () => {
         reviewedIds: new Set(ids(28)),
       });
 
-      expect(screen.getByText('28 of 80 reviewed')).toBeInTheDocument();
+      expect(screen.getByText(fullText('28 of 80 reviewed'))).toBeInTheDocument();
       expect(screen.getByRole('progressbar', { name: /^review progress: /i })).toHaveAttribute('aria-valuenow', '35');
       expect(screen.queryByText('Done')).not.toBeInTheDocument();
     });
@@ -503,7 +504,7 @@ describe('CollapsibleWarnings', () => {
       );
       await userEvent.click(screen.getByText('Content the model may have dropped'));
 
-      expect(screen.getByText('1 of 2 reviewed')).toBeInTheDocument();
+      expect(screen.getByText(fullText('1 of 2 reviewed'))).toBeInTheDocument();
       await userEvent.click(screen.getByRole('button', { name: 'Fine as is' }));
       expect(onAcknowledge).toHaveBeenLastCalledWith('dropped_blocks', ['Section 1 dropped.'], true);
 
@@ -562,7 +563,7 @@ describe('CollapsibleWarnings', () => {
         retryProgress: { kind: 'enhancement_call_failed', done: 100, total: 275 },
       });
 
-      expect(screen.getByText('Retrying: 100 of 275')).toBeInTheDocument();
+      expect(screen.getByText(fullText('Retrying: 100 of 275'))).toBeInTheDocument();
       expect(screen.getByRole('progressbar', { name: /^retry progress: /i })).toHaveAttribute('aria-valuenow', '36');
       expect(screen.queryByRole('button', { name: 'Retry enhancement' })).not.toBeInTheDocument();
       await userEvent.click(screen.getByRole('button', { name: 'Stop' }));
@@ -632,7 +633,7 @@ describe('CollapsibleWarnings', () => {
       expect(screen.getByText('1 to fix')).toBeInTheDocument();
       expect(screen.queryByText('Done')).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: /undo/i })).not.toBeInTheDocument();
-      expect(screen.getByText('1 of 2 reviewed')).toBeInTheDocument();
+      expect(screen.getByText(fullText('1 of 2 reviewed'))).toBeInTheDocument();
     });
 
     it('still counts an open fix kind', () => {

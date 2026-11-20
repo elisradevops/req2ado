@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.canonical.model import CanonicalDoc
 from app.leveling.tree_builder import build_baseline_tree
+from app.study.rulebook import FileRulebook
 from app.workitem.model import IntegrityWarning, WorkItemMode, WorkItemNode
 
 _ID_PREFIX = "bl_"
@@ -9,6 +10,7 @@ _ID_PREFIX = "bl_"
 
 def adopt_baseline_structure(
     doc: CanonicalDoc,
+    rulebook: FileRulebook | None = None,
 ) -> tuple[list[WorkItemNode], list[IntegrityWarning]]:
     """The items of `doc` as the BASELINE rules structure them, ready to join a SURVEY tree.
 
@@ -18,7 +20,7 @@ def adopt_baseline_structure(
     item per sheet), for every format, so it is the fixed item set. The nodes are renamed (`bl_` prefix, so they cannot
     collide with the deterministic subtrees' ids), marked SURVEY (the later passes score and refine them like any SURVEY
     item) and keep their hashes, so a rerun produces the same identities."""
-    tree = build_baseline_tree(doc)
+    tree = build_baseline_tree(doc, rulebook)
     renamed = {node.local_id: f"{_ID_PREFIX}{node.local_id}" for node in tree.nodes}
     nodes: list[WorkItemNode] = []
     for node in tree.nodes:

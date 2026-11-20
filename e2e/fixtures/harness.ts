@@ -257,6 +257,7 @@ export async function openDiffReadyJob(page: Page, variant: WarningVariant = 'ma
   await page.routeWebSocket(/\/chat\?/, () => {});
   await installPageHooks(page, []);
   await page.goto(`/jobs/${JOB_ID}`);
-  await page.getByRole('button', { name: 'Collapse Core module' }).waitFor();
+  // The chevron is aria-hidden (the row carries aria-expanded), so wait for the open Feature's row itself.
+  await page.getByRole('treeitem', { name: 'Core module', expanded: true }).waitFor();
   return { pageErrors };
 }

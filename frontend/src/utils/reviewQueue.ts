@@ -198,49 +198,74 @@ export function nextInQueue<T extends { localId: string }>(before: T[], currentI
   return rest[0];
 }
 
+// "N of M reviewed" for the write bar (the Jobs list's count is the same rule, mirrored in the orchestrator's review-progress.ts).
+// Reviewable = a new item (action 'create') that is not excluded, itself or through an excluded ancestor (confirm drops those too);
+// reviewed = of those, the ones marked reviewed. Reuse and near-duplicate entries are not written, so they are not counted.
+export function reviewProgress(entries: ReviewQueueEntry[]): { reviewed: number; reviewable: number } {
+  const byId = new Map(entries.map((entry) => [entry.localId, entry]));
+  const cache = new Map<string, boolean>();
+  let reviewed = 0;
+  let reviewable = 0;
+  for (const entry of entries) {
+    if (entry.action !== 'create' || isExcludedWithAncestors(entry, byId, cache)) continue;
+    reviewable += 1;
+    if (entry.reviewed) reviewed += 1;
+  }
+  return { reviewed, reviewable };
+}
+
 export interface CleanApproval<T> {
-  // Lowest quality score first, so the sample always starts with the weakest of them.
+  // Lowest quality score first, so the sample always starts with the weakest of them (BASELINE: tree order, nothing is scored).
   items: T[];
   // Still up for review but left out: blocking, low-score, flagged or warned items.
   flagged: number;
   unscored: number;
   stale: number;
+  // BASELINE only: Epics and Features, never offered (they are checked one by one, DESIGN.md §11.5.1). SURVEY counts them as unscored.
+  structure: number;
   lowestScore: number | null;
   highestScore: number | null;
 }
 
 // What "approve clean items" would mark reviewed. "Clean" means "not flagged", never "verified":
-// the queue's clean tier (no flag, no fix/review warning; info warnings do not count) restricted
-// to items that carry a current score, since the queue's clean tier also holds unscored ones.
-// There is deliberately no score threshold of its own.
+// the queue's clean tier (no flag, no fix/review warning; info warnings do not count). In SURVEY it is
+// restricted to items that carry a current score, since the queue's clean tier also holds unscored ones.
+// BASELINE scores nothing (its text is verbatim), so there clean means only "no warning": score and
+// staleness are not looked at. There is deliberately no score threshold of its own.
 export function cleanApproval<T extends ReviewQueueEntry & { qualityStale?: boolean }>(
   entries: T[],
   kindGroups: WarningKindGroup[],
+  mode: 'survey' | 'baseline' = 'survey',
 ): CleanApproval<T> {
   const items: T[] = [];
   let flagged = 0;
   let unscored = 0;
   let stale = 0;
+  let structure = 0;
   for (const { entry, tier } of buildTieredQueue(entries, kindGroups)) {
-    if (tier === 'structure') unscored += 1;
-    else if (tier !== 'clean') flagged += 1;
+    if (tier === 'structure') {
+      if (mode === 'baseline') structure += 1;
+      else unscored += 1;
+    } else if (tier !== 'clean') flagged += 1;
+    else if (mode === 'baseline') items.push(entry);
     else if (entry.qualityScore == null) unscored += 1;
     else if (entry.qualityStale) stale += 1;
     else items.push(entry);
   }
-  const scores = items.map((item) => item.qualityScore as number);
+  const scores = mode === 'baseline' ? [] : items.map((item) => item.qualityScore as number);
   return {
     items,
     flagged,
     unscored,
     stale,
+    structure,
     lowestScore: scores.length > 0 ? scores[0] : null,
     highestScore: scores.length > 0 ? scores[scores.length - 1] : null,
   };
 }
 
 // The items the reviewer must look at before approving the rest: max(3, ceil(N / 10)) of them,
-// capped at N. Input is lowest score first (as cleanApproval returns it); the sample starts at the
+// capped at N. Input is lowest score first (as cleanApproval returns it; tree order in BASELINE); the sample starts at the
 // lowest and is evenly spaced up to the highest. No randomness, so it is the same every time.
 export function spotCheckSample<T>(items: T[]): T[] {
   const total = items.length;

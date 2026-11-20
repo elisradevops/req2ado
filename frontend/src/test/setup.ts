@@ -75,11 +75,12 @@ if (!window.matchMedia) {
 }
 
 // number-flow renders the digits into a shadow root with its own <style>,
-// so a sentence like "28 of 80 reviewed" is split across elements and no
-// longer matches getByText. Tests assert the numbers, not the roll
-// animation -- render the plain formatted value as a bare text node.
+// so its light DOM carries no text. AnimatedNumber hides it from assistive
+// tech and adds a visually hidden plain number; render nothing here, as the
+// real element's light DOM does, so the number is in the DOM once (no
+// "11 warning" from a doubled count, no double getByText match).
 vi.mock('@number-flow/react', () => ({
-  default: ({ value }: { value: number }) => Number(value).toLocaleString(),
+  default: () => null,
 }));
 
 // The connection-status store is module-level state shared by every consumer: a test must not see the previous test's checks.

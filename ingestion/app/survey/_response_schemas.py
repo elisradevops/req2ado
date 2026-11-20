@@ -691,6 +691,130 @@ def sheet_study_schema() -> dict:
     }
 
 
+_LADDER_OR_UNKNOWN = ["Epic", "Feature", "Requirement", "not_imported", "unknown"]
+_BASES = ["same_name", "translation", "hierarchy_position", "none"]
+
+
+def file_rules_table_schema() -> dict:
+    """study_file_rules_table (study/model_rules.py): how one table states its items, as column and row numbers, closed vocabularies and values
+    copied from the table. The caller checks every number and value against the table; the schema only fixes the shape."""
+    integer_or_null = {"type": ["integer", "null"]}
+    return {
+        "name": "file_rules_table",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "sheet_kind": {"type": "string", "enum": ["work_items", "not_work_items", "unknown"]},
+                "header_row": integer_or_null,
+                "columns": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "column": {"type": "integer"},
+                            "header": {"type": "string"},
+                            "role": {
+                                "type": "string",
+                                "enum": [
+                                    "type",
+                                    "level_title",
+                                    "level_number",
+                                    "outline_number",
+                                    "id",
+                                    "parent_id",
+                                    "title",
+                                    "customer_id",
+                                    "description",
+                                    "metadata",
+                                ],
+                            },
+                            "level": integer_or_null,
+                        },
+                        "required": ["column", "header", "role", "level"],
+                        "additionalProperties": False,
+                    },
+                },
+                "nesting": {
+                    "type": "string",
+                    "enum": ["level_columns", "level_number", "outline_number", "id_parent", "row_order", "unknown"],
+                },
+                "type_values": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "value": {"type": "string"},
+                            "maps_to": {"type": "string", "enum": _LADDER_OR_UNKNOWN},
+                            "basis": {"type": "string", "enum": _BASES},
+                        },
+                        "required": ["value", "maps_to", "basis"],
+                        "additionalProperties": False,
+                    },
+                },
+                "level_types": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "level": {"type": "integer"},
+                            "maps_to": {"type": "string", "enum": _LADDER_OR_UNKNOWN},
+                        },
+                        "required": ["level", "maps_to"],
+                        "additionalProperties": False,
+                    },
+                },
+                "evidence_rows": {"type": "array", "items": {"type": "integer"}},
+            },
+            "required": ["sheet_kind", "header_row", "columns", "nesting", "type_values", "level_types", "evidence_rows"],
+            "additionalProperties": False,
+        },
+    }
+
+
+def file_rules_document_schema() -> dict:
+    """study_file_rules_document (study/model_rules.py): how a document states its item types: label conventions copied from its headings and the
+    type of each nesting depth. The caller recounts every label over every heading; the schema only fixes the shape."""
+    return {
+        "name": "file_rules_document",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "type_source": {"type": "string", "enum": ["labels", "depth", "labels_and_depth", "none", "unknown"]},
+                "labels": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "label": {"type": "string"},
+                            "separator": {"type": "string", "enum": [":", "-", "–", "—", "."]},
+                            "maps_to": {"type": "string", "enum": ["Epic", "Feature", "Requirement", "unknown"]},
+                            "basis": {"type": "string", "enum": _BASES},
+                            "example_headings": {"type": "array", "items": {"type": "integer"}},
+                        },
+                        "required": ["label", "separator", "maps_to", "basis", "example_headings"],
+                        "additionalProperties": False,
+                    },
+                },
+                "depth_types": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "depth": {"type": "integer"},
+                            "maps_to": {"type": "string", "enum": ["Epic", "Feature", "Requirement", "unknown"]},
+                        },
+                        "required": ["depth", "maps_to"],
+                        "additionalProperties": False,
+                    },
+                },
+                "evidence_headings": {"type": "array", "items": {"type": "integer"}},
+            },
+            "required": ["type_source", "labels", "depth_types", "evidence_headings"],
+            "additionalProperties": False,
+        },
+    }
+
+
 def document_study_schema() -> dict:
     """study_document_window: what one window of the job's document states about its glossary, unresolved-value markers, verification
     wording, cited standards, table roles, list lead-ins and the sentences that state its purpose. Entries are checked against the window text by the caller."""

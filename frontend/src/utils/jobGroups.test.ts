@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { groupJobs, isStaleJob, rerunOf, shortJobId, STALE_AFTER_DAYS, type JobGroupable } from './jobGroups';
+import { groupJobs, isStaleJob, replacedByRerun, rerunOf, shortJobId, STALE_AFTER_DAYS, type JobGroupable } from './jobGroups';
 
 // "Now" is Fri 13 Nov 2026, 10:00 local, so the day boundaries do not depend on when the suite runs.
 const NOW = new Date(2026, 10, 13, 10, 0, 0);
@@ -159,5 +159,30 @@ describe('rerunOf', () => {
     const map = rerunOf(jobs);
     expect(performance.now() - started).toBeLessThan(500);
     expect(map.size).toBe(19999);
+  });
+});
+
+describe('replacedByRerun (the inverse of rerunOf)', () => {
+  const named = (id: string, createdAt: string, originalFilename: string) => ({ id, status: 'diff_ready', createdAt, originalFilename });
+
+  it('names, for each job a later run of the same file followed, the short id of that next run', () => {
+    const jobs = [
+      named('33333333-c', daysAgo(0), 'F.docx'),
+      named('22222222-b', daysAgo(1), 'f.DOCX'),
+      named('11111111-a', daysAgo(2), 'F.docx'),
+      named('99999999-z', daysAgo(0), 'Other.docx'),
+    ];
+    const map = replacedByRerun(jobs);
+    expect(map.get('11111111-a')).toBe('22222222');
+    expect(map.get('22222222-b')).toBe('33333333');
+    // the newest run and an unrelated file are replaced by nothing
+    expect(map.has('33333333-c')).toBe(false);
+    expect(map.has('99999999-z')).toBe(false);
+  });
+
+  it('is exactly rerunOf turned around', () => {
+    const jobs = [named('bbbbbbbb-2', daysAgo(0), 'AirPro.docx'), named('aaaaaaaa-1', daysAgo(1), 'AirPro.docx')];
+    expect(rerunOf(jobs).get('bbbbbbbb-2')).toBe('aaaaaaaa');
+    expect(replacedByRerun(jobs).get('aaaaaaaa-1')).toBe('bbbbbbbb');
   });
 });

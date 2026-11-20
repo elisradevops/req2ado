@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { LayoutGrid, AlignLeft, Image, Layers, Table2, TriangleAlert, ArrowRight, Activity, Info } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { restorableDraft, useNewJobDraftStore } from '../store/newJobDraftStore';
-import { isUntouchedChoices, loadLastJobChoices, loadProjectChoices, rememberJobChoices, withRememberedChoices } from '../utils/lastJobChoices';
+import { loadLastJobChoices, loadProjectChoices, rememberJobChoices, withRememberedChoices } from '../utils/lastJobChoices';
 import { FileTypeIcon } from '../components/FileTypeIcon';
 import { FileDropzone, type FileDropzoneStatus } from '../components/FileDropzone';
 import { ModeCards } from '../components/ModeCards';
@@ -16,7 +16,9 @@ import { SafetyLine } from '../components/SafetyLine';
 import { DedupScopeSelect } from '../components/DedupScopeSelect';
 import {
   listJobs,
+  editRules,
   previewJob,
+  previewRules,
   previewSummary,
   getCachedResult,
   submitJob,
@@ -26,6 +28,7 @@ import {
   type EtaEstimate,
   type PreviewResult,
   type DocumentOverview,
+  type RulebookView,
 } from '../api/jobs';
 import { estimateLine, formatTokenCount, formatUsdRange, tokenForecastLine } from '../utils/eta';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
@@ -39,6 +42,7 @@ import { PageHeader } from '../ui/PageHeader';
 import { SectionCard } from '../ui/SectionCard';
 import { KbReadinessStrip } from '../components/KbReadinessStrip';
 import { OverviewLines } from '../components/DocumentOverviewCard';
+import { FileRulesCard, type RulesStatus } from '../components/FileRulesCard';
 import { TextField } from '../ui/TextField';
 import { Button } from '../ui/Button';
 import { Spinner } from '../ui/Spinner';
@@ -55,16 +59,33 @@ import { describeEstimateBasis } from '../utils/modelFacts';
 // don't exist as separate screens, since target/options/review all live on
 // one page today. Two honest stages instead of a stage count the UI can't
 // back up.
-// One list for both modes: the step count never changes when the mode does. BASELINE never reaches step 3, so it shows it muted and tagged
-// "SURVEY only" (a struck-through label read as an error before any mode had been chosen).
-const WIZARD_STEPS = ['Upload document', 'Configure & review', 'Confirm understanding'];
+// SURVEY confirms what was read on a page of its own (it waits there for the optional AI summary); BASELINE has nothing to wait for, so
+// its configuration and the check of what was read are one page that holds Start (P5). Step numbers: BASELINE 1-2, SURVEY 1-3.
+const SURVEY_STEPS = ['Upload document', 'Configure & review', 'Confirm understanding'];
+const BASELINE_STEPS = ['Upload document', 'Check and start'];
 
-function wizardSubLabels(mode: 'baseline' | 'survey'): (string | null)[] {
-  return [null, null, mode === 'baseline' ? 'SURVEY only' : null];
+function stepsFor(mode: 'baseline' | 'survey'): string[] {
+  return mode === 'baseline' ? BASELINE_STEPS : SURVEY_STEPS;
 }
 
-function wizardStepStates(activeIndex: number): StepState[] {
-  return WIZARD_STEPS.map((_, index) => {
+/** Whether this step is the one that shows what was read from the file and starts the job. */
+function isFinalStep(step: number, mode: 'baseline' | 'survey'): boolean {
+  return step === stepsFor(mode).length;
+}
+
+/** The reason an API call failed, as the server stated it (a rulebook that does not fit the file says why), else a plain sentence. */
+function errorReason(err: unknown): string {
+  // The reading is limited per minute (the server's throttle): say so rather than "could not be read".
+  if ((err as { response?: { status?: unknown } } | null)?.response?.status === 429) return 'Too many reads in a minute. Try again shortly.';
+  const message = (err as { response?: { data?: { message?: unknown } } } | null)?.response?.data?.message;
+  if (typeof message === 'string' && message) return message;
+  if (Array.isArray(message) && message.length > 0) return message.join('; ');
+  return "The file's conventions could not be read.";
+}
+
+
+function wizardStepStates(activeIndex: number, mode: 'baseline' | 'survey'): StepState[] {
+  return stepsFor(mode).map((_, index) => {
     if (index < activeIndex) return 'done';
     return index === activeIndex ? 'awaiting' : 'pending';
   });
@@ -311,11 +332,13 @@ export function NewJobWizard(): React.ReactElement {
   const { showToast, showErrorToast } = useToast();
   const orgUrl = useOrgUrl();
   // What the user had done before leaving this page and coming back (see newJobDraftStore); empty on a first visit.
-  // A tab nobody has chosen anything in starts from the last job's mode and destination (per user, a convenience only).
+  // A tab nobody has chosen anything in starts from the last job's destination (per user, a convenience only). The mode is not restored:
+  // BASELINE is always preselected and the last job's mode is only labelled on its card (D1); a draft in progress keeps its own mode.
   const userId = useUserId();
   const [initial] = useState(() => {
     const draft = restorableDraft();
-    return { ...withRememberedChoices(draft, loadLastJobChoices(userId)), modeChosen: !isUntouchedChoices(draft) };
+    const remembered = loadLastJobChoices(userId);
+    return { ...withRememberedChoices(draft, remembered, { applyMode: false }), lastUsedMode: remembered?.mode };
   });
   const [step, setStep] = useState<1 | 2 | 3>(initial.step);
   // The three steps share one container, so a step change replays a fade on it rather than remounting (focus survives; DESIGN.md section 8).
@@ -343,16 +366,19 @@ export function NewJobWizard(): React.ReactElement {
       heading.focus();
     }
   }, [step]);
+  // The mode sets how many steps there are (and step 2's name), so switching it on step 2 re-titles the page without moving focus.
+  const [mode, setMode] = useState<'baseline' | 'survey'>(initial.mode);
+  const steps = stepsFor(mode);
   useEffect(() => {
     const previousTitle = document.title;
-    document.title = `Step ${step} of ${WIZARD_STEPS.length}: ${WIZARD_STEPS[step - 1]} - New job`;
+    document.title = `Step ${step} of ${steps.length}: ${steps[step - 1]} - New job`;
     return () => {
       document.title = previousTitle;
     };
-  }, [step]);
+  }, [step, steps]);
   const stepTitle = (
     <>
-      New job<span className="sr-only">, step {step} of {WIZARD_STEPS.length}</span>
+      New job<span className="sr-only">, step {step} of {steps.length}</span>
     </>
   );
   const [file, setFile] = useState<File | null>(initial.file);
@@ -384,19 +410,12 @@ export function NewJobWizard(): React.ReactElement {
       cancelled = true;
     };
   }, [parsedFileName]);
-  const [mode, setMode] = useState<'baseline' | 'survey'>(initial.mode);
   const [project, setProject] = useState(initial.project);
   const [areaPath, setAreaPath] = useState(initial.areaPath);
   const [state, setState] = useState(initial.state);
   const [iterationPath, setIterationPath] = useState(initial.iterationPath);
   const [dedupScope, setDedupScope] = useState<'area_path' | 'project'>(initial.dedupScope);
   const [model, setModel] = useState(initial.model);
-  // Whether the person picked the mode themselves (or came back to a draft they had started): a project's remembered mode never replaces it.
-  const modeChosen = useRef(initial.modeChosen);
-  function handleModeChange(next: 'baseline' | 'survey'): void {
-    modeChosen.current = true;
-    setMode(next);
-  }
   // Mirror the user's work into the draft store so it survives a visit to another page (cleared on submit, replace and logout).
   useEffect(() => {
     useNewJobDraftStore.getState().patch({ step, file, preview, parseStatus, mode, model, project, areaPath, state, iterationPath, dedupScope });
@@ -500,14 +519,12 @@ export function NewJobWizard(): React.ReactElement {
   // coherent (browsing project X's area paths then writing to project Y
   // would be silently wrong).
   // Only on a real change: a project restored from the draft must keep its restored area path.
-  // The new project's own last area path (and its mode, unless the person chose one) is offered instead of an empty one (B6).
+  // The new project's own last area path is offered instead of an empty one (B6); never its mode (D1: the mode stays what is selected).
   const lastProject = useRef(project);
   useEffect(() => {
     if (lastProject.current === project) return;
     lastProject.current = project;
-    const remembered = loadProjectChoices(userId, project);
-    setAreaPath(remembered?.areaPath ?? '');
-    if (remembered && !modeChosen.current) setMode(remembered.mode);
+    setAreaPath(loadProjectChoices(userId, project)?.areaPath ?? '');
   }, [project, userId]);
 
   // DESIGN.md §11.2.3.d -- both mode cards show a real server-computed
@@ -552,6 +569,94 @@ export function NewJobWizard(): React.ReactElement {
     return () => controller.abort();
   }, [fileHash, mode, model]);
 
+  // How the file states its structure (the pre-study): the model reads the file's conventions, every answer is checked against the whole file, and the job
+  // is built from exactly the rulebook shown. It runs for every file, in both modes (the items are still built by code): asked once per file as soon as the
+  // file is parsed, and shown on step 3 (with no model connection it is skipped). Moving between steps keeps the answer (still in flight or not); a new
+  // file, "Change document" or leaving the page drops it. It reads with the model chosen at that moment (BASELINE: the deployment's default; SURVEY: the
+  // job's model). The model is not part of what triggers it: once read, the same file keeps its rules until the user reads it again, and the card says
+  // when the job will use another model. "Stop waiting" lets Start go without it: the job's worker then reads the file itself when it starts.
+  const [rules, setRules] = useState<{ status: RulesStatus; view: RulebookView | null; error: string | null; model?: string; startedAt?: string }>({ status: 'idle', view: null, error: null });
+  const rulesRequestSeq = useRef(0);
+  const rulesAbort = useRef<AbortController | null>(null);
+  // The file the study was asked for, so returning to step 3 does not ask again.
+  const rulesAskedFor = useRef<File | null>(null);
+  // Set by "Change document": the same file is asked again only once the user goes on from step 1, not while they may still replace it.
+  const rulesHeld = useRef(false);
+  const modelForRules = useRef<string | undefined>(undefined);
+  modelForRules.current = mode === 'baseline' ? undefined : model || undefined;
+
+  const learnRules = useCallback(async (forFile: File, relearn: boolean): Promise<void> => {
+    rulesAbort.current?.abort();
+    const controller = new AbortController();
+    rulesAbort.current = controller;
+    const seq = ++rulesRequestSeq.current;
+    const usedModel = modelForRules.current;
+    setRules({ status: 'loading', view: null, error: null, model: usedModel, startedAt: new Date().toISOString() });
+    try {
+      const view = await previewRules(forFile, usedModel, relearn, controller.signal);
+      if (seq !== rulesRequestSeq.current) return;
+      setRules(view ? { status: 'ready', view, error: null, model: usedModel } : { status: 'error', view: null, error: 'The server gave no answer.', model: usedModel });
+    } catch (err) {
+      if (seq !== rulesRequestSeq.current || controller.signal.aborted) return;
+      setRules({ status: 'error', view: null, error: errorReason(err), model: usedModel });
+    }
+  }, []);
+
+  // Stops waiting, not the job's own reading: the request is dropped (ingestion stops its model calls) and Start goes free; the file stays.
+  const cancelRules = useCallback((): void => {
+    rulesRequestSeq.current += 1; // the answer, if it still comes, is no longer wanted
+    rulesAbort.current?.abort();
+    setRules({ status: 'cancelled', view: null, error: null });
+  }, []);
+
+  const resetRules = useCallback((): void => {
+    rulesRequestSeq.current += 1; // whatever is still in flight is no longer wanted
+    rulesAbort.current?.abort();
+    rulesAskedFor.current = null;
+    setRules({ status: 'idle', view: null, error: null });
+  }, []);
+
+  // A different file (or none) starts from nothing; the cleanup also drops a request still in flight when the page is left.
+  const hasPreview = preview !== null;
+  useEffect(() => {
+    rulesHeld.current = false;
+    resetRules();
+    return resetRules;
+  }, [file, fileHash, hasPreview, resetRules]);
+
+  // Asked as soon as the file is parsed. Order matters: this effect must stay declared after the reset above. Both run when `hasPreview`/`fileHash`
+  // flip in the same render, and the reset aborts whatever is in flight, so asking first would be cancelled at once (which is also why it is not
+  // started in handleFileSelected). `step` is a dependency only for "Change document" (held until the user leaves step 1).
+  useEffect(() => {
+    if (!file || !hasPreview || rulesAskedFor.current === file) return;
+    if (rulesHeld.current && step === 1) return;
+    rulesHeld.current = false;
+    rulesAskedFor.current = file;
+    void learnRules(file, false);
+  }, [step, file, fileHash, hasPreview, learnRules]);
+
+  async function handleSaveRulesEdit(edited: Record<string, unknown>): Promise<string | null> {
+    if (!file) return 'There is no file.';
+    try {
+      // Checked with the model the rules were read with, which the card names.
+      const view = await editRules(file, edited, rules.model);
+      rulesRequestSeq.current += 1; // an older answer still coming back must not replace the edit
+      setRules((current) => ({ status: 'ready', view, error: null, model: current.model }));
+      return null;
+    } catch (err) {
+      return errorReason(err);
+    }
+  }
+  // Start (SURVEY step 3, BASELINE step 2) waits for the reading; 'idle' there is the moment before it is asked (the effect above runs after the first paint). 'cancelled' is not
+  // busy: the user stopped waiting, and the job reads the file itself.
+  const rulesBusy = rules.status === 'loading' || rules.status === 'idle';
+  // The model the reading used against the one the job will use (BASELINE: the default). A later model pick does not read again by itself.
+  const defaultModelName = 'the default model';
+  const rulesModelHint =
+    rules.status === 'ready' && rules.view && !rules.view.skipped && rules.view.source !== 'user' && rules.model !== modelForRules.current
+      ? { readWith: rules.model ?? defaultModelName, jobUses: modelForRules.current ?? defaultModelName }
+      : null;
+
   async function handleFileSelected(selected: File): Promise<void> {
     const seq = ++previewRequestSeq.current;
     setFile(selected);
@@ -589,7 +694,7 @@ export function NewJobWizard(): React.ReactElement {
     setParseError(null);
   }
 
-  // Start on step 3. A run forecast above the deployment's threshold asks first (the server decides: COST_CONFIRM_TOKENS), so a very large file
+  // Start on the final step. A run forecast above the deployment's threshold asks first (the server decides: COST_CONFIRM_TOKENS), so a very large file
   // is a deliberate choice; everything else starts at once as before.
   function requestStart(): void {
     if (forecast?.requiresConfirmation) setCostConfirmOpen(true);
@@ -610,6 +715,8 @@ export function NewJobWizard(): React.ReactElement {
         iterationPath: iterationPath || undefined,
         dedupScope: dedupScope === 'project' ? 'project' : undefined,
         model: mode === 'survey' ? model || undefined : undefined,
+        // The rulebook shown in the card: the job is built from exactly it (only when the study learned something worth storing).
+        rulebookId: rules.view?.id ? rules.view.id : undefined,
         // The AI summary goes with the job only if it was ready: the start button never waits for it.
         documentOverview: mode === 'survey' ? (documentOverview && aiSummary.status === 'ready' && aiSummary.text ? { ...documentOverview, aiSummary: aiSummary.text } : documentOverview) : undefined,
       });
@@ -624,17 +731,6 @@ export function NewJobWizard(): React.ReactElement {
     }
   }
 
-  // Step 2's own submit button: BASELINE creates the job directly
-  // (unchanged); SURVEY instead advances to step 3, where the real
-  // creation trigger lives.
-  function handleContinueFromConfigure(): void {
-    if (mode === 'survey') {
-      setStep(3);
-    } else {
-      void handleSubmit();
-    }
-  }
-
   // Deliberately does NOT clear file/preview -- unlike handleReplace, going
   // Back to review/re-upload is not "start over": the already-parsed file
   // and its stat tiles should still be sitting there on step 1 exactly as
@@ -643,11 +739,18 @@ export function NewJobWizard(): React.ReactElement {
     setStep(1);
   }
 
+  // "Change document" keeps the parsed file like Back, but the reading of its conventions starts over: an answer still coming back is dropped.
+  function handleChangeDocument(): void {
+    resetRules();
+    rulesHeld.current = true;
+    setStep(1);
+  }
+
   if (step === 1) {
     return (
       <div ref={stepRootRef} data-testid="wizard-step" className="flex flex-col gap-4">
         <PageHeader title={stepTitle} description="Upload a requirements document to get started" />
-        <Stepper steps={WIZARD_STEPS} states={wizardStepStates(0)} subLabels={wizardSubLabels(mode)} />
+        <Stepper steps={steps} states={wizardStepStates(0, mode)} />
         {/* DESIGN.md §11.1 -- "a two-pane split that owns the viewport by
             construction" -- previously a single narrow column stretched
             across AppShell's full-viewport-height <main>, reading as a
@@ -719,7 +822,7 @@ export function NewJobWizard(): React.ReactElement {
             <div className="grid grid-cols-2 gap-2.5">
               <StatTile
                 value={preview?.blockCount ?? '--'}
-                label="Blocks"
+                label="Text blocks"
                 icon={LayoutGrid}
                 hint="Paragraphs, list items and table rows."
                 interactive
@@ -740,7 +843,7 @@ export function NewJobWizard(): React.ReactElement {
               />
               <StatTile
                 value={preview?.depth ?? '--'}
-                label="Depth"
+                label="Heading levels"
                 icon={Layers}
                 hint="Deepest heading nesting found."
                 interactive
@@ -755,7 +858,7 @@ export function NewJobWizard(): React.ReactElement {
               <div className="mt-auto flex flex-wrap items-center gap-3">
                 <SafetyLine variant="wizard" />
                 <Button onClick={() => setStep(2)} disabled={!preview} className="ml-auto">
-                  Configure
+                  {mode === 'baseline' ? 'Check and start' : 'Configure'}
                   <ArrowRight className="h-3.5 w-3.5" />
                 </Button>
               </div>
@@ -776,15 +879,13 @@ export function NewJobWizard(): React.ReactElement {
   const forecast = mode === 'survey' && !cachedResult ? surveyEstimate?.tokens : undefined;
   const forecastLine = tokenForecastLine(forecast);
 
-  if (step === 3) {
-    return (
-      <div ref={stepRootRef} data-testid="wizard-step" className="flex flex-col gap-4">
-        <PageHeader title={stepTitle} description="Check what was read from the file before it runs" />
-        <Stepper steps={WIZARD_STEPS} states={wizardStepStates(2)} />
-        {/* Same two columns as step 2 (DESIGN.md §11.2.5): the question and its action on the left, the "This run" rail kept on the right so
-            the file, the mode, where it lands and the estimate are beside Start (owner decision, 2026-11-12). */}
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
-        <div className="flex min-w-0 flex-col gap-4">
+  // SURVEY's step 3, or BASELINE's step 2 ("Check and start"): the page that shows what was read from the file and holds Start.
+  const finalStep = isFinalStep(step, mode);
+  // Start needs a destination. On BASELINE's single page it is chosen on the same page, so the bar says what Start is waiting for.
+  const destinationMissing = !areaPath || (hasAdoSession && !project);
+  // What was read from the file, shared by both final pages (SURVEY step 3, BASELINE step 2).
+  const understanding = (
+    <>
         <SectionCard title="Does this look right?">
           <div className="flex flex-col gap-3">
             {documentOverview?.lines && documentOverview.lines.length > 0 ? (
@@ -833,23 +934,63 @@ export function NewJobWizard(): React.ReactElement {
             {documentOverview?.caveat && <Alert severity="warning">{documentOverview.caveat}</Alert>}
           </div>
         </SectionCard>
-        {/* sticky: the list above can be long and a summary can appear or go away above it, and Start must not move out from under the pointer. Styled as the Write bar's dock (own border, shadow, z-10) so the content scrolling under it does not show through. */}
+        <FileRulesCard
+          status={rules.status}
+          view={rules.view}
+          error={rules.error}
+          modelLabel={rules.model || (modelListing?.recommended ? `Default (${modelListing.recommended})` : 'Default')}
+          startedAt={rules.startedAt}
+          modelHint={rulesModelHint}
+          onRelearn={() => file && void learnRules(file, true)}
+          onStopWaiting={cancelRules}
+          onReadNow={() => file && void learnRules(file, false)}
+          onSaveEdit={handleSaveRulesEdit}
+        />
+    </>
+  );
+  const startBar = (
+        // sticky: the list above can be long and a summary can appear or go away above it, and Start must not move out from under the pointer. Styled as the Write bar's dock (own border, shadow, z-10) so the content scrolling under it does not show through.
         <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-3 rounded-md border border-hairline-strong bg-surface px-3.5 py-2.5 shadow-dock">
-          <Button variant="outline" onClick={() => setStep(2)}>
-            ← Back to configure
-          </Button>
+          {/* BASELINE's single page goes back to the upload; SURVEY's step 3 back to its configuration. */}
+          {mode === 'baseline' ? (
+            <Button variant="outline" onClick={handleBack}>
+              Back
+            </Button>
+          ) : (
+            <Button variant="outline" onClick={() => setStep(2)}>
+              ← Back to configure
+            </Button>
+          )}
           {/* Below lg the rail comes after this bar, so Start would be pressed without the destination in view: say it here. */}
           {areaPath && (
             <p className="w-full min-w-0 break-words font-mono text-xs text-ink-2 lg:hidden">
               Lands in {formatDestinationPreview(project, areaPath, iterationPath, state)}
             </p>
           )}
+          {destinationMissing && (
+            <p className="w-full text-xs text-ink-2">
+              {hasAdoSession && !project ? 'Choose a team project and an area path to start.' : 'Choose an area path to start.'}
+            </p>
+          )}
           <SafetyLine variant="wizard" />
-          <Button onClick={requestStart} disabled={isSubmitting} className="ml-auto">
+          <Button onClick={requestStart} disabled={isSubmitting || rulesBusy || destinationMissing} className="ml-auto">
             {isSubmitting ? <Spinner /> : <Activity className="h-3.5 w-3.5" />}
-            {isSubmitting ? 'Starting…' : 'Looks right — start job'}
+            {isSubmitting ? 'Starting…' : rulesBusy ? 'Reading the file…' : 'Looks right — start job'}
           </Button>
         </div>
+  );
+
+  if (step === 3) {
+    return (
+      <div ref={stepRootRef} data-testid="wizard-step" className="flex flex-col gap-4">
+        <PageHeader title={stepTitle} description="Check what was read from the file before it runs" />
+        <Stepper steps={steps} states={wizardStepStates(2, mode)} />
+        {/* Same two columns as step 2 (DESIGN.md §11.2.5): the question and its action on the left, the "This run" rail kept on the right so
+            the file, the mode, where it lands and the estimate are beside Start (owner decision, 2026-11-12). */}
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
+        <div className="flex min-w-0 flex-col gap-4">
+        {understanding}
+        {startBar}
         </div>
         <aside aria-label="This run" className="flex min-w-0 flex-col gap-4 lg:self-start">
           <SectionCard title="This run">
@@ -863,7 +1004,7 @@ export function NewJobWizard(): React.ReactElement {
                 areaPath={areaPath}
                 iterationPath={iterationPath}
                 state={state}
-                onChangeDocument={handleBack}
+                onChangeDocument={handleChangeDocument}
               />
               <PreviousRunLine previousRuns={previousRuns} />
               {selectedEstimateLine && (
@@ -888,15 +1029,18 @@ export function NewJobWizard(): React.ReactElement {
           <ConfirmDialog
             open={costConfirmOpen}
             onOpenChange={setCostConfirmOpen}
-            title="Start a large run?"
+            title="Start a large SURVEY run?"
             description={
               <>
-                This run is forecast to use roughly {formatTokenCount(forecast.inputTokens.low + forecast.outputTokens.low)} –{' '}
-                {formatTokenCount(forecast.inputTokens.high + forecast.outputTokens.high)} model tokens
-                {forecast.costUsd ? ` (${formatUsdRange(forecast.costUsd)})` : ''}. It is a rough forecast made before the run, and your account is billed for what the run really uses.
+                With {model || (modelListing?.recommended ? `your default model (${modelListing.recommended})` : 'your default model')}, this run is
+                forecast to use roughly {formatTokenCount(forecast.inputTokens.low + forecast.outputTokens.low)} –{' '}
+                {formatTokenCount(forecast.inputTokens.high + forecast.outputTokens.high)} model tokens (input and output),{' '}
+                {forecast.costUsd ? `about ${formatUsdRange(forecast.costUsd)}` : 'no price is set for this model'}. It is a rough forecast made
+                before the run, and your account is billed for what the run really uses.
+                <span className="mt-2 block">Plus a short pre-study read of the file’s layout, not counted here.</span>
               </>
             }
-            confirmLabel="Start job"
+            confirmLabel="Start SURVEY run"
             onConfirm={() => {
               setCostConfirmOpen(false);
               void handleSubmit();
@@ -910,8 +1054,11 @@ export function NewJobWizard(): React.ReactElement {
 
   return (
     <div ref={stepRootRef} data-testid="wizard-step" className="flex flex-col gap-4">
-      <PageHeader title={stepTitle} description="Review the parsed document and set where it writes to" />
-      <Stepper steps={WIZARD_STEPS} states={wizardStepStates(1)} subLabels={wizardSubLabels(mode)} />
+      <PageHeader
+        title={stepTitle}
+        description={finalStep ? 'Set where it writes to and check what was read from the file before it runs' : 'Review the parsed document and set where it writes to'}
+      />
+      <Stepper steps={steps} states={wizardStepStates(1, mode)} />
       {/* DESIGN.md §11.2.5. Left: the decision path, in the order an engineer decides (how to read it, where it lands, then
           the folded options). Right: a quiet summary rail that reads the choices back and holds the action, so the primary
           button is in view without scrolling past the mode cards. */}
@@ -924,7 +1071,8 @@ export function NewJobWizard(): React.ReactElement {
             </h2>
           <ModeCards
             value={mode}
-            onChange={handleModeChange}
+            onChange={setMode}
+            lastUsed={initial.lastUsedMode}
             baselineEstimate={baselineEstimate}
             surveyEstimate={surveyEstimate}
             surveyCached={cachedResult}
@@ -937,6 +1085,9 @@ export function NewJobWizard(): React.ReactElement {
             modelsError={modelsError}
           />
           </section>
+          {/* BASELINE: what was read from the file comes right after the mode cards, before the destination, so the reading is in view (on a phone the
+              destination would push it a screen and a half down) and in the same order for the keyboard and for a screen reader. */}
+          {finalStep && understanding}
           <SectionCard title="Destination in Azure DevOps">
             <div className="flex flex-col gap-3">
               {hasAdoSession ? (
@@ -1014,6 +1165,7 @@ export function NewJobWizard(): React.ReactElement {
               <DedupScopeSelect value={dedupScope} onChange={setDedupScope} />
             </div>
           </details>
+          {finalStep && startBar}
         </div>
 
         {/* Sticky only on a viewport tall enough to hold it, so a short window never pins its bottom out of reach. */}
@@ -1032,7 +1184,7 @@ export function NewJobWizard(): React.ReactElement {
                 areaPath={areaPath}
                 iterationPath={iterationPath}
                 state={state}
-                onChangeDocument={handleBack}
+                onChangeDocument={handleChangeDocument}
               />
               <PreviousRunLine previousRuns={previousRuns} />
               <div className="flex flex-col gap-2 border-t border-hairline pt-3">
@@ -1064,6 +1216,8 @@ export function NewJobWizard(): React.ReactElement {
                   <KbReadinessStrip />
                 </div>
               )}
+              {/* BASELINE starts from the sticky bar on the left, which carries these. */}
+              {!finalStep && (
               <div className="flex flex-col gap-3 border-t border-hairline pt-3">
                 <SafetyLine variant="wizard" />
                 {/* The destination can sit below the fold on the left; say what the disabled action is waiting for. */}
@@ -1076,12 +1230,13 @@ export function NewJobWizard(): React.ReactElement {
                   <Button variant="outline" onClick={handleBack}>
                     Back
                   </Button>
-                  <Button onClick={handleContinueFromConfigure} disabled={!areaPath || (hasAdoSession && !project) || isSubmitting} className="ml-auto">
-                    {isSubmitting ? <Spinner /> : mode === 'survey' ? <ArrowRight className="h-3.5 w-3.5" /> : <Activity className="h-3.5 w-3.5" />}
-                    {isSubmitting ? 'Starting…' : mode === 'survey' ? 'Continue' : 'Start job'}
+                  <Button onClick={() => setStep(3)} disabled={destinationMissing} className="ml-auto">
+                    <ArrowRight className="h-3.5 w-3.5" />
+                    Continue
                   </Button>
                 </div>
               </div>
+              )}
             </div>
           </SectionCard>
         </aside>

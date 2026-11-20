@@ -201,6 +201,13 @@ class Settings(BaseSettings):
     survey_study_max_windows: int = Field(default=300, ge=1)
     # The off-switch: false skips the study altogether and acceptance criteria are proposed from the hierarchy alone, without a warning.
     survey_study_enabled: bool = True
+    # The model-assisted pre-study (study/model_rules.py): how many times the model is asked about one table or document (a field is kept only when most
+    # answers agree; 1 keeps a single answer), and how many tables of one file it is asked about.
+    prestudy_votes: int = Field(default=3, ge=1, le=5)
+    prestudy_max_tables: int = Field(default=10, ge=1)
+    # How many of those asks run at once (the votes of one table or document; never more than the votes). 1 asks them one after another with no
+    # thread pool. The same operator caveat as survey_chunk_concurrency: a backend that serves one request at a time only queues them.
+    prestudy_vote_concurrency: int = Field(default=3, ge=1, le=5)
     # Self-healing of that study: after this many CONSECUTIVE windows that could not be fully read the study stops reading (the job warns it
     # was partly read); past the soft budget (seconds) it logs a warning and keeps reading, past the hard budget it stops and keeps what it read.
     survey_study_breaker_failures: int = Field(default=5, ge=1)

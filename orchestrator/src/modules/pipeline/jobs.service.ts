@@ -22,6 +22,7 @@ import type { DiffRevision, DiscussionEntry, DryRunDiffEntry, SuggestionDecision
 import { RewriteCheckCache } from './rewrite-check-cache';
 import { mapWithConcurrency, type SettledResult } from './map-with-concurrency';
 import { buildExclusionChecker, filterExcludedDiffEntries, summarizeDiffEntries } from './diff-summary';
+import { reviewProgressOf, type ReviewProgress } from './review-progress';
 import { attachableFigureIds, buildWritePreview, findOrphanedSelections, findUnknownSelections, planHasWork, selectEntriesToCreate, selectEntriesToLink, selectTraceLinks, type WritePlanEntry, type WritePreview } from './write-plan';
 import { COUNTED_ACK_KINDS, openFixItems } from './write-gate';
 import { DEFAULT_CUSTOMER_ID_FIELD_CANDIDATES } from '../../config/customer-id-fields';
@@ -92,6 +93,10 @@ export interface SubmitJobInput {
   // wizard time (fail-open, same convention as every other optional
   // LLM-dependent signal in this codebase).
   documentOverview?: DocumentOverview | null;
+  // The rulebook the wizard stored for this file (what the pre-study learned about its conventions, or the user's edit of it) and its hash: the job builds
+  // from exactly this. Absent: the file was not studied for this job (SURVEY then asks the model itself; BASELINE reads only the conventions it recognises).
+  fileRulebook?: Record<string, unknown> | null;
+  fileRulebookHash?: string | null;
 }
 
 export interface JobSummary {
@@ -114,6 +119,10 @@ export interface JobSummary {
   // The class of a failed job's failure (failure-reason.ts FAILURE_CLASSES), so a failed row can say why; null for any other job and for a job
   // that failed before it was recorded.
   failureClass: string | null;
+  // "N of M reviewed" for a job in review (status diff_ready), the same rule as the review page's Write bar (review-progress.ts); null for
+  // every other job.
+  reviewedCount: number | null;
+  reviewableCount: number | null;
 }
 
 // Read-time decoration of diff entries: `attachFigureIds` is the figures confirm() would attach for the entry (the server owns that rule, so the
@@ -392,6 +401,8 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         documentOverview: input.documentOverview
           ? (input.documentOverview as unknown as Prisma.InputJsonValue)
           : Prisma.DbNull,
+        fileRulebook: input.fileRulebook ? (input.fileRulebook as Prisma.InputJsonValue) : Prisma.DbNull,
+        fileRulebookHash: input.fileRulebookHash ?? null,
       },
     });
     // BullMQ persists job data as JSON in Redis. JSON.stringify(Buffer)
@@ -417,6 +428,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         filename: input.filename,
         ...(input.model ? { model: input.model } : {}),
         ...(input.mode === 'survey' && input.documentOverview?.structureHint ? { structureHint: input.documentOverview.structureHint } : {}),
+        ...(input.fileRulebook ? { fileRulebook: input.fileRulebook, fileRulebookHash: input.fileRulebookHash ?? null } : {}),
       },
       { jobId: job.id },
     );
@@ -484,6 +496,9 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       // submit()'s own doc comment: this is generated once, at wizard time,
       // never recomputed later.
       documentOverview: job.documentOverview as DocumentOverview | null,
+      // A resubmit builds from the rulebook the original run used, never from a fresh study: same file, same structure.
+      fileRulebook: job.fileRulebook as Record<string, unknown> | null,
+      fileRulebookHash: job.fileRulebookHash,
     });
   }
 
@@ -766,6 +781,14 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       FROM "Job" WHERE id = ANY(${ids})
     `;
     const itemCountById = new Map(itemCounts.map((row) => [row.id, Number(row.itemCount)]));
+    // Review progress needs each entry's reviewed/excluded flags and the ancestry, so it is computed here (the same helper rule as the
+    // review page), not in SQL -- and only for the jobs in review on THIS page, so the full diff is read for those few, never the whole list.
+    const inReviewIds = rows.filter((row) => row.status === 'diff_ready').map((row) => row.id);
+    const progressById = new Map<string, ReviewProgress | null>();
+    if (inReviewIds.length > 0) {
+      const diffs = await this.prisma.job.findMany({ where: { id: { in: inReviewIds } }, select: { id: true, dryRunDiff: true } });
+      for (const diff of diffs) progressById.set(diff.id, reviewProgressOf(diff.dryRunDiff));
+    }
     return rows.map((row) => ({
       id: row.id,
       mode: row.mode,
@@ -777,6 +800,8 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       createdAt: row.createdAt,
       batchId: row.batchId,
       failureClass: row.failureClass ?? null,
+      reviewedCount: progressById.get(row.id)?.reviewed ?? null,
+      reviewableCount: progressById.get(row.id)?.reviewable ?? null,
     }));
   }
 

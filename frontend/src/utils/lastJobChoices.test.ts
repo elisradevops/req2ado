@@ -113,6 +113,14 @@ describe('withRememberedChoices', () => {
     expect(withRememberedChoices(chosenMode, remembered)).toBe(chosenMode);
   });
 
+  it('with applyMode false (the single-file wizard, D1), fills the destination but keeps the default BASELINE mode', () => {
+    const filled = withRememberedChoices(EMPTY_DRAFT, remembered, { applyMode: false });
+    expect(filled).toMatchObject({ mode: 'baseline', project: 'proj', areaPath: 'proj\\Customer Requirements' });
+    // A draft in progress keeps its own mode, SURVEY included.
+    const chosenMode: NewJobDraft = { ...EMPTY_DRAFT, mode: 'survey' };
+    expect(withRememberedChoices(chosenMode, remembered, { applyMode: false })).toBe(chosenMode);
+  });
+
   it('changes nothing when nothing was remembered', () => {
     expect(withRememberedChoices(EMPTY_DRAFT, null)).toBe(EMPTY_DRAFT);
   });

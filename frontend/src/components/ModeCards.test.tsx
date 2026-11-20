@@ -41,6 +41,29 @@ describe('ModeCards', () => {
     expect(onChange).toHaveBeenCalledWith('survey');
   });
 
+  it('labels the last-used mode only: the label never selects that card or calls onChange', () => {
+    const onChange = vi.fn();
+    render(<ModeCards value="baseline" onChange={onChange} lastUsed="survey" />);
+    const survey = screen.getByRole('radio', { name: /SURVEY/ });
+    expect(survey).toHaveTextContent('Last used');
+    expect(survey).toHaveAttribute('aria-checked', 'false');
+    expect(screen.getByRole('radio', { name: /BASELINE/ })).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByRole('radio', { name: /BASELINE/ })).not.toHaveTextContent('Last used');
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('shows no label without a last-used mode', () => {
+    render(<ModeCards value="baseline" onChange={vi.fn()} />);
+    expect(screen.queryByText('Last used')).not.toBeInTheDocument();
+  });
+
+  it('does not claim BASELINE has no model cost: both modes say the file\'s layout is read by a model first', () => {
+    render(<ModeCards value="baseline" onChange={vi.fn()} />);
+    expect(screen.queryByText(/no model cost/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /BASELINE/ })).toHaveTextContent('a short model read of the file’s layout runs first (once per file, then reused)');
+    expect(screen.getByRole('radio', { name: /SURVEY/ })).toHaveTextContent('the same short read of the file’s layout first');
+  });
+
   it('renders "--" for a mode whose estimate has not resolved yet, never a locally-computed number', () => {
     render(<ModeCards value="baseline" onChange={vi.fn()} />);
     // Both cards must show the placeholder -- neither estimate is passed.

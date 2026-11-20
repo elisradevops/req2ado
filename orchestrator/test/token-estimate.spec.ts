@@ -1,4 +1,5 @@
 import { CostEstimator, documentTokensOf, parseModelPrices } from '../src/modules/pipeline/token-estimate';
+import { configSchema } from '../src/config/config.schema';
 
 const block = (text: string) => ({ id: 'b', kind: 'paragraph' as const, text, source_ref: { document_path: 'x', start_offset: 0, end_offset: 0 } });
 const doc = (texts: string[], tableCells: (string | null)[][][] = []) =>
@@ -64,6 +65,14 @@ describe('CostEstimator', () => {
     expect(new CostEstimator({}, 0).estimate(args).requiresConfirmation).toBe(false);
     expect(new CostEstimator({}, 1_000_000).estimate(args).requiresConfirmation).toBe(true);
     expect(new CostEstimator({}, 2_000_000).estimate(args).requiresConfirmation).toBe(false);
+  });
+
+  it('asks by default: the shipped threshold (250,000) is crossed by a 20k-token file, not by a 10k-token one', () => {
+    const threshold = configSchema.shape.COST_CONFIRM_TOKENS.parse(undefined);
+    expect(threshold).toBe(250_000);
+    // likely total = documentTokens * 11 * 1.27: 279,400 and 139,700
+    expect(new CostEstimator({}, threshold).estimate({ documentTokens: 20_000, figureCount: 0 }).requiresConfirmation).toBe(true);
+    expect(new CostEstimator({}, threshold).estimate({ documentTokens: 10_000, figureCount: 0 }).requiresConfirmation).toBe(false);
   });
 
   it('treats a negative or fractional size safely', () => {

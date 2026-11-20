@@ -433,6 +433,7 @@ const ListScroller = forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElem
 });
 // The DOM id of a row, which the tree names in aria-activedescendant (focus stays on the tree while the arrow keys move the selection).
 const rowDomId = (prefix: string, localId: string): string => `${prefix}-row-${encodeURIComponent(localId)}`;
+const TREE_KEYS = new Set(['ArrowDown', 'ArrowUp', 'ArrowRight', 'ArrowLeft', 'Home', 'End']);
 
 // DESIGN.md §11.5 -- drag-and-drop is scoped to short, in-viewport moves;
 // MoveToPicker (a separate component, not part of this file) is the stated
@@ -662,26 +663,77 @@ export function DiffTree({
     listRef.current?.scrollToItem(index, 'center');
   }, [selectedId, rows]);
 
-  // ArrowUp/ArrowDown move selection between currently-VISIBLE rows (post
-  // filter/collapse) and scroll the new selection into view -- a virtualized
-  // list has no native browser tab-order between its (mostly unmounted) rows
-  // to rely on. Skip when the keypress originated in the checkbox/text
-  // inputs above the tree (search field, action select) or the row's own
-  // exclude checkbox, so arrow keys still work normally for editing there.
+  // The tree's keys (WAI-ARIA tree pattern, DESIGN.md §13): ArrowUp/ArrowDown move selection between currently-VISIBLE rows (post
+  // filter/collapse), Home/End to the first/last of them, ArrowRight expands a closed parent or else steps to its first child,
+  // ArrowLeft collapses an open parent or else steps to the parent. The new selection is scrolled into view -- a virtualized
+  // list has no native browser tab-order between its (mostly unmounted) rows to rely on. Skip when the keypress originated in the
+  // checkbox/text inputs above the tree (search field, action select) or the row's own controls, so the keys still work normally
+  // for editing there.
   function handleKeyDown(event: React.KeyboardEvent<HTMLDivElement>): void {
-    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+    if (!TREE_KEYS.has(event.key)) return;
     if (rows.length === 0) return;
     const target = event.target as HTMLElement;
     if (target.tagName === 'INPUT' || target.tagName === 'SELECT' || target.tagName === 'BUTTON') return;
     event.preventDefault();
     const currentIndex = rows.findIndex((row) => row.entry.localId === selectedId);
-    const nextIndex =
-      event.key === 'ArrowDown'
-        ? Math.min(rows.length - 1, currentIndex + 1)
-        : Math.max(0, currentIndex === -1 ? 0 : currentIndex - 1);
+    const current = currentIndex === -1 ? undefined : rows[currentIndex];
+    // Collapse state applies only while browsing unfiltered (see `rows`), the same rule the disclosure follows.
+    const canToggle = !!current && current.hasChildren && !isFiltering;
+    let nextIndex: number;
+    switch (event.key) {
+      case 'ArrowDown':
+        nextIndex = Math.min(rows.length - 1, currentIndex + 1);
+        break;
+      case 'ArrowUp':
+        nextIndex = Math.max(0, currentIndex === -1 ? 0 : currentIndex - 1);
+        break;
+      case 'Home':
+        nextIndex = 0;
+        break;
+      case 'End':
+        nextIndex = rows.length - 1;
+        break;
+      case 'ArrowRight':
+        if (!current) return;
+        if (canToggle && collapsedIds.has(current.entry.localId)) {
+          toggleCollapsed(current.entry.localId);
+          return;
+        }
+        // Children are drawn right after their parent, so the first child is the next visible row.
+        if (rows[currentIndex + 1]?.entry.parentLocalId !== current.entry.localId) return;
+        nextIndex = currentIndex + 1;
+        break;
+      default: {
+        // ArrowLeft
+        if (!current) return;
+        if (canToggle && !collapsedIds.has(current.entry.localId)) {
+          toggleCollapsed(current.entry.localId);
+          return;
+        }
+        const parentIndex = rows.findIndex((row) => row.entry.localId === current.entry.parentLocalId);
+        if (parentIndex === -1) return;
+        nextIndex = parentIndex;
+      }
+    }
     onSelect(rows[nextIndex].entry.localId);
     listRef.current?.scrollToItem(nextIndex);
   }
+
+  // Each visible row's place among its visible siblings (aria-posinset/aria-setsize): the virtualized list mounts only a few rows,
+  // so the browser cannot count them itself.
+  const siblingPositions = useMemo(() => {
+    const byParent = new Map<string | null, string[]>();
+    for (const row of rows) {
+      const siblings = byParent.get(row.entry.parentLocalId) ?? [];
+      siblings.push(row.entry.localId);
+      byParent.set(row.entry.parentLocalId, siblings);
+    }
+    const positions = new Map<string, { posInSet: number; setSize: number }>();
+    for (const siblings of byParent.values()) {
+      siblings.forEach((localId, index) => positions.set(localId, { posInSet: index + 1, setSize: siblings.length }));
+    }
+    return positions;
+  }, [rows]);
 
   // Category ('Epic'/'Feature'/'Requirement') -> this project's real ADO
   // type name, for the WorkItemTypeBadge lookup below. Fails open to the
@@ -847,6 +899,7 @@ export function DiffTree({
           tabIndex={0}
           onKeyDown={handleKeyDown}
           role="tree"
+          aria-label="Proposed work items"
           aria-activedescendant={selectedId && rows.some((row) => row.entry.localId === selectedId) ? rowDomId(treeDomId, selectedId) : undefined}
           // As tall as the job's rows (at least 3, so a near-empty tree is still a card), up to the viewport-based cap that used to be the fixed height. Counted from ALL entries, not the visible rows, so filtering or collapsing a branch never makes the card jump.
           style={{ height: `min(max(calc(100vh - 160px), 280px), ${Math.max(entries.length, 3) * rowHeight}px)` }}
@@ -896,6 +949,7 @@ export function DiffTree({
               isFiltering,
               collapsedIds,
               toggleCollapsed,
+              siblingPositions,
               byLocalId,
               moveValidationReason,
               hasExcludedAncestor,
@@ -952,6 +1006,7 @@ function DiffTreeRow({
   isFiltering,
   collapsedIds,
   toggleCollapsed,
+  siblingPositions,
   byLocalId,
   moveValidationReason,
   hasExcludedAncestor,
@@ -978,6 +1033,7 @@ function DiffTreeRow({
   isFiltering: boolean;
   collapsedIds: Set<string>;
   toggleCollapsed: (localId: string) => void;
+  siblingPositions: Map<string, { posInSet: number; setSize: number }>;
   byLocalId: Map<string, DryRunDiffEntry>;
   moveValidationReason: (dragId: string, targetParentId: string | null) => 'self' | 'cycle' | 'tier' | 'root-tier' | null;
   hasExcludedAncestor: (entry: DryRunDiffEntry) => boolean;
@@ -1202,6 +1258,21 @@ function DiffTreeRow({
     </>
   );
 
+  // The row's accessible name is its title alone (aria-labelledby); type, customer id and what the write does follow as its
+  // description. Without these the name was every control's text in turn, the title read three times (DESIGN.md §13).
+  const rowId = rowDomId(rowIdPrefix, entry.localId);
+  const titleId = `${rowId}-title`;
+  const descriptionId = `${rowId}-desc`;
+  const actionText =
+    entry.action === 'reuse'
+      ? `links to ${entry.existingAdoId != null ? `WI-${entry.existingAdoId}` : 'an existing item'}`
+      : entry.action === 'dedup_skip'
+        ? `near-duplicate${entry.existingAdoId != null ? ` of WI-${entry.existingAdoId}` : ''}, skipped`
+        : 'new';
+  const description = [typeName, entry.customerId, actionText, entry.excluded ? 'excluded' : null].filter(Boolean).join(', ');
+  const position = siblingPositions.get(entry.localId);
+  const expandable = row.hasChildren && !isFiltering;
+
   return (
     <div
       ref={setNodeRef}
@@ -1219,10 +1290,17 @@ function DiffTreeRow({
         zIndex: isDragging ? 1 : undefined,
       }}
       role="treeitem"
-      id={rowDomId(rowIdPrefix, entry.localId)}
+      id={rowId}
+      aria-labelledby={titleId}
+      // Replaces dnd-kit's own description (its keyboard-drag instructions): the tree drags by mouse only (MouseSensor).
+      aria-describedby={descriptionId}
       // the real depth, even where the phone row draws at most three indent guides
       aria-level={row.depth + 1}
+      aria-setsize={position?.setSize}
+      aria-posinset={position?.posInSet}
       aria-selected={entry.localId === selectedId}
+      // Only a parent the reader can open or close says so (the keys do it); a leaf has no aria-expanded at all.
+      aria-expanded={expandable ? !collapsedIds.has(entry.localId) : undefined}
       // Row-level keyboard drag activation isn't wired up (MoveToPicker is
       // the keyboard-accessible reparent path per DESIGN.md §11.5) -- forced
       // to -1 so dnd-kit's own default tabIndex doesn't add every row as an
@@ -1297,12 +1375,14 @@ function DiffTreeRow({
             <span className="w-px bg-hairline" />
           </span>
         ))}
-        {row.hasChildren && !isFiltering && (
+        {expandable && (
+          // A pointer control only: the row itself carries aria-expanded and ArrowRight/ArrowLeft open and close it, so the chevron
+          // is neither a tab stop nor announced (it repeated the title in the row's name).
           <button
             type="button"
-            tabIndex={controlTab}
+            tabIndex={-1}
+            aria-hidden="true"
             aria-label={collapsedIds.has(entry.localId) ? `Expand ${entry.title}` : `Collapse ${entry.title}`}
-            aria-expanded={!collapsedIds.has(entry.localId)}
             onClick={(e) => {
               e.stopPropagation();
               toggleCollapsed(entry.localId);
@@ -1320,6 +1400,7 @@ function DiffTreeRow({
             <div className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
               <span className="flex min-w-0 items-center gap-1.5">
                 <p
+                  id={titleId}
                   dir="auto"
                   className={cn(
                     'min-w-0 flex-1 truncate text-start text-sm font-medium leading-snug',
@@ -1360,7 +1441,7 @@ function DiffTreeRow({
           <WorkItemTypeBadge type={entry.type} catalogEntry={typeCatalog?.[realTypeName(entry.type)]} />
           {/* R7: the title keeps a minimum (rem, so it grows with text size; capped by the cell so it never paints past it) and takes the
               free space; what follows it shrinks first. */}
-          <p dir="auto" className={cn('min-w-[min(12rem,50%)] flex-1 truncate text-start text-sm font-medium leading-snug', entry.excluded && 'line-through text-ink-3')}>
+          <p id={titleId} dir="auto" className={cn('min-w-[min(12rem,50%)] flex-1 truncate text-start text-sm font-medium leading-snug', entry.excluded && 'line-through text-ink-3')}>
             {entry.title}
           </p>
           {/* The marks after the title wrap whole onto a second line that is cut away, the same "never half-clipped" rule as the phone
@@ -1482,6 +1563,10 @@ function DiffTreeRow({
         >
           {narrow ? <Info className="h-4 w-4" /> : <SquareArrowOutUpRight className="h-3.5 w-3.5" />}
         </button>
+      </span>
+      {/* Last, and outside the grid flow (sr-only is absolute), so it takes no column. */}
+      <span id={descriptionId} className="sr-only">
+        {description}
       </span>
     </div>
   );

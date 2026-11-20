@@ -988,9 +988,11 @@ marked do not animate: the tree is virtualised, and §8 already restricts what a
 virtualised row may animate.
 
 **Dependencies.** `@number-flow/react` and `motion` are approved for this
-purpose only. In tests `@number-flow/react` is mocked to a bare text node
-(`src/test/setup.ts`), because it renders its digits into a shadow root and would
-otherwise split a sentence like "28 of 80 reviewed" across elements.
+purpose only. In tests `@number-flow/react` is mocked to render nothing, as its
+light DOM does (`src/test/setup.ts`): the digits live in a shadow root, and the
+number a test sees is `AnimatedNumber`'s visually hidden plain number (§13). A
+sentence with a count in it is split across elements, so tests match it with
+`fullText` (`src/test/textContent.ts`).
 
 ### §8.3 — One motion language (P16)
 
@@ -1012,7 +1014,7 @@ and a rare arrival.
 | Where | What moves | Rule |
 |---|---|---|
 | Route change | `<main>` fades in, `--duration-fast` | Opacity only, on the element that persists; replayed per path, never on first load, tab or query change. |
-| Wizard step change | The step container fades in, `--duration-fast`; focus moves to the step heading | The steps share one container. Only a step not yet seen fades; going back is an instant swap. The heading reads "New Job, step n of 3" and takes focus because the control that had it is gone; the page title reads "Step n of 3: <name> - New Job" and is restored on leaving. Nothing moves focus on first load. |
+| Wizard step change | The step container fades in, `--duration-fast`; focus moves to the step heading | The steps share one container. Only a step not yet seen fades; going back is an instant swap. The heading reads "New Job, step n of N" (N is 2 in BASELINE, 3 in SURVEY) and takes focus because the control that had it is gone; the page title reads "Step n of N: <name> - New Job" and is restored on leaving. Switching mode on step 2 re-titles the page in place without moving focus. Nothing moves focus on first load. |
 | Tables on first paint | The `<tbody>` fades once, `--duration-fast` | Jobs list and batch files. One block, opacity only, no per-row stagger: every row behaves the same at 5 rows or 500, and nothing replays on sort, filter or refresh. The Knowledge Base list does not animate (it re-renders on every search keystroke). |
 | Stepper | The line sweeps to the next step in one `--duration-medium` pass; a step added late fades in | The half ending at the finished step runs linear, the half arriving at the next runs ease-out after it, so the line never stalls at a node. Emptying is instant. Steps present on first paint do not animate. |
 | Current-step marker | The refresh icon spins once a second, linear, for four turns, then rests | No pulsing ring: two motions saying "working" read as noise, and a ring that replays on a remount reads as a restart. It stops under five seconds (WCAG 2.2.2) and hands over to a still "in progress" glyph (three dots), so it never rests as a refresh arrow that reads like a retry button; under reduced motion the dots are there from the start. The status text and the ticking elapsed clock carry "still working". |
@@ -1025,7 +1027,7 @@ and a rare arrival.
 | Skeleton to content | The job page cross-fades in, `ARRIVE.fade` (`--duration-fast`) | `useSkeletonCrossfade(loading)`: only when the placeholder was actually drawn (the load outlasted the delay); a fast load neither shows a placeholder nor fades. The Jobs list already fades its table once on first arrival (row above). The swap itself, and the "Loading…" status leaving, is the text equivalent. |
 | Disclosure open | The region fades in, `--motion-reveal` (190ms), opacity only | Research #6. Only when the reader opens it, not for one open on first paint. Closing is instant (the content leaves the page at once); no height animation (row "Considered and not done" below). The chevron turn is unchanged. |
 | Phase advance | The finished phase's glyph and name, and the new current one's, fade in once, `--motion-milestone` (240ms) | Research #4. `PhaseRail` compares each row with the previous commit, so nothing animates on first paint. The rail has no connector line, so there is no fill. The page's one polite region already announces the step change (§13), so the rail adds none. |
-| Count tick | The review group counters ("Check · 10") and the write bar's "N items to fix before writing" roll to their new value (`AnimatedNumber`) | Research #2. The number is the button's or sentence's text, so the change is announced with it; number-flow snaps under reduced motion. Never on scores in the dialog (the reviewer is reading them). |
+| Count tick | The review group counters ("Check · 10") and the write bar's "N items to fix before writing" roll to their new value (`AnimatedNumber`) | Research #2. A visually hidden plain copy of the number is the button's or sentence's text (the animation is `aria-hidden`, §13), so the change is announced with it; number-flow snaps under reduced motion. Never on scores in the dialog (the reviewer is reading them). |
 | Job state chip | Colour eases at `--motion-feedback` (90ms) when a status changes on the page (Diff ready, Writing, Written) | The word and icon change with it, so colour is never the only cue. |
 | Confirm-to-ADO attention | The shadow eases from rest to the attention shadow once, 2600ms, and stays | The rule itself holds the attention shadow and the animation uses a `backwards` fill, so the end state is the resting state and the button's own hover and press shadows still apply. The reduced-motion fallback shows the same state, so both modes end alike. Not a loop (WCAG 2.2.2). |
 | Running job: live dot | A halo around the dot fades out once per real server update (`BEAT`, `--duration-slow`), at most one per 2 seconds | Opacity only, never a loop. A hollow ring with a neutral plain-text note after 60 seconds of silence (§11.3.2). Replaces an endless ping. |
@@ -1148,10 +1150,10 @@ column is what you type. Names marked **in use** already appear somewhere in
 |---|---|---|---|
 | `i-upload` | Drop / browse for a document | `Upload` | **in use** |
 | `i-doc` | A document, a file, the Wiki nav item | `FileText` | **in use** |
-| `i-blocks` | Blocks stat tile (paragraphs, list items, table rows) | `LayoutGrid` | Four squares. `Blocks` also exists but reads as toy bricks. |
+| `i-blocks` | Text blocks stat tile (paragraphs, list items, table rows) | `LayoutGrid` | Four squares. `Blocks` also exists but reads as toy bricks. |
 | `i-sections` | Sections stat tile, document-map header, provenance | `AlignLeft` | Three decreasing rules — the same glyph the mockup drew. |
 | `i-figure` | Figures stat tile, figure rows, figure thumbnails | `Image` | **in use** |
-| `i-depth` | Depth stat tile (deepest heading nesting) | `Layers` | |
+| `i-depth` | Heading levels stat tile (deepest heading nesting) | `Layers` | |
 | `i-pulse` | Job is running; the Start-job button | `Activity` | |
 | `i-check` | Completed step, done state, passing verdict | `Check` | **in use** |
 | `i-terminal` | — | **none** | Withdrawn. It headed the activity-log card, which was superseded before it was built (§11.3). Do not introduce it. |
@@ -1221,9 +1223,11 @@ Both panes want vertical space, so none is left over.
 ├───────────────────────────┬───────────────────────────────┤
 │ LEFT  (grows)             │ RIGHT (fixed-ish)             │
 │                           │  ┌──────────┬──────────┐      │
-│  no file yet:             │  │ Blocks   │ Sections │      │
+│  no file yet:             │  │ Text     │ Sections │      │
+│                           │  │ blocks   │          │      │
 │    ┌───────────────────┐  │  ├──────────┼──────────┤      │
-│    │   dropzone,       │  │  │ Figures  │ Depth    │      │
+│    │   dropzone,       │  │  │ Figures  │ Heading  │      │
+│    │                   │  │  │          │ levels   │      │
 │    │   flex:1          │  │  └──────────┴──────────┘      │
 │    └───────────────────┘  │  ┌───────────────────────┐    │
 │                           │  │ Worth knowing before  │    │
@@ -1326,6 +1330,11 @@ reader's local day, newest first. A job is in exactly one group; empty groups ar
   search and status filter would otherwise show, so it never promises jobs the filter already hides.
 - **A short job id** (first 8 characters, `font-mono`, §0 item 1) is the first column: the text the job's address starts with, so two
   uploads of the same file name can be told apart and matched to a page.
+- **Re-runs both ways.** A file name already run says "Re-run of <short id>"; the older job says "Replaced by re-run <short id>",
+  muted (`replacedByRerun`, the inverse of `rerunOf` in `utils/jobGroups.ts`). Both are the same filename heuristic: the name is the only
+  link the list has, so the older job is never changed or hidden by it.
+- **Review progress.** A Diff ready job says "N of M reviewed" under its status, the same count as its Write bar (new items still in the write,
+  excluded subtrees left out). The server computes it for the jobs in review on the requested page only (`review-progress.ts`), null otherwise.
 - **One word per state.** The tile, the filter and the chip all say **Diff ready** (not "Awaiting review" in two places and "Diff ready" in
   a third). A finished write is **Written** (§12).
 
@@ -1336,11 +1345,14 @@ never blocks. A file with no headings says what the leveler really does: clause 
 with none is everything one Epic and one Feature (`leveling/tree_builder.py`, the grouping-without-headings rule).
 
 **The rail does not claim a destination the form has not got.** With only a project chosen, "Lands" says "Not chosen yet". Below `lg` the rail
-comes after step 3's action bar, so the bar carries a "Lands in <destination>" line itself.
+comes after the Start action bar (SURVEY step 3, BASELINE step 2), so the bar carries a "Lands in <destination>" line itself.
 
 **Step 3 keeps the "This run" rail (owner decision, 2026-11-12; built 2026-11-13).** Same two columns as §11.2.5: the question and Start on the
 left, the file, mode and destination (`RunFacts`, shared with step 2) and the estimate on the right. A new job starts from the last started
-job's mode, project and area path (`utils/lastJobChoices.ts`; per user, localStorage, only for a wizard nobody has touched in the tab).
+job's project and area path (`utils/lastJobChoices.ts`; per user, localStorage, only for a wizard nobody has touched in the tab). Its mode is
+not restored (D1, 2026-11-20): BASELINE is always preselected and the last job's mode card carries a "Last used" label only. A SURVEY run
+forecast above `COST_CONFIRM_TOKENS` (default 250,000; 0 never asks) asks "Start a large SURVEY run?" with its tokens, cost or "no price is
+set for this model", and the model.
 
 ### §11.2 — New Job, step 2: Configure
 
@@ -1358,11 +1370,24 @@ its own question heading:
 2. **"Where do the items land?"** — an ADO path, read left to right.
 3. The cost, as a calibrated range.
 
-**The step count is stable.** The wizard's stepper always shows the same three
-steps, whichever mode is chosen. BASELINE never reaches "Confirm understanding",
-so it shows that step muted with a "SURVEY only" chip rather than leaving it out or striking it through, and picking SURVEY
-no longer makes a step appear. The "writes nothing, you approve the diff first"
-line sits beside the primary action on every step that has one, step 3 included.
+**The step count follows the mode (P5, 2026-11-20).** BASELINE has two steps, "Upload document" and "Check and start"; SURVEY
+has three, "Upload document", "Configure & review" and "Confirm understanding" (it waits there for the optional AI summary). The
+stepper lists only the mode's own steps (no skipped step), and the heading and page title count them. BASELINE's step 2 is one page:
+mode cards, destination, then what was read from the file (the overview and "How this file is read"), "More options", and the
+sticky Start bar ("Back", "Looks right — start job", held until a destination is chosen); the "This run" rail stays on the right
+without an action. Switching to SURVEY on that page turns it into "Configure & review" with "Continue", and the reading moves to
+step 3. In both modes the card "How this file is read" (the
+pre-study) is asked as soon as the file is parsed (with the model chosen at that moment, normally the default) and holds Start
+while it reads, showing the elapsed time. "Stop waiting" lets Start go: the job then reads the file's layout itself when it starts.
+When the job will use a different model than the one that read the file, the card says so and offers to read again with it.
+Under the rule sentences the card checks the rules against the file: per table, a counts strip in plain text
+(`Epic 4 · Feature 39 · Requirement 235 · Not imported 68 rows`), then two closed `Disclosure`s: "Show examples" (up to three items
+per type, each with its row number in the file and "↳ under <parent>") and "Rows not imported (N)" (counts per reason first, then
+up to twenty rows with their row number, text and reason, and "+M more"). File text keeps `dir="auto"` and is never translated. A
+document's counts are estimates from its typed headings and always say "about"; a document has no not-imported list. A rulebook
+stored before this breakdown existed shows one muted line, "Read again to see the breakdown."; a skipped or empty study shows
+nothing extra. An edit's answer carries fresh counts. The "writes nothing, you approve the diff first"
+line sits beside the primary action on every step that has one, the Start bar included.
 
 A thin **document strip** runs above all three: file icon, filename, a
 `font-mono` summary (`682 blocks · 24 sections · 39 figures · depth 4`), and a
@@ -3736,10 +3761,18 @@ matched. Rules:
 **Approve all clean (P17c).** A button "Approve N clean items" opens a
 confirmation that cannot be skipped through: a spot-check comes first.
 
-- **Clean means** the queue's clean tier AND scored AND not `qualityStale`
+- **Clean means** the queue's clean tier and, in SURVEY, scored and not `qualityStale`
   (`cleanApproval` in `utils/reviewQueue.ts`). Info warnings do not disqualify.
   There is no new threshold; it is the existing flag rule. Flagged, unscored
   and stale items are left out and counted in the dialog.
+- **BASELINE too (2026-11-20).** BASELINE items are verbatim and carry no score, so
+  there clean means no blocking or review warning only (`cleanApproval(..., 'baseline')`):
+  score and staleness are not looked at, and Epics and Features are never offered
+  (the structure tier, §11.5.1). The dialog (`BulkApproveDialog`, `mode`) names no
+  score signal and says plainly that the items are copied word for word and were not
+  scored, so the screen is weaker evidence and the spot-check matters more. Its
+  "left out" line gives only "with warnings" and "Epics and Features". The spot-check
+  sample is in tree order (nothing to order by score).
 - **Spot-check is mandatory.** `spotCheckSample` picks min(N, max(3, ceil(N/10))) items (all of them when N < 3),
   evenly spaced from the lowest score, the same every time. The reviewer steps
   through them in the details dialog (queue mode `spotCheck`) and answers each
@@ -4058,6 +4091,18 @@ the link never lands in proxy or access logs; the server takes the user from the
   motion the spinner freezes, so this is not optional.
 - Radio-group semantics are real: `ModeCards` is `role="radiogroup"` with
   `role="radio"` children and arrow-key navigation, not a set of styled buttons.
+- **The review tree is a WAI-ARIA tree** (`DiffTree.tsx`). The container is named
+  "Proposed work items". Each row is named by its title alone (`aria-labelledby`) and
+  described by type, customer id and action (`aria-describedby`), so the title is not
+  read three times through the checkbox, chevron and Details labels. A parent row
+  carries `aria-expanded`; every row carries `aria-level`, `aria-setsize` and
+  `aria-posinset` among its visible siblings (the list is virtualised, so the browser
+  cannot count). Keys: Up/Down move, Home/End go to the first/last visible row, Right
+  opens a closed parent or steps to its first child, Left closes an open parent or steps
+  to its parent. The chevron is a pointer control only (`tabIndex=-1`, `aria-hidden`).
+- **Animated counts are read as numbers.** `AnimatedNumber` hides number-flow's
+  shadow-root digits (`aria-hidden`) and adds a visually hidden plain number, so
+  "Clean · 235" is read as a number, not digit column by digit column.
 
 ---
 

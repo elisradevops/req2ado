@@ -28,6 +28,22 @@ import type { IngestionSourceExcerpt, SourceExcerptRequest } from './source-exce
 // the ladder's ordering can be verified/tuned without a code change.
 const DEFAULT_INGESTION_REQUEST_TIMEOUT_MS = 3_600_000;
 
+/** What POST /prestudy answers: the rulebook (its JSON form), its hash, how each table will be read in words, and what happened (warnings). */
+export interface PrestudyResult {
+  rulebook: Record<string, unknown>;
+  hash: string;
+  version: string;
+  /** "model" (learned), "user" (an edit that passed the checks) or "none" (nothing learned). */
+  source: 'model' | 'user' | 'none';
+  rules: string[];
+  warnings: unknown[];
+  /** What the rules make of the file (counts, examples, rows not imported), for the wizard; null when the rules state nothing. Display only. */
+  details?: Record<string, unknown> | null;
+}
+
+/** The pre-study asks the model several times, one after another, with the file attached: it may take minutes. */
+const PRESTUDY_TIMEOUT_MS = 15 * 60_000;
+
 export interface RewriteScore {
   score: number | null;
   issues: string[];
@@ -559,6 +575,40 @@ export class IngestionHttpClient {
       const body = (await response.json()) as { ingestion?: unknown; profile?: unknown };
       if (typeof body?.ingestion !== 'string') return null;
       return { ingestion: body.ingestion, profile: typeof body.profile === 'string' ? body.profile : null };
+    } catch {
+      return null;
+    }
+  }
+
+  // How a file states its structure (the pre-study). Without `rulebook`: the model is asked (the uploaded file, when there is one, is attached to its calls);
+  // with it: a user's edit is checked against the document, no model involved. A rulebook that does not fit the file answers 422 with the reason.
+  async prestudy(
+    doc: CanonicalDoc,
+    // `fresh`: ask the model again instead of reusing its cached answers (the wizard's "Read again").
+    options: { userId?: string; model?: string; fileId?: string; rulebook?: Record<string, unknown>; fresh?: boolean; signal?: AbortSignal } = {},
+  ): Promise<PrestudyResult> {
+    const timeout = AbortSignal.timeout(PRESTUDY_TIMEOUT_MS);
+    const response = await fetch(`${this.baseUrl}/prestudy`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...identityHeaders(options.userId),
+        ...(options.fileId ? { 'X-Req2Ado-File-Id': options.fileId } : {}),
+      },
+      body: JSON.stringify({ doc, ...(options.model ? { model: options.model } : {}), ...(options.rulebook ? { rulebook: options.rulebook } : {}), ...(options.fresh ? { fresh: true } : {}) }),
+      signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout,
+    });
+    if (!response.ok) throw await _ingestionError(response, 'Ingestion /prestudy request failed: ');
+    return (await response.json()) as PrestudyResult;
+  }
+
+  // How a file is studied right now (prompts, schemas, votes, code pass); null when it cannot be read: a stored rulebook is then reused only if the user edited it.
+  async prestudyVersion(): Promise<string | null> {
+    try {
+      const response = await fetch(`${this.baseUrl}/prestudy/version`);
+      if (!response.ok) return null;
+      const body = (await response.json()) as { version?: unknown };
+      return typeof body?.version === 'string' ? body.version : null;
     } catch {
       return null;
     }

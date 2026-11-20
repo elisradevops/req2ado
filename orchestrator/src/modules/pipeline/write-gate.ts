@@ -16,6 +16,7 @@ export const FIX_WARNING_KINDS: ReadonlySet<string> = new Set([
   'output_truncated',
   'dropped_row',
   'trace_link_write_failed',
+  'rulebook_mismatch',
 ]);
 
 export const COUNTED_ACK_KINDS: ReadonlySet<string> = new Set(['missing_source_reference']);

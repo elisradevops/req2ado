@@ -87,10 +87,11 @@ test.describe('tree defaults', () => {
     // The tree is virtualized: a tall viewport (same width) keeps every fixture row mounted.
     await page.setViewportSize({ width: page.viewportSize()!.width, height: 1800 });
     await openDiffReadyJob(page);
-    await expect(page.getByRole('button', { name: 'Collapse Core module' })).toHaveAttribute('aria-expanded', 'true');
-    await expect(page.getByRole('button', { name: 'Expand Power and thermal' })).toHaveAttribute('aria-expanded', 'false');
+    // The row carries the state (the chevron is a pointer-only control, hidden from assistive tech); a leaf has no aria-expanded.
+    await expect(page.getByRole('treeitem', { name: 'Core module' })).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.getByRole('treeitem', { name: 'Power and thermal' })).toHaveAttribute('aria-expanded', 'false');
     await expect(page.getByText('Hidden until the Feature is opened')).toHaveCount(0);
-    await expect(page.getByRole('button', { name: /(expand|collapse) childless feature/i })).toHaveCount(0);
+    await expect(page.getByRole('treeitem', { name: 'Childless feature' })).not.toHaveAttribute('aria-expanded');
   });
 
   test('flag icon and issue triangle are two different, named signals', async ({ page }) => {
@@ -260,6 +261,68 @@ test.describe('contrast of the P14 signals', () => {
       expect(await contrastOf(page, '[data-testid="approval-gate"]')).toBeGreaterThanOrEqual(4.5);
     });
   }
+});
+
+test.describe('tree for assistive tech and the keyboard (DESIGN.md §13)', () => {
+  const tree = (page: Page) => page.getByRole('tree', { name: 'Proposed work items' });
+  const row = (page: Page, name: string) => page.getByRole('treeitem', { name, exact: true });
+
+  test.beforeEach(async ({ page }) => {
+    // The tree is virtualized: a tall viewport (same width) keeps every fixture row mounted.
+    await page.setViewportSize({ width: page.viewportSize()!.width, height: 1800 });
+    await openDiffReadyJob(page);
+  });
+
+  test('a row is named by its title, said once, and described by type, customer id and action', async ({ page }) => {
+    const item = page.getByRole('treeitem', { name: /^Flagged only/ });
+    await expect(item).toHaveAccessibleName('Flagged only');
+    const withId = page.getByRole('treeitem', { name: MIXED_TITLE });
+    // The type is the project's own name for it (the mocked catalog's), so only the rest is pinned.
+    await expect(withId).toHaveAccessibleDescription(/^[^,]+, CM-003, new$/);
+  });
+
+  test('ArrowLeft/ArrowRight close and open a parent and move between parent and child; Home/End go to the ends', async ({ page }) => {
+    await tree(page).focus();
+    await page.keyboard.press('Home');
+    await expect(row(page, 'Subsystem overview')).toHaveAttribute('aria-selected', 'true');
+    await page.keyboard.press('ArrowDown');
+    const core = row(page, 'Core module');
+    await expect(core).toHaveAttribute('aria-selected', 'true');
+
+    await page.keyboard.press('ArrowLeft');
+    await expect(core).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.getByText('Flagged only')).toHaveCount(0);
+    await page.keyboard.press('ArrowRight');
+    await expect(core).toHaveAttribute('aria-expanded', 'true');
+    // On an open parent ArrowRight steps to the first child, and ArrowLeft from there back to the parent.
+    await page.keyboard.press('ArrowRight');
+    await expect(page.getByRole('treeitem', { name: LONG_TITLE })).toHaveAttribute('aria-selected', 'true');
+    await page.keyboard.press('ArrowLeft');
+    await expect(core).toHaveAttribute('aria-selected', 'true');
+
+    await page.keyboard.press('End');
+    await expect(row(page, 'Childless feature')).toHaveAttribute('aria-selected', 'true');
+    await page.keyboard.press('Home');
+    await expect(row(page, 'Subsystem overview')).toHaveAttribute('aria-selected', 'true');
+    // Focus never left the tree, and no dialog opened.
+    await expect(tree(page)).toBeFocused();
+    await expect(dialog(page)).toHaveCount(0);
+  });
+
+  test('a count chip is read as a plain number, not the odometer\'s digit columns', async ({ page }) => {
+    const chip = page.getByRole('button', { name: /^Check · \d+$/ });
+    await expect(chip).toHaveCount(1);
+    await expect(chip.locator('.sr-only')).toHaveText(/^\d+$/);
+  });
+
+  test('the tree has no serious or critical violations after keyboard use', async ({ page }) => {
+    await tree(page).focus();
+    await page.keyboard.press('Home');
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('ArrowLeft');
+    const results = await new AxeBuilder({ page }).include('[role="tree"]').analyze();
+    expect(results.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical').map((v) => `${v.id}: ${v.nodes.length}`)).toEqual([]);
+  });
 });
 
 test.describe('accessibility scan', () => {

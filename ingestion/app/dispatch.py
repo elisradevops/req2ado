@@ -9,6 +9,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
+from app.canonical.markup import normalize_block_markup
 from app.canonical.model import BlockKind, CanonicalDoc
 from app.loaders.csv_loader import load_csv
 from app.loaders.docx_loader import load_docx
@@ -177,5 +178,8 @@ def dispatch_by_extension(
             on_figure_bytes=on_figure_bytes,
             on_ocr_page=on_ocr_page,
         )
+    # Markup inside running text (HTML pasted into a Word paragraph, an HTML block in Markdown, a tracker's rich text) becomes Markdown here, once, for
+    # every format: a description is stored as Markdown and nothing downstream renders raw tags.
+    doc = normalize_block_markup(doc)
     doc = _classify_open_tbd_paragraphs(doc)
     return _normalize_document_identity(doc, filename)

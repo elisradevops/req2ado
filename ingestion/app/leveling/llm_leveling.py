@@ -61,6 +61,7 @@ from app.leveling.heading_outline import (
 )
 from app.leveling.hierarchy_rules import (
     ensure_ladder,
+    learn_leaf_floor,
     requirement_heading_warning,
     scope_with_ancestors,
     type_headings_by_shape,
@@ -94,6 +95,11 @@ from app.leveling.root_regrouping import (
     _regroup_disconnected_roots,
     _repair_requirement_hierarchy,
 )
+from app.leveling.rule_builder import (
+    is_rule_built,
+    tree_from_table_rules,
+    verify_tree_against_rules,
+)
 from app.leveling.scoring import (
     BatchedScoringClient,
     _score_all_requirements,
@@ -125,6 +131,10 @@ from app.leveling.warnings_finalize import finalize_warnings
 from app.quality.criteria_retrieval import CriteriaRetriever
 from app.request_identity import user_scope
 from app.section_analysis_options import DEFAULT_SECTION_ANALYSIS_OPTIONS, SectionAnalysisOptions
+from app.study.file_rules import study_tables
+from app.study.heading_rules import apply_stated_type_labels, lock_types_by_depth
+from app.study.model_rules import prestudy
+from app.study.rulebook import FileRulebook
 from app.workitem.model import (
     IntegrityWarning,
     KbCitation,
@@ -1400,6 +1410,14 @@ def _apply_det_parent_summary(
             counter.complete("summarize")
 
 
+def _ladder_scope(det_nodes: list[WorkItemNode], all_nodes: list[WorkItemNode]) -> set[str]:
+    """What SURVEY's ladder repair may complete: the document's own structure, except the items a table states (rule_builder): a stated type and
+    parent are final, as in BASELINE, which never repairs them. A stated structure the ladder does not allow (a Requirement directly under an
+    Epic) is kept and reported once (SOURCE_STRUCTURE_VIOLATION); bridging it would change a stated parent and make the stated-structure check
+    report the repair as a mismatch."""
+    return scope_with_ancestors([n for n in det_nodes if not is_rule_built(n.local_id)], all_nodes)
+
+
 def _detect_deterministic_subtrees(
     doc: CanonicalDoc,
     title_tag_client: TitleTagClient | None,
@@ -1424,6 +1442,8 @@ def _detect_deterministic_subtrees(
     # Studies the sheets of a spreadsheet the id convention does not read (see sheet_study.py). None (every caller that does not pass it)
     # leaves a spreadsheet exactly as it was: its sheets go to the model-driven path below.
     sheet_study_client: SheetStudyClient | None = None,
+    # What the pre-study learned about the file's conventions (study/model_rules.py); None reads only the conventions the code recognises.
+    rulebook: FileRulebook | None = None,
 ) -> tuple[list[WorkItemNode], list[IntegrityWarning], CanonicalDoc]:
     """Detects and builds every deterministic hierarchy subtree this
     document's own structure already encodes -- a 2-column dotted-ID
@@ -1474,7 +1494,21 @@ def _detect_deterministic_subtrees(
     # docstring), so hoisting this computation earlier changes nothing about
     # which nodes end up in det_nodes or their order -- only WHEN the rows
     # are computed, not what they contain.
-    qualifying_table_rows = [(table, rows_from_table(table)) for table in doc.tables]
+    # A table that states its items' types and nesting in columns (study/file_rules.py) is built as it states them, and no later pass retypes
+    # it: neither the id convention nor the sheet study below sees it. Only for a file with no running text (a heading way reads the rest).
+    stated_rules = (
+        {} if any(not _is_unsupported_content_note(b) for b in doc.blocks) else study_tables(doc, rulebook)
+    )
+    if stated_rules:
+        rule_nodes, rule_warnings = tree_from_table_rules(
+            doc, stated_rules, _hash_description, _hash_identity_for_synthesized_node
+        )
+        det_nodes.extend(rule_nodes)
+        det_warnings.extend(rule_warnings)
+        claimed_table_ids.update(stated_rules)
+    qualifying_table_rows = [
+        (table, rows_from_table(table)) for table in doc.tables if table.id not in stated_rules
+    ]
     # A spreadsheet's sheets the id convention does not read: the model studies each ONE time, from a sample, and code maps every row by
     # its answer (sheet_study.py). A sheet it cannot or will not map stays on the model-driven path below, with a warning saying so.
     sheet_mappings: dict[str, SheetMapping] = {}
@@ -1634,7 +1668,13 @@ def _detect_deterministic_subtrees(
         # give one shape; the missing parents are added once, over the whole tree, by ensure_ladder at the end.
         # `_repair_requirement_hierarchy` is not used here because it would add "(auto-grouped)" bridge Features and
         # change the nesting the typing reads.
-        type_headings_by_shape(nodes)
+        document_rules = rulebook.document if rulebook is not None else None
+        stated_types = apply_stated_type_labels(
+            nodes, _hash_description, labels=document_rules.labels if document_rules else None
+        )
+        if document_rules is not None:
+            stated_types = lock_types_by_depth(nodes, document_rules.depth_types, stated_types)
+        type_headings_by_shape(nodes, locked=stated_types, leaf_floor=learn_leaf_floor(nodes))
         det_nodes.extend(nodes)
         det_warnings.extend(heading_warnings)
         det_warnings.extend(build_warnings)
@@ -1989,6 +2029,7 @@ def _build_survey_tree(
     study_handle: StudyHandle | None = None,
     study_enabled: bool = True,
     criteria_limiter: LeaseLimiter | None = None,
+    rulebook: FileRulebook | None = None,
 ) -> WorkItemTree:
     """The pipeline behind build_survey_tree (see its docstring); the public wrapper owns the document study."""
     # Real gap (confirmed live, 682-block AirPro ICD document): the
@@ -2079,10 +2120,11 @@ def _build_survey_tree(
         chunk_concurrency=chunk_concurrency,
         user_id=user_id,
         sheet_study_client=analysis_client if hasattr(analysis_client, "study_spreadsheet") else None,
+        rulebook=rulebook,
     )
 
     if structure_mode == "baseline" and (llm_doc.blocks or llm_doc.tables or llm_doc.figures):
-        residual_nodes, residual_warnings = adopt_baseline_structure(llm_doc)
+        residual_nodes, residual_warnings = adopt_baseline_structure(llm_doc, rulebook)
         det_nodes = [*det_nodes, *residual_nodes]
         det_warnings = [*det_warnings, *residual_warnings]
         llm_doc = llm_doc.model_copy(update={"blocks": [], "tables": [], "figures": []})
@@ -2218,7 +2260,7 @@ def _build_survey_tree(
             all_nodes,
             _derive_doc_title(doc),
             all_warnings,
-            scope=scope_with_ancestors(det_nodes, all_nodes),
+            scope=_ladder_scope(det_nodes, all_nodes),
         )
         _regroup_disconnected_roots(
             all_nodes,
@@ -2244,7 +2286,7 @@ def _build_survey_tree(
             all_nodes,
             _derive_doc_title(doc),
             all_warnings,
-            scope=scope_with_ancestors(det_nodes, all_nodes),
+            scope=_ladder_scope(det_nodes, all_nodes),
         )
 
         trace_links: list[TraceLink] = []
@@ -2814,7 +2856,7 @@ def _build_survey_tree(
         all_nodes,
         _derive_doc_title(doc),
         all_warnings,
-        scope=scope_with_ancestors(det_nodes, all_nodes),
+        scope=_ladder_scope(det_nodes, all_nodes),
     )
     _regroup_disconnected_roots(
         all_nodes,
@@ -2835,7 +2877,7 @@ def _build_survey_tree(
         all_nodes,
         _derive_doc_title(doc),
         all_warnings,
-        scope=scope_with_ancestors(det_nodes, all_nodes),
+        scope=_ladder_scope(det_nodes, all_nodes),
     )
 
     # STAGE 2: whole-document figure/table -> EXACT node mapping, run here
@@ -3138,6 +3180,9 @@ def build_survey_tree(
     study_store: StudyStore | None = None,
     chunk_concurrency: int = 1,
     study_limiter: LeaseLimiter | None = None,
+    # What the pre-study learned about the file's conventions. None: when the analysis client can study file conventions (study_file_rules_*), the
+    # model is asked once here (prestudy), its answers validated against the whole file; the rules are then fixed for the rest of the run.
+    rulebook: FileRulebook | None = None,
 ) -> WorkItemTree:
     """SURVEY-mode leveling entry point. Splits the document into top-level
     branches (_split_into_branches, the same depth-1-heading split
@@ -3309,6 +3354,11 @@ def build_survey_tree(
                 "Document study could not start (%s); carrying on without it.", type(error).__name__
             )
             handle = None
+    prestudy_warnings: list[IntegrityWarning] = []
+    if rulebook is None and hasattr(analysis_client, "study_file_rules_table"):
+        # Only for what the recognised headings do not cover; a failed or refused study leaves the file on the deterministic path, with a warning.
+        rulebook, prestudy_warnings = prestudy(doc, analysis_client, user_id)  # type: ignore[arg-type]
+        arguments["rulebook"] = rulebook
     try:
         tree = _build_survey_tree(
             **arguments,
@@ -3327,6 +3377,14 @@ def build_survey_tree(
         raise
     if handle is not None:
         handle.close()  # a finished job keeps the study's windows as the re-run cache; a study still running is stopped and cleaned up
+    tree.warnings.extend(prestudy_warnings)
+    if rulebook is not None and rulebook.tables:
+        # The tables read by the model's rules are checked against those rules (the recognised ones are checked by /level itself).
+        tree.warnings.extend(
+            verify_tree_against_rules(
+                doc, tree, {t: r for t, r in study_tables(doc, rulebook).items() if t in rulebook.tables}
+            )
+        )
     return assign_identity_v2(tree, doc)
 
 

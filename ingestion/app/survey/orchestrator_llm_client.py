@@ -37,6 +37,8 @@ from app.survey._response_schemas import (
     document_study_schema,
     duplicate_cluster_verdict_schema,
     duplicate_pair_verdict_schema,
+    file_rules_document_schema,
+    file_rules_table_schema,
     kb_category_consolidation_schema,
     kb_document_profile_schema,
     kb_document_relevance_schema,
@@ -92,6 +94,12 @@ _JSON_FENCE_PATTERN = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?```$", re.DOTALL)
 # subsequent raw_decode() then fails on the leading prose, crashing the
 # whole SURVEY job.
 _JSON_FENCE_ANYWHERE_PATTERN = re.compile(r"```(?:json)?\s*\n?(.*?)\n?```", re.DOTALL)
+# A reasoning model's thinking put in front of the reply text: `<think>...</think>` (Ollama/qwen without a separate reasoning field) or Open WebUI's
+# `<details type="reasoning">...</details>`. It can hold braces of its own, so the bracket search below would start inside it; only LEADING blocks
+# are removed, so a JSON value that merely mentions such a tag is untouched.
+_LEADING_REASONING_PATTERN = re.compile(
+    r"^\s*(?:<think>.*?</think>|<details\b[^>]*\btype=[\"']reasoning[\"'][^>]*>.*?</details>)", re.DOTALL | re.IGNORECASE
+)
 
 # httpx's default timeout (5s total) is far too short for a real local LLM —
 # observed directly: a 12b-class Ollama model took several minutes to over
@@ -194,8 +202,12 @@ def _strip_json_fence(content: str) -> str:
     """Local models (Ollama included — the golden test's real target) often
     wrap JSON in markdown fences despite being explicitly told not to. Strip
     a single leading/trailing fence if present; otherwise return unchanged.
-    Cheap insurance against a single fenced response failing an entire job."""
-    stripped = content.strip()
+    Cheap insurance against a single fenced response failing an entire job.
+    Leading reasoning blocks are removed first (see _LEADING_REASONING_PATTERN)."""
+    stripped = content
+    while (reasoning := _LEADING_REASONING_PATTERN.match(stripped)) is not None:
+        stripped = stripped[reasoning.end() :]
+    stripped = stripped.strip()
     match = _JSON_FENCE_PATTERN.match(stripped)
     if match:
         return match.group(1).strip()
@@ -1103,6 +1115,10 @@ class OrchestratorLlmClient:
         # configured LLM_CHAT_MODEL default, matching pre-model-selection
         # behavior exactly.
         self._model = model
+        # The Open WebUI file the file-conventions study attaches to its calls (set by the /prestudy route for the one request); None attaches nothing.
+        self.study_file_id: str | None = None
+        # Set by the /prestudy route when the user asked to read the file again: the study asks the model afresh instead of reusing kept answers.
+        self.study_fresh = False
         # The answer budget for this model: the default, or its stated output ceiling when that is lower (e.g. the
         # 16,384-token `-chat` aliases). See app.leveling.model_caps.output_token_budget.
         self._max_output_tokens = output_token_budget(model)
@@ -1332,6 +1348,7 @@ class OrchestratorLlmClient:
         stream_inputs: dict[str, str | None] | None = None,
         stream_stage: str | None = None,
         budget_kind: Literal["study"] | None = None,
+        file_id: str | None = None,
     ) -> Any:
         """Shared payload-envelope + response-parsing shape for this class's
         simple, single-shot structured-extraction calls (schema in, JSON
@@ -1356,6 +1373,9 @@ class OrchestratorLlmClient:
             "temperature": 0,
             **({"model": self._model} if self._model else {}),
             **({"responseSchema": schema} if schema is not None else {}),
+            # An Open WebUI file the orchestrator uploaded for this call (the pre-study's hybrid route): the model reads the file's full text beside the
+            # profile in the message. Only the file-conventions study sets it.
+            **({"fileId": file_id} if file_id else {}),
             "think": False,
             "maxTokens": self._max_output_tokens if max_tokens is None else max_tokens,
             **(
@@ -2036,6 +2056,78 @@ class OrchestratorLlmClient:
         if key is not None:
             self._cache.set(key, parsed)
         return parsed
+
+    def _study_file_rules(
+        self,
+        name: str,
+        schema: dict,
+        required: str,
+        sample: dict,
+        user_id: str | None,
+        vote: int,
+        accept: Callable[[dict], bool] | None,
+    ) -> dict:
+        """One ask of the file-conventions pre-study (study/model_rules.py). `vote` only keeps repeated asks of one sample apart in the response
+        cache, so each vote is a real second opinion; it is never sent to the model. The caller checks every number and value in the answer against
+        the file, so an answer is used only once it fits; `accept` is that check, and only an answer it accepts is kept for reuse (a refused answer
+        is asked again next time, not replayed). `study_fresh` skips the kept answer. `required` is the answer's first key: a reply that wraps the
+        answer in a single outer key ({"result": {...}}) is unwrapped."""
+        system_prompt = load_prompt(name)
+        key = None
+        if self._cache is not None and user_id:  # a call without a user id shares no cached answer
+            key = cache_key(
+                name,
+                self._model,
+                self._num_ctx,
+                self._top_k,
+                self._min_p,
+                self._seed,
+                system_prompt,
+                schema,
+                sample,
+                user_scope(user_id),
+                vote,
+                self.study_file_id is not None,  # the answer differs with the file attached; the file's id changes every upload, so only whether
+            )
+            cached = None if self.study_fresh else self._cache.get(key)
+            if isinstance(cached, dict) and accept is not None and accept(cached):
+                return cached
+        # A study call: an answer cut off at the output limit is raised once by the orchestrator, and one still cut off raises StudyLengthCutoff
+        # (this vote fails, reported) instead of being read as a partial answer.
+        parsed = self._chat_json(
+            system_prompt,
+            json.dumps(sample, ensure_ascii=False),
+            schema=schema,
+            max_tokens=2000,
+            user_id=user_id,
+            budget_kind="study",
+            file_id=self.study_file_id,
+        )
+        if not isinstance(parsed, dict):
+            raise ValueError(f"malformed JSON in LLM response content: {parsed!r}")
+        if required not in parsed and len(parsed) == 1:
+            inner = next(iter(parsed.values()))
+            if isinstance(inner, dict) and required in inner:
+                parsed = inner
+        if key is not None and accept is not None and accept(parsed):
+            self._cache.set(key, parsed)
+        return parsed
+
+    def study_file_rules_table(
+        self, sample: dict, user_id: str | None = None, vote: int = 0, accept: Callable[[dict], bool] | None = None
+    ) -> dict:
+        """Backs app.study.model_rules: how one table states its items' types, levels, parents and fields, from a bounded sample of it."""
+        return self._study_file_rules(
+            "study_file_rules_table", file_rules_table_schema(), "sheet_kind", sample, user_id, vote, accept
+        )
+
+    def study_file_rules_document(
+        self, sample: dict, user_id: str | None = None, vote: int = 0, accept: Callable[[dict], bool] | None = None
+    ) -> dict:
+        """Backs app.study.model_rules: how a document's headings state their item types, from a bounded outline of it."""
+        return self._study_file_rules(
+            "study_file_rules_document", file_rules_document_schema(), "type_source", sample, user_id, vote, accept
+        )
 
     def propose_acceptance_criteria(
         self,

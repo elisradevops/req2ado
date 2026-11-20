@@ -28,13 +28,20 @@ import type { DiscussionEntry } from '../writeback/dry-run.service';
 // `</table>` regardless of what's inside -- only the opening tag itself
 // needed to stop assuming zero attributes.
 const TABLE_BLOCK_PATTERN = /<table[^>]*>[\s\S]*?<\/table>/g;
+// Only the tags and attributes _table_to_html emits (cell text is html.escape'd there, so it holds no raw `<`). A block with anything else
+// (an <img onerror>, an onclick, a link) was not rendered by ingestion and is escaped like any other text.
+const TRUSTED_TABLE_TAG = /<\/?(?:table|caption|colgroup|col|thead|tbody|tr|th|td|b|br)(?:\s+(?:style|colspan|rowspan)="[^"<>]*")*\s*\/?>/gi;
+
+function isTrustedTable(block: string): boolean {
+  return !block.replace(TRUSTED_TABLE_TAG, '').includes('<');
+}
 
 function escapeAngleBrackets(text: string): string {
   let result = '';
   let lastIndex = 0;
   for (const match of text.matchAll(TABLE_BLOCK_PATTERN)) {
     result += text.slice(lastIndex, match.index).replace(/</g, '&lt;');
-    result += match[0];
+    result += isTrustedTable(match[0]) ? match[0] : match[0].replace(/</g, '&lt;');
     lastIndex = match.index! + match[0].length;
   }
   result += text.slice(lastIndex).replace(/</g, '&lt;');

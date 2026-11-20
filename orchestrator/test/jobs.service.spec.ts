@@ -5986,9 +5986,56 @@ describe('JobsService.list', () => {
     expect(callArg.select).not.toHaveProperty('dryRunDiff');
     expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
     expect(result).toEqual([
-      { id: 'j2', mode: 'survey', status: 'diff_ready', areaPath: 'Proj\\B', originalFilename: 'b.docx', itemCount: 3, createdItemCount: 0, createdAt: new Date('2026-07-09T10:00:00Z'), batchId: null, failureClass: null },
-      { id: 'j1', mode: 'baseline', status: 'succeeded', areaPath: 'Proj\\A', originalFilename: 'a.docx', itemCount: 1, createdItemCount: 1, createdAt: new Date('2026-07-08T10:00:00Z'), batchId: 'batch-1', failureClass: null },
+      { id: 'j2', mode: 'survey', status: 'diff_ready', areaPath: 'Proj\\B', originalFilename: 'b.docx', itemCount: 3, createdItemCount: 0, createdAt: new Date('2026-07-09T10:00:00Z'), batchId: null, failureClass: null, reviewedCount: null, reviewableCount: null },
+      { id: 'j1', mode: 'baseline', status: 'succeeded', areaPath: 'Proj\\A', originalFilename: 'a.docx', itemCount: 1, createdItemCount: 1, createdAt: new Date('2026-07-08T10:00:00Z'), batchId: 'batch-1', failureClass: null, reviewedCount: null, reviewableCount: null },
     ]);
+  });
+
+  it('counts "N of M reviewed" for the jobs in review on this page only, with ancestor exclusion, and null for every other job', async () => {
+    const row = (id: string, status: string) => ({
+      id, mode: 'baseline', status, areaPath: 'P\\A', adoProject: 'P', originalFilename: `${id}.docx`, createdAt: new Date('2026-07-09T10:00:00Z'), batchId: null,
+      failureClass: null, _count: { createdItemMappings: 0 },
+    });
+    const create = (localId: string, extra: Record<string, unknown> = {}) => ({ localId, parentLocalId: null, type: 'Requirement', action: 'create', ...extra });
+    const findMany = jest
+      .fn()
+      .mockResolvedValueOnce([row('r1', 'diff_ready'), row('done', 'succeeded'), row('r2', 'diff_ready'), row('run', 'running')])
+      .mockResolvedValueOnce([
+        {
+          id: 'r1',
+          dryRunDiff: [
+            create('a', { reviewed: true }),
+            create('b'),
+            create('x', { type: 'Feature', excluded: true }),
+            create('under', { parentLocalId: 'x', reviewed: true }),
+            create('reused', { action: 'reuse', reviewed: true }),
+          ],
+        },
+        { id: 'r2', dryRunDiff: null },
+      ]);
+    const prisma = { job: { findMany }, $queryRaw: jest.fn().mockResolvedValue([]) };
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    const result = await service.list('user-1', { skip: 0, take: 4 });
+
+    expect(findMany).toHaveBeenCalledTimes(2);
+    expect(findMany.mock.calls[1][0]).toEqual({ where: { id: { in: ['r1', 'r2'] } }, select: { id: true, dryRunDiff: true } });
+    expect(result.map((r) => [r.id, r.reviewedCount, r.reviewableCount])).toEqual([
+      ['r1', 1, 2],
+      ['done', null, null],
+      ['r2', null, null],
+      ['run', null, null],
+    ]);
+  });
+
+  it('does not read any diff when no job on the page is in review', async () => {
+    const findMany = jest.fn().mockResolvedValueOnce([
+      { id: 'j1', mode: 'survey', status: 'succeeded', areaPath: 'P\\A', originalFilename: 'a.docx', createdAt: new Date(), batchId: null, failureClass: null, _count: { createdItemMappings: 0 } },
+    ]);
+    const prisma = { job: { findMany }, $queryRaw: jest.fn().mockResolvedValue([]) };
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+    await service.list();
+    expect(findMany).toHaveBeenCalledTimes(1);
   });
 
   it('carries the short failure class of a failed job (so the list can say why), and null for every other row', async () => {

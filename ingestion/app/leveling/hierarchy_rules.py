@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+from collections import Counter
 
 from app.workitem.model import (
     IntegrityWarning,
@@ -34,8 +35,54 @@ def states_a_requirement(title: str) -> bool:
     return bool(_OBLIGATION.search(title or ""))
 
 
-def type_headings_by_shape(
+# A file's own requirement level, learned from the whole file: when at least this many headings are leaves and nearly all of them sit at one nesting depth,
+# that depth is where the file writes its requirements, and a leaf above it is a section that is still empty, not a requirement.
+LEAF_FLOOR_MIN_LEAVES = 20
+LEAF_FLOOR_SHARE = 0.9
+
+
+def learn_leaf_floor(
     nodes: list[WorkItemNode], non_structural_ids: set[str] | frozenset[str] = frozenset()
+) -> int | None:
+    """The nesting depth at which `nodes` (the whole file, not one branch) write their requirements, or None when no depth is clear enough to
+    be a rule. Read over every leaf heading: with LEAF_FLOOR_MIN_LEAVES or more of them and LEAF_FLOOR_SHARE of them at one depth, that depth is
+    the floor. A file whose leaves sit at mixed depths has no rule, and the shape rule alone types it."""
+    ids = {n.local_id for n in nodes}
+    parent_of = {n.local_id: n.parent_local_id for n in nodes if n.parent_local_id in ids}
+    has_child = {
+        n.parent_local_id
+        for n in nodes
+        if n.parent_local_id in ids and n.local_id not in non_structural_ids
+    }
+    depth_cache: dict[str, int] = {}
+
+    def depth(local_id: str, path: tuple[str, ...] = ()) -> int:
+        if local_id not in depth_cache:
+            parent = parent_of.get(local_id)
+            depth_cache[local_id] = (
+                0
+                if parent is None or parent in path or local_id in path
+                else depth(parent, (*path, local_id)) + 1
+            )
+        return depth_cache[local_id]
+
+    leaf_depths = Counter(
+        depth(n.local_id)
+        for n in nodes
+        if n.local_id not in has_child and n.local_id not in non_structural_ids
+    )
+    total = sum(leaf_depths.values())
+    if total < LEAF_FLOOR_MIN_LEAVES:
+        return None
+    floor, count = leaf_depths.most_common(1)[0]
+    return floor if count / total >= LEAF_FLOOR_SHARE else None
+
+
+def type_headings_by_shape(
+    nodes: list[WorkItemNode],
+    non_structural_ids: set[str] | frozenset[str] = frozenset(),
+    locked: dict[str, WorkItemType] | None = None,
+    leaf_floor: int | None = None,
 ) -> None:
     """Types the nodes of ONE heading-built forest from its shape, keeping the nesting exactly as the headings give it
     (nothing is moved, nothing is dropped, titles/descriptions/source refs/hashes are never touched):
@@ -45,6 +92,9 @@ def type_headings_by_shape(
     - any other heading with children is a section: the top one is an Epic when it has a sub-section, else a Feature;
       a section below a section is a Feature (a Feature may hold Features).
     `non_structural_ids` names nodes (such as the front-matter node) that do not make their parent a section.
+    `locked` maps a node to the type the file itself states for it (see study/heading_rules.py): that type is final, and the node counts as a
+    section or a requirement for the nodes around it accordingly. `leaf_floor` is the depth the whole file writes its requirements at
+    (learn_leaf_floor): a leaf heading above it is a section, not a requirement.
     Mutates `nodes` in place; a node that stops being a Requirement loses its Customer ID, which only a Requirement
     carries."""
     ids = {n.local_id for n in nodes}
@@ -64,11 +114,33 @@ def type_headings_by_shape(
             and all(is_leaf(c) for c in children[n.local_id])
         )
 
+    depth_of: dict[str, int] = {}
+
+    def depth(n: WorkItemNode) -> int:
+        if n.local_id not in depth_of:
+            chain, current, seen = (
+                0,
+                by_id.get(n.parent_local_id) if n.parent_local_id else None,
+                {n.local_id},
+            )
+            while current is not None and current.local_id not in seen:
+                seen.add(current.local_id)
+                chain += 1
+                current = by_id.get(current.parent_local_id) if current.parent_local_id else None
+            depth_of[n.local_id] = chain
+        return depth_of[n.local_id]
+
     def is_section(n: WorkItemNode) -> bool:
+        if locked and n.local_id in locked:
+            return locked[n.local_id] != R
+        if leaf_floor is not None and is_leaf(n) and depth(n) < leaf_floor:
+            return True
         return not is_leaf(n) and not is_statement(n)
 
     for n in nodes:
-        if not is_section(n):
+        if locked and n.local_id in locked:
+            new_type = locked[n.local_id]
+        elif not is_section(n):
             new_type = R
         else:
             parent = by_id.get(n.parent_local_id) if n.parent_local_id else None
@@ -83,7 +155,7 @@ def type_headings_by_shape(
             if has_section_above:
                 new_type = F
             else:
-                new_type = E if any(is_section(c) for c in children[n.local_id]) else F
+                new_type = E if any(is_section(c) for c in children.get(n.local_id, [])) else F
         if new_type != R:
             n.customer_id = None
         n.type = new_type

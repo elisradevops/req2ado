@@ -16,7 +16,7 @@ import httpx
 import redis
 from fastapi import FastAPI, Header, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from app import job_cancel
@@ -72,6 +72,7 @@ from app.leveling.llm_lease_limiter import LeaseLimiter
 from app.leveling.llm_leveling import build_survey_tree
 from app.leveling.model_caps import _resolve_caps
 from app.leveling.narration_publisher import LevelingProgress, NarrationPublisher, last_known_phase
+from app.leveling.rule_builder import verify_tree_against_rules
 from app.leveling.scoring import score_single_requirement_text, score_texts_together
 from app.leveling.study_store import StudyStore
 from app.leveling.tree_builder import build_baseline_tree, figure_id_by_block_id
@@ -86,6 +87,9 @@ from app.request_identity import (
     resolve_user_id,
 )
 from app.source_excerpt import SourceExcerpt, excerpt_for_span, parse_cached
+from app.study.file_rules import study_tables, table_details
+from app.study.model_rules import check_rulebook, document_details, prestudy, prestudy_version
+from app.study.rulebook import FileRulebook, rulebook_from_json, rulebook_to_json
 from app.survey.llm_cache import LlmResponseCache
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 from app.vision.emf_converter import convert_vector_image_to_png, sniff_vector_image_extension
@@ -1133,6 +1137,7 @@ def _build_survey_tree_with_scoring(
             pass
         return build_survey_tree(
             doc,
+            rulebook=_rulebook_of(doc),
             analysis_client=client,
             scoring_client=client,
             criteria_retriever=_get_criteria_retriever(user_id),
@@ -2148,6 +2153,33 @@ def _enforce_requirement_only_fields(tree: WorkItemTree) -> WorkItemTree:
     return tree
 
 
+def _rulebook_of(doc: CanonicalDoc) -> FileRulebook | None:
+    """The rulebook the orchestrator stored for this file and sent in the body (None: not studied; an empty one: studied, nothing learned)."""
+    if doc.rulebook is None:
+        return None
+    try:
+        return rulebook_from_json(doc.rulebook)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=f"the rulebook sent with the document is not valid: {error}") from None
+
+
+def _check_stated_structure(tree: WorkItemTree, doc: CanonicalDoc, include_model: bool = True) -> WorkItemTree:
+    """Adds a RULEBOOK_MISMATCH warning when the finished tree disagrees with the types and parents the file states (leveling/rule_builder.py).
+    Best effort by design: the check only reports, so if it cannot run the job still completes, and the failure is logged, never swallowed."""
+    try:
+        tree.warnings.extend(verify_tree_against_rules(doc, tree))
+        rulebook = _rulebook_of(doc)
+        if rulebook is not None and rulebook.tables and include_model:
+            # Tables read by the stored rulebook's rules (the recognised ones were checked above).
+            model_rules = {
+                t: r for t, r in study_tables(doc, rulebook).items() if t in rulebook.tables and t not in study_tables(doc)
+            }
+            tree.warnings.extend(verify_tree_against_rules(doc, tree, model_rules))
+    except Exception:
+        logger.exception("the stated-structure check could not run")
+    return tree
+
+
 async def _survey_client(model: str | None, user_id: str | None) -> OrchestratorLlmClient:
     """The LLM client of a SURVEY run for `model`: its context window is sized the same way the whole-document gate sizes it (see _survey_level),
     so the job and the wizard's study read the document with identical settings."""
@@ -2276,6 +2308,106 @@ def _level_result(doc: CanonicalDoc, tree: WorkItemTree, rubric_report: dict) ->
     }
 
 
+class PrestudyRequest(BaseModel):
+    doc: CanonicalDoc
+    # A user's edit to check against the document (no model is asked); absent: the model is asked how the file states its structure.
+    rulebook: dict | None = None
+    model: str | None = None
+    votes: int | None = Field(default=None, ge=1, le=5)
+    # The user asked to read the file again: the model is asked afresh, its earlier answers are not reused.
+    fresh: bool = False
+
+
+class PrestudyResponse(BaseModel):
+    rulebook: dict
+    hash: str
+    version: str
+    source: str  # "model" (learned), "user" (an edit that passed the checks) or "none" (nothing learned)
+    rules: list[str]  # how each table will be read, in plain words, for the wizard
+    warnings: list[IntegrityWarning]
+    # What the rules make of this file, for the wizard to check them against it: counts, a few items, the rows not imported. Display only:
+    # not part of the rulebook, its hash or prestudy_version().
+    details: dict | None = None
+
+
+def _prestudy_response(doc: CanonicalDoc, rulebook: FileRulebook, source: str, warnings: list[IntegrityWarning]) -> PrestudyResponse:
+    rules: list[str] = []
+    tables: list[dict] = []
+    by_table = study_tables(doc, rulebook)  # once: it reads every table of the file
+    for table in doc.tables:
+        name = table.caption or f"Table {table.id}"
+        rule = by_table.get(table.id)
+        if rule is None:
+            continue
+        how = "recognised headings" if rule.origin == "stated" else "your edit" if source == "user" else "read by the model"
+        rules.append(f"{name}: {rule.describe()} ({how})")
+        tables.append(table_details(table, rule))
+    document = rulebook.document
+    document_part = None
+    if document is not None:
+        rules += [f"Headings that begin with '{r.label}{r.separator}' are {r.type}s." for r in document.labels]
+        rules += [f"Headings at depth {depth + 1} are {name}s." for depth, name in document.depth_types]
+        document_part = document_details(doc, document)
+    details = {"approximate": document_part is not None, "tables": tables, "document": document_part} if tables or document_part else None
+    return PrestudyResponse(
+        rulebook=rulebook_to_json(rulebook),
+        hash=rulebook.hash,
+        version=prestudy_version(),
+        source=source,
+        rules=rules,
+        warnings=warnings,
+        details=details,
+    )
+
+
+@app.get("/prestudy/version")
+async def prestudy_version_route() -> dict:
+    """How a file is studied right now (prompts, schemas, votes, code pass): a rulebook stored under another version is not reused."""
+    return {"version": prestudy_version()}
+
+
+@app.post("/prestudy", response_model=PrestudyResponse)
+async def prestudy_route(
+    request: Request,
+    body: PrestudyRequest,
+    x_user_id: str | None = Header(default=None, alias=USER_ID_HEADER),
+    # The Open WebUI file the orchestrator uploaded for this study (the hybrid route): attached to the model's calls beside the profile.
+    x_file_id: str | None = Header(default=None, alias="X-Req2Ado-File-Id"),
+) -> PrestudyResponse:
+    """How a file states its structure. With `rulebook`: checks a user's edit against the document (no model). Without: asks the model (the file's own
+    row, column and heading numbers in a bounded profile, its answers validated against the whole file and voted), and returns the rulebook it can stand
+    behind, or an empty one. Never fails for a model that fails: the warnings say what happened."""
+    user_id = resolve_user_id(x_user_id)
+    doc = body.doc
+    if body.rulebook is not None:
+        try:
+            rulebook = rulebook_from_json(body.rulebook, origin="user")
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=f"the rules are not valid: {error}") from None
+        reason = check_rulebook(doc, rulebook)
+        if reason is not None:
+            raise HTTPException(status_code=422, detail=reason)
+        return _prestudy_response(doc, rulebook, "user", [])
+    client = await _survey_client(body.model, user_id)
+    client.study_file_id = x_file_id or None
+    client.study_fresh = body.fresh
+    # The caller going away (the wizard stopped waiting or changed the file, the orchestrator gave up) cancels the study: no further vote is
+    # asked, and its answer is not returned (the orchestrator stores the rulebook, so nothing is kept).
+    with job_cancel.cancellation_scope() as cancel_token:
+        async with job_cancel.watch_for_disconnect(request, cancel_token):
+            try:
+                rulebook, warnings = await run_in_threadpool(prestudy, doc, client, user_id, body.votes)
+            except job_cancel.JobCancelled:
+                raise HTTPException(
+                    status_code=499, detail="the caller disconnected; the study was cancelled"
+                ) from None
+        if cancel_token.cancelled:
+            raise HTTPException(
+                status_code=499, detail="the caller disconnected; the study was cancelled"
+            )
+    return _prestudy_response(doc, rulebook, "none" if rulebook.is_empty() else "model", warnings)
+
+
 @app.post("/level", response_model=WorkItemTree)
 async def level(
     request: Request,
@@ -2291,6 +2423,23 @@ async def level(
 ) -> WorkItemTree:
     user_id = resolve_user_id(x_user_id)
     primer_context = resolve_primer_context(x_primer_context)
+    rulebook = _rulebook_of(doc)  # fail fast on a rulebook that does not parse
+    # The stored rulebook was studied on another parse (the wizard's study, an earlier ingestion version, a user's edit): it is used only if the
+    # document this job parsed still passes the checks a model's answer had to pass. Otherwise this run reads the file by its recognised
+    # conventions (an empty rulebook: studied, so SURVEY does not ask the model again) and the tree says why; the job does not fail.
+    stale_rulebook: list[IntegrityWarning] = []
+    reason = check_rulebook(doc, rulebook) if rulebook is not None else None
+    if reason is not None:
+        stale_rulebook.append(
+            IntegrityWarning.make(
+                WarningKind.PRESTUDY_REJECTED,
+                f"The stored reading of how this file states its items was not used: {reason}. The file was read by its recognised headings "
+                "and its shape instead; study the file again to use its own rules.",
+                detail={"source": "the stored rulebook", "reason": reason},
+            )
+        )
+        rulebook = FileRulebook()
+        doc.rulebook = rulebook_to_json(rulebook)
     if mode == "survey":
         if NDJSON in request.headers.get("accept", ""):
             # Streamed: heartbeats while the run works, then one result (or error) line. The caller's limit is silence, not total time;
@@ -2310,6 +2459,7 @@ async def level(
                         rubric_report,
                     )
                 _raise_if_budget_stopped(token)
+                tree.warnings.extend(stale_rulebook)
                 return await run_in_threadpool(_level_result, doc, tree, rubric_report)
 
             return StreamingResponse(
@@ -2343,9 +2493,14 @@ async def level(
         response.headers["X-Req2Ado-Rubric-Version"] = rubric_report.get("version") or ""
         if rubric_report.get("degraded"):
             response.headers["X-Req2Ado-Rubric-Degraded"] = "1"
-        return _enforce_requirement_only_fields(_append_vision_disabled_warning(tree, doc, mode))
+        tree.warnings.extend(stale_rulebook)
+        return _enforce_requirement_only_fields(
+            _check_stated_structure(_append_vision_disabled_warning(tree, doc, mode), doc, include_model=False)
+        )
+    tree = build_baseline_tree(doc, rulebook)
+    tree.warnings.extend(stale_rulebook)
     return _enforce_requirement_only_fields(
-        _append_vision_disabled_warning(build_baseline_tree(doc), doc, mode)
+        _check_stated_structure(_append_vision_disabled_warning(tree, doc, mode), doc)
     )
 
 

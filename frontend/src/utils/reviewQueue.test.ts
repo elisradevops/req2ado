@@ -9,6 +9,7 @@ import {
   countStillToCheck,
   groupReviewQueue,
   reviewGroupOf,
+  reviewProgress,
   reviewQueueModeReducer,
   riskReason,
   riskTier,
@@ -312,6 +313,74 @@ describe('cleanApproval', () => {
       lowestScore: null,
       highestScore: null,
     });
+  });
+
+  describe('in BASELINE (nothing is scored, so clean means no warning)', () => {
+    it('offers an unscored, unwarned item, ignoring score and staleness, in tree order', () => {
+      const result = cleanApproval(
+        [entry('a'), entry('b', { qualityStale: true } as Partial<ReviewQueueEntry>), entry('c')],
+        NO_WARNINGS,
+        'baseline',
+      );
+      expect(result.items.map((item) => item.localId)).toEqual(['a', 'b', 'c']);
+      expect(result).toMatchObject({ unscored: 0, stale: 0, lowestScore: null, highestScore: null });
+    });
+
+    it('never offers an Epic or Feature, a warned, reviewed or excluded item, or one that is not written', () => {
+      const groups = buildKindGroups([
+        warning('missing_source_reference', 'needs_review', ['blocked']),
+        warning('low_grounding', 'needs_review', ['warned']),
+      ]);
+      const result = cleanApproval(
+        [
+          entry('epic', { type: 'Epic' }),
+          entry('feature', { type: 'Feature', parentLocalId: 'epic' }),
+          entry('ok', { parentLocalId: 'feature' }),
+          entry('reviewed', { reviewed: true }),
+          entry('excluded', { excluded: true }),
+          entry('under', { parentLocalId: 'excluded' }),
+          entry('reuse', { action: 'reuse' }),
+          entry('blocked'),
+          entry('warned'),
+        ],
+        groups,
+        'baseline',
+      );
+      expect(result.items.map((item) => item.localId)).toEqual(['ok']);
+      expect(result).toMatchObject({ flagged: 2, structure: 2, unscored: 0, stale: 0 });
+    });
+
+    it('leaves SURVEY as it was: the same unscored item is not offered there', () => {
+      expect(cleanApproval([entry('u')], NO_WARNINGS).items).toEqual([]);
+      expect(cleanApproval([entry('u')], NO_WARNINGS, 'baseline').items.map((item) => item.localId)).toEqual(['u']);
+    });
+  });
+});
+
+describe('reviewProgress', () => {
+  it('counts the new items still in the write, and how many of them are reviewed', () => {
+    expect(reviewProgress([entry('a', { reviewed: true }), entry('b'), entry('c', { reviewed: true })])).toEqual({ reviewed: 2, reviewable: 3 });
+  });
+
+  it('leaves out items that are not written (reuse, near-duplicate), even when marked reviewed', () => {
+    expect(
+      reviewProgress([entry('a'), entry('r', { action: 'reuse', reviewed: true }), entry('d', { action: 'dedup_skip' })]),
+    ).toEqual({ reviewed: 0, reviewable: 1 });
+  });
+
+  it('leaves out an excluded item and everything under an excluded ancestor', () => {
+    expect(
+      reviewProgress([
+        entry('epic', { type: 'Epic', excluded: true }),
+        entry('feature', { type: 'Feature', parentLocalId: 'epic' }),
+        entry('req', { parentLocalId: 'feature', reviewed: true }),
+        entry('kept', { reviewed: true }),
+      ]),
+    ).toEqual({ reviewed: 1, reviewable: 1 });
+  });
+
+  it('is zero of zero for an empty diff', () => {
+    expect(reviewProgress([])).toEqual({ reviewed: 0, reviewable: 0 });
   });
 });
 

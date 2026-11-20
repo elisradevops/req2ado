@@ -90,21 +90,32 @@ export function groupJobs<T extends JobGroupable>(jobs: T[], now: Date): Array<{
   }));
 }
 
-// For each job that has an earlier job with the same file name (case aside), the short id of the nearest earlier one: "Re-run of 0c5d877e".
-// The name is the only link the list has between two runs of one file. One sort and one pass.
-export function rerunOf(jobs: ReadonlyArray<{ id: string; createdAt: string; originalFilename: string }>): Map<string, string> {
+// Each (re-run, the nearest earlier job with the same file name, case aside) pair. The name is the only link the list has between two
+// runs of one file (a filename heuristic, DESIGN.md §11.1b). One sort and one pass.
+function rerunPairs(jobs: ReadonlyArray<{ id: string; createdAt: string; originalFilename: string }>): Array<[rerunId: string, earlierId: string]> {
   const time = (createdAt: string): number => {
     const parsed = Date.parse(createdAt);
     return Number.isFinite(parsed) ? parsed : 0;
   };
   const oldestFirst = [...jobs].sort((a, b) => time(a.createdAt) - time(b.createdAt));
   const lastIdByName = new Map<string, string>();
-  const out = new Map<string, string>();
+  const pairs: Array<[string, string]> = [];
   for (const job of oldestFirst) {
     const name = job.originalFilename.toLowerCase();
     const earlier = lastIdByName.get(name);
-    if (earlier !== undefined) out.set(job.id, shortJobId(earlier));
+    if (earlier !== undefined) pairs.push([job.id, earlier]);
     lastIdByName.set(name, job.id);
   }
-  return out;
+  return pairs;
+}
+
+// For each job that has an earlier job with the same file name (case aside), the short id of the nearest earlier one: "Re-run of 0c5d877e".
+export function rerunOf(jobs: ReadonlyArray<{ id: string; createdAt: string; originalFilename: string }>): Map<string, string> {
+  return new Map(rerunPairs(jobs).map(([rerunId, earlierId]) => [rerunId, shortJobId(earlierId)]));
+}
+
+// The inverse: for each job that a later job with the same file name followed, the short id of that next run: "Replaced by re-run 1a2b3c4d".
+// The same filename heuristic, so it says a re-run exists, never that the older job's items were superseded.
+export function replacedByRerun(jobs: ReadonlyArray<{ id: string; createdAt: string; originalFilename: string }>): Map<string, string> {
+  return new Map(rerunPairs(jobs).map(([rerunId, earlierId]) => [earlierId, shortJobId(rerunId)]));
 }

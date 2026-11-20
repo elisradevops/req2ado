@@ -27,7 +27,7 @@ import { cn } from '../lib/cn';
 import { ARRIVE } from '../ui/motion';
 import { formatDateTime } from '../utils/formatDateTime';
 import { IconButton } from '../ui/IconButton';
-import { groupJobs, isStaleJob, isStalledJob, rerunOf, shortJobId } from '../utils/jobGroups';
+import { groupJobs, isStaleJob, isStalledJob, replacedByRerun, rerunOf, shortJobId } from '../utils/jobGroups';
 import { useUserId } from '../store/authStore';
 import { jobStatusLabel } from '../utils/labels';
 
@@ -203,6 +203,9 @@ export function JobsList(): React.ReactElement {
   const jobGroups = useMemo(() => groupJobs(filteredJobs, now), [filteredJobs, now]);
   const tileCounts = useMemo(() => computeTileCounts(jobs, now), [jobs, now]);
   const reruns = useMemo(() => rerunOf(jobs), [jobs]);
+  // The older side of the same pair: a later job ran the same file name. A filename heuristic (DESIGN.md §11.1b), so it is a muted note,
+  // never a status: the older job is not changed or hidden.
+  const replacedBy = useMemo(() => replacedByRerun(jobs), [jobs]);
   const itemsWritten = useMemo(() => jobs.reduce((sum, job) => sum + job.createdItemCount, 0), [jobs]);
 
   return (
@@ -425,6 +428,7 @@ export function JobsList(): React.ReactElement {
                             )}
                           </span>
                           {reruns.has(job.id) && <span className="block text-xs text-ink-3">Re-run of {reruns.get(job.id)}</span>}
+                          {replacedBy.has(job.id) && <span className="block text-xs text-ink-3">Replaced by re-run {replacedBy.get(job.id)}</span>}
                           {job.status === 'failed' && job.failureClass && (
                             <span className="block max-w-[14rem] truncate text-xs text-ink-3 max-md:max-w-[7rem]">
                               {describeStoredFailure({ failureClass: job.failureClass })?.summary}
@@ -454,6 +458,12 @@ export function JobsList(): React.ReactElement {
                               </Tooltip>
                             )}
                           </span>
+                          {/* Review progress, the same count as the job's Write bar (computed by the server for a job in review). */}
+                          {job.reviewableCount != null && job.reviewableCount > 0 && (
+                            <span className="mt-0.5 block whitespace-nowrap text-xs text-ink-2">
+                              {(job.reviewedCount ?? 0).toLocaleString()} of {job.reviewableCount.toLocaleString()} reviewed
+                            </span>
+                          )}
                         </td>
                         <td className={cn('px-3.5 font-mono tabular-nums max-[1099px]:hidden', cellPaddingY)}>{job.itemCount}</td>
                         <td className={cn('px-3.5 font-mono text-xs max-[1399px]:hidden', cellPaddingY)}>

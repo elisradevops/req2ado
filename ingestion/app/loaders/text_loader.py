@@ -5,6 +5,7 @@ from pathlib import Path
 
 from markdown_it import MarkdownIt
 
+from app.canonical.markup import html_to_markdown
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, SourceRef
 from app.loaders.encoding_utils import read_text_degrading, unsupported_encoding_note
 
@@ -97,6 +98,27 @@ def load_markdown(path: str) -> CanonicalDoc:
             block_id += 1
             i += 3
             continue
+        if token.type in ("html_block", "fence", "code_block") and token.map:
+            # Raw HTML and code are content of the item they sit under: an HTML body (a tracker's export saved as Markdown) is the item's
+            # whole description. HTML becomes Markdown here; code is kept as a fenced block, word for word.
+            if token.type == "html_block":
+                content = html_to_markdown(token.content).strip()
+            else:
+                fence = f"```{token.info.strip()}\n" if token.type == "fence" else "```\n"
+                content = f"{fence}{token.content.rstrip(chr(10))}\n```"
+            if content:
+                lines = text.splitlines(keepends=True)
+                start = sum(len(line) for line in lines[: token.map[0]])
+                end = sum(len(line) for line in lines[: token.map[1]])
+                blocks.append(
+                    Block(
+                        id=f"b{block_id}",
+                        kind=BlockKind.PARAGRAPH,
+                        text=content,
+                        source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end),
+                    )
+                )
+                block_id += 1
         i += 1
 
     return CanonicalDoc(document=document, blocks=blocks)

@@ -83,8 +83,13 @@ export function isUntouchedChoices(draft: Pick<LastJobChoices, 'mode' | 'project
 }
 
 // Applied only to a wizard nobody has touched in this tab (the empty defaults), so a person who is part-way through, or who came back
-// from another page, never has their own choices replaced.
-export function withRememberedChoices<T extends Pick<NewJobDraft, 'mode' | 'project' | 'areaPath'>>(draft: T, remembered: LastJobChoices | null): T {
-  if (!remembered) return draft;
-  return isUntouchedChoices(draft) ? { ...draft, mode: remembered.mode, project: remembered.project, areaPath: remembered.areaPath } : draft;
+// from another page, never has their own choices replaced. `applyMode: false` restores the destination only and leaves the mode at its
+// default (the single-file wizard: BASELINE is always preselected, since a remembered SURVEY spends model tokens nobody chose this time).
+export function withRememberedChoices<T extends Pick<NewJobDraft, 'mode' | 'project' | 'areaPath'>>(
+  draft: T,
+  remembered: LastJobChoices | null,
+  { applyMode = true }: { applyMode?: boolean } = {},
+): T {
+  if (!remembered || !isUntouchedChoices(draft)) return draft;
+  return { ...draft, ...(applyMode ? { mode: remembered.mode } : {}), project: remembered.project, areaPath: remembered.areaPath };
 }

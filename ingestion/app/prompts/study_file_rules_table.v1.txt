@@ -1,0 +1,54 @@
+You are given a bounded, normalised SAMPLE of ONE table (a spreadsheet sheet, a CSV file or a document table) that a customer sent to be imported as Azure DevOps work items of three types: Epic (top level), Feature (middle), Requirement (bottom). Code applies your answer to EVERY row; you never write work items. Your only job is to name the conventions this table uses, with row and column NUMBERS from the input.
+
+Input JSON:
+- rowCount, columnCount: the size of the WHOLE table.
+- statsFromRow: the statistics below cover every row from this row number on (the rows under the first heading row), so a column's own heading is never one of its values.
+- columns[]: per column, over those rows: column (0-based), filledFraction, distinctCount, averageLength, numericFraction; and allValues (every distinct value with its count, first-seen order) when the column has at most 30 distinct values.
+- rows[]: selected rows {row, cells}: the first rows of the table, the first data rows, the last rows, and the first row of every distinct value of each low-cardinality column. Row numbers are the table's own and are not contiguous.
+HTML was converted to plain text, long cells end with "…", and some values read "<redacted>".
+
+Answer, in this order:
+1 sheet_kind: "work_items" when each data row is one item a team tracks (epic, feature, requirement, story, test...); "not_work_items" for a lookup table, revision history, cover page, budget or similar; "unknown" when you cannot tell. If it is not "work_items": header_row null, every list empty, nesting "unknown".
+2 header_row: the row number of the row that names the columns (the LAST one if the names span two rows), or null if there is none.
+3 columns: one entry per column that has a role. "header" = that column's cell in header_row, copied EXACTLY. "level" = the depth 1..9 for role level_title, otherwise null. Roles:
+  type           - each row states its item type ("Work Item Type", "Type", "Kind", "סוג פריט").
+  level_title    - one of several columns where WHICH column holds the row's title gives its depth ("Title 1", "Title 2"; "Level 1 / Level 2"). level 1 is the outermost.
+  level_number   - each row states its depth as a number or code (1, 2, 3; "L2"; "רמה 2").
+  outline_number - a hierarchical number whose dots give the nesting (1, 1.2, 1.2.3).
+  id             - the row's own identifier, referenced by a parent_id column.
+  parent_id      - the identifier of the row's parent.
+  title          - the item's short name (when there are no level_title columns).
+  customer_id    - the customer's own requirement identifier ("REQ-014", "SRS-3.2.1", "מזהה לקוח") that is not used for nesting.
+  description    - long text that belongs in the item's body (statement, rationale, acceptance criteria).
+  metadata       - short attributes (priority, status, owner, release, area, "עדיפות").
+  A column has at most ONE role, and at most one column has each of the roles type, level_number, outline_number, id, parent_id, title, customer_id. Omit columns that have no role.
+4 nesting: how a row's parent is written: "level_columns" (level_title columns), "level_number", "outline_number", "id_parent" (id and parent_id columns), "row_order" (only a type column: a row's parent is the nearest earlier row of a higher type), "unknown".
+5 type_values: only when a type column exists: EVERY value in that column's allValues, copied exactly, each with
+  maps_to: "Epic" | "Feature" | "Requirement" | "not_imported" (a type outside the three: Bug, Task, Test Case, Risk, Issue) | "unknown";
+  basis: "same_name" (it is Epic, Feature or Requirement in any case or plural) | "translation" (the same word in another language: אפיק = Epic, פיצ'ר = Feature, דרישה = Requirement) | "hierarchy_position" (another name whose place in the rows shows its level: a value whose rows are the parents of other rows is above them, the deepest level is Requirement) | "none".
+6 level_types: only when there is NO type column and nesting is level_columns, level_number or outline_number: for each depth that occurs, {level, maps_to} with level 1 the outermost. With fewer than three depths the deepest is Requirement and you go upward. Never invent a depth.
+7 evidence_rows: up to 8 row numbers from the input that best show the types and the nesting.
+
+Rules:
+- Copy every heading and value character for character, in its own script (case, spaces, punctuation, Hebrew or any other). Never translate, trim or correct, and never add a gloss, an explanation, an English equivalent or parentheses to a heading or a value: for a heading that reads מזהה the answer is "מזהה", never "ID (מזהה)". An answer that changes the text is refused.
+- Use only row and column numbers that appear in the input.
+- When unsure of a column's role, omit the column; when unsure of a field, answer "unknown" or null. A wrong answer is worse than "unknown".
+- The column statistics describe the whole table: trust them over the sample rows.
+- Return ONLY a JSON object with exactly the keys sheet_kind, header_row, columns, nesting, type_values, level_types, evidence_rows. No prose, no markdown fences -- the response body must be valid JSON on its own.
+
+Examples (the input is shown as its heading row and the allValues of the relevant column only):
+
+[A] heading row 0: ["ID","Work Item Type","Title 1","Title 2","Title 3","State","Description"]; column 1 allValues: Epic 3, Feature 9, Requirement 40
+{"sheet_kind":"work_items","header_row":0,"columns":[{"column":0,"header":"ID","role":"id","level":null},{"column":1,"header":"Work Item Type","role":"type","level":null},{"column":2,"header":"Title 1","role":"level_title","level":1},{"column":3,"header":"Title 2","role":"level_title","level":2},{"column":4,"header":"Title 3","role":"level_title","level":3},{"column":5,"header":"State","role":"metadata","level":null},{"column":6,"header":"Description","role":"description","level":null}],"nesting":"level_columns","type_values":[{"value":"Epic","maps_to":"Epic","basis":"same_name"},{"value":"Feature","maps_to":"Feature","basis":"same_name"},{"value":"Requirement","maps_to":"Requirement","basis":"same_name"}],"level_types":[],"evidence_rows":[1,2,3]}
+
+[B] heading row 0: ["Key","Parent","Summary","Kind","Text"]; column 3 allValues: Group 5, Item 44; the Parent of every Item row is the Key of a Group row
+{"sheet_kind":"work_items","header_row":0,"columns":[{"column":0,"header":"Key","role":"id","level":null},{"column":1,"header":"Parent","role":"parent_id","level":null},{"column":2,"header":"Summary","role":"title","level":null},{"column":3,"header":"Kind","role":"type","level":null},{"column":4,"header":"Text","role":"description","level":null}],"nesting":"id_parent","type_values":[{"value":"Group","maps_to":"Feature","basis":"hierarchy_position"},{"value":"Item","maps_to":"Requirement","basis":"hierarchy_position"}],"level_types":[],"evidence_rows":[1,2,7]}
+
+[C] heading row 0: ["מזהה","סוג פריט","כותרת","תיאור","עדיפות"]; column 1 allValues: אפיק 2, פיצ'ר 6, דרישה 31, באג 3
+{"sheet_kind":"work_items","header_row":0,"columns":[{"column":0,"header":"מזהה","role":"customer_id","level":null},{"column":1,"header":"סוג פריט","role":"type","level":null},{"column":2,"header":"כותרת","role":"title","level":null},{"column":3,"header":"תיאור","role":"description","level":null},{"column":4,"header":"עדיפות","role":"metadata","level":null}],"nesting":"row_order","type_values":[{"value":"אפיק","maps_to":"Epic","basis":"translation"},{"value":"פיצ'ר","maps_to":"Feature","basis":"translation"},{"value":"דרישה","maps_to":"Requirement","basis":"translation"},{"value":"באג","maps_to":"not_imported","basis":"none"}],"level_types":[],"evidence_rows":[1,2,3]}
+
+[D] heading row 0: ["Level","Name","Details"]; column 0 allValues: 1 4, 2 12, 3 60
+{"sheet_kind":"work_items","header_row":0,"columns":[{"column":0,"header":"Level","role":"level_number","level":null},{"column":1,"header":"Name","role":"title","level":null},{"column":2,"header":"Details","role":"description","level":null}],"nesting":"level_number","type_values":[],"level_types":[{"level":1,"maps_to":"Epic"},{"level":2,"maps_to":"Feature"},{"level":3,"maps_to":"Requirement"}],"evidence_rows":[1,2,3]}
+
+[E] heading row 0: ["Version","Date","Author","Change"]
+{"sheet_kind":"not_work_items","header_row":null,"columns":[],"nesting":"unknown","type_values":[],"level_types":[],"evidence_rows":[]}
