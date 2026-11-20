@@ -25,6 +25,10 @@ export interface CanonicalDoc {
    */
   vision_active?: boolean;
   /**
+   * What the pre-study learned about this file's conventions (the rulebook's JSON form: tables, document, hash), set by the orchestrator from the rulebook it stored for the file and carried to /level in this same body. Null: not studied. An empty object: studied, nothing to learn.
+   */
+  rulebook?: {} | null;
+  /**
    * Why vision did not (fully) run: baseline_mode, skip_vision_requested, model_not_vision_capable, no_user, vision_client_unavailable (vision_active false), or breaker_tripped (vision_active true but captioning stopped after consecutive failures). Null when vision ran normally.
    */
   vision_skip_reason?: string | null;

@@ -29,8 +29,9 @@ import type { EtaEstimate, ModelDetail } from '../api/jobs';
 export const MODE_COPY = {
   baseline: {
     title: 'BASELINE',
-    description: 'Deterministic, verbatim extraction. No AI model. Fast.',
-    costNote: 'no model cost',
+    description: 'Deterministic, verbatim extraction. No AI rewriting. Fast.',
+    // Not "no model cost": the pre-study (a model reading the file's layout) runs in both modes.
+    costNote: 'items are built by code; a short model read of the file’s layout runs first (once per file, then reused)',
     sample: {
       kind: 'verbatim' as const,
       text: '1.1 The system shall <requirement text, copied word for word>.',
@@ -39,7 +40,7 @@ export const MODE_COPY = {
   survey: {
     title: 'SURVEY',
     description: 'An AI model rewrites the text into formal "shall" requirements.',
-    costNote: 'uses your model quota',
+    costNote: 'uses your model quota, plus the same short read of the file’s layout first',
     sample: {
       kind: 'structured' as const,
       title: '<short title>',
@@ -111,9 +112,12 @@ export function ModeCards({
   recommendedModel,
   modelsLoading,
   modelsError,
+  lastUsed,
 }: {
   value: 'baseline' | 'survey';
   onChange: (mode: 'baseline' | 'survey') => void;
+  // The mode of the person's last job: a "Last used" label on that card only. It never selects it (BASELINE stays the default, D1).
+  lastUsed?: 'baseline' | 'survey';
   // Server-computed (DESIGN.md §11.2.3.d) -- undefined while in flight or
   // before the first preview/estimate call resolves. Both modes' estimates
   // are shown side by side (the whole point of the card layout is
@@ -194,6 +198,7 @@ export function ModeCards({
                 {selected && <span className="h-1.5 w-1.5 rounded-full bg-accent" />}
               </span>
               <span className="text-sm font-bold">{MODE_COPY[mode].title}</span>
+              {lastUsed === mode && <span className={cn('ml-auto', LABEL_MICRO)}>Last used</span>}
             </div>
             <span className="text-xs text-ink-3">{MODE_COPY[mode].description}</span>
             <SamplePreview sample={MODE_COPY[mode].sample} />

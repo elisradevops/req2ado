@@ -190,6 +190,11 @@ model Job {
   // LLM-dependent signal in this codebase) -- the two cases are
   // distinguished client-side by Job.mode, not by this column's nullness.
   documentOverview Json?
+  // What the pre-study learned about this file's conventions (the rulebook's JSON form), copied from the FileRulebook row the wizard stored for it, so
+  // the job builds from exactly the rulebook the user saw and a resubmit reuses it. Null: the file was not studied for this job. fileRulebookHash is the
+  // rulebook's own hash (it is part of the result-cache key: results built from other rules do not apply).
+  fileRulebook     Json?
+  fileRulebookHash String?
   // Telemetry for the SURVEY cost estimate (DESIGN.md §11.2.3) -- lets the
   // ETA be computed from this deployment's own real completed-job
   // durations instead of a hand-picked constant (two of which were tried
@@ -300,6 +305,28 @@ model JobEvent {
 // AuditEntry's free-text messages) -- one row per node whose dry-run diff
 // action was 'dedup_skip', written at diff-ready time in pipeline.worker.ts.
 // Queryable per job for real audit/reporting, not just an in-memory count.
+// How a file states its structure, learned by the pre-study (a model's validated answer) or edited by the user in the wizard, stored per user and file
+// so the wizard's preview, the job and a re-run all use the same rulebook. Rows are written only for an answer that passed the checks (never for a failed
+// study). A user's edit (source "user") wins over a learned one for the same file. The model is provenance, not part of the key: the same file gives the same
+// rules whichever model is selected, until the user asks for them again.
+model FileRulebook {
+  id              String   @id @default(uuid())
+  userId          String
+  fileSha256      String
+  prestudyVersion String
+  model           String
+  source          String
+  rulebook        Json
+  hash            String
+  rules           Json
+  warnings        Json
+  // What the rules make of the file (counts, examples, rows not imported), for the wizard; null for a rulebook stored before it was kept.
+  details         Json?
+  createdAt       DateTime @default(now())
+
+  @@index([userId, fileSha256])
+}
+
 model DedupSkipAudit {
   id            String   @id @default(uuid())
   jobId         String

@@ -1,6 +1,7 @@
 import { plural } from '../utils/plural';
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import axios from 'axios';
 import {
   getJob,
   confirmJob,
@@ -78,7 +79,7 @@ import { computeWriteGate, openReviewRecordCount } from '../utils/writeGate';
 import { QUEUED_COPY } from '../utils/labels';
 import { describeFailureCause, describeStoredFailure, failureAuditMessage } from '../utils/failureCause';
 import { REVIEW_GROUP_META } from '../components/reviewGroupMeta';
-import { buildReviewQueue, cleanApproval, countStillToCheck, groupReviewQueue, isExcludedWithAncestors, nextInQueue, REVIEW_GROUP_ORDER, reviewQueueModeReducer, type ReviewGroup, riskReason, spotCheckSample } from '../utils/reviewQueue';
+import { buildReviewQueue, cleanApproval, countStillToCheck, groupReviewQueue, isExcludedWithAncestors, nextInQueue, REVIEW_GROUP_ORDER, reviewProgress, reviewQueueModeReducer, type ReviewGroup, riskReason, spotCheckSample } from '../utils/reviewQueue';
 import { BulkApproveDialog } from '../components/BulkApproveDialog';
 import { WriteSummary, type WriteSummaryState } from '../components/WriteSummary';
 import { approvalBreakdown, type ApprovalMethod } from '../utils/approvalBreakdown';
@@ -116,6 +117,7 @@ import { matchesDiffFilter } from '../utils/diffFilterMatch';
 import { FigureDescriptions, type FigureDescriptionEntry } from '../components/FigureDescriptions';
 import { SectionResults, type SectionResultEntry } from '../components/SectionResults';
 import type { WorkItemTypeCatalogEntry } from '../api/ado';
+import { NotFound } from './NotFound';
 import { isRunDetailStatus, shouldShowTiles, shouldShowTabs, shouldShowFilterBar, shouldShowNothingWrittenLine, reviewHeadline, phaseRailOrientation } from './jobDetailLayout';
 import { SafetyLine } from '../components/SafetyLine';
 import { Download, Ellipsis, FileX2, RotateCw, ShieldCheck, Trash2, TriangleAlert, Upload, X } from 'lucide-react';
@@ -386,7 +388,8 @@ export function JobDetail(): React.ReactElement {
   const [retryProgress, setRetryProgress] = useState<{ kind: string; done: number; total: number } | null>(null);
   const retryCancelRef = useRef(false);
   const [loaded, setLoaded] = useState(false);
-  const [loadError, setLoadError] = useState(false);
+  // 'not_found': the server has no such job (a wrong or deleted link), shown as the Not found page rather than a connection problem.
+  const [loadError, setLoadError] = useState<boolean | 'not_found'>(false);
   // Resolved server-side and embedded directly in the job response (see
   // WorkItemTypeCatalogService) -- previously a separate frontend fetch
   // (useWorkItemTypeCatalog), triggered once areaPath resolved into a
@@ -498,9 +501,9 @@ export function JobDetail(): React.ReactElement {
         setRequirementClassificationField(job.requirementClassificationField ?? null);
         setLoaded(true);
       })
-      .catch(() => {
+      .catch((err: unknown) => {
         if (cancelled) return;
-        setLoadError(true);
+        setLoadError(axios.isAxiosError(err) && err.response?.status === 404 ? 'not_found' : true);
         setLoaded(true);
       });
     return () => {
@@ -2426,9 +2429,16 @@ export function JobDetail(): React.ReactElement {
     const byId = new Map(diff.map((entry) => [entry.localId, entry]));
     const cache = new Map<string, boolean>();
     let leftOut = 0;
-    for (const entry of diff) if (isExcludedWithAncestors(entry, byId, cache)) leftOut += 1;
-    return { included: diff.length - leftOut, leftOut };
+    let toCreate = 0;
+    for (const entry of diff) {
+      if (isExcludedWithAncestors(entry, byId, cache)) leftOut += 1;
+      else if (entry.action === 'create') toCreate += 1;
+    }
+    return { included: diff.length - leftOut, leftOut, nothingToWrite: toCreate === 0 };
   }, [diff]);
+  // "N of M reviewed" in the Write bar: the new items still in the write (not writeCounts.included, which also counts reuse and
+  // near-duplicate entries), and how many of them are marked reviewed. The Jobs list shows the same count from the server.
+  const reviewCounts = useMemo(() => reviewProgress(diff), [diff]);
 
   // Counted per warning TYPE (one row each in the panel), not per record:
   // "3 warnings need your attention" must match the 3 rows to fix or review.
@@ -2496,11 +2506,12 @@ export function JobDetail(): React.ReactElement {
     return result;
   }, [focusWarning, focusReviewable, reviewedIds]);
 
-  // The clean items "Approve clean items" would mark reviewed, and the sample to look at first. Only for SURVEY:
-  // BASELINE carries no scores, and its text is verbatim.
+  // The clean items "Approve clean items" would mark reviewed, and the sample to look at first. BASELINE carries no scores (its text
+  // is verbatim), so there clean means no warning only; the dialog says so (DESIGN.md §11.6).
+  const bulkMode = mode === 'baseline' ? 'baseline' : 'survey';
   const bulk = useMemo(
-    () => cleanApproval(mode === 'survey' && status === 'diff_ready' ? diff : [], warningKindGroups),
-    [mode, status, diff, warningKindGroups],
+    () => cleanApproval(status === 'diff_ready' ? diff : [], warningKindGroups, bulkMode),
+    [bulkMode, status, diff, warningKindGroups],
   );
   const spotCheckSampleItems = useMemo(() => spotCheckSample(bulk.items), [bulk]);
   // Only sample items that are still clean count: one that was excluded since drops out, and a new member must be checked.
@@ -2654,6 +2665,8 @@ export function JobDetail(): React.ReactElement {
   const hasNextEntry = navIndex !== -1 && navIndex < navList.length - 1;
   // Research #7: when the page's placeholder was drawn (a load over a second), the page cross-fades in instead of snapping.
   const contentFade = useSkeletonCrossfade(!loaded);
+
+  if (loadError === 'not_found') return <NotFound />;
 
   if (loadError) {
     return (
@@ -3315,6 +3328,9 @@ export function JobDetail(): React.ReactElement {
         canWriteToAdo={canWriteToAdo}
         includedCount={writeCounts.included}
         leftOutCount={writeCounts.leftOut}
+        nothingToWrite={writeCounts.nothingToWrite}
+        reviewedCount={reviewCounts.reviewed}
+        reviewableCount={reviewCounts.reviewable}
         destination={areaPath ?? teamProject ?? undefined}
       />
     ) : null;
@@ -3452,7 +3468,8 @@ export function JobDetail(): React.ReactElement {
         count={bulk.items.length}
         lowestScore={bulk.lowestScore}
         highestScore={bulk.highestScore}
-        leftOut={{ flagged: bulk.flagged, unscored: bulk.unscored, stale: bulk.stale }}
+        mode={bulkMode}
+        leftOut={{ flagged: bulk.flagged, unscored: bulk.unscored, stale: bulk.stale, structure: bulk.structure }}
         sampleSize={spotCheckSampleItems.length}
         checkedCount={spotCheckCheckedCount}
         notice={bulkNotice}

@@ -285,3 +285,7 @@ class CanonicalDoc(BaseModel):
     # after consecutive failures and the remaining figures left
     # uncaptioned). None when vision ran normally.
     vision_skip_reason: str | None = None
+    # What the pre-study learned about this file's conventions (study/rulebook.py, in its JSON form), set by the orchestrator from the rulebook it stored for
+    # the file (the wizard's preview, or the user's edit) and carried to /level in this same body, like the vision flags above. None: /level reads only the
+    # conventions the code recognises (BASELINE) or asks the model once itself (SURVEY). {} (an empty rulebook) means "asked, nothing to learn": no second ask.
+    rulebook: dict | None = None

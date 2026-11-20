@@ -42,6 +42,10 @@
       "default": false,
       "description": "Whether /ingest actually opened the vision-LLM gate for this document (False for BASELINE, a preview call, a model without vision support, or no user identity). Round-tripped from /ingest's response through /level's own `doc` request body -- consumed there to emit a single tree-level WarningKind.vision_captioning_disabled warning when False and figures is non-empty."
     },
+    "rulebook": {
+      "type": ["object", "null"],
+      "description": "What the pre-study learned about this file's conventions (the rulebook's JSON form: tables, document, hash), set by the orchestrator from the rulebook it stored for the file and carried to /level in this same body. Null: not studied. An empty object: studied, nothing to learn."
+    },
     "vision_skip_reason": {
       "type": ["string", "null"],
       "default": null,

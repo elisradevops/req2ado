@@ -66,7 +66,7 @@ const CHAT_DROPPABLE: ReadonlySet<string> = new Set([
   'presence_penalty',
   'frequency_penalty',
 ]);
-const FILE_CONTEXT_DROPPABLE: ReadonlySet<string> = new Set(['temperature', 'seed', 'options']);
+const FILE_CONTEXT_DROPPABLE: ReadonlySet<string> = new Set(['temperature', 'seed', 'options', 'reasoning_effort']);
 const VISION_DROPPABLE: ReadonlySet<string> = new Set(['temperature', 'frequency_penalty']);
 
 // Module-level singleton, not per-instance: the cl100k_base rank table load
@@ -94,6 +94,15 @@ function chatTemperature(requested: number | undefined, adaptation: Adaptation):
   if (adaptation.dropped.has('temperature')) return undefined;
   if (requested !== undefined) return adaptation.temperature ?? requested;
   return adaptation.attempt > 1 ? adaptation.temperature : undefined;
+}
+
+// Ollama's own request options from a chat call's options, as ONE object (see chatCall's comment on why): only a trusted-local backend takes it.
+function ollamaOptionsOf(opts: LlmChatOptions | undefined): Record<string, number> {
+  const options: Record<string, number> = {};
+  if (opts?.numCtx !== undefined) options.num_ctx = opts.numCtx;
+  if (opts?.topK !== undefined) options.top_k = opts.topK;
+  if (opts?.minP !== undefined) options.min_p = opts.minP;
+  return options;
 }
 
 function buildResponseFormat(opts: LlmChatOptions | undefined, includeSchema: boolean): OpenAI.ResponseFormatJSONSchema | undefined {
@@ -271,6 +280,10 @@ export class OpenWebUiClient implements LlmClient {
   }
 
   async chat(messages: ChatMessage[], opts?: LlmChatOptions): Promise<LlmChatResult> {
+    if (opts?.fileId) {
+      const fileId = opts.fileId;
+      return this.asWork(!opts.background, () => this.chatWithFileContext(messages, fileId, opts));
+    }
     return this.asWork(!opts?.background, () => this.chatCall(messages, opts));
   }
 
@@ -287,10 +300,7 @@ export class OpenWebUiClient implements LlmClient {
     // NOT silently ignored as previously assumed. Only Ollama-compatible
     // backends (LLM_TRUSTED_LOCAL=true) accept this field.
     // See LlmChatOptions.numCtx/topK/minP doc comments.
-    const ollamaOptions: Record<string, number> = {};
-    if (opts?.numCtx !== undefined) ollamaOptions.num_ctx = opts.numCtx;
-    if (opts?.topK !== undefined) ollamaOptions.top_k = opts.topK;
-    if (opts?.minP !== undefined) ollamaOptions.min_p = opts.minP;
+    const ollamaOptions = ollamaOptionsOf(opts);
     const chatModel = opts?.model ?? this.config.LLM_CHAT_MODEL;
     const studyCall = opts?.budgetKind === 'study';
     const buildParams = (a: Adaptation) => ({
@@ -1478,6 +1488,88 @@ export class OpenWebUiClient implements LlmClient {
         // An answer without choices (the proxy's empty completion) is an empty result, as before, not an error.
         const parsed = chatCompletionResponseSchema.safeParse(await response.json());
         return { content: parsed.success ? (parsed.data.choices[0].message.content ?? '') : '' };
+      },
+    });
+  }
+
+  // A structured chat call with an uploaded file attached (the file-conventions pre-study's hybrid route): the same native-route + `context: 'full'`
+  // mechanism as chatWithFullFileContext above (see its comment for why only the native endpoint reads the file), but with the caller's messages,
+  // response schema, temperature and limits, adapted the same way chat() is. The messages are redacted like any chat call's; the FILE is not (the
+  // production Open WebUI route is approved for unredacted files).
+  private async chatWithFileContext(messages: ChatMessage[], fileId: string, opts: LlmChatOptions): Promise<LlmChatResult> {
+    const outboundMessages = this.config.LLM_TRUSTED_LOCAL ? messages : redactMessages(messages);
+    const model = opts.model ?? this.config.LLM_CHAT_MODEL;
+    const requestChars = outboundMessages.reduce((n, m) => n + (typeof m.content === 'string' ? m.content.length : 0), 0);
+    const ollamaOptions = ollamaOptionsOf(opts);
+    const studyCall = opts.budgetKind === 'study';
+    const buildBody = (a: Adaptation): string => {
+      const maxTokens = effectiveMaxTokens(opts.maxTokens, a);
+      const responseFormat = buildResponseFormat(opts, !a.dropSchema);
+      const temperature = chatTemperature(opts.temperature, a);
+      const body = {
+        model,
+        messages: outboundMessages,
+        files: [{ type: 'file', id: fileId, context: 'full' }],
+        ...(temperature !== undefined ? { temperature } : {}),
+        ...(this.config.LLM_SEND_SEED && !a.dropped.has('seed') && opts.seed !== undefined ? { seed: opts.seed } : {}),
+        ...(responseFormat ? { response_format: responseFormat } : {}),
+        ...(maxTokens !== undefined ? { [a.tokenParam]: maxTokens } : {}),
+        // The same controls chat() sends (see its comments): the context window and sampler options for a trusted-local backend (without
+        // num_ctx a local model cuts the attached file's long prompt from the front, dropping the instructions), and no reasoning when asked.
+        ...(this.config.LLM_TRUSTED_LOCAL && !a.dropped.has('options') && Object.keys(ollamaOptions).length > 0 ? { options: ollamaOptions } : {}),
+        ...(this.config.LLM_SEND_REASONING_EFFORT && !a.dropped.has('reasoning_effort') && opts.think === false ? { reasoning_effort: 'none' } : {}),
+      };
+      return JSON.stringify(body);
+    };
+    return negotiate({
+      label: 'OpenWebUiClient.chatWithFileContext',
+      model,
+      hasSchema: opts.responseSchema !== undefined,
+      requestChars,
+      droppable: FILE_CONTEXT_DROPPABLE,
+      // A study call is raised once on a cut-off answer and keeps the study's own remembered limit, as in chat().
+      ...(studyCall
+        ? { ...this.kindScope('study', model), maxAttempts: LADDER_MAX_ATTEMPTS }
+        : { learned: this.learnedFor(model), remember: (update: LearnedUpdate) => this.rememberConstraint(model, update) }),
+      ...(opts.deadlineAtMs !== undefined ? { deadlineAtMs: opts.deadlineAtMs } : {}),
+      terminal: (err) => {
+        const { status, message } = summarizeUpstreamError(err);
+        throw new Error(`OpenWebUiClient.chatWithFileContext failed: ${status} — ${message}`);
+      },
+      ...(opts.signal ? { signal: opts.signal } : {}),
+      send: async (adaptation, signal) => {
+        const response = await fetch(`${this.openWebUiAppRoot()}/api/chat/completions`, {
+          method: 'POST',
+          signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(this.config.LLM_REQUEST_TIMEOUT_MS)]) : AbortSignal.timeout(this.config.LLM_REQUEST_TIMEOUT_MS),
+          headers: {
+            'Content-Type': 'application/json',
+            ...(this.config.LLM_API_KEY ? { Authorization: `Bearer ${this.config.LLM_API_KEY}` } : {}),
+          },
+          body: buildBody(adaptation),
+        });
+        if (!response.ok) {
+          let bodyText = '';
+          try { bodyText = await response.text(); } catch { /* ignore read failure */ }
+          const text = errorMessageFromBody(bodyText).slice(0, 500) || `HTTP ${response.status}`;
+          throw OpenAI.APIError.generate(response.status, { message: text }, text, Object.fromEntries(response.headers?.entries?.() ?? []));
+        }
+        const parsed = chatCompletionResponseSchema.safeParse(await response.json());
+        if (!parsed.success) return { content: '' };
+        const choice = parsed.data.choices[0];
+        const finishReason = choice.finish_reason ?? undefined;
+        const content = choice.message.content ?? '';
+        // As in chat(): an empty answer at the limit, or any cut-off study answer, is asked again once with a larger limit.
+        if (finishReason === 'length' && (studyCall || !content.trim())) {
+          const target = raisedBudgetFor(effectiveMaxTokens(opts.maxTokens, adaptation), adaptation);
+          if (target !== null) throw new EmptyLengthCompletion(target);
+        }
+        // One line per call, token counts and never content: this route's prompt carries the whole file, so its size is worth seeing.
+        // eslint-disable-next-line no-console
+        (finishReason && finishReason !== 'stop' ? console.warn : console.log)(
+          `[OpenWebUiClient.chatWithFileContext] finishReason=${finishReason ?? 'n/a'} model=${model} promptTokens=${parsed.data.usage?.prompt_tokens ?? 'n/a'} completionTokens=${parsed.data.usage?.completion_tokens ?? 'n/a'} maxTokens=${opts.maxTokens ?? 'n/a'}`,
+        );
+        const usage = usageOf(parsed.data.usage);
+        return { content, ...(finishReason ? { finishReason } : {}), ...(usage ? { usage } : {}) };
       },
     });
   }

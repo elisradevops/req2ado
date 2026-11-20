@@ -178,8 +178,9 @@ def test_positional_arguments_still_work_on_the_public_wrapper() -> None:
         given.get(name, defaults[name]) for name in names[: chunk_at + 1]
     ]  # up to and including the last pre-study parameter
     assert names.index("study_store") < chunk_at and names[chunk_at + 1 :] == [
-        "study_limiter"
-    ]  # no existing position moved
+        "study_limiter",
+        "rulebook",
+    ]  # no existing position moved; the pre-study's rulebook is appended
 
     tree = build_survey_tree(*positional)
 

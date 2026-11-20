@@ -5,6 +5,8 @@ export interface BulkApproveLeftOut {
   flagged: number;
   unscored: number;
   stale: number;
+  // BASELINE: Epics and Features, which are never offered (checked one by one).
+  structure?: number;
 }
 
 function itemsOf(count: number): string {
@@ -15,7 +17,10 @@ function itemsOf(count: number): string {
 // uses -- "not flagged", never "verified" -- and keeps the approve action disabled until the
 // reviewer has looked at the whole sample. Nothing here is focused except Cancel, so Enter or
 // Space on opening never approves. The count shown is live; `notice` carries a failure to save.
+// BASELINE items are verbatim and carry no score, so its copy names only the warnings it screens on
+// and says plainly that nothing was scored (DESIGN.md §11.6).
 export function BulkApproveDialog({
+  mode = 'survey',
   open,
   onOpenChange,
   count,
@@ -31,6 +36,7 @@ export function BulkApproveDialog({
   returnFocusRef,
   restoreFocus,
 }: {
+  mode?: 'survey' | 'baseline';
   open: boolean;
   onOpenChange: (open: boolean) => void;
   count: number;
@@ -54,12 +60,21 @@ export function BulkApproveDialog({
       : lowestScore === highestScore
         ? ` with score ${lowestScore}`
         : ` with scores ${lowestScore} to ${highestScore}`;
-  const reasons = [
-    leftOut.flagged > 0 ? `${leftOut.flagged.toLocaleString()} flagged or with warnings` : null,
-    leftOut.unscored > 0 ? `${leftOut.unscored.toLocaleString()} not scored` : null,
-    leftOut.stale > 0 ? `${leftOut.stale.toLocaleString()} with an out-of-date score` : null,
-  ].filter((reason): reason is string => reason !== null);
-  const leftOutTotal = leftOut.flagged + leftOut.unscored + leftOut.stale;
+  const baseline = mode === 'baseline';
+  const structure = leftOut.structure ?? 0;
+  const reasons = (
+    baseline
+      ? [
+          leftOut.flagged > 0 ? `${leftOut.flagged.toLocaleString()} with warnings` : null,
+          structure > 0 ? `${structure.toLocaleString()} ${structure === 1 ? 'Epic or Feature' : 'Epics and Features'}, which you check one by one` : null,
+        ]
+      : [
+          leftOut.flagged > 0 ? `${leftOut.flagged.toLocaleString()} flagged or with warnings` : null,
+          leftOut.unscored > 0 ? `${leftOut.unscored.toLocaleString()} not scored` : null,
+          leftOut.stale > 0 ? `${leftOut.stale.toLocaleString()} with an out-of-date score` : null,
+        ]
+  ).filter((reason): reason is string => reason !== null);
+  const leftOutTotal = baseline ? leftOut.flagged + structure : leftOut.flagged + leftOut.unscored + leftOut.stale;
 
   return (
     <Dialog
@@ -69,10 +84,17 @@ export function BulkApproveDialog({
       restoreFocus={restoreFocus}
       title={`Approve ${cleanItems}?`}
       description={
-        <>
-          {itemsOf(count)} you have not reviewed yet{range}. They are not flagged: no low score, low grounding or low model
-          confidence, and no blocking or review warning. That is a screen, not a judgment, so you check a sample first.
-        </>
+        baseline ? (
+          <>
+            {itemsOf(count)} you have not reviewed yet. They are not flagged: no blocking or review warning. BASELINE items are copied
+            word for word and are not scored, so this is a screen, not a judgment: check a sample first.
+          </>
+        ) : (
+          <>
+            {itemsOf(count)} you have not reviewed yet{range}. They are not flagged: no low score, low grounding or low model
+            confidence, and no blocking or review warning. That is a screen, not a judgment, so you check a sample first.
+          </>
+        )
       }
       footer={
         <>

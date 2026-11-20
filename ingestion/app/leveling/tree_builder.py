@@ -5,6 +5,7 @@ import html
 import re
 from pathlib import Path
 
+from app.canonical.markup import html_to_cell_text, looks_like_html
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Figure, SourceRef, Table, TableCell
 from app.distillation.description import assemble_description, strip_leading_title
 from app.distillation.title import extract_baseline_title
@@ -13,6 +14,7 @@ from app.leveling.customer_id import extract_customer_requirement_code
 from app.leveling.depth import authored_numbering_label, resolve_block_depth
 from app.leveling.hierarchy_rules import (
     ensure_ladder,
+    learn_leaf_floor,
     requirement_heading_warning,
     type_headings_by_shape,
 )
@@ -21,6 +23,8 @@ from app.leveling.profiles import heading_style_type_for_depth
 from app.leveling.requirement_rows import atomizable_requirement_rows, row_title_and_description
 from app.leveling.table_color import colgroup_html, resolve_cell_style_colors, table_style_attr
 from app.leveling.warnings_finalize import finalize_warnings
+from app.study.heading_rules import apply_stated_type_labels, lock_types_by_depth
+from app.study.rulebook import FileRulebook
 from app.workitem.model import (
     IntegrityWarning,
     WarningKind,
@@ -384,7 +388,11 @@ def _render_table_row(row: list[TableCell | None], cell_tag: str, border_style: 
             style_parts.append("border:1px solid")
         if style_parts:
             attrs += f' style="{";".join(style_parts)}"'
-        cell_text = html.escape(cell.text)
+        if looks_like_html(cell.text):
+            # A cell that holds HTML (a tracker export, a pasted rich text) shows its text and line breaks, not its tags.
+            cell_text = html.escape(html_to_cell_text(cell.text)).replace("\n", "<br>")
+        else:
+            cell_text = html.escape(cell.text)
         if cell.bold:
             # Semantic <b>, not a font-weight style declaration -- consistent
             # with border_css's currentColor approach elsewhere in this file:
@@ -979,12 +987,35 @@ def _build_flat_list_tree(doc: CanonicalDoc, branches: list[list[Block]]) -> Wor
     return WorkItemTree(nodes=nodes)
 
 
-def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
-    """See _build_baseline_tree; also sets every node's W1 identity_hash_v2/content_hash (identity_v2.assign_identity_v2)."""
-    return assign_identity_v2(_build_baseline_tree(doc), doc)
+def _tree_from_table_rules(doc: CanonicalDoc, rulebook: FileRulebook | None = None) -> WorkItemTree | None:
+    """A table file that states its items' types and nesting in columns (a tracker export, a sheet with a type column), built as the file states
+    it: no shape rule decides a type or a parent. None when the document has real text blocks (those go the heading way) or no table states its
+    structure. A table of the same file that states none is built the way it always was, beside the rule-built items."""
+    if any(not _is_unsupported_content_note(b) for b in doc.blocks) or not doc.tables:
+        return None
+    # Local imports: rule_builder and the study read the model, never this module, and stay out of its import-time graph.
+    from app.leveling.rule_builder import tree_from_table_rules
+    from app.study.file_rules import study_tables
+
+    rules = study_tables(doc, rulebook)
+    if not rules:
+        return None
+    nodes, warnings = tree_from_table_rules(doc, rules, _hash_description, _hash_identity_for_synthesized_node)
+    others = [t for t in doc.tables if t.id not in rules and any(c is not None and c.text.strip() for row in t.cells for c in row)]
+    if others:
+        rest = _build_headingless_tree(doc.model_copy(update={"tables": others}))
+        nodes += rest.nodes
+        warnings += rest.warnings
+    return WorkItemTree(nodes=nodes, warnings=warnings)
 
 
-def _build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
+def build_baseline_tree(doc: CanonicalDoc, rulebook: FileRulebook | None = None) -> WorkItemTree:
+    """See _build_baseline_tree; also sets every node's W1 identity_hash_v2/content_hash (identity_v2.assign_identity_v2). `rulebook` is what the
+    pre-study learned about the file's conventions (study/model_rules.py); None builds from the conventions the code recognises, as before."""
+    return assign_identity_v2(_build_baseline_tree(doc, rulebook), doc)
+
+
+def _build_baseline_tree(doc: CanonicalDoc, rulebook: FileRulebook | None = None) -> WorkItemTree:
     """Deterministic BASELINE-mode leveling: no LLM involved. Splits the
     document into top-level branches, auto-detects a profile per branch
     (see autodetect.py), then walks each branch's blocks maintaining a
@@ -1042,6 +1073,10 @@ def _build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
     document with a single flat item is too ambiguous to confidently
     regroup and is left to the structured path (produces one ungrouped
     Requirement, an acceptable minimal case)."""
+    ruled = _tree_from_table_rules(doc, rulebook)
+    if ruled is not None:
+        return ruled
+
     if (doc.blocks and all(resolve_block_depth(b)[0] is None for b in doc.blocks)) or (
         not doc.blocks and doc.tables
     ):
@@ -1447,11 +1482,27 @@ def _build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
     # Epic -> Feature -> Requirement: heading branches are typed from their own shape (the old depth-only rule left a
     # document without level-1 headings as Requirements under Requirements), then any missing parent is added.
     branch_ends = [entry[0] for entry in branch_node_starts[1:]] + [len(nodes)]
+    # What the file states or shows about its own types, read over the whole file (not one branch): labelled headings, and the depth it writes
+    # its requirements at. Both are only taken when the file is consistent about them; see study/heading_rules.py and learn_leaf_floor.
+    document_rules = rulebook.document if rulebook is not None else None
+    stated_types = apply_stated_type_labels(
+        nodes, _hash_description, front_matter_ids, document_rules.labels if document_rules else None
+    )
+    if document_rules is not None:
+        stated_types = lock_types_by_depth(nodes, document_rules.depth_types, stated_types, front_matter_ids)
+    leaf_floor = learn_leaf_floor(nodes, front_matter_ids)
+    # A file that states its types, or shows a clear requirement level, is typed by those rules in every branch, numbered ones included.
+    learned_rules = bool(stated_types) or leaf_floor is not None
     for (start, is_heading, from_heading_rule, from_classifier), end in zip(
         branch_node_starts, branch_ends
     ):
-        if is_heading or from_heading_rule > from_classifier:
-            type_headings_by_shape(nodes[start:end], non_structural_ids=front_matter_ids)
+        if is_heading or from_heading_rule > from_classifier or learned_rules:
+            type_headings_by_shape(
+                nodes[start:end],
+                non_structural_ids=front_matter_ids,
+                locked=stated_types,
+                leaf_floor=leaf_floor,
+            )
             for node in nodes[start:end]:
                 block = block_by_node.get(node.local_id)
                 if (

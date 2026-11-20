@@ -52,10 +52,11 @@ export const useNewJobDraftStore = create<NewJobDraftStore>((set) => ({
 /**
  * The draft as the wizard should start from it. A parse that was still running (or had failed) when the user left has no
  * result that can arrive any more, so the file side is dropped and the wizard starts at the dropzone rather than showing
- * a spinner that never ends; the choices the user made (mode, project, ...) are kept either way.
+ * a spinner that never ends; the choices the user made (mode, project, ...) are kept either way. BASELINE has two steps, so
+ * a step 3 kept with it is its last step, step 2.
  */
 export function restorableDraft(): NewJobDraft {
   const { draft } = useNewJobDraftStore.getState();
-  if (draft.file && draft.preview && draft.parseStatus === 'parsed') return draft;
+  if (draft.file && draft.preview && draft.parseStatus === 'parsed') return draft.mode === 'baseline' && draft.step === 3 ? { ...draft, step: 2 } : draft;
   return { ...draft, file: null, preview: null, parseStatus: 'idle', step: 1 };
 }

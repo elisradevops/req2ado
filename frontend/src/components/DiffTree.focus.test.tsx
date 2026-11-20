@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { DiffTree } from './DiffTree';
 import type { DryRunDiffEntry } from './DiffTree';
@@ -16,7 +16,7 @@ describe('DiffTree keyboard focus', () => {
   });
   afterEach(() => vi.restoreAllMocks());
 
-  it('keeps focus on the same disclosure button after it is toggled from the keyboard', async () => {
+  it('opens and closes a parent from the keyboard on the row, without remounting it, and keeps focus on the tree', async () => {
     const entries = [
       entry('e1', null, 'Epic', 'Epic 1'),
       entry('f1', 'e1', 'Feature', 'Feature 1'),
@@ -24,18 +24,33 @@ describe('DiffTree keyboard focus', () => {
       entry('f2', 'e1', 'Feature', 'Feature 2'),
       entry('r2', 'f2', 'Requirement', 'Req 2'),
     ];
-    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+    render(<DiffTree entries={entries} selectedId="f2" onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
 
-    const toggle = screen.getByRole('button', { name: 'Expand Feature 2' });
-    toggle.focus();
-    expect(toggle).toHaveFocus();
+    const tree = screen.getByRole('tree');
+    tree.focus();
+    const row = screen.getByRole('treeitem', { name: 'Feature 2' });
+    expect(row).toHaveAttribute('aria-expanded', 'false');
 
-    await userEvent.keyboard('{Enter}');
+    await userEvent.keyboard('{ArrowRight}');
 
-    const after = screen.getByRole('button', { name: 'Collapse Feature 2' });
-    expect(after).toBe(toggle); // same element: the row was not remounted
-    expect(after).toHaveFocus();
+    const after = screen.getByRole('treeitem', { name: 'Feature 2' });
+    expect(after).toBe(row); // same element: the row was not remounted
+    expect(after).toHaveAttribute('aria-expanded', 'true');
+    expect(tree).toHaveFocus();
     expect(screen.getByText('Req 2')).toBeInTheDocument();
+
+    await userEvent.keyboard('{ArrowLeft}');
+    expect(row).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('Req 2')).not.toBeInTheDocument();
+  });
+
+  it('keeps the chevron a pointer control only: not a tab stop and hidden from assistive tech', () => {
+    const entries = [entry('e1', null, 'Epic', 'Epic 1'), entry('f1', 'e1', 'Feature', 'Feature 1'), entry('r1', 'f1', 'Requirement', 'Req 1')];
+    render(<DiffTree entries={entries} selectedId="f1" onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+    const chevron = screen.getByLabelText('Collapse Feature 1');
+    expect(chevron).toHaveAttribute('aria-hidden', 'true');
+    expect(chevron).toHaveAttribute('tabindex', '-1');
+    expect(chevron).not.toHaveAttribute('aria-expanded');
   });
   const treeEntries = [
     entry('e1', null, 'Epic', 'Epic 1'),
@@ -77,7 +92,7 @@ describe('DiffTree keyboard focus', () => {
 
   it('makes only the selected row\'s controls tab stops, so the tree is not seventy stops long', () => {
     renderTree('f1');
-    expect(tabStops()).toEqual(['Exclude Feature 1', 'Collapse Feature 1', 'Details for Feature 1']);
+    expect(tabStops()).toEqual(['Exclude Feature 1', 'Details for Feature 1']);
   });
 
   it('has no row stop at all while nothing is selected: the tree itself is the one stop', () => {
@@ -104,6 +119,88 @@ describe('DiffTree keyboard focus', () => {
     rerender(view('r1'));
     expect(screen.getByRole('link')).not.toHaveAttribute('tabindex', '-1');
   });
+  describe('the tree pattern (WAI-ARIA APG): names, sizes and keys', () => {
+    const tree = [
+      entry('e1', null, 'Epic', 'Epic 1'),
+      entry('f1', 'e1', 'Feature', 'Feature 1'),
+      { ...entry('r1', 'f1', 'Requirement', 'Req 1'), customerId: 'SRS-4' } as DryRunDiffEntry,
+      entry('r2', 'f1', 'Requirement', 'Req 2'),
+      entry('r3', 'f1', 'Requirement', 'Req 3'),
+    ];
+    const renderAt = (selectedId: string | null, onSelect = vi.fn()) => {
+      render(<DiffTree entries={tree} selectedId={selectedId} onSelect={onSelect} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+      screen.getByRole('tree').focus();
+      return onSelect;
+    };
+
+    it('names the tree', () => {
+      renderAt(null);
+      expect(screen.getByRole('tree')).toHaveAccessibleName('Proposed work items');
+    });
+
+    it('names each row by its title alone, said once, and describes it by type, customer id and what the write does', () => {
+      renderAt('r1');
+      const row = screen.getByRole('treeitem', { name: 'Req 1' });
+      expect(row).toHaveAccessibleName('Req 1');
+      expect(row).toHaveAccessibleDescription('Requirement, SRS-4, new');
+    });
+
+    it('says where a row sits among its visible siblings', () => {
+      renderAt(null);
+      const req2 = screen.getByRole('treeitem', { name: 'Req 2' });
+      expect(req2).toHaveAttribute('aria-posinset', '2');
+      expect(req2).toHaveAttribute('aria-setsize', '3');
+      expect(screen.getByRole('treeitem', { name: 'Epic 1' })).toHaveAttribute('aria-setsize', '1');
+    });
+
+    it('puts aria-expanded on a parent row only', () => {
+      renderAt(null);
+      expect(screen.getByRole('treeitem', { name: 'Feature 1' })).toHaveAttribute('aria-expanded', 'true');
+      expect(screen.getByRole('treeitem', { name: 'Req 1' })).not.toHaveAttribute('aria-expanded');
+    });
+
+    it('ArrowRight on an open parent moves to its first child; on a leaf it does nothing', async () => {
+      const onSelect = renderAt('f1');
+      await userEvent.keyboard('{ArrowRight}');
+      expect(onSelect).toHaveBeenLastCalledWith('r1');
+      onSelect.mockClear();
+      cleanup();
+      const leaf = renderAt('r2');
+      await userEvent.keyboard('{ArrowRight}');
+      expect(leaf).not.toHaveBeenCalled();
+    });
+
+    it('ArrowLeft on a child moves to its parent', async () => {
+      const onSelect = renderAt('r3');
+      await userEvent.keyboard('{ArrowLeft}');
+      expect(onSelect).toHaveBeenLastCalledWith('f1');
+    });
+
+    it('ArrowLeft on an open parent closes it and keeps the selection', async () => {
+      const onSelect = renderAt('f1');
+      await userEvent.keyboard('{ArrowLeft}');
+      expect(onSelect).not.toHaveBeenCalled();
+      expect(screen.getByRole('treeitem', { name: 'Feature 1' })).toHaveAttribute('aria-expanded', 'false');
+      expect(screen.queryByText('Req 1')).not.toBeInTheDocument();
+    });
+
+    it('Home and End move to the first and last visible row', async () => {
+      const onSelect = renderAt('r2');
+      await userEvent.keyboard('{End}');
+      expect(onSelect).toHaveBeenLastCalledWith('r3');
+      await userEvent.keyboard('{Home}');
+      expect(onSelect).toHaveBeenLastCalledWith('e1');
+    });
+
+    it('still moves with ArrowUp and ArrowDown', async () => {
+      const onSelect = renderAt('r2');
+      await userEvent.keyboard('{ArrowDown}');
+      expect(onSelect).toHaveBeenLastCalledWith('r3');
+      await userEvent.keyboard('{ArrowUp}');
+      expect(onSelect).toHaveBeenLastCalledWith('r1');
+    });
+  });
+
   it('takes the scrolling list itself out of the tab order (a browser makes a scrollable region a stop), so the tree stays one stop', () => {
     renderTree(null);
     const scroller = screen.getByRole('tree').firstElementChild as HTMLElement;

@@ -380,6 +380,17 @@ class WarningKind(StrEnum):
     SPREADSHEET_MAPPED = "spreadsheet_mapped"
     # ...in which case it stays on the model-driven path, which can miss rows in a large sheet.
     SPREADSHEET_NOT_MAPPED = "spreadsheet_not_mapped"
+    # The file states each item's type (a type column) and nesting: rows whose type is outside Epic/Feature/Requirement (a Test Case, a Task) are
+    # not imported, and a stated structure the ladder does not allow is kept as stated, so a reviewer sees both.
+    SOURCE_TYPE_SKIPPED = "source_type_skipped"
+    SOURCE_STRUCTURE_VIOLATION = "source_structure_violation"
+    # The final tree disagrees with what the file states (an item's type or parent differs from the file's). No pass is meant to do this; the
+    # check exists so that one that does is seen, never silent.
+    RULEBOOK_MISMATCH = "rulebook_mismatch"
+    # The model-assisted pre-study read how a table or the document states its items: what it learned, checked against the whole file; or why its
+    # answer was refused, in which case the file was read by its recognised headings and its shape as before.
+    PRESTUDY_APPLIED = "prestudy_applied"
+    PRESTUDY_REJECTED = "prestudy_rejected"
     NO_MODEL_TITLE = "no_model_title"
     INVALID_FIGURE_IDS = "invalid_figure_ids"
     INVALID_TABLE_IDS = "invalid_table_ids"
@@ -533,6 +544,11 @@ WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
     WarningKind.OUTPUT_TRUNCATED: WarningSeverity.PIPELINE_ISSUE,
     WarningKind.SPREADSHEET_MAPPED: WarningSeverity.NEEDS_REVIEW,
     WarningKind.SPREADSHEET_NOT_MAPPED: WarningSeverity.PIPELINE_ISSUE,
+    WarningKind.SOURCE_TYPE_SKIPPED: WarningSeverity.NEEDS_REVIEW,
+    WarningKind.SOURCE_STRUCTURE_VIOLATION: WarningSeverity.NEEDS_REVIEW,
+    WarningKind.RULEBOOK_MISMATCH: WarningSeverity.NEEDS_REVIEW,
+    WarningKind.PRESTUDY_APPLIED: WarningSeverity.NEEDS_REVIEW,
+    WarningKind.PRESTUDY_REJECTED: WarningSeverity.PIPELINE_ISSUE,
     WarningKind.NO_MODEL_TITLE: WarningSeverity.AUTO_FIXED,
     WarningKind.INVALID_FIGURE_IDS: WarningSeverity.NEEDS_REVIEW,
     WarningKind.INVALID_TABLE_IDS: WarningSeverity.NEEDS_REVIEW,

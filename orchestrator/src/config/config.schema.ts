@@ -36,6 +36,12 @@ export const configSchema = z.object({
   LLM_MODEL_HIDE_PATTERNS: z.string().optional(),
   // Automatic model health (model-health.ts): probe each listed model in the background and hide the ones that fail.
   // On by default; 'false' restores the plain catalog (the rollback switch).
+  // The file-conventions pre-study (pipeline/file-rulebook.service.ts) attaches the uploaded file to its model calls only for a document, whose profile
+  // lists its headings alone. A table's profile already covers every row, and the attached sheet multiplies each call's prompt; 'true' attaches it anyway.
+  PRESTUDY_ATTACH_FILE_FOR_TABLES: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
   // A SURVEY job whose file, user, model, knowledge base and release equal an earlier one's gets that job's stored result
   // instead of a fresh, differently-sampled one (see pipeline/result-cache.ts). 'false' turns it off. RESULT_CACHE_VERSION
   // invalidates every stored result when changed without a release.
@@ -50,8 +56,9 @@ export const configSchema = z.object({
   // The pre-flight cost forecast (pipeline/token-estimate.ts). LLM_MODEL_PRICES is a JSON object of model id ("*" for any other) to
   // {"inputPerMTok": n, "outputPerMTok": n}, US dollars per million tokens; without a price for the model the wizard shows tokens only.
   // COST_CONFIRM_TOKENS: a run forecast above this many tokens (input + output, likely case) asks the user to confirm before Start; 0 never asks.
+  // On by default at 250,000 (a few hundred table rows already reach it), so a large SURVEY run is a deliberate choice unless a deployment opts out.
   LLM_MODEL_PRICES: z.string().optional(),
-  COST_CONFIRM_TOKENS: z.coerce.number().int().min(0).default(0),
+  COST_CONFIRM_TOKENS: z.coerce.number().int().min(0).default(250_000),
   // W1 content-aware identity: a follow-up file is matched by identity_hash_v2 first (so a renamed or shifted file still matches) and a
   // reused item whose content changed is flagged. 'false' restores the v1 position lookup exactly, with no code change; confirm() keeps
   // writing the v2 rows either way, so turning it back on loses nothing.

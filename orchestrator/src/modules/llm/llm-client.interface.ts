@@ -67,6 +67,9 @@ export interface LlmChatResult {
 
 export interface LlmChatOptions {
   model?: string;
+  // An Open WebUI file (already uploaded and processed) to attach to this call: the model reads its full text beside the messages. Only the
+  // OpenWebUiClient honours it (the file-conventions pre-study's hybrid route); any other client ignores it.
+  fileId?: string;
   temperature?: number;
   // Pins the sampler's RNG (forwarded as OpenAI-compat `seed`, honored by
   // Ollama and by the production proxy alike). Defensive/hygiene on top of

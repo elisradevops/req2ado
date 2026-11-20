@@ -15,6 +15,7 @@ import { CredentialVaultService } from '../auth/credential-vault.service';
 import { AdoCredentialResolver } from '../auth/ado-credential.resolver';
 import { LlmConfigResolver } from '../auth/llm-config.resolver';
 import { OpenWebUiClientFactory, type OpenWebUiGlobalConfig } from '../llm/openwebui-client.factory';
+import { FileRulebookService } from './file-rulebook.service';
 import { SettingsService } from '../settings/settings.service';
 
 /**
@@ -121,6 +122,13 @@ primerCacheRedis.on('error', (err) => {
   console.error('PrimerCache Redis error:', err);
 });
 
+// What the pre-study learned about a file's conventions, stored per user and file (the same service the wizard's preview uses).
+const fileRulebooks = new FileRulebookService(prisma, ingestionClient, openWebUiClientFactory, {
+  attachFileForTables: config.PRESTUDY_ATTACH_FILE_FOR_TABLES,
+  // The languages this worker parses a job with (ocrLanguages below), so a study run here reads the same document.
+  ocrLanguages: config.OCR_LANGUAGES,
+});
+
 const release = releaseVersion();
 const resultCache = new JobResultCache(
   primerCacheRedis as unknown as ResultCacheStore,
@@ -146,6 +154,7 @@ export default async function processPipelineJob(job: SandboxedJob<QueuedJobData
     adoCredentialResolver,
     defaultLlmModel: config.LLM_CHAT_MODEL,
     openWebUiClientFactory,
+    fileRulebooks,
     primerCacheRedis: primerCacheRedis as any,
     resultCache,
     settingsService,

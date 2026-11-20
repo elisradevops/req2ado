@@ -301,6 +301,93 @@ describe('runPipelineJob', () => {
     expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [] }, 'survey', undefined, [], 'gemma4:12b', 'job-1', undefined);
   });
 
+  it('sends the rulebook stored for the file to /level on the document, in BASELINE too, and leaves the document alone when there is none', async () => {
+    fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+    fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
+    fakeDryRunService.diff.mockResolvedValue([]);
+    const deps = {
+      ingestionClient: fakeIngestionClient as any,
+      dryRunService: fakeDryRunService as any,
+      idempotencyService: fakeIdempotencyService as any,
+      prisma: fakePrisma as any,
+      jobEventsPublisher: fakeJobEventsPublisher as any,
+      mcpClient: fakeMcpClient as any,
+      backfillService: fakeBackfillService as any,
+      adoCredentialResolver: fakeAdoCredentialResolver as any,
+      defaultLlmModel: 'gemma4:12b',
+    };
+    const job = { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline' as const, fileBuffer: Buffer.from(''), filename: 'x.txt' };
+    const rulebook = { version: 1, hash: 'h1', tables: { t0: { nesting: 'order' } }, document: null };
+
+    await runPipelineJob({ ...job, fileRulebook: rulebook, fileRulebookHash: 'h1' }, deps);
+    expect(fakeIngestionClient.level.mock.calls[0][0]).toEqual({ blocks: [], rulebook });
+
+    fakeIngestionClient.level.mockClear();
+    await runPipelineJob(job, deps);
+    expect(fakeIngestionClient.level.mock.calls[0][0]).toEqual({ blocks: [] });
+  });
+
+  describe('the pre-study runs for every job that the wizard gave no rulebook', () => {
+    const baseDeps = () => ({
+      ingestionClient: fakeIngestionClient as any,
+      dryRunService: fakeDryRunService as any,
+      idempotencyService: fakeIdempotencyService as any,
+      prisma: fakePrisma as any,
+      jobEventsPublisher: fakeJobEventsPublisher as any,
+      mcpClient: fakeMcpClient as any,
+      backfillService: fakeBackfillService as any,
+      adoCredentialResolver: fakeAdoCredentialResolver as any,
+      defaultLlmModel: 'gemma4:12b',
+    });
+    const jobOf = (over: Record<string, unknown> = {}) => ({ id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: 'u1', mode: 'baseline' as const, fileBuffer: Buffer.from('f'), filename: 'x.xlsx', ...over });
+    const rulebook = { version: 1, hash: 'h1', tables: { t0: { nesting: 'order' } }, document: null };
+
+    beforeEach(() => {
+      fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+      fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
+      fakeDryRunService.diff.mockResolvedValue([]);
+    });
+
+    it('learns or reuses the rulebook for a BASELINE job and builds from it', async () => {
+      const forJob = jest.fn().mockResolvedValue({ rulebook, hash: 'h1' });
+      await runPipelineJob(jobOf(), { ...baseDeps(), fileRulebooks: { forJob } });
+      expect(forJob).toHaveBeenCalledWith(expect.objectContaining({ userId: 'u1', filename: 'x.xlsx', model: 'gemma4:12b', signal: expect.any(AbortSignal) }));
+      expect(fakeIngestionClient.level.mock.calls[0][0]).toEqual({ blocks: [], rulebook });
+    });
+
+    it('builds from the recognised conventions when the study is skipped (no connection)', async () => {
+      const forJob = jest.fn().mockResolvedValue({ rulebook: null, hash: null });
+      await runPipelineJob(jobOf(), { ...baseDeps(), fileRulebooks: { forJob } });
+      expect(fakeIngestionClient.level.mock.calls[0][0]).toEqual({ blocks: [] });
+    });
+
+    it('passes {} on when the study learned nothing, so no later stage asks the model again', async () => {
+      const forJob = jest.fn().mockResolvedValue({ rulebook: {}, hash: null });
+      await runPipelineJob(jobOf(), { ...baseDeps(), fileRulebooks: { forJob } });
+      expect(fakeIngestionClient.level.mock.calls[0][0]).toEqual({ blocks: [], rulebook: {} });
+    });
+
+    it('does not ask when the job already carries the wizard\'s rulebook', async () => {
+      const forJob = jest.fn();
+      await runPipelineJob(jobOf({ fileRulebook: rulebook, fileRulebookHash: 'h1' }), { ...baseDeps(), fileRulebooks: { forJob } });
+      expect(forJob).not.toHaveBeenCalled();
+      expect(fakeIngestionClient.level.mock.calls[0][0]).toEqual({ blocks: [], rulebook });
+    });
+
+    it('does not ask a job that has no user (no connection can exist)', async () => {
+      const forJob = jest.fn();
+      await runPipelineJob(jobOf({ userId: null }), { ...baseDeps(), fileRulebooks: { forJob } });
+      expect(forJob).not.toHaveBeenCalled();
+    });
+
+    it('a study that fails never fails the job: it is built from the recognised conventions', async () => {
+      const forJob = jest.fn().mockRejectedValue(new Error('ingestion down'));
+      jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+      await runPipelineJob(jobOf(), { ...baseDeps(), fileRulebooks: { forJob } });
+      expect(fakeIngestionClient.level.mock.calls[0][0]).toEqual({ blocks: [] });
+    });
+  });
+
   it('filters Hierarchy-Forward/Reverse out of the trace-link catalog but keeps every other real link type', async () => {
     // Regression: Hierarchy-Forward/Reverse ("Child"/"Parent") are real ADO
     // work-item relation types (they pass discoverLinkTypes' own

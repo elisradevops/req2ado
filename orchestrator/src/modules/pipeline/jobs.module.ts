@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { PrismaClient } from '@prisma/client';
 import Redis from 'ioredis';
+import { FileRulebookService } from './file-rulebook.service';
 import { JobsController, RESULT_CACHE_PROBE } from './jobs.controller';
 import { JobResultCache, ResultCacheProbe, kbVersionFor, releaseVersion, type ResultCacheStore } from './result-cache';
 import { DedupDecisionsController } from './dedup-decisions.controller';
@@ -27,6 +28,7 @@ import { JobEventsPublisher } from './job-events.publisher';
 import { BackfillService } from '../writeback/backfill.service';
 import { BackfillController } from '../writeback/backfill.controller';
 import { LlmModule } from '../llm/llm.module';
+import { OpenWebUiClientFactory } from '../llm/openwebui-client.factory';
 import { AuthModule } from '../auth/auth.module';
 import { BatchController } from '../batch/batch.controller';
 import { BatchService } from '../batch/batch.service';
@@ -40,6 +42,16 @@ const JOB_CACHED_RESULTS = 'JOB_CACHED_RESULTS';
   controllers: [JobsController, AdoController, JobEventsController, BackfillController, BatchController, DedupDecisionsController],
   providers: [
     { provide: PrismaClient, useValue: new PrismaClient() },
+    {
+      // The same PRESTUDY_ATTACH_FILE_FOR_TABLES and OCR_LANGUAGES the pipeline worker builds its own copy with (pipeline.processor.ts).
+      provide: FileRulebookService,
+      inject: [PrismaClient, IngestionHttpClient, OpenWebUiClientFactory, ConfigService],
+      useFactory: (prisma: PrismaClient, ingestion: IngestionHttpClient, clients: OpenWebUiClientFactory, config: ConfigService) =>
+        new FileRulebookService(prisma, ingestion, clients, {
+          attachFileForTables: config.get<boolean>('PRESTUDY_ATTACH_FILE_FOR_TABLES') === true,
+          ocrLanguages: config.get<string>('OCR_LANGUAGES'),
+        }),
+    },
     {
       // Same erased-runtime-type / explicit-factory reasoning this module
       // already documents for IdempotencyService et al -- needed here only

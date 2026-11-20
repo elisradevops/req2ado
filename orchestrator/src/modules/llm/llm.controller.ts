@@ -103,6 +103,7 @@ export class LlmController {
         ...(body.toolChoice !== undefined ? { toolChoice: body.toolChoice } : {}),
         ...(body.think !== undefined ? { think: body.think } : {}),
         ...(body.budgetKind !== undefined ? { budgetKind: body.budgetKind } : {}),
+        ...(body.fileId !== undefined ? { fileId: body.fileId } : {}),
         ...(body.deadlineMs !== undefined ? { deadlineAtMs: Date.now() + body.deadlineMs } : {}),
       });
       if (jobId && this.tokenUsage) {

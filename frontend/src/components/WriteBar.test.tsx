@@ -42,6 +42,17 @@ describe('WriteBar', () => {
     expect(screen.queryByText(/included/)).toBeNull();
   });
 
+  it('says how many of the items to review are reviewed, as plain text beside the summary', () => {
+    renderBar({ includedCount: 14, leftOutCount: 1, reviewedCount: 4, reviewableCount: 12 });
+    expect(screen.getByText('14 included · 1 left out')).toHaveTextContent('14 included · 1 left out · 4 of 12 reviewed');
+    expect(screen.getByText('· 4 of 12 reviewed', { exact: false })).toBeInTheDocument();
+  });
+
+  it('says nothing about review progress when nothing is left to review', () => {
+    renderBar({ includedCount: 3, reviewedCount: 0, reviewableCount: 0 });
+    expect(screen.queryByText(/reviewed/)).toBeNull();
+  });
+
   it('keeps clear of the home indicator on a phone', () => {
     renderBar();
     expect(screen.getByRole('region', { name: 'Review decision' }).className).toContain('env(safe-area-inset-bottom)');
@@ -69,5 +80,24 @@ describe('WriteBar', () => {
     const write = screen.getByRole('button', { name: /write to azure devops/i });
     const described = (write.getAttribute('aria-describedby') ?? '').split(' ');
     expect(described).toEqual(expect.arrayContaining(['write-blocked-reason', 'write-ado-reason']));
+  });
+
+  it('says there is nothing left to write when no new item remains, and keeps Write available for the dialog to confirm', () => {
+    const onWrite = vi.fn();
+    renderBar({ nothingToWrite: true, includedCount: 0, leftOutCount: 3, onWrite });
+    const note = screen.getByText('Nothing left to write: every item is excluded or already exists.');
+    const write = screen.getByRole('button', { name: /write to azure devops/i });
+    expect(write).toBeEnabled();
+    expect(write.getAttribute('aria-describedby')).toContain(note.id);
+    write.click();
+    expect(onWrite).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not say it while Write is blocked or Azure DevOps is not set up: that reason comes first', () => {
+    const { unmount } = renderBar({ nothingToWrite: true, blockedCount: 2 });
+    expect(screen.queryByText(/Nothing left to write/)).toBeNull();
+    unmount();
+    renderBar({ nothingToWrite: true, canWriteToAdo: false });
+    expect(screen.queryByText(/Nothing left to write/)).toBeNull();
   });
 });

@@ -166,6 +166,80 @@ export async function previewJob(
   return response.data;
 }
 
+/** How a file states its structure, as the pre-study learned it (or the user edited it): what the wizard shows, and what the job is built from. */
+export interface RulebookView {
+  /** The stored rulebook's id, passed to submitJob. Null when the study learned nothing (nothing is stored for it). */
+  id: string | null;
+  /** "model" (learned by the model, checked against every row), "user" (an edit that fits the file) or "none" (nothing could be verified). */
+  source: 'model' | 'user' | 'none';
+  hash: string;
+  /** How each table (and the document's headings) will be read, in words. */
+  rules: string[];
+  warnings: { kind?: string; raw?: string; detail?: Record<string, unknown> }[];
+  /** The rulebook's JSON form: what an edit is made on and sent back as. */
+  rulebook: Record<string, unknown>;
+  /** True when a rulebook stored earlier for this file was returned and no model was asked. */
+  reused: boolean;
+  /** Why the study was skipped (no model connection for this user), or null. Not a failure: the file is read by its recognised headings and its shape. */
+  skipped: string | null;
+  /** What the rules make of the file, to check them against it; null for a skipped or empty study and for a rulebook stored before it was kept. */
+  details?: RulebookDetails | null;
+}
+
+/** One item the rules build, as an example: `row` is the sheet's row number (heading row = 1), null for a document's heading. */
+export interface RulebookSample {
+  row: number | null;
+  title: string;
+  /** The parent's title; null for a root. */
+  parent: string | null;
+}
+
+type LadderCounts = Record<'Epic' | 'Feature' | 'Requirement', number>;
+
+/** What the rules make of the file (ingestion's `_prestudy_response`): capped, display only. */
+export interface RulebookDetails {
+  /** True when a part of it is an estimate (a document's headings). */
+  approximate: boolean;
+  tables: {
+    name: string;
+    totalRows: number;
+    typeCounts: LadderCounts;
+    /** At most 3 per type. */
+    samples: Partial<Record<string, RulebookSample[]>>;
+    skipped: {
+      count: number;
+      /** Reason code -> rows: "type:<the file's value>", "under_skipped", "in_cycle", "no_title" or "no_type". */
+      byReason: Record<string, number>;
+      /** The first 20; `more` counts the rest. */
+      rows: { row: number; reason: string; text: string }[];
+      more: number;
+    };
+  }[];
+  /** A document's headings the rules state a type for: an estimate, never exact. */
+  document?: { typeCounts: LadderCounts; samples: Partial<Record<string, RulebookSample[]>>; approximate: true } | null;
+}
+
+// Reads how the file states its structure (the model is asked, with the file attached; a rulebook stored for this user and file is returned without
+// asking again, unless `relearn`). Takes minutes the first time: the caller shows progress and can abort.
+export async function previewRules(file: File, model?: string, relearn = false, signal?: AbortSignal): Promise<RulebookView> {
+  const form = new FormData();
+  form.append('file', file);
+  if (model) form.append('model', model);
+  if (relearn) form.append('relearn', 'true');
+  const response = await httpClient.post<RulebookView>('/jobs/preview/rules', form, signal ? { signal } : undefined);
+  return response.data;
+}
+
+/** A user's edit of the rulebook, checked against the file. Rejects with the server's reason in `response.data.message` when it does not fit. */
+export async function editRules(file: File, rulebook: Record<string, unknown>, model?: string): Promise<RulebookView> {
+  const form = new FormData();
+  form.append('file', file);
+  if (model) form.append('model', model);
+  form.append('rulebook', JSON.stringify(rulebook));
+  const response = await httpClient.post<RulebookView>('/jobs/preview/rules/edit', form);
+  return response.data;
+}
+
 // Re-prices without re-uploading -- the reviewer changing mode/model on
 // step 2 needs a fresh estimate, and re-uploading a (potentially 40MB)
 // file just to change which number is shown would be absurd.
@@ -200,6 +274,8 @@ export interface SubmitJobParams {
   // (previewExposition above) -- undefined/null for BASELINE or a failed
   // generation.
   documentOverview?: DocumentOverview | null;
+  // The stored rulebook the wizard showed (RulebookView.id): the job is built from exactly it. Unset: the file is not studied for this job.
+  rulebookId?: string;
 }
 
 export async function submitJob(params: SubmitJobParams): Promise<{ jobId: string }> {
@@ -213,6 +289,7 @@ export async function submitJob(params: SubmitJobParams): Promise<{ jobId: strin
   if (params.dedupScope === 'project') form.append('dedupScope', params.dedupScope);
   if (params.model) form.append('model', params.model);
   if (params.documentOverview) form.append('documentOverview', JSON.stringify(params.documentOverview));
+  if (params.rulebookId) form.append('rulebookId', params.rulebookId);
   const response = await httpClient.post('/jobs', form);
   return response.data;
 }

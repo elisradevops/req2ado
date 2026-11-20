@@ -2126,3 +2126,104 @@ describe('OpenWebUiClient upstream negotiation (attempt loop)', () => {
     expect(create.mock.calls[2][0]).toHaveProperty('temperature', 1);
   });
 });
+
+
+describe('OpenWebUiClient.chat with an uploaded file (the pre-study\'s hybrid route)', () => {
+  const config: OpenWebUiClientConfig = {
+    LLM_BASE_URL: 'http://localhost:3000/v1',
+    LLM_API_KEY: 'test-key',
+    LLM_CHAT_MODEL: 'test-model',
+    LLM_TRUSTED_LOCAL: false,
+    EMBED_TRANSPORT: 'ollama' as const,
+    EMBED_MODEL: 'test-embed',
+    EMBED_PATH: '/api/embed',
+    SHOW_PATH: '/api/show',
+    FILES_UPLOAD_PATH: '/api/v1/files/',
+    FILES_STATUS_PATH: '/api/v1/files',
+    LLM_REQUEST_TIMEOUT_MS: 5000,
+    LLM_SEND_SEED: false,
+    LLM_SEND_REASONING_EFFORT: false,
+  };
+  const schema = { name: 'file_rules_table', schema: { type: 'object', properties: { sheet_kind: { type: 'string' } }, required: ['sheet_kind'], additionalProperties: false } };
+  const messages = [
+    { role: 'system' as const, content: 'You are given a SAMPLE.' },
+    { role: 'user' as const, content: '{"rowCount":3} contact a@b.example' },
+  ];
+
+  beforeEach(() => {
+    global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ choices: [{ message: { content: '{"sheet_kind":"work_items"}' } }] }) });
+  });
+
+  it('goes to the native endpoint with the file at full context, the caller\'s messages and its response schema', async () => {
+    const client = new OpenWebUiClient(config);
+    const result = await client.chat(messages, { fileId: 'file-9', responseSchema: schema, temperature: 0, maxTokens: 500 });
+    const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
+    const body = JSON.parse(options.body);
+    expect(url).toBe('http://localhost:3000/api/chat/completions');
+    expect(body.files).toEqual([{ type: 'file', id: 'file-9', context: 'full' }]);
+    expect(body.messages.map((m: { role: string }) => m.role)).toEqual(['system', 'user']);
+    expect(body.response_format).toMatchObject({ type: 'json_schema', json_schema: { name: 'file_rules_table' } });
+    expect(result.content).toBe('{"sheet_kind":"work_items"}');
+  });
+
+  it('redacts the message text like any chat call, and sends the file itself untouched', async () => {
+    const client = new OpenWebUiClient(config);
+    await client.chat(messages, { fileId: 'file-9' });
+    const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+    expect(JSON.stringify(body.messages)).not.toContain('a@b.example');
+    expect(body.files[0].id).toBe('file-9');
+  });
+
+  it('a call without a file id still goes through the ordinary chat path', async () => {
+    const client = new OpenWebUiClient(config);
+    await client.chat(messages, { responseSchema: schema }).catch(() => undefined);
+    const calls = (global.fetch as jest.Mock).mock.calls.filter(([url]) => String(url).endsWith('/api/chat/completions'));
+    expect(calls).toHaveLength(0);
+  });
+
+  it('sends the context window, sampler options and reasoning_effort none like chat(), only where the deployment allows them', async () => {
+    const opts = { fileId: 'file-9', numCtx: 65_536, topK: 20, minP: 0.05, think: false, maxTokens: 500 };
+    await new OpenWebUiClient({ ...config, LLM_TRUSTED_LOCAL: true, LLM_SEND_REASONING_EFFORT: true }).chat(messages, opts);
+    const local = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+    expect(local.options).toEqual({ num_ctx: 65_536, top_k: 20, min_p: 0.05 });
+    expect(local.reasoning_effort).toBe('none');
+    await new OpenWebUiClient(config).chat(messages, opts);
+    const remote = JSON.parse((global.fetch as jest.Mock).mock.calls[1][1].body);
+    expect(remote).not.toHaveProperty('options');
+    expect(remote).not.toHaveProperty('reasoning_effort');
+  });
+
+  it('returns the finish reason and the token usage, and logs the counts without content', async () => {
+    jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: '{"sheet_kind":"work_items"}' }, finish_reason: 'stop' }], usage: { prompt_tokens: 50_000, completion_tokens: 120 } }),
+    });
+    const result = await new OpenWebUiClient(config).chat(messages, { fileId: 'file-9', maxTokens: 500 });
+    expect(result).toMatchObject({ finishReason: 'stop', usage: { promptTokens: 50_000, completionTokens: 120 } });
+    const line = String((console.log as jest.Mock).mock.calls[0][0]);
+    expect(line).toContain('promptTokens=50000');
+    expect(line).not.toContain('work_items');
+    (console.log as jest.Mock).mockRestore();
+  });
+
+  it('asks a cut-off study answer again once with a larger limit, as chat() does', async () => {
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    const cut = { ok: true, json: async () => ({ choices: [{ message: { content: '{"sheet_ki' }, finish_reason: 'length' }] }) };
+    const whole = { ok: true, json: async () => ({ choices: [{ message: { content: '{"sheet_kind":"work_items"}' }, finish_reason: 'stop' }] }) };
+    global.fetch = jest.fn().mockResolvedValueOnce(cut).mockResolvedValueOnce(whole);
+    const result = await new OpenWebUiClient(config).chat(messages, { fileId: 'file-9', maxTokens: 2000, budgetKind: 'study' });
+    const sent = (global.fetch as jest.Mock).mock.calls.map(([, o]) => JSON.parse(o.body).max_tokens);
+    expect(sent).toEqual([2000, 8000]);
+    expect(result).toMatchObject({ content: '{"sheet_kind":"work_items"}', finishReason: 'stop' });
+    jest.restoreAllMocks();
+  });
+
+  it('refuses a file id that is not an opaque token (the route\'s own check)', async () => {
+    const { llmChatRequestSchema } = await import('../src/modules/llm/llm-chat.dto');
+    const base = { messages: [{ role: 'user', content: 'x' }] };
+    expect(llmChatRequestSchema.safeParse({ ...base, fileId: 'abc-123_X' }).success).toBe(true);
+    expect(llmChatRequestSchema.safeParse({ ...base, fileId: '../../etc' }).success).toBe(false);
+  });
+});

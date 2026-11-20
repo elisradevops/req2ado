@@ -16,6 +16,9 @@ export function WriteBar({
   includedCount,
   leftOutCount = 0,
   destination,
+  nothingToWrite = false,
+  reviewedCount = 0,
+  reviewableCount = 0,
 }: {
   // Items still to decide before Write is available; 0 when the gate is open.
   blockedCount: number;
@@ -29,9 +32,20 @@ export function WriteBar({
   includedCount?: number;
   leftOutCount?: number;
   destination?: string;
+  // No new item is left to create (every one is excluded or already exists), from the diff as it stands. Said only when Write is otherwise
+  // available. Write stays enabled: the Write dialog's server preview is the authority (it may still have links or figures to write).
+  nothingToWrite?: boolean;
+  // Review progress: the new items still in the write (reviewable) and how many are marked reviewed. Plain text, so it is read as a
+  // number; not said when nothing is left to review.
+  reviewedCount?: number;
+  reviewableCount?: number;
 }): React.ReactElement {
   const blocked = blockedCount > 0;
-  const describedBy = [blocked ? 'write-blocked-reason' : null, !canWriteToAdo ? 'write-ado-reason' : null].filter(Boolean).join(' ') || undefined;
+  const showNothingToWrite = nothingToWrite && !blocked && canWriteToAdo;
+  const describedBy =
+    [blocked ? 'write-blocked-reason' : null, !canWriteToAdo ? 'write-ado-reason' : null, showNothingToWrite ? 'write-nothing-reason' : null]
+      .filter(Boolean)
+      .join(' ') || undefined;
   const writeButton = (
     <span className="max-md:flex-1">
       <Button
@@ -53,12 +67,15 @@ export function WriteBar({
       aria-label="Review decision"
       className="mx-2 flex flex-wrap items-center justify-end gap-x-3 gap-y-2 rounded-md border border-hairline-strong bg-surface px-3.5 py-2.5 shadow-dock max-md:mx-0 max-md:mb-[env(safe-area-inset-bottom)] max-md:flex-col max-md:items-stretch md:mx-4"
     >
-      {(includedCount !== undefined || blocked || !canWriteToAdo) && (
+      {(includedCount !== undefined || blocked || !canWriteToAdo || showNothingToWrite) && (
         <div className="mr-auto flex min-w-0 flex-col gap-0.5 max-md:mr-0">
           {includedCount !== undefined && (
             <>
               <p className="text-xs font-semibold text-ink-1">
                 {includedCount.toLocaleString()} included{leftOutCount > 0 ? ` · ${leftOutCount.toLocaleString()} left out` : ''}
+                {reviewableCount > 0 && (
+                  <span className="font-normal text-ink-2">{` · ${reviewedCount.toLocaleString()} of ${reviewableCount.toLocaleString()} reviewed`}</span>
+                )}
               </p>
               {destination && (
                 <p className="min-w-0 truncate text-xs text-ink-2" title={destination}>
@@ -78,6 +95,11 @@ export function WriteBar({
             // In text, not only a hover tooltip: a phone has no hover, and the reason Write is unavailable must be readable.
             <p id="write-ado-reason" className="text-xs text-ink-2">
               Sign in with an Azure DevOps org URL and PAT to write
+            </p>
+          )}
+          {showNothingToWrite && (
+            <p id="write-nothing-reason" className="text-xs text-ink-2">
+              Nothing left to write: every item is excluded or already exists.
             </p>
           )}
         </div>

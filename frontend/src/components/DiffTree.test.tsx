@@ -273,11 +273,11 @@ describe('DiffTree', () => {
     );
     expect(screen.getByText('Child Feature')).toBeInTheDocument();
 
-    await userEvent.click(screen.getByRole('button', { name: /collapse root epic/i }));
+    await userEvent.click(screen.getByLabelText(/collapse root epic/i));
     expect(screen.queryByText('Child Feature')).not.toBeInTheDocument();
     expect(screen.getByText('Root Epic')).toBeInTheDocument(); // the collapsed row itself stays visible
 
-    await userEvent.click(screen.getByRole('button', { name: /expand root epic/i }));
+    await userEvent.click(screen.getByLabelText(/expand root epic/i));
     expect(screen.getByText('Child Feature')).toBeInTheDocument();
   });
 
@@ -285,7 +285,7 @@ describe('DiffTree', () => {
     const { rerender } = render(
       <DiffTree entries={ENTRIES} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} />,
     );
-    await userEvent.click(screen.getByRole('button', { name: /collapse root epic/i }));
+    await userEvent.click(screen.getByLabelText(/collapse root epic/i));
     expect(screen.queryByText('Child Feature')).not.toBeInTheDocument();
 
     rerender(
@@ -320,8 +320,10 @@ describe('DiffTree', () => {
       { localId: 'r2', parentLocalId: 'f2', type: 'Requirement', title: 'Req 2', description: '', action: 'create', customerId: null },
     ];
     render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
-    expect(screen.queryByRole('button', { name: /(expand|collapse) feature 1/i })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Collapse Feature 2' })).toHaveAttribute('aria-expanded', 'true');
+    // The chevron is a pointer-only control (aria-hidden); the row carries the expanded state.
+    expect(screen.queryByLabelText(/(expand|collapse) feature 1/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('treeitem', { name: 'Feature 1' })).not.toHaveAttribute('aria-expanded');
+    expect(screen.getByRole('treeitem', { name: 'Feature 2' })).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByText('Req 2')).toBeInTheDocument();
   });
 
@@ -538,7 +540,7 @@ describe('DiffTree selectedId navigation (jump-to-node from outside the tree)', 
     const { rerender } = render(
       <DiffTree entries={ENTRIES} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} />,
     );
-    await userEvent.click(screen.getByRole('button', { name: /collapse root epic/i }));
+    await userEvent.click(screen.getByLabelText(/collapse root epic/i));
     expect(screen.queryByText('Child Feature')).not.toBeInTheDocument();
     scrollToItem.mockClear(); // isolate the assertion below from any scroll the collapse click itself triggered
 
@@ -574,7 +576,7 @@ describe('DiffTree selectedId navigation (jump-to-node from outside the tree)', 
     );
     scrollToItem.mockClear(); // isolate from the initial-mount scroll
 
-    await userEvent.click(screen.getByRole('button', { name: /collapse root epic/i }));
+    await userEvent.click(screen.getByLabelText(/collapse root epic/i));
 
     expect(screen.queryByText('Child Feature')).not.toBeInTheDocument(); // the collapse itself did happen
     expect(scrollToItem).not.toHaveBeenCalled();
@@ -1315,8 +1317,8 @@ describe('DiffTree disclosure motion (DESIGN.md section 8.3)', () => {
 
   it('turns one chevron instead of swapping icons, so the disclosure state is a transform', () => {
     renderTree();
-    const open = screen.getByRole('button', { name: 'Collapse Feature 1' }).querySelector('svg')!;
-    const closed = screen.getByRole('button', { name: 'Expand Feature 2' }).querySelector('svg')!;
+    const open = screen.getByLabelText('Collapse Feature 1').querySelector('svg')!;
+    const closed = screen.getByLabelText('Expand Feature 2').querySelector('svg')!;
     expect(open).toHaveClass('rotate-90');
     expect(closed).not.toHaveClass('rotate-90');
     expect(open).toHaveClass('transition-transform');
@@ -1324,9 +1326,9 @@ describe('DiffTree disclosure motion (DESIGN.md section 8.3)', () => {
 
   it('moves no row when it expands or collapses: rows appear and leave at once', () => {
     renderTree();
-    fireEvent.click(screen.getByRole('button', { name: 'Expand Feature 2' }));
+    fireEvent.click(screen.getByLabelText('Expand Feature 2'));
     expect(screen.getByText('Hidden req').closest('[role="treeitem"]')!.className).not.toMatch(/animate-|fadeIn/);
-    fireEvent.click(screen.getByRole('button', { name: 'Collapse Feature 1' }));
+    fireEvent.click(screen.getByLabelText('Collapse Feature 1'));
     expect(screen.queryByText('Opened req')).not.toBeInTheDocument();
     expect(document.querySelector('[role="treeitem"][class*="animate-"]')).toBeNull();
   });

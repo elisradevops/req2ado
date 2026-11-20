@@ -70,6 +70,8 @@ export const llmChatRequestSchema = z.object({
   // explicit `false` disables a reasoning model's hidden chain-of-thought.
   think: z.boolean().optional(),
   budgetKind: z.literal('study').optional(),
+  // An Open WebUI file the orchestrator uploaded for this study call (see LlmChatOptions.fileId). Ids are opaque tokens; anything else is refused.
+  fileId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/).optional(),
   // How long the caller will wait for this call, retries included (ms).
   deadlineMs: z.number().int().positive().optional(),
   // Job transparency (B7): /llm/chat/stream only. When true, the stream ends

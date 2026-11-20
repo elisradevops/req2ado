@@ -37,6 +37,8 @@ export interface ResultKeyParts {
   ingestionVersion: string;
   /** The version of the KB profile the job is scored with (null without one): results scored with other categories do not apply. */
   profileVersion: string | null;
+  /** The hash of the rulebook the job builds from (study/rulebook.py): a result built from other rules does not apply. Absent: no rulebook. */
+  rulebookHash?: string | null;
 }
 
 const TTL_SECONDS = 30 * 24 * 60 * 60;
@@ -61,7 +63,7 @@ export class JobResultCache {
 
   keyFor(parts: ResultKeyParts): string {
     const digest = createHash('sha256')
-      .update(JSON.stringify([this.codeVersion, parts.fileHash, parts.userId, parts.model, parts.mode, parts.kbVersion, parts.ingestionVersion, parts.profileVersion]))
+      .update(JSON.stringify([this.codeVersion, parts.fileHash, parts.userId, parts.model, parts.mode, parts.kbVersion, parts.ingestionVersion, parts.profileVersion, ...(parts.rulebookHash ? [parts.rulebookHash] : [])]))
       .digest('hex');
     return `job-result:${digest}`;
   }

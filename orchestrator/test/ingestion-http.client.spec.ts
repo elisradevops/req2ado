@@ -859,6 +859,30 @@ describe('IngestionHttpClient.cacheScope', () => {
 });
 
 
+describe('IngestionHttpClient.prestudy', () => {
+  beforeEach(() => {
+    global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ source: 'none' }) });
+  });
+
+  it('asks for a fresh study only when told to ("Read again"), and names the attached file in a header', async () => {
+    const client = new IngestionHttpClient('http://ingestion.internal');
+    await client.prestudy(MINIMAL_DOC, { userId: 'user-1', fileId: 'file-1' });
+    await client.prestudy(MINIMAL_DOC, { userId: 'user-1', fresh: true });
+    const [first, second] = (global.fetch as jest.Mock).mock.calls.map(([, options]) => options);
+    expect(JSON.parse(first.body)).not.toHaveProperty('fresh');
+    expect(first.headers['X-Req2Ado-File-Id']).toBe('file-1');
+    expect(JSON.parse(second.body).fresh).toBe(true);
+    expect(second.headers).not.toHaveProperty('X-Req2Ado-File-Id');
+  });
+
+  it('returns the breakdown of the file as ingestion gave it', async () => {
+    const details = { approximate: false, tables: [], document: null };
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ source: 'model', details }) });
+    expect((await new IngestionHttpClient('http://ingestion.internal').prestudy(MINIMAL_DOC, { userId: 'user-1' })).details).toEqual(details);
+  });
+});
+
+
 describe('IngestionHttpClient.level: which rubric the job was scored with', () => {
   beforeEach(() => {
     global.fetch = jest.fn();

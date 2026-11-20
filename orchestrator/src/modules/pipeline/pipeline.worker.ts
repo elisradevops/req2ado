@@ -120,6 +120,10 @@ export interface PipelineJobInput {
   model?: string;
   // How the file is built, made from its text and structure when the wizard showed the overview (SURVEY only): context for the AI stage.
   structureHint?: string;
+  // What the pre-study learned about this file's conventions (the rulebook's JSON form) and its hash, from the rulebook the wizard stored for it. The job
+  // builds from exactly this: it rides on the document to /level, and its hash is part of the result-cache key.
+  fileRulebook?: Record<string, unknown> | null;
+  fileRulebookHash?: string | null;
 }
 
 // The primer's cache is the narrow Redis shape primer.step.ts declares (get/set only), not the full ioredis type.
@@ -166,6 +170,10 @@ export interface PipelineWorkerDeps {
   // hazard this factory pattern exists to close everywhere else.
   openWebUiClientFactory?: OpenWebUiClientFactory;
   primerCacheRedis?: PrimerCacheRedis;
+  // How the file states its structure (the pre-study): learned, or reused from the one stored for this user and file, before every job that was not given
+  // one by the wizard, in BASELINE and SURVEY alike. Absent (an older or mocked deps object), or no user, or no model connection: the job is built from the
+  // conventions the code recognises, as before.
+  fileRulebooks?: { forJob(input: { userId: string; file: Buffer; filename: string; model?: string; signal?: AbortSignal }): Promise<{ rulebook: Record<string, unknown> | null; hash: string | null }> };
   // Stores a SURVEY job's parsed document and leveled tree so an identical rerun (same file, user, model, knowledge base and
   // release) returns the identical result; see result-cache.ts. Absent: nothing is cached (every older caller and test).
   resultCache?: JobResultCache;
@@ -679,6 +687,25 @@ export async function runPipelineJob(
       (t) => t.referenceName !== 'System.LinkTypes.Hierarchy-Forward' && t.referenceName !== 'System.LinkTypes.Hierarchy-Reverse',
     );
 
+    // How the file states its structure: every job is built from a rulebook when one can be had. The wizard's own is on the job; otherwise it is learned or
+    // reused here, BEFORE the result-cache key below is made (its hash is part of the key). A failed study never fails the job; a cancelled one ends it.
+    let fileRulebook = job.fileRulebook ?? null;
+    let fileRulebookHash = job.fileRulebookHash ?? null;
+    if (!fileRulebook && deps.fileRulebooks && job.userId) {
+      const userId = job.userId;
+      try {
+        const studied = await withCancelWatch(deps.prisma, job.id, deps.cancelPollMs ?? CANCEL_POLL_MS, (signal) =>
+          deps.fileRulebooks!.forJob({ userId, file: job.fileBuffer, filename: job.filename, ...(model ? { model } : {}), signal }),
+        );
+        fileRulebook = studied.rulebook;
+        fileRulebookHash = studied.hash;
+      } catch (error) {
+        if (error instanceof JobCancelledError) throw error;
+        // eslint-disable-next-line no-console -- worker process logging
+        console.warn(`Job ${job.id}: the file's conventions could not be studied (${error instanceof Error ? error.name : 'error'}); building from the recognised ones`);
+      }
+    }
+
     // An identical earlier SURVEY job (same file, user, model, knowledge base, release) already has its document and tree
     // stored: reuse them instead of asking the models again, so the result is identical. Any problem reading it is a miss.
     let cacheKey: string | null = null;
@@ -701,6 +728,7 @@ export async function runPipelineJob(
             kbVersion: cacheKbVersion,
             ingestionVersion: cacheScope.ingestion,
             profileVersion,
+            rulebookHash: fileRulebookHash,
           })
         : null;
     if (deps.resultCache && job.mode === 'survey' && job.userId) {
@@ -900,8 +928,10 @@ export async function runPipelineJob(
         const levelStartedAt = Date.now();
         // eslint-disable-next-line no-console -- worker process logging
         console.info(`Job ${job.id}: /level started`);
+        // The rulebook stored for this file rides on the document to /level (CanonicalDoc.rulebook), so the job builds from exactly what the wizard showed.
+        const levelDoc = fileRulebook ? { ...doc, rulebook: fileRulebook } : doc;
         levelResult = await deps.ingestionClient.level(
-          doc, job.mode, job.userId ?? undefined, linkTypeCatalog, model, job.id, primerContext, ...(deps.resultCache ? [scored] : []),
+          levelDoc, job.mode, job.userId ?? undefined, linkTypeCatalog, model, job.id, primerContext, ...(deps.resultCache ? [scored] : []),
         );
         // eslint-disable-next-line no-console -- worker process logging
         console.info(`Job ${job.id}: /level finished in ${Date.now() - levelStartedAt} ms, ${(levelResult as { nodes?: unknown[] })?.nodes?.length ?? 0} nodes`);

@@ -20,6 +20,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { FileRulebookService, RulebookRejected, type RulebookView } from './file-rulebook.service';
 import { Throttle } from '@nestjs/throttler';
 import { Body } from '@nestjs/common';
 import type { Response } from 'express';
@@ -164,6 +165,8 @@ export class JobsController {
     @Optional() @Inject('OCR_LANGUAGES') private readonly ocrLanguages?: string,
     // The pre-flight token and cost forecast (GET estimate); absent, the estimate carries none.
     @Optional() @Inject('COST_ESTIMATOR') private readonly costEstimator?: CostEstimator,
+    // What the pre-study learned about a file's conventions, stored per user and file (POST preview/rules); absent, jobs are never given a rulebook.
+    @Optional() private readonly fileRulebooks?: FileRulebookService,
   ) {}
 
   // The AI summaries already written in this process (P6): a re-upload of the same file gets its summary at once.
@@ -269,6 +272,8 @@ export class JobsController {
     @Body('documentOverview') documentOverviewRaw: string | undefined,
     // How wide the duplicate check looks: the area path and the ones under it (the default), or the whole project.
     @Body('dedupScope') dedupScope?: string,
+    // The rulebook the wizard stored for this very file (POST preview/rules): the job is built from exactly it. Refused when it is not this user's or this file's.
+    @Body('rulebookId') rulebookId?: string,
   ): Promise<{ jobId: string }> {
     await this.assertModelAllowed(model);
     if (!file) {
@@ -306,6 +311,12 @@ export class JobsController {
     const sourceHash = createHash('sha256').update(file.buffer).digest('hex');
     // Parsed defensively: a malformed overview is no overview, and never fails job creation.
     const documentOverview = parseDocumentOverview(documentOverviewRaw);
+    let storedRulebook: { rulebook: Record<string, unknown>; hash: string } | undefined;
+    if (rulebookId) {
+      const row = await this.fileRulebooks?.getFor(user.userId, rulebookId, sourceHash);
+      if (!row) throw new BadRequestException('rulebookId does not name a rulebook stored for this file');
+      storedRulebook = { rulebook: row.rulebook as Record<string, unknown>, hash: row.hash };
+    }
     return this.jobsService.submit({
       areaPath,
       adoProject: adoProject ?? null,
@@ -324,6 +335,7 @@ export class JobsController {
       model,
       documentOverview,
       ...(dedupScope ? { dedupScope } : {}),
+      ...(storedRulebook ? { fileRulebook: storedRulebook.rulebook, fileRulebookHash: storedRulebook.hash } : {}),
     });
   }
 
@@ -433,6 +445,80 @@ export class JobsController {
   // deterministic input the preview returned, checked against it, and answered as null on any failure. The wizard never waits on it.
   // A model call on the user's own connection with text the caller chose, so it is limited well below the global 200 per minute: the wizard
   // asks once per document (and once more if the model is changed).
+  // How the file states its structure, read by the model (the file is attached to its calls) and checked against every row or heading. A rulebook
+  // stored earlier for this user and file is returned without asking again (`relearn=true` asks again). Nothing is stored for a study that learned nothing.
+  @Throttle({ default: { limit: 6, ttl: 60_000 } })
+  @Post('preview/rules')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MULTER_SAFETY_CEILING_BYTES } }))
+  async previewRules(
+    @UploadedFile() file: Express.Multer.File | undefined,
+    @CurrentUser() user: SessionUser,
+    @Body('model') model: string | undefined,
+    @Body('relearn') relearn: string | undefined,
+    @Res({ passthrough: true }) res?: Response,
+  ): Promise<RulebookView> {
+    const upload = this.checkedUpload(file);
+    await this.assertModelAllowed(model);
+    if (!this.fileRulebooks) throw new BadRequestException('the pre-study is not available');
+    const abort = new AbortController();
+    res?.on('close', () => {
+      if (!res.writableEnded) abort.abort(); // the browser left: stop the study (and its model calls) too
+    });
+    return this.fileRulebooks.learn({
+      userId: user.userId,
+      file: upload.buffer,
+      filename: upload.originalname,
+      ...(model ? { model } : {}),
+      relearn: relearn === 'true',
+      signal: abort.signal,
+    });
+  }
+
+  // A user's edit of the rulebook: checked against the file with the same checks as a model's answer. A rulebook that does not fit answers 400 with the
+  // reason; one that fits is stored as the user's and wins over a learned one for this file.
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Post('preview/rules/edit')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MULTER_SAFETY_CEILING_BYTES } }))
+  async editRules(
+    @UploadedFile() file: Express.Multer.File | undefined,
+    @CurrentUser() user: SessionUser,
+    @Body('model') model: string | undefined,
+    @Body('rulebook') rulebookRaw: string | undefined,
+  ): Promise<RulebookView> {
+    const upload = this.checkedUpload(file);
+    if (!this.fileRulebooks) throw new BadRequestException('the pre-study is not available');
+    let rulebook: unknown;
+    try {
+      rulebook = JSON.parse(rulebookRaw ?? '');
+    } catch {
+      throw new BadRequestException('rulebook must be JSON');
+    }
+    if (typeof rulebook !== 'object' || rulebook === null || Array.isArray(rulebook)) throw new BadRequestException('rulebook must be a JSON object');
+    try {
+      return await this.fileRulebooks.edit({
+        userId: user.userId,
+        file: upload.buffer,
+        filename: upload.originalname,
+        ...(model ? { model } : {}),
+        rulebook: rulebook as Record<string, unknown>,
+      });
+    } catch (err) {
+      if (err instanceof RulebookRejected) throw new BadRequestException(err.message);
+      throw err;
+    }
+  }
+
+  // The same checks every upload route makes: present, within the size limit, a supported type.
+  private checkedUpload(file: Express.Multer.File | undefined): Express.Multer.File {
+    if (!file) throw new BadRequestException('file is required');
+    if (file.size > this.maxUploadSizeBytes) {
+      throw new PayloadTooLargeException(`file exceeds the ${Math.round(this.maxUploadSizeBytes / 1024 / 1024)}MB upload limit`);
+    }
+    const ext = file.originalname.slice(file.originalname.lastIndexOf('.')).toLowerCase();
+    if (!ALLOWED_EXTENSIONS.has(ext)) throw new BadRequestException(`unsupported file type: ${ext}`);
+    return file;
+  }
+
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('preview/summary')
   async previewSummary(

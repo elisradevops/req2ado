@@ -550,6 +550,7 @@ describe('JobsList', () => {
 describe('JobsList background refresh', () => {
   const row = (id: string, name: string) => ({
     id, mode: 'survey', status: 'succeeded', areaPath: 'Proj\\A', originalFilename: name, itemCount: 1, createdItemCount: 1, createdAt: new Date().toISOString(),
+    reviewedCount: null, reviewableCount: null,
   });
 
   // The page refreshes on a 20 s interval. Capture that callback and call it by hand: no fake timers, so waitFor keeps working.
@@ -596,6 +597,33 @@ describe('JobsList background refresh', () => {
     expect(screen.getAllByRole('rowheader').map((h) => h.textContent)).toEqual(['Running now · 1', 'Needs you · 1']);
     expect(screen.getByText('Re-run of aaaaaaaa')).toBeInTheDocument();
     expect(screen.getAllByText(/^Re-run of /)).toHaveLength(1);
+  });
+
+  it('marks the older run of a re-run file as replaced, naming the re-run, and only that one', async () => {
+    const now = Date.now();
+    vi.spyOn(jobsApi, 'listJobs').mockResolvedValue([
+      { ...row('aaaaaaaa-1', 'AirPro.docx'), createdAt: new Date(now - 3_600_000).toISOString() },
+      { ...row('bbbbbbbb-2', 'AirPro.docx'), createdAt: new Date(now - 60_000).toISOString() },
+      { ...row('cccccccc-3', 'Other.docx'), createdAt: new Date(now - 60_000).toISOString() },
+    ] as never);
+    render(<ToastProvider><MemoryRouter><JobsList /></MemoryRouter></ToastProvider>);
+    await waitFor(() => expect(screen.getAllByText('AirPro.docx')).toHaveLength(2));
+    const older = screen.getByText('Replaced by re-run bbbbbbbb');
+    expect(older.closest('tr')).toHaveTextContent('aaaaaaaa');
+    expect(older).toHaveClass('text-ink-3');
+    expect(screen.getAllByText(/^Replaced by re-run /)).toHaveLength(1);
+  });
+
+  it('says how many items of a job in review are reviewed, and nothing for a job without a count', async () => {
+    vi.spyOn(jobsApi, 'listJobs').mockResolvedValue([
+      { ...row('aaaaaaaa-1', 'inreview.docx'), status: 'diff_ready', reviewedCount: 4, reviewableCount: 12 },
+      { ...row('bbbbbbbb-2', 'empty.docx'), status: 'diff_ready', reviewedCount: 0, reviewableCount: 0 },
+      row('cccccccc-3', 'done.docx'),
+    ] as never);
+    render(<ToastProvider><MemoryRouter><JobsList /></MemoryRouter></ToastProvider>);
+    await waitFor(() => expect(screen.getByText('inreview.docx')).toBeInTheDocument());
+    expect(screen.getByText('4 of 12 reviewed').closest('tr')).toHaveTextContent('inreview.docx');
+    expect(screen.getAllByText(/ reviewed$/)).toHaveLength(1);
   });
 
   it('does not let a slow, older response overwrite a newer one', async () => {
