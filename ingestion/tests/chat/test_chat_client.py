@@ -4,6 +4,10 @@ import httpx
 import pytest
 
 from app.chat.chat_client import PROPOSAL_SENTINEL, ChatLlmClient, split_message_and_proposal
+from app.prompts.assembly import DataBlock, build_call
+
+# Any built call: the client sends whatever messages the assembly layer produced.
+_CALL = build_call("judge_duplicate_pair", blocks=[DataBlock("source", "hi")], user_text="hi")
 
 
 def test_no_sentinel_returns_full_text_as_message() -> None:
@@ -70,12 +74,7 @@ async def test_stream_reply_yields_deltas_from_ndjson_lines() -> None:
     client = ChatLlmClient("http://orchestrator:3001", "test-token")
     client._transport = transport  # noqa: SLF001 - test injection seam
 
-    chunks = [
-        chunk
-        async for chunk in client.stream_reply(
-            [{"role": "user", "content": "hi"}], model="llama3.1"
-        )
-    ]
+    chunks = [chunk async for chunk in client.stream_reply(_CALL, model="llama3.1")]
 
     assert chunks == [("Hel", ""), ("lo", "")]
 
@@ -93,12 +92,7 @@ async def test_stream_reply_yields_reasoning_deltas_separately_from_content() ->
     client = ChatLlmClient("http://orchestrator:3001", "test-token")
     client._transport = transport  # noqa: SLF001
 
-    chunks = [
-        chunk
-        async for chunk in client.stream_reply(
-            [{"role": "user", "content": "hi"}], model="llama3.1"
-        )
-    ]
+    chunks = [chunk async for chunk in client.stream_reply(_CALL, model="llama3.1")]
 
     assert chunks == [("", "Hmm, "), ("", "let me think."), ("Sure.", "")]
 
@@ -115,7 +109,7 @@ async def test_stream_reply_omits_model_key_when_none() -> None:
     client = ChatLlmClient("http://orchestrator:3001", "test-token")
     client._transport = transport  # noqa: SLF001
 
-    [_ async for _ in client.stream_reply([{"role": "user", "content": "hi"}], model=None)]
+    [_ async for _ in client.stream_reply(_CALL, model=None)]
 
     assert "model" not in captured["body"]
 
@@ -135,7 +129,7 @@ async def test_stream_reply_sends_a_fixed_seed_for_reproducibility() -> None:
     client = ChatLlmClient("http://orchestrator:3001", "test-token")
     client._transport = transport  # noqa: SLF001
 
-    [_ async for _ in client.stream_reply([{"role": "user", "content": "hi"}], model=None)]
+    [_ async for _ in client.stream_reply(_CALL, model=None)]
 
     assert captured["body"]["seed"] == 42
     assert captured["body"]["temperature"] == 0.3
@@ -152,12 +146,7 @@ async def test_stream_reply_sends_user_id_header_when_given() -> None:
     client = ChatLlmClient("http://orchestrator:3001", "test-token")
     client._transport = httpx.MockTransport(handler)  # noqa: SLF001
 
-    [
-        _
-        async for _ in client.stream_reply(
-            [{"role": "user", "content": "hi"}], model=None, user_id="user-1"
-        )
-    ]
+    [_ async for _ in client.stream_reply(_CALL, model=None, user_id="user-1")]
 
     assert captured["headers"]["x-req2ado-user-id"] == "user-1"
 
@@ -175,7 +164,7 @@ async def test_stream_reply_error_carries_orchestrator_message_without_mdn_suffi
     client._transport = httpx.MockTransport(handler)  # noqa: SLF001
 
     with pytest.raises(httpx.HTTPStatusError) as caught:
-        [_ async for _ in client.stream_reply([{"role": "user", "content": "hi"}], model=None)]
+        [_ async for _ in client.stream_reply(_CALL, model=None)]
 
     described = describe_exception(caught.value)
     assert "401" in described

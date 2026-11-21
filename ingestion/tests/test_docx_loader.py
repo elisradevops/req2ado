@@ -1181,21 +1181,27 @@ def test_load_docx_does_not_crash_on_a_non_numeric_outline_lvl_val() -> None:
         assert block.kind == BlockKind.PARAGRAPH
 
 
-def test_load_docx_treats_title_style_as_a_heading() -> None:
+def test_load_docx_reads_title_style_as_the_document_title() -> None:
+    # The Word "Title" style names the document; it is not a section heading, so it does not advance the heading
+    # counters either (the first unnumbered Heading 1 is still "1").
     from docx import Document as DocxDocument
 
     doc = DocxDocument()
     paragraph = doc.add_paragraph("AirPro Interface Control Document")
     paragraph.style = doc.styles["Title"]
+    doc.add_heading("Scope", level=1)
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         out_path = Path(tmp_dir) / "title.docx"
         doc.save(str(out_path))
         result = load_docx(str(out_path))
 
-    heading = next(b for b in result.blocks if "Interface Control" in b.text)
-    assert heading.kind == BlockKind.HEADING
-    assert heading.heading_level == 1
+    title = next(b for b in result.blocks if "Interface Control" in b.text)
+    assert title.kind == BlockKind.TITLE
+    assert title.heading_level is None
+    scope = next(b for b in result.blocks if b.text == "Scope")
+    assert scope.kind == BlockKind.HEADING
+    assert scope.number_label == "1"
 
 
 def test_load_docx_does_not_crash_on_a_custom_heading_style_with_non_numeric_suffix() -> None:

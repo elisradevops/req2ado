@@ -2,8 +2,9 @@ import logging
 
 import pytest
 
-from app.chat.chat_service import _build_system_prompt, run_chat_turn, weakest_category_note
+from app.chat.chat_service import _build_call, run_chat_turn, weakest_category_note
 from app.kb.profile import build_profile
+from app.prompts.assembly import block_text
 from tests.chat.test_chat_service import _FakeChatClient, _FakePublisher
 from tests.test_kb_profile import DOCS, FakeProfileClient
 
@@ -27,7 +28,6 @@ def test_the_weakest_category_is_named_with_its_score_and_the_organizations_pass
     assert "Implementable (61)" in note  # the two lowest below the bar are listed, weakest first
     assert note.index("Clear and unambiguous") < note.index("Implementable")
     assert "Testable" not in note  # 88 is above the bar
-    assert "say which category" in note
 
 
 def test_a_category_without_a_stored_pass_condition_is_still_named() -> None:
@@ -44,13 +44,16 @@ def test_nothing_is_added_when_every_category_is_good_or_there_are_no_scores() -
     )  # malformed scores are ignored
 
 
-def test_the_system_prompt_carries_the_note_and_is_unchanged_without_one() -> None:
-    base = _build_system_prompt(ITEM, None)
-    assert _build_system_prompt(ITEM, None, None) == base
-    with_note = _build_system_prompt(ITEM, None, "WEAKEST NOTE.")
-    assert "WEAKEST NOTE." in with_note and with_note.startswith(
-        base.split("Rules for any rewrite")[0]
-    )
+def test_the_note_is_a_data_block_its_instruction_is_in_the_system_prompt_and_nothing_changes_without_one() -> (
+    None
+):
+    base = _build_call(ITEM, None)
+    assert _build_call(ITEM, None, None) == base
+    assert "weakest" not in base.system and "<weakest_categories>" not in base.user
+    with_note = _build_call(ITEM, None, "WEAKEST NOTE.")
+    assert block_text(with_note.user, "weakest_categories") == "WEAKEST NOTE."
+    assert "WEAKEST NOTE." not in with_note.system
+    assert "say which category" in with_note.system
 
 
 @pytest.mark.asyncio

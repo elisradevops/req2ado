@@ -30,13 +30,14 @@ from typing import Literal, Protocol
 from pydantic import BaseModel, Field
 
 from app.config import settings
+from app.language_policy import OBLIGATION_FORMS_MAX
 from app.leveling.bounded_chunks import run_chunks_bounded
 from app.prompts import load_prompt
 from app.request_identity import redact_identity
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "kb-profile-4"
+SCHEMA_VERSION = "kb-profile-5"
 WINDOW_CHARS = 10_000
 WINDOW_OVERLAP = 500
 RELEVANCE_EXCERPT_CHARS = 1_500
@@ -119,6 +120,9 @@ class KbProfile(BaseModel):
     type_definitions: list[TypeDefinition] = Field(default_factory=list)
     rules: list[Rule] = Field(default_factory=list)
     glossary: list[GlossaryTerm] = Field(default_factory=list)
+    # How the organization's standard says a requirement states an obligation (its modal word, or its rule for phrasing one), verbatim from
+    # the knowledge base. The output-language policy (app.language_policy) reads it; nothing in the code knows any obligation word itself.
+    obligation_forms: list[Rule] = Field(default_factory=list)
     conflicts: list[Conflict] = Field(default_factory=list)
     truncated: bool = False
     # When it was built (UTC, ISO). Informational only: never part of `version`, absent on profiles stored before it existed.
@@ -276,7 +280,13 @@ def profile_version(documents: dict[str, str], model: str) -> str:
 
 
 def _empty() -> dict:
-    return {"categories": [], "type_definitions": [], "rules": [], "glossary": []}
+    return {
+        "categories": [],
+        "type_definitions": [],
+        "rules": [],
+        "glossary": [],
+        "obligation_forms": [],
+    }
 
 
 def _union(into: dict, extracted: dict) -> None:
@@ -284,6 +294,7 @@ def _union(into: dict, extracted: dict) -> None:
     seen = {
         "categories": {_key(c.get("name", "")) for c in into["categories"]},
         "rules": {_key(r) for r in into["rules"]},
+        "obligation_forms": {_key(f) for f in into["obligation_forms"]},
         "glossary": {_key(g.get("term", "")) for g in into["glossary"]},
         "type_definitions": {
             (d.get("item_type"), _key(d.get("text", ""))) for d in into["type_definitions"]
@@ -306,6 +317,10 @@ def _union(into: dict, extracted: dict) -> None:
         if isinstance(r, str) and r.strip() and _key(r) not in seen["rules"]:
             seen["rules"].add(_key(r))
             into["rules"].append(" ".join(r.split()).rstrip("."))
+    for f in extracted.get("obligation_forms") or []:
+        if isinstance(f, str) and f.strip() and _key(f) not in seen["obligation_forms"]:
+            seen["obligation_forms"].add(_key(f))
+            into["obligation_forms"].append(" ".join(f.split()))
     for g in extracted.get("glossary") or []:
         if (
             isinstance(g, dict)
@@ -729,6 +744,7 @@ def merge_document_profiles(
     categories: dict[str, dict] = {}
     category_variants: dict[str, dict[str, Variant]] = {}
     rules: dict[str, dict] = {}
+    forms: dict[str, dict] = {}
     glossary: dict[str, dict] = {}
     definitions: dict[str, dict[str, Variant]] = {}
     for name in names:
@@ -751,6 +767,10 @@ def merge_document_profiles(
             rules.setdefault(key, {"text": rule, "sources": [], "index": index})["sources"].append(
                 name
             )
+        for index, form in enumerate(extracted[name].get("obligation_forms") or []):
+            forms.setdefault(_key(form), {"text": form, "sources": [], "index": index})[
+                "sources"
+            ].append(name)
         for index, g in enumerate(extracted[name]["glossary"]):
             key = _key(g["term"])
             glossary.setdefault(
@@ -804,6 +824,7 @@ def merge_document_profiles(
             )
     rule_list, cut_rules = ranked(rules, MAX_RULES)
     glossary_list, cut_glossary = ranked(glossary, MAX_GLOSSARY)
+    form_list, _ = ranked(forms, OBLIGATION_FORMS_MAX)  # the forms most documents state; more would not be one form
     return KbProfile(
         version=version,
         built_with=model,
@@ -815,6 +836,7 @@ def merge_document_profiles(
             GlossaryTerm(term=g["term"], definition=g["definition"], sources=g["sources"])
             for g in glossary_list
         ],
+        obligation_forms=[Rule(text=f["text"], sources=f["sources"]) for f in form_list],
         conflicts=sorted(conflicts, key=lambda c: (c.kind, c.key)),
         truncated=cut_categories or cut_rules or cut_glossary,
     )
@@ -1024,6 +1046,12 @@ def _scored_categories(profile: KbProfile) -> list[Category]:
     return kept or list(profile.categories)
 
 
+class RubricText(str):
+    """The scoring context built from the organization's profile (scoring_inputs): its own standard for judging a requirement. A scoring
+    call gives it the `rubric` authority (app.prompts.assembly); context retrieved from knowledge-base chunks is a plain str and stays
+    `reference`, which may be irrelevant. The type carries which of the two a context is, through every layer that passes it on."""
+
+
 def scoring_inputs(
     profile: KbProfile | None,
 ) -> tuple[list[str] | None, dict[str, str] | None, str | None]:
@@ -1050,7 +1078,7 @@ def scoring_inputs(
         lines.append("Mandatory writing rules:")
         lines += [f"- {r.text}" for r in profile.rules]
     context = "\n".join(lines)
-    return names, definitions, context[:SCORING_CONTEXT_MAX_CHARS]
+    return names, definitions, RubricText(context[:SCORING_CONTEXT_MAX_CHARS])
 
 
 AUTHORING_STANDARD_MAX_CHARS = 6_000

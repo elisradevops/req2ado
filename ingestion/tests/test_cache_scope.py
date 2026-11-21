@@ -8,6 +8,7 @@ from importlib import metadata
 
 from fastapi.testclient import TestClient
 
+from app.build_fingerprint import code_fingerprint
 from app.kb.profile import Category, InMemoryProfileStore, KbProfile
 from app.main import app
 from app.request_identity import USER_ID_HEADER
@@ -23,7 +24,9 @@ def test_the_scope_names_the_ingestion_build_and_the_stored_profile(monkeypatch)
     )
     monkeypatch.setattr("app.main._stored_profile_or_none", lambda user_id: profile)
     body = client.get("/cache-scope", headers={"X-Req2Ado-User-Id": "u1"}).json()
-    assert body == {"ingestion": metadata.version("req2ado-ingestion"), "profile": "v-stored"}
+    # The build is the package version plus the fingerprint of its code and prompts.
+    build = f"{metadata.version('req2ado-ingestion')}+code.{code_fingerprint()[:12]}"
+    assert body == {"ingestion": build, "profile": "v-stored"}
 
 
 def test_a_user_without_a_knowledge_base_is_scoped_by_the_built_in_rubric(monkeypatch) -> None:
@@ -38,3 +41,31 @@ def test_a_user_without_a_knowledge_base_is_scoped_by_the_built_in_rubric(monkey
 
 def test_no_user_at_all_has_no_profile_scope(monkeypatch) -> None:
     assert client.get("/cache-scope").json()["profile"] is None
+
+
+def test_a_code_or_prompt_change_changes_the_build_in_the_scope(monkeypatch, tmp_path) -> None:
+    # The package version changes only on a release: without the code's own fingerprint, a job re-run after a code or prompt change
+    # replayed the result the old code built.
+    import app.build_fingerprint as build
+    from app import main
+
+    (tmp_path / "leveling.py").write_text("one", encoding="utf-8")
+    (tmp_path / "prompts").mkdir()
+    (tmp_path / "prompts" / "p.v1.txt").write_text("prompt", encoding="utf-8")
+    (tmp_path / "__pycache__").mkdir()
+    monkeypatch.setattr(build, "_APP_DIR", tmp_path)
+    first = build.code_fingerprint.__wrapped__()
+    (tmp_path / "__pycache__" / "leveling.cpython-313.pyc").write_bytes(b"compiled")
+    assert build.code_fingerprint.__wrapped__() == first  # compiled caches are not the code
+    (tmp_path / "leveling.py").write_text("two", encoding="utf-8")
+    after_code = build.code_fingerprint.__wrapped__()
+    assert after_code != first
+    (tmp_path / "prompts" / "p.v1.txt").write_text("changed prompt", encoding="utf-8")
+    assert build.code_fingerprint.__wrapped__() != after_code
+
+    monkeypatch.setattr(main, "_ingestion_version", lambda: "1.0")
+    monkeypatch.setattr(main, "code_fingerprint", lambda: "a" * 64)
+    before = client.get("/cache-scope").json()["ingestion"]
+    monkeypatch.setattr(main, "code_fingerprint", lambda: "b" * 64)
+    assert before == f"1.0+code.{'a' * 12}"
+    assert client.get("/cache-scope").json()["ingestion"] != before

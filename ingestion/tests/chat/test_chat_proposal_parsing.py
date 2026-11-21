@@ -12,7 +12,7 @@ from app.chat.chat_client import (
     proposal_failure_reason,
     split_message_and_proposal,
 )
-from app.chat.chat_service import _build_system_prompt, run_chat_turn
+from app.chat.chat_service import _build_call, run_chat_turn
 from tests.chat.test_chat_service import _FakePublisher
 
 M = PROPOSAL_SENTINEL
@@ -52,6 +52,12 @@ def test_the_reason_a_proposal_is_missing_is_named(reply, reason) -> None:
     assert proposal_failure_reason(reply) == reason
 
 
+def _prompt(*args, **kwargs) -> str:
+    """Everything the model reads for this turn: the instructions, then the data blocks of the user message."""
+    call = _build_call(*args, **kwargs)
+    return call.system + "\n\n" + call.user
+
+
 def test_the_split_still_gives_no_proposal_for_every_failing_case() -> None:
     for reply in (
         "No marker.",
@@ -66,7 +72,7 @@ def test_the_split_still_gives_no_proposal_for_every_failing_case() -> None:
 def test_the_prompt_says_to_ask_or_to_propose_never_to_announce_a_rewrite_it_does_not_deliver() -> (
     None
 ):
-    prompt = _build_system_prompt(
+    prompt = _prompt(
         {"type": "Requirement", "title": "T", "description": "D", "qualityIssues": []}, None, None
     ).lower()
     assert "never announce a rewrite" in prompt

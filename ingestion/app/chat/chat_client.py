@@ -5,6 +5,8 @@ from collections.abc import AsyncIterator
 
 import httpx
 
+from app.prompts.assembly import PromptCall
+
 _STREAM_REQUEST_TIMEOUT_SECONDS = 120.0
 PROPOSAL_SENTINEL = "<<<PROPOSAL>>>"
 
@@ -72,7 +74,7 @@ class ChatLlmClient:
         self._transport: httpx.AsyncBaseTransport | None = None  # test-only injection seam
 
     async def stream_reply(
-        self, messages: list[dict], model: str | None, user_id: str | None = None
+        self, call: PromptCall, model: str | None, user_id: str | None = None
     ) -> AsyncIterator[tuple[str, str]]:
         """Yields (content_delta, reasoning_delta) pairs -- exactly one of the
         pair is non-empty per chunk (a reasoning model's chain-of-thought
@@ -84,9 +86,9 @@ class ChatLlmClient:
         # temperature=0.3 (a deliberate non-zero value, unlike every other
         # caller in this codebase) still introduces controlled sampling
         # variety across genuinely different prompts.
-        payload: dict = {"messages": messages, "temperature": 0.3, "seed": 42}
-        if model is not None:
-            payload["model"] = model
+        payload = call.payload(
+            {"temperature": 0.3, "seed": 42, **({"model": model} if model is not None else {})}
+        )
         headers = {"Authorization": f"Bearer {self._bearer_token}"}
         # The orchestrator's /llm/* proxy resolves each user's own Open WebUI
         # connection from this header and rejects the call (401) without it --

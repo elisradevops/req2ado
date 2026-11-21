@@ -3,8 +3,7 @@
 Feature/Requirement hierarchy from THREE possible source conventions:
 
 1. A 2-column `Requirement ID | Text` table with a dotted numeric ID
-   (see `rows_from_table` -- the original convention, formerly the whole
-   of `table_groups.py`).
+   (see `rows_from_table` -- the original convention).
 2. A native Word Heading hierarchy where the document's own author typed a
    dotted numeric ID directly into the heading text (see
    `rows_from_id_headings` in a later phase).
@@ -35,7 +34,7 @@ over-triggering (inventing structure that isn't there).
 from __future__ import annotations
 
 import re
-from collections.abc import Hashable
+from collections.abc import Hashable, Sequence
 from typing import NamedTuple, TypeVar
 
 from app.canonical.model import Block, BlockKind, SourceRef, plain_text_rows
@@ -153,6 +152,43 @@ def is_requirement_shaped(text: str) -> bool:
     return bool(_REQUIREMENT_SHAPE_MODAL_PATTERN.search(stripped))
 
 
+_TERMINAL_PUNCTUATION_PATTERN = re.compile(r"[.!?][\"'”’)\]]*$")
+# Inline emphasis a Markdown source keeps around a lead-in ("**Engineering Notes:**").
+_TRAILING_EMPHASIS_PATTERN = re.compile(r"[*_]+$")
+
+
+def _is_lead_in(text: str) -> bool:
+    return _TRAILING_EMPHASIS_PATTERN.sub("", text).endswith(":")
+
+
+def is_standalone_statement(text: str) -> bool:
+    """A complete sentence that can stand as its own item: at least _REQUIREMENT_SHAPE_MIN_WORDS words, ending in terminal
+    punctuation, and neither a ':' lead-in nor a "Label: value" spec cell. Sentence structure only, no modal words, so it
+    reads any language the same way (a Hebrew future-tense obligation has no "shall")."""
+    stripped = " ".join(text.split())
+    if len(stripped.split()) < _REQUIREMENT_SHAPE_MIN_WORDS:
+        return False
+    if _SPEC_CELL_LABEL_PATTERN.match(stripped):
+        return False
+    return bool(_TERMINAL_PUNCTUATION_PATTERN.search(stripped))
+
+
+def standalone_statement_flags(texts: Sequence[str]) -> list[bool]:
+    """Per body text (in order), whether it stands alone: is_standalone_statement, and not one of a ':' lead-in's items.
+    Everything after a lead-in ("Engineering Notes:", "The unit shall:") continues that lead-in's sentence, up to the next
+    labelled paragraph ("Acceptance Criteria: ...") or lead-in."""
+    flags: list[bool] = []
+    under_lead_in = False
+    for text in texts:
+        stripped = " ".join(text.split())
+        if _is_lead_in(stripped):
+            under_lead_in = True
+        elif _SPEC_CELL_LABEL_PATTERN.match(stripped):
+            under_lead_in = False
+        flags.append(not under_lead_in and is_standalone_statement(stripped))
+    return flags
+
+
 EPIC = "Epic"
 FEATURE = "Feature"
 REQUIREMENT = "Requirement"
@@ -215,7 +251,7 @@ class HierarchyRow(NamedTuple):
     # node, or None if it should FOLD into the nearest node-producing
     # ancestor's description instead (id_tree_builder's job, not the
     # adapter's -- the adapter only decides WHETHER to fold, via the same
-    # qualifying_groups-or-has_shall rule table_groups.py always used).
+    # qualifying_groups-or-has_shall rule).
     # Convention 3 (structural headings) never sets this to None: every
     # real Word heading the author created becomes its own node, per that
     # adapter's own docstring.
@@ -405,9 +441,7 @@ def _parse_id_hierarchy_table_rows(rows: list[list[str]]) -> list[tuple[tuple[in
 def parsed_id_rows_from_table(table) -> list[tuple[tuple[int, ...], str]]:
     """Public wrapper over the table-row parse -- returns [] gracefully
     for a non-conforming table (wrong column count, insufficient ID-shaped
-    rows). Used both by `table_groups.qualifying_table_groups` (the
-    existing LLM-hint/repair consumer) and by the new deterministic
-    builder path."""
+    rows). Used by the deterministic builder path."""
     return _parse_id_hierarchy_table_rows(plain_text_rows(table))
 
 

@@ -61,15 +61,13 @@ def _doc() -> CanonicalDoc:
     )
 
 
-def _run(profile, mode="baseline"):
+def _run(profile):
     scorer = CapturingScorer()
     build_survey_tree(
         _doc(),
         StructureRefusingClient(),
         scoring_client=scorer,
         embed_client=TitleHashEmbedder(),
-        structure_mode=mode,
-        root_regroup_mode="deterministic",
         kb_profile=profile,
         user_id="u1",
     )

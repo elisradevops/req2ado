@@ -17,66 +17,7 @@ from pathlib import Path
 from app.canonical.model import BlockKind
 from app.leveling.llm_leveling import build_survey_tree
 from app.loaders.pdf_loader import load_pdf
-from app.section_analysis_options import DEFAULT_SECTION_ANALYSIS_OPTIONS, SectionAnalysisOptions
 from app.workitem.model import WorkItemType
-
-
-class FakeSectionAnalysisClient:
-    """Local hand-written test double for SectionAnalysisClient -- NOT
-    cross-imported from tests/test_llm_leveling.py or
-    tests/test_worktree_schema_conformance.py, following this repo's own
-    established convention (both of those files define their own local
-    copy rather than importing a test-only class across files). Nodes'
-    title/text deliberately echo this file's own fixture content (see
-    _build_pdf below) so build_survey_tree's grounding/dropped-blocks
-    integrity checks pass cleanly -- this test's concern is branch/node
-    structural stability driven by real PDF segmentation, not integrity
-    warnings, which would otherwise be noise unrelated to what Tasks 2-3
-    can regress."""
-
-    def __init__(self, nodes: list[dict]) -> None:
-        self._nodes = nodes
-        self.calls: list[dict] = []
-
-    def analyze_section_skeleton(
-        self,
-        section_text: str,
-        kb_context: str | None = None,
-        *,
-        options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
-        user_id: str | None = None,
-    ) -> tuple[list[dict], bool]:
-        self.calls.append(
-            {"section_text": section_text, "kb_context": kb_context, "options": options}
-        )
-        # STAGE 1 sees structure only -- see llm_leveling's
-        # _build_survey_skeleton_for_branch.
-        return [
-            {k: v for k, v in node.items() if k in {"temp_id", "type", "parent_temp_id", "title"}}
-            for node in self._nodes
-        ], False
-
-    def author_content(
-        self,
-        section_text: str,
-        skeleton_nodes: dict[str, dict],
-        kb_context: str | None = None,
-        user_id: str | None = None,
-    ) -> tuple[dict[str, dict], bool]:
-        by_title = {node["title"]: node for node in self._nodes}
-        return {
-            local_id: {
-                "description": by_title[info["title"]]["text"],
-                "tags": by_title[info["title"]].get("tags", []),
-            }
-            for local_id, info in skeleton_nodes.items()
-            if info["title"] in by_title
-        }, False
-
-    def analyze_section_skeleton_agentic(
-        self, section_text: str, retrieve_fn, **kwargs
-    ) -> tuple[list[dict], list[dict], bool]:
-        raise AssertionError("not exercised by this test -- default model is not tool-capable")
 
 
 def _build_pdf(tmp_path: Path) -> Path:
@@ -143,51 +84,13 @@ def test_pdf_survey_golden_produces_stable_branch_and_heading_structure(tmp_path
         doc.blocks[1].text.count("This is a long sentence") == 3
     )  # wrapped paragraph merged intact, not split
 
-    # --- build_survey_tree (SURVEY branch/token-estimate stability) ---
-    # Node text/title deliberately echoes the fixture's own body text so
-    # grounding checks pass cleanly and tree.warnings stays empty --
-    # isolates this test's real concern (structural stability) from
-    # integrity-warning noise unrelated to Tasks 2-3.
-    nodes = [
-        {
-            "temp_id": "n0",
-            "type": "Feature",
-            "parent_temp_id": None,
-            "title": "Overview",
-            "text": _WRAPPED_BODY_TEXT.strip(),
-            "tags": [],
-        },
-        {
-            "temp_id": "n1",
-            "type": "Feature",
-            "parent_temp_id": None,
-            "title": "Scope",
-            "text": _SCOPE_BODY_TEXT,
-            "tags": [],
-        },
-    ]
-    fake = FakeSectionAnalysisClient(nodes)
-    tree = build_survey_tree(doc, fake)
+    # --- build_survey_tree: the PDF's own headings are the SURVEY structure ---
+    # The items are the document's own structure (code, not the model), so the heading detection above is what decides them: two
+    # headings, two items, each carrying its own body, and the suppressed running header reaches no item.
+    tree = build_survey_tree(doc, object())
+    requirements = [n for n in tree.nodes if n.type == WorkItemType.REQUIREMENT]
 
-    assert len(tree.nodes) == 2
-    assert [n.type for n in tree.nodes] == [WorkItemType.FEATURE, WorkItemType.FEATURE]
-    assert [n.title for n in tree.nodes] == ["Overview", "Scope"]
-    assert (
-        tree.warnings == []
-    )  # no dropped-block/low-grounding regressions from segmentation changes
-
-    # A single whole-document call, not a branch split -- this tiny
-    # document's real token count comfortably fits the coverage budget.
-    assert len(fake.calls) == 1
-    assert fake.calls[0]["options"].whole_document is True
-    # topic_count is the real per-block-driven coverage hint Tasks 2-3 can
-    # regress: 2 real HEADING blocks (Overview, Scope) + 0 table groups.
-    # Before Task 3 added heading detection, PDF never emitted
-    # BlockKind.HEADING at all, so this would have been 0 -- this
-    # assertion is the concrete pin that Task 3's heading detection is
-    # actually feeding build_survey_tree's coverage hint, not just
-    # producing HEADING blocks nobody downstream reads.
-    assert fake.calls[0]["options"].topic_count == 2
-    assert (
-        "REV" not in fake.calls[0]["section_text"]
-    )  # suppressed header never reaches the LLM prompt either
+    assert [n.title for n in requirements] == ["Overview", "Scope"]
+    assert requirements[0].description.count("This is a long sentence") == 3
+    assert requirements[1].description == _SCOPE_BODY_TEXT
+    assert not any("REV" in (n.description or "") or "REV" in n.title for n in tree.nodes)

@@ -473,17 +473,13 @@ class WarningKind(StrEnum):
     # route exit, same VISION_CAPTIONING_DISABLED precedent, so it fires
     # exactly once regardless of BASELINE/SURVEY mode.
     MISSING_SOURCE_REFERENCE = "missing_source_reference"
-    # 300553 smart-title fallback: a SURVEY-mode node's stage-1 title (see
-    # llm_leveling._author_branch_content) was too generic/short
-    # (title_is_low_quality) and got replaced by a real distillation call
-    # once its actual description text existed to distill FROM. One warning
-    # per branch, `detail["nodeIds"]` listing every affected node -- same
-    # one-per-branch dedup convention as DROPPED_BLOCKS immediately above it
-    # in this same function's caller.
+    # 300553 smart-title fallback: a SURVEY-mode node's title was too generic and got replaced by a distillation call. Nothing produces it
+    # since the model-structure path was removed; the value stays because it is part of the shared work-item-tree contract, and stored
+    # trees may carry it.
     SURVEY_TITLE_DISTILLED = "survey_title_distilled"
     # Per-row requirement splitting (2026-08-26): a source table row that
     # carries its own literal requirement identifier (see
-    # requirement_rows.qualifying_requirement_rows) but that no generated
+    # requirement_rows' id-column gate) but that no generated
     # node's customer_id claimed -- the row may have been merged into
     # another requirement, or dropped entirely. An identified row going
     # unclaimed is a lost, explicitly-numbered customer requirement, the

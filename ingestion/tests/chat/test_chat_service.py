@@ -5,6 +5,7 @@ import pytest
 from app.chat.chat_client import PROPOSAL_SENTINEL
 from app.chat.chat_service import _SentinelWindow, run_chat_turn
 from app.chat.redis_publisher import RedisChatPublisher
+from app.prompts.assembly import block_text
 
 
 class _FakeRedis:
@@ -346,8 +347,10 @@ async def test_run_chat_turn_grounds_system_prompt_with_kb_context_when_area_pat
         publisher,
     )
 
-    system_prompt = captured["messages"][0]["content"]
-    assert "The receiver shall decode HDR10 metadata." in system_prompt
+    # Knowledge-base text reaches the model as a reference block of the user message, never in the system prompt.
+    call = captured["messages"]
+    assert "The receiver shall decode HDR10 metadata." in (block_text(call.user, "reference") or "")
+    assert "The receiver shall decode HDR10 metadata." not in call.system
     assert publisher.done is not None
 
 
@@ -422,13 +425,12 @@ async def test_run_chat_turn_aims_the_rewrite_at_the_weakest_category_using_the_
         profile=profile,
     )
 
-    system = seen[0][0]["content"]
+    call = seen[0]
+    weakest = block_text(call.user, "weakest_categories") or ""
     # The note names only what is weak, with its score; the standard in the prompt lists every category.
-    assert "Clear and unambiguous (40)" in system and "One reading only" in system
-    assert (
-        "Testable (90)" not in system
-        and "weakest quality categories are Clear and unambiguous (40)" in system
-    )
+    assert "Clear and unambiguous (40)" in weakest and "One reading only" in call.user
+    assert "Testable (90)" not in weakest
+    assert "weakest quality categories" in call.system
 
     seen.clear()
     await run_chat_turn(
@@ -444,4 +446,4 @@ async def test_run_chat_turn_aims_the_rewrite_at_the_weakest_category_using_the_
         RecordingClient([]),
         _FakePublisher(),
     )
-    assert "weakest" not in seen[0][0]["content"]
+    assert "weakest" not in seen[0].system and "<weakest_categories>" not in seen[0].user

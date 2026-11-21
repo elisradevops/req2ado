@@ -2,7 +2,7 @@
 model.
 
 The same rules run over a registry of real fixture files, one per format, loaded through the app's own loaders. For each
-file, with the structure taken from the document (`structure_mode="baseline"`):
+file, with the structure taken from the document:
   * the model that writes wording is never asked how many items exist (the analysis client refuses every structure call);
   * the item count is the same for three simulated models and for repeated runs;
   * every block, table and figure of the document is a node or folded into one (nothing silently lost);
@@ -112,14 +112,12 @@ class TitleHashEmbedder:
         return vectors
 
 
-def _survey(doc, seed: int, mode: str = "baseline"):
+def _survey(doc, seed: int):
     return build_survey_tree(
         doc,
         StructureRefusingClient(),
         grouping_client=SimulatedGrouper(seed),
         embed_client=TitleHashEmbedder(),
-        structure_mode=mode,
-        root_regroup_mode="deterministic",
     )
 
 
@@ -226,10 +224,11 @@ def test_nothing_in_the_document_is_dropped(label: str, filename: str) -> None:
         )
 
 
-def test_the_model_mode_is_still_available_as_the_rollback() -> None:
+def test_the_model_can_no_longer_be_asked_how_many_items_exist() -> None:
+    # The model-structured path was removed: the item set is the document's own, on every run and with every model.
     from app.leveling import llm_leveling
 
-    assert "structure_mode" in llm_leveling.build_survey_tree.__code__.co_varnames
+    assert "structure_mode" not in llm_leveling.build_survey_tree.__code__.co_varnames
 
 
 def test_a_document_with_an_epic_a_bare_section_and_a_lone_requirement_gets_one_shape_in_both_modes() -> (
@@ -334,8 +333,6 @@ def test_a_requirement_heading_with_sub_sections_keeps_its_statement_in_the_tree
             StructureRefusingClient(),
             grouping_client=SimulatedGrouper(1),
             embed_client=TitleHashEmbedder(),
-            structure_mode="baseline",
-            root_regroup_mode="deterministic",
             parent_summary_client=RippleSummarizer(),
         )
     statements = [
@@ -366,8 +363,6 @@ def test_a_statement_heading_that_became_a_section_says_so_in_one_notice(mode: s
             StructureRefusingClient(),
             grouping_client=SimulatedGrouper(1),
             embed_client=TitleHashEmbedder(),
-            structure_mode="baseline",
-            root_regroup_mode="deterministic",
             parent_summary_client=RippleSummarizer(),
         )
     notices = [w for w in tree.warnings if w.kind.value == "requirement_heading_is_section"]

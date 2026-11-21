@@ -16,6 +16,7 @@ from app.config import settings
 from app.http_errors import describe_exception, exception_details
 from app.kb.profile import render_authoring_standard
 from app.kb.retrieval import retrieve_context
+from app.language_policy import dominant_script, script_name
 from app.leveling.description_text import (
     description_for_model,
     markers_as_words,
@@ -23,6 +24,7 @@ from app.leveling.description_text import (
     split_tables,
     table_context,
 )
+from app.prompts.assembly import DataBlock, Fragment, PromptCall, build_call
 
 logger = logging.getLogger(__name__)
 
@@ -68,38 +70,6 @@ class _SentinelWindow:
         return emit
 
 
-_SYSTEM_PROMPT_TEMPLATE = (
-    "You are refining ONE requirement item in a document review tool. The user "
-    "may ask a question or ask you to rewrite the item. Item type: {item_type}. "
-    "Item title: {title}. Item description: {description}. {quality_note}"
-    "{table_note}"
-    "{rewrite_rules}"
-    "Reply conversationally first. If — and only if — the user asked for a "
-    "rewrite of the title and/or description, end your reply with a new line "
-    f"containing exactly '{PROPOSAL_SENTINEL}' followed by a single-line JSON "
-    'object: {{"proposedTitle": <string or null>, "proposedDescription": '
-    "<string or null>}}. If no rewrite was requested, omit the sentinel line "
-    "entirely."
-)
-
-
-_REWRITE_RULES = (
-    "Rules for any rewrite: {shape}"
-    "keep the title unless the user asked to change it; keep every number, unit, identifier "
-    "and named entity of the current description; do not make it longer than about two times "
-    "the length of the current description unless the user asked for more; use the "
-    "organization's definitions, rules and terms given above and stay consistent with the document context. "
-    "Do not invent facts: if an improvement needs information that is neither in the item nor in "
-    "the material above (a value, a unit, an actor, a condition), ask the user for it instead of "
-    "proposing a rewrite. Either ask your question and propose nothing, or propose the rewrite: never announce a rewrite "
-    "('here is a rewrite') unless the marker line and the JSON follow in the same reply. "
-)
-_SHAPE_REQUIREMENT = "keep it ONE requirement statement (one shall/should/must); "
-_SHAPE_OTHER = (
-    "keep it a concise description of the scope of the {kind}, not a requirement statement; "
-)
-
-
 # Mirrored in frontend/src/utils/qualityCategories.ts (WEAK_CATEGORY_SCORE); a frontend test fails if the two differ.
 _WEAK_CATEGORY_SCORE = 70
 _WEAKEST_SHOWN = 2
@@ -125,9 +95,10 @@ def _weakest_categories(scores: dict | None) -> list[tuple[str, float]]:
 
 
 def weakest_category_note(scores: dict | None, profile) -> str | None:
-    """A note for the chat prompt naming the item's weakest quality categories (score below 70, at most two, weakest first)
-    with the organization's pass condition from its KB profile when it has one, so a rewrite is aimed at what actually
-    lowers the item's score. None when there are no usable scores or every category is good."""
+    """The item's weakest quality categories (score below 70, at most two, weakest first), each with the organization's pass condition
+    from its KB profile when it has one, so a rewrite is aimed at what actually lowers the item's score. Data for the chat's
+    <weakest_categories> block (the pass conditions are knowledge-base text). None when there are no usable scores or every
+    category is good."""
     weak = _weakest_categories(scores)
     if not weak:
         return None
@@ -142,68 +113,76 @@ def weakest_category_note(scores: dict | None, profile) -> str | None:
         parts.append(
             f"{name} ({value:g})" + (f", whose pass condition is: {condition}" if condition else "")
         )
-    return (
-        "The item's weakest quality categories are "
-        + "; ".join(parts)
-        + ". When the user asks for a rewrite, aim it at "
-        "improving the weakest category first without losing what the item already does well, and say which category the "
-        "rewrite targets. "
-    )
+    return "\n".join(parts)
 
 
-_TABLE_NOTE = (
-    "The description contains tables. Each is shown as a marker such as [[TABLE 1]] at its place, and its content is listed below as read-only "
-    "CSV so you can understand the item; the tables are NOT part of your rewrite. In any proposedDescription keep every marker exactly once, "
-    "unchanged, where its table belongs; never write, copy, quote, summarize or change table content or markup; a table is put back by the "
-    "tool. If the user asks to change what a table says, tell them that tables cannot be changed here and leave its marker. "
-)
-
-
-def _build_system_prompt(
+def _build_call(
     item: dict,
     kb_context: str | None,
     weakest_note: str | None = None,
     context: dict | None = None,
     standard: str | None = None,
     tables: list[str] | None = None,
-) -> str:
-    """The organization's standard first (what an Epic, Feature and Requirement are, its rules, terms and every category's pass
-    condition), then reference chunks from the knowledge base, then where the item sits in the document, then the item."""
-    quality_note = ""
-    if item.get("qualityIssues"):
-        quality_note = f"Known quality issues: {', '.join(item['qualityIssues'])}. "
-    if weakest_note:
-        quality_note += weakest_note
+    history: list[dict] | None = None,
+    user_message: str | None = None,
+    obligation_forms: list[str] | None = None,
+) -> PromptCall:
+    """The chat turn's call: the instructions in the system prompt; the organization's standard (what an Epic, Feature and Requirement are,
+    its rules, terms and every category's pass condition), the knowledge-base chunks, where the item sits in the document, the item
+    itself, its tables and its weakest categories as data blocks in this turn's user message, followed by what the user wrote. The
+    output-language policy (app.language_policy) follows the item's own script, and a Requirement's obligation form is the organization's
+    (`obligation_forms`, from its profile), carried as standard data."""
+    issues = item.get("qualityIssues")
     item_type = item.get("childType") or item.get("type") or "Requirement"
+    # A Requirement stays one statement; an Epic or Feature stays a description of its scope.
     shape = (
-        _SHAPE_REQUIREMENT if item_type == "Requirement" else _SHAPE_OTHER.format(kind=item_type)
+        Fragment("fragment_chat_shape_requirement")
+        if item_type == "Requirement"
+        else Fragment("fragment_chat_shape_other", {"kind": item_type})
     )
-    prompt = _SYSTEM_PROMPT_TEMPLATE.format(
-        rewrite_rules=_REWRITE_RULES.format(shape=shape),
-        item_type=item_type,
-        title=item["title"],
-        description=item["description"],
-        quality_note=quality_note,
-        table_note=_TABLE_NOTE if tables else "",
-    )
-    sections: list[str] = []
-    if standard:
-        sections.append(
-            f"The organization's own standard for requirements (authoritative; follow it):\n\n{standard}"
-        )
-    if tables:
-        sections.append(
-            f"The tables of the item's description (read-only, for understanding only):\n\n{table_context(tables)}"
-        )
-    if kb_context:
-        sections.append(
-            "Reference material from the knowledge base (may be incomplete or irrelevant — use only what's genuinely "
-            f"helpful):\n\n{kb_context}"
-        )
     pack = render_context_pack(context)
-    if pack:
-        sections.append(pack)
-    return "\n\n".join([*sections, prompt])
+    item_text = f"Title: {item['title']}\nDescription: {item['description']}"
+    script = dominant_script(item_text)
+    language = (
+        Fragment("fragment_output_language", {"script": script_name(script)})
+        if script
+        else Fragment("fragment_output_language_unknown")
+    )
+    forms = obligation_forms if item_type == "Requirement" else None
+    after = [
+        language,
+        *(
+            [Fragment("fragment_obligation_form", {"forms_from": "the organization's standard"})]
+            if forms
+            else []
+        ),
+    ]
+    blocks = [
+        *([DataBlock("org_standard", standard)] if standard else []),
+        *([DataBlock("org_standard", "\n".join(forms), tag="obligation_forms")] if forms else []),
+        *([DataBlock("reference", kb_context)] if kb_context else []),
+        *([DataBlock("background", pack)] if pack else []),
+        DataBlock("source", item_text, tag="item"),
+        *([DataBlock("source", table_context(tables), tag="item_tables")] if tables else []),
+        *([DataBlock("reference", weakest_note, tag="weakest_categories")] if weakest_note else []),
+    ]
+    return build_call(
+        "chat_refine_item",
+        markers={
+            "item_type": item_type,
+            "quality_note": Fragment("fragment_chat_quality_issues", {"issues": ", ".join(issues)})
+            if issues
+            else "",
+            "weakest_note": Fragment("fragment_chat_weakest_categories") if weakest_note else "",
+            "table_note": Fragment("fragment_chat_table_note") if tables else "",
+            "rewrite_rules": Fragment("fragment_chat_rewrite_rules", {"shape": shape}),
+            "proposal_sentinel": PROPOSAL_SENTINEL,
+        },
+        blocks=blocks,
+        after=after,
+        history=history or [],
+        user_text=user_message,
+    )
 
 
 async def run_chat_turn(
@@ -256,24 +235,23 @@ async def run_chat_turn(
             ", ".join(f"{name}={value:g}" for name, value in weakest) or "none",
             "yes" if profile is not None else "no",
         )
-        system_prompt = _build_system_prompt(
+        call = _build_call(
             item,
             kb_context,
             weakest_category_note(item.get("qualityCategoryScores"), profile),
             context=item.get("context"),
             standard=render_authoring_standard(profile),
             tables=tables,
-        )
-        capped_history = history[-_MAX_HISTORY_TURNS:]
-        messages = (
-            [{"role": "system", "content": system_prompt}]
-            + capped_history
-            + [{"role": "user", "content": user_message}]
+            obligation_forms=[f.text for f in profile.obligation_forms]
+            if profile is not None and getattr(profile, "source", "kb") != "default"
+            else None,
+            history=history[-_MAX_HISTORY_TURNS:],
+            user_message=user_message,
         )
 
         window = _SentinelWindow(PROPOSAL_SENTINEL)
         full_text = ""
-        async for delta, reasoning_delta in chat_client.stream_reply(messages, model, user_id):
+        async for delta, reasoning_delta in chat_client.stream_reply(call, model, user_id):
             if await publisher.is_aborted(job_id, local_id):
                 logger.info("Chat turn aborted for job_id=%s local_id=%s", job_id, local_id)
                 await publisher.publish_error(job_id, local_id, "stopped by user")

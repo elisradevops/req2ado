@@ -21,7 +21,12 @@ describe('getRunMap', () => {
     expect(get).toHaveBeenCalledWith('/jobs/job-1/run-map');
   });
 
-  it('treats a 404 (feature off, not parsed yet, or not your job) as no map', async () => {
+  it('treats a 204 (feature off or not parsed yet) as no map', async () => {
+    get.mockResolvedValue({ status: 204, data: '' });
+    await expect(getRunMap('job-1')).resolves.toBeNull();
+  });
+
+  it('treats a 404 (not your job) as no map', async () => {
     get.mockImplementation(() => Promise.reject(failure(404)));
     await expect(getRunMap('job-1')).resolves.toBeNull();
   });

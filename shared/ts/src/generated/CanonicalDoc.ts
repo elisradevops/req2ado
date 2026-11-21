@@ -35,7 +35,7 @@ export interface CanonicalDoc {
 }
 export interface Block {
   id: string;
-  kind: 'heading' | 'paragraph' | 'list_item' | 'table' | 'figure' | 'note' | 'open_tbd';
+  kind: 'title' | 'heading' | 'paragraph' | 'list_item' | 'table' | 'figure' | 'note' | 'open_tbd';
   text: string;
   heading_level?: number | null;
   /**

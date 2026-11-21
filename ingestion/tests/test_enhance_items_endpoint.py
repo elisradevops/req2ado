@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from app.leveling.id_tree_builder import synthesis_updates, title_tag_updates
 from app.main import app
+from app.prompts.assembly import block_text
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 from app.workitem.model import WorkItemType
 
@@ -298,7 +299,7 @@ def test_parent_summary_sends_the_descendants_text_to_the_model(monkeypatch) -> 
     seen: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(json.loads(json.loads(request.content)["messages"][1]["content"]))
+        seen.append(json.loads(block_text(json.loads(request.content)["messages"][1]["content"])))
         return httpx.Response(
             200,
             json={"content": json.dumps({"p": {"title": "Brand new title", "description": "D."}})},

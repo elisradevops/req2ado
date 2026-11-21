@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from app import main
 from app.kb.default_rubric import default_profile
 from app.kb.profile import Category, KbProfile
+from app.prompts.assembly import block_text
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 
 client = TestClient(main.app)
@@ -70,7 +71,9 @@ class Recorder:
     def __call__(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         self.calls.append(body)
-        asked = [c["name"] for c in json.loads(body["messages"][1]["content"])["categories"]]
+        asked = [
+            c["name"] for c in json.loads(block_text(body["messages"][1]["content"]))["categories"]
+        ]
         reasons = (
             self.reasons if self.reasons is not None else {n: f"Reason for {n}." for n in asked}
         )
@@ -90,7 +93,8 @@ class Recorder:
 
 def asked_names(recorder: Recorder) -> list[str]:
     return [
-        c["name"] for c in json.loads(recorder.calls[0]["messages"][1]["content"])["categories"]
+        c["name"]
+        for c in json.loads(block_text(recorder.calls[0]["messages"][1]["content"]))["categories"]
     ]
 
 
@@ -136,7 +140,7 @@ def test_without_a_knowledge_base_the_built_in_rubric_and_its_design_philosophy_
     system = recorder.calls[0]["messages"][0]["content"]
     assert "29148" in system and "Epic" in system and "built-in" in system.lower()
     assert body["basis"] == "built_in" and body["rubric"]["source"] == "default"
-    user = json.loads(recorder.calls[0]["messages"][1]["content"])
+    user = json.loads(block_text(recorder.calls[0]["messages"][1]["content"]))
     assert user["categories"][0]["guidance"]  # how to improve, from the built-in rubric
     assert "Carrier acquisition" in json.dumps(
         user["context"]
@@ -171,7 +175,7 @@ def test_with_a_knowledge_base_its_own_pass_conditions_are_the_basis_and_the_phi
     ).json()
     system = recorder.calls[0]["messages"][0]["content"]
     assert "organization's own" in system and "29148" not in system
-    user = json.loads(recorder.calls[0]["messages"][1]["content"])
+    user = json.loads(block_text(recorder.calls[0]["messages"][1]["content"]))
     assert user["categories"][0] == {
         "name": "Testability",
         "score": 30,
@@ -196,7 +200,7 @@ def test_a_pinned_pass_condition_is_what_the_explanation_holds_the_item_to(monke
     recorder = Recorder()
     install(monkeypatch, recorder, pinned)
     client.post("/score-explain", json=BODY)
-    user = json.loads(recorder.calls[0]["messages"][1]["content"])
+    user = json.loads(block_text(recorder.calls[0]["messages"][1]["content"]))
     assert (
         next(c for c in user["categories"] if c["name"] == "Verifiable")["pass_condition"]
         == "Has an acceptance test id"
@@ -217,7 +221,7 @@ def test_the_user_can_ask_about_chosen_categories_and_a_name_the_rubric_no_longe
         },
     )
     assert asked_names(recorder) == ["Consistent", "An old category"]
-    old = json.loads(recorder.calls[0]["messages"][1]["content"])["categories"][1]
+    old = json.loads(block_text(recorder.calls[0]["messages"][1]["content"]))["categories"][1]
     assert old["pass_condition"] is None and old["score"] == 10
 
 
@@ -245,7 +249,7 @@ def test_the_request_carries_the_item_and_never_asks_for_a_rewrite(monkeypatch) 
     recorder = Recorder()
     install(monkeypatch, recorder)
     client.post("/score-explain", json=BODY)
-    user = json.loads(recorder.calls[0]["messages"][1]["content"])
+    user = json.loads(block_text(recorder.calls[0]["messages"][1]["content"]))
     assert (
         user["item"]["description"] == BODY["description"] and user["item"]["title"] == "Lock time"
     )
@@ -340,7 +344,7 @@ def test_the_model_must_name_the_items_language_before_writing_reasons_and_is_to
     schema = call["responseSchema"]["schema"]
     assert list(schema["properties"])[0] == "language"
     assert schema["required"][0] == "language"
-    user = json.loads(call["messages"][1]["content"])
+    user = json.loads(block_text(call["messages"][1]["content"]))
     assert (
         "language" in user["reasons_language"].lower()
         and "description" in user["reasons_language"].lower()
@@ -365,5 +369,5 @@ def test_the_explanation_reads_the_text_form_of_the_description_like_the_score_d
     install(monkeypatch, recorder)
     html = "The receiver shall use:\n\n<table><tr><th>Rail</th><th>V</th></tr><tr><td>VDD</td><td>3.3</td></tr></table>"
     client.post("/score-explain", json={**BODY, "description": html})
-    user = json.loads(recorder.calls[0]["messages"][1]["content"])
+    user = json.loads(block_text(recorder.calls[0]["messages"][1]["content"]))
     assert user["item"]["description"] == "The receiver shall use:\n\nTable (CSV):\nRail,V\nVDD,3.3"

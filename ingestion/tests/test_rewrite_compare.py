@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from app import main
 from app.kb.profile import build_profile
 from app.main import app
+from app.prompts.assembly import block_text
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 from tests.test_kb_profile import DOCS, FakeProfileClient
 
@@ -54,8 +55,13 @@ def _scores(before: dict, after: dict, drop: str | None = None) -> httpx.Respons
     return httpx.Response(200, json={"content": json.dumps(entries)})
 
 
-def _entry(score: int, **cats: int) -> dict:
-    return {"score": score, "issues": [], "categoryScores": cats}
+def _entry(**levels: int) -> dict:
+    """One text's answer as the model gives it: a level (0-4) per category; the score is computed from it in code
+    (app.leveling.score_levels)."""
+    return {
+        "categories": [{"name": n, "level": v, "evidence": ""} for n, v in levels.items()],
+        "findings": [],
+    }
 
 
 def test_both_texts_are_scored_in_one_call_with_the_same_rubric_and_the_profile_context(
@@ -66,34 +72,37 @@ def test_both_texts_are_scored_in_one_call_with_the_same_rubric_and_the_profile_
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(json.loads(request.content))
         return _scores(
-            _entry(64, **{"Clear and unambiguous": 60, "Testable": 70, KEY: 90}),
-            _entry(71, **{"Clear and unambiguous": 80, "Testable": 70, KEY: 90}),
+            _entry(**{"Clear and unambiguous": 2, "Testable": 3, KEY: 4}),
+            _entry(**{"Clear and unambiguous": 4, "Testable": 3, KEY: 4}),
         )
 
     _patch(monkeypatch, handler)
     response = client.post("/rewrite/compare", json=BODY)
 
     assert response.status_code == 200, response.text
-    assert len(calls) == 1  # one call, one frame
+    # One call per vote, each with both texts, so the delta compares two readings made in the same frame.
+    assert len(calls) == 2
+    assert all(set(json.loads(block_text(c["messages"][1]["content"]))) >= {"before", "after"} for c in calls)
     sent = json.dumps(calls[0])
     assert "One reading only" in sent  # the profile's pass conditions, as in the original scoring
-    user = json.loads(calls[0]["messages"][1]["content"])
+    user = json.loads(block_text(calls[0]["messages"][1]["content"]))
     assert (
         set(user) >= {"before", "after"}
         and "acquire lock" in user["after"]
         and "lock within 5 ms" in user["before"]
     )
-    assert (
-        '"Clear and unambiguous", "Testable"' in calls[0]["messages"][0]["content"]
-    )  # the item's own categories
+    assert '"Clear and unambiguous", "Testable"' in block_text(
+        calls[0]["messages"][1]["content"], "category_names"
+    )  # the item's own categories, as data
     body = response.json()
-    assert body["before"]["score"] == 64 and body["after"]["score"] == 71 and body["delta"] == 7
-    assert body["categoryDeltas"] == {"Clear and unambiguous": 20, "Testable": 0, KEY: 0}
+    # mean(50, 75) = 62.5 and mean(100, 75) = 87.5, completeness 4 gates neither.
+    assert body["before"]["score"] == 62 and body["after"]["score"] == 88 and body["delta"] == 26
+    assert body["categoryDeltas"] == {"Clear and unambiguous": 50, "Testable": 0, KEY: 0}
     assert body["warnings"] == []
 
 
 def test_the_deterministic_warnings_come_with_the_comparison(monkeypatch) -> None:
-    _patch(monkeypatch, lambda r: _scores(_entry(64, Testable=60), _entry(40, Testable=40)))
+    _patch(monkeypatch, lambda r: _scores(_entry(Testable=3), _entry(Testable=2)))
     bad = {
         **BODY,
         "proposed_title": "Other title",
@@ -102,7 +111,7 @@ def test_the_deterministic_warnings_come_with_the_comparison(monkeypatch) -> Non
     body = client.post("/rewrite/compare", json=bad).json()
     codes = {w["code"] for w in body["warnings"]}
     assert {"title_changed", "dropped_numbers"} <= codes
-    assert body["delta"] == -24
+    assert body["delta"] == -25
 
 
 def test_when_the_model_cannot_score_both_texts_the_warnings_still_come_back_and_no_delta_is_made_up(
@@ -110,7 +119,7 @@ def test_when_the_model_cannot_score_both_texts_the_warnings_still_come_back_and
 ) -> None:
     _patch(
         monkeypatch,
-        lambda r: _scores(_entry(64, Testable=60), _entry(71, Testable=70), drop="after"),
+        lambda r: _scores(_entry(Testable=2), _entry(Testable=3), drop="after"),
     )
     bad = {**BODY, "proposed_description": "The receiver shall lock quickly."}
     response = client.post("/rewrite/compare", json=bad)
@@ -137,7 +146,7 @@ def test_a_failing_model_call_is_the_same_unavailable_comparison_not_an_error(mo
 
 
 def test_blank_texts_are_refused(monkeypatch) -> None:
-    _patch(monkeypatch, lambda r: _scores(_entry(1), _entry(2)))
+    _patch(monkeypatch, lambda r: _scores(_entry(), _entry()))
     assert (
         client.post("/rewrite/compare", json={**BODY, "proposed_description": "  "}).status_code
         == 400
@@ -155,7 +164,7 @@ def test_score_item_uses_the_profile_context_not_retrieved_chunks(monkeypatch) -
         seen.append(json.dumps(json.loads(request.content)))
         return httpx.Response(
             200,
-            json={"content": json.dumps({"adhoc": _entry(70, **{"Clear and unambiguous": 70})})},
+            json={"content": json.dumps({"adhoc": _entry(**{"Clear and unambiguous": 3})})},
         )
 
     _patch(monkeypatch, handler)
@@ -181,7 +190,7 @@ def test_score_item_without_a_profile_keeps_retrieving(monkeypatch) -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(json.dumps(json.loads(request.content)))
-        return httpx.Response(200, json={"content": json.dumps({"adhoc": _entry(70, clarity=70)})})
+        return httpx.Response(200, json={"content": json.dumps({"adhoc": _entry(clarity=3)})})
 
     _patch(monkeypatch, handler, profile=None)
     monkeypatch.setattr("app.main.retrieve_context", lambda *a, **k: ("RETRIEVED CHUNK", []))
@@ -197,7 +206,7 @@ def test_the_off_switch_for_profile_scoring_also_governs_a_rescore_and_a_compari
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(json.dumps(json.loads(request.content)))
-        return _scores(_entry(64, Testable=60), _entry(71, Testable=70))
+        return _scores(_entry(Testable=2), _entry(Testable=3))
 
     _patch(monkeypatch, handler)
     monkeypatch.setattr("app.main.settings.kb_profile_scoring", False)
@@ -212,7 +221,7 @@ def test_warnings_only_answers_at_once_without_calling_the_model(monkeypatch) ->
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(1)
-        return _scores(_entry(1), _entry(2))
+        return _scores(_entry(), _entry())
 
     _patch(monkeypatch, handler)
     body = client.post(
@@ -239,7 +248,7 @@ def test_a_prediction_that_takes_longer_than_the_cap_gives_the_warnings_and_no_s
     def slow(request: httpx.Request) -> httpx.Response:
         calls.append(1)
         time.sleep(0.8)
-        return _scores(_entry(64, Testable=60), _entry(71, Testable=70))
+        return _scores(_entry(Testable=2), _entry(Testable=3))
 
     _patch(monkeypatch, slow)
     monkeypatch.setattr("app.main.REWRITE_PREDICTION_SECONDS", 0.2)
@@ -259,9 +268,9 @@ def test_a_prediction_that_takes_longer_than_the_cap_gives_the_warnings_and_no_s
 
 
 def test_a_prediction_within_the_cap_is_returned_as_before(monkeypatch) -> None:
-    _patch(monkeypatch, lambda r: _scores(_entry(64, Testable=60), _entry(71, Testable=70)))
+    _patch(monkeypatch, lambda r: _scores(_entry(Testable=2), _entry(Testable=3)))
     monkeypatch.setattr("app.main.REWRITE_PREDICTION_SECONDS", 5)
-    assert client.post("/rewrite/compare", json=BODY).json()["delta"] == 7
+    assert client.post("/rewrite/compare", json=BODY).json()["delta"] == 25
 
 
 def test_the_prediction_model_call_ends_with_the_cap_instead_of_running_on(monkeypatch) -> None:
@@ -274,6 +283,6 @@ def test_the_prediction_model_call_ends_with_the_cap_instead_of_running_on(monke
             super().__init__(*args, **kwargs)
 
     monkeypatch.setattr("app.survey.orchestrator_llm_client.httpx.Client", Recording)
-    _patch(monkeypatch, lambda r: _scores(_entry(64, Testable=60), _entry(71, Testable=70)))
+    _patch(monkeypatch, lambda r: _scores(_entry(Testable=2), _entry(Testable=3)))
     assert client.post("/rewrite/compare", json=BODY).status_code == 200
     assert timeouts and set(timeouts) == {main.REWRITE_PREDICTION_SECONDS + 5}

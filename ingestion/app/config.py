@@ -233,14 +233,6 @@ class Settings(BaseSettings):
     survey_criteria_concurrency: int = Field(default=3, ge=1, le=4)
     survey_criteria_stage_budget_seconds: float = Field(default=3600, ge=1)
     survey_criteria_lease_max_wait_seconds: int = Field(default=120, ge=1)
-    # How disconnected root sections are grouped under synthetic topical Epics: "deterministic" clusters their titles by
-    # embedding similarity with a fixed rule (same input, same groups, whichever chat model runs the job; the model only
-    # names the groups), "llm" is the earlier model-chosen grouping, whose group count varied from 1 to 14 between runs
-    # of the same document. The threshold is the cosine similarity above which two clusters are merged.
-    root_regroup_mode: str = "deterministic"
-    # Who decides how many items a document has when no deterministic detector claims it: "baseline" (the document's own
-    # structure, the same for every model and run) or "model" (the chat model, whose count varied from run to run).
-    structure_mode: str = "baseline"
     # Requirement scoring from the user's KB profile (one fixed category list built from every KB document) instead of the
     # single best-matching document's checklist. "False" restores the earlier behaviour (KB_PROFILE_SCORING=false).
     kb_profile_scoring: bool = True
@@ -260,6 +252,9 @@ class Settings(BaseSettings):
     # one after another: 732 s in a job when the proxy held half its calls for a minute. The answers are merged in call order, so the
     # profile does not depend on this number (KB_PROFILE_CONCURRENCY=1 is the old sequential build).
     kb_profile_concurrency: int = 3
+    # Disconnected root sections are grouped under synthetic topical Epics by clustering their titles by embedding
+    # similarity with a fixed rule (same input, same groups, whichever chat model runs the job; the model only names
+    # the groups). This is the cosine similarity above which two clusters are merged.
     root_regroup_cosine_threshold: float = 0.75
     # Job transparency (docs/job-transparency-implementation-plan.md). Every
     # capability is its own kill switch and ships OFF: with both false this

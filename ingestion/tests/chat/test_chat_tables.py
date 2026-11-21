@@ -141,7 +141,8 @@ async def _turn(description: str, deltas: list[str]):
     await run_chat_turn(
         "job-1", "n0", _item(description), [], "rewrite it", None, None, None, None, chat, publisher
     )
-    return chat.messages[0]["content"], publisher
+    # Everything the model reads: the instructions and the data blocks of the user message.
+    return "\n\n".join(m["content"] for m in chat.messages.messages()), publisher
 
 
 @pytest.mark.asyncio
@@ -180,7 +181,7 @@ async def test_a_description_without_a_table_gets_the_prompt_it_always_had() -> 
             + json.dumps({"proposedTitle": None, "proposedDescription": "Better."})
         ],
     )
-    assert "TABLE" not in prompt and "Item description: The receiver shall lock." in prompt
+    assert "TABLE" not in prompt and "Description: The receiver shall lock." in prompt
     assert publisher.done["proposedDescription"] == "Better."
 
 

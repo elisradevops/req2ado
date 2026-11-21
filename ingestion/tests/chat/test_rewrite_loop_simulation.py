@@ -13,7 +13,9 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from app.leveling.score_levels import entry_from_votes
 from app.main import RewriteCompareRequest, app
+from app.prompts.assembly import block_text
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 
 client = TestClient(app)
@@ -54,15 +56,29 @@ def judge(text: str) -> dict:
     has_number = bool(re.search(r"\d", text))
     clear = max(0, 90 - 10 * vague - 10 * max(0, modals - 1) - max(0, len(text) - 200) // 20)
     testable = max(0, (85 if has_number else 40) - 12 * max(0, modals - 1) - 15 * vague)
-    return {
-        "score": (clear + testable) // 2,
-        "issues": [],
-        "categoryScores": {
+    return _answer(
+        {
             "Clear and unambiguous": clear,
             "Testable": testable,
             "completeness_as_requirement": 90,
-        },
+        }
+    )
+
+
+def _answer(points: dict[str, int]) -> dict:
+    """The rubric's 0-100 judgments as the model answers: the nearest level (0-4) per category."""
+    return {
+        "categories": [
+            {"name": name, "level": min(4, round(value / 25)), "evidence": ""}
+            for name, value in points.items()
+        ],
+        "findings": [],
     }
+
+
+def score(text: str) -> int:
+    """The score code computes from the judge's answer (both votes read the text the same way)."""
+    return entry_from_votes([judge(text), judge(text)], text)["score"]
 
 
 def needs_confirmation(body: dict) -> bool:
@@ -74,7 +90,7 @@ def needs_confirmation(body: dict) -> bool:
 
 def _install(monkeypatch, judge_fn) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        texts = json.loads(request.content)["messages"][1]["content"]
+        texts = block_text(json.loads(request.content)["messages"][1]["content"])
         parsed = json.loads(texts)
         return httpx.Response(
             200,
@@ -109,15 +125,9 @@ def flattering(monkeypatch):
     """A judge that scores every text the same and high: the prediction can never be what catches a bad rewrite."""
     _install(
         monkeypatch,
-        lambda text: {
-            "score": 90,
-            "issues": [],
-            "categoryScores": {
-                "Clear and unambiguous": 90,
-                "Testable": 90,
-                "completeness_as_requirement": 90,
-            },
-        },
+        lambda text: _answer(
+            {"Clear and unambiguous": 90, "Testable": 90, "completeness_as_requirement": 90}
+        ),
     )
 
 
@@ -156,7 +166,7 @@ def test_no_rewrite_is_both_predicted_better_and_flagged_clean_while_actually_wo
 ) -> None:
     body = compare(name)
     description, _title = REWRITES[name]
-    actually_worse = judge(description)["score"] < judge(ORIGINAL)["score"]
+    actually_worse = score(description) < score(ORIGINAL)
     if actually_worse:
         assert needs_confirmation(body), (name, body)
 
@@ -183,8 +193,8 @@ def test_both_texts_are_judged_in_the_same_call_so_the_delta_is_exactly_the_diff
     judged,
 ) -> None:
     body = compare("faithful")
-    assert body["before"]["score"] == judge(ORIGINAL)["score"]
-    assert body["after"]["score"] == judge(REWRITES["faithful"][0])["score"]
+    assert body["before"]["score"] == score(ORIGINAL) is not None
+    assert body["after"]["score"] == score(REWRITES["faithful"][0])
     assert body["delta"] == body["after"]["score"] - body["before"]["score"]
 
 

@@ -2,11 +2,11 @@ import json
 from unittest.mock import patch
 
 import httpx
-import pytest
 from fastapi.testclient import TestClient
 
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, SourceRef
 from app.main import app
+from app.prompts.assembly import block_text
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 
 client = TestClient(app)
@@ -27,14 +27,6 @@ _ANALYZE_SECTION_MARKER = "analyzing one section"
 # their own titles standing in for missing descriptions.
 _AUTHOR_CONTENT_MARKER = "authoring the requirement text"
 
-# Substring unique to distill_survey_title.v1.txt -- fires (300553) when a
-# fixture's own title happens to be short/generic (e.g. "Power"), which none
-# of these tests care about distinguishing from a real one. The shared
-# handler below answers it with the SAME title the node already had (a
-# harmless no-op distillation) rather than falling through to the generic
-# "{}" default, which has no 'title' key and would KeyError.
-_DISTILL_TITLE_MARKER = "single-line replacement title"
-
 
 def _authored_content(nodes: list[dict], request: httpx.Request) -> httpx.Response:
     """Answers a STAGE 3 author_content call from the same node fixture the
@@ -42,7 +34,7 @@ def _authored_content(nodes: list[dict], request: httpx.Request) -> httpx.Respon
     for these single-branch fixtures is exactly the temp_id STAGE 1
     returned (no "br{N}_" namespacing -- see build_survey_tree's
     node_id_prefix)."""
-    requested = json.loads(json.loads(request.content)["messages"][1]["content"])["nodes"]
+    requested = json.loads(block_text(json.loads(request.content)["messages"][1]["content"]))["nodes"]
     by_temp_id = {node["temp_id"]: node for node in nodes}
     return httpx.Response(
         200,
@@ -63,14 +55,6 @@ def _authored_content(nodes: list[dict], request: httpx.Request) -> httpx.Respon
 
 def _sr(path: str) -> SourceRef:
     return SourceRef(document_path=path, start_offset=0, end_offset=10)
-
-
-@pytest.fixture
-def model_structure(monkeypatch):
-    """The model-structured path (STRUCTURE_MODE=model), kept as the rollback: these tests exercise its mechanics."""
-    from app.config import settings
-
-    monkeypatch.setattr(settings, "structure_mode", "model")
 
 
 def test_level_endpoint_survey_mode_structures_the_document_itself_by_default() -> None:
@@ -206,68 +190,6 @@ def test_level_endpoint_derives_customer_id_per_requirement_from_its_own_numberi
     assert body["nodes"][2]["customer_id"] is None
 
 
-def test_level_endpoint_survey_mode_never_returns_tags_on_a_non_requirement_node(
-    monkeypatch, model_structure
-) -> None:
-    # End-to-end guard for the same invariant test_content_stage_never_tags_
-    # an_epic_or_feature_even_when_the_model_returns_tags_for_it pins at the
-    # unit level: even a real model response carrying tags for an Epic/
-    # Feature must never survive into the final tree.
-    nodes = [
-        {
-            "temp_id": "n0",
-            "type": "Feature",
-            "parent_temp_id": None,
-            "title": "Power",
-            "text": "Power management features.",
-            "tags": ["safety"],
-        },
-        {
-            "temp_id": "n1",
-            "type": "Requirement",
-            "parent_temp_id": "n0",
-            "title": "Power on",
-            "text": "The system shall power on within 5 seconds.",
-            "tags": ["functional"],
-        },
-    ]
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content)
-        system_prompt = body["messages"][0]["content"]
-        if _ANALYZE_SECTION_MARKER in system_prompt:
-            return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
-        if _AUTHOR_CONTENT_MARKER in system_prompt:
-            return _authored_content(nodes, request)
-        if _DISTILL_TITLE_MARKER in system_prompt:
-            requested_text = json.loads(body["messages"][1]["content"])["text"]
-            return httpx.Response(200, json={"content": json.dumps({"title": requested_text})})
-        return httpx.Response(200, json={"content": "{}"})
-
-    original_init = OrchestratorLlmClient.__init__
-
-    def patched_init(
-        self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None, cache=None
-    ):
-        original_init(self, base_url, bearer_token, model=model)
-        self._transport = httpx.MockTransport(handler)
-
-    monkeypatch.setattr(OrchestratorLlmClient, "__init__", patched_init)
-    monkeypatch.setattr("app.main.settings.llm_proxy_bearer", "test-bearer")
-
-    doc = CanonicalDoc(
-        document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
-        blocks=[Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Power", source_ref=_sr("x.txt"))],
-    )
-    response = client.post("/level", params={"mode": "survey"}, json=doc.model_dump(mode="json"))
-    assert response.status_code == 200
-    body = response.json()
-    feature_node = next(n for n in body["nodes"] if n["type"] == "Feature")
-    requirement_node = next(n for n in body["nodes"] if n["type"] == "Requirement")
-    assert feature_node["tags"] == []
-    assert requirement_node["tags"] == ["functional"]
-
-
 def test_level_endpoint_default_mode_still_uses_baseline_tree(monkeypatch) -> None:
     # Regression guard: with the mode branch added, no-mode/mode=baseline must
     # remain completely unaffected — never construct an OrchestratorLlmClient,
@@ -312,148 +234,6 @@ def test_level_endpoint_default_mode_still_uses_baseline_tree(monkeypatch) -> No
     body = response.json()
     assert body["nodes"][0]["type"] == "Epic"
     assert body["nodes"][0]["mode"] == "BASELINE"
-
-
-def test_level_endpoint_mode_survey_routes_to_build_survey_tree(
-    monkeypatch, model_structure
-) -> None:
-    nodes = [
-        {
-            "temp_id": "n0",
-            "type": "Epic",
-            "parent_temp_id": None,
-            "title": "Power on",
-            "text": "The system shall power on within 5 seconds.",
-            "tags": ["functional"],
-        }
-    ]
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.headers["authorization"] == "Bearer test-bearer"
-        body = json.loads(request.content)
-        system_prompt = body["messages"][0]["content"]
-        if _ANALYZE_SECTION_MARKER in system_prompt:
-            return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
-        if _AUTHOR_CONTENT_MARKER in system_prompt:
-            return _authored_content(nodes, request)
-        return httpx.Response(
-            200, json={"content": "{}"}
-        )  # scoring call -- degrades harmlessly, not asserted here
-
-    original_init = OrchestratorLlmClient.__init__
-
-    def patched_init(
-        self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None, cache=None
-    ):
-        original_init(self, base_url, bearer_token, model=model)
-        self._transport = httpx.MockTransport(handler)
-
-    monkeypatch.setattr(OrchestratorLlmClient, "__init__", patched_init)
-    monkeypatch.setattr("app.main.settings.llm_proxy_bearer", "test-bearer")
-
-    doc = CanonicalDoc(
-        document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
-        blocks=[
-            Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr("x.txt")),
-        ],
-    )
-    response = client.post("/level", params={"mode": "survey"}, json=doc.model_dump(mode="json"))
-    assert response.status_code == 200
-    body = response.json()
-    assert len(body["nodes"]) == 1
-    assert body["nodes"][0]["mode"] == "SURVEY"
-    assert "shall" in body["nodes"][0]["description"]
-
-
-def test_level_endpoint_survey_mode_with_area_path_injects_kb_context(
-    monkeypatch, model_structure
-) -> None:
-    captured_system_prompts: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        system_prompt = json.loads(request.content)["messages"][0]["content"]
-        captured_system_prompts.append(system_prompt)
-        nodes = [
-            {
-                "temp_id": "n0",
-                "type": "Epic",
-                "parent_temp_id": None,
-                "title": "Power on",
-                "text": "The system shall power on.",
-                "tags": ["functional"],
-            }
-        ]
-        if _ANALYZE_SECTION_MARKER in system_prompt:
-            return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
-        if _AUTHOR_CONTENT_MARKER in system_prompt:
-            return _authored_content(nodes, request)
-        return httpx.Response(200, json={"content": "{}"})
-
-    original_init = OrchestratorLlmClient.__init__
-
-    def patched_init(
-        self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None, cache=None
-    ):
-        original_init(self, base_url, bearer_token, model=model)
-        self._transport = httpx.MockTransport(handler)
-
-    monkeypatch.setattr(OrchestratorLlmClient, "__init__", patched_init)
-    monkeypatch.setattr("app.main.settings.llm_proxy_bearer", "test-bearer")
-    # retrieve_context is called from app.leveling.llm_leveling (build_survey_tree's
-    # module), not from app.main — main.py only forwards user_id/embed_client/
-    # vector_store through, it never calls retrieve_context itself. With the
-    # default model (no tool-calling support), build_survey_tree computes this
-    # ONCE for the whole document (§5c's fallback path) and threads the same
-    # kb_context into analyze_section + scoring.
-    monkeypatch.setattr(
-        "app.leveling.llm_leveling.retrieve_context",
-        lambda user_id, query_text, embed_client, vector_store, **_: (
-            "Injected KB reference text.",
-            [
-                {
-                    "source_file": "ref-doc.docx",
-                    "distance": 0.1,
-                    "similarity": 0.9,
-                    "text": "Injected KB reference text.",
-                }
-            ],
-        ),
-    )
-    # judge_kb_relevance is wired for real (user_id is set) and routes
-    # through the same MockTransport handler -- its own system prompt
-    # doesn't carry kb_context (it's the thing being verified, not something
-    # to ground itself in), so it's excluded from the assertion below via
-    # its "knowledge-base snippets" phrase.
-
-    doc = CanonicalDoc(
-        document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
-        blocks=[
-            Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr("x.txt"))
-        ],
-    )
-    response = client.post(
-        "/level",
-        params={"mode": "survey"},
-        headers={"X-Req2Ado-User-Id": "Project\\Area1"},
-        json=doc.model_dump(mode="json"),
-    )
-    assert response.status_code == 200
-    grounded_prompts = [
-        p
-        for p in captured_system_prompts
-        if "knowledge-base snippets" not in p
-    ]
-    assert grounded_prompts and all(
-        "Injected KB reference text." in prompt for prompt in grounded_prompts
-    )
-    assert response.json()["kb_citations"] == [
-        {
-            "source_file": "ref-doc.docx",
-            "similarity": 0.9,
-            "relevance": "unknown",
-            "inclusion": "retrieved",
-        }
-    ]
 
 
 def test_level_endpoint_survey_mode_without_area_path_skips_kb_retrieval(monkeypatch) -> None:
@@ -633,60 +413,6 @@ def test_level_endpoint_survey_mode_empty_link_type_catalog_skips_trace_link_inf
 
     assert response.status_code == 200
     assert captured == {}
-
-
-def test_level_endpoint_survey_mode_populates_quality_score_from_a_real_scoring_call(
-    monkeypatch, model_structure
-) -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        system_prompt = json.loads(request.content)["messages"][0]["content"]
-        # Requirement, not Epic -- quality scoring is scoped to
-        # Requirement-type nodes only (EARS/INCOSE/ISO criteria describe
-        # atomic testable statements, not Epic/Feature groupings), so an
-        # Epic node here would never reach the scoring call this test
-        # means to exercise.
-        nodes = [
-            {
-                "temp_id": "n0",
-                "type": "Requirement",
-                "parent_temp_id": None,
-                "title": "Power on",
-                "text": "The system shall power on.",
-                "tags": ["functional"],
-            }
-        ]
-        if _ANALYZE_SECTION_MARKER in system_prompt:
-            return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
-        if _AUTHOR_CONTENT_MARKER in system_prompt:
-            return _authored_content(nodes, request)
-        if "score" in system_prompt.lower() and "EARS" in system_prompt:
-            return httpx.Response(
-                200, json={"content": json.dumps({"n0": {"score": 72, "issues": ["vague_term"]}})}
-            )
-        return httpx.Response(200, json={"content": "{}"})
-
-    original_init = OrchestratorLlmClient.__init__
-
-    def patched_init(
-        self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None, cache=None
-    ):
-        original_init(self, base_url, bearer_token, model=model)
-        self._transport = httpx.MockTransport(handler)
-
-    monkeypatch.setattr(OrchestratorLlmClient, "__init__", patched_init)
-    monkeypatch.setattr("app.main.settings.llm_proxy_bearer", "test-bearer")
-
-    doc = CanonicalDoc(
-        document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
-        blocks=[
-            Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr("x.txt"))
-        ],
-    )
-    response = client.post("/level", params={"mode": "survey"}, json=doc.model_dump(mode="json"))
-    assert response.status_code == 200
-    body = response.json()
-    assert body["nodes"][0]["quality_score"] == 72
-    assert body["nodes"][0]["quality_issues"] == ["vague_term"]
 
 
 def test_level_endpoint_survey_mode_without_area_path_has_empty_kb_citations(monkeypatch) -> None:

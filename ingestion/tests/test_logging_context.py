@@ -71,9 +71,9 @@ def test_build_survey_tree_warning_carries_job_id_through_run_in_threadpool() ->
     )
     from app.leveling.llm_leveling import build_survey_tree
 
-    class _EmptyResultClient:
-        def analyze_section_skeleton(self, *args, **kwargs):
-            return [], False
+    class _FailingScoringClient:
+        def score_requirements_for_document(self, *args, **kwargs):
+            raise ValueError("boom")
 
     doc = CanonicalDoc(
         document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
@@ -106,13 +106,15 @@ def test_build_survey_tree_warning_carries_job_id_through_run_in_threadpool() ->
         # worker thread, not around the outer await -- the contextvar is
         # set directly on the thread build_survey_tree itself executes on.
         with job_id_scope("job-thread-test-123"):
-            build_survey_tree(doc, _EmptyResultClient())
+            build_survey_tree(doc, object(), _FailingScoringClient())
 
     try:
         asyncio.run(run_in_threadpool(_build_with_job_scope))
     finally:
         root_logger.removeHandler(handler)
 
-    zero_node_warnings = [r for r in captured_records if "produced 0 work items" in r.getMessage()]
-    assert len(zero_node_warnings) == 1
-    assert zero_node_warnings[0].job_id == "job-thread-test-123"
+    scoring_warnings = [
+        r for r in captured_records if "Requirement quality scoring failed" in r.getMessage()
+    ]
+    assert len(scoring_warnings) == 1
+    assert scoring_warnings[0].job_id == "job-thread-test-123"

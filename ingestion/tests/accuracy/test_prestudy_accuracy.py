@@ -78,8 +78,6 @@ def test_survey_builds_the_stated_structure_and_says_what_the_model_learned(vari
         Client(),
         grouping_client=SimulatedGrouper(1),
         embed_client=TitleHashEmbedder(),
-        structure_mode="baseline",
-        root_regroup_mode="deterministic",
     )
     result = score(tree, rich=False)
     assert not result.problems(), result.summary()
@@ -97,8 +95,6 @@ def test_survey_reads_a_document_by_the_labels_the_model_found(built) -> None:
         Client(),
         grouping_client=SimulatedGrouper(1),
         embed_client=TitleHashEmbedder(),
-        structure_mode="baseline",
-        root_regroup_mode="deterministic",
     )
     result = score(tree, rich=False)
     assert not result.problems(), result.summary()

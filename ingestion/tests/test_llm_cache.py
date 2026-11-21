@@ -1,5 +1,6 @@
 # ingestion/tests/test_llm_cache.py
-from app.survey.llm_cache import LlmResponseCache, cache_key
+from app.prompts.assembly import DataBlock, build_call
+from app.survey.llm_cache import LlmResponseCache, payload_key
 
 
 class _FakeRedis:
@@ -24,36 +25,57 @@ class _FakeRedis:
         self._store[key] = value.encode() if isinstance(value, str) else value
 
 
-def test_cache_key_differs_by_operation() -> None:
-    assert cache_key("op_a", "model", None, None, None, None, "same text") != cache_key(
-        "op_b", "model", None, None, None, None, "same text"
+_PARAMS = {"temperature": 0, "model": "m", "think": False, "maxTokens": 100}
+
+
+def _payload(
+    prompt: str = "propose_acceptance_criteria",
+    version: int | None = None,
+    source: str = "{}",
+    **params,
+) -> dict:
+    call = build_call(prompt, version=version, blocks=[DataBlock("source", source)])
+    return call.payload({**_PARAMS, **params})
+
+
+def test_a_changed_prompt_gives_a_different_key_and_an_unchanged_one_the_same_key() -> None:
+    assert payload_key(_payload(version=4)) == payload_key(_payload(version=4))
+    assert payload_key(_payload(version=3)) != payload_key(_payload(version=4))
+    assert payload_key(_payload("judge_duplicate_pair")) != payload_key(
+        _payload("judge_parameter_pairs")
     )
 
 
-def test_cache_key_differs_by_model() -> None:
-    assert cache_key("op", "model-a", None, None, None, None, "text") != cache_key(
-        "op", "model-b", None, None, None, None, "text"
-    )
+def test_the_key_differs_by_the_data_sent() -> None:
+    assert payload_key(_payload(source="text a")) != payload_key(_payload(source="text b"))
 
 
-def test_cache_key_differs_by_num_ctx_top_k_min_p_seed() -> None:
-    base = cache_key("op", "model", 8192, 40, 0.1, 42, "text")
-    assert base != cache_key("op", "model", 4096, 40, 0.1, 42, "text")
-    assert base != cache_key("op", "model", 8192, 20, 0.1, 42, "text")
-    assert base != cache_key("op", "model", 8192, 40, 0.5, 42, "text")
-    assert base != cache_key("op", "model", 8192, 40, 0.1, 7, "text")
+def test_the_key_differs_by_every_model_parameter_and_the_schema() -> None:
+    base = payload_key(_payload())
+    for change in (
+        {"model": "other"},
+        {"numCtx": 8192},
+        {"topK": 40},
+        {"minP": 0.1},
+        {"seed": 7},
+        {"maxTokens": 200},
+        {"responseSchema": {"type": "object"}},
+        {"budgetKind": "study"},
+    ):
+        assert payload_key(_payload(**change)) != base, change
 
 
-def test_cache_key_differs_by_parts() -> None:
-    assert cache_key("op", "model", None, None, None, None, "text a") != cache_key(
-        "op", "model", None, None, None, None, "text b"
-    )
+def test_the_scope_partitions_the_cache_by_what_is_not_in_the_request() -> None:
+    payload = _payload()
+    assert payload_key(payload, "user-a") != payload_key(payload, "user-b")
+    assert payload_key(payload, "user-a", 0) != payload_key(payload, "user-a", 1)
+    assert payload_key(payload, "user-a", 1) == payload_key(payload, "user-a", 1)
 
 
-def test_cache_key_is_stable_for_identical_inputs() -> None:
-    assert cache_key("op", "model", 8192, 40, 0.1, 42, "text", {"a": 1}) == cache_key(
-        "op", "model", 8192, 40, 0.1, 42, "text", {"a": 1}
-    )
+def test_an_attached_files_id_is_not_part_of_the_key_only_whether_one_is_attached() -> None:
+    first_upload = payload_key(_payload(fileId="file-1"))
+    assert payload_key(_payload(fileId="file-2")) == first_upload
+    assert payload_key(_payload()) != first_upload
 
 
 def test_get_returns_none_on_a_miss() -> None:

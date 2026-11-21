@@ -16,6 +16,7 @@ from app.leveling.id_hierarchy import HierarchyRow
 from app.leveling.id_tree_builder import build_hierarchy_subtree
 from app.leveling.live_context import live_emitter_scope
 from app.logging_context import job_id_scope
+from app.prompts.assembly import block_text
 from app.survey import orchestrator_llm_client as client_module
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 
@@ -55,7 +56,7 @@ class Server:
         self.max_in_flight = 0
 
     def answer(self, payload: dict) -> str:
-        given = json.loads(payload["messages"][1]["content"])
+        given = json.loads(block_text(payload["messages"][1]["content"]))
         # The keyed passes send no responseSchema by default, so the pass is told apart by the
         # shape of what it was asked about.
         first = next(iter(given.values()))

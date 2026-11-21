@@ -21,6 +21,8 @@ class DocumentFormat(StrEnum):
 
 
 class BlockKind(StrEnum):
+    # The document's own name (Word's "Title" style). Not a section: builders never make it an item, it names the document Epic.
+    TITLE = "title"
     HEADING = "heading"
     PARAGRAPH = "paragraph"
     LIST_ITEM = "list_item"
@@ -201,7 +203,7 @@ def plain_text_rows(table: Table) -> list[list[str]]:
     placeholder, and a real gap's own (already-empty) text for a gap. This
     is the ONLY thing table-detection/plain-text consumers that predate this
     feature need (id_hierarchy.py's rows_from_table/parsed_id_rows_from_table,
-    llm_leveling.py's _table_to_markdown non-empty check, table_groups.py) --
+    llm_leveling.py's _table_to_markdown non-empty check) --
     none of them have any positional/dimensional assumption beyond a
     rectangular grid, which Table's own validator already guarantees. Using
     this instead of hand-rolling the same derivation keeps every one of

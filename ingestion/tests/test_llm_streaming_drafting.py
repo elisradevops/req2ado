@@ -260,7 +260,7 @@ def test_the_other_drafting_calls_stream_too(live) -> None:  # noqa: ANN001
 def test_non_drafting_calls_are_never_streamed(live) -> None:  # noqa: ANN001
     server = Server(json.dumps({"verdict": "redundant"}))
     with job_id_scope(JOB), live_emitter_scope(JOB, live):
-        _client(server).judge_duplicate_cluster({"a": "x", "b": "y"}, user_id="u1")
+        _client(server).judge_duplicate_pair("x", "y", user_id="u1")
     assert server.paths() == ["/llm/chat"]
 
 

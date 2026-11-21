@@ -52,30 +52,13 @@ class LlmResponseCache:
             logger.warning("LlmResponseCache.set failed, result will not be cached", exc_info=True)
 
 
-def cache_key(
-    operation: str,
-    model: str | None,
-    num_ctx: int | None,
-    top_k: int | None,
-    min_p: float | None,
-    seed: int | None,
-    *parts: object,
-) -> str:
-    """Stable cache key covering every input that can change an LLM call's
-    output -- not just the prompt/section text. Two identical texts scored
-    under a different model/num_ctx/top_k/min_p/seed must never collide, so
-    all five are folded into the key alongside the call's own arguments."""
-    payload = json.dumps(
-        {
-            "operation": operation,
-            "model": model,
-            "num_ctx": num_ctx,
-            "top_k": top_k,
-            "min_p": min_p,
-            "seed": seed,
-            "parts": parts,
-        },
-        sort_keys=True,
-        default=str,
-    )
-    return f"llm_cache:{hashlib.sha256(payload.encode()).hexdigest()}"
+def payload_key(payload: dict, *scope: object) -> str:
+    """The cache key of one request, computed from the exact body sent: the messages (so the prompt text), the schema and every model
+    parameter. No caller lists what goes in, so nothing that changes the answer can be left out. `scope` partitions the cache by what
+    is not in the body: the user (an answer is never shared across users) or a vote number (repeated asks stay separate opinions).
+    An attached file's id changes with every upload of the same file, so only whether one is attached is part of the key."""
+    body = {k: v for k, v in payload.items() if k != "fileId"}
+    if "fileId" in payload:
+        body["fileAttached"] = bool(payload["fileId"])
+    text = json.dumps({"payload": body, "scope": scope}, sort_keys=True, default=str)
+    return f"llm_cache:{hashlib.sha256(text.encode()).hexdigest()}"

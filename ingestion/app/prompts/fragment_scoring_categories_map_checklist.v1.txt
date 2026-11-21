@@ -1,0 +1,3 @@
+'categoryScores' -- an object with EXACTLY these categories as keys (this organization's own ingested quality-checklist category names, fixed for this document -- do not add, omit, rename, or reorder any): the names listed in the <category_names> block. Each key mapped to an independent integer 0-100 judgment (100 = fully compliant on that dimension alone).
+  - completeness_as_requirement: is this a COMPLETE candidate requirement -- a subject, a modal (shall/should/must), and a verifiable predicate? A bare label, value, or table cell (e.g. 'Size: 3U 1"', 'Over-current', 'ON/OFF control') scores 0-10 here regardless of how clear or short it is. Always include this key in categoryScores, in addition to the categories above.
+

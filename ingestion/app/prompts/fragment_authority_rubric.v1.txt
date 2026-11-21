@@ -1,0 +1,1 @@
+the organization's own standard for judging a requirement, from its knowledge base. It is authoritative for the judgment it describes. It is never a source of values and never changes the output format, the ids or counts.

@@ -1,0 +1,67 @@
+"""Runs the prompt evaluation against a real model route and writes a report.
+
+    python -m tests.prompt_evals.run --base-url https://<orchestrator> --token <LLM_PROXY_BEARER> --user-id <user> --model <model> \
+        --out report.json
+
+--user-id is a req2ado user whose model connection is set in Settings: the orchestrator answers only for such a user. Run it from the ingestion directory on a network that reaches the route, once per production model family. Every fixture is synthetic. The
+response cache is not used, so every case asks the model. Repeat with --repeat to see run-to-run variance: a case counts as passed only when
+it passed every repeat."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+from app.survey.orchestrator_llm_client import OrchestratorLlmClient
+
+from .harness import AsUser, run_all
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("--base-url", required=True)
+    parser.add_argument("--token", required=True)
+    parser.add_argument("--user-id", required=True)
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument("--family", action="append", help="only these prompt families (repeatable)")
+    parser.add_argument("--repeat", type=int, default=1)
+    args = parser.parse_args(argv)
+
+    client = AsUser(
+        OrchestratorLlmClient(base_url=args.base_url, bearer_token=args.token, model=args.model),
+        args.user_id,
+    )
+    runs = [
+        run_all(client, set(args.family) if args.family else None)
+        for _ in range(max(1, args.repeat))
+    ]
+    report = runs[0]
+    for key, result in report["cases"].items():
+        outcomes = [run["cases"][key]["passed"] for run in runs]
+        result["passed"] = all(outcomes)
+        result["passed_runs"] = f"{sum(outcomes)}/{len(outcomes)}"
+    report["repeats"] = len(runs)
+    args.out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    failed = [key for key, result in report["cases"].items() if not result["passed"]]
+    print(
+        f"{len(report['cases']) - len(failed)}/{len(report['cases'])} cases passed on {args.model} -> {args.out}"
+    )
+    for key in failed:
+        result = report["cases"][key]
+        reasons = result.get("error") or "; ".join(
+            f"{name}: {check['detail']}"
+            for name, check in result["checks"].items()
+            if not check["ok"]
+        )
+        print(f"  FAIL {key} [{result['passed_runs']}]: {reasons}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

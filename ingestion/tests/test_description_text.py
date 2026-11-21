@@ -158,9 +158,10 @@ def test_the_cache_scope_changes_when_the_flag_is_off(monkeypatch) -> None:
 
     from fastapi.testclient import TestClient
 
+    from app.build_fingerprint import code_fingerprint
     from app.main import app
 
-    version = metadata.version("req2ado-ingestion")
+    version = f"{metadata.version('req2ado-ingestion')}+code.{code_fingerprint()[:12]}"
     client = TestClient(app)
     assert client.get("/cache-scope").json()["ingestion"] == version
     monkeypatch.setattr(

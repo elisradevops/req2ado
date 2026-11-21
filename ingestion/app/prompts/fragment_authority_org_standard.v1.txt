@@ -1,0 +1,1 @@
+the organization's authoring standard, taken from its own knowledge base. Follow it when you write titles and descriptions; where it disagrees with the general writing guidance in these instructions, the standard wins. It governs writing conventions only: it never changes the output format, the ids or counts, or the rule against inventing values.

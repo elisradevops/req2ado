@@ -125,7 +125,6 @@ def _run(nodes, embed, namer, warnings=None):
         namer,
         warnings if warnings is not None else [],
         embed_client=embed,
-        deterministic=True,
         cosine_threshold=0.75,
     )
 
@@ -168,14 +167,66 @@ def test_embedding_failure_leaves_every_root_alone_and_never_calls_the_model_to_
     assert namer.group_calls == 0
 
 
-def test_without_an_embed_client_the_model_path_is_unchanged() -> None:
+def _typed_doc(titles_topics_types: list[tuple[str, int, WorkItemType]]):
+    nodes, embed = _doc([(title, topic) for title, topic, _ in titles_topics_types])
+    for node, (_, _, node_type) in zip(nodes, titles_topics_types):
+        node.type = node_type
+    return nodes, embed
+
+
+def _group(nodes) -> WorkItemNode:
+    (group,) = [n for n in nodes if "synth_group" in n.local_id]
+    return group
+
+
+def test_a_group_of_requirements_stays_a_feature() -> None:
+    nodes, embed = _typed_doc(
+        [
+            ("Start-up time", 0, WorkItemType.REQUIREMENT),
+            ("Start-up current", 0, WorkItemType.REQUIREMENT),
+        ]
+    )
+    _run(nodes, embed, _Namer({}))
+    group = _group(nodes)
+    assert group.type == WorkItemType.FEATURE
+    assert {n.parent_local_id for n in nodes if n is not group} == {group.local_id}
+
+
+def test_a_group_with_an_epic_among_its_members_becomes_an_epic() -> None:
+    nodes, embed = _typed_doc(
+        [("Power", 0, WorkItemType.EPIC), ("Power budget", 0, WorkItemType.REQUIREMENT)]
+    )
+    _run(nodes, embed, _Namer({}))
+    assert _group(nodes).type == WorkItemType.EPIC
+
+
+def test_a_synthesized_group_shares_its_first_members_source_but_not_its_identity() -> None:
+    nodes, embed = _doc([("Bus A", 0), ("Bus B", 0)])
+    first_member = nodes[0]
+    _run(nodes, embed, _Namer({}))
+    group = _group(nodes)
+    assert group.source_ref == first_member.source_ref
+    assert group.identity_hash != first_member.identity_hash
+
+
+def test_grouping_is_announced_to_the_progress_callback_before_it_runs() -> None:
+    nodes, embed = _doc([("A1", 0), ("A2", 0), ("B1", 1)])
+    events: list = []
+    _regroup_disconnected_roots(
+        nodes, "regroup_", _Namer({}), [], progress_callback=events.append, embed_client=embed
+    )
+    assert [event.phase for event in events] == ["regroup_roots"]
+
+
+def test_without_an_embed_client_the_roots_stay_as_they_are() -> None:
+    # The grouping is a fixed embedding rule; with no embedder there is no grouping, and the model is never asked to choose one.
     class Llm:
         def group_root_topics(self, titles_by_id, user_id=None):
-            return {"groups": [{"title": "G", "member_ids": ["n0", "n1"]}]}
+            raise AssertionError("the model must never choose the groups")
 
     nodes = [_root("n0", "A"), _root("n1", "B")]
-    _regroup_disconnected_roots(nodes, "regroup_", Llm(), [], deterministic=True, embed_client=None)
-    assert any(n.title == "G" for n in nodes)
+    _regroup_disconnected_roots(nodes, "regroup_", Llm(), [], embed_client=None)
+    assert [(n.local_id, n.parent_local_id) for n in nodes] == [("n0", None), ("n1", None)]
 
 
 def test_77_titles_in_known_clusters_give_a_fixed_group_count() -> None:

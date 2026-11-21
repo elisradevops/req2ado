@@ -11,6 +11,7 @@ import app.survey.keyed_calls as keyed_calls_module
 from app.leveling.id_tree_builder import _apply_title_tag_pass, build_hierarchy_subtree
 from app.leveling.live_stream import DraftingDisplay
 from app.prompts import load_prompt
+from app.prompts.assembly import block_text
 from app.survey.keyed_calls import (
     KeyedEntries,
     KeyedSpec,
@@ -296,7 +297,7 @@ def test_title_and_tags_in_array_mode_sends_the_fixed_schema_and_a_matching_prom
         content = {
             "items": [
                 {"id": k, "title": f"T {k}", "tags": ["safety"]}
-                for k in json.loads(body["messages"][1]["content"])
+                for k in json.loads(block_text(body["messages"][1]["content"]))
             ]
         }
         return httpx.Response(200, json={"content": json.dumps(content)})
@@ -326,7 +327,7 @@ def test_title_and_tags_retries_only_the_omitted_ids() -> None:
     seen: list[list[str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        asked = list(json.loads(json.loads(request.content)["messages"][1]["content"]))
+        asked = list(json.loads(block_text(json.loads(request.content)["messages"][1]["content"])))
         seen.append(asked)
         answered = asked[:1] if len(seen) == 1 else asked
         return httpx.Response(
@@ -493,7 +494,7 @@ def test_client_degrades_after_the_schema_returns_nothing_and_stops_sending_it(a
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         bodies.append(body)
-        asked = list(json.loads(body["messages"][1]["content"]))
+        asked = list(json.loads(block_text(body["messages"][1]["content"])))
         if "responseSchema" in body:  # the schema'd call is answered with an empty array
             return httpx.Response(200, json={"content": json.dumps({"items": []})})
         return httpx.Response(
@@ -524,7 +525,7 @@ def test_a_truncated_array_answer_keeps_its_complete_items_and_only_the_rest_is_
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
-        asked = list(json.loads(body["messages"][1]["content"]))
+        asked = list(json.loads(block_text(body["messages"][1]["content"])))
         asked_lists.append(asked)
         if len(asked_lists) == 1:
             truncated = '{"items": [{"id": "det0_h1", "title": "Complete", "tags": []}, {"id": "det0_h2", "ti'
@@ -571,7 +572,7 @@ def test_a_title_cut_off_by_the_token_limit_is_not_kept_as_if_it_were_final(arra
     asked_lists: list[list[str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        asked = list(json.loads(json.loads(request.content)["messages"][1]["content"]))
+        asked = list(json.loads(block_text(json.loads(request.content)["messages"][1]["content"])))
         asked_lists.append(asked)
         if len(asked_lists) == 1:
             # the second element parses (the reader repairs it) but its title stops half way

@@ -3,15 +3,12 @@ that has been migrated to the keyed-result module."""
 
 from __future__ import annotations
 
+from app.leveling.score_levels import FINDINGS
 from app.survey._response_schemas import (
-    _CONFIDENCE,
-    _ISSUES,
     _TAGS,
     content_authoring_schema,
-    figure_table_mapping_schema,
     kb_relevance_schema,
     parent_summary_schema,
-    scores_schema,
     synthesis_schema,
     title_tags_schema,
 )
@@ -77,53 +74,76 @@ AUTHOR_CONTENT_SPEC = KeyedSpec(
     legacy_schema=content_authoring_schema,
 )
 
-# `node_id` is null for "belongs to no work item" and for "escalate"; a union with null is accepted by
-# both Anthropic and OpenAI/Azure strict structured output when written as anyOf.
-FIGURE_TABLE_MAPPING_SPEC = KeyedSpec(
-    name="figure_table_mapping",
-    schema_name="figure_table_mapping",
-    fields={
-        "node_id": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-        "escalate": {"type": "boolean"},
-    },
-    field_prompts={
-        "node_id": "'node_id' (a candidate id from the input, or null)",
-        "escalate": "'escalate' (boolean)",
-    },
-    id_noun="item id",
-    legacy_schema=figure_table_mapping_schema,
-)
 
-# Quality scoring. `categoryScores` was an open map (category name -> score), which is not valid strict
-# JSON Schema; on the wire it is an array of {"name", "score"} entries and the client turns it back
-# into the same dict the scoring code reads. `score` carries no minimum/maximum (neither vendor
-# supports them) -- the 0-100 range is checked where the score is read (leveling/scoring.py).
-_CATEGORY_SCORES = {
+# Quality scoring. The model judges; code scores (app.leveling.score_levels). Each entry is a level per category with the words that
+# support it, and the problems found, each with the words it concerns. Levels carry no minimum/maximum (neither vendor supports them):
+# the 0-4 range is checked where they are read.
+_CATEGORY_LEVELS = {
     "type": "array",
     "items": {
         "type": "object",
-        "properties": {"name": {"type": "string"}, "score": {"type": "integer"}},
-        "required": ["name", "score"],
+        "properties": {
+            "name": {"type": "string"},
+            "level": {"type": "integer"},
+            "evidence": {"type": "string"},
+        },
+        "required": ["name", "level", "evidence"],
+        "additionalProperties": False,
+    },
+}
+_FINDINGS = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "issue": {"type": "string", "enum": list(FINDINGS)},
+            "quote": {"type": "string"},
+        },
+        "required": ["issue", "quote"],
         "additionalProperties": False,
     },
 }
 
+def _levels_by_node_schema() -> dict:
+    """The legacy_map form of the scoring answer: a node_id-keyed object (the keys are runtime ids), each entry the same two fields."""
+    return {
+        "name": "levels_by_node",
+        "schema": {
+            "type": "object",
+            "additionalProperties": {
+                "type": "object",
+                "properties": {"categories": _CATEGORY_LEVELS, "findings": _FINDINGS},
+                "required": ["categories", "findings"],
+            },
+        },
+    }
+
+
 SCORING_SPEC = KeyedSpec(
     name="scoring",
-    schema_name="scores_by_node",
-    fields={
-        "score": {"type": "integer"},
-        "issues": {"type": "array", "items": {"type": "string", "enum": _ISSUES}},
-        "categoryScores": _CATEGORY_SCORES,
-        "confidence": {"type": "string", "enum": _CONFIDENCE},
-    },
+    schema_name="levels_by_node",
+    fields={"categories": _CATEGORY_LEVELS, "findings": _FINDINGS},
     field_prompts={
-        "score": "'score' (an integer 0-100)",
-        "issues": "'issues' (a list of zero or more issue tags)",
-        "categoryScores": '\'categoryScores\' (a list of {"name", "score"} objects)',
-        "confidence": "'confidence' (one of 'high', 'medium', 'low')",
+        "categories": '\'categories\' (a list of {"name", "level", "evidence"} objects)',
+        "findings": '\'findings\' (a list of {"issue", "quote"} objects)',
     },
     id_noun="node_id",
-    legacy_schema=scores_schema,
+    legacy_schema=_levels_by_node_schema,
 )
 
+# Within-job conflict detection (app.leveling.conflict_detection): per pair, is it the same parameter, and -- used only where code cannot
+# compare the values itself -- do the two values agree. Either may be "uncertain".
+PAIR_VERDICTS = ("yes", "no", "uncertain")
+PARAMETER_PAIR_SPEC = KeyedSpec(
+    name="parameter_pair",
+    schema_name="parameter_pairs",
+    fields={
+        "same_parameter": {"type": "string", "enum": list(PAIR_VERDICTS)},
+        "values_agree": {"type": "string", "enum": list(PAIR_VERDICTS)},
+    },
+    field_prompts={
+        "same_parameter": "'same_parameter' ('yes', 'no' or 'uncertain')",
+        "values_agree": "'values_agree' ('yes', 'no' or 'uncertain')",
+    },
+    id_noun="pair id",
+)

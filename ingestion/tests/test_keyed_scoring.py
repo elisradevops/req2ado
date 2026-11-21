@@ -1,6 +1,5 @@
-"""Quality scoring on the keyed-result module: the array wire format (`categoryScores` as a list of
-{"name", "score"} entries, no minimum/maximum), turned back into the dict the scoring code reads; the
-default mode still sends the exact prompts it always did."""
+"""Quality scoring on the keyed-result module: the model returns an anchored level per category (with its evidence) and quoted findings;
+code computes the entry the scoring code reads (app.leveling.score_levels) from two votes, the second over the items in reverse order."""
 
 import json
 from pathlib import Path
@@ -9,7 +8,11 @@ import httpx
 import pytest
 
 import app.survey.keyed_calls as keyed_calls_module
+import app.survey.orchestrator_llm_client as client_module
+from app.kb.profile import RubricText
+from app.language_policy import LanguagePolicy
 from app.leveling.scoring import _parse_category_scores
+from app.prompts.assembly import block_text
 from app.survey.keyed_calls import (
     describe_output,
     items_schema,
@@ -18,7 +21,7 @@ from app.survey.keyed_calls import (
     reset_degraded,
 )
 from app.survey.keyed_specs import SCORING_SPEC
-from app.survey.orchestrator_llm_client import OrchestratorLlmClient, _with_category_dict
+from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 
 GOLDEN = json.loads((Path(__file__).parent / "fixtures" / "scoring_prompts_none.json").read_text())
 DESCRIPTIONS = {"n1": "The unit shall do X.", "n2": "Size: 3U"}
@@ -35,9 +38,7 @@ def _default_modes(monkeypatch):
 
 @pytest.fixture
 def array_mode(monkeypatch):
-    monkeypatch.setattr(
-        keyed_calls_module.settings, "keyed_schema_passes", "scoring"
-    )
+    monkeypatch.setattr(keyed_calls_module.settings, "keyed_schema_passes", "scoring")
 
 
 def _client(handler, cache=None) -> OrchestratorLlmClient:
@@ -48,18 +49,25 @@ def _client(handler, cache=None) -> OrchestratorLlmClient:
     return client
 
 
-def _first_body(call) -> dict:
+def _bodies(call, client_setup=None) -> list[dict]:
     seen: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(json.loads(request.content))
         return httpx.Response(200, json={"content": "{}"})
 
-    call(_client(handler))
-    return seen[0]
+    client = _client(handler)
+    if client_setup is not None:
+        client_setup(client)
+    call(client)
+    return seen
 
 
-# -- the default mode is exactly what prod already ran ----------------------------------------------
+def _ids(body: dict) -> list[str]:
+    return list(json.loads(block_text(body["messages"][1]["content"])))
+
+
+# -- the default mode (prompt-only) ------------------------------------------------------------------
 
 
 CASES = {
@@ -80,13 +88,13 @@ CASES = {
 
 
 @pytest.mark.parametrize("name", CASES)
-def test_the_default_mode_sends_the_exact_prompt_it_always_did_and_no_schema(name) -> None:
-    body = _first_body(CASES[name])
+def test_the_default_mode_sends_the_reviewed_prompt_and_no_schema(name) -> None:
+    body = _bodies(CASES[name])[0]
     assert body["messages"][0]["content"] == GOLDEN[name]
     assert "responseSchema" not in body
 
 
-# -- the array wire format ---------------------------------------------------------------------------
+# -- the wire format ---------------------------------------------------------------------------------
 
 
 def _walk(node):
@@ -99,44 +107,35 @@ def _walk(node):
             yield from _walk(value)
 
 
-@pytest.mark.parametrize("spec", [SCORING_SPEC])
-def test_the_scoring_schemas_follow_the_vendor_rules_for_strict_structured_output(spec) -> None:
-    schema = items_schema(spec)
+def test_the_scoring_schema_follows_the_vendor_rules_for_strict_structured_output() -> None:
+    schema = items_schema(SCORING_SPEC)
     assert schema["strict"] is True
     for node in _walk(schema["schema"]):
         assert (
             "minimum" not in node and "maximum" not in node
-        )  # unsupported; the range is checked where the score is read
+        )  # the 0-4 range is checked where a level is read
         if node.get("type") == "object":
             assert node["additionalProperties"] is False and set(node["required"]) == set(
                 node["properties"]
             )
-    assert not any(
-        node.get("type") == "object"
-        and "additionalProperties" in node
-        and node["additionalProperties"] is not False
-        for node in _walk(schema["schema"])
-    )  # no open map left anywhere
 
 
-def test_the_scoring_schemas_do_not_grow_with_the_number_of_nodes() -> None:
+def test_the_scoring_schema_does_not_grow_with_the_number_of_nodes() -> None:
     assert len(json.dumps(items_schema(SCORING_SPEC))) < 1500
 
 
-def test_the_requirement_schema_keeps_every_field_the_scorer_reads() -> None:
+def test_the_model_gives_levels_and_quoted_findings_never_a_score_or_a_confidence() -> None:
     entry = items_schema(SCORING_SPEC)["schema"]["properties"]["items"]["items"]["properties"]
-    assert set(entry) == {"id", "score", "issues", "categoryScores", "confidence"}
-    assert entry["categoryScores"]["type"] == "array"
-    assert set(entry["categoryScores"]["items"]["properties"]) == {"name", "score"}
+    assert set(entry) == {"id", "categories", "findings"}
+    assert set(entry["categories"]["items"]["properties"]) == {"name", "level", "evidence"}
+    assert set(entry["findings"]["items"]["properties"]) == {"issue", "quote"}
+    assert "conflicting_value" not in entry["findings"]["items"]["properties"]["issue"]["enum"]
 
 
 def test_the_lead_clause_comes_from_the_same_place_as_the_other_passes() -> None:
     assert (
         output_lead(SCORING_SPEC, "none")
         == "Return ONLY a JSON object with the SAME node_id keys, each mapped to an object with"
-    )
-    assert output_lead(SCORING_SPEC, "array").startswith(
-        'Return ONLY a JSON object of the form {"items": [...]}'
     )
     assert describe_output(SCORING_SPEC, "array").startswith(
         output_lead(SCORING_SPEC, "array")[:-1]
@@ -148,167 +147,160 @@ def test_modes_follow_the_named_passes(monkeypatch) -> None:
     assert mode_for(SCORING_SPEC) == "array"
 
 
-def _array_answer(ids, categories=(("clarity", 80), ("testability", 60))):
+def _levels(ids, level=4, completeness=4, findings=()):
     return {
         "items": [
             {
                 "id": i,
-                "score": 70,
-                "issues": ["ambiguous"],
-                "confidence": "high",
-                "categoryScores": [{"name": n, "score": s} for n, s in categories],
+                "categories": [
+                    {"name": "clarity", "level": level, "evidence": ""},
+                    {"name": "testability", "level": level, "evidence": ""},
+                    {"name": "completeness_as_requirement", "level": completeness, "evidence": ""},
+                ],
+                "findings": [{"issue": f, "quote": q} for f, q in findings],
             }
             for i in ids
         ]
     }
 
 
-def test_requirement_scoring_in_array_mode_returns_the_dict_shape_the_scorer_reads(
-    array_mode,
-) -> None:
+def _answering(answer_for):
     seen: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         seen.append(body)
-        return httpx.Response(
-            200,
-            json={"content": json.dumps(_array_answer(json.loads(body["messages"][1]["content"])))},
-        )
+        return httpx.Response(200, json={"content": json.dumps(answer_for(len(seen), _ids(body)))})
 
+    return handler, seen
+
+
+def test_two_votes_the_second_in_reverse_order_and_code_computes_the_entry(array_mode) -> None:
+    handler, seen = _answering(
+        lambda call, ids: _levels(
+            ids, level=3 if call == 1 else 2, findings=[("vague_term", "do X")]
+        )
+    )
     result = _client(handler).score_requirements_for_document(DESCRIPTIONS)
 
-    assert len(seen) == 1 and seen[0]["responseSchema"] == items_schema(SCORING_SPEC)
+    assert [_ids(b) for b in seen] == [["n1", "n2"], ["n2", "n1"]]
+    assert seen[0]["responseSchema"] == items_schema(SCORING_SPEC)
+    # levels 3 and 2 average to 2.5 (62.5 -> 62); completeness 4 does not gate it; the finding's quote is in n1 only.
     assert result["n1"] == {
-        "score": 70,
-        "issues": ["ambiguous"],
+        "score": 62,
+        "issues": ["vague_term"],
+        "categoryScores": {"clarity": 62, "testability": 62, "completeness_as_requirement": 100},
         "confidence": "high",
-        "categoryScores": {"clarity": 80, "testability": 60},
     }
-    assert _parse_category_scores(result["n1"]["categoryScores"]) == {
-        "clarity": 80,
-        "testability": 60,
-    }
+    assert result["n2"]["issues"] == []
+    assert _parse_category_scores(result["n1"]["categoryScores"]) == result["n1"]["categoryScores"]
+
+
+def test_votes_that_disagree_on_whether_it_is_a_requirement_give_a_low_confidence(
+    array_mode,
+) -> None:
+    handler, _ = _answering(lambda call, ids: _levels(ids, completeness=4 if call == 1 else 0))
+    result = _client(handler).score_requirements_for_document(DESCRIPTIONS)
+    assert result["n1"]["confidence"] == "low"
+    assert "not_a_requirement" not in result["n1"]["issues"]  # the mean level, 2, states no issue
+
+
+def test_a_failed_second_vote_leaves_one_vote_and_a_medium_confidence(
+    array_mode, monkeypatch
+) -> None:
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        if len(calls) > 1:
+            return httpx.Response(500, json={})
+        return httpx.Response(200, json={"content": json.dumps(_levels(DESCRIPTIONS))})
+
+    monkeypatch.setattr(client_module.time, "sleep", lambda _seconds: None)
+    client = _client(handler)
+    result = client.score_requirements_for_document(DESCRIPTIONS)
+    assert result["n1"]["confidence"] == "medium" and result["n1"]["score"] == 100
 
 
 @pytest.mark.parametrize(
     ("kwargs", "expected"),
     [
-        ({}, "an array of EXACTLY SIX"),
+        ({}, "EXACTLY SIX"),
         ({"category_checklist": ["Necessary", "Verifiable"]}, "3 entries in total, never fewer"),
-        ({"kb_context": "KB material"}, "whose NAMES you derive"),
+        ({"kb_context": "KB material"}, "Decide the names ONCE"),
     ],
 )
 def test_the_prompt_describes_the_category_list_the_schema_expects(
     array_mode, kwargs, expected
 ) -> None:
-    body = _first_body(lambda c: c.score_requirements_for_document(DESCRIPTIONS, **kwargs))
-    prompt = body["messages"][0]["content"]
-    assert expected in prompt and '{"name": <category>, "score": <integer 0-100>}' in prompt
+    prompt = _bodies(lambda c: c.score_requirements_for_document(DESCRIPTIONS, **kwargs))[0][
+        "messages"
+    ][0]["content"]
+    assert expected in prompt and '{"name", "level", "evidence"}' in prompt
     assert output_lead(SCORING_SPEC, "array") in prompt and "exactly 2 node_id(s)" in prompt
-    assert "completeness_as_requirement" in prompt
-    assert "an object with FIVE" not in prompt and "EXACTLY these categories as keys" not in prompt
-    assert (
-        "FIVE" not in prompt
-    )  # the count and the list must agree: completeness_as_requirement is the sixth
+    assert "completeness_as_requirement: 4 = a complete requirement" in prompt
+    assert "'score' (an integer 0-100)" not in prompt and "'confidence'" not in prompt
 
 
-def test_the_default_array_prompt_names_all_six_categories_and_says_none_may_be_left_out(
-    array_mode,
-) -> None:
-    prompt = _first_body(lambda c: c.score_requirements_for_document(DESCRIPTIONS))["messages"][0][
-        "content"
-    ]
-    for name in (
-        "clarity",
-        "testability",
-        "atomicity",
-        "style",
-        "rationale",
-        "completeness_as_requirement",
-    ):
-        assert (
-            name in prompt.split("never fewer")[0]
-        )  # the list sits in the same sentence as the count
-    assert "score it 100 instead of leaving it out" in prompt
-
-
-def test_the_checklist_names_still_reach_the_model_in_array_mode(array_mode) -> None:
-    body = _first_body(
+def test_the_checklist_names_reach_the_model_with_the_completeness_check() -> None:
+    body = _bodies(
         lambda c: c.score_requirements_for_document(
             DESCRIPTIONS, category_checklist=["Necessary", "Verifiable"]
         )
-    )
-    # The built-in completeness check is part of the explicit list (it used to be prose only, and was dropped on 152 of 428 items).
+    )[0]
     assert (
-        '["Necessary", "Verifiable", "completeness_as_requirement"]'
-        in body["messages"][0]["content"]
+        block_text(body["messages"][1]["content"], "category_names")
+        == '["Necessary", "Verifiable", "completeness_as_requirement"]'
     )
 
 
-def test_a_legacy_map_answer_is_still_read_in_none_mode() -> None:
-    legacy = {
-        i: {"score": 70, "issues": [], "confidence": "high", "categoryScores": {"clarity": 80}}
-        for i in DESCRIPTIONS
-    }
+def test_the_organizations_rubric_is_authoritative_and_retrieved_chunks_are_reference() -> None:
+    body = _bodies(
+        lambda c: c.score_requirements_for_document(DESCRIPTIONS, kb_context=RubricText("R"))
+    )[0]
+    system, user = (m["content"] for m in body["messages"])
+    assert block_text(user, "rubric") == "R" and block_text(user, "reference") is None
+    assert "The <rubric> block is this organization's own standard" in system
+    assert "may be incomplete or irrelevant" not in system
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"content": json.dumps(legacy)})
-
-    assert _client(handler).score_requirements_for_document(DESCRIPTIONS) == legacy
-
-
-def test_a_malformed_category_entry_is_skipped_and_other_shapes_are_left_alone() -> None:
-    entry = {
-        "score": 1,
-        "categoryScores": [
-            {"name": "clarity", "score": 80},
-            {"score": 5},
-            "x",
-            {"name": 7, "score": 1},
-        ],
-    }
-    assert _with_category_dict(entry)["categoryScores"] == {"clarity": 80}
-    assert _with_category_dict({"score": 1, "categoryScores": {"clarity": 5}}) == {
-        "score": 1,
-        "categoryScores": {"clarity": 5},
-    }
-    assert _with_category_dict("not an entry") == "not an entry"
+    body = _bodies(lambda c: c.score_requirements_for_document(DESCRIPTIONS, kb_context="chunks"))[
+        0
+    ]
+    system, user = (m["content"] for m in body["messages"])
+    assert block_text(user, "reference") == "chunks" and block_text(user, "rubric") is None
 
 
-def test_omitted_nodes_are_asked_for_again_once(array_mode) -> None:
-    asked: list[list[str]] = []
+def test_the_obligation_form_and_hebrew_text_reach_the_model_as_written() -> None:
+    hebrew = {"h1": "היחידה תעבור בדיקת סביבה"}
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        ids = list(json.loads(json.loads(request.content)["messages"][1]["content"]))
-        asked.append(ids)
-        return httpx.Response(
-            200, json={"content": json.dumps(_array_answer(ids[:1] if len(asked) == 1 else ids))}
-        )
+    def setup(client: OrchestratorLlmClient) -> None:
+        client.language_policy = LanguagePolicy("HEBREW", ("היחידה תעבור",), "document")
 
+    body = _bodies(lambda c: c.score_requirements_for_document(hebrew), setup)[0]
+    system, user = (m["content"] for m in body["messages"])
+    assert block_text(user, "obligation_forms") == "היחידה תעבור"
+    assert "היחידה תעבור" not in system and "shows how this document states an obligation" in system
+    assert "היחידה תעבור בדיקת סביבה" in block_text(user)  # not \\u-escaped
+
+
+def test_omitted_nodes_are_asked_for_again_once_per_vote(array_mode) -> None:
+    handler, seen = _answering(lambda call, ids: _levels(ids[:1] if call in (1, 3) else ids))
     result = _client(handler).score_requirements_for_document(DESCRIPTIONS)
-
-    assert set(result) == set(DESCRIPTIONS) and asked == [["n1", "n2"], ["n2"]]
+    assert set(result) == set(DESCRIPTIONS)
+    assert [_ids(b) for b in seen] == [["n1", "n2"], ["n2"], ["n2", "n1"], ["n1"]]
 
 
 def test_an_answer_cut_off_by_the_token_limit_distrusts_its_last_node(array_mode) -> None:
-    calls: list[int] = []
+    seen: list[list[str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        calls.append(1)
-        ids = list(json.loads(json.loads(request.content)["messages"][1]["content"]))
-        # first call: cut off after n1 had been (partly) written; the retry gets the rest.
-        if len(calls) == 1:
-            return httpx.Response(
-                200, json={"content": json.dumps(_array_answer(ids)), "finishReason": "length"}
-            )
-        return httpx.Response(200, json={"content": json.dumps(_array_answer(ids))})
+        ids = _ids(json.loads(request.content))
+        seen.append(ids)
+        cut = {"finishReason": "length"} if len(seen) == 1 else {}
+        return httpx.Response(200, json={"content": json.dumps(_levels(ids)), **cut})
 
     result = _client(handler).score_requirements_for_document(DESCRIPTIONS)
-
-    assert (
-        set(result) == {"n1", "n2"} and len(calls) == 2
-    )  # n2 was distrusted, asked again, and answered
+    assert set(result) == {"n1", "n2"} and seen[1] == ["n2"]  # n2 was distrusted and asked again
 
 
 class _Cache:
@@ -322,16 +314,20 @@ class _Cache:
         self.stored[key] = value
 
 
-def test_only_a_complete_answer_is_cached(array_mode) -> None:
-    def complete(request: httpx.Request) -> httpx.Response:
-        ids = list(json.loads(json.loads(request.content)["messages"][1]["content"]))
-        return httpx.Response(200, json={"content": json.dumps(_array_answer(ids))})
-
+def test_each_complete_vote_is_cached_raw_and_scored_after_the_cache(array_mode) -> None:
     def partial(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"content": json.dumps(_array_answer(["n1"]))})
+        return httpx.Response(200, json={"content": json.dumps(_levels(["n1"]))})
 
     cache = _Cache()
     _client(partial, cache).score_requirements_for_document(DESCRIPTIONS)
     assert cache.stored == {}
-    _client(complete, cache).score_requirements_for_document(DESCRIPTIONS)
-    assert len(cache.stored) == 1
+
+    handler, _ = _answering(lambda call, ids: _levels(ids))
+    first = _client(handler, cache).score_requirements_for_document(DESCRIPTIONS)
+    assert len(cache.stored) == 2
+    assert all("categories" in entry for vote in cache.stored.values() for entry in vote.values())
+
+    def unreachable(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("both votes are cached")
+
+    assert _client(unreachable, cache).score_requirements_for_document(DESCRIPTIONS) == first
