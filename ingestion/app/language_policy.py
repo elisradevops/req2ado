@@ -130,15 +130,52 @@ def checked_obligation_forms(raw: object, text: str) -> list[str]:
 @dataclass(frozen=True)
 class LanguagePolicy:
     """`script`: the job's main script (dominant_script over its text), None when it has no words. `obligation_forms`: verbatim text
-    that says how a requirement states an obligation, from `forms_from` ("kb": the organization's profile, "document": the source)."""
+    that says how a requirement states an obligation, from `forms_from` ("kb": the organization's profile, "document": the source).
+    `document_forms`: the document's own forms for the scripts the profile's forms are not written in (empty when the forms are the
+    document's already)."""
 
     script: str | None = None
     obligation_forms: tuple[str, ...] = ()
     forms_from: Literal["kb", "document"] | None = None
+    document_forms: tuple[str, ...] = ()
+
+    def forms_for(
+        self, script: str | None
+    ) -> tuple[tuple[str, ...], Literal["kb", "document"] | None]:
+        """The forms a text written in `script` may follow, and where they come from: the main forms written in that script, else the
+        document's own in that script, else none (a form in another language cannot be followed in this one). Unfiltered when the
+        script is unknown."""
+        if script is None:
+            return (self.obligation_forms, self.forms_from) if self.obligation_forms else ((), None)
+        main = tuple(f for f in self.obligation_forms if dominant_script(f) == script)
+        if main:
+            return main, self.forms_from
+        own = tuple(f for f in self.document_forms if dominant_script(f) == script)
+        return (own, "document") if own else ((), None)
 
 
 _PROSE_KINDS = ("title", "heading", "paragraph", "list_item", "note", "open_tbd")
 _SENTENCE_KINDS = ("paragraph", "list_item")
+
+
+def _read_forms(
+    find_forms: Callable[[str], list[str]] | None, sentences: list[str]
+) -> tuple[str, ...]:
+    """The document's own forms read from `sentences` (find_forms over their obligation_sample); empty when there is nothing to read or the
+    read fails: the form is guidance, and without it the prompts still state the language."""
+    sample = obligation_sample(sentences)
+    if find_forms is None or not sample:
+        return ()
+    try:
+        return tuple(find_forms(sample))
+    except JobCancelled:
+        raise
+    except Exception as error:  # noqa: BLE001 -- see the docstring
+        logger.warning(
+            "Obligation form could not be read from the document (%s); prompts name the language only",
+            type(error).__name__,
+        )
+        return ()
 
 
 def policy_for_document(
@@ -148,24 +185,16 @@ def policy_for_document(
 ) -> LanguagePolicy:
     """The job's policy: the script of the document's prose (headings, paragraphs, list items, notes; tables and figures are mostly
     values and labels), and the obligation form from the organization's profile, or when it states none, from the document itself
-    (`find_forms` reads obligation_sample of its sentences). A failed or empty read leaves the form unknown: the prompts then name only
-    the language, and nothing guesses a form."""
+    (`find_forms` reads obligation_sample of its sentences). When the profile's forms do not cover a script the document's sentences are
+    written in, the document's own forms are read from those sentences only. A failed or empty read leaves that form unknown: the prompts
+    then name only the language, and nothing guesses a form."""
     script = dominant_script(
         "\n".join(b.text for b in doc.blocks if b.kind in _PROSE_KINDS and b.text)
     )
-    if kb_forms:
-        return LanguagePolicy(script, tuple(kb_forms), "kb")
-    sample = obligation_sample(b.text for b in doc.blocks if b.kind in _SENTENCE_KINDS)
-    if find_forms is None or not sample:
-        return LanguagePolicy(script)
-    try:
-        forms = find_forms(sample)
-    except JobCancelled:
-        raise
-    except Exception as error:  # noqa: BLE001 -- the form is guidance; without it the prompts still state the language
-        logger.warning(
-            "Obligation form could not be read from the document (%s); prompts name the language only",
-            type(error).__name__,
-        )
-        return LanguagePolicy(script)
-    return LanguagePolicy(script, tuple(forms), "document") if forms else LanguagePolicy(script)
+    sentences = [b.text for b in doc.blocks if b.kind in _SENTENCE_KINDS and b.text]
+    if not kb_forms:
+        forms = _read_forms(find_forms, sentences)
+        return LanguagePolicy(script, forms, "document") if forms else LanguagePolicy(script)
+    covered = {dominant_script(form) for form in kb_forms}
+    uncovered = [text for text in sentences if dominant_script(text) not in covered]
+    return LanguagePolicy(script, tuple(kb_forms), "kb", _read_forms(find_forms, uncovered))

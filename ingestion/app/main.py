@@ -1189,6 +1189,9 @@ def _build_survey_tree_with_scoring(
             # "Controls:", "Over 28V VDC input" read as literal section
             # titles, not ADO's own strategic-goal/capability framing).
             parent_summary_client=client,
+            # Same client, implements ContentAuthoringClient directly: the prose items code built are rewritten on the fixed tree, in the
+            # source's language and obligation form, and a rewrite that adds or drops a value is not kept (app.leveling.content_authoring).
+            content_client=client,
             # Same client, implements ConflictJudgeClient directly -- real
             # capability gap closed here: this codebase previously had no
             # conflict/contradiction detection anywhere (see

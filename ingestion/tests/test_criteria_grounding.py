@@ -205,3 +205,20 @@ def test_a_requirement_id_a_port_name_or_a_content_word_is_not_a_checkable_value
 )
 def test_a_verification_phrase_or_a_real_standard_is_still_a_checkable_value(text: str) -> None:
     assert has_quantity(text)
+
+
+@pytest.mark.parametrize(
+    ("criterion", "given"),
+    [
+        ("Verify the input is 28 V.", "המתח יהיה 28 וולט."),
+        ("בדוק שהמתח הוא 28 וולט.", "The input shall be 28 V."),
+        ("בדוק שהחזרה מתרחשת תוך 2 שניות.", "The unit shall resume within 2 s."),
+    ],
+)
+def test_a_hebrew_unit_word_is_the_unit_it_names(criterion: str, given: str) -> None:
+    assert _check(criterion, given) == []
+
+
+def test_a_hebrew_unit_word_that_names_another_unit_is_reported() -> None:
+    assert _check("Verify the current is 28 A.", "המתח יהיה 28 וולט.") == ["unit:a"]
+    assert has_quantity("המתח יהיה 28 וולט.")

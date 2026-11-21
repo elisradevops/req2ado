@@ -4,8 +4,8 @@ A quantity is a number with a unit attached ("85%", "28 VDC", "-40 to +85 °C" i
 unambiguous: SI prefixes, minutes and hours, Celsius to kelvin. Everything else (imperial units, data sizes, decibels) compares only with
 itself, so a rounded conversion in the source ("14.7 psi (101.3 kPa)") is never read as a disagreement. A bare number is not a quantity:
 counts, ids and versions carry no unit. Text normalisation (dashes, bidi marks, thousands separators, number words) and the unit
-vocabulary are criteria_grounding's, so both checks read a value the same way; units written as Hebrew words ("28 וולט", "תוך 2 שניות")
-are read here too.
+vocabulary are criteria_grounding's, units written as Hebrew words ("28 וולט", "תוך 2 שניות") included, so both checks read a value the
+same way.
 
 `compare` answers for two statements: "agree" when, in every dimension both state, each side's values are covered by the other's (one may
 state more values than the other), "differ" when each side states a value the other does not, and "incomparable" when they share no
@@ -19,43 +19,14 @@ from fractions import Fraction
 from typing import Literal
 
 from app.leveling.criteria_grounding import (
+    _HEBREW_UNIT,
+    _HEBREW_UNITS,
     _SECTION_REF,
     _STANDARD,
     _UNIT_CANON,
     _UNIT_WORDS,
     _normalise,
 )
-
-# Units written as Hebrew words, mapped to the canonical unit they name. Longest first in the pattern, so "מילישניות" is not read as "שניות".
-_HEBREW_UNITS = {
-    "מעלות צלזיוס": "°c",
-    "מילישניות": "ms",
-    "מילישנייה": "ms",
-    "שניות": "s",
-    "שנייה": "s",
-    "שניה": "s",
-    "דקות": "min",
-    "דקה": "min",
-    "שעות": "h",
-    "שעה": "h",
-    "וולט": "v",
-    "וואט": "w",
-    "ואט": "w",
-    "אמפר": "a",
-    "הרץ": "hz",
-    "קילוהרץ": "khz",
-    "מגהרץ": "mhz",
-    "מילימטר": "mm",
-    "סנטימטר": "cm",
-    "קילומטר": "km",
-    "מטרים": "m",
-    "מטר": "m",
-    "קילוגרם": "kg",
-    "גרם": "g",
-    "אחוזים": "%",
-    "אחוז": "%",
-}
-_HEBREW_UNIT = "|".join(sorted(map(re.escape, _HEBREW_UNITS), key=len, reverse=True))
 
 # A number, optionally signed, optionally the start of a range ("-40 to +85", "10-20", "5 עד 10"); then its unit and, for electrical
 # units, AC or DC. A sign counts only after a space, a bracket or the start, so "x-5 V" has no quantity at all; a Hebrew one-letter

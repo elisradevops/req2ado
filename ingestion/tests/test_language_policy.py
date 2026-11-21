@@ -206,3 +206,58 @@ def test_the_document_obligation_form_call_keeps_only_what_the_sample_contains()
     client, bodies = _client([{"obligation_forms": ["היחידה תעבור", "shall"]}])
     assert client.find_obligation_forms(HEBREW_REQUIREMENT) == ["היחידה תעבור"]
     assert block_text(bodies[0]["messages"][1]["content"]) == HEBREW_REQUIREMENT
+
+
+def test_author_content_writes_a_section_in_its_own_language_not_the_documents() -> None:
+    # A Hebrew section of a mostly English document: the instruction must name the section's script, which the script check requires.
+    client, bodies = _client([_array({"r1": {"description": HEBREW_REQUIREMENT, "tags": []}})])
+    client.language_policy = LanguagePolicy("LATIN", ("shall",), "kb")
+    content, _ = client.author_content(
+        HEBREW_REQUIREMENT, {"r1": {"type": "Requirement", "title": "t", "parent_id": None}}
+    )
+    system = bodies[0]["messages"][0]["content"]
+    assert "Hebrew script" in system and "Latin script" not in system
+    assert content["r1"]["description"] == HEBREW_REQUIREMENT
+
+
+ENGLISH_SENTENCE = "The unit shall supply power to the bus at all times."
+MIXED_DOC = _doc(("paragraph", ENGLISH_SENTENCE), ("paragraph", HEBREW_REQUIREMENT))
+
+
+def test_the_document_is_asked_only_for_the_scripts_the_organizations_forms_do_not_cover() -> None:
+    asked: list[str] = []
+    policy = policy_for_document(
+        MIXED_DOC, ["shall"], lambda s: asked.append(s) or ["היחידה תעבור"]
+    )
+    assert asked == [HEBREW_REQUIREMENT]
+    assert policy == LanguagePolicy("LATIN", ("shall",), "kb", ("היחידה תעבור",))
+
+    asked.clear()
+    covered = policy_for_document(MIXED_DOC, ["shall", "יש ל"], lambda s: asked.append(s) or ["x"])
+    assert asked == [] and covered.document_forms == ()
+
+
+def test_a_text_follows_only_the_forms_written_in_its_own_script() -> None:
+    policy = LanguagePolicy("LATIN", ("shall",), "kb", ("היחידה תעבור",))
+    assert policy.forms_for("LATIN") == (("shall",), "kb")
+    assert policy.forms_for("HEBREW") == (("היחידה תעבור",), "document")
+    assert LanguagePolicy("LATIN", ("shall",), "kb").forms_for("HEBREW") == ((), None)
+    assert policy.forms_for(None) == (("shall",), "kb")
+
+
+def test_a_hebrew_section_under_an_english_standard_gets_the_documents_hebrew_form() -> None:
+    # The fixture's failure: the only form shown was the organization's English "shall", and the model wrote English.
+    answer = _array({"r1": {"description": HEBREW_REQUIREMENT, "tags": []}})
+    node = {"r1": {"type": "Requirement", "title": "t", "parent_id": None}}
+    client, bodies = _client([answer])
+    client.language_policy = LanguagePolicy("LATIN", ("shall",), "kb", ("היחידה תעבור",))
+    client.author_content(HEBREW_REQUIREMENT, node)
+    system, user = (m["content"] for m in bodies[0]["messages"])
+    assert block_text(user, "obligation_forms") == "היחידה תעבור"
+    assert "this document's own usage" in system and "the organization's standard" not in system
+
+    client, bodies = _client([answer])
+    client.language_policy = LanguagePolicy("LATIN", ("shall",), "kb")
+    client.author_content(HEBREW_REQUIREMENT, node)
+    system, user = (m["content"] for m in bodies[0]["messages"])
+    assert block_text(user, "obligation_forms") is None and "Obligation form" not in system

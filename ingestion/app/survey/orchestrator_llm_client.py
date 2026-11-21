@@ -26,6 +26,7 @@ from app.kb.profile import RubricText
 from app.language_policy import (
     LanguagePolicy,
     checked_obligation_forms,
+    dominant_script,
     script_name,
     writes_in_script,
 )
@@ -513,19 +514,24 @@ class OrchestratorLlmClient:
         work item's title or description; none when the user's KB profile has no content."""
         return [DataBlock("org_standard", self.authoring_standard)] if self.authoring_standard else []
 
-    def _language(self, obligations: bool = False) -> tuple[list[Fragment], list[DataBlock]]:
+    def _language(
+        self, obligations: bool = False, script: str | None = None
+    ) -> tuple[list[Fragment], list[DataBlock]]:
         """The output-language policy of a prompt that writes text (app.language_policy): the rule fragment, and for a prompt that writes
         requirements (`obligations`) the obligation form. The form is the organization's or the document's own words, so it travels as a
-        data block with that authority, never inside the instructions."""
+        data block with that authority, never inside the instructions. `script`: the script of the text this call rewrites, when it has
+        one; otherwise the job's (a section in another language than most of the document is written in its own)."""
         policy = self.language_policy
+        script = script or policy.script
         after = [
-            Fragment("fragment_output_language", {"script": script_name(policy.script)})
-            if policy.script
+            Fragment("fragment_output_language", {"script": script_name(script)})
+            if script
             else Fragment("fragment_output_language_unknown")
         ]
         blocks: list[DataBlock] = []
-        if obligations and policy.obligation_forms:
-            from_kb = policy.forms_from == "kb"
+        forms, forms_from = policy.forms_for(script)
+        if obligations and forms:
+            from_kb = forms_from == "kb"
             after.append(
                 Fragment(
                     "fragment_obligation_form",
@@ -539,7 +545,7 @@ class OrchestratorLlmClient:
             blocks.append(
                 DataBlock(
                     "org_standard" if from_kb else "source",
-                    "\n".join(policy.obligation_forms),
+                    "\n".join(forms),
                     tag="obligation_forms",
                 )
             )
@@ -1879,43 +1885,25 @@ class OrchestratorLlmClient:
         kb_context: str | None = None,
         user_id: str | None = None,
     ) -> tuple[dict[str, dict], bool]:
-        """STAGE 3 of the two-stage SURVEY generation split: the CONTENT
-        half of what analyze_section used to decide in one call. Given the
-        same section text AND the tree that stage 1 already decided for it,
-        returns each node's authored content -- and nothing else.
+        """Writes each node's description and tags on a tree that is already FIXED (app.leveling.content_authoring): the prompt
+        states that no node may be added, dropped, re-typed, re-parented or renamed.
 
-        `skeleton_nodes` maps each node's own id to {'type', 'title',
-        'parent_id'} (the same real-node-id-keyed convention
-        summarize_parent_nodes already
-        uses, rather than a second temp-id space): 'parent_id' is
-        informational context for authoring, NOT something this call may
-        change. The prompt states the hierarchy is FIXED -- no node may be
-        added, dropped, re-typed, re-parented or renamed here, because those
-        decisions were already made, already repaired
-        (_repair_requirement_hierarchy), and already regrouped
-        whole-document (_regroup_disconnected_roots) before this call runs.
+        `skeleton_nodes` maps each node's own id to {'type', 'title', 'parent_id'}; 'parent_id' is context only.
 
-        Returns ({node_id: {'description', 'tags'}}, truncated). `truncated`
-        matters at least as much here as it did on the old single call -- a
-        long branch's full requirement text is exactly the payload most
-        likely to hit the output-token cap -- so it is surfaced the same way
-        rather than swallowed; a node the response omits is the CALLER's
-        problem to degrade gracefully (see llm_leveling._author_branch_content),
-        never silently dropped here.
+        Returns ({node_id: {'description', 'tags'}}, truncated). `truncated` is surfaced, not swallowed: a long branch's full text is
+        the payload most likely to hit the output cap. A node the response omits, or answers in another script, is absent; the caller
+        keeps its source wording.
 
-        Response-cached on the same terms as analyze_section/
-        analyze_section_skeleton (see this class's `cache` param), and for a
-        sharper reason than either: splitting generation in two DOUBLED a
-        document's per-branch call count, and this is the larger half of the
-        pair. Caching only stage 1 would mean a re-run paid full price for
-        exactly the expensive call. The key is computed from the request
-        itself (llm_cache.payload_key), so it covers every input that can
-        change the answer, the prompt included."""
+        Response-cached (see this class's `cache` param). The key is computed from the request itself (llm_cache.payload_key), so it
+        covers every input that can change the answer, the prompt included."""
         spec = AUTHOR_CONTENT_SPEC
         truncated = False
 
         def build(nodes: dict, mode: KeyedMode) -> tuple[PromptCall, dict]:
-            after, language_blocks = self._language(obligations=True)
+            # The language of the section being written, which the script check below also requires.
+            after, language_blocks = self._language(
+                obligations=True, script=dominant_script(section_text)
+            )
             call = build_call(
                 "author_content",
                 markers={
@@ -1970,7 +1958,7 @@ class OrchestratorLlmClient:
 
         # No retry of omitted nodes: a long branch's full text is exactly what hits the output cap, so
         # repeating it would pay twice for the same cut-off, and the caller already decides what an
-        # absent node means (see llm_leveling._author_branch_content).
+        # absent node means (see app.leveling.content_authoring).
         result = run_keyed(
             send,
             skeleton_nodes,

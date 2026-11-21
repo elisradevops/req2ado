@@ -7,7 +7,7 @@ Two jobs, both pure code and independent of any model or document layout:
   section reference ("see 4.2.1") or a version ("2.0") is not a checkable value.
 - `given_values` / `ungrounded` check a proposed criterion against the text the model was given: every number, unit attached to a number,
   standard and dotted section reference in the criterion must also stand in that text, else it is reported (the caller drops the criterion:
-  a value the input does not state is an invented value). Numbers compare by value ("5.0" = "5", "1,000" = "1000", "five" = "5", a Hebrew
+  a value the input does not state is an invented value). A unit written as a Hebrew word ("28 וולט") is the unit it names ("28 V"). Numbers compare by value ("5.0" = "5", "1,000" = "1000", "five" = "5", a Hebrew
   number word counts), signs are ignored ("-40 to +85" is the numbers 40 and 85) and a standard compares without spaces and hyphens.
 
 Known limits, accepted: a unit conversion (1 km in the input, 1000 m in the criterion) reads as invented; a number word prefixed in Hebrew
@@ -89,6 +89,36 @@ _STANDARD = re.compile(
 )
 _SECTION_REF = re.compile(r"(?<![\w.])\d+(?:\.\d+){2,}(?![\w.]*\d)")
 _NUMBER = re.compile(r"(?<![\d.])\d+(?:\.\d+)?")
+# Units written as Hebrew words, mapped to the canonical unit they name. Longest first in the pattern, so "מילישניות" is not read as "שניות".
+_HEBREW_UNITS = {
+    "מעלות צלזיוס": "°c",
+    "מילישניות": "ms",
+    "מילישנייה": "ms",
+    "שניות": "s",
+    "שנייה": "s",
+    "שניה": "s",
+    "דקות": "min",
+    "דקה": "min",
+    "שעות": "h",
+    "שעה": "h",
+    "וולט": "v",
+    "וואט": "w",
+    "ואט": "w",
+    "אמפר": "a",
+    "הרץ": "hz",
+    "קילוהרץ": "khz",
+    "מגהרץ": "mhz",
+    "מילימטר": "mm",
+    "סנטימטר": "cm",
+    "קילומטר": "km",
+    "מטרים": "m",
+    "מטר": "m",
+    "קילוגרם": "kg",
+    "גרם": "g",
+    "אחוזים": "%",
+    "אחוז": "%",
+}
+_HEBREW_UNIT = "|".join(sorted(map(re.escape, _HEBREW_UNITS), key=len, reverse=True))
 # A unit counts only when attached to a number. Single-letter units are case-sensitive, so "3 a time" has none.
 _UNIT_WORDS = (
     "milliseconds?|seconds?|minutes?|hours?|days?|msec|sec|min|hr|khz|mhz|ghz|hz|hertz|kbps|mbps|gbps|bps|dbm|db|decibels?|rpm|psi|kpa|pa|"
@@ -97,7 +127,8 @@ _UNIT_WORDS = (
     "miles?|pounds?|(?:milli)?liters?|(?:milli)?litres?"
 )
 _UNIT = re.compile(
-    rf"(?<=\d)(?:\s?(?:%|(?i:{_UNIT_WORDS})(?![A-Za-z])|[AVWNsmghΩ](?![A-Za-z]))|-(?i:{_UNIT_WORDS})(?![A-Za-z]))"
+    rf"(?<=\d)(?:\s?(?:%|(?i:{_UNIT_WORDS})(?![A-Za-z])|[AVWNsmghΩ](?![A-Za-z])|(?:{_HEBREW_UNIT})(?![\u0590-\u05FF]))"
+    rf"|-(?i:{_UNIT_WORDS})(?![A-Za-z]))"
 )
 # "one" is read as a number only when a unit follows ("one-meter drop", "one second"): elsewhere it is mostly a pronoun.
 _ONE_BEFORE_UNIT = re.compile(
@@ -216,8 +247,8 @@ def _standard_key(raw: str) -> str:
 
 
 def _unit_key(raw: str) -> str:
-    unit = raw.strip(" -").casefold()
-    return _UNIT_CANON.get(unit, unit)
+    unit = re.sub(r"\s+", " ", raw.strip(" -")).casefold()
+    return _HEBREW_UNITS.get(unit) or _UNIT_CANON.get(unit, unit)
 
 
 def _values(text: str, standard_digits_count: bool) -> Grounding:

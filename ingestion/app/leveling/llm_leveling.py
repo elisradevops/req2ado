@@ -36,6 +36,7 @@ from app.leveling.conflict_detection import (
     _detect_conflicting_duplicates,
 )
 from app.leveling.conservation import restore_lost_nodes
+from app.leveling.content_authoring import ContentAuthoringClient, author_fixed_tree
 from app.leveling.document_study import DocumentStudyClient
 
 # Extracted to grounding.py (Phase 6, NEW-04) so id_tree_builder.py can use
@@ -1103,6 +1104,9 @@ def _build_survey_tree(
     # an Epic/Feature keeps its verbatim heading-derived title, identical
     # to its description.
     parent_summary_client: ParentSummaryClient | None = None,
+    # Optional rewriting of the code-built prose items' text on the fixed tree (app.leveling.content_authoring) -- None (the default) is
+    # byte-identical to before: those items keep their source wording.
+    content_client: ContentAuthoringClient | None = None,
     # Optional near-duplicate conflict detection (see
     # _detect_conflicting_duplicates's own docstring) -- None (the
     # default) is byte-identical to before this capability existed: a
@@ -1220,6 +1224,7 @@ def _build_survey_tree(
         rulebook=rulebook,
     )
 
+    residual_nodes: list[WorkItemNode] = []
     if llm_doc.blocks or llm_doc.tables or llm_doc.figures:
         residual_nodes, residual_warnings = adopt_baseline_structure(llm_doc, rulebook)
         det_nodes = [*det_nodes, *residual_nodes]
@@ -1275,6 +1280,17 @@ def _build_survey_tree(
     deduped_citations = sorted(doc_kb_citations, key=lambda c: c.source_file)
     kb_files_available = _count_kb_files(user_id, vector_store) if kb_deps_present else None
     progress_callback = _stamp_kb_files_available(progress_callback, kb_files_available)
+
+    if content_client is not None:
+        # Before scoring, so the scores, the duplicate check and the criteria judge the text that is written.
+        author_fixed_tree(
+            residual_nodes,
+            content_client,
+            all_warnings,
+            kb_context=doc_kb_context,
+            user_id=user_id,
+            concurrency=chunk_concurrency,
+        )
 
     if scoring_client is not None:
         model_name = getattr(analysis_client, "model", None)
@@ -1444,6 +1460,7 @@ def build_survey_tree(
     title_tag_client: TitleTagClient | None = None,
     synthesis_client: SynthesisClient | None = None,
     parent_summary_client: ParentSummaryClient | None = None,
+    content_client: ContentAuthoringClient | None = None,
     conflict_client: ConflictJudgeClient | None = None,
     grouping_client: RootGroupingClient | None = None,
     branch_concurrency: int = 1,
