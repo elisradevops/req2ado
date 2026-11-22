@@ -24,6 +24,7 @@ from app.workitem.model import (
     RequirementQualityIssue,
     WarningKind,
     WorkItemNode,
+    record_prompt,
 )
 
 logger = logging.getLogger(__name__)
@@ -981,6 +982,7 @@ def _apply_quality_scores(
         raw_score = entry.get("score")
         if isinstance(raw_score, int) and not isinstance(raw_score, bool) and 0 <= raw_score <= 100:
             node.quality_score = raw_score
+        record_prompt(node, entry)
         node.quality_issues = sorted(
             {
                 RequirementQualityIssue(issue)

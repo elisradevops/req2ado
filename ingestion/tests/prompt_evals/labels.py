@@ -1,35 +1,74 @@
 """Human labels the scoring and duplicate-judging prompts are measured against. Synthetic items, written to cover the cases the review named.
 
-STATUS: DRAFT -- written by the assistant, not yet confirmed by the owner or a reviewer. A label is only ground truth once `CONFIRMED` is True;
-until then the report marks these cases as measured against draft labels."""
+STATUS: CONFIRMED by the owner on 2026-11-22 (score labels with their issue expectations, pair labels and parameter-pair labels). A change
+to any label needs the owner's confirmation again: set `CONFIRMED` back to False until then."""
 
 from __future__ import annotations
 
-CONFIRMED = False
+CONFIRMED = True
 
-# (id, text, lowest acceptable score, highest acceptable score, why)
-SCORE_LABELS: list[tuple[str, str, int, int, str]] = [
+# The scoring case passes no KB, and with no organization standard neither rationale nor active voice is required (owner decision,
+# 2026-11-22): no item may show these.
+_NO_STANDARD = frozenset({"passive_voice", "missing_rationale"})
+# A complete, measurable requirement: none of the quality problems.
+_CLEAN = _NO_STANDARD | {
+    "ambiguous",
+    "not_testable",
+    "compound",
+    "missing_acceptance_criteria",
+    "vague_term",
+    "not_a_requirement",
+    "fragment",
+    "placeholder",
+    "open_item_tbd",
+}
+
+# (id, text, lowest acceptable score, highest acceptable score, issues of which at least one must show (empty: none required),
+# issues that must not show, why)
+SCORE_LABELS: list[tuple[str, str, int, int, frozenset[str], frozenset[str], str]] = [
     (
         "good",
         "The power supply shall deliver 28 VDC ±0.5 V at loads from 0 A to 10 A, verified by test per ATP section 4.2.",
         70,
         100,
+        frozenset(),
+        _CLEAN,
         "complete, measurable, verification stated",
     ),
-    ("fragment", 'Size: 3U 1"', 0, 30, "a table cell, not a requirement"),
+    (
+        "fragment",
+        'Size: 3U 1"',
+        0,
+        30,
+        frozenset({"not_a_requirement", "fragment"}),
+        _NO_STANDARD,
+        "a table cell, not a requirement",
+    ),
     (
         "vague",
         "The system shall be user-friendly and fast.",
         0,
         50,
+        frozenset({"vague_term"}),
+        _NO_STANDARD,
         "vague terms, nothing checkable",
     ),
-    ("tbd", "The unit shall operate from a supply voltage of TBD V.", 0, 45, "value not decided"),
+    (
+        "tbd",
+        "The unit shall operate from a supply voltage of TBD V.",
+        0,
+        45,
+        frozenset({"placeholder", "open_item_tbd"}),
+        _NO_STANDARD,
+        "value not decided",
+    ),
     (
         "compound",
         "The unit shall log every fault, send it to the host within 1 s and light the fault LED until reset.",
         20,
-        65,
+        70,  # owner, 2026-11-22: was 65; with style and rationale out of the mean a clear, testable compound item scores up to ~67
+        frozenset({"compound"}),
+        _NO_STANDARD | {"not_a_requirement", "fragment"},
         "three obligations in one",
     ),
     (
@@ -37,7 +76,9 @@ SCORE_LABELS: list[tuple[str, str, int, int, str]] = [
         "היחידה תספק מתח של 28 וולט ישר בטווח עומסים של 0 עד 10 אמפר, ותאומת בבדיקה לפי סעיף 4.2 בנוהל הקבלה.",
         70,
         100,
-        "Hebrew, complete and measurable",
+        frozenset(),
+        _CLEAN,
+        "Hebrew, complete and measurable; the future-tense obligation is not passive voice",
     ),
 ]
 

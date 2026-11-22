@@ -54,6 +54,7 @@ from app.kb.profile import (
     ensure_profile,
     render_authoring_standard,
     scoring_inputs,
+    standard_requires,
 )
 from app.kb.retrieval import retrieve_context
 from app.kb.rubric import RubricOverrides, apply_overrides, rubric_view, validate_overrides
@@ -1137,6 +1138,9 @@ def _build_survey_tree_with_scoring(
             AttributeError
         ):  # a client double that is not an OrchestratorLlmClient has nowhere to put it
             pass
+        if hasattr(client, "standard_requires"):
+            # What the organization's standard requires beyond the built-in scoring categories (none without a profile).
+            client.standard_requires = standard_requires(profile)
         if hasattr(client, "language_policy"):
             # The output-language policy (app.language_policy): code reads the document's script; the obligation form is the
             # organization's (its profile), else the document's own.
@@ -2560,6 +2564,14 @@ async def _rescoring_kb_context(user_id: str | None, text: str) -> str | None:
     return kb_context
 
 
+async def _rescoring_standard_requires(user_id: str | None) -> frozenset[str]:
+    """What the user's standard requires (app.kb.profile.standard_requires), from the profile the job was scored with, so a rescore
+    judges the same categories the job did."""
+    if not user_id or not settings.kb_profile_scoring:
+        return frozenset()
+    return standard_requires(await run_in_threadpool(_stored_profile_or_none, user_id))
+
+
 @app.post("/score-item", response_model=ScoreItemResponse)
 async def score_item(body: ScoreItemRequest) -> ScoreItemResponse:
     if not body.description.strip():
@@ -2595,6 +2607,7 @@ async def score_item(body: ScoreItemRequest) -> ScoreItemResponse:
         top_k=_SURVEY_TOP_K,
         min_p=_SURVEY_MIN_P,
     )
+    client.standard_requires = await _rescoring_standard_requires(body.user_id)
 
     def _score() -> tuple:
         return score_single_requirement_text(
@@ -2691,6 +2704,7 @@ async def rewrite_compare(body: RewriteCompareRequest) -> dict:
         min_p=_SURVEY_MIN_P,
     )
     client.request_timeout_seconds = REWRITE_PREDICTION_SECONDS + CAPPED_CALL_GRACE_SECONDS
+    client.standard_requires = await _rescoring_standard_requires(body.user_id)
 
     def _score() -> dict:
         return score_texts_together(

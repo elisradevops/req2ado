@@ -636,6 +636,26 @@ def kb_category_consolidation_schema() -> dict:
     }
 
 
+def standard_requirements_schema() -> dict:
+    """find_standard_requirements: whether the organization's material requires the active voice and a stated rationale, each with
+    the words that say so."""
+    answer = {
+        "type": "object",
+        "properties": {"required": {"type": "boolean"}, "quote": {"type": "string"}},
+        "required": ["required", "quote"],
+        "additionalProperties": False,
+    }
+    return {
+        "name": "standard_requirements",
+        "schema": {
+            "type": "object",
+            "properties": {"active_voice": answer, "rationale": answer},
+            "required": ["active_voice", "rationale"],
+            "additionalProperties": False,
+        },
+    }
+
+
 def score_explanation_schema() -> dict:
     """explain_category_scores: one short reason per category the author asked about."""
     return {

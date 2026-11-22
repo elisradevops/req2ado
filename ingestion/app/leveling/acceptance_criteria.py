@@ -44,6 +44,7 @@ from app.workitem.model import (
     WarningKind,
     WorkItemNode,
     WorkItemType,
+    record_prompt,
 )
 
 if TYPE_CHECKING:
@@ -502,6 +503,7 @@ def propose_acceptance_criteria(
                 continue
             if answer.get("needs_author_input") is True:
                 _append(node, _needs_input_section(_strings(answer.get("missing"))))
+                record_prompt(node, answer)
                 needs_input += 1
                 continue
             criteria = [c for c in _strings(answer.get("criteria")) if not _restates(c, texts.get(node.local_id, ""))]
@@ -522,12 +524,14 @@ def propose_acceptance_criteria(
                 # Only what the model says is missing from the requirement: a value one of ITS criteria invented (the ungrounded ones)
                 # is not something the requirement leaves open, and naming it would present an invented number as the author's gap.
                 _append(node, _needs_input_section(_strings(answer.get("missing"))))
+                record_prompt(node, answer)
                 needs_input += 1
                 continue
             body = f"<p><b>{SECTION_TITLE}</b></p>{_list_html(kept)}"
             if assumptions:
                 body += f"<p><i>Assumptions</i></p>{_list_html(assumptions)}"
             _append(node, f'<div {_MARKER}="criteria">{body}</div>')
+            record_prompt(node, answer)
     if unanswered:
         warnings.append(
             IntegrityWarning.make(

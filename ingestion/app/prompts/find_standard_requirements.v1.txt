@@ -1,0 +1,7 @@
+You are given a JSON object with "rules" (the mandatory rules a company's requirements-writing documents state) and "categories" (the quality criteria those documents use to judge a requirement, each with its pass condition). Decide, for each of these two writing requirements, whether the company's material requires it of every requirement statement:
+- active_voice: a requirement must be written in the active voice, naming who or what must act.
+- rationale: a requirement must state its rationale, the reason it is needed.
+
+Answer true only when a rule or criterion states it as something a requirement must do. A recommendation, an example, a mention in passing or a different quality is false. When in doubt, answer false. For a true answer, "quote" is the exact words of the rule or criterion that states it, copied from the input in its own language; for a false answer, "quote" is an empty string. A true answer whose quote is not in the input is discarded.
+
+Return ONLY a JSON object {"active_voice": {"required": true or false, "quote": "..."}, "rationale": {"required": true or false, "quote": "..."}}. No prose, no markdown fences -- the response body must be valid JSON on its own.

@@ -28,7 +28,13 @@ from app.leveling.criteria_grounding import given_values, ungrounded
 from app.leveling.description_text import html_to_model_text, split_tables
 from app.leveling.id_tree_builder import synthesis_updates
 from app.leveling.live_context import current_stage_counter
-from app.workitem.model import IntegrityWarning, WarningKind, WorkItemNode, WorkItemType
+from app.workitem.model import (
+    IntegrityWarning,
+    WarningKind,
+    WorkItemNode,
+    WorkItemType,
+    record_prompt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +224,7 @@ def author_fixed_tree(
             node.fidelity_hash = updates["fidelity_hash"]
             node.grounding_score = updates["grounding_score"]
             node.tags = updates.get("tags", []) if requirement else []
+            record_prompt(node, entry)
 
     if counter is not None:
         counter.complete("write")

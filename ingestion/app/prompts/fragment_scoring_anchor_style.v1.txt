@@ -1,0 +1,1 @@
+  - style (the organization's standard requires the active voice): 4 = active voice with a clear subject that must act; 1 or less = passive voice that hides who must act.

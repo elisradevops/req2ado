@@ -15,17 +15,6 @@ from app.workitem.model import RequirementTag
 _TAG_VOCABULARY = ", ".join(t.value for t in RequirementTag)
 
 
-def test_generate_requirements_prompt() -> None:
-    assert load_prompt("generate_requirements") == (
-        "You convert informal requirement text into formal 'shall' statements. "
-        "Return ONLY a JSON array of objects, each with 'text' (a single formal "
-        "shall-style requirement sentence) and 'tags' (a list of zero or more of: "
-        "functional, non_functional, interface, performance, regulatory, safety, "
-        "security, operation, maintenance, feature, behavior). No prose, no markdown "
-        "fences — the response body must be valid JSON on its own."
-    )
-
-
 def test_infer_trace_links_prompt() -> None:
     # v3 (kept for history) took the catalog as a marker; v4 reads it from the <link_types> data block.
     assert '- Some.Ref ("Some Name")' in load_prompt(
@@ -113,6 +102,8 @@ def test_title_and_tags_for_rows_prompt() -> None:
     assert _TAG_VOCABULARY in result
     assert "The input contains exactly 5 row(s)." in result
     assert "Return exactly 5 entries" in result
+    # v3: v2 said "omit only if the text is already short and clear, in which case return it unchanged" -- omit and return at once.
+    assert "the title is the text unchanged" in result and "omit only if" not in result
 
 
 def test_summarize_parent_nodes_prompt() -> None:
@@ -183,7 +174,7 @@ def test_load_prompt_raises_on_unknown_marker() -> None:
     import pytest
 
     with pytest.raises(ValueError, match="no '__NOT_A_REAL_MARKER__' placeholder"):
-        load_prompt("generate_requirements", not_a_real_marker="x")
+        load_prompt("judge_rule_conformance", not_a_real_marker="x")
 
 
 def test_load_prompt_raises_on_missing_file() -> None:

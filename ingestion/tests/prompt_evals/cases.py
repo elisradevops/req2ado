@@ -9,6 +9,7 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from app.language_policy import LanguagePolicy
 from app.leveling.trace_links import _link_target
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 
@@ -158,7 +159,9 @@ def _check_author_injection(result: object) -> Checks:
 _SCORE_TEXTS = {i: text for i, text, *_ in labels.SCORE_LABELS}
 
 
-def _score_reply(levels: dict[str, tuple[int, int]]) -> str:
+def _score_reply(
+    levels: dict[str, tuple[int, int]], findings: dict[str, list[tuple[str, str]]] | None = None
+) -> str:
     """A scoring answer as the model gives it: per item (level of every built-in quality category, completeness level). Code computes the
     score (app.leveling.score_levels): the quality level's 0-100 score, gated by completeness."""
     quality = ("clarity", "testability", "atomicity", "style", "rationale")
@@ -167,7 +170,7 @@ def _score_reply(levels: dict[str, tuple[int, int]]) -> str:
             i: {
                 "categories": [{"name": n, "level": level, "evidence": ""} for n in quality]
                 + [{"name": "completeness_as_requirement", "level": complete, "evidence": ""}],
-                "findings": [],
+                "findings": [{"issue": f, "quote": q} for f, q in (findings or {}).get(i, [])],
             }
             for i, (level, complete) in levels.items()
         }
@@ -176,8 +179,13 @@ def _score_reply(levels: dict[str, tuple[int, int]]) -> str:
 
 def _check_scores(result: object) -> Checks:
     checks: Checks = {"every_item": p.same_ids(result, _SCORE_TEXTS)}
-    for i, _text, low, high, _why in labels.SCORE_LABELS:
+    for i, _text, low, high, show, not_show, _why in labels.SCORE_LABELS:
         checks[f"score_{i}"] = p.within((result.get(i) or {}).get("score"), low, high, f"{i} score")
+        issues = set((result.get(i) or {}).get("issues") or [])
+        checks[f"issues_{i}"] = (
+            (not show or bool(show & issues)) and not (not_show & issues),
+            f"{i} issues {sorted(issues)}: one of {sorted(show)} expected, none of {sorted(not_show & issues)}",
+        )
     return checks
 
 
@@ -190,7 +198,12 @@ _SCORE_GOOD = _score_reply(
         "tbd": (1, 4),
         "compound": (2, 4),
         "good_he": (3, 4),
-    }
+    },
+    {
+        "vague": [("vague_term", "user-friendly")],
+        "tbd": [("placeholder", "TBD")],
+        "compound": [("compound", "send it to the host within 1 s")],
+    },
 )
 # ... and fragment 100, vague 75, tbd 100, compound 100, good_he 6 (outside them).
 _SCORE_BAD = _score_reply(
@@ -451,6 +464,66 @@ def _check_parents(result: object) -> Checks:
     }
 
 
+# A document mostly in English (the job's script) with one Hebrew section: each node is written in its own section's language.
+_MIXED_PARENTS = {
+    "he": _HE_PARENTS["f1"],
+    "en": {
+        "type": "Feature",
+        "title": "Environment",
+        "requirement_titles": ["Operating temperature"],
+        "requirement_descriptions": ["The unit shall operate from -40 C to +70 C."],
+    },
+}
+
+
+def _in_job_script(client: object, script: str, call: Callable[[], object]) -> object:
+    """`call` made with the job's language policy set to `script` (an eval client is shared by every case, so it is put back)."""
+    inner = getattr(client, "_client", client)  # harness.AsUser wraps the client
+    before = inner.language_policy
+    inner.language_policy = LanguagePolicy(script, (), "document")
+    try:
+        return call()
+    finally:
+        inner.language_policy = before
+
+
+def _check_mixed_parents(result: object) -> Checks:
+    he, en = result.get("he") or {}, result.get("en") or {}
+    english = [en.get("title", ""), en.get("description", "")]
+    return {
+        "every_node": p.same_ids(result, _MIXED_PARENTS),
+        "hebrew_section_in_hebrew": p.all_hebrew([he.get("title", ""), he.get("description", "")]),
+        "english_section_in_english": (
+            all(text and p.hebrew_ratio(text) == 0 for text in english),
+            f"not English: {[t[:40] for t in english]}",
+        ),
+    }
+
+
+# --- find_standard_requirements --------------------------------------------------------------------------------------------------
+
+# A synthetic standard: it requires the active voice (in Hebrew) and only recommends a rationale.
+_STANDARD_RULES = [
+    "כל דרישה תנוסח בקול פעיל ותציין במפורש מי מבצע אותה.",
+    "It is recommended to add a short rationale where the reason for a requirement may not be obvious.",
+    "Each requirement shall have a unique identifier.",
+]
+_STANDARD_CATEGORIES = [
+    {"name": "Verifiable", "pass_condition": "The requirement states how it is verified."}
+]
+
+
+def _check_standard(result: object) -> Checks:
+    found = result if isinstance(result, dict) else {}
+    material = " ".join(_STANDARD_RULES).split()
+    quote = " ".join(str(found.get("active_voice", "")).split())
+    return {
+        "active_voice_required": (bool(quote), f"answer {found}"),
+        "quote_from_the_rule": (bool(quote) and quote in " ".join(material), f"quote {quote!r}"),
+        "recommendation_is_not_required": ("rationale" not in found, f"answer {found}"),
+    }
+
+
 # --- judge_rule_conformance ------------------------------------------------------------------------------------------------------
 
 _RULE = "Every interface requirement shall name the interface standard it uses."
@@ -632,6 +705,67 @@ CASES: list[Case] = [
                         "title": "Power supply capability",
                         "description": "Input voltage and fast boot.",
                     }
+                }
+            )
+        ],
+        frozenset({"hebrew"}),
+    ),
+    Case(
+        "summarize_parent_nodes",
+        "mixed_languages",
+        lambda c: _in_job_script(c, "LATIN", lambda: c.summarize_parent_nodes(_MIXED_PARENTS)),
+        _check_mixed_parents,
+        [  # one call per language, Hebrew first (app.survey.orchestrator_llm_client._by_script)
+            _j(
+                {
+                    "he": {
+                        "title": "אספקת חשמל ליחידה",
+                        "description": "מתח כניסה ואתחול מהיר של היחידה.",
+                    }
+                }
+            ),
+            _j(
+                {
+                    "en": {
+                        "title": "Environmental operation",
+                        "description": "Operation across the temperature range.",
+                    }
+                }
+            ),
+        ],
+        [
+            _j(
+                {
+                    "he": {
+                        "title": "Power supply capability",
+                        "description": "Input voltage and fast boot.",
+                    }
+                }
+            )
+        ],
+        frozenset({"hebrew"}),
+    ),
+    Case(
+        "find_standard_requirements",
+        "required_or_recommended",
+        lambda c: c.find_standard_requirements(_STANDARD_RULES, _STANDARD_CATEGORIES),
+        _check_standard,
+        [
+            _j(
+                {
+                    "active_voice": {"required": True, "quote": "תנוסח בקול פעיל"},
+                    "rationale": {"required": False, "quote": ""},
+                }
+            )
+        ],
+        [
+            _j(
+                {
+                    "active_voice": {"required": True, "quote": "תנוסח בקול פעיל"},
+                    "rationale": {
+                        "required": True,
+                        "quote": "It is recommended to add a short rationale",
+                    },
                 }
             )
         ],

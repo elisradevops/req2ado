@@ -12,6 +12,7 @@ import app.survey.orchestrator_llm_client as orchestrator_llm_client_module
 from app.prompts.assembly import DataBlock, block_text, build_call
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 from app.workitem.model import RequirementQualityIssue
+from tests._prompt_tags import untagged
 
 
 def _judged(level: int, *findings: tuple[str, str]) -> dict:
@@ -180,7 +181,7 @@ def test_score_requirements_for_document_parses_valid_json_response() -> None:
     client._transport = _mock_transport(response_json)
 
     result = client.score_requirements_for_document({"0": "The system shall be fast."})
-    assert result == {
+    assert untagged(result) == {
         "0": {
             "score": 56,  # mean(75, 75) gated by completeness 3 of 4
             "issues": ["vague_term"],
@@ -825,9 +826,12 @@ def test_score_requirements_for_document_includes_an_issues_enum_schema_with_add
     # fixed properties set, since keys are runtime node_ids.
     assert "additionalProperties" in schema
     findings = schema["additionalProperties"]["properties"]["findings"]["items"]["properties"]
-    # Every issue but conflicting_value, which only duplicate detection can state (it needs two items).
+    # Every issue but conflicting_value, which only duplicate detection can state (it needs two items), and the issues about something
+    # missing, which only the levels state (app.leveling.score_levels.LEVEL_ONLY_ISSUES).
     assert set(findings["issue"]["enum"]) == {i.value for i in RequirementQualityIssue} - {
-        "conflicting_value"
+        "conflicting_value",
+        "missing_acceptance_criteria",
+        "missing_rationale",
     }
 
 
@@ -858,7 +862,7 @@ def test_score_requirements_for_document_schema_allows_dynamic_category_scores()
     assert category["name"] == {"type": "string"} and category["level"] == {"type": "integer"}
 
 
-def test_score_requirements_for_document_prompt_explains_all_five_categories() -> None:
+def test_score_requirements_for_document_prompt_explains_the_categories_the_standard_requires() -> None:
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -871,9 +875,15 @@ def test_score_requirements_for_document_prompt_explains_all_five_categories() -
     client._transport = httpx.MockTransport(handler)
 
     client.score_requirements_for_document({"0": "text"})
-
-    for keyword in ("clarity", "testability", "atomicity", "style", "rationale"):
+    for keyword in ("clarity", "testability", "atomicity"):
         assert keyword in captured["system_prompt"]
+    # No standard: active voice and a rationale are not required, so not judged.
+    assert "- style" not in captured["system_prompt"] and "- rationale" not in captured["system_prompt"]
+
+    client.score_requirements_for_document(
+        {"0": "text"}, standard_requires=frozenset({"active_voice", "rationale"})
+    )
+    assert "- style (" in captured["system_prompt"] and "- rationale (" in captured["system_prompt"]
 
 
 def test_score_requirements_for_document_prompt_covers_completeness_and_new_issue_tags() -> None:
@@ -934,7 +944,7 @@ def test_score_requirements_for_document_derives_dynamic_categories_when_kb_cont
     # Determinism instruction: same category set across every node in the batch.
     assert "Decide the names ONCE and use the same set" in prompt
     # Still documents the fallback for when the material has no clear checklist.
-    assert "use clarity, testability, atomicity, style and rationale instead" in prompt
+    assert "use clarity, testability and atomicity instead" in prompt
 
 
 def test_score_requirements_for_document_uses_fixed_categories_without_kb_context() -> None:
@@ -954,7 +964,7 @@ def test_score_requirements_for_document_uses_fixed_categories_without_kb_contex
     client.score_requirements_for_document({"0": "text"})
 
     prompt = captured["system_prompt"]
-    assert "EXACTLY SIX" in prompt
+    assert "EXACTLY 4" in prompt
     assert "Decide the names ONCE" not in prompt
 
 
@@ -1484,7 +1494,7 @@ def test_author_content_returns_description_and_tags_per_node() -> None:
     }
     result, truncated = client.author_content("Display\nThe display shall support HDR.", skeleton)
 
-    assert result == content
+    assert untagged(result) == content
     assert truncated is False
     # The already-decided skeleton crosses the wire alongside the section
     # text -- this call is given the tree, it does not re-derive one.
@@ -1610,7 +1620,7 @@ def test_author_content_cache_miss_then_hit_skips_the_second_llm_call() -> None:
     second_result, second_truncated = client.author_content("Some section text.", skeleton)
 
     assert call_count == 1  # second call hit the cache, never reached the transport
-    assert first_result == second_result == content
+    assert first_result == second_result and untagged(first_result) == content
     assert first_truncated is second_truncated is False
 
 
@@ -1662,8 +1672,8 @@ def test_author_content_cache_key_covers_the_skeleton_not_just_the_section_text(
         "Same section text.", {"n0": {"type": "Requirement", "title": "Second", "parent_id": None}}
     )
 
-    assert first == {"n0": {"description": "First", "tags": []}}
-    assert second == {
+    assert untagged(first) == {"n0": {"description": "First", "tags": []}}
+    assert untagged(second) == {
         "n0": {"description": "Second", "tags": []}
     }  # not a stale hit from the first skeleton
 

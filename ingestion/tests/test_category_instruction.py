@@ -48,8 +48,13 @@ def test_the_key_is_matched_without_regard_to_case_when_deduplicating() -> None:
     )
 
 
-def test_the_builtin_and_derived_forms_are_unchanged() -> None:
-    builtin = _array_category_instruction(None, None)
-    assert "EXACTLY SIX" in builtin and KEY in builtin
+def test_the_builtin_and_derived_forms_ask_only_what_the_standard_requires() -> None:
+    builtin = _array_category_instruction(None, None)  # no standard: neither active voice nor a rationale is required
+    assert "EXACTLY 4" in builtin and f"clarity, testability, atomicity and {KEY}" in builtin
+    assert "- style" not in builtin and "- rationale" not in builtin
+    both = render_fragment(_scoring_category_fragment(None, None, frozenset({"active_voice", "rationale"})))
+    assert "EXACTLY 6" in both and f"clarity, testability, atomicity, style, rationale and {KEY}" in both
+    assert "standard requires the active voice" in both and "standard requires a stated rationale" in both
     derived = _array_category_instruction(None, "some KB material")
     assert "Decide the names ONCE" in derived and KEY in derived
+    assert "use clarity, testability and atomicity instead" in derived

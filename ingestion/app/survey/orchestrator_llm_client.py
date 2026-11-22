@@ -6,6 +6,7 @@ import logging
 import re
 import socket
 import sys
+import threading
 import time
 from collections.abc import Callable
 from typing import Any, Literal
@@ -34,11 +35,17 @@ from app.leveling.live_context import current_stage_counter, live_emitter_for, n
 from app.leveling.live_stream import DraftingDisplay
 from app.leveling.llm_call_gate import gated
 from app.leveling.model_caps import output_token_budget
-from app.leveling.score_levels import COMPLETENESS, FINDINGS, entry_from_votes
+from app.leveling.score_levels import (
+    COMPLETENESS,
+    STANDARD_REQUIREMENTS,
+    builtin_categories,
+    entry_from_votes,
+    findings_for,
+)
 from app.logging_context import current_job_id
 from app.otel import get_tracer
 from app.prompts import resolve_version
-from app.prompts.assembly import DataBlock, Fragment, PromptCall, build_call
+from app.prompts.assembly import DataBlock, Fragment, PromptCall, PromptIdentity, build_call
 from app.request_identity import user_scope
 from app.survey._response_schemas import (
     CONFORMANCE_VERDICTS,
@@ -57,9 +64,11 @@ from app.survey._response_schemas import (
     rule_conformance_schema,
     score_explanation_schema,
     sheet_study_schema,
+    standard_requirements_schema,
     trace_links_schema,
 )
 from app.survey.keyed_calls import (
+    KeyedEntries,
     KeyedMode,
     describe_output,
     drop_possibly_cut_last_entry,
@@ -80,7 +89,7 @@ from app.survey.keyed_specs import (
     TITLE_TAGS_SPEC,
 )
 from app.survey.llm_cache import LlmResponseCache, payload_key
-from app.workitem.model import RequirementTag
+from app.workitem.model import PROMPT_KEY, RequirementTag
 
 logger = logging.getLogger(__name__)
 _tracer = get_tracer()
@@ -315,14 +324,28 @@ def _scoring_category_names(category_checklist: list[str]) -> list[str]:
     return names
 
 
-def _scoring_category_fragment(category_checklist: list[str] | None, kb_context: str | None) -> Fragment:
+# fragment_scoring_levels_{builtin,derived} from v2 on take the built-in categories from code: only those the organization's standard
+# requires (app.leveling.score_levels.STANDARD_REQUIREMENTS). An older file names all five itself, so deleting v2 rolls back cleanly.
+_STANDARD_LEVELS_VERSION = 2
+
+
+def _and_list(names: list[str]) -> str:
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+def _scoring_category_fragment(
+    category_checklist: list[str] | None,
+    kb_context: str | None,
+    requires: frozenset[str] = frozenset(),
+) -> Fragment:
     """The `categories` paragraph of the requirement-scoring prompt, a fragment prompt file per source of the category names, in priority
     order:
     1. `category_checklist` -- a FIXED, pre-extracted list (genuinely deterministic across runs), listed in the <category_names> block;
     2. `kb_context` present but no stored checklist -- best-effort live derivation from that material (NOT guaranteed identical across
        runs -- a live judgment call);
     3. neither -- the built-in categories.
-    Each one ends with the completeness_as_requirement anchors, which are always judged."""
+    Each one ends with the completeness_as_requirement anchors, which are always judged. `requires`: what the organization's standard
+    requires; a built-in category it does not require is not asked for."""
     completeness = Fragment("fragment_scoring_completeness")
     if category_checklist:
         count = len(_scoring_category_names(category_checklist))
@@ -330,9 +353,29 @@ def _scoring_category_fragment(category_checklist: list[str] | None, kb_context:
             "fragment_scoring_levels_checklist",
             {"entry_count": str(count), "completeness": completeness},
         )
+    builtin = list(builtin_categories(requires))
     if kb_context:
-        return Fragment("fragment_scoring_levels_derived", {"completeness": completeness})
-    return Fragment("fragment_scoring_levels_builtin", {"completeness": completeness})
+        if resolve_version("fragment_scoring_levels_derived") < _STANDARD_LEVELS_VERSION:
+            return Fragment("fragment_scoring_levels_derived", {"completeness": completeness})
+        return Fragment(
+            "fragment_scoring_levels_derived",
+            {"builtin_names": _and_list(builtin), "completeness": completeness},
+        )
+    if resolve_version("fragment_scoring_levels_builtin") < _STANDARD_LEVELS_VERSION:
+        return Fragment("fragment_scoring_levels_builtin", {"completeness": completeness})
+    anchors: dict[str, str | Fragment] = {
+        f"{category}_anchor": Fragment(f"fragment_scoring_anchor_{category}") if name in requires else ""
+        for name, (category, _issue) in STANDARD_REQUIREMENTS.items()
+    }
+    return Fragment(
+        "fragment_scoring_levels_builtin",
+        {
+            "entry_count": str(len(builtin) + 1),
+            "category_names": _and_list([*builtin, COMPLETENESS]),
+            **anchors,
+            "completeness": completeness,
+        },
+    )
 
 
 def _text_of(value: object) -> str:
@@ -367,6 +410,16 @@ def _in_source_script(
         return ok
 
     return accept
+
+
+def _tag_prompt(entries: object, identity: PromptIdentity | None) -> None:
+    """Tags every answer entry with the prompt that produced it (app.workitem.model.record_prompt reads the tag where an answer is
+    applied to a work item)."""
+    if identity is None or not isinstance(entries, dict):
+        return
+    for entry in entries.values():
+        if isinstance(entry, dict):
+            entry[PROMPT_KEY] = identity.as_dict()
 
 
 def _abort_in_flight(client: httpx.Client) -> None:
@@ -500,6 +553,12 @@ class OrchestratorLlmClient:
         self.authoring_standard: str | None = None
         # Set by /level for the job (app.language_policy): the document's main script and how its requirements state an obligation.
         self.language_policy = LanguagePolicy()
+        # The prompt of the last call this thread made through _chat_json, for tagging a keyed call's answers (_run_keyed_by_script).
+        # Per thread: a job's chunks run in parallel on one client.
+        self._last_call = threading.local()
+        # Set from the user's KB profile (app.kb.profile.standard_requires): what the organization's standard requires beyond the
+        # built-in scoring categories. Empty: no standard, so neither the active voice nor a rationale is judged.
+        self.standard_requires: frozenset[str] = frozenset()
         self._cache = cache
         self._transport: httpx.BaseTransport | None = None  # test-only injection seam
         # How long one call waits for the orchestrator's answer. None: the configured LLM_REQUEST_TIMEOUT_SECONDS (a job's calls run
@@ -783,6 +842,7 @@ class OrchestratorLlmClient:
         LIVE_PROGRESS and LLM_STREAM_DRAFTING are on and the job has a live
         emitter. Otherwise this is exactly the plain call it always was. `params` comes from `_params`, built once by the caller
         so a cached call's key (`payload_key`) covers exactly the body sent."""
+        self._last_call.identity = call.identity
         emitter = (
             live_emitter_for(current_job_id())
             if stream_inputs is not None and settings.live_progress and settings.llm_stream_drafting
@@ -878,6 +938,7 @@ class OrchestratorLlmClient:
         kb_context: str | None = None,
         category_checklist: list[str] | None = None,
         user_id: str | None = None,
+        standard_requires: frozenset[str] | None = None,
     ) -> dict[str, dict]:
         """Batched quality scoring: every node's FINAL description judged in one call per vote. The model returns a level (0-4, anchored
         in the prompt) per category with the words that support it, and the problems it finds with the words they concern; code turns
@@ -890,10 +951,14 @@ class OrchestratorLlmClient:
         app.kb.checklist_extraction or the profile), when supplied, is a FIXED list of category names -- a cross-run determinism
         guarantee (the SAME document run 4 times must yield the SAME categories). The job's obligation form
         (app.language_policy) tells the completeness judgment how this text states an obligation, in any language.
+        `standard_requires` is what the organization's standard requires beyond the built-in categories
+        (app.leveling.score_levels.STANDARD_REQUIREMENTS); None: the client's own (set from the user's KB profile).
 
         Each vote's raw answer is response-cached on its own exact request (a complete answer only), and the scores are computed after
         the cache, so a change to how code scores never serves an old result."""
         spec = SCORING_SPEC
+        if standard_requires is None:
+            standard_requires = self.standard_requires
         is_rubric = isinstance(kb_context, RubricText)
         policy = self.language_policy
         forms = policy.obligation_forms
@@ -927,8 +992,10 @@ class OrchestratorLlmClient:
                 "score_requirements_for_document",
                 markers={
                     "output_lead": output_lead(spec, mode),
-                    "category_instruction": _scoring_category_fragment(category_checklist, kb_context),
-                    "findings": ", ".join(FINDINGS),
+                    "category_instruction": _scoring_category_fragment(
+                        category_checklist, kb_context, standard_requires
+                    ),
+                    "findings": ", ".join(findings_for(standard_requires)),
                     "node_count": str(len(descriptions)),
                 },
                 before=before,
@@ -1033,11 +1100,18 @@ class OrchestratorLlmClient:
                     number,
                     exc_info=True,
                 )
+        identity = build(descriptions_by_node_id, mode_for(spec, self._model))[0].identity
         result: dict[str, dict] = {}
         for node_id, text in descriptions_by_node_id.items():
-            entry = entry_from_votes([v.get(node_id) for v in votes], text)
+            entry = entry_from_votes(
+                [v.get(node_id) for v in votes],
+                text,
+                requires=standard_requires,
+                builtin=not category_checklist,
+            )
             if entry is not None:
                 result[node_id] = entry
+        _tag_prompt(result, identity)
         return result
 
     def extract_quality_checklist(
@@ -1193,6 +1267,53 @@ class OrchestratorLlmClient:
             result[canonical_name] = definition[:_CHECKLIST_DEFINITION_MAX_CHARS]
         return result
 
+    def _by_script(
+        self, payload: dict[str, Any], source_of: Callable[[str], str]
+    ) -> list[tuple[str | None, dict[str, Any]]]:
+        """`payload` split by the script each entry's own source is written in (its dominant script; the job's when it has no counted
+        words), in a fixed order. A batched prompt names one output language, so a document with sections in two languages asks once
+        per language; a single-language document is one group, and its request is the same as before."""
+        groups: dict[str | None, dict[str, Any]] = {}
+        for key, item in payload.items():
+            script = dominant_script(source_of(key)) or self.language_policy.script
+            groups.setdefault(script, {})[key] = item
+        return sorted(groups.items(), key=lambda group: group[0] or "")
+
+    def _run_keyed_by_script(
+        self,
+        send: Callable[[dict, KeyedMode, str | None], object],
+        payload: dict[str, Any],
+        spec: Any,
+        source_of: Callable[[str], str],
+        fields: tuple[str, ...],
+    ) -> KeyedEntries:
+        """run_keyed once per script group (_by_script), each asked in its group's language and checked against its own source's
+        script; the groups' entries are returned as one result over every requested id."""
+        accept = _in_source_script(spec.name, source_of, fields)
+        results = []
+        for script, group in self._by_script(payload, source_of):
+            used: list[PromptIdentity] = []
+
+            def sent(part: dict, mode: KeyedMode, script: str | None = script) -> object:
+                answer = send(part, mode, script)
+                used.append(self._last_call.identity)
+                return answer
+
+            result = run_keyed(sent, group, spec, model=self._model, accept=accept)
+            _tag_prompt(result, used[0] if used else None)
+            results.append(result)
+        if len(results) == 1:
+            return results[0]
+        merged: dict[str, Any] = {}
+        for result in results:
+            merged.update(result)
+        return KeyedEntries(
+            merged,
+            list(payload),
+            mode=results[-1].mode,
+            degraded=any(result.degraded for result in results),
+        )
+
     def title_and_tags_for_rows(
         self,
         texts_by_row_id: dict[str, str],
@@ -1216,11 +1337,11 @@ class OrchestratorLlmClient:
         tags exactly as constructed."""
         spec = TITLE_TAGS_SPEC
 
-        def send(payload: dict, mode: KeyedMode) -> object:
+        def send(payload: dict, mode: KeyedMode, script: str | None) -> object:
             # The output-format sentence and the strict schema are both generated from `spec`
             # (app.survey.keyed_calls), so the prompt and the schema cannot drift; a retry of
             # omitted ids re-enters here with just those ids.
-            after, language_blocks = self._language()
+            after, language_blocks = self._language(script=script)
             call = build_call(
                 "title_and_tags_for_rows",
                 markers={
@@ -1243,14 +1364,8 @@ class OrchestratorLlmClient:
                 stream_stage="improve",
             )
 
-        return run_keyed(
-            send,
-            texts_by_row_id,
-            spec,
-            model=self._model,
-            accept=_in_source_script(
-                spec.name, lambda row_id: _text_of(texts_by_row_id[row_id]), ("title",)
-            ),
+        return self._run_keyed_by_script(
+            send, texts_by_row_id, spec, lambda row_id: _text_of(texts_by_row_id[row_id]), ("title",)
         )
 
     def summarize_parent_nodes(
@@ -1287,8 +1402,8 @@ class OrchestratorLlmClient:
         description exactly as constructed."""
         spec = PARENT_SUMMARY_SPEC
 
-        def send(payload: dict, mode: KeyedMode) -> object:
-            after, language_blocks = self._language()
+        def send(payload: dict, mode: KeyedMode, script: str | None) -> object:
+            after, language_blocks = self._language(script=script)
             call = build_call(
                 "summarize_parent_nodes",
                 markers={
@@ -1312,14 +1427,12 @@ class OrchestratorLlmClient:
                 stream_stage="summarize",
             )
 
-        return run_keyed(
+        return self._run_keyed_by_script(
             send,
             nodes_by_id,
             spec,
-            model=self._model,
-            accept=_in_source_script(
-                spec.name, lambda node_id: _text_of(nodes_by_id[node_id]), ("title", "description")
-            ),
+            lambda node_id: _text_of(nodes_by_id[node_id]),
+            ("title", "description"),
         )
 
     def synthesize_leaf_requirements(
@@ -1350,10 +1463,10 @@ class OrchestratorLlmClient:
         source text exactly as constructed."""
         spec = SYNTHESIS_SPEC
 
-        def send(payload: dict, mode: KeyedMode) -> object:
+        def send(payload: dict, mode: KeyedMode, script: str | None) -> object:
             # The tag vocabulary is part of the generated output-format sentence (it comes from the same
             # field list as the schema), so it is not passed as a separate marker.
-            after, language_blocks = self._language(obligations=True)
+            after, language_blocks = self._language(obligations=True, script=script)
             call = build_call(
                 "synthesize_leaf_requirements",
                 markers={
@@ -1377,14 +1490,8 @@ class OrchestratorLlmClient:
                 stream_stage="draft",
             )
 
-        return run_keyed(
-            send,
-            items_by_id,
-            spec,
-            model=self._model,
-            accept=_in_source_script(
-                spec.name, lambda row_id: _text_of(items_by_id[row_id]), ("title", "text")
-            ),
+        return self._run_keyed_by_script(
+            send, items_by_id, spec, lambda row_id: _text_of(items_by_id[row_id]), ("title", "text")
         )
 
     def study_document_window(self, window_text: str, user_id: str | None = None) -> dict:
@@ -1486,8 +1593,17 @@ class OrchestratorLlmClient:
         """Backs app.leveling.acceptance_criteria: proposed criteria (with assumptions, or "needs author input") for requirements the
         scorer flagged as lacking them. Returns {node_id: entry}; entries for ids that were not asked about are dropped, a missing id
         is simply absent (the caller leaves that description alone). `background` is the job's context primer: a background block,
-        context only, never a source of values."""
-        after, language_blocks = self._language()
+        context only, never a source of values. A document with requirements in two languages is asked once per language
+        (_by_script)."""
+        result: dict[str, dict] = {}
+        for script, group in self._by_script(items_by_id, lambda node_id: _text_of(items_by_id[node_id].get("text"))):
+            result.update(self._propose_acceptance_criteria_in(script, group, user_id, background))
+        return result
+
+    def _propose_acceptance_criteria_in(
+        self, script: str | None, items_by_id: dict[str, dict], user_id: str | None, background: str | None
+    ) -> dict[str, dict]:
+        after, language_blocks = self._language(script=script)
         call = build_call(
             "propose_acceptance_criteria",
             blocks=[
@@ -1498,6 +1614,7 @@ class OrchestratorLlmClient:
             after=after,
         )
         params = self._params(schema=acceptance_criteria_schema(), max_tokens=4000)
+        identity = call.identity
         key = None
         if self._cache is not None and user_id:  # a call without a user id shares no cached answer
             key = payload_key(call.payload(params), user_scope(user_id))
@@ -1515,6 +1632,7 @@ class OrchestratorLlmClient:
             and isinstance(entry.get("id"), str)
             and entry["id"] in items_by_id
         }
+        _tag_prompt(result, identity)
         if key is not None and len(result) == len(items_by_id):
             self._cache.set(key, result)
         return result
@@ -1695,6 +1813,28 @@ class OrchestratorLlmClient:
                     }
                 )
         return groups
+
+    def find_standard_requirements(
+        self, rules: list[str], categories: list[dict], user_id: str | None = None
+    ) -> dict[str, str]:
+        """Backs the KB profile's standard requirements (app.kb.profile.find_standard_requires): whether the organization's rules and
+        quality criteria require the active voice and a stated rationale. Returns {name: quote} for each one answered as required with
+        a non-empty quote; the caller keeps only a quote its material contains. An answer that is not an object raises ValueError."""
+        source = json.dumps({"rules": rules, "categories": categories}, ensure_ascii=False)
+        call = build_call("find_standard_requirements", blocks=[DataBlock("source", source)])
+        parsed = self._chat_json(
+            call, self._params(schema=standard_requirements_schema(), max_tokens=1000), user_id=user_id
+        )
+        if not isinstance(parsed, dict):
+            raise ValueError(f"malformed JSON in LLM response content: {parsed!r}")
+        found = {}
+        for name in STANDARD_REQUIREMENTS:
+            answer = parsed.get(name)
+            if isinstance(answer, dict) and answer.get("required") is True:
+                quote = answer.get("quote")
+                if isinstance(quote, str) and quote.strip():
+                    found[name] = " ".join(quote.split())
+        return found
 
     def explain_category_scores(
         self,
@@ -1984,6 +2124,7 @@ class OrchestratorLlmClient:
             retry=False,
             accept=_in_source_script(spec.name, lambda _node_id: section_text, ("description",)),
         )
+        _tag_prompt(result, build(skeleton_nodes, mode_for(spec, self._model))[0].identity)
         if truncated:
             notice("output_limit_reached", "warning", with_last_item=True, step="write")
         logger.warning(

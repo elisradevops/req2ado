@@ -165,8 +165,60 @@ def test_a_prompt_that_writes_no_requirement_gets_the_language_but_no_form() -> 
     client.language_policy = LanguagePolicy(None, ("shall",), "kb")
     client.summarize_parent_nodes({"p1": {"title": "מתח", "requirement_titles": ["דרישה"]}})
     system, user = (m["content"] for m in bodies[0]["messages"])
-    assert "Language: write every text" in system and "main language" not in system
+    # The job's script is unknown, but the node's own text is Hebrew, so the call is asked in Hebrew (per-section language).
+    assert "the one written in the Hebrew script" in system
     assert "obligation_forms" not in system and block_text(user, "obligation_forms") is None
+
+
+def test_a_batch_with_sections_in_two_languages_asks_each_in_its_own() -> None:
+    client, bodies = _client(
+        [
+            _array({"p1": {"title": "אספקת מתח ליחידה", "description": "מספקת מתח"}}),
+            _array({"p2": {"title": "Environmental testing", "description": "Covers the tests"}}),
+        ]
+    )
+    client.language_policy = LanguagePolicy("LATIN", (), "document")
+    result = client.summarize_parent_nodes(
+        {
+            "p1": {"title": "אספקת מתח", "requirement_titles": [HEBREW_REQUIREMENT]},
+            "p2": {"title": "Environment", "requirement_titles": [ENGLISH_REQUIREMENT]},
+        }
+    )
+    assert len(bodies) == 2
+    (hebrew_system, hebrew_user), (latin_system, latin_user) = (
+        [m["content"] for m in body["messages"]] for body in bodies
+    )
+    assert "Hebrew script" in hebrew_system and list(
+        json.loads(block_text(hebrew_user, "source"))
+    ) == ["p1"]
+    assert "Latin script" in latin_system and list(
+        json.loads(block_text(latin_user, "source"))
+    ) == ["p2"]
+    assert set(result) == {"p1", "p2"} and result.missing == [] and result.requested == ["p1", "p2"]
+
+
+def test_acceptance_criteria_for_requirements_in_two_languages_are_asked_per_language() -> None:
+    def answer(node_id: str) -> dict:
+        entry = {
+            "id": node_id,
+            "criteria": [],
+            "assumptions": [],
+            "needs_author_input": True,
+            "missing": ["TBD"],
+        }
+        return {"items": [entry]}
+
+    client, bodies = _client([answer("he"), answer("en")])
+    client.language_policy = LanguagePolicy("LATIN", (), "document")
+    result = client.propose_acceptance_criteria(
+        {
+            "he": {"text": HEBREW_REQUIREMENT, "ancestors": ["Environment"]},
+            "en": {"text": ENGLISH_REQUIREMENT},
+        }
+    )
+    assert len(bodies) == 2 and set(result) == {"he", "en"}
+    assert "Hebrew script" in bodies[0]["messages"][0]["content"]
+    assert "Latin script" in bodies[1]["messages"][0]["content"]
 
 
 def test_an_answer_in_another_script_is_asked_again_then_left_out() -> None:

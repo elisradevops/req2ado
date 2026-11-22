@@ -28,6 +28,7 @@ from app.survey.keyed_specs import (
 )
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 from app.workitem.model import RequirementTag
+from tests._prompt_tags import untagged
 
 _TAGS = ", ".join(t.value for t in RequirementTag)
 
@@ -182,7 +183,7 @@ def test_synthesis_in_array_mode_sends_the_fixed_schema_and_returns_an_id_map(al
 
     result = _client(handler).synthesize_leaf_requirements(ROWS)
 
-    assert result == {
+    assert untagged(result) == {
         k: {"title": f"T {k}", "text": f"The unit shall {k}.", "tags": ["safety"]} for k in ROWS
     }
     assert len(seen) == 1 and seen[0]["responseSchema"] == items_schema(SYNTHESIS_SPEC)
@@ -251,7 +252,7 @@ def test_parent_summary_in_array_mode_sends_the_fixed_schema_and_returns_an_id_m
 
     result = _client(handler).summarize_parent_nodes(NODES)
 
-    assert result == {
+    assert untagged(result) == {
         k: {"title": f"Capability {k}", "description": f"Summary {k}."} for k in NODES
     }
     assert seen[0]["responseSchema"] == items_schema(PARENT_SUMMARY_SPEC)
@@ -357,7 +358,7 @@ def test_author_content_in_array_mode_returns_the_same_shape_as_before(all_array
     result, truncated = _client(handler).author_content("Section text", SKELETON)
 
     assert (
-        result == {k: {"description": f"D {k}", "tags": []} for k in SKELETON}
+        untagged(result) == {k: {"description": f"D {k}", "tags": []} for k in SKELETON}
         and truncated is False
     )
     assert seen[0]["responseSchema"] == items_schema(AUTHOR_CONTENT_SPEC)
@@ -406,7 +407,7 @@ def test_author_content_in_none_mode_keeps_the_old_wire_shape() -> None:
 
     result, truncated = _client(handler).author_content("Section text", SKELETON)
 
-    assert result == content and truncated is False
+    assert untagged(result) == content and truncated is False
 
 
 # -- figure / table mapping ---------------------------------------------------------------------

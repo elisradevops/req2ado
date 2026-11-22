@@ -22,6 +22,7 @@ from app.survey.keyed_calls import (
 )
 from app.survey.keyed_specs import SCORING_SPEC
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
+from tests._prompt_tags import untagged
 
 GOLDEN = json.loads((Path(__file__).parent / "fixtures" / "scoring_prompts_none.json").read_text())
 DESCRIPTIONS = {"n1": "The unit shall do X.", "n2": "Size: 3U"}
@@ -186,7 +187,7 @@ def test_two_votes_the_second_in_reverse_order_and_code_computes_the_entry(array
     assert [_ids(b) for b in seen] == [["n1", "n2"], ["n2", "n1"]]
     assert seen[0]["responseSchema"] == items_schema(SCORING_SPEC)
     # levels 3 and 2 average to 2.5 (62.5 -> 62); completeness 4 does not gate it; the finding's quote is in n1 only.
-    assert result["n1"] == {
+    assert untagged(result)["n1"] == {
         "score": 62,
         "issues": ["vague_term"],
         "categoryScores": {"clarity": 62, "testability": 62, "completeness_as_requirement": 100},
@@ -225,7 +226,7 @@ def test_a_failed_second_vote_leaves_one_vote_and_a_medium_confidence(
 @pytest.mark.parametrize(
     ("kwargs", "expected"),
     [
-        ({}, "EXACTLY SIX"),
+        ({}, "EXACTLY 4"),
         ({"category_checklist": ["Necessary", "Verifiable"]}, "3 entries in total, never fewer"),
         ({"kb_context": "KB material"}, "Decide the names ONCE"),
     ],

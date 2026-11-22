@@ -8,6 +8,8 @@ for every model:
 - the overall score is the mean of the quality categories, gated by completeness_as_requirement (a statement that is not a requirement
   scores low however well it reads);
 - the issues are the findings whose quote the item's text really contains, plus the issues the levels themselves state (LEVEL_ISSUES);
+  an issue about something the item lacks comes from the levels only (LEVEL_ONLY_ISSUES);
+- active voice and a stated rationale are judged only when the organization's standard requires them (STANDARD_REQUIREMENTS);
 - the confidence is how far two independent votes agree, never the model's opinion of itself.
 
 The result has the shape the scoring code has always read ({"score", "issues", "categoryScores", "confidence"}), so nothing after the
@@ -31,15 +33,24 @@ LEVEL_ISSUES: dict[str, tuple[tuple[int, str], ...]] = {
     "style": ((1, "passive_voice"),),
     "rationale": ((1, "missing_rationale"),),
 }
+# An issue about something the item lacks has no words of its own to quote: a finding for it could quote the whole item, so the quote check
+# filters nothing, and one vote reporting it was enough to flip an unchanged item between two score sets (the prompt root-cause work,
+# 2026-11-22). It is stated by the averaged levels only.
+LEVEL_ONLY_ISSUES = frozenset({"missing_acceptance_criteria", "missing_rationale"})
+# What only an organization's standard can require (owner decision, 2026-11-22): the requirement's name -> the built-in category that
+# judges it and the issue it raises. Without the requirement the category is not judged, not scored and raises no issue; with no standard
+# at all, neither is required.
+STANDARD_REQUIREMENTS: dict[str, tuple[str, str]] = {
+    "active_voice": ("style", "passive_voice"),
+    "rationale": ("rationale", "missing_rationale"),
+}
 # The findings the model may report. conflicting_value is not one: duplicate detection sets it from two items, never one.
 FINDINGS = (
     "ambiguous",
     "not_testable",
     "compound",
-    "missing_acceptance_criteria",
     "vague_term",
     "passive_voice",
-    "missing_rationale",
     "not_a_requirement",
     "fragment",
     "placeholder",
@@ -50,6 +61,24 @@ FINDINGS = (
 # low-confidence score; a difference of at most AGREE_WITHIN everywhere, with the same issues, is a high one.
 AGREE_WITHIN = 1
 DISAGREE_FROM = 3
+
+
+def _unrequired(requires: frozenset[str]) -> tuple[frozenset[str], frozenset[str]]:
+    """The built-in categories and the issues a standard that requires only `requires` leaves out."""
+    left_out = [pair for name, pair in STANDARD_REQUIREMENTS.items() if name not in requires]
+    return frozenset(c for c, _ in left_out), frozenset(i for _, i in left_out)
+
+
+def builtin_categories(requires: frozenset[str] = frozenset()) -> tuple[str, ...]:
+    """The built-in quality categories judged for a standard that requires `requires` (completeness is judged apart, always)."""
+    categories, _ = _unrequired(requires)
+    return tuple(c for c in BUILTIN_CATEGORIES if c not in categories)
+
+
+def findings_for(requires: frozenset[str] = frozenset()) -> tuple[str, ...]:
+    """The findings the model is asked for, for a standard that requires `requires`."""
+    _, issues = _unrequired(requires)
+    return tuple(f for f in FINDINGS if f not in issues)
 
 
 def _squash(text: str) -> str:
@@ -76,14 +105,15 @@ def levels_of(answer: object) -> dict[str, int]:
     return levels
 
 
-def findings_of(answer: object, text: str) -> set[str]:
+def findings_of(answer: object, text: str, requires: frozenset[str] = frozenset()) -> set[str]:
     """The findings of one vote whose quote the item's text contains (whitespace and case aside). A finding without a real quote is
-    dropped: the model must point at the words it judged."""
+    dropped: the model must point at the words it judged. So is one the prompt did not ask for (findings_for)."""
+    asked = findings_for(requires)
     found: set[str] = set()
     findings = answer.get("findings") if isinstance(answer, dict) else None
     squashed = _squash(text)
     for entry in findings if isinstance(findings, list) else []:
-        if not isinstance(entry, dict) or entry.get("issue") not in FINDINGS:
+        if not isinstance(entry, dict) or entry.get("issue") not in asked:
             continue
         quote = entry.get("quote")
         if isinstance(quote, str) and quote.strip() and _squash(quote) in squashed:
@@ -130,15 +160,27 @@ def _confidence(votes: Sequence[dict[str, int]], issue_sets: Sequence[set[str]])
     return "medium"
 
 
-def entry_from_votes(answers: Sequence[object], text: str) -> dict | None:
+def entry_from_votes(
+    answers: Sequence[object],
+    text: str,
+    requires: frozenset[str] = frozenset(),
+    builtin: bool = True,
+) -> dict | None:
     """One item's score entry from its votes' answers (a missing or unusable answer is skipped). None when no vote judged any category.
     Category levels are the mean of the votes that judged that category; categories only one vote named are kept (the key check in
-    app.leveling.scoring decides what a missing one means)."""
-    votes = [levels for levels in (levels_of(a) for a in answers) if levels]
+    app.leveling.scoring decides what a missing one means). `requires`: what the organization's standard requires
+    (STANDARD_REQUIREMENTS); `builtin`: the categories are the built-in ones, so one the standard does not require is left out even
+    when a vote judged it (an organization's own category of the same name is its own, and kept)."""
+    left_out, _ = _unrequired(requires) if builtin else (frozenset(), frozenset())
+
+    def judged(answer: object) -> dict[str, int]:
+        return {name: level for name, level in levels_of(answer).items() if name not in left_out}
+
+    votes = [levels for levels in (judged(a) for a in answers) if levels]
     if not votes:
         return None
-    usable = [a for a in answers if levels_of(a)]
-    issue_sets = [findings_of(a, text) for a in usable]
+    usable = [a for a in answers if judged(a)]
+    issue_sets = [findings_of(a, text, requires) for a in usable]
     names = list(dict.fromkeys(name for levels in votes for name in levels))
     mean_levels = {
         name: sum(v[name] for v in votes if name in v) / sum(1 for v in votes if name in v)

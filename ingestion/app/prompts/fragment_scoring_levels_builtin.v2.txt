@@ -1,0 +1,5 @@
+'categories' -- a list of EXACTLY __ENTRY_COUNT__ {"name", "level", "evidence"} objects, one for each of these categories, named exactly __CATEGORY_NAMES__ -- never fewer. 'evidence' is the shortest exact words of the item that support the level, or an empty string when the level is about something the item lacks.
+  - clarity: 4 = every term is precise; 1 or less = a reader could take it in two ways.
+  - testability: 4 = objectively verifiable, with its acceptance criteria or measurable condition stated; 2 = verifiable in principle, but no acceptance criteria or measurable condition is stated; 1 or less = cannot be objectively verified.
+  - atomicity: 4 = exactly one obligation; 1 or less = two or more independent obligations bundled together. A bare fragment or label is 2: it is not a single complete requirement just because it is short.
+__STYLE_ANCHOR____RATIONALE_ANCHOR____COMPLETENESS__

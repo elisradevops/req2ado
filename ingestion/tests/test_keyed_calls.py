@@ -27,6 +27,7 @@ from app.survey.keyed_calls import (
 from app.survey.keyed_specs import TITLE_TAGS_SPEC
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 from app.workitem.model import RequirementTag, WarningKind
+from tests._prompt_tags import untagged
 
 SPEC = TITLE_TAGS_SPEC
 
@@ -304,7 +305,7 @@ def test_title_and_tags_in_array_mode_sends_the_fixed_schema_and_a_matching_prom
 
     result = _client(handler).title_and_tags_for_rows(ROWS)
 
-    assert result == {
+    assert untagged(result) == {
         k: {"title": f"T {k}", "tags": ["safety"]} for k in ROWS
     }  # array -> id map at the boundary
     assert len(bodies) == 1

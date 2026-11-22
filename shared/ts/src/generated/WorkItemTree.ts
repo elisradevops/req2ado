@@ -112,6 +112,14 @@ export interface WorkItemNode {
    */
   grounding_score?: number | null;
   /**
+   * Every prompt whose answer was used for this item, in the order first used: which prompt produced it. Stored only, never written to ADO. Empty or absent for an item no model answer changed.
+   */
+  prompts?: {
+    name: string;
+    version: number;
+    sha256: string;
+  }[];
+  /**
    * SURVEY-only: 0-100 quality judgment of the final description. Null for BASELINE or when no scoring_client was supplied.
    */
   quality_score?: number | null;

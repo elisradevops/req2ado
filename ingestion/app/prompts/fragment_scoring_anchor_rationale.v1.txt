@@ -1,0 +1,1 @@
+  - rationale (the organization's standard requires a stated rationale): 4 = states why, or no reason is needed; 1 or less = the reason is not self-evident and is not stated.

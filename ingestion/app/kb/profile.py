@@ -32,6 +32,7 @@ from pydantic import BaseModel, Field
 from app.config import settings
 from app.language_policy import OBLIGATION_FORMS_MAX
 from app.leveling.bounded_chunks import run_chunks_bounded
+from app.leveling.score_levels import STANDARD_REQUIREMENTS
 from app.prompts import load_prompt
 from app.request_identity import redact_identity
 
@@ -88,6 +89,13 @@ class Rule(BaseModel):
     sources: list[str]
 
 
+class StandardRequirement(BaseModel):
+    # app.leveling.score_levels.STANDARD_REQUIREMENTS: "active_voice" or "rationale".
+    name: str
+    # The words of the organization's rule or criterion that require it, verbatim.
+    quote: str
+
+
 class GlossaryTerm(BaseModel):
     term: str
     definition: str
@@ -123,6 +131,9 @@ class KbProfile(BaseModel):
     # How the organization's standard says a requirement states an obligation (its modal word, or its rule for phrasing one), verbatim from
     # the knowledge base. The output-language policy (app.language_policy) reads it; nothing in the code knows any obligation word itself.
     obligation_forms: list[Rule] = Field(default_factory=list)
+    # What the standard requires beyond the built-in scoring categories (find_standard_requires): only these are judged and raise an
+    # issue. Empty on a profile stored before it existed; such a profile is stale anyway (build_version), so the next job rebuilds it.
+    standard_requires: list[StandardRequirement] = Field(default_factory=list)
     conflicts: list[Conflict] = Field(default_factory=list)
     truncated: bool = False
     # When it was built (UTC, ISO). Informational only: never part of `version`, absent on profiles stored before it existed.
@@ -152,6 +163,7 @@ class KbProfileClient(Protocol):
     # Optional: consolidate_kb_categories(categories, max_categories, user_id=None, preferred_names=None)
     #   -> [{name, pass_condition, merged_from}].
     # A client without it, or one that fails, leaves the deterministic list (capped).
+    # Optional: find_standard_requirements(rules, categories, user_id=None) -> {name: quote}. A client without it requires nothing.
 
 
 class ProfileStore(Protocol):
@@ -259,6 +271,7 @@ def build_version() -> str:
     parts = [
         extraction_version(),
         load_prompt("consolidate_kb_categories"),
+        load_prompt("find_standard_requirements"),
         CONSOLIDATION_RUNS,
         MAX_SCORING_CATEGORIES,
     ]
@@ -535,9 +548,12 @@ def build_profile(
         profile.categories, client, user_id, previous, stats
     )
     profile.truncated = profile.truncated or cut
+    profile.standard_requires, requires_ok = find_standard_requires(profile, client, user_id)
     # A build that could not read every document, or whose merge pass got no answer at all, is used but never stored as current.
-    profile.degraded = degraded or (
-        stats.get("runs_asked", 0) > 0 and stats.get("runs_answered", 0) == 0
+    profile.degraded = (
+        degraded
+        or not requires_ok
+        or (stats.get("runs_asked", 0) > 0 and stats.get("runs_answered", 0) == 0)
     )
     # Counts only: category names are the company's own material.
     logger.info(
@@ -556,6 +572,41 @@ def build_profile(
         model,
     )
     return profile
+
+
+def _squashed(text: str) -> str:
+    return " ".join((text or "").split()).casefold()
+
+
+def find_standard_requires(
+    profile: KbProfile, client: object, user_id: str | None = None
+) -> tuple[list[StandardRequirement], bool]:
+    """What the organization's standard requires beyond the built-in scoring categories (app.leveling.score_levels
+    .STANDARD_REQUIREMENTS), asked once per build over its rules and quality criteria. An answer counts only with a quote the
+    material really contains, so the model must point at the rule that says so. Returns the requirements and whether the question was
+    answered: a profile with no rules or criteria requires nothing (answered); a failed call requires nothing for now (not answered)."""
+    find = getattr(client, "find_standard_requirements", None)
+    rules = [r.text for r in profile.rules]
+    categories = [{"name": c.name, "pass_condition": c.pass_condition or ""} for c in profile.categories]
+    if find is None or not (rules or categories):
+        return [], True
+    try:
+        answer = find(rules, categories, user_id=user_id)
+    except Exception:  # noqa: BLE001 -- best effort: the build goes on, but is not stored as current (degraded)
+        logger.warning("KB profile: the standard-requirements question failed", exc_info=True)
+        return [], False
+    material = _squashed("\n".join([*rules, *(f"{c['name']} {c['pass_condition']}" for c in categories)]))
+    found = [
+        StandardRequirement(name=name, quote=quote)
+        for name, quote in sorted(answer.items())
+        if name in STANDARD_REQUIREMENTS and _squashed(quote) in material
+    ]
+    return found, True
+
+
+def standard_requires(profile: KbProfile | None) -> frozenset[str]:
+    """The names of what `profile`'s standard requires (find_standard_requires); nothing without a profile."""
+    return frozenset(r.name for r in profile.standard_requires) if profile is not None else frozenset()
 
 
 def _representative_key(member: Category, preferred: set[str]):
