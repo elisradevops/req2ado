@@ -1,0 +1,244 @@
+{
+  "items": [
+    {
+      "id": "bl_n0",
+      "type": "Feature",
+      "parent": "bl_synth_doc_epic",
+      "cid": null,
+      "title": "1 Power interface",
+      "desc": "The power interface requirements are listed in the table below.",
+      "q": null,
+      "issues": [],
+      "conf": null,
+      "links": []
+    },
+    {
+      "id": "bl_n1",
+      "type": "Requirement",
+      "parent": "bl_n0",
+      "cid": "PWR-001",
+      "title": "The unit shall accept 28 VDC input.",
+      "desc": "The unit shall accept 28 VDC input.",
+      "q": 95,
+      "issues": [
+        "missing_acceptance_criteria",
+        "missing_rationale"
+      ],
+      "conf": "medium",
+      "links": []
+    },
+    {
+      "id": "bl_n2",
+      "type": "Requirement",
+      "parent": "bl_n0",
+      "cid": "PWR-002",
+      "title": "The unit shall tolerate input transients up to 50 V for 100 ms.",
+      "desc": "The unit shall tolerate input transients up to 50 V for 100 ms.",
+      "q": 95,
+      "issues": [
+        "missing_acceptance_criteria",
+        "missing_rationale"
+      ],
+      "conf": "medium",
+      "links": []
+    },
+    {
+      "id": "bl_n3",
+      "type": "Requirement",
+      "parent": "bl_n0",
+      "cid": "PWR-003",
+      "title": "The unit shall draw no more than 40 W.",
+      "desc": "The unit shall draw no more than 40 W.",
+      "q": 95,
+      "issues": [
+        "missing_acceptance_criteria",
+        "missing_rationale"
+      ],
+      "conf": "medium",
+      "links": []
+    },
+    {
+      "id": "bl_n4",
+      "type": "Requirement",
+      "parent": "bl_n0",
+      "cid": "PWR-004",
+      "title": "The unit shall be protected against reverse polarity.",
+      "desc": "The unit shall be protected against reverse polarity.",
+      "q": 73,
+      "issues": [
+        "missing_acceptance_criteria",
+        "missing_rationale",
+        "passive_voice"
+      ],
+      "conf": "medium",
+      "links": []
+    },
+    {
+      "id": "bl_n5",
+      "type": "Requirement",
+      "parent": "bl_n0",
+      "cid": "PWR-005",
+      "title": "The unit shall report input voltage to the host once per second.",
+      "desc": "The unit shall report input voltage to the host once per second.",
+      "q": 95,
+      "issues": [
+        "missing_acceptance_criteria",
+        "missing_rationale"
+      ],
+      "conf": "medium",
+      "links": []
+    },
+    {
+      "id": "bl_n6",
+      "type": "Requirement",
+      "parent": "bl_synth_feature_synth_doc_epic",
+      "cid": null,
+      "title": "2 Connector J1",
+      "desc": "The unit shall provide connector J1 with the pin-out given in the table below.\n<table style=\"width:100%; border-collapse:collapse\"><colgroup><col style=\"width:50%\"><col style=\"width:50%\"></colgroup><tbody><tr><td style=\"border:1px solid\">Pin</td><td style=\"border:1px solid\">Signal</td></tr><tr><td style=\"border:1px solid\">1</td><td style=\"border:1px solid\">+28V</td></tr><tr><td style=\"border:1px solid\">2</td><td style=\"border:1px solid\">GND</td></tr><tr><td style=\"border:1px solid\">3</td><td style=\"border:1px solid\">TX+</td></tr><tr><td style=\"border:1px solid\">4</td><td style=\"border:1px solid\">TX-</td></tr><tr><td style=\"border:1px solid\">5</td><td style=\"border:1px solid\">RX+</td></tr><tr><td style=\"border:1px solid\">6</td><td style=\"border:1px solid\">RX-</td></tr></tbody></table>",
+      "q": 80,
+      "issues": [
+        "missing_acceptance_criteria",
+        "missing_rationale"
+      ],
+      "conf": "medium",
+      "links": []
+    },
+    {
+      "id": "bl_n7",
+      "type": "Feature",
+      "parent": "bl_synth_doc_epic",
+      "cid": null,
+      "title": "3 ניהול צריכת הספק",
+      "desc": "היחידה מספקת יכולת ניהול צריכת הספק הכוללת מעבר למצב חיסכון בהספק לאחר תקופת אי-פעילות, הגבלת צריכה במצב זה, וחזרה לפעולה מלאה בעת קבלת פקודת השכמה.",
+      "q": null,
+      "issues": [],
+      "conf": null,
+      "links": []
+    },
+    {
+      "id": "bl_n7_s1",
+      "type": "Requirement",
+      "parent": "bl_n7",
+      "cid": null,
+      "title": "היחידה תעבור למצב חיסכון בהספק לאחר 10 דקות ללא פעילות.",
+      "desc": "היחידה תעבור למצב חיסכון בהספק לאחר 10 דקות ללא פעילות.",
+      "q": 95,
+      "issues": [
+        "missing_acceptance_criteria",
+        "missing_rationale"
+      ],
+      "conf": "medium",
+      "links": []
+    },
+    {
+      "id": "bl_n7_s2",
+      "type": "Requirement",
+      "parent": "bl_n7",
+      "cid": null,
+      "title": "במצב חיסכון צריכת ההספק לא תעלה על 5 ואט.",
+      "desc": "במצב חיסכון צריכת ההספק לא תעלה על 5 ואט.",
+      "q": 95,
+      "issues": [
+        "missing_acceptance_criteria",
+        "missing_rationale"
+      ],
+      "conf": "medium",
+      "links": []
+    },
+    {
+      "id": "bl_n7_s3",
+      "type": "Requirement",
+      "parent": "bl_n7",
+      "cid": null,
+      "title": "היחידה תחזור לפעולה מלאה תוך 2 שניות מקבלת פקודת השכמה.",
+      "desc": "היחידה תחזור לפעולה מלאה תוך 2 שניות מקבלת פקודת השכמה.",
+      "q": 95,
+      "issues": [
+        "missing_acceptance_criteria",
+        "missing_rationale"
+      ],
+      "conf": "medium",
+      "links": []
+    },
+    {
+      "id": "bl_n8",
+      "type": "Feature",
+      "parent": "bl_synth_doc_epic",
+      "cid": null,
+      "title": "4 General",
+      "desc": "This feature establishes the general operational and usability expectations for the system, covering interface quality and power requirements.",
+      "q": null,
+      "issues": [],
+      "conf": null,
+      "links": []
+    },
+    {
+      "id": "bl_n8_s1",
+      "type": "Requirement",
+      "parent": "bl_n8",
+      "cid": null,
+      "title": "The system shall be user-friendly and fast.",
+      "desc": "The system shall be user-friendly and fast.",
+      "q": 21,
+      "issues": [
+        "compound",
+        "missing_acceptance_criteria",
+        "missing_rationale",
+        "not_testable",
+        "vague_term"
+      ],
+      "conf": "medium",
+      "links": []
+    },
+    {
+      "id": "bl_n8_s2",
+      "type": "Requirement",
+      "parent": "bl_n8",
+      "cid": null,
+      "title": "The unit shall operate from a supply voltage of TBD V.",
+      "desc": "The unit shall operate from a supply voltage of TBD V.",
+      "q": 21,
+      "issues": [
+        "missing_acceptance_criteria",
+        "missing_rationale",
+        "placeholder"
+      ],
+      "conf": "low",
+      "links": []
+    },
+    {
+      "id": "bl_synth_doc_epic",
+      "type": "Epic",
+      "parent": null,
+      "cid": null,
+      "title": "Eval Unit Specification",
+      "desc": "Eval Unit Specification",
+      "q": null,
+      "issues": [],
+      "conf": null,
+      "links": []
+    },
+    {
+      "id": "bl_synth_feature_synth_doc_epic",
+      "type": "Feature",
+      "parent": "bl_synth_doc_epic",
+      "cid": null,
+      "title": "Eval Unit Specification",
+      "desc": "Eval Unit Specification",
+      "q": null,
+      "issues": [],
+      "conf": null,
+      "links": []
+    }
+  ],
+  "warnings": [
+    "catchall_epic_wrap: {\"epicId\":\"bl_synth_doc_epic\",\"featureIds\":[\"bl_n0\",\"bl_n7\",\"bl_n8\"]}",
+    "criteria_value_ungrounded: {\"pass\":\"acceptance_criteria\",\"dropped\":1,\"assumptionOnly\":0}",
+    "missing_source_reference: {}",
+    "overview_reused: {\"reason\":\"cache_hit\",\"cachedAt\":\"2026-11-20T21:42:08.227Z\",\"sourceJobId\":\"7d551fef-e19d-47e0-8591-aff4c06c4a18\"}"
+  ],
+  "kb": [
+    "01_Requirements_Engineering_and_ADO_Work_Item_Standard.pdf retrieved relevant",
+    "02_Public_Source_SIGINT_Naval_Air_Force_Engineering_Guidelines.pdf retrieved not_relevant"
+  ]
+}

@@ -126,6 +126,20 @@
           "type": ["number", "null"],
           "description": "SURVEY-only: how much of the generated description's vocabulary appears in its source block. Null for BASELINE (trivially fully grounded) or when scoring wasn't enabled."
         },
+        "prompts": {
+          "type": "array",
+          "description": "Every prompt whose answer was used for this item, in the order first used: which prompt produced it. Stored only, never written to ADO. Empty or absent for an item no model answer changed.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "version", "sha256"],
+            "properties": {
+              "name": { "type": "string" },
+              "version": { "type": "integer" },
+              "sha256": { "type": "string" }
+            }
+          }
+        },
         "quality_score": {
           "type": ["integer", "null"],
           "description": "SURVEY-only: 0-100 quality judgment of the final description. Null for BASELINE or when no scoring_client was supplied."

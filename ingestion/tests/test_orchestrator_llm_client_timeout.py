@@ -6,6 +6,7 @@ import json
 import httpx
 import pytest
 
+from app.prompts.assembly import DataBlock, build_call
 from app.survey import orchestrator_llm_client as module
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 
@@ -41,9 +42,12 @@ def make_client(monkeypatch) -> tuple[OrchestratorLlmClient, list]:
     return client, timeouts
 
 
+# Any built call: these tests are about the transport, not the prompt.
+_CALL = build_call("judge_duplicate_pair", blocks=[DataBlock("source", "x")])
+
 CALLS = {
-    "plain chat": lambda c: c._post_chat({"messages": []}, "u1"),
-    "streamed chat": lambda c: c._chat_json_streaming({"messages": []}, "u1", NullDisplay()),
+    "plain chat": lambda c: c._post_chat(_CALL, {}, "u1"),
+    "streamed chat": lambda c: c._chat_json_streaming(_CALL, {}, "u1", NullDisplay()),
     "model lookup": lambda c: c.show_model("m", "u1"),
 }
 
@@ -70,5 +74,5 @@ def test_the_timeout_belongs_to_the_client_that_set_it_not_to_the_class(monkeypa
     capped, _ = make_client(monkeypatch)
     capped.request_timeout_seconds = 65
     other, timeouts = make_client(monkeypatch)
-    other._post_chat({"messages": []}, "u1")
+    other._post_chat(_CALL, {}, "u1")
     assert timeouts == [module._LLM_REQUEST_TIMEOUT_SECONDS]

@@ -55,9 +55,9 @@ class _Judge:
 
     def judge_rule_conformance(
         self, rule: str, items: dict[str, str], user_id: str | None = None
-    ) -> dict[str, bool]:
+    ) -> dict[str, str]:
         self.calls.append((rule, sorted(items)))
-        return {item_id: self._passes for item_id in items}
+        return {item_id: "conforms" if self._passes else "violates" for item_id in items}
 
 
 @pytest.mark.parametrize(
@@ -186,3 +186,24 @@ def test_the_command_line_tool_reads_job_exports_and_a_profile_and_prints_the_co
     assert code == 0
     out = capsys.readouterr().out
     assert "One requirement per statement" in out and "gain" in out.lower()
+
+
+def test_an_item_the_rule_does_not_apply_to_neither_passes_nor_fails_it() -> None:
+    class Mixed:
+        def judge_rule_conformance(self, rule, items, user_id=None):
+            ids = sorted(items)
+            return {
+                ids[0]: "conforms",
+                ids[1]: "violates",
+                **dict.fromkeys(ids[2:], "not_applicable"),
+            }
+
+    items = [
+        {"localId": f"n{i}", "type": "Requirement", "title": "t", "description": f"Text {i}."}
+        for i in range(4)
+    ]
+    rule = conformance_report(items, _profile("Use the customer's own vocabulary"), judge=Mixed())[
+        "rules"
+    ][0]
+    assert rule["checked"] == 2 and rule["passed"] == 1 and len(rule["failed_ids"]) == 1
+    assert len(rule["not_applicable_ids"]) == 2 and len(rule["sampled_ids"]) == 4

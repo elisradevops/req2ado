@@ -1,0 +1,1 @@
+Obligation form: where you write a requirement, state its obligation the way the <obligation_forms> block shows (__FORMS_FROM__), in the requirement's own language.

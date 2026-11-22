@@ -287,12 +287,13 @@ def retry_omitted(
     send: Callable[[dict], object],
     label: str,
     fields: Collection[str] | None = None,
+    accept: Callable[[str, object], bool] | None = None,
 ) -> tuple[dict, int]:
     """ONE bounded retry of the ids `result` lacks, in halves. Returns (merged result,
     number of extra calls made). Cost is bounded by design: only the omitted ids are
     re-sent, each half at most once, and the retry stops as soon as a half yields nothing
     -- so a systematic fault costs at most ONE extra call, not one per half. A retry call
-    that raises is swallowed (fail-open, same as the pass itself): the ids stay omitted."""
+    that raises is swallowed (fail-open, same as the pass itself): the ids stay omitted. An entry `accept` refuses counts as omitted."""
     missing = [node_id for node_id in ids if node_id not in result]
     if not missing:
         return result, 0
@@ -309,7 +310,11 @@ def retry_omitted(
         except Exception as exc:  # noqa: BLE001 -- the retry is best-effort; the ids just stay omitted
             logger.warning("%s retry for %d omitted id(s) failed: %s", label, len(half), exc)
             break
-        matched = {node_id: half_result[node_id] for node_id in half if node_id in half_result}
+        matched = {
+            node_id: half_result[node_id]
+            for node_id in half
+            if node_id in half_result and (accept is None or accept(node_id, half_result[node_id]))
+        }
         if not matched:
             break
         merged.update(matched)
@@ -349,12 +354,19 @@ class KeyedEntries(dict):
             self.reason = "partial"
 
 
+def _accepted(entries: dict, accept: Callable[[str, object], bool] | None) -> dict:
+    if accept is None:
+        return entries
+    return {node_id: entry for node_id, entry in entries.items() if accept(node_id, entry)}
+
+
 def run_keyed(
     send: Callable[[dict, KeyedMode], object],
     payload: Mapping[str, object],
     spec: KeyedSpec,
     model: str | None = None,
     retry: bool = True,
+    accept: Callable[[str, object], bool] | None = None,
 ) -> KeyedEntries:
     """One keyed call: `send(payload, mode)` returns the parsed JSON the model produced (it must
     build its own request from `payload` and `mode`, so a retry can send a subset and a fallback
@@ -367,20 +379,24 @@ def run_keyed(
     schema is not tried -- and paid for -- on every later chunk. Cost: one extra call, once.
 
     `retry=False` skips the retry of omitted ids, for a pass whose caller already decides what an
-    absent id means (and whose calls are too large to repeat)."""
+    absent id means (and whose calls are too large to repeat).
+
+    `accept(id, entry)` is the caller's own check of an entry (for example that it is written in its source's script): an entry it
+    refuses counts as omitted, so it gets the same one retry, and when the retry is refused too the id is absent and the caller keeps
+    what it had."""
     ids = list(payload)
     if not ids:
         return KeyedEntries({}, [])
     mode = mode_for(spec, model)
     raw = send(dict(payload), mode)
-    first = normalize_keyed_result(raw, ids, spec.fields)
+    first = _accepted(normalize_keyed_result(raw, ids, spec.fields), accept)
     extra_calls = 0
     degraded = False
     fallback_failed = False
     if mode == "array" and not any(node_id in first for node_id in ids):
         extra_calls += 1
         fallback_raw = send(dict(payload), "none")
-        fallback = normalize_keyed_result(fallback_raw, ids, spec.fields)
+        fallback = _accepted(normalize_keyed_result(fallback_raw, ids, spec.fields), accept)
         if any(node_id in fallback for node_id in ids):
             _mark_degraded(spec, model)
             logger.warning(
@@ -404,6 +420,7 @@ def run_keyed(
             lambda subset: send(subset, mode),
             f"{spec.name} keyed call",
             spec.fields,
+            accept,
         )
     )
     extra_calls += retried

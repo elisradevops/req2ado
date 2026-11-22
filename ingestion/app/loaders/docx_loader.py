@@ -775,7 +775,7 @@ def _heading_level_for_paragraph(paragraph: DocxParagraph) -> int | None:
     "Heading 1"-styled paragraph has NO outlineLvl on its own pPr, only
     on the style's pPr), so this is what fires for the common case,
     template-independent of the style's NAME; (3) style-name regex
-    fallback ("Heading" + optional space + digits, or "Title") for a
+    fallback ("Heading" + optional space + digits) for a
     template that defines neither outlineLvl location -- allows both the
     with-space Word convention ("Heading 1") and the no-space convention
     docgen-json-to-word emits ("Heading3"). Returns None (falls through to
@@ -796,8 +796,6 @@ def _heading_level_for_paragraph(paragraph: DocxParagraph) -> int | None:
                 return level
 
     style_name = style.name if style else ""
-    if style_name == "Title":
-        return 1
     match = _HEADING_STYLE_PATTERN.match(style_name)
     if match:
         return int(match.group(1))
@@ -959,6 +957,20 @@ def load_docx(
                     # touches Figure.caption itself, still reserved for real
                     # vision prose only (see the comment above).
                     blocks[-1].text = f"[FIGURE: {content}]"
+            elif style_name == "Title":
+                # The document's own name, not a section heading: it does not advance the heading counters, and the
+                # builders use it to name the document Epic instead of the filename (tree_builder._derive_doc_title).
+                blocks.append(
+                    Block(
+                        id=f"b{block_id}",
+                        kind=BlockKind.TITLE,
+                        text=content,
+                        source_ref=SourceRef(
+                            document_path=path, start_offset=start, end_offset=end
+                        ),
+                    )
+                )
+                block_id += 1
             else:
                 heading_level = _heading_level_for_paragraph(paragraph)
                 if heading_level is not None:

@@ -59,6 +59,7 @@ from app.workitem.model import (
     WorkItemMode,
     WorkItemNode,
     WorkItemType,
+    record_prompt,
 )
 
 logger = logging.getLogger(__name__)
@@ -459,6 +460,8 @@ def _apply_title_tag_pass(
                 node.title = updates["title"]
             if "tags" in updates:
                 node.tags = updates["tags"]
+            if updates:
+                record_prompt(node, entry)
 
 
 class ParentSummaryClient(Protocol):
@@ -867,6 +870,7 @@ def _apply_parent_summary_pass(
                 )
                 if "title" in resolved:
                     node.title = resolved["title"]
+                    record_prompt(node, entry)
                 else:
                     # Keep the verbatim heading title (still on the node -- this pass hasn't
                     # touched it) instead of the model's. A Feature with one Requirement child
@@ -915,6 +919,7 @@ def _apply_parent_summary_pass(
                         description = assemble_description(description, table_html)
                 node.description = description
                 node.fidelity_hash = _hash_description(node.description)
+                record_prompt(node, entry)
                 # Recompute against the real descendant requirement text
                 # (already collected into payload_by_id above), not a
                 # self-comparison -- mirrors _apply_synthesis_pass's own
@@ -1170,6 +1175,8 @@ def _apply_synthesis_pass(
                 continue
             node = by_id[node_id]
             updates = synthesis_updates(entry, original_text_by_id[node_id], node.type)
+            if updates:
+                record_prompt(node, entry)
             if "description" in updates:
                 node.description = updates["description"]
                 node.fidelity_hash = updates["fidelity_hash"]

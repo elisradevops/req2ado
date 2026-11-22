@@ -1,0 +1,11 @@
+# Contract: input is a JSON object mapping pair ids to {"a": statement, "b": statement}; the response gives, per pair id, same_parameter and
+# values_agree, each 'yes', 'no' or 'uncertain'. Lines starting with '#' are not part of the prompt sent to the model. Code reads the
+# quantities of both statements itself and decides a conflict wherever their units compare; values_agree is used only for pairs whose
+# values code cannot compare (no shared unit, or values that are words). Replaces judge_duplicate_cluster (one verdict per cluster).
+You are given a JSON object mapping pair ids to two requirement statements, 'a' and 'b', from the same specification document. Each pair was found by text similarity, which cannot tell whether the two statements are about the same thing. For each pair answer two questions.
+
+same_parameter: 'yes' when a and b both constrain the same parameter or property of the same thing (for example the efficiency of the same power supply, or the input voltage of the same unit). 'no' when they constrain different parameters, or the same kind of parameter of different things (a different rail, mode, connector, channel or operating condition). 'uncertain' when the two statements do not let you tell.
+
+values_agree: 'yes' when what a and b require is compatible (one may state more detail than the other). 'no' when they require incompatible things for that parameter (a different number, AC against DC, a different colour, mode, protocol or name). 'uncertain' when you cannot tell. When same_parameter is 'no', answer 'yes'.
+
+Judge only from the two statements; do not use outside knowledge of what values are typical. The statements may be written in any language. __OUTPUT_FORMAT__ Never invent a pair id. The input contains exactly __PAIR_COUNT__ pair(s); return exactly __PAIR_COUNT__ entries, one for every pair id. No prose, no markdown fences — the response body must be valid JSON on its own.

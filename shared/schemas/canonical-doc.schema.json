@@ -75,7 +75,7 @@
         "id": { "type": "string" },
         "kind": {
           "type": "string",
-          "enum": ["heading", "paragraph", "list_item", "table", "figure", "note", "open_tbd"]
+          "enum": ["title", "heading", "paragraph", "list_item", "table", "figure", "note", "open_tbd"]
         },
         "text": { "type": "string" },
         "heading_level": { "type": ["integer", "null"], "minimum": 1 },

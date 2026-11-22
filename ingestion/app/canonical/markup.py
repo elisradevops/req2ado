@@ -246,7 +246,7 @@ def html_to_cell_text(text: str) -> str:
 
 
 def normalize_block_markup(doc):  # noqa: ANN001, ANN201  (CanonicalDoc; imported lazily so this module stays import-light)
-    """Turns markup inside a document's running text into Markdown (paragraphs and list items) or plain text (headings), in place.
+    """Turns markup inside a document's running text into Markdown (paragraphs and list items) or plain text (the title and headings), in place.
     A block that is not HTML-looking is not touched, so a plain or Markdown source comes out byte-identical."""
     from app.canonical.model import BlockKind
 
@@ -255,7 +255,7 @@ def normalize_block_markup(doc):  # noqa: ANN001, ANN201  (CanonicalDoc; importe
             continue
         if block.kind in (BlockKind.PARAGRAPH, BlockKind.LIST_ITEM):
             converted = html_to_markdown(block.text)
-        elif block.kind == BlockKind.HEADING:
+        elif block.kind in (BlockKind.TITLE, BlockKind.HEADING):
             converted = html_to_plain(block.text)
         else:
             continue

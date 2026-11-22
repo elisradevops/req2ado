@@ -10,6 +10,7 @@ from app.leveling.live_stream import DraftingDisplay
 from app.logging_context import current_job_id, job_id_scope
 from app.survey import orchestrator_llm_client as client_module
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
+from tests._prompt_tags import untagged
 
 JOB = "job-stream"
 ROWS = {"r1": "Size: 3U 1 inch", "r2": "Over-current protection", "r3": "Operating temperature"}
@@ -111,9 +112,9 @@ def _client(server: Server) -> OrchestratorLlmClient:
 
 def _run(client: OrchestratorLlmClient, redis: FakeRedis | None, *, scope: bool = True):  # noqa: ANN202
     if not scope:
-        return client.title_and_tags_for_rows(dict(ROWS), user_id="u1")
+        return untagged(client.title_and_tags_for_rows(dict(ROWS), user_id="u1"))
     with job_id_scope(JOB), live_emitter_scope(JOB, redis):
-        return client.title_and_tags_for_rows(dict(ROWS), user_id="u1")
+        return untagged(client.title_and_tags_for_rows(dict(ROWS), user_id="u1"))
 
 
 def test_streamed_call_returns_exactly_what_the_plain_call_returns(live) -> None:  # noqa: ANN001
@@ -243,7 +244,9 @@ def test_the_other_drafting_calls_stream_too(live) -> None:  # noqa: ANN001
     parent_result = {"p1": {"title": "Power supply", "description": "Powers the unit."}}
     server = Server(json.dumps(parent_result))
     with job_id_scope(JOB), live_emitter_scope(JOB, live):
-        assert _client(server).summarize_parent_nodes(parents, user_id="u1") == parent_result
+        assert (
+            untagged(_client(server).summarize_parent_nodes(parents, user_id="u1")) == parent_result
+        )
     assert server.paths() == ["/llm/chat/stream"]
     item = next(f for f in live.frames() if f["kind"] == "item")
     assert item["ref"] == "p1" and item["title"] == "Power supply"
@@ -253,14 +256,17 @@ def test_the_other_drafting_calls_stream_too(live) -> None:  # noqa: ANN001
     synth_result = {"s1": {"title": "Size", "text": "The unit shall be 3U high.", "tags": []}}
     server = Server(json.dumps(synth_result))
     with job_id_scope(JOB), live_emitter_scope(JOB, live):
-        assert _client(server).synthesize_leaf_requirements(items, user_id="u1") == synth_result
+        assert (
+            untagged(_client(server).synthesize_leaf_requirements(items, user_id="u1"))
+            == synth_result
+        )
     assert server.paths() == ["/llm/chat/stream"]
 
 
 def test_non_drafting_calls_are_never_streamed(live) -> None:  # noqa: ANN001
     server = Server(json.dumps({"verdict": "redundant"}))
     with job_id_scope(JOB), live_emitter_scope(JOB, live):
-        _client(server).judge_duplicate_cluster({"a": "x", "b": "y"}, user_id="u1")
+        _client(server).judge_duplicate_pair("x", "y", user_id="u1")
     assert server.paths() == ["/llm/chat"]
 
 
@@ -313,7 +319,7 @@ def test_streamed_items_move_the_pass_count_during_the_call(
         counter._min_interval = 0.0
         counter.plan({"improve": 3})
         client = _client(Server(json.dumps(RESULT)))
-        assert client.title_and_tags_for_rows(dict(ROWS), user_id="u1") == RESULT
+        assert untagged(client.title_and_tags_for_rows(dict(ROWS), user_id="u1")) == RESULT
     improve = [u["done"] for u in units if u["stage"] == "improve"]
     assert improve[0] == 0
     assert 1 in improve and 2 in improve and improve[-1] == 3  # moved item by item

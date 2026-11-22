@@ -1,0 +1,8 @@
+'categoryScores' -- an object with FIVE independent integer 0-100 judgments (100 = fully compliant on that dimension alone, judge each one on its own merits, do not just derive them mechanically from whether an issue tag was flagged):
+  - clarity: is the wording unambiguous and free of vague terms?
+  - testability: can this be objectively verified, with clear acceptance criteria?
+  - atomicity: is this ONE single requirement, not several bundled together? A bare fragment or label (see completeness_as_requirement below) is NOT atomic just because it is short -- score it low here too, not high.
+  - style: active voice, EARS-style phrasing?
+  - rationale: does it state WHY when the reason isn't self-evident?
+  - completeness_as_requirement: is this a COMPLETE candidate requirement -- a subject, a modal (shall/should/must), and a verifiable predicate? A bare label, value, or table cell (e.g. 'Size: 3U 1"', 'Over-current', 'ON/OFF control') scores 0-10 here regardless of how clear or short it is. Always include this key in categoryScores, in addition to the categories above.
+

@@ -86,35 +86,43 @@ export class JobEventsController implements OnModuleDestroy {
   // lifecycles to warrant separate routes.
   // Job transparency (B6): the static "what is in your document" description
   // ingestion writes before the first model call. Owner-scoped like every
-  // other job route (404 for anyone else), and 404 when the feature is off or
-  // no map exists yet. Named run-map to stay distinct from the wizard's
-  // step-1 document map (document-map.ts).
+  // other job route (404 for anyone else). The owner's job without a map (the
+  // feature is off, the run has not written it yet, or the stored value is
+  // unreadable) answers 204 No Content: that is an expected state the page polls
+  // through while a job starts, not an error, so it must not show as a failed
+  // request. Named run-map to stay distinct from the wizard's step-1 document
+  // map (document-map.ts).
   @Get(':id/run-map')
-  async getRunMap(@Param('id') id: string, @CurrentUser() user: SessionUser): Promise<unknown> {
+  async getRunMap(
+    @Param('id') id: string,
+    @CurrentUser() user: SessionUser,
+    @Res({ passthrough: true }) res: Pick<Response, 'status'>,
+  ): Promise<unknown> {
     const job = await this.jobsService.getById(id);
     if (!job || job.userId !== user.userId) {
       throw new NotFoundException(`Job ${id} not found`);
     }
-    if (!this.liveProgress) throw this.noRunMap(id, 'feature_off');
+    if (!this.liveProgress) return this.noRunMap(id, 'feature_off', res);
     const raw = await this.redisCommandClient.get(runMapKey(id));
-    if (!raw) throw this.noRunMap(id, 'missing');
+    if (!raw) return this.noRunMap(id, 'missing', res);
     try {
       return JSON.parse(raw) as unknown;
     } catch {
-      throw this.noRunMap(id, 'not_json');
+      return this.noRunMap(id, 'not_json', res);
     }
   }
 
-  // The 404 of run-map used to leave no trace, so "no map" could not be told from "never written" or "expired". Counts only.
-  private noRunMap(jobId: string, reason: 'feature_off' | 'missing' | 'not_json'): NotFoundException {
+  // Why the owner got no map, so "no map" can be told from "never written" or "expired". Counts only.
+  private noRunMap(jobId: string, reason: 'feature_off' | 'missing' | 'not_json', res: Pick<Response, 'status'>): undefined {
     const marker = `${jobId}:${reason}`;
     if (!this.loggedRunMapMisses.has(marker)) {
       // Full: forget everything, so a long-lived pod keeps logging new jobs (at worst one repeat line per old pair).
       if (this.loggedRunMapMisses.size >= 1000) this.loggedRunMapMisses.clear();
       this.loggedRunMapMisses.add(marker);
-      this.logger.log(`run-map 404 job=${jobId} reason=${reason}`);
+      this.logger.log(`run-map none job=${jobId} reason=${reason}`);
     }
-    return new NotFoundException('No document map for this job');
+    res.status(204);
+    return undefined;
   }
 
   // Job transparency: the refs of items the run has finished. The event stream

@@ -4,14 +4,14 @@ import type { DocumentMap } from './liveTypes';
 
 /**
  * The document map of a running job (counts and outline), owner-scoped. Returns
- * null when the server has none: the feature is off, the run has not parsed the
- * document yet, or the job is not this user's. All of those mean "do not show
- * the outline", never an error.
+ * null when the server has none: 204 when the feature is off or the run has not
+ * parsed the document yet, 404 when the job is not this user's. All of those mean
+ * "do not show the outline", never an error.
  */
 export async function getRunMap(jobId: string): Promise<DocumentMap | null> {
   try {
     const response = await httpClient.get<DocumentMap>(`/jobs/${jobId}/run-map`);
-    return response.data;
+    return response.status === 204 || !response.data ? null : response.data;
   } catch (error) {
     if (axios.isAxiosError(error) && error.response?.status === 404) return null;
     throw error;

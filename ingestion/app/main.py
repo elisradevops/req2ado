@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from app import job_cancel
+from app.build_fingerprint import code_fingerprint
 from app.canonical.model import CanonicalDoc
 from app.chat.chat_client import ChatLlmClient
 from app.chat.chat_service import run_chat_turn
@@ -53,9 +54,11 @@ from app.kb.profile import (
     ensure_profile,
     render_authoring_standard,
     scoring_inputs,
+    standard_requires,
 )
 from app.kb.retrieval import retrieve_context
 from app.kb.rubric import RubricOverrides, apply_overrides, rubric_view, validate_overrides
+from app.language_policy import policy_for_document
 from app.level_stream import NDJSON, ndjson_stream
 from app.leveling.description_text import description_for_model
 from app.leveling.document_map import publish_document_map
@@ -1135,6 +1138,20 @@ def _build_survey_tree_with_scoring(
             AttributeError
         ):  # a client double that is not an OrchestratorLlmClient has nowhere to put it
             pass
+        if hasattr(client, "standard_requires"):
+            # What the organization's standard requires beyond the built-in scoring categories (none without a profile).
+            client.standard_requires = standard_requires(profile)
+        if hasattr(client, "language_policy"):
+            # The output-language policy (app.language_policy): code reads the document's script; the obligation form is the
+            # organization's (its profile), else the document's own.
+            find_forms = getattr(client, "find_obligation_forms", None)
+            client.language_policy = policy_for_document(
+                doc,
+                [f.text for f in profile.obligation_forms]
+                if profile is not None and settings.kb_profile_generation
+                else [],
+                (lambda sample: find_forms(sample, user_id=user_id)) if find_forms else None,
+            )
         return build_survey_tree(
             doc,
             rulebook=_rulebook_of(doc),
@@ -1176,6 +1193,9 @@ def _build_survey_tree_with_scoring(
             # "Controls:", "Over 28V VDC input" read as literal section
             # titles, not ADO's own strategic-goal/capability framing).
             parent_summary_client=client,
+            # Same client, implements ContentAuthoringClient directly: the prose items code built are rewritten on the fixed tree, in the
+            # source's language and obligation form, and a rewrite that adds or drops a value is not kept (app.leveling.content_authoring).
+            content_client=client,
             # Same client, implements ConflictJudgeClient directly -- real
             # capability gap closed here: this codebase previously had no
             # conflict/contradiction detection anywhere (see
@@ -1192,16 +1212,8 @@ def _build_survey_tree_with_scoring(
             # comment). Default 1 = the previous strictly-sequential
             # behavior for all five chunked enhancement passes.
             chunk_concurrency=settings.survey_chunk_concurrency,
-            root_regroup_mode=settings.root_regroup_mode,
-            structure_mode=settings.structure_mode,
             root_regroup_cosine_threshold=settings.root_regroup_cosine_threshold,
             primer_context=primer_context,
-            # Same client, implements TitleDistillationClient directly --
-            # 300553's smart-title fallback: a stage-1 title too generic/
-            # short to be useful gets replaced once the node's real
-            # description exists to distill a better one from (see
-            # _author_branch_content's own gate for the actual quality check).
-            title_distillation_client=client,
             # Same client again: acceptance-criteria proposals and the whole-document study that informs them (SURVEY only).
             acceptance_criteria_client=client,
             document_study_client=client,
@@ -2216,7 +2228,7 @@ async def _survey_level(
 ) -> WorkItemTree:
     """The SURVEY run of /level: the clients for the job's model, then the build in the threadpool. The caller owns the cancellation scope.
     `rubric_report` is filled with the rubric the job was scored with."""
-    # One real client instance satisfies SectionAnalysisClient (and every
+    # One real client instance satisfies SurveyModelClient (and every
     # other build_survey_tree Protocol). run_in_threadpool:
     # OrchestratorLlmClient's HTTP calls are synchronous (httpx.Client,
     # not an async client) — calling build_survey_tree inline in this
@@ -2552,6 +2564,14 @@ async def _rescoring_kb_context(user_id: str | None, text: str) -> str | None:
     return kb_context
 
 
+async def _rescoring_standard_requires(user_id: str | None) -> frozenset[str]:
+    """What the user's standard requires (app.kb.profile.standard_requires), from the profile the job was scored with, so a rescore
+    judges the same categories the job did."""
+    if not user_id or not settings.kb_profile_scoring:
+        return frozenset()
+    return standard_requires(await run_in_threadpool(_stored_profile_or_none, user_id))
+
+
 @app.post("/score-item", response_model=ScoreItemResponse)
 async def score_item(body: ScoreItemRequest) -> ScoreItemResponse:
     if not body.description.strip():
@@ -2587,6 +2607,7 @@ async def score_item(body: ScoreItemRequest) -> ScoreItemResponse:
         top_k=_SURVEY_TOP_K,
         min_p=_SURVEY_MIN_P,
     )
+    client.standard_requires = await _rescoring_standard_requires(body.user_id)
 
     def _score() -> tuple:
         return score_single_requirement_text(
@@ -2683,6 +2704,7 @@ async def rewrite_compare(body: RewriteCompareRequest) -> dict:
         min_p=_SURVEY_MIN_P,
     )
     client.request_timeout_seconds = REWRITE_PREDICTION_SECONDS + CAPPED_CALL_GRACE_SECONDS
+    client.standard_requires = await _rescoring_standard_requires(body.user_id)
 
     def _score() -> dict:
         return score_texts_together(
@@ -3277,14 +3299,18 @@ def _ingestion_version() -> str | None:
 async def cache_scope(
     x_user_id: str | None = Header(default=None, alias=USER_ID_HEADER),
 ) -> dict:
-    """What a stored job result depends on besides the file: this ingestion build, and the version of the rubric the user's jobs are scored
-    with (null without a user). The orchestrator puts both in its result-cache key, so a new build or a changed rubric never serves old results.
-    The user comes in the header: identity does not travel in URLs."""
+    """What a stored job result depends on besides the file: this ingestion build (its version and the fingerprint of its code and
+    prompts), and the version of the rubric the user's jobs are scored with (null without a user). The orchestrator puts both in its
+    result-cache key, so changed code, a changed prompt or a changed rubric never serves old results. The user comes in the header:
+    identity does not travel in URLs."""
     user = resolve_user_id(x_user_id)
     profile = await run_in_threadpool(_stored_profile_or_none, user) if user else None
     version = _ingestion_version()
-    if version is not None and not settings.description_text_for_model_enabled:
-        version = f"{version}+html"  # results built from the stored HTML are not the ones built from its text form
+    if version is not None:
+        # The package version changes only on a release; the code's own fingerprint changes with any code or prompt change.
+        version = f"{version}+code.{code_fingerprint()[:12]}"
+        if not settings.description_text_for_model_enabled:
+            version = f"{version}+html"  # results built from the stored HTML are not the ones built from its text form
     return {"ingestion": version, "profile": profile.version if profile is not None else None}
 
 

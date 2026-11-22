@@ -1,0 +1,8 @@
+'categoryScores' -- an array of EXACTLY SIX {"name": <category>, "score": <integer 0-100>} objects, one for EACH of these six dimensions, named exactly clarity, testability, atomicity, style, rationale and completeness_as_requirement -- never fewer. When a dimension does not seem to apply (for example no rationale is needed), still include it and score it 100 instead of leaving it out. 100 = fully compliant on that dimension alone; judge each one on its own merits, do not just derive them mechanically from whether an issue tag was flagged:
+  - clarity: is the wording unambiguous and free of vague terms?
+  - testability: can this be objectively verified, with clear acceptance criteria?
+  - atomicity: is this ONE single requirement, not several bundled together? A bare fragment or label (see completeness_as_requirement below) is NOT atomic just because it is short -- score it low here too, not high.
+  - style: active voice, EARS-style phrasing?
+  - rationale: does it state WHY when the reason isn't self-evident?
+  - completeness_as_requirement: is this a COMPLETE candidate requirement -- a subject, a modal (shall/should/must), and a verifiable predicate? A bare label, value, or table cell (e.g. 'Size: 3U 1"', 'Over-current', 'ON/OFF control') scores 0-10 here regardless of how clear or short it is. Always include this category in categoryScores, in addition to the categories above.
+

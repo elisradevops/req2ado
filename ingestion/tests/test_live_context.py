@@ -137,15 +137,18 @@ class EmbedClient:
 
 
 class ConflictClient:
-    def __init__(self, verdict: dict) -> None:
-        self._verdict = verdict
+    def __init__(self, same_parameter: str) -> None:
+        self._same_parameter = same_parameter
 
-    def judge_duplicate_cluster(
+    def judge_parameter_pairs(
         self,
-        texts_by_id: dict[str, str],
+        pairs_by_id: dict[str, dict[str, str]],
         user_id: str | None = None,
-    ) -> dict:
-        return self._verdict
+    ) -> dict[str, dict]:
+        return {
+            pair_id: {"same_parameter": self._same_parameter, "values_agree": "yes"}
+            for pair_id in pairs_by_id
+        }
 
 
 def _req(local_id: str, text: str) -> WorkItemNode:
@@ -164,17 +167,17 @@ TEXT_A = "Power-supply efficiency shall be at least 85%."
 TEXT_B = "Power-supply efficiency shall be at-least 93%."
 
 
-def _detect(verdict: dict) -> None:
+def _detect(same_parameter: str) -> None:
     nodes = [_req("n0", TEXT_A), _req("n1", TEXT_B)]
     embed = EmbedClient({TEXT_A: [1.0, 0.0], TEXT_B: [0.99, 0.01]})
-    _detect_conflicting_duplicates(nodes, embed, ConflictClient(verdict), [])
+    _detect_conflicting_duplicates(nodes, embed, ConflictClient(same_parameter), [])
 
 
 def test_a_confirmed_conflict_emits_a_compare_frame_with_both_texts(monkeypatch) -> None:
     _flag(monkeypatch, True)
     redis = FakeRedis()
     with live_emitter_scope("job-1", redis), job_id_scope("job-1"):
-        _detect({"verdict": "contradictory", "conflicting_values": ["85%", "93%"]})
+        _detect("yes")
     compare = [f for f in redis.published if f["kind"] == "compare"]
     assert len(compare) == 1
     payload = compare[0]["compare"]
@@ -184,11 +187,11 @@ def test_a_confirmed_conflict_emits_a_compare_frame_with_both_texts(monkeypatch)
     assert 0.9 < payload["similarity"] <= 1.0
 
 
-def test_a_redundant_verdict_emits_nothing(monkeypatch) -> None:
+def test_a_different_parameter_verdict_emits_nothing(monkeypatch) -> None:
     _flag(monkeypatch, True)
     redis = FakeRedis()
     with live_emitter_scope("job-1", redis), job_id_scope("job-1"):
-        _detect({"verdict": "redundant", "conflicting_values": []})
+        _detect("no")
     assert redis.published == []
 
 
@@ -196,7 +199,7 @@ def test_without_an_emitter_in_scope_conflict_detection_is_unchanged(monkeypatch
     _flag(monkeypatch, False)
     redis = FakeRedis()
     with live_emitter_scope("job-1", redis), job_id_scope("job-1"):
-        _detect({"verdict": "contradictory", "conflicting_values": ["85%", "93%"]})
+        _detect("yes")
     assert redis.published == []
 
 

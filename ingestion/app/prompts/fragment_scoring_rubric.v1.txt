@@ -1,0 +1,1 @@
+The <rubric> block is this organization's own standard for judging a requirement. Judge every category by its pass conditions and rules; use the general criteria in these instructions only for what it does not address.

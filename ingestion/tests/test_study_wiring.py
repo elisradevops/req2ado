@@ -20,7 +20,7 @@ from app.workitem.model import WarningKind
 from tests.test_llm_leveling import (
     _EMPTY_STUDY,
     FakeScoringClient,
-    FakeSectionAnalysisClient,
+    FakeSurveyModelClient,
     _BrokenStudy,
     _CriteriaForEveryKey,
     _CriteriaSpy,
@@ -121,6 +121,14 @@ def _stored_keys(redis: _Redis) -> list[str]:
     return list(redis.data)
 
 
+def _requirement_id(tree) -> str:
+    """The id of the document's one requirement (the HDR statement), whatever number the structure gave it."""
+    (node_id,) = [
+        n.local_id for n in tree.nodes if n.type.value == "Requirement" and "HDR" in n.description
+    ]
+    return node_id
+
+
 def test_study_starts_before_scoring_and_joins_before_criteria() -> None:
     study = _EventStudy()
     criteria = _OrderedCriteria(study)
@@ -129,7 +137,7 @@ def test_study_starts_before_scoring_and_joins_before_criteria() -> None:
 
     build_survey_tree(
         _small_doc(),
-        FakeSectionAnalysisClient(),
+        FakeSurveyModelClient(),
         scoring_client=scoring,
         acceptance_criteria_client=criteria,
         document_study_client=study,
@@ -149,7 +157,7 @@ def test_study_runs_on_the_deterministic_path_too() -> None:
 
     tree = build_survey_tree(
         _structural_heading_doc(),
-        FakeSectionAnalysisClient(),
+        FakeSurveyModelClient(),
         scoring_client=_CriteriaForEveryKey(),
         acceptance_criteria_client=criteria,
         document_study_client=study,
@@ -165,7 +173,7 @@ def test_positional_arguments_still_work_on_the_public_wrapper() -> None:
     names = list(inspect.signature(build_survey_tree).parameters)
     given = {
         "doc": _small_doc(),
-        "analysis_client": FakeSectionAnalysisClient(),
+        "analysis_client": FakeSurveyModelClient(),
         "scoring_client": _flagged_scoring(),
         "acceptance_criteria_client": criteria,
         "document_study_client": study,
@@ -184,7 +192,7 @@ def test_positional_arguments_still_work_on_the_public_wrapper() -> None:
 
     tree = build_survey_tree(*positional)
 
-    assert len(study.windows) == 1 and list(criteria.calls[0]) == ["n1"]
+    assert len(study.windows) == 1 and list(criteria.calls[0]) == [_requirement_id(tree)]
     assert any("Proposed acceptance criteria" in n.description for n in tree.nodes)
 
 
@@ -206,7 +214,7 @@ def test_exception_in_the_pipeline_stops_the_study_and_cleans_its_keys(monkeypat
         with pytest.raises(RuntimeError, match="scoring down"):
             build_survey_tree(
                 doc,
-                FakeSectionAnalysisClient(),
+                FakeSurveyModelClient(),
                 scoring_client=_flagged_scoring(),
                 acceptance_criteria_client=_CriteriaSpy(),
                 document_study_client=stub,
@@ -238,7 +246,7 @@ def test_cancellation_propagates_and_cleans_up() -> None:
             with pytest.raises(JobCancelled):
                 build_survey_tree(
                     doc,
-                    FakeSectionAnalysisClient(),
+                    FakeSurveyModelClient(),
                     scoring_client=_HookedScoring(before=cancel),
                     acceptance_criteria_client=_CriteriaSpy(),
                     document_study_client=stub,
@@ -291,7 +299,7 @@ def test_no_eligible_requirement_keeps_finished_windows_and_stops_the_study(monk
     try:
         tree = build_survey_tree(
             doc,
-            FakeSectionAnalysisClient(),
+            FakeSurveyModelClient(),
             scoring_client=scoring,
             acceptance_criteria_client=criteria,
             document_study_client=stub,
@@ -315,7 +323,7 @@ def test_off_switch_skips_the_study_entirely(monkeypatch) -> None:
 
     tree = build_survey_tree(
         _small_doc(),
-        FakeSectionAnalysisClient(),
+        FakeSurveyModelClient(),
         scoring_client=_flagged_scoring(),
         acceptance_criteria_client=_CriteriaSpy(),
         document_study_client=study,
@@ -345,7 +353,7 @@ def test_no_user_id_still_studies_but_uncached_and_unlimited() -> None:
 
     build_survey_tree(
         _small_doc(),
-        FakeSectionAnalysisClient(),
+        FakeSurveyModelClient(),
         scoring_client=_flagged_scoring(),
         acceptance_criteria_client=_CriteriaSpy(),
         document_study_client=study,
@@ -360,7 +368,7 @@ def test_no_user_id_still_studies_but_uncached_and_unlimited() -> None:
 def test_study_warnings_become_integrity_warnings_in_the_main_thread() -> None:
     tree = build_survey_tree(
         _small_doc(),
-        FakeSectionAnalysisClient(),
+        FakeSurveyModelClient(),
         scoring_client=_flagged_scoring(),
         acceptance_criteria_client=_CriteriaSpy(),
         document_study_client=_BrokenStudy(),
@@ -387,7 +395,7 @@ def test_study_warnings_become_integrity_warnings_in_the_main_thread() -> None:
 
     tree = build_survey_tree(
         _long_doc(),
-        FakeSectionAnalysisClient(),
+        FakeSurveyModelClient(),
         scoring_client=_flagged_scoring(),
         acceptance_criteria_client=_CriteriaSpy(),
         document_study_client=_FailsOneWindow(),
@@ -407,7 +415,7 @@ def test_a_study_that_could_not_start_gives_one_warning_and_a_tree_from_the_hier
 
     tree = build_survey_tree(
         _small_doc(),
-        FakeSectionAnalysisClient(),
+        FakeSurveyModelClient(),
         scoring_client=_flagged_scoring(),
         acceptance_criteria_client=criteria,
         document_study_client=study,
@@ -421,8 +429,9 @@ def test_a_study_that_could_not_start_gives_one_warning_and_a_tree_from_the_hier
     )
     assert study.windows == []  # nothing reads the document on the job's thread
     assert (
-        list(criteria.calls[0]) == ["n1"]
-        and "Proposed acceptance criteria" in {n.local_id: n for n in tree.nodes}["n1"].description
+        list(criteria.calls[0]) == [_requirement_id(tree)]
+        and "Proposed acceptance criteria"
+        in {n.local_id: n for n in tree.nodes}[_requirement_id(tree)].description
     )
 
 
@@ -443,7 +452,7 @@ def test_concurrency_4_gives_the_same_tree_as_concurrency_1(monkeypatch) -> None
         monkeypatch.setattr(settings, "survey_study_concurrency", concurrency)
         tree = build_survey_tree(
             _two_window_doc(),
-            FakeSectionAnalysisClient(),
+            FakeSurveyModelClient(),
             scoring_client=_flagged_scoring(),
             acceptance_criteria_client=_CriteriaSpy(),
             document_study_client=_Stub(_window_count(_two_window_doc())),
@@ -460,7 +469,7 @@ def test_limiter_is_used_when_given() -> None:
 
     build_survey_tree(
         _small_doc(),
-        FakeSectionAnalysisClient(),
+        FakeSurveyModelClient(),
         scoring_client=_flagged_scoring(),
         acceptance_criteria_client=_CriteriaSpy(),
         document_study_client=_EventStudy(),
@@ -516,7 +525,7 @@ def test_the_study_text_is_a_snapshot_rendered_on_the_calling_thread(monkeypatch
 
     build_survey_tree(
         _small_doc(),
-        FakeSectionAnalysisClient(),
+        FakeSurveyModelClient(),
         scoring_client=_flagged_scoring(),
         acceptance_criteria_client=_CriteriaSpy(),
         document_study_client=_EventStudy(),
@@ -555,7 +564,7 @@ def test_a_study_that_cannot_start_never_fails_the_job(monkeypatch, caplog, what
     with caplog.at_level("WARNING"):
         tree = build_survey_tree(
             _small_doc(),
-            FakeSectionAnalysisClient(),
+            FakeSurveyModelClient(),
             scoring_client=_flagged_scoring(),
             acceptance_criteria_client=criteria,
             document_study_client=_EventStudy(),
@@ -583,7 +592,7 @@ def test_a_job_cancelled_while_starting_the_study_still_stops(monkeypatch) -> No
     with pytest.raises(JobCancelled):
         build_survey_tree(
             _small_doc(),
-            FakeSectionAnalysisClient(),
+            FakeSurveyModelClient(),
             scoring_client=_flagged_scoring(),
             acceptance_criteria_client=_CriteriaSpy(),
             document_study_client=_EventStudy(),
@@ -606,7 +615,7 @@ def _run_two_window_job(redis: _Redis, **kwargs):
     doc = _two_window_doc()
     return build_survey_tree(
         doc,
-        FakeSectionAnalysisClient(),
+        FakeSurveyModelClient(),
         scoring_client=kwargs.pop("scoring", _flagged_scoring()),
         acceptance_criteria_client=_CriteriaSpy(),
         document_study_client=_Stub(_window_count(doc)),
@@ -671,7 +680,7 @@ def test_close_failure_does_not_mask_the_original_exception(monkeypatch) -> None
     with pytest.raises(RuntimeError, match="the job's own"):
         build_survey_tree(
             _small_doc(),
-            FakeSectionAnalysisClient(),
+            FakeSurveyModelClient(),
             scoring_client=_flagged_scoring(),
             acceptance_criteria_client=_CriteriaSpy(),
             document_study_client=_EventStudy(),

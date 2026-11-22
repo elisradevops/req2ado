@@ -384,6 +384,8 @@ interface LeveledNode {
   // response shape before this round -- an older/mocked ingestion response
   // in a test omitting them entirely must not crash the mapping below.
   grounding_score?: number | null;
+  // Every prompt whose answer was used for this node (ingestion WorkItemNode.prompts). Stored with the diff for audit only.
+  prompts?: { name: string; version: number; sha256: string }[];
   quality_score?: number | null;
   quality_issues?: string[];
   // Per-dimension 0-100 breakdown backing quality_score -- see ingestion's
@@ -1026,6 +1028,8 @@ export async function runPipelineJob(
         seCoverageRef: node.se_coverage_ref ?? null,
         areaPath: job.areaPath,
         groundingScore: node.grounding_score ?? null,
+        // Absent when no model answer was used for the node (BASELINE, or every answer rejected).
+        ...(node.prompts?.length ? { prompts: node.prompts } : {}),
         qualityScore: node.quality_score,
         qualityIssues: node.quality_issues,
         qualityCategoryScores: node.quality_category_scores,

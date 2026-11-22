@@ -117,6 +117,10 @@ def test_helper_is_silent_with_live_progress_off(monkeypatch) -> None:  # noqa: 
     assert redis.published == []
 
 
+# One node of an already-built tree, for a call that writes its content.
+_ONE_NODE = {"r1": {"type": "Requirement", "title": "Start-up", "parent_id": None}}
+
+
 def _client(handler):  # noqa: ANN001, ANN202
     import httpx
 
@@ -140,20 +144,18 @@ def test_client_reports_retry_and_output_limit(monkeypatch) -> None:  # noqa: AN
         calls["n"] += 1
         if calls["n"] == 1:
             return httpx.Response(503, json={"error": "busy"})
-        return httpx.Response(
-            200, json={"content": json.dumps({"nodes": []}), "finishReason": "length"}
-        )
+        return httpx.Response(200, json={"content": json.dumps({}), "finishReason": "length"})
 
     redis = FakeRedis()
     with job_id_scope("j5"), live_emitter_scope("j5", redis):
-        _client(handler).analyze_section("Some section text.")
+        _client(handler).author_content("Some section text.", _ONE_NODE)
     kinds = [
         (json.loads(b)["kind"], json.loads(b)["facts"])
         for c, b in redis.published
         if c == "job-events:j5"
     ]
     assert ("server_retry", {"status": 503}) in kinds
-    assert ("output_limit_reached", {"step": "analyze"}) in kinds
+    assert ("output_limit_reached", {"step": "write"}) in kinds
 
 
 def test_client_is_silent_without_live_progress(monkeypatch) -> None:  # noqa: ANN001
@@ -163,12 +165,10 @@ def test_client_is_silent_without_live_progress(monkeypatch) -> None:  # noqa: A
     redis = FakeRedis()
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200, json={"content": json.dumps({"nodes": []}), "finishReason": "length"}
-        )
+        return httpx.Response(200, json={"content": json.dumps({}), "finishReason": "length"})
 
     with job_id_scope("j5"), live_emitter_scope("j5", redis):
-        _client(handler).analyze_section("Some section text.")
+        _client(handler).author_content("Some section text.", _ONE_NODE)
     assert redis.published == []
 
 

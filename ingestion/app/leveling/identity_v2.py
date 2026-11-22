@@ -114,7 +114,7 @@ def assign_identity_v2(tree: WorkItemTree, doc: CanonicalDoc) -> WorkItemTree:
         node.identity_hash_v2 = _sha256(f"{base}\x00{ordinal}")
 
         if node.title == filename_title and node.description == filename_title:
-            # A title made from the filename (the document Epic of a document without one): nothing of the document to compare.
+            # The document's name on a synthesized parent (its Title, or the filename when it has none): no source span to compare.
             node.content_hash = None
         elif start is not None:
             following = bisect.bisect_right(span_starts, start)

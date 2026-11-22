@@ -9,12 +9,10 @@ two real documents, opposite shapes:
                           P-SENSOR-002# | Sync accuracy | Timing accuracy shall...
     -- every row has its own literal id AND its own "shall" statement: 19
     such rows across 5 tables, exactly the 19 Requirements the customer's
-    own expected-results CSV lists. SURVEY mode's stage-1 skeleton call was
-    never told this -- its own node-count floor (heading_count +
-    qualifying_table_groups) saw 0 qualifying groups here (table_groups.py
-    requires a strictly-2-column dotted-numeric-ID table; these are 3
-    columns with a "P-SENSOR-NNN#"-style id) and merged rows into fewer
-    nodes than the document actually specifies.
+    own expected-results CSV lists. The dotted-numeric table convention
+    (id_hierarchy.rows_from_table, strictly 2 columns) does not recognise
+    them (3 columns, a "P-SENSOR-NNN#"-style id), so without this module
+    the rows were merged into fewer items than the document specifies.
 
     AirPro_BP_ICD_Revision_0.3.docx: SRU module | QTY | Unit Power [Watt] | Total power
                                      Power supply Efficiency | 1 | 63 | 0.87
@@ -25,8 +23,8 @@ two real documents, opposite shapes:
     what counts as a "requirement".
 
 The discriminator is deliberately the ID COLUMN, not a "shall" statement
-(unlike this module's sibling `table_groups.py`, whose leaf/group split IS
-"shall"-based): a row here can have an empty or non-"shall" label cell and
+(unlike id_hierarchy's dotted-numeric table convention, whose leaf/group
+split IS "shall"-based): a row here can have an empty or non-"shall" label cell and
 still be a real, separately-numbered requirement (Mock_PRD's own
 "P-SENSOR-009#" row has a blank Parameter cell) -- the source document's
 own decision to give it a distinct literal id is the real signal, not
@@ -50,7 +48,7 @@ Known, deliberate limitations (accepted, not silently papered over):
   detector -- see llm_leveling.py's own model-reported customer_id path).
   Under-triggering is the accepted failure direction, matching every other
   heuristic in this file's sibling modules.
-- Unlike table_groups.py, no column-count restriction and no "shall"
+- Unlike id_hierarchy's table convention, no column-count restriction and no "shall"
   requirement -- deliberately not inherited, since the ID column alone is
   this detector's discriminator (see above).
 - "Code-shaped" is defined entirely by customer_id.py's own pattern
@@ -61,21 +59,12 @@ Known, deliberate limitations (accepted, not silently papered over):
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
 from typing import NamedTuple
 
 from app.canonical.model import Table, plain_text_rows
 from app.distillation.title import extract_baseline_title
 from app.leveling.customer_id import extract_customer_requirement_code
 from app.leveling.id_hierarchy import MIN_ID_ROW_FRACTION, MIN_ID_ROWS
-
-_LABEL_MAX_LENGTH = 80
-
-
-class RequirementRowInfo(NamedTuple):
-    table_id: str
-    code: str  # verbatim, exactly as the table cell prints it -- never normalized
-    label: str  # longest other non-empty cell in the row, truncated -- prompt-hint use only
 
 
 def _best_matching_column(rows: list[list[str]]) -> tuple[int | None, int]:
@@ -109,65 +98,18 @@ def _id_column_index(rows: list[list[str]]) -> int | None:
     """Column index whose cells most often whole-cell-match a customer
     code, or None if no column qualifies -- gated on BOTH MIN_ID_ROWS and
     MIN_ID_ROW_FRACTION: this is the "is this table AS A WHOLE a
-    requirements list" decision (see qualifying_requirement_rows's own
-    docstring), not a lighter single-code lookup -- see
-    repeated_customer_code_in_table below for that narrower case."""
+    requirements list" decision (see the module docstring), not a lighter
+    single-code lookup."""
     best_index, best_count = _best_matching_column(rows)
     if best_count < MIN_ID_ROWS or best_count < len(rows) * MIN_ID_ROW_FRACTION:
         return None
     return best_index
 
 
-def repeated_customer_code_in_table(table: Table) -> str | None:
-    """A SUPPLEMENTARY table's own first customer-assigned code, trusted
-    ONLY when the same column repeats a whole-cell code match at least
-    MIN_ID_ROWS (2) times -- the absolute floor `_id_column_index` also
-    uses, but deliberately WITHOUT that function's MIN_ID_ROW_FRACTION
-    gate (the "is this whole table a requirements list" decision --
-    qualifying_requirement_rows's own call). A table that met BOTH gates
-    is already excluded from ever reaching this function's caller (see
-    llm_leveling.py's own Phase 6 exclusion from stage 2 figure/table
-    mapping): it was pre-split into its own per-row nodes at stage 1
-    instead, so re-checking the exact same full gate here would always
-    read empty by construction.
-
-    Guards against a genuinely supplementary column where only ONE cell
-    happens to be code-shaped -- a category label, not a repeating id
-    column -- which a plain regex search over the table's rendered HTML
-    would wrongly trust as this table's own customer id. The MIN_ID_ROWS
-    floor alone (no fraction needed) correctly rejects it: one match can
-    never reach 2. Confirmed live case and rejected earlier approaches:
-    docs/handoff-heading-tier-detector-and-customer-id-fixes.md.
-
-    Returns the FIRST matching row's own code in document order, or None
-    if no column reaches the floor. Never raises."""
-    rows = [row for row in plain_text_rows(table) if any(cell.strip() for cell in row)]
-    if len(rows) < MIN_ID_ROWS:
-        return None
-    best_index, best_count = _best_matching_column(rows)
-    if best_index is None or best_count < MIN_ID_ROWS:
-        return None
-    for row in rows:
-        if best_index >= len(row):
-            continue
-        cell = row[best_index].strip()
-        if cell and extract_customer_requirement_code(cell) == cell:
-            return cell
-    return None  # unreachable given best_count >= MIN_ID_ROWS, but never trust that blindly
-
-
-def _row_label(row: list[str], id_column: int) -> str:
-    others = [cell.strip() for i, cell in enumerate(row) if i != id_column and cell.strip()]
-    if not others:
-        return ""
-    longest = max(others, key=len)
-    return longest if len(longest) <= _LABEL_MAX_LENGTH else longest[:_LABEL_MAX_LENGTH]
-
-
 def _gated_id_rows(table: Table) -> tuple[list[list[str]], int] | None:
     """The table's non-blank rows and its id column, or None when the table
-    as a whole is not a requirements list -- the one shared gate behind both
-    `qualifying_requirement_rows` and `atomizable_requirement_rows`."""
+    as a whole is not a requirements list -- the gate behind
+    `atomizable_requirement_rows`."""
     rows = [row for row in plain_text_rows(table) if any(cell.strip() for cell in row)]
     if len(rows) < MIN_ID_ROWS:
         return None
@@ -175,32 +117,6 @@ def _gated_id_rows(table: Table) -> tuple[list[list[str]], int] | None:
     if id_column is None:
         return None
     return rows, id_column
-
-
-def qualifying_requirement_rows(tables: Iterable[Table] | None) -> list[RequirementRowInfo]:
-    """Every row, across all given tables, that is itself a separately-
-    identified requirement -- one RequirementRowInfo per such row, in
-    table/row order. Each table is judged independently: one table's id
-    column has no bearing on another's."""
-    if not tables:
-        return []
-    results: list[RequirementRowInfo] = []
-    for table in tables:
-        gated = _gated_id_rows(table)
-        if gated is None:
-            continue
-        rows, id_column = gated
-        for row in rows:
-            if id_column >= len(row):
-                continue
-            code = row[id_column].strip()
-            if code and extract_customer_requirement_code(code) == code:
-                results.append(
-                    RequirementRowInfo(
-                        table_id=table.id, code=code, label=_row_label(row, id_column)
-                    )
-                )
-    return results
 
 
 class AtomicRow(NamedTuple):
@@ -255,8 +171,8 @@ def atomizable_requirement_rows(table: Table | None) -> list[AtomicRow] | None:
     """The rows of `table` as separate requirements, or None when the table
     must stay folded into its parent's description.
 
-    Same table-level decision as `qualifying_requirement_rows` (an id
-    column clearing MIN_ID_ROWS/MIN_ID_ROW_FRACTION), plus one extra rule so
+    The table-level decision is `_gated_id_rows` (an id column clearing
+    MIN_ID_ROWS/MIN_ID_ROW_FRACTION), plus one extra rule so
     splitting never loses row text: the only non-blank row allowed WITHOUT a
     code is a single leading header-shaped row (column labels). A coded table with any other
     uncoded row (a trailing note, a continuation row) returns None and keeps

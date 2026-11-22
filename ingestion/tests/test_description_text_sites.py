@@ -43,9 +43,9 @@ class _Judge:
     def __init__(self) -> None:
         self.seen: list[dict] = []
 
-    def judge_duplicate_cluster(self, texts_by_id, user_id=None):  # noqa: ANN001, ANN201
-        self.seen.append(texts_by_id)
-        return {"verdict": "redundant", "conflicting_values": []}
+    def judge_parameter_pairs(self, pairs_by_id, user_id=None):  # noqa: ANN001, ANN201
+        self.seen.append(pairs_by_id)
+        return {pair_id: {"same_parameter": "no", "values_agree": "yes"} for pair_id in pairs_by_id}
 
 
 def test_duplicate_clusters_are_embedded_and_judged_on_the_text_form() -> None:
@@ -56,7 +56,9 @@ def test_duplicate_clusters_are_embedded_and_judged_on_the_text_form() -> None:
     embed, judge = _Embed(), _Judge()
     _detect_conflicting_duplicates(nodes, embed, judge, [])
     assert embed.texts and all("<" not in t for t in embed.texts)
-    assert judge.seen and all("<" not in text for text in judge.seen[0].values())
+    assert judge.seen and all(
+        "<" not in text for pair in judge.seen[0].values() for text in pair.values()
+    )
     assert nodes[0].description == f"{PROSE}\n\n{STYLED}"  # what is stored is left alone
 
 

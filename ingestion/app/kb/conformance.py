@@ -73,7 +73,7 @@ def rule_check_for(rule_text: str) -> RuleCheck | None:
 class ConformanceJudge(Protocol):
     def judge_rule_conformance(
         self, rule: str, items: dict[str, str], user_id: str | None = None
-    ) -> dict[str, bool]: ...
+    ) -> dict[str, str]: ...
 
 
 def _sample(items: list[dict], size: int) -> list[dict]:
@@ -123,13 +123,16 @@ def conformance_report(
                         for i in sample
                     },
                 )
-                failed = [item_id for item_id, ok in verdicts.items() if not ok]
+                # A rule counts only on the items it applies to: an item it does not cover neither passes nor fails it.
+                applicable = [i for i, v in verdicts.items() if v != "not_applicable"]
+                failed = [i for i in applicable if verdicts[i] == "violates"]
                 entry |= {
                     "method": "model sample",
-                    "checked": len(verdicts),
-                    "passed": len(verdicts) - len(failed),
+                    "checked": len(applicable),
+                    "passed": len(applicable) - len(failed),
                     "failed_ids": sorted(failed),
                     "sampled_ids": sorted(verdicts),
+                    "not_applicable_ids": sorted(set(verdicts) - set(applicable)),
                 }
             except Exception as exc:  # noqa: BLE001 -- a judge that fails leaves the rule unchecked, never "passed"
                 entry |= {

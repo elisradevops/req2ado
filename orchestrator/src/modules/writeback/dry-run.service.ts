@@ -90,6 +90,8 @@ export interface DryRunTreeNode {
   // SURVEY-only signals (see ingestion's WorkItemNode) -- null/undefined for
   // BASELINE nodes and for any SURVEY node when scoring wasn't enabled.
   groundingScore?: number | null;
+  // Every prompt whose answer was used for this item (ingestion WorkItemNode.prompts): stored for audit, never written to ADO.
+  prompts?: { name: string; version: number; sha256: string }[];
   qualityScore?: number | null;
   qualityIssues?: string[];
   // Per-dimension 0-100 breakdown backing qualityScore -- see ingestion's
@@ -243,6 +245,7 @@ export interface DryRunDiffEntry {
   seCoverageRef: string | null;
   tags: string[];
   groundingScore?: number | null;
+  prompts?: { name: string; version: number; sha256: string }[];
   qualityScore?: number | null;
   qualityIssues?: string[];
   qualityCategoryScores?: QualityCategoryScores | null;
@@ -639,7 +642,7 @@ export class DryRunService {
           title: node.title, description: node.description, action: 'reuse' as const,
           existingAdoId, similarity: null, sourceHash: node.sourceHash, customerId: node.customerId,
           seCoverageRef: node.seCoverageRef,
-          tags: node.tags, groundingScore: node.groundingScore, qualityScore: node.qualityScore,
+          tags: node.tags, groundingScore: node.groundingScore, prompts: node.prompts, qualityScore: node.qualityScore,
           qualityIssues: node.qualityIssues, qualityCategoryScores: node.qualityCategoryScores,
           qualityCategoryChecklist: node.qualityCategoryChecklist,
           qualityConfidence: node.qualityConfidence,
@@ -688,7 +691,7 @@ export class DryRunService {
               title: node.title, description: node.description, action: 'dedup_skip' as const,
               existingAdoId: matchedAdoId, similarity: dedupResult.similarity,
               sourceHash: node.sourceHash, customerId: node.customerId, seCoverageRef: node.seCoverageRef, tags: node.tags,
-              groundingScore: node.groundingScore, qualityScore: node.qualityScore, qualityIssues: node.qualityIssues,
+              groundingScore: node.groundingScore, prompts: node.prompts, qualityScore: node.qualityScore, qualityIssues: node.qualityIssues,
               qualityCategoryScores: node.qualityCategoryScores, qualityCategoryChecklist: node.qualityCategoryChecklist,
               qualityConfidence: node.qualityConfidence,
               sourceRef: node.sourceRef, childType: node.childType, traceLinks: node.traceLinks,
@@ -708,7 +711,7 @@ export class DryRunService {
         title: node.title, description: node.description, action: 'create' as const,
         existingAdoId: null, similarity: null, sourceHash: node.sourceHash, customerId: node.customerId,
         seCoverageRef: node.seCoverageRef,
-        tags: node.tags, groundingScore: node.groundingScore, qualityScore: node.qualityScore,
+        tags: node.tags, groundingScore: node.groundingScore, prompts: node.prompts, qualityScore: node.qualityScore,
         qualityIssues: node.qualityIssues, qualityCategoryScores: node.qualityCategoryScores,
         qualityCategoryChecklist: node.qualityCategoryChecklist,
         qualityConfidence: node.qualityConfidence,

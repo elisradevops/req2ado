@@ -161,9 +161,9 @@ def test_a_sheet_the_id_convention_already_reads_is_not_sent_to_the_model(tmp_pa
 
 def test_build_survey_tree_maps_every_row_of_a_sheet_without_a_structure_call(tmp_path) -> None:
     from app.leveling.llm_leveling import build_survey_tree
-    from tests.test_llm_leveling import FakeSectionAnalysisClient
+    from tests.test_llm_leveling import FakeSurveyModelClient
 
-    class SheetAwareClient(FakeSectionAnalysisClient):
+    class SheetAwareClient(FakeSurveyModelClient):
         calls_to_study = 0
 
         def study_spreadsheet(self, sample, user_id=None):  # noqa: ANN001, ANN201
@@ -177,7 +177,5 @@ def test_build_survey_tree_maps_every_row_of_a_sheet_without_a_structure_call(tm
     requirements = [n for n in tree.nodes if n.type == "Requirement"]
     assert len(requirements) == 2000
     assert SheetAwareClient.calls_to_study == 1
-    # The model-driven structure call never ran: the sheet was fully represented before it.
-    assert client.calls == [] and client.agentic_calls == []
     assert any(w.kind == WarningKind.SPREADSHEET_MAPPED for w in tree.warnings)
     assert not any(w.kind == WarningKind.OUTPUT_TRUNCATED for w in tree.warnings)

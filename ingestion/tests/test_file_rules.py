@@ -245,8 +245,6 @@ def test_survey_keeps_a_stated_requirement_under_an_epic_as_baseline_does(tmp_pa
         StructureRefusingClient(),
         grouping_client=SimulatedGrouper(1),
         embed_client=TitleHashEmbedder(),
-        structure_mode="baseline",
-        root_regroup_mode="deterministic",
     )
 
     def shape(tree) -> set:

@@ -47,10 +47,18 @@ def _latest_version(name: str) -> int:
     return max(versions)
 
 
+def resolve_version(name: str, version: int | None = None) -> int:
+    """The version `load_prompt(name, version)` loads: `version` itself, or the highest one present."""
+    return version if version is not None else _latest_version(name)
+
+
 @cache
 def _read(name: str, version: int) -> str:
+    """The file's text without its `#` comment lines: a comment is a note for whoever edits the prompt, never part of it."""
     path = _PROMPTS_DIR / f"{name}.v{version}.txt"
-    return path.read_text(encoding="utf-8").rstrip("\n")
+    text = path.read_text(encoding="utf-8")
+    text = text[:-1] if text.endswith("\n") else text  # the file's own final newline; a fragment that must end in one keeps it
+    return "\n".join(line for line in text.split("\n") if not line.startswith("#"))
 
 
 def load_prompt(name: str, version: int | None = None, **markers: str) -> str:
@@ -61,8 +69,7 @@ def load_prompt(name: str, version: int | None = None, **markers: str) -> str:
     verbatim. Raises if a marker is passed but its `__NAME__` placeholder
     isn't actually present in the file (a real, catchable programming
     error -- a silently-ignored substitution would be worse)."""
-    resolved_version = version if version is not None else _latest_version(name)
-    text = _read(name, resolved_version)
+    text = _read(name, resolve_version(name, version))
     for key, value in markers.items():
         placeholder = f"__{key.upper()}__"
         if placeholder not in text:

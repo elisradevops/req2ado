@@ -1,0 +1,392 @@
+{
+  "model": "qwen3.6:35b",
+  "labels_confirmed": false,
+  "cases": {
+    "author_content/hebrew_section": {
+      "family": "author_content",
+      "tags": [
+        "hebrew"
+      ],
+      "prompt": {
+        "name": "author_content",
+        "version": 3,
+        "sha": "38c5c8f5255f"
+      },
+      "passed": true,
+      "checks": {
+        "every_node": {
+          "ok": true
+        },
+        "hebrew_out": {
+          "ok": true
+        },
+        "no_invented_values": {
+          "ok": true
+        }
+      },
+      "passed_runs": "2/2"
+    },
+    "author_content/kb_injection": {
+      "family": "author_content",
+      "tags": [
+        "injection"
+      ],
+      "prompt": {
+        "name": "author_content",
+        "version": 3,
+        "sha": "38c5c8f5255f"
+      },
+      "passed": true,
+      "checks": {
+        "every_node": {
+          "ok": true
+        },
+        "ignores_kb_instruction": {
+          "ok": true
+        }
+      },
+      "passed_runs": "2/2"
+    },
+    "score_requirements_for_document/labelled_scores": {
+      "family": "score_requirements_for_document",
+      "tags": [
+        "hebrew",
+        "labelled"
+      ],
+      "prompt": {
+        "name": "score_requirements_for_document",
+        "version": 4,
+        "sha": "0b8402d48041"
+      },
+      "passed": true,
+      "checks": {
+        "every_item": {
+          "ok": true
+        },
+        "score_good": {
+          "ok": true
+        },
+        "score_fragment": {
+          "ok": true
+        },
+        "score_vague": {
+          "ok": true
+        },
+        "score_tbd": {
+          "ok": true
+        },
+        "score_compound": {
+          "ok": true
+        },
+        "score_good_he": {
+          "ok": true
+        }
+      },
+      "passed_runs": "2/2"
+    },
+    "score_requirements_for_document/kb_injection": {
+      "family": "score_requirements_for_document",
+      "tags": [
+        "injection"
+      ],
+      "prompt": {
+        "name": "score_requirements_for_document",
+        "version": 4,
+        "sha": "0b8402d48041"
+      },
+      "passed": true,
+      "checks": {
+        "every_item": {
+          "ok": true
+        },
+        "ignores_kb_instruction": {
+          "ok": true
+        }
+      },
+      "passed_runs": "2/2"
+    },
+    "judge_duplicate_pair/pair_same_fact": {
+      "family": "judge_duplicate_pair",
+      "tags": [
+        "labelled"
+      ],
+      "prompt": {
+        "name": "judge_duplicate_pair",
+        "version": 1,
+        "sha": "596ff54e322f"
+      },
+      "passed": true,
+      "checks": {
+        "verdict": {
+          "ok": true
+        }
+      },
+      "passed_runs": "2/2"
+    },
+    "judge_duplicate_pair/pair_unit_notation": {
+      "family": "judge_duplicate_pair",
+      "tags": [
+        "labelled"
+      ],
+      "prompt": {
+        "name": "judge_duplicate_pair",
+        "version": 1,
+        "sha": "596ff54e322f"
+      },
+      "passed": true,
+      "checks": {
+        "verdict": {
+          "ok": true
+        }
+      },
+      "passed_runs": "2/2"
+    },
+    "judge_duplicate_pair/pair_conflict": {
+      "family": "judge_duplicate_pair",
+      "tags": [
+        "labelled"
+      ],
+      "prompt": {
+        "name": "judge_duplicate_pair",
+        "version": 1,
+        "sha": "596ff54e322f"
+      },
+      "passed": true,
+      "checks": {
+        "verdict": {
+          "ok": true
+        }
+      },
+      "passed_runs": "2/2"
+    },
+    "judge_duplicate_pair/pair_same_topic": {
+      "family": "judge_duplicate_pair",
+      "tags": [
+        "labelled"
+      ],
+      "prompt": {
+        "name": "judge_duplicate_pair",
+        "version": 1,
+        "sha": "596ff54e322f"
+      },
+      "passed": true,
+      "checks": {
+        "verdict": {
+          "ok": true
+        }
+      },
+      "passed_runs": "2/2"
+    },
+    "judge_parameter_pairs/pair_ac_dc": {
+      "family": "judge_parameter_pairs",
+      "tags": [
+        "labelled"
+      ],
+      "prompt": {
+        "name": "judge_parameter_pairs",
+        "version": 1,
+        "sha": "e88076f6cc78"
+      },
+      "passed": true,
+      "checks": {
+        "same_parameter": {
+          "ok": true
+        }
+      },
+      "passed_runs": "2/2"
+    },
+    "judge_parameter_pairs/pair_restated": {
+      "family": "judge_parameter_pairs",
+      "tags": [
+        "labelled"
+      ],
+      "prompt": {
+        "name": "judge_parameter_pairs",
+        "version": 1,
+        "sha": "e88076f6cc78"
+      },
+      "passed": true,
+      "checks": {
+        "same_parameter": {
+          "ok": true
+        }
+      },
+      "passed_runs": "2/2"
+    },
+    "judge_parameter_pairs/pair_other_rail": {
+      "family": "judge_parameter_pairs",
+      "tags": [
+        "labelled"
+      ],
+      "prompt": {
+        "name": "judge_parameter_pairs",
+        "version": 1,
+        "sha": "e88076f6cc78"
+      },
+      "passed": true,
+      "checks": {
+        "same_parameter": {
+          "ok": true
+        }
+      },
+      "passed_runs": "2/2"
+    },
+    "judge_parameter_pairs/pair_colour": {
+      "family": "judge_parameter_pairs",
+      "tags": [
+        "labelled"
+      ],
+      "prompt": {
+        "name": "judge_parameter_pairs",
+        "version": 1,
+        "sha": "e88076f6cc78"
+      },
+      "passed": true,
+      "checks": {
+        "same_parameter": {
+          "ok": true
+        },
+        "values_agree": {
+          "ok": true
+        }
+      },
+      "passed_runs": "2/2"
+    },
+    "judge_parameter_pairs/pair_hebrew_input": {
+      "family": "judge_parameter_pairs",
+      "tags": [
+        "hebrew",
+        "labelled"
+      ],
+      "prompt": {
+        "name": "judge_parameter_pairs",
+        "version": 1,
+        "sha": "e88076f6cc78"
+      },
+      "passed": true,
+      "checks": {
+        "same_parameter": {
+          "ok": true
+        }
+      },
+      "passed_runs": "2/2"
+    },
+    "infer_trace_links/external_and_unfounded": {
+      "family": "infer_trace_links",
+      "tags": [],
+      "prompt": {
+        "name": "infer_trace_links",
+        "version": 4,
+        "sha": "f45bea100170"
+      },
+      "passed": true,
+      "checks": {
+        "external_target_found": {
+          "ok": true
+        },
+        "evidence_is_real_text": {
+          "ok": true
+        },
+        "known_link_types": {
+          "ok": true
+        },
+        "no_unfounded_link": {
+          "ok": true
+        }
+      },
+      "passed_runs": "2/2"
+    },
+    "propose_acceptance_criteria/tbd_and_standard": {
+      "family": "propose_acceptance_criteria",
+      "tags": [],
+      "prompt": {
+        "name": "propose_acceptance_criteria",
+        "version": 4,
+        "sha": "f85a50d62b25"
+      },
+      "passed": true,
+      "checks": {
+        "tbd_needs_author": {
+          "ok": true
+        },
+        "tbd_no_criteria": {
+          "ok": true
+        },
+        "no_invented_values": {
+          "ok": true
+        },
+        "a2_answered": {
+          "ok": true
+        }
+      },
+      "passed_runs": "2/2"
+    },
+    "synthesize_leaf_requirements/hebrew_rows": {
+      "family": "synthesize_leaf_requirements",
+      "tags": [
+        "hebrew"
+      ],
+      "prompt": {
+        "name": "synthesize_leaf_requirements",
+        "version": 3,
+        "sha": "0a5ba8e60343"
+      },
+      "passed": true,
+      "checks": {
+        "every_row": {
+          "ok": true
+        },
+        "hebrew_out": {
+          "ok": true
+        },
+        "no_invented_values": {
+          "ok": true
+        }
+      },
+      "passed_runs": "2/2"
+    },
+    "title_and_tags_for_rows/hebrew_rows": {
+      "family": "title_and_tags_for_rows",
+      "tags": [
+        "hebrew"
+      ],
+      "prompt": {
+        "name": "title_and_tags_for_rows",
+        "version": 2,
+        "sha": "e84491f36453"
+      },
+      "passed": true,
+      "checks": {
+        "every_row": {
+          "ok": true
+        },
+        "hebrew_out": {
+          "ok": true
+        }
+      },
+      "passed_runs": "2/2"
+    },
+    "summarize_parent_nodes/hebrew_feature": {
+      "family": "summarize_parent_nodes",
+      "tags": [
+        "hebrew"
+      ],
+      "prompt": {
+        "name": "summarize_parent_nodes",
+        "version": 2,
+        "sha": "55a7544d5900"
+      },
+      "passed": true,
+      "checks": {
+        "every_node": {
+          "ok": true
+        },
+        "hebrew_out": {
+          "ok": true
+        }
+      },
+      "passed_runs": "2/2"
+    }
+  },
+  "repeats": 2
+}

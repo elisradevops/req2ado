@@ -10,7 +10,6 @@ from app.canonical.model import (
     TableCell,
 )
 from app.leveling.tree_builder import (
-    _bound_branch_size,
     _build_flat_list_tree,
     _hash_identity,
     _split_into_branches,
@@ -1565,112 +1564,6 @@ def test_split_into_branches_still_splits_on_depth_1_when_the_document_has_it() 
     assert len(branches) == 2
     assert [b.id for b in branches[0]] == ["b0", "b1"]
     assert [b.id for b in branches[1]] == ["b2"]
-
-
-def _numbered_block(path: str, index: int, label: str) -> Block:
-    return Block(
-        id=f"b{index}",
-        kind=BlockKind.PARAGRAPH,
-        text=f"{label} text",
-        source_ref=_sr(path, index, index + 1),
-    )
-
-
-def test_bound_branch_size_leaves_a_small_branch_untouched() -> None:
-    path = "small.txt"
-    branch = [_numbered_block(path, 0, "2.1"), _numbered_block(path, 1, "2.1.1")]
-
-    result = _bound_branch_size(branch, max_block_count=10)
-
-    assert result == [branch]
-
-
-def test_bound_branch_size_splits_an_oversized_branch_at_its_own_next_depth_level() -> None:
-    # Reproduces a real failure: a document can have very few top-level
-    # sections that are themselves still far too large for a single
-    # per-branch LLM call -- _split_into_branches alone cannot fix this,
-    # since it only ever splits at the document's shallowest depth. Must
-    # re-split at the NEXT depth level found within the oversized branch.
-    path = "oversized.txt"
-    branch = [
-        _numbered_block(path, 0, "2"),  # boundary depth (1 segment) -- the branch's own heading
-        _numbered_block(path, 1, "2.1"),  # 1st sub-branch starts (2 segments)
-        _numbered_block(path, 2, "2.1.1"),
-        _numbered_block(path, 3, "2.2"),  # 2nd sub-branch starts
-        _numbered_block(path, 4, "2.2.1"),
-        _numbered_block(path, 5, "2.3"),  # 3rd sub-branch starts
-    ]
-
-    result = _bound_branch_size(branch, max_block_count=3)
-
-    # The structural split alone would yield 4 small pieces ([b0], [b1,b2],
-    # [b3,b4], [b5]); adjacent pieces are then greedily re-merged in
-    # document order back up toward max_block_count, so this becomes 2
-    # pieces instead of 4 -- fewer, larger branches means fewer LLM calls.
-    assert [b.id for b in result[0]] == ["b0", "b1", "b2"]
-    assert [b.id for b in result[1]] == ["b3", "b4", "b5"]
-    assert all(len(b) <= 3 for b in result)
-    # No block lost or duplicated across the split.
-    assert sum(len(b) for b in result) == len(branch)
-
-
-def test_bound_branch_size_recurses_when_one_sub_split_is_still_too_big() -> None:
-    path = "deep.txt"
-    branch = [
-        _numbered_block(path, 0, "2"),
-        _numbered_block(path, 1, "2.1"),
-        _numbered_block(path, 2, "2.1.1"),  # 3rd level -- lets sub-branch 2.1 split further
-        _numbered_block(path, 3, "2.1.2"),
-        _numbered_block(path, 4, "2.2"),
-    ]
-
-    result = _bound_branch_size(branch, max_block_count=2)
-
-    assert all(len(b) <= 2 for b in result)
-    assert sum(len(b) for b in result) == len(branch)
-
-
-def test_bound_branch_size_merges_many_small_sibling_sections_to_cut_llm_call_count() -> None:
-    # Reproduces the real optimization target: a document with many small,
-    # fine-grained sibling sections (e.g. a clause per sub-heading) would,
-    # without merging, produce one LLM call per tiny section -- far more
-    # round trips than the branch-size cap actually requires. Six small
-    # sections (1-2 blocks each) under a cap of 5 should collapse into far
-    # fewer branches, each close to but not exceeding the cap.
-    path = "many_small_sections.txt"
-    branch = [
-        _numbered_block(path, 0, "2.1"),
-        _numbered_block(path, 1, "2.2"),
-        _numbered_block(path, 2, "2.2.1"),
-        _numbered_block(path, 3, "2.3"),
-        _numbered_block(path, 4, "2.4"),
-        _numbered_block(path, 5, "2.4.1"),
-        _numbered_block(path, 6, "2.5"),
-        _numbered_block(path, 7, "2.6"),
-    ]
-
-    result = _bound_branch_size(branch, max_block_count=5)
-
-    assert len(result) < len(branch)
-    assert all(len(b) <= 5 for b in result)
-    assert sum(len(b) for b in result) == len(branch)
-    # Document order is preserved across the merged groups.
-    assert [b.id for group in result for b in group] == [f"b{i}" for i in range(8)]
-
-
-def test_bound_branch_size_leaves_a_flat_oversized_branch_unsplit_when_no_finer_structure_exists() -> (
-    None
-):
-    # A branch that genuinely has no sub-heading structure at all (every
-    # block at the same depth, or unleveled body text) cannot be split
-    # smaller without an arbitrary cut -- must be returned as-is rather than
-    # looping or silently dropping content.
-    path = "flat.txt"
-    branch = [_numbered_block(path, i, "2.1") for i in range(5)]
-
-    result = _bound_branch_size(branch, max_block_count=2)
-
-    assert result == [branch]
 
 
 # --- Golden TV-Receiver + Remote-Control scenario (bottom-up level-mapping) --

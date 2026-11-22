@@ -44,8 +44,6 @@ def test_survey_keeps_every_stated_item_right(variant, built) -> None:
         StructureRefusingClient(),
         grouping_client=SimulatedGrouper(1),
         embed_client=TitleHashEmbedder(),
-        structure_mode="baseline",
-        root_regroup_mode="deterministic",
     )
     result = score(tree, rich=variant.rich)
     assert not result.problems(), result.summary()

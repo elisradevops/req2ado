@@ -1,0 +1,1 @@
+The <obligation_forms> block shows how __FORMS_FROM__ states an obligation; a requirement stated that way has its obligation.

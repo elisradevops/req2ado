@@ -1,0 +1,2 @@
+'categories' -- a list with EXACTLY one {"name", "level", "evidence"} object for each name in the <category_names> block (the organization's own categories plus completeness_as_requirement; do not add, omit or rename any) -- __ENTRY_COUNT__ entries in total, never fewer. When a category does not seem to apply, still include it with your best level. 'evidence' is the shortest exact words of the item that support the level, or an empty string when the level is about something the item lacks.
+__COMPLETENESS__

@@ -4,6 +4,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.prompts.assembly import block_text
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 
 client = TestClient(app)
@@ -26,7 +27,12 @@ def test_score_item_returns_the_parsed_score_issues_and_category_scores(monkeypa
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["authorization"] == "Bearer test-bearer"
         content = json.dumps(
-            {"adhoc": {"score": 65, "issues": ["vague_term"], "categoryScores": {"clarity": 40}}},
+            {
+                "adhoc": {
+                    "categories": [{"name": "clarity", "level": 2, "evidence": "fast"}],
+                    "findings": [{"issue": "vague_term", "quote": "be fast"}],
+                }
+            },
         )
         return httpx.Response(200, json={"content": content})
 
@@ -36,9 +42,10 @@ def test_score_item_returns_the_parsed_score_issues_and_category_scores(monkeypa
 
     assert response.status_code == 200
     body = response.json()
-    assert body["quality_score"] == 65
+    # Computed in code from the level (2 of 4) and the quoted finding.
+    assert body["quality_score"] == 50
     assert body["quality_issues"] == ["vague_term"]
-    assert body["quality_category_scores"] == {"clarity": 40}
+    assert body["quality_category_scores"] == {"clarity": 50}
 
 
 def test_score_item_forces_the_supplied_category_checklist_as_the_exact_key_set(
@@ -48,17 +55,20 @@ def test_score_item_forces_the_supplied_category_checklist_as_the_exact_key_set(
     # must be judged against the SAME rubric as the original score, not
     # whatever the model would derive live -- see
     # score_single_requirement_text's own docstring.
-    captured_system_prompts: list[str] = []
+    captured_user_messages: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
-        captured_system_prompts.append(body["messages"][0]["content"])
+        captured_user_messages.append(body["messages"][1]["content"])
         content = json.dumps(
             {
                 "adhoc": {
-                    "score": 80,
-                    "issues": [],
-                    "categoryScores": {"Necessary": 80, "Verifiable": 70},
+                    "categories": [
+                        {"name": "Necessary", "level": 3, "evidence": ""},
+                        {"name": "Verifiable", "level": 2, "evidence": ""},
+                        {"name": "completeness_as_requirement", "level": 4, "evidence": ""},
+                    ],
+                    "findings": [],
                 },
             },
         )
@@ -75,19 +85,29 @@ def test_score_item_forces_the_supplied_category_checklist_as_the_exact_key_set(
     )
 
     assert response.status_code == 200
-    assert '["Necessary", "Verifiable"]' in captured_system_prompts[0]
-    assert response.json()["quality_category_scores"] == {"Necessary": 80, "Verifiable": 70}
+    # The forced checklist reaches the model as the <category_names> block of the user message.
+    assert (
+        block_text(captured_user_messages[0], "category_names")
+        == '["Necessary", "Verifiable", "completeness_as_requirement"]'
+    )
+    assert response.json()["quality_category_scores"] == {
+        "Necessary": 75,
+        "Verifiable": 50,
+        "completeness_as_requirement": 100,
+    }
 
 
 def test_score_item_returns_quality_confidence(monkeypatch) -> None:
+    votes: list[int] = []
+
     def handler(request: httpx.Request) -> httpx.Response:
+        votes.append(1)
+        level = 4 if len(votes) == 1 else 0  # the two votes disagree by the whole scale
         content = json.dumps(
             {
                 "adhoc": {
-                    "score": 72,
-                    "issues": ["ambiguous"],
-                    "categoryScores": {"clarity": 70},
-                    "confidence": "low",
+                    "categories": [{"name": "clarity", "level": level, "evidence": ""}],
+                    "findings": [],
                 }
             },
         )
@@ -99,13 +119,14 @@ def test_score_item_returns_quality_confidence(monkeypatch) -> None:
 
     assert response.status_code == 200
     body = response.json()
+    assert len(votes) == 2
     assert body["quality_confidence"] == "low"
-    assert body["quality_score"] == 72
+    assert body["quality_score"] == 50
 
 
 def test_score_item_confidence_is_null_when_the_model_said_nothing_usable(monkeypatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        content = json.dumps({"adhoc": {"score": 72, "issues": [], "categoryScores": None}})
+        content = json.dumps({"adhoc": {"categories": [], "findings": []}})
         return httpx.Response(200, json={"content": content})
 
     _patch_llm(monkeypatch, handler)

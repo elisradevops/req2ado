@@ -11,6 +11,7 @@ import pytest
 
 import app.survey.keyed_calls as keyed_calls_module
 from app.prompts import load_prompt
+from app.prompts.assembly import block_text
 from app.survey.keyed_calls import (
     describe_output,
     items_schema,
@@ -20,7 +21,6 @@ from app.survey.keyed_calls import (
 )
 from app.survey.keyed_specs import (
     AUTHOR_CONTENT_SPEC,
-    FIGURE_TABLE_MAPPING_SPEC,
     KB_RELEVANCE_SPEC,
     PARENT_SUMMARY_SPEC,
     SYNTHESIS_SPEC,
@@ -28,6 +28,7 @@ from app.survey.keyed_specs import (
 )
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 from app.workitem.model import RequirementTag
+from tests._prompt_tags import untagged
 
 _TAGS = ", ".join(t.value for t in RequirementTag)
 
@@ -51,12 +52,6 @@ PASSES = {
         "author_content",
         {"tag_vocabulary": _TAGS, "node_count": "3"},
         {"tag_vocabulary": _TAGS, "node_count": "3"},
-    ),
-    "figure_table_mapping": (
-        FIGURE_TABLE_MAPPING_SPEC,
-        "map_figures_tables",
-        {"item_count": "3"},
-        {"item_count": "3"},
     ),
 }
 
@@ -84,7 +79,7 @@ def _client(handler) -> OrchestratorLlmClient:
 
 
 def _user_ids(body: dict, key: str | None = None) -> list[str]:
-    content = json.loads(body["messages"][-1]["content"])
+    content = json.loads(block_text(body["messages"][-1]["content"]))
     return list(content[key] if key else content)
 
 
@@ -188,7 +183,7 @@ def test_synthesis_in_array_mode_sends_the_fixed_schema_and_returns_an_id_map(al
 
     result = _client(handler).synthesize_leaf_requirements(ROWS)
 
-    assert result == {
+    assert untagged(result) == {
         k: {"title": f"T {k}", "text": f"The unit shall {k}.", "tags": ["safety"]} for k in ROWS
     }
     assert len(seen) == 1 and seen[0]["responseSchema"] == items_schema(SYNTHESIS_SPEC)
@@ -257,7 +252,7 @@ def test_parent_summary_in_array_mode_sends_the_fixed_schema_and_returns_an_id_m
 
     result = _client(handler).summarize_parent_nodes(NODES)
 
-    assert result == {
+    assert untagged(result) == {
         k: {"title": f"Capability {k}", "description": f"Summary {k}."} for k in NODES
     }
     assert seen[0]["responseSchema"] == items_schema(PARENT_SUMMARY_SPEC)
@@ -356,14 +351,14 @@ def test_author_content_in_array_mode_returns_the_same_shape_as_before(all_array
         seen.append(body)
         items = [
             {"id": k, "description": f"D {k}", "tags": []}
-            for k in json.loads(body["messages"][1]["content"])["nodes"]
+            for k in json.loads(block_text(body["messages"][1]["content"]))["nodes"]
         ]
         return httpx.Response(200, json={"content": json.dumps({"items": items})})
 
     result, truncated = _client(handler).author_content("Section text", SKELETON)
 
     assert (
-        result == {k: {"description": f"D {k}", "tags": []} for k in SKELETON}
+        untagged(result) == {k: {"description": f"D {k}", "tags": []} for k in SKELETON}
         and truncated is False
     )
     assert seen[0]["responseSchema"] == items_schema(AUTHOR_CONTENT_SPEC)
@@ -412,68 +407,7 @@ def test_author_content_in_none_mode_keeps_the_old_wire_shape() -> None:
 
     result, truncated = _client(handler).author_content("Section text", SKELETON)
 
-    assert result == content and truncated is False
+    assert untagged(result) == content and truncated is False
 
 
 # -- figure / table mapping ---------------------------------------------------------------------
-
-CANDIDATES = {"n1": {"type": "Requirement", "title": "Pinout"}}
-ITEMS = {
-    "f1": {"kind": "figure", "caption": "Pinout"},
-    "f2": {"kind": "figure", "caption": "Logo"},
-    "f3": {"kind": "table", "caption": "Elsewhere"},
-}
-
-
-def test_mapping_keeps_the_three_outcomes_in_array_mode(all_array) -> None:
-    seen: list[dict] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content)
-        seen.append(body)
-        items = [
-            {"id": "f1", "node_id": "n1", "escalate": False},
-            {"id": "f2", "node_id": None, "escalate": False},
-            {"id": "f3", "node_id": None, "escalate": True},
-        ]
-        return httpx.Response(200, json={"content": json.dumps({"items": items})})
-
-    result = _client(handler).map_figures_tables(CANDIDATES, ITEMS)
-
-    assert result == {
-        "f1": {"node_id": "n1", "escalate": False},
-        "f2": {"node_id": None, "escalate": False},
-        "f3": {"node_id": None, "escalate": True},
-    }
-    assert seen[0]["responseSchema"] == items_schema(FIGURE_TABLE_MAPPING_SPEC)
-    node_id = items_schema(FIGURE_TABLE_MAPPING_SPEC)["schema"]["properties"]["items"]["items"][
-        "properties"
-    ]["node_id"]
-    assert node_id == {"anyOf": [{"type": "string"}, {"type": "null"}]}
-
-
-def test_mapping_never_repeats_a_call_for_unanswered_items(all_array) -> None:
-    calls: list[int] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        calls.append(1)
-        return httpx.Response(
-            200,
-            json={
-                "content": json.dumps({"items": [{"id": "f1", "node_id": "n1", "escalate": False}]})
-            },
-        )
-
-    result = _client(handler).map_figures_tables(CANDIDATES, ITEMS)
-
-    assert set(result) == {"f1"} and len(calls) == 1
-
-
-def test_mapping_in_none_mode_keeps_the_old_wire_shape() -> None:
-    content = {k: {"node_id": None, "escalate": True} for k in ITEMS}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert "responseSchema" not in json.loads(request.content)
-        return httpx.Response(200, json={"content": json.dumps(content)})
-
-    assert _client(handler).map_figures_tables(CANDIDATES, ITEMS) == content

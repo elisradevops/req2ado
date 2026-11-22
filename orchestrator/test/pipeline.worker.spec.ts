@@ -779,6 +779,37 @@ describe('runPipelineJob', () => {
     );
   });
 
+  it('carries the prompts a node used into the dry-run diff, and leaves the key out when there are none', async () => {
+    const prompt = { name: 'author_content', version: 4, sha256: 'abc' };
+    fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+    fakeIngestionClient.level.mockResolvedValue({
+      nodes: [
+        { local_id: 'n0', fidelity_hash: 'hashA', prompts: [prompt] },
+        { local_id: 'n1', fidelity_hash: 'hashB', prompts: [] },
+      ],
+    });
+    fakeDryRunService.diff.mockResolvedValue([]);
+
+    await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        defaultLlmModel: 'gemma4:12b',
+      },
+    );
+
+    const [nodes] = fakeDryRunService.diff.mock.calls[0];
+    expect(nodes[0].prompts).toEqual([prompt]);
+    expect('prompts' in nodes[1]).toBe(false);
+  });
+
   it('carries quality_score/quality_issues/child_type from ingestion through to the dry-run diff input', async () => {
     fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
     fakeIngestionClient.level.mockResolvedValue({

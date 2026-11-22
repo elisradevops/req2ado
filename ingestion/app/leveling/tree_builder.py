@@ -18,6 +18,7 @@ from app.leveling.hierarchy_rules import (
     requirement_heading_warning,
     type_headings_by_shape,
 )
+from app.leveling.id_hierarchy import is_standalone_statement, standalone_statement_flags
 from app.leveling.identity_v2 import assign_identity_v2
 from app.leveling.profiles import heading_style_type_for_depth
 from app.leveling.requirement_rows import atomizable_requirement_rows, row_title_and_description
@@ -60,80 +61,6 @@ def _split_into_branches(doc: CanonicalDoc) -> list[list[Block]]:
     if current:
         branches.append(current)
     return branches
-
-
-def _bound_branch_size(branch: list[Block], max_block_count: int) -> list[list[Block]]:
-    """Recursively re-splits a single branch that is still oversized after
-    _split_into_branches, at that branch's OWN next-shallowest depth level
-    -- SURVEY-only (see llm_leveling.build_survey_tree's caller): a
-    real-world document can have very few top-level sections that are
-    wildly unbalanced in size (observed live: an ICD with only 4 top-level
-    sections, one of them 372 blocks -- still large enough to blow a
-    per-branch LLM-call timeout even after the top-level depth-detection
-    fix). Splitting on the document's actual heading structure alone cannot
-    guarantee every branch stays small; this guarantees it regardless of
-    that structure, by bounding branch size directly.
-
-    Deliberately NOT applied to build_baseline_tree's branches:
-    is_heading_style_branch/classify_numbering_branch reason over a
-    branch's own tree shape, and sub-splitting would change what a sub-chunk
-    classifies as compared to the original, whole section -- a real
-    behavior change BASELINE mode has no need for (it doesn't call an LLM,
-    so branch size was never a timeout risk there in the first place).
-
-    Falls back to leaving a branch unsplit (returned as-is) when it has no
-    further internal structure to split on -- a big flat run of body text
-    with no sub-headings genuinely cannot be chunked smaller without an
-    arbitrary block-count cut that would sever a requirement's sentence
-    from its own continuation blocks.
-
-    After splitting at the document's own next-shallowest depth, adjacent
-    resulting pieces are greedily re-merged (in original document order)
-    back up toward max_block_count -- splitting on structure alone can
-    fragment a document with many small sections (a real ICD's fine-grained
-    numbering) into far more, far smaller pieces than max_block_count
-    actually requires, each costing its own full LLM round trip. Merging
-    keeps every final branch's own document-order contiguity while cutting
-    the branch (and therefore LLM call) count roughly in proportion to how
-    small the natural sections are relative to the cap.
-    """
-    if len(branch) <= max_block_count:
-        return [branch]
-    resolved = [(block, resolve_block_depth(block)[0]) for block in branch]
-    known_depths = [depth for _, depth in resolved if depth is not None]
-    if not known_depths:
-        return [branch]
-    boundary_depth = min(known_depths)
-    finer_depths = [depth for depth in known_depths if depth > boundary_depth]
-    if not finer_depths:
-        return [branch]
-    split_depth = min(finer_depths)
-    sub_branches: list[list[Block]] = []
-    current: list[Block] = []
-    for block, depth in resolved:
-        if depth == split_depth and current:
-            sub_branches.append(current)
-            current = []
-        current.append(block)
-    if current:
-        sub_branches.append(current)
-    if len(sub_branches) <= 1:
-        # split_depth didn't actually produce a new boundary -- avoid an
-        # infinite recursion loop and just accept this branch's size.
-        return [branch]
-    expanded: list[list[Block]] = []
-    for sub_branch in sub_branches:
-        expanded.extend(_bound_branch_size(sub_branch, max_block_count))
-    result: list[list[Block]] = []
-    merged: list[Block] = []
-    for piece in expanded:
-        if merged and len(merged) + len(piece) > max_block_count:
-            result.append(merged)
-            merged = []
-        merged.extend(piece)
-    if merged:
-        result.append(merged)
-    return result
 
 
 def _hash_description(description: str) -> str:
@@ -219,12 +146,22 @@ def _widen_page_end(open_ref: SourceRef, folded_ref: SourceRef) -> SourceRef:
 
 
 def _derive_doc_title(doc: CanonicalDoc) -> str:
-    """Filename-derived title for a document with no heading structure at
-    all — there is no heading/numbered-line text to extract a title from,
-    so this is the one BASELINE code path where a title is not a verbatim
+    """The document's name, for the document Epic and other synthesized parents: its own Title block (verbatim) when it
+    has one, otherwise derived from the filename -- the one BASELINE code path where a title is not a verbatim
     source-span extraction. See _build_headingless_tree."""
+    title_block = next((b for b in doc.blocks if b.kind == BlockKind.TITLE and b.text.strip()), None)
+    if title_block is not None:
+        return extract_baseline_title(title_block.text.strip())
     stem = Path(doc.document.path).stem.replace("_", " ").replace("-", " ").strip()
     return extract_baseline_title(stem or "Untitled Document")
+
+
+def _without_title_blocks(doc: CanonicalDoc) -> CanonicalDoc:
+    """`doc` without its TITLE blocks: the title names the document (_derive_doc_title) and is never an item, so no
+    builder walk sees it (it would otherwise be folded as body text, or lead a branch and hide its heading style)."""
+    if not any(b.kind == BlockKind.TITLE for b in doc.blocks):
+        return doc
+    return doc.model_copy(update={"blocks": [b for b in doc.blocks if b.kind != BlockKind.TITLE]})
 
 
 _FIGURE_TEXT_PATTERN = re.compile(r"^\[FIGURE:\s*(.*?)\s*\]$")
@@ -265,26 +202,6 @@ def _is_unsupported_content_note(block: Block) -> bool:
     leaks into a work item's section label, description, or rendered section
     text in either mode."""
     return block.kind == BlockKind.NOTE and block.text.startswith(_UNSUPPORTED_NOTE_PREFIX)
-
-
-_COPYRIGHT_MARKER_PATTERN = re.compile(r"©|\(c\)\s*\d{4}|all rights reserved", re.IGNORECASE)
-
-
-def _is_boilerplate_label_text(block: Block) -> bool:
-    """True for a block whose text is copyright/footer boilerplate (e.g.
-    "www.example.com ©2025 -- Example Corp (Pty...") -- never legitimate
-    section-label content. pdf_loader.py's own recurrence-based
-    header/footer stripping (_detect_boilerplate_templates) only fires once
-    a line repeats across >= _BOILERPLATE_RECURRENCE_FRACTION of pages; a
-    copyright line that varies slightly per page, or sits in a document too
-    short to establish recurrence, can still reach this far as an ordinary
-    block. Real bug this closes, confirmed live (cubeadcs_icd.pdf, whole
-    document collapsed into one headingless branch): the first remaining
-    block was a page-1 copyright/footer line, which
-    _derive_section_label's fallback then rendered verbatim as the
-    section's own label ("Section 1 of 1: www.cubespace.co.za
-    ©2025 -- CubeSpace Satellite Systems (Pty...")."""
-    return bool(_COPYRIGHT_MARKER_PATTERN.search(block.text))
 
 
 def figure_id_by_block_id(doc: CanonicalDoc) -> dict[str, str]:
@@ -601,7 +518,7 @@ def _partition_tables_by_branch(
     return buckets
 
 
-def _build_headingless_tree(doc: CanonicalDoc) -> WorkItemTree:
+def _build_headingless_tree(doc: CanonicalDoc, doc_title: str | None = None) -> WorkItemTree:
     """Grouping-without-headings rule (original request, BASELINE mode):
     when a document has NO internal heading structure at all — every block
     resolves to depth=None via resolve_block_depth (no headings, no
@@ -636,7 +553,7 @@ def _build_headingless_tree(doc: CanonicalDoc) -> WorkItemTree:
     enforcement pass, which flags a Requirement node's missing customer_id
     for human review rather than inventing one).
     """
-    doc_title = _derive_doc_title(doc)
+    doc_title = doc_title or _derive_doc_title(doc)
     # Prefer the first REAL (non-diagnostic-NOTE) block: on the table-only-
     # plus-NOTE path (docx footnote/endnote/comment detection, see
     # _is_unsupported_content_note), doc.blocks[0] IS the [UNSUPPORTED: ...]
@@ -872,7 +789,9 @@ def _build_headingless_tree(doc: CanonicalDoc) -> WorkItemTree:
     return WorkItemTree(nodes=nodes, warnings=finalize_warnings(warnings))
 
 
-def _build_flat_list_tree(doc: CanonicalDoc, branches: list[list[Block]]) -> WorkItemTree:
+def _build_flat_list_tree(
+    doc: CanonicalDoc, branches: list[list[Block]], doc_title: str | None = None
+) -> WorkItemTree:
     """Flat single-column list rule: a document where every top-level branch
     is exactly one lone block (numbering resolves a depth, e.g. '1 Do X',
     '2 Do Y', but nothing ever nests under any of them) would otherwise fall
@@ -891,7 +810,7 @@ def _build_flat_list_tree(doc: CanonicalDoc, branches: list[list[Block]]) -> Wor
     the raw block text with the numbering label still attached) as both
     title and description -- each item genuinely is one requirement, not a
     Feature in its own right."""
-    doc_title = _derive_doc_title(doc)
+    doc_title = doc_title or _derive_doc_title(doc)
     first_source_ref = branches[0][0].source_ref
 
     # Epic/Feature synthetic wrappers never carry a customer_id -- only
@@ -987,7 +906,9 @@ def _build_flat_list_tree(doc: CanonicalDoc, branches: list[list[Block]]) -> Wor
     return WorkItemTree(nodes=nodes)
 
 
-def _tree_from_table_rules(doc: CanonicalDoc, rulebook: FileRulebook | None = None) -> WorkItemTree | None:
+def _tree_from_table_rules(
+    doc: CanonicalDoc, rulebook: FileRulebook | None = None, doc_title: str | None = None
+) -> WorkItemTree | None:
     """A table file that states its items' types and nesting in columns (a tracker export, a sheet with a type column), built as the file states
     it: no shape rule decides a type or a parent. None when the document has real text blocks (those go the heading way) or no table states its
     structure. A table of the same file that states none is built the way it always was, beside the rule-built items."""
@@ -1003,10 +924,85 @@ def _tree_from_table_rules(doc: CanonicalDoc, rulebook: FileRulebook | None = No
     nodes, warnings = tree_from_table_rules(doc, rules, _hash_description, _hash_identity_for_synthesized_node)
     others = [t for t in doc.tables if t.id not in rules and any(c is not None and c.text.strip() for row in t.cells for c in row)]
     if others:
-        rest = _build_headingless_tree(doc.model_copy(update={"tables": others}))
+        rest = _build_headingless_tree(doc.model_copy(update={"tables": others}), doc_title)
         nodes += rest.nodes
         warnings += rest.warnings
     return WorkItemTree(nodes=nodes, warnings=warnings)
+
+
+_STATEMENT_KINDS = (BlockKind.PARAGRAPH, BlockKind.LIST_ITEM, BlockKind.OPEN_TBD)
+
+
+def _split_statement_bodies(
+    nodes: list[WorkItemNode],
+    block_by_node: dict[str, Block],
+    heading_texts: dict[str, str],
+    folded_parts: dict[str, list[tuple[Block | None, str]]],
+    front_matter_ids: set[str],
+    locked: dict[str, WorkItemType],
+) -> None:
+    """A leaf heading whose body states several things is split: each standalone statement (a paragraph, list item or
+    TBD that is a complete sentence and not one of a ':' lead-in's items, id_hierarchy.standalone_statement_flags) becomes its own Requirement, verbatim, right
+    after the heading in `nodes`. The heading becomes a Feature (under an Epic, a Feature or nothing) or stays a
+    Requirement over its sub-Requirements (under a Requirement); its description keeps the heading and the body parts
+    that are not statements (lead-ins, notes, tables). By sentence structure, not modal words, so a Hebrew future-tense
+    obligation splits like a "shall".
+
+    Left whole: a heading with children, front matter, a type the file states (`locked`), a body with fewer than two
+    statements, and a heading that is itself a statement (a numbered requirement paragraph whose body elaborates it).
+    Child ids are f"{heading}_s{k}", so no other node's id moves."""
+    has_children = {n.parent_local_id for n in nodes if n.parent_local_id}
+    by_id = {n.local_id: n for n in nodes}
+    result: list[WorkItemNode] = []
+    for node in nodes:
+        result.append(node)
+        parts = folded_parts.get(node.local_id, [])
+        body = [(block, text) for block, text in parts if block is not None]
+        flags = standalone_statement_flags([text for _, text in body])
+        statement_ids = {
+            block.id for (block, _), flag in zip(body, flags) if flag and block.kind in _STATEMENT_KINDS
+        }
+        statements = [(block, text) for block, text in body if block.id in statement_ids]
+        if (
+            node.local_id not in block_by_node
+            or node.local_id in has_children
+            or node.local_id in front_matter_ids
+            or node.local_id in locked
+            or len(statements) < 2
+            or is_standalone_statement(heading_texts[node.local_id])
+        ):
+            continue
+        parent = by_id.get(node.parent_local_id) if node.parent_local_id else None
+        if parent is None or parent.type in (WorkItemType.EPIC, WorkItemType.FEATURE):
+            node.type = WorkItemType.FEATURE
+            node.customer_id = None
+        else:
+            node.type = WorkItemType.REQUIREMENT
+        node.child_type = WorkItemType.REQUIREMENT
+        description = heading_texts[node.local_id]
+        for block, text in parts:
+            if block is None or block.id not in statement_ids:
+                description = assemble_description(description, text)
+        node.description = strip_leading_title(description, node.title)
+        node.fidelity_hash = _hash_description(node.description)
+        section_path = [*node.source_ref.section_path, node.title]
+        for k, (block, text) in enumerate(statements, start=1):
+            child = WorkItemNode(
+                local_id=f"{node.local_id}_s{k}",
+                type=WorkItemType.REQUIREMENT,
+                parent_local_id=node.local_id,
+                title=extract_baseline_title(text),
+                description=text,
+                customer_id=extract_customer_requirement_code(block.text),
+                source_ref=block.source_ref.model_copy(update={"section_path": section_path}),
+                fidelity_hash=_hash_description(text),
+                identity_hash=_hash_identity(text, block.source_ref),
+                tags=[],
+                mode=WorkItemMode.BASELINE,
+                child_type=WorkItemType.REQUIREMENT,
+            )
+            result.append(child)
+    nodes[:] = result
 
 
 def build_baseline_tree(doc: CanonicalDoc, rulebook: FileRulebook | None = None) -> WorkItemTree:
@@ -1072,19 +1068,24 @@ def _build_baseline_tree(doc: CanonicalDoc, rulebook: FileRulebook | None = None
     Epic/Feature/Requirement* tree. Requires more than one branch: a
     document with a single flat item is too ambiguous to confidently
     regroup and is left to the structured path (produces one ungrouped
-    Requirement, an acceptable minimal case)."""
-    ruled = _tree_from_table_rules(doc, rulebook)
+    Requirement, an acceptable minimal case).
+
+    The document's Title (a TITLE block) is never an item: it is taken out before any of the above and names the
+    document Epic and the other synthesized parents (_derive_doc_title)."""
+    doc_title = _derive_doc_title(doc)
+    doc = _without_title_blocks(doc)
+    ruled = _tree_from_table_rules(doc, rulebook, doc_title)
     if ruled is not None:
         return ruled
 
     if (doc.blocks and all(resolve_block_depth(b)[0] is None for b in doc.blocks)) or (
         not doc.blocks and doc.tables
     ):
-        return _build_headingless_tree(doc)
+        return _build_headingless_tree(doc, doc_title)
 
     branches = _split_into_branches(doc)
     if len(branches) > 1 and all(len(branch) == 1 for branch in branches):
-        return _build_flat_list_tree(doc, branches)
+        return _build_flat_list_tree(doc, branches, doc_title)
 
     table_buckets = (
         _partition_tables_by_branch(branches, doc.tables) if doc.tables else [[] for _ in branches]
@@ -1132,6 +1133,10 @@ def _build_baseline_tree(doc: CanonicalDoc, rulebook: FileRulebook | None = None
     # typed by shape too; a branch that is mostly numbered text keeps its classifier.
     branch_node_starts: list[list] = []
     block_by_node: dict[str, Block] = {}
+    # What each heading node's description folded in, in order: (block, its text) for a body block, (None, the HTML)
+    # for a table. _split_statement_bodies reads it to split a leaf heading whose body is several statements.
+    folded_parts: dict[str, list[tuple[Block | None, str]]] = {}
+    heading_texts: dict[str, str] = {}
     front_matter_ids: set[str] = set()
     for branch_blocks, branch_tables in zip(branches, table_buckets):
         heading_branch = is_heading_style_branch(branch_blocks)
@@ -1245,6 +1250,7 @@ def _build_baseline_tree(doc: CanonicalDoc, rulebook: FileRulebook | None = None
                     )
                     open_node.source_ref = _widen_page_end(open_node.source_ref, table.source_ref)
                     open_node.table_ids.append(table.id)
+                    folded_parts.setdefault(open_node.local_id, []).append((None, description))
                     ocr_warning = _ocr_recovered_table_warning(table, node_ids=[open_node.local_id])
                     nested_table_warning = _nested_table_dropped_warning(
                         table, node_ids=[open_node.local_id]
@@ -1348,6 +1354,7 @@ def _build_baseline_tree(doc: CanonicalDoc, rulebook: FileRulebook | None = None
                         open_node.description, open_node.source_ref
                     )
                     open_node.source_ref = _widen_page_end(open_node.source_ref, block.source_ref)
+                    folded_parts.setdefault(open_node.local_id, []).append((block, display_text))
                 else:
                     if orphan_source_ref is None:
                         orphan_source_ref = block.source_ref
@@ -1443,6 +1450,7 @@ def _build_baseline_tree(doc: CanonicalDoc, rulebook: FileRulebook | None = None
             nodes.append(node)
             nodes_by_id[local_id] = node
             block_by_node[local_id] = block
+            heading_texts[local_id] = display_text
             stack.append((depth, local_id))
 
             if orphan_entries and not front_matter_flushed:
@@ -1459,7 +1467,7 @@ def _build_baseline_tree(doc: CanonicalDoc, rulebook: FileRulebook | None = None
                     local_id=front_matter_local_id,
                     type=WorkItemType.REQUIREMENT,
                     parent_local_id=local_id,
-                    title=f"Front Matter: {_derive_doc_title(doc)}",
+                    title=f"Front Matter: {doc_title}",
                     description=front_matter_text,
                     # Always None: by construction this node folds together
                     # text that precedes any heading/numbering in its
@@ -1515,7 +1523,8 @@ def _build_baseline_tree(doc: CanonicalDoc, rulebook: FileRulebook | None = None
                     node.customer_id = extract_customer_requirement_code(
                         block.text
                     ) or authored_numbering_label(block)
-    ensure_ladder(nodes, _derive_doc_title(doc), warnings)
+    _split_statement_bodies(nodes, block_by_node, heading_texts, folded_parts, front_matter_ids, stated_types)
+    ensure_ladder(nodes, doc_title, warnings)
     section_notice = requirement_heading_warning(nodes)
     if section_notice is not None:
         warnings.append(section_notice)

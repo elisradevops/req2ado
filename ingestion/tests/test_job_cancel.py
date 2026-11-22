@@ -12,6 +12,7 @@ import pytest
 
 from app import job_cancel
 from app.job_cancel import JobCancelled
+from app.prompts.assembly import DataBlock, build_call
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 
 
@@ -48,7 +49,7 @@ def test_no_model_call_is_made_in_a_cancelled_scope() -> None:
     with job_cancel.cancellation_scope() as token:
         token.cancel()
         with pytest.raises(JobCancelled):
-            client._post_chat({"messages": []}, None)
+            client._post_chat(build_call("judge_duplicate_pair", blocks=[DataBlock("source", "x")]), {}, None)
     assert calls == []
 
 

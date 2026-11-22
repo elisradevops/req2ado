@@ -173,6 +173,19 @@ class TraceLink(BaseModel):
     resolution_status: TraceLinkResolutionStatus
 
 
+class PromptRef(BaseModel):
+    """A prompt whose answer was used for a work item (app.prompts.assembly.PromptIdentity): its name, the version loaded and a hash
+    of every prompt file the call was built from."""
+
+    name: str
+    version: int
+    sha256: str
+
+
+# The key under which the LLM client tags each answer entry with the prompt that produced it (record_prompt reads it).
+PROMPT_KEY = "_prompt"
+
+
 class WorkItemNode(BaseModel):
     local_id: str
     type: WorkItemType
@@ -296,6 +309,9 @@ class WorkItemNode(BaseModel):
     # source-span extraction, trivially fully grounded by construction --
     # this field simply doesn't apply).
     grounding_score: float | None = None
+    # Every prompt whose answer was used for this item (record_prompt), in the order first used: which prompt produced it. Stored
+    # only; never written to ADO. Empty for an item no model answer changed (BASELINE, or every answer rejected).
+    prompts: list[PromptRef] = Field(default_factory=list)
     # SURVEY-only: 0-100 quality judgment of the FINAL formalized
     # description against EARS/INCOSE/ISO/IEC/IEEE-29148 criteria, plus zero
     # or more specific issues (see RequirementQualityIssue). None/[] for
@@ -473,17 +489,13 @@ class WarningKind(StrEnum):
     # route exit, same VISION_CAPTIONING_DISABLED precedent, so it fires
     # exactly once regardless of BASELINE/SURVEY mode.
     MISSING_SOURCE_REFERENCE = "missing_source_reference"
-    # 300553 smart-title fallback: a SURVEY-mode node's stage-1 title (see
-    # llm_leveling._author_branch_content) was too generic/short
-    # (title_is_low_quality) and got replaced by a real distillation call
-    # once its actual description text existed to distill FROM. One warning
-    # per branch, `detail["nodeIds"]` listing every affected node -- same
-    # one-per-branch dedup convention as DROPPED_BLOCKS immediately above it
-    # in this same function's caller.
+    # 300553 smart-title fallback: a SURVEY-mode node's title was too generic and got replaced by a distillation call. Nothing produces it
+    # since the model-structure path was removed; the value stays because it is part of the shared work-item-tree contract, and stored
+    # trees may carry it.
     SURVEY_TITLE_DISTILLED = "survey_title_distilled"
     # Per-row requirement splitting (2026-08-26): a source table row that
     # carries its own literal requirement identifier (see
-    # requirement_rows.qualifying_requirement_rows) but that no generated
+    # requirement_rows' id-column gate) but that no generated
     # node's customer_id claimed -- the row may have been merged into
     # another requirement, or dropped entirely. An identified row going
     # unclaimed is a lost, explicitly-numbered customer requirement, the
@@ -653,3 +665,17 @@ class WorkItemTree(BaseModel):
     # visible to a reviewer rather than silently dropped.
     excluded_figure_ids: list[str] = Field(default_factory=list)
     excluded_table_ids: list[str] = Field(default_factory=list)
+
+
+def record_prompt(node: WorkItemNode, entry: object) -> None:
+    """Notes on `node` the prompt that produced `entry` (the client's PROMPT_KEY tag), once. Called where an answer is applied, so only
+    a prompt whose answer was used is listed; an untagged entry (a test double, an old cached answer) is no-op."""
+    tag = entry.get(PROMPT_KEY) if isinstance(entry, dict) else None
+    if not isinstance(tag, dict):
+        return
+    try:
+        ref = PromptRef(**tag)
+    except (TypeError, ValueError):
+        return
+    if ref not in node.prompts:
+        node.prompts.append(ref)

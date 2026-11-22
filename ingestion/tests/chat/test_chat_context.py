@@ -9,7 +9,7 @@ import logging
 import pytest
 
 from app.chat import chat_service
-from app.chat.chat_service import _build_system_prompt, run_chat_turn
+from app.chat.chat_service import _build_call, run_chat_turn
 from app.chat.context_pack import MAX_CONTEXT_CHARS, render_context_pack
 from app.kb.profile import build_profile
 from tests.chat.test_chat_service import _FakePublisher
@@ -41,6 +41,12 @@ CONTEXT = {
     "figures": [{"name": "Lock state machine", "caption": "States from idle to locked."}],
     "tables": [{"caption": "Acquisition timing limits"}],
 }
+
+
+def _prompt(*args, **kwargs) -> str:
+    """Everything the model reads for this turn: the instructions, then the data blocks of the user message."""
+    call = _build_call(*args, **kwargs)
+    return call.system + "\n\n" + call.user
 
 
 def test_the_pack_says_where_the_item_sits_and_what_surrounds_it() -> None:
@@ -96,7 +102,7 @@ def test_malformed_context_is_ignored_not_fatal() -> None:
 
 
 def test_the_prompt_leads_with_the_standard_then_the_document_then_the_item() -> None:
-    prompt = _build_system_prompt(
+    prompt = _prompt(
         ITEM, None, None, context=CONTEXT, standard="STANDARD TEXT: every rule and definition"
     )
     assert (
@@ -107,7 +113,7 @@ def test_the_prompt_leads_with_the_standard_then_the_document_then_the_item() ->
 
 
 def test_the_prompt_carries_the_rewrite_rules() -> None:
-    prompt = _build_system_prompt(ITEM, None, None)
+    prompt = _prompt(ITEM, None, None)
     lowered = prompt.lower()
     assert "one requirement" in lowered or "single requirement" in lowered
     assert "keep the title" in lowered
@@ -119,7 +125,7 @@ def test_the_prompt_carries_the_rewrite_rules() -> None:
 
 
 def test_the_prompt_is_unchanged_in_shape_without_context_or_standard() -> None:
-    prompt = _build_system_prompt(ITEM, None, "WEAK NOTE.")
+    prompt = _prompt(ITEM, None, "WEAK NOTE.")
     assert "WEAK NOTE." in prompt and "Receiver lock time" in prompt
     assert "Where this item sits" not in prompt
 
@@ -159,7 +165,7 @@ async def test_a_turn_sends_the_standard_and_the_context_and_retrieves_by_the_it
         _FakePublisher(),
         PROFILE,
     )
-    system = client.messages[0]["content"]
+    system = "\n\n".join(m["content"] for m in client.messages.messages())
     assert "Carrier acquisition" in system and "Filter settling time" in system  # the document
     assert (
         "One reading only" in system or "Can be verified" in system
@@ -189,14 +195,14 @@ async def test_a_turn_without_context_or_profile_still_works(caplog) -> None:
             _FakePublisher(),
             None,
         )
-    assert "Receiver lock time" in client.messages[0]["content"]
+    assert "Receiver lock time" in client.messages.user
 
 
 def test_the_one_statement_rule_is_for_requirements_only() -> None:
-    requirement = _build_system_prompt(ITEM, None, None).lower()
+    requirement = _prompt(ITEM, None, None).lower()
     assert "one requirement statement" in requirement
     for kind in ("Epic", "Feature"):
-        other = _build_system_prompt({**ITEM, "type": kind}, None, None).lower()
+        other = _prompt({**ITEM, "type": kind}, None, None).lower()
         assert "one requirement statement" not in other and "shall/should/must" not in other
         assert (
             "keep the title" in other and "number" in other and "invent" in other

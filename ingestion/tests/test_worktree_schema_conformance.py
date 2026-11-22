@@ -8,7 +8,6 @@ import pytest
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, SourceRef
 from app.leveling.llm_leveling import build_survey_tree
 from app.leveling.tree_builder import build_baseline_tree
-from app.section_analysis_options import DEFAULT_SECTION_ANALYSIS_OPTIONS, SectionAnalysisOptions
 from app.workitem.model import IntegrityWarning, KbCoverage, WarningKind
 
 SCHEMA_PATH = Path(__file__).parents[2] / "shared" / "schemas" / "work-item-tree.schema.json"
@@ -57,55 +56,12 @@ def _survey_doc() -> CanonicalDoc:
     )
 
 
-class FakeSectionAnalysisClient:
-    """Hand-written test double for SectionAnalysisClient — mirrors the fake
-    used in tests/test_llm_leveling.py to prove SURVEY-mode output (via the
-    two-stage skeleton + content-authoring generation split) also conforms to
-    the shared work-item-tree schema."""
+class FakeSurveyModelClient:
+    """Test double for SurveyModelClient: the job's chat-model client, which never decides the structure (it comes from the
+    document). It has none of the optional passes (no file-conventions pre-study, no sheet study), so the document's own structure is
+    used as-is."""
 
-    _CONTENT = {
-        "n0": {"description": "The system shall handle: Display", "tags": []},
-        "n1": {
-            "description": "The system shall handle: The display shall support HDR.",
-            "tags": [],
-        },
-    }
-
-    def analyze_section_skeleton(
-        self,
-        section_text: str,
-        kb_context: str | None = None,
-        *,
-        options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
-        user_id: str | None = None,
-    ) -> tuple[list[dict], bool]:
-        return [
-            {"temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "Display"},
-            {
-                "temp_id": "n1",
-                "type": "Requirement",
-                "parent_temp_id": "n0",
-                "title": "HDR support",
-            },
-        ], False
-
-    def author_content(
-        self,
-        section_text: str,
-        skeleton_nodes: dict[str, dict],
-        kb_context: str | None = None,
-        user_id: str | None = None,
-    ) -> tuple[dict[str, dict], bool]:
-        return {
-            local_id: self._CONTENT[local_id]
-            for local_id in skeleton_nodes
-            if local_id in self._CONTENT
-        }, False
-
-    def analyze_section_skeleton_agentic(
-        self, section_text: str, retrieve_fn, **kwargs
-    ) -> tuple[list[dict], list[dict], bool]:
-        raise AssertionError("not exercised by this test -- default model is not tool-capable")
+    model = None
 
 
 def test_baseline_tree_matches_work_item_tree_schema(schema) -> None:
@@ -114,7 +70,7 @@ def test_baseline_tree_matches_work_item_tree_schema(schema) -> None:
 
 
 def test_survey_tree_matches_work_item_tree_schema(schema) -> None:
-    tree = build_survey_tree(_survey_doc(), FakeSectionAnalysisClient())
+    tree = build_survey_tree(_survey_doc(), FakeSurveyModelClient())
     jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
 
 
@@ -124,17 +80,12 @@ def test_survey_tree_with_a_real_warning_matches_work_item_tree_schema(schema) -
     # detail/raw) was never actually exercised against real serialized
     # output -- an empty array trivially satisfies any `items` schema
     # regardless of whether that schema is even correct.
-    fake = FakeSectionAnalysisClient()
-    # An empty "title" -- triggers the NO_MODEL_TITLE warning regardless of
-    # hierarchy shape (a lone root Requirement with no Feature/Epic anywhere
-    # is otherwise a legitimate no-op, see
-    # test_build_survey_tree_does_not_touch_a_genuinely_sole_root_requirement
-    # in test_llm_leveling.py).
-    fake.analyze_section_skeleton = lambda *a, **k: (
-        [{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "title": ""}],
-        False,
+    # A reference to a document the job did not ingest gives a warning with node ids and detail, the full warning shape.
+    doc = _survey_doc()
+    doc = doc.model_copy(
+        update={"blocks": [block.model_copy(update={"text": f"{block.text} See ReqID 12345."}) for block in doc.blocks]}
     )
-    tree = build_survey_tree(_survey_doc(), fake)
+    tree = build_survey_tree(doc, FakeSurveyModelClient())
     assert len(tree.warnings) >= 1
     jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
 
@@ -337,7 +288,7 @@ def test_excluded_ids_default_to_empty_lists_on_every_tree(schema) -> None:
     # at all, and a SURVEY run whose client can't map still returns [].
     assert build_baseline_tree(_baseline_doc()).excluded_figure_ids == []
     assert build_baseline_tree(_baseline_doc()).excluded_table_ids == []
-    survey_tree = build_survey_tree(_survey_doc(), FakeSectionAnalysisClient())
+    survey_tree = build_survey_tree(_survey_doc(), FakeSurveyModelClient())
     assert survey_tree.excluded_figure_ids == []
     assert survey_tree.excluded_table_ids == []
 
@@ -365,7 +316,7 @@ def test_v2_identity_and_content_hash_match_work_item_tree_schema(schema) -> Non
     tree = build_baseline_tree(_baseline_doc())
     assert all(node.identity_hash_v2 for node in tree.nodes)
     jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
-    survey = build_survey_tree(_survey_doc(), FakeSectionAnalysisClient())
+    survey = build_survey_tree(_survey_doc(), FakeSurveyModelClient())
     # A SURVEY node that shares its source block with another real node has no identity of its own (null); every other one has one.
     keys = [(n.source_ref.start_offset, n.source_ref.end_offset, n.source_ref.page) for n in survey.nodes if "synth_" not in n.local_id]
     for node in survey.nodes:
