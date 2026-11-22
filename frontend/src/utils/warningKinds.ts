@@ -426,6 +426,15 @@ export const KIND_META: Record<string, KindMeta> = {
     chip: 'Original wording',
     unit: ['item', 'items'],
   },
+  kb_context_blocked: {
+    title: 'Knowledge base left out',
+    group: 'info',
+    short: "The model provider's content filter blocked the knowledge-base text, so one step ran without it for these items.",
+    means: "These items are complete, but the step named in the details did not use your organization's knowledge base for them.",
+    todo: 'Nothing required. If it repeats, check the knowledge-base document for text that reads like an instruction to the model.',
+    chip: 'Without knowledge base',
+    unit: ['item', 'items'],
+  },
   scoring_failed: {
     title: 'Quality scoring failed',
     group: 'info',

@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import OpenAI from 'openai';
 import { getEncoding, type Tiktoken } from 'js-tiktoken';
-import type { LlmChatOptions, LlmChatResult, LlmClient, LlmResponseSchema, LlmStreamChunk } from './llm-client.interface';
+import type { LlmChatOptions, LlmChatResult, LlmClient, LlmResponseSchema, LlmRouting, LlmStreamChunk } from './llm-client.interface';
 import { usageOf } from './token-usage';
 import { redactMessages, redactText, type ChatMessage } from './redactor';
 import { isModelHidden, parseModelHidePatterns } from './model-visibility';
@@ -26,6 +26,7 @@ import {
   UpstreamHttpError,
   type Adaptation,
   type LearnedUpdate,
+  routingOf,
 } from './upstream-negotiation';
 
 /** Characters of text in a message list (a length for failure logs, never content). */
@@ -177,6 +178,22 @@ interface EmbedStats {
   tokens?: number;
 }
 
+/** An SDK answer and the routing its headers name. */
+interface Routed<T> {
+  data: T;
+  routing?: LlmRouting;
+}
+
+/** Awaits one SDK request together with the routing its answer's headers name. The SDK's promise carries the response headers; a plain
+ *  promise (a test double) has none, which reads as an answer that names no routed model. */
+async function withRouting<T>(request: Promise<T>): Promise<Routed<T>> {
+  const sdk = request as Promise<T> & { withResponse?: () => Promise<{ data: T; response: { headers: unknown } }> };
+  if (typeof sdk.withResponse !== 'function') return { data: await request };
+  const { data, response } = await sdk.withResponse();
+  const routing = routingOf(response.headers);
+  return { data, ...(routing ? { routing } : {}) };
+}
+
 @Injectable()
 export class OpenWebUiClient implements LlmClient {
   private readonly openai: OpenAI;
@@ -220,9 +237,9 @@ export class OpenWebUiClient implements LlmClient {
     const known = this.learnedFor(model);
     return {
       learned: { ...known, rejected: known?.rejected ?? new Set<string>(), maxTokensFloor: this.kindFloors.get(key) },
-      remember: ({ maxTokensFloor, ...rest }: LearnedUpdate): void => {
-        if (maxTokensFloor !== undefined) this.kindFloors.set(key, Math.min(maxTokensFloor, REMEMBERED_FLOOR_MAX[kind]));
-        if (Object.keys(rest).length > 0) this.rememberConstraint(model, rest);
+      remember: ({ maxTokensFloor, ...rest }: LearnedUpdate, routedModel?: string): void => {
+        if (maxTokensFloor !== undefined) this.kindFloors.set(routedModel ? `${kind}:${routedModel}` : key, Math.min(maxTokensFloor, REMEMBERED_FLOOR_MAX[kind]));
+        if (Object.keys(rest).length > 0) this.rememberConstraint(routedModel ?? model, rest);
       },
     };
   }
@@ -337,7 +354,7 @@ export class OpenWebUiClient implements LlmClient {
       ...(opts?.tools !== undefined ? { tools: opts.tools as OpenAI.Chat.ChatCompletionTool[] } : {}),
       ...(opts?.toolChoice !== undefined ? { tool_choice: opts.toolChoice } : {}),
     });
-    const toResult = (response: OpenAI.Chat.ChatCompletion, adaptation: Adaptation): LlmChatResult => {
+    const toResult = ({ data: response, routing }: Routed<OpenAI.Chat.ChatCompletion>, adaptation: Adaptation): LlmChatResult => {
       assertCompletion(response);
       const finishReason = response.choices[0]?.finish_reason;
       // The whole output budget went on hidden reasoning (gpt-5-mini/nano at a small limit): nothing usable came
@@ -347,7 +364,7 @@ export class OpenWebUiClient implements LlmClient {
       const cutOffContent = response.choices[0]?.message?.content;
       if (finishReason === 'length' && (studyCall || !cutOffContent?.trim()) && !response.choices[0]?.message?.tool_calls?.length) {
         const target = raisedBudgetFor(effectiveMaxTokens(opts?.maxTokens, adaptation), adaptation);
-        if (target !== null) throw new EmptyLengthCompletion(target);
+        if (target !== null) throw new EmptyLengthCompletion(target, routing);
       }
       // Only the abnormal endings are logged (a normal call ends 'stop' /
       // 'tool_calls'), with token counts and never content. A prod job got
@@ -365,6 +382,7 @@ export class OpenWebUiClient implements LlmClient {
         toolCalls: response.choices[0]?.message?.tool_calls as LlmChatResult['toolCalls'],
         finishReason,
         ...(usage ? { usage } : {}),
+        ...(routing ? { routing } : {}),
       };
     };
     // Classification and retry policy live in negotiate() (upstream-negotiation.ts): a required temperature,
@@ -377,19 +395,19 @@ export class OpenWebUiClient implements LlmClient {
       droppable: CHAT_DROPPABLE,
       ...(studyCall
         ? { ...this.kindScope('study', chatModel), maxAttempts: LADDER_MAX_ATTEMPTS }
-        : { learned: this.learnedFor(chatModel), remember: (update: LearnedUpdate) => this.rememberConstraint(chatModel, update) }),
+        : { learned: this.learnedFor(chatModel), remember: (update: LearnedUpdate, routedModel?: string) => this.rememberConstraint(routedModel ?? chatModel, update) }),
       ...(opts?.deadlineAtMs !== undefined ? { deadlineAtMs: opts.deadlineAtMs } : {}),
       ...(opts?.signal ? { signal: opts.signal } : {}),
       hasTools: opts?.tools !== undefined,
       send: async (adaptation, signal) =>
         toResult(
           await (signal || (studyCall && this.rungTimeout().timeout !== undefined)
-            ? this.openai.chat.completions.create(buildParams(adaptation), { ...(studyCall ? this.rungTimeout() : {}), ...(signal ? { signal } : {}) }).catch((err: unknown) => {
+            ? withRouting(this.openai.chat.completions.create(buildParams(adaptation), { ...(studyCall ? this.rungTimeout() : {}), ...(signal ? { signal } : {}) })).catch((err: unknown) => {
                 // A rung cut at the bound is a timeout the caller can tell from a server error (and does not resend).
                 if (err instanceof OpenAI.APIConnectionTimeoutError) throw new UpstreamHttpError(504, 'Upstream did not answer within the per-attempt time bound');
                 throw err;
               })
-            : this.openai.chat.completions.create(buildParams(adaptation))),
+            : withRouting(this.openai.chat.completions.create(buildParams(adaptation)))),
           adaptation,
         ),
     });
@@ -530,20 +548,21 @@ export class OpenWebUiClient implements LlmClient {
     });
     // Only the creation of the stream is negotiated (same policy as chat()); an error while the stream is
     // being read is not retried, as before.
-    const stream = await negotiate({
+    const created = await negotiate({
       label: 'OpenWebUiClient.streamChat',
       model: chatModel,
       hasSchema: opts?.responseSchema !== undefined,
       requestChars: messageChars(outboundMessages),
       droppable: CHAT_DROPPABLE,
       learned: this.learnedFor(chatModel),
-      remember: (update) => this.rememberConstraint(chatModel, update),
+      remember: (update: LearnedUpdate, routedModel?: string) => this.rememberConstraint(routedModel ?? chatModel, update),
       send: async (adaptation) => {
-        const created = await this.openai.chat.completions.create(buildParams(adaptation));
-        if (!created) throw new UpstreamHttpError(502, 'Upstream returned an empty stream');
+        const created = await withRouting(this.openai.chat.completions.create(buildParams(adaptation)));
+        if (!created.data) throw new UpstreamHttpError(502, 'Upstream returned an empty stream');
         return created;
       },
     });
+    const { data: stream, routing } = created;
     // `reasoning` is Ollama's OpenAI-compat streaming delta field for a
     // reasoning model's chain-of-thought (the streaming counterpart of the
     // non-stream response's `message.reasoning`, confirmed live above) --
@@ -558,7 +577,7 @@ export class OpenWebUiClient implements LlmClient {
         yield { ...(delta.content ? { content: delta.content } : {}), ...(delta.reasoning ? { reasoning: delta.reasoning } : {}) };
       }
     }
-    if (finishReason) yield { finishReason };
+    if (finishReason || routing) yield { ...(finishReason ? { finishReason } : {}), ...(routing ? { routing } : {}) };
   }
 
   async embed(texts: string[], opts?: { model?: string }): Promise<number[][]> {
@@ -1320,6 +1339,7 @@ export class OpenWebUiClient implements LlmClient {
     let lastFinishReason = 'unknown';
     let lastCompletionTokens: number | undefined;
     let lastChars = 0;
+    let lastRoutedModel: string | undefined;
     const description = await negotiate({
       label: 'OpenWebUiClient.vision',
       model,
@@ -1336,7 +1356,9 @@ export class OpenWebUiClient implements LlmClient {
         const params = buildParams(adaptation);
         attemptsMade += 1;
         const requestOptions = { ...this.rungTimeout(), ...(signal ? { signal } : {}) };
-        const response = await (Object.keys(requestOptions).length > 0 ? this.openai.chat.completions.create(params, requestOptions) : this.openai.chat.completions.create(params)).catch((err: unknown) => {
+        const { data: response, routing } = await withRouting(
+          Object.keys(requestOptions).length > 0 ? this.openai.chat.completions.create(params, requestOptions) : this.openai.chat.completions.create(params),
+        ).catch((err: unknown) => {
           // A rung cut at the bound is a timeout the caller can tell from a server error (and does not resend), as chat does.
           if (err instanceof OpenAI.APIConnectionTimeoutError) throw new UpstreamHttpError(504, 'Upstream did not answer within the per-attempt time bound');
           throw err;
@@ -1346,12 +1368,13 @@ export class OpenWebUiClient implements LlmClient {
         lastFinishReason = response.choices[0]?.finish_reason ?? 'unknown';
         lastCompletionTokens = response.usage?.completion_tokens;
         lastChars = text.length;
+        lastRoutedModel = routing?.model;
         if (response.choices[0]?.finish_reason === 'length') {
           // Cut off at the output limit: empty (a reasoning model spent the budget thinking) or part of a JSON answer. Either way
           // it is not a description. Ask again with a larger limit while the model's ceiling and the deadline allow; when
           // nothing is left to raise, fail clearly instead of passing partial JSON on as a caption.
           const target = raisedBudgetFor(effectiveMaxTokens(VISION_BASE_TOKENS, adaptation), adaptation, true, LADDER_CEILING);
-          if (target !== null) throw new EmptyLengthCompletion(target);
+          if (target !== null) throw new EmptyLengthCompletion(target, routing);
           throw new UpstreamHttpError(422, 'Upstream answer was cut off at the largest output limit this model allows');
         }
         return text;
@@ -1359,7 +1382,7 @@ export class OpenWebUiClient implements LlmClient {
     });
     // eslint-disable-next-line no-console -- worker/API process logging
     console.info(
-      `[OpenWebUiClient.vision] model=${model} attempts=${attemptsMade} elapsedMs=${Date.now() - callStartedAt} finishReason=${lastFinishReason} completionTokens=${lastCompletionTokens ?? 'n/a'} chars=${lastChars}`,
+      `[OpenWebUiClient.vision] model=${model} attempts=${attemptsMade} elapsedMs=${Date.now() - callStartedAt} finishReason=${lastFinishReason} completionTokens=${lastCompletionTokens ?? 'n/a'} chars=${lastChars}${lastRoutedModel ? ` routedModel=${lastRoutedModel}` : ''}`,
     );
     return description;
   }
@@ -1459,7 +1482,7 @@ export class OpenWebUiClient implements LlmClient {
       requestChars: outboundContent.length,
       droppable: FILE_CONTEXT_DROPPABLE,
       learned: this.learnedFor(model),
-      remember: (update) => this.rememberConstraint(model, update),
+      remember: (update: LearnedUpdate, routedModel?: string) => this.rememberConstraint(routedModel ?? model, update),
       terminal: (err) => {
         const { status, message } = summarizeUpstreamError(err);
         throw new Error(`OpenWebUiClient.chatWithFullFileContext failed: ${status} — ${message}`);
@@ -1530,7 +1553,7 @@ export class OpenWebUiClient implements LlmClient {
       // A study call is raised once on a cut-off answer and keeps the study's own remembered limit, as in chat().
       ...(studyCall
         ? { ...this.kindScope('study', model), maxAttempts: LADDER_MAX_ATTEMPTS }
-        : { learned: this.learnedFor(model), remember: (update: LearnedUpdate) => this.rememberConstraint(model, update) }),
+        : { learned: this.learnedFor(model), remember: (update: LearnedUpdate, routedModel?: string) => this.rememberConstraint(routedModel ?? model, update) }),
       ...(opts.deadlineAtMs !== undefined ? { deadlineAtMs: opts.deadlineAtMs } : {}),
       terminal: (err) => {
         const { status, message } = summarizeUpstreamError(err);
@@ -1553,15 +1576,16 @@ export class OpenWebUiClient implements LlmClient {
           const text = errorMessageFromBody(bodyText).slice(0, 500) || `HTTP ${response.status}`;
           throw OpenAI.APIError.generate(response.status, { message: text }, text, Object.fromEntries(response.headers?.entries?.() ?? []));
         }
+        const routing = routingOf(response.headers);
         const parsed = chatCompletionResponseSchema.safeParse(await response.json());
-        if (!parsed.success) return { content: '' };
+        if (!parsed.success) return { content: '', ...(routing ? { routing } : {}) };
         const choice = parsed.data.choices[0];
         const finishReason = choice.finish_reason ?? undefined;
         const content = choice.message.content ?? '';
         // As in chat(): an empty answer at the limit, or any cut-off study answer, is asked again once with a larger limit.
         if (finishReason === 'length' && (studyCall || !content.trim())) {
           const target = raisedBudgetFor(effectiveMaxTokens(opts.maxTokens, adaptation), adaptation);
-          if (target !== null) throw new EmptyLengthCompletion(target);
+          if (target !== null) throw new EmptyLengthCompletion(target, routing);
         }
         // One line per call, token counts and never content: this route's prompt carries the whole file, so its size is worth seeing.
         // eslint-disable-next-line no-console
@@ -1569,7 +1593,7 @@ export class OpenWebUiClient implements LlmClient {
           `[OpenWebUiClient.chatWithFileContext] finishReason=${finishReason ?? 'n/a'} model=${model} promptTokens=${parsed.data.usage?.prompt_tokens ?? 'n/a'} completionTokens=${parsed.data.usage?.completion_tokens ?? 'n/a'} maxTokens=${opts.maxTokens ?? 'n/a'}`,
         );
         const usage = usageOf(parsed.data.usage);
-        return { content, ...(finishReason ? { finishReason } : {}), ...(usage ? { usage } : {}) };
+        return { content, ...(finishReason ? { finishReason } : {}), ...(usage ? { usage } : {}), ...(routing ? { routing } : {}) };
       },
     });
   }

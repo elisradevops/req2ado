@@ -118,6 +118,10 @@ export interface WorkItemNode {
     name: string;
     version: number;
     sha256: string;
+    /**
+     * The model that answered: the one a router (such as the gateway's Auto) sent the call to when its answer named it, else the model the call asked for. Null or absent when the call named no model.
+     */
+    model?: string | null;
   }[];
   /**
    * SURVEY-only: 0-100 quality judgment of the final description. Null for BASELINE or when no scoring_client was supplied.
@@ -210,7 +214,8 @@ export interface IntegrityWarning {
     | 'source_structure_violation'
     | 'rulebook_mismatch'
     | 'prestudy_applied'
-    | 'prestudy_rejected';
+    | 'prestudy_rejected'
+    | 'kb_context_blocked';
   /**
    * auto_fixed: deterministic code already resolved it, no action needed. needs_review: an AI/heuristic judgment call a human should verify. pipeline_issue: something broke or was incomplete for this run.
    */

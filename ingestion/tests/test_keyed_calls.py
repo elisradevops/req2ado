@@ -483,6 +483,77 @@ def test_if_prompt_only_gets_nothing_either_the_schema_is_not_blamed(array_mode)
     assert mode_for(SPEC, "m") == "array"
 
 
+def test_a_well_formed_answer_the_caller_refuses_keeps_the_schema(array_mode, caplog) -> None:
+    send, _ = _send_factory([_all, _all])
+    with caplog.at_level(logging.WARNING, logger="app.survey.keyed_calls"):
+        entries = run_keyed(send, PAYLOAD, SPEC, model="m", accept=lambda _id, _entry: False)
+
+    # One retry on the schema, never the prompt-only fallback, and the pair is not degraded.
+    assert send.modes == ["array", "array"]
+    assert entries.degraded is False and entries.mode == "array" and len(entries) == 0
+    assert mode_for(SPEC, "m") == "array"
+    refusals = [r.getMessage() for r in caplog.records if "refused" in r.getMessage()]
+    assert refusals and all("text " not in line for line in refusals)  # ids only, never content
+    assert "r0" in refusals[0]
+    assert not any("came back" in r.getMessage() for r in caplog.records)  # they did; they were refused
+
+
+def test_refused_entries_get_the_normal_retry_and_an_accepted_retry_is_used(array_mode) -> None:
+    refuse_first_answer = iter([False] * len(PAYLOAD) + [True] * len(PAYLOAD))
+    send, calls = _send_factory([_all, _all, _all])
+    entries = run_keyed(
+        send, PAYLOAD, SPEC, model="m", accept=lambda _id, _entry: next(refuse_first_answer)
+    )
+
+    assert send.modes == ["array", "array", "array"]
+    assert calls[1] + calls[2] == list(PAYLOAD)  # the refused ids, in halves
+    assert entries.reason is None and entries.degraded is False
+
+
+@pytest.mark.parametrize(
+    "unusable",
+    [
+        {"items": []},
+        {"items": [{"title": "no id"}]},
+        {"items": [{"id": "r0"}]},  # an id with none of the contract's fields
+        "not json at all",
+        {"items": [{"id": "elsewhere", **ENTRY}]},  # none of the requested ids
+    ],
+)
+def test_an_unusable_array_answer_still_degrades(array_mode, unusable) -> None:
+    send, _ = _send_factory([unusable, _all])
+    entries = run_keyed(send, PAYLOAD, SPEC, model="m")
+
+    assert send.modes == ["array", "none"]
+    assert entries.degraded is True and mode_for(SPEC, "m") == "none"
+
+
+def test_the_client_keeps_the_schema_when_gpt_answers_hebrew_rows_in_english(array_mode) -> None:
+    from tests._prod_replay import (
+        GPT_ENGLISH_TITLES,
+        HEBREW_ROWS,
+        HEBREW_TITLES,
+        asked_ids,
+        keyed_answer,
+        replay,
+    )
+
+    english = lambda r: keyed_answer({i: {"title": GPT_ENGLISH_TITLES[i], "tags": []} for i in asked_ids(r)})  # noqa: E731
+    hebrew = lambda r: keyed_answer({i: {"title": HEBREW_TITLES[i], "tags": []} for i in asked_ids(r)})  # noqa: E731
+    handler, bodies = replay(english, hebrew, hebrew, hebrew)
+    client = _client(handler)
+
+    first = client.title_and_tags_for_rows(HEBREW_ROWS)
+    second = client.title_and_tags_for_rows(HEBREW_ROWS)
+
+    assert {k: v["title"] for k, v in first.items()} == HEBREW_TITLES  # the refused ids, retried once
+    assert len(bodies) == 4  # English answer, two retry halves, then the next job's single call
+
+    assert {k: v["title"] for k, v in second.items()} == HEBREW_TITLES
+    assert all("responseSchema" in body for body in bodies)  # never dropped to prompt-only
+    assert mode_for(SPEC, client._model) == "array"
+
+
 def test_prompt_only_mode_never_falls_back() -> None:
     send, _ = _send_factory([{}, {}])
     run_keyed(send, PAYLOAD, SPEC, model="m")

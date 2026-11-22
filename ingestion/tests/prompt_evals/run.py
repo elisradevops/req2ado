@@ -23,7 +23,7 @@ from pathlib import Path
 from app.config import settings
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 
-from .harness import AsUser, run_all
+from .harness import BLOCKED, AsUser, run_all
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -56,13 +56,26 @@ def main(argv: list[str] | None = None) -> int:
         outcomes = [run["cases"][key]["passed"] for run in runs]
         result["passed"] = all(outcomes)
         result["passed_runs"] = f"{sum(outcomes)}/{len(outcomes)}"
+        # A repeat the provider blocked measured nothing about the prompt: the case is reported as blocked, not failed.
+        if any(run["cases"][key].get("outcome") == BLOCKED for run in runs):
+            result["outcome"] = BLOCKED
     report["repeats"] = len(runs)
     args.out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    failed = [key for key, result in report["cases"].items() if not result["passed"]]
+    blocked = [key for key, result in report["cases"].items() if result.get("outcome") == BLOCKED]
+    failed = [
+        key
+        for key, result in report["cases"].items()
+        if not result["passed"] and key not in blocked
+    ]
     print(
-        f"{len(report['cases']) - len(failed)}/{len(report['cases'])} cases passed on {args.model} -> {args.out}"
+        f"{len(report['cases']) - len(failed) - len(blocked)}/{len(report['cases'])} cases passed, "
+        f"{len(blocked)} blocked by the provider, on {args.model} -> {args.out}"
     )
+    for key in blocked:
+        print(
+            f"  BLOCKED {key} [{report['cases'][key]['passed_runs']}]: the provider's content filter refused the call"
+        )
     for key in failed:
         result = report["cases"][key]
         reasons = result.get("error") or "; ".join(

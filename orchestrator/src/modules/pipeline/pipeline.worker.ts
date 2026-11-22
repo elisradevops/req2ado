@@ -385,7 +385,7 @@ interface LeveledNode {
   // in a test omitting them entirely must not crash the mapping below.
   grounding_score?: number | null;
   // Every prompt whose answer was used for this node (ingestion WorkItemNode.prompts). Stored with the diff for audit only.
-  prompts?: { name: string; version: number; sha256: string }[];
+  prompts?: { name: string; version: number; sha256: string; model?: string | null }[];
   quality_score?: number | null;
   quality_issues?: string[];
   // Per-dimension 0-100 breakdown backing quality_score -- see ingestion's

@@ -186,6 +186,15 @@ describe('LlmController', () => {
       ]);
     });
 
+    it("names the model a router sent the stream to, from the stream's last chunk", async () => {
+      const routing = { model: 'claude-opus-5-5', tier: 'COMPLEX' };
+      const { written } = await run([{ content: 'Hi' }, { finishReason: 'stop', routing }], { includeDone: true, model: 'Auto' });
+      expect(written).toEqual([
+        `${JSON.stringify({ delta: 'Hi' })}\n`,
+        `${JSON.stringify({ done: true, finishReason: 'stop', model: 'Auto', routing })}\n`,
+      ]);
+    });
+
     it('reports a length cut-off so the caller knows the answer is incomplete', async () => {
       const { written } = await run([{ content: '{"a":' }, { finishReason: 'length' }], { includeDone: true });
       expect(JSON.parse(written[written.length - 1])).toEqual({ done: true, finishReason: 'length' });

@@ -75,14 +75,14 @@ def script_name(script: str) -> str:
 def writes_in_script(output: str, source: str) -> bool:
     """Whether `output` is written in the script of the `source` it was written from. Only the words the output adds count (a word
     copied from the source, such as a name or a term, is the source's own, whatever its script). True when either side has nothing to
-    judge by: no counted source words, or no added words."""
+    judge by: no counted source words, or no added words. A tie goes to the source's script."""
     expected = dominant_script(source)
     if expected is None:
         return True
     added = _scripts(output, frozenset(w.casefold() for w in _WORD.findall(source or "")))
     if not added:
         return True
-    return max(added.items(), key=lambda kv: (kv[1], kv[0]))[0] == expected
+    return added[expected] == max(added.values())
 
 
 def obligation_sample(texts: Iterable[str]) -> str:

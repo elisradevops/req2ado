@@ -69,6 +69,14 @@ describe('warningKinds', () => {
     }
   });
 
+  it('explains a step that ran without the knowledge base, instead of the generic fallback copy', () => {
+    const meta = KIND_META.kb_context_blocked;
+    expect(meta.group).toBe('info');
+    expect(meta.short).toMatch(/content filter/i);
+    expect(meta.todo).toMatch(/knowledge-base document/i);
+    expect(warningGroup(warning('kb_context_blocked', 'pipeline_issue'))).toBe('info');
+  });
+
   it('explains a run whose figures were not described, instead of the generic fallback copy', () => {
     const meta = KIND_META.vision_captioning_disabled;
     expect(meta.group).toBe('review');

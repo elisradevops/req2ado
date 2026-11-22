@@ -136,7 +136,11 @@
             "properties": {
               "name": { "type": "string" },
               "version": { "type": "integer" },
-              "sha256": { "type": "string" }
+              "sha256": { "type": "string" },
+              "model": {
+                "type": ["string", "null"],
+                "description": "The model that answered: the one a router (such as the gateway's Auto) sent the call to when its answer named it, else the model the call asked for. Null or absent when the call named no model."
+              }
             }
           }
         },
@@ -234,7 +238,8 @@
             "ocr_recovered_table_text", "missing_source_reference", "survey_title_distilled",
             "missing_requirement_row_coverage", "duplicate_customer_id", "parent_title_collision",
             "criteria_value_ungrounded", "requirement_heading_is_section", "changed_since_written",
-            "spreadsheet_mapped", "spreadsheet_not_mapped", "source_type_skipped", "source_structure_violation", "rulebook_mismatch", "prestudy_applied", "prestudy_rejected"
+            "spreadsheet_mapped", "spreadsheet_not_mapped", "source_type_skipped", "source_structure_violation", "rulebook_mismatch", "prestudy_applied", "prestudy_rejected",
+            "kb_context_blocked"
           ]
         },
         "severity": {

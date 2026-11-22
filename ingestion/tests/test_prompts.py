@@ -9,6 +9,10 @@ prompt content, which is a real risk with marker/format-based substitution
 a couple of the `', '.join(...)`-shaped f-strings before being caught and
 redone by hand)."""
 
+import re
+
+import pytest
+
 from app.prompts import load_prompt
 from app.workitem.model import RequirementTag
 
@@ -182,3 +186,24 @@ def test_load_prompt_raises_on_missing_file() -> None:
 
     with pytest.raises(FileNotFoundError):
         load_prompt("this_prompt_does_not_exist")
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "synthesize_leaf_requirements",
+        "author_content",
+        "propose_acceptance_criteria",
+        "summarize_parent_nodes",
+        "title_and_tags_for_rows",
+        "fragment_chat_shape_requirement",
+    ],
+)
+def test_a_prompt_that_writes_requirements_shows_no_english_only_obligation(name: str) -> None:
+    # GPT copied the English "shall" of synthesis v3's only example into Hebrew requirements (production finding F3).
+    assert not re.search(r"\bshall\b", load_prompt(name), re.IGNORECASE)
+
+
+def test_the_synthesis_prompt_says_the_obligation_follows_the_output_language() -> None:
+    text = load_prompt("synthesize_leaf_requirements")
+    assert "the way that language states one" in text

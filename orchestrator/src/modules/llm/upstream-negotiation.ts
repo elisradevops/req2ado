@@ -1,6 +1,7 @@
 import { Logger } from '@nestjs/common';
 import OpenAI from 'openai';
 import { retryAfterMsFromHeaders } from './openwebui-api';
+import type { LlmRouting } from './llm-client.interface';
 
 const logger = new Logger('UpstreamNegotiation');
 
@@ -22,7 +23,21 @@ const logger = new Logger('UpstreamNegotiation');
 // support it, degrade once to a schema-less retry on the specific
 // status codes an unsupported/malformed response_format would produce.
 export function isSchemaRejection(err: unknown): boolean {
-  return err instanceof OpenAI.APIError && (err.status === 400 || err.status === 422);
+  return err instanceof OpenAI.APIError && (err.status === 400 || err.status === 422) && !isContentFilterBlock(err);
+}
+
+/** Marks the text of a provider content-filter block so ingestion can tell it from any other failure (it answers 422 with it). */
+export const CONTENT_FILTERED_CODE = 'LLM_CONTENT_FILTERED';
+
+/**
+ * Whether the provider's content filter blocked the request (LiteLLM: `ContentPolicyViolationError`; Azure: error code
+ * `content_filter`, "content management policy"). The same text is blocked again whatever is adapted: no schema-less retry,
+ * no repeat.
+ */
+export function isContentFilterBlock(err: unknown): boolean {
+  if (!(err instanceof OpenAI.APIError) || err.status !== 400) return false;
+  if (err.code === 'content_filter') return true;
+  return /contentpolicyviolation|content management policy|content[_ ]filter/i.test(err.message ?? '');
 }
 
 /** Carries an upstream HTTP status so the controller can propagate it instead of collapsing to a generic 500. */
@@ -211,8 +226,36 @@ export function isToolsWithReasoningRejection(err: unknown): boolean {
  * (`finish_reason: length`; gpt-5-mini/nano at 50 tokens, vision at 300). Thrown by a caller's attempt so the
  * loop retries once with a larger budget; `target` is that budget.
  */
+/** The routing an answer's (or an error's) headers name, or undefined when they name none. A router (the gateway's `Auto`) answers with its
+ *  own name in the body; the model that really answered is named only in these headers, and only where the gateway passes them on.
+ *  Takes a fetch `Headers` or a plain record. */
+export function routingOf(headers: unknown): LlmRouting | undefined {
+  if (!headers || typeof headers !== 'object') return undefined;
+  const read = (name: string): string | undefined => {
+    const value =
+      typeof (headers as Headers).get === 'function'
+        ? (headers as Headers).get(name)
+        : Object.entries(headers as Record<string, unknown>).find(([key]) => key.toLowerCase() === name)?.[1];
+    return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+  };
+  const model = read('x-litellm-model-name');
+  if (!model) return undefined;
+  const tier = read('x-litellm-complexity-router-tier');
+  return { model, ...(tier ? { tier } : {}) };
+}
+
+/** The routing of the answer or error one attempt ended with. */
+function routingOfFailure(err: unknown): LlmRouting | undefined {
+  if (err instanceof EmptyLengthCompletion) return err.routing;
+  return err instanceof OpenAI.APIError ? routingOf(err.headers) : undefined;
+}
+
 export class EmptyLengthCompletion extends Error {
-  constructor(public readonly target: number) {
+  constructor(
+    public readonly target: number,
+    /** Which model the router sent the cut-off answer to, when its headers said. */
+    public readonly routing?: LlmRouting,
+  ) {
     super(`Upstream returned no content at the output limit (retrying with a limit of ${target})`);
     this.name = 'EmptyLengthCompletion';
   }
@@ -362,8 +405,9 @@ export interface NegotiationArgs<T> {
   /** Parameters this call is able to leave out when an upstream rejects them. */
   droppable: ReadonlySet<string>;
   learned?: LearnedConstraints;
-  /** Called with what a failure taught us, so later calls start from it. */
-  remember: (update: LearnedUpdate) => void;
+  /** Called with what a failure taught us, so later calls start from it, and the model a router sent the failed attempt to (when its
+   *  headers said): what one routed model refuses is about that model, not about the router's name. */
+  remember: (update: LearnedUpdate, routedModel?: string) => void;
   /** Whether the request carries tools (enables the "function tools need reasoning off" adaptation). */
   hasTools?: boolean;
   /** Builds and sends ONE attempt under the given adaptation. `signal` is the caller's abort signal, to hand to the SDK. */
@@ -465,8 +509,9 @@ export async function negotiate<T>(args: NegotiationArgs<T>): Promise<T> {
     // this service's log (four 502s and a 400 in one prod job were invisible).
     const logFailure = (err: unknown): void => {
       const { status, message } = summarizeUpstreamError(err);
+      // The schema this attempt actually sent: a schema dropped after an earlier attempt is not in this one.
       logger.warn(
-        `upstream call failed: label=${args.label} model=${args.model} attempt=${attempt} status=${status} elapsedMs=${Date.now() - startedAt} requestChars=${args.requestChars ?? "n/a"} schema=${args.hasSchema} message="${message}" requestId=${upstreamRequestId(err) ?? "none"}`,
+        `upstream call failed: label=${args.label} model=${args.model} attempt=${attempt} status=${status} elapsedMs=${Date.now() - startedAt} requestChars=${args.requestChars ?? "n/a"} schema=${args.hasSchema && !adaptation.dropSchema} message="${message}" requestId=${upstreamRequestId(err) ?? "none"}${routingOfFailure(err) ? ` routedModel=${routingOfFailure(err)!.model}` : ""}`,
       );
     };
     // The failure itself was already logged above; this only records that nothing more could be adapted.
@@ -479,10 +524,11 @@ export async function negotiate<T>(args: NegotiationArgs<T>): Promise<T> {
     } catch (err) {
       // The caller went away: not an upstream failure, and nothing to adapt around or repeat.
       if (args.signal?.aborted) throw err;
+      const routedModel = routingOfFailure(err)?.model;
       if (err instanceof EmptyLengthCompletion) {
         // The higher limit is known to be needed whether or not there is time to use it now: the next call starts there.
         adaptation.maxTokensFloor = err.target;
-        args.remember({ maxTokensFloor: err.target });
+        args.remember({ maxTokensFloor: err.target }, routedModel);
         if (attempt < maxAttempts && !outOfTime()) {
           // eslint-disable-next-line no-console
           console.warn(`[${args.label}] answer cut off at the output limit; retrying with limit ${err.target} for model=${args.model}`);
@@ -496,6 +542,11 @@ export async function negotiate<T>(args: NegotiationArgs<T>): Promise<T> {
       // A used-up budget is final: no repeat, no adaptation. Surfaced as 402 with a code every layer above can recognise.
       if (isBudgetExceeded(err)) {
         return giveUp(new UpstreamHttpError(402, `${BUDGET_EXCEEDED_CODE}: ${summarizeUpstreamError(err).message}`));
+      }
+      // A content-filter block is final too: the same text is blocked again. A 422 with its own code, not the 400 that
+      // ingestion reads as worth splitting and repeating.
+      if (isContentFilterBlock(err)) {
+        return giveUp(new UpstreamHttpError(422, `${CONTENT_FILTERED_CODE}: ${summarizeUpstreamError(err).message}`));
       }
       if (attempt >= maxAttempts || outOfTime()) return giveUp(err);
 
@@ -517,7 +568,7 @@ export async function negotiate<T>(args: NegotiationArgs<T>): Promise<T> {
         // eslint-disable-next-line no-console
         console.warn(`[${args.label}] upstream requires temperature=${requiredTemperature}; retrying for model=${args.model}`);
         adaptation.temperature = requiredTemperature;
-        args.remember({ temperature: requiredTemperature });
+        args.remember({ temperature: requiredTemperature }, routedModel);
         continue;
       }
 
@@ -528,7 +579,7 @@ export async function negotiate<T>(args: NegotiationArgs<T>): Promise<T> {
         // eslint-disable-next-line no-console
         console.warn(`[${args.label}] upstream refuses both output-limit parameters; sending none for model=${args.model}`);
         adaptation.omitTokenLimit = true;
-        args.remember({ omitTokenLimit: true });
+        args.remember({ omitTokenLimit: true }, routedModel);
         continue;
       }
 
@@ -536,7 +587,7 @@ export async function negotiate<T>(args: NegotiationArgs<T>): Promise<T> {
         // eslint-disable-next-line no-console
         console.warn(`[${args.label}] upstream requires max_completion_tokens instead of max_tokens; retrying for model=${args.model}`);
         adaptation.tokenParam = 'max_completion_tokens';
-        args.remember({ tokenParam: 'max_completion_tokens' });
+        args.remember({ tokenParam: 'max_completion_tokens' }, routedModel);
         continue;
       }
 
@@ -544,7 +595,7 @@ export async function negotiate<T>(args: NegotiationArgs<T>): Promise<T> {
         // eslint-disable-next-line no-console
         console.warn(`[${args.label}] upstream refuses tools while reasoning; retrying with reasoning_effort=none for model=${args.model}`);
         adaptation.forceReasoningNone = true;
-        args.remember({ forceReasoningNone: true });
+        args.remember({ forceReasoningNone: true }, routedModel);
         continue;
       }
 
@@ -554,7 +605,7 @@ export async function negotiate<T>(args: NegotiationArgs<T>): Promise<T> {
           // eslint-disable-next-line no-console
           console.warn(`[${args.label}] upstream caps output at ${cap} tokens; clamping for model=${args.model}`);
           adaptation.maxTokensCap = cap;
-          args.remember({ maxTokensCap: cap });
+          args.remember({ maxTokensCap: cap }, routedModel);
           continue;
         }
       }
@@ -567,7 +618,7 @@ export async function negotiate<T>(args: NegotiationArgs<T>): Promise<T> {
             // eslint-disable-next-line no-console
             console.warn(`[${args.label}] upstream rejected params [${[...unsupported].join(', ')}]; retrying without them for model=${args.model}`);
             for (const param of fresh) adaptation.dropped.add(param);
-            args.remember({ rejected: fresh });
+            args.remember({ rejected: fresh }, routedModel);
             continue;
           }
         }

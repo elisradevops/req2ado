@@ -91,6 +91,26 @@ def test_the_gate_reports_a_missing_case() -> None:
     ]
 
 
+def test_the_hebrew_checks_catch_an_added_latin_obligation_word() -> None:
+    from .cases import _HE_GOOD, _HE_SECTION, _check_author, _check_synth
+    from .properties import no_added_latin_obligation
+
+    # The shape GPT answered on the 2026-11-22 production baseline (docs/prod-eval-baseline-2026-11-22.md, F3): Hebrew with "shall".
+    synth = {
+        "x1": {"text": "ספק הכוח shall לפעול במתח כניסה של 28 וולט."},
+        "x2": {"text": "ספק הכוח יסיים אתחול תוך 2 שניות."},
+    }
+    checks = _check_synth(synth)
+    assert checks["hebrew_out"][0]  # the 60%-Hebrew check lets it through...
+    assert not checks["no_latin_obligation"][0] and "shall" in checks["no_latin_obligation"][1]  # ...this one does not
+
+    content = json.loads(_HE_GOOD)
+    content["r1"]["description"] = "היחידה shall לעבור למצב חיסכון בהספק לאחר 10 דקות ללא פעילות."
+    assert not _check_author((content, False), _HE_SECTION)["no_latin_obligation"][0]
+    # An English word the source itself contains is not an added one.
+    assert no_added_latin_obligation(["המערכת shall כמו במקור"], ["shall במקור"])[0]
+
+
 def test_author_content_checks_catch_a_dropped_value_and_added_emphasis() -> None:
     from .cases import _HE_GOOD, _HE_SECTION, _check_author
 
@@ -135,3 +155,75 @@ def test_inside_the_service_the_url_and_token_default_to_its_own_settings(
         ]
     )
     assert seen["base_url"] == "http://x" and seen["bearer_token"] == "t"
+
+
+def test_the_obligation_form_case_sends_the_documents_form_and_the_plain_case_does_not() -> None:
+    from .cases import _HE_FORMS
+
+    def sent_for(name: str) -> str:
+        (case,) = [c for c in CASES if (c.family, c.name) == ("synthesize_leaf_requirements", name)]
+        client, sent = _client(case.good)
+        evaluate(case, client)
+        return json.dumps(sent, ensure_ascii=False)
+
+    assert _HE_FORMS[0] in sent_for("hebrew_rows_with_forms")
+    assert _HE_FORMS[0] not in sent_for("hebrew_rows")
+
+
+# --- a provider content-filter block (production finding F1) ---------------------------------------------------------------------
+
+
+def _blocking_client() -> OrchestratorLlmClient:
+    from tests._prod_replay import content_filter_block
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="t")
+    client._transport = httpx.MockTransport(content_filter_block)
+    return client
+
+
+def test_a_call_the_provider_blocked_is_its_own_outcome_not_an_error() -> None:
+    from .harness import BLOCKED
+
+    (case,) = [c for c in CASES if (c.family, c.name) == ("author_content", "kb_injection")]
+    outcome = evaluate(case, _blocking_client())
+    assert outcome == {"passed": False, "outcome": BLOCKED, "checks": {}}
+
+
+def test_the_gate_does_not_count_a_blocked_case_as_a_regression() -> None:
+    from .compare import blocked
+    from .harness import BLOCKED
+
+    new = _report(a=False, b=True)
+    new["cases"]["a"]["outcome"] = BLOCKED
+    assert regressions(_report(a=True, b=True), new) == []
+    assert blocked(new) == ["a"]
+
+
+def test_a_run_reports_a_case_blocked_in_any_repeat_as_blocked(monkeypatch, tmp_path, capsys) -> None:  # noqa: ANN001
+    from . import run as run_module
+    from .harness import BLOCKED
+
+    repeats = iter(
+        [
+            {"model": "m", "cases": {"a": {"passed": False, "outcome": BLOCKED, "checks": {}}, "b": {"passed": True, "checks": {}}}},
+            {"model": "m", "cases": {"a": {"passed": True, "checks": {}}, "b": {"passed": True, "checks": {}}}},
+        ]
+    )
+    monkeypatch.setattr(run_module, "run_all", lambda client, families: next(repeats))
+    out = tmp_path / "r.json"
+    run_module.main(["--base-url", "http://x", "--token", "t", "--user-id", "u", "--model", "m", "--repeat", "2", "--out", str(out)])
+    report = json.loads(out.read_text(encoding="utf-8"))
+    assert report["cases"]["a"]["outcome"] == BLOCKED and report["cases"]["a"]["passed"] is False
+    assert "outcome" not in report["cases"]["b"]
+    printed = capsys.readouterr().out
+    assert "1/2 cases passed, 1 blocked by the provider" in printed
+    assert "BLOCKED a" in printed and "FAIL a" not in printed
+
+
+def test_the_mild_injection_fixture_has_no_override_wording() -> None:
+    # The strong fixture is what the provider's filter blocks; the mild one must reach the model so the prompt's defence is measured.
+    from .cases import CANARY, INJECTION, MILD_INJECTION
+
+    assert CANARY in MILD_INJECTION
+    for phrase in ("ignore", "SYSTEM", "IMPORTANT", "instruction"):
+        assert phrase in INJECTION and phrase not in MILD_INJECTION

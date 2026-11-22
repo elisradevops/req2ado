@@ -44,6 +44,15 @@ def test_a_hebrew_source_accepts_hebrew_output_and_refuses_a_translation() -> No
     assert not writes_in_script("היחידה תעבור בדיקה", ENGLISH_REQUIREMENT)
 
 
+def test_a_tie_between_the_added_words_goes_to_the_source_script() -> None:
+    source = "מתח כניסה: 28 וולט"
+    # One added Hebrew word, one added Latin word: the source's script wins, whatever the script names sort as.
+    assert writes_in_script("מתח כניסה shall לקבל 28 וולט", source)
+    assert writes_in_script("Input voltage is 28 V להיות", "Input voltage: 28 V")
+    # A Latin majority is still refused.
+    assert not writes_in_script("מתח כניסה shall accept 28 וולט", source)
+
+
 def test_only_the_words_the_output_adds_decide_its_script() -> None:
     source = "מתג Power Supply ראשי לכל יחידה"
     # The English name is copied from the source; the added words are Hebrew.

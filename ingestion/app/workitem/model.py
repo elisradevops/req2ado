@@ -180,10 +180,16 @@ class PromptRef(BaseModel):
     name: str
     version: int
     sha256: str
+    # The model that answered: the one a router (the gateway's `Auto`) sent the call to when its answer named it, else the model the call
+    # asked for. None when the call named no model (the orchestrator's default).
+    model: str | None = None
 
 
-# The key under which the LLM client tags each answer entry with the prompt that produced it (record_prompt reads it).
+# The key under which the LLM client tags each answer entry with the prompt that produced it (record_prompt reads it): one tag, or one
+# per model when the answer combines answers from several (scoring's votes).
 PROMPT_KEY = "_prompt"
+# The key under which a keyed answer's entries note the model that answered them, until the client folds it into the PROMPT_KEY tag.
+MODEL_KEY = "_model"
 
 
 class WorkItemNode(BaseModel):
@@ -543,6 +549,10 @@ class WarningKind(StrEnum):
     # orchestrator's dry run (one warning per job, `node_ids` the changed items), never by ingestion -- listed for parity, like
     # ADO_VERIFICATION_FAILED. A Check notice: it never blocks the write.
     CHANGED_SINCE_WRITTEN = "changed_since_written"
+    # F1: the model provider's content filter blocked the knowledge-base text a pass sent, so the pass asked once more without it
+    # (app.survey.content_filter). `detail["pass"]` names the pass ("scoring", "authoring", "trace_links"), `node_ids` the items it
+    # handled without the KB text. Nothing is missing; those items were not grounded on the organization's KB.
+    KB_CONTEXT_BLOCKED = "kb_context_blocked"
 
 
 WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
@@ -599,6 +609,7 @@ WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
     WarningKind.CRITERIA_VALUE_UNGROUNDED: WarningSeverity.NEEDS_REVIEW,
     WarningKind.REQUIREMENT_HEADING_IS_SECTION: WarningSeverity.NEEDS_REVIEW,
     WarningKind.CHANGED_SINCE_WRITTEN: WarningSeverity.NEEDS_REVIEW,
+    WarningKind.KB_CONTEXT_BLOCKED: WarningSeverity.PIPELINE_ISSUE,
 }
 
 
@@ -670,12 +681,13 @@ class WorkItemTree(BaseModel):
 def record_prompt(node: WorkItemNode, entry: object) -> None:
     """Notes on `node` the prompt that produced `entry` (the client's PROMPT_KEY tag), once. Called where an answer is applied, so only
     a prompt whose answer was used is listed; an untagged entry (a test double, an old cached answer) is no-op."""
-    tag = entry.get(PROMPT_KEY) if isinstance(entry, dict) else None
-    if not isinstance(tag, dict):
-        return
-    try:
-        ref = PromptRef(**tag)
-    except (TypeError, ValueError):
-        return
-    if ref not in node.prompts:
-        node.prompts.append(ref)
+    tags = entry.get(PROMPT_KEY) if isinstance(entry, dict) else None
+    for tag in tags if isinstance(tags, list) else [tags]:
+        if not isinstance(tag, dict):
+            continue
+        try:
+            ref = PromptRef(**tag)
+        except (TypeError, ValueError):
+            continue
+        if ref not in node.prompts:
+            node.prompts.append(ref)

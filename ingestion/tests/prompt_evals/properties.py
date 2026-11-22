@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 
 from app.leveling.criteria_grounding import given_values, ungrounded
@@ -20,6 +21,19 @@ def hebrew_ratio(text: str) -> float:
 def all_hebrew(texts: Iterable[str], minimum: float = 0.6) -> Check:
     off = [t[:40] for t in texts if hebrew_ratio(t) < minimum]
     return (not off, f"not Hebrew: {off[:3]}")
+
+
+# English modal verbs that state an obligation. Eval-only: production code and prompts name no obligation word (the job's own forms do).
+_LATIN_OBLIGATIONS = frozenset({"shall", "must", "should", "will"})
+
+
+def no_added_latin_obligation(texts: Iterable[str], sources: Iterable[str]) -> Check:
+    """No text adds an English obligation word its sources do not contain ("ספק הכוח shall לפעול"): all_hebrew lets one through."""
+    given = {w.casefold() for s in sources for w in re.findall(r"[A-Za-z]+", s)}
+    added = sorted(
+        {w for t in texts for w in (m.casefold() for m in re.findall(r"[A-Za-z]+", t)) if w in _LATIN_OBLIGATIONS and w not in given}
+    )
+    return (not added, f"added English obligation word(s): {added}")
 
 
 def same_ids(answer_ids: Iterable[str], expected: Iterable[str]) -> Check:

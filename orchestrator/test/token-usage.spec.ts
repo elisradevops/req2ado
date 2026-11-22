@@ -81,6 +81,13 @@ describe('LlmController /chat token ledger', () => {
     expect(record).toHaveBeenCalledWith({ jobId: 'job-1', stage: 'other', model: 'default-model' });
   });
 
+  it('under a router (Auto), records the tokens under the model the answer says it was sent to, and returns that routing', async () => {
+    const result = { content: '{}', routing: { model: 'OpenAI/gpt-5.4', tier: 'MEDIUM' } };
+    const { controller, record } = build(result);
+    await expect(controller.chat({ messages, model: 'Auto' }, 'user-1', undefined, 'job-1', 's')).resolves.toBe(result);
+    expect(record).toHaveBeenCalledWith({ jobId: 'job-1', stage: 's', model: 'OpenAI/gpt-5.4' });
+  });
+
   it('records nothing for a call that names no job', async () => {
     const { controller, record } = build({ content: '{}' });
     await controller.chat({ messages }, 'user-1');
