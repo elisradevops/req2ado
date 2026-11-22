@@ -310,11 +310,12 @@ def retry_omitted(
         except Exception as exc:  # noqa: BLE001 -- the retry is best-effort; the ids just stay omitted
             logger.warning("%s retry for %d omitted id(s) failed: %s", label, len(half), exc)
             break
-        matched = {
-            node_id: half_result[node_id]
-            for node_id in half
-            if node_id in half_result and (accept is None or accept(node_id, half_result[node_id]))
-        }
+        matched = _accepted(
+            {node_id: half_result[node_id] for node_id in half if node_id in half_result},
+            accept,
+            label,
+            half,
+        )
         if not matched:
             break
         merged.update(matched)
@@ -354,10 +355,27 @@ class KeyedEntries(dict):
             self.reason = "partial"
 
 
-def _accepted(entries: dict, accept: Callable[[str, object], bool] | None) -> dict:
+def _accepted(
+    entries: dict, accept: Callable[[str, object], bool] | None, label: str, ids: list[str]
+) -> dict:
+    """`entries` without the ones `accept` refuses; a refusal is logged on a line of its own (ids only, never content)."""
     if accept is None:
         return entries
-    return {node_id: entry for node_id, entry in entries.items() if accept(node_id, entry)}
+    kept = {node_id: entry for node_id, entry in entries.items() if accept(node_id, entry)}
+    refused = [node_id for node_id in ids if node_id in entries and node_id not in kept]
+    if refused:
+        logger.warning(
+            "%s: %d entr%s refused by the caller's check: %s",
+            label,
+            len(refused),
+            "y" if len(refused) == 1 else "ies",
+            [node_id[:40] for node_id in refused[:10]],
+        )
+    return kept
+
+
+def _usable(entries: dict, ids: list[str]) -> bool:
+    return any(node_id in entries for node_id in ids)
 
 
 def run_keyed(
@@ -374,8 +392,10 @@ def run_keyed(
     logged once.
 
     Fallback: in "array" mode, when NOTHING usable comes back (an empty `items`, a different
-    shape, a wrapper the parser cannot read) the same call is made once more prompt-only. If that
-    works, this (pass, model) is degraded to prompt-only for the rest of the process, so the
+    shape, a wrapper the parser cannot read, none of the requested ids) the same call is made once
+    more prompt-only. Usable is judged BEFORE `accept`: well-formed entries the caller refuses say
+    nothing about the schema, so they get the normal retry on the schema instead. If prompt-only
+    does answer, this (pass, model) is degraded to prompt-only for the rest of the process, so the
     schema is not tried -- and paid for -- on every later chunk. Cost: one extra call, once.
 
     `retry=False` skips the retry of omitted ids, for a pass whose caller already decides what an
@@ -388,16 +408,19 @@ def run_keyed(
     if not ids:
         return KeyedEntries({}, [])
     mode = mode_for(spec, model)
+    label = f"keyed call {spec.name}"
     raw = send(dict(payload), mode)
-    first = _accepted(normalize_keyed_result(raw, ids, spec.fields), accept)
+    parsed = normalize_keyed_result(raw, ids, spec.fields)
+    first = _accepted(parsed, accept, label, ids)
     extra_calls = 0
     degraded = False
     fallback_failed = False
-    if mode == "array" and not any(node_id in first for node_id in ids):
+    if mode == "array" and not _usable(parsed, ids):
         extra_calls += 1
         fallback_raw = send(dict(payload), "none")
-        fallback = _accepted(normalize_keyed_result(fallback_raw, ids, spec.fields), accept)
-        if any(node_id in fallback for node_id in ids):
+        fallback_parsed = normalize_keyed_result(fallback_raw, ids, spec.fields)
+        fallback = _accepted(fallback_parsed, accept, label, ids)
+        if _usable(fallback_parsed, ids):
             _mark_degraded(spec, model)
             logger.warning(
                 "keyed call %s: the array schema returned none of the %d requested ids but the same call "
@@ -406,7 +429,7 @@ def run_keyed(
                 len(ids),
                 model,
             )
-            mode, degraded, raw, first = "none", True, fallback_raw, fallback
+            mode, degraded, raw, parsed, first = "none", True, fallback_raw, fallback_parsed, fallback
         else:
             # Prompt-only got nothing either, so the schema is not the problem: no point retrying halves.
             fallback_failed = True
@@ -438,7 +461,8 @@ def run_keyed(
         entries.reason,
         " degraded=true" if degraded else "",
     )
-    if entries.reason == "no_matching_keys":
+    if entries.reason == "no_matching_keys" and not _usable(parsed, ids):
+        # (When the ids did come back and the caller refused them, the refusal line above already said so.)
         # Ids only, never content, and each cut short: a model that answers in prose can put
         # document text in its "keys", which must never be copied into a log.
         sample = [str(key)[:40] for key in list(raw)[:3]] if isinstance(raw, dict) else []
