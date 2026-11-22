@@ -33,6 +33,21 @@ def no_invented_values(texts: Iterable[str], source: Iterable[str]) -> Check:
     return (not bad, f"invented {bad[:5]}")
 
 
+def keeps_values(texts: dict[str, str], sources: dict[str, str]) -> Check:
+    """Each listed text still states every value of its own source sentence (the code gate's own check, app.leveling.content_authoring)."""
+    dropped = sorted(
+        f"{key}:{label}"
+        for key, source in sources.items()
+        for label in ungrounded(source, given_values([texts.get(key, "")]))
+    )
+    return (not dropped, f"dropped {dropped[:5]}")
+
+
+def no_emphasis(texts: Iterable[str]) -> Check:
+    marked = [t[:40] for t in texts if "**" in t or "__" in t]
+    return (not marked, f"emphasis in {marked[:2]}")
+
+
 def absent(token: str, texts: Iterable[str]) -> Check:
     hits = [t[:40] for t in texts if token.casefold() in t.casefold()]
     return (not hits, f"{token!r} in {hits[:2]}")

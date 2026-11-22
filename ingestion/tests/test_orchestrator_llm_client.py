@@ -1492,7 +1492,7 @@ def test_author_content_returns_description_and_tags_per_node() -> None:
     assert user_payload["nodes"] == skeleton
     assert user_payload["section"] == "Display\nThe display shall support HDR."
     system_prompt = captured["body"]["messages"][0]["content"]
-    assert "FIXED" in system_prompt
+    assert "The tree is fixed" in system_prompt
     assert "2 node(s)" in system_prompt
 
 
@@ -2283,9 +2283,22 @@ def test_judge_rule_conformance_returns_verdicts_for_the_given_items_only() -> N
         base_url="http://orchestrator.internal", bearer_token="test-bearer"
     )
     client._transport = _mock_transport({"content": json.dumps(answer)})
+    # A boolean answer (prompt v1's shape) reads as conforms / violates.
     assert client.judge_rule_conformance(
         "One shall per sentence", {"n1": "a", "n2": "b", "n3": "c"}
-    ) == {"n1": True, "n2": False}
+    ) == {"n1": "conforms", "n2": "violates"}
+    v2 = {
+        "verdicts": [
+            {"id": "n1", "verdict": "not_applicable"},
+            {"id": "n2", "verdict": "violates"},
+            {"id": "n3", "verdict": "maybe"},
+        ]
+    }
+    client._transport = _mock_transport({"content": json.dumps(v2)})
+    assert client.judge_rule_conformance("r", {"n1": "a", "n2": "b", "n3": "c"}) == {
+        "n1": "not_applicable",
+        "n2": "violates",
+    }
     client._transport = _mock_transport({"content": json.dumps({"verdicts": "no"})})
     with pytest.raises(ValueError):
         client.judge_rule_conformance("r", {"n1": "a"})

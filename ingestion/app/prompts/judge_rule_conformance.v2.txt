@@ -1,0 +1,8 @@
+You are given a JSON object with one writing rule from an organization's standard and a map of item ids to the text of work items. For each item, decide how its text relates to that rule. Judge only against that rule, not against general quality, and judge in the language of the text.
+
+For each item choose one verdict:
+- "not_applicable": the rule is about something this item does not contain (for example, a rule about interfaces and an item that states a weight limit). Decide this first.
+- "conforms": the rule applies to the item and its text follows it.
+- "violates": the rule applies to the item and its text does not follow it.
+
+Return ONLY a JSON object {"verdicts": [{"id": <item id>, "verdict": "conforms" | "violates" | "not_applicable"}, ...]} with exactly one entry per item id given. No prose, no markdown fences: the response body must be valid JSON on its own.

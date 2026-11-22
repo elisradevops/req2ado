@@ -37,9 +37,11 @@ from app.leveling.model_caps import output_token_budget
 from app.leveling.score_levels import COMPLETENESS, FINDINGS, entry_from_votes
 from app.logging_context import current_job_id
 from app.otel import get_tracer
+from app.prompts import resolve_version
 from app.prompts.assembly import DataBlock, Fragment, PromptCall, build_call
 from app.request_identity import user_scope
 from app.survey._response_schemas import (
+    CONFORMANCE_VERDICTS,
     acceptance_criteria_schema,
     checklist_definitions_schema,
     checklist_extraction_schema,
@@ -84,6 +86,10 @@ logger = logging.getLogger(__name__)
 _tracer = get_tracer()
 
 _NATIVE_ADO_LINK_PREFIXES = ("System.", "Microsoft.VSTS.")
+# From this infer_trace_links version on, the answer names a node target and a cited identifier in separate fields.
+_SPLIT_TARGET_VERSION = 5
+# From this judge_rule_conformance version on, the verdict may say the rule does not apply to an item.
+_NOT_APPLICABLE_VERSION = 2
 
 
 def _is_native_ado_link_type(reference_name: str) -> bool:
@@ -858,7 +864,11 @@ class OrchestratorLlmClient:
         # confirmed-live finding (3-10x wall-clock cost, no accuracy
         # benefit) as analyze_section/analyze_section_agentic and
         # score_requirements_for_document.
-        result = self._chat_json(call, self._params(schema=trace_links_schema()), user_id=user_id)
+        # v5 asks for the node target and the cited identifier in separate fields; the schema follows the prompt version (rollback-safe).
+        split_target = resolve_version("infer_trace_links") >= _SPLIT_TARGET_VERSION
+        result = self._chat_json(
+            call, self._params(schema=trace_links_schema(split_target)), user_id=user_id
+        )
         return result.get("links", []) if isinstance(result, dict) else []
 
     def score_requirements_for_document(
@@ -1726,26 +1736,33 @@ class OrchestratorLlmClient:
 
     def judge_rule_conformance(
         self, rule: str, items: dict[str, str], user_id: str | None = None
-    ) -> dict[str, bool]:
+    ) -> dict[str, str]:
         """Backs the KB conformance report (app.kb.conformance): does each item follow one stated writing rule? Returns
-        {item id: bool} for the ids the model answered about; ids it skipped are absent, malformed entries dropped."""
+        {item id: "conforms" | "violates" | "not_applicable"} for the ids the model answered about; ids it skipped are absent, malformed
+        entries dropped. Before prompt v2 the answer was a boolean (a rule that does not apply counted as followed): read as conforms or
+        violates. The schema follows the prompt version, so removing v2 rolls back cleanly."""
+        not_applicable = resolve_version("judge_rule_conformance") >= _NOT_APPLICABLE_VERSION
         source = json.dumps({"rule": rule, "items": items}, ensure_ascii=False)
         call = build_call("judge_rule_conformance", blocks=[DataBlock("source", source)])
         parsed = self._chat_json(
             call,
-            self._params(schema=rule_conformance_schema(), max_tokens=2000),
+            self._params(schema=rule_conformance_schema(not_applicable), max_tokens=2000),
             user_id=user_id,
         )
         verdicts = parsed.get("verdicts") if isinstance(parsed, dict) else None
         if not isinstance(verdicts, list):
             raise ValueError(f"malformed JSON in LLM response content: {parsed!r}")
-        return {
-            str(v["id"]): v["conforms"]
-            for v in verdicts
-            if isinstance(v, dict)
-            and str(v.get("id")) in items
-            and isinstance(v.get("conforms"), bool)
-        }
+        found: dict[str, str] = {}
+        for entry in verdicts:
+            if not isinstance(entry, dict) or str(entry.get("id")) not in items:
+                continue
+            verdict = entry.get("verdict")
+            if verdict not in CONFORMANCE_VERDICTS:
+                conforms = entry.get("conforms")
+                verdict = ("conforms" if conforms else "violates") if isinstance(conforms, bool) else None
+            if verdict is not None:
+                found[str(entry["id"])] = verdict
+        return found
 
     def name_root_groups(
         self, titles_by_group_id: dict[str, list[str]], user_id: str | None = None

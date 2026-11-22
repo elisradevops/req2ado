@@ -89,3 +89,14 @@ def test_the_gate_reports_a_missing_case() -> None:
     assert regressions(_report(a=True), {"model": "m", "cases": {}}) == [
         "a: missing from the new report"
     ]
+
+
+def test_author_content_checks_catch_a_dropped_value_and_added_emphasis() -> None:
+    from .cases import _HE_GOOD, _HE_SECTION, _check_author
+
+    content = json.loads(_HE_GOOD)
+    content["r2"]["description"] = "במצב חיסכון צריכת ההספק **לא תעלה** על הסף."
+    checks = _check_author((content, False), _HE_SECTION)
+    assert not checks["keeps_values"][0] and "r2:number:5" in checks["keeps_values"][1]
+    assert not checks["no_emphasis"][0]
+    assert checks["no_invented_values"][0]

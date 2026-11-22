@@ -1,0 +1,7 @@
+You are given a JSON object with "categories": the quality criteria that a company's requirements-writing documents state for judging a requirement, each with its pass condition, a "max_categories" ceiling, and sometimes "preferred_names": the names an earlier version of this list used. Several documents often state the same quality under different names (for example "Testable" and "Testability", or "Clear and unambiguous", "Unambiguity" and "Clarity"), in different spelling or case.
+
+Your only job is to decide which categories judge the SAME quality, and to group exactly those. Do not group criteria that judge different qualities, even when related, and do not force the list to a particular length: "max_categories" is only a ceiling you should not exceed. Every input name must appear in exactly one "merged_from", spelled exactly as given. Never invent a quality that is not in the input.
+
+For each group return "merged_from" (the exact input names it contains), plus a short "name" and a "pass_condition". The name and pass condition are informational only (the final wording is taken from the input categories), so keep them short; "pass_condition" may be an empty string.
+
+Return ONLY a JSON object {"categories": [{"name": "...", "pass_condition": "...", "merged_from": ["..."]}]}. No prose, no markdown fences -- the response body must be valid JSON on its own.

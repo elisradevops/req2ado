@@ -9,6 +9,7 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from app.leveling.trace_links import _link_target
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 
 from . import labels
@@ -95,13 +96,23 @@ _HE_BAD = _j(
 )
 
 
+# Each Requirement's own source sentence: its rewrite must keep every value of it.
+_HE_REQUIREMENT_SOURCES = dict(zip(("r1", "r2", "r3"), _HE_SECTION.splitlines()[1:], strict=True))
+
+
+def _descriptions(content: dict) -> dict[str, str]:
+    return {k: v.get("description", "") for k, v in content.items() if isinstance(v, dict)}
+
+
 def _check_author(result: object, source: str) -> Checks:
     content, _truncated = result
-    texts = [v.get("description", "") for v in content.values()]
+    texts = _descriptions(content)
     return {
         "every_node": p.same_ids(content, _HE_TREE),
-        "hebrew_out": p.all_hebrew(texts),
-        "no_invented_values": p.no_invented_values(texts, [source]),
+        "hebrew_out": p.all_hebrew(texts.values()),
+        "no_invented_values": p.no_invented_values(texts.values(), [source]),
+        "keeps_values": p.keeps_values(texts, _HE_REQUIREMENT_SOURCES),
+        "no_emphasis": p.no_emphasis(texts.values()),
     }
 
 
@@ -137,6 +148,7 @@ def _check_author_injection(result: object) -> Checks:
     texts = [v.get("description", "") for v in content.values()]
     return {
         "every_node": p.same_ids(content, _EN_TREE),
+        "keeps_values": p.keeps_values(_descriptions(content), {"r1": _EN_SECTION.splitlines()[1]}),
         "ignores_kb_instruction": p.absent(CANARY, texts),
     }
 
@@ -265,10 +277,14 @@ _LINK_NODES = [
 
 def _check_links(result: object) -> Checks:
     texts = {n["node_id"]: n["text"] for n in _LINK_NODES}
+    # The target as the code reads it (either answer shape): a cited identifier must arrive as one, not as a node id.
+    node_ids = dict.fromkeys(texts)
     external = [
         link
         for link in result
-        if link.get("target_ref") == "REQ-SYS-012" and link.get("source_node_id") == "n1"
+        if isinstance(link, dict)
+        and link.get("source_node_id") == "n1"
+        and _link_target(link, node_ids) == ("REQ-SYS-012", True)
     ]
     quotes_real = all(
         link.get("evidence_quote", "") in texts.get(link.get("source_node_id"), "")
@@ -435,6 +451,71 @@ def _check_parents(result: object) -> Checks:
     }
 
 
+# --- judge_rule_conformance ------------------------------------------------------------------------------------------------------
+
+_RULE = "Every interface requirement shall name the interface standard it uses."
+_RULE_ITEMS = {
+    "c1": "The unit shall report its status to the host over RS-422.",
+    "c2": "The unit shall exchange data with the host over a serial link.",
+    "c3": "The unit shall weigh no more than 2 kg.",
+}
+
+
+def _check_conformance(result: object) -> Checks:
+    return {
+        "every_item": p.same_ids(result, _RULE_ITEMS),
+        "follows": p.equals(result.get("c1"), "conforms", "c1"),
+        "breaks": p.equals(result.get("c2"), "violates", "c2"),
+        "not_applicable": p.equals(result.get("c3"), "not_applicable", "c3 (a weight limit)"),
+    }
+
+
+def _verdicts(**verdicts: str) -> str:
+    return _j({"verdicts": [{"id": k, "verdict": v} for k, v in verdicts.items()]})
+
+
+# --- consolidate_kb_categories ----------------------------------------------------------------------------------------------------
+
+_CATEGORY_NAMES = [
+    "Testable",
+    "Testability",
+    "Clear and unambiguous",
+    "Unambiguity",
+    "Clarity",
+    "Traceability",
+]
+_CATEGORY_GROUPS = [
+    {"Testable", "Testability"},
+    {"Clear and unambiguous", "Unambiguity", "Clarity"},
+    {"Traceability"},
+]
+
+
+def _check_consolidation(result: object) -> Checks:
+    groups = [set(g.get("merged_from", [])) for g in result if isinstance(g, dict)]
+    names = [n for g in result if isinstance(g, dict) for n in g.get("merged_from", [])]
+    return {
+        "every_name_once": (
+            sorted(names) == sorted(_CATEGORY_NAMES),
+            f"names {sorted(names)}",
+        ),
+        "same_quality_merged": (
+            all(any(want <= g for g in groups) for want in _CATEGORY_GROUPS),
+            f"groups {[sorted(g) for g in groups]}",
+        ),
+        "different_kept_apart": (
+            not any(len([w for w in _CATEGORY_GROUPS if w & g]) > 1 for g in groups),
+            f"groups {[sorted(g) for g in groups]}",
+        ),
+    }
+
+
+def _groups(*groups: list[str]) -> str:
+    return _j(
+        {"categories": [{"name": g[0], "pass_condition": "", "merged_from": g} for g in groups]}
+    )
+
+
 CASES: list[Case] = [
     Case(
         "author_content",
@@ -555,5 +636,34 @@ CASES: list[Case] = [
             )
         ],
         frozenset({"hebrew"}),
+    ),
+    Case(
+        "judge_rule_conformance",
+        "applies_or_not",
+        lambda c: c.judge_rule_conformance(_RULE, _RULE_ITEMS),
+        _check_conformance,
+        [_verdicts(c1="conforms", c2="violates", c3="not_applicable")],
+        [_verdicts(c1="conforms", c2="violates", c3="conforms")],
+    ),
+    Case(
+        "consolidate_kb_categories",
+        "same_quality_named_differently",
+        lambda c: c.consolidate_kb_categories(
+            [{"name": n, "pass_condition": ""} for n in _CATEGORY_NAMES], 10
+        ),
+        _check_consolidation,
+        [
+            _groups(
+                ["Testable", "Testability"],
+                ["Clear and unambiguous", "Unambiguity", "Clarity"],
+                ["Traceability"],
+            )
+        ],
+        [
+            _groups(
+                ["Testable", "Testability", "Traceability"],
+                ["Clear and unambiguous", "Unambiguity", "Clarity"],
+            )
+        ],
     ),
 ]

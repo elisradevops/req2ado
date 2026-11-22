@@ -50,7 +50,12 @@ def _response_schema_functions() -> dict[str, object]:
     return {
         name: fn
         for name, fn in inspect.getmembers(response_schemas, inspect.isfunction)
-        if name.endswith("_schema") and not inspect.signature(fn).parameters
+        # Called with no arguments: a schema function whose parameters all have defaults is built in its default shape.
+        if name.endswith("_schema")
+        and all(
+            p.default is not inspect.Parameter.empty
+            for p in inspect.signature(fn).parameters.values()
+        )
     }
 
 

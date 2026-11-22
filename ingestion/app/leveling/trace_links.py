@@ -38,6 +38,26 @@ def _words(text: str) -> list[str]:
     return re.findall(r"\w+", text.casefold())
 
 
+def _link_target(raw_link: dict, node_by_local_id: dict[str, WorkItemNode]) -> tuple[str | None, bool]:
+    """(the target, whether it is outside this job). From infer_trace_links v5 the answer names a node ('target_node_id') or a cited
+    identifier ('target_external_id'), exactly one: a node id that is not a node of this tree is not taken for an identifier. Before v5 one
+    'target_ref' carried both, and anything that was not a node was read as a cited identifier. (None, False) when the answer names no
+    usable target."""
+    if "target_node_id" in raw_link or "target_external_id" in raw_link:
+        node_id, external_id = raw_link.get("target_node_id"), raw_link.get("target_external_id")
+        node_id = node_id.strip() if isinstance(node_id, str) else ""
+        external_id = external_id.strip() if isinstance(external_id, str) else ""
+        if bool(node_id) == bool(external_id):
+            return None, False
+        if node_id:
+            return (node_id, False) if node_id in node_by_local_id else (None, False)
+        return external_id, True
+    target_ref = raw_link.get("target_ref")
+    if not isinstance(target_ref, str) or not target_ref:
+        return None, False
+    return target_ref, target_ref not in node_by_local_id
+
+
 def _quote_names_target(quote: str, target_ref: str, target_node: WorkItemNode | None) -> bool:
     """True when the evidence quote refers to the item it links to: it contains the target's customer id, the target's whole
     title, or a distinctive word of that title (not a word every requirement uses); for a target in another job, the target
@@ -331,7 +351,7 @@ def _infer_trace_links_for_nodes(
             continue
         source_node_id = raw_link.get("source_node_id")
         reference_name = raw_link.get("reference_name")
-        target_ref = raw_link.get("target_ref")
+        target_ref, external = _link_target(raw_link, node_by_local_id)
         # Real anti-hallucination guard (SWEEP.md section 7's "highest-
         # leverage fix in the whole audit"): a proposed link with no
         # evidence quote, or a quote that isn't a literal substring of the
@@ -372,7 +392,7 @@ def _infer_trace_links_for_nodes(
             # structural signal preventing it from proposing a node relates
             # to itself.
             continue
-        if target_ref in node_by_local_id:
+        if not external:
             if _is_ancestor(source_node_id, target_ref, node_by_local_id) or _is_ancestor(
                 target_ref, source_node_id, node_by_local_id
             ):
@@ -404,7 +424,7 @@ def _infer_trace_links_for_nodes(
                     resolution_status=TraceLinkResolutionStatus.PENDING,
                 )
             )
-        elif target_ref:
+        else:
             links_per_source[source_node_id] = links_per_source.get(source_node_id, 0) + 1
             trace_links.append(
                 TraceLink(

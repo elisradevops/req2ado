@@ -71,7 +71,7 @@ def kb_relevance_schema() -> dict:
     }
 
 
-def trace_links_schema() -> dict:
+def trace_links_schema(split_target: bool = True) -> dict:
     """infer_trace_links: whole-document trace/coverage link inference.
     Wrapped in an object with one 'links' array (NOT a top-level array) and
     deliberately NO maxItems -- see this module's header docstring: the
@@ -81,7 +81,11 @@ def trace_links_schema() -> dict:
     of the source node's own text -- this schema only constrains SHAPE
     (the field must exist and be a string), not content; the substring
     check is a real anti-hallucination guard this repo previously had none
-    of for this call."""
+    of for this call.
+
+    `split_target` (infer_trace_links v5 on): the target is either a node of the request ('target_node_id') or an identifier the text
+    cites ('target_external_id'), one of them empty; before v5 one 'target_ref' carried both."""
+    targets = ["target_node_id", "target_external_id"] if split_target else ["target_ref"]
     return {
         "name": "trace_links",
         "schema": {
@@ -94,15 +98,10 @@ def trace_links_schema() -> dict:
                         "properties": {
                             "source_node_id": {"type": "string"},
                             "reference_name": {"type": "string"},
-                            "target_ref": {"type": "string"},
+                            **{name: {"type": "string"} for name in targets},
                             "evidence_quote": {"type": "string"},
                         },
-                        "required": [
-                            "source_node_id",
-                            "reference_name",
-                            "target_ref",
-                            "evidence_quote",
-                        ],
+                        "required": ["source_node_id", "reference_name", *targets, "evidence_quote"],
                         "additionalProperties": False,
                     },
                 }
@@ -576,8 +575,18 @@ def acceptance_criteria_schema() -> dict:
     }
 
 
-def rule_conformance_schema() -> dict:
-    """judge_rule_conformance: for each given item, whether its text follows one stated writing rule."""
+CONFORMANCE_VERDICTS = ("conforms", "violates", "not_applicable")
+
+
+def rule_conformance_schema(not_applicable: bool = True) -> dict:
+    """judge_rule_conformance: for each given item, whether its text follows one stated writing rule. `not_applicable`
+    (judge_rule_conformance v2 on): a 'verdict' of conforms / violates / not_applicable; before v2 a boolean 'conforms', with a rule that
+    does not apply counted as conforming."""
+    verdict = (
+        {"verdict": {"type": "string", "enum": list(CONFORMANCE_VERDICTS)}}
+        if not_applicable
+        else {"conforms": {"type": "boolean"}}
+    )
     return {
         "name": "rule_conformance",
         "schema": {
@@ -587,8 +596,8 @@ def rule_conformance_schema() -> dict:
                     "type": "array",
                     "items": {
                         "type": "object",
-                        "properties": {"id": {"type": "string"}, "conforms": {"type": "boolean"}},
-                        "required": ["id", "conforms"],
+                        "properties": {"id": {"type": "string"}, **verdict},
+                        "required": ["id", *verdict],
                         "additionalProperties": False,
                     },
                 },

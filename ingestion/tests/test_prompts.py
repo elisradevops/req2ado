@@ -31,10 +31,17 @@ def test_infer_trace_links_prompt() -> None:
     assert '- Some.Ref ("Some Name")' in load_prompt(
         "infer_trace_links", 3, catalog_lines='- Some.Ref ("Some Name")'
     )
-    result = load_prompt("infer_trace_links")
-    assert "__CATALOG_LINES__" not in result and "<link_types> block" in result
-    assert result.startswith("You infer trace/coverage links between work items")
-    assert result.endswith("the response body must be valid JSON on its own.")
+    for version in (4, 5):
+        result = load_prompt("infer_trace_links", version)
+        assert "__CATALOG_LINES__" not in result and "<link_types> block" in result
+        assert result.endswith("the response body must be valid JSON on its own.")
+    assert load_prompt("infer_trace_links", 4).startswith(
+        "You infer trace/coverage links between work items"
+    )
+    # v5 drops v4's opening base-rate hint ("the most common case is ...").
+    latest = load_prompt("infer_trace_links")
+    assert latest.startswith("You infer trace and coverage links between work items")
+    assert "most common case" not in latest
 
 
 def test_infer_trace_links_v2_prompt_includes_native_type_preference_instruction() -> None:
@@ -56,11 +63,20 @@ def test_infer_trace_links_v3_prompt_requires_object_wrapper_and_evidence_quote(
     # field (see _response_schemas.trace_links_schema and
     # trace_links.py's evidence-quote validation). v3 must actually ask
     # for what the code now requires.
-    result = load_prompt("infer_trace_links")
+    result = load_prompt("infer_trace_links", 4)
     assert "'links' array" in result
     assert "'evidence_quote'" in result
     assert "exact, verbatim, character-for-character" in result
     assert "will be discarded" in result
+
+
+def test_infer_trace_links_v5_names_a_node_target_and_a_cited_identifier_separately() -> None:
+    result = load_prompt("infer_trace_links")
+    assert "'links' array" in result and "'evidence_quote'" in result
+    assert "'target_node_id'" in result and "'target_external_id'" in result
+    assert "'target_ref'" not in result
+    assert "Exactly one of 'target_node_id' and 'target_external_id' is filled in" in result
+    assert "is discarded" in result
 
 
 def test_score_requirements_for_document_prompt() -> None:
