@@ -91,6 +91,26 @@ def test_the_gate_reports_a_missing_case() -> None:
     ]
 
 
+def test_the_hebrew_checks_catch_an_added_latin_obligation_word() -> None:
+    from .cases import _HE_GOOD, _HE_SECTION, _check_author, _check_synth
+    from .properties import no_added_latin_obligation
+
+    # The shape GPT answered on the 2026-11-22 production baseline (docs/prod-eval-baseline-2026-11-22.md, F3): Hebrew with "shall".
+    synth = {
+        "x1": {"text": "ספק הכוח shall לפעול במתח כניסה של 28 וולט."},
+        "x2": {"text": "ספק הכוח יסיים אתחול תוך 2 שניות."},
+    }
+    checks = _check_synth(synth)
+    assert checks["hebrew_out"][0]  # the 60%-Hebrew check lets it through...
+    assert not checks["no_latin_obligation"][0] and "shall" in checks["no_latin_obligation"][1]  # ...this one does not
+
+    content = json.loads(_HE_GOOD)
+    content["r1"]["description"] = "היחידה shall לעבור למצב חיסכון בהספק לאחר 10 דקות ללא פעילות."
+    assert not _check_author((content, False), _HE_SECTION)["no_latin_obligation"][0]
+    # An English word the source itself contains is not an added one.
+    assert no_added_latin_obligation(["המערכת shall כמו במקור"], ["shall במקור"])[0]
+
+
 def test_author_content_checks_catch_a_dropped_value_and_added_emphasis() -> None:
     from .cases import _HE_GOOD, _HE_SECTION, _check_author
 
@@ -135,3 +155,16 @@ def test_inside_the_service_the_url_and_token_default_to_its_own_settings(
         ]
     )
     assert seen["base_url"] == "http://x" and seen["bearer_token"] == "t"
+
+
+def test_the_obligation_form_case_sends_the_documents_form_and_the_plain_case_does_not() -> None:
+    from .cases import _HE_FORMS
+
+    def sent_for(name: str) -> str:
+        (case,) = [c for c in CASES if (c.family, c.name) == ("synthesize_leaf_requirements", name)]
+        client, sent = _client(case.good)
+        evaluate(case, client)
+        return json.dumps(sent, ensure_ascii=False)
+
+    assert _HE_FORMS[0] in sent_for("hebrew_rows_with_forms")
+    assert _HE_FORMS[0] not in sent_for("hebrew_rows")
