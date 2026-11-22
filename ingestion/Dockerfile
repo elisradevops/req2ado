@@ -26,6 +26,11 @@ RUN apt-get update \
 COPY pyproject.toml ./
 COPY app ./app
 RUN pip install --no-cache-dir .
+# The prompt evals (synthetic fixtures only), so they can run against the production model route from inside this container:
+# `python -m tests.prompt_evals.run --user-id <user> --model <model> --out /tmp/report.json`. Their baselines and offline tests stay out.
+COPY tests/__init__.py ./tests/__init__.py
+COPY tests/prompt_evals/__init__.py tests/prompt_evals/cases.py tests/prompt_evals/compare.py tests/prompt_evals/harness.py \
+     tests/prompt_evals/labels.py tests/prompt_evals/properties.py tests/prompt_evals/run.py ./tests/prompt_evals/
 # Optional, empty by default -- a developer on a network with TLS-intercepting
 # middleware (e.g. a corporate proxy) can supply an extra trusted CA
 # certificate via docker-compose.override.yml (gitignored, never committed).
