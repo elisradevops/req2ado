@@ -29,10 +29,12 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable, Collection, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Literal
 
 from app.config import settings
+from app.workitem.model import MODEL_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +86,20 @@ def _forced_passes() -> set[str]:
 # anywhere; so instead of assuming it works, the first time it demonstrably does not, this pair drops
 # to prompt-only for the rest of the process (a restart tries the schema again).
 _degraded: set[tuple[str, str | None]] = set()
+
+# The model that answered this thread's last /llm/chat call, when a router (the gateway's `Auto`) named it; None when the answer named
+# none. Set by the client on every answer and read right after `send` returns, in the same thread (production finding F7).
+_answered_by: ContextVar[str | None] = ContextVar("answered_by", default=None)
+
+
+def note_answered_by(model: str | None) -> None:
+    """Records which model a router sent this thread's last call to (None: the answer did not say)."""
+    _answered_by.set(model)
+
+
+def answered_by() -> str | None:
+    """The model a router sent this thread's last call to, or None when the answer did not say."""
+    return _answered_by.get()
 _degraded_lock = threading.Lock()
 
 
@@ -378,6 +394,33 @@ def _usable(entries: dict, ids: list[str]) -> bool:
     return any(node_id in entries for node_id in ids)
 
 
+def _noting_answering_model(send: Callable[[dict, KeyedMode], object], model: str | None) -> Callable[[dict, KeyedMode], object]:
+    """`send`, with every entry of each answer noting the model that answered it (MODEL_KEY): the one a router named, else `model`."""
+
+    def noting(payload: dict, mode: KeyedMode) -> object:
+        note_answered_by(None)
+        raw = send(payload, mode)
+        by = answered_by() or model
+        if by is not None:
+            for entry in _answer_entries(raw):
+                entry[MODEL_KEY] = by
+        return raw
+
+    return noting
+
+
+def _answer_entries(raw: object) -> list[dict]:
+    """The entry objects of an answer in the shapes normalize_keyed_result reads (array, `items`, id map, one wrapper around a map)."""
+    if isinstance(raw, dict) and isinstance(raw.get("items"), list):
+        raw = raw["items"]
+    elif isinstance(raw, dict) and len(raw) == 1:
+        (inner,) = raw.values()
+        if isinstance(inner, dict) and inner and all(isinstance(value, dict) for value in inner.values()):
+            raw = inner
+    values = raw if isinstance(raw, list) else list(raw.values()) if isinstance(raw, dict) else []
+    return [value for value in values if isinstance(value, dict)]
+
+
 def run_keyed(
     send: Callable[[dict, KeyedMode], object],
     payload: Mapping[str, object],
@@ -409,7 +452,9 @@ def run_keyed(
         return KeyedEntries({}, [])
     mode = mode_for(spec, model)
     label = f"keyed call {spec.name}"
+    send = _noting_answering_model(send, model)
     raw = send(dict(payload), mode)
+    failed_by = answered_by() or model
     parsed = normalize_keyed_result(raw, ids, spec.fields)
     first = _accepted(parsed, accept, label, ids)
     extra_calls = 0
@@ -421,13 +466,15 @@ def run_keyed(
         fallback_parsed = normalize_keyed_result(fallback_raw, ids, spec.fields)
         fallback = _accepted(fallback_parsed, accept, label, ids)
         if _usable(fallback_parsed, ids):
-            _mark_degraded(spec, model)
+            # Under a router, what failed is the model the schema call was sent to; `Auto` itself is degraded only when the answer
+            # did not name one (it is then its own unknown model).
+            _mark_degraded(spec, failed_by)
             logger.warning(
                 "keyed call %s: the array schema returned none of the %d requested ids but the same call "
                 "prompt-only did -- using prompt-only for this pass on model=%s from now on (until restart)",
                 spec.name,
                 len(ids),
-                model,
+                failed_by,
             )
             mode, degraded, raw, parsed, first = "none", True, fallback_raw, fallback_parsed, fallback
         else:

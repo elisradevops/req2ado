@@ -136,7 +136,11 @@
             "properties": {
               "name": { "type": "string" },
               "version": { "type": "integer" },
-              "sha256": { "type": "string" }
+              "sha256": { "type": "string" },
+              "model": {
+                "type": ["string", "null"],
+                "description": "The model that answered: the one a router (such as the gateway's Auto) sent the call to when its answer named it, else the model the call asked for. Null or absent when the call named no model."
+              }
             }
           }
         },

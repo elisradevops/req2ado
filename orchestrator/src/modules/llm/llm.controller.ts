@@ -6,7 +6,7 @@ import { llmChatRequestSchema } from './llm-chat.dto';
 import { llmEmbedRequestSchema } from './llm-embed.dto';
 import { llmShowRequestSchema } from './llm-show.dto';
 import { llmVisionRequestSchema } from './llm-vision.dto';
-import type { LlmToolCall, LlmUsage } from './llm-client.interface';
+import type { LlmRouting, LlmToolCall, LlmUsage } from './llm-client.interface';
 import { TokenUsageRecorder } from './token-usage';
 import { LlmProxyBearerGuard } from './llm-proxy-bearer.guard';
 import { OpenWebUiClientFactory } from './openwebui-client.factory';
@@ -80,7 +80,7 @@ export class LlmController {
     // Which job and pipeline stage this call is for, set by the ingestion service; absent on any other caller. Used only for the token ledger.
     @Headers('x-req2ado-job-id') jobId?: string,
     @Headers('x-req2ado-stage') stage?: string,
-  ): Promise<{ content: string; toolCalls?: LlmToolCall[]; finishReason?: string; usage?: LlmUsage }> {
+  ): Promise<{ content: string; toolCalls?: LlmToolCall[]; finishReason?: string; usage?: LlmUsage; routing?: LlmRouting }> {
     const parseResult = llmChatRequestSchema.safeParse(rawBody);
     if (!parseResult.success) {
       throw new BadRequestException('Invalid request body: messages must be a non-empty array');
@@ -107,7 +107,8 @@ export class LlmController {
         ...(body.deadlineMs !== undefined ? { deadlineAtMs: Date.now() + body.deadlineMs } : {}),
       });
       if (jobId && this.tokenUsage) {
-        await this.tokenUsage.record({ jobId, stage: stage?.trim() || 'other', model: body.model ?? llmClient.chatModel, ...(result.usage ? { usage: result.usage } : {}) });
+        // Under a router (the gateway's `Auto`) the tokens were spent by the model it sent the call to, when the answer named it.
+        await this.tokenUsage.record({ jobId, stage: stage?.trim() || 'other', model: result.routing?.model ?? body.model ?? llmClient.chatModel, ...(result.usage ? { usage: result.usage } : {}) });
       }
       return result;
     } catch (err) {
@@ -145,6 +146,7 @@ export class LlmController {
       clientDisconnected = true;
     });
     let finishReason: string | undefined;
+    let routing: LlmRouting | undefined;
     let completed = false;
     try {
       for await (const chunk of llmClient.streamChat(body.messages, {
@@ -162,8 +164,9 @@ export class LlmController {
         ...(body.minP !== undefined ? { minP: body.minP } : {}),
         ...(body.think !== undefined ? { think: body.think } : {}),
       })) {
-        if (chunk.finishReason) {
-          finishReason = chunk.finishReason;
+        if (chunk.finishReason || chunk.routing) {
+          finishReason = chunk.finishReason ?? finishReason;
+          routing = chunk.routing ?? routing;
           if (!chunk.content && !chunk.reasoning) continue;
         }
         // `delta` stays the wire name for final-answer content (backward
@@ -176,7 +179,7 @@ export class LlmController {
       // Only written when the stream really ran to its end: a missing terminal
       // line is how the caller knows the answer may be cut off.
       if (completed && body.includeDone) {
-        res.write(`${JSON.stringify({ done: true, ...(finishReason ? { finishReason } : {}), ...(body.model !== undefined ? { model: body.model } : {}) })}\n`);
+        res.write(`${JSON.stringify({ done: true, ...(finishReason ? { finishReason } : {}), ...(body.model !== undefined ? { model: body.model } : {}), ...(routing ? { routing } : {}) })}\n`);
       }
     } finally {
       res.end();

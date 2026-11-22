@@ -180,10 +180,16 @@ class PromptRef(BaseModel):
     name: str
     version: int
     sha256: str
+    # The model that answered: the one a router (the gateway's `Auto`) sent the call to when its answer named it, else the model the call
+    # asked for. None when the call named no model (the orchestrator's default).
+    model: str | None = None
 
 
-# The key under which the LLM client tags each answer entry with the prompt that produced it (record_prompt reads it).
+# The key under which the LLM client tags each answer entry with the prompt that produced it (record_prompt reads it): one tag, or one
+# per model when the answer combines answers from several (scoring's votes).
 PROMPT_KEY = "_prompt"
+# The key under which a keyed answer's entries note the model that answered them, until the client folds it into the PROMPT_KEY tag.
+MODEL_KEY = "_model"
 
 
 class WorkItemNode(BaseModel):
@@ -675,12 +681,13 @@ class WorkItemTree(BaseModel):
 def record_prompt(node: WorkItemNode, entry: object) -> None:
     """Notes on `node` the prompt that produced `entry` (the client's PROMPT_KEY tag), once. Called where an answer is applied, so only
     a prompt whose answer was used is listed; an untagged entry (a test double, an old cached answer) is no-op."""
-    tag = entry.get(PROMPT_KEY) if isinstance(entry, dict) else None
-    if not isinstance(tag, dict):
-        return
-    try:
-        ref = PromptRef(**tag)
-    except (TypeError, ValueError):
-        return
-    if ref not in node.prompts:
-        node.prompts.append(ref)
+    tags = entry.get(PROMPT_KEY) if isinstance(entry, dict) else None
+    for tag in tags if isinstance(tags, list) else [tags]:
+        if not isinstance(tag, dict):
+            continue
+        try:
+            ref = PromptRef(**tag)
+        except (TypeError, ValueError):
+            continue
+        if ref not in node.prompts:
+            node.prompts.append(ref)

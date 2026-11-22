@@ -40,6 +40,13 @@ export interface ProxyBehavior {
   /** The provider's content filter blocks any request whose messages contain this text (every GPT model on the 2026-11-22
    *  production baseline blocked the kb_injection fixture; Claude did not). */
   contentFilterOn?: string;
+  /** A complexity router, not a model (the gateway's `Auto` on the 2026-11-22 production baseline): each request goes to the next of these
+   *  models in turn (each must also be in the proxy's model map) and is answered with that model's behavior, while the body's `model` stays
+   *  the requested name. The routed model is named only in the x-litellm-model-name / x-litellm-complexity-router-tier headers. */
+  routes?: { model: string; tier: string }[];
+  /** Which answers carry the routing headers. The baseline saw them only on streaming responses; 'always' also puts them on
+   *  non-streaming answers and on errors. Default 'always'. */
+  routingHeaders?: 'always' | 'streaming-only';
 }
 
 export interface RecordedRequest {
@@ -151,15 +158,19 @@ export async function startFakeProxy(models: Record<string, ProxyBehavior>): Pro
     }
     if (request.method === 'POST' && (path === '/v1/chat/completions' || path === '/api/chat/completions')) {
       const model = String(body.model ?? '');
-      const behavior = models[model];
-      if (!behavior) return json(404, { detail: 'Model not found' });
+      const requested = models[model];
+      if (!requested) return json(404, { detail: 'Model not found' });
       calls[model] = (calls[model] ?? 0) + 1;
+      const route = requested.routes?.[(calls[model] - 1) % requested.routes.length];
+      const behavior = route ? models[route.model] : requested;
+      const routed: Record<string, string> = route ? { 'x-litellm-model-name': route.model, 'x-litellm-complexity-router-tier': route.tier } : {};
+      const routedUnlessStreamOnly = requested.routingHeaders === 'streaming-only' ? {} : routed;
       if (behavior.rateLimitedCalls && calls[model] <= behavior.rateLimitedCalls.count) {
-        return json(429, { error: { message: 'rate limited', type: 'rate_limit_error' } }, { 'retry-after': String(behavior.rateLimitedCalls.retryAfterSeconds) });
+        return json(429, { error: { message: 'rate limited', type: 'rate_limit_error' } }, { 'retry-after': String(behavior.rateLimitedCalls.retryAfterSeconds), ...routedUnlessStreamOnly });
       }
       const refused = refusal(body, behavior, model);
       if (refused) {
-        response.writeHead(refused.status, refused.text ? { 'Content-Type': 'application/json' } : {});
+        response.writeHead(refused.status, { ...(refused.text ? { 'Content-Type': 'application/json' } : {}), ...routedUnlessStreamOnly });
         return response.end(refused.text ? JSON.stringify({ error: { message: refused.text, type: 'invalid_request_error' } }) : '');
       }
       if (behavior.latencyMs) {
@@ -179,7 +190,7 @@ export async function startFakeProxy(models: Record<string, ProxyBehavior>): Pro
           id: 'chatcmpl-fake', object: 'chat.completion', created: 1, model,
           choices: [{ index: 0, message: { role: 'assistant', content: behavior.emptyContent ?? '' }, finish_reason: 'length' }],
           usage: { prompt_tokens: 10, completion_tokens: limit, total_tokens: 10 + limit },
-        });
+        }, routedUnlessStreamOnly);
       }
       const content = behavior.answer ?? 'OK';
       if (behavior.truncatedBelow && typeof limit === 'number' && limit < behavior.truncatedBelow) {
@@ -187,10 +198,10 @@ export async function startFakeProxy(models: Record<string, ProxyBehavior>): Pro
           id: 'chatcmpl-fake', object: 'chat.completion', created: 1, model,
           choices: [{ index: 0, message: { role: 'assistant', content: content.slice(0, Math.max(1, Math.floor(content.length / 2))) }, finish_reason: 'length' }],
           usage: { prompt_tokens: 10, completion_tokens: limit, total_tokens: 10 + limit },
-        });
+        }, routedUnlessStreamOnly);
       }
       if (body.stream === true) {
-        response.writeHead(201, { 'Content-Type': 'text/event-stream' });
+        response.writeHead(201, { 'Content-Type': 'text/event-stream', ...routed });
         response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content } }] })}\n\n`);
         response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\n`);
         response.write('data: [DONE]\n\n');
@@ -200,7 +211,7 @@ export async function startFakeProxy(models: Record<string, ProxyBehavior>): Pro
         id: 'chatcmpl-fake', object: 'chat.completion', created: 1, model,
         choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }],
         usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
-      });
+      }, routedUnlessStreamOnly);
     }
     return json(404, { detail: 'Not Found' });
   });

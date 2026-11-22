@@ -118,6 +118,10 @@ export interface WorkItemNode {
     name: string;
     version: number;
     sha256: string;
+    /**
+     * The model that answered: the one a router (such as the gateway's Auto) sent the call to when its answer named it, else the model the call asked for. Null or absent when the call named no model.
+     */
+    model?: string | null;
   }[];
   /**
    * SURVEY-only: 0-100 quality judgment of the final description. Null for BASELINE or when no scoring_client was supplied.

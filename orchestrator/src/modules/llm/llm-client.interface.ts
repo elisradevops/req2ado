@@ -58,11 +58,19 @@ export interface LlmUsage {
   reasoningTokens?: number;
 }
 
+/** The model a router (the gateway's `Auto`) sent a call to, and its tier, as the answer's headers named them. */
+export interface LlmRouting {
+  model: string;
+  tier?: string;
+}
+
 export interface LlmChatResult {
   content: string;
   toolCalls?: LlmToolCall[];
   finishReason?: string;
   usage?: LlmUsage;
+  /** Only when the answer's headers named the model a router sent the call to. */
+  routing?: LlmRouting;
 }
 
 export interface LlmChatOptions {
@@ -159,6 +167,8 @@ export interface LlmStreamChunk {
   // Only ever on the last chunk, and only when the upstream reported one
   // ('stop', 'length', ...). Carries no text.
   finishReason?: string;
+  // Only on the last chunk, and only when the stream's headers named the model a router sent it to.
+  routing?: LlmRouting;
 }
 
 export interface LlmClient {

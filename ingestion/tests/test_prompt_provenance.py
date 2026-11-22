@@ -41,7 +41,7 @@ def test_a_prompt_is_recorded_once_and_an_untagged_or_malformed_answer_records_n
     record_prompt(node, {PROMPT_KEY: {"name": "x"}})
     record_prompt(node, None)
     assert node.prompts == [PromptRef(**TAG)]
-    assert node.model_dump()["prompts"] == [TAG]
+    assert node.model_dump()["prompts"] == [{**TAG, "model": None}]  # no model named: the orchestrator's default answered
     assert _node().prompts == []
 
 

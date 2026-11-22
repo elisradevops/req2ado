@@ -70,9 +70,11 @@ from app.survey._response_schemas import (
 from app.survey.keyed_calls import (
     KeyedEntries,
     KeyedMode,
+    answered_by,
     describe_output,
     drop_possibly_cut_last_entry,
     mode_for,
+    note_answered_by,
     output_lead,
     run_keyed,
     schema_for,
@@ -89,7 +91,7 @@ from app.survey.keyed_specs import (
     TITLE_TAGS_SPEC,
 )
 from app.survey.llm_cache import LlmResponseCache, payload_key
-from app.workitem.model import PROMPT_KEY, RequirementTag
+from app.workitem.model import MODEL_KEY, PROMPT_KEY, RequirementTag
 
 logger = logging.getLogger(__name__)
 _tracer = get_tracer()
@@ -412,14 +414,36 @@ def _in_source_script(
     return accept
 
 
-def _tag_prompt(entries: object, identity: PromptIdentity | None) -> None:
-    """Tags every answer entry with the prompt that produced it (app.workitem.model.record_prompt reads the tag where an answer is
-    applied to a work item)."""
-    if identity is None or not isinstance(entries, dict):
+def _tag_prompt(entries: object, identity: PromptIdentity | None, model: str | None) -> None:
+    """Tags every answer entry with the prompt that produced it and the model that answered (app.workitem.model.record_prompt reads the
+    tag where an answer is applied to a work item). The model is the one the entry notes (MODEL_KEY: one, or several for an entry built
+    from several answers), else the one a router named for this thread's last call, else `model`, the one the call asked for."""
+    if not isinstance(entries, dict):
         return
+    default = answered_by() or model
     for entry in entries.values():
-        if isinstance(entry, dict):
-            entry[PROMPT_KEY] = identity.as_dict()
+        if not isinstance(entry, dict):
+            continue
+        noted = entry.pop(MODEL_KEY, None)
+        if identity is None:
+            continue
+        models = noted if isinstance(noted, list) else [noted or default]
+        tags = [{**identity.as_dict(), **({"model": by} if by else {})} for by in dict.fromkeys(models)]
+        entry[PROMPT_KEY] = tags[0] if len(tags) == 1 else tags
+
+
+def _routed_model_of(body: object) -> str | None:
+    """The model a router (the gateway's `Auto`) sent the call to, from the orchestrator's `routing` field; None when it named none."""
+    routing = body.get("routing") if isinstance(body, dict) else None
+    model = routing.get("model") if isinstance(routing, dict) else None
+    return model if isinstance(model, str) and model else None
+
+
+def _routed_model(response: httpx.Response) -> str | None:
+    try:
+        return _routed_model_of(response.json())
+    except ValueError:  # not JSON: the caller reports that answer itself
+        return None
 
 
 def _abort_in_flight(client: httpx.Client) -> None:
@@ -720,6 +744,8 @@ class OrchestratorLlmClient:
                     raise LlmBudgetExceeded(detail)
                 return response
             if response.status_code not in _RETRYABLE_CHAT_STATUS_CODES:
+                if response.is_success:
+                    note_answered_by(_routed_model(response))
                 return response
             if response.status_code == 429 and _RATE_LIMIT_RETRIED_CODE in response.text:
                 return response  # already waited out and repeated by the orchestrator: the callers' own rate-limit handling takes it from here
@@ -794,6 +820,7 @@ class OrchestratorLlmClient:
                         if message.get("done"):
                             finished = True
                             finish_reason = message.get("finishReason")
+                            note_answered_by(_routed_model_of(message))
                             if message.get("finishReason") == "length":
                                 logger.warning(
                                     "Streamed structured LLM call ended with finishReason=length -- the answer may be incomplete"
@@ -1110,8 +1137,12 @@ class OrchestratorLlmClient:
                 builtin=not category_checklist,
             )
             if entry is not None:
+                # One tag per model whose vote went into the entry: votes a router sent to different models are both recorded.
+                entry[MODEL_KEY] = [
+                    vote.get(MODEL_KEY) or self._model for vote in (v.get(node_id) for v in votes) if isinstance(vote, dict)
+                ]
                 result[node_id] = entry
-        _tag_prompt(result, identity)
+        _tag_prompt(result, identity, self._model)
         return result
 
     def extract_quality_checklist(
@@ -1300,7 +1331,7 @@ class OrchestratorLlmClient:
                 return answer
 
             result = run_keyed(sent, group, spec, model=self._model, accept=accept)
-            _tag_prompt(result, used[0] if used else None)
+            _tag_prompt(result, used[0] if used else None, self._model)
             results.append(result)
         if len(results) == 1:
             return results[0]
@@ -1632,7 +1663,7 @@ class OrchestratorLlmClient:
             and isinstance(entry.get("id"), str)
             and entry["id"] in items_by_id
         }
-        _tag_prompt(result, identity)
+        _tag_prompt(result, identity, self._model)
         if key is not None and len(result) == len(items_by_id):
             self._cache.set(key, result)
         return result
@@ -2124,7 +2155,7 @@ class OrchestratorLlmClient:
             retry=False,
             accept=_in_source_script(spec.name, lambda _node_id: section_text, ("description",)),
         )
-        _tag_prompt(result, build(skeleton_nodes, mode_for(spec, self._model))[0].identity)
+        _tag_prompt(result, build(skeleton_nodes, mode_for(spec, self._model))[0].identity, self._model)
         if truncated:
             notice("output_limit_reached", "warning", with_last_item=True, step="write")
         logger.warning(

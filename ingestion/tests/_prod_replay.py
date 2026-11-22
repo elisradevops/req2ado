@@ -46,10 +46,22 @@ def asked_ids(request: httpx.Request) -> list[str]:
     return list(json.loads(block_text(body["messages"][1]["content"])))
 
 
-def keyed_answer(entries: dict[str, dict]) -> httpx.Response:
-    """A well-formed array-format answer, as the orchestrator relays it."""
+def keyed_answer(entries: dict[str, dict], routed_to: str | None = None) -> httpx.Response:
+    """A well-formed array-format answer, as the orchestrator relays it. `routed_to`: the gateway's `Auto` router sent the call to this
+    model, and the answer's headers said so (the orchestrator passes it on as `routing`; without the headers there is none)."""
     items = [{"id": node_id, **entry} for node_id, entry in entries.items()]
-    return httpx.Response(200, json={"content": json.dumps({"items": items}, ensure_ascii=False)})
+    return answer(json.dumps({"items": items}, ensure_ascii=False), routed_to)
+
+
+# The gateway's `Auto` is a complexity router (docs/prod-eval-baseline-2026-11-22.md, F7): SIMPLE goes to gpt-5-mini, MEDIUM (and the
+# fallback) to gpt-5.4, COMPLEX/REASONING to claude-opus-5-5. The tier is what the router's header says.
+ROUTER_TIERS = {"OpenAI/gpt-5-mini": "SIMPLE", "OpenAI/gpt-5.4": "MEDIUM", "claude-opus-5-5": "COMPLEX"}
+
+
+def answer(content: str, routed_to: str | None = None) -> httpx.Response:
+    """Any /llm/chat answer, optionally naming the model a router sent the call to."""
+    routing = {"routing": {"model": routed_to, "tier": ROUTER_TIERS.get(routed_to, "MEDIUM")}} if routed_to else {}
+    return httpx.Response(200, json={"content": content, **routing})
 
 
 def replay(*answers: Callable[[httpx.Request], httpx.Response]) -> tuple[Callable[[httpx.Request], httpx.Response], list[dict]]:
