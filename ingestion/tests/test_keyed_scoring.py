@@ -95,6 +95,20 @@ def test_the_default_mode_sends_the_reviewed_prompt_and_no_schema(name) -> None:
     assert "responseSchema" not in body
 
 
+@pytest.mark.parametrize("name", CASES)
+def test_every_scoring_mode_says_a_requirement_and_its_own_verification_are_one_obligation(name) -> None:
+    # GPT sometimes tagged "... shall supply 28 V ..., and shall be verified by test 4.2" as compound (production finding F6).
+    prompt = _bodies(CASES[name])[0]["messages"][0]["content"]
+    assert "together with the way it is verified" in prompt
+
+
+def test_the_built_in_atomicity_anchor_says_a_requirement_and_its_own_verification_are_one_obligation() -> None:
+    anchor = next(
+        line for line in _bodies(CASES["default"])[0]["messages"][0]["content"].splitlines() if "- atomicity:" in line
+    )
+    assert "together with the way it is verified" in anchor
+
+
 # -- the wire format ---------------------------------------------------------------------------------
 
 
