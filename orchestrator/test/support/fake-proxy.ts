@@ -37,6 +37,9 @@ export interface ProxyBehavior {
   truncatedBelow?: number;
   /** What the empty reasoning answer carries as content (default ''): a thinking model sometimes emits only whitespace. */
   emptyContent?: string;
+  /** The provider's content filter blocks any request whose messages contain this text (every GPT model on the 2026-11-22
+   *  production baseline blocked the kb_injection fixture; Claude did not). */
+  contentFilterOn?: string;
 }
 
 export interface RecordedRequest {
@@ -64,7 +67,15 @@ export const BEHAVIORS = {
 
 const chars = (messages: { content?: unknown }[]): number => messages.reduce((n, m) => n + (typeof m.content === 'string' ? m.content.length : 0), 0);
 
+// The error class is the one the 2026-11-22 production baseline recorded (400, litellm.ContentPolicyViolationError); the rest of the
+// text follows Azure's content-filter wording and is not a verbatim capture.
+export const CONTENT_FILTER_TEXT =
+  "litellm.ContentPolicyViolationError: AzureException - The response was filtered due to the prompt triggering Azure OpenAI's content management policy.";
+
 function refusal(body: Record<string, any>, behavior: ProxyBehavior, model: string): { status: number; text: string } | null {
+  if (behavior.contentFilterOn && JSON.stringify(body.messages ?? []).includes(behavior.contentFilterOn)) {
+    return { status: 400, text: CONTENT_FILTER_TEXT };
+  }
   const refused = (behavior.rejectsParams ?? []).filter((name) => name in body);
   if (refused.length > 0) {
     return { status: 400, text: `litellm.UnsupportedParamsError: azure_ai does not support parameters: [${refused.map((n) => `'${n}'`).join(', ')}], for model=${model}.` };

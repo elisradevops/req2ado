@@ -446,6 +446,18 @@ describe('OpenWebUiClient model negotiation', () => {
       expect(lines[0]).toMatch(/label=OpenWebUiClient\.chat model=OpenAI\/gpt-chat-latest attempt=1 status=400 elapsedMs=\d+ requestChars=\d+ schema=false message="(?:400 )+Unsupported parameter/);
     });
 
+    it('logs the schema state of each attempt, not of the call (a schema dropped after attempt 1 shows as schema=false)', async () => {
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      const schema = { name: 's', schema: { type: 'object', properties: {}, additionalProperties: false }, strict: true };
+      jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      const create = jest.fn().mockRejectedValueOnce(apiError('', 400)).mockRejectedValueOnce(apiError('502 Bad gateway', 502));
+
+      await expect(makeClient(create).chat(user, { model: 'm', responseSchema: schema, maxTokens: 100 })).rejects.toMatchObject({ upstreamStatus: 502 });
+
+      const lines = warn.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith('upstream call failed'));
+      expect(lines.map((l) => l.match(/attempt=(\d) .* schema=(\w+)/)?.slice(1).join(':'))).toEqual(['1:true', '2:false']);
+    });
+
     it('logs the terminal failure and a gave-up line, and never the request content', async () => {
       const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
       const error = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);

@@ -22,7 +22,21 @@ const logger = new Logger('UpstreamNegotiation');
 // support it, degrade once to a schema-less retry on the specific
 // status codes an unsupported/malformed response_format would produce.
 export function isSchemaRejection(err: unknown): boolean {
-  return err instanceof OpenAI.APIError && (err.status === 400 || err.status === 422);
+  return err instanceof OpenAI.APIError && (err.status === 400 || err.status === 422) && !isContentFilterBlock(err);
+}
+
+/** Marks the text of a provider content-filter block so ingestion can tell it from any other failure (it answers 422 with it). */
+export const CONTENT_FILTERED_CODE = 'LLM_CONTENT_FILTERED';
+
+/**
+ * Whether the provider's content filter blocked the request (LiteLLM: `ContentPolicyViolationError`; Azure: error code
+ * `content_filter`, "content management policy"). The same text is blocked again whatever is adapted: no schema-less retry,
+ * no repeat.
+ */
+export function isContentFilterBlock(err: unknown): boolean {
+  if (!(err instanceof OpenAI.APIError) || err.status !== 400) return false;
+  if (err.code === 'content_filter') return true;
+  return /contentpolicyviolation|content management policy|content[_ ]filter/i.test(err.message ?? '');
 }
 
 /** Carries an upstream HTTP status so the controller can propagate it instead of collapsing to a generic 500. */
@@ -465,8 +479,9 @@ export async function negotiate<T>(args: NegotiationArgs<T>): Promise<T> {
     // this service's log (four 502s and a 400 in one prod job were invisible).
     const logFailure = (err: unknown): void => {
       const { status, message } = summarizeUpstreamError(err);
+      // The schema this attempt actually sent: a schema dropped after an earlier attempt is not in this one.
       logger.warn(
-        `upstream call failed: label=${args.label} model=${args.model} attempt=${attempt} status=${status} elapsedMs=${Date.now() - startedAt} requestChars=${args.requestChars ?? "n/a"} schema=${args.hasSchema} message="${message}" requestId=${upstreamRequestId(err) ?? "none"}`,
+        `upstream call failed: label=${args.label} model=${args.model} attempt=${attempt} status=${status} elapsedMs=${Date.now() - startedAt} requestChars=${args.requestChars ?? "n/a"} schema=${args.hasSchema && !adaptation.dropSchema} message="${message}" requestId=${upstreamRequestId(err) ?? "none"}`,
       );
     };
     // The failure itself was already logged above; this only records that nothing more could be adapted.
@@ -496,6 +511,11 @@ export async function negotiate<T>(args: NegotiationArgs<T>): Promise<T> {
       // A used-up budget is final: no repeat, no adaptation. Surfaced as 402 with a code every layer above can recognise.
       if (isBudgetExceeded(err)) {
         return giveUp(new UpstreamHttpError(402, `${BUDGET_EXCEEDED_CODE}: ${summarizeUpstreamError(err).message}`));
+      }
+      // A content-filter block is final too: the same text is blocked again. A 422 with its own code, not the 400 that
+      // ingestion reads as worth splitting and repeating.
+      if (isContentFilterBlock(err)) {
+        return giveUp(new UpstreamHttpError(422, `${CONTENT_FILTERED_CODE}: ${summarizeUpstreamError(err).message}`));
       }
       if (attempt >= maxAttempts || outOfTime()) return giveUp(err);
 
