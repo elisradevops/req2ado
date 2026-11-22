@@ -100,3 +100,38 @@ def test_author_content_checks_catch_a_dropped_value_and_added_emphasis() -> Non
     assert not checks["keeps_values"][0] and "r2:number:5" in checks["keeps_values"][1]
     assert not checks["no_emphasis"][0]
     assert checks["no_invented_values"][0]
+
+
+def test_inside_the_service_the_url_and_token_default_to_its_own_settings(
+    monkeypatch, tmp_path
+) -> None:  # noqa: ANN001
+    from . import run as run_module
+
+    seen: dict = {}
+
+    def fake_client(**kwargs):  # noqa: ANN003, ANN202
+        seen.update(kwargs)
+        return OrchestratorLlmClient(**kwargs)
+
+    monkeypatch.setattr(run_module, "OrchestratorLlmClient", fake_client)
+    monkeypatch.setattr(run_module, "run_all", lambda client, families: {"model": "m", "cases": {}})
+    monkeypatch.setattr(run_module.settings, "orchestrator_url", "http://orchestrator.svc")
+    monkeypatch.setattr(run_module.settings, "llm_proxy_bearer", "from-settings")
+    out = tmp_path / "r.json"
+    assert run_module.main(["--user-id", "u", "--model", "m", "--out", str(out)]) == 0
+    assert seen["base_url"] == "http://orchestrator.svc" and seen["bearer_token"] == "from-settings"
+    run_module.main(
+        [
+            "--base-url",
+            "http://x",
+            "--token",
+            "t",
+            "--user-id",
+            "u",
+            "--model",
+            "m",
+            "--out",
+            str(out),
+        ]
+    )
+    assert seen["base_url"] == "http://x" and seen["bearer_token"] == "t"

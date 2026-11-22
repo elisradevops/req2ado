@@ -3,8 +3,14 @@
     python -m tests.prompt_evals.run --base-url https://<orchestrator> --token <LLM_PROXY_BEARER> --user-id <user> --model <model> \
         --out report.json
 
---user-id is a req2ado user whose model connection is set in Settings: the orchestrator answers only for such a user. Run it from the ingestion directory on a network that reaches the route, once per production model family. Every fixture is synthetic. The
-response cache is not used, so every case asks the model. Repeat with --repeat to see run-to-run variance: a case counts as passed only when
+--user-id is a req2ado user whose model connection is set in Settings: the orchestrator answers only for such a user. Run it from the ingestion directory on a network that reaches the route, once per production model family.
+
+Inside a running ingestion container (the image ships this harness), --base-url and --token default to the container's own ORCHESTRATOR_URL
+and LLM_PROXY_BEARER, so nobody handles the token:
+
+    python -m tests.prompt_evals.run --user-id <user> --model <model> --repeat 2 --out /tmp/report.json
+
+Every fixture is synthetic. The response cache is not used, so every case asks the model. Repeat with --repeat to see run-to-run variance: a case counts as passed only when
 it passed every repeat."""
 
 from __future__ import annotations
@@ -14,6 +20,7 @@ import json
 import sys
 from pathlib import Path
 
+from app.config import settings
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 
 from .harness import AsUser, run_all
@@ -23,8 +30,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--base-url", required=True)
-    parser.add_argument("--token", required=True)
+    parser.add_argument("--base-url", default=None, help="default: this service's ORCHESTRATOR_URL")
+    parser.add_argument("--token", default=None, help="default: this service's LLM_PROXY_BEARER")
     parser.add_argument("--user-id", required=True)
     parser.add_argument("--model", required=True)
     parser.add_argument("--out", required=True, type=Path)
@@ -33,7 +40,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     client = AsUser(
-        OrchestratorLlmClient(base_url=args.base_url, bearer_token=args.token, model=args.model),
+        OrchestratorLlmClient(
+            base_url=args.base_url or settings.orchestrator_url,
+            bearer_token=args.token or settings.llm_proxy_bearer,
+            model=args.model,
+        ),
         args.user_id,
     )
     runs = [
