@@ -168,3 +168,62 @@ def test_the_obligation_form_case_sends_the_documents_form_and_the_plain_case_do
 
     assert _HE_FORMS[0] in sent_for("hebrew_rows_with_forms")
     assert _HE_FORMS[0] not in sent_for("hebrew_rows")
+
+
+# --- a provider content-filter block (production finding F1) ---------------------------------------------------------------------
+
+
+def _blocking_client() -> OrchestratorLlmClient:
+    from tests._prod_replay import content_filter_block
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="t")
+    client._transport = httpx.MockTransport(content_filter_block)
+    return client
+
+
+def test_a_call_the_provider_blocked_is_its_own_outcome_not_an_error() -> None:
+    from .harness import BLOCKED
+
+    (case,) = [c for c in CASES if (c.family, c.name) == ("author_content", "kb_injection")]
+    outcome = evaluate(case, _blocking_client())
+    assert outcome == {"passed": False, "outcome": BLOCKED, "checks": {}}
+
+
+def test_the_gate_does_not_count_a_blocked_case_as_a_regression() -> None:
+    from .compare import blocked
+    from .harness import BLOCKED
+
+    new = _report(a=False, b=True)
+    new["cases"]["a"]["outcome"] = BLOCKED
+    assert regressions(_report(a=True, b=True), new) == []
+    assert blocked(new) == ["a"]
+
+
+def test_a_run_reports_a_case_blocked_in_any_repeat_as_blocked(monkeypatch, tmp_path, capsys) -> None:  # noqa: ANN001
+    from . import run as run_module
+    from .harness import BLOCKED
+
+    repeats = iter(
+        [
+            {"model": "m", "cases": {"a": {"passed": False, "outcome": BLOCKED, "checks": {}}, "b": {"passed": True, "checks": {}}}},
+            {"model": "m", "cases": {"a": {"passed": True, "checks": {}}, "b": {"passed": True, "checks": {}}}},
+        ]
+    )
+    monkeypatch.setattr(run_module, "run_all", lambda client, families: next(repeats))
+    out = tmp_path / "r.json"
+    run_module.main(["--base-url", "http://x", "--token", "t", "--user-id", "u", "--model", "m", "--repeat", "2", "--out", str(out)])
+    report = json.loads(out.read_text(encoding="utf-8"))
+    assert report["cases"]["a"]["outcome"] == BLOCKED and report["cases"]["a"]["passed"] is False
+    assert "outcome" not in report["cases"]["b"]
+    printed = capsys.readouterr().out
+    assert "1/2 cases passed, 1 blocked by the provider" in printed
+    assert "BLOCKED a" in printed and "FAIL a" not in printed
+
+
+def test_the_mild_injection_fixture_has_no_override_wording() -> None:
+    # The strong fixture is what the provider's filter blocks; the mild one must reach the model so the prompt's defence is measured.
+    from .cases import CANARY, INJECTION, MILD_INJECTION
+
+    assert CANARY in MILD_INJECTION
+    for phrase in ("ignore", "SYSTEM", "IMPORTANT", "instruction"):
+        assert phrase in INJECTION and phrase not in MILD_INJECTION

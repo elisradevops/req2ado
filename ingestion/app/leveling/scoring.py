@@ -16,6 +16,7 @@ from app.leveling.narration_publisher import (
     _sample_titles,
 )
 from app.quality.criteria_retrieval import CriteriaRetriever
+from app.survey.content_filter import kb_blocked_warning, without_kb_when_blocked
 from app.workitem.model import (
     IntegrityWarning,
     KbCitation,
@@ -963,13 +964,23 @@ def _apply_quality_scores(
             "Scoring drift probe skipped: a real node already uses the reserved canary id %r.",
             _CANARY_NODE_ID,
         )
-    scores_by_node_id = scoring_client.score_requirements_for_document(
-        descriptions_by_node_id,
-        criteria_context,
+    scores_by_node_id, kb_left_out = without_kb_when_blocked(
+        lambda kb: scoring_client.score_requirements_for_document(
+            descriptions_by_node_id,
+            criteria_context,
+            kb,
+            category_checklist,
+            user_id=user_id,
+        ),
         kb_context,
-        category_checklist,
-        user_id=user_id,
+        "score_requirements_for_document",
     )
+    if kb_left_out:
+        warnings.append(
+            kb_blocked_warning("scoring", "quality scoring", [node.local_id for node in nodes])
+        )
+        # The category repair below asks in the same frame as the scores it completes.
+        kb_context = None
     if inject_canary:
         _check_scoring_canary(scores_by_node_id.pop(_CANARY_NODE_ID, None))
     valid_issue_values = {i.value for i in RequirementQualityIssue}

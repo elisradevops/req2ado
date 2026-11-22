@@ -543,6 +543,10 @@ class WarningKind(StrEnum):
     # orchestrator's dry run (one warning per job, `node_ids` the changed items), never by ingestion -- listed for parity, like
     # ADO_VERIFICATION_FAILED. A Check notice: it never blocks the write.
     CHANGED_SINCE_WRITTEN = "changed_since_written"
+    # F1: the model provider's content filter blocked the knowledge-base text a pass sent, so the pass asked once more without it
+    # (app.survey.content_filter). `detail["pass"]` names the pass ("scoring", "authoring", "trace_links"), `node_ids` the items it
+    # handled without the KB text. Nothing is missing; those items were not grounded on the organization's KB.
+    KB_CONTEXT_BLOCKED = "kb_context_blocked"
 
 
 WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
@@ -599,6 +603,7 @@ WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
     WarningKind.CRITERIA_VALUE_UNGROUNDED: WarningSeverity.NEEDS_REVIEW,
     WarningKind.REQUIREMENT_HEADING_IS_SECTION: WarningSeverity.NEEDS_REVIEW,
     WarningKind.CHANGED_SINCE_WRITTEN: WarningSeverity.NEEDS_REVIEW,
+    WarningKind.KB_CONTEXT_BLOCKED: WarningSeverity.PIPELINE_ISSUE,
 }
 
 

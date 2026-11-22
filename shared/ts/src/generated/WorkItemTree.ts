@@ -210,7 +210,8 @@ export interface IntegrityWarning {
     | 'source_structure_violation'
     | 'rulebook_mismatch'
     | 'prestudy_applied'
-    | 'prestudy_rejected';
+    | 'prestudy_rejected'
+    | 'kb_context_blocked';
   /**
    * auto_fixed: deterministic code already resolved it, no action needed. needs_review: an AI/heuristic judgment call a human should verify. pipeline_issue: something broke or was incomplete for this run.
    */

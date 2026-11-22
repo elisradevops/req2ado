@@ -21,6 +21,25 @@ HEBREW_TITLES = {"x1": "מתח כניסה", "x2": "זמן אתחול"}
 HEBREW_ROWS = {"x1": "מתח כניסה: 28 וולט", "x2": "זמן אתחול: 2 שניות"}
 
 
+# The provider's content filter blocks knowledge-base text that reads like an injection (the eval's kb_injection fixture, every GPT
+# model: `ContentPolicyViolationError`, 400). The orchestrator answers it as a final 422 carrying its code (F2), in the body shape of
+# its HTTP errors. The class name is from the baseline; the provider's tail is not a verbatim capture.
+CONTENT_FILTER_MESSAGE = (
+    "LLM_CONTENT_FILTERED: litellm.ContentPolicyViolationError: The response was filtered due to the prompt "
+    "triggering the content management policy."
+)
+
+
+def content_filter_block(_request: httpx.Request | None = None) -> httpx.Response:
+    return httpx.Response(422, json={"statusCode": 422, "message": CONTENT_FILTER_MESSAGE})
+
+
+def carries_kb(request: httpx.Request) -> bool:
+    """Whether a call sent knowledge-base text (a `reference` or `rubric` block)."""
+    user = json.loads(request.content)["messages"][1]["content"]
+    return block_text(user, "reference") is not None or block_text(user, "rubric") is not None
+
+
 def asked_ids(request: httpx.Request) -> list[str]:
     """The ids a keyed call asked about (its source block)."""
     body = json.loads(request.content)

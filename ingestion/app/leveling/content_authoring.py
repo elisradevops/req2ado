@@ -28,6 +28,7 @@ from app.leveling.criteria_grounding import given_values, ungrounded
 from app.leveling.description_text import html_to_model_text, split_tables
 from app.leveling.id_tree_builder import synthesis_updates
 from app.leveling.live_context import current_stage_counter
+from app.survey.content_filter import kb_blocked_warning, without_kb_when_blocked
 from app.workitem.model import (
     IntegrityWarning,
     WarningKind,
@@ -168,7 +169,7 @@ def author_fixed_tree(
     if not chunks:
         return
 
-    def write(chunk: _Chunk) -> tuple[dict[str, dict], bool]:
+    def write(chunk: _Chunk) -> tuple[tuple[dict[str, dict], bool], bool]:
         payload = {
             node_id: {
                 "type": by_id[node_id].type.value,
@@ -178,8 +179,12 @@ def author_fixed_tree(
             for node_id in chunk.node_ids
         }
         try:
-            return client.author_content(
-                chunk.section_text, payload, kb_context=kb_context, user_id=user_id
+            return without_kb_when_blocked(
+                lambda kb: client.author_content(
+                    chunk.section_text, payload, kb_context=kb, user_id=user_id
+                ),
+                kb_context,
+                "author_content",
             )
         finally:
             if counter is not None:
@@ -188,6 +193,7 @@ def author_fixed_tree(
     failed: list[str] = []
     omitted: list[str] = []
     rejected: dict[str, list[str]] = {}
+    without_kb: list[str] = []
     truncated = False
     for outcome in run_chunks_bounded(chunks, write, concurrency):
         chunk = chunks[outcome.chunk_index]
@@ -201,8 +207,10 @@ def author_fixed_tree(
             )
             failed.extend(chunk.node_ids)
             continue
-        content, chunk_truncated = outcome.value or ({}, False)
+        (content, chunk_truncated), kb_left_out = outcome.value or (({}, False), False)
         truncated = truncated or chunk_truncated
+        if kb_left_out:
+            without_kb.extend(chunk.node_ids)
         for node_id in chunk.node_ids:
             node = by_id[node_id]
             entry = content.get(node_id)
@@ -255,6 +263,8 @@ def author_fixed_tree(
                 values=rejected,
             )
         )
+    if without_kb:
+        warnings.append(kb_blocked_warning(_PASS, "writing the item text", without_kb))
     if truncated:
         warnings.append(
             _warning(

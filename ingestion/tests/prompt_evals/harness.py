@@ -7,6 +7,7 @@ import hashlib
 import traceback
 
 from app.prompts import _PROMPTS_DIR, _latest_version
+from app.survey.content_filter import is_content_filtered
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 
 from . import labels
@@ -20,11 +21,18 @@ def prompt_identity(family: str) -> dict:
     return {"name": family, "version": version, "sha": hashlib.sha256(text).hexdigest()[:12]}
 
 
+BLOCKED = "blocked_by_provider"
+
+
 def evaluate(case: Case, client: OrchestratorLlmClient) -> dict:
-    """One case's outcome: every check's result, or the error that kept the call from answering (an error fails the case)."""
+    """One case's outcome: every check's result, or the error that kept the call from answering (an error fails the case). A call the
+    provider's content filter blocked is its own outcome, BLOCKED: the prompt was never answered, so it is neither a pass nor an error,
+    and the gate does not count it as a regression."""
     try:
         checks = case.check(case.run(client))
     except Exception as exc:  # noqa: BLE001 - a failing call is a measured outcome, not a crash of the run
+        if is_content_filtered(exc):
+            return {"passed": False, "outcome": BLOCKED, "checks": {}}
         return {
             "passed": False,
             "error": f"{type(exc).__name__}: {exc}",

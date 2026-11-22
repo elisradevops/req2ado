@@ -10,6 +10,7 @@ if TYPE_CHECKING:
 
 from app.leveling.live_context import current_stage_counter
 from app.leveling.narration_publisher import LevelingProgress, ProgressCallback, _sample_titles
+from app.survey.content_filter import kb_blocked_warning, without_kb_when_blocked
 from app.workitem.model import (
     IntegrityWarning,
     TraceLink,
@@ -158,12 +159,18 @@ def _infer_chunk_once(
     catalog: list[dict],
     kb_context: str | None,
     user_id: str | None,
+    without_kb: list[dict],
 ) -> tuple[list[dict] | None, str | None]:
-    """(links, None) on success, (None, short reason) when the call failed or answered with something unusable."""
+    """(links, None) on success, (None, short reason) when the call failed or answered with something unusable. Nodes answered without
+    the KB text (the provider's filter blocked it) are added to `without_kb`."""
     started = time.monotonic()
     chars = sum(len(n["text"]) for n in nodes)
     try:
-        links = client.infer_trace_links(nodes, catalog, kb_context=kb_context, user_id=user_id)
+        links, kb_left_out = without_kb_when_blocked(
+            lambda kb: client.infer_trace_links(nodes, catalog, kb_context=kb, user_id=user_id),
+            kb_context,
+            "infer_trace_links",
+        )
     except Exception as exc:  # noqa: BLE001 -- enrichment must never fail the job
         reason = " ".join(str(exc).split())[:200] or type(exc).__name__
         logger.warning(
@@ -181,6 +188,8 @@ def _infer_chunk_once(
         time.monotonic() - started,
         len(links) if isinstance(links, list) else 0,
     )
+    if kb_left_out:
+        without_kb.extend(nodes)
     return (links if isinstance(links, list) else []), None
 
 
@@ -190,17 +199,20 @@ def _infer_chunk_resilient(
     catalog: list[dict],
     kb_context: str | None,
     user_id: str | None,
+    without_kb: list[dict],
 ) -> tuple[list[list[dict]], list[tuple[list[dict], str]]]:
     """(answered link lists, [(skipped nodes, reason)]): one retry as two halves (a smaller request) when the
     chunk has more than one node, the same call once more otherwise."""
-    links, reason = _infer_chunk_once(client, nodes, catalog, kb_context, user_id)
+    links, reason = _infer_chunk_once(client, nodes, catalog, kb_context, user_id, without_kb)
     if links is not None:
         return [links], []
     groups = [nodes[: len(nodes) // 2], nodes[len(nodes) // 2 :]] if len(nodes) > 1 else [nodes]
     answered: list[list[dict]] = []
     skipped: list[tuple[list[dict], str]] = []
     for group in groups:
-        group_links, group_reason = _infer_chunk_once(client, group, catalog, kb_context, user_id)
+        group_links, group_reason = _infer_chunk_once(
+            client, group, catalog, kb_context, user_id, without_kb
+        )
         if group_links is not None:
             answered.append(group_links)
         else:
@@ -290,6 +302,7 @@ def _infer_trace_links_for_nodes(
     # again as two halves, and whatever is still unanswered is reported, never dropped silently.
     raw_links: list[dict] = []
     skipped_groups: list[tuple[list[dict], str]] = []
+    without_kb: list[dict] = []
     any_answered = False
     chunks = list(_chunk_nodes(llm_nodes))
     # The step counts its own items, so the run's percentage moves while links are being resolved (None unless live progress is on).
@@ -298,7 +311,7 @@ def _infer_trace_links_for_nodes(
         counter.set_total("trace", len(llm_nodes))
     for chunk in chunks:
         answered, skipped = _infer_chunk_resilient(
-            link_type_client, chunk, catalog, kb_context, user_id
+            link_type_client, chunk, catalog, kb_context, user_id, without_kb
         )
         if counter is not None:
             counter.advance("trace", len(chunk))
@@ -330,6 +343,12 @@ def _infer_trace_links_for_nodes(
                     detail={"reason": reason},
                 )
             )
+    if without_kb:
+        all_warnings.append(
+            kb_blocked_warning(
+                "trace_links", "trace-link inference", [n["node_id"] for n in without_kb]
+            )
+        )
     catalog_by_ref = {
         entry["reference_name"]: entry.get("name", entry["reference_name"]) for entry in catalog
     }

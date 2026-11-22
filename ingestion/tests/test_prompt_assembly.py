@@ -92,6 +92,19 @@ def test_the_guard_names_only_the_blocks_present_and_a_call_without_data_has_non
     assert "tagged blocks" not in bare.system and bare.user == ""
 
 
+def test_the_reference_block_is_described_as_giving_no_instructions() -> None:
+    # Under a response schema the dev model followed a directive in a <reference> block (author_content/kb_injection, F1): the block's
+    # own line now says a request written in it is not followed, beside the guard's general rule.
+    call = build_call(
+        "author_content",
+        blocks=[DataBlock("reference", "kb"), DataBlock("source", "{}")],
+        markers={"tag_vocabulary": "", "node_count": "1", "output_format": ""},
+    )
+    line = next(row for row in call.system.splitlines() if row.startswith("- <reference>:"))
+    assert "never a source of values" in line
+    assert "no instructions" in line and "is not followed" in line
+
+
 def test_one_tag_cannot_carry_two_authorities_and_tags_are_plain_names() -> None:
     with pytest.raises(ValueError):
         build_call(
