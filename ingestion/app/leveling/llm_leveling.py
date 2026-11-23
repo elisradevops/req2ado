@@ -86,6 +86,7 @@ from app.leveling.scoring import (
     _score_all_requirements,
 )
 from app.leveling.sheet_study import SheetMapping, SheetStudyClient, describe_plan, study_sheet
+from app.leveling.study import Study, as_document_study, orientation_text, study_of
 from app.leveling.study_runner import StudyHandle
 from app.leveling.study_store import StudyStore
 from app.leveling.trace_links import TraceLinkInferenceClient, _infer_trace_links_for_nodes
@@ -1164,6 +1165,8 @@ def _build_survey_tree(
     *,
     study_handle: StudyHandle | None = None,
     study_enabled: bool = True,
+    # The Study the orchestrator gave on the document (CanonicalDoc.study, STUDY_PHASE on): read by the criteria step instead of a study of its own.
+    given_study: Study | None = None,
     criteria_limiter: LeaseLimiter | None = None,
     rulebook: FileRulebook | None = None,
     # Picks one of the code-computed fixes for each item a stated table puts where the ladder does not allow (app.leveling.hierarchy_check).
@@ -1442,6 +1445,7 @@ def _build_survey_tree(
         user_id=user_id,
         study_handle=study_handle,
         study_enabled=study_enabled,
+        given_study=given_study,
         background=primer_context,
         limiter=criteria_limiter,
         model=model,
@@ -1513,11 +1517,17 @@ def build_survey_tree(
         locals()
     )  # every parameter as passed, whether it was given by position or by name
     study_limiter = arguments.pop("study_limiter")
+    # A Study the orchestrator gave on the document (STUDY_PHASE on) replaces both the background study and the primer: its orientation is the
+    # criteria's background, and no study of this run's own is started.
+    given = study_of(doc)
+    if given is not None:
+        arguments["primer_context"] = orientation_text(given.orientation)
     # The study is owned here, never by the last step, so no thread of it outlives the job on any exit path (see app.leveling.study_runner).
     study_enabled = settings.survey_study_enabled
     handle: StudyHandle | None = None
     if (
-        study_enabled
+        given is None
+        and study_enabled
         and acceptance_criteria_client is not None
         and document_study_client is not None
     ):
@@ -1552,6 +1562,7 @@ def build_survey_tree(
             **arguments,
             study_handle=handle,
             study_enabled=study_enabled,
+            given_study=given,
             criteria_limiter=study_limiter,
         )
     except BaseException:
@@ -1585,6 +1596,7 @@ def _propose_criteria_step(
     user_id: str | None = None,
     study_handle: StudyHandle | None = None,
     study_enabled: bool = True,
+    given_study: Study | None = None,
     background: str | None = None,
     limiter: LeaseLimiter | None = None,
     model: str | None = None,
@@ -1594,7 +1606,9 @@ def _propose_criteria_step(
 
     With a `study_handle` (started by build_survey_tree) the study has been reading in the background since the job began: this joins it, or,
     when nothing is eligible, stops it and keeps the windows it had stored. Without one the proposals use the hierarchy alone, and when the study
-    was wanted (`study_enabled` and a `study_client`) one warning says it could not be started: the document is never read on the job's thread."""
+    was wanted (`study_enabled` and a `study_client`) one warning says it could not be started: the document is never read on the job's thread.
+    A `given_study` (the orchestrator's Study, CanonicalDoc.study) is read instead of any study of this run's own; its reading warnings are
+    the job's, as the background study's are."""
     if criteria_client is None or not eligible_nodes(nodes):
         skip_criteria_stage()
         if study_handle is not None:
@@ -1607,7 +1621,17 @@ def _propose_criteria_step(
         table = tables_by_id.get(table_id)
         return _table_to_markdown(table) if table is not None else None
 
-    if study_handle is not None:
+    if given_study is not None:
+        study = as_document_study(given_study)
+        for message in given_study.warnings:
+            warnings.append(
+                IntegrityWarning.make(
+                    WarningKind.DOCUMENT_STUDY_INCOMPLETE,
+                    message,
+                    detail={"pass": "document_study"},
+                )
+            )
+    elif study_handle is not None:
         outcome = study_handle.result(
             timeout=settings.survey_study_hard_budget_seconds + 60
         )  # JobCancelled is not swallowed

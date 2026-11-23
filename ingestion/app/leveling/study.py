@@ -33,8 +33,13 @@ from app.canonical.model import BlockKind, CanonicalDoc, Table
 from app.config import settings
 from app.job_cancel import JobCancelled
 from app.kb.profile import windows_of
-from app.leveling.document_study import STUDY_WINDOW_CHARS, STUDY_WINDOW_OVERLAP, _canonical
-from app.leveling.llm_leveling import _render_block_line, _table_to_markdown
+from app.leveling.document_study import (
+    STUDY_WINDOW_CHARS,
+    STUDY_WINDOW_OVERLAP,
+    DocumentStudy,
+    StudyReadStats,
+    _canonical,
+)
 from app.leveling.study_runner import StudyHandle
 from app.leveling.study_store import study_version
 from app.leveling.tree_builder import _order_key
@@ -184,6 +189,11 @@ def table_text(table: Table, rule: TableRule) -> str:
 def study_text(doc: CanonicalDoc, rules: dict[str, TableRule]) -> str:
     """The document as the Study reads it: blocks and tables in document order (as render_section orders them), with every table that
     states its items' types rendered by table_text instead of as a markdown grid."""
+    from app.leveling.llm_leveling import (  # here, not at the top: llm_leveling reads a given Study through this module
+        _render_block_line,
+        _table_to_markdown,
+    )
+
     entries: list[tuple[tuple[int, int], str]] = []
     for block in doc.blocks:
         line = _render_block_line(block)
@@ -518,3 +528,53 @@ def build_study(
     if key is not None and study.complete:
         cache.put(key, study)  # type: ignore[union-attr]
     return study
+
+
+# -- a Study given to /level (CanonicalDoc.study) ----------------------------------------------------------------------------------
+
+
+def study_of(doc: CanonicalDoc) -> Study | None:
+    """The Study the orchestrator put on the document, or None when there is none. One that is not a Study's JSON form is ignored with a
+    warning (the caller then takes today's path), never trusted in part."""
+    if doc.study is None:
+        return None
+    try:
+        return Study.model_validate(doc.study)
+    except ValueError:
+        logger.warning("The Study sent with the document is not valid; carrying on without it.")
+        return None
+
+
+def as_document_study(study: Study) -> DocumentStudy | None:
+    """The grounded facts in the shape the acceptance-criteria step reads (the background study's), or None when no window was read."""
+    s = study.stats
+    if s.windows_studied == 0 and not any(
+        (study.glossary, study.placeholder_tokens, study.verification_statements, study.standards_cited, study.table_roles)
+    ):
+        return None
+    return DocumentStudy(
+        glossary=[g.model_dump() for g in study.glossary],
+        placeholder_tokens=list(study.placeholder_tokens),
+        verification_statements=list(study.verification_statements),
+        standards_cited=list(study.standards_cited),
+        table_roles=[r.model_dump() for r in study.table_roles],
+        windows_studied=s.windows_studied,
+        windows_total=s.windows_total,
+        read_stats=StudyReadStats(
+            s.windows_retried, s.windows_split, s.windows_failed, s.breaker_opened, s.budget_stopped, s.windows_cached
+        ),
+    )
+
+
+_ORIENTATION_LABELS = {
+    "document_type": "Document type",
+    "purpose": "Purpose",
+    "system": "System",
+    "conventions": "Conventions",
+}
+
+
+def orientation_text(orientation: Orientation) -> str | None:
+    """The orientation as the background text the primer used to be (one labelled line per written field), or None when it is empty."""
+    lines = [f"{_ORIENTATION_LABELS[f]}: {getattr(orientation, f)}" for f in ORIENTATION_FIELDS if getattr(orientation, f)]
+    return "\n".join(lines) or None
