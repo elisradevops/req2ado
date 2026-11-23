@@ -167,6 +167,19 @@ def test_a_stated_table_is_read_one_row_per_line_including_the_rows_not_imported
     assert text.index("1 Scope") < text.index("[TABLE t0]")  # document order
 
 
+
+def test_every_window_of_a_long_table_holds_its_marker() -> None:
+    from app.kb.profile import windows_of
+    from app.leveling.document_study import STUDY_WINDOW_CHARS, STUDY_WINDOW_OVERLAP
+
+    rows = [["Type", "Title", "Description"], ["Epic", "Root", "The unit"], ["Feature", "Group", "A group"]]
+    rows += [["Requirement", f"Item {i}", f"The unit shall do thing number {i} within the stated time. " * 3] for i in range(800)]
+    table = Table(id="t9", caption="Long", cells=[[TableCell(text=c) for c in r] for r in rows], source_ref=_ref(0))
+    doc = CanonicalDoc(document=Document(path="x.xlsx", format=DocumentFormat.XLSX, sha256="h"), tables=[table])
+    windows = windows_of(study_text(doc, study_tables(doc)), STUDY_WINDOW_CHARS, STUDY_WINDOW_OVERLAP)
+    assert len(windows) > 3
+    assert all("[TABLE t9] Long columns: Type, Title, Description" in window for window in windows)
+
 def test_a_verification_statement_from_a_row_not_imported_is_kept() -> None:
     study = _build(_doc(), _FakeClient())
     assert TEST_CASE_LINE in study.verification_statements

@@ -58,6 +58,8 @@ _OUTLINE_CHARS = 4_000
 _OUTLINE_HEADING_LEVELS = 3
 VOCABULARY_VALUES = 50  # distinct values kept per column
 VOCABULARY_VALUE_CHARS = 200  # a longer value is free text, not vocabulary: it is left out
+# Half a window (STUDY_WINDOW_CHARS): any window that falls inside a long table holds at least one whole marker line.
+_TABLE_MARKER_EVERY = STUDY_WINDOW_CHARS // 2
 _TIMING_SAMPLES_MIN = 3  # fewer measured windows than this: the default seconds per window is used
 _RESULT_PREFIX = "studyresult"
 _TIMING_PREFIX = "studytiming"
@@ -146,20 +148,36 @@ def _row_line(rule: TableRule, row: list[str], type_name: str, title: str) -> st
 
 
 def table_text(table: Table, rule: TableRule) -> str:
-    """A table that states its items' types, one row per line (type · title · description) under its `[TABLE id]` marker, so the
-    window check of table roles still holds. The rows that are not imported (RowPlan.skipped, e.g. Test Cases) are rendered the same way,
-    after the imported ones, with the type the file wrote: verification statements in them are then grounded in the text that is read."""
+    """A table that states its items' types, one row per line (type · title · description) under its `[TABLE id]` marker line (with the
+    table's caption and columns). The marker line is repeated every _TABLE_MARKER_EVERY characters, so every window that falls inside a long
+    table still holds the marker its table roles are checked against; it also closes the table. The rows that are not imported (RowPlan.skipped, e.g. Test Cases)
+    are rendered the same way, after the imported ones, with the type the file wrote: verification statements in them are then grounded in
+    the text that is read."""
     grid = _grid(table)
-    lines = [f"[TABLE {table.id}]"]
+    columns = ", ".join(label.strip() for label in rule.labels if label.strip())
+    marker = " ".join(part for part in (f"[TABLE {table.id}]", table.caption or "", f"columns: {columns}" if columns else "") if part)
+    lines = [marker]
+    since_marker = 0
+
+    def add(line: str) -> None:
+        nonlocal since_marker
+        if since_marker >= _TABLE_MARKER_EVERY:
+            lines.append(marker)
+            since_marker = 0
+        lines.append(line)
+        since_marker += len(line) + 1
+
     for plan in rule.kept:
-        lines.append(_row_line(rule, grid[plan.row], plan.type or "", plan.title))
+        add(_row_line(rule, grid[plan.row], plan.type or "", plan.title))
     skipped = [plan for plan in rule.rows if plan.skipped]
     if skipped:
-        lines.append("Rows not imported:")
+        add("Rows not imported:")
         for plan in skipped:
             row = grid[plan.row]
             title = plan.title or next((c for c in row if c.strip()), "")
-            lines.append(_row_line(rule, row, plan.raw_type, title))
+            add(_row_line(rule, row, plan.raw_type, title))
+    if len(lines) > 1:
+        lines.append(marker)  # closing it too: the last, shorter window of a document can end inside the table
     return "\n".join(lines)
 
 
@@ -273,6 +291,7 @@ def study_result_version() -> str:
         _STUDY_CODE_VERSION,
         _ORIENTATION_FIELD_CHARS,
         _OUTLINE_CHARS,
+        _TABLE_MARKER_EVERY,
         VOCABULARY_VALUES,
         VOCABULARY_VALUE_CHARS,
         *(_source_of(fn) for fn in (table_text, study_text, table_vocabulary, _vocabulary_columns, outline_of, checked_orientation)),
