@@ -1147,6 +1147,29 @@ export class JobsController {
     return { stored: true };
   }
 
+  // Internal read-back of a stored figure, for ingestion's /captions: a job whose captions are written after its Study (STUDY_PHASE on)
+  // describes each figure from the copy /ingest stored here, so the file is never parsed twice. Same bearer-guarded, no-session
+  // convention as the upload route above; streams the raw bytes like the browser route below. 404 when the job or the figure is unknown.
+  @Get(':id/figures/:figureId/bytes')
+  @Public()
+  @UseGuards(LlmProxyBearerGuard)
+  async readFigureFileInternal(
+    @Param('id') id: string,
+    @Param('figureId') figureId: string,
+    @Res() res: Response,
+  ): Promise<void> {
+    const job = await this.jobsService.getById(id);
+    if (!job) {
+      throw new NotFoundException(`Job ${id} not found`);
+    }
+    const figureFile = await this.jobsService.getFigureFile(id, figureId);
+    if (!figureFile) {
+      throw new NotFoundException(`Figure ${figureId} not found for job ${id}`);
+    }
+    res.set('Content-Type', figureFile.mimeType);
+    res.send(figureFile.bytes);
+  }
+
   // Browser-facing counterpart to the internal upload route above -- lets
   // the review UI actually render a figure's image (FigureDescriptions,
   // NodeDetailPanel), not just the vision-model's text caption. Session-
