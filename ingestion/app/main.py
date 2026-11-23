@@ -77,6 +77,13 @@ from app.leveling.model_caps import _resolve_caps
 from app.leveling.narration_publisher import LevelingProgress, NarrationPublisher, last_known_phase
 from app.leveling.rule_builder import verify_tree_against_rules
 from app.leveling.scoring import score_single_requirement_text, score_texts_together
+from app.leveling.study import (
+    Study,
+    StudyResultCache,
+    StudyTimings,
+    build_study,
+    study_result_version,
+)
 from app.leveling.study_store import StudyStore
 from app.leveling.tree_builder import build_baseline_tree, figure_id_by_block_id
 from app.loaders.docx_pagination import annotate_docx_pages
@@ -413,6 +420,9 @@ _study_limiter = LeaseLimiter(
     settings.survey_study_user_slots,
     settings.survey_study_lease_seconds,
 )
+# The Study's whole results (per user and document) and the model's measured seconds per window (its time budget); same client, fail-open.
+_study_result_cache = StudyResultCache(_study_redis, settings.survey_study_cache_ttl_seconds)
+_study_timings = StudyTimings(_study_redis, settings.study_timing_samples, settings.survey_study_cache_ttl_seconds)
 
 
 def _sniff_image_mime_type(image_bytes: bytes) -> str | None:
@@ -2419,6 +2429,57 @@ async def prestudy_route(
                 status_code=499, detail="the caller disconnected; the study was cancelled"
             )
     return _prestudy_response(doc, rulebook, "none" if rulebook.is_empty() else "model", warnings)
+
+
+class StudyRequest(BaseModel):
+    doc: CanonicalDoc  # its rulebook, when the file was pre-studied, decides which tables state their items' types
+    model: str | None = None
+
+
+@app.get("/study/version")
+async def study_version_route() -> dict:
+    """How a Study is made right now (window reading, orientation prompt, code pass): a Study cached under another version is not reused."""
+    return {"version": study_result_version()}
+
+
+@app.post("/study", response_model=Study)
+async def study_route(
+    request: Request,
+    body: StudyRequest,
+    x_user_id: str | None = Header(default=None, alias=USER_ID_HEADER),
+) -> Study:
+    """One reading of the document (app.leveling.study): the grounded facts, a short orientation and each stated table's vocabulary. Never
+    fails for a model that fails: the stats and warnings say what was read. Changes nothing else: no job, no tree, no other step reads it yet."""
+    user_id = resolve_user_id(x_user_id)
+    doc = body.doc
+    rulebook = _rulebook_of(doc)
+    client = await _survey_client(body.model, user_id)
+    # The caller going away cancels the reading: no further window is asked, and a run that was cancelled stores nothing.
+    with job_cancel.cancellation_scope() as cancel_token:
+        async with job_cancel.watch_for_disconnect(request, cancel_token):
+            try:
+                study = await run_in_threadpool(
+                    lambda: build_study(
+                        doc,
+                        client,
+                        user_id,
+                        body.model,
+                        rulebook=rulebook,
+                        store=_study_store,
+                        limiter=_study_limiter,
+                        timings=_study_timings,
+                        cache=_study_result_cache,
+                    )
+                )
+            except job_cancel.JobCancelled:
+                raise HTTPException(
+                    status_code=499, detail="the caller disconnected; the study was cancelled"
+                ) from None
+        if cancel_token.cancelled:
+            raise HTTPException(
+                status_code=499, detail="the caller disconnected; the study was cancelled"
+            )
+    return study
 
 
 @app.post("/level", response_model=WorkItemTree)

@@ -696,3 +696,17 @@ def obligation_forms_schema() -> dict:
             "additionalProperties": False,
         },
     }
+
+
+def document_orientation_schema() -> dict:
+    """orient_document: what kind of document it is, its purpose, the system it specifies and its conventions, in a sentence each."""
+    text = {"type": "string"}
+    return {
+        "name": "document_orientation",
+        "schema": {
+            "type": "object",
+            "properties": {"document_type": text, "purpose": text, "system": text, "conventions": text},
+            "required": ["document_type", "purpose", "system", "conventions"],
+            "additionalProperties": False,
+        },
+    }

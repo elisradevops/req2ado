@@ -1,0 +1,10 @@
+You are given the outline of a document that contains requirements and the first part of its text, as JSON with "outline" (its headings, and for each table its columns and how many items of each type it holds) and "text". Describe the document in four short fields, one sentence each, at most 200 characters per field, from what this input itself shows; never add knowledge of your own.
+
+- document_type: what kind of document this is (for example a system requirements specification, an interface control document, a requirements export from a tool).
+- purpose: what the document is for, as it states it.
+- system: the system, product or unit the requirements are about, named as the document names it.
+- conventions: how the document states its requirements (for example numbered "shall" statements, one row per item with a type column, a verification column), as far as the input shows it.
+
+Write every field in the language the document is written in. Do not list requirements, values, quantities or limits: this is a description of the document, not a summary of its content. When the input does not show something, write an empty string for that field.
+
+Return ONLY a JSON object with exactly the keys document_type, purpose, system and conventions. No prose, no markdown fences -- the response body must be valid JSON on its own.

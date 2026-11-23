@@ -227,6 +227,11 @@ class Settings(BaseSettings):
     # study lowers it by one on each 429 it sees), and how many windows ahead of the one being merged may be submitted.
     survey_study_concurrency: int = Field(default=4, ge=1, le=8)
     survey_study_lookahead: int = Field(default=8, ge=1)
+    # The Study (app.leveling.study): its time budget is the windows x the model's median seconds per window (the last
+    # study_timing_samples window calls measured, per model) / survey_study_concurrency, at most survey_study_hard_budget_seconds. Until
+    # enough windows are measured, study_default_seconds_per_window is used.
+    study_default_seconds_per_window: float = Field(default=60.0, gt=0)
+    study_timing_samples: int = Field(default=20, ge=1)
     # The acceptance-criteria proposals (app.leveling.acceptance_criteria): how many chunks of requirements are asked at once (2 when no shared
     # limiter is available), the whole step's time budget (chunks not started by then are reported, not asked) and how long one model attempt
     # waits for a limiter slot. Each attempt holds one slot of the limiter above.

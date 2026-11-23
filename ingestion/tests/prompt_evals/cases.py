@@ -603,6 +603,45 @@ def _groups(*groups: list[str]) -> str:
     )
 
 
+# --- orient_document --------------------------------------------------------------------------------------------------------------
+
+_ORIENT_OUTLINE = "# 1 כללי\n# 2 דרישות ספק הכוח\n# 3 אימות"
+_ORIENT_WINDOW = (
+    "1 כללי\nמסמך זה מפרט את הדרישות לספק הכוח של מערכת המכ\"ם.\n"
+    "2 דרישות ספק הכוח\n2.1 ספק הכוח יקבל מתח כניסה של 28 וולט.\n2.2 ספק הכוח יסיים אתחול תוך 2 שניות.\n"
+)
+_ORIENT_FIELDS = ("document_type", "purpose", "system", "conventions")
+
+
+def _check_orientation(result: object) -> Checks:
+    fields = [result.get(f) for f in _ORIENT_FIELDS] if isinstance(result, dict) else []
+    texts = [f for f in fields if isinstance(f, str) and f.strip()]
+    return {
+        "fields": (len(fields) == 4 and all(isinstance(f, str) and len(f) <= 250 for f in fields), "missing or long field"),
+        "filled": (len(texts) >= 3, "fewer than three fields written"),
+        "hebrew": p.all_hebrew(texts),
+        "no_values": p.no_invented_values(texts, [_ORIENT_OUTLINE, _ORIENT_WINDOW]),
+    }
+
+
+_ORIENT_GOOD = _j(
+    {
+        "document_type": "מפרט דרישות מערכת",
+        "purpose": "מפרט את הדרישות לספק הכוח",
+        "system": "ספק הכוח של מערכת המכ\"ם",
+        "conventions": "דרישות ממוספרות בפורמט ספק הכוח יקבל או יסיים",
+    }
+)
+_ORIENT_BAD = _j(
+    {
+        "document_type": "System requirements specification",
+        "purpose": "Power supply requirements, 115 V input",
+        "system": "Radar power supply",
+        "conventions": "Numbered shall statements",
+    }
+)
+
+
 CASES: list[Case] = [
     Case(
         "author_content",
@@ -660,6 +699,15 @@ CASES: list[Case] = [
     ),
     *[_pair_case(label) for label in labels.PAIR_LABELS],
     *[_parameter_pair_case(label) for label in labels.PARAMETER_PAIR_LABELS],
+    Case(
+        "orient_document",
+        "hebrew_document",
+        lambda c: c.orient_document(_ORIENT_OUTLINE, _ORIENT_WINDOW),
+        _check_orientation,
+        [_ORIENT_GOOD],
+        [_ORIENT_BAD],
+        frozenset({"hebrew"}),
+    ),
     Case(
         "infer_trace_links",
         "external_and_unfounded",
