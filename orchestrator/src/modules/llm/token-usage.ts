@@ -2,7 +2,7 @@ import type { PrismaClient } from '@prisma/client';
 import type { LlmUsage } from './llm-client.interface';
 
 /** The OpenAI-compatible `usage` object as a proxy sends it; every field is optional because proxies differ. */
-interface RawUsage {
+export interface RawUsage {
   prompt_tokens?: unknown;
   completion_tokens?: unknown;
   prompt_tokens_details?: { cached_tokens?: unknown } | null;

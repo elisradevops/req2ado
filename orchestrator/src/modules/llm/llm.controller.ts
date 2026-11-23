@@ -122,6 +122,9 @@ export class LlmController {
     @Body() rawBody: unknown,
     @Res() res: Response,
     @Headers('x-req2ado-user-id') userId: string | undefined,
+    // As chat(): which job and stage the call is for, so a streamed call reaches the token ledger too.
+    @Headers('x-req2ado-job-id') jobId?: string,
+    @Headers('x-req2ado-stage') stage?: string,
   ): Promise<void> {
     const parseResult = llmChatRequestSchema.safeParse(rawBody);
     if (!parseResult.success) {
@@ -142,9 +145,15 @@ export class LlmController {
     // OpenAI SDK abort-signal plumbing (out of scope here), since it can't
     // instantly abort a stream mid-network-call.
     let clientDisconnected = false;
+    // A caller that goes away also aborts the upstream request (as chat() does), so the model stops generating at once instead of
+    // after the next chunk arrives.
+    const upstream = new AbortController();
     res.on('close', () => {
       clientDisconnected = true;
+      if (!res.writableEnded) upstream.abort();
     });
+    let wrote = false;
+    let usage: LlmUsage | undefined;
     let finishReason: string | undefined;
     let routing: LlmRouting | undefined;
     let completed = false;
@@ -163,16 +172,21 @@ export class LlmController {
         ...(body.topK !== undefined ? { topK: body.topK } : {}),
         ...(body.minP !== undefined ? { minP: body.minP } : {}),
         ...(body.think !== undefined ? { think: body.think } : {}),
+        ...(body.budgetKind !== undefined ? { budgetKind: body.budgetKind } : {}),
+        ...(body.deadlineMs !== undefined ? { deadlineAtMs: Date.now() + body.deadlineMs } : {}),
+        signal: upstream.signal,
       })) {
-        if (chunk.finishReason || chunk.routing) {
+        if (chunk.finishReason || chunk.routing || chunk.usage) {
           finishReason = chunk.finishReason ?? finishReason;
           routing = chunk.routing ?? routing;
+          usage = chunk.usage ?? usage;
           if (!chunk.content && !chunk.reasoning) continue;
         }
         // `delta` stays the wire name for final-answer content (backward
         // compatible with every existing consumer); `reasoningDelta` is new,
         // additive, and only present on a reasoning-model chunk.
         res.write(`${JSON.stringify({ ...(chunk.content ? { delta: chunk.content } : {}), ...(chunk.reasoning ? { reasoningDelta: chunk.reasoning } : {}) })}\n`);
+        wrote = true;
         if (clientDisconnected) break;
       }
       completed = !clientDisconnected;
@@ -181,6 +195,27 @@ export class LlmController {
       if (completed && body.includeDone) {
         res.write(`${JSON.stringify({ done: true, ...(finishReason ? { finishReason } : {}), ...(body.model !== undefined ? { model: body.model } : {}), ...(routing ? { routing } : {}) })}\n`);
       }
+      if (completed && jobId && this.tokenUsage) {
+        // Same ledger entry chat() records; under a router, the tokens go to the model the stream named.
+        await this.tokenUsage.record({ jobId, stage: stage?.trim() || 'other', model: routing?.model ?? body.model ?? llmClient.chatModel, ...(usage ? { usage } : {}) });
+      }
+    } catch (err) {
+      // Before any output the status line is still free: an upstream HTTP error keeps its status (a content filter 422, a budget
+      // 402, a rate limit 429 with its Retry-After), as chat() answers it. After output it can only end the stream without its
+      // terminal line, which is how the caller knows the answer is incomplete.
+      if (!wrote && err instanceof UpstreamHttpError) {
+        res.status(err.upstreamStatus);
+        res.write(JSON.stringify({ message: err.message }));
+        return;
+      }
+      if (!wrote && err instanceof OpenAI.APIError && typeof err.status === 'number' && err.status >= 400 && err.status <= 599) {
+        const retryAfter = err.headers?.['retry-after'];
+        if (err.status === 429 && retryAfter) res.setHeader('Retry-After', String(retryAfter));
+        res.status(err.status);
+        res.write(JSON.stringify({ message: err.message }));
+        return;
+      }
+      throw err;
     } finally {
       res.end();
     }

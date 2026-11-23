@@ -3,6 +3,7 @@ import { BadRequestException, HttpException, NotFoundException, UnauthorizedExce
 import OpenAI from 'openai';
 import { LlmController } from '../src/modules/llm/llm.controller';
 import { ModelInfoUnavailableError } from '../src/modules/llm/openwebui.client';
+import { UpstreamHttpError } from '../src/modules/llm/upstream-negotiation';
 
 const USER_ID = 'user-1';
 
@@ -228,7 +229,7 @@ describe('LlmController', () => {
 
     await controller.chatStream({ messages: [{ role: 'user', content: 'hi' }], seed: 42 }, res as any, USER_ID);
 
-    expect(streamChat).toHaveBeenCalledWith([{ role: 'user', content: 'hi' }], { seed: 42 });
+    expect(streamChat).toHaveBeenCalledWith([{ role: 'user', content: 'hi' }], { seed: 42, signal: expect.any(AbortSignal) });
   });
 
   it('threads numCtx/topK/minP/think from the request body into llmClient.streamChat (previously silently discarded)', async () => {
@@ -250,6 +251,7 @@ describe('LlmController', () => {
       topK: 50,
       minP: 0.05,
       think: false,
+      signal: expect.any(AbortSignal),
     });
   });
 
@@ -320,6 +322,71 @@ describe('LlmController', () => {
       `${JSON.stringify({ delta: 'c' })}\n`,
     ]);
     expect(res.end).toHaveBeenCalled();
+  });
+
+  describe('chat/stream parity with chat', () => {
+    const streamBody = { messages: [{ role: 'user' as const, content: 'hi' }] };
+    const streamRes = () => {
+      const handlers: Record<string, () => void> = {};
+      return {
+        res: {
+          setHeader: jest.fn(),
+          write: jest.fn(),
+          end: jest.fn(),
+          status: jest.fn(),
+          writableEnded: false,
+          headersSent: false,
+          on: (event: string, handler: () => void) => {
+            handlers[event] = handler;
+          },
+        } as any,
+        fire: (event: string) => handlers[event]?.(),
+      };
+    };
+
+    it('forwards the budget kind, the deadline and an abort signal to streamChat, as chat does', async () => {
+      async function* none() {}
+      const streamChat = jest.fn().mockReturnValue(none());
+      const { controller } = makeController({ streamChat });
+      await controller.chatStream({ ...streamBody, budgetKind: 'study', deadlineMs: 5000 }, streamRes().res, USER_ID);
+      const opts = streamChat.mock.calls[0][1];
+      expect(opts.budgetKind).toBe('study');
+      expect(typeof opts.deadlineAtMs).toBe('number');
+      expect(opts.signal).toBeInstanceOf(AbortSignal);
+    });
+
+    it('aborts the upstream stream when the caller closes the connection, so the model stops generating', async () => {
+      let signal: AbortSignal | undefined;
+      const streamChat = jest.fn().mockImplementation((_m: unknown, opts: { signal?: AbortSignal }) => {
+        signal = opts.signal;
+        return (async function* () {
+          yield { content: 'a' };
+          await new Promise((resolve) => opts.signal?.addEventListener('abort', resolve));
+        })();
+      });
+      const { controller } = makeController({ streamChat });
+      const { res, fire } = streamRes();
+      const call = controller.chatStream(streamBody, res, USER_ID);
+      await new Promise((resolve) => setImmediate(resolve));
+      fire('close');
+      await call;
+      expect(signal?.aborted).toBe(true);
+      expect(res.end).toHaveBeenCalled();
+    });
+
+    it('answers an upstream error raised before any output with its own status, not a 200 stream', async () => {
+      const streamChat = jest.fn().mockImplementation(() =>
+        (async function* () {
+          throw new UpstreamHttpError(422, 'content filtered');
+        })(),
+      );
+      const { controller } = makeController({ streamChat });
+      const { res } = streamRes();
+      await controller.chatStream(streamBody, res, USER_ID);
+      expect(res.status).toHaveBeenCalledWith(422);
+      expect(res.write).not.toHaveBeenCalledWith(expect.stringContaining('delta'));
+      expect(res.end).toHaveBeenCalled();
+    });
   });
 
   describe('chat disconnect', () => {

@@ -1,8 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import OpenAI from 'openai';
 import { getEncoding, type Tiktoken } from 'js-tiktoken';
-import type { LlmChatOptions, LlmChatResult, LlmClient, LlmResponseSchema, LlmRouting, LlmStreamChunk } from './llm-client.interface';
-import { usageOf } from './token-usage';
+import type { LlmChatOptions, LlmChatResult, LlmClient, LlmResponseSchema, LlmRouting, LlmStreamChunk, LlmUsage } from './llm-client.interface';
+import { usageOf, type RawUsage } from './token-usage';
 import { redactMessages, redactText, type ChatMessage } from './redactor';
 import { isModelHidden, parseModelHidePatterns } from './model-visibility';
 import { chatCompletionResponseSchema, errorMessageFromBody, modelsResponseSchema } from './openwebui-api';
@@ -67,6 +67,9 @@ const CHAT_DROPPABLE: ReadonlySet<string> = new Set([
   'presence_penalty',
   'frequency_penalty',
 ]);
+// A stream also asks for its token usage (so a streamed call reaches the job's token ledger); an upstream that rejects that is
+// streamed without it.
+const STREAM_DROPPABLE: ReadonlySet<string> = new Set([...CHAT_DROPPABLE, 'stream_options']);
 const FILE_CONTEXT_DROPPABLE: ReadonlySet<string> = new Set(['temperature', 'seed', 'options', 'reasoning_effort']);
 const VISION_DROPPABLE: ReadonlySet<string> = new Set(['temperature', 'frequency_penalty']);
 
@@ -536,6 +539,7 @@ export class OpenWebUiClient implements LlmClient {
       model: chatModel,
       messages: outboundMessages as OpenAI.Chat.ChatCompletionMessageParam[],
       stream: true as const,
+      ...(!a.dropped.has('stream_options') ? { stream_options: { include_usage: true } } : {}),
       ...(chatTemperature(opts?.temperature, a) !== undefined ? { temperature: chatTemperature(opts?.temperature, a) } : {}),
       // seed: gated on LLM_SEND_SEED -- see chat()'s own seed comment; left out once an upstream rejected it.
       ...(this.config.LLM_SEND_SEED && !a.dropped.has('seed') && opts?.seed !== undefined ? { seed: opts.seed } : {}),
@@ -553,11 +557,16 @@ export class OpenWebUiClient implements LlmClient {
       model: chatModel,
       hasSchema: opts?.responseSchema !== undefined,
       requestChars: messageChars(outboundMessages),
-      droppable: CHAT_DROPPABLE,
+      droppable: STREAM_DROPPABLE,
       learned: this.learnedFor(chatModel),
       remember: (update: LearnedUpdate, routedModel?: string) => this.rememberConstraint(routedModel ?? chatModel, update),
-      send: async (adaptation) => {
-        const created = await withRouting(this.openai.chat.completions.create(buildParams(adaptation)));
+      // As chat(): a caller that goes away (or a deadline that passes) stops the upstream request instead of leaving it generating.
+      ...(opts?.deadlineAtMs !== undefined ? { deadlineAtMs: opts.deadlineAtMs } : {}),
+      ...(opts?.signal ? { signal: opts.signal } : {}),
+      send: async (adaptation, signal) => {
+        const created = await withRouting(
+          signal ? this.openai.chat.completions.create(buildParams(adaptation), { signal }) : this.openai.chat.completions.create(buildParams(adaptation)),
+        );
         if (!created.data) throw new UpstreamHttpError(502, 'Upstream returned an empty stream');
         return created;
       },
@@ -568,7 +577,10 @@ export class OpenWebUiClient implements LlmClient {
     // non-stream response's `message.reasoning`, confirmed live above) --
     // not part of the OpenAI SDK's own delta type, hence the inline shape.
     let finishReason: string | undefined;
-    for await (const chunk of stream as AsyncIterable<{ choices: { delta?: { content?: string; reasoning?: string }; finish_reason?: string | null }[] }>) {
+    let usage: LlmUsage | undefined;
+    for await (const chunk of stream as AsyncIterable<{ choices: { delta?: { content?: string; reasoning?: string }; finish_reason?: string | null }[]; usage?: RawUsage | null }>) {
+      // The usage arrives on a final chunk of its own, with no choices (stream_options.include_usage).
+      if (chunk.usage) usage = usageOf(chunk.usage) ?? usage;
       const reason = chunk.choices[0]?.finish_reason;
       if (reason) finishReason = reason;
       const delta = chunk.choices[0]?.delta;
@@ -577,7 +589,7 @@ export class OpenWebUiClient implements LlmClient {
         yield { ...(delta.content ? { content: delta.content } : {}), ...(delta.reasoning ? { reasoning: delta.reasoning } : {}) };
       }
     }
-    if (finishReason || routing) yield { ...(finishReason ? { finishReason } : {}), ...(routing ? { routing } : {}) };
+    if (finishReason || routing || usage) yield { ...(finishReason ? { finishReason } : {}), ...(routing ? { routing } : {}), ...(usage ? { usage } : {}) };
   }
 
   async embed(texts: string[], opts?: { model?: string }): Promise<number[][]> {
