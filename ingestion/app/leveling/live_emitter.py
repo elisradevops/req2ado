@@ -36,6 +36,11 @@ _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 _COALESCED_KINDS = {"working_on", "writing", "ocr_page"}
 
 
+# The lane of model_progress frames: one of its own, so the latest frame kept per lane (replayed to a page opened mid-run) never
+# replaces an item lane's "working on" frame. Never handed out by acquire_lane, which counts up from 0.
+PROGRESS_LANE = -1
+
+
 def live_channel(job_id: str) -> str:
     return f"job-events:{job_id}:live"
 
@@ -136,6 +141,20 @@ class LiveEmitter:
                 "itemType": item_type,
                 "excerpt": excerpt,
                 "cursor": cursor,
+            }
+        )
+
+    def model_progress(self, *, prompt: str, stage: str, elapsed_s: float, tokens: int | None) -> None:
+        """How far one open model call has got: so a long call (a scoring batch can take minutes) never looks stuck. `tokens` is
+        about how many the model has written so far (None when the call does not stream)."""
+        self._submit(
+            {
+                "kind": "model_progress",
+                "lane": PROGRESS_LANE,
+                "prompt": prompt,
+                "stage": stage,
+                "elapsedS": round(elapsed_s, 1),
+                "tokens": tokens,
             }
         )
 
@@ -300,6 +319,13 @@ class LiveEmitter:
             frame["cursor"] = max(0.0, min(1.0, float(cursor)))
         if "partial" in fields:
             frame["partial"] = bool(fields["partial"])
+        if fields["kind"] == "model_progress":
+            # The prompt's identity and the ledger stage are code-made names, never document text.
+            frame["prompt"] = clip_text(str(fields.get("prompt") or ""), TITLE_MAX_CHARS) or ""
+            frame["stage"] = clip_text(str(fields.get("stage") or ""), TITLE_MAX_CHARS) or ""
+            frame["elapsedS"] = max(0.0, float(fields.get("elapsedS") or 0.0))
+            tokens = fields.get("tokens")
+            frame["tokens"] = max(0, int(tokens)) if tokens is not None else None
         compare = fields.get("compare")
         if compare is not None:
             frame["compare"] = {

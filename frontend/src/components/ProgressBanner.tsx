@@ -153,6 +153,8 @@ const PHASE_START_WEIGHT: Record<NarrationEvent['phase'], number> = {
 
 /** No update for this long and the run is called out as waiting: calm and neutral, never a warning, because one large request can take many minutes. */
 const WAITING_AFTER_SECONDS = 60;
+// A model_progress report older than this is stale (the server sends one every ~15 s while a call is open): the line is dropped.
+const MODEL_PROGRESS_FRESH_MS = 45_000;
 /**
  * No new event for this long and the card says "Still working on <stage>" (QA P2): a Score batch sat at 40% for ~35 s with
  * only a ticking "updated 39s ago" and looked frozen. Shorter than the one-minute wait above, which takes over from it.
@@ -361,6 +363,7 @@ export function ProgressBanner({
   // before.
   const countedProgress = useLiveRunStore((s) => s.progress);
   const liveActive = useLiveRunStore((s) => s.active);
+  const modelProgress = useLiveRunStore((s) => s.modelProgress);
   const shownProgress = countedProgress ? countedProgress.pct : clampedProgress;
   // Single shared clock tick -- both the ETA calc below and the "last
   // update Ns ago" counter derive from this one useNow() call instead of
@@ -450,6 +453,9 @@ export function ProgressBanner({
   const modelCallStartedAt = useWindowStartedAt(modelCallKey, tickingNow, modelCallStorageKey);
   const modelCallElapsedMs = structurePassSilent ? secondsSinceUpdate * 1000 : modelCallKey ? tickingNow - modelCallStartedAt : undefined;
   const modelCallTarget = structurePassSilent ? 'deciding the structure of the document' : latest ? describeModelCallTarget(latest) : null;
+  // The server's own report on the open model call (sent every ~15 s): shown while it is fresh, so a long call never looks stuck.
+  const modelProgressShown = modelProgress !== null && tickingNow - modelProgress.receivedAt <= MODEL_PROGRESS_FRESH_MS;
+  const modelProgressMs = modelProgress ? modelProgress.elapsedS * 1000 + Math.max(0, tickingNow - modelProgress.receivedAt) : 0;
   // "Time left in THIS step", from progress observed during the step only (see utils/stepEta.ts).
   // It used to be (time since the job started) / (units done) * (units remaining), recomputed every
   // second: the clock included upload, parsing and every earlier step, and because units only move
@@ -780,6 +786,13 @@ export function ProgressBanner({
           <p className='mt-2.5 rounded-md border border-hairline-strong bg-surface-alt p-3 text-xs text-ink-2' data-testid='model-call-clock'>
             Waiting on the model, {modelCallTarget} — {formatDuration(modelCallElapsedMs)} so far. Each of these steps is a single
             model call, so the bar moves when the call returns.
+          </p>
+        )}
+
+        {modelProgressShown && modelProgress && (
+          <p className='mt-2.5 rounded-md border border-hairline-strong bg-surface-alt p-3 text-xs text-ink-2' data-testid='model-progress'>
+            Waiting on the model{modelCallTarget ? `, ${modelCallTarget}` : ''} — {formatDuration(modelProgressMs)} so far
+            {modelProgress.tokens !== null ? `, about ${modelProgress.tokens.toLocaleString('en-US')} tokens written` : ''}.
           </p>
         )}
 

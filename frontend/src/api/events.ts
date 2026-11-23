@@ -388,7 +388,8 @@ export function isValidLiveFrame(payload: unknown): payload is LiveFrame {
     isOptionalString(p.ref) &&
     isOptionalString(p.title) &&
     isOptionalString(p.excerpt) &&
-    (p.kind !== 'compare' || isValidCompare(p.compare))
+    (p.kind !== 'compare' || isValidCompare(p.compare)) &&
+    (p.kind !== 'model_progress' || (isFiniteNumber(p.elapsedS) && (p.tokens === null || p.tokens === undefined || isFiniteNumber(p.tokens))))
   );
 }
 

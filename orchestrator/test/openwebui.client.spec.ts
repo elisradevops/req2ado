@@ -326,6 +326,41 @@ describe('OpenWebUiClient', () => {
     expect(fakeCreate.mock.calls[1][0]).not.toHaveProperty('seed');
   });
 
+  it('streamChat() asks for usage and yields it on its last chunk, so a streamed call reaches the token ledger', async () => {
+    const client = new OpenWebUiClient({ ...config });
+    async function* fakeStream() {
+      yield { choices: [{ delta: { content: '{}' } }] };
+      yield { choices: [{ delta: {}, finish_reason: 'stop' }] };
+      yield { choices: [], usage: { prompt_tokens: 12, completion_tokens: 3 } };
+    }
+    const fakeCreate = jest.fn().mockResolvedValue(fakeStream());
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    const chunks: unknown[] = [];
+    for await (const chunk of client.streamChat([{ role: 'user', content: 'hi' }])) chunks.push(chunk);
+
+    expect(fakeCreate.mock.calls[0][0]).toHaveProperty('stream_options', { include_usage: true });
+    expect(chunks[chunks.length - 1]).toEqual(expect.objectContaining({ finishReason: 'stop', usage: { promptTokens: 12, completionTokens: 3 } }));
+  });
+
+  it('streamChat() leaves stream_options out once an upstream rejects it, and still streams', async () => {
+    const client = new OpenWebUiClient({ ...config });
+    const rejection = new OpenAI.APIError(400, { message: "does not support parameters: ['stream_options']" }, "does not support parameters: ['stream_options']", {} as any);
+    async function* fakeStream() {
+      yield { choices: [{ delta: { content: 'ok' } }] };
+    }
+    const fakeCreate = jest.fn().mockRejectedValueOnce(rejection).mockResolvedValueOnce(fakeStream());
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    const texts: string[] = [];
+    for await (const chunk of client.streamChat([{ role: 'user', content: 'hi' }])) if (chunk.content) texts.push(chunk.content);
+
+    expect(texts).toEqual(['ok']);
+    expect(fakeCreate.mock.calls[1][0]).not.toHaveProperty('stream_options');
+  });
+
   describe('responseSchema present -- precise classifiers must win over the catch-all schema-less fallback', () => {
     // Exact production error (Elbichat/claude-opus-4-8 via LiteLLM). Regression
     // for the SURVEY Score-phase stall: isSchemaRejection matches ANY 400, so

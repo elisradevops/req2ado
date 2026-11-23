@@ -169,6 +169,8 @@ export interface LlmStreamChunk {
   finishReason?: string;
   // Only on the last chunk, and only when the stream's headers named the model a router sent it to.
   routing?: LlmRouting;
+  // Only on the last chunk, and only when the upstream reported the stream's token usage (asked for with stream_options.include_usage).
+  usage?: LlmUsage;
 }
 
 export interface LlmClient {
