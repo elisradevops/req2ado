@@ -188,7 +188,8 @@ def test_positional_arguments_still_work_on_the_public_wrapper() -> None:
     assert names.index("study_store") < chunk_at and names[chunk_at + 1 :] == [
         "study_limiter",
         "rulebook",
-    ]  # no existing position moved; the pre-study's rulebook is appended
+        "hierarchy_client",
+    ]  # no existing position moved; the pre-study's rulebook, then the hierarchy check's client, are appended
 
     tree = build_survey_tree(*positional)
 

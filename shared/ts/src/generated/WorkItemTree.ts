@@ -215,7 +215,8 @@ export interface IntegrityWarning {
     | 'rulebook_mismatch'
     | 'prestudy_applied'
     | 'prestudy_rejected'
-    | 'kb_context_blocked';
+    | 'kb_context_blocked'
+    | 'columns_not_imported';
   /**
    * auto_fixed: deterministic code already resolved it, no action needed. needs_review: an AI/heuristic judgment call a human should verify. pipeline_issue: something broke or was incomplete for this run.
    */

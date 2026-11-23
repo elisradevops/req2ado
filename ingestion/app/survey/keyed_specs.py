@@ -147,3 +147,16 @@ PARAMETER_PAIR_SPEC = KeyedSpec(
     },
     id_noun="pair id",
 )
+
+# The hierarchy check (app.leveling.hierarchy_check): per item the ladder does not allow, one of the fixes code offered for it. The option ids
+# differ per item, so the schema cannot enumerate them; the client accepts only an id offered for that item.
+HIERARCHY_FIX_SPEC = KeyedSpec(
+    name="hierarchy_fix",
+    schema_name="hierarchy_fixes_by_item",
+    fields={"option": {"type": "string"}, "reason": {"type": "string"}},
+    field_prompts={
+        "option": "'option' (exactly one of the option ids listed for that item)",
+        "reason": "'reason' (one short sentence)",
+    },
+    id_noun="item id",
+)

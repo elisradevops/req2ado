@@ -553,6 +553,8 @@ class WarningKind(StrEnum):
     # (app.survey.content_filter). `detail["pass"]` names the pass ("scoring", "authoring", "trace_links"), `node_ids` the items it
     # handled without the KB text. Nothing is missing; those items were not grounded on the organization's KB.
     KB_CONTEXT_BLOCKED = "kb_context_blocked"
+    # A stated table's columns that carry values but are read into no field of the work items (app.leveling.rule_builder).
+    COLUMNS_NOT_IMPORTED = "columns_not_imported"
 
 
 WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
@@ -610,6 +612,7 @@ WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
     WarningKind.REQUIREMENT_HEADING_IS_SECTION: WarningSeverity.NEEDS_REVIEW,
     WarningKind.CHANGED_SINCE_WRITTEN: WarningSeverity.NEEDS_REVIEW,
     WarningKind.KB_CONTEXT_BLOCKED: WarningSeverity.PIPELINE_ISSUE,
+    WarningKind.COLUMNS_NOT_IMPORTED: WarningSeverity.NEEDS_REVIEW,
 }
 
 

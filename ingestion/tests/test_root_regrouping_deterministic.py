@@ -6,7 +6,11 @@ import numpy as np
 
 from app.canonical.model import SourceRef
 from app.leveling.conservation import restore_lost_nodes
-from app.leveling.root_regrouping import _regroup_disconnected_roots, deterministic_root_groups
+from app.leveling.root_regrouping import (
+    _ensure_root_features_have_epic_parent,
+    _regroup_disconnected_roots,
+    deterministic_root_groups,
+)
 from app.workitem.model import (
     IntegrityWarning,
     WarningKind,
@@ -366,3 +370,25 @@ def test_a_group_never_grows_past_the_size_cap() -> None:
     assert sorted(i for g in groups for i in g) == sorted(
         set(i for g in groups for i in g)
     )  # no root in two groups
+
+
+def test_roots_a_table_states_are_never_grouped() -> None:
+    # r<table>_<n> ids are rule-built (rule_builder.is_rule_built): the file states them as roots, so they stay roots.
+    titles = [("A1", 0), ("A2", 0), ("B1", 1), ("B2", 1)]
+    vectors = dict(zip([t for t, _ in titles], _topic_vectors([k for _, k in titles])))
+    nodes = [_root("r0_0", "A1", WorkItemType.EPIC), _root("r0_1", "A2", WorkItemType.EPIC), _root("n2", "B1"), _root("n3", "B2")]
+    warnings: list[IntegrityWarning] = []
+    _run(nodes, _Embed(vectors), _Namer({}), warnings)
+    by_id = {n.local_id: n for n in nodes}
+    assert by_id["r0_0"].parent_local_id is None and by_id["r0_1"].parent_local_id is None
+    assert by_id["n2"].parent_local_id == by_id["n3"].parent_local_id is not None  # the others still group
+    assert all("r0_0" not in w.node_ids for w in warnings)
+
+
+def test_a_root_feature_a_table_states_is_not_wrapped_in_a_catch_all_epic() -> None:
+    nodes = [_root("r0_0", "E", WorkItemType.EPIC), _root("r0_1", "Stated F"), _root("n2", "Loose F")]
+    warnings: list[IntegrityWarning] = []
+    _ensure_root_features_have_epic_parent(nodes, "regroup_", warnings)
+    by_id = {n.local_id: n for n in nodes}
+    assert by_id["r0_1"].parent_local_id is None
+    assert by_id["n2"].parent_local_id == "regroup_synth_root_epic"

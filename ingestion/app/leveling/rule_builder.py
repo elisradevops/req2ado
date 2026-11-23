@@ -11,7 +11,7 @@ from collections import Counter
 
 from app.canonical.markup import html_to_markdown
 from app.canonical.model import CanonicalDoc, Table, plain_text_rows
-from app.study.file_rules import TableRule
+from app.study.file_rules import TableRule, clip_detail
 from app.workitem.model import (
     IntegrityWarning,
     WarningKind,
@@ -33,6 +33,8 @@ _CHILD_TYPE = {
 _MAX_TITLE = 256
 # The ids tree_from_table_rules gives (r<table index>_<item index>); no other builder's ids have this shape.
 _RULE_ID = re.compile(r"r\d+_\d+")
+# The skipped rows a warning's sentence names; its detail lists all of them.
+_NAMED_ROWS = 100
 
 
 def _label(header: str) -> str:
@@ -112,22 +114,27 @@ def build_table_nodes(
             child_type=_CHILD_TYPE[node_type],
         )
         nodes.append(node)
-    return nodes, _warnings(table, rule)
+    return nodes, _warnings(table, rule, id_of)
 
 
-def _warnings(table: Table, rule: TableRule) -> list[IntegrityWarning]:
+def _warnings(table: Table, rule: TableRule, id_of: dict[int, str]) -> list[IntegrityWarning]:
     out: list[IntegrityWarning] = []
     caption = table.caption or f"Table {table.id}"
     skipped = rule.skipped_counts()
     for reason, count in sorted(skipped.items()):
         if reason.startswith("type:"):
             kind_name = reason[5:]
+            # Row numbers count the heading row as 1, as the sheet does (file_rules.table_details).
+            rows = [{"row": p.row + 1, "title": clip_detail(p.title)} for p in rule.rows if p.skipped == reason]
+            named = "; ".join(f"row {r['row']} '{r['title']}'" for r in rows[:_NAMED_ROWS]) + (
+                f"; and {len(rows) - _NAMED_ROWS} more" if len(rows) > _NAMED_ROWS else ""
+            )
             out.append(
                 IntegrityWarning.make(
                     WarningKind.SOURCE_TYPE_SKIPPED,
                     f"{count} row(s) of type '{kind_name}' in '{caption}' were not imported: only Epic, Feature and Requirement are work item "
-                    "types of this ladder. Nothing was retyped; add them by hand if they are wanted.",
-                    detail={"type": kind_name, "count": count, "source": caption},
+                    f"types of this ladder. Nothing was retyped; add them by hand if they are wanted. The rows: {named}.",
+                    detail={"type": kind_name, "count": count, "source": caption, "rows": rows},
                 )
             )
         elif reason == "under_skipped":
@@ -160,6 +167,16 @@ def _warnings(table: Table, rule: TableRule) -> list[IntegrityWarning]:
                     detail={"reason": reason, "count": count, "source": caption},
                 )
             )
+    unread = _unread_columns(table, rule)
+    if unread:
+        out.append(
+            IntegrityWarning.make(
+                WarningKind.COLUMNS_NOT_IMPORTED,
+                f"{len(unread)} column(s) of '{caption}' were not imported: {', '.join(unread)}. Only the type, title, nesting, Customer ID "
+                "and Description columns are read; the values of these columns are in no work item.",
+                detail={"source": caption, "columns": unread, "count": len(unread)},
+            )
+        )
     if rule.violations:
         shown = "; ".join(rule.violations[:5]) + (
             f"; and {len(rule.violations) - 5} more" if len(rule.violations) > 5 else ""
@@ -168,10 +185,33 @@ def _warnings(table: Table, rule: TableRule) -> list[IntegrityWarning]:
             IntegrityWarning.make(
                 WarningKind.SOURCE_STRUCTURE_VIOLATION,
                 f"'{caption}' states a structure the Epic > Feature > Requirement ladder does not allow, kept as the file states it: {shown}.",
-                detail={"count": len(rule.violations), "source": caption},
+                node_ids=[id_of[position] for position, _ in rule.ladder_violations],
+                # One entry per item; a SURVEY hierarchy check (app.leveling.hierarchy_check) fills in the suggested fix and its reason.
+                detail={
+                    "count": len(rule.violations),
+                    "source": caption,
+                    "items": [
+                        {"id": id_of[position], "problem": problem, "suggestion": None, "reason": ""}
+                        for position, problem in rule.ladder_violations
+                    ],
+                },
             )
         )
     return out
+
+
+def _unread_columns(table: Table, rule: TableRule) -> list[str]:
+    """The labels of the columns the rule gives no role that hold a value in at least one imported row, in column order. A column that is
+    empty on every imported row (an export's blank ID or Parent, a Test Case's steps) carries nothing into the items, so it is not named."""
+    read = {rule.type_col, rule.level_col, rule.title_col, rule.id_col, rule.parent_col, rule.customer_id_col}
+    read |= set(rule.level_cols) | set(rule.description_cols)
+    grid = plain_text_rows(table)
+    rows = [grid[plan.row] for plan in rule.kept if plan.row < len(grid)]
+    return [
+        label
+        for col, label in enumerate(rule.labels)
+        if label and col not in read and any(col < len(row) and row[col].strip() for row in rows)
+    ]
 
 
 def type_counts(nodes: list[WorkItemNode]) -> Counter:
@@ -212,23 +252,24 @@ def verify_tree_against_rules(doc: CanonicalDoc, tree, rules: dict[str, TableRul
     rules = study_tables(doc) if rules is None else rules
     if not rules:
         return []
-    by_title: dict[str, list[WorkItemNode]] = {}
-    for node in tree.nodes:
-        by_title.setdefault((node.source_title or node.title).strip(), []).append(node)
     by_id = {n.local_id: n for n in tree.nodes}
     wrong: list[str] = []
-    for rule in rules.values():
-        for plan in rule.kept:
-            parent_title = rule.rows[plan.parent].title[:_MAX_TITLE] if plan.parent is not None else None
-            candidates = by_title.get(plan.title[:_MAX_TITLE], [])
-            found = any(
-                c.type.value == plan.type
-                and (parent_title is None or _title_of(by_id.get(c.parent_local_id)) == parent_title)
-                for c in candidates
-            )
-            if not found:
-                state = "missing" if not candidates else "has another type or parent"
-                wrong.append(f"{plan.type} '{plan.title[:60]}' ({state})")
+    for index, table in enumerate(doc.tables):
+        rule = rules.get(table.id)
+        if rule is None:
+            continue
+        # Each stated row is found by the id tree_from_table_rules gave it (build_table_nodes: r<table index>_<kept index>), never by its title,
+        # so two rows with one title cannot stand in for each other. A stated root must still be a root.
+        kept = [p for p, plan in enumerate(rule.rows) if plan.skipped is None and plan.type is not None]
+        id_of = {position: f"r{index}_{k}" for k, position in enumerate(kept)}
+        for position, node_id in id_of.items():
+            plan = rule.rows[position]
+            node = by_id.get(node_id)
+            expected_parent = id_of.get(plan.parent) if plan.parent is not None else None
+            if node is None:
+                wrong.append(f"{plan.type} '{plan.title[:60]}' (missing)")
+            elif node.type.value != plan.type or node.parent_local_id != expected_parent:
+                wrong.append(f"{plan.type} '{plan.title[:60]}' (has another type or parent)")
     if not wrong:
         return []
     shown = "; ".join(wrong[:5]) + (f"; and {len(wrong) - 5} more" if len(wrong) > 5 else "")
@@ -240,6 +281,3 @@ def verify_tree_against_rules(doc: CanonicalDoc, tree, rules: dict[str, TableRul
         )
     ]
 
-
-def _title_of(node: WorkItemNode | None) -> str | None:
-    return (node.source_title or node.title).strip() if node is not None else None

@@ -1206,6 +1206,7 @@ def _build_survey_tree_with_scoring(
             # disconnected root nodes, see _regroup_disconnected_roots's
             # own docstring) into a coherent hierarchy, structure-only.
             grouping_client=client,
+            hierarchy_client=client,
             branch_concurrency=settings.survey_branch_concurrency,
             # Chunk-level counterpart, independent dial (the two never
             # compound -- see Settings.survey_chunk_concurrency's own

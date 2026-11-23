@@ -38,6 +38,7 @@ from app.leveling.conflict_detection import (
 from app.leveling.conservation import restore_lost_nodes
 from app.leveling.content_authoring import ContentAuthoringClient, author_fixed_tree
 from app.leveling.document_study import DocumentStudyClient
+from app.leveling.hierarchy_check import HierarchyFixClient, suggest_hierarchy_fixes
 
 # Extracted to grounding.py (Phase 6, NEW-04) so id_tree_builder.py can use
 # the SAME Unicode-aware implementation instead of maintaining a second copy
@@ -506,13 +507,20 @@ def _apply_det_parent_summary(
         counter.complete("improve")
     if parent_summary_client is None:
         return
+    # An Epic or Feature a table states keeps the file's title and description: it is never summarized over.
     parent_ids = [
-        n.local_id for n in det_nodes if n.type in (WorkItemType.EPIC, WorkItemType.FEATURE)
+        n.local_id
+        for n in det_nodes
+        if n.type in (WorkItemType.EPIC, WorkItemType.FEATURE) and not is_rule_built(n.local_id)
     ]
     # Only a document that had deterministic subtrees was planned; for any other
     # (a text PDF, a scan) a "summarize 0 of 0" marker would be noise.
     if counter is not None and counter.is_planned("summarize"):
         counter.set_total("summarize", len(parent_ids))
+    if not parent_ids:  # nothing to summarize (every parent is stated by a table): no budget lookup, no call
+        if counter is not None:
+            counter.complete("summarize")
+        return
     # parent_summary_client is the same OrchestratorLlmClient instance
     # already implementing every other Protocol here -- reused as the
     # live per-model token-budget lookup (ModelCapsClient), replacing the
@@ -571,6 +579,8 @@ def _detect_deterministic_subtrees(
     sheet_study_client: SheetStudyClient | None = None,
     # What the pre-study learned about the file's conventions (study/model_rules.py); None reads only the conventions the code recognises.
     rulebook: FileRulebook | None = None,
+    # Picks one of the code-computed fixes for each item a stated table puts where the ladder does not allow (app.leveling.hierarchy_check).
+    hierarchy_client: HierarchyFixClient | None = None,
 ) -> tuple[list[WorkItemNode], list[IntegrityWarning], CanonicalDoc]:
     """Detects and builds every deterministic hierarchy subtree this
     document's own structure already encodes -- a 2-column dotted-ID
@@ -630,6 +640,10 @@ def _detect_deterministic_subtrees(
         rule_nodes, rule_warnings = tree_from_table_rules(
             doc, stated_rules, _hash_description, _hash_identity_for_synthesized_node
         )
+        if hierarchy_client is not None:
+            # The model's job for a stated table: pick a fix for each item the ladder does not allow. Nothing is applied; a file the ladder
+            # allows asks nothing.
+            suggest_hierarchy_fixes(rule_nodes, rule_warnings, hierarchy_client, user_id, chunk_concurrency)
         det_nodes.extend(rule_nodes)
         det_warnings.extend(rule_warnings)
         claimed_table_ids.update(stated_rules)
@@ -1152,6 +1166,8 @@ def _build_survey_tree(
     study_enabled: bool = True,
     criteria_limiter: LeaseLimiter | None = None,
     rulebook: FileRulebook | None = None,
+    # Picks one of the code-computed fixes for each item a stated table puts where the ladder does not allow (app.leveling.hierarchy_check).
+    hierarchy_client: HierarchyFixClient | None = None,
 ) -> WorkItemTree:
     """The pipeline behind build_survey_tree (see its docstring); the public wrapper owns the document study."""
     # Real gap (confirmed live, 682-block AirPro ICD document): the
@@ -1222,6 +1238,7 @@ def _build_survey_tree(
         user_id=user_id,
         sheet_study_client=analysis_client if hasattr(analysis_client, "study_spreadsheet") else None,
         rulebook=rulebook,
+        hierarchy_client=hierarchy_client,
     )
 
     residual_nodes: list[WorkItemNode] = []
@@ -1473,6 +1490,8 @@ def build_survey_tree(
     # What the pre-study learned about the file's conventions. None: when the analysis client can study file conventions (study_file_rules_*), the
     # model is asked once here (prestudy), its answers validated against the whole file; the rules are then fixed for the rest of the run.
     rulebook: FileRulebook | None = None,
+    # Picks one of the code-computed fixes for each item a stated table puts where the ladder does not allow (app.leveling.hierarchy_check).
+    hierarchy_client: HierarchyFixClient | None = None,
 ) -> WorkItemTree:
     """Builds the SURVEY work-item tree. Which items exist, their types and their nesting come from the document itself, never from
     the chat model, so the same file gives the same items whichever model runs and however often:

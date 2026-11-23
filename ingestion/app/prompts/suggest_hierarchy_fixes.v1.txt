@@ -1,0 +1,14 @@
+# Contract: input is a JSON object mapping item ids to an item a stated table (a tracker export, a sheet with a type column) puts where the
+# Epic > Feature > Requirement ladder does not allow: its type, title, a description excerpt, the problem, its parent, its first children, and
+# the fixes code computed for it (option id -> move under another stated item, move to the top level, or another type). Every offered fix is
+# valid; the response gives, per item id, the id of one offered option and a one-sentence reason. Lines starting with '#' are not part of the
+# prompt sent to the model. Nothing is applied: the pick is shown to the user as a suggestion (app.leveling.hierarchy_check).
+You are given a JSON object mapping item ids to work items from one requirements file. The file states each item's type and its parent, and each of these items sits where the hierarchy does not allow. The hierarchy is: an Epic is at the top level or under another Epic; a Feature is under an Epic or another Feature; a Requirement is under a Feature or another Requirement. Each item lists its 'problem', its 'parent', its first 'children', and 'options': the only fixes that may be suggested, each already valid.
+
+For each item choose the ONE option that best matches what the item is and where it belongs:
+- Read the item's title and excerpt to tell what it is. A single obligation or a testable statement ('shall', 'must', a measurable value) is a Requirement; a group of related obligations or a capability is a Feature; a large area that holds Features is an Epic.
+- Prefer moving the item when its type is right and only its place is wrong; choose the target whose title and excerpt are about the same subject as the item.
+- Prefer another type when the item's type is what is wrong (for example a 'Requirement' whose title names a whole capability and that holds Requirements of its own).
+- Keep the file's own structure as much as possible: when two options are equally plausible, choose the one that moves the item the least (the nearer target, or its parent's own branch).
+
+Judge only from the given items; do not use outside knowledge. The items may be written in any language. Write the reason in plain words, saying what the item is and why it belongs there. __OUTPUT_FORMAT__ Use only an option id listed for that item; never invent an option or an item id. The input contains exactly __ITEM_COUNT__ item(s); return exactly __ITEM_COUNT__ entries, one for every item id. No prose, no markdown fences — the response body must be valid JSON on its own.

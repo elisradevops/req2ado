@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from app.debug_capture import DebugCapture
 
 from app.leveling.narration_publisher import LevelingProgress, ProgressCallback
+from app.leveling.rule_builder import is_rule_built
 from app.leveling.tree_builder import _hash_identity_for_synthesized_node
 from app.workitem.model import (
     IntegrityWarning,
@@ -258,7 +259,8 @@ def _regroup_disconnected_roots(
     never fails the job."""
     if grouping_client is None or embed_client is None:
         return  # the grouping is a fixed embedding rule: without an embedder the roots stay as they are
-    roots = [n for n in nodes if n.parent_local_id is None]
+    # A root a table states (rule_builder) is a root because the file says so: it is never grouped under a node the file does not have.
+    roots = [n for n in nodes if n.parent_local_id is None and not is_rule_built(n.local_id)]
     if len(roots) < 2:
         return
     # The heading each root was built from, not its current title: the model rewrites titles after the hierarchy is
@@ -397,8 +399,11 @@ def _ensure_root_features_have_epic_parent(
     this module (Epics and Features are not scored)."""
     if not any(n.type == WorkItemType.EPIC for n in nodes):
         return
+    # A root Feature a table states stays as the file states it (reported as a structure violation, never wrapped).
     orphan_features = [
-        n for n in nodes if n.parent_local_id is None and n.type == WorkItemType.FEATURE
+        n
+        for n in nodes
+        if n.parent_local_id is None and n.type == WorkItemType.FEATURE and not is_rule_built(n.local_id)
     ]
     if not orphan_features:
         return

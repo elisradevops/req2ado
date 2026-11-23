@@ -77,6 +77,13 @@ describe('warningKinds', () => {
     expect(warningGroup(warning('kb_context_blocked', 'pipeline_issue'))).toBe('info');
   });
 
+  it('names the columns a stated table has that were not imported, as information only', () => {
+    const meta = KIND_META.columns_not_imported;
+    expect(meta.group).toBe('info');
+    expect(meta.means).toMatch(/Description/);
+    expect(warningGroup(warning('columns_not_imported', 'needs_review'))).toBe('info');
+  });
+
   it('explains a run whose figures were not described, instead of the generic fallback copy', () => {
     const meta = KIND_META.vision_captioning_disabled;
     expect(meta.group).toBe('review');
