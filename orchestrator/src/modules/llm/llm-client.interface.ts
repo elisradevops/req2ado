@@ -134,6 +134,9 @@ export interface LlmChatOptions {
   // an opt-out, not a blanket setting, so callers that DO want reasoning
   // (e.g. a user-facing chat turn) are unaffected.
   think?: boolean;
+  // Prompt caching for this call (Claude models only): the system message and each part a caller marked become cache breakpoints.
+  // Undefined: the LLM_PROMPT_CACHE setting decides. Lets one request (a probe) turn it on or off without changing the setting.
+  promptCache?: boolean;
   /** `study`: a document-study window. Raised once on a cut-off answer, with its own remembered limit kept apart from other chat calls, and a bounded rung time. */
   budgetKind?: 'study';
   /** Epoch ms by which the call, retries included, should be over; no new attempt starts past it. */

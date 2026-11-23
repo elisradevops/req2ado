@@ -33,6 +33,17 @@ _AUTHORITIES: frozenset[str] = frozenset(
 )
 _TAG_PATTERN = re.compile(r"^[a-z][a-z_]*$")
 _GUARD = "fragment_prompt_guard"
+# Blocks whose text is the same on every call of a prompt within a job, so a prompt cache can reuse them: knowledge-base text, the rubric,
+# the organization's conventions, the document's background, and the fixed vocabularies sent as source (the scoring categories, the
+# link-type catalog). Criteria retrieved per batch (reference tagged "criteria") are not: they differ from call to call.
+_STABLE_AUTHORITIES = frozenset({"reference", "rubric", "org_standard", "background"})
+_STABLE_SOURCE_TAGS = frozenset({"category_names", "link_types"})
+
+
+def _is_stable(block: DataBlock) -> bool:
+    if block.authority == "source":
+        return block.tag in _STABLE_SOURCE_TAGS
+    return block.authority in _STABLE_AUTHORITIES and block.tag != "criteria"
 
 
 @dataclass(frozen=True)
@@ -82,17 +93,28 @@ class PromptCall:
     system: str
     user: str
     history: tuple[tuple[str, str], ...] = ()
+    # How many leading characters of `user` are the same on every call of this prompt in a job (the stable blocks, see _STABLE_BLOCKS):
+    # where a prompt-cache breakpoint can go. 0 when the message starts with this call's own data.
+    cache_prefix: int = 0
 
-    def messages(self) -> list[dict[str, str]]:
+    def messages(self, mark_cache: bool = False) -> list[dict[str, object]]:
+        """The messages. With `mark_cache` and a stable prefix (cache_prefix), the user message is two text parts that join back to
+        it exactly, the first marked as a prompt-cache breakpoint."""
+        user: object = self.user
+        if mark_cache and self.cache_prefix > 0:
+            user = [
+                {"type": "text", "text": self.user[: self.cache_prefix], "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": self.user[self.cache_prefix :]},
+            ]
         return [
             {"role": "system", "content": self.system},
             *({"role": role, "content": content} for role, content in self.history),
-            {"role": "user", "content": self.user},
+            {"role": "user", "content": user},
         ]
 
-    def payload(self, params: Mapping[str, object]) -> dict[str, object]:
+    def payload(self, params: Mapping[str, object], mark_cache: bool = False) -> dict[str, object]:
         """The request body: the messages plus the model parameters (temperature, schema, limits) the caller sets."""
-        return {"messages": self.messages(), **params}
+        return {"messages": self.messages(mark_cache), **params}
 
 
 @dataclass(frozen=True)
@@ -185,9 +207,13 @@ def build_call(
     ]
     system = "\n\n".join([_guard(blocks), *instructions] if blocks else instructions)
     reserved = frozenset(b.name for b in blocks)
-    user = "\n\n".join(
-        [*(render_block(b, reserved) for b in blocks), *([user_text] if user_text else [])]
-    )
+    rendered = [render_block(b, reserved) for b in blocks]
+    user = "\n\n".join([*rendered, *([user_text] if user_text else [])])
+    # The stable prefix: the leading run of stable blocks, ending right after the last of them (the separator belongs to the rest).
+    stable = 0
+    while stable < len(blocks) and _is_stable(blocks[stable]):
+        stable += 1
+    cache_prefix = len("\n\n".join(rendered[:stable])) if stable and stable < len(rendered) + (1 if user_text else 0) else 0
     files = [
         (name, resolved),
         *(
@@ -213,4 +239,5 @@ def build_call(
         system=system,
         user=user,
         history=tuple((turn["role"], turn["content"]) for turn in history),
+        cache_prefix=cache_prefix,
     )

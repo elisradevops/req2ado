@@ -752,7 +752,7 @@ class OrchestratorLlmClient:
         when falsy, mirroring how every other optional field in this
         module is conditionally included -- never sent as an empty
         string."""
-        payload = call.payload(params)
+        payload = call.payload(params, mark_cache=settings.llm_prompt_cache)
         logger.info("/llm/chat call: prompt=%s", call.identity)
         trace.get_current_span().set_attribute("req2ado.prompt", str(call.identity))
         response: httpx.Response | None = None
@@ -885,7 +885,7 @@ class OrchestratorLlmClient:
                     with client.stream(
                         "POST",
                         f"{self._base_url}/llm/chat/stream",
-                        json={**call.payload(params), "includeDone": True},
+                        json={**call.payload(params, mark_cache=settings.llm_prompt_cache), "includeDone": True},
                         headers=headers,
                     ) as response:
                         if response.is_error:
