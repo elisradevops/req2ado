@@ -24,7 +24,7 @@ class Scripted:
         criteria_context=None,
         kb_context=None,
         category_checklist=None,
-        user_id=None,
+        user_id=None, together=False,
     ):
         self.calls.append(
             {

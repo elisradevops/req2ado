@@ -1,0 +1,3 @@
+# v3: no per-category 'evidence' quote (no code read it; it was the largest part of every scoring answer). Otherwise as v2.
+'categories' -- a list of {"name", "level"} objects whose names are the quality checklist the organization's knowledge-base material defines, spelled exactly as it spells them. Decide the names ONCE and use the same set, spelled identically, for every node_id. If the material defines no clear checklist, use __BUILTIN_NAMES__ instead. Always include completeness_as_requirement as well.
+__COMPLETENESS__

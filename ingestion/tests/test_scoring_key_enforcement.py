@@ -108,7 +108,7 @@ def test_a_job_whose_chunks_each_stay_consistent_but_differ_from_one_another_is_
             criteria_context=None,
             kb_context=None,
             category_checklist=None,
-            user_id=None,
+            user_id=None, together=False,
         ):
             self.calls += 1
             names = {"Clarity": 50} if self.calls == 1 else {"Testable": 50}
@@ -143,7 +143,7 @@ def test_no_job_level_warning_when_the_job_is_consistent_or_a_chunk_warning_alre
             criteria_context=None,
             kb_context=None,
             category_checklist=None,
-            user_id=None,
+            user_id=None, together=False,
         ):
             return {
                 node_id: {"score": 70, "issues": [], "categoryScores": {"Clarity": 50}}
@@ -205,7 +205,7 @@ def test_a_job_level_drift_is_reported_even_when_an_earlier_stage_already_warned
             criteria_context=None,
             kb_context=None,
             category_checklist=None,
-            user_id=None,
+            user_id=None, together=False,
         ):
             self.calls += 1
             names = {"Clarity": 50} if self.calls == 1 else {"Testable": 50}

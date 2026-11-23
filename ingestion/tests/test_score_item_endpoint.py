@@ -102,11 +102,12 @@ def test_score_item_returns_quality_confidence(monkeypatch) -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         votes.append(1)
-        level = 4 if len(votes) == 1 else 0  # the two votes disagree by the whole scale
+        # The first vote's 1 is on the "ambiguous" threshold, so the second vote is asked; it says 4 (a gap of 3: low confidence).
+        level = 1 if len(votes) == 1 else 4
         content = json.dumps(
             {
                 "adhoc": {
-                    "categories": [{"name": "clarity", "level": level, "evidence": ""}],
+                    "categories": [{"name": "clarity", "level": level}],
                     "findings": [],
                 }
             },
@@ -121,7 +122,7 @@ def test_score_item_returns_quality_confidence(monkeypatch) -> None:
     body = response.json()
     assert len(votes) == 2
     assert body["quality_confidence"] == "low"
-    assert body["quality_score"] == 50
+    assert body["quality_score"] == 62
 
 
 def test_score_item_confidence_is_null_when_the_model_said_nothing_usable(monkeypatch) -> None:
