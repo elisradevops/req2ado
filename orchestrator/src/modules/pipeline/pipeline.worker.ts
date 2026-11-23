@@ -231,10 +231,9 @@ class JobCancelledError extends Error {
  * Cooperative-cancellation checkpoint. A cancel() lands in the HTTP process, which
  * cannot reach into this worker, so the job status in the database is the channel:
  * this function reads it and takes effect the next time it is called, not mid-call.
- * The ingest call is the exception: withCancelWatch (below) polls the same status
- * while it runs and aborts the call. An in-flight level() call is NOT watched yet,
- * so for it a cancel still waits for this checkpoint right after level() resolves,
- * the dominant wall-clock cost of a real SURVEY job.
+ * The long calls are the exception: withCancelWatch (below) polls the same status
+ * while the ingest and the level() call run and aborts them, so a cancel stops a
+ * SURVEY run's scoring at once instead of after it.
  */
 async function assertNotCancelled(prisma: PrismaClient, jobId: string): Promise<void> {
   const current = await prisma.job.findUnique({ where: { id: jobId }, select: { status: true } });
@@ -932,8 +931,12 @@ export async function runPipelineJob(
         console.info(`Job ${job.id}: /level started`);
         // The rulebook stored for this file rides on the document to /level (CanonicalDoc.rulebook), so the job builds from exactly what the wizard showed.
         const levelDoc = fileRulebook ? { ...doc, rulebook: fileRulebook } : doc;
-        levelResult = await deps.ingestionClient.level(
-          levelDoc, job.mode, job.userId ?? undefined, linkTypeCatalog, model, job.id, primerContext, ...(deps.resultCache ? [scored] : []),
+        // Watched like the parse: a cancel aborts the call, which closes the connection, and ingestion then stops the run and the model
+        // call it has open, instead of scoring to the end for a job nobody is waiting for.
+        levelResult = await withCancelWatch(deps.prisma, job.id, deps.cancelPollMs ?? CANCEL_POLL_MS, (levelSignal) =>
+          deps.ingestionClient.level(
+            levelDoc, job.mode, job.userId ?? undefined, linkTypeCatalog, model, job.id, primerContext, deps.resultCache ? scored : undefined, levelSignal,
+          ),
         );
         // eslint-disable-next-line no-console -- worker process logging
         console.info(`Job ${job.id}: /level finished in ${Date.now() - levelStartedAt} ms, ${(levelResult as { nodes?: unknown[] })?.nodes?.length ?? 0} nodes`);
