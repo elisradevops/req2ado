@@ -860,3 +860,153 @@ CASES: list[Case] = [
         ],
     ),
 ]
+
+
+# --- suggest_hierarchy_fixes ------------------------------------------------------------------------------------------------------------
+# Each item sits where the Epic > Feature > Requirement ladder does not allow; code offers only valid fixes (app.leveling.hierarchy_check),
+# and the model picks one. A labelled case has a single clearly right option.
+
+
+def _target(kind: str, title: str, excerpt: str) -> dict:
+    return {"action": "move_under", "type": kind, "title": title, "excerpt": excerpt}
+
+
+def _item(kind, title, excerpt, problem, parent, options, children=()) -> dict:
+    return {
+        "type": kind,
+        "title": title,
+        "excerpt": excerpt,
+        "problem": problem,
+        "parent": {"type": parent[0], "title": parent[1]} if parent else None,
+        "children": [{"type": k, "title": t} for k, t in children],
+        "options": options,
+    }
+
+
+_FIX_LABELLED = [
+    (
+        "requirement_under_epic_moves",
+        _item(
+            "Requirement", "Boot time", "The unit shall complete boot within 2 s of power-on.", "Requirement under Epic", ("Epic", "Power"),
+            {
+                "o1": _target("Feature", "Display", "Screen brightness, dimming and timeouts."),
+                "o2": _target("Feature", "Startup", "Power-on sequence and boot behaviour of the unit."),
+                "o3": {"action": "retype", "type": "Epic"},
+                "o4": {"action": "retype", "type": "Feature"},
+            },
+        ),
+        "o2",
+    ),
+    (
+        "feature_under_requirement_is_a_requirement",
+        _item(
+            "Feature", "Wake on button press", "The unit shall wake within 1 s when the power button is pressed.", "Feature under Requirement",
+            ("Requirement", "Sleep entry"),
+            {
+                "o1": _target("Epic", "Power", "Power management of the unit."),
+                "o2": _target("Feature", "Logging", "Event logging and log retention."),
+                "o3": {"action": "retype", "type": "Requirement"},
+            },
+        ),
+        "o3",
+    ),
+    (
+        "epic_under_feature_is_a_feature",
+        _item(
+            "Epic", "Brightness control", "Brightness levels and automatic dimming of the screen.", "Epic under Feature", ("Feature", "Display"),
+            {
+                "o1": {"action": "move_to_top"},
+                "o2": _target("Epic", "Communications", "Radio links, protocols and message formats."),
+                "o3": {"action": "retype", "type": "Feature"},
+                "o4": {"action": "retype", "type": "Requirement"},
+            },
+            children=[("Requirement", "Auto dim after 30 s"), ("Requirement", "Manual brightness levels")],
+        ),
+        "o3",
+    ),
+    (
+        "root_feature_moves_to_its_subject",
+        _item(
+            "Feature", "Event logging", "Recording of system events, faults and operator actions.", "Feature with no parent", None,
+            {
+                "o1": _target("Epic", "Power", "Power supply, batteries and power states."),
+                "o2": _target("Epic", "Diagnostics and maintenance", "Fault detection, logs, diagnostics and field maintenance."),
+                "o3": _target("Feature", "Display", "Screen brightness, dimming and timeouts."),
+            },
+            children=[("Requirement", "Log rotation")],
+        ),
+        "o2",
+    ),
+    (
+        "hebrew_requirement_under_epic_moves",
+        _item(
+            "Requirement", "זמן אתחול", "היחידה תשלים אתחול תוך 2 שניות מהפעלת המתח.", "Requirement under Epic", ("Epic", "ניהול הספק"),
+            {
+                "o1": _target("Feature", "תצוגה", "בהירות המסך, עמעום וזמני כיבוי."),
+                "o2": _target("Feature", "הפעלה", "רצף הדלקה ואתחול של היחידה."),
+                "o3": {"action": "retype", "type": "Feature"},
+            },
+        ),
+        "o2",
+    ),
+]
+
+
+def _fix_case(name: str, item: dict, want: str) -> Case:
+    wrong = next(option for option in item["options"] if option != want)
+
+    def check(result: dict) -> dict:
+        entry = result.get("i0") or {}
+        return {
+            "option": p.equals(entry.get("option"), want, "option"),
+            "reason": (isinstance(entry.get("reason"), str) and bool(entry["reason"].strip()), "no reason"),
+        }
+
+    return Case(
+        "suggest_hierarchy_fixes",
+        name,
+        lambda client: client.suggest_hierarchy_fixes({"i0": item}),
+        check,
+        good=[_j({"i0": {"option": want, "reason": "It is about the same subject."}})],
+        bad=[_j({"i0": {"option": wrong, "reason": "It is about the same subject."}})],
+        tags=frozenset({"labelled", "hebrew"} if name.startswith("hebrew") else {"labelled"}),
+    )
+
+
+# Either placement is defensible; the answer must name one of the offered options for every item, with a reason.
+_FIX_AMBIGUOUS = {
+    "a": _item(
+        "Requirement", "Status report", "The unit shall report its status every 5 s.", "Requirement under Epic", ("Epic", "Unit"),
+        {
+            "o1": _target("Feature", "Communications", "Messages sent between the unit and the station."),
+            "o2": _target("Feature", "Health monitoring", "Built-in tests and status of the unit."),
+        },
+    ),
+    "b": _item(
+        "Feature", "Alarms", "Alarm conditions raised to the operator.", "Feature with no parent", None,
+        {"o1": _target("Epic", "Unit", "The unit's functions."), "o2": _target("Epic", "Operator station", "The operator's screens and controls.")},
+    ),
+}
+
+
+def _check_fix_ambiguous(result: dict) -> dict:
+    return {
+        "ids": p.same_ids(result, _FIX_AMBIGUOUS),
+        "offered": (
+            all(isinstance(e, dict) and e.get("option") in _FIX_AMBIGUOUS[k]["options"] for k, e in result.items()),
+            "an option that was not offered",
+        ),
+    }
+
+
+CASES += [_fix_case(name, item, want) for name, item, want in _FIX_LABELLED]
+CASES.append(
+    Case(
+        "suggest_hierarchy_fixes",
+        "ambiguous_places_name_an_offered_option",
+        lambda client: client.suggest_hierarchy_fixes(_FIX_AMBIGUOUS),
+        _check_fix_ambiguous,
+        good=[_j({"a": {"option": "o2", "reason": "Status is health."}, "b": {"option": "o2", "reason": "The operator sees alarms."}})],
+        bad=[_j({"a": {"option": "o2", "reason": "Status is health."}})],
+    )
+)

@@ -133,10 +133,11 @@ def test_several_description_columns_keep_their_labels(tmp_path: Path) -> None:
     assert by_title["R"].description == "**Notes:**\n\nn3\n\n**Comments:**\n\nc3"
 
 
-def test_with_several_columns_a_first_one_named_description_stays_unlabelled(tmp_path: Path) -> None:
+def test_a_column_named_description_is_the_description_alone(tmp_path: Path) -> None:
+    # The owner's rule: the other columns are other fields, never mixed into the description.
     csv_text = "Work Item Type,Title,Description,Notes\nEpic,E,d1,n1\nFeature,F,d2,n2\nRequirement,R,d3,n3\n"
     by_title = {n.title: n for n in build_baseline_tree(_doc(tmp_path, csv_text)).nodes}
-    assert by_title["R"].description == "d3\n\n**Notes:**\n\nn3"
+    assert by_title["R"].description == "d3"
 
 
 def test_the_breakdown_of_a_large_table_stays_small(tmp_path: Path) -> None:

@@ -42,7 +42,7 @@ _CUSTOMER_ID_HEADERS = {
     "req id",
     "external id",
 }
-_DESCRIPTION_HEADERS = {"description", "desc", "details"}
+_DESCRIPTION_HEADERS = {"description", "desc", "details", "תיאור"}
 _LONG_TEXT_HEADER = re.compile(
     r"description|acceptance|rationale|notes?|criteria|assessment|explanation|comments?|details",
     re.IGNORECASE,
@@ -94,6 +94,8 @@ class TableRule:
     rows: list[RowPlan] = field(default_factory=list)
     blank_rows: int = 0
     violations: list[str] = field(default_factory=list)
+    # The kept rows (RowPlan positions) the ladder does not allow, each with its problem ("Requirement under Epic", "Feature with no parent").
+    ladder_violations: list[tuple[int, str]] = field(default_factory=list)
 
     @property
     def kept(self) -> list[RowPlan]:
@@ -189,10 +191,9 @@ def study_table(table: Table) -> TableRule | None:
         return None
 
     structural = {type_col, title_col, id_col, parent_col, *level_cols}
+    # A column named as the description is the description, alone: the file's other columns are other fields, never mixed into it.
     description_col = first(_DESCRIPTION_HEADERS)
-    description_cols = ([description_col] if description_col is not None else []) + _long_text_columns(
-        labels, body, structural | {description_col}
-    )
+    description_cols = [description_col] if description_col is not None else _long_text_columns(labels, body, structural)
     spec = RuleSpec(
         header_row=header_row,
         nesting=nesting,
@@ -236,9 +237,13 @@ def rule_from_spec(table: Table, spec: RuleSpec) -> TableRule | None:
     columns += [*spec.level_cols, *spec.description_cols]
     if not 0 <= spec.header_row < len(grid) - 1 or any(c is not None and not 0 <= c < width for c in columns):
         return None
+    labels = [c.strip() for c in grid[spec.header_row]]
+    # Whoever chose the columns (the header detector, the model or the user), a column named as the description is the description alone.
+    named = [c for c in spec.description_cols if _norm(labels[c]) in _DESCRIPTION_HEADERS]
+    description_cols = named[:1] or list(spec.description_cols)
     rule = TableRule(
         table_id=table.id,
-        labels=[c.strip() for c in grid[spec.header_row]],
+        labels=labels,
         header_row=spec.header_row,
         type_col=spec.type_col,
         level_cols=list(spec.level_cols),
@@ -246,7 +251,7 @@ def rule_from_spec(table: Table, spec: RuleSpec) -> TableRule | None:
         id_col=spec.id_col,
         parent_col=spec.parent_col,
         customer_id_col=spec.customer_id_col,
-        description_cols=list(spec.description_cols),
+        description_cols=description_cols,
         nesting=spec.nesting,
         level_col=spec.level_col,
         type_map=spec.type_map,
@@ -338,15 +343,17 @@ def _plan_rows(rule: TableRule, body: list[tuple[int, list[str]]]) -> None:
             plan.skipped = "no_title"
     _skip_under_skipped(plans)
     # The ladder is checked once every skip is known: with ID/Parent nesting a parent may come after its child in the file.
-    for plan in plans:
+    for position, plan in enumerate(plans):
         if plan.skipped is None and plan.type is not None:
             parent_type = plans[plan.parent].type if plan.parent is not None else None
             if parent_type is None and plan.type != "Epic":
                 rule.violations.append(f"{plan.type} '{plan.title[:60]}' has no parent")
+                rule.ladder_violations.append((position, f"{plan.type} with no parent"))
             elif parent_type is not None and parent_type not in _VALID_PARENT[plan.type]:
                 rule.violations.append(
                     f"{plan.type} '{plan.title[:60]}' sits under a {parent_type}"
                 )
+                rule.ladder_violations.append((position, f"{plan.type} under {parent_type}"))
     rule.rows = plans
 
 
