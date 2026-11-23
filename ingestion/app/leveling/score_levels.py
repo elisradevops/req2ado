@@ -86,22 +86,32 @@ def _squash(text: str) -> str:
     return " ".join((text or "").split()).casefold()
 
 
-def levels_of(answer: object) -> dict[str, int]:
-    """name -> level of one vote's answer for one item; an entry without a name or with a level outside 0..MAX_LEVEL is left out (a
-    bool is not a level). The first entry of a name wins."""
+def _is_level(level: object) -> bool:
+    return isinstance(level, int) and not isinstance(level, bool) and 0 <= level <= MAX_LEVEL
+
+
+def levels_of(answer: object, names: Sequence[str] | None = None) -> dict[str, int]:
+    """name -> level of one vote's answer for one item.
+
+    With `names` (the fixed category list, in the order the prompt gave it) the answer may give its levels by position: `"levels"`, a list
+    of exactly len(names) levels, maps level i to names[i]. A list of another length, or with anything that is not a level, is no usable
+    answer at all (a level cannot be trusted to its category once one is missing): the item is then asked again or left unscored. An answer
+    in the named form is still read, with or without `names`.
+
+    Named form: an entry without a name or with a level outside 0..MAX_LEVEL is left out (a bool is not a level). The first entry of a
+    name wins."""
+    if names is not None and isinstance(answer, dict) and "levels" in answer:
+        given = answer.get("levels")
+        if isinstance(given, list) and len(given) == len(names) and all(_is_level(level) for level in given):
+            return dict(zip(names, given, strict=True))
+        return {}
     levels: dict[str, int] = {}
     categories = answer.get("categories") if isinstance(answer, dict) else None
     for entry in categories if isinstance(categories, list) else []:
         if not isinstance(entry, dict):
             continue
         name, level = entry.get("name"), entry.get("level")
-        if (
-            isinstance(name, str)
-            and name.strip()
-            and isinstance(level, int)
-            and not isinstance(level, bool)
-            and 0 <= level <= MAX_LEVEL
-        ):
+        if isinstance(name, str) and name.strip() and _is_level(level):
             levels.setdefault(name.strip(), level)
     return levels
 
@@ -155,11 +165,13 @@ def is_borderline(levels: dict[str, int]) -> bool:
     )
 
 
-def needs_second_vote(answer: object, requires: frozenset[str] = frozenset(), builtin: bool = True) -> bool:
+def needs_second_vote(
+    answer: object, requires: frozenset[str] = frozenset(), builtin: bool = True, names: Sequence[str] | None = None
+) -> bool:
     """Whether a first vote's answer is borderline, judged on the categories entry_from_votes keeps (the same filter). An answer with no
-    usable level is asked again too: one vote that judged nothing is no score."""
+    usable level is asked again too: one vote that judged nothing is no score. `names`: as levels_of."""
     left_out, _ = _unrequired(requires) if builtin else (frozenset(), frozenset())
-    levels = {name: level for name, level in levels_of(answer).items() if name not in left_out}
+    levels = {name: level for name, level in levels_of(answer, names).items() if name not in left_out}
     return not levels or is_borderline(levels)
 
 
@@ -186,16 +198,18 @@ def entry_from_votes(
     text: str,
     requires: frozenset[str] = frozenset(),
     builtin: bool = True,
+    names: Sequence[str] | None = None,
 ) -> dict | None:
     """One item's score entry from its votes' answers (a missing or unusable answer is skipped). None when no vote judged any category.
     Category levels are the mean of the votes that judged that category; categories only one vote named are kept (the key check in
     app.leveling.scoring decides what a missing one means). `requires`: what the organization's standard requires
     (STANDARD_REQUIREMENTS); `builtin`: the categories are the built-in ones, so one the standard does not require is left out even
-    when a vote judged it (an organization's own category of the same name is its own, and kept)."""
+    when a vote judged it (an organization's own category of the same name is its own, and kept). `names`: the fixed category list, for
+    answers that give their levels by position (levels_of)."""
     left_out, _ = _unrequired(requires) if builtin else (frozenset(), frozenset())
 
     def judged(answer: object) -> dict[str, int]:
-        return {name: level for name, level in levels_of(answer).items() if name not in left_out}
+        return {name: level for name, level in levels_of(answer, names).items() if name not in left_out}
 
     votes = [levels for levels in (judged(a) for a in answers) if levels]
     if not votes:

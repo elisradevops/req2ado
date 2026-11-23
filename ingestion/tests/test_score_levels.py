@@ -1,5 +1,7 @@
 """Scores computed in code from the model's anchored levels and quoted findings (app.leveling.score_levels)."""
 
+import pytest
+
 from app.leveling.score_levels import (
     COMPLETENESS,
     FINDINGS,
@@ -11,6 +13,7 @@ from app.leveling.score_levels import (
     findings_for,
     findings_of,
     levels_of,
+    needs_second_vote,
 )
 
 EVERYTHING = frozenset(STANDARD_REQUIREMENTS)
@@ -180,3 +183,39 @@ def test_without_a_standard_active_voice_and_rationale_are_not_judged() -> None:
 def test_an_organization_category_named_like_a_built_in_one_is_kept() -> None:
     entry = entry_from_votes([_answer({"style": 2, COMPLETENESS: 4})], TEXT, builtin=False)
     assert entry["categoryScores"]["style"] == 50 and "passive_voice" not in entry["issues"]
+
+
+# --- levels by position (a fixed category list, in the order the prompt gave it) ---------------------------------------------------
+
+NAMES = ["clarity", "testability", COMPLETENESS]
+
+
+def test_levels_by_position_map_to_the_names_in_order() -> None:
+    assert levels_of({"levels": [4, 2, 3]}, NAMES) == {"clarity": 4, "testability": 2, COMPLETENESS: 3}
+
+
+@pytest.mark.parametrize(
+    "levels",
+    [[4, 2], [4, 2, 3, 1], [4, "2", 3], [4, 2, 5], [4, True, 3], "4,2,3", None],
+)
+def test_levels_by_position_that_do_not_fit_the_names_are_no_answer(levels) -> None:  # noqa: ANN001
+    # One level missing or extra and none of them can be trusted to its category: the item is asked again or left unscored.
+    assert levels_of({"levels": levels}, NAMES) == {}
+
+
+def test_the_named_form_is_still_read_with_the_names_given() -> None:
+    answer = {"categories": [{"name": "clarity", "level": 3}, {"name": COMPLETENESS, "level": 4}]}
+    assert levels_of(answer, NAMES) == {"clarity": 3, COMPLETENESS: 4}
+
+
+def test_without_names_a_positional_answer_is_not_read() -> None:
+    # Only a fixed list gives a position a meaning (an organization's derived categories have none).
+    assert levels_of({"levels": [4, 2, 3]}) == {}
+
+
+def test_a_positional_answer_is_scored_and_voted_like_a_named_one() -> None:
+    named = entry_from_votes([_answer({"clarity": 4, "testability": 2, COMPLETENESS: 4})], TEXT)
+    positional = entry_from_votes([{"levels": [4, 2, 4], "findings": []}], TEXT, names=NAMES)
+    assert positional["score"] == named["score"] and positional["categoryScores"] == named["categoryScores"]
+    assert needs_second_vote({"levels": [4, 2]}, names=NAMES)  # unusable: asked again
+    assert needs_second_vote({"levels": [4, 4, 4]}, names=NAMES) is False

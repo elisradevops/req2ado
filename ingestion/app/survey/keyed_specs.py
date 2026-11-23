@@ -130,6 +130,41 @@ SCORING_SPEC = KeyedSpec(
     legacy_schema=_levels_by_node_schema,
 )
 
+# Scoring against a FIXED category list (the built-in categories, or an organization's checklist), the levels by position: one integer
+# per category in the order the prompt names them. The category names repeated in every entry were ~3/4 of every scoring answer; the
+# order is the prompt's own list, so code maps each level back (app.leveling.score_levels.levels_of). The list's length is checked in code
+# (strict structured-output modes do not all honour minItems/maxItems). Same name as SCORING_SPEC: it is the same call to model routing.
+_POSITIONAL_LEVELS = {"type": "array", "items": {"type": "integer"}}
+
+
+def _positional_levels_by_node_schema() -> dict:
+    """The legacy_map form of the positional scoring answer: a node_id-keyed object, each entry `levels` and `findings`."""
+    return {
+        "name": "levels_by_node",
+        "schema": {
+            "type": "object",
+            "additionalProperties": {
+                "type": "object",
+                "properties": {"levels": _POSITIONAL_LEVELS, "findings": _FINDINGS},
+                "required": ["levels", "findings"],
+            },
+        },
+    }
+
+
+SCORING_POSITIONAL_SPEC = KeyedSpec(
+    name="scoring",
+    schema_name="levels_by_node",
+    fields={"levels": _POSITIONAL_LEVELS, "findings": _FINDINGS},
+    field_prompts={
+        "levels": "'levels' (a list of integers, one per category, in the order the categories are named)",
+        "findings": "'findings' (a list of {\"issue\", \"quote\"} objects)",
+    },
+    id_noun="node_id",
+    legacy_schema=_positional_levels_by_node_schema,
+    also_answers=("categories",),  # a model that still answers with named categories is read, not dropped (levels_of)
+)
+
 # Within-job conflict detection (app.leveling.conflict_detection): per pair, is it the same parameter, and -- used only where code cannot
 # compare the values itself -- do the two values agree. Either may be "uncertain".
 PAIR_VERDICTS = ("yes", "no", "uncertain")
