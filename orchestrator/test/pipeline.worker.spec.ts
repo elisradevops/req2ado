@@ -3375,7 +3375,7 @@ describe('runPipelineJob', () => {
 
       expect(fakeOpenWebUiClient.uploadFile).not.toHaveBeenCalled(); // no primer
       expect(ingestion.ingest.mock.calls[0].at(-1)).toBe(true); // captions deferred
-      expect(ingestion.study).toHaveBeenCalledWith(parsed, { userId: 'user-1', model: 'gemma4:12b', signal: expect.any(AbortSignal) });
+      expect(ingestion.study).toHaveBeenCalledWith(parsed, { userId: 'user-1', model: 'gemma4:12b', jobId: 'job-s', signal: expect.any(AbortSignal) });
       expect(ingestion.captions).toHaveBeenCalledWith(parsed, 'job-s', expect.objectContaining({ study: theStudy, userId: 'user-1' }));
       expect(ingestion.level).toHaveBeenCalledWith(
         { ...captioned, study: theStudy }, 'survey', 'user-1', [], 'gemma4:12b', 'job-s', undefined, undefined, expect.any(AbortSignal),
@@ -3402,6 +3402,30 @@ describe('runPipelineJob', () => {
       const leveled = ingestion.level.mock.calls[0][0];
       expect(leveled.figures).toEqual([{ id: 'f0', caption: null, name: null, caption_status: 'vision_failed' }]);
       expect(leveled.study).toEqual(theStudy);
+    });
+
+    it('follows the progress from before the Study through /level, and stops following it once', async () => {
+      const order: string[] = [];
+      const stop = jest.fn().mockImplementation(async () => void order.push('stop'));
+      const progressService = { track: jest.fn().mockImplementation(async () => (order.push('track'), stop)), record: jest.fn() };
+      const ingestion = client({
+        study: jest.fn().mockImplementation(async () => (order.push('study'), theStudy)),
+        level: jest.fn().mockImplementation(async () => (order.push('level'), { nodes: [] })),
+      });
+      await runPipelineJob(job, {
+        ingestionClient: ingestion as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        defaultLlmModel: 'gemma4:12b',
+        progressService: progressService as any,
+        studyPhase: true,
+      });
+      expect(order).toEqual(['track', 'study', 'level', 'stop']);
     });
 
     it('is off unless switched on: a SURVEY job runs the primer path exactly as before', async () => {

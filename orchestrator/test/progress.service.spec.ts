@@ -24,8 +24,11 @@ const seenOf = (...entries: ProgressUnits[]): Map<StageName, ProgressUnits> => n
 
 // Expected values come from the weight table itself, so a recalibration changes the table and nothing here.
 type PathName = keyof typeof PROGRESS_WEIGHTS;
-const weightOf = (path: PathName, stage: StageName): number =>
+const rawWeightOf = (path: PathName, stage: StageName): number =>
   (PROGRESS_WEIGHTS[path].find((entry) => entry.stage === stage) as { weight: number }).weight;
+// A share as a run WITHOUT the Study phase sees it: the optional study share never reports there, so the others count rescaled. Every
+// expectation below is about such a run, so it reads exactly as before the Study stage existed.
+const weightOf = (path: PathName, stage: StageName): number => rawWeightOf(path, stage) / (1 - rawWeightOf(path, 'study'));
 const D = (stage: StageName): number => weightOf('det', stage);
 const L = (stage: StageName): number => weightOf('llm', stage);
 const S = (stage: StageName): number => weightOf('scan', stage);
@@ -37,6 +40,21 @@ const DET_NO_DRAFT = DET - D('draft');
 const detPct = (draftShare: number): number => Math.round((100 * (D('parse') + D('draft') * draftShare)) / DET);
 
 describe('progress weights', () => {
+  it('a run without the Study phase is weighted exactly as before it existed', () => {
+    const seen = seenOf(units('parse', 35, 35, { complete: true }), units('skeleton', 3, 9));
+    expect(computeOverall(seen).value).toBeCloseTo(L('parse') + L('skeleton') * (3 / 9), 10);
+  });
+
+  it('counts the Study phase in windows, right after parsing, once it reports', () => {
+    const seen = seenOf(units('parse', 35, 35, { complete: true }), units('study', 5, 10, { unit: 'windows' }));
+    const share = (path: PathName, stage: StageName) => rawWeightOf(path, stage);
+    const counted = PROGRESS_WEIGHTS.det.filter((entry) => !entry.optional || entry.stage === 'study').reduce((sum, entry) => sum + entry.weight, 0);
+    const overall = computeOverall(seen);
+    expect(overall.value).toBeCloseTo((share('det', 'parse') + share('det', 'study') * 0.5) / counted, 10);
+    expect(overall).toMatchObject({ stage: 'study', unit: 'windows', done: 5, total: 10 });
+    expect(PROGRESS_WEIGHTS.det.map((entry) => entry.stage).slice(0, 2)).toEqual(['parse', 'study']);
+  });
+
   it.each(Object.keys(PROGRESS_WEIGHTS))('the %s path weights sum to 1', (path) => {
     const sum = PROGRESS_WEIGHTS[path as keyof typeof PROGRESS_WEIGHTS].reduce((s, e) => s + e.weight, 0);
     expect(sum).toBeCloseTo(1, 10);

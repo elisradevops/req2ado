@@ -6,6 +6,7 @@
 
 export type StageName =
   | 'parse'
+  | 'study'
   | 'draft'
   | 'improve'
   | 'summarize'
@@ -84,7 +85,7 @@ export interface MapItem {
 export interface StageUnits {
   type: 'units';
   stage: StageName;
-  unit: 'figures' | 'pages' | 'items' | 'sections' | 'requirements' | 'passes';
+  unit: 'figures' | 'pages' | 'windows' | 'items' | 'sections' | 'requirements' | 'passes';
   done: number;
   total: number;
   complete: boolean;
@@ -108,7 +109,7 @@ export interface ProgressEvent {
    */
   pct: number;
   stage: StageName;
-  unit: 'figures' | 'pages' | 'items' | 'sections' | 'requirements' | 'passes';
+  unit: 'figures' | 'pages' | 'windows' | 'items' | 'sections' | 'requirements' | 'passes';
   done: number;
   total: number;
   /**

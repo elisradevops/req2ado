@@ -6,6 +6,7 @@
 
 export const STAGE_NAMES = [
   'parse',
+  'study',
   'draft',
   'improve',
   'summarize',
@@ -21,7 +22,7 @@ export const STAGE_NAMES = [
 ] as const;
 export type StageName = (typeof STAGE_NAMES)[number];
 
-export const PROGRESS_UNITS = ['figures', 'pages', 'items', 'sections', 'requirements', 'passes'] as const;
+export const PROGRESS_UNITS = ['figures', 'pages', 'windows', 'items', 'sections', 'requirements', 'passes'] as const;
 export type ProgressUnit = (typeof PROGRESS_UNITS)[number];
 
 export const LIVE_KINDS = ['working_on', 'writing', 'item', 'compare', 'ocr_page', 'reset', 'model_progress'] as const;

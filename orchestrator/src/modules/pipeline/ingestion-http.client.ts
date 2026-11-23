@@ -609,8 +609,13 @@ export class IngestionHttpClient {
 
   // The Study of a parsed document (ingestion's /study): one reading of it, its grounded facts and orientation. Fail-open on ingestion's
   // side (a partial Study, never an error for a model that fails); aborting the signal cancels the reading.
-  async study(doc: CanonicalDoc, options: { userId?: string; model?: string; signal?: AbortSignal } = {}): Promise<Record<string, unknown>> {
-    const response = await fetch(`${this.baseUrl}/study`, {
+  // `jobId`: the job the reading is for, so its study stage counts the windows as they are read.
+  async study(
+    doc: CanonicalDoc,
+    options: { userId?: string; model?: string; jobId?: string; signal?: AbortSignal } = {},
+  ): Promise<Record<string, unknown>> {
+    const query = options.jobId ? `?${new URLSearchParams({ job_id: options.jobId }).toString()}` : '';
+    const response = await fetch(`${this.baseUrl}/study${query}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...identityHeaders(options.userId) },
       body: JSON.stringify({ doc, ...(options.model ? { model: options.model } : {}) }),

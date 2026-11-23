@@ -7,7 +7,7 @@ import logging
 import tempfile
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -2538,6 +2538,28 @@ async def prestudy_route(
     return _prestudy_response(doc, rulebook, "none" if rulebook.is_empty() else "model", warnings)
 
 
+def _study_progress(job_id: str | None) -> Callable[[int, int], None] | None:
+    """Publishes the Study's reading as the job's study stage (windows accounted for of windows to read); None without a job."""
+    if job_id is None:
+        return None
+    publisher = NarrationPublisher(_narration_redis, job_id)
+
+    def report(done: int, total: int) -> None:
+        publisher.publish(
+            LevelingProgress(
+                phase="study_window",
+                branch_index=None,
+                branch_count=0,
+                blocks_done=done,
+                blocks_total=total,
+                kb_grounded=False,
+                kb_citations=[],
+            )
+        )
+
+    return report
+
+
 class StudyRequest(BaseModel):
     doc: CanonicalDoc  # its rulebook, when the file was pre-studied, decides which tables state their items' types
     model: str | None = None
@@ -2553,6 +2575,7 @@ async def study_version_route() -> dict:
 async def study_route(
     request: Request,
     body: StudyRequest,
+    job_id: str | None = None,  # the job the reading is for: its study stage counts the windows; absent (the wizard): no progress
     x_user_id: str | None = Header(default=None, alias=USER_ID_HEADER),
 ) -> Study:
     """One reading of the document (app.leveling.study): the grounded facts, a short orientation and each stated table's vocabulary. Never
@@ -2576,6 +2599,7 @@ async def study_route(
                         limiter=_study_limiter,
                         timings=_study_timings,
                         cache=_study_result_cache,
+                        on_progress=_study_progress(job_id),
                     )
                 )
             except job_cancel.JobCancelled:

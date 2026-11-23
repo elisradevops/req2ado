@@ -41,7 +41,7 @@ interface StageWeight {
 //         summarize) plus, for any leftover text, the section stages.
 //   llm:  text-first documents processed section by section.
 //   scan: same as llm but pages are read first (OCR), which takes real time.
-export const PROGRESS_WEIGHTS: Record<ProgressPath, StageWeight[]> = {
+const BASE_WEIGHTS: Record<ProgressPath, StageWeight[]> = {
   det: [
     { stage: 'parse', weight: 0.02 },
     { stage: 'draft', weight: 0.12, skippable: true },
@@ -77,6 +77,22 @@ export const PROGRESS_WEIGHTS: Record<ProgressPath, StageWeight[]> = {
     { stage: 'criteria', weight: 0.1, skippable: true },
     { stage: 'dedup', weight: 0.02 },
   ],
+};
+
+// The Study phase (STUDY_PHASE): one reading of the document right after parsing, counted in windows. Optional, so a run without it is
+// weighted exactly as before: the other shares are scaled by the same factor, and the bar divides by the shares of the stages that report.
+// It reports right after parsing, so its arrival barely moves the bar back (and the published percentage never decreases).
+const STUDY_SHARE = 0.1;
+
+const withStudy = (table: StageWeight[]): StageWeight[] => {
+  const scaled = table.map((entry) => ({ ...entry, weight: entry.weight * (1 - STUDY_SHARE) }));
+  return [scaled[0], { stage: 'study', weight: STUDY_SHARE, optional: true }, ...scaled.slice(1)];
+};
+
+export const PROGRESS_WEIGHTS: Record<ProgressPath, StageWeight[]> = {
+  det: withStudy(BASE_WEIGHTS.det),
+  llm: withStudy(BASE_WEIGHTS.llm),
+  scan: withStudy(BASE_WEIGHTS.scan),
 };
 
 // The three passes that run over many chunks and, for a document with several

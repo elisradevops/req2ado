@@ -135,6 +135,13 @@ def units_from_progress(progress: LevelingProgress) -> StageUnits | None:
     if phase == "infer_trace_links":
         return StageUnits("link", "passes", 2, 2, complete=True)
 
+    if phase == "study_window":
+        total = progress.blocks_total
+        if total <= 0:
+            return None
+        done = _clamp(progress.blocks_done, total)
+        return StageUnits("study", "windows", done, total, complete=done >= total)
+
     return None
 
 

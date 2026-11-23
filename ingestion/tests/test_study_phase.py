@@ -344,3 +344,45 @@ def test_a_disconnected_caller_cancels_the_study(no_redis) -> None:  # noqa: ANN
 
 def test_the_version_route_names_the_current_version() -> None:
     assert TestClient(app).get("/study/version").json() == {"version": study_module.study_result_version()}
+
+
+
+def test_the_route_reports_each_window_as_the_jobs_study_stage(no_redis, monkeypatch) -> None:  # noqa: ANN001
+    from app import main
+
+    published: list = []
+
+    class _Publisher:
+        def __init__(self, redis, job_id):  # noqa: ANN001
+            self.job_id = job_id
+
+        def publish(self, progress) -> None:  # noqa: ANN001
+            published.append((self.job_id, progress.phase, progress.blocks_done, progress.blocks_total))
+
+    monkeypatch.setattr(main, "NarrationPublisher", _Publisher)
+
+    async def fake(model, user_id):  # noqa: ANN001, ANN201
+        return _FakeClient()
+
+    with patch("app.main._survey_client", fake):
+        response = TestClient(app).post(
+            "/study", params={"job_id": "job-7"}, json={"doc": _doc(paragraphs=40).model_dump(mode="json")}, headers={"X-Req2Ado-User-Id": USER}
+        )
+    assert response.status_code == 200
+    total = response.json()["stats"]["windows_total"]
+    assert published[0] == ("job-7", "study_window", 0, total)
+    assert published[-1] == ("job-7", "study_window", total, total)
+    assert all(phase == "study_window" for _, phase, _, _ in published)
+
+
+def test_the_route_reports_nothing_without_a_job(no_redis, monkeypatch) -> None:  # noqa: ANN001
+    from app import main
+
+    monkeypatch.setattr(main, "NarrationPublisher", lambda *a: (_ for _ in ()).throw(AssertionError("no job, no publisher")))
+
+    async def fake(model, user_id):  # noqa: ANN001, ANN201
+        return _FakeClient()
+
+    with patch("app.main._survey_client", fake):
+        response = TestClient(app).post("/study", json={"doc": _doc().model_dump(mode="json")}, headers={"X-Req2Ado-User-Id": USER})
+    assert response.status_code == 200

@@ -817,32 +817,40 @@ export async function runPipelineJob(
     // without a Study /level studies the document itself, as today; a caption pass that fails leaves every figure marked as not described.
     let doc = ingested;
     let study: Record<string, unknown> | null = null;
+    // The Study's windows move the progress bar, so with the Study phase on the tracking starts here and carries on through /level.
+    let studyProgress: (() => Promise<void>) | undefined;
     if (studyPhase && !cached) {
+      studyProgress = await deps.progressService?.track(job.id);
       try {
-        study = await withCancelWatch(deps.prisma, job.id, deps.cancelPollMs ?? CANCEL_POLL_MS, (studySignal) =>
-          deps.ingestionClient.study(doc, { userId: job.userId ?? undefined, model, signal: studySignal }),
-        );
-      } catch (error) {
-        if (error instanceof JobCancelledError) throw error;
-        // eslint-disable-next-line no-console -- worker process logging
-        console.warn(`Job ${job.id}: the document could not be studied (${error instanceof Error ? error.name : 'error'}); /level studies it itself`);
-      }
-      if (doc.vision_active && (doc.figures ?? []).length > 0) {
         try {
-          doc = await withCancelWatch(deps.prisma, job.id, deps.cancelPollMs ?? CANCEL_POLL_MS, (captionSignal) =>
-            deps.ingestionClient.captions(doc, job.id, {
-              study,
-              userId: job.userId ?? undefined,
-              visionModel: visionPlan ? model : undefined,
-              signal: captionSignal,
-            }),
+          study = await withCancelWatch(deps.prisma, job.id, deps.cancelPollMs ?? CANCEL_POLL_MS, (studySignal) =>
+            deps.ingestionClient.study(doc, { userId: job.userId ?? undefined, model, jobId: job.id, signal: studySignal }),
           );
         } catch (error) {
           if (error instanceof JobCancelledError) throw error;
           // eslint-disable-next-line no-console -- worker process logging
-          console.warn(`Job ${job.id}: the figure captions could not be written (${error instanceof Error ? error.name : 'error'})`);
-          doc = { ...doc, figures: (doc.figures ?? []).map((figure) => ({ ...figure, caption_status: figure.caption_status ?? ('vision_failed' as const) })) };
+          console.warn(`Job ${job.id}: the document could not be studied (${error instanceof Error ? error.name : 'error'}); /level studies it itself`);
         }
+        if (doc.vision_active && (doc.figures ?? []).length > 0) {
+          try {
+            doc = await withCancelWatch(deps.prisma, job.id, deps.cancelPollMs ?? CANCEL_POLL_MS, (captionSignal) =>
+              deps.ingestionClient.captions(doc, job.id, {
+                study,
+                userId: job.userId ?? undefined,
+                visionModel: visionPlan ? model : undefined,
+                signal: captionSignal,
+              }),
+            );
+          } catch (error) {
+            if (error instanceof JobCancelledError) throw error;
+            // eslint-disable-next-line no-console -- worker process logging
+            console.warn(`Job ${job.id}: the figure captions could not be written (${error instanceof Error ? error.name : 'error'})`);
+            doc = { ...doc, figures: (doc.figures ?? []).map((figure) => ({ ...figure, caption_status: figure.caption_status ?? ('vision_failed' as const) })) };
+          }
+        }
+      } catch (error) {
+        await studyProgress?.(); // a cancelled job: nothing follows that would stop it
+        throw error;
       }
     }
 
@@ -957,7 +965,7 @@ export async function runPipelineJob(
     // (common) "Default" wizard selection.
     // Follow ingestion's exact stage units for the duration of the leveling call
     // (observation only; tracking failures are swallowed inside the service).
-    const stopProgress = await deps.progressService?.track(job.id);
+    const stopProgress = studyProgress ?? (await deps.progressService?.track(job.id));
     let levelResult: unknown;
     const catalogHash = hashCatalog(linkTypeCatalog);
     try {
