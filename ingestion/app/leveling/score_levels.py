@@ -1,7 +1,7 @@
 """Requirement scores computed in code from the model's anchored judgments (S3 of the prompt root-cause work).
 
-The model answers only what needs language judgment: for each category a level on a fixed 0-4 scale (the anchors are in the scoring prompt)
-with a short evidence quote, and a closed list of findings, each with the quote it concerns. Everything else is decided here, the same way
+The model answers only what needs language judgment: for each category a level on a fixed 0-4 scale (the anchors are in the scoring prompt),
+and a closed list of findings, each with the quote it concerns. Everything else is decided here, the same way
 for every model:
 
 - a level becomes a 0-100 category score (level / MAX_LEVEL, so 0, 25, 50, 75, 100; the mean of two votes can fall between);
@@ -10,7 +10,8 @@ for every model:
 - the issues are the findings whose quote the item's text really contains, plus the issues the levels themselves state (LEVEL_ISSUES);
   an issue about something the item lacks comes from the levels only (LEVEL_ONLY_ISSUES);
 - active voice and a stated rationale are judged only when the organization's standard requires them (STANDARD_REQUIREMENTS);
-- the confidence is how far two independent votes agree, never the model's opinion of itself.
+- the confidence is how far two independent votes agree, never the model's opinion of itself; an item asked one vote (nothing near an
+  issue threshold, see is_borderline) is a high confidence.
 
 The result has the shape the scoring code has always read ({"score", "issues", "categoryScores", "confidence"}), so nothing after the
 client changes."""
@@ -144,9 +145,29 @@ def _overall(levels: dict[str, float]) -> int:
     return round(sum(quality) / len(quality) * gate)
 
 
+def is_borderline(levels: dict[str, int]) -> bool:
+    """Whether one level step in any category could change the issues these levels state (LEVEL_ISSUES): a level on an issue's
+    threshold or one step above it. Only such an item is asked a second vote; an organization's own category states no level issue."""
+    return any(
+        level in (at_most, at_most + 1)
+        for name, level in levels.items()
+        for at_most, _issue in LEVEL_ISSUES.get(name, ())
+    )
+
+
+def needs_second_vote(answer: object, requires: frozenset[str] = frozenset(), builtin: bool = True) -> bool:
+    """Whether a first vote's answer is borderline, judged on the categories entry_from_votes keeps (the same filter). An answer with no
+    usable level is asked again too: one vote that judged nothing is no score."""
+    left_out, _ = _unrequired(requires) if builtin else (frozenset(), frozenset())
+    levels = {name: level for name, level in levels_of(answer).items() if name not in left_out}
+    return not levels or is_borderline(levels)
+
+
 def _confidence(votes: Sequence[dict[str, int]], issue_sets: Sequence[set[str]]) -> str:
     if len(votes) < 2:
-        return "medium"  # one vote: agreement could not be measured
+        # One vote: high when no category sits near an issue threshold (no single step could change its issues; such an item is never
+        # asked a second vote), medium when agreement would have mattered but could not be measured.
+        return "medium" if is_borderline(votes[0]) else "high"
     first, second = votes[0], votes[1]
     shared = first.keys() & second.keys()
     gap = max((abs(first[n] - second[n]) for n in shared), default=0)

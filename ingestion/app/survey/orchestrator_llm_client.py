@@ -42,6 +42,7 @@ from app.leveling.score_levels import (
     builtin_categories,
     entry_from_votes,
     findings_for,
+    needs_second_vote,
 )
 from app.logging_context import current_job_id
 from app.otel import get_tracer
@@ -1063,6 +1064,7 @@ class OrchestratorLlmClient:
         category_checklist: list[str] | None = None,
         user_id: str | None = None,
         standard_requires: frozenset[str] | None = None,
+        together: bool = False,
     ) -> dict[str, dict]:
         """Batched quality scoring: every node's FINAL description judged in one call per vote. The model returns a level (0-4, anchored
         in the prompt) per category with the words that support it, and the problems it finds with the words they concern; code turns
@@ -1192,8 +1194,8 @@ class OrchestratorLlmClient:
                 parsed = drop_possibly_cut_last_entry(parsed)
             return parsed
 
-        def vote(number: int) -> dict:
-            ordered = list(descriptions_by_node_id.items())
+        def vote(number: int, items: dict[str, str] | None = None) -> dict:
+            ordered = list((descriptions_by_node_id if items is None else items).items())
             batch = dict(reversed(ordered) if number % 2 else ordered)
             key = None
             if self._cache is not None:
@@ -1210,15 +1212,25 @@ class OrchestratorLlmClient:
                 self._cache.set(key, dict(entries))
             return dict(entries)
 
-        votes: list[dict] = []
-        for number in range(SCORING_VOTES):
+        votes: list[dict] = [vote(0)]  # the first vote failing is the call failing: the caller's split-and-retry handles it
+        # The second vote (the same items in reverse order) only for the items a single level step could change: the rest are decided by
+        # the first vote, and asking them again was half of every scoring call's output.
+        borderline = {
+            node_id: text
+            for node_id, text in descriptions_by_node_id.items()
+            if needs_second_vote(votes[0].get(node_id), requires=standard_requires, builtin=not category_checklist)
+        }
+        if together and borderline:
+            # Texts that are compared (a rewrite's before and after) are always read by the same votes, so their scores stay comparable.
+            borderline = dict(descriptions_by_node_id)
+        for number in range(1, SCORING_VOTES):
+            if not borderline:
+                break
             try:
-                votes.append(vote(number))
+                votes.append(vote(number, borderline))
             except JobCancelled:
                 raise
             except Exception:
-                if number == 0:
-                    raise  # the first vote failing is the call failing: the caller's split-and-retry handles it
                 logger.warning(
                     "score_requirements_for_document: vote %d failed; confidence comes from one vote",
                     number,

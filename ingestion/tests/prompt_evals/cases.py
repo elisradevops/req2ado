@@ -176,8 +176,8 @@ def _score_reply(
     return _j(
         {
             i: {
-                "categories": [{"name": n, "level": level, "evidence": ""} for n in quality]
-                + [{"name": "completeness_as_requirement", "level": complete, "evidence": ""}],
+                "categories": [{"name": n, "level": level} for n in quality]
+                + [{"name": "completeness_as_requirement", "level": complete}],
                 "findings": [{"issue": f, "quote": q} for f, q in (findings or {}).get(i, [])],
             }
             for i, (level, complete) in levels.items()

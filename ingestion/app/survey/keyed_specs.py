@@ -85,9 +85,8 @@ _CATEGORY_LEVELS = {
         "properties": {
             "name": {"type": "string"},
             "level": {"type": "integer"},
-            "evidence": {"type": "string"},
         },
-        "required": ["name", "level", "evidence"],
+        "required": ["name", "level"],
         "additionalProperties": False,
     },
 }
@@ -124,7 +123,7 @@ SCORING_SPEC = KeyedSpec(
     schema_name="levels_by_node",
     fields={"categories": _CATEGORY_LEVELS, "findings": _FINDINGS},
     field_prompts={
-        "categories": '\'categories\' (a list of {"name", "level", "evidence"} objects)',
+        "categories": '\'categories\' (a list of {"name", "level"} objects)',
         "findings": '\'findings\' (a list of {"issue", "quote"} objects)',
     },
     id_noun="node_id",

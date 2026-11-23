@@ -599,7 +599,7 @@ def test_build_survey_tree_requirement_scoring_failure_fires_chunk_warning() -> 
             criteria_context=None,
             kb_context=None,
             category_checklist=None,
-            user_id=None,
+            user_id=None, together=False,
         ):
             raise ValueError("boom")
 
@@ -626,7 +626,7 @@ def test_apply_quality_scores_missing_score_fires_chunk_warning() -> None:
             criteria_context=None,
             kb_context=None,
             category_checklist=None,
-            user_id=None,
+            user_id=None, together=False,
         ):
             return {}  # every node comes back with no valid score
 
@@ -654,7 +654,7 @@ def test_apply_quality_scores_inconsistent_categories_fires_chunk_warning() -> N
             criteria_context=None,
             kb_context=None,
             category_checklist=None,
-            user_id=None,
+            user_id=None, together=False,
         ):
             return {
                 "n1": {"score": 80, "issues": [], "categoryScores": {"clarity": 80}},
@@ -822,7 +822,7 @@ def test_build_survey_tree_score_requirements_events_carry_the_real_kb_citations
             criteria_context=None,
             kb_context=None,
             category_checklist=None,
-            user_id=None,
+            user_id=None, together=False,
         ):
             return {node_id: {"score": 90, "issues": []} for node_id in descriptions_by_node_id}
 
@@ -892,7 +892,7 @@ def test_build_survey_tree_scoring_uses_the_stored_checklist_from_the_grounding_
             criteria_context=None,
             kb_context=None,
             category_checklist=None,
-            user_id=None,
+            user_id=None, together=False,
         ):
             captured["category_checklist"] = category_checklist
             return {node_id: {"score": 90, "issues": []} for node_id in descriptions_by_node_id}
@@ -950,7 +950,7 @@ def test_build_survey_tree_falls_back_to_none_checklist_when_grounding_document_
             criteria_context=None,
             kb_context=None,
             category_checklist=None,
-            user_id=None,
+            user_id=None, together=False,
         ):
             captured["category_checklist"] = category_checklist
             return {node_id: {"score": 90, "issues": []} for node_id in descriptions_by_node_id}
@@ -3290,7 +3290,7 @@ class _CriteriaForEveryKey:
         criteria_context=None,
         kb_context=None,
         category_checklist=None,
-        user_id=None,
+        user_id=None, together=False,
     ):
         return {
             k: {"score": 40, "issues": ["missing_acceptance_criteria"]}

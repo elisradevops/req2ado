@@ -64,6 +64,7 @@ class BatchedScoringClient(Protocol):
         kb_context: str | None = None,
         category_checklist: list[str] | None = None,
         user_id: str | None = None,
+        together: bool = False,
     ) -> dict[str, dict]: ...
 
 
@@ -567,6 +568,7 @@ def score_texts_together(
         kb_context,
         category_checklist,
         user_id=user_id,
+        together=True,  # the texts are compared: every vote reads all of them, so their scores stay comparable
     )
     valid_issue_values = {i.value for i in RequirementQualityIssue}
     out: dict = {}

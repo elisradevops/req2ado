@@ -59,7 +59,7 @@ def _entry(**levels: int) -> dict:
     """One text's answer as the model gives it: a level (0-4) per category; the score is computed from it in code
     (app.leveling.score_levels)."""
     return {
-        "categories": [{"name": n, "level": v, "evidence": ""} for n, v in levels.items()],
+        "categories": [{"name": n, "level": v} for n, v in levels.items()],
         "findings": [],
     }
 
@@ -80,8 +80,8 @@ def test_both_texts_are_scored_in_one_call_with_the_same_rubric_and_the_profile_
     response = client.post("/rewrite/compare", json=BODY)
 
     assert response.status_code == 200, response.text
-    # One call per vote, each with both texts, so the delta compares two readings made in the same frame.
-    assert len(calls) == 2
+    # Nothing is borderline here (the organization's own categories state no level issue), so one vote reads both texts.
+    assert len(calls) == 1
     assert all(set(json.loads(block_text(c["messages"][1]["content"]))) >= {"before", "after"} for c in calls)
     sent = json.dumps(calls[0])
     assert "One reading only" in sent  # the profile's pass conditions, as in the original scoring
@@ -286,3 +286,22 @@ def test_the_prediction_model_call_ends_with_the_cap_instead_of_running_on(monke
     _patch(monkeypatch, lambda r: _scores(_entry(Testable=2), _entry(Testable=3)))
     assert client.post("/rewrite/compare", json=BODY).status_code == 200
     assert timeouts and set(timeouts) == {main.REWRITE_PREDICTION_SECONDS + 5}
+
+
+def test_when_one_compared_text_is_borderline_every_vote_still_reads_both(monkeypatch) -> None:
+    # Before and after must be read by the same votes, or the delta would compare readings made differently.
+    calls: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(json.loads(request.content))
+        return _scores(
+            _entry(**{"Clear and unambiguous": 2, "Testable": 3, KEY: 2}),  # completeness 2: one step above "fragment"
+            _entry(**{"Clear and unambiguous": 4, "Testable": 3, KEY: 4}),
+        )
+
+    _patch(monkeypatch, handler)
+    response = client.post("/rewrite/compare", json=BODY)
+
+    assert response.status_code == 200, response.text
+    assert len(calls) == 2
+    assert all(set(json.loads(block_text(c["messages"][1]["content"]))) >= {"before", "after"} for c in calls)

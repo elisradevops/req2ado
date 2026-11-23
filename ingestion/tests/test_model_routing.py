@@ -38,7 +38,8 @@ def _client(handler) -> OrchestratorLlmClient:
 
 LEVELS = {
     "categories": [
-        {"name": name, "level": 4, "evidence": ""}
+        # 3 is borderline for testability (one step above "missing acceptance criteria"), so both votes are asked.
+        {"name": name, "level": 3}
         for name in ("clarity", "testability", "atomicity", "completeness_as_requirement")
     ],
     "findings": [],

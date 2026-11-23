@@ -20,7 +20,7 @@ TEXT = "The system shall be user-friendly and fast, TBD."
 
 def _answer(levels: dict[str, object], findings: list[tuple[str, str]] = ()) -> dict:
     return {
-        "categories": [{"name": n, "level": v, "evidence": ""} for n, v in levels.items()],
+        "categories": [{"name": n, "level": v} for n, v in levels.items()],
         "findings": [{"issue": i, "quote": q} for i, q in findings],
     }
 
@@ -126,9 +126,12 @@ def test_two_votes_are_averaged_and_their_findings_pooled() -> None:
     assert entry["issues"] == ["placeholder", "vague_term"]
 
 
-def test_one_usable_vote_is_a_medium_confidence_and_none_is_no_entry() -> None:
+def test_one_usable_vote_is_high_when_clear_medium_when_borderline_and_none_is_no_entry() -> None:
+    # One vote: no category near an issue threshold is a high confidence (no single step could change its issues); a borderline one,
+    # whose agreement could not be measured, is medium.
     entry = entry_from_votes([None, _answer({"clarity": 4, COMPLETENESS: 4})], TEXT)
-    assert entry["score"] == 100 and entry["confidence"] == "medium"
+    assert entry["score"] == 100 and entry["confidence"] == "high"
+    assert entry_from_votes([None, _answer({"clarity": 2, COMPLETENESS: 4})], TEXT)["confidence"] == "medium"
     assert entry_from_votes([None, _answer({})], TEXT) is None
     assert entry_from_votes([], TEXT) is None
 

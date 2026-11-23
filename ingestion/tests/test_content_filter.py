@@ -206,7 +206,7 @@ class _BlockingScorer:
         criteria_context=None,
         kb_context=None,
         category_checklist=None,
-        user_id=None,
+        user_id=None, together=False,
     ):
         self.kb_sent.append(kb_context)
         if kb_context is not None:
