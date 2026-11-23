@@ -19,6 +19,7 @@ import {
   editRules,
   previewJob,
   previewRules,
+  previewStudy,
   previewSummary,
   getCachedResult,
   submitJob,
@@ -28,6 +29,7 @@ import {
   type EtaEstimate,
   type PreviewResult,
   type DocumentOverview,
+  type DocumentStudy,
   type RulebookView,
 } from '../api/jobs';
 import { estimateLine, formatTokenCount, formatUsdRange, tokenForecastLine } from '../utils/eta';
@@ -43,6 +45,7 @@ import { SectionCard } from '../ui/SectionCard';
 import { KbReadinessStrip } from '../components/KbReadinessStrip';
 import { OverviewLines } from '../components/DocumentOverviewCard';
 import { FileRulesCard, type RulesStatus } from '../components/FileRulesCard';
+import { DocumentStudyCard, type StudyStatus } from '../components/DocumentStudyCard';
 import { TextField } from '../ui/TextField';
 import { Button } from '../ui/Button';
 import { Spinner } from '../ui/Spinner';
@@ -657,6 +660,51 @@ export function NewJobWizard(): React.ReactElement {
       ? { readWith: rules.model ?? defaultModelName, jobUses: modelForRules.current ?? defaultModelName }
       : null;
 
+  // Reading and analyzing the document (the Study): the reading the job itself does before Analyze, done here while the user checks the page,
+  // so the job reuses it (ingestion keeps it by user, text, rulebook and model) instead of reading again. It starts once the file's layout is
+  // settled, because it reads the tables by the rulebook shown, and with the model the job will use (BASELINE: the default). A different file,
+  // rulebook, mode or model reads again; leaving the page stops it. Start waits for it; a reading that fails frees Start (the job then says so).
+  const [study, setStudy] = useState<{ status: StudyStatus; done: number; total: number; view: DocumentStudy | null; error: string | null; startedAt?: string }>({
+    status: 'waiting',
+    done: 0,
+    total: 0,
+    view: null,
+    error: null,
+  });
+  const studyModel = mode === 'survey' ? model || undefined : undefined;
+  const studyRulebookId = rules.view?.id || undefined;
+  const studyKey = file && hasPreview && !rulesBusy ? [fileHash, mode, studyModel ?? '', studyRulebookId ?? ''].join('|') : null;
+  useEffect(() => {
+    if (!file || studyKey === null) {
+      setStudy({ status: 'waiting', done: 0, total: 0, view: null, error: null });
+      return undefined;
+    }
+    const controller = new AbortController();
+    setStudy({ status: 'reading', done: 0, total: 0, view: null, error: null, startedAt: new Date().toISOString() });
+    previewStudy(
+      { file, mode, model: studyModel, rulebookId: studyRulebookId },
+      (done, total) => {
+        if (!controller.signal.aborted) setStudy((current) => ({ ...current, done, total }));
+      },
+      controller.signal,
+    ).then(
+      (result) => {
+        if (controller.signal.aborted) return;
+        setStudy((current) =>
+          result.kind === 'skipped'
+            ? { status: 'skipped', done: 0, total: 0, view: null, error: null }
+            : { status: 'ready', done: current.total, total: current.total, view: result.study, error: null },
+        );
+      },
+      (err: unknown) => {
+        if (controller.signal.aborted) return;
+        setStudy({ status: 'error', done: 0, total: 0, view: null, error: err instanceof Error ? err.message : 'The document could not be read.' });
+      },
+    );
+    return () => controller.abort();
+  }, [studyKey, file, mode, studyModel, studyRulebookId]);
+  const studyBusy = study.status === 'waiting' || study.status === 'reading';
+
   async function handleFileSelected(selected: File): Promise<void> {
     const seq = ++previewRequestSeq.current;
     setFile(selected);
@@ -946,6 +994,7 @@ export function NewJobWizard(): React.ReactElement {
           onReadNow={() => file && void learnRules(file, false)}
           onSaveEdit={handleSaveRulesEdit}
         />
+        <DocumentStudyCard status={study.status} done={study.done} total={study.total} study={study.view} error={study.error} startedAt={study.startedAt} />
     </>
   );
   const startBar = (
@@ -973,9 +1022,9 @@ export function NewJobWizard(): React.ReactElement {
             </p>
           )}
           <SafetyLine variant="wizard" />
-          <Button onClick={requestStart} disabled={isSubmitting || rulesBusy || destinationMissing} className="ml-auto">
+          <Button onClick={requestStart} disabled={isSubmitting || rulesBusy || studyBusy || destinationMissing} className="ml-auto">
             {isSubmitting ? <Spinner /> : <Activity className="h-3.5 w-3.5" />}
-            {isSubmitting ? 'Starting…' : rulesBusy ? 'Reading the file…' : 'Looks right — start job'}
+            {isSubmitting ? 'Starting…' : rulesBusy ? 'Reading the file…' : studyBusy ? 'Reading the document…' : 'Looks right — start job'}
           </Button>
         </div>
   );

@@ -21,6 +21,7 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { FileRulebookService, RulebookRejected, type RulebookView } from './file-rulebook.service';
+import { StudyPreviewService } from './study-preview.service';
 import { Throttle } from '@nestjs/throttler';
 import { Body } from '@nestjs/common';
 import type { Response } from 'express';
@@ -167,6 +168,8 @@ export class JobsController {
     @Optional() @Inject('COST_ESTIMATOR') private readonly costEstimator?: CostEstimator,
     // What the pre-study learned about a file's conventions, stored per user and file (POST preview/rules); absent, jobs are never given a rulebook.
     @Optional() private readonly fileRulebooks?: FileRulebookService,
+    // The wizard's Study step (POST preview/study); absent, the wizard has none.
+    @Optional() private readonly studyPreview?: StudyPreviewService,
   ) {}
 
   // The AI summaries already written in this process (P6): a re-upload of the same file gets its summary at once.
@@ -472,6 +475,56 @@ export class JobsController {
       relearn: relearn === 'true',
       signal: abort.signal,
     });
+  }
+
+  // The wizard's "Reading and analyzing the document" step: the Study the job will read, streamed as it reads (heartbeat lines with
+  // windowsDone/windowsTotal, then one result line with the Study). The job reuses it from ingestion's cache. A job that would not read one
+  // (STUDY_PHASE off, or a BASELINE job of a user with no model connection) answers one `{"type":"skipped"}` line. The browser leaving
+  // stops the reading.
+  @Throttle({ default: { limit: 6, ttl: 60_000 } })
+  @Post('preview/study')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MULTER_SAFETY_CEILING_BYTES } }))
+  async previewStudy(
+    @UploadedFile() file: Express.Multer.File | undefined,
+    @CurrentUser() user: SessionUser,
+    @Body('mode') mode: string | undefined,
+    @Body('model') model: string | undefined,
+    @Body('rulebookId') rulebookId: string | undefined,
+    @Res() res: Response,
+  ): Promise<void> {
+    const upload = this.checkedUpload(file);
+    if (mode !== 'baseline' && mode !== 'survey') throw new BadRequestException(`mode must be 'baseline' or 'survey', got: ${mode}`);
+    await this.assertModelAllowed(model);
+    const abort = new AbortController();
+    res.on('close', () => {
+      if (!res.writableEnded) abort.abort(); // the browser left: stop the reading (and its model calls) too
+    });
+    const stream = this.studyPreview
+      ? await this.studyPreview.open(
+          {
+            userId: user.userId,
+            file: upload.buffer,
+            filename: upload.originalname,
+            mode,
+            ...(model ? { model } : {}),
+            ...(rulebookId ? { rulebookId } : {}),
+            signal: abort.signal,
+          },
+          createHash('sha256').update(upload.buffer).digest('hex'),
+        )
+      : null;
+    res.status(200).set('Content-Type', 'application/x-ndjson');
+    if (!stream) {
+      res.end('{"type":"skipped"}\n');
+      return;
+    }
+    try {
+      for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>) res.write(chunk);
+    } catch (error) {
+      if (abort.signal.aborted) return; // the browser is gone: nothing to tell it
+      res.write(`${JSON.stringify({ type: 'error', status: 502, detail: error instanceof Error ? error.message : 'the study stopped' })}\n`);
+    }
+    res.end();
   }
 
   // A user's edit of the rulebook: checked against the file with the same checks as a model's answer. A rulebook that does not fit answers 400 with the
@@ -1145,6 +1198,29 @@ export class JobsController {
     }
     await this.jobsService.storeFigureFile(id, figureId, bytes, parseResult.data.mimeType);
     return { stored: true };
+  }
+
+  // Internal read-back of a stored figure, for ingestion's /captions: a job whose captions are written after its Study (STUDY_PHASE on)
+  // describes each figure from the copy /ingest stored here, so the file is never parsed twice. Same bearer-guarded, no-session
+  // convention as the upload route above; streams the raw bytes like the browser route below. 404 when the job or the figure is unknown.
+  @Get(':id/figures/:figureId/bytes')
+  @Public()
+  @UseGuards(LlmProxyBearerGuard)
+  async readFigureFileInternal(
+    @Param('id') id: string,
+    @Param('figureId') figureId: string,
+    @Res() res: Response,
+  ): Promise<void> {
+    const job = await this.jobsService.getById(id);
+    if (!job) {
+      throw new NotFoundException(`Job ${id} not found`);
+    }
+    const figureFile = await this.jobsService.getFigureFile(id, figureId);
+    if (!figureFile) {
+      throw new NotFoundException(`Figure ${figureId} not found for job ${id}`);
+    }
+    res.set('Content-Type', figureFile.mimeType);
+    res.send(figureFile.bytes);
   }
 
   // Browser-facing counterpart to the internal upload route above -- lets

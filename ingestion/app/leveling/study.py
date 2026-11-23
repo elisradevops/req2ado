@@ -21,6 +21,7 @@ import inspect
 import json
 import logging
 import math
+import re
 import statistics
 import threading
 import time
@@ -33,13 +34,18 @@ from app.canonical.model import BlockKind, CanonicalDoc, Table
 from app.config import settings
 from app.job_cancel import JobCancelled
 from app.kb.profile import windows_of
-from app.leveling.document_study import STUDY_WINDOW_CHARS, STUDY_WINDOW_OVERLAP, _canonical
-from app.leveling.llm_leveling import _render_block_line, _table_to_markdown
+from app.leveling.document_study import (
+    STUDY_WINDOW_CHARS,
+    STUDY_WINDOW_OVERLAP,
+    DocumentStudy,
+    StudyReadStats,
+    _canonical,
+)
 from app.leveling.study_runner import StudyHandle
 from app.leveling.study_store import study_version
 from app.leveling.tree_builder import _order_key
 from app.prompts import load_prompt
-from app.request_identity import user_scope
+from app.request_identity import redact_identity, user_scope
 from app.study.file_rules import TableRule, _grid, study_tables
 from app.survey._response_schemas import document_orientation_schema
 
@@ -62,7 +68,9 @@ VOCABULARY_VALUE_CHARS = 200  # a longer value is free text, not vocabulary: it 
 _TABLE_MARKER_EVERY = STUDY_WINDOW_CHARS // 2
 _TIMING_SAMPLES_MIN = 3  # fewer measured windows than this: the default seconds per window is used
 _RESULT_PREFIX = "studyresult"
-_TIMING_PREFIX = "studytiming"
+# Seconds per 1,000 characters read (a window's own length, not a window: a short document's one small window and a full 20,000-character
+# window take very different times). A new key, so samples measured per window before are never read as per 1,000 characters.
+_TIMING_PREFIX = "studytime-kchar"
 
 
 class OrientationClient(Protocol):
@@ -105,7 +113,7 @@ class StudyStats(BaseModel):
     breaker_opened: bool = False
     budget_stopped: bool = False
     budget_seconds: float = 0.0
-    seconds_per_window: float = 0.0  # the estimate the budget was computed from
+    seconds_per_window: float = 0.0  # the estimate the budget was computed from, for a full window (STUDY_WINDOW_CHARS)
     stopped_by: str = "completed"  # StudyOutcome.stopped_by, or "empty" for a document with no text
     orientation_failed: bool = False
     from_cache: bool = False  # the whole Study came from the result cache: no model call was made
@@ -184,6 +192,11 @@ def table_text(table: Table, rule: TableRule) -> str:
 def study_text(doc: CanonicalDoc, rules: dict[str, TableRule]) -> str:
     """The document as the Study reads it: blocks and tables in document order (as render_section orders them), with every table that
     states its items' types rendered by table_text instead of as a markdown grid."""
+    from app.leveling.llm_leveling import (  # here, not at the top: llm_leveling reads a given Study through this module
+        _render_block_line,
+        _table_to_markdown,
+    )
+
     entries: list[tuple[tuple[int, int], str]] = []
     for block in doc.blocks:
         line = _render_block_line(block)
@@ -204,16 +217,27 @@ def study_text(doc: CanonicalDoc, rules: dict[str, TableRule]) -> str:
 # -- vocabulary (code only) ------------------------------------------------------------------------------------------------------
 
 
+# A person as an Azure DevOps export or a sheet writes one: "Name <DOMAIN\\user>" or "Name <user@domain>" (an identity field), beside the
+# deployment's own identity forms (app.request_identity: Windows SIDs, identity URIs).
+_PERSON_VALUE = re.compile(r"<[^<>\s]+\\[^<>\s]+>|<[^<>\s@]+@[^<>\s]+>")
+
+
+def _names_a_person(value: str) -> bool:
+    return bool(_PERSON_VALUE.search(value)) or redact_identity(value) != value
+
+
 def _vocabulary_columns(rule: TableRule) -> list[int]:
-    """The columns whose values name a kind of thing (type, level, priority, method...): never the free-text columns (title,
-    description) nor the identifiers (id, parent, customer id), whose values are all different by design."""
-    excluded = {rule.title_col, rule.id_col, rule.parent_col, rule.customer_id_col, *rule.description_cols}
+    """The columns whose values name a kind of thing (type, level, priority, method...): never the free-text columns (the title, the
+    level title columns of a table nested by levels, the description) nor the identifiers (id, parent, customer id), whose values are
+    all different by design."""
+    excluded = {rule.title_col, rule.id_col, rule.parent_col, rule.customer_id_col, *rule.level_cols, *rule.description_cols}
     return [index for index in range(len(rule.labels)) if index not in excluded and rule.labels[index].strip()]
 
 
 def table_vocabulary(table: Table, rule: TableRule) -> list[ColumnVocabulary]:
     """Each column's distinct values over the imported rows, in first-seen order (de-duplicated by their canonical form, the first
-    spelling kept), at most VOCABULARY_VALUES of them; a value longer than VOCABULARY_VALUE_CHARS is free text and left out."""
+    spelling kept), at most VOCABULARY_VALUES of them; a value longer than VOCABULARY_VALUE_CHARS is free text and left out. A column
+    with any value that names a person (Assigned To, Created By...) is left out whole: the vocabulary goes into prompts, people do not."""
     grid = _grid(table)
     name = table.caption or f"Table {table.id}"
     vocabulary: list[ColumnVocabulary] = []
@@ -228,6 +252,8 @@ def table_vocabulary(table: Table, rule: TableRule) -> list[ColumnVocabulary]:
             if key not in seen:
                 seen.add(key)
                 values.append(value)
+        if any(_names_a_person(value) for value in values):
+            continue
         if values:
             vocabulary.append(
                 ColumnVocabulary(
@@ -294,7 +320,11 @@ def study_result_version() -> str:
         _TABLE_MARKER_EVERY,
         VOCABULARY_VALUES,
         VOCABULARY_VALUE_CHARS,
-        *(_source_of(fn) for fn in (table_text, study_text, table_vocabulary, _vocabulary_columns, outline_of, checked_orientation)),
+        *(
+            _source_of(fn)
+            for fn in (table_text, study_text, table_vocabulary, _vocabulary_columns, _names_a_person, outline_of, checked_orientation)
+        ),
+        _PERSON_VALUE.pattern,
     ]
     return hashlib.sha256(json.dumps(parts).encode("utf-8")).hexdigest()[:12]
 
@@ -303,7 +333,8 @@ def study_result_version() -> str:
 
 
 class _TimedClient:
-    """Measures each window call that answers (inside the lease, so waiting for a slot is not counted). Shared by the worker threads."""
+    """Measures each window call that answers (inside the lease, so waiting for a slot is not counted), as seconds per 1,000 characters
+    of the text it read. Shared by the worker threads."""
 
     def __init__(self, inner: OrientationClient, clock: Callable[[], float]) -> None:
         self._inner = inner
@@ -315,13 +346,13 @@ class _TimedClient:
         started = self._clock()
         answer = self._inner.study_document_window(window_text, user_id=user_id)
         with self._lock:
-            self.samples.append(self._clock() - started)
+            self.samples.append((self._clock() - started) * 1000 / max(len(window_text), 1))
         return answer
 
 
 class StudyTimings:
-    """The model's recent seconds per window, in Redis (one capped list per model, no user data). Fail open: no client or any Redis error
-    is "nothing measured", and the default is used."""
+    """The model's recent seconds per 1,000 characters read, in Redis (one capped list per model, no user data). Fail open: no client or
+    any Redis error is "nothing measured", and the default is used."""
 
     def __init__(self, redis_client, samples: int, ttl_seconds: int) -> None:
         self._redis = redis_client
@@ -355,17 +386,25 @@ class StudyTimings:
             return
         key = self._key(model)
         try:
-            self._redis.lpush(key, *(f"{s:.3f}" for s in good))
+            self._redis.lpush(key, *(f"{s:.4f}" for s in good))
             self._redis.ltrim(key, 0, self._samples - 1)
             self._redis.expire(key, self._ttl_seconds)
         except Exception as error:  # noqa: BLE001 -- fail open
             logger.warning("Study timings not recorded (%s).", type(error).__name__)
 
 
-def study_budget(windows: int, seconds_per_window: float, concurrency: int, ceiling: float) -> float:
-    """Seconds for `windows` windows read `concurrency` at a time, plus one round of slack for a slow window, at most `ceiling`."""
-    rounds = math.ceil(max(windows, 1) / max(concurrency, 1)) + 1
-    return min(ceiling, rounds * seconds_per_window)
+# Headroom over the estimate: one model's time per window varies widely (10 to 26 s for full windows of one export), and the estimate is a
+# median, so about half the windows take longer than it says.
+_BUDGET_MARGIN = 1.5
+
+
+def study_budget(window_chars: list[int], seconds_per_kchar: float, concurrency: int, ceiling: float) -> float:
+    """Seconds to read windows of these lengths `concurrency` at a time (their characters x the seconds per 1,000 characters / the
+    concurrency, plus the longest window once more for the last slow call), with _BUDGET_MARGIN headroom, at most `ceiling`."""
+    if not window_chars:
+        return 0.0
+    per_window = [chars / 1000 * seconds_per_kchar for chars in window_chars]
+    return min(ceiling, _BUDGET_MARGIN * (sum(per_window) / max(concurrency, 1) + max(per_window)))
 
 
 # -- result cache ----------------------------------------------------------------------------------------------------------------
@@ -453,9 +492,13 @@ def build_study(
             return cached
 
     measured = timings.median(model) if timings is not None else None
-    seconds_per_window = measured if measured is not None else float(settings.study_default_seconds_per_window)
-    to_read = min(len(windows), settings.survey_study_max_windows)
-    budget = study_budget(to_read, seconds_per_window, settings.survey_study_concurrency, settings.survey_study_hard_budget_seconds)
+    # The default is set per full window (the unit an operator thinks in); measured times are per 1,000 characters.
+    seconds_per_kchar = measured if measured is not None else float(settings.study_default_seconds_per_window) * 1000 / STUDY_WINDOW_CHARS
+    seconds_per_window = seconds_per_kchar * STUDY_WINDOW_CHARS / 1000
+    to_read = windows[: settings.survey_study_max_windows]
+    budget = study_budget(
+        [len(w) for w in to_read], seconds_per_kchar, settings.survey_study_concurrency, settings.survey_study_hard_budget_seconds
+    )
 
     timed = _TimedClient(client, clock)
     # The background study's own settings, except the deadline: the Study's budget replaces the fixed hard budget.
@@ -518,3 +561,53 @@ def build_study(
     if key is not None and study.complete:
         cache.put(key, study)  # type: ignore[union-attr]
     return study
+
+
+# -- a Study given to /level (CanonicalDoc.study) ----------------------------------------------------------------------------------
+
+
+def study_of(doc: CanonicalDoc) -> Study | None:
+    """The Study the orchestrator put on the document, or None when there is none. One that is not a Study's JSON form is ignored with a
+    warning (the caller then takes today's path), never trusted in part."""
+    if doc.study is None:
+        return None
+    try:
+        return Study.model_validate(doc.study)
+    except ValueError:
+        logger.warning("The Study sent with the document is not valid; carrying on without it.")
+        return None
+
+
+def as_document_study(study: Study) -> DocumentStudy | None:
+    """The grounded facts in the shape the acceptance-criteria step reads (the background study's), or None when no window was read."""
+    s = study.stats
+    if s.windows_studied == 0 and not any(
+        (study.glossary, study.placeholder_tokens, study.verification_statements, study.standards_cited, study.table_roles)
+    ):
+        return None
+    return DocumentStudy(
+        glossary=[g.model_dump() for g in study.glossary],
+        placeholder_tokens=list(study.placeholder_tokens),
+        verification_statements=list(study.verification_statements),
+        standards_cited=list(study.standards_cited),
+        table_roles=[r.model_dump() for r in study.table_roles],
+        windows_studied=s.windows_studied,
+        windows_total=s.windows_total,
+        read_stats=StudyReadStats(
+            s.windows_retried, s.windows_split, s.windows_failed, s.breaker_opened, s.budget_stopped, s.windows_cached
+        ),
+    )
+
+
+_ORIENTATION_LABELS = {
+    "document_type": "Document type",
+    "purpose": "Purpose",
+    "system": "System",
+    "conventions": "Conventions",
+}
+
+
+def orientation_text(orientation: Orientation) -> str | None:
+    """The orientation as the background text the primer used to be (one labelled line per written field), or None when it is empty."""
+    lines = [f"{_ORIENTATION_LABELS[f]}: {getattr(orientation, f)}" for f in ORIENTATION_FIELDS if getattr(orientation, f)]
+    return "\n".join(lines) or None

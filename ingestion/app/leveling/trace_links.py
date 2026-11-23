@@ -83,6 +83,20 @@ def _quote_names_target(quote: str, target_ref: str, target_node: WorkItemNode |
 
 
 _EMBEDDED_TABLE_HTML_PATTERN = re.compile(r"<table.*?</table>", re.DOTALL)
+# Markdown emphasis and code markers: formatting, not words. A source that writes "**Verified by ATP:** ATP-ICC-002" is quoted by the model as
+# "Verified by ATP: ATP-ICC-002"; the words are the source's own, so the quote is evidence.
+_MARKDOWN_MARKERS = re.compile(r"\*\*|__|`")
+
+
+def _plain_words(text: str) -> str:
+    """The text as words only: markdown emphasis and code markers removed, whitespace squashed."""
+    return " ".join(_MARKDOWN_MARKERS.sub("", text).split())
+
+
+def _quote_is_in(quote: str, source_text: str) -> bool:
+    """True when the quote's words appear, in order and verbatim, in the source text: formatting markers and spacing do not count."""
+    words = _plain_words(quote)
+    return bool(words) and words in _plain_words(source_text)
 
 
 def _without_embedded_table_html(description: str) -> str:
@@ -373,18 +387,22 @@ def _infer_trace_links_for_nodes(
         target_ref, external = _link_target(raw_link, node_by_local_id)
         # Real anti-hallucination guard (SWEEP.md section 7's "highest-
         # leverage fix in the whole audit"): a proposed link with no
-        # evidence quote, or a quote that isn't a literal substring of the
-        # exact text this call sent the model (llm_nodes' stripped text,
+        # evidence quote, or a quote whose words are not a literal run of
+        # the exact text this call sent the model (llm_nodes' stripped text,
         # not the raw node.description -- see this function's own
         # llm_nodes construction comment for why), has no verifiable
         # textual basis and is dropped here, same fail-open-per-entry
         # philosophy as every other validation check in this loop.
+        # Markdown emphasis and spacing are not words (_quote_is_in): a
+        # source's "**Verified by ATP:**" quoted without the stars is the
+        # source's own text, and requiring the stars dropped every link of
+        # an Azure DevOps export (161 of 161 on one job).
         evidence_quote = raw_link.get("evidence_quote")
         source_text = text_by_node_id.get(source_node_id, "")
         if (
             not isinstance(evidence_quote, str)
             or not evidence_quote
-            or evidence_quote not in source_text
+            or not _quote_is_in(evidence_quote, source_text)
         ):
             logger.warning(
                 "Trace-link inference proposed a link with no valid evidence quote, skipped: %r",

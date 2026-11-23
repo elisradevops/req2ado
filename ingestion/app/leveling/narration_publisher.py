@@ -125,6 +125,9 @@ Phase = Literal[
     # `warnings.append(message)` call at each site -- same message, both
     # places -- so the final warnings list is byte-identical to before.
     "chunk_warning",
+    # The Study phase (app.leveling.study, /study): one event as the reading starts and one per window accounted for, blocks_done of
+    # blocks_total windows, so the job's study stage counts windows.
+    "study_window",
 ]
 
 
@@ -354,6 +357,7 @@ _PHASE_MESSAGES: dict[Phase, str] = {
     "parse_done": "Finished parsing the document",
     "table_detected": "Detected a table",
     "page_alignment": "Deriving real page numbers from a converted PDF",
+    "study_window": "Studying the document",
     "preparing_analysis": "Preparing analysis -- splitting sections, retrieving context",
     "deterministic_subtree": "Building the item hierarchy",
     "build_skeleton": "Deciding this section's work-item structure",
@@ -422,6 +426,10 @@ def _format_message(progress: LevelingProgress) -> str:
         )
         return base
     if progress.phase == "preparing_analysis":
+        return base
+    if progress.phase == "study_window":
+        if progress.blocks_total > 0:
+            base += f" -- {progress.blocks_done} of {progress.blocks_total} part(s) read"
         return base
     if progress.phase == "page_alignment":
         # Completion fire (page_align_page_count present) vs. the earlier

@@ -29,6 +29,8 @@ beforeEach(() => {
   useNewJobDraftStore.getState().reset();
   vi.spyOn(kbApi, 'listIngestedDocuments').mockResolvedValue([]);
   vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'valid', expiresInSeconds: 3600 });
+  // By default the job reads no Study (as for a user with no model connection), so Start behaves as it did before the Study step.
+  vi.spyOn(jobsApi, 'previewStudy').mockResolvedValue({ kind: 'skipped' });
 });
 
 describe('NewJobWizard Step 1', () => {
@@ -2027,5 +2029,89 @@ describe('NewJobWizard: how the file is read (the pre-study)', () => {
     vi.spyOn(jobsApi, 'previewRules').mockRejectedValue({ response: { status: 429, data: { message: 'ThrottlerException: Too Many Requests' } } });
     await toCheckAndStart();
     expect(await screen.findByText(/too many reads in a minute\. try again shortly\./i)).toBeInTheDocument();
+  });
+});
+
+describe('NewJobWizard: reading and analyzing the document (the Study)', () => {
+  const PREVIEW = {
+    blockCount: 1,
+    sectionCount: 6,
+    figureCount: 0,
+    depth: 2,
+    fileType: 'xlsx',
+    tableCount: 1,
+    openTbdCount: 0,
+    documentMap: [],
+    estimate: { mode: 'baseline', estimateMinutes: 1 },
+    fileHash: 'f'.repeat(64),
+    documentTokens: 10,
+    overview: { synopsis: 'A sheet.', caveat: null, lines: ['Structure: 1 table.'], profile: { summaryInput: 'x' } },
+  } as never;
+  const VIEW = { id: 'rb1', source: 'model', hash: '0123456789abcdef', rules: [], warnings: [], rulebook: { version: 1, tables: {}, document: null }, reused: false } as never;
+  const STUDY = {
+    orientation: { document_type: 'A system requirements specification', purpose: 'States what the radio does', system: 'The radio', conventions: '' },
+    glossary: [{ term: 'BIT', definition: 'Built-in test' }],
+    placeholder_tokens: ['TBD'],
+    verification_statements: ['Verified by test TP-1', 'Measured at ambient'],
+    standards_cited: [],
+    table_roles: [],
+    vocabulary: [{ table: 'Sheet', column: 'Priority', values: ['High', 'Low'], more: 0 }],
+    stats: { windows_studied: 4, windows_total: 4, budget_stopped: false, orientation_failed: false, from_cache: false },
+    warnings: [],
+  };
+
+  async function toCheckAndStart(): Promise<void> {
+    vi.spyOn(jobsApi, 'previewRules').mockResolvedValue(VIEW);
+    vi.spyOn(jobsApi, 'previewJob').mockResolvedValue(PREVIEW);
+    vi.spyOn(jobsApi, 'listModels').mockResolvedValue({ models: ['m1'], recommended: null, details: [] });
+    vi.spyOn(jobsApi, 'submitJob').mockResolvedValue({ jobId: 'job-1' });
+    render(
+      <ToastProvider>
+        <MemoryRouter>
+          <NewJobWizard />
+        </MemoryRouter>
+      </ToastProvider>,
+    );
+    await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'sheet.xlsx'));
+    await waitFor(() => expect(screen.getByRole('button', { name: /configure|check and start/i })).not.toBeDisabled());
+    await userEvent.click(screen.getByRole('button', { name: /configure|check and start/i }));
+    await userEvent.type(screen.getByLabelText(/area path/i), 'Project\\Area1');
+  }
+
+  it('reads with the rulebook shown and the job\'s model, and Start waits for it, showing the parts read', async () => {
+    let progress: (done: number, total: number) => void = () => undefined;
+    let finish: (value: { kind: 'study'; study: typeof STUDY }) => void = () => undefined;
+    const read = vi.spyOn(jobsApi, 'previewStudy').mockImplementation((_input, onProgress) => {
+      progress = onProgress;
+      return new Promise((resolve) => (finish = resolve as never));
+    });
+    await toCheckAndStart();
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+    expect(read.mock.calls[0][0]).toMatchObject({ mode: 'baseline', model: undefined, rulebookId: 'rb1' });
+    const start = screen.getByRole('button', { name: /reading the document/i });
+    expect(start).toBeDisabled();
+    act(() => progress(2, 4));
+    expect(await screen.findByText('Reading part 3 of 4.')).toBeInTheDocument();
+    act(() => finish({ kind: 'study', study: STUDY }));
+    expect(await screen.findByText('The radio')).toBeInTheDocument();
+    expect(screen.getByText(/found 2 verification statements · 1 defined term · 1 open-value marker/i)).toBeInTheDocument();
+    const ready = screen.getByRole('button', { name: /looks right/i });
+    await waitFor(() => expect(ready).toBeEnabled());
+    await userEvent.click(ready);
+    expect(jobsApi.submitJob).toHaveBeenCalledWith(expect.objectContaining({ rulebookId: 'rb1' }));
+  });
+
+  it('a reading that fails frees Start and says the job will say so', async () => {
+    vi.spyOn(jobsApi, 'previewStudy').mockRejectedValue(new Error('The model route did not answer.'));
+    await toCheckAndStart();
+    expect(await screen.findByText(/the model route did not answer\. the job can start without it/i)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: /looks right/i })).toBeEnabled());
+  });
+
+  it('shows nothing and holds nothing when the job reads no Study', async () => {
+    vi.spyOn(jobsApi, 'previewStudy').mockResolvedValue({ kind: 'skipped' });
+    await toCheckAndStart();
+    await waitFor(() => expect(screen.getByRole('button', { name: /looks right/i })).toBeEnabled());
+    expect(screen.queryByTestId('document-study-card')).not.toBeInTheDocument();
   });
 });

@@ -68,7 +68,7 @@
       }
     },
     "StageName": {
-      "enum": ["parse", "draft", "improve", "summarize", "skeleton", "map", "write", "score", "link", "trace", "criteria", "dedup", "write_ado"]
+      "enum": ["parse", "study", "draft", "improve", "summarize", "skeleton", "map", "write", "score", "link", "trace", "criteria", "dedup", "write_ado"]
     },
     "StageUnits": {
       "type": "object",
@@ -78,7 +78,7 @@
       "properties": {
         "type": { "const": "units" },
         "stage": { "$ref": "#/definitions/StageName" },
-        "unit": { "enum": ["figures", "pages", "items", "sections", "requirements", "passes"] },
+        "unit": { "enum": ["figures", "pages", "windows", "items", "sections", "requirements", "passes"] },
         "done": { "type": "integer", "minimum": 0 },
         "total": { "type": "integer", "minimum": 0 },
         "complete": { "type": "boolean" },
@@ -99,7 +99,7 @@
         "seq": { "type": "integer", "minimum": 0, "description": "Monotonic per job; clients drop frames older than the newest seen." },
         "pct": { "type": "integer", "minimum": 0, "maximum": 100, "description": "Never decreases within a job." },
         "stage": { "$ref": "#/definitions/StageName" },
-        "unit": { "enum": ["figures", "pages", "items", "sections", "requirements", "passes"] },
+        "unit": { "enum": ["figures", "pages", "windows", "items", "sections", "requirements", "passes"] },
         "done": { "type": "integer", "minimum": 0 },
         "total": { "type": "integer", "minimum": 0 },
         "estimated": { "type": "boolean", "description": "True while the stage weights are the shipped defaults rather than calibrated from past runs." },

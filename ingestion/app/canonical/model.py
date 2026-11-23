@@ -291,3 +291,6 @@ class CanonicalDoc(BaseModel):
     # the file (the wizard's preview, or the user's edit) and carried to /level in this same body, like the vision flags above. None: /level reads only the
     # conventions the code recognises (BASELINE) or asks the model once itself (SURVEY). {} (an empty rulebook) means "asked, nothing to learn": no second ask.
     rulebook: dict | None = None
+    # The Study of this document (app.leveling.study, in its JSON form), set by the orchestrator when STUDY_PHASE is on: /level reads it instead
+    # of starting its own background study. None: no Study (today's path).
+    study: dict | None = None

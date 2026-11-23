@@ -226,3 +226,19 @@ def test_a_link_between_unrelated_branches_still_stands() -> None:
         nodes, _Client([_link("other", "child", "Data framing")]), CATALOG, [], None, 0, 0
     )
     assert [(link.source_local_id, link.target_local_id) for link in links] == [("other", "child")]
+
+
+def test_a_quote_of_bold_labelled_source_text_without_the_markers_is_evidence() -> None:
+    # An Azure DevOps export keeps its markdown ("**Verified by ATP:** ..."); the model quotes the words without the stars. Requiring the stars
+    # dropped every link of one export job (161 of 161).
+    nodes = [_node("n0", "A", "The unit shall start.\n\n**Verified by ATP:** REQ-2, REQ-3"), NODES[1]]
+    for quote in ("Verified by ATP: REQ-2", "Verified  by ATP:  REQ-2", "**Verified by ATP:** REQ-2"):
+        links = _infer_trace_links_for_nodes(nodes, _Client([_link("n0", "n1", quote)]), CATALOG, [], None, 0, 0)
+        assert [(link.source_local_id, link.target_local_id) for link in links] == [("n0", "n1")], quote
+
+
+def test_a_quote_whose_words_are_not_in_the_source_is_still_dropped() -> None:
+    nodes = [_node("n0", "A", "The unit shall start.\n\n**Verified by ATP:** REQ-2"), NODES[1]]
+    for quote in ("Verified by test: REQ-2", "Verified by ATP REQ-2 and REQ-9", "**"):
+        links = _infer_trace_links_for_nodes(nodes, _Client([_link("n0", "n1", quote)]), CATALOG, [], None, 0, 0)
+        assert links == [], quote

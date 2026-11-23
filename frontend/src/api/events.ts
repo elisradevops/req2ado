@@ -109,6 +109,9 @@ export interface NarrationEvent {
     // completion event carrying pageAlignPageCount/pageAlignAnchoredRatio
     // below (both null on the first fire, same describe_figure convention).
     | 'page_alignment'
+    // The Study phase (STUDY_PHASE, ingestion's /study): one event as the reading starts and one per window, blocksDone of blocksTotal
+    // windows. Fires after parsing and before the structure step.
+    | 'study_window'
     // Published by the orchestrator (not ingestion) during the dedup-check
     // burst and the Confirm/writing phase -- reuses blocksDone/blocksTotal
     // for a plain N-of-M counter rather than new field names, matching
@@ -276,6 +279,7 @@ export const INGESTION_NARRATION_PHASES = [
   'page_alignment',
   'job_failed',
   'chunk_warning',
+  'study_window',
 ] as const;
 
 // Never emitted by ingestion -- 'infer_hierarchy'/'generate_requirements'

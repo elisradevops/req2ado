@@ -46,6 +46,10 @@
       "type": ["object", "null"],
       "description": "What the pre-study learned about this file's conventions (the rulebook's JSON form: tables, document, hash), set by the orchestrator from the rulebook it stored for the file and carried to /level in this same body. Null: not studied. An empty object: studied, nothing to learn."
     },
+    "study": {
+      "type": ["object", "null"],
+      "description": "The Study of this document (ingestion's /study: grounded facts, orientation, table vocabulary), set by the orchestrator when STUDY_PHASE is on and carried to /level in this same body. Null: no Study; /level then runs today's primer and background study."
+    },
     "vision_skip_reason": {
       "type": ["string", "null"],
       "default": null,

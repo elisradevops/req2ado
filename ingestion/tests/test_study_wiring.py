@@ -687,3 +687,79 @@ def test_close_failure_does_not_mask_the_original_exception(monkeypatch) -> None
             document_study_client=_EventStudy(),
             user_id=USER,
         )
+
+
+# --- a Study given on the document (CanonicalDoc.study, STUDY_PHASE on) ----------------------------------------------------------
+
+
+def _given_study(**overrides) -> dict:
+    from app.leveling.study import Orientation, Study, StudyStats
+
+    study = Study(
+        version="v",
+        orientation=Orientation(document_type="A requirements specification", system="The display unit"),
+        verification_statements=["Verified by test TP-1"],
+        placeholder_tokens=["TBD"],
+        stats=StudyStats(windows_studied=2, windows_total=2),
+        **overrides,
+    )
+    return study.model_dump(mode="json")
+
+
+def _spy_on_criteria(monkeypatch) -> list[dict]:
+    seen: list[dict] = []
+    real = llm_leveling_module.propose_acceptance_criteria
+
+    def spy(nodes, study, *args, **kwargs):
+        seen.append({"study": study, "background": kwargs.get("background")})
+        return real(nodes, study, *args, **kwargs)
+
+    monkeypatch.setattr(llm_leveling_module, "propose_acceptance_criteria", spy)
+    return seen
+
+
+def test_a_given_study_replaces_the_background_study_and_the_primer(monkeypatch) -> None:
+    seen = _spy_on_criteria(monkeypatch)
+    study_client = _EventStudy()
+    doc = _small_doc().model_copy(update={"study": _given_study()})
+    build_survey_tree(
+        doc,
+        FakeSurveyModelClient(),
+        scoring_client=_flagged_scoring(),
+        acceptance_criteria_client=_CriteriaSpy(),
+        document_study_client=study_client,
+        primer_context="the old primer",
+    )
+    assert study_client.windows == []  # no study of the run's own
+    (call,) = seen
+    assert call["study"].verification_statements == ["Verified by test TP-1"]
+    assert call["study"].placeholder_tokens == ["TBD"]
+    assert call["background"] == "Document type: A requirements specification\nSystem: The display unit"
+
+
+def test_a_given_studys_reading_warnings_are_left_to_the_orchestrator() -> None:
+    doc = _small_doc().model_copy(update={"study": _given_study(warnings=["The document study read 1 of 2 parts of the document."])})
+    tree = build_survey_tree(
+        doc,
+        FakeSurveyModelClient(),
+        scoring_client=_flagged_scoring(),
+        acceptance_criteria_client=_CriteriaSpy(),
+        document_study_client=_EventStudy(),
+    )
+    assert not [w for w in tree.warnings if w.kind == WarningKind.DOCUMENT_STUDY_INCOMPLETE]  # said once, for the job
+
+
+def test_a_study_that_is_not_valid_is_ignored_and_todays_path_runs(monkeypatch) -> None:
+    seen = _spy_on_criteria(monkeypatch)
+    study_client = _EventStudy()
+    doc = _small_doc().model_copy(update={"study": {"orientation": "not an object"}})
+    build_survey_tree(
+        doc,
+        FakeSurveyModelClient(),
+        scoring_client=_flagged_scoring(),
+        acceptance_criteria_client=_CriteriaSpy(),
+        document_study_client=study_client,
+        primer_context="the old primer",
+    )
+    assert study_client.windows != []  # the background study ran
+    assert seen[0]["background"] == "the old primer"

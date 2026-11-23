@@ -241,8 +241,23 @@ def test_a_failed_orientation_keeps_the_grounded_facts() -> None:
 
 
 def test_the_budget_is_rounds_of_the_median_window_plus_one_capped_at_the_ceiling() -> None:
-    assert study_budget(10, 30.0, 4, 10_000) == (3 + 1) * 30.0
-    assert study_budget(10, 30.0, 4, 100) == 100
+    # Four full windows and a short last one, 1.5 s per 1,000 characters, read 4 at a time: their time / 4, plus the longest once more.
+    chars = [20_000] * 4 + [2_000]
+    assert study_budget(chars, 1.5, 4, 10_000) == pytest.approx(1.5 * ((4 * 30 + 3) / 4 + 30))  # with the 1.5x headroom
+    assert study_budget(chars, 1.5, 4, 40) == 40
+
+
+def test_the_budget_covers_a_large_export_read_at_its_measured_rate() -> None:
+    # The ado_tree_export.csv case: 12 full windows read one at a time took ~175 s on the dev model, ~0.75 s per 1,000 characters at the
+    # median, with single windows taking up to 26 s. The budget at that median must leave room for the slow ones.
+    chars = [19_000] * 11 + [15_906]
+    assert study_budget(chars, 0.75, 1, 2_700) > 175 * 1.3
+    assert study_budget([], 1.5, 4, 40) == 0
+
+
+def test_a_short_document_gets_a_short_budget_and_a_long_one_a_long_budget() -> None:
+    # The budget follows the text, not the number of windows: one 500-character window is not budgeted as a full window.
+    assert study_budget([500], 3.0, 4, 10_000) < study_budget([20_000], 3.0, 4, 10_000) / 10
 
 
 def test_the_budget_stops_the_reading_early_with_partial_stats(monkeypatch) -> None:  # noqa: ANN001
@@ -252,13 +267,21 @@ def test_the_budget_stops_the_reading_early_with_partial_stats(monkeypatch) -> N
     assert study.stats.windows_total > 3
     assert study.stats.stopped_by == "deadline" and study.stats.budget_stopped
     assert study.stats.windows_studied < study.stats.windows_total
-    assert study.stats.budget_seconds == pytest.approx(0.05 * (study.stats.windows_total + 1))
+    from app.kb.profile import windows_of
+    from app.leveling.document_study import STUDY_WINDOW_CHARS, STUDY_WINDOW_OVERLAP
+
+    doc = _doc(paragraphs=40)
+    chars = [len(w) for w in windows_of(study_text(doc, study_tables(doc)), STUDY_WINDOW_CHARS, STUDY_WINDOW_OVERLAP)]
+    assert study.stats.budget_seconds == pytest.approx(study_budget(chars, 0.05 * 1000 / STUDY_WINDOW_CHARS, 1, 10_000), abs=1e-3)
 
 
 def test_measured_window_times_set_the_next_budget() -> None:
     redis = _FakeRedis()
     _build(_doc(paragraphs=40), _FakeClient(window_seconds=0.01), redis, cache=None)
-    assert len(redis.data["studytiming:model-a"]) >= 3
+    samples = redis.data["studytime-kchar:model-a"]
+    assert len(samples) >= 3
+    # Per 1,000 characters: a full window that took ~0.01 s is ~0.0005 s per 1,000 characters, not 0.01.
+    assert all(float(sample) < 0.01 for sample in samples)
     timings = StudyTimings(redis, 20, 3600)
     assert timings.median("model-a") is not None and timings.median("model-b") is None
 
@@ -344,3 +367,97 @@ def test_a_disconnected_caller_cancels_the_study(no_redis) -> None:  # noqa: ANN
 
 def test_the_version_route_names_the_current_version() -> None:
     assert TestClient(app).get("/study/version").json() == {"version": study_module.study_result_version()}
+
+
+
+def test_the_route_reports_each_window_as_the_jobs_study_stage(no_redis, monkeypatch) -> None:  # noqa: ANN001
+    from app import main
+
+    published: list = []
+
+    class _Publisher:
+        def __init__(self, redis, job_id):  # noqa: ANN001
+            self.job_id = job_id
+
+        def publish(self, progress) -> None:  # noqa: ANN001
+            published.append((self.job_id, progress.phase, progress.blocks_done, progress.blocks_total))
+
+    monkeypatch.setattr(main, "NarrationPublisher", _Publisher)
+
+    async def fake(model, user_id):  # noqa: ANN001, ANN201
+        return _FakeClient()
+
+    with patch("app.main._survey_client", fake):
+        response = TestClient(app).post(
+            "/study", params={"job_id": "job-7"}, json={"doc": _doc(paragraphs=40).model_dump(mode="json")}, headers={"X-Req2Ado-User-Id": USER}
+        )
+    assert response.status_code == 200
+    total = response.json()["stats"]["windows_total"]
+    assert published[0] == ("job-7", "study_window", 0, total)
+    assert published[-1] == ("job-7", "study_window", total, total)
+    assert all(phase == "study_window" for _, phase, _, _ in published)
+
+
+def test_the_route_reports_nothing_without_a_job(no_redis, monkeypatch) -> None:  # noqa: ANN001
+    from app import main
+
+    monkeypatch.setattr(main, "NarrationPublisher", lambda *a: (_ for _ in ()).throw(AssertionError("no job, no publisher")))
+
+    async def fake(model, user_id):  # noqa: ANN001, ANN201
+        return _FakeClient()
+
+    with patch("app.main._survey_client", fake):
+        response = TestClient(app).post("/study", json={"doc": _doc().model_dump(mode="json")}, headers={"X-Req2Ado-User-Id": USER})
+    assert response.status_code == 200
+
+
+def test_the_streamed_route_reports_windows_then_ends_with_the_study(no_redis, monkeypatch) -> None:  # noqa: ANN001
+    import json as json_module
+
+    from app import main
+
+    monkeypatch.setattr(main, "STUDY_HEARTBEAT_SECONDS", 0.02)
+    monkeypatch.setattr(study_module.settings, "survey_study_concurrency", 1)
+
+    async def fake(model, user_id):  # noqa: ANN001, ANN201
+        return _FakeClient(window_seconds=0.05)
+
+    with patch("app.main._survey_client", fake):
+        response = TestClient(app).post(
+            "/study",
+            json={"doc": _doc(paragraphs=40).model_dump(mode="json")},
+            headers={"X-Req2Ado-User-Id": USER, "Accept": "application/x-ndjson"},
+        )
+    assert response.status_code == 200 and response.headers["content-type"].startswith("application/x-ndjson")
+    lines = [json_module.loads(line) for line in response.text.splitlines()]
+    heartbeats, last = lines[:-1], lines[-1]
+    assert heartbeats and all(h["type"] == "heartbeat" for h in heartbeats)
+    total = last["study"]["stats"]["windows_total"]
+    assert {h["windowsTotal"] for h in heartbeats} <= {0, total}
+    assert [h["windowsDone"] for h in heartbeats] == sorted(h["windowsDone"] for h in heartbeats)  # never goes back
+    assert last["type"] == "result" and last["study"]["stats"]["windows_studied"] == total
+
+
+def test_an_azure_devops_export_gives_vocabulary_columns_only_no_titles_and_no_people() -> None:
+    from pathlib import Path
+
+    from app.dispatch import dispatch_by_extension
+
+    path = Path(__file__).parent / "accuracy" / "fixtures" / "ado_tree_export.csv"
+    doc = dispatch_by_extension(path.name, str(path))
+    rules = study_tables(doc)
+    (table,) = [t for t in doc.tables if t.id in rules]
+    columns = {v.column: v.values for v in table_vocabulary(table, rules[table.id])}
+    assert not {"Title 1", "Title 2", "Title 3", "Assigned To"} & set(columns)  # level titles are free text; a person is not vocabulary
+    assert columns["Work Item Type"] == ["Epic", "Feature", "Requirement"]
+    assert columns["Requirement Type"] == ["Functional", "Interface", "Safety", "Operational"]
+    assert "Rows not imported:" in study_text(doc, rules)  # the export's Test Case rows are read too
+
+
+def test_a_column_naming_people_is_left_out_of_the_vocabulary() -> None:
+    rows = [["Type", "Title", "Owner", "Reviewer", "Status"], ["Epic", "Root", "Dana <dana@example.com>", "Team A", "Open"]]
+    rows += [["Feature", "Group", "Lee <CORP\\lee>", "Team B", "Open"], ["Requirement", "Item", "Dana <dana@example.com>", "Team A", "Done"]]
+    table = Table(id="t2", cells=[[TableCell(text=c) for c in r] for r in rows], source_ref=_ref(0))
+    doc = CanonicalDoc(document=Document(path="x.xlsx", format=DocumentFormat.XLSX, sha256="h"), tables=[table])
+    columns = {v.column for v in table_vocabulary(table, study_tables(doc)["t2"])}
+    assert columns == {"Type", "Reviewer", "Status"}

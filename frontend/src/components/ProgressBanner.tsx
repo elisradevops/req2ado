@@ -74,6 +74,8 @@ export const PHASE_SUBLABEL: Record<NarrationEvent['phase'], string> = {
   // never actually looked up for the same reason (no per-section row),
   // present only so this Record stays exhaustive.
   page_alignment: 'Deriving page numbers',
+  // The Study phase, between parsing and the structure step: never looked up for a per-section row, present so this Record stays exhaustive.
+  study_window: 'Studying the document',
   // dedup_check is never looked up for the SectionStepList sub-label (it
   // always carries branchCount 0, so no per-section row reads it), but IS
   // now read for ProgressBanner's own headline -- spec's own quoted example
@@ -140,6 +142,7 @@ const PHASE_START_WEIGHT: Record<NarrationEvent['phase'], number> = {
   // Parse-stage phase, same as describe_figure/parse_done above -- section
   // scoring hasn't started yet, so no partial credit to give.
   page_alignment: 0,
+  study_window: 0,
   // Never actually read: dedup_check/writing both carry branchCount 0, so
   // the `averageSectionShare * PHASE_START_WEIGHT[...]` term this Record
   // feeds is always multiplied by 0 anyway -- their blocksDone/blocksTotal
@@ -171,6 +174,7 @@ const PARSE_TIME_PHASES: ReadonlySet<NarrationEvent['phase']> = new Set<Narratio
   'parse_done',
   'table_detected',
   'page_alignment',
+  'study_window',
 ]);
 
 function formatDuration(ms: number): string {

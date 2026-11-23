@@ -17,6 +17,10 @@ export const STAGE_COPY: Record<StageName, StageCopy> = {
     headline: 'Reading the document',
     why: 'The file is split into headings, tables and figures before any model sees it.',
   },
+  study: {
+    headline: 'Studying the document',
+    why: 'The whole document is read once, so every later step knows its terms, its conventions and how it states verification.',
+  },
   draft: {
     headline: 'Rewriting fragments as requirements',
     why: 'Short table cells and headings are turned into complete requirement statements.',
@@ -70,6 +74,7 @@ export const STAGE_COPY: Record<StageName, StageCopy> = {
 const UNIT_NAMES: Record<ProgressUnit, [string, string]> = {
   figures: ['figure', 'figures'],
   pages: ['page', 'pages'],
+  windows: ['part', 'parts'],
   items: ['item', 'items'],
   sections: ['section', 'sections'],
   requirements: ['requirement', 'requirements'],
