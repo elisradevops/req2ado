@@ -30,6 +30,10 @@ export const configSchema = z.object({
   // backends that accept them.
   LLM_SEND_SEED: z.enum(['true', 'false']).default('false'),
   LLM_SEND_REASONING_EFFORT: z.enum(['true', 'false']).default('false'),
+  // Prompt caching for Claude models: the system message and each stable prefix a caller marked are sent as cache breakpoints
+  // (cache_control). Off by default, because it only helps if the gateway passes the field through; a request can still ask for it
+  // itself (promptCache), so a probe can check that without turning it on for everyone.
+  LLM_PROMPT_CACHE: z.enum(['true', 'false']).default('false'),
   // Comma-separated glob patterns (`*`, `?`, case-insensitive) of model names that are hidden from every model
   // picker and refused at job submit/preview/resubmit/retry: models that fail the request contract, persona/agent
   // presets that inject their own prompt, and retired aliases. Empty by default.

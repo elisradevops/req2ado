@@ -13,6 +13,9 @@ export interface ChatMessage {
   // (the executed tool's result) or a plain system/user/assistant turn is
   // guaranteed to have one.
   content?: string;
+  // The same content split into text parts, set when the caller marked where its stable prefix ends (a prompt-cache breakpoint):
+  // `content` is always the parts joined. Only the redaction and the outbound request read it.
+  parts?: Array<{ text: string; cache?: boolean }>;
   tool_calls?: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>;
   tool_call_id?: string;
 }
@@ -32,7 +35,12 @@ export function redactText(text: string): string {
 export function redactMessages(messages: ChatMessage[]): ChatMessage[] {
   // content is absent on an assistant message that only carries tool_calls
   // (see ChatMessage above) -- nothing to redact in that case.
-  return messages.map((message) =>
-    message.content !== undefined ? { ...message, content: redactText(message.content) } : message,
-  );
+  return messages.map((message) => {
+    if (message.parts) {
+      // Each part on its own, so a cache breakpoint stays where the caller put it; the content stays the parts joined.
+      const parts = message.parts.map((part) => ({ ...part, text: redactText(part.text) }));
+      return { ...message, parts, content: parts.map((part) => part.text).join('') };
+    }
+    return message.content !== undefined ? { ...message, content: redactText(message.content) } : message;
+  });
 }

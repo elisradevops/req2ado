@@ -389,6 +389,19 @@ describe('LlmController', () => {
     });
   });
 
+  it('accepts message content sent as text parts with a cache marker, and hands on the joined text, the parts and the request switch', async () => {
+    const chat = jest.fn().mockResolvedValue({ content: '{}' });
+    const { controller } = makeController({ chat });
+    await controller.chat(
+      {
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'A', cache_control: { type: 'ephemeral' } }, { type: 'text', text: 'B' }] }],
+        promptCache: true,
+      },
+      USER_ID,
+    );
+    expect(chat).toHaveBeenCalledWith([{ role: 'user', content: 'AB', parts: [{ text: 'A', cache: true }, { text: 'B' }] }], { promptCache: true });
+  });
+
   describe('chat disconnect', () => {
     const chatBody = { messages: [{ role: 'user' as const, content: 'hi' }] };
     const fakeRes = () => {

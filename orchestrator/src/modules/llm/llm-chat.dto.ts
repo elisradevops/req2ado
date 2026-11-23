@@ -9,7 +9,13 @@ import { z } from 'zod';
 const chatMessageSchema = z
   .object({
     role: z.enum(['system', 'user', 'assistant', 'tool']),
-    content: z.string().optional(),
+    // A string, or the same text as parts, one of which may mark the end of a stable prefix (a prompt-cache breakpoint).
+    content: z
+      .union([
+        z.string(),
+        z.array(z.object({ type: z.literal('text'), text: z.string(), cache_control: z.object({ type: z.literal('ephemeral') }).optional() }).strict()).min(1),
+      ])
+      .optional(),
     tool_calls: z
       .array(
         z.object({
@@ -69,6 +75,7 @@ export const llmChatRequestSchema = z.object({
   // See LlmChatOptions.think's own doc comment (llm-client.interface.ts) --
   // explicit `false` disables a reasoning model's hidden chain-of-thought.
   think: z.boolean().optional(),
+  promptCache: z.boolean().optional(),
   budgetKind: z.literal('study').optional(),
   // An Open WebUI file the orchestrator uploaded for this study call (see LlmChatOptions.fileId). Ids are opaque tokens; anything else is refused.
   fileId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/).optional(),

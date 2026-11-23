@@ -2,16 +2,27 @@ import { BadRequestException, Body, Controller, Get, Headers, HttpException, Log
 import OpenAI from 'openai';
 import { SkipThrottle } from '@nestjs/throttler';
 import type { Response } from 'express';
-import { llmChatRequestSchema } from './llm-chat.dto';
+import { llmChatRequestSchema, type LlmChatRequestBody } from './llm-chat.dto';
 import { llmEmbedRequestSchema } from './llm-embed.dto';
 import { llmShowRequestSchema } from './llm-show.dto';
 import { llmVisionRequestSchema } from './llm-vision.dto';
 import type { LlmRouting, LlmToolCall, LlmUsage } from './llm-client.interface';
 import { TokenUsageRecorder } from './token-usage';
+import type { ChatMessage } from './redactor';
 import { LlmProxyBearerGuard } from './llm-proxy-bearer.guard';
 import { OpenWebUiClientFactory } from './openwebui-client.factory';
 import { ModelInfoUnavailableError, UpstreamHttpError, type ModelInfo } from './openwebui.client';
 import { Public } from '../auth/public.decorator';
+
+/** The request's messages as the LLM client takes them: content sent as text parts becomes the joined text, with the parts (and which
+ * one ends a stable prefix) kept beside it for the prompt-cache breakpoint. */
+function chatMessages(messages: LlmChatRequestBody['messages']): ChatMessage[] {
+  return messages.map((message) => {
+    if (!Array.isArray(message.content)) return message as ChatMessage;
+    const parts = message.content.map((part) => ({ text: part.text, ...(part.cache_control ? { cache: true } : {}) }));
+    return { ...message, content: parts.map((part) => part.text).join(''), parts } as ChatMessage;
+  });
+}
 
 // Every route here is internal service-to-service traffic already gated by
 // LlmProxyBearerGuard (ingestion's shared bearer token), not public traffic
@@ -89,7 +100,8 @@ export class LlmController {
     const signal = this.abortOnClose(res, 'chat');
     const llmClient = await this.resolveClient(userId);
     try {
-      const result = await llmClient.chat(body.messages, {
+      const result = await llmClient.chat(chatMessages(body.messages), {
+        ...(body.promptCache !== undefined ? { promptCache: body.promptCache } : {}),
         ...(signal ? { signal } : {}),
         ...(body.model !== undefined ? { model: body.model } : {}),
         ...(body.temperature !== undefined ? { temperature: body.temperature } : {}),
@@ -158,7 +170,8 @@ export class LlmController {
     let routing: LlmRouting | undefined;
     let completed = false;
     try {
-      for await (const chunk of llmClient.streamChat(body.messages, {
+      for await (const chunk of llmClient.streamChat(chatMessages(body.messages), {
+        ...(body.promptCache !== undefined ? { promptCache: body.promptCache } : {}),
         ...(body.model !== undefined ? { model: body.model } : {}),
         ...(body.temperature !== undefined ? { temperature: body.temperature } : {}),
         ...(body.seed !== undefined ? { seed: body.seed } : {}),
