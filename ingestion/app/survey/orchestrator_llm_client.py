@@ -1653,9 +1653,11 @@ class OrchestratorLlmClient:
     def orient_document(self, outline: str, first_window: str, user_id: str | None = None) -> dict:
         """Backs the Study (app.leveling.study): what kind of document this is, its purpose, the system it specifies and its conventions,
         a sentence each, from its outline and its first window. Background only: the caller clips the fields and never takes a value from
-        them. Not cached here: the caller caches the whole Study."""
+        them. Not cached here: the caller caches the whole Study. Written in the language of the document's own text (the first window's
+        script), as every prompt that writes text is."""
         source = json.dumps({"outline": outline, "text": first_window}, ensure_ascii=False)
-        call = build_call("orient_document", blocks=[DataBlock("source", source)])
+        after, _ = self._language(script=dominant_script(first_window))
+        call = build_call("orient_document", blocks=[DataBlock("source", source)], after=after)
         parsed = self._chat_json(
             call,
             self._params(schema=document_orientation_schema(), max_tokens=800, budget_kind="study"),
