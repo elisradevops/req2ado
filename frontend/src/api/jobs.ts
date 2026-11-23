@@ -230,6 +230,81 @@ export async function previewRules(file: File, model?: string, relearn = false, 
   return response.data;
 }
 
+/** The Study of a document (ingestion's /study): what the job's later steps are given as context. Display only in the wizard. */
+export interface DocumentStudy {
+  orientation: { document_type: string; purpose: string; system: string; conventions: string };
+  glossary: { term: string; definition: string }[];
+  placeholder_tokens: string[];
+  verification_statements: string[];
+  standards_cited: string[];
+  table_roles: { table: string; role: string }[];
+  vocabulary: { table: string; column: string; values: string[]; more: number }[];
+  stats: { windows_studied: number; windows_total: number; budget_stopped: boolean; orientation_failed: boolean; from_cache: boolean };
+  warnings: string[];
+}
+
+/** What the wizard's Study step ended with: the Study, or `skipped` when this job reads none (no model connection for a BASELINE job). */
+export type StudyPreviewResult = { kind: 'study'; study: DocumentStudy } | { kind: 'skipped' };
+
+/** Thrown when the reading stops with an error; `status` is the HTTP status the server gave (in a stream, carried on its error line). */
+export class StudyPreviewError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
+// The wizard's "Reading and analyzing the document" step: the same reading the job will do, streamed (fetch, not axios: axios cannot hand a
+// browser stream over as it arrives). `onProgress` gets the windows read so far as each heartbeat line arrives; aborting `signal` stops it.
+export async function previewStudy(
+  input: { file: File; mode: 'baseline' | 'survey'; model?: string; rulebookId?: string },
+  onProgress: (done: number, total: number) => void,
+  signal?: AbortSignal,
+): Promise<StudyPreviewResult> {
+  const form = new FormData();
+  form.append('file', input.file);
+  form.append('mode', input.mode);
+  if (input.model) form.append('model', input.model);
+  if (input.rulebookId) form.append('rulebookId', input.rulebookId);
+  const { apiBaseUrl } = await loadRuntimeConfig();
+  const response = await fetch(`${apiBaseUrl}/jobs/preview/study`, { method: 'POST', body: form, credentials: 'include', signal });
+  if (response.status === 401) {
+    useAuthStore.getState().logout(); // the same expired-session handling httpClient's interceptor gives every other call
+    window.location.assign('/login');
+  }
+  if (!response.ok || !response.body) {
+    let message = `The document could not be read (status ${response.status}).`;
+    try {
+      const body = (await response.json()) as { message?: unknown };
+      if (typeof body?.message === 'string') message = body.message;
+    } catch {
+      // not JSON: keep the plain sentence
+    }
+    throw new StudyPreviewError(message, response.status);
+  }
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffered = '';
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (value) buffered += value;
+    let newline = buffered.indexOf('\n');
+    while (newline >= 0) {
+      const text = buffered.slice(0, newline).trim();
+      buffered = buffered.slice(newline + 1);
+      newline = buffered.indexOf('\n');
+      if (!text) continue;
+      const line = JSON.parse(text) as { type: string; windowsDone?: number; windowsTotal?: number; study?: DocumentStudy; status?: number; detail?: string };
+      if (line.type === 'heartbeat' && typeof line.windowsTotal === 'number' && line.windowsTotal > 0) onProgress(line.windowsDone ?? 0, line.windowsTotal);
+      else if (line.type === 'skipped') return { kind: 'skipped' };
+      else if (line.type === 'result' && line.study) return { kind: 'study', study: line.study };
+      else if (line.type === 'error') throw new StudyPreviewError(line.detail || 'The document could not be read.', line.status ?? 502);
+    }
+    if (done) throw new StudyPreviewError('The reading ended without an answer.', 502);
+  }
+}
+
 /** A user's edit of the rulebook, checked against the file. Rejects with the server's reason in `response.data.message` when it does not fit. */
 export async function editRules(file: File, rulebook: Record<string, unknown>, model?: string): Promise<RulebookView> {
   const form = new FormData();
