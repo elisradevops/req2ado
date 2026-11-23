@@ -88,11 +88,12 @@ def test_score_requirements_v4_prompt_asks_for_levels_and_findings_not_a_score_o
     result = load_prompt(
         "score_requirements_for_document",
         output_lead="Return",
-        category_instruction="'categories' -- TEST.",
+        answer_fields="'levels' and 'findings'",
+        category_instruction="'levels' -- TEST.",
         findings="vague_term",
         node_count="7",
     )
-    assert "'categories' and 'findings'" in result and "vague_term" in result
+    assert "'levels' and 'findings'" in result and "vague_term" in result
     assert "Do not give an overall score or a confidence" in result
     assert "'score' (an integer" not in result and "'confidence' (exactly one of" not in result
     assert "never omit it" in result

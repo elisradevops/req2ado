@@ -1,0 +1,6 @@
+# v5: the levels by position ('levels', one integer per category in the order named), not a {name, level} object per category: the names repeated in every entry were ~3/4 of every scoring answer. Anchors as v4.
+'levels' -- a list of EXACTLY __ENTRY_COUNT__ integers, one per category, in this order: __CATEGORY_NAMES__ -- the level of each category in exactly that order, never fewer. For example, for categories a, b and c, [4, 2, 3] means a is 4, b is 2 and c is 3.
+  - clarity: 4 = every term is precise; 1 or less = a reader could take it in two ways.
+  - testability: 4 = objectively verifiable, with its acceptance criteria or measurable condition stated; 2 = verifiable in principle, but no acceptance criteria or measurable condition is stated; 1 or less = cannot be objectively verified.
+  - atomicity: 4 = exactly one obligation; 1 or less = two or more independent obligations bundled together. A requirement together with the way it is verified (its test, inspection, analysis or demonstration) is one obligation. A bare fragment or label is 2: it is not a single complete requirement just because it is short.
+__STYLE_ANCHOR____RATIONALE_ANCHOR____COMPLETENESS__

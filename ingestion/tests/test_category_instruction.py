@@ -27,7 +27,7 @@ def test_the_explicit_list_contains_the_completeness_check_once() -> None:
     assert (
         "<category_names>" in text and "Clarity" not in text
     )  # the names are data, never in the instruction
-    assert "3 entries in total" in text
+    assert "EXACTLY 3 integers" in text
 
 
 def test_a_checklist_that_already_has_the_key_is_not_asked_for_it_twice() -> None:
@@ -37,13 +37,13 @@ def test_a_checklist_that_already_has_the_key_is_not_asked_for_it_twice() -> Non
         KEY,
         "Testable",
     ]  # the item's own order is kept
-    assert "3 entries in total" in text
+    assert "EXACTLY 3 integers" in text
 
 
 def test_the_key_is_matched_without_regard_to_case_when_deduplicating() -> None:
     names = listed(["Clarity", "Completeness_As_Requirement"])
     assert [c.casefold() for c in names].count(KEY) == 1
-    assert "2 entries in total" in _array_category_instruction(
+    assert "EXACTLY 2 integers" in _array_category_instruction(
         ["Clarity", "Completeness_As_Requirement"], None
     )
 

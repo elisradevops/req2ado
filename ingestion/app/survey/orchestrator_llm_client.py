@@ -90,6 +90,7 @@ from app.survey.keyed_specs import (
     PAIR_VERDICTS,
     PARAMETER_PAIR_SPEC,
     PARENT_SUMMARY_SPEC,
+    SCORING_POSITIONAL_SPEC,
     SCORING_SPEC,
     SYNTHESIS_SPEC,
     TITLE_TAGS_SPEC,
@@ -1083,9 +1084,18 @@ class OrchestratorLlmClient:
 
         Each vote's raw answer is response-cached on its own exact request (a complete answer only), and the scores are computed after
         the cache, so a change to how code scores never serves an old result."""
-        spec = SCORING_SPEC
         if standard_requires is None:
             standard_requires = self.standard_requires
+        # A fixed category list (an organization's checklist, or the built-in categories): the model gives the levels by position, in the
+        # order the prompt names them, and code maps them back. The same functions name them in the prompt, so the orders agree. Categories
+        # derived from knowledge-base material are named by the model during the call: no order exists, so those stay named.
+        if category_checklist:
+            category_names: list[str] | None = _scoring_category_names(category_checklist)
+        elif kb_context is not None:
+            category_names = None
+        else:
+            category_names = [*builtin_categories(standard_requires), COMPLETENESS]
+        spec = SCORING_POSITIONAL_SPEC if category_names else SCORING_SPEC
         is_rubric = isinstance(kb_context, RubricText)
         policy = self.language_policy
         forms = policy.obligation_forms
@@ -1119,6 +1129,12 @@ class OrchestratorLlmClient:
                 "score_requirements_for_document",
                 markers={
                     "output_lead": output_lead(spec, mode),
+                    # v7 names the answer's fields from here (levels by position for a fixed list); an older file names them itself.
+                    **(
+                        {"answer_fields": "'levels' and 'findings'" if category_names else "'categories' and 'findings'"}
+                        if resolve_version("score_requirements_for_document") >= 7
+                        else {}
+                    ),
                     "category_instruction": _scoring_category_fragment(
                         category_checklist, kb_context, standard_requires
                     ),
@@ -1219,7 +1235,9 @@ class OrchestratorLlmClient:
         borderline = {
             node_id: text
             for node_id, text in descriptions_by_node_id.items()
-            if needs_second_vote(votes[0].get(node_id), requires=standard_requires, builtin=not category_checklist)
+            if needs_second_vote(
+                votes[0].get(node_id), requires=standard_requires, builtin=not category_checklist, names=category_names
+            )
         }
         if together and borderline:
             # Texts that are compared (a rewrite's before and after) are always read by the same votes, so their scores stay comparable.
@@ -1245,6 +1263,7 @@ class OrchestratorLlmClient:
                 text,
                 requires=standard_requires,
                 builtin=not category_checklist,
+                names=category_names,
             )
             if entry is not None:
                 # One tag per model whose vote went into the entry: votes a router sent to different models are both recorded.
