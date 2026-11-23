@@ -29,6 +29,10 @@ export interface CanonicalDoc {
    */
   rulebook?: {} | null;
   /**
+   * The Study of this document (ingestion's /study: grounded facts, orientation, table vocabulary), set by the orchestrator when STUDY_PHASE is on and carried to /level in this same body. Null: no Study; /level then runs today's primer and background study.
+   */
+  study?: {} | null;
+  /**
    * Why vision did not (fully) run: baseline_mode, skip_vision_requested, model_not_vision_capable, no_user, vision_client_unavailable (vision_active false), or breaker_tripped (vision_active true but captioning stopped after consecutive failures). Null when vision ran normally.
    */
   vision_skip_reason?: string | null;

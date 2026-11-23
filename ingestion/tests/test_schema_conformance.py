@@ -106,6 +106,22 @@ def test_schema_rejects_a_non_boolean_vision_active(schema) -> None:
         jsonschema.validate(instance=doc, schema=schema)
 
 
+
+def test_schema_accepts_a_study_object_and_null(schema) -> None:
+    # CanonicalDoc.study: the /study result the orchestrator carries to /level when STUDY_PHASE is on.
+    doc = load_txt(str(FIXTURES / "sample.txt")).model_dump(mode="json")
+    assert doc["study"] is None
+    jsonschema.validate(instance=doc, schema=schema)
+    doc["study"] = {"version": "v", "orientation": {"document_type": "x", "purpose": "", "system": "", "conventions": ""}}
+    jsonschema.validate(instance=doc, schema=schema)
+
+
+def test_schema_rejects_a_study_that_is_not_an_object(schema) -> None:
+    doc = load_txt(str(FIXTURES / "sample.txt")).model_dump(mode="json")
+    doc["study"] = "read"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(instance=doc, schema=schema)
+
 def test_schema_accepts_each_real_figure_caption_status_value(schema) -> None:
     # Task 4b sub-fix (ii): Figure.caption_status, closed to "insignificant"/
     # "vision_failed"/null (additionalProperties: false on Figure, so this
