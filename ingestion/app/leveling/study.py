@@ -21,6 +21,7 @@ import inspect
 import json
 import logging
 import math
+import re
 import statistics
 import threading
 import time
@@ -44,7 +45,7 @@ from app.leveling.study_runner import StudyHandle
 from app.leveling.study_store import study_version
 from app.leveling.tree_builder import _order_key
 from app.prompts import load_prompt
-from app.request_identity import user_scope
+from app.request_identity import redact_identity, user_scope
 from app.study.file_rules import TableRule, _grid, study_tables
 from app.survey._response_schemas import document_orientation_schema
 
@@ -214,16 +215,27 @@ def study_text(doc: CanonicalDoc, rules: dict[str, TableRule]) -> str:
 # -- vocabulary (code only) ------------------------------------------------------------------------------------------------------
 
 
+# A person as an Azure DevOps export or a sheet writes one: "Name <DOMAIN\\user>" or "Name <user@domain>" (an identity field), beside the
+# deployment's own identity forms (app.request_identity: Windows SIDs, identity URIs).
+_PERSON_VALUE = re.compile(r"<[^<>\s]+\\[^<>\s]+>|<[^<>\s@]+@[^<>\s]+>")
+
+
+def _names_a_person(value: str) -> bool:
+    return bool(_PERSON_VALUE.search(value)) or redact_identity(value) != value
+
+
 def _vocabulary_columns(rule: TableRule) -> list[int]:
-    """The columns whose values name a kind of thing (type, level, priority, method...): never the free-text columns (title,
-    description) nor the identifiers (id, parent, customer id), whose values are all different by design."""
-    excluded = {rule.title_col, rule.id_col, rule.parent_col, rule.customer_id_col, *rule.description_cols}
+    """The columns whose values name a kind of thing (type, level, priority, method...): never the free-text columns (the title, the
+    level title columns of a table nested by levels, the description) nor the identifiers (id, parent, customer id), whose values are
+    all different by design."""
+    excluded = {rule.title_col, rule.id_col, rule.parent_col, rule.customer_id_col, *rule.level_cols, *rule.description_cols}
     return [index for index in range(len(rule.labels)) if index not in excluded and rule.labels[index].strip()]
 
 
 def table_vocabulary(table: Table, rule: TableRule) -> list[ColumnVocabulary]:
     """Each column's distinct values over the imported rows, in first-seen order (de-duplicated by their canonical form, the first
-    spelling kept), at most VOCABULARY_VALUES of them; a value longer than VOCABULARY_VALUE_CHARS is free text and left out."""
+    spelling kept), at most VOCABULARY_VALUES of them; a value longer than VOCABULARY_VALUE_CHARS is free text and left out. A column
+    with any value that names a person (Assigned To, Created By...) is left out whole: the vocabulary goes into prompts, people do not."""
     grid = _grid(table)
     name = table.caption or f"Table {table.id}"
     vocabulary: list[ColumnVocabulary] = []
@@ -238,6 +250,8 @@ def table_vocabulary(table: Table, rule: TableRule) -> list[ColumnVocabulary]:
             if key not in seen:
                 seen.add(key)
                 values.append(value)
+        if any(_names_a_person(value) for value in values):
+            continue
         if values:
             vocabulary.append(
                 ColumnVocabulary(
@@ -304,7 +318,11 @@ def study_result_version() -> str:
         _TABLE_MARKER_EVERY,
         VOCABULARY_VALUES,
         VOCABULARY_VALUE_CHARS,
-        *(_source_of(fn) for fn in (table_text, study_text, table_vocabulary, _vocabulary_columns, outline_of, checked_orientation)),
+        *(
+            _source_of(fn)
+            for fn in (table_text, study_text, table_vocabulary, _vocabulary_columns, _names_a_person, outline_of, checked_orientation)
+        ),
+        _PERSON_VALUE.pattern,
     ]
     return hashlib.sha256(json.dumps(parts).encode("utf-8")).hexdigest()[:12]
 

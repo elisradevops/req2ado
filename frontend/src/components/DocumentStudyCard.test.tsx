@@ -43,6 +43,16 @@ describe('DocumentStudyCard', () => {
     expect(screen.getByText('and 4 more')).toBeInTheDocument(); // one beyond the eight shown, plus three the server left out
   });
 
+  it.each([
+    [{ stopped_by: 'empty', windows_total: 0, windows_studied: 0 }, 'The document has no text to read, so there is nothing to describe.'],
+    [{ orientation_failed: true }, 'The overview of the document could not be written; the job starts with what the reading found.'],
+    [{}, 'The document gives too little to describe it.'],
+  ])('says why there is no overview: %o', (stats, sentence) => {
+    const empty = { document_type: '', purpose: '', system: '', conventions: '' };
+    render(<DocumentStudyCard status="ready" {...props} study={{ ...STUDY, orientation: empty, stats: { ...STUDY.stats, ...stats } }} />);
+    expect(screen.getByText(sentence)).toBeInTheDocument();
+  });
+
   it('says plainly when only part of the document was read', () => {
     render(<DocumentStudyCard status="ready" {...props} study={{ ...STUDY, stats: { ...STUDY.stats, windows_studied: 7 } }} />);
     expect(screen.getByText(/read 7 of 10 parts of the document\. the job starts with what was read/i)).toBeInTheDocument();

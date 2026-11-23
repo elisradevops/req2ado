@@ -22,6 +22,13 @@ function count(n: number, one: string, many: string): string | null {
   return n > 0 ? plural(n, one, many) : null;
 }
 
+/** Why there is no overview: nothing to read, a failed call, or a document too short to describe (the model wrote nothing; not a failure). */
+function emptyOverview(study: DocumentStudy): string {
+  if (study.stats.stopped_by === 'empty') return 'The document has no text to read, so there is nothing to describe.';
+  if (study.stats.orientation_failed) return 'The overview of the document could not be written; the job starts with what the reading found.';
+  return 'The document gives too little to describe it.';
+}
+
 function StudyFindings({ study }: { study: DocumentStudy }): React.ReactElement {
   const orientation = ORIENTATION_LABELS.filter(([key]) => study.orientation[key]);
   const counts = [
@@ -44,7 +51,7 @@ function StudyFindings({ study }: { study: DocumentStudy }): React.ReactElement 
           ))}
         </dl>
       ) : (
-        <p className="text-sm text-ink-2">The overview of the document could not be written; the job starts with what the reading found.</p>
+        <p className="text-sm text-ink-2">{emptyOverview(study)}</p>
       )}
       {counts.length > 0 && <p className="text-xs text-ink-2">Found {counts.join(' · ')}.</p>}
       {total > 0 && read < total && (

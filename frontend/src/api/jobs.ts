@@ -239,7 +239,8 @@ export interface DocumentStudy {
   standards_cited: string[];
   table_roles: { table: string; role: string }[];
   vocabulary: { table: string; column: string; values: string[]; more: number }[];
-  stats: { windows_studied: number; windows_total: number; budget_stopped: boolean; orientation_failed: boolean; from_cache: boolean };
+  // stopped_by 'empty': the document had no text to read (no model was asked).
+  stats: { windows_studied: number; windows_total: number; budget_stopped: boolean; orientation_failed: boolean; from_cache: boolean; stopped_by?: string };
   warnings: string[];
 }
 

@@ -413,3 +413,28 @@ def test_the_streamed_route_reports_windows_then_ends_with_the_study(no_redis, m
     assert {h["windowsTotal"] for h in heartbeats} <= {0, total}
     assert [h["windowsDone"] for h in heartbeats] == sorted(h["windowsDone"] for h in heartbeats)  # never goes back
     assert last["type"] == "result" and last["study"]["stats"]["windows_studied"] == total
+
+
+def test_an_azure_devops_export_gives_vocabulary_columns_only_no_titles_and_no_people() -> None:
+    from pathlib import Path
+
+    from app.dispatch import dispatch_by_extension
+
+    path = Path(__file__).parent / "accuracy" / "fixtures" / "ado_tree_export.csv"
+    doc = dispatch_by_extension(path.name, str(path))
+    rules = study_tables(doc)
+    (table,) = [t for t in doc.tables if t.id in rules]
+    columns = {v.column: v.values for v in table_vocabulary(table, rules[table.id])}
+    assert not {"Title 1", "Title 2", "Title 3", "Assigned To"} & set(columns)  # level titles are free text; a person is not vocabulary
+    assert columns["Work Item Type"] == ["Epic", "Feature", "Requirement"]
+    assert columns["Requirement Type"] == ["Functional", "Interface", "Safety", "Operational"]
+    assert "Rows not imported:" in study_text(doc, rules)  # the export's Test Case rows are read too
+
+
+def test_a_column_naming_people_is_left_out_of_the_vocabulary() -> None:
+    rows = [["Type", "Title", "Owner", "Reviewer", "Status"], ["Epic", "Root", "Dana <dana@example.com>", "Team A", "Open"]]
+    rows += [["Feature", "Group", "Lee <CORP\\lee>", "Team B", "Open"], ["Requirement", "Item", "Dana <dana@example.com>", "Team A", "Done"]]
+    table = Table(id="t2", cells=[[TableCell(text=c) for c in r] for r in rows], source_ref=_ref(0))
+    doc = CanonicalDoc(document=Document(path="x.xlsx", format=DocumentFormat.XLSX, sha256="h"), tables=[table])
+    columns = {v.column for v in table_vocabulary(table, study_tables(doc)["t2"])}
+    assert columns == {"Type", "Reviewer", "Status"}
