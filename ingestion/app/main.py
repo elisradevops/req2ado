@@ -2029,10 +2029,13 @@ async def captions(
 ) -> CanonicalDoc:
     """Writes the figure captions of a document parsed with defer_captions, after its Study: the same captioning pass /ingest runs
     (_caption_figures), with the Study's orientation as context, describing each figure from the copy /ingest stored for the job (no second
-    parse). A document vision did not run for, or one with no figure, comes back unchanged. The caller going away cancels the pass (499)."""
+    parse). A BASELINE document is captioned the same way (/ingest stores its figures; the orchestrator asks only for a user with a model
+    connection), and is then marked as captioned. A SURVEY document vision was turned off for (a model that cannot read images), or one
+    with no figure, comes back unchanged. The caller going away cancels the pass (499)."""
     user_id = resolve_user_id(x_user_id)
     doc = body.doc
-    if not doc.vision_active or not doc.figures or not user_id:
+    baseline = doc.vision_skip_reason == "baseline_mode"
+    if not (doc.vision_active or baseline) or not doc.figures or not user_id:
         return doc
     figure_ids = [figure.id for figure in doc.figures]
     if figure_ids != [f"f{position}" for position in range(len(figure_ids))]:
@@ -2069,6 +2072,9 @@ async def captions(
             raise HTTPException(
                 status_code=499, detail="the caller disconnected; the run was cancelled"
             )
+    if baseline:
+        doc.vision_active = True
+        doc.vision_skip_reason = None
     if breaker.tripped:
         doc.vision_skip_reason = "breaker_tripped"
     if body.redact:
@@ -2571,37 +2577,74 @@ async def study_version_route() -> dict:
     return {"version": study_result_version()}
 
 
-@app.post("/study", response_model=Study)
+# How often a streamed /study sends a heartbeat line (with how many windows are read) while it reads.
+STUDY_HEARTBEAT_SECONDS = 2.0
+
+
+@app.post("/study", response_model=None)
 async def study_route(
     request: Request,
     body: StudyRequest,
-    job_id: str | None = None,  # the job the reading is for: its study stage counts the windows; absent (the wizard): no progress
+    job_id: str | None = None,  # the job the reading is for: its study stage counts the windows; absent (the wizard): no job progress
     x_user_id: str | None = Header(default=None, alias=USER_ID_HEADER),
-) -> Study:
+) -> Study | StreamingResponse:
     """One reading of the document (app.leveling.study): the grounded facts, a short orientation and each stated table's vocabulary. Never
-    fails for a model that fails: the stats and warnings say what was read. Changes nothing else: no job, no tree, no other step reads it yet."""
+    fails for a model that fails: the stats and warnings say what was read.
+
+    Asked with `Accept: application/x-ndjson` (the wizard, which shows how far the reading is): streamed as heartbeat lines that carry
+    `windowsDone`/`windowsTotal`, then one `{"type":"result","study":{...}}` line (or an error line); closing the stream cancels the reading.
+    Otherwise one JSON response, the caller going away cancelling the reading (499)."""
     user_id = resolve_user_id(x_user_id)
     doc = body.doc
     rulebook = _rulebook_of(doc)
     client = await _survey_client(body.model, user_id)
+    progress = {"windowsDone": 0, "windowsTotal": 0}
+    report_job = _study_progress(job_id)
+
+    def on_progress(done: int, total: int) -> None:
+        progress.update(windowsDone=done, windowsTotal=total)
+        if report_job is not None:
+            report_job(done, total)
+
+    def run() -> Study:
+        return build_study(
+            doc,
+            client,
+            user_id,
+            body.model,
+            rulebook=rulebook,
+            store=_study_store,
+            limiter=_study_limiter,
+            timings=_study_timings,
+            cache=_study_result_cache,
+            on_progress=on_progress,
+        )
+
+    if NDJSON in request.headers.get("accept", ""):
+        token = job_cancel.CancelToken()
+
+        async def work() -> dict:
+            with job_cancel.cancellation_scope(token):
+                study = await run_in_threadpool(run)
+            return {"study": study.model_dump(mode="json")}
+
+        def describe(exc: Exception) -> tuple[int, str]:
+            if isinstance(exc, job_cancel.JobCancelled):
+                return 499, "the caller disconnected; the study was cancelled"
+            logger.exception("Unhandled exception in %s", request.url)
+            return 500, describe_exception(exc)
+
+        return StreamingResponse(
+            ndjson_stream(
+                work, token, heartbeat_seconds=STUDY_HEARTBEAT_SECONDS, describe_failure=describe, status=lambda: dict(progress)
+            ),
+            media_type=NDJSON,
+        )
     # The caller going away cancels the reading: no further window is asked, and a run that was cancelled stores nothing.
     with job_cancel.cancellation_scope() as cancel_token:
         async with job_cancel.watch_for_disconnect(request, cancel_token):
             try:
-                study = await run_in_threadpool(
-                    lambda: build_study(
-                        doc,
-                        client,
-                        user_id,
-                        body.model,
-                        rulebook=rulebook,
-                        store=_study_store,
-                        limiter=_study_limiter,
-                        timings=_study_timings,
-                        cache=_study_result_cache,
-                        on_progress=_study_progress(job_id),
-                    )
-                )
+                study = await run_in_threadpool(run)
             except job_cancel.JobCancelled:
                 raise HTTPException(
                     status_code=499, detail="the caller disconnected; the study was cancelled"

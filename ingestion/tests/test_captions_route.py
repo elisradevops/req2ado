@@ -195,3 +195,21 @@ def test_the_studys_orientation_is_the_context_when_no_context_is_given(stack) -
     study = Study(version="v", orientation=Orientation(document_type="An ICD", system="The radar")).model_dump(mode="json")
     assert _captions(doc, study=study).status_code == 200
     assert vision.contexts == ["Document type: An ICD\nSystem: The radar"]
+
+
+def test_a_baseline_document_is_captioned_from_its_stored_figures_and_marked_captioned(stack) -> None:  # noqa: ANN001
+    vision, files = stack
+    doc = _ingest(mode="baseline")
+    assert doc["vision_active"] is False and doc["vision_skip_reason"] == "baseline_mode"
+    assert set(files.files) == {(JOB, f["id"]) for f in doc["figures"]}  # BASELINE stores its figures already
+    captioned = _captions(doc, context="Document type: An ICD").json()
+    assert vision.contexts == ["Document type: An ICD"]
+    assert [b["text"] for b in captioned["blocks"] if b["kind"] == "figure"] == ["[FIGURE: a real caption]"]
+    assert captioned["vision_active"] is True and captioned["vision_skip_reason"] is None
+
+
+def test_a_survey_document_whose_model_cannot_read_images_stays_uncaptioned(stack) -> None:  # noqa: ANN001
+    vision, _ = stack
+    doc = _ingest(skip_vision=True, vision_skip_reason="model_not_vision_capable")
+    assert _captions(doc, context="x").json() == doc
+    assert vision.contexts == []

@@ -386,3 +386,30 @@ def test_the_route_reports_nothing_without_a_job(no_redis, monkeypatch) -> None:
     with patch("app.main._survey_client", fake):
         response = TestClient(app).post("/study", json={"doc": _doc().model_dump(mode="json")}, headers={"X-Req2Ado-User-Id": USER})
     assert response.status_code == 200
+
+
+def test_the_streamed_route_reports_windows_then_ends_with_the_study(no_redis, monkeypatch) -> None:  # noqa: ANN001
+    import json as json_module
+
+    from app import main
+
+    monkeypatch.setattr(main, "STUDY_HEARTBEAT_SECONDS", 0.02)
+    monkeypatch.setattr(study_module.settings, "survey_study_concurrency", 1)
+
+    async def fake(model, user_id):  # noqa: ANN001, ANN201
+        return _FakeClient(window_seconds=0.05)
+
+    with patch("app.main._survey_client", fake):
+        response = TestClient(app).post(
+            "/study",
+            json={"doc": _doc(paragraphs=40).model_dump(mode="json")},
+            headers={"X-Req2Ado-User-Id": USER, "Accept": "application/x-ndjson"},
+        )
+    assert response.status_code == 200 and response.headers["content-type"].startswith("application/x-ndjson")
+    lines = [json_module.loads(line) for line in response.text.splitlines()]
+    heartbeats, last = lines[:-1], lines[-1]
+    assert heartbeats and all(h["type"] == "heartbeat" for h in heartbeats)
+    total = last["study"]["stats"]["windows_total"]
+    assert {h["windowsTotal"] for h in heartbeats} <= {0, total}
+    assert [h["windowsDone"] for h in heartbeats] == sorted(h["windowsDone"] for h in heartbeats)  # never goes back
+    assert last["type"] == "result" and last["study"]["stats"]["windows_studied"] == total
