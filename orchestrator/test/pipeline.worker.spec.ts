@@ -3330,6 +3330,90 @@ describe('runPipelineJob', () => {
     });
   });
 
+  describe('the Study phase (STUDY_PHASE)', () => {
+    const parsed = { blocks: [{ id: 'b0' }], figures: [{ id: 'f0', caption: null, name: null }], vision_active: true };
+    const captioned = { ...parsed, figures: [{ id: 'f0', caption: 'a wiring diagram', name: null }] };
+    const theStudy = { version: 'v1', orientation: { document_type: 'An ICD', purpose: '', system: '', conventions: '' } };
+    const job = { id: 'job-s', areaPath: 'Project\\Area1', adoProject: 'Project', userId: 'user-1', mode: 'survey' as const, fileBuffer: Buffer.from('text'), filename: 'x.docx' };
+
+    function run(client: Record<string, jest.Mock>, studyPhase: boolean | undefined) {
+      return runPipelineJob(job, {
+        ingestionClient: client as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        defaultLlmModel: 'gemma4:12b',
+        openWebUiClientFactory: { getClientFor: jest.fn().mockResolvedValue(fakeOpenWebUiClient) } as any,
+        primerCacheRedis: fakePrimerCacheRedis as any,
+        ...(studyPhase === undefined ? {} : { studyPhase }),
+      });
+    }
+
+    function client(overrides: Record<string, jest.Mock> = {}) {
+      return {
+        ...fakeIngestionClient,
+        ingest: jest.fn().mockResolvedValue(parsed),
+        level: jest.fn().mockResolvedValue({ nodes: [] }),
+        study: jest.fn().mockResolvedValue(theStudy),
+        captions: jest.fn().mockResolvedValue(captioned),
+        ...overrides,
+      };
+    }
+
+    beforeEach(() => {
+      fakeDryRunService.diff.mockResolvedValue([]);
+      fakePrimerCacheRedis.get.mockResolvedValue(null);
+    });
+
+    it('reads the document once, captions its figures with the Study, and gives /level the Study instead of a primer', async () => {
+      const ingestion = client();
+      await run(ingestion, true);
+
+      expect(fakeOpenWebUiClient.uploadFile).not.toHaveBeenCalled(); // no primer
+      expect(ingestion.ingest.mock.calls[0].at(-1)).toBe(true); // captions deferred
+      expect(ingestion.study).toHaveBeenCalledWith(parsed, { userId: 'user-1', model: 'gemma4:12b', signal: expect.any(AbortSignal) });
+      expect(ingestion.captions).toHaveBeenCalledWith(parsed, 'job-s', expect.objectContaining({ study: theStudy, userId: 'user-1' }));
+      expect(ingestion.level).toHaveBeenCalledWith(
+        { ...captioned, study: theStudy }, 'survey', 'user-1', [], 'gemma4:12b', 'job-s', undefined, undefined, expect.any(AbortSignal),
+      );
+    });
+
+    it('writes no captions when vision did not run for the document', async () => {
+      const ingestion = client({ ingest: jest.fn().mockResolvedValue({ ...parsed, vision_active: false }) });
+      await run(ingestion, true);
+      expect(ingestion.captions).not.toHaveBeenCalled();
+      expect(ingestion.level.mock.calls[0][0]).toEqual({ ...parsed, vision_active: false, study: theStudy });
+    });
+
+    it('carries on without a Study when it cannot be read: /level then studies the document itself', async () => {
+      const ingestion = client({ study: jest.fn().mockRejectedValue(new Error('ingestion down')) });
+      await run(ingestion, true);
+      expect(ingestion.captions).toHaveBeenCalledWith(parsed, 'job-s', expect.objectContaining({ study: null }));
+      expect(ingestion.level.mock.calls[0][0]).toEqual(captioned); // no study on the document
+    });
+
+    it('marks every figure as not described when the captions cannot be written', async () => {
+      const ingestion = client({ captions: jest.fn().mockRejectedValue(new Error('vision down')) });
+      await run(ingestion, true);
+      const leveled = ingestion.level.mock.calls[0][0];
+      expect(leveled.figures).toEqual([{ id: 'f0', caption: null, name: null, caption_status: 'vision_failed' }]);
+      expect(leveled.study).toEqual(theStudy);
+    });
+
+    it('is off unless switched on: a SURVEY job runs the primer path exactly as before', async () => {
+      const ingestion = client();
+      await run(ingestion, undefined);
+      expect(ingestion.study).not.toHaveBeenCalled();
+      expect(ingestion.captions).not.toHaveBeenCalled();
+      expect(ingestion.ingest.mock.calls[0]).toHaveLength(11); // no defer flag
+      expect(ingestion.level.mock.calls[0][0]).toEqual(parsed);
+    });
+  });
+
   describe('whole-document primer (Phase 6c)', () => {
     // No document-size gate any more (Task 4) -- bigDoc/bigFileBuffer are
     // kept only as a realistic fixture for tests that don't care about

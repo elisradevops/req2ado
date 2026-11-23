@@ -39,6 +39,8 @@ export interface ResultKeyParts {
   profileVersion: string | null;
   /** The hash of the rulebook the job builds from (study/rulebook.py): a result built from other rules does not apply. Absent: no rulebook. */
   rulebookHash?: string | null;
+  /** The job ran the Study phase (STUDY_PHASE): its captions and criteria had other context. Absent or false: today's path, same key as before. */
+  studyPhase?: boolean;
 }
 
 const TTL_SECONDS = 30 * 24 * 60 * 60;
@@ -63,7 +65,7 @@ export class JobResultCache {
 
   keyFor(parts: ResultKeyParts): string {
     const digest = createHash('sha256')
-      .update(JSON.stringify([this.codeVersion, parts.fileHash, parts.userId, parts.model, parts.mode, parts.kbVersion, parts.ingestionVersion, parts.profileVersion, ...(parts.rulebookHash ? [parts.rulebookHash] : [])]))
+      .update(JSON.stringify([this.codeVersion, parts.fileHash, parts.userId, parts.model, parts.mode, parts.kbVersion, parts.ingestionVersion, parts.profileVersion, ...(parts.rulebookHash ? [parts.rulebookHash] : []), ...(parts.studyPhase ? ['study-phase'] : [])]))
       .digest('hex');
     return `job-result:${digest}`;
   }

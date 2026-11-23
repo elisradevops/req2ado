@@ -185,3 +185,13 @@ def test_the_figure_client_reads_a_stored_copy_and_says_none_for_a_missing_one()
     files._transport = httpx.MockTransport(handler)
     assert files.fetch("j1", "f0") == b"png" and files.fetch("j1", "f1") is None
     assert seen[0].url.path == "/jobs/j1/figures/f0/bytes" and seen[0].headers["Authorization"] == "Bearer secret"
+
+
+def test_the_studys_orientation_is_the_context_when_no_context_is_given(stack) -> None:  # noqa: ANN001
+    from app.leveling.study import Orientation, Study
+
+    vision, _ = stack
+    doc = _ingest(defer_captions=True)
+    study = Study(version="v", orientation=Orientation(document_type="An ICD", system="The radar")).model_dump(mode="json")
+    assert _captions(doc, study=study).status_code == 200
+    assert vision.contexts == ["Document type: An ICD\nSystem: The radar"]

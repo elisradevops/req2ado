@@ -278,6 +278,8 @@ export class IngestionHttpClient {
     visionSkipReason?: string,
     // Aborting it closes the connection, which makes ingestion stop the figure captioning that is running (a cancelled job).
     signal?: AbortSignal,
+    // STUDY_PHASE: parse and store the figures but write no caption (captions() writes them after the Study).
+    deferCaptions?: boolean,
   ): Promise<CanonicalDoc> {
     const form = new FormData();
     form.append('file', new Blob([fileBuffer]), filename);
@@ -296,6 +298,9 @@ export class IngestionHttpClient {
     }
     if (visionSkipReason) {
       params.set('vision_skip_reason', visionSkipReason);
+    }
+    if (deferCaptions) {
+      params.set('defer_captions', 'true');
     }
     const url = `${this.baseUrl}/ingest?${params.toString()}`;
     const response = await fetch(url, {
@@ -600,6 +605,41 @@ export class IngestionHttpClient {
     });
     if (!response.ok) throw await _ingestionError(response, 'Ingestion /prestudy request failed: ');
     return (await response.json()) as PrestudyResult;
+  }
+
+  // The Study of a parsed document (ingestion's /study): one reading of it, its grounded facts and orientation. Fail-open on ingestion's
+  // side (a partial Study, never an error for a model that fails); aborting the signal cancels the reading.
+  async study(doc: CanonicalDoc, options: { userId?: string; model?: string; signal?: AbortSignal } = {}): Promise<Record<string, unknown>> {
+    const response = await fetch(`${this.baseUrl}/study`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...identityHeaders(options.userId) },
+      body: JSON.stringify({ doc, ...(options.model ? { model: options.model } : {}) }),
+      dispatcher: this.longRunningAgent,
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    if (!response.ok) throw await _ingestionError(response, 'Ingestion /study request failed: ');
+    return (await response.json()) as Record<string, unknown>;
+  }
+
+  // The figure captions of a document parsed with deferCaptions, written after its Study with the Study's orientation as their context.
+  async captions(
+    doc: CanonicalDoc,
+    jobId: string,
+    options: { study?: Record<string, unknown> | null; userId?: string; visionModel?: string; signal?: AbortSignal } = {},
+  ): Promise<CanonicalDoc> {
+    const response = await fetch(`${this.baseUrl}/captions?${new URLSearchParams({ job_id: jobId }).toString()}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...identityHeaders(options.userId) },
+      body: JSON.stringify({
+        doc,
+        ...(options.study ? { study: options.study } : {}),
+        ...(options.visionModel ? { vision_model: options.visionModel } : {}),
+      }),
+      dispatcher: this.longRunningAgent,
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    if (!response.ok) throw await _ingestionError(response, 'Ingestion /captions request failed: ');
+    return (await response.json()) as CanonicalDoc;
   }
 
   // How a file is studied right now (prompts, schemas, votes, code pass); null when it cannot be read: a stored rulebook is then reused only if the user edited it.

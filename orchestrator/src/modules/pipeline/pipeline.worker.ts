@@ -210,6 +210,8 @@ export interface PipelineWorkerDeps {
   ocrLanguages?: string;
   /** Budget, heartbeat and skip memory of the whole-document primer step (see primer.step.ts). Absent: the defaults below. */
   primerOptions?: PrimerStepOptions;
+  /** STUDY_PHASE: a SURVEY job reads its document once (ingestion's /study) instead of the primer and /level's background study. */
+  studyPhase?: boolean;
 }
 
 /**
@@ -609,7 +611,9 @@ export async function runPipelineJob(
     // always has.
     let primerContext: string | undefined;
     const primerWarnings: WarningRecord[] = [];
-    if (job.mode === 'survey' && deps.openWebUiClientFactory && deps.primerCacheRedis && job.userId) {
+    // The Study phase replaces the primer (its orientation is the captions' and the criteria's context) and /level's own background study.
+    const studyPhase = deps.studyPhase === true && job.mode === 'survey' && Boolean(job.userId);
+    if (!studyPhase && job.mode === 'survey' && deps.openWebUiClientFactory && deps.primerCacheRedis && job.userId) {
       const openWebUiClientFactory = deps.openWebUiClientFactory;
       const primerCacheRedis = deps.primerCacheRedis;
       const primerUserId = job.userId;
@@ -730,6 +734,7 @@ export async function runPipelineJob(
             ingestionVersion: cacheScope.ingestion,
             profileVersion,
             rulebookHash: fileRulebookHash,
+            studyPhase,
           })
         : null;
     if (deps.resultCache && job.mode === 'survey' && job.userId) {
@@ -780,7 +785,7 @@ export async function runPipelineJob(
         console.info(`Job ${job.id}: result cache not consulted (knowledge base or ingestion scope unreadable), running in full`);
       }
     }
-    const [doc] = await withCancelWatch(deps.prisma, job.id, deps.cancelPollMs ?? CANCEL_POLL_MS, (cancelSignal) =>
+    const [ingested] = await withCancelWatch(deps.prisma, job.id, deps.cancelPollMs ?? CANCEL_POLL_MS, (cancelSignal) =>
       Promise.all([
         cached
           ? Promise.resolve(cached.doc as Awaited<ReturnType<typeof deps.ingestionClient.ingest>>)
@@ -796,6 +801,8 @@ export async function runPipelineJob(
               visionPlan ? model : undefined,
               visionPlan?.skipReason,
               cancelSignal,
+              // Only when on, so the call with STUDY_PHASE off is exactly today's.
+              ...(studyPhase ? [true] : []),
             ),
         maybeBackfillAreaPath(deps.prisma, deps.backfillService, job.areaPath, credential, job.userId ?? undefined, deps.embedModel ?? ''),
         // A job that searches the whole project needs every area of it in the index, not only the ones an earlier job happened to scan:
@@ -805,6 +812,39 @@ export async function runPipelineJob(
           : []),
       ]),
     );
+
+    // The Study phase: one reading of the parsed document, then the figure captions with its orientation as their context. Both fail open:
+    // without a Study /level studies the document itself, as today; a caption pass that fails leaves every figure marked as not described.
+    let doc = ingested;
+    let study: Record<string, unknown> | null = null;
+    if (studyPhase && !cached) {
+      try {
+        study = await withCancelWatch(deps.prisma, job.id, deps.cancelPollMs ?? CANCEL_POLL_MS, (studySignal) =>
+          deps.ingestionClient.study(doc, { userId: job.userId ?? undefined, model, signal: studySignal }),
+        );
+      } catch (error) {
+        if (error instanceof JobCancelledError) throw error;
+        // eslint-disable-next-line no-console -- worker process logging
+        console.warn(`Job ${job.id}: the document could not be studied (${error instanceof Error ? error.name : 'error'}); /level studies it itself`);
+      }
+      if (doc.vision_active && (doc.figures ?? []).length > 0) {
+        try {
+          doc = await withCancelWatch(deps.prisma, job.id, deps.cancelPollMs ?? CANCEL_POLL_MS, (captionSignal) =>
+            deps.ingestionClient.captions(doc, job.id, {
+              study,
+              userId: job.userId ?? undefined,
+              visionModel: visionPlan ? model : undefined,
+              signal: captionSignal,
+            }),
+          );
+        } catch (error) {
+          if (error instanceof JobCancelledError) throw error;
+          // eslint-disable-next-line no-console -- worker process logging
+          console.warn(`Job ${job.id}: the figure captions could not be written (${error instanceof Error ? error.name : 'error'})`);
+          doc = { ...doc, figures: (doc.figures ?? []).map((figure) => ({ ...figure, caption_status: figure.caption_status ?? ('vision_failed' as const) })) };
+        }
+      }
+    }
 
     // Figure storage happens during /ingest, not /level -- a store()
     // failure there (main.py's _describe_figure_with_progress) can never
@@ -930,7 +970,8 @@ export async function runPipelineJob(
         // eslint-disable-next-line no-console -- worker process logging
         console.info(`Job ${job.id}: /level started`);
         // The rulebook stored for this file rides on the document to /level (CanonicalDoc.rulebook), so the job builds from exactly what the wizard showed.
-        const levelDoc = fileRulebook ? { ...doc, rulebook: fileRulebook } : doc;
+        // The Study rides the same way (CanonicalDoc.study): /level then reads it instead of studying the document again.
+        const levelDoc = { ...doc, ...(fileRulebook ? { rulebook: fileRulebook } : {}), ...(study ? { study } : {}) };
         // Watched like the parse: a cancel aborts the call, which closes the connection, and ingestion then stops the run and the model
         // call it has open, instead of scoring to the end for a job nobody is waiting for.
         levelResult = await withCancelWatch(deps.prisma, job.id, deps.cancelPollMs ?? CANCEL_POLL_MS, (levelSignal) =>

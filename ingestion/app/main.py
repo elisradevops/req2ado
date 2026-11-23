@@ -83,6 +83,8 @@ from app.leveling.study import (
     StudyResultCache,
     StudyTimings,
     build_study,
+    orientation_text,
+    study_of,
     study_result_version,
 )
 from app.leveling.study_store import StudyStore
@@ -1999,7 +2001,8 @@ async def ingest(
 
 class CaptionsRequest(BaseModel):
     doc: CanonicalDoc  # as /ingest returned it with defer_captions (figures stored, none captioned)
-    context: str | None = None  # the Study's orientation, the captions' document context (what the primer was)
+    context: str | None = None  # the captions' document context (what the primer was); absent: taken from `study`
+    study: dict | None = None  # the job's Study (its JSON form): its orientation is the context, rendered as /level renders it
     vision_model: str | None = None
     redact: bool = False  # the job's own /ingest redact flag: captions written now are redacted the same way
 
@@ -2036,13 +2039,17 @@ async def captions(
         raise HTTPException(status_code=422, detail="the document's figures are not numbered as /ingest numbers them")
     narration_publisher = NarrationPublisher(_narration_redis, job_id)
     breaker = _VisionBreaker(_VISION_BREAKER_THRESHOLD)
+    context = body.context
+    if context is None and body.study is not None:
+        given = study_of(doc.model_copy(update={"study": body.study}))
+        context = orientation_text(given.orientation) if given is not None else None
 
     def _run() -> list[str]:
         figure_bytes = _fetch_figure_bytes(job_id, figure_ids)
         return _caption_figures(
             doc,
             figure_bytes,
-            body.context,
+            context,
             None,  # already stored by /ingest
             user_id=user_id,
             model=body.vision_model,

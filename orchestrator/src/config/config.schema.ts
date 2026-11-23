@@ -57,6 +57,13 @@ export const configSchema = z.object({
   // value as ingestion's KB_PROFILE_MODEL so the background build and a job's lazy build agree.
   KB_PROFILE_MODEL: z.string().optional(),
   RESULT_CACHE_VERSION: z.string().default('1'),
+  // The Study phase (ingestion's /study): a SURVEY job reads its document once before Analyze, captions its figures with the Study's
+  // orientation, and gives the Study to /level, instead of the primer and /level's own background study. 'false' (the default) keeps
+  // today's path; it is also the switch back if the Study misbehaves in production.
+  STUDY_PHASE: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
   // The pre-flight cost forecast (pipeline/token-estimate.ts). LLM_MODEL_PRICES is a JSON object of model id ("*" for any other) to
   // {"inputPerMTok": n, "outputPerMTok": n}, US dollars per million tokens; without a price for the model the wizard shows tokens only.
   // COST_CONFIRM_TOKENS: a run forecast above this many tokens (input + output, likely case) asks the user to confirm before Start; 0 never asks.
