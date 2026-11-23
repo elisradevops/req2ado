@@ -393,13 +393,18 @@ class StudyTimings:
             logger.warning("Study timings not recorded (%s).", type(error).__name__)
 
 
+# Headroom over the estimate: one model's time per window varies widely (10 to 26 s for full windows of one export), and the estimate is a
+# median, so about half the windows take longer than it says.
+_BUDGET_MARGIN = 1.5
+
+
 def study_budget(window_chars: list[int], seconds_per_kchar: float, concurrency: int, ceiling: float) -> float:
     """Seconds to read windows of these lengths `concurrency` at a time (their characters x the seconds per 1,000 characters / the
-    concurrency), plus the longest window once more as slack for a slow call, at most `ceiling`."""
+    concurrency, plus the longest window once more for the last slow call), with _BUDGET_MARGIN headroom, at most `ceiling`."""
     if not window_chars:
         return 0.0
     per_window = [chars / 1000 * seconds_per_kchar for chars in window_chars]
-    return min(ceiling, sum(per_window) / max(concurrency, 1) + max(per_window))
+    return min(ceiling, _BUDGET_MARGIN * (sum(per_window) / max(concurrency, 1) + max(per_window)))
 
 
 # -- result cache ----------------------------------------------------------------------------------------------------------------

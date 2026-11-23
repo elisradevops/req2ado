@@ -243,8 +243,15 @@ def test_a_failed_orientation_keeps_the_grounded_facts() -> None:
 def test_the_budget_is_rounds_of_the_median_window_plus_one_capped_at_the_ceiling() -> None:
     # Four full windows and a short last one, 1.5 s per 1,000 characters, read 4 at a time: their time / 4, plus the longest once more.
     chars = [20_000] * 4 + [2_000]
-    assert study_budget(chars, 1.5, 4, 10_000) == pytest.approx((4 * 30 + 3) / 4 + 30)
+    assert study_budget(chars, 1.5, 4, 10_000) == pytest.approx(1.5 * ((4 * 30 + 3) / 4 + 30))  # with the 1.5x headroom
     assert study_budget(chars, 1.5, 4, 40) == 40
+
+
+def test_the_budget_covers_a_large_export_read_at_its_measured_rate() -> None:
+    # The ado_tree_export.csv case: 12 full windows read one at a time took ~175 s on the dev model, ~0.75 s per 1,000 characters at the
+    # median, with single windows taking up to 26 s. The budget at that median must leave room for the slow ones.
+    chars = [19_000] * 11 + [15_906]
+    assert study_budget(chars, 0.75, 1, 2_700) > 175 * 1.3
     assert study_budget([], 1.5, 4, 40) == 0
 
 
