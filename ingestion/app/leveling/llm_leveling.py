@@ -1607,8 +1607,8 @@ def _propose_criteria_step(
     With a `study_handle` (started by build_survey_tree) the study has been reading in the background since the job began: this joins it, or,
     when nothing is eligible, stops it and keeps the windows it had stored. Without one the proposals use the hierarchy alone, and when the study
     was wanted (`study_enabled` and a `study_client`) one warning says it could not be started: the document is never read on the job's thread.
-    A `given_study` (the orchestrator's Study, CanonicalDoc.study) is read instead of any study of this run's own; its reading warnings are
-    the job's, as the background study's are."""
+    A `given_study` (the orchestrator's Study, CanonicalDoc.study) is read instead of any study of this run's own; what it did not read is
+    reported once for the whole job by the orchestrator, not again here."""
     if criteria_client is None or not eligible_nodes(nodes):
         skip_criteria_stage()
         if study_handle is not None:
@@ -1622,15 +1622,7 @@ def _propose_criteria_step(
         return _table_to_markdown(table) if table is not None else None
 
     if given_study is not None:
-        study = as_document_study(given_study)
-        for message in given_study.warnings:
-            warnings.append(
-                IntegrityWarning.make(
-                    WarningKind.DOCUMENT_STUDY_INCOMPLETE,
-                    message,
-                    detail={"pass": "document_study"},
-                )
-            )
+        study = as_document_study(given_study)  # what it did not read is the job's warning, said once by the orchestrator
     elif study_handle is not None:
         outcome = study_handle.result(
             timeout=settings.survey_study_hard_budget_seconds + 60

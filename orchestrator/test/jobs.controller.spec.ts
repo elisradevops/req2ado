@@ -815,6 +815,52 @@ describe('JobsController.uploadFigureFile', () => {
   });
 });
 
+describe('JobsController.previewStudy', () => {
+  const user = { userId: 'u1' } as any;
+  const upload = { buffer: Buffer.from('doc'), originalname: 'x.docx', size: 3 } as any;
+  function res() {
+    const handlers: Record<string, () => void> = {};
+    const r: any = { writableEnded: false, written: [] as string[] };
+    r.on = jest.fn((event: string, fn: () => void) => (handlers[event] = fn));
+    r.status = jest.fn(() => r);
+    r.set = jest.fn(() => r);
+    r.write = jest.fn((chunk: Uint8Array | string) => r.written.push(Buffer.from(chunk).toString()));
+    r.end = jest.fn((chunk?: string) => {
+      if (chunk) r.written.push(chunk);
+      r.writableEnded = true;
+    });
+    return r;
+  }
+  const make = (studyPreview?: object) =>
+    new JobsController({} as any, {} as any, { isModelHidden: () => false } as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, undefined, undefined, undefined, undefined, undefined, undefined, studyPreview as any);
+
+  it('answers one skipped line when the job would read no Study', async () => {
+    const r = res();
+    await make({ open: jest.fn().mockResolvedValue(null) }).previewStudy(upload, user, 'baseline', undefined, undefined, r);
+    expect(r.set).toHaveBeenCalledWith('Content-Type', 'application/x-ndjson');
+    expect(r.written.join('')).toBe('{"type":"skipped"}\n');
+  });
+
+  it('relays the reading as it streams, with the file, mode, model and rulebook the wizard gave', async () => {
+    const lines = ['{"type":"heartbeat","windowsDone":1,"windowsTotal":3}\n', '{"type":"result","study":{}}\n'];
+    const open = jest.fn().mockResolvedValue((async function* () {
+      for (const l of lines) yield Buffer.from(l);
+    })());
+    const r = res();
+    await make({ open }).previewStudy(upload, user, 'survey', 'm1', 'rb1', r);
+    expect(open).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'u1', mode: 'survey', model: 'm1', rulebookId: 'rb1', filename: 'x.docx', signal: expect.any(AbortSignal) }),
+      expect.stringMatching(/^[0-9a-f]{64}$/),
+    );
+    expect(r.written.join('')).toBe(lines.join(''));
+    expect(r.end).toHaveBeenCalled();
+  });
+
+  it('refuses a mode that is not baseline or survey', async () => {
+    await expect(make({ open: jest.fn() }).previewStudy(upload, user, 'other', undefined, undefined, res())).rejects.toThrow('mode must be');
+  });
+});
+
 describe('JobsController.readFigureFileInternal', () => {
   const make = (jobsService: object) => new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 

@@ -3407,7 +3407,7 @@ describe('runPipelineJob', () => {
     it('follows the progress from before the Study through /level, and stops following it once', async () => {
       const order: string[] = [];
       const stop = jest.fn().mockImplementation(async () => void order.push('stop'));
-      const progressService = { track: jest.fn().mockImplementation(async () => (order.push('track'), stop)), record: jest.fn() };
+      const progressService = { track: jest.fn().mockImplementation(async () => (order.push('track'), stop)), record: jest.fn(), finish: jest.fn() };
       const ingestion = client({
         study: jest.fn().mockImplementation(async () => (order.push('study'), theStudy)),
         level: jest.fn().mockImplementation(async () => (order.push('level'), { nodes: [] })),
@@ -3426,6 +3426,68 @@ describe('runPipelineJob', () => {
         studyPhase: true,
       });
       expect(order).toEqual(['track', 'study', 'level', 'stop']);
+    });
+
+    it('reads the Study for a BASELINE job of a connected user and captions its figures, but not for one with no connection', async () => {
+      const baselineParsed = { ...parsed, vision_active: false, vision_skip_reason: 'baseline_mode' };
+      const runBaseline = (connected: boolean) => {
+        const ingestion = client({ ingest: jest.fn().mockResolvedValue(baselineParsed) });
+        const getClientFor = connected ? jest.fn().mockResolvedValue(fakeOpenWebUiClient) : jest.fn().mockRejectedValue(new Error('no connection'));
+        return runPipelineJob({ ...job, mode: 'baseline' }, {
+          ingestionClient: ingestion as any,
+          dryRunService: fakeDryRunService as any,
+          idempotencyService: fakeIdempotencyService as any,
+          prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
+          backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          defaultLlmModel: 'gemma4:12b',
+          openWebUiClientFactory: { getClientFor } as any,
+          studyPhase: true,
+        }).then(() => ingestion);
+      };
+      const connected = await runBaseline(true);
+      expect(connected.study).toHaveBeenCalled();
+      expect(connected.captions).toHaveBeenCalledWith(baselineParsed, 'job-s', expect.objectContaining({ study: theStudy }));
+      const unconnected = await runBaseline(false);
+      expect(unconnected.study).not.toHaveBeenCalled();
+      expect(unconnected.captions).not.toHaveBeenCalled();
+    });
+
+    it('says once, for the job, when the Study could not be read or read only part of the document', async () => {
+      const warningsOf = async (study: jest.Mock) => {
+        fakePrisma.job.update.mockClear();
+        await run(client({ study }), true);
+        const saved = fakePrisma.job.update.mock.calls.map(([arg]: any[]) => arg?.data?.warnings).find(Boolean) ?? [];
+        return (saved as { kind: string; raw: string }[]).filter((w) => w.kind === 'document_study_incomplete');
+      };
+      expect(await warningsOf(jest.fn().mockRejectedValue(new Error('down')))).toEqual([
+        expect.objectContaining({ raw: 'The document could not be studied, so this job ran without the context it gives.' }),
+      ]);
+      const partial = { ...theStudy, stats: { windows_studied: 3, windows_total: 10, orientation_failed: false } };
+      expect(await warningsOf(jest.fn().mockResolvedValue(partial))).toEqual([
+        expect.objectContaining({ raw: 'The document study read 3 of 10 parts of the document.' }),
+      ]);
+      const whole = { ...theStudy, stats: { windows_studied: 10, windows_total: 10, orientation_failed: false } };
+      expect(await warningsOf(jest.fn().mockResolvedValue(whole))).toEqual([]);
+    });
+
+    it('reads the Study with the rulebook /level builds from', async () => {
+      const ingestion = client();
+      await runPipelineJob({ ...job, fileRulebook: { tables: { t0: {} } }, fileRulebookHash: 'h' } as any, {
+        ingestionClient: ingestion as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        defaultLlmModel: 'gemma4:12b',
+        studyPhase: true,
+      });
+      expect(ingestion.study.mock.calls[0][0]).toEqual({ ...parsed, rulebook: { tables: { t0: {} } } });
     });
 
     it('is off unless switched on: a SURVEY job runs the primer path exactly as before', async () => {

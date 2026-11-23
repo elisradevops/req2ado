@@ -411,8 +411,8 @@ export const KIND_META: Record<string, KindMeta> = {
   document_study_incomplete: {
     title: 'Document study incomplete',
     group: 'info',
-    short: 'The study of the document did not read every part of the file, so some proposals were made with less context.',
-    means: 'The unread parts did not feed the acceptance-criteria proposals. The tree itself is built from the whole document, so nothing is missing from the tree.',
+    short: 'The study of the document did not read every part of the file, so some steps had less context.',
+    means: 'The unread parts gave no context to the figure descriptions and the acceptance-criteria proposals. The tree itself is built from the whole document, so nothing is missing from the tree.',
     todo: 'Nothing required. Resubmit the job to read the unread parts again.',
     chip: 'Study incomplete',
     unit: ['warning', 'warnings'],

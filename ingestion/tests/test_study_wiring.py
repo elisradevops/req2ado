@@ -737,7 +737,7 @@ def test_a_given_study_replaces_the_background_study_and_the_primer(monkeypatch)
     assert call["background"] == "Document type: A requirements specification\nSystem: The display unit"
 
 
-def test_a_given_studys_reading_warnings_are_the_jobs() -> None:
+def test_a_given_studys_reading_warnings_are_left_to_the_orchestrator() -> None:
     doc = _small_doc().model_copy(update={"study": _given_study(warnings=["The document study read 1 of 2 parts of the document."])})
     tree = build_survey_tree(
         doc,
@@ -746,8 +746,7 @@ def test_a_given_studys_reading_warnings_are_the_jobs() -> None:
         acceptance_criteria_client=_CriteriaSpy(),
         document_study_client=_EventStudy(),
     )
-    ours = [w for w in tree.warnings if w.detail.get("pass") == "document_study"]
-    assert len(ours) == 1 and ours[0].kind == WarningKind.DOCUMENT_STUDY_INCOMPLETE and "1 of 2 parts" in ours[0].raw
+    assert not [w for w in tree.warnings if w.kind == WarningKind.DOCUMENT_STUDY_INCOMPLETE]  # said once, for the job
 
 
 def test_a_study_that_is_not_valid_is_ignored_and_todays_path_runs(monkeypatch) -> None:

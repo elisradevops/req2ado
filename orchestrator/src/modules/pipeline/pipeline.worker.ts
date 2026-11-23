@@ -476,6 +476,33 @@ interface LeveledWarning {
 // isn't possible (no job.userId, no factory wired, or the profile vanished
 // between submit and run) -- a real SURVEY job from a currently-logged-in
 // user always has both, per the first-login configuration gate.
+/** Whether the user has a model connection (an Open WebUI profile): a BASELINE job reads the Study only then. */
+async function hasModelConnection(userId: string, deps: PipelineWorkerDeps): Promise<boolean> {
+  if (!deps.openWebUiClientFactory) return false;
+  try {
+    await deps.openWebUiClientFactory.getClientFor(userId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The job's warning about its Study: none when every part was read, one saying what was not otherwise (the job carried on, fail-open). */
+function studyIncompleteWarnings(study: Record<string, unknown> | null): WarningRecord[] {
+  const warning = (raw: string, detail: Record<string, unknown>): WarningRecord[] => [
+    { kind: 'document_study_incomplete', severity: 'pipeline_issue', nodeIds: [], detail: { pass: 'study', ...detail }, raw },
+  ];
+  if (!study) return warning('The document could not be studied, so this job ran without the context it gives.', {});
+  const stats = (study.stats ?? {}) as { windows_studied?: number; windows_total?: number; orientation_failed?: boolean };
+  const read = stats.windows_studied ?? 0;
+  const total = stats.windows_total ?? 0;
+  const messages = [
+    ...(total > 0 && read < total ? [`The document study read ${read} of ${total} parts of the document.`] : []),
+    ...(stats.orientation_failed ? ['The overview of the document could not be written.'] : []),
+  ];
+  return messages.length ? warning(messages.join(' '), { windowsRead: read, windowsTotal: total }) : [];
+}
+
 async function resolveDefaultChatModel(job: PipelineJobInput, deps: PipelineWorkerDeps): Promise<string> {
   let reason: 'no_user' | 'no_factory' | 'resolve_failed' = job.userId ? 'no_factory' : 'no_user';
   if (job.userId && deps.openWebUiClientFactory) {
@@ -612,7 +639,9 @@ export async function runPipelineJob(
     let primerContext: string | undefined;
     const primerWarnings: WarningRecord[] = [];
     // The Study phase replaces the primer (its orientation is the captions' and the criteria's context) and /level's own background study.
-    const studyPhase = deps.studyPhase === true && job.mode === 'survey' && Boolean(job.userId);
+    // Every SURVEY job reads it; a BASELINE job does when its user has a model connection (it then gets figure captions too).
+    const studyPhase =
+      deps.studyPhase === true && Boolean(job.userId) && (job.mode === 'survey' || (await hasModelConnection(job.userId!, deps)));
     if (!studyPhase && job.mode === 'survey' && deps.openWebUiClientFactory && deps.primerCacheRedis && job.userId) {
       const openWebUiClientFactory = deps.openWebUiClientFactory;
       const primerCacheRedis = deps.primerCacheRedis;
@@ -824,14 +853,22 @@ export async function runPipelineJob(
       try {
         try {
           study = await withCancelWatch(deps.prisma, job.id, deps.cancelPollMs ?? CANCEL_POLL_MS, (studySignal) =>
-            deps.ingestionClient.study(doc, { userId: job.userId ?? undefined, model, jobId: job.id, signal: studySignal }),
+            // With the rulebook /level builds from: the tables it states are read row by row, and the wizard's Study (read with the same
+            // rulebook) is the same reading, so the cached one is reused.
+            deps.ingestionClient.study(fileRulebook ? { ...doc, rulebook: fileRulebook } : doc, {
+              userId: job.userId ?? undefined,
+              model,
+              jobId: job.id,
+              signal: studySignal,
+            }),
           );
         } catch (error) {
           if (error instanceof JobCancelledError) throw error;
           // eslint-disable-next-line no-console -- worker process logging
           console.warn(`Job ${job.id}: the document could not be studied (${error instanceof Error ? error.name : 'error'}); /level studies it itself`);
         }
-        if (doc.vision_active && (doc.figures ?? []).length > 0) {
+        // A BASELINE document is captioned here too (its /ingest never runs vision); a SURVEY one only when vision ran for it.
+      if ((doc.vision_active || doc.vision_skip_reason === 'baseline_mode') && (doc.figures ?? []).length > 0) {
           try {
             doc = await withCancelWatch(deps.prisma, job.id, deps.cancelPollMs ?? CANCEL_POLL_MS, (captionSignal) =>
               deps.ingestionClient.captions(doc, job.id, {
@@ -853,6 +890,9 @@ export async function runPipelineJob(
         throw error;
       }
     }
+
+    // What the Study read, said once for the job (any mode): a Study that could not be read at all, or did not read every part.
+    const studyWarnings = studyPhase && !cached ? studyIncompleteWarnings(study) : [];
 
     // Figure storage happens during /ingest, not /level -- a store()
     // failure there (main.py's _describe_figure_with_progress) can never
@@ -1414,6 +1454,7 @@ export async function runPipelineJob(
           ...figureStorageWarnings,
           ...figureCaptionWarnings,
           ...primerWarnings,
+          ...studyWarnings,
           ...(boilerplateWarning ? [boilerplateWarning] : []),
         ] as any,
         kbCitations: (tree.kb_citations ?? []).map((c) => ({

@@ -626,6 +626,20 @@ export class IngestionHttpClient {
     return (await response.json()) as Record<string, unknown>;
   }
 
+  // The same reading streamed (the wizard): heartbeat lines with windowsDone/windowsTotal, then one result line with the Study. Returns the
+  // response body to relay as it arrives; aborting the signal closes it, which cancels the reading.
+  async studyStream(doc: CanonicalDoc, options: { userId?: string; model?: string; signal?: AbortSignal } = {}): Promise<ReadableStream<Uint8Array>> {
+    const response = await fetch(`${this.baseUrl}/study`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: NDJSON, ...identityHeaders(options.userId) },
+      body: JSON.stringify({ doc, ...(options.model ? { model: options.model } : {}) }),
+      dispatcher: this.longRunningAgent,
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    if (!response.ok || !response.body) throw await _ingestionError(response, 'Ingestion /study request failed: ');
+    return response.body;
+  }
+
   // The figure captions of a document parsed with deferCaptions, written after its Study with the Study's orientation as their context.
   async captions(
     doc: CanonicalDoc,
