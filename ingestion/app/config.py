@@ -273,6 +273,10 @@ class Settings(BaseSettings):
     # too, so the screen can show how far a long call has got (elapsed time and about how many tokens were written). The answer is
     # parsed exactly as the plain call's; a study call stays plain. Off: those calls are plain and report elapsed time only.
     llm_stream_progress: bool = True
+    # llm_prompt_cache: send the stable start of each call's user message (knowledge-base text, rubric, fixed vocabularies) as its own
+    # text part marked as a prompt-cache breakpoint. The orchestrator forwards the mark only to a Claude model with caching on, and
+    # otherwise sends the joined text unchanged. Off: the request is exactly as before.
+    llm_prompt_cache: bool = False
     # Longest excerpt of the owner's own document text sent on the live
     # channel, in characters. Bounded so a misconfiguration cannot turn the
     # event bus into a document copy.
