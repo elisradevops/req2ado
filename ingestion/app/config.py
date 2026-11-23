@@ -269,6 +269,10 @@ class Settings(BaseSettings):
     # display observer -- the returned value still comes from the existing
     # full-text parse, so results are unchanged either way.
     llm_stream_drafting: bool = False
+    # llm_stream_progress: with live progress on, every other model call of a job (scoring, trace links, criteria, ...) is streamed
+    # too, so the screen can show how far a long call has got (elapsed time and about how many tokens were written). The answer is
+    # parsed exactly as the plain call's; a study call stays plain. Off: those calls are plain and report elapsed time only.
+    llm_stream_progress: bool = True
     # Longest excerpt of the owner's own document text sent on the live
     # channel, in characters. Bounded so a misconfiguration cannot turn the
     # event bus into a document copy.

@@ -36,6 +36,14 @@ describe('liveRunStore', () => {
     expect(store().active).toBe(true);
   });
 
+  it('keeps a model call\'s progress apart from the item lanes, and counts it as activity', () => {
+    store().ingestLive(frame(1, -1, 'model_progress', { prompt: 'score_requirements_for_document.v6@x', stage: 'score_requirements_for_document', elapsedS: 250, tokens: 9800 }));
+    tick();
+    expect(store().modelProgress).toMatchObject({ elapsedS: 250, tokens: 9800, stage: 'score_requirements_for_document' });
+    expect(store().lanes).toEqual({});
+    expect(store().activityAt).not.toBeNull();
+  });
+
   it('notifies subscribers at most four times a second however many events arrive', () => {
     const listener = vi.fn();
     const unsubscribe = useLiveRunStore.subscribe(listener);

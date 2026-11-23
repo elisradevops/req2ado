@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { subscribeToJobEvents } from './events';
+import { isValidLiveFrame, subscribeToJobEvents } from './events';
 
 class FakeEventSource {
   static instances: FakeEventSource[] = [];
@@ -274,5 +274,17 @@ describe('subscribeToJobEvents live run events', () => {
     source.emit('notice', { ...notice, count: 'many' });
     expect(handlers.onNotice).toHaveBeenCalledTimes(1);
     expect(handlers.onNotice).toHaveBeenCalledWith(notice);
+  });
+});
+
+describe('model_progress live frames', () => {
+  const base = { type: 'live', seq: 3, lane: -1, kind: 'model_progress', prompt: 'p', stage: 's', emittedAt: 'x' };
+  it('accepts one with elapsed time and tokens, or with no token count (a plain call)', () => {
+    expect(isValidLiveFrame({ ...base, elapsedS: 12.5, tokens: 100 })).toBe(true);
+    expect(isValidLiveFrame({ ...base, elapsedS: 12.5, tokens: null })).toBe(true);
+  });
+  it('rejects one without a usable elapsed time or with a non-numeric token count', () => {
+    expect(isValidLiveFrame({ ...base, elapsedS: 'soon', tokens: 1 })).toBe(false);
+    expect(isValidLiveFrame({ ...base, elapsedS: 3, tokens: 'many' })).toBe(false);
   });
 });

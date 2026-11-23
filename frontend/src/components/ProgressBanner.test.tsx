@@ -1432,6 +1432,31 @@ describe('ProgressBanner live run view', () => {
     expect(screen.queryByTestId('model-call-clock')).not.toBeInTheDocument();
   });
 
+  it('shows how far an open model call has got, from the server: elapsed time and about how many tokens it has written', () => {
+    const score = { phase: 'score_requirements', branchIndex: null, branchCount: 0, blocksDone: 0, blocksTotal: 0, kbGrounded: false, kbCitations: [], message: 'Scoring requirement quality (batch 3 of 8)' } as unknown as NarrationEvent;
+    render(<ProgressBanner stage="infer_hierarchy_start" startedAt="2026-07-09T10:00:00Z" mode="survey" narrations={[score]} jobId="job-1" />);
+    act(() => {
+      useLiveRunStore.getState().ingestLive({ type: 'live', seq: 1, lane: -1, kind: 'model_progress', prompt: 'p', stage: 'score_requirements_for_document', elapsedS: 250, tokens: 9800, emittedAt: 'x' });
+      vi.advanceTimersByTime(FLUSH_INTERVAL_MS);
+    });
+    const line = screen.getByTestId('model-progress');
+    expect(line).toHaveTextContent(/4m 10s so far/);
+    expect(line).toHaveTextContent(/9,800 tokens written/);
+  });
+
+  it('drops the model-progress line once its last report is old', () => {
+    render(<ProgressBanner stage="infer_hierarchy_start" startedAt="2026-07-09T10:00:00Z" mode="survey" narrations={[analyze]} jobId="job-1" />);
+    act(() => {
+      useLiveRunStore.getState().ingestLive({ type: 'live', seq: 1, lane: -1, kind: 'model_progress', prompt: 'p', stage: 's', elapsedS: 30, tokens: null, emittedAt: 'x' });
+      vi.advanceTimersByTime(FLUSH_INTERVAL_MS);
+    });
+    expect(screen.getByTestId('model-progress')).toBeInTheDocument();
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+    expect(screen.queryByTestId('model-progress')).not.toBeInTheDocument();
+  });
+
   it('restarts the "updated … ago" stamp when live frames arrive between narration events', () => {
     render(<ProgressBanner stage="infer_hierarchy_start" startedAt="2026-07-09T10:00:00Z" mode="survey" narrations={[analyze]} jobId="job-1" />);
     act(() => {
