@@ -68,7 +68,9 @@ VOCABULARY_VALUE_CHARS = 200  # a longer value is free text, not vocabulary: it 
 _TABLE_MARKER_EVERY = STUDY_WINDOW_CHARS // 2
 _TIMING_SAMPLES_MIN = 3  # fewer measured windows than this: the default seconds per window is used
 _RESULT_PREFIX = "studyresult"
-_TIMING_PREFIX = "studytiming"
+# Seconds per 1,000 characters read (a window's own length, not a window: a short document's one small window and a full 20,000-character
+# window take very different times). A new key, so samples measured per window before are never read as per 1,000 characters.
+_TIMING_PREFIX = "studytime-kchar"
 
 
 class OrientationClient(Protocol):
@@ -111,7 +113,7 @@ class StudyStats(BaseModel):
     breaker_opened: bool = False
     budget_stopped: bool = False
     budget_seconds: float = 0.0
-    seconds_per_window: float = 0.0  # the estimate the budget was computed from
+    seconds_per_window: float = 0.0  # the estimate the budget was computed from, for a full window (STUDY_WINDOW_CHARS)
     stopped_by: str = "completed"  # StudyOutcome.stopped_by, or "empty" for a document with no text
     orientation_failed: bool = False
     from_cache: bool = False  # the whole Study came from the result cache: no model call was made
@@ -331,7 +333,8 @@ def study_result_version() -> str:
 
 
 class _TimedClient:
-    """Measures each window call that answers (inside the lease, so waiting for a slot is not counted). Shared by the worker threads."""
+    """Measures each window call that answers (inside the lease, so waiting for a slot is not counted), as seconds per 1,000 characters
+    of the text it read. Shared by the worker threads."""
 
     def __init__(self, inner: OrientationClient, clock: Callable[[], float]) -> None:
         self._inner = inner
@@ -343,13 +346,13 @@ class _TimedClient:
         started = self._clock()
         answer = self._inner.study_document_window(window_text, user_id=user_id)
         with self._lock:
-            self.samples.append(self._clock() - started)
+            self.samples.append((self._clock() - started) * 1000 / max(len(window_text), 1))
         return answer
 
 
 class StudyTimings:
-    """The model's recent seconds per window, in Redis (one capped list per model, no user data). Fail open: no client or any Redis error
-    is "nothing measured", and the default is used."""
+    """The model's recent seconds per 1,000 characters read, in Redis (one capped list per model, no user data). Fail open: no client or
+    any Redis error is "nothing measured", and the default is used."""
 
     def __init__(self, redis_client, samples: int, ttl_seconds: int) -> None:
         self._redis = redis_client
@@ -383,17 +386,20 @@ class StudyTimings:
             return
         key = self._key(model)
         try:
-            self._redis.lpush(key, *(f"{s:.3f}" for s in good))
+            self._redis.lpush(key, *(f"{s:.4f}" for s in good))
             self._redis.ltrim(key, 0, self._samples - 1)
             self._redis.expire(key, self._ttl_seconds)
         except Exception as error:  # noqa: BLE001 -- fail open
             logger.warning("Study timings not recorded (%s).", type(error).__name__)
 
 
-def study_budget(windows: int, seconds_per_window: float, concurrency: int, ceiling: float) -> float:
-    """Seconds for `windows` windows read `concurrency` at a time, plus one round of slack for a slow window, at most `ceiling`."""
-    rounds = math.ceil(max(windows, 1) / max(concurrency, 1)) + 1
-    return min(ceiling, rounds * seconds_per_window)
+def study_budget(window_chars: list[int], seconds_per_kchar: float, concurrency: int, ceiling: float) -> float:
+    """Seconds to read windows of these lengths `concurrency` at a time (their characters x the seconds per 1,000 characters / the
+    concurrency), plus the longest window once more as slack for a slow call, at most `ceiling`."""
+    if not window_chars:
+        return 0.0
+    per_window = [chars / 1000 * seconds_per_kchar for chars in window_chars]
+    return min(ceiling, sum(per_window) / max(concurrency, 1) + max(per_window))
 
 
 # -- result cache ----------------------------------------------------------------------------------------------------------------
@@ -481,9 +487,13 @@ def build_study(
             return cached
 
     measured = timings.median(model) if timings is not None else None
-    seconds_per_window = measured if measured is not None else float(settings.study_default_seconds_per_window)
-    to_read = min(len(windows), settings.survey_study_max_windows)
-    budget = study_budget(to_read, seconds_per_window, settings.survey_study_concurrency, settings.survey_study_hard_budget_seconds)
+    # The default is set per full window (the unit an operator thinks in); measured times are per 1,000 characters.
+    seconds_per_kchar = measured if measured is not None else float(settings.study_default_seconds_per_window) * 1000 / STUDY_WINDOW_CHARS
+    seconds_per_window = seconds_per_kchar * STUDY_WINDOW_CHARS / 1000
+    to_read = windows[: settings.survey_study_max_windows]
+    budget = study_budget(
+        [len(w) for w in to_read], seconds_per_kchar, settings.survey_study_concurrency, settings.survey_study_hard_budget_seconds
+    )
 
     timed = _TimedClient(client, clock)
     # The background study's own settings, except the deadline: the Study's budget replaces the fixed hard budget.

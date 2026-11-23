@@ -241,8 +241,16 @@ def test_a_failed_orientation_keeps_the_grounded_facts() -> None:
 
 
 def test_the_budget_is_rounds_of_the_median_window_plus_one_capped_at_the_ceiling() -> None:
-    assert study_budget(10, 30.0, 4, 10_000) == (3 + 1) * 30.0
-    assert study_budget(10, 30.0, 4, 100) == 100
+    # Four full windows and a short last one, 1.5 s per 1,000 characters, read 4 at a time: their time / 4, plus the longest once more.
+    chars = [20_000] * 4 + [2_000]
+    assert study_budget(chars, 1.5, 4, 10_000) == pytest.approx((4 * 30 + 3) / 4 + 30)
+    assert study_budget(chars, 1.5, 4, 40) == 40
+    assert study_budget([], 1.5, 4, 40) == 0
+
+
+def test_a_short_document_gets_a_short_budget_and_a_long_one_a_long_budget() -> None:
+    # The budget follows the text, not the number of windows: one 500-character window is not budgeted as a full window.
+    assert study_budget([500], 3.0, 4, 10_000) < study_budget([20_000], 3.0, 4, 10_000) / 10
 
 
 def test_the_budget_stops_the_reading_early_with_partial_stats(monkeypatch) -> None:  # noqa: ANN001
@@ -252,13 +260,21 @@ def test_the_budget_stops_the_reading_early_with_partial_stats(monkeypatch) -> N
     assert study.stats.windows_total > 3
     assert study.stats.stopped_by == "deadline" and study.stats.budget_stopped
     assert study.stats.windows_studied < study.stats.windows_total
-    assert study.stats.budget_seconds == pytest.approx(0.05 * (study.stats.windows_total + 1))
+    from app.kb.profile import windows_of
+    from app.leveling.document_study import STUDY_WINDOW_CHARS, STUDY_WINDOW_OVERLAP
+
+    doc = _doc(paragraphs=40)
+    chars = [len(w) for w in windows_of(study_text(doc, study_tables(doc)), STUDY_WINDOW_CHARS, STUDY_WINDOW_OVERLAP)]
+    assert study.stats.budget_seconds == pytest.approx(study_budget(chars, 0.05 * 1000 / STUDY_WINDOW_CHARS, 1, 10_000), abs=1e-3)
 
 
 def test_measured_window_times_set_the_next_budget() -> None:
     redis = _FakeRedis()
     _build(_doc(paragraphs=40), _FakeClient(window_seconds=0.01), redis, cache=None)
-    assert len(redis.data["studytiming:model-a"]) >= 3
+    samples = redis.data["studytime-kchar:model-a"]
+    assert len(samples) >= 3
+    # Per 1,000 characters: a full window that took ~0.01 s is ~0.0005 s per 1,000 characters, not 0.01.
+    assert all(float(sample) < 0.01 for sample in samples)
     timings = StudyTimings(redis, 20, 3600)
     assert timings.median("model-a") is not None and timings.median("model-b") is None
 
