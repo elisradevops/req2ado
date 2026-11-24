@@ -261,6 +261,63 @@ def test_a_failed_second_vote_leaves_one_vote_and_a_medium_confidence(
     assert result["n1"]["confidence"] == "medium" and result["n1"]["score"] == 50
 
 
+PROXY_REJECTED = {"statusCode": 503, "message": "LLM_PROXY_REJECTED: 400 Model not found"}
+
+
+def _second_vote_answers(*later: httpx.Response):
+    """A handler whose first call (vote 1) answers borderline levels, so a second vote is asked; later calls answer `later` in turn."""
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        if len(calls) == 1:
+            return httpx.Response(200, json={"content": json.dumps(_levels(DESCRIPTIONS, level=2))})
+        return later[min(len(calls) - 2, len(later) - 1)]
+
+    return handler, calls
+
+
+def test_a_second_vote_lost_to_a_transient_upstream_error_is_repeated_once_and_counts(
+    array_mode, monkeypatch
+) -> None:
+    from app.workitem.model import SINGLE_VOTE_KEY
+
+    ok = httpx.Response(200, json={"content": json.dumps(_levels(DESCRIPTIONS, level=2))})
+    # _post_chat's own three sends all get the proxy refusal; the vote's one repeat gets an answer.
+    handler, calls = _second_vote_answers(*[httpx.Response(503, json=PROXY_REJECTED)] * 3, ok)
+    monkeypatch.setattr(client_module.time, "sleep", lambda _seconds: None)
+    result = _client(handler).score_requirements_for_document(DESCRIPTIONS)
+
+    assert len(calls) == 1 + 3 + 1
+    assert SINGLE_VOTE_KEY not in result["n1"]
+
+
+def test_a_second_vote_still_failing_after_its_repeat_notes_why_on_the_entries(
+    array_mode, monkeypatch
+) -> None:
+    from app.workitem.model import SINGLE_VOTE_KEY
+
+    handler, calls = _second_vote_answers(httpx.Response(503, json=PROXY_REJECTED))
+    monkeypatch.setattr(client_module.time, "sleep", lambda _seconds: None)
+    result = _client(handler).score_requirements_for_document(DESCRIPTIONS)
+
+    assert len(calls) == 1 + 3 + 3  # vote 1, then the second vote's three sends, twice
+    assert result["n1"]["confidence"] == "medium" and result["n1"]["score"] == 50
+    assert result["n1"][SINGLE_VOTE_KEY] == "503: " + json.dumps(PROXY_REJECTED, separators=(",", ":"))
+
+
+def test_a_second_vote_refused_for_good_is_not_repeated(array_mode, monkeypatch) -> None:
+    from app.workitem.model import SINGLE_VOTE_KEY
+
+    blocked = {"statusCode": 422, "message": "LLM_CONTENT_FILTERED: blocked"}
+    handler, calls = _second_vote_answers(httpx.Response(422, json=blocked))
+    monkeypatch.setattr(client_module.time, "sleep", lambda _seconds: None)
+    result = _client(handler).score_requirements_for_document(DESCRIPTIONS)
+
+    assert len(calls) == 2
+    assert result["n1"][SINGLE_VOTE_KEY].startswith("422: ")
+
+
 @pytest.mark.parametrize(
     ("kwargs", "expected", "spec", "form"),
     [

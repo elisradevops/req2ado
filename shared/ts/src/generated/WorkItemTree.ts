@@ -185,6 +185,7 @@ export interface IntegrityWarning {
     | 'scoring_failed'
     | 'scoring_missing'
     | 'scoring_inconsistent_categories'
+    | 'scoring_single_vote'
     | 'enhancement_call_failed'
     | 'enhancement_response_incomplete'
     | 'document_study_incomplete'

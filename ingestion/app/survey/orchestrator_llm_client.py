@@ -97,7 +97,7 @@ from app.survey.keyed_specs import (
     TITLE_TAGS_SPEC,
 )
 from app.survey.llm_cache import LlmResponseCache, payload_key
-from app.workitem.model import MODEL_KEY, PROMPT_KEY, RequirementTag
+from app.workitem.model import MODEL_KEY, PROMPT_KEY, SINGLE_VOTE_KEY, RequirementTag
 
 logger = logging.getLogger(__name__)
 _tracer = get_tracer()
@@ -209,6 +209,32 @@ _CHAT_RETRY_BACKOFF_SECONDS = (2.0, 8.0)
 _SLOW_FAILURE_SECONDS = 120.0
 # How often an open model call reports how far it has got on the live screen (LiveEmitter.model_progress).
 _PROGRESS_EVERY_SECONDS = 15.0
+# A scoring vote that failed on a transient upstream error is repeated once, after this wait (on top of _post_chat's own retries).
+_VOTE_RETRY_SECONDS = 5.0
+# Longest stretch of the orchestrator's error text kept in a log line or a warning (its text names the upstream failure, never the request).
+_FAILURE_TEXT_CHARS = 300
+
+
+def _failure_summary(error: BaseException) -> str:
+    """One line naming a failed call: the HTTP status and the orchestrator's own error text (e.g. "503: LLM_PROXY_REJECTED: 400 Model not
+    found"), or the exception type and message. Kept so a failure can be investigated from the log and the job's warnings alone."""
+    if isinstance(error, httpx.HTTPStatusError):
+        text = " ".join(error.response.text.split())[:_FAILURE_TEXT_CHARS]
+        return f"{error.response.status_code}: {text}" if text else str(error.response.status_code)
+    return f"{type(error).__name__}: {' '.join(str(error).split())[:_FAILURE_TEXT_CHARS]}"
+
+
+def _transient_upstream_failure(error: BaseException) -> str | None:
+    """The failure's summary when repeating the same call could succeed: a 5xx, a 429 the orchestrator did not already wait out, or a
+    dropped connection. None otherwise (a timeout is not repeated: the call already ran for minutes)."""
+    if isinstance(error, httpx.HTTPStatusError):
+        status = error.response.status_code
+        if status == 429 and _RATE_LIMIT_RETRIED_CODE in error.response.text:
+            return None
+        return _failure_summary(error) if status in _RETRYABLE_CHAT_STATUS_CODES else None
+    if isinstance(error, httpx.TransportError) and not isinstance(error, httpx.TimeoutException):
+        return _failure_summary(error)
+    return None
 
 
 def _strip_json_fence(content: str) -> str:
@@ -1259,6 +1285,7 @@ class OrchestratorLlmClient:
         if together and borderline:
             # Texts that are compared (a rewrite's before and after) are always read by the same votes, so their scores stay comparable.
             borderline = dict(descriptions_by_node_id)
+        single_vote_reason: str | None = None
         for number in range(1, SCORING_VOTES):
             if not borderline:
                 break
@@ -1266,14 +1293,36 @@ class OrchestratorLlmClient:
                 # Announced: the same items read a second time (in reverse order) looked like the step looping.
                 with model_call_pass(f"vote {number + 1} of {SCORING_VOTES}"):
                     votes.append(vote(number, borderline))
+                continue
             except JobCancelled:
                 raise
-            except Exception:
+            except Exception as error:  # noqa: BLE001 - a lost second vote lowers confidence, it never fails the call
+                failure = error
+            # A transient upstream failure (prod probe 2026-11-24: the proxy's own instant 400s, now a 503) is repeated once before the
+            # scores fall back to one vote.
+            if _transient_upstream_failure(failure) is not None:
                 logger.warning(
-                    "score_requirements_for_document: vote %d failed; confidence comes from one vote",
+                    "score_requirements_for_document: vote %d failed (%s); repeating it once",
                     number,
-                    exc_info=True,
+                    _transient_upstream_failure(failure),
                 )
+                time.sleep(_VOTE_RETRY_SECONDS)
+                raise_if_cancelled()
+                try:
+                    with model_call_pass(f"vote {number + 1} of {SCORING_VOTES}"):
+                        votes.append(vote(number, borderline))
+                    continue
+                except JobCancelled:
+                    raise
+                except Exception as error:  # noqa: BLE001 - same contract as the first try
+                    failure = error
+            single_vote_reason = _failure_summary(failure)
+            logger.warning(
+                "score_requirements_for_document: vote %d failed (%s); confidence comes from one vote",
+                number,
+                single_vote_reason,
+                exc_info=failure,
+            )
         identity = build(descriptions_by_node_id, mode_for(spec, self._model))[0].identity
         result: dict[str, dict] = {}
         for node_id, text in descriptions_by_node_id.items():
@@ -1289,6 +1338,9 @@ class OrchestratorLlmClient:
                 entry[MODEL_KEY] = [
                     vote.get(MODEL_KEY) or self._model for vote in (v.get(node_id) for v in votes) if isinstance(vote, dict)
                 ]
+                if single_vote_reason is not None and node_id in borderline:
+                    # The item needed a second vote and did not get one: scoring turns this into a job warning.
+                    entry[SINGLE_VOTE_KEY] = single_vote_reason
                 result[node_id] = entry
         _tag_prompt(result, identity, self._model)
         return result

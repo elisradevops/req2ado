@@ -229,7 +229,7 @@
             "output_truncated", "no_model_title", "invalid_figure_ids", "invalid_table_ids",
             "invalid_node_type", "dangling_parent", "low_grounding", "zero_nodes",
             "dropped_blocks", "missing_table_group_coverage", "external_reference",
-            "scoring_failed", "scoring_missing", "scoring_inconsistent_categories",
+            "scoring_failed", "scoring_missing", "scoring_inconsistent_categories", "scoring_single_vote",
             "enhancement_call_failed", "enhancement_response_incomplete", "document_study_incomplete", "dropped_row",
             "front_matter_folded", "front_matter_left_out", "informational_section_folded", "trace_link_inference_failed", "trace_links_partial", "items_lost",
             "heading_id_offset_mismatch",

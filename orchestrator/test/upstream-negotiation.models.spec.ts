@@ -20,6 +20,14 @@ import {
   parseMaxTokensUnsupported,
   raisedBudgetFor,
   type Adaptation,
+  isProxyRejection,
+  isSchemaRejection,
+  proxyErrorBody,
+  withProxyErrorBodies,
+  PROXY_DETAIL_TYPE,
+  PROXY_REJECTED_CODE,
+  PROXY_REJECTION_WAIT_MS,
+  PROXY_REJECTION_JITTER_MS,
 } from '../src/modules/llm/upstream-negotiation';
 
 // These tests exercise the LEARNING loop (what a model's refusal teaches the client), so they use real model names
@@ -786,5 +794,133 @@ describe('a used-up token budget', () => {
     expect(create).toHaveBeenCalledTimes(1);
     expect((failure as UpstreamHttpError).upstreamStatus).toBe(429);
     expect((failure as UpstreamHttpError).message).not.toContain(RATE_LIMIT_EXHAUSTED_CODE);
+  });
+});
+
+// Open WebUI v0.8.12 answers its own refusals as FastAPI's {"detail": "..."}; the SDK reads only a body's `error`, so they surfaced as
+// "400 status code (no body)" and were mistaken for schema rejections (prod probe, 2026-11-24).
+describe('a 400 the proxy wrote itself', () => {
+  const sdkWith = (status: number, body: string) =>
+    new OpenAI({
+      baseURL: 'http://proxy.test/api/v1',
+      apiKey: 'k',
+      maxRetries: 0,
+      fetch: withProxyErrorBodies(async () => new Response(body, { status, headers: { 'content-type': 'application/json' } })) as any,
+    });
+  const failureOf = (status: number, body: string) =>
+    sdkWith(status, body).chat.completions.create({ model: 'm', messages: [{ role: 'user', content: 'hi' }] }).catch((e: unknown) => e);
+
+  it('rewrites a detail-only body into one the SDK reads, and leaves a provider body alone', () => {
+    expect(JSON.parse(proxyErrorBody('{"detail":"Model not found"}')!)).toEqual({ error: { message: 'Model not found', type: PROXY_DETAIL_TYPE } });
+    expect(JSON.parse(proxyErrorBody('{"detail":[{"loc":["body"],"msg":"x"}]}')!).error.message).toBe('[{"loc":["body"],"msg":"x"}]');
+    // A bare message is made readable but not marked as the proxy's own refusal.
+    expect(JSON.parse(proxyErrorBody('{"message":"nope"}')!)).toEqual({ error: { message: 'nope' } });
+    expect(proxyErrorBody('{"error":{"message":"bad schema"}}')).toBeNull();
+    expect(proxyErrorBody('{"detail":""}')).toBeNull();
+    expect(proxyErrorBody('')).toBeNull();
+    expect(proxyErrorBody('Internal Server Error')).toBeNull();
+  });
+
+  it("puts the proxy's reason in the error and tells it from a schema rejection", async () => {
+    const err = await failureOf(400, '{"detail":"Model not found"}');
+    expect((err as Error).message).toBe('400 Model not found');
+    expect(isProxyRejection(err)).toBe(true);
+    expect(isSchemaRejection(err)).toBe(false);
+  });
+
+  it('treats a 400 with an empty body as the proxy refusing too', async () => {
+    const err = await failureOf(400, '');
+    expect((err as Error).message).toBe('400 status code (no body)');
+    expect(isProxyRejection(err)).toBe(true);
+    expect(isSchemaRejection(err)).toBe(false);
+  });
+
+  it("keeps a provider's 400 a schema rejection, with its own text", async () => {
+    const err = await failureOf(400, '{"error":{"message":"Invalid schema for response_format"}}');
+    expect((err as Error).message).toBe('400 Invalid schema for response_format');
+    expect(isProxyRejection(err)).toBe(false);
+    expect(isSchemaRejection(err)).toBe(true);
+  });
+
+  const config = {
+    LLM_BASE_URL: 'http://localhost:11434/v1',
+    LLM_CHAT_MODEL: 'llama3.1',
+    LLM_TRUSTED_LOCAL: false,
+    EMBED_TRANSPORT: 'openai' as const,
+    EMBED_MODEL: 'nomic-embed-text',
+    EMBED_PATH: '/api/embed',
+    SHOW_PATH: '/api/show',
+    FILES_UPLOAD_PATH: '/api/v1/files/',
+    FILES_STATUS_PATH: '/api/v1/files',
+    LLM_REQUEST_TIMEOUT_MS: 600_000,
+    LLM_SEND_SEED: false,
+    LLM_SEND_REASONING_EFFORT: false,
+  };
+  const proxyRefusal = () => new OpenAI.APIError(400, undefined, undefined, {} as any);
+  const schema = { name: 'scores', schema: { type: 'object' } };
+  const clientWith = (create: jest.Mock) => {
+    const client = new OpenWebUiClient(config as any);
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = create;
+    return client;
+  };
+
+  afterEach(() => jest.useRealTimers());
+
+  it("reads the proxy's reason through the client's own HTTP stack (a real server answering like Open WebUI)", async () => {
+    const http = await import('node:http');
+    const server = http.createServer((_req, res) => {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end('{"detail":"Model not found"}');
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const { port } = server.address() as { port: number };
+      const client = new OpenWebUiClient({ ...config, LLM_BASE_URL: `http://127.0.0.1:${port}/api/v1` } as any);
+      // No schema: a refused call is repeated once after the wait, then answered as a 503 carrying the proxy's reason.
+      const failure = await client.chat([{ role: 'user', content: 'hi' }], { model: 'claude-opus-5-5' }).catch((e: unknown) => e);
+      expect((failure as UpstreamHttpError).upstreamStatus).toBe(503);
+      expect((failure as UpstreamHttpError).message).toBe(`${PROXY_REJECTED_CODE}: 400 Model not found`);
+    } finally {
+      server.close();
+    }
+  }, 10_000);
+
+
+  it('repeats the call once after a short wait, schema kept', async () => {
+    jest.useFakeTimers();
+    const create = jest.fn().mockRejectedValueOnce(proxyRefusal()).mockResolvedValueOnce({ choices: [{ message: { content: '{}' } }] });
+    const pending = clientWith(create).chat([{ role: 'user', content: 'hi' }], { model: 'claude-opus-5-5', responseSchema: schema });
+    await jest.advanceTimersByTimeAsync(PROXY_REJECTION_WAIT_MS + PROXY_REJECTION_JITTER_MS);
+
+    expect((await pending).content).toBe('{}');
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(create.mock.calls[1][0]).toHaveProperty('response_format');
+  });
+
+  it('an empty body refused twice gets one schema-less try (a provider may refuse a schema without a body), then a 503', async () => {
+    jest.useFakeTimers();
+    const create = jest.fn().mockRejectedValue(proxyRefusal());
+    const pending = clientWith(create).chat([{ role: 'user', content: 'hi' }], { model: 'claude-opus-5-5', responseSchema: schema }).catch((e: unknown) => e);
+    await jest.advanceTimersByTimeAsync(PROXY_REJECTION_WAIT_MS + PROXY_REJECTION_JITTER_MS);
+    const failure = await pending;
+
+    expect(create.mock.calls.map(([body]) => 'response_format' in body)).toEqual([true, true, false]);
+    expect((failure as UpstreamHttpError).upstreamStatus).toBe(503);
+    expect((failure as UpstreamHttpError).message).toBe(`${PROXY_REJECTED_CODE}: 400 status code (no body)`);
+  });
+
+  it('answers 503 with its own code when the repeat is refused too, never dropping the schema', async () => {
+    jest.useFakeTimers();
+    const create = jest.fn().mockRejectedValue(new OpenAI.APIError(400, { message: 'Model not found', type: PROXY_DETAIL_TYPE }, '400 Model not found', {} as any));
+    const pending = clientWith(create).chat([{ role: 'user', content: 'hi' }], { model: 'claude-opus-5-5', responseSchema: schema }).catch((e: unknown) => e);
+    await jest.advanceTimersByTimeAsync(PROXY_REJECTION_WAIT_MS + PROXY_REJECTION_JITTER_MS);
+    const failure = await pending;
+
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(create.mock.calls.every(([body]) => 'response_format' in body)).toBe(true);
+    expect(failure).toBeInstanceOf(UpstreamHttpError);
+    expect((failure as UpstreamHttpError).upstreamStatus).toBe(503);
+    expect((failure as UpstreamHttpError).message).toBe(`${PROXY_REJECTED_CODE}: 400 Model not found`);
   });
 });

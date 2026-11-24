@@ -18,6 +18,7 @@ from app.leveling.narration_publisher import (
 from app.quality.criteria_retrieval import CriteriaRetriever
 from app.survey.content_filter import kb_blocked_warning, without_kb_when_blocked
 from app.workitem.model import (
+    SINGLE_VOTE_KEY,
     IntegrityWarning,
     KbCitation,
     QualityCategoryScores,
@@ -1019,6 +1020,25 @@ def _apply_quality_scores(
         node.quality_confidence = _reconcile_confidence(
             _parse_confidence(entry.get("confidence")),
             [i.value for i in node.quality_issues],
+        )
+
+    # Items that needed a second vote and lost it to an upstream failure: their scores stand, on one vote. The reason is the failure's own
+    # summary (status and the orchestrator's error text), kept so the failure can be investigated from the job alone.
+    single_vote = {
+        node.local_id: entry[SINGLE_VOTE_KEY]
+        for node in nodes
+        if isinstance(entry := scores_by_node_id.get(node.local_id), dict) and entry.get(SINGLE_VOTE_KEY)
+    }
+    if single_vote:
+        message = f"Quality scores of {len(single_vote)} item(s) rest on one vote: the second vote failed."
+        logger.warning("%s (%s)", message, next(iter(single_vote.values())))
+        warnings.append(
+            IntegrityWarning.make(
+                WarningKind.SCORING_SINGLE_VOTE,
+                message,
+                node_ids=list(single_vote),
+                detail={"branch": node_id_prefix or "(root)", "error": next(iter(single_vote.values()))},
+            )
         )
 
     missing_nodes = [node for node in nodes if node.quality_score is None]
