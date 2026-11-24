@@ -1,7 +1,7 @@
 {
   "name": "@req2ado/frontend",
   "private": true,
-  "version": "0.3.25",
+  "version": "0.3.26",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
