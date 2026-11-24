@@ -462,6 +462,15 @@ export const KIND_META: Record<string, KindMeta> = {
     chip: 'No score',
     unit: ['batch', 'batches'],
   },
+  scoring_single_vote: {
+    title: 'Scores rest on one vote',
+    group: 'info',
+    short: "A second scoring pass failed, so these items' scores come from one pass.",
+    means: 'The scores are shown but are less certain. The details name the failure.',
+    todo: 'Optional: open an item and use Rescore.',
+    chip: 'One vote',
+    unit: ['item', 'items'],
+  },
   scoring_inconsistent_categories: {
     title: 'Inconsistent scoring categories',
     group: 'info',

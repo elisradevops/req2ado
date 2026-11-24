@@ -23,7 +23,82 @@ const logger = new Logger('UpstreamNegotiation');
 // support it, degrade once to a schema-less retry on the specific
 // status codes an unsupported/malformed response_format would produce.
 export function isSchemaRejection(err: unknown): boolean {
-  return err instanceof OpenAI.APIError && (err.status === 400 || err.status === 422) && !isContentFilterBlock(err);
+  return err instanceof OpenAI.APIError && (err.status === 400 || err.status === 422) && !isContentFilterBlock(err) && !isProxyRejection(err);
+}
+
+/** The `type` of an error body this client rewrote from the proxy's own answer (see proxyErrorBody). */
+export const PROXY_DETAIL_TYPE = 'proxy_detail';
+
+/** Marks the text of a call the proxy itself refused and kept refusing after one repeat (it answers 503 with it, which ingestion retries). */
+export const PROXY_REJECTED_CODE = 'LLM_PROXY_REJECTED';
+
+/** A proxy refusal is repeated once, after this wait plus up to PROXY_REJECTION_JITTER_MS. */
+export const PROXY_REJECTION_WAIT_MS = 1_500;
+export const PROXY_REJECTION_JITTER_MS = 1_000;
+
+/**
+ * Whether a 400 came from the proxy itself rather than from the model provider behind it. Open WebUI v0.8.12 passes a provider's
+ * error through with the provider's body, which always has an `error` object (LiteLLM: `{"error": {...}}`). Its own refusals are
+ * FastAPI's `{"detail": "..."}`, which the OpenAI SDK does not read: they surfaced as "400 status code (no body)". In v0.8.12 the
+ * only such 400 on the chat route is its pre-flight model check (`chat_completion` in main.py: the model is missing from its model
+ * registry, or the access check failed), so it says nothing about the request: it is not a schema rejection, and the same call can
+ * succeed a moment later (prod probe, 2026-11-24: answered in 33-45 ms, the same request passing before and after).
+ */
+export function isProxyRejection(err: unknown): boolean {
+  if (!(err instanceof OpenAI.APIError) || err.status !== 400) return false;
+  return hasNoBody(err) || (err.error as { type?: unknown } | null | undefined)?.type === PROXY_DETAIL_TYPE;
+}
+
+/** A 400 that came with no text at all: the SDK's own "status code (no body)". */
+function hasNoBody(err: InstanceType<typeof OpenAI.APIError>): boolean {
+  return err.error == null && /status code \(no body\)$/.test(err.message ?? '');
+}
+
+/** The error to throw for a failed answer read by hand (not through the SDK): the proxy's own body is made readable as the SDK path does. */
+export function upstreamErrorFrom(status: number, text: string, headers: Record<string, string>): InstanceType<typeof OpenAI.APIError> {
+  const rewritten = proxyErrorBody(text);
+  return rewritten
+    ? OpenAI.APIError.generate(status, JSON.parse(rewritten), undefined, headers)
+    : OpenAI.APIError.generate(status, { message: text }, text, headers);
+}
+
+/**
+ * An error body the OpenAI SDK can read, made from a body without an `error` object; null when it has one or carries no text. The SDK
+ * keeps only a body's `error` field, so without this the reason never reached the log. Open WebUI's own `{"detail": ...}` is marked
+ * PROXY_DETAIL_TYPE (see isProxyRejection); a bare `{"message": ...}` is only made readable, and is classified like any other error.
+ */
+export function proxyErrorBody(text: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || 'error' in parsed) return null;
+  const { detail, message } = parsed as { detail?: unknown; message?: unknown };
+  const asText = (value: unknown): string => (typeof value === 'string' ? value : JSON.stringify(value));
+  if (detail != null && detail !== '') return JSON.stringify({ error: { message: asText(detail), type: PROXY_DETAIL_TYPE } });
+  if (message != null && message !== '') return JSON.stringify({ error: { message: asText(message) } });
+  return null;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyFetch = (url: any, init?: any) => Promise<any>;
+
+/** Wraps the SDK's fetch so a failed answer's proxy-written body is rewritten by proxyErrorBody. Any other answer is returned untouched. */
+export function withProxyErrorBodies(base: AnyFetch): AnyFetch {
+  return async (url, init) => {
+    const response = await base(url, init);
+    if (response.ok || response.status < 400) return response;
+    const text: string = await response.text();
+    const headers: Record<string, string> = {};
+    response.headers.forEach((value: string, name: string) => {
+      // The new body is plain text of a different length.
+      if (name !== 'content-length' && name !== 'content-encoding') headers[name] = value;
+    });
+    // The same Response class the SDK's fetch returned (node-fetch or the built-in one).
+    return new response.constructor(proxyErrorBody(text) ?? text, { status: response.status, statusText: response.statusText, headers });
+  };
 }
 
 /** Marks the text of a provider content-filter block so ingestion can tell it from any other failure (it answers 422 with it). */
@@ -496,6 +571,7 @@ export async function negotiate<T>(args: NegotiationArgs<T>): Promise<T> {
     attempt: 1,
   };
   let rateLimitRetries = 0;
+  let proxyRejectionRetries = 0;
   for (let attempt = 1; ; attempt += 1) {
     adaptation.attempt = attempt;
     // An aborted call is never sent: the caller (a cancelled job, a closed connection) is no longer waiting for it.
@@ -561,6 +637,28 @@ export async function negotiate<T>(args: NegotiationArgs<T>): Promise<T> {
       }
       if (rateLimitWait !== null && rateLimitRetries >= RATE_LIMIT_RETRIES) {
         return giveUp(new UpstreamHttpError(429, `${RATE_LIMIT_EXHAUSTED_CODE}: ${summarizeUpstreamError(err).message}`));
+      }
+
+      // The proxy refused the call itself (see isProxyRejection): nothing in the request to adapt, so the same call is sent once more
+      // after a short wait, schema kept. Still refused: a 503 with its own code, which ingestion treats as transient.
+      if (isProxyRejection(err)) {
+        const wait = PROXY_REJECTION_WAIT_MS + Math.floor(Math.random() * PROXY_REJECTION_JITTER_MS);
+        if (proxyRejectionRetries < 1 && !outOfTime(wait)) {
+          proxyRejectionRetries += 1;
+          // eslint-disable-next-line no-console
+          console.warn(`[${args.label}] the proxy refused the call itself; repeating after ${wait} ms for model=${args.model}`);
+          await (args.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(wait);
+          continue;
+        }
+        // An empty body names no reason, so after the plain repeat failed too the schema gets one schema-less try: a provider may
+        // refuse a schema without a body (test/support/fake-proxy.ts models it). A refusal that names its reason keeps the schema.
+        if (args.hasSchema && !adaptation.dropSchema && err instanceof OpenAI.APIError && hasNoBody(err)) {
+          // eslint-disable-next-line no-console
+          console.warn(`[${args.label}] refused twice with no body; trying once without the response schema for model=${args.model}`);
+          adaptation.dropSchema = true;
+          continue;
+        }
+        return giveUp(new UpstreamHttpError(503, `${PROXY_REJECTED_CODE}: ${summarizeUpstreamError(err).message}`));
       }
 
       const requiredTemperature = parseTemperatureConstraint(err);

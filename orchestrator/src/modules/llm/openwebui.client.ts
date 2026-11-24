@@ -27,6 +27,8 @@ import {
   type Adaptation,
   type LearnedUpdate,
   routingOf,
+  upstreamErrorFrom,
+  withProxyErrorBodies,
 } from './upstream-negotiation';
 
 /** Characters of text in a message list (a length for failure logs, never content). */
@@ -301,6 +303,10 @@ export class OpenWebUiClient implements LlmClient {
       // silently eating that margin on retries of its own.
       maxRetries: 0,
     });
+    // The proxy's own refusals ({"detail": ...}) are rewritten into a body the SDK reads, so their reason reaches the log and the
+    // caller instead of "400 status code (no body)" (see withProxyErrorBodies). The SDK's own fetch is kept underneath.
+    const sdk = this.openai as unknown as { fetch: Parameters<typeof withProxyErrorBodies>[0] };
+    sdk.fetch = withProxyErrorBodies(sdk.fetch);
   }
 
   // How many calls that are real work (chat and vision, not background probes) are running on this client right now. A model health probe
@@ -1545,7 +1551,7 @@ export class OpenWebUiClient implements LlmClient {
           let bodyText = '';
           try { bodyText = await response.text(); } catch { /* ignore read failure */ }
           const text = errorMessageFromBody(bodyText).slice(0, 500) || `HTTP ${response.status}`;
-          throw OpenAI.APIError.generate(response.status, { message: text }, text, Object.fromEntries(response.headers?.entries?.() ?? []));
+          throw upstreamErrorFrom(response.status, text, Object.fromEntries(response.headers?.entries?.() ?? []));
         }
         // An answer without choices (the proxy's empty completion) is an empty result, as before, not an error.
         const parsed = chatCompletionResponseSchema.safeParse(await response.json());
@@ -1613,7 +1619,7 @@ export class OpenWebUiClient implements LlmClient {
           let bodyText = '';
           try { bodyText = await response.text(); } catch { /* ignore read failure */ }
           const text = errorMessageFromBody(bodyText).slice(0, 500) || `HTTP ${response.status}`;
-          throw OpenAI.APIError.generate(response.status, { message: text }, text, Object.fromEntries(response.headers?.entries?.() ?? []));
+          throw upstreamErrorFrom(response.status, text, Object.fromEntries(response.headers?.entries?.() ?? []));
         }
         const routing = routingOf(response.headers);
         const parsed = chatCompletionResponseSchema.safeParse(await response.json());

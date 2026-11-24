@@ -4,6 +4,7 @@ bad answer must fail at least one. A check that cannot fail measures nothing."""
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -134,7 +135,7 @@ def test_inside_the_service_the_url_and_token_default_to_its_own_settings(
         return OrchestratorLlmClient(**kwargs)
 
     monkeypatch.setattr(run_module, "OrchestratorLlmClient", fake_client)
-    monkeypatch.setattr(run_module, "run_all", lambda client, families: {"model": "m", "cases": {}})
+    monkeypatch.setattr(run_module, "run_all", lambda client, families, **_: {"model": "m", "cases": {}})
     monkeypatch.setattr(run_module.settings, "orchestrator_url", "http://orchestrator.svc")
     monkeypatch.setattr(run_module.settings, "llm_proxy_bearer", "from-settings")
     out = tmp_path / "r.json"
@@ -209,7 +210,7 @@ def test_a_run_reports_a_case_blocked_in_any_repeat_as_blocked(monkeypatch, tmp_
             {"model": "m", "cases": {"a": {"passed": True, "checks": {}}, "b": {"passed": True, "checks": {}}}},
         ]
     )
-    monkeypatch.setattr(run_module, "run_all", lambda client, families: next(repeats))
+    monkeypatch.setattr(run_module, "run_all", lambda client, families, **_: next(repeats))
     out = tmp_path / "r.json"
     run_module.main(["--base-url", "http://x", "--token", "t", "--user-id", "u", "--model", "m", "--repeat", "2", "--out", str(out)])
     report = json.loads(out.read_text(encoding="utf-8"))
@@ -243,7 +244,7 @@ def test_a_case_that_fails_only_in_a_later_repeat_keeps_that_repeats_checks(monk
             {"model": "m", "cases": {"a": {"passed": False, "checks": bad}}},
         ]
     )
-    monkeypatch.setattr(run_module, "run_all", lambda client, families: next(repeats))
+    monkeypatch.setattr(run_module, "run_all", lambda client, families, **_: next(repeats))
     out = tmp_path / "r.json"
     run_module.main(["--base-url", "http://x", "--token", "t", "--user-id", "u", "--model", "m", "--repeat", "2", "--out", str(out)])
     case = json.loads(out.read_text(encoding="utf-8"))["cases"]["a"]
@@ -254,3 +255,89 @@ def test_a_case_that_fails_only_in_a_later_repeat_keeps_that_repeats_checks(monk
     # compare.py now sees the check that stopped passing
     baseline = {"cases": {"a": {"passed": True, "checks": ok}}}
     assert any("score_good" in line for line in regressions(baseline, {"cases": {"a": case}}))
+
+
+def _route_failure(status: int = 503, message: str = "LLM_PROXY_REJECTED: 400 Model not found") -> httpx.HTTPStatusError:
+    request = httpx.Request("POST", "http://orchestrator/llm/chat")
+    response = httpx.Response(status, json={"statusCode": status, "message": message}, request=request)
+    return httpx.HTTPStatusError(f"{status}", request=request, response=response)
+
+
+def _flaky_case(failures: int, error: BaseException):
+    """A case whose call fails `failures` times with `error`, then answers; its one check passes."""
+    from types import SimpleNamespace
+
+    calls = []
+
+    def run(_client):
+        calls.append(1)
+        if len(calls) <= failures:
+            raise error
+        return "answer"
+
+    return SimpleNamespace(run=run, check=lambda _answer: {"ok": (True, "")}), calls
+
+
+def test_a_call_the_route_failed_is_run_once_more_and_the_failure_stays_on_record() -> None:
+    case, calls = _flaky_case(1, _route_failure())
+    outcome = evaluate(case, None, retry_wait_seconds=0)
+    assert len(calls) == 2 and outcome["passed"] is True and "outcome" not in outcome
+    assert outcome["upstream_failures"] == ['503: {"statusCode":503,"message":"LLM_PROXY_REJECTED: 400 Model not found"}']
+
+
+def test_a_call_the_route_failed_twice_is_an_upstream_error_with_the_orchestrators_text() -> None:
+    from .harness import UPSTREAM_ERROR
+
+    case, calls = _flaky_case(2, _route_failure())
+    outcome = evaluate(case, None, retry_wait_seconds=0)
+    assert len(calls) == 2 and outcome["passed"] is False and outcome["outcome"] == UPSTREAM_ERROR
+    assert len(outcome["upstream_failures"]) == 2 and "Model not found" in outcome["upstream_failures"][1]
+
+
+def test_an_error_that_is_not_the_routes_is_still_a_plain_failure_and_not_repeated() -> None:
+    case, calls = _flaky_case(1, ValueError("unparseable answer"))
+    outcome = evaluate(case, None, retry_wait_seconds=0)
+    assert len(calls) == 1 and outcome["passed"] is False and "outcome" not in outcome
+    assert outcome["error"] == "ValueError: unparseable answer"
+
+
+def test_a_run_reports_a_case_the_route_failed_apart_from_failed_cases_and_the_gate_skips_it(
+    monkeypatch, tmp_path, capsys  # noqa: ANN001
+) -> None:
+    from . import run as run_module
+    from .compare import upstream
+    from .harness import UPSTREAM_ERROR
+
+    ok = {"score_good": {"ok": True}}
+    route_failed = {"passed": False, "outcome": UPSTREAM_ERROR, "error": "HTTPStatusError: 503", "checks": {}, "upstream_failures": ["503: x", "503: x"]}
+    repeats = iter(
+        [
+            {"model": "m", "cases": {"a": {"passed": True, "checks": ok}, "b": {"passed": True, "checks": ok}}},
+            {"model": "m", "cases": {"a": dict(route_failed), "b": {"passed": False, "checks": {"score_good": {"ok": False, "detail": "66"}}}}},
+        ]
+    )
+    monkeypatch.setattr(run_module, "run_all", lambda client, families, **_: next(repeats))
+    out = tmp_path / "r.json"
+    run_module.main(["--base-url", "http://x", "--token", "t", "--user-id", "u", "--model", "m", "--repeat", "2", "--out", str(out)])
+    report = json.loads(out.read_text(encoding="utf-8"))
+    a, b = report["cases"]["a"], report["cases"]["b"]
+    assert a["outcome"] == UPSTREAM_ERROR and a["failed_in_repeat"] == 2 and a["error"] == "HTTPStatusError: 503"
+    assert a["repeats"][1]["upstream_failures"] == ["503: x", "503: x"]
+    assert "outcome" not in b and b["failed_in_repeat"] == 2
+    printed = capsys.readouterr().out
+    assert "0/2 cases passed, 0 blocked by the provider, 1 failed by the route" in printed
+    assert "UPSTREAM a [1/2]: HTTPStatusError: 503" in printed and "FAIL b [1/2]: score_good: 66" in printed
+    baseline = {"cases": {"a": {"passed": True, "checks": ok}, "b": {"passed": True, "checks": ok}}}
+    assert regressions(baseline, report) == ["b/score_good: passed before, fails now (66)"]
+    assert upstream(report) == ["a"]
+
+
+def test_a_paced_run_waits_between_two_cases_and_not_before_the_first(monkeypatch) -> None:  # noqa: ANN001
+    from . import harness
+
+    slept: list[float] = []
+    monkeypatch.setattr(harness.time, "sleep", slept.append)
+    monkeypatch.setattr(harness, "evaluate", lambda case, client, retry_wait_seconds: {"passed": True, "checks": {}})
+    harness.run_all(SimpleNamespace(model="m"), {"author_content"}, pause_seconds=20)
+    cases = [c for c in CASES if c.family == "author_content"]
+    assert slept == [20] * (len(cases) - 1)

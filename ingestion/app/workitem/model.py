@@ -190,6 +190,9 @@ class PromptRef(BaseModel):
 PROMPT_KEY = "_prompt"
 # The key under which a keyed answer's entries note the model that answered them, until the client folds it into the PROMPT_KEY tag.
 MODEL_KEY = "_model"
+# The key under which a scoring entry notes why the item got one vote where it needed two (the failure's summary); scoring turns it into a
+# SCORING_SINGLE_VOTE warning.
+SINGLE_VOTE_KEY = "_singleVote"
 
 
 class WorkItemNode(BaseModel):
@@ -426,6 +429,8 @@ class WarningKind(StrEnum):
     SCORING_FAILED = "scoring_failed"
     SCORING_MISSING = "scoring_missing"
     SCORING_INCONSISTENT_CATEGORIES = "scoring_inconsistent_categories"
+    # A scoring vote failed (after one repeat) for items that needed it: their scores rest on one vote.
+    SCORING_SINGLE_VOTE = "scoring_single_vote"
     ADO_VERIFICATION_FAILED = "ado_verification_failed"
     # Deterministic-hierarchy path (id_tree_builder.py) title/tag,
     # parent-summary, and requirement-synthesis enhancement passes -- all
@@ -593,6 +598,7 @@ WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
     WarningKind.SCORING_FAILED: WarningSeverity.PIPELINE_ISSUE,
     WarningKind.SCORING_MISSING: WarningSeverity.PIPELINE_ISSUE,
     WarningKind.SCORING_INCONSISTENT_CATEGORIES: WarningSeverity.PIPELINE_ISSUE,
+    WarningKind.SCORING_SINGLE_VOTE: WarningSeverity.PIPELINE_ISSUE,
     WarningKind.ADO_VERIFICATION_FAILED: WarningSeverity.PIPELINE_ISSUE,
     WarningKind.ENHANCEMENT_CALL_FAILED: WarningSeverity.PIPELINE_ISSUE,
     WarningKind.ENHANCEMENT_RESPONSE_INCOMPLETE: WarningSeverity.AUTO_FIXED,

@@ -747,6 +747,30 @@ def test_scoring_missing_carries_a_reason_telling_total_failure_from_partial() -
     assert missing and missing[0].detail["reason"] == "partial"
 
 
+def test_scores_resting_on_one_vote_become_one_warning_naming_the_failure() -> None:
+    from app.workitem.model import SINGLE_VOTE_KEY
+
+    nodes = [
+        _requirement_node("a", "The system shall do A."),
+        _requirement_node("b", "The system shall do B."),
+    ]
+    reason = '503: {"message":"LLM_PROXY_REJECTED: 400 Model not found"}'
+    entry = {"score": 50, "issues": [], "categoryScores": {}, "confidence": "medium"}
+    warnings: list = []
+    _apply_quality_scores(
+        nodes,
+        _FakeScoringClient({"a": {**entry, SINGLE_VOTE_KEY: reason}, "b": dict(entry)}),
+        warnings,
+        "",
+    )
+
+    single = [w for w in warnings if w.kind.value == "scoring_single_vote"]
+    assert len(single) == 1
+    assert single[0].node_ids == ["a"] and single[0].detail["error"] == reason
+    assert single[0].severity.value == "pipeline_issue"
+    assert nodes[0].quality_score == 50  # the score itself stands
+
+
 def _http_status_error(status: int):
     import httpx
 
