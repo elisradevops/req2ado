@@ -53,9 +53,35 @@ def main(argv: list[str] | None = None) -> int:
     ]
     report = runs[0]
     for key, result in report["cases"].items():
-        outcomes = [run["cases"][key]["passed"] for run in runs]
+        # Copies: `result` IS the first repeat's record, and it is rewritten below.
+        repeats = [dict(run["cases"][key]) for run in runs]
+        outcomes = [repeat["passed"] for repeat in repeats]
         result["passed"] = all(outcomes)
         result["passed_runs"] = f"{sum(outcomes)}/{len(outcomes)}"
+        # The report starts from the first repeat. A case that failed in a later one must show THAT repeat's checks (or error): otherwise its
+        # failing checks read "ok" with no detail, and compare.py, which reads the checks, cannot see the regression.
+        failing = next(
+            (i for i, repeat in enumerate(repeats) if not repeat["passed"] and repeat.get("outcome") != BLOCKED), None
+        )
+        if failing is not None:
+            result["checks"] = repeats[failing].get("checks", {})
+            if repeats[failing].get("error"):
+                result["error"] = repeats[failing]["error"]
+            else:
+                result.pop("error", None)
+            result["failed_in_repeat"] = failing + 1
+        # Each repeat's outcome in brief: which checks failed, with their detail.
+        result["repeats"] = [
+            {
+                "passed": repeat["passed"],
+                **({"outcome": repeat["outcome"]} if repeat.get("outcome") else {}),
+                **({"error": repeat["error"]} if repeat.get("error") else {}),
+                "failed_checks": {
+                    name: check.get("detail", "") for name, check in repeat.get("checks", {}).items() if not check.get("ok")
+                },
+            }
+            for repeat in repeats
+        ]
         # A repeat the provider blocked measured nothing about the prompt: the case is reported as blocked, not failed.
         if any(run["cases"][key].get("outcome") == BLOCKED for run in runs):
             result["outcome"] = BLOCKED
