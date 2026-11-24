@@ -120,7 +120,8 @@ import type { WorkItemTypeCatalogEntry } from '../api/ado';
 import { NotFound } from './NotFound';
 import { isRunDetailStatus, shouldShowTiles, shouldShowTabs, shouldShowFilterBar, shouldShowNothingWrittenLine, reviewHeadline, phaseRailOrientation } from './jobDetailLayout';
 import { SafetyLine } from '../components/SafetyLine';
-import { Download, Ellipsis, FileX2, RotateCw, ShieldCheck, Trash2, TriangleAlert, Upload, X } from 'lucide-react';
+import { itemsCsv } from '../utils/itemsCsv';
+import { Download, Ellipsis, FileX2, RotateCw, Sheet, ShieldCheck, Trash2, TriangleAlert, Upload, X } from 'lucide-react';
 import { IconButton } from '../ui/IconButton';
 import { WriteBar } from '../components/WriteBar';
 import { EmptyState } from '../ui/EmptyState';
@@ -1191,6 +1192,19 @@ export function JobDetail(): React.ReactElement {
     } catch (err) {
       showErrorToast('Failed to download summary — please try again.', err);
     }
+  }
+
+  // The proposed items as an Azure DevOps tree export (Title 1 = Epic, Title 2 = the Feature under it, ...), with each item's source page
+  // and section: for checking the result against the document, and the shape req2ado itself reads back. Built from the items on screen.
+  function handleDownloadItems(): void {
+    if (!id || diff.length === 0) return;
+    const blob = new Blob([itemsCsv(diff)], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `job-${id}-items.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
   }
 
   // WID 300578: read-only, no local diff mutation -- just fetches and
@@ -3390,6 +3404,7 @@ export function JobDetail(): React.ReactElement {
             )}
             <div role="group" aria-label="Job tools" className="flex items-center gap-0.5 max-md:w-full">
               <IconButton label="Download summary" compactLabel="Download" icon={Download} onClick={handleDownloadSummary} />
+              {diff.length > 0 && <IconButton label="Download items (CSV)" compactLabel="Items CSV" icon={Sheet} onClick={handleDownloadItems} />}
               {status !== 'pending' && status !== 'running' && status !== 'writing' && createdItemCount > 0 && (
                 <IconButton label={isValidating ? 'Validating…' : 'Validate'} compactLabel={isValidating ? 'Validating…' : 'Validate'} icon={ShieldCheck} onClick={handleValidate} loading={isValidating} />
               )}

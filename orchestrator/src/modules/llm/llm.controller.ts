@@ -55,13 +55,35 @@ export class LlmController {
   // Rejected outright when absent or unknown, rather than falling back to
   // any shared default -- that fallback is exactly the bug per-user
   // credentials exist to close.
-  private async resolveClient(userId: string | undefined) {
+  /**
+   * One warning line for a request this proxy refuses or relays as refused, so a failed run can be diagnosed from the log (a probe whose
+   * 12 calls all got HTTP 400 left no trace here). Safe by construction: the route, the status, a fixed reason, the invalid fields' paths
+   * and codes (never their values), and the job id and stage when ingestion sent them. Never the user id, the body, or upstream text.
+   */
+  private rejected(
+    route: string,
+    status: number,
+    why: string,
+    context: { jobId?: string; stage?: string; issues?: { path: PropertyKey[]; code: string }[] } = {},
+  ): void {
+    const fields = (context.issues ?? []).slice(0, 5).map((issue) => `${issue.path.map(String).join('.') || '(body)'}:${issue.code}`);
+    this.logger.warn(
+      `${route} request rejected (${status}): ${why}` +
+        (fields.length ? `; fields ${fields.join(', ')}` : '') +
+        (context.jobId ? `; job ${context.jobId}` : '') +
+        (context.stage ? `; stage ${context.stage}` : ''),
+    );
+  }
+
+  private async resolveClient(userId: string | undefined, route = 'llm') {
     if (!userId) {
+      this.rejected(route, 401, 'no X-Req2Ado-User-Id header');
       throw new UnauthorizedException('X-Req2Ado-User-Id header is required');
     }
     try {
       return await this.clientFactory.getClientFor(userId);
     } catch {
+      this.rejected(route, 401, 'the user has no model connection');
       throw new UnauthorizedException(`No Open WebUI connection configured for user ${userId}`);
     }
   }
@@ -94,11 +116,12 @@ export class LlmController {
   ): Promise<{ content: string; toolCalls?: LlmToolCall[]; finishReason?: string; usage?: LlmUsage; routing?: LlmRouting }> {
     const parseResult = llmChatRequestSchema.safeParse(rawBody);
     if (!parseResult.success) {
+      this.rejected('chat', 400, 'invalid body', { jobId, stage, issues: parseResult.error.issues });
       throw new BadRequestException('Invalid request body: messages must be a non-empty array');
     }
     const body = parseResult.data;
     const signal = this.abortOnClose(res, 'chat');
-    const llmClient = await this.resolveClient(userId);
+    const llmClient = await this.resolveClient(userId, 'chat');
     try {
       const result = await llmClient.chat(chatMessages(body.messages), {
         ...(body.promptCache !== undefined ? { promptCache: body.promptCache } : {}),
@@ -124,7 +147,10 @@ export class LlmController {
       }
       return result;
     } catch (err) {
-      if (err instanceof UpstreamHttpError) throw new HttpException(err.message, err.upstreamStatus);
+      if (err instanceof UpstreamHttpError) {
+        this.rejected('chat', err.upstreamStatus, 'the model route refused the call', { jobId, stage });
+        throw new HttpException(err.message, err.upstreamStatus);
+      }
       throw err;
     }
   }
@@ -140,10 +166,11 @@ export class LlmController {
   ): Promise<void> {
     const parseResult = llmChatRequestSchema.safeParse(rawBody);
     if (!parseResult.success) {
+      this.rejected('chat/stream', 400, 'invalid body', { jobId, stage, issues: parseResult.error.issues });
       throw new BadRequestException('Invalid request body: messages must be a non-empty array');
     }
     const body = parseResult.data;
-    const llmClient = await this.resolveClient(userId);
+    const llmClient = await this.resolveClient(userId, 'chat/stream');
     res.setHeader('Content-Type', 'application/x-ndjson');
     res.setHeader('Transfer-Encoding', 'chunked');
     // "Stop generating" support: when the downstream caller (ingestion)
@@ -217,6 +244,7 @@ export class LlmController {
       // 402, a rate limit 429 with its Retry-After), as chat() answers it. After output it can only end the stream without its
       // terminal line, which is how the caller knows the answer is incomplete.
       if (!wrote && err instanceof UpstreamHttpError) {
+        this.rejected('chat/stream', err.upstreamStatus, 'the model route refused the call', { jobId, stage });
         res.status(err.upstreamStatus);
         res.write(JSON.stringify({ message: err.message }));
         return;
@@ -236,7 +264,7 @@ export class LlmController {
 
   @Get('models')
   async models(@Headers('x-req2ado-user-id') userId: string | undefined): Promise<{ models: string[] }> {
-    const llmClient = await this.resolveClient(userId);
+    const llmClient = await this.resolveClient(userId, 'models');
     const models = await llmClient.listModels();
     return { models };
   }
@@ -248,14 +276,18 @@ export class LlmController {
   ): Promise<{ embeddings: number[][] }> {
     const parseResult = llmEmbedRequestSchema.safeParse(rawBody);
     if (!parseResult.success) {
+      this.rejected('embed', 400, 'invalid body', { issues: parseResult.error.issues });
       throw new BadRequestException('Invalid request body: texts must be a non-empty array of strings');
     }
-    const llmClient = await this.resolveClient(userId);
+    const llmClient = await this.resolveClient(userId, 'embed');
     try {
       const embeddings = await llmClient.embed(parseResult.data.texts);
       return { embeddings };
     } catch (err) {
-      if (err instanceof UpstreamHttpError) throw new HttpException(err.message, err.upstreamStatus);
+      if (err instanceof UpstreamHttpError) {
+        this.rejected('embed', err.upstreamStatus, 'the model route refused the call');
+        throw new HttpException(err.message, err.upstreamStatus);
+      }
       throw err;
     }
   }
@@ -274,7 +306,7 @@ export class LlmController {
     if (!parseResult.success) {
       throw new BadRequestException('Invalid request body: model must be a non-empty string');
     }
-    const llmClient = await this.resolveClient(userId);
+    const llmClient = await this.resolveClient(userId, 'show');
     try {
       return await llmClient.showModel(parseResult.data.model);
     } catch (err) {
@@ -296,6 +328,7 @@ export class LlmController {
   ): Promise<{ description: string }> {
     const parseResult = llmVisionRequestSchema.safeParse(rawBody);
     if (!parseResult.success) {
+      this.rejected('vision', 400, 'invalid body', { issues: parseResult.error.issues });
       throw new BadRequestException('Invalid request body: prompt and a non-empty images array (base64) are required');
     }
     const body = parseResult.data;
@@ -312,7 +345,7 @@ export class LlmController {
             ...(deadlineAtMs !== undefined ? { deadlineAtMs } : {}),
           }
         : undefined;
-    const llmClient = await this.resolveClient(userId);
+    const llmClient = await this.resolveClient(userId, 'vision');
     try {
       const description = await llmClient.vision(body.prompt, body.images.map((image) => Buffer.from(image, 'base64')), opts);
       return { description };
@@ -320,7 +353,10 @@ export class LlmController {
       // An upstream HTTP error keeps its status (a refused image is a 400, a rate limit a 429 with its Retry-After), as chat
       // does: collapsed to a 500 the caller could not tell "send the image smaller" or "wait N seconds" from "the server is
       // broken", and retried every one of them the same way.
-      if (err instanceof UpstreamHttpError) throw new HttpException(err.message, err.upstreamStatus);
+      if (err instanceof UpstreamHttpError) {
+        this.rejected('vision', err.upstreamStatus, 'the model route refused the call');
+        throw new HttpException(err.message, err.upstreamStatus);
+      }
       if (err instanceof OpenAI.APIError && typeof err.status === 'number' && err.status >= 400 && err.status <= 599) {
         const retryAfter = err.headers?.['retry-after'];
         if (err.status === 429 && retryAfter) res?.setHeader('Retry-After', String(retryAfter));
