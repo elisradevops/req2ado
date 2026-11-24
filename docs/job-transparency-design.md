@@ -355,7 +355,7 @@ Then:
 
 ## (d) Post-completion view: run summary
 
-The run summary appears on `diff_ready`, `succeeded`, `failed` and `cancelled`, as a collapsed disclosure (closed by default, like §11.3.2's disclosures) titled "How this run went". It is placed after the stat tiles and before CollapsibleWarnings. It also goes into the existing "Download summary".
+The run summary appears on `diff_ready`, `succeeded`, `failed` and `cancelled`, as a collapsed disclosure (closed by default, like §11.3.2's disclosures) titled "How this run went". It is placed after the stat tiles and before CollapsibleWarnings. It also goes into the job report ("Download report", a readable Markdown file built on the job page).
 
 ```
 How this run went                                                           ▾

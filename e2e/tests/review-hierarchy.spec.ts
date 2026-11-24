@@ -108,7 +108,7 @@ test.describe('layout at this width', () => {
     await openDiffReadyJob(page);
     expect(await pageOverflow(page)).toBe(0);
 
-    const names = ['Reject', 'Write to Azure DevOps', 'Download summary', 'Resubmit', 'Delete'];
+    const names = ['Reject', 'Write to Azure DevOps', 'Download report', 'Download items (CSV)', 'Resubmit', 'Delete'];
     const boxes: { name: string; x: number; y: number; w: number; h: number }[] = [];
     for (const name of names) {
       const button = page.getByRole('button', { name }).first();

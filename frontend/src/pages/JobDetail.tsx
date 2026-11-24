@@ -51,7 +51,7 @@ import { subscribeToJobEvents, isValidNarrationEvent, isValidNotice, type JobSta
 import type { Notice } from '../api/liveTypes';
 import { useLiveRunStore, mergeNotice } from '../store/liveRunStore';
 import { RunNotices } from '../components/liveRun/RunNotices';
-import { RUN_SUMMARY_HEADING } from '../utils/liveCopy';
+import { RUN_SUMMARY_HEADING, noticeCopy } from '../utils/liveCopy';
 import { loadRuntimeConfig } from '../api/config';
 import { useOrgUrl } from '../store/authStore';
 import { usePageLabelStore } from '../store/pageLabelStore';
@@ -121,6 +121,7 @@ import { NotFound } from './NotFound';
 import { isRunDetailStatus, shouldShowTiles, shouldShowTabs, shouldShowFilterBar, shouldShowNothingWrittenLine, reviewHeadline, phaseRailOrientation } from './jobDetailLayout';
 import { SafetyLine } from '../components/SafetyLine';
 import { itemsCsv } from '../utils/itemsCsv';
+import { jobReport } from '../utils/jobReport';
 import { Download, Ellipsis, FileX2, RotateCw, Sheet, ShieldCheck, Trash2, TriangleAlert, Upload, X } from 'lucide-react';
 import { IconButton } from '../ui/IconButton';
 import { WriteBar } from '../components/WriteBar';
@@ -1176,22 +1177,32 @@ export function JobDetail(): React.ReactElement {
     }
   }
 
-  // Downloads the server-computed summary (GET /jobs/:id/summary) as a JSON
-  // file -- a real, exportable report distinct from the diff itself.
-  async function handleDownloadSummary(): Promise<void> {
+  // The job's report, for a person: what was run, what it proposes (per type, action and section), what the document's structure left
+  // out, and every notice in plain language. Markdown, built from the job record on screen (the server summary stays for the tiles).
+  function handleDownloadReport(): void {
     if (!id) return;
-    try {
-      const summary = await getSummary(id);
-      const blob = new Blob([JSON.stringify(summary, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `job-${id}-summary.json`;
-      link.click();
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      showErrorToast('Failed to download summary — please try again.', err);
-    }
+    const report = jobReport({
+      jobId: id,
+      fileName: sourceFilename,
+      mode,
+      status,
+      createdAt: startedAt,
+      project: adoProject,
+      areaPath,
+      iterationPath,
+      workItemState,
+      items: diff,
+      warnings,
+      runNotices: historyNotices.map((notice) => noticeCopy(notice, titleByLocalIdMap)),
+      generatedAt: new Date().toISOString(),
+    });
+    const blob = new Blob([report], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `job-${id}-report.md`;
+    link.click();
+    URL.revokeObjectURL(url);
   }
 
   // The proposed items as an Azure DevOps tree export (Title 1 = Epic, Title 2 = the Feature under it, ...), with each item's source page
@@ -3403,7 +3414,7 @@ export function JobDetail(): React.ReactElement {
               </div>
             )}
             <div role="group" aria-label="Job tools" className="flex items-center gap-0.5 max-md:w-full">
-              <IconButton label="Download summary" compactLabel="Download" icon={Download} onClick={handleDownloadSummary} />
+              <IconButton label="Download report" compactLabel="Report" icon={Download} onClick={handleDownloadReport} />
               {diff.length > 0 && <IconButton label="Download items (CSV)" compactLabel="Items CSV" icon={Sheet} onClick={handleDownloadItems} />}
               {status !== 'pending' && status !== 'running' && status !== 'writing' && createdItemCount > 0 && (
                 <IconButton label={isValidating ? 'Validating…' : 'Validate'} compactLabel={isValidating ? 'Validating…' : 'Validate'} icon={ShieldCheck} onClick={handleValidate} loading={isValidating} />
