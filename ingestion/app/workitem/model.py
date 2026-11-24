@@ -439,6 +439,12 @@ class WarningKind(StrEnum):
     DOCUMENT_STUDY_INCOMPLETE = "document_study_incomplete"
     DROPPED_ROW = "dropped_row"
     FRONT_MATTER_FOLDED = "front_matter_folded"
+    # Blocks and tables the document layout read as front matter (cover, notices, revision history, contents, abbreviations,
+    # anything before the first numbered section): reported once, never made into items. See app/leveling/document_layout.py.
+    FRONT_MATTER_LEFT_OUT = "front_matter_left_out"
+    # Leaf sections that describe the document (Scope, Purpose, ...) and state no requirement: kept in the parent's description, never a
+    # Requirement (app/leveling/informational.py).
+    INFORMATIONAL_SECTION_FOLDED = "informational_section_folded"
     TRACE_LINK_INFERENCE_FAILED = "trace_link_inference_failed"
     TRACE_LINKS_PARTIAL = "trace_links_partial"
     ITEMS_LOST = "items_lost"
@@ -593,6 +599,8 @@ WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
     WarningKind.DOCUMENT_STUDY_INCOMPLETE: WarningSeverity.PIPELINE_ISSUE,
     WarningKind.DROPPED_ROW: WarningSeverity.NEEDS_REVIEW,
     WarningKind.FRONT_MATTER_FOLDED: WarningSeverity.AUTO_FIXED,
+    WarningKind.FRONT_MATTER_LEFT_OUT: WarningSeverity.AUTO_FIXED,
+    WarningKind.INFORMATIONAL_SECTION_FOLDED: WarningSeverity.AUTO_FIXED,
     WarningKind.TRACE_LINK_INFERENCE_FAILED: WarningSeverity.PIPELINE_ISSUE,
     WarningKind.TRACE_LINKS_PARTIAL: WarningSeverity.NEEDS_REVIEW,
     WarningKind.ITEMS_LOST: WarningSeverity.NEEDS_REVIEW,

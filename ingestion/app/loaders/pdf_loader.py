@@ -27,6 +27,7 @@ from app.canonical.model import (
     Table,
     TableCell,
 )
+from app.leveling.customer_id import opens_a_requirement
 from app.leveling.numbering import numbering_depth, parse_numbering
 from app.loaders.figure_utils import append_figure, extract_figure_title
 
@@ -1177,6 +1178,10 @@ def _lines_to_paragraphs(lines: list[dict]) -> list[tuple[str, float, float, boo
     signal Task 3's heading classification needs."""
     if not lines:
         return []
+    # The body text's right edge on this page: a line that ends a sentence well short of it is the last line of its paragraph. Read
+    # from the lines at the page's commonest size (the body), as a high percentile, so one wide heading or table line does not make
+    # every ordinary line look short.
+    right_edge = _body_right_edge(lines)
     paragraphs: list[tuple[str, float, float, bool]] = []
     current_texts = [lines[0]["text"]]
     current_top = lines[0]["top"]
@@ -1184,23 +1189,68 @@ def _lines_to_paragraphs(lines: list[dict]) -> list[tuple[str, float, float, boo
     current_bold = _line_is_bold(lines[0])
     prev_bottom = lines[0]["bottom"]
     prev_size = current_size
+    previous_line = lines[0]
     for line in lines[1:]:
         size = _line_size(line)
         gap = line["top"] - prev_bottom
         same_size = abs(size - prev_size) <= _PARAGRAPH_LINE_SIZE_TOLERANCE
         small_gap = gap <= max(size, prev_size) * _PARAGRAPH_LINE_GAP_RATIO
-        if same_size and small_gap:
+        # A line that opens with a requirement code ("REQ-002: ...") starts a new requirement even when set tight against the
+        # previous one -- otherwise consecutive requirements merged into one block (spec fixture, tight_requirements).
+        starts_requirement = opens_a_requirement(line["text"])
+        # The previous line ended a sentence and stopped short of the right edge (by more than a few characters): its paragraph
+        # ended there, even when the next one is set with no space before it (spec fixture, tight_requirements_no_id).
+        prev_line = previous_line
+        ended_short = bool(_SENTENCE_END_PATTERN.search(prev_line["text"])) and (
+            right_edge - prev_line.get("x1", right_edge) > _PARAGRAPH_SHORT_LINE_EMS * prev_size
+        )
+        if same_size and small_gap and not starts_requirement and not ended_short:
             current_texts.append(line["text"])
         else:
-            paragraphs.append((" ".join(current_texts), current_top, current_size, current_bold))
+            paragraphs.append((_join_lines(current_texts), current_top, current_size, current_bold))
             current_texts = [line["text"]]
             current_top = line["top"]
             current_size = size
             current_bold = _line_is_bold(line)
         prev_bottom = line["bottom"]
         prev_size = size
-    paragraphs.append((" ".join(current_texts), current_top, current_size, current_bold))
+        previous_line = line
+    paragraphs.append((_join_lines(current_texts), current_top, current_size, current_bold))
     return paragraphs
+
+
+_SENTENCE_END_PATTERN = re.compile(r"[.!?][\"'\u201d\u2019)\]]*\s*$")  # not ":": a lead-in continues into its list
+
+
+def _body_right_edge(lines: list[dict]) -> float:
+    """The 80th percentile of the right edges of the lines at the commonest font size: where full body lines end."""
+    from collections import Counter
+
+    sizes = Counter(round(_line_size(line), 1) for line in lines)
+    if not sizes:
+        return 0.0
+    body = round(sizes.most_common(1)[0][0], 1)
+    edges = sorted(line.get("x1", 0.0) for line in lines if round(_line_size(line), 1) == body)
+    if not edges:
+        return 0.0
+    return edges[min(len(edges) - 1, int(0.8 * len(edges)))]
+# How far short of the right edge (in ems of the line's font size) a sentence-ending line must stop to be read as a paragraph's
+# last line. A justified or ragged-right body line stops within about one or two characters of the edge; 4 ems is clear of both.
+_PARAGRAPH_SHORT_LINE_EMS = 4.0
+_LINE_END_HYPHEN_PATTERN = re.compile(r"[^\W\d_]-$")
+
+
+def _join_lines(texts: list[str]) -> str:
+    """Joins a paragraph's lines with a space, except after a line that ends in a word broken by a hyphen ("regu-" / "lation"),
+    which is joined with no space. The hyphen itself is kept: whether it was a soft break or a real compound ("built-" / "in")
+    cannot be told from the text, and no text the document does not print is ever made up."""
+    joined = texts[0]
+    for text in texts[1:]:
+        if _LINE_END_HYPHEN_PATTERN.search(joined) and text[:1].islower():
+            joined += text
+        else:
+            joined += " " + text
+    return joined
 
 
 # Phase 5 (Task 9): flag-only multi-column detection. Real-document
@@ -1390,14 +1440,18 @@ def _normalize_digits(text: str) -> str:
 
 
 def _detect_boilerplate_templates(
-    pages_first_lines: list[str], pages_last_lines: list[str]
+    pages_header_lines: list[list[str]], pages_footer_lines: list[list[str]]
 ) -> tuple[set[str], set[str]]:
     """Returns (header_templates, footer_templates) -- the set of
     digit-normalized line templates that recur on at least
     _BOILERPLATE_RECURRENCE_FRACTION of pages, checked separately for the
-    FIRST line (header candidate) and LAST line (footer candidate) of
-    each page. Empty strings (a page with no lines at all) are never
-    counted as boilerplate.
+    lines in each page's TOP margin (header candidates) and BOTTOM margin
+    (footer candidates). Every margin line is a candidate, not just the
+    page's first/last line: a two-line running header ("ACME SYSTEMS LTD" /
+    "PDU-SPEC-0042 Rev 2.0") otherwise lost only its outer line and the
+    inner one leaked into every page's body (reproduced on
+    tests/fixtures/build_spec_pdf_fixture.py's header_footer variant). A
+    template counts once per page. Empty strings are never counted.
 
     `count >= 2` is a required guard, not just the fraction threshold: with
     a single-page document, `threshold = 1 * _BOILERPLATE_RECURRENCE_FRACTION`
@@ -1411,15 +1465,16 @@ def _detect_boilerplate_templates(
     own docstring for the measured 33/35-page real case)."""
     from collections import Counter
 
-    def _templates(lines: list[str]) -> set[str]:
-        normalized = [_normalize_digits(t) for t in lines if t]
-        if not normalized:
+    def _templates(pages: list[list[str]]) -> set[str]:
+        counts: Counter[str] = Counter()
+        for lines in pages:
+            counts.update({_normalize_digits(t) for t in lines if t})
+        if not counts:
             return set()
-        counts = Counter(normalized)
-        threshold = len(lines) * _BOILERPLATE_RECURRENCE_FRACTION
+        threshold = len(pages) * _BOILERPLATE_RECURRENCE_FRACTION
         return {template for template, count in counts.items() if count >= 2 and count >= threshold}
 
-    return _templates(pages_first_lines), _templates(pages_last_lines)
+    return _templates(pages_header_lines), _templates(pages_footer_lines)
 
 
 def _detect_boilerplate_images(
@@ -1622,10 +1677,16 @@ def load_pdf(
         # page-by-page (a header/footer's own defining property is that it
         # recurs ACROSS pages -- no single page's content can prove that).
         all_pages_lines: list[list[dict]] = [page.extract_text_lines() for page in pdf.pages]
-        pages_first_lines = [lines[0]["text"] if lines else "" for lines in all_pages_lines]
-        pages_last_lines = [lines[-1]["text"] if lines else "" for lines in all_pages_lines]
+        pages_header_lines = [
+            [line["text"] for line in lines if line["top"] <= _HEADER_FOOTER_MARGIN_POINTS]
+            for lines in all_pages_lines
+        ]
+        pages_footer_lines = [
+            [line["text"] for line in lines if line["bottom"] >= page.height - _HEADER_FOOTER_MARGIN_POINTS]
+            for page, lines in zip(pdf.pages, all_pages_lines)
+        ]
         header_templates, footer_templates = _detect_boilerplate_templates(
-            pages_first_lines, pages_last_lines
+            pages_header_lines, pages_footer_lines
         )
 
         # First pass (Gap B): every page's own images (full pdfplumber bbox
@@ -1779,19 +1840,18 @@ def load_pdf(
             # an embedded page-correlated digit (see that constant's own
             # docstring). A real header/footer is by definition anchored in
             # the page's own margin; real body content is not.
-            filtered_lines = list(page_lines)
-            if (
-                filtered_lines
-                and filtered_lines[0]["top"] <= _HEADER_FOOTER_MARGIN_POINTS
-                and _normalize_digits(filtered_lines[0]["text"]) in header_templates
-            ):
-                filtered_lines = filtered_lines[1:]
-            if (
-                filtered_lines
-                and filtered_lines[-1]["bottom"] >= page.height - _HEADER_FOOTER_MARGIN_POINTS
-                and _normalize_digits(filtered_lines[-1]["text"]) in footer_templates
-            ):
-                filtered_lines = filtered_lines[:-1]
+            filtered_lines = [
+                line
+                for line in page_lines
+                if not (
+                    line["top"] <= _HEADER_FOOTER_MARGIN_POINTS
+                    and _normalize_digits(line["text"]) in header_templates
+                )
+                and not (
+                    line["bottom"] >= page.height - _HEADER_FOOTER_MARGIN_POINTS
+                    and _normalize_digits(line["text"]) in footer_templates
+                )
+            ]
 
             paragraphs_with_meta = _lines_to_paragraphs(filtered_lines)
 

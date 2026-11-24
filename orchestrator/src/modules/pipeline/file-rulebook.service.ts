@@ -28,7 +28,8 @@ export interface RulebookView {
 
 export function viewOf(row: FileRulebook, reused: boolean): RulebookView {
   return {
-    id: row.id,
+    // A kept reading that learned nothing has no rules to apply: the wizard and the job carry no rulebook id for it.
+    id: row.source === 'none' ? null : row.id,
     source: row.source as RulebookView['source'],
     hash: row.hash,
     rules: row.rules as string[],
@@ -38,6 +39,20 @@ export function viewOf(row: FileRulebook, reused: boolean): RulebookView {
     skipped: null,
     details: (row.details as Record<string, unknown> | null) ?? null,
   };
+}
+
+/**
+ * Whether a reading that learned nothing is settled (the model answered and nothing could be verified), and so worth keeping. A reading where the
+ * model could not be reached is not: the next visit asks again.
+ */
+export function settledReading(result: Pick<PrestudyResult, 'warnings'>): boolean {
+  return !result.warnings.some((warning) => {
+    const detail = (warning as { kind?: unknown; detail?: { reason?: unknown; transient?: unknown } } | null)?.detail;
+    if (!detail) return false;
+    // Ingestion marks a refusal the model's errors decided (an error, a timeout, a budget refusal) as transient. The reason text is the
+    // fallback for an ingestion that predates the mark.
+    return detail.transient === true || (typeof detail.reason === 'string' && /could not be asked/i.test(detail.reason));
+  });
 }
 
 /** Whether ingestion studies `doc` as a document (any running text) rather than by its tables: the same test as its study/model_rules._has_running_text. */
@@ -53,7 +68,8 @@ export function fileShaOf(buffer: Buffer): string {
 /**
  * Learns, stores and reuses how a file states its structure. One rulebook per user and file: the wizard's preview, the job and a re-run all use the
  * same one, so the same file gives the same structure. A user's edit wins over a learned rulebook; a learned one is reused while the study is the same
- * (prompts, schemas, votes, code pass) and is asked for again on request. A study that learned nothing is returned but never stored.
+ * (prompts, schemas, votes, code pass) and is asked for again on request. A study that learned nothing is kept the same way (so the file is not read
+ * again), unless the model could not be reached.
  */
 @Injectable()
 export class FileRulebookService {
@@ -74,15 +90,16 @@ export class FileRulebookService {
     return row && row.userId === userId && row.fileSha256 === fileSha256 ? row : null;
   }
 
-  async learn(input: { userId: string; file: Buffer; filename: string; model?: string; relearn?: boolean; signal?: AbortSignal }): Promise<RulebookView> {
+  async learn(input: { userId: string; file: Buffer; filename: string; model?: string; relearn?: boolean; jobId?: string; signal?: AbortSignal }): Promise<RulebookView> {
     const sha = fileShaOf(input.file);
     if (!input.relearn) {
       const user = await this.prisma.fileRulebook.findFirst({ where: { userId: input.userId, fileSha256: sha, source: 'user' }, orderBy: { createdAt: 'desc' } });
       if (user) return viewOf(user, true);
       const version = await this.ingestion.prestudyVersion();
       if (version) {
+        // A reading that learned nothing ('none') is kept too, so an unchanged file is not read again on the next visit or in the job.
         const learned = await this.prisma.fileRulebook.findFirst({
-          where: { userId: input.userId, fileSha256: sha, prestudyVersion: version, source: 'model' },
+          where: { userId: input.userId, fileSha256: sha, prestudyVersion: version, source: { in: ['model', 'none'] } },
           orderBy: { createdAt: 'desc' },
         });
         if (learned) return viewOf(learned, true);
@@ -103,7 +120,7 @@ export class FileRulebookService {
    * file, or a fresh study. `rulebook` is null when the study was skipped (no connection); {} when it ran and learned nothing (so no later stage asks again);
    * otherwise the rulebook and its hash. A failed study throws: the caller proceeds without one.
    */
-  async forJob(input: { userId: string; file: Buffer; filename: string; model?: string; signal?: AbortSignal }): Promise<{ rulebook: Record<string, unknown> | null; hash: string | null }> {
+  async forJob(input: { userId: string; file: Buffer; filename: string; model?: string; jobId?: string; signal?: AbortSignal }): Promise<{ rulebook: Record<string, unknown> | null; hash: string | null }> {
     const view = await this.learn(input);
     if (view.skipped) return { rulebook: null, hash: null };
     if (view.id === null) return { rulebook: {}, hash: null };
@@ -140,13 +157,14 @@ export class FileRulebookService {
   // profile alone (fail open); the Open WebUI copy is always deleted afterwards. A table study is not attached (unless configured): its profile covers
   // every row, and the attached sheet made each vote's prompt about ten times longer, behind Open WebUI's own instructions. `relearn` asks the model
   // afresh instead of replaying cached answers.
-  private async askWithFile(input: { userId: string; file: Buffer; filename: string; model?: string; relearn?: boolean; signal?: AbortSignal }, doc: Awaited<ReturnType<IngestionHttpClient['ingest']>>): Promise<PrestudyResult> {
+  private async askWithFile(input: { userId: string; file: Buffer; filename: string; model?: string; relearn?: boolean; jobId?: string; signal?: AbortSignal }, doc: Awaited<ReturnType<IngestionHttpClient['ingest']>>): Promise<PrestudyResult> {
     const ask = (fileId: string | undefined) =>
       this.ingestion.prestudy(doc, {
         userId: input.userId,
         ...(input.model ? { model: input.model } : {}),
         ...(fileId ? { fileId } : {}),
         ...(input.relearn ? { fresh: true } : {}),
+        ...(input.jobId ? { jobId: input.jobId } : {}),
         ...(input.signal ? { signal: input.signal } : {}),
       });
     if (!studiedAsDocument(doc) && !this.options.attachFileForTables) return ask(undefined);
@@ -181,7 +199,7 @@ export class FileRulebookService {
   }
 
   private async store(userId: string, fileSha256: string, model: string, result: PrestudyResult): Promise<RulebookView> {
-    if (result.source === 'none') {
+    if (result.source === 'none' && !settledReading(result)) {
       return { id: null, source: 'none', hash: result.hash, rules: result.rules, warnings: result.warnings, rulebook: result.rulebook, reused: false, skipped: null, details: null };
     }
     const row = await this.prisma.fileRulebook.create({
@@ -195,7 +213,7 @@ export class FileRulebookService {
         hash: result.hash,
         rules: result.rules as Prisma.InputJsonValue,
         warnings: result.warnings as Prisma.InputJsonValue,
-        ...(result.details ? { details: result.details as Prisma.InputJsonValue } : {}),
+        ...(result.details && result.source !== 'none' ? { details: result.details as Prisma.InputJsonValue } : {}),
       },
     });
     return viewOf(row, false);

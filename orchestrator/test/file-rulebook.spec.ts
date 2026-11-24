@@ -123,10 +123,31 @@ describe('FileRulebookService.learn', () => {
     expect(ingestion.prestudy).toHaveBeenCalledTimes(2);
   });
 
-  it('stores nothing for a study that learned nothing, and says so', async () => {
-    const { service, prisma } = setup({ prestudy: jest.fn().mockResolvedValue(learned({ source: 'none', rules: [], warnings: [{ kind: 'prestudy_rejected' }] })) });
-    const view = await service.learn(input);
-    expect(view).toMatchObject({ id: null, source: 'none' });
+  it('keeps a reading that learned nothing, so the same file is not read again in the next wizard visit or in the job', async () => {
+    const empty = learned({ source: 'none', rules: [], warnings: [{ kind: 'prestudy_rejected', detail: { reason: 'the model found no type and no front matter the document states (0 of 3 answers usable)' } }] });
+    const prestudy = jest.fn().mockResolvedValue(empty);
+    const { service, prisma } = setup({ prestudy });
+    const first = await service.learn(input);
+    expect(first).toMatchObject({ id: null, source: 'none', reused: false });
+    expect(prisma.rows).toHaveLength(1);
+    const again = await service.learn(input);
+    expect(again).toMatchObject({ id: null, source: 'none', reused: true });
+    expect(prestudy).toHaveBeenCalledTimes(1);
+    expect(await service.forJob(input)).toEqual({ rulebook: {}, hash: null });
+    expect(prestudy).toHaveBeenCalledTimes(1);
+  });
+
+  it('stores nothing for a refusal ingestion marks transient (a timeout or a budget stop), whatever its wording', async () => {
+    const timedOut = learned({ source: 'none', rules: [], warnings: [{ kind: 'prestudy_rejected', detail: { reason: 'the model timed out (1 of 3 answers usable)', transient: true } }] });
+    const { service, prisma } = setup({ prestudy: jest.fn().mockResolvedValue(timedOut) });
+    expect(await service.learn(input)).toMatchObject({ id: null, source: 'none' });
+    expect(prisma.rows).toHaveLength(0);
+  });
+
+  it('stores nothing when the model could not be reached, so the next visit asks again', async () => {
+    const unreachable = learned({ source: 'none', rules: [], warnings: [{ kind: 'prestudy_rejected', detail: { reason: 'the model could not be asked (0 of 3 answers usable)' } }] });
+    const { service, prisma } = setup({ prestudy: jest.fn().mockResolvedValue(unreachable) });
+    expect(await service.learn(input)).toMatchObject({ id: null, source: 'none' });
     expect(prisma.rows).toHaveLength(0);
   });
 
@@ -232,6 +253,13 @@ describe('FileRulebookService with no Open WebUI connection, and forJob', () => 
     const skipped = setup();
     (skipped.service as any).clients.getClientFor = jest.fn().mockRejectedValue(new Error('no connection'));
     expect(await skipped.service.forJob(input)).toEqual({ rulebook: null, hash: null });
+  });
+
+  it('forJob passes the job id to the reading, so the job\'s live screen names the step', async () => {
+    const prestudy = jest.fn().mockResolvedValue(learned());
+    const { service } = setup({ prestudy });
+    await service.forJob({ ...input, jobId: 'job-7' });
+    expect(prestudy).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ jobId: 'job-7' }));
   });
 
   it('forJob lets a failed study throw, for the caller to carry on without it', async () => {

@@ -198,6 +198,9 @@ export class ProgressTracker {
   private readonly seen = new Map<StageName, ProgressUnits>();
   private lastPct = 0;
   private lastStage: StageName | null = null;
+  // The step's own count last sent ("12 of 36 in this step"): a change in it alone is an event too.
+  private lastDone: number | null = null;
+  private lastTotal: number | null = null;
   private seq = 0;
   private finished = false;
 
@@ -213,7 +216,7 @@ export class ProgressTracker {
     }
   }
 
-  /** Returns an event only when the percentage or the stage changed. */
+  /** Returns an event when the percentage, the stage, or the step's own count changed (a count frozen at "N of M" read as stuck). */
   ingest(units: ProgressUnits): ProgressEvent | null {
     // A step's worker can report once more after the run is over (a late criteria chunk): it must not reopen a finished run.
     if (this.finished) return null;
@@ -221,7 +224,7 @@ export class ProgressTracker {
     const overall = computeOverall(this.seen, units);
     // 100 is reserved for finish(): the run is not done until the diff is ready.
     const pct = Math.max(this.lastPct, Math.min(99, Math.round(overall.value * 100)));
-    if (pct === this.lastPct && overall.stage === this.lastStage) return null;
+    if (pct === this.lastPct && overall.stage === this.lastStage && overall.done === this.lastDone && overall.total === this.lastTotal) return null;
     return this.emit(pct, overall);
   }
 
@@ -247,6 +250,8 @@ export class ProgressTracker {
   private emit(pct: number, overall: OverallProgress): ProgressEvent {
     this.lastPct = pct;
     this.lastStage = overall.stage;
+    this.lastDone = overall.done;
+    this.lastTotal = overall.total;
     this.seq += 1;
     return {
       type: 'progress',

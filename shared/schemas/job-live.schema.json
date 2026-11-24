@@ -149,6 +149,7 @@
         "stage": { "type": "string", "maxLength": 200, "description": "model_progress only: the pipeline stage of the call (the token ledger's stage name)." },
         "elapsedS": { "type": "number", "minimum": 0, "description": "model_progress only: seconds since the call was sent." },
         "tokens": { "type": ["integer", "null"], "minimum": 0, "description": "model_progress only: about how many tokens the model has written so far; null when the call does not stream." },
+        "pass": { "type": ["string", "null"], "maxLength": 80, "description": "model_progress only: which pass of its step the open call is, code-made (\"vote 2 of 2\"); null or absent when the step has one pass." },
         "emittedAt": { "type": "string" }
       }
     },

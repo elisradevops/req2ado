@@ -81,17 +81,35 @@ class LabelRule:
     type: str  # Epic / Feature / Requirement
 
 
+# What a front-matter part is, as the pre-study names it and the wizard shows it.
+FRONT_MATTER_ROLES = ("cover", "notice", "revision_history", "contents", "abbreviations", "glossary", "other")
+
+
+@dataclass(frozen=True)
+class FrontMatterPart:
+    """A heading that opens front matter (its whole section is left out of the items): the heading's block id and what it is."""
+
+    block_id: str
+    role: str
+
+
 @dataclass(frozen=True)
 class DocumentRules:
     labels: tuple[LabelRule, ...] = ()
     depth_types: tuple[tuple[int, str], ...] = ()  # (0-based nesting depth, type), only when the document is consistent
     origin: str = "model"
+    # The front matter the pre-study found and code checked (study/model_rules.validate_document_answer), used by the structure step
+    # (leveling/document_layout.py) to leave those sections out.
+    front_matter: tuple[FrontMatterPart, ...] = ()
 
     def canonical(self) -> dict:
-        return {
+        canonical: dict = {
             "labels": sorted((fold(r.label), r.separator, r.type) for r in self.labels),
             "depth_types": sorted(self.depth_types),
         }
+        if self.front_matter:  # only when present, so a rulebook stored before front matter existed keeps its hash
+            canonical["front_matter"] = sorted((p.block_id, p.role) for p in self.front_matter)
+        return canonical
 
 
 @dataclass(frozen=True)
@@ -113,7 +131,9 @@ class FileRulebook:
         return hashlib.sha256(text.encode()).hexdigest()
 
     def is_empty(self) -> bool:
-        return not self.tables and (self.document is None or not (self.document.labels or self.document.depth_types))
+        return not self.tables and (
+            self.document is None or not (self.document.labels or self.document.depth_types or self.document.front_matter)
+        )
 
 
 # --------------------------------------------------------------------------------------------------------------------------------------------
@@ -209,6 +229,7 @@ def rulebook_to_json(rulebook: FileRulebook) -> dict:
         else {
             "labels": [{"label": r.label, "separator": r.separator, "type": r.type} for r in document.labels],
             "depth_types": [[depth, name] for depth, name in document.depth_types],
+            "front_matter": [{"block_id": p.block_id, "role": p.role} for p in document.front_matter],
             "origin": document.origin,
         },
     }
@@ -244,5 +265,19 @@ def rulebook_from_json(raw: object, origin: str | None = None) -> FileRulebook:
             if not isinstance(item, (list, tuple)) or len(item) != 2:
                 raise ValueError("a depth type must be a [depth, type] pair")
             depths.append((_int(item[0], "a depth", high=8), _ladder(item[1], "a depth's type", allow_none=False)))
-        document = DocumentRules(labels=tuple(labels), depth_types=tuple(sorted(dict(depths).items())), origin=origin or ("user" if document_raw.get("origin") == "user" else "model"))  # type: ignore[arg-type]
+        front_raw = document_raw.get("front_matter", [])
+        if not isinstance(front_raw, list) or len(front_raw) > 40:
+            raise ValueError("front_matter must be a short list")
+        front = []
+        for item in front_raw:
+            if (
+                not isinstance(item, dict)
+                or not isinstance(item.get("block_id"), str)
+                or not item["block_id"]
+                or len(item["block_id"]) > 64
+                or item.get("role") not in FRONT_MATTER_ROLES
+            ):
+                raise ValueError("a front-matter part must be a block id and one of " + ", ".join(FRONT_MATTER_ROLES))
+            front.append(FrontMatterPart(item["block_id"], item["role"]))
+        document = DocumentRules(labels=tuple(labels), depth_types=tuple(sorted(dict(depths).items())), origin=origin or ("user" if document_raw.get("origin") == "user" else "model"), front_matter=tuple(front))  # type: ignore[arg-type]
     return FileRulebook(tables=tables, document=document)

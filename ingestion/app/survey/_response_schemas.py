@@ -492,8 +492,23 @@ def file_rules_document_schema() -> dict:
                     },
                 },
                 "evidence_headings": {"type": "array", "items": {"type": "integer"}},
+                "front_matter_headings": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "i": {"type": "integer"},
+                            "role": {
+                                "type": "string",
+                                "enum": ["cover", "notice", "revision_history", "contents", "abbreviations", "glossary", "other"],
+                            },
+                        },
+                        "required": ["i", "role"],
+                        "additionalProperties": False,
+                    },
+                },
             },
-            "required": ["type_source", "labels", "depth_types", "evidence_headings"],
+            "required": ["type_source", "labels", "depth_types", "evidence_headings", "front_matter_headings"],
             "additionalProperties": False,
         },
     }

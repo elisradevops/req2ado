@@ -245,10 +245,19 @@ function buildOutline(blocks: Block[], entryOf: Map<Block, ProfileOutlineEntry>)
   return outline;
 }
 
+// The number a heading prints in its own text ("2.1 Input Power", "1. Scope"): the same shape as ingestion's numbering.parse_numbering.
+const PRINTED_NUMBER = /^\s*\d+(?:\.\d+)*(?:\.[a-z])?\.?\s+\S/;
+
+/** A heading with a clause number: one the loader assigned (`number_label`), or one printed in its text. The loaders leave
+ *  `number_label` null exactly when the number is in the text, so counting the field alone called every printed number missing. */
+export function hasClauseNumber(heading: Block): boolean {
+  return Boolean(heading.number_label) || PRINTED_NUMBER.test(textOf(heading));
+}
+
 function describeStructure(doc: CanonicalDoc, blocks: Block[]): DocumentProfile['structure'] {
   const headings = blocks.filter((block) => block.kind === 'heading');
   const levels = headings.map(levelOf);
-  const numberedHeadings = headings.filter((heading) => Boolean(heading.number_label)).length;
+  const numberedHeadings = headings.filter(hasClauseNumber).length;
   const requirementHeadings = headings.filter((heading) => OBLIGATION.test(textOf(heading))).length;
   let levelJumps = 0;
   for (let i = 1; i < levels.length; i += 1) if (levels[i] - levels[i - 1] > 1) levelJumps += 1;

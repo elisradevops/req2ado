@@ -172,6 +172,10 @@ export interface LiveFrame {
    * model_progress only: about how many tokens the model has written so far; null when the call does not stream.
    */
   tokens?: number | null;
+  /**
+   * model_progress only: which pass of its step the open call is, code-made ("vote 2 of 2"); null or absent when the step has one pass.
+   */
+  pass?: string | null;
   emittedAt: string;
 }
 export interface ComparePayload {

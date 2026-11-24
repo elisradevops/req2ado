@@ -37,6 +37,12 @@ from app.leveling.conflict_detection import (
 )
 from app.leveling.conservation import restore_lost_nodes
 from app.leveling.content_authoring import ContentAuthoringClient, author_fixed_tree
+from app.leveling.document_layout import (
+    find_front_matter,
+    learned_front_matter,
+    left_out_warning,
+    without_front_matter,
+)
 from app.leveling.document_study import DocumentStudyClient
 from app.leveling.hierarchy_check import HierarchyFixClient, suggest_hierarchy_fixes
 
@@ -1442,6 +1448,7 @@ def _build_survey_tree(
         acceptance_criteria_client,
         document_study_client,
         all_warnings,
+        progress_callback=progress_callback,
         user_id=user_id,
         study_handle=study_handle,
         study_enabled=study_enabled,
@@ -1557,6 +1564,10 @@ def build_survey_tree(
         # Only for what the recognised headings do not cover; a failed or refused study leaves the file on the deterministic path, with a warning.
         rulebook, prestudy_warnings = prestudy(doc, analysis_client, user_id)  # type: ignore[arg-type]
         arguments["rulebook"] = rulebook
+    # The document's front matter (cover, notices, revision history, contents, ...) is left out before any structure is built,
+    # the same way BASELINE leaves it out (app.leveling.document_layout); the Study above still reads the whole document.
+    front = find_front_matter(doc, learned_front_matter(rulebook))
+    arguments["doc"] = without_front_matter(doc, front)
     try:
         tree = _build_survey_tree(
             **arguments,
@@ -1577,6 +1588,9 @@ def build_survey_tree(
     if handle is not None:
         handle.close()  # a finished job keeps the study's windows as the re-run cache; a study still running is stopped and cleaned up
     tree.warnings.extend(prestudy_warnings)
+    left_out = left_out_warning(front)
+    if left_out is not None:
+        tree.warnings.append(left_out)
     if rulebook is not None and rulebook.tables:
         # The tables read by the model's rules are checked against those rules (the recognised ones are checked by /level itself).
         tree.warnings.extend(
@@ -1600,6 +1614,7 @@ def _propose_criteria_step(
     background: str | None = None,
     limiter: LeaseLimiter | None = None,
     model: str | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> None:
     """Runs the acceptance-criteria proposals (see app.leveling.acceptance_criteria) when a client is supplied and any requirement is
     eligible. The whole-document study runs only then, so a document with nothing to propose never pays for it.
@@ -1621,9 +1636,18 @@ def _propose_criteria_step(
         table = tables_by_id.get(table_id)
         return _table_to_markdown(table) if table is not None else None
 
+    def narrate(phase: str) -> None:
+        if progress_callback is not None:
+            progress_callback(
+                LevelingProgress(phase=phase, branch_index=None, branch_count=0, blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[])
+            )
+
     if given_study is not None:
         study = as_document_study(given_study)  # what it did not read is the job's warning, said once by the orchestrator
     elif study_handle is not None:
+        finished = getattr(study_handle, "finished", None)
+        if finished is None or not finished():
+            narrate("await_study")  # the wait is named, not shown as the step before it still working
         outcome = study_handle.result(
             timeout=settings.survey_study_hard_budget_seconds + 60
         )  # JobCancelled is not swallowed
@@ -1647,6 +1671,7 @@ def _propose_criteria_step(
             )
         )
 
+    narrate("propose_criteria")
     propose_acceptance_criteria(
         nodes,
         study,

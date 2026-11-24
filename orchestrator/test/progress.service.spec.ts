@@ -256,11 +256,13 @@ describe('which path a run is on (a planned-at-zero marker is not evidence)', ()
 describe('ProgressTracker', () => {
   const fixed = () => new Date('2026-10-05T10:00:00.000Z');
 
-  it('emits only when the percentage or stage changes', () => {
+  it('emits when the percentage, the stage or the step\'s own count changes, and never for an unchanged report', () => {
     const tracker = new ProgressTracker(fixed);
     expect(tracker.ingest(units('draft', 0, 1000))?.pct).toBe(detPct(0)); // stage changed, parse share is full
     expect(tracker.ingest(units('draft', 0, 1000))).toBeNull();
-    expect(tracker.ingest(units('draft', 1, 1000))).toBeNull(); // rounds to the same percent
+    // Rounds to the same percent, but "1 of 1000" is news: a count frozen on screen read as a stuck step.
+    expect(tracker.ingest(units('draft', 1, 1000))).toMatchObject({ pct: detPct(0), done: 1, total: 1000 });
+    expect(tracker.ingest(units('draft', 1, 1000))).toBeNull();
     expect(tracker.ingest(units('draft', 500, 1000))?.pct).toBe(detPct(0.5));
   });
 

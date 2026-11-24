@@ -90,7 +90,9 @@ def test_pdf_survey_golden_produces_stable_branch_and_heading_structure(tmp_path
     tree = build_survey_tree(doc, object())
     requirements = [n for n in tree.nodes if n.type == WorkItemType.REQUIREMENT]
 
-    assert [n.title for n in requirements] == ["Overview", "Scope"]
+    # "Scope" states no requirement ("A second, separate section body."): it is kept, word for word, in its parent's description and
+    # is not an item of its own (app.leveling.informational). "Overview" says "must", so it stays a Requirement.
+    assert [n.title for n in requirements] == ["Overview"]
     assert requirements[0].description.count("This is a long sentence") == 3
-    assert requirements[1].description == _SCOPE_BODY_TEXT
+    assert any(_SCOPE_BODY_TEXT in (n.description or "") for n in tree.nodes if n.type != WorkItemType.REQUIREMENT)
     assert not any("REV" in (n.description or "") or "REV" in n.title for n in tree.nodes)

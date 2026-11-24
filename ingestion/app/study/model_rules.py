@@ -30,7 +30,9 @@ from app.canonical.markup import html_to_cell_text
 from app.canonical.model import BlockKind, CanonicalDoc, Table
 from app.config import settings
 from app.job_cancel import JobCancelled, submit_in_context
+from app.leveling.customer_id import opens_a_requirement
 from app.leveling.depth import resolve_block_depth
+from app.leveling.document_layout import find_front_matter, section_of, without_front_matter
 from app.leveling.numbering import parse_numbering
 from app.prompts import load_prompt
 from app.study.file_rules import (
@@ -43,9 +45,11 @@ from app.study.file_rules import (
 )
 from app.study.heading_rules import MIN_LABELLED, MIN_LABELLED_SHARE
 from app.study.rulebook import (
+    FRONT_MATTER_ROLES,
     LADDER,
     DocumentRules,
     FileRulebook,
+    FrontMatterPart,
     LabelRule,
     RuleSpec,
     fold,
@@ -411,6 +415,11 @@ def vote_specs(specs: list[RuleSpec], table: Table) -> RuleSpec | str:
     return check_spec(table, spec) or spec
 
 
+class TransientReason(str):
+    """Why no answer could be used, when the model could not be reached for enough of the votes (an error, a timeout, a budget refusal):
+    not a reading of the file, so it is never kept as one (the orchestrator stores only settled readings)."""
+
+
 def _ask(
     ask: Callable[[int, Callable[[dict], bool]], dict],
     validate: Callable[[dict], object | str],
@@ -440,8 +449,10 @@ def _ask(
         results = [one(vote) for vote in range(votes)]
     answers: list = []
     reasons: list[str] = []
+    errors = 0
     for vote, (raw, error) in enumerate(results):
         if error is not None:
+            errors += 1
             logger.warning("Pre-study ask %d for %s failed: %s", vote, describe, error, exc_info=error)
             reasons.append("the model could not be asked")
             continue
@@ -462,7 +473,9 @@ def _ask(
             answers.append(checked)
     needed = 1 if votes == 1 else 2
     if len(answers) < needed:
-        return [], (reasons[0] if reasons else "no usable answer") + (f" ({len(answers)} of {votes} answers usable)" if votes > 1 else "")
+        reason = (reasons[0] if reasons else "no usable answer") + (f" ({len(answers)} of {votes} answers usable)" if votes > 1 else "")
+        # Errors decided it when the votes that did answer, plus the ones that errored, could have been enough.
+        return [], TransientReason(reason) if errors and len(answers) + errors >= needed else reason
     return answers, None
 
 
@@ -507,6 +520,7 @@ def document_headings(doc: CanonicalDoc) -> list[dict]:
                 "depth": len(open_levels),
                 "number": label,
                 "text": " ".join((remainder if label else block.text).split()),
+                "block_id": block.id,
             }
         )
         open_levels.append(level)
@@ -559,8 +573,39 @@ def document_sample(doc: CanonicalDoc) -> dict:
 _RANK = {name: rank for rank, name in enumerate(LADDER)}
 
 
-def validate_document_answer(raw: dict, headings: list[dict]) -> DocumentRules | str:
-    """The model's answer as DocumentRules, or the reason it cannot be used. Labels are recounted over every heading of the document."""
+# Front matter may not be more than this share of the document's blocks: an answer that would leave out the body is refused.
+MAX_FRONT_MATTER_SHARE = 0.5
+
+
+def validate_front_matter(raw: dict, headings: list[dict], doc: CanonicalDoc | None) -> tuple[FrontMatterPart, ...]:
+    """The headings the model named as opening front matter, each checked against the document: the heading exists, its role is known, its
+    section holds no requirement code (a section with requirements is never front matter), and together they are at most
+    MAX_FRONT_MATTER_SHARE of the blocks. A part that fails is dropped on its own; it never refuses the rest of the answer."""
+    if doc is None or not isinstance(raw.get("front_matter_headings"), list):
+        return ()
+    by_i = {h["i"]: h for h in headings}
+    parts: dict[str, FrontMatterPart] = {}
+    covered: set[str] = set()
+    for item in raw["front_matter_headings"]:
+        if not isinstance(item, dict):
+            continue
+        i, role = item.get("i"), item.get("role")
+        if not isinstance(i, int) or isinstance(i, bool) or i not in by_i or role not in FRONT_MATTER_ROLES:
+            continue
+        block_id = by_i[i]["block_id"]
+        section, _tables = section_of(doc, block_id)
+        if not section or any(opens_a_requirement(b.text) for b in section):
+            continue
+        parts[block_id] = FrontMatterPart(block_id, role)
+        covered.update(b.id for b in section)
+    if doc.blocks and len(covered) > MAX_FRONT_MATTER_SHARE * len(doc.blocks):
+        return ()
+    return tuple(sorted(parts.values(), key=lambda p: p.block_id))
+
+
+def validate_document_answer(raw: dict, headings: list[dict], doc: CanonicalDoc | None = None) -> DocumentRules | str:
+    """The model's answer as DocumentRules, or the reason it cannot be used. Labels are recounted over every heading of the document; front
+    matter is checked against the document (validate_front_matter)."""
     labels: list[LabelRule] = []
     seen: set[str] = set()
     for item in raw.get("labels") if isinstance(raw.get("labels"), list) else []:
@@ -604,9 +649,10 @@ def validate_document_answer(raw: dict, headings: list[dict]) -> DocumentRules |
         return "the model gave a type for a depth the document does not have"
     if any(_RANK[b] < _RANK[a] for (_, a), (_, b) in zip(depth_types, depth_types[1:])):
         return "the types the model gave for each depth go back up the ladder"
-    if not labels and not depth_types:
-        return "the model found no type the document states"
-    return DocumentRules(labels=tuple(labels), depth_types=tuple(depth_types), origin="model")
+    front_matter = validate_front_matter(raw, headings, doc)
+    if not labels and not depth_types and not front_matter:
+        return "the model found no type and no front matter the document states"
+    return DocumentRules(labels=tuple(labels), depth_types=tuple(depth_types), origin="model", front_matter=front_matter)
 
 
 def _label_of(text: str, labels: list[LabelRule]) -> LabelRule | None:
@@ -668,7 +714,16 @@ def vote_documents(rules: list[DocumentRules]) -> DocumentRules:
         for depth, counts in sorted(depth_votes.items())
         if counts.most_common(1)[0][1] * 2 > total
     )
-    return DocumentRules(labels=labels, depth_types=depths, origin="model")
+    front_votes: dict[str, Counter] = {}
+    for r in rules:
+        for part in r.front_matter:
+            front_votes.setdefault(part.block_id, Counter())[part.role] += 1
+    front = tuple(
+        FrontMatterPart(block_id, counts.most_common(1)[0][0])
+        for block_id, counts in sorted(front_votes.items())
+        if sum(counts.values()) * 2 > total  # a majority calls it front matter; the role is the most named one
+    )
+    return DocumentRules(labels=labels, depth_types=depths, origin="model", front_matter=front)
 
 
 def study_document_with_model(
@@ -680,14 +735,14 @@ def study_document_with_model(
     sample = document_sample(doc)
     answers, reason = _ask(
         lambda vote, accept: client.study_file_rules_document(sample, user_id=user_id, vote=vote, accept=accept),
-        lambda raw: validate_document_answer(raw, headings),
+        lambda raw: validate_document_answer(raw, headings, doc),
         votes,
         "the document",
     )
     if reason is not None:
         return None, reason
     voted = vote_documents(answers)
-    if not voted.labels and not voted.depth_types:
+    if not voted.labels and not voted.depth_types and not voted.front_matter:
         return None, "the model's answers disagree on what the document states"
     return voted, None
 
@@ -734,11 +789,17 @@ def prestudy(
                 )
             )
     else:
-        document, reason = study_document_with_model(doc, client, user_id, votes)
+        # The outline the model reads leaves out the front matter the document's own structure already shows (contents entries, everything
+        # before the first numbered section), so the model is asked only about what is still open.
+        document, reason = study_document_with_model(without_front_matter(doc, find_front_matter(doc)), client, user_id, votes)
         if reason is not None:
             warnings.append(_rejected("the document", reason))
         elif document is not None:
-            parts = [f"{r.label}{r.separator} = {r.type}" for r in document.labels] + [f"depth {d + 1} = {t}" for d, t in document.depth_types]
+            parts = (
+                [f"{r.label}{r.separator} = {r.type}" for r in document.labels]
+                + [f"depth {d + 1} = {t}" for d, t in document.depth_types]
+                + [f"{p.role.replace('_', ' ')} left out" for p in document.front_matter]
+            )
             warnings.append(
                 IntegrityWarning.make(
                     WarningKind.PRESTUDY_APPLIED,
@@ -753,12 +814,13 @@ def _rejected(source: str, reason: str) -> IntegrityWarning:
     return IntegrityWarning.make(
         WarningKind.PRESTUDY_REJECTED,
         f"The model's reading of how {source} states its items was not used: {reason}. The file was read by its recognised headings and its shape instead.",
-        detail={"source": source, "reason": reason},
+        # transient: the model could not be reached, so this is no reading of the file and must not be kept as one.
+        detail={"source": source, "reason": str(reason), "transient": isinstance(reason, TransientReason)},
     )
 
 
 # Bump when the sampling, validation or voting code changes meaning, so a rulebook stored under an older version is asked for again.
-_CODE_PASS_VERSION = "3"
+_CODE_PASS_VERSION = "4"  # 4: front matter (validate_front_matter), the outline without the code-found front matter
 
 
 def prestudy_version() -> str:
@@ -798,4 +860,11 @@ def check_rulebook(doc: CanonicalDoc, rulebook: FileRulebook) -> str | None:
         for rule in rulebook.document.labels:
             if sum(1 for h in headings if _starts_with_label(h["text"], rule.label, rule.separator)) < MIN_LABELLED:
                 return f"the label '{rule.label}{rule.separator}' does not begin at least {MIN_LABELLED} headings"
+    if rulebook.document is not None:
+        for part in rulebook.document.front_matter:
+            section, _tables = section_of(doc, part.block_id)
+            if not section:
+                return f"the rules leave out a heading ({part.block_id}) that this file does not have"
+            if any(opens_a_requirement(b.text) for b in section):
+                return f"the rules leave out '{section[0].text[:60]}', whose section holds requirements"
     return None

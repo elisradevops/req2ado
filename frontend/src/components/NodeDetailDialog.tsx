@@ -675,8 +675,9 @@ export function NodeDetailDialog({
             </span>
           )}
           <WorkItemTypeBadge type={entry.type} catalogEntry={typeCatalog?.[entry.type]} />
-          <span dir="auto" className="min-w-[12rem] flex-1 break-words" title={entry.title}>{entry.title}</span>
+          {/* The Customer ID leads the title, as it does in the tree. */}
           {entry.customerId && <span className="flex-none font-mono text-xs tracking-tight text-ink-3">{entry.customerId}</span>}
+          <span dir="auto" className="min-w-[12rem] flex-1 break-words" title={entry.title}>{entry.title}</span>
           <ActionBadge action={entry.action} existingAdoId={entry.existingAdoId} />
           <span className="ms-auto flex flex-none items-center gap-1.5">
             {entryEditable && (

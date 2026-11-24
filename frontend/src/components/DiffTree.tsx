@@ -563,8 +563,21 @@ export function DiffTree({
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(() => {
     const parents = new Set(entries.map((entry) => entry.parentLocalId));
     // The first Feature that has children stays open, so a reviewer sees real Requirements on arrival; every other Feature starts collapsed.
+    // So do the Features nested inside it, down to its Requirements: with "2 Power Requirements > 2.1 Input Power > REQ-001" the
+    // requirements (and their Customer IDs) were two closed levels away.
     const firstOpen = entries.find((entry) => entry.type === 'Feature' && parents.has(entry.localId))?.localId;
-    return new Set(entries.filter((entry) => entry.type === 'Feature' && entry.localId !== firstOpen).map((entry) => entry.localId));
+    const open = new Set<string>(firstOpen ? [firstOpen] : []);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const entry of entries) {
+        if (entry.type === 'Feature' && !open.has(entry.localId) && entry.parentLocalId && open.has(entry.parentLocalId) && parents.has(entry.localId)) {
+          open.add(entry.localId);
+          grew = true;
+        }
+      }
+    }
+    return new Set(entries.filter((entry) => entry.type === 'Feature' && !open.has(entry.localId)).map((entry) => entry.localId));
   });
 
   const isFiltering = !!filterAction || !!filterText || filterFlaggedOnly || !!focusNodeIds;
@@ -1439,6 +1452,8 @@ function DiffTreeRow({
               badge fell back to hardcoded colors/icons. realTypeName()
               resolves the real name first. */}
           <WorkItemTypeBadge type={entry.type} catalogEntry={typeCatalog?.[realTypeName(entry.type)]} />
+          {/* The Customer ID leads the title, like a clause number: at the end of a long title it was the first mark to be cut away. */}
+          {customerIdEl}
           {/* R7: the title keeps a minimum (rem, so it grows with text size; capped by the cell so it never paints past it) and takes the
               free space; what follows it shrinks first. */}
           <p id={titleId} dir="auto" className={cn('min-w-[min(12rem,50%)] flex-1 truncate text-start text-sm font-medium leading-snug', entry.excluded && 'line-through text-ink-3')}>
@@ -1459,7 +1474,6 @@ function DiffTreeRow({
             {excludedEl}
             {!criteriaInStatusColumn(entry) && criteriaEl}
             {lockEl}
-            {customerIdEl}
           </span>
         </span>
         )}

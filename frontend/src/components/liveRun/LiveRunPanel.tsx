@@ -11,7 +11,7 @@ import {
 } from '../../utils/liveCopy';
 import { DocumentMetrics } from './DocumentMetrics';
 import { DocumentOutline } from './DocumentOutline';
-import { WorkingOnCard } from './WorkingOnCard';
+import { WorkingOnCard, type CurrentPass } from './WorkingOnCard';
 import { ComparePair } from './ComparePair';
 import { RunNotices } from './RunNotices';
 
@@ -25,7 +25,16 @@ export const LONG_WAIT_AFTER_SECONDS = 60;
 // one) two texts side by side. It appears only when the server has the live
 // feature on; with it off, or against an older server, this renders nothing and
 // the banner is exactly what it was.
-export function LiveRunPanel({ jobId, running }: { jobId: string | undefined; running: boolean }): React.ReactElement | null {
+export function LiveRunPanel({
+  jobId,
+  running,
+  current,
+}: {
+  jobId: string | undefined;
+  running: boolean;
+  /** What a step with no live lane is on, for the Now card (ProgressBanner builds it from the narration and the heartbeat). */
+  current?: CurrentPass | null;
+}): React.ReactElement | null {
   const active = useLiveRunStore((s) => s.active);
   const lanes = useLiveRunStore((s) => s.lanes);
   const recent = useLiveRunStore((s) => s.recent);
@@ -84,7 +93,7 @@ export function LiveRunPanel({ jobId, running }: { jobId: string | undefined; ru
       )}
       <RunNotices notices={notices} heading={LIMITS_HEADING} storageKey={`${jobId}.live`} titleByRef={titleByRef} />
       {map && <DocumentMetrics stats={map.stats} finished={doneCount} total={map.totalItems} />}
-      {active && <WorkingOnCard lanes={laneList} recent={recent} now={now} titleByRef={titleByRef} />}
+      {active && <WorkingOnCard lanes={laneList} recent={recent} now={now} titleByRef={titleByRef} current={current} />}
       {compare && <ComparePair key={compare.seq} compare={compare.payload} titleByRef={titleByRef} pathByRef={pathByRef} />}
       {map && map.items.length > 0 && (
         <DocumentOutline items={map.items} doneRefs={doneRefs} workingRefs={workingRefs} truncated={map.truncated} />

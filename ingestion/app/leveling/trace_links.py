@@ -333,6 +333,8 @@ def _infer_trace_links_for_nodes(
             any_answered = True
             raw_links.extend(links)
         skipped_groups.extend(skipped)
+    if counter is not None:
+        counter.complete("trace")  # its last chunk answered: the step is done, not left at N of N
     if skipped_groups and not any_answered:
         first_reason = skipped_groups[0][1]
         logger.warning("Trace-link inference failed: %s", first_reason)

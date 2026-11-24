@@ -799,3 +799,12 @@ def test_a_hierarchy_pass_reads_in_plain_words_not_in_pipeline_terms() -> None:
     assert _format_message(improve) == "Improving titles and tags, part 2 of 2 (1 item), group 2 of 3"
     for message in (_format_message(draft), _format_message(improve)):
         assert not any(word in message.lower() for word in ("deterministic", "node(s)", "synthesiz", "chunk"))
+
+
+def test_whole_document_passes_do_not_show_the_document_block_count_as_their_progress() -> None:
+    from app.leveling.narration_publisher import _format_message
+
+    for phase in ("regroup_roots", "infer_trace_links", "await_study", "propose_criteria"):
+        message = _format_message(_progress(phase=phase, branch_index=None, blocks_done=17, blocks_total=17))
+        assert "17 of 17" not in message, message
+    assert "acceptance criteria" in _format_message(_progress(phase="await_study", branch_index=None)).lower()

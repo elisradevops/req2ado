@@ -1439,9 +1439,23 @@ describe('ProgressBanner live run view', () => {
       useLiveRunStore.getState().ingestLive({ type: 'live', seq: 1, lane: -1, kind: 'model_progress', prompt: 'p', stage: 'score_requirements_for_document', elapsedS: 250, tokens: 9800, emittedAt: 'x' });
       vi.advanceTimersByTime(FLUSH_INTERVAL_MS);
     });
-    const line = screen.getByTestId('model-progress');
-    expect(line).toHaveTextContent(/4m 10s so far/);
-    expect(line).toHaveTextContent(/9,800 tokens written/);
+    // One place says it: the Now card names the batch and how long its call has run; no separate note beside it.
+    const line = screen.getByTestId('working-on-current');
+    expect(line).toHaveTextContent(/scoring requirement/i);
+    expect(line).toHaveTextContent(/4m 10s, about 9,800 tokens written so far/);
+    expect(screen.queryByTestId('model-progress')).not.toBeInTheDocument();
+  });
+
+  it('names the pass of the step when the open call is a second vote', () => {
+    const score = { phase: 'score_requirements', branchIndex: null, branchCount: 0, blocksDone: 0, blocksTotal: 0, kbGrounded: false, kbCitations: [], chunkIndex: 0, chunkCount: 1, sampleTitles: ['Input voltage'], message: 'Scoring requirement quality (batch 1 of 1)' } as unknown as NarrationEvent;
+    render(<ProgressBanner stage="infer_hierarchy_start" startedAt="2026-07-09T10:00:00Z" mode="survey" narrations={[score]} jobId="job-1" />);
+    act(() => {
+      useLiveRunStore.getState().ingestLive({ type: 'live', seq: 1, lane: -1, kind: 'model_progress', prompt: 'p', stage: 'score_requirements_for_document', elapsedS: 41, tokens: null, pass: 'vote 2 of 2', emittedAt: 'x' });
+      vi.advanceTimersByTime(FLUSH_INTERVAL_MS);
+    });
+    const line = screen.getByTestId('working-on-current');
+    expect(line).toHaveTextContent('Scoring requirement batch 1 of 1 · vote 2 of 2');
+    expect(line).toHaveTextContent('Input voltage');
   });
 
   it('drops the model-progress line once its last report is old', () => {
@@ -1450,11 +1464,11 @@ describe('ProgressBanner live run view', () => {
       useLiveRunStore.getState().ingestLive({ type: 'live', seq: 1, lane: -1, kind: 'model_progress', prompt: 'p', stage: 's', elapsedS: 30, tokens: null, emittedAt: 'x' });
       vi.advanceTimersByTime(FLUSH_INTERVAL_MS);
     });
-    expect(screen.getByTestId('model-progress')).toBeInTheDocument();
+    expect(screen.getByTestId('working-on-current')).toBeInTheDocument();
     act(() => {
       vi.advanceTimersByTime(60_000);
     });
-    expect(screen.queryByTestId('model-progress')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('working-on-current')).not.toBeInTheDocument();
   });
 
   it('restarts the "updated … ago" stamp when live frames arrive between narration events', () => {

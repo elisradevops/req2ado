@@ -190,6 +190,8 @@ export interface IntegrityWarning {
     | 'document_study_incomplete'
     | 'dropped_row'
     | 'front_matter_folded'
+    | 'front_matter_left_out'
+    | 'informational_section_folded'
     | 'trace_link_inference_failed'
     | 'trace_links_partial'
     | 'items_lost'

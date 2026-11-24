@@ -312,6 +312,25 @@ describe('DiffTree', () => {
     expect(screen.queryByText('Req 2')).not.toBeInTheDocument();
   });
 
+  it('opens the Features nested inside the first open Feature, so its Requirements and their Customer IDs are on screen', () => {
+    const entries: DryRunDiffEntry[] = [
+      { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Epic 1', description: '', action: 'create', customerId: null },
+      { localId: 'f1', parentLocalId: 'e1', type: 'Feature', title: '2 Power Requirements', description: '', action: 'create', customerId: null },
+      { localId: 'f11', parentLocalId: 'f1', type: 'Feature', title: '2.1 Input Power', description: '', action: 'create', customerId: null },
+      { localId: 'r1', parentLocalId: 'f11', type: 'Requirement', title: 'The PDU shall accept 18 to 32 VDC.', description: '', action: 'create', customerId: 'REQ-001' },
+      { localId: 'f2', parentLocalId: 'e1', type: 'Feature', title: '3 Built-In Test', description: '', action: 'create', customerId: null },
+      { localId: 'f21', parentLocalId: 'f2', type: 'Feature', title: '3.1 Power-Up Test', description: '', action: 'create', customerId: null },
+      { localId: 'r2', parentLocalId: 'f21', type: 'Requirement', title: 'The PDU shall run a power-up test.', description: '', action: 'create', customerId: 'REQ-006' },
+    ];
+    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+
+    const row = screen.getByText('The PDU shall accept 18 to 32 VDC.').closest('[role="treeitem"]') as HTMLElement;
+    const id = within(row).getByTitle('Customer ID: REQ-001');
+    // The ID comes before the title in the row, like a clause number.
+    expect(id.compareDocumentPosition(within(row).getByText('The PDU shall accept 18 to 32 VDC.')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByText('The PDU shall run a power-up test.')).not.toBeInTheDocument(); // the next top-level Feature stays closed
+  });
+
   it('skips a childless first Feature and opens the first Feature that has children', () => {
     const entries: DryRunDiffEntry[] = [
       { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Epic 1', description: '', action: 'create', customerId: null },
@@ -680,21 +699,21 @@ describe('DiffTree signal counts', () => {
     const title = screen.getByText('Child req');
     // a minimum in rem, capped by the cell, so it scales with text size and never pushes past a narrow cell
     expect(title.className).toMatch(/min-w-\[min\(\d+rem,\d+%\)\]/);
-    const trailing = screen.getByText('REQ-1').closest('[data-testid="title-trailing"]') as HTMLElement;
+    const trailing = screen.getByText('Nested Requirement').closest('[data-testid="title-trailing"]') as HTMLElement;
     expect(trailing).not.toBeNull();
     // whole marks wrap onto a line that is cut away (never half a chip), bounded in rem, not px
     expect(trailing).toHaveClass('flex-wrap', 'overflow-hidden', 'min-w-0');
     expect(trailing.className).not.toMatch(/h-\[\d+px\]/);
-    // the hazard first and the customer id last: wrapping hides the LAST marks
-    const tier = within(trailing).getByText('Nested Requirement');
-    expect(tier.compareDocumentPosition(screen.getByText('REQ-1')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // the customer id leads the title (it was the first mark cut away at the end of a long title), so it is never in the trailing group
+    expect(within(trailing).queryByText('REQ-1')).toBeNull();
+    expect(screen.getByText('REQ-1').compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(title.compareDocumentPosition(trailing) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('lets a mark that is wider than the group drop out whole: a first-line placeholder gives even the first mark a line to wrap away from (it was cut in half, "o Customer ID")', () => {
     const entries: DryRunDiffEntry[] = [{ ...baseEntry, localId: 'c', title: 'Child req', customerId: 'REQ-1' }];
     render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
-    const trailing = screen.getByText('REQ-1').closest('[data-testid="title-trailing"]') as HTMLElement;
+    const trailing = screen.getByTestId('title-trailing');
     // a zero-width, full-height pseudo item on line 1, pulled back over the gap so it costs no width
     expect(trailing).toHaveClass('before:h-6', 'before:w-0', 'before:flex-none', 'before:-mr-2');
     // the group is still removed from layout when it has no marks (the pseudo item does not make it non-empty)

@@ -104,6 +104,13 @@ Phase = Literal[
     "map_scope",
     "regroup_roots",
     "infer_trace_links",
+    # The acceptance-criteria step had no phase of its own, so while it ran the screen still read "resolving trace links" (owner
+    # finding 2026-11-24). await_study: it is waiting for the document reading (the Study) to finish before it can start.
+    "await_study",
+    "propose_criteria",
+    # Parse's sub-step: the model reading how the file states its structure (the pre-study), run inside a job only when no reading of
+    # the file is stored yet. Named so the wait is not a silent "Parse".
+    "learn_layout",
     # Real gap this closes (confirmed live): a job that fails deep inside
     # build_survey_tree (e.g. an httpx.ReadTimeout waiting on a scoring LLM
     # call) previously surfaced nothing more than a flattened one-line
@@ -369,8 +376,16 @@ _PHASE_MESSAGES: dict[Phase, str] = {
     "map_scope": "Mapping figures and tables to their work items",
     "regroup_roots": "Grouping disconnected sections by topic",
     "infer_trace_links": "Resolving trace/coverage links",
+    "await_study": "Waiting for the document reading to finish -- the acceptance criteria use it",
+    "learn_layout": "Reading the file's layout -- stored for the next run of this file",
+    "propose_criteria": "Writing acceptance criteria",
     "job_failed": "Job failed",
 }
+
+
+_WHOLE_DOCUMENT_PASSES = frozenset(
+    {"regroup_roots", "infer_trace_links", "detect_conflicts", "await_study", "propose_criteria", "learn_layout"}
+)
 
 
 def _format_message(progress: LevelingProgress) -> str:
@@ -502,6 +517,10 @@ def _format_message(progress: LevelingProgress) -> str:
         # phase -- distinguished purely by whether sample_titles is present,
         # no separate phase name needed.
         base += f" -- {', '.join(progress.sample_titles)}"
+    elif progress.phase in _WHOLE_DOCUMENT_PASSES:
+        # One pass over the whole tree: the document's block count is not this pass's progress ("17 of 17 blocks" at its start
+        # read as a finished counter that kept working). Its own count, when it has one, is the step's counted progress.
+        pass
     else:
         base += f" -- {progress.blocks_done} of {progress.blocks_total} blocks"
     if progress.model:

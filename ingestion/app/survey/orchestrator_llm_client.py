@@ -10,6 +10,7 @@ import threading
 import time
 from collections.abc import Callable
 from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Literal
 
 import httpx
@@ -500,6 +501,20 @@ class _QuietDisplay:
     def end(self) -> None: ...
 
 
+# Which pass of its step the calls opened on this thread are ("vote 2 of 2"), read by _beating into every progress frame.
+_current_pass: ContextVar[str | None] = ContextVar("req2ado_model_call_pass", default=None)
+
+
+@contextmanager
+def model_call_pass(label: str | None):  # noqa: ANN202
+    """Names the pass of a step the model calls inside this block belong to, for the live screen."""
+    token = _current_pass.set(label)
+    try:
+        yield
+    finally:
+        _current_pass.reset(token)
+
+
 @contextmanager
 def _beating(prompt: str, stage: str):  # noqa: ANN202
     """While a plain (not streamed) model call is open, reports every _PROGRESS_EVERY_SECONDS that it is still working, so a long
@@ -510,10 +525,11 @@ def _beating(prompt: str, stage: str):  # noqa: ANN202
         return
     stop = threading.Event()
     started = time.monotonic()
+    label = _current_pass.get()  # read here: the beat thread has its own context
 
     def beat() -> None:
         while not stop.wait(max(_PROGRESS_EVERY_SECONDS, 0.05)):
-            emitter.model_progress(prompt=prompt, stage=stage, elapsed_s=time.monotonic() - started, tokens=None)
+            emitter.model_progress(prompt=prompt, stage=stage, elapsed_s=time.monotonic() - started, tokens=None, pass_=label)
 
     thread = threading.Thread(target=beat, name="model-progress", daemon=True)
     thread.start()
@@ -1229,7 +1245,8 @@ class OrchestratorLlmClient:
                 self._cache.set(key, dict(entries))
             return dict(entries)
 
-        votes: list[dict] = [vote(0)]  # the first vote failing is the call failing: the caller's split-and-retry handles it
+        with model_call_pass(f"vote 1 of {SCORING_VOTES}"):
+            votes: list[dict] = [vote(0)]  # the first vote failing is the call failing: the caller's split-and-retry handles it
         # The second vote (the same items in reverse order) only for the items a single level step could change: the rest are decided by
         # the first vote, and asking them again was half of every scoring call's output.
         borderline = {
@@ -1246,7 +1263,9 @@ class OrchestratorLlmClient:
             if not borderline:
                 break
             try:
-                votes.append(vote(number, borderline))
+                # Announced: the same items read a second time (in reverse order) looked like the step looping.
+                with model_call_pass(f"vote {number + 1} of {SCORING_VOTES}"):
+                    votes.append(vote(number, borderline))
             except JobCancelled:
                 raise
             except Exception:

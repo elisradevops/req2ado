@@ -36,7 +36,7 @@ import { jobsListQuerySchema } from './jobs-list.dto';
 import { EtaService, type EtaEstimate, type ModelStats } from './eta.service';
 import { buildDocumentMap, type DocumentMapSection } from './document-map';
 import { parseDocumentOverview, type DocumentOverview } from './document-overview.service';
-import { buildPreviewOverview } from './document-preview';
+import { buildPreviewOverview, type LeftOut } from './document-preview';
 import { generateSummary, MAX_SUMMARY_INPUT_CHARS, SummaryCache } from './document-summary';
 import { fileHashOf, type ResultCacheProbe } from './result-cache';
 import { EntrySourceReader, type EntrySourceAnswer } from './source-excerpt';
@@ -373,6 +373,9 @@ export class JobsController {
     documentMap: DocumentMapSection[];
     // The step-3 overview and the document profile, from the parsed document alone.
     overview: DocumentOverview & { profile: DocumentProfile };
+    // What the baseline build left out as front matter (cover, notices, revision history, contents, ...), or null when nothing was, or the baseline
+    // tree could not be had in time.
+    leftOut: LeftOut | null;
     // The result-cache file hash (content only, not the name): the wizard asks GET cached-result with it once mode and model are chosen.
     fileHash: string;
     // The document's size in tokens (script-aware), for the pre-flight cost forecast the wizard asks GET estimate for.
@@ -405,14 +408,18 @@ export class JobsController {
     // that only exists after /level's (expensive, LLM-driven for SURVEY)
     // hierarchy inference, which preview deliberately never calls.
     const doc = await this.ingestionClient.ingest(file.buffer, file.originalname, true);
-    const headingLevels = doc.blocks
+    // What the wizard shows is read off the document's content: the front matter the baseline build leaves out (cover, revision history, contents,
+    // ...) is listed once as `leftOut`, never counted or numbered as content (its tables are not "detected tables", its headings not sections).
+    const { overview, leftOut, content } = await buildPreviewOverview(doc, (...args) => this.ingestionClient.level(...args), this.logger);
+    const headingLevels = content.blocks
       .filter((b) => b.kind === 'heading' && typeof b.heading_level === 'number')
       .map((b) => b.heading_level as number);
     const fileType = ext.slice(1).toLowerCase();
-    const blockCount = doc.blocks.length;
-    const figureCount = doc.figures.length;
-    const tableCount = doc.tables.length;
-    const cellCount = doc.tables.reduce((n, t) => n + t.cells.reduce((rn, row) => rn + row.length, 0), 0);
+    const blockCount = content.blocks.length;
+    const figureCount = content.figures.length;
+    const tableCount = content.tables.length;
+    const cellCount = content.tables.reduce((n, t) => n + t.cells.reduce((rn, row) => rn + row.length, 0), 0);
+    // The estimate is of the work the job does, which leaves the front matter out too.
     const estimate = await this.etaService.estimate({
       mode: (mode as 'baseline' | 'survey' | undefined) ?? 'baseline',
       blockCount,
@@ -421,8 +428,8 @@ export class JobsController {
       tableCount,
       cellCount,
     });
-    const documentMap = buildDocumentMap(doc.blocks);
-    const sectionCount = doc.blocks.filter((b) => b.kind === 'heading').length;
+    const documentMap = buildDocumentMap(content.blocks);
+    const sectionCount = content.blocks.filter((b) => b.kind === 'heading').length;
     const depth = headingLevels.reduce((most, level) => Math.max(most, level), 0); // reduce, not spread: a huge document has too many headings to spread
     return {
       blockCount,
@@ -435,12 +442,13 @@ export class JobsController {
       // A bare "TBD"/open placeholder left in the source text -- a real,
       // pre-existing content gap worth flagging before the reviewer commits
       // to a mode, not something SURVEY/BASELINE processing introduces.
-      openTbdCount: doc.blocks.filter((b) => b.kind === 'open_tbd').length,
+      openTbdCount: content.blocks.filter((b) => b.kind === 'open_tbd').length,
       documentMap,
       // What the wizard's "does this look right?" step shows: made from the parsed text and structure alone, at once, with no model.
-      overview: await buildPreviewOverview(doc, (...args) => this.ingestionClient.level(...args), { sectionCount, depth, documentMap }, this.logger),
+      overview,
+      leftOut: leftOut ?? null,
       fileHash: fileHashOf(file.buffer),
-      documentTokens: documentTokensOf(doc),
+      documentTokens: documentTokensOf(content),
     };
   }
 

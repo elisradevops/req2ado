@@ -93,7 +93,9 @@ function reachedKeyFor(
       // Another whole-tree pass that runs after scoring, before dedup_check --
       // omitting it here regressed the stepper backward to "Analyze" (confirmed
       // live), the exact bug this whole condition exists to prevent.
-      latestNarrationPhase === 'infer_trace_links'
+      latestNarrationPhase === 'infer_trace_links' ||
+      latestNarrationPhase === 'await_study' ||
+      latestNarrationPhase === 'propose_criteria'
     ) {
       key = 'score';
     } else if (stage === 'parse' || (latestNarrationPhase === 'primer' && stage === null)) {
@@ -124,7 +126,9 @@ function reachedKeyFor(
       latestNarrationPhase === 'score_requirements_done' ||
       latestNarrationPhase === 'detect_conflicts' ||
       latestNarrationPhase === 'regroup_roots' ||
-      latestNarrationPhase === 'infer_trace_links'
+      latestNarrationPhase === 'infer_trace_links' ||
+      latestNarrationPhase === 'await_study' ||
+      latestNarrationPhase === 'propose_criteria'
     ) {
       key = 'score';
     } else if (stage === 'parse') key = 'parse';
@@ -226,6 +230,10 @@ export function JobLifecycleSteps({
     tip = 'Grouping disconnected sections under a shared topic before the duplicate check.';
   } else if (reached === 'score' && latestNarrationPhase === 'infer_trace_links') {
     tip = 'Resolving trace/coverage links between requirements.';
+  } else if (reached === 'score' && latestNarrationPhase === 'await_study') {
+    tip = 'Waiting for the document reading to finish: the acceptance criteria use it.';
+  } else if (reached === 'score' && latestNarrationPhase === 'propose_criteria') {
+    tip = 'Writing acceptance criteria for the requirements.';
   }
   if (status === 'cancelled') tip = 'Cancelled here.';
   else if (status === 'failed') tip = 'The job failed here.';

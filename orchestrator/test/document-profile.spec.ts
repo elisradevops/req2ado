@@ -13,6 +13,12 @@ const doc = (blocks: any[], extra: Record<string, unknown> = {}) => ({ document:
 const SCOPE = 'This ICD defines the electrical and mechanical interfaces of the backplane.';
 
 describe('buildDocumentProfile', () => {
+  it('counts a number printed in the heading text as a clause number (the loader leaves number_label empty then)', () => {
+    const profile = buildDocumentProfile(doc([h(1, null, '1 Introduction'), h(2, null, '1.1 Scope'), p(SCOPE), h(1, null, 'Annex')]));
+    expect(profile.structure.numberedHeadings).toBe(2);
+    expect(composeProfileLines(profile).join(' ')).toMatch(/1 of 3 headings carries no clause number/);
+  });
+
   it('quotes the Scope paragraph verbatim with its section number', () => {
     const profile = buildDocumentProfile(doc([h(1, '1', 'Introduction'), h(2, '1.1', 'Scope'), p(SCOPE), p('Second paragraph.'), h(2, '1.2', 'Other'), p('Elsewhere.')]));
     expect(profile.purpose).toEqual({ number: '1.1', title: 'Scope', text: `${SCOPE} Second paragraph.`, truncated: false });

@@ -20,7 +20,7 @@ def adopt_baseline_structure(
     item per sheet), for every format, so it is the fixed item set. The nodes are renamed (`bl_` prefix, so they cannot
     collide with the deterministic subtrees' ids), marked SURVEY (the later passes score and refine them like any SURVEY
     item) and keep their hashes, so a rerun produces the same identities."""
-    tree = build_baseline_tree(doc, rulebook)
+    tree = build_baseline_tree(doc, rulebook, leave_out_front_matter=False)  # SURVEY left it out already
     renamed = {node.local_id: f"{_ID_PREFIX}{node.local_id}" for node in tree.nodes}
     nodes: list[WorkItemNode] = []
     for node in tree.nodes:

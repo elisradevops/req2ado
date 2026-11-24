@@ -101,6 +101,12 @@ export interface NarrationEvent {
     | 'detect_conflicts'
     | 'regroup_roots'
     | 'infer_trace_links'
+    // The acceptance-criteria step, and its wait for the document reading (the Study) to finish: named, so the screen does not
+    // keep reading "resolving trace links" while they run.
+    | 'await_study'
+    | 'propose_criteria'
+    // Parse's sub-step: the model reading the file's layout inside a job (only when no reading of the file is stored yet).
+    | 'learn_layout'
     // Fired for a docx source only, after parsing, while deriving real page
     // numbers by converting the docx to PDF and anchor-matching its blocks
     // against the PDF's own real per-page text (see ingestion's
@@ -276,6 +282,9 @@ export const INGESTION_NARRATION_PHASES = [
   'map_scope',
   'regroup_roots',
   'infer_trace_links',
+  'await_study',
+  'propose_criteria',
+  'learn_layout',
   'page_alignment',
   'job_failed',
   'chunk_warning',

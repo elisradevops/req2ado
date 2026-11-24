@@ -556,8 +556,8 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
     await userEvent.type(screen.getByLabelText(/area path/i), 'Project\\Area1');
     expect(screen.queryByRole('button', { name: /^continue$/i })).not.toBeInTheDocument(); // one page: nothing to continue to
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('New job, step 2 of 2');
-    expect(screen.getByText(/does this look right/i)).toBeInTheDocument();
-    expect(screen.getByTestId('file-rules-card')).toBeInTheDocument();
+    expect(screen.getByText(/this file and how it will be read/i)).toBeInTheDocument();
+    expect(screen.getByTestId('file-reading-card')).toBeInTheDocument();
     expect(screen.getByText(/About a backplane/)).toBeInTheDocument();
     expect(screen.queryByText(/your knowledge base/i)).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /write it again/i })).not.toBeInTheDocument();
@@ -997,7 +997,7 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
       await openCheckAndStart();
       expect(screen.getByRole('radiogroup', { name: 'Analysis mode' })).toBeInTheDocument();
       expect(screen.getByText(/About a backplane/)).toBeInTheDocument();
-      expect(screen.getByTestId('file-rules-card')).toBeInTheDocument();
+      expect(screen.getByTestId('file-reading-card')).toBeInTheDocument();
       expect(screen.queryByRole('button', { name: /back to configure/i })).not.toBeInTheDocument();
       const start = screen.getByRole('button', { name: /start job|reading the file/i });
       const bar = start.parentElement as HTMLElement;
@@ -1010,7 +1010,7 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
 
     it('puts what was read from the file before the destination, in the page order the keyboard and a screen reader follow', async () => {
       await openCheckAndStart();
-      const rules = screen.getByTestId('file-rules-card');
+      const rules = screen.getByTestId('file-reading-card');
       const destination = screen.getByText('Destination in Azure DevOps');
       const modes = screen.getByRole('radiogroup', { name: 'Analysis mode' });
       expect(modes.compareDocumentPosition(rules) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -1053,12 +1053,12 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
       expect(document.title).toBe('Step 2 of 3: Configure & review - New job');
       expect(screen.getByRole('button', { name: /^continue$/i })).toBeEnabled();
       expect(screen.queryByRole('button', { name: /looks right|reading the file/i })).not.toBeInTheDocument();
-      expect(screen.queryByText(/does this look right/i)).not.toBeInTheDocument();
-      expect(screen.queryByTestId('file-rules-card')).not.toBeInTheDocument();
+      expect(screen.queryByText(/this file and how it will be read/i)).not.toBeInTheDocument();
+      expect(screen.queryByTestId('file-reading-card')).not.toBeInTheDocument();
 
       await userEvent.click(screen.getByRole('button', { name: /^continue$/i }));
       expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('New job, step 3 of 3');
-      expect(screen.getByTestId('file-rules-card')).toBeInTheDocument();
+      expect(screen.getByTestId('file-reading-card')).toBeInTheDocument();
     });
 
     it('a SURVEY user who goes back from step 3 and picks BASELINE lands on "Check and start", and starts from there', async () => {
@@ -1069,7 +1069,7 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
 
       expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('New job, step 2 of 2');
       expect(screen.queryByRole('button', { name: /^continue$/i })).not.toBeInTheDocument();
-      expect(screen.getByTestId('file-rules-card')).toBeInTheDocument();
+      expect(screen.getByTestId('file-reading-card')).toBeInTheDocument();
       await startBaselineJob();
       expect(jobsApi.submitJob).toHaveBeenCalledWith(expect.objectContaining({ mode: 'baseline', areaPath: 'Project\\Area1' }));
     });
@@ -1086,7 +1086,7 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
       );
       expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('New job, step 2 of 2');
       expect(screen.getByLabelText(/area path/i)).toHaveValue('Project\\Area1');
-      expect(screen.getByTestId('file-rules-card')).toBeInTheDocument();
+      expect(screen.getByTestId('file-reading-card')).toBeInTheDocument();
     });
   });
 
@@ -1754,11 +1754,11 @@ describe('NewJobWizard: how the file is read (the pre-study)', () => {
     await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'sheet.xlsx'));
     await waitFor(() => expect(learn).toHaveBeenCalledTimes(1));
     expect(screen.getByRole('button', { name: /configure|check and start/i })).toBeInTheDocument(); // still on step 1
-    expect(screen.queryByTestId('file-rules-card')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('file-reading-card')).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: /configure|check and start/i }));
     await userEvent.click(screen.getByRole('radio', { name: /survey/i }));
     await userEvent.type(screen.getByLabelText(/area path/i), 'Project\\Area1');
-    expect(screen.queryByTestId('file-rules-card')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('file-reading-card')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^continue$/i })).toBeEnabled(); // nothing held on step 2
     await userEvent.click(screen.getByRole('button', { name: /^continue$/i }));
     expect(await screen.findByText(/types are stated in column 'Kind'/i)).toBeInTheDocument();
@@ -1987,7 +1987,7 @@ describe('NewJobWizard: how the file is read (the pre-study)', () => {
   it('shows how long the reading has run', async () => {
     vi.spyOn(jobsApi, 'previewRules').mockReturnValue(new Promise(() => {}));
     await toCheckAndStart();
-    expect(await screen.findByTestId('file-rules-elapsed')).toHaveTextContent(/^\d\d:\d\d so far$/);
+    expect(await screen.findByTestId('file-reading-elapsed')).toHaveTextContent(/^\d\d:\d\d so far$/);
   });
 
   it('"Stop waiting" frees Start, says the job reads the file itself, and the job carries no rulebook; a late answer never lands', async () => {
@@ -2001,7 +2001,7 @@ describe('NewJobWizard: how the file is read (the pre-study)', () => {
     expect(await screen.findByRole('button', { name: /reading the file/i })).toBeDisabled();
     await userEvent.click(screen.getByRole('button', { name: 'Stop waiting' }));
     expect(signals[0]?.aborted).toBe(true);
-    expect(screen.getByTestId('file-rules-cancelled')).toHaveTextContent(/the job will read the file's layout when it starts, which adds time to the job/i);
+    expect(screen.getByTestId('file-reading-stopped')).toHaveTextContent(/the job reads the file's layout and the document when it starts, which adds time to the job/i);
     await act(async () => finish(VIEW)); // the cancelled request answers anyway
     expect(screen.queryByText(/types are stated in column 'Kind'/i)).not.toBeInTheDocument();
     await startJob();
@@ -2091,8 +2091,9 @@ describe('NewJobWizard: reading and analyzing the document (the Study)', () => {
     const start = screen.getByRole('button', { name: /reading the document/i });
     expect(start).toBeDisabled();
     act(() => progress(2, 4));
-    expect(await screen.findByText('Reading part 3 of 4.')).toBeInTheDocument();
+    expect(await within(screen.getByTestId('file-reading-card')).findByText(/part 3 of 4/)).toBeInTheDocument();
     act(() => finish({ kind: 'study', study: STUDY }));
+    await userEvent.click(await screen.findByRole('button', { name: /what the model learned from reading the document/i }));
     expect(await screen.findByText('The radio')).toBeInTheDocument();
     expect(screen.getByText(/found 2 verification statements · 1 defined term · 1 open-value marker/i)).toBeInTheDocument();
     const ready = screen.getByRole('button', { name: /looks right/i });

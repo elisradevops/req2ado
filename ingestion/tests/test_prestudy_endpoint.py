@@ -566,4 +566,21 @@ def test_the_breakdown_is_not_part_of_how_a_file_is_studied(hebrew_doc) -> None:
     from app.study import model_rules
 
     source = inspect.getsource(model_rules.prestudy_version)
-    assert "details" not in source and model_rules._CODE_PASS_VERSION == "3"
+    # "4": the pre-study also learns front matter (a deliberate re-study of stored model rulebooks).
+    assert "details" not in source and model_rules._CODE_PASS_VERSION == "4"
+
+
+def test_a_reading_for_a_job_names_the_step_on_the_jobs_live_screen(hebrew_doc) -> None:
+    published: list = []
+
+    class _Publisher:
+        def __init__(self, _redis, job_id):  # noqa: ANN001
+            self.job_id = job_id
+
+        def publish(self, progress) -> None:  # noqa: ANN001
+            published.append((self.job_id, progress.phase))
+
+    with patch("app.main._survey_client", _fake_client), patch("app.main.NarrationPublisher", _Publisher):
+        client.post("/prestudy?job_id=job-7", json={"doc": hebrew_doc.model_dump(mode="json")})
+        client.post("/prestudy", json={"doc": hebrew_doc.model_dump(mode="json")})
+    assert published == [("job-7", "learn_layout")]  # the wizard's reading (no job) publishes nothing

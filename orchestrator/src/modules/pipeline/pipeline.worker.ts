@@ -173,7 +173,7 @@ export interface PipelineWorkerDeps {
   // How the file states its structure (the pre-study): learned, or reused from the one stored for this user and file, before every job that was not given
   // one by the wizard, in BASELINE and SURVEY alike. Absent (an older or mocked deps object), or no user, or no model connection: the job is built from the
   // conventions the code recognises, as before.
-  fileRulebooks?: { forJob(input: { userId: string; file: Buffer; filename: string; model?: string; signal?: AbortSignal }): Promise<{ rulebook: Record<string, unknown> | null; hash: string | null }> };
+  fileRulebooks?: { forJob(input: { userId: string; file: Buffer; filename: string; model?: string; jobId?: string; signal?: AbortSignal }): Promise<{ rulebook: Record<string, unknown> | null; hash: string | null }> };
   // Stores a SURVEY job's parsed document and leveled tree so an identical rerun (same file, user, model, knowledge base and
   // release) returns the identical result; see result-cache.ts. Absent: nothing is cached (every older caller and test).
   resultCache?: JobResultCache;
@@ -729,7 +729,7 @@ export async function runPipelineJob(
       const userId = job.userId;
       try {
         const studied = await withCancelWatch(deps.prisma, job.id, deps.cancelPollMs ?? CANCEL_POLL_MS, (signal) =>
-          deps.fileRulebooks!.forJob({ userId, file: job.fileBuffer, filename: job.filename, ...(model ? { model } : {}), signal }),
+          deps.fileRulebooks!.forJob({ userId, file: job.fileBuffer, filename: job.filename, ...(model ? { model } : {}), jobId: job.id, signal }),
         );
         fileRulebook = studied.rulebook;
         fileRulebookHash = studied.hash;

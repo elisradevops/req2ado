@@ -165,6 +165,14 @@ interface Props {
   onReadNow: () => void;
   /** Saves an edit. Resolves to null when the file accepted it, or to the reason it did not (shown here, the edit stays open). */
   onSaveEdit: (rulebook: Record<string, unknown>) => Promise<string | null>;
+  /** Inside the wizard's one "This file and how it will be read" card: only how items are built, no card, intro or waiting of its own (the
+   *  outer card has the one status line, timer and "Stop waiting"). */
+  embedded?: boolean;
+}
+
+/** The reading was refused because the model could not be reached at all, not because the file states nothing: a connection to check. */
+export function modelUnreachable(view: RulebookView | null): boolean {
+  return Boolean(view?.warnings.some((w) => w.kind === 'prestudy_rejected' && /could not be asked/i.test(String((w.detail as { reason?: unknown } | undefined)?.reason ?? w.raw ?? ''))));
 }
 
 /**
@@ -172,7 +180,7 @@ interface Props {
  * a type), every answer is checked against the whole file, and only code builds the items from it. The reviewer sees the rules in words, can read them
  * again or correct how a type is mapped, and the job is built from exactly what is shown here.
  */
-export function FileRulesCard({ status, view, error, modelLabel, startedAt, modelHint, onRelearn, onStopWaiting, onReadNow, onSaveEdit }: Props): React.ReactElement {
+export function FileRulesCard({ status, view, error, modelLabel, startedAt, modelHint, onRelearn, onStopWaiting, onReadNow, onSaveEdit, embedded }: Props): React.ReactElement | null {
   const [editing, setEditing] = useState(false);
   const [edits, setEdits] = useState<Edits>({ types: {}, labels: {} });
   const [saving, setSaving] = useState(false);
@@ -196,6 +204,145 @@ export function FileRulesCard({ status, view, error, modelLabel, startedAt, mode
     } else {
       setRejection(message);
     }
+  }
+
+  const editForm = (
+    <div className="flex flex-col gap-2.5 rounded-md border border-hairline p-3" data-testid="file-rules-edit">
+                {editableTables.map(([tableId, spec]) =>
+                  Object.entries(spec.type_map ?? {}).map(([value, type]) => (
+                    <div key={`${tableId}:${value}`} className="grid grid-cols-[minmax(0,1fr)_minmax(0,12rem)] items-center gap-3">
+                      <span dir="auto" className="break-words text-sm text-ink-1">
+                        Rows typed “{value}” are
+                      </span>
+                      <Select
+                        aria-label={`Type for rows typed ${value}`}
+                        value={edits.types[tableId]?.[value] ?? type ?? 'Not imported'}
+                        onChange={(event) =>
+                          setEdits((current) => ({ ...current, types: { ...current.types, [tableId]: { ...current.types[tableId], [value]: event.target.value } } }))
+                        }
+                      >
+                        {TYPE_CHOICES.map((choice) => (
+                          <option key={choice} value={choice}>
+                            {choice}
+                          </option>
+                        ))}
+                      </Select>
+                    </div>
+                  )),
+                )}
+                {labels.map((label, index) => (
+                  <div key={`${label.label}${label.separator}`} className="grid grid-cols-[minmax(0,1fr)_minmax(0,12rem)] items-center gap-3">
+                    <span dir="auto" className="break-words text-sm text-ink-1">
+                      Headings that begin “{label.label}
+                      {label.separator}” are
+                    </span>
+                    <Select
+                      aria-label={`Type for headings that begin ${label.label}`}
+                      value={edits.labels[index] ?? label.type}
+                      onChange={(event) => setEdits((current) => ({ ...current, labels: { ...current.labels, [index]: event.target.value } }))}
+                    >
+                      {TYPE_CHOICES.filter((choice) => choice !== 'Not imported').map((choice) => (
+                        <option key={choice} value={choice}>
+                          {choice}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+                ))}
+                {rejection && <Alert severity="error">{rejection}</Alert>}
+                <div className="flex items-center gap-2">
+                  <Button onClick={() => void save()} disabled={saving}>
+                    {saving ? <Spinner /> : null}
+                    {saving ? 'Checking…' : 'Save changes'}
+                  </Button>
+                  <Button variant="outline" onClick={() => { setEditing(false); setRejection(null); setEdits({ types: {}, labels: {} }); }} disabled={saving}>
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+  );
+
+  if (embedded) {
+    if (status === 'error') {
+      return (
+        <Alert severity="warning">
+          <div className="flex flex-col gap-2">
+            <span>{error || "The file's layout could not be read."} Items are built from the file's own headings and numbering.</span>
+            <div>
+              <Button variant="outline" onClick={onRelearn}>
+                <RefreshCw className="h-3.5 w-3.5" /> Try again
+              </Button>
+            </div>
+          </div>
+        </Alert>
+      );
+    }
+    if (status !== 'ready' || !view) return null;
+    if (view.skipped) return <p className="text-sm text-ink-2" data-testid="file-rules-skipped">{view.skipped}</p>;
+    if (modelUnreachable(view)) {
+      return (
+        <Alert severity="warning">
+          <div className="flex flex-col gap-2" data-testid="file-rules-unreachable">
+            <span>
+              Your model connection did not answer, so the model did not read the file&apos;s layout. Items are built from the file&apos;s own headings and
+              numbering. Check the connection, then read again.
+            </span>
+            <div>
+              <Button variant="outline" onClick={onRelearn}>
+                <RefreshCw className="h-3.5 w-3.5" /> Read again
+              </Button>
+            </div>
+          </div>
+        </Alert>
+      );
+    }
+    return (
+      <div className="flex flex-col gap-2.5" data-testid="file-rules-card">
+        {view.rules.length > 0 ? (
+          <ul className="flex flex-col gap-1.5 text-sm text-ink-1">
+            {view.rules.map((rule) => (
+              <li key={rule} dir="auto" className="break-words">
+                {rule}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-sm text-ink-1">
+            The file does not name its item types in words, so items are built from its own headings and numbering: each section heading is a Feature, each
+            requirement under it is a Requirement.
+          </p>
+        )}
+        {modelHint && (
+          <p className="text-xs text-ink-2" data-testid="file-rules-model-hint">
+            Read with {modelHint.readWith}. This job will use {modelHint.jobUses}.{' '}
+            <button type="button" className="font-medium text-accent underline underline-offset-2 hover:no-underline" onClick={onRelearn}>
+              Read again with {modelHint.jobUses}
+            </button>
+          </p>
+        )}
+        {view.details && <RulesBreakdown details={view.details} />}
+        {editing && canEdit && editForm}
+        <div className={cn('flex flex-wrap items-center gap-2', editing && 'hidden')}>
+          {canEdit && (
+            <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
+              <Pencil className="h-3.5 w-3.5" /> Edit types
+            </Button>
+          )}
+          <Button variant="outline" size="sm" onClick={onRelearn}>
+            <RefreshCw className="h-3.5 w-3.5" /> Read again
+          </Button>
+          <span className="text-xs text-ink-3">
+            {view.source === 'none' ? 'Nothing for the model to verify' : SOURCE_LABEL[view.source]}
+            {view.reused ? ' · reused from an earlier upload of this file' : ''}
+          </span>
+          {view.source !== 'none' && (
+            <span className="font-mono text-meta text-ink-3" title="The same file with the same rules always gives the same items">
+              rules {view.hash.slice(0, 8)}
+            </span>
+          )}
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -294,61 +441,7 @@ export function FileRulesCard({ status, view, error, modelLabel, startedAt, mode
               )
             )}
 
-            {editing && canEdit && (
-              <div className="flex flex-col gap-2.5 rounded-md border border-hairline p-3" data-testid="file-rules-edit">
-                {editableTables.map(([tableId, spec]) =>
-                  Object.entries(spec.type_map ?? {}).map(([value, type]) => (
-                    <div key={`${tableId}:${value}`} className="grid grid-cols-[minmax(0,1fr)_minmax(0,12rem)] items-center gap-3">
-                      <span dir="auto" className="break-words text-sm text-ink-1">
-                        Rows typed “{value}” are
-                      </span>
-                      <Select
-                        aria-label={`Type for rows typed ${value}`}
-                        value={edits.types[tableId]?.[value] ?? type ?? 'Not imported'}
-                        onChange={(event) =>
-                          setEdits((current) => ({ ...current, types: { ...current.types, [tableId]: { ...current.types[tableId], [value]: event.target.value } } }))
-                        }
-                      >
-                        {TYPE_CHOICES.map((choice) => (
-                          <option key={choice} value={choice}>
-                            {choice}
-                          </option>
-                        ))}
-                      </Select>
-                    </div>
-                  )),
-                )}
-                {labels.map((label, index) => (
-                  <div key={`${label.label}${label.separator}`} className="grid grid-cols-[minmax(0,1fr)_minmax(0,12rem)] items-center gap-3">
-                    <span dir="auto" className="break-words text-sm text-ink-1">
-                      Headings that begin “{label.label}
-                      {label.separator}” are
-                    </span>
-                    <Select
-                      aria-label={`Type for headings that begin ${label.label}`}
-                      value={edits.labels[index] ?? label.type}
-                      onChange={(event) => setEdits((current) => ({ ...current, labels: { ...current.labels, [index]: event.target.value } }))}
-                    >
-                      {TYPE_CHOICES.filter((choice) => choice !== 'Not imported').map((choice) => (
-                        <option key={choice} value={choice}>
-                          {choice}
-                        </option>
-                      ))}
-                    </Select>
-                  </div>
-                ))}
-                {rejection && <Alert severity="error">{rejection}</Alert>}
-                <div className="flex items-center gap-2">
-                  <Button onClick={() => void save()} disabled={saving}>
-                    {saving ? <Spinner /> : null}
-                    {saving ? 'Checking…' : 'Save changes'}
-                  </Button>
-                  <Button variant="outline" onClick={() => { setEditing(false); setRejection(null); setEdits({ types: {}, labels: {} }); }} disabled={saving}>
-                    Cancel
-                  </Button>
-                </div>
-              </div>
-            )}
+            {editing && canEdit && editForm}
 
             <div className={cn('flex flex-wrap items-center gap-2', editing && 'hidden')}>
               {canEdit && (

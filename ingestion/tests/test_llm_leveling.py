@@ -3553,9 +3553,14 @@ def test_trace_links_count_their_own_items_not_chunks_through_the_stage_counter(
         def advance(self, stage: str, count: int) -> None:
             calls.append(("advance", stage, count))
 
+        def complete(self, stage: str) -> None:
+            calls.append(("complete", stage, 0))
+
     monkeypatch.setattr("app.leveling.trace_links.current_stage_counter", lambda: _Counter())
     nodes = [_req_node(f"n{i}", f"The system shall do thing {i}.") for i in range(3)]
     _infer_trace_links_for_nodes(nodes, FakeTraceLinkInferenceClient(results=[]), [], [], None, 0, 0)
 
     assert calls[0] == ("set_total", "trace", 3)
     assert sum(count for kind, _stage, count in calls if kind == "advance") == 3
+    # Marked complete when its last chunk answers, so the screen never shows "3 of 3" still working.
+    assert calls[-1] == ("complete", "trace", 0)

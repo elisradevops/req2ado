@@ -231,7 +231,7 @@
             "dropped_blocks", "missing_table_group_coverage", "external_reference",
             "scoring_failed", "scoring_missing", "scoring_inconsistent_categories",
             "enhancement_call_failed", "enhancement_response_incomplete", "document_study_incomplete", "dropped_row",
-            "front_matter_folded", "trace_link_inference_failed", "trace_links_partial", "items_lost",
+            "front_matter_folded", "front_matter_left_out", "informational_section_folded", "trace_link_inference_failed", "trace_links_partial", "items_lost",
             "heading_id_offset_mismatch",
             "unsupported_content_note", "empty_table_content",
             "vision_captioning_disabled", "invalid_mapping_target", "mapping_call_failed",

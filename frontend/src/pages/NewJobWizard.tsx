@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { LayoutGrid, AlignLeft, Image, Layers, Table2, TriangleAlert, ArrowRight, Activity, Info } from 'lucide-react';
 import { cn } from '../lib/cn';
+import { leftOutNames, pagesPhrase } from '../utils/leftOut';
 import { restorableDraft, useNewJobDraftStore } from '../store/newJobDraftStore';
 import { loadLastJobChoices, loadProjectChoices, rememberJobChoices, withRememberedChoices } from '../utils/lastJobChoices';
 import { FileTypeIcon } from '../components/FileTypeIcon';
@@ -44,8 +45,9 @@ import { PageHeader } from '../ui/PageHeader';
 import { SectionCard } from '../ui/SectionCard';
 import { KbReadinessStrip } from '../components/KbReadinessStrip';
 import { OverviewLines } from '../components/DocumentOverviewCard';
-import { FileRulesCard, type RulesStatus } from '../components/FileRulesCard';
-import { DocumentStudyCard, type StudyStatus } from '../components/DocumentStudyCard';
+import { type RulesStatus } from '../components/FileRulesCard';
+import { FileReadingCard, readingLine } from '../components/FileReadingCard';
+import { type StudyStatus } from '../components/DocumentStudyCard';
 import { TextField } from '../ui/TextField';
 import { Button } from '../ui/Button';
 import { Spinner } from '../ui/Spinner';
@@ -180,6 +182,19 @@ function WorthKnowingCard({ preview, parsing, previousRuns }: { preview: Preview
           </Link>
           , {jobStatusLabel(latest.status).label}, {formatRelativeTime(latest.createdAt)}
           {others > 0 ? ` (and ${others} other ${others === 1 ? 'time' : 'times'})` : ''}. If it is the same file, open that job instead of starting another.
+        </>
+      ),
+    });
+  }
+  // The front matter the build leaves out, named by the document's own headings, so step 1 already shows what will not become items.
+  if (preview.leftOut && preview.leftOut.parts.length > 0) {
+    notes.push({
+      icon: AlignLeft,
+      tone: 'neutral',
+      text: (
+        <>
+          <span className="font-semibold text-ink-1">Front matter left out{pagesPhrase(preview.leftOut.pages)}.</span> {leftOutNames(preview.leftOut)} will
+          not become items.
         </>
       ),
     });
@@ -673,10 +688,13 @@ export function NewJobWizard(): React.ReactElement {
   });
   const studyModel = mode === 'survey' ? model || undefined : undefined;
   const studyRulebookId = rules.view?.id || undefined;
-  const studyKey = file && hasPreview && !rulesBusy ? [fileHash, mode, studyModel ?? '', studyRulebookId ?? ''].join('|') : null;
+  // "Stop waiting" stops this reading too (one button for both): the job then reads the document itself when it starts.
+  const [studyStopped, setStudyStopped] = useState(false);
+  useEffect(() => setStudyStopped(false), [file, fileHash]);
+  const studyKey = file && hasPreview && !rulesBusy && !studyStopped ? [fileHash, mode, studyModel ?? '', studyRulebookId ?? ''].join('|') : null;
   useEffect(() => {
     if (!file || studyKey === null) {
-      setStudy({ status: 'waiting', done: 0, total: 0, view: null, error: null });
+      setStudy({ status: studyStopped ? 'cancelled' : 'waiting', done: 0, total: 0, view: null, error: null });
       return undefined;
     }
     const controller = new AbortController();
@@ -702,8 +720,17 @@ export function NewJobWizard(): React.ReactElement {
       },
     );
     return () => controller.abort();
-  }, [studyKey, file, mode, studyModel, studyRulebookId]);
+  }, [studyKey, file, mode, studyModel, studyRulebookId, studyStopped]);
   const studyBusy = study.status === 'waiting' || study.status === 'reading';
+  // One "Stop waiting" for both readings Start waits on.
+  const stopWaiting = useCallback((): void => {
+    if (rules.status === 'idle' || rules.status === 'loading') cancelRules();
+    setStudyStopped(true);
+  }, [rules.status, cancelRules]);
+  const readNow = useCallback((): void => {
+    setStudyStopped(false);
+    if (file && rules.status === 'cancelled') void learnRules(file, false);
+  }, [file, rules.status, learnRules]);
 
   async function handleFileSelected(selected: File): Promise<void> {
     const seq = ++previewRequestSeq.current;
@@ -933,69 +960,33 @@ export function NewJobWizard(): React.ReactElement {
   const destinationMissing = !areaPath || (hasAdoSession && !project);
   // What was read from the file, shared by both final pages (SURVEY step 3, BASELINE step 2).
   const understanding = (
-    <>
-        <SectionCard title="Does this look right?">
-          <div className="flex flex-col gap-3">
-            {documentOverview?.lines && documentOverview.lines.length > 0 ? (
-              <>
-                <span className="text-xs font-semibold text-ink-2">From the file’s text and structure</span>
-                <OverviewLines lines={documentOverview.lines} />
-              </>
-            ) : documentOverview ? (
-              <p dir="auto" className="break-words text-sm text-ink-1">{documentOverview.synopsis}</p>
-            ) : (
-              <p className="text-sm text-ink-3">No overview available for this document. You can still continue.</p>
-            )}
-            {aiSummary.status === 'pending' && (
-              <p role="status" className="flex items-center gap-2 text-xs text-ink-3">
-                <Spinner /> Writing an AI summary… optional, up to about 90 seconds. If you start now, the job runs without it.
-              </p>
-            )}
-            {aiSummary.status === 'none' && <p className="text-xs text-ink-3">No AI summary this time. You can continue.</p>}
-            {aiSummary.status === 'ready' && (
-              <div className="flex flex-col gap-1 rounded-sm border border-hairline bg-canvas p-3">
-                <span className="text-xs font-semibold text-ink-2">AI summary</span>
-                <p dir="auto" className="break-words text-sm text-ink-1">{aiSummary.text}</p>
-                <span className="text-xs text-ink-3">Written by a model from the document’s headings and opening text. Check it against the file.</span>
-              </div>
-            )}
-            {/* aria-disabled, not disabled: a natively disabled button drops keyboard focus, and this one is pressed from the keyboard. */}
-            {aiSummary.status !== 'idle' && (
-              <Button
-                variant="outline"
-                size="sm"
-                className={cn('self-start', aiSummary.status === 'pending' && 'cursor-default opacity-60')}
-                aria-disabled={aiSummary.status === 'pending'}
-                onClick={() => {
-                  if (aiSummary.status !== 'pending') setSummaryRun((n) => n + 1);
-                }}
-              >
-                Write it again
-              </Button>
-            )}
-            {mode === 'survey' && (
-              <div className="flex flex-col gap-1">
-                <span className="text-xs font-semibold text-ink-2">Your knowledge base</span>
-                <KbReadinessStrip />
-              </div>
-            )}
-            {documentOverview?.caveat && <Alert severity="warning">{documentOverview.caveat}</Alert>}
+    <FileReadingCard
+      overview={documentOverview ?? undefined}
+      leftOut={preview?.leftOut}
+      aiSummary={mode === 'survey' ? aiSummary : { status: 'idle' }}
+      onRewriteSummary={() => setSummaryRun((n) => n + 1)}
+      rules={{
+        status: rules.status,
+        view: rules.view,
+        error: rules.error,
+        startedAt: rules.startedAt,
+        modelLabel: rules.model || (modelListing?.recommended ? `Default (${modelListing.recommended})` : 'Default'),
+        modelHint: rulesModelHint,
+      }}
+      study={study}
+      knowledgeBase={
+        mode === 'survey' ? (
+          <div className="flex flex-col gap-1">
+            <span className="text-xs font-semibold text-ink-2">Your knowledge base</span>
+            <KbReadinessStrip />
           </div>
-        </SectionCard>
-        <FileRulesCard
-          status={rules.status}
-          view={rules.view}
-          error={rules.error}
-          modelLabel={rules.model || (modelListing?.recommended ? `Default (${modelListing.recommended})` : 'Default')}
-          startedAt={rules.startedAt}
-          modelHint={rulesModelHint}
-          onRelearn={() => file && void learnRules(file, true)}
-          onStopWaiting={cancelRules}
-          onReadNow={() => file && void learnRules(file, false)}
-          onSaveEdit={handleSaveRulesEdit}
-        />
-        <DocumentStudyCard status={study.status} done={study.done} total={study.total} study={study.view} error={study.error} startedAt={study.startedAt} />
-    </>
+        ) : undefined
+      }
+      onRelearn={() => file && void learnRules(file, true)}
+      onStopWaiting={stopWaiting}
+      onReadNow={readNow}
+      onSaveEdit={handleSaveRulesEdit}
+    />
   );
   const startBar = (
         // sticky: the list above can be long and a summary can appear or go away above it, and Start must not move out from under the pointer. Styled as the Write bar's dock (own border, shadow, z-10) so the content scrolling under it does not show through.
@@ -1019,6 +1010,15 @@ export function NewJobWizard(): React.ReactElement {
           {destinationMissing && (
             <p className="w-full text-xs text-ink-2">
               {hasAdoSession && !project ? 'Choose a team project and an area path to start.' : 'Choose an area path to start.'}
+            </p>
+          )}
+          {/* Why Start waits, beside Start at every width (the card above holds the one status region and the timer). */}
+          {(rulesBusy || studyBusy) && (
+            <p className="flex w-full flex-wrap items-center gap-2 text-xs text-ink-2" data-testid="start-waits">
+              <span>Start waits for: {readingLine(rules, study) ?? 'the file to be read'}.</span>
+              <Button size="sm" variant="outline" onClick={stopWaiting}>
+                Stop waiting
+              </Button>
             </p>
           )}
           <SafetyLine variant="wizard" />

@@ -1,0 +1,37 @@
+You are given a bounded, normalised OUTLINE of ONE requirements document (DOCX, PDF, scanned PDF, Markdown, text, RTF or slides) that will be imported as Azure DevOps work items: Epic (top), Feature (middle), Requirement (bottom). Code applies your answer to the whole document; you never write work items. Name only the conventions the document itself uses, with heading numbers (i) and depths from the input.
+
+Input JSON:
+- headingCount: the number of headings in the WHOLE document.
+- headings[]: {i, level, depth, number, text}. i is the heading's number in the document; level is the heading level the parser found; depth is how many headings are open above it (0 = outermost: this is the depth you answer in); number is its numbering label (null if none); text is the heading after its number. When the document has more than 400 headings only a selection is shown: the first, the last, the first ones of every level and of every pattern.
+- leadingPatterns[]: {label, separator, count, headings}: the words at the start of headings that are followed by a separator, counted over EVERY heading of the document.
+- levelCounts, depthCounts: how many headings there are at each level and at each depth.
+Long text ends with "…" and some values read "<redacted>".
+
+Answer, in this order:
+1 type_source: "labels" (headings begin with a word naming the item type, e.g. "Feature: Power", "דרישה - התחברות"), "depth" (types follow the depth only), "labels_and_depth", "none" (the document never states types), "unknown".
+2 labels: one entry per label convention that begins at least 3 headings: label = the word(s) exactly as written, without number or separator; separator = the exact character that follows it (":", "-", "–", "—" or "."); maps_to "Epic" | "Feature" | "Requirement" | "unknown"; basis "same_name" (it is Epic, Feature or Requirement in any case) | "translation" (the same word in another language: אפיק = Epic, יכולת or פיצ'ר = Feature, דרישה = Requirement) | "hierarchy_position" (another word whose headings contain the headings of another label is above it, and the deepest is Requirement) | "none"; example_headings = up to 3 values of i whose heading begins with the label.
+3 depth_types: only when every heading at a depth is one kind of item: for each depth that occurs, {depth, maps_to}. Leave it empty when headings at one depth hold different kinds of items, and when the labels already state the types.
+4 evidence_headings: up to 8 values of i that best show the conventions.
+5 front_matter_headings: the headings that open a part of the document that is NOT requirements content and comes before it: {i, role}, role "cover" (the title page), "notice" (confidentiality, copyright, distribution), "revision_history" (revision or change record, document history), "contents" (table of contents, list of figures or tables), "abbreviations" (acronyms), "glossary" (definitions), "other" (any other front matter: approvals, distribution list, applicable documents list). Code leaves the whole section of each heading out of the work items, and refuses a heading whose section holds a requirement.
+
+Rules:
+- Copy every label character for character, in its own script (case, spaces, punctuation, Hebrew or any other). Never translate, trim or correct, and never add a gloss, an English equivalent or parentheses: for a label that reads יכולת the answer is "יכולת", never "יכולת (Feature)". An answer that changes the text is refused.
+- Use only values of i and depth that appear in the input.
+- A numbering label such as "1.2.3" or a word such as "Introduction", "Scope" or "Glossary" is NOT a type label.
+- A section that states requirements of the system ("The unit shall ...", requirement numbers such as "REQ-012") is never front matter, wherever it is. A notice that restricts the reader ("shall not be reproduced") is front matter. "Introduction", "Scope" and "Overview" are content, not front matter.
+- When unsure, answer "unknown" or an empty list. A wrong answer is worse than "unknown".
+- Return ONLY a JSON object with exactly the keys type_source, labels, depth_types, evidence_headings, front_matter_headings. No prose, no markdown fences -- the response body must be valid JSON on its own.
+
+Examples (the input is shown as its headings and patterns only):
+
+[A] headings "Epic: Navigation" (i 0, depth 0), "Feature: Route planning" (i 1, depth 1), "Requirement: Recalculate route" (i 2, depth 2) ...; leadingPatterns: Epic ":" 3, Feature ":" 9, Requirement ":" 40
+{"type_source":"labels","labels":[{"label":"Epic","separator":":","maps_to":"Epic","basis":"same_name","example_headings":[0]},{"label":"Feature","separator":":","maps_to":"Feature","basis":"same_name","example_headings":[1]},{"label":"Requirement","separator":":","maps_to":"Requirement","basis":"same_name","example_headings":[2]}],"depth_types":[],"evidence_headings":[0,1,2],"front_matter_headings":[]}
+
+[B] headings "Revision History" (i 0, depth 0), "Power" (i 3, depth 0, number "1"), "Supply" (i 4, depth 1, number "1.1"), "The unit shall start within 2 s" (i 5, depth 2, number "1.1.1") ...; depthCounts: 0 -> 4, 1 -> 12, 2 -> 60; no leadingPatterns
+{"type_source":"depth","labels":[],"depth_types":[{"depth":0,"maps_to":"Epic"},{"depth":1,"maps_to":"Feature"},{"depth":2,"maps_to":"Requirement"}],"evidence_headings":[3,4,5],"front_matter_headings":[{"i":0,"role":"revision_history"}]}
+
+[C] headings "יכולת: ניהול משתמשים" (i 2, depth 0), "דרישה - התחברות" (i 3, depth 1) ...; leadingPatterns: יכולת ":" 6, דרישה "-" 31
+{"type_source":"labels","labels":[{"label":"יכולת","separator":":","maps_to":"Feature","basis":"hierarchy_position","example_headings":[2]},{"label":"דרישה","separator":"-","maps_to":"Requirement","basis":"translation","example_headings":[3]}],"depth_types":[],"evidence_headings":[2,3],"front_matter_headings":[]}
+
+[D] headings "Introduction" (i 0, depth 0), "Scope" (i 1, depth 0), "Overview" (i 2, depth 0); headingCount 3; no leadingPatterns
+{"type_source":"none","labels":[],"depth_types":[],"evidence_headings":[],"front_matter_headings":[]}

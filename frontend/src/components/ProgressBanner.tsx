@@ -15,6 +15,7 @@ import { Chip } from '../ui/Chip';
 import { InfoTip } from '../ui/Tooltip';
 import { describeStepKbGrounding } from '../utils/kbCoverage';
 import { LiveRunPanel } from './liveRun/LiveRunPanel';
+import type { CurrentPass } from './liveRun/WorkingOnCard';
 import { useLiveRunStore } from '../store/liveRunStore';
 import { COUNTED_EXPLANATION, describeCountedProgress, describeCountedValueText, STILL_WORKING_COPY } from '../utils/liveCopy';
 import { countedBarMatches, liveStageFor, phaseKeyOfNarration } from '../utils/liveStage';
@@ -70,6 +71,9 @@ export const PHASE_SUBLABEL: Record<NarrationEvent['phase'], string> = {
   detect_conflicts: 'Checking for conflicts',
   regroup_roots: 'Grouping by topic',
   infer_trace_links: 'Resolving trace links',
+  await_study: 'Waiting for the document reading',
+  learn_layout: "Reading the file's layout",
+  propose_criteria: 'Writing acceptance criteria',
   // Docx-only, fires during parse like describe_figure/parse_done above --
   // never actually looked up for the same reason (no per-section row),
   // present only so this Record stays exhaustive.
@@ -139,6 +143,9 @@ const PHASE_START_WEIGHT: Record<NarrationEvent['phase'], number> = {
   detect_conflicts: 1,
   regroup_roots: 1,
   infer_trace_links: 1,
+  await_study: 1,
+  propose_criteria: 1,
+  learn_layout: 0,
   // Parse-stage phase, same as describe_figure/parse_done above -- section
   // scoring hasn't started yet, so no partial credit to give.
   page_alignment: 0,
@@ -206,6 +213,10 @@ function describeModelCallTarget(latest: NarrationEvent): string {
       return 'grouping top-level items by topic';
     case 'infer_trace_links':
       return 'resolving trace links between requirements';
+    case 'await_study':
+      return 'waiting for the document reading to finish (the acceptance criteria use it)';
+    case 'propose_criteria':
+      return 'writing acceptance criteria';
     default:
       return PHASE_SUBLABEL[latest.phase].toLowerCase();
   }
@@ -282,7 +293,9 @@ export function ProgressBanner({
     latest?.phase === 'detect_conflicts' ||
     latest?.phase === 'regroup_roots' ||
     latest?.phase === 'map_scope' ||
-    latest?.phase === 'infer_trace_links';
+    latest?.phase === 'infer_trace_links' ||
+    latest?.phase === 'await_study' ||
+    latest?.phase === 'propose_criteria';
   // Distinct from isTailPhase -- this phase runs at the very START of
   // analysis (before branchCount is even known), so "Finishing up…" would
   // be actively misleading here. Only shares isTailPhase's OTHER effect:
@@ -367,6 +380,8 @@ export function ProgressBanner({
   // before.
   const countedProgress = useLiveRunStore((s) => s.progress);
   const liveActive = useLiveRunStore((s) => s.active);
+  // A step with live lanes shows them in the Now card; the batch view is only for a step that has none.
+  const liveLaneCount = useLiveRunStore((s) => Object.keys(s.lanes).length);
   const modelProgress = useLiveRunStore((s) => s.modelProgress);
   const shownProgress = countedProgress ? countedProgress.pct : clampedProgress;
   // Single shared clock tick -- both the ETA calc below and the "last
@@ -460,6 +475,19 @@ export function ProgressBanner({
   // The server's own report on the open model call (sent every ~15 s): shown while it is fresh, so a long call never looks stuck.
   const modelProgressShown = modelProgress !== null && tickingNow - modelProgress.receivedAt <= MODEL_PROGRESS_FRESH_MS;
   const modelProgressMs = modelProgress ? modelProgress.elapsedS * 1000 + Math.max(0, tickingNow - modelProgress.receivedAt) : 0;
+  // The Now card's subject while a batched step's call is open (no live lane): the batch, its pass ("vote 2 of 2"), a few of its items
+  // and how long the call has run. The separate "Waiting on the model" note is then not shown: one place says it (DESIGN.md §11.3.5).
+  const currentPass: CurrentPass | null =
+    liveActive && liveLaneCount === 0 && modelProgressShown && modelProgress && latest && modelCallTarget
+      ? {
+          line: modelCallTarget.charAt(0).toUpperCase() + modelCallTarget.slice(1),
+          pass: modelProgress.pass,
+          titles: (latest.sampleTitles ?? []).slice(0, 3),
+          elapsedLabel:
+            formatDuration(modelProgressMs) +
+            (modelProgress.tokens !== null ? `, about ${modelProgress.tokens.toLocaleString('en-US')} tokens written` : ''),
+        }
+      : null;
   // "Time left in THIS step", from progress observed during the step only (see utils/stepEta.ts).
   // It used to be (time since the job started) / (units done) * (units remaining), recomputed every
   // second: the clock included upload, parsing and every earlier step, and because units only move
@@ -565,14 +593,15 @@ export function ProgressBanner({
           <p className='text-title'>{headline}</p>
           {stageLine && <p data-testid='stage-line' className='text-xs text-ink-2'>{stageLine}</p>}
           {latest?.message && !structurePassSilent && <p className='truncate text-xs text-ink-3' title={latest.message}>{latest.message}</p>}
-          {stillWorkingOn && (
+          {/* One waiting line, never two: "still working" until the long-wait threshold, then the same line with how long. */}
+          {stillWorkingOn && !waitingLong && (
             <p data-testid='still-working-note' className='mt-1 text-xs text-ink-2'>
               {STILL_WORKING_COPY(stillWorkingOn)}
             </p>
           )}
           {waitingLong && (
             <p data-testid='waiting-note' className='mt-1 w-fit rounded-sm bg-surface-alt px-2 py-0.5 text-xs text-ink-2'>
-              No update for {formatDuration(secondsSinceUpdate * 1000)}. Still working; you can close this page.
+              No update for {formatDuration(secondsSinceUpdate * 1000)}. Still working on {liveStage.label}; you can close this page.
             </p>
           )}
         </div>
@@ -784,7 +813,7 @@ export function ProgressBanner({
         )}
 
         {/* Only a SURVEY run publishes a document map; asking for one on a BASELINE run is a request that always fails. */}
-        <LiveRunPanel jobId={jobId} running={mode === 'survey'} />
+        <LiveRunPanel jobId={jobId} running={mode === 'survey'} current={currentPass} />
 
         {modelCallInFlight && modelCallElapsedMs !== undefined && !detSubtreeChunk && !liveActive && (
           <p className='mt-2.5 rounded-md border border-hairline-strong bg-surface-alt p-3 text-xs text-ink-2' data-testid='model-call-clock'>
@@ -793,7 +822,7 @@ export function ProgressBanner({
           </p>
         )}
 
-        {modelProgressShown && modelProgress && (
+        {modelProgressShown && modelProgress && !currentPass && (
           <p className='mt-2.5 rounded-md border border-hairline-strong bg-surface-alt p-3 text-xs text-ink-2' data-testid='model-progress'>
             Waiting on the model{modelCallTarget ? `, ${modelCallTarget}` : ''} — {formatDuration(modelProgressMs)} so far
             {modelProgress.tokens !== null ? `, about ${modelProgress.tokens.toLocaleString('en-US')} tokens written` : ''}.
