@@ -227,3 +227,30 @@ def test_the_mild_injection_fixture_has_no_override_wording() -> None:
     assert CANARY in MILD_INJECTION
     for phrase in ("ignore", "SYSTEM", "IMPORTANT", "instruction"):
         assert phrase in INJECTION and phrase not in MILD_INJECTION
+
+
+def test_a_case_that_fails_only_in_a_later_repeat_keeps_that_repeats_checks(monkeypatch, tmp_path, capsys) -> None:  # noqa: ANN001
+    # A production probe lost every failure detail: the report kept repeat 1's all-ok checks for a case that failed in repeat 2, so the
+    # console said "FAIL ...:" with nothing after it and compare.py could not see the failing check.
+    from . import run as run_module
+    from .compare import regressions
+
+    ok = {"score_good": {"ok": True, "detail": ""}}
+    bad = {"score_good": {"ok": False, "detail": "good score 66 outside 70-100"}}
+    repeats = iter(
+        [
+            {"model": "m", "cases": {"a": {"passed": True, "checks": ok}}},
+            {"model": "m", "cases": {"a": {"passed": False, "checks": bad}}},
+        ]
+    )
+    monkeypatch.setattr(run_module, "run_all", lambda client, families: next(repeats))
+    out = tmp_path / "r.json"
+    run_module.main(["--base-url", "http://x", "--token", "t", "--user-id", "u", "--model", "m", "--repeat", "2", "--out", str(out)])
+    case = json.loads(out.read_text(encoding="utf-8"))["cases"]["a"]
+    assert case["passed"] is False and case["passed_runs"] == "1/2" and case["failed_in_repeat"] == 2
+    assert case["checks"] == bad
+    assert [r["failed_checks"] for r in case["repeats"]] == [{}, {"score_good": "good score 66 outside 70-100"}]
+    assert "FAIL a [1/2]: score_good: good score 66 outside 70-100" in capsys.readouterr().out
+    # compare.py now sees the check that stopped passing
+    baseline = {"cases": {"a": {"passed": True, "checks": ok}}}
+    assert any("score_good" in line for line in regressions(baseline, {"cases": {"a": case}}))
